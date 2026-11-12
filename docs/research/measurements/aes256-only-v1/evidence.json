@@ -14,7 +14,13 @@
       "linux": "kiln 8fadc1ec213332e16cb0d915a3fb913f (kiln-a094a12d.attlocal.net): Fedora 44, Linux 6.19.10-300.fc44.x86_64, 32 cores; every run checked pgrep -x amphora-bench first and ran under systemd-run --user --scope -q -p MemoryMax=24G with CARGO_BUILD_JOBS=4, TMPDIR=$HOME/g121-tmp",
       "macos": "kiln d1323898b255a3ed435eb83fa0f7b0cf (adas-mac-studio.local-2): macOS 26.4 arm64"
     },
-    "toolchain": "rustc/cargo 1.98.1 (rust-toolchain.toml), rustfmt 1.9.0-stable, zig 0.16.0 (the pinned one) for the musl C"
+    "toolchain": "rustc/cargo 1.98.1 (rust-toolchain.toml), rustfmt 1.9.0-stable, zig 0.16.0 (the pinned one) for the musl C",
+    "commit": "e12d5b96eb7f097514122a23662dd1ddb67f1087 (signed by kiln's signer; parent 032b63b1c9b642d0e2c8af71d6f9643909416f99)",
+    "committed_blobs": {
+      "crates/remote/src/lib.rs": "e7d124f83cb981bf1db5dfae52cf78e43999b0ec",
+      "crates/remote/src/tls.rs": "7f8c4dcfbb3dfee960c7867cea5de070c7f8f212",
+      "crates/server/src/server.rs": "49a0b707a7cfb349d55be2438a4de4edd13b53be"
+    }
   },
   "decision": {
     "sources": {
@@ -37,15 +43,48 @@
     "literals": "none new in production beyond the suite the directive names; test fixtures: 16 delivery rounds in each in-memory exchange, as the existing handshake harness had"
   },
   "tls_configs": [
-    {"site": "crates/remote/src/tls.rs server() and client(): D180 contexts, ALPN shards/1", "changed": "yes: tls::provider is the node provider narrowed to TLS13_AES_256_GCM_SHA384 (a LazyLock static)"},
-    {"site": "crates/remote/src/tls.rs owner_server() and client_with(): the managed owner-output endpoint and its subscriber, ALPN shards-managed-output/1 (crates/remote/src/managed.rs Endpoint::bind and client_config; crates/shards/src/daemon/managed.rs binds it)", "changed": "yes, the same provider"},
-    {"site": "crates/server/src/server.rs prepare(): the in-VM server's mutual TLS 1.3 over its Unix socket, which carries an agent's MCP requests, code mode's programs, its messages to granted peers and files handed across (D60)", "changed": "yes: aws-lc-rs's provider narrowed to TLS13_AES_256_GCM_SHA384, shared by its ServerConfig and client verifier"},
-    {"site": "crates/registry/src/tls.rs client_config: registries, and through it every outbound HTTPS client of shards (pull.rs, guest.rs, keyless.rs, google.rs, the log drivers fluentd/splunk/syslog/gcplogs/awslogs, aws S3 and ECR, the build fetchers azblob/gha/git/http/s3, the build proxy's upstream, policy signatures)", "changed": "no", "why": "outside servers a user names choose their suites (TLS 1.2 ones among them); forcing AES-256-GCM risks pulls and deliveries; no agent or shards control crosses them (the brief's scope)"},
-    {"site": "crates/registry/src/apple.rs", "changed": "no", "why": "the macOS platform verifier for those clients: certificate checks, no suites of its own"},
-    {"site": "crates/shards/src/aws/mod.rs (a client of a configured CA bundle)", "changed": "no", "why": "outbound to AWS endpoints"},
-    {"site": "crates/shards/src/build/proxy/ca.rs (the build proxy's per-host server configurations, TLS 1.3 and 1.2)", "changed": "no", "why": "terminates the HTTPS of build steps' own tools in images (curl, apt, pip), whose suites the images choose; not agent or shards control"},
-    {"site": "tests: crates/registry/src/testing.rs, crates/shards/src/daemon/ship/stream.rs tests, crates/shards/src/build/proxy/tests.rs, crates/shards/tests/{containers,build}.rs, crates/testguest/src/workload.rs, crates/server/src/server.rs tests' clients", "changed": "no", "why": "test peers; the in-VM server's test clients (server.rs tests, testguest workload.rs connect) use aws-lc-rs's defaults over TLS 1.3, which offer AES-256-GCM first"},
-    {"site": "non-TLS control channels (CLI to daemon request FIFOs, the Engine API's engine.sock, host to guest vsock)", "changed": "no", "why": "no TLS configuration to narrow; whether the directive reaches them is for Ada and ROOT (not in the brief's scope)"}
+    {
+      "site": "crates/remote/src/tls.rs server() and client(): D180 contexts, ALPN shards/1",
+      "changed": "yes: tls::provider is the node provider narrowed to TLS13_AES_256_GCM_SHA384 (a LazyLock static)"
+    },
+    {
+      "site": "crates/remote/src/tls.rs owner_server() and client_with(): the managed owner-output endpoint and its subscriber, ALPN shards-managed-output/1 (crates/remote/src/managed.rs Endpoint::bind and client_config; crates/shards/src/daemon/managed.rs binds it)",
+      "changed": "yes, the same provider"
+    },
+    {
+      "site": "crates/server/src/server.rs prepare(): the in-VM server's mutual TLS 1.3 over its Unix socket, which carries an agent's MCP requests, code mode's programs, its messages to granted peers and files handed across (D60)",
+      "changed": "yes: aws-lc-rs's provider narrowed to TLS13_AES_256_GCM_SHA384, shared by its ServerConfig and client verifier"
+    },
+    {
+      "site": "crates/registry/src/tls.rs client_config: registries, and through it every outbound HTTPS client of shards (pull.rs, guest.rs, keyless.rs, google.rs, the log drivers fluentd/splunk/syslog/gcplogs/awslogs, aws S3 and ECR, the build fetchers azblob/gha/git/http/s3, the build proxy's upstream, policy signatures)",
+      "changed": "no",
+      "why": "outside servers a user names choose their suites (TLS 1.2 ones among them); forcing AES-256-GCM risks pulls and deliveries; no agent or shards control crosses them (the brief's scope)"
+    },
+    {
+      "site": "crates/registry/src/apple.rs",
+      "changed": "no",
+      "why": "the macOS platform verifier for those clients: certificate checks, no suites of its own"
+    },
+    {
+      "site": "crates/shards/src/aws/mod.rs (a client of a configured CA bundle)",
+      "changed": "no",
+      "why": "outbound to AWS endpoints"
+    },
+    {
+      "site": "crates/shards/src/build/proxy/ca.rs (the build proxy's per-host server configurations, TLS 1.3 and 1.2)",
+      "changed": "no",
+      "why": "terminates the HTTPS of build steps' own tools in images (curl, apt, pip), whose suites the images choose; not agent or shards control"
+    },
+    {
+      "site": "tests: crates/registry/src/testing.rs, crates/shards/src/daemon/ship/stream.rs tests, crates/shards/src/build/proxy/tests.rs, crates/shards/tests/{containers,build}.rs, crates/testguest/src/workload.rs, crates/server/src/server.rs tests' clients",
+      "changed": "no",
+      "why": "test peers; the in-VM server's test clients (server.rs tests, testguest workload.rs connect) use aws-lc-rs's defaults over TLS 1.3, which offer AES-256-GCM first"
+    },
+    {
+      "site": "non-TLS control channels (CLI to daemon request FIFOs, the Engine API's engine.sock, host to guest vsock)",
+      "changed": "no",
+      "why": "no TLS configuration to narrow; whether the directive reaches them is for Ada and ROOT (not in the brief's scope)"
+    }
   ],
   "tests": {
     "crates/remote (tls::tests over lib.rs's in-process handshake exchange, endpoints at 127.0.0.1:7001/7002)": {
@@ -65,7 +104,8 @@
       "01-red-base-providers.log": "red: shards-remote 2 of 8 failed, shards-server 3 of 3 failed, on the base's providers",
       "02-INVALID-green-stale-mutant.log": "invalid: cargo reused the red run's mutant builds (kiln's sync gave the sources the Mac's older mtimes); kept as a record, superseded by 03",
       "03-green.log": "green: shards-remote 33 unit + 17 tests/loopback.rs (real UDP on 127.0.0.1) passed; shards-server 47 passed",
-      "04-mutations.log": "chacha-remote, aes128-remote, chacha-server, aes128-server: each killed by two tests"
+      "04-mutations.log": "chacha-remote, aes128-remote, chacha-server, aes128-server: each killed by two tests",
+      "05-final-green-gates.log": "on e12d5b96e's Rust and harness (blob ids printed on the runner, equal to the commit's): shards-remote 33 + 17 passed, shards-server 47 passed; scripts/check-development-policy 0; cargo fmt --all --check 0; clippy -D warnings 0 for shards-remote (x86_64 gnu) and shards-server (x86_64 gnu, x86_64 musl, aarch64 musl). Run without a sync: kiln's sync after the commit timed out three times"
     }
   },
   "observations_not_changed": [
@@ -80,12 +120,13 @@
     "R06/R07/R13": "Focused diffs at the existing seams; comments carry the directive, RFC sections and sources.",
     "R08/R14": "No benchmark or profile (implementer). Between shards builds the negotiated suite is unchanged; the in-VM server's clients that negotiated AES-128-GCM or ChaCha20-Poly1305 now negotiate AES-256-GCM, a cost unmeasured here.",
     "R09/R10": "Red on the base's providers, green, four mutants killed, the invalid run kept, harness committed (run.sh, mutate.py, mutations.sh).",
-    "R11": "Linux x86_64 gnu: both crates tested; shards-server linted for x86_64 and aarch64 musl with the pinned zig. macOS arm64: see 06 (or not_run). Windows and aarch64 Linux: not built here, unverified.",
+    "R11": "Linux x86_64 gnu: both crates tested (05). shards-server linted for x86_64 and aarch64 musl with the pinned zig 0.16.0 (05). macOS arm64: not run, three attempts on d1323898b255a3ed435eb83fa0f7b0cf failed before running ('did not answer the sync in 60s', then 'not connected to the kiln server'). Windows, macOS and aarch64 Linux builds of crates/remote: unverified here. The change has no cfg and no platform code.",
     "R12": "No platform-specific code.",
     "R15": "Implementer, light tests only; no VMs, E2E, benchmarks or profiling.",
     "R16": "No builds on this Mac (22 GiB free, under its 30 GiB floor): only rustfmt of three files. On kiln-a094a12d: the synced copy's target directories (regenerable) and the stage logs in $HOME/g121-tmp/aes256-only-v1."
   },
   "not_run": [
+    "macOS arm64 clippy and tests of shards-remote and shards-server (kiln's sync to the Mac Studio runner failed three times)",
     "real-VM E2E, owed to ROOT: D180 contexts (crates/shards/tests/context.rs), the managed output's (crates/shards/tests/managed_output/, common/managed_capture.rs), the in-VM server's (the_in_vm_server_knows_each_agent, tests/mcp.rs, agents_message_one_another_as_granted)",
     "scripts/lint over the seven targets and the whole workspace's build and tests (crates/shards uses shards_remote's unchanged API)",
     "Windows and aarch64 Linux builds of crates/remote; aarch64 Linux tests of either crate",
