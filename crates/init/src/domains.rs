@@ -2769,6 +2769,9 @@ mod tests {
         let agent = r#"{"name":"a","source":"./a","to":"/agents/a","processes":null}"#;
         let harness = r#"{"name":"h","source":"./h","to":"/harness/h","processes":null}"#;
         assert_eq!(nesting_of(spec("", "", r#","nesting":true"#).as_bytes()), Ok(()));
+        // As the build's spec() writes it (step 2): the grant after the schema's version.
+        let built = format!(r#"{{"schemaVersion":1,"nesting":true,"agents":[],"harnesses":[],{lists}}}"#);
+        assert_eq!(nesting_of(built.as_bytes()), Ok(()));
         for undeclared in [
             spec("", "", ""),
             spec("", "", r#","nesting":false"#),
