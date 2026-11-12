@@ -1,0 +1,98 @@
+# R09 red run: the new tests against unmodified production code.
+# TRANSCRIPT: copied by hand from the kiln tool result before the sha256 check was adopted (one slip, 1.67s for 1.66s in 04, was found and corrected); not hash-verified. The same outcomes recur hash-verified in 06a-c, 17 (red symptoms under each mutant) and 18 (green).
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g
+# source: bff3015182ad754274f1048ce393ac12cb6cd91f plus test-only additions (crates/server/src/{broker,server}.rs tests modules; production code unmodified). bff3015 + 03-red-state-tests.patch rebuilds the final red state (a superset: it adds the sandbox tests and one later assertion)
+# build: cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 --no-run   (Finished `test` profile in 37.84s)
+# command (run in the kiln-synced copy of the worktree):
+#   echo "HEAD=$(git rev-parse HEAD) production_diff=$(git diff --stat -- crates/server | tail -1)"; uname -srm; rustc -V; cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 -- --nocapture a_program_answers_a_request_that_closes_its_connection a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can a_gone_clients_program_is_stopped_though_the_helper_was_full a_refusal_without_storage_says_it_was_refused a_small_hand_reserves_what_its_file_holds a_file_longer_than_its_size_says_is_handed_as_before 2>&1 | grep -v '^warning: aws-lc-sys'; echo "exit=${PIPESTATUS[0]}"
+# raw stdout+stderr follows (the grep drops only aws-lc-sys build-script warnings; none were printed, nothing rebuilt)
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f production_diff= 2 files changed, 416 insertions(+)
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 6 tests
+REFUSAL_FALLBACK format=Program path=refused literal=true outcome=Some("uncertain") effect=Some("unknown") reply={"error":"broker response unavailable; effect commitment is unknown","broker":{"outcome":"uncertain","effect":{"kind":"unknown"},"cause":{"kind":"response_capacity"}}}
+
+thread 'broker::tests::a_refusal_without_storage_says_it_was_refused' (360117) panicked at crates/server/src/broker.rs:1252:17:
+assertion `left == right` failed: refused: {"error":"broker response unavailable; effect commitment is unknown","broker":{"outcome":"uncertain","effect":{"kind":"unknown"},"cause":{"kind":"response_capacity"}}}
+  left: Some("uncertain")
+ right: Some("refused")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test broker::tests::a_refusal_without_storage_says_it_was_refused ... FAILED
+HAND_RESERVATION channel_most=212960 file_bytes=10 packet_len=26 reserved_at_admission=212961 capacity_after_read=212961
+
+thread 'broker::tests::a_small_hand_reserves_what_its_file_holds' (360118) panicked at crates/server/src/broker.rs:1321:9:
+a 26-byte hand held 212961 bytes
+HAND_GROWN limit=212943 outcome=Completed effect=KernelAccepted { bytes: 1587 }
+HAND_GROWN limit=16 outcome=Failed(Refusal { phase: Executing, reason: TooLong }) effect=NotStarted
+test broker::tests::a_small_hand_reserves_what_its_file_holds ... FAILED
+test broker::tests::a_file_longer_than_its_size_says_is_handed_as_before ... ok
+CONNECTION_CLOSE program=1 program_frame_read=false worker_done_written=false client_read=Ok(0) answer_bytes=0 stops=[1]
+
+thread 'server::tests::a_program_answers_a_request_that_closes_its_connection' (360120) panicked at crates/server/src/server.rs:3045:9:
+no answer to the program's request: ""
+test server::tests::a_program_answers_a_request_that_closes_its_connection ... FAILED
+LOST_STOP_GONE program=1 program_frame_read=true control_messages_filling=278 program_let_go=true drained=278 stops=[]
+
+thread 'server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full' (360119) panicked at crates/server/src/server.rs:3107:9:
+assertion `left == right` failed: the gone client's worker has no STOP: it runs on
+  left: []
+ right: [1]
+test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+LOST_STOP_DEADLINE program=1 control_messages_filling=278 drained=278 stops=[] answered_ended=true
+
+thread 'server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can' (360121) panicked at crates/server/src/server.rs:3074:9:
+assertion `left == right` failed: the worker answered as ended has no STOP: it runs on
+  left: []
+ right: [1]
+test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+
+failures:
+
+failures:
+    broker::tests::a_refusal_without_storage_says_it_was_refused
+    broker::tests::a_small_hand_reserves_what_its_file_holds
+    server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full
+    server::tests::a_program_answers_a_request_that_closes_its_connection
+    server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can
+
+test result: FAILED. 1 passed; 5 failed; 0 ignored; 0 measured; 36 filtered out; finished in 5.51s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+exit=101
+
+# Re-run after one assertion was added to a_program_answers_a_request_that_closes_its_connection
+# (assert!(read.is_ok()) after the answer check: the connection must also close after its answer).
+# Same runner and toolchain; production code still unmodified. Command:
+#   echo "HEAD=$(git rev-parse HEAD)"; git diff --stat -- crates/server; cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 --no-run 2>&1 | grep -v '^warning: aws-lc-sys' | tail -3; cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 -- --nocapture a_program_answers_a_request_that_closes_its_connection 2>&1 | grep -v '^warning: aws-lc-sys'; echo "exit=${PIPESTATUS[0]}"
+# raw stdout+stderr:
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ crates/server/src/broker.rs  | 158 ++++++++++++++++++++++++++
+ crates/server/src/sandbox.rs | 165 +++++++++++++++++++++++++++
+ crates/server/src/server.rs  | 259 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 582 insertions(+)
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.07s
+  Executable unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 1 test
+CONNECTION_CLOSE program=1 program_frame_read=false worker_done_written=false client_read=Ok(0) answer_bytes=0 stops=[1]
+
+thread 'server::tests::a_program_answers_a_request_that_closes_its_connection' (226025) panicked at crates/server/src/server.rs:3045:9:
+no answer to the program's request: ""
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test server::tests::a_program_answers_a_request_that_closes_its_connection ... FAILED
+
+failures:
+
+failures:
+    server::tests::a_program_answers_a_request_that_closes_its_connection
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+exit=101

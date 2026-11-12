@@ -1,0 +1,20 @@
+# The existing test a_worker_is_ended_for_a_call_its_filter_refuses made non-dumpable (PR_SET_DUMPABLE 0 in its children): 40 whole-suite runs, cores counted.
+# command: L=/tmp/afs1-13.log; { echo "HEAD=..."; git diff --stat -- crates/server | tail -1; sha256sum crates/server/src/*.rs; before=$(coredumpctl list --no-pager | grep -c 'shards_server-'); echo "test-binary cores before: $before"; touch crates/server/src/*.rs; cargo test ... --no-run | grep -E 'Compiling shards-server|error'; fails=0; for i in $(seq 40); do out=$(cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 2>&1); if ! echo "$out" | grep -q '^test result: ok. 44 passed'; then fails=$((fails+1)); echo "=== run $i failed:"; echo "$out" | sed -n '/^failures:/,/^test result/p' | head -30; fi; done; echo "full-suite runs failed: $fails of 40"; sleep 2; after=...; echo "test-binary cores after: $after (new: $((after-before)))"; } > $L 2>&1; cat $L; echo "SHA256 $(sha256sum < $L)"
+# result: 0 of 40 failed, but still 1 new core per run. coredumpctl info -1 (verbatim excerpt, sync: false):
+#   PID: 43358 (shards-program)  Signal: 31 (SYS) si_code: SYS_SECCOMP
+#   Stack: libc __fcntl <- std::sys::fs::unix::debug_assert_fd_is_open <- <OwnedFd as Drop>::drop <- shards_server::sandbox::worker <- serve_helper <- sandbox::tests::a_worker_not_reaped_ends_no_other
+# reading: in a debug build, worker 1 of the new fork test drops its socket's OwnedFd, whose debug check calls fcntl(2), which the worker's
+# seccomp filter refuses: SIGSYS and a core, and its pidfd's exit (so its ENDED) waits for the dump. Release builds (production, test-release) have no such check.
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# runner sha256 of the raw part below: 554733cdcf4db2fc9013387572189b4bc6e88dbabef276e129e93a127aed5da4 (this copy verified identical to the hash the runner printed)
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ 3 files changed, 798 insertions(+), 62 deletions(-)
+c0ae08844df9e2a374d18e55516ed03ced853ba40517ef1e2597a69c972163e0  crates/server/src/broker.rs
+0ae9a897e4c71850c8087ee85c9fe18dc0262cb9d6d6e521c7ab8f448a5bc2c7  crates/server/src/main.rs
+5ef687ec797289cdbd8471397aa8d4c2b69fb6c0189179c42c749711caffa7ab  crates/server/src/sandbox.rs
+4955bc45693d6b88859d74c25c8d2576cadd3cba3ece353003739dd3ab710145  crates/server/src/server.rs
+test-binary cores before: 398
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+full-suite runs failed: 0 of 40
+test-binary cores after: 438 (new: 40)

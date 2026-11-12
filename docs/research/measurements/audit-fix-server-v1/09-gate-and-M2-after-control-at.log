@@ -1,0 +1,110 @@
+# Gate (policy, fmt, clippy gnu, whole suite) after control_at became an Option, and mutation M2 on that source.
+# command: L=/tmp/afs1-09a.log; { echo "HEAD=$(git rev-parse HEAD)"; git diff --stat -- crates/server | tail -1; touch crates/server/src/*.rs; <policy, fmt --check, clippy gnu -D warnings, cargo test gnu as in 08a>; echo "--- mutations.sh M2"; docs/research/measurements/audit-fix-server-v1/mutations.sh M2; } > $L 2>&1; cat $L; echo "SHA256 $(sha256sum < $L)"
+# finding: the M2 mutant was killed (exit 101) by the deadline test only; the gone-client test passed under it (stops=[1]),
+# because the connection-gone path then dropped the program's socket before sending its STOP, letting the test drain the helper first.
+# The path was reordered (remove, STOP sent or owed, then drop; as the other two paths already were): see 10.
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# runner sha256 of the raw part below: 49dbfe02758955ccb7416e315407c6b171ff253b6de24b7631b21f2add568684 (this copy verified identical to the hash the runner printed)
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ 3 files changed, 791 insertions(+), 62 deletions(-)
+--- python3 scripts/check-development-policy
+Development policy checks passed; evidence/coordinator review is still required.
+policy_exit=0
+--- cargo fmt -p shards-server -- --check
+fmt_exit=0
+--- cargo clippy -p shards-server --target x86_64-unknown-linux-gnu -j2 --all-targets -- -D warnings
+    Checking shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.80s
+clippy_gnu_exit=0
+--- cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.78s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 44 tests
+test broker::tests::a_refusal_without_storage_says_it_was_refused ... ok
+test broker::tests::broker_rejects_bad_arguments_ownership_and_exhausted_identity_before_send ... ok
+test broker::tests::broker_required_durable_refuses_before_opening_or_sending ... ok
+test broker::tests::broker_completion_consumes_only_the_owned_request_once ... ok
+test broker::tests::broker_local_send_failure_preserves_cause_without_reusing_identity ... ok
+test broker::tests::a_small_hand_reserves_what_its_file_holds ... ok
+test broker::tests::broker_reservation_precedes_actual_send_and_retains_local_receipt ... ok
+test broker::tests::a_file_longer_than_its_size_says_is_handed_as_before ... ok
+test sandbox::tests::frames_are_read_whole_and_within_their_bound ... ok
+test broker::tests::broker_prebuilt_error_capacity_covers_actual_escaped_completion ... ok
+test server::json::tests::reads_what_rfc_8259_writes_and_no_more ... ok
+test server::tests::a_program_is_reserved_before_its_helper_receives_authority ... ok
+test server::tests::a_typed_program_refusal_formats_without_requesting_storage ... ok
+test server::tests::a_refused_native_release_does_not_reuse_its_issued_identity ... ok
+test server::tests::an_expired_program_is_refused_before_native_release ... ok
+test server::tests::an_exhausted_program_identity_cannot_release_another_worker ... ok
+test server::tests::an_unusable_helper_control_is_not_admitted ... ok
+test server::tests::base64_is_rfc_4648s ... ok
+test server::tests::a_peers_file_is_heard_as_granted ... ok
+test server::tests::each_refused_program_allocation_precedes_native_worker_release ... ok
+test server::tests::strings_are_quoted_as_json_writes_them ... ok
+test server::tests::a_peer_is_heard_only_as_granted ... ok
+test server::tests::what_the_current_revision_refuses ... ok
+test server::tests::broker_exhausted_caller_identity_refuses_before_packet ... ok
+test server::tests::a_programs_call_is_its_callers ... ok
+test server::tests::earlier_revisions_and_what_every_revision_refuses ... ok
+test server::tests::the_current_revision_is_answered_request_by_request ... ok
+test server::tests::headers_that_differ_from_their_body_are_refused ... ok
+test server::tests::requests_past_their_bounds_are_refused ... ok
+test server::tests::a_cancellation_names_a_request_in_its_own_session ... ok
+test server::tests::broker_http_and_program_callers_share_the_actual_peer_admission ... ok
+test sandbox::tests::the_call_beneath_the_tools_is_out_of_reach ... ok
+test server::tests::only_a_regular_file_of_the_scratch_is_handed ... ok
+test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... ok
+test server::tests::initialize_begins_a_session ... ok
+test sandbox::tests::what_a_program_came_to ... ok
+test server::tests::an_instance_answers_its_own_caller_alone ... ok
+test server::tests::a_program_answers_a_request_that_closes_its_connection ... ok
+test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... ok
+test sandbox::tests::a_program_calls_its_tools_over_its_socket ... ok
+test sandbox::tests::a_programs_broker_results_keep_their_receipt ... ok
+test sandbox::tests::a_worker_is_ended_for_a_call_its_filter_refuses ... ok
+test sandbox::tests::a_worker_not_reaped_ends_no_other ... ok
+test sandbox::tests::a_refused_call_is_thrown ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.48s
+
+test_gnu_exit=0
+--- mutations.sh M2
+=== M2: crates/server/src/server.rs
+@@ -486,7 +486,6 @@
+                 *slot = byte;
+             }
+             match sandbox::send_control(c.as_raw_fd(), &stop, None) {
+-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
+                 // Sent; or refused for a cause room would not cure, let go of as before.
+                 _ => {
+                     self.unstopped.pop();
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.93s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 2 tests
+LOST_STOP_GONE program=1 program_frame_read=true control_messages_filling=278 program_let_go=true drained=278 stops=[1]
+test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... ok
+LOST_STOP_DEADLINE program=1 control_messages_filling=278 drained=278 stops=[] answered_ended=true
+
+thread 'server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can' (314876) panicked at crates/server/src/server.rs:3149:9:
+assertion `left == right` failed: the worker answered as ended has no STOP: it runs on
+  left: []
+ right: [1]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+
+failures:
+
+failures:
+    server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 42 filtered out; finished in 5.51s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+=== M2: cargo test exit 101 (non-zero: the mutant is killed)
+=== M2: crates/server/src/server.rs restored
+=== source after:  3 files changed, 791 insertions(+), 62 deletions(-)

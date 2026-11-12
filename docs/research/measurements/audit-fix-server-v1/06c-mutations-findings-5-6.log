@@ -1,0 +1,121 @@
+# Guard-removal mutations, batch 3: findings 5 (M5a: the thrown Error's cause; M5b: the returned value's broker) and 6 (M6). Harness: mutate.py, mutations.sh.
+# NOTE: ran on an intermediate source (before control_at became an Option, the connection-gone reorder and the test-only PR_SET_DUMPABLE lines); 17-final-mutations.log reruns all nine mutants on the committed source.
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# source: bff3015182ad754274f1048ce393ac12cb6cd91f + the fixed, formatted diff; each mutant applied alone, then restored
+# command:
+#   L=/tmp/afs1-06c.log; { echo "HEAD=$(git rev-parse HEAD)"; git diff --stat -- crates/server | tail -1; docs/research/measurements/audit-fix-server-v1/mutations.sh M5a M5b M6; } > $L 2>&1; cat $L; echo "SHA256 $(sha256sum < $L)"
+# runner sha256 of the raw part below: 15cba013c3783156f29190bd940430cd6033d4cc6b8eae0d35e954a25f52719e (this copy verified identical)
+# result: every mutant killed (M5a: no cause on the thrown Error; M5b: no broker on the returned value; M6: the helper ends on the first ECHILD reap, killing the other worker)
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ 3 files changed, 787 insertions(+), 59 deletions(-)
+=== M5a: crates/server/src/sandbox.rs
+@@ -63,7 +63,7 @@
+   const tool = (name, args) => {
+     const r = JSON.parse(call(name, JSON.stringify(args)));
+     if (r.error !== undefined) {
+-      throw r.broker === undefined ? new Error(r.error) : new Error(r.error, { cause: r.broker });
++      throw new Error(r.error);
+     }
+     if (r.broker !== undefined && typeof r.value === "object" && r.value !== null) {
+       Object.defineProperty(r.value, "broker", { value: r.broker });
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.09s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 1 test
+BROKER_RECEIPT thrown=Ok("[\"agent a may not send agent c requests\",null]")
+
+thread 'sandbox::tests::a_programs_broker_results_keep_their_receipt' (3591005) panicked at crates/server/src/sandbox.rs:986:9:
+assertion `left == right` failed
+  left: Ok("[\"agent a may not send agent c requests\",null]")
+ right: Ok("[\"agent a may not send agent c requests\",{\"principal\":\"agent a\",\"peer\":\"agent c\",\"operation\":null,\"request\":null,\"outcome\":\"refused\",\"effect\":{\"kind\":\"not_started\"},\"phase\":\"validated\",\"cause\":{\"kind\":\"grant\"}}]")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test sandbox::tests::a_programs_broker_results_keep_their_receipt ... FAILED
+
+failures:
+
+failures:
+    sandbox::tests::a_programs_broker_results_keep_their_receipt
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+=== M5a: cargo test exit 101 (non-zero: the mutant is killed)
+=== M5a: crates/server/src/sandbox.rs restored
+=== M5b: crates/server/src/sandbox.rs
+@@ -66,7 +66,6 @@
+       throw r.broker === undefined ? new Error(r.error) : new Error(r.error, { cause: r.broker });
+     }
+     if (r.broker !== undefined && typeof r.value === "object" && r.value !== null) {
+-      Object.defineProperty(r.value, "broker", { value: r.broker });
+     }
+     return r.value;
+   };
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.78s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 1 test
+BROKER_RECEIPT thrown=Ok("[\"agent a may not send agent c requests\",{\"principal\":\"agent a\",\"peer\":\"agent c\",\"operation\":null,\"request\":null,\"outcome\":\"refused\",\"effect\":{\"kind\":\"not_started\"},\"phase\":\"validated\",\"cause\":{\"kind\":\"grant\"}}]")
+BROKER_RECEIPT returned=Ok("[{\"id\":1},null]")
+
+thread 'sandbox::tests::a_programs_broker_results_keep_their_receipt' (3593763) panicked at crates/server/src/sandbox.rs:995:9:
+assertion `left == right` failed
+  left: Ok("[{\"id\":1},null]")
+ right: Ok("[{\"id\":1},{\"principal\":\"agent a\",\"peer\":\"agent b\",\"operation\":\"send\",\"request\":1,\"outcome\":\"completed\",\"effect\":{\"kind\":\"kernel_accepted\",\"bytes\":10},\"phase\":\"terminal\",\"cause\":null}]")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test sandbox::tests::a_programs_broker_results_keep_their_receipt ... FAILED
+
+failures:
+
+failures:
+    sandbox::tests::a_programs_broker_results_keep_their_receipt
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+=== M5b: cargo test exit 101 (non-zero: the mutant is killed)
+=== M5b: crates/server/src/sandbox.rs restored
+=== M6: crates/server/src/sandbox.rs
+@@ -583,11 +583,10 @@
+                 let w = workers.get(i).ok_or(HelperCause::Control)?;
+                 // Its pidfd says it ended: one waitid gives no status of is said to have ended
+                 // unknown, and no longer waited for, and the others are served on.
+-                let (code, status) = match w.reap(0) {
+-                    Ok(Some(ended)) => ended,
+-                    Ok(None) => (END_UNKNOWN, 0),
+-                    Err(e) => (END_UNKNOWN, e.raw_os_error().unwrap_or(0)),
+-                };
++                let (code, status) = w
++                    .reap(0)
++                    .map_err(|e| HelperCause::io("reaping a worker", e))?
++                    .ok_or(HelperCause::Control)?;
+                 // get(i) above checked this index; no mutation intervened.
+                 let w = workers.swap_remove(i);
+                 Worker::said(control, w.id, code, status)?;
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.64s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 1 test
+REAP_UNKNOWN first=[] control_closed=true worker_two_ran_on=false second=[] control_closed_later=true worker_two_ended=true helper_exited=true helper_code=3 helper_signal=0 helper_failure="reaping a worker: Uncategorized, OS Some(10); 2 workers not known reaped, first 2: reaping a worker: Uncategorized, OS Some(10)"
+
+thread 'sandbox::tests::a_worker_not_reaped_ends_no_other' (3598087) panicked at crates/server/src/sandbox.rs:1145:9:
+the helper ended for one worker it could not reap
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test sandbox::tests::a_worker_not_reaped_ends_no_other ... FAILED
+
+failures:
+
+failures:
+    sandbox::tests::a_worker_not_reaped_ends_no_other
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.41s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+=== M6: cargo test exit 101 (non-zero: the mutant is killed)
+=== M6: crates/server/src/sandbox.rs restored
+=== source after:  3 files changed, 787 insertions(+), 59 deletions(-)

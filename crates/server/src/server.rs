@@ -266,6 +266,9 @@ pub struct Programs {
     /// Programs let go of, by their connection and request ID, whose connections are yet to
     /// be told.
     cancelled: Vec<(u64, String)>,
+    /// Programs let go of whose STOP the helper's socket, full, has yet to take: each is sent
+    /// as it has room ([`Programs::send_stops`]), lest its worker run on.
+    unstopped: Vec<u64>,
 }
 
 /// A program running: its socket, what came of it and what goes to it, the connection that
@@ -341,6 +344,7 @@ impl Programs {
             next: 0,
             running: Vec::new(),
             cancelled: Vec::new(),
+            unstopped: Vec::new(),
         }
     }
 
@@ -370,13 +374,17 @@ impl Programs {
         self.running
             .try_reserve(1)
             .map_err(|_| ProgramAdmission::Capacity)?;
-        // Each live request may need one owned cancellation result before another admission.
+        // Each live request may need one owned cancellation result, and one STOP the helper's
+        // socket cannot yet take, before another admission.
         let cancellations = self
             .running
             .len()
             .checked_add(1)
             .ok_or(ProgramAdmission::Capacity)?;
         self.cancelled
+            .try_reserve(cancellations)
+            .map_err(|_| ProgramAdmission::Capacity)?;
+        self.unstopped
             .try_reserve(cancellations)
             .map_err(|_| ProgramAdmission::Capacity)?;
         let session = session
@@ -451,9 +459,25 @@ impl Programs {
         Ok(id)
     }
 
-    /// Ends program `id`'s worker, if it runs.
-    fn stop(&self, id: u64) {
-        if let Ok(c) = &self.control {
+    /// Ends the worker of program `id`, just taken out of those running: its STOP sent now,
+    /// or, while the helper's socket is full, once it has room. With no helper there is no
+    /// worker to end: each ended with it (PR_SET_PDEATHSIG), or as it let go of its socket.
+    fn stop(&mut self, id: u64) {
+        if self.control.is_err() {
+            return;
+        }
+        // Admission reserved this place: a program is let go of once (prepare).
+        self.unstopped.push(id);
+        self.send_stops();
+    }
+
+    /// Sends the helper the STOPs it is owed, as many as its socket takes now.
+    fn send_stops(&mut self) {
+        let Ok(c) = &self.control else {
+            self.unstopped.clear();
+            return;
+        };
+        while let Some(&id) = self.unstopped.last() {
             let mut stop = [0; 1 + size_of::<u64>()];
             for (slot, byte) in stop
                 .iter_mut()
@@ -461,7 +485,13 @@ impl Programs {
             {
                 *slot = byte;
             }
-            let _ = sandbox::send_control(c.as_raw_fd(), &stop, None);
+            match sandbox::send_control(c.as_raw_fd(), &stop, None) {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
+                // Sent; or refused for a cause room would not cure, let go of as before.
+                _ => {
+                    self.unstopped.pop();
+                }
+            }
         }
     }
 }
@@ -834,8 +864,19 @@ struct Conn {
     checked: bool,
     plain: Vec<u8>,
     closing: bool,
-    /// The program whose answer it awaits before it reads another request (D136).
-    waiting: Option<u64>,
+    /// The program whose answer it awaits before it reads another request (D136), and what
+    /// it does once that answer is written.
+    waiting: Option<(u64, AfterAnswer)>,
+}
+
+/// What a connection does once the program it awaits has answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfterAnswer {
+    /// Reads its next request.
+    Read,
+    /// Closes, as its request asked (`Connection: close`): the answer is its last (RFC 9112
+    /// §9.6, a server closes after the response to the request that said close).
+    Close,
 }
 
 /// How many connections it holds at once: what this process may open
@@ -885,13 +926,21 @@ pub fn serve(p: &Prepared, peers: &mut [Peer], mut programs: Programs) {
                 revents: 0,
             });
         }
-        if let Ok(control) = &programs.control {
+        // The helper's socket, if there is one, and room in it while it is owed STOPs.
+        let control_at = programs.control.as_ref().ok().map(|control| {
+            let at = set.len();
+            let out = if programs.unstopped.is_empty() {
+                0
+            } else {
+                libc::POLLOUT
+            };
             set.push(libc::pollfd {
                 fd: control.as_raw_fd(),
-                events: libc::POLLIN,
+                events: libc::POLLIN | out,
                 revents: 0,
             });
-        }
+            at
+        });
         for prog in &programs.running {
             let out = if prog.write.is_empty() { 0 } else { libc::POLLOUT };
             set.push(libc::pollfd {
@@ -925,6 +974,12 @@ pub fn serve(p: &Prepared, peers: &mut [Peer], mut programs: Programs) {
         // (net/socket.c, `do_accept`), charged to this domain's memory meanwhile, so that
         // a loop of them took it past the agents' share.
         let ready = |i: usize| set.get(i).is_some_and(|s| s.revents != 0);
+        if control_at
+            .and_then(|i| set.get(i))
+            .is_some_and(|s| s.revents & libc::POLLOUT != 0)
+        {
+            programs.send_stops();
+        }
         let listening = ready(0);
         while listening && let Ok((stream, _)) = p.listener.accept() {
             if conns.len() >= room || stream.set_nonblocking(true).is_err() {
@@ -960,17 +1015,24 @@ pub fn serve(p: &Prepared, peers: &mut [Peer], mut programs: Programs) {
         for (conn, answer) in answers {
             if let Some(c) = conns.iter_mut().find(|c| c.id == conn) {
                 let _ = c.tls.writer().write_all(&answer);
-                c.waiting = None;
+                if let Some((_, AfterAnswer::Close)) = c.waiting.take() {
+                    c.closing = true;
+                    c.tls.send_close_notify();
+                }
             }
         }
         for c in &mut conns {
             step(p, peers, &mut programs, c);
         }
-        // A connection gone ends the program it awaited.
-        for c in conns.iter().filter(|c| c.closing && c.waiting.is_some()) {
-            if let Some(id) = c.waiting {
+        // A connection gone ends the program it awaited, if that program still runs.
+        for c in conns.iter().filter(|c| c.closing) {
+            if let Some((id, _)) = c.waiting
+                && let Some(at) = programs.running.iter().position(|prog| prog.id == id)
+            {
+                // Its socket closes once its STOP is sent or owed, as on every other path.
+                let ended = programs.running.swap_remove(at);
                 programs.stop(id);
-                programs.running.retain(|prog| prog.id != id);
+                drop(ended);
             }
         }
         conns.retain(|c| !(c.closing && !c.tls.wants_write()));
@@ -1145,6 +1207,9 @@ fn worker_end(code: i32, status: i32) -> String {
     const CLD_EXITED: i32 = 1;
     match code {
         CLD_EXITED => format!("the program ended without a word, its worker's status {status}"),
+        sandbox::END_UNKNOWN => {
+            format!("the program ended without a word, how is not known (waitid: OS {status})")
+        }
         _ if status == libc::SIGSYS => {
             "the program's worker made a system call its sandbox refuses, and was ended".to_string()
         }
@@ -1221,14 +1286,22 @@ fn step(p: &Prepared, peers: &mut [Peer], programs: &mut Programs, c: &mut Conn)
             match answer {
                 Reply::Now(answer) => {
                     let _ = c.tls.writer().write_all(&answer);
+                    if close {
+                        c.closing = true;
+                        c.tls.send_close_notify();
+                        break;
+                    }
                 }
-                // A program's: its answer comes once it ends, before the next request.
-                Reply::Later(id) => c.waiting = Some(id),
-            }
-            if close {
-                c.closing = true;
-                c.tls.send_close_notify();
-                break;
+                // A program's: its answer comes once it ends, before the next request, and
+                // the close its request asked for comes after that answer.
+                Reply::Later(id) => {
+                    let after = if close {
+                        AfterAnswer::Close
+                    } else {
+                        AfterAnswer::Read
+                    };
+                    c.waiting = Some((id, after));
+                }
             }
         }
     }
@@ -1361,7 +1434,7 @@ const TOOLS: &str = r#"{"tools":[
 {"name":"receive","description":"What peers have sent the caller and it has not taken: their requests, and their answers to its own, each a text or a file (its name, its size, and its bytes in Base64).","inputSchema":{"type":"object","properties":{}}},
 {"name":"answer","description":"Answers a request a peer sent the caller, by its ID.","inputSchema":{"type":"object","properties":{"to":{"type":"string"},"id":{"type":"integer"},"text":{"type":"string"}},"required":["to","id","text"]}},
 {"name":"hand","description":"Hands a peer a file of the caller's scratch, /tmp: a request where the caller may send the peer requests, or, with id, the answer to its request of that ID. The file is a regular one, which the caller's group may read, of at most 1 MiB less its name; its server opens it beneath /tmp, through no link, and reads it whole.","inputSchema":{"type":"object","properties":{"to":{"type":"string"},"path":{"type":"string"},"id":{"type":"integer"}},"required":["to","path"]}},
-{"name":"run","description":"Runs a JavaScript program (ECMAScript, QuickJS-NG) that calls the tools above, many in one round trip, in a sandbox with the caller's grants and no more: no files, no network, no processes. The program is the body of an async function, in strict mode: await the tools, and return a value, which comes back as JSON; a tool's refusal is thrown as an Error, and an error the program does not catch comes back with its stack, at the program's own lines and columns. timeout_ms, if given, ends it past that many milliseconds.\n\ndeclare const shards: {\n  whoami(): Promise<string>;\n  mcp(): Promise<Array<{ name: string; remote: true; url: string } | { name: string; remote: false; dir: string; command: string[] }>>;\n  peers(): Promise<Array<{ name: string; send: boolean; answer: boolean }>>;\n  send(to: string, text: string): Promise<{ id: number }>;\n  receive(): Promise<Array<{ from: string; kind: \"request\" | \"answer\"; id: number; text?: string; file?: { name: string; size: number; data: string } }>>;\n  answer(to: string, id: number, text: string): Promise<{}>;\n  hand(to: string, path: string, id?: number): Promise<{ id: number } | {}>;\n};","inputSchema":{"type":"object","properties":{"code":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1}},"required":["code"]}}
+{"name":"run","description":"Runs a JavaScript program (ECMAScript, QuickJS-NG) that calls the tools above, many in one round trip, in a sandbox with the caller's grants and no more: no files, no network, no processes. The program is the body of an async function, in strict mode: await the tools, and return a value, which comes back as JSON; a tool's refusal is thrown as an Error, and an error the program does not catch comes back with its stack, at the program's own lines and columns. send, answer and hand also give the broker's typed receipt of what they did: as the cause of the Error they throw, and as the broker property of the value they return. timeout_ms, if given, ends it past that many milliseconds.\n\ndeclare const shards: {\n  whoami(): Promise<string>;\n  mcp(): Promise<Array<{ name: string; remote: true; url: string } | { name: string; remote: false; dir: string; command: string[] }>>;\n  peers(): Promise<Array<{ name: string; send: boolean; answer: boolean }>>;\n  send(to: string, text: string): Promise<{ id: number }>;\n  receive(): Promise<Array<{ from: string; kind: \"request\" | \"answer\"; id: number; text?: string; file?: { name: string; size: number; data: string } }>>;\n  answer(to: string, id: number, text: string): Promise<{}>;\n  hand(to: string, path: string, id?: number): Promise<{ id: number } | {}>;\n};","inputSchema":{"type":"object","properties":{"code":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1}},"required":["code"]}}
 ]}"#;
 
 /// What a JSON-RPC message came to: an answer now, an answer that begins a session and that
@@ -2851,5 +2924,264 @@ mod tests {
         let d = shards_testdir::TempDir::new("server-bounds").unwrap();
         // SAFETY: getgid(2).
         prepare(d.to_str().unwrap(), "agent t", unsafe { libc::getgid() }).unwrap()
+    }
+
+    /// A control socket's two ends, as `spawn_helper` makes them: sequenced packets.
+    fn control_pair() -> (OwnedFd, OwnedFd) {
+        let mut fds = [0 as RawFd; 2];
+        // SAFETY: socketpair(2) into a two-element array.
+        let rc = unsafe {
+            libc::socketpair(
+                libc::AF_UNIX,
+                libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                0,
+                fds.as_mut_ptr(),
+            )
+        };
+        assert_eq!(rc, 0);
+        // SAFETY: both were just made, and are owned here alone.
+        unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+    }
+
+    /// Whether `fd` is readable within `ms` milliseconds.
+    fn readable(fd: &OwnedFd, ms: i32) -> bool {
+        let mut p = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll(2) of one pollfd of ours.
+        unsafe { libc::poll(&raw mut p, 1, ms) == 1 }
+    }
+
+    /// An instance in `dir`, served on a thread of its own, code mode's helper played by the
+    /// test: the helper's end of its control socket, and another handle on the instance's.
+    fn served_with_helper(dir: &str) -> (OwnedFd, OwnedFd) {
+        let (instance, helper) = control_pair();
+        let also = instance.try_clone().unwrap();
+        // SAFETY: getgid(2).
+        let p = prepare(dir, "agent t", unsafe { libc::getgid() }).unwrap();
+        let programs = Programs::new(Ok(instance));
+        std::thread::spawn(move || serve(&p, &mut Vec::new(), programs));
+        (helper, also)
+    }
+
+    /// A client of the instance in `dir`, with the certificate it issued its caller.
+    fn client(dir: &str) -> rustls::StreamOwned<rustls::ClientConnection, UnixStream> {
+        use rustls::pki_types::ServerName;
+        use rustls::pki_types::pem::PemObject as _;
+        let ca = CertificateDer::from_pem_file(format!("{dir}/ca.pem")).unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(ca).unwrap();
+        let cert = CertificateDer::from_pem_file(format!("{dir}/cert.pem")).unwrap();
+        let key = PrivateKeyDer::from_pem_file(format!("{dir}/key.pem")).unwrap();
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_client_auth_cert(vec![cert], key)
+            .unwrap();
+        let tls =
+            rustls::ClientConnection::new(Arc::new(config), ServerName::try_from(NAME).unwrap()).unwrap();
+        let sock = UnixStream::connect(format!("{dir}/server.sock")).unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        rustls::StreamOwned::new(tls, sock)
+    }
+
+    /// A `tools/call` of `run` with `arguments`, its head carrying `headers` (each ending CRLF).
+    fn run_request(arguments: &str, headers: &str) -> String {
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"run","arguments":{arguments}}}}}"#
+        );
+        format!(
+            "POST /mcp HTTP/1.1\r\n{headers}Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// The helper's next control message, within five seconds, and the program ID it names.
+    fn next_control(helper: &OwnedFd) -> (Vec<u8>, Option<OwnedFd>, u64) {
+        assert!(readable(helper, 5000), "the helper was sent nothing");
+        let (msg, fd) = sandbox::recv_control(helper.as_raw_fd()).unwrap().unwrap();
+        let id = u64::from_be_bytes(msg[1..9].try_into().unwrap());
+        (msg, fd, id)
+    }
+
+    /// The first frame a worker reads from its program's socket; None at the socket's end.
+    fn first_frame(socket: &mut UnixStream) -> Option<(u8, Vec<u8>)> {
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            if let Ok(Some((kind, bytes, _))) = sandbox::parse_frame(&got) {
+                return Some((kind, bytes.to_vec()));
+            }
+            match socket.read(&mut buf) {
+                Ok(0) | Err(_) => return None,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+            }
+        }
+    }
+
+    /// One HTTP answer read from `client`, head and body, or what came before its end.
+    fn response(client: &mut impl Read) -> String {
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            if let Some(end) = got.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&got[..end]).into_owned();
+                let length: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Content-Length: "))
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(0);
+                if got.len() >= end + 4 + length {
+                    break;
+                }
+            }
+            match client.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+            }
+        }
+        String::from_utf8_lossy(&got).into_owned()
+    }
+
+    /// Sends on `instance`, a handle on the instance's end of the control socket, until the
+    /// socket takes no more: how many it took.
+    fn fill(instance: &OwnedFd) -> usize {
+        let mut taken = 0;
+        loop {
+            match sandbox::send_control(instance.as_raw_fd(), b"x", None) {
+                Ok(()) => taken += 1,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return taken,
+                Err(e) => panic!("filling the control socket: {e}"),
+            }
+        }
+    }
+
+    /// What the helper reads within five seconds, until a STOP: how many other messages,
+    /// and the IDs its STOPs name.
+    fn drain_until_stop(helper: &OwnedFd) -> (usize, Vec<u64>) {
+        let (mut others, mut stops) = (0, Vec::new());
+        let until = Instant::now() + Duration::from_secs(5);
+        while stops.is_empty() && Instant::now() < until {
+            if !readable(helper, 100) {
+                continue;
+            }
+            let Some((msg, _)) = sandbox::recv_control(helper.as_raw_fd()).unwrap() else {
+                break;
+            };
+            match msg.first() {
+                Some(&sandbox::STOP) => stops.push(u64::from_be_bytes(msg[1..9].try_into().unwrap())),
+                _ => others += 1,
+            }
+        }
+        (others, stops)
+    }
+
+    /// A program's request that closes its connection (`Connection: close`, as a client
+    /// without keep-alive sends each) is answered once the program ends, and then the
+    /// connection closes; the program is not stopped for it.
+    #[test]
+    fn a_program_answers_a_request_that_closes_its_connection() {
+        let tmp = shards_testdir::TempDir::new("close").unwrap();
+        let dir = tmp.to_str().unwrap();
+        let (helper, _instance) = served_with_helper(dir);
+        let mut client = client(dir);
+        let req = run_request(r#"{"code":"return 42;"}"#, "Connection: close\r\n");
+        client.write_all(req.as_bytes()).unwrap();
+        // The helper is asked to run it; its worker, played here, returns 42.
+        let (run, program, id) = next_control(&helper);
+        assert_eq!(run.first(), Some(&sandbox::RUN));
+        let mut program = UnixStream::from(program.unwrap());
+        program.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let sent = first_frame(&mut program);
+        let wrote = program.write_all(&sandbox::frame(sandbox::DONE, b"42").unwrap());
+        let mut answer = Vec::new();
+        let read = client.read_to_end(&mut answer);
+        let answer = String::from_utf8_lossy(&answer).into_owned();
+        let mut stops = Vec::new();
+        while readable(&helper, 100) {
+            let Some((msg, _)) = sandbox::recv_control(helper.as_raw_fd()).unwrap() else {
+                break;
+            };
+            if msg.first() == Some(&sandbox::STOP) {
+                stops.push(u64::from_be_bytes(msg[1..9].try_into().unwrap()));
+            }
+        }
+        eprintln!(
+            "CONNECTION_CLOSE program={id} program_frame_read={} worker_done_written={} client_read={read:?} answer_bytes={} stops={stops:?}",
+            sent.is_some(),
+            wrote.is_ok(),
+            answer.len()
+        );
+        assert!(
+            answer.contains(r#""text":"42""#),
+            "no answer to the program's request: {answer:?}"
+        );
+        assert!(
+            read.is_ok(),
+            "the connection did not close after its answer: {read:?}"
+        );
+        assert!(stops.is_empty(), "its program was stopped: {stops:?}");
+    }
+
+    /// A program run past its time is answered as ended, and its worker's STOP reaches the
+    /// helper though the helper's socket was full as it was due: once the helper has read
+    /// what filled it.
+    #[test]
+    fn a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can() {
+        let tmp = shards_testdir::TempDir::new("stop").unwrap();
+        let dir = tmp.to_str().unwrap();
+        let (helper, instance) = served_with_helper(dir);
+        let mut client = client(dir);
+        let req = run_request(r#"{"code":"for (;;) {}","timeout_ms":500}"#, "");
+        client.write_all(req.as_bytes()).unwrap();
+        // Its worker, played here, runs on: its socket held, never answering.
+        let (run, _program, id) = next_control(&helper);
+        assert_eq!(run.first(), Some(&sandbox::RUN));
+        let filled = fill(&instance);
+        let answer = response(&mut client);
+        let (drained, stops) = drain_until_stop(&helper);
+        eprintln!(
+            "LOST_STOP_DEADLINE program={id} control_messages_filling={filled} drained={drained} stops={stops:?} answered_ended={}",
+            answer.contains("ran past its 500 ms, and was ended")
+        );
+        assert!(answer.contains("ran past its 500 ms, and was ended"), "{answer}");
+        assert_eq!(
+            stops,
+            [id],
+            "the worker answered as ended has no STOP: it runs on"
+        );
+    }
+
+    /// A client gone ends the program it awaited: its worker's STOP reaches the helper though
+    /// the helper's socket was full as the client went.
+    #[test]
+    fn a_gone_clients_program_is_stopped_though_the_helper_was_full() {
+        let tmp = shards_testdir::TempDir::new("gone").unwrap();
+        let dir = tmp.to_str().unwrap();
+        let (helper, instance) = served_with_helper(dir);
+        let mut client = client(dir);
+        client
+            .write_all(run_request(r#"{"code":"for (;;) {}"}"#, "").as_bytes())
+            .unwrap();
+        let (run, program, id) = next_control(&helper);
+        assert_eq!(run.first(), Some(&sandbox::RUN));
+        let mut program = UnixStream::from(program.unwrap());
+        program.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let sent = first_frame(&mut program);
+        let filled = fill(&instance);
+        drop(client);
+        // The instance lets the program go: its end of the program's socket closes.
+        let let_go = matches!(program.read(&mut [0u8; 1]), Ok(0));
+        let (drained, stops) = drain_until_stop(&helper);
+        eprintln!(
+            "LOST_STOP_GONE program={id} program_frame_read={} control_messages_filling={filled} program_let_go={let_go} drained={drained} stops={stops:?}",
+            sent.is_some()
+        );
+        assert!(let_go);
+        assert_eq!(stops, [id], "the gone client's worker has no STOP: it runs on");
     }
 }

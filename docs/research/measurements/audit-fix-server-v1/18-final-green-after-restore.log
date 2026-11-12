@@ -1,0 +1,20 @@
+# The whole suite on the restored committed source, after the last mutant (sources touched: no mutant build reused).
+# command: L=/tmp/afs1-18.log; { echo "HEAD=$(git rev-parse HEAD)"; sha256sum crates/server/src/*.rs; touch crates/server/src/*.rs; cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 2>&1 | grep -v '^warning: aws-lc-sys' | grep -v ' \.\.\. ok$'; echo "test_gnu_exit=${PIPESTATUS[0]}"; } > $L 2>&1; cat $L; echo "SHA256 $(sha256sum < $L)"
+# result: 44 passed, 0 failed.
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# runner sha256 of the raw part below: 2648c18e6a912dafe9f028f8140997827e511b9e332b0aaa6af2c92703264a9a (this copy verified identical to the hash the runner printed)
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+c0ae08844df9e2a374d18e55516ed03ced853ba40517ef1e2597a69c972163e0  crates/server/src/broker.rs
+0ae9a897e4c71850c8087ee85c9fe18dc0262cb9d6d6e521c7ab8f448a5bc2c7  crates/server/src/main.rs
+3be073815859fe2fb8a8961d396e8e71eb66fb1dd6be021d38f4513e3c9a4aca  crates/server/src/sandbox.rs
+4955bc45693d6b88859d74c25c8d2576cadd3cba3ece353003739dd3ab710145  crates/server/src/server.rs
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.61s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 44 tests
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+
+test_gnu_exit=0

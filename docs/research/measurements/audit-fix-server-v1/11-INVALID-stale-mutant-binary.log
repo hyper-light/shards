@@ -1,0 +1,74 @@
+# INVALID run, kept for the record: flake quantification attempted without touching the sources first.
+# kiln's sync reset the restored sources' mtimes to the (older) local ones, so cargo kept the last M2 mutant build: no 'Compiling' line below.
+# Every later runner command touches crates/server/src/*.rs before building. The source hashes matched the local fixed source throughout.
+# command: L=/tmp/afs1-11.log; { echo "HEAD=$(git rev-parse HEAD)"; git diff --stat -- crates/server | tail -1; nproc; cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 --no-run 2>&1 | tail -1; for mode in all skip-new skip-both-forks; do case $mode in all) extra="";; skip-new) extra="--skip a_worker_not_reaped_ends_no_other";; skip-both-forks) extra="--skip a_worker_not_reaped_ends_no_other --skip a_worker_is_ended_for_a_call_its_filter_refuses";; esac; fails=0; for i in $(seq 10); do out=$(cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 -- $extra 2>&1); echo "$out" | grep -E '^test .* FAILED$' | sed "s/^/$mode run $i: /"; echo "$out" | grep -q '^test result: ok' || fails=$((fails+1)); done; echo "$mode: $fails of 10 runs failed"; done; } > $L 2>&1; cat $L; echo "SHA256 $(sha256sum < $L)"
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# runner sha256 of the raw part below: e8cc90746443d038103a17ab00b8741268fed34b17f3441e3ca028d796248d42 (this copy verified identical to the hash the runner printed)
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ 3 files changed, 793 insertions(+), 62 deletions(-)
+32
+  Executable unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+all run 1: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+all run 1: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+all run 2: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+all run 2: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+all run 3: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+all run 3: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+all run 4: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+all run 4: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+all run 5: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+all run 5: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+all run 6: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+all run 6: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+all run 7: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+all run 7: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+all run 8: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+all run 8: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+all run 9: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+all run 9: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+all run 10: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+all run 10: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+all: 10 of 10 runs failed
+skip-new run 1: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-new run 1: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-new run 2: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-new run 2: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-new run 3: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-new run 3: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-new run 4: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-new run 4: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-new run 5: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-new run 5: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-new run 6: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-new run 6: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-new run 7: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-new run 7: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-new run 8: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-new run 8: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-new run 9: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-new run 9: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-new run 10: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-new run 10: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-new: 10 of 10 runs failed
+skip-both-forks run 1: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-both-forks run 1: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-both-forks run 2: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-both-forks run 2: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-both-forks run 3: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-both-forks run 3: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-both-forks run 4: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-both-forks run 4: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-both-forks run 5: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-both-forks run 5: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-both-forks run 6: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-both-forks run 6: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-both-forks run 7: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-both-forks run 7: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-both-forks run 8: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-both-forks run 8: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-both-forks run 9: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-both-forks run 9: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-both-forks run 10: test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+skip-both-forks run 10: test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+skip-both-forks: 10 of 10 runs failed

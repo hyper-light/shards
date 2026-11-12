@@ -1,0 +1,157 @@
+# Guard-removal mutations, batch 2: findings 3 (M3) and 4 (M4: the size-after-fstat guard; M4b: the growth branch that keeps the old limit/probe semantics). Harness: mutate.py, mutations.sh.
+# NOTE: ran on an intermediate source (before control_at became an Option, the connection-gone reorder and the test-only PR_SET_DUMPABLE lines); 17-final-mutations.log reruns all nine mutants on the committed source.
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# source: bff3015182ad754274f1048ce393ac12cb6cd91f + the fixed, formatted diff; each mutant applied alone, then restored
+# command:
+#   L=/tmp/afs1-06b.log; { echo "HEAD=$(git rev-parse HEAD)"; git diff --stat -- crates/server | tail -1; docs/research/measurements/audit-fix-server-v1/mutations.sh M3 M4 M4b; } > $L 2>&1; cat $L; echo "SHA256 $(sha256sum < $L)"
+# runner sha256 of the raw part below: f02b378b77b67dea3c7e5dc3512a4ea0fc8de687119b9dd808a06a5235c5ef96 (this copy verified identical)
+# result: every mutant killed (M3: refusal says uncertain; M4: 26-byte hand holds 212961 bytes; M4b: a procfs file longer than its size is refused TooLong)
+# ("Blocking waiting for file lock on package cache": another cargo on the shared runner held the cache briefly.)
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ 3 files changed, 787 insertions(+), 59 deletions(-)
+=== M3: crates/server/src/broker.rs
+@@ -515,7 +515,7 @@
+         let mut out = Growing(String::new());
+         match self.response(&mut out, principal, peer, None, Outcome::Refused(error)) {
+             Ok(()) => Reply::Owned(out.0),
+-            Err(_) => self.refusal_literal(),
++            Err(_) => self.literal(),
+         }
+     }
+     /// Outer presentation for the actual run-tool error bridge. The Display producer
+@@ -527,7 +527,7 @@
+             .and_then(|()| fmt::Write::write_str(&mut out, "}"))
+         {
+             Ok(()) => Reply::Owned(out.0),
+-            Err(_) => self.refusal_literal(),
++            Err(_) => self.literal(),
+         }
+     }
+ }
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+warning: method `refusal_literal` is never used
+   --> crates/server/src/broker.rs:504:8
+    |
+378 | impl Format {
+    | ----------- method in this implementation
+...
+504 |     fn refusal_literal(self) -> Reply {
+    |        ^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards-server` (bin "shards-server" test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.40s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 1 test
+REFUSAL_FALLBACK format=Program path=refused literal=true outcome=Some("uncertain") effect=Some("unknown") reply={"error":"broker response unavailable; effect commitment is unknown","broker":{"outcome":"uncertain","effect":{"kind":"unknown"},"cause":{"kind":"response_capacity"}}}
+
+thread 'broker::tests::a_refusal_without_storage_says_it_was_refused' (3475261) panicked at crates/server/src/broker.rs:1291:17:
+assertion `left == right` failed: refused: {"error":"broker response unavailable; effect commitment is unknown","broker":{"outcome":"uncertain","effect":{"kind":"unknown"},"cause":{"kind":"response_capacity"}}}
+  left: Some("uncertain")
+ right: Some("refused")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test broker::tests::a_refusal_without_storage_says_it_was_refused ... FAILED
+
+failures:
+
+failures:
+    broker::tests::a_refusal_without_storage_says_it_was_refused
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+=== M3: cargo test exit 101 (non-zero: the mutant is killed)
+=== M3: crates/server/src/broker.rs restored
+=== M4: crates/server/src/broker.rs
+@@ -780,7 +780,7 @@
+         };
+         let full = room(self.limit)?;
+         // What its size says first: within the limit, checked above.
+-        let mut end = room(usize::try_from(meta.len()).map_err(|_| failed(Reason::TooLong))?)?;
++        let mut end = full;
+         let reserve = |packet: &mut Vec<u8>, end: usize| {
+             packet
+                 .try_reserve_exact(end.saturating_sub(packet.len()))
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.81s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 1 test
+HAND_RESERVATION channel_most=212960 file_bytes=10 packet_len=26 reserved_at_admission=16 capacity_after_read=212961
+
+thread 'broker::tests::a_small_hand_reserves_what_its_file_holds' (3477866) panicked at crates/server/src/broker.rs:1360:9:
+a 26-byte hand held 212961 bytes
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test broker::tests::a_small_hand_reserves_what_its_file_holds ... FAILED
+
+failures:
+
+failures:
+    broker::tests::a_small_hand_reserves_what_its_file_holds
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+=== M4: cargo test exit 101 (non-zero: the mutant is killed)
+=== M4: crates/server/src/broker.rs restored
+=== M4b: crates/server/src/broker.rs
+@@ -821,8 +821,7 @@
+             if used == end {
+                 // Longer than its size said, and within the limit: room for all the limit
+                 // admits, and its probe byte.
+-                end = full;
+-                reserve(packet, end)?;
++                return Err(failed(Reason::TooLong));
+             }
+         }
+     }
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+warning: variable does not need to be mutable
+   --> crates/server/src/broker.rs:783:13
+    |
+783 |         let mut end = room(usize::try_from(meta.len()).map_err(|_| failed(Reason::TooLong))?)?;
+    |             ----^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `full`
+   --> crates/server/src/broker.rs:781:13
+    |
+781 |         let full = room(self.limit)?;
+    |             ^^^^ help: if this is intentional, prefix it with an underscore: `_full`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards-server` (bin "shards-server" test) generated 2 warnings (run `cargo fix --bin "shards-server" -p shards-server --tests` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.60s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 1 test
+HAND_GROWN limit=212943 outcome=Failed(Refusal { phase: Executing, reason: TooLong }) effect=NotStarted
+
+thread 'broker::tests::a_file_longer_than_its_size_says_is_handed_as_before' (3479851) panicked at crates/server/src/broker.rs:1401:17:
+assertion `left == right` failed
+  left: Failed(Refusal { phase: Executing, reason: TooLong })
+ right: Completed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test broker::tests::a_file_longer_than_its_size_says_is_handed_as_before ... FAILED
+
+failures:
+
+failures:
+    broker::tests::a_file_longer_than_its_size_says_is_handed_as_before
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+=== M4b: cargo test exit 101 (non-zero: the mutant is killed)
+=== M4b: crates/server/src/broker.rs restored
+=== source after:  3 files changed, 787 insertions(+), 59 deletions(-)

@@ -1,0 +1,73 @@
+# All nine guard-removal mutants again, on the committed source (mutate.py, mutations.sh), output reduced to their verdict lines.
+# command: L=/tmp/afs1-17.log; { echo "HEAD=$(git rev-parse HEAD)"; sha256sum crates/server/src/*.rs; touch crates/server/src/*.rs; docs/research/measurements/audit-fix-server-v1/mutations.sh M1a M1b M2 M3 M4 M4b M5a M5b M6 | grep -E '^(=== |CONNECTION_CLOSE|LOST_STOP|REFUSAL_FALLBACK|HAND_|BROKER_RECEIPT|REAP_UNKNOWN|test .* \.\.\. |test result)'; sha256sum crates/server/src/*.rs; } > $L 2>&1; cat $L; echo "SHA256 $(sha256sum < $L)"
+# result: 9 of 9 killed, each for its finding's reason; source hashes after equal those before (every mutant restored).
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# runner sha256 of the raw part below: 8c4820c13fce681970f48e49f098b39bad7a0e77967d2c60dd5e62665bb98e9f (this copy verified identical to the hash the runner printed)
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+c0ae08844df9e2a374d18e55516ed03ced853ba40517ef1e2597a69c972163e0  crates/server/src/broker.rs
+0ae9a897e4c71850c8087ee85c9fe18dc0262cb9d6d6e521c7ab8f448a5bc2c7  crates/server/src/main.rs
+3be073815859fe2fb8a8961d396e8e71eb66fb1dd6be021d38f4513e3c9a4aca  crates/server/src/sandbox.rs
+4955bc45693d6b88859d74c25c8d2576cadd3cba3ece353003739dd3ab710145  crates/server/src/server.rs
+=== M1a: crates/server/src/server.rs
+CONNECTION_CLOSE program=1 program_frame_read=false worker_done_written=false client_read=Ok(0) answer_bytes=0 stops=[1]
+test server::tests::a_program_answers_a_request_that_closes_its_connection ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.10s
+=== M1a: cargo test exit 101 (non-zero: the mutant is killed)
+=== M1a: crates/server/src/server.rs restored
+=== M1b: crates/server/src/server.rs
+CONNECTION_CLOSE program=1 program_frame_read=true worker_done_written=true client_read=Err(Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }) answer_bytes=162 stops=[]
+test server::tests::a_program_answers_a_request_that_closes_its_connection ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 5.13s
+=== M1b: cargo test exit 101 (non-zero: the mutant is killed)
+=== M1b: crates/server/src/server.rs restored
+=== M2: crates/server/src/server.rs
+LOST_STOP_GONE program=1 program_frame_read=true control_messages_filling=278 program_let_go=true drained=278 stops=[]
+test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+LOST_STOP_DEADLINE program=1 control_messages_filling=278 drained=278 stops=[] answered_ended=true
+test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 42 filtered out; finished in 5.51s
+=== M2: cargo test exit 101 (non-zero: the mutant is killed)
+=== M2: crates/server/src/server.rs restored
+=== M3: crates/server/src/broker.rs
+REFUSAL_FALLBACK format=Program path=refused literal=true outcome=Some("uncertain") effect=Some("unknown") reply={"error":"broker response unavailable; effect commitment is unknown","broker":{"outcome":"uncertain","effect":{"kind":"unknown"},"cause":{"kind":"response_capacity"}}}
+test broker::tests::a_refusal_without_storage_says_it_was_refused ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+=== M3: cargo test exit 101 (non-zero: the mutant is killed)
+=== M3: crates/server/src/broker.rs restored
+=== M4: crates/server/src/broker.rs
+HAND_RESERVATION channel_most=212960 file_bytes=10 packet_len=26 reserved_at_admission=16 capacity_after_read=212961
+test broker::tests::a_small_hand_reserves_what_its_file_holds ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+=== M4: cargo test exit 101 (non-zero: the mutant is killed)
+=== M4: crates/server/src/broker.rs restored
+=== M4b: crates/server/src/broker.rs
+HAND_GROWN limit=212943 outcome=Failed(Refusal { phase: Executing, reason: TooLong }) effect=NotStarted
+test broker::tests::a_file_longer_than_its_size_says_is_handed_as_before ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+=== M4b: cargo test exit 101 (non-zero: the mutant is killed)
+=== M4b: crates/server/src/broker.rs restored
+=== M5a: crates/server/src/sandbox.rs
+BROKER_RECEIPT thrown=Ok("[\"agent a may not send agent c requests\",null]")
+test sandbox::tests::a_programs_broker_results_keep_their_receipt ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+=== M5a: cargo test exit 101 (non-zero: the mutant is killed)
+=== M5a: crates/server/src/sandbox.rs restored
+=== M5b: crates/server/src/sandbox.rs
+BROKER_RECEIPT thrown=Ok("[\"agent a may not send agent c requests\",{\"principal\":\"agent a\",\"peer\":\"agent c\",\"operation\":null,\"request\":null,\"outcome\":\"refused\",\"effect\":{\"kind\":\"not_started\"},\"phase\":\"validated\",\"cause\":{\"kind\":\"grant\"}}]")
+BROKER_RECEIPT returned=Ok("[{\"id\":1},null]")
+test sandbox::tests::a_programs_broker_results_keep_their_receipt ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+=== M5b: cargo test exit 101 (non-zero: the mutant is killed)
+=== M5b: crates/server/src/sandbox.rs restored
+=== M6: crates/server/src/sandbox.rs
+REAP_UNKNOWN first=[] control_closed=true worker_two_ran_on=false second=[] control_closed_later=true worker_two_ended=true helper_exited=true helper_code=3 helper_signal=0 helper_failure="reaping a worker: Uncategorized, OS Some(10); 2 workers not known reaped, first 2: reaping a worker: Uncategorized, OS Some(10)"
+test sandbox::tests::a_worker_not_reaped_ends_no_other ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+=== M6: cargo test exit 101 (non-zero: the mutant is killed)
+=== M6: crates/server/src/sandbox.rs restored
+=== source after:  3 files changed, 803 insertions(+), 62 deletions(-)
+c0ae08844df9e2a374d18e55516ed03ced853ba40517ef1e2597a69c972163e0  crates/server/src/broker.rs
+0ae9a897e4c71850c8087ee85c9fe18dc0262cb9d6d6e521c7ab8f448a5bc2c7  crates/server/src/main.rs
+3be073815859fe2fb8a8961d396e8e71eb66fb1dd6be021d38f4513e3c9a4aca  crates/server/src/sandbox.rs
+4955bc45693d6b88859d74c25c8d2576cadd3cba3ece353003739dd3ab710145  crates/server/src/server.rs
