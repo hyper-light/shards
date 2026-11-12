@@ -224,6 +224,9 @@ Windows through cargo-xwin, then `cargo test`.
   --bulk-rounds 1`. Every phase of every arm ran: 4 first and 4 reconnect handshakes, every
   round trip, transfer and guest count. There were 0 failures and 0 unreadable processes, and
   every process ended with the run.
+- Lint and light tests at 3bbbf33 on adas-mac-studio.local-2 (`scripts/lint.sh`, zig 0.16.0,
+  cargo-xwin): clippy passes on all 7 supported targets, and `cargo test` passes 8 of 8 on
+  macOS arm64. On adacachy, at 1e1d306, it passes 8 of 8 on Linux x86_64.
 - What the smoke found and fixed: quinn-proto reports a peer-opened stream's first bytes only
   through `Opened`, so both endpoints read in `opened`, as Shards' own server does; a daemon
   run's command is PID 1 of its own PID namespace, so the guest program takes PID 1's role only
