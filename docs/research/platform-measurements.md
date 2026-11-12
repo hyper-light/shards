@@ -20767,6 +20767,94 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     translated code turns into a call into shards traps nothing. What translation costs
     the rest of a guest's code is the next measurement.
 
+### M518. What a rootless software hypervisor's traps cost on Windows, and how its guest memory reaches another process (softvirt)
+
+- **Question.** Windows filters no system calls for a user process: its one system-call
+  mitigation, `PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY`, disallows only win32k and
+  fsctl calls. A guest's code can reach a hypervisor only as a breakpoint (a rewritten
+  system call) or a fault: in its own process, through a vectored exception handler, or
+  in another, as a debug event. What does each cost? Can a section's views put guest
+  memory into another process page by page, below the 64 KiB allocation granularity?
+  What does publishing translated code cost?
+- **Method.** `docs/research/measurements/softvirt-traps/windows.c`, `cl /nologo /O2 /W4`,
+  n=20000 after 1000 warm-ups, `QueryPerformanceCounter`, whose 10 MHz counter ticks
+  every 100 ns on both runners: every p50 below but the native rows' is a multiple of it,
+  and an 8-byte flush can read 0. GitHub's windows-2025 runner (x64: Windows Server 2025
+  Datacenter 10.0.26100, image windows-2025-vs2026 20261103.298.1) and windows-11-arm
+  runner (arm64: Windows 11 Enterprise 10.0.26200, image windows-11-vs2026-arm64
+  20261101.203.1), 4 processors each, `softvirt-traps.yml`, three runs each, 2026-11-12:
+  43135435859 (`windows.c` at 85f525fca), 43162571571 (df68484b0) and 43165501391
+  (961409a6e, which names the CPU: an AMD EPYC 7763 and a Cobalt 100).
+  - `native`: `SwitchToThread` with no other thread to run (`NtYieldExecution`), per
+    call over 64 in a row.
+  - `veh`: `__debugbreak()` served by a vectored exception handler that steps over it; a
+    load of a `PAGE_NOACCESS` page whose handler makes the page read-write.
+  - `debug`: the same breakpoint in a child started with `DEBUG_ONLY_THIS_PROCESS`,
+    served by the parent's `WaitForDebugEventEx` loop; the child times each round trip.
+  - `views`: `MapViewOfFile3` of a pagefile-backed section's 64 KiB view into an idle
+    child, then `UnmapViewOfFile2`; and a placeholder (`VirtualAlloc2`,
+    `MEM_RESERVE_PLACEHOLDER`) split at 4 KiB (`VirtualFreeEx`,
+    `MEM_PRESERVE_PLACEHOLDER`), each part replaced by a 4 KiB view
+    (`MEM_REPLACE_PLACEHOLDER`), one at a 4 KiB offset of the section, one at offset 0.
+  - `jit`: `VirtualProtect` of a code page read-write, then execute-read;
+    `FlushInstructionCache` of 8 bytes.
+
+  Raw: `measurements/softvirt-traps/results/windows-x86_64-github-windows-2025.md` and
+  `windows-arm64-github-windows-11-arm.md`.
+- **Results** (ns; run 3's distribution, then the p50 range of the three runs; `debug`
+  from runs 2 and 3, run 1's having failed):
+
+  | test | variant | host | n | p50 | p90 | p99 | max | p50, all runs |
+  |---|---|---|---|---|---|---|---|---|
+  | native | `NtYieldExecution`, each of 64 in a row | x64 | 20000 | 185 | 187 | 267 | 1,454 | 151-187 |
+  | native | the same | arm64 | 20000 | 170 | 173 | 215 | 3,365 | 104-170 |
+  | veh | breakpoint, a vectored handler in the process | x64 | 20000 | 1,600 | 1,700 | 2,700 | 36,600 | 1,200-1,600 |
+  | veh | the same | arm64 | 20000 | 1,000 | 1,100 | 1,100 | 42,100 | 700-1,000 |
+  | veh | access violation, the handler `VirtualProtect`s the page | x64 | 20000 | 3,400 | 5,100 | 6,100 | 88,200 | 2,900-3,500 |
+  | veh | the same | arm64 | 20000 | 2,200 | 2,300 | 2,400 | 103,700 | 1,700-2,200 |
+  | debug | breakpoint, a debug event to the parent | x64 | 20000 | 96,800 | 110,300 | 149,500 | 11,999,800 | 38,000-96,800 |
+  | debug | the same | arm64 | 20000 | 33,100 | 38,400 | 46,800 | 197,900 | 27,200-33,100 |
+  | views | map a 64 KiB view into the child | x64 | 20000 | 1,600 | 2,300 | 4,200 | 886,200 | 1,200-1,600 |
+  | views | the same | arm64 | 20000 | 1,100 | 1,100 | 2,400 | 28,000 | 800-1,100 |
+  | views | unmap it | x64 | 20000 | 2,000 | 2,300 | 4,700 | 1,010,100 | 1,500-2,000 |
+  | views | the same | arm64 | 20000 | 1,400 | 1,500 | 2,200 | 33,100 | 1,200-1,400 |
+  | jit | `VirtualProtect` read-write, then execute-read | x64 | 20000 | 1,100 | 1,600 | 2,000 | 1,156,200 | 800-1,100 |
+  | jit | the same | arm64 | 20000 | 900 | 1,000 | 1,000 | 23,000 | 700-900 |
+  | jit | `FlushInstructionCache` of 8 bytes | x64 | 20000 | 0 | 100 | 100 | 24,000 | 0 |
+  | jit | the same | arm64 | 20000 | 300 | 300 | 400 | 5,800 | 200-300 |
+
+  A placeholder split at 4 KiB, a 4 KiB view at a 4 KiB offset and one at offset 0: `ok`
+  in every run on both.
+- **Found.**
+  - In-process traps cost 0.7 to 1.6 us. A breakpoint to a vectored handler takes 1.2 to
+    1.6 us on x64 and 0.7 to 1.0 us on arm64, 7.9 to 8.6 and 5.9 to 6.7 times the same
+    run's `NtYieldExecution`; a fault whose handler changes the page's protection, 2.9 to
+    3.5 and 1.7 to 2.2 us. That is about Linux's in-process trap on cloud VMs (1.08 to
+    1.80 us, M516), and a fifth to half of the Mac's (3.4 us, M517).
+  - A trap served by another process costs 27 to 97 us: a debug event takes 27.2 to 33.1
+    us on arm64 and 38.0 to 96.8 us on x64, 27 to 61 times the in-process handler. One
+    of run 3's x64 round trips took 12.0 s (its p99, 150 us); the harness cannot tell a
+    pause of the VM from a stall in the debug path. Of Windows' documented interfaces,
+    only the debugging API lets one process catch another's breakpoints and faults and
+    resume it, so a hypervisor serving guest code in another process traps at this price.
+  - A debugger and a handler see the trap differently. A vectored handler finds the
+    thread's PC on the break instruction and steps it over; a debugger finds it already
+    past (21,001 of 21,001 breakpoints, the loader's own included, in both runs on both
+    architectures). Run 1's parent stepped each again, and its child died before it
+    could report (fixed in df68484b0).
+  - Guest memory reaches another process page by page. A 64 KiB view of a section maps
+    into a child in 0.8 to 1.6 us and unmaps in 1.2 to 2.0 us, and placeholders split to
+    4 KiB take 4 KiB views at any 4 KiB offset, below the allocation granularity, on both
+    architectures: the parent's hold on its child's memory that macOS's task port gives
+    (M517), without the child's help.
+  - Publishing translated code by protection change costs 0.7 to 1.1 us for the pair, 8
+    to 13 times macOS's `MAP_JIT` toggle (83 ns, M517); an 8-byte instruction-cache flush
+    stays within 0.3 us. Two views of one section, one writable and one executable, would
+    need no protection change (not measured here).
+  - On Windows, then, a trap costs at least 0.7 us in the guest's own process and 27 us
+    from another; a guest system call that translated code turns into a call traps
+    nothing.
+
 ### M519. What today's rootless sandboxes without hardware virtualization cost a guest: gVisor and User-mode Linux against native and KVM (softvirt)
 
 - **Question.** The bar a software hypervisor of shards' own must clear (R08): what do the
