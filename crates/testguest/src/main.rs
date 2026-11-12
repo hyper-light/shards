@@ -5,6 +5,8 @@
 #[cfg(target_os = "linux")]
 mod cleanup;
 #[cfg(target_os = "linux")]
+mod engine_bulk;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 mod managed_lifecycle;

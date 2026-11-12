@@ -143,14 +143,17 @@ impl Conn {
             }
         }
         self.ringing = match offered.and_then(|offer| Ring::attach(handle.memory(), &offer)) {
-            Ok(ring) => Ringing::Ringed(Box::new(Ringed {
+            Ok(ring) => {
+                debug!("vsock: port {}: an engine ring attached", self.local_port);
+                Ringing::Ringed(Box::new(Ringed {
                 ring,
                 replied: false,
                 doorbell: false,
                 blocked: false,
                 full: false,
                 ended: false,
-            })),
+                }))
+            }
             Err(refusal) => {
                 debug!("vsock: port {}: a ring refused: {refusal:?}", self.local_port);
                 Ringing::Refused(Reply::Refused(refusal), handle)

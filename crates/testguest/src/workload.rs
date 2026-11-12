@@ -449,6 +449,10 @@ pub fn main() -> ! {
         // attach's own: `api-run IMAGE CMD...` says what the command wrote, then `status N`
         // (D181).
         "api-run" => api_run(arg(1), args.get(2..).unwrap_or_default()),
+        // Bulk bytes through its microVM's engine, and what they take (D230; engine_bulk.rs).
+        "bulk-emit" => crate::engine_bulk::emit(arg(1).parse().unwrap_or(0)),
+        "bulk-sum" => crate::engine_bulk::sum(),
+        "api-bulk" => crate::engine_bulk::api_bulk(args.get(1..).unwrap_or_default()),
         "ask" => ask(arg(1), arg(2).parse().ok()),
         "resolve" => resolve(arg(1)),
         "dnsttl" => dnsttl(arg(1)),
