@@ -334,6 +334,10 @@ impl Guest for SimGuest {
         self.connect_with_budget(port, SimConnectBudget::Before(deadline))
     }
 
+    fn connect_once_before(&self, port: u32, deadline: Instant) -> Result<Box<dyn Stream>, Refusal> {
+        self.connect_with_budget(port, SimConnectBudget::Once(deadline))
+    }
+
     fn stop(&self) -> Result<(), Refusal> {
         let mut state = lock(&self.shared);
         state.end.get_or_insert(End::Stopped);
@@ -372,6 +376,7 @@ impl Guest for SimGuest {
 enum SimConnectBudget {
     Standalone(Duration),
     Before(Instant),
+    Once(Instant),
 }
 
 impl SimGuest {
@@ -380,11 +385,15 @@ impl SimGuest {
         // None: past `Instant`'s range (`Duration::MAX`): until the guest listens or ends.
         let deadline = match budget {
             SimConnectBudget::Standalone(patience) => Instant::now().checked_add(patience),
-            SimConnectBudget::Before(at) => Some(at),
+            SimConnectBudget::Before(at) | SimConnectBudget::Once(at) => Some(at),
+        };
+        let absolute = match budget {
+            SimConnectBudget::Standalone(_) => None,
+            SimConnectBudget::Before(at) | SimConnectBudget::Once(at) => Some(at),
         };
         let mut state = lock(&self.shared);
         loop {
-            if matches!(budget, SimConnectBudget::Before(at) if Instant::now() >= at) {
+            if absolute.is_some_and(|at| Instant::now() >= at) {
                 return Err(Refusal::Connect {
                     port,
                     failure: crate::HandshakeError::Expired {
@@ -422,7 +431,7 @@ impl SimGuest {
                 let ours = ours.boxed().map_err(|_| Refusal::Allocation {
                     what: "connection storage",
                 })?;
-                if matches!(budget, SimConnectBudget::Before(at) if Instant::now() >= at) {
+                if absolute.is_some_and(|at| Instant::now() >= at) {
                     return Err(Refusal::Connect {
                         port,
                         failure: crate::HandshakeError::Expired {
@@ -434,10 +443,17 @@ impl SimGuest {
                 self.shared.changed.notify_all();
                 return Ok(ours);
             }
+            if matches!(budget, SimConnectBudget::Once(_)) {
+                // As the VMM's muxer does, a CONNECT to a port nobody listens on closes unanswered.
+                return Err(Refusal::Connect {
+                    port,
+                    failure: crate::HandshakeError::Closed,
+                });
+            }
             state = match deadline.map(|d| d.saturating_duration_since(Instant::now())) {
                 Some(left) if left.is_zero() => {
                     return Err(match budget {
-                        SimConnectBudget::Before(_) => Refusal::Connect {
+                        SimConnectBudget::Before(_) | SimConnectBudget::Once(_) => Refusal::Connect {
                             port,
                             failure: crate::HandshakeError::Expired {
                                 phase: crate::HandshakePhase::Dial,
