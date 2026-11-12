@@ -21883,17 +21883,22 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 **Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
 `docker run`'s `128 + signal`; every wait is on a fact.
 
-**Built so far** (branch `p/runtime-image-boot-v1`, light checks only): the abi entries,
-init's staging, member ends, `ATTEND` and `STATS` scopes, the VM process's relay of member
-ends, `shards_api::image` and `shards api-run` on Linux and macOS. **Owed:** the Windows run
-host (refused `Unsupported` there, its AppContainer launch not written), a member's stdin and
-terminal, DAX windows for its shares, templates and pools, a boot patience, shares added
-while running, `attach` after the owner's crash, one launch shared with the builder's and the
-daemon's, and a simulator.
+**Built:** the abi entries, init's staging, member ends, `ATTEND` and `STATS` scopes, the VM
+process's relay of member ends, `shards_api::image` and `shards api-run` on Linux and macOS;
+a boot within the orchestrator's patience (`Images::boot`), its refusal quoting what the run
+host and its VM said last. **Owed:** the Windows run host (refused `Unsupported` there, its
+AppContainer launch not written), a member's stdin and terminal, DAX windows for its shares,
+templates and pools, shares added while running, `attach` after the owner's crash, one launch
+shared with the builder's and the daemon's, and a simulator.
 
-**Evidence owed** (ROOT): real-VM E2E on KVM x86_64 and arm64 and HVF
-(`crates/shards/tests/api_image.rs`); the run host's resident, CPU and kernel cost per
-microVM against the daemon's per run and Firecracker's (R14).
+**Tested** (real VMs, `crates/shards/tests/api_image.rs`, 2026-11-12): 6 of 6 on macOS arm64
+HVF (an M5 Max, macOS 26.5.2) at f6051bc93, after main's CI failed every boot: the run
+host's request kept no log retention, which a warm VM refuses, and its follower held the
+link's lock for the run's life; each reproduced live before its fix
+(runtime-image-boot-v1/README.md). **Evidence owed** (ROOT): the whole file on Linux x86_64
+KVM at the landed revision (CI's run of f6051bc93 was queued as it landed); KVM arm64 (no
+arm64 Linux host here has KVM; the nested path of boot.rs); the run host's resident, CPU and
+kernel cost per microVM against the daemon's per run and Firecracker's (R14).
 
 **What would falsify it.** A run host costing more per microVM than the daemon per run (then
 one host per orchestrator); an orchestrator needing to link the VMM; credentials a member

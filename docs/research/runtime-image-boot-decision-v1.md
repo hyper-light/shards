@@ -278,11 +278,15 @@ port's token (`run::TOKEN`, 16 bytes) for an input connection; vsock credit and
 definition (inode(7)); `128 + signal` is `docker run`'s status rule (abi/src/run.rs:61-65).
 The run host waits on facts (the VM's `READY`, `TAKEN`, the VM process's exit, its channel's
 end), never on a clock of its own; a stuck boot is the orchestrator's to bound, as a direct
-boot's is (D215).
+boot's is (D215): `Images::boot` takes its patience, and a boot it outlasts is refused with
+what the run host said last.
 
 ## 4. Per host
 
-What v1 builds (code), against what is owed; nothing here has run on a VM yet (§8).
+What v1 builds (code), against what is owed. On 2026-11-12 macOS's v1 row ran on real VMs,
+`crates/shards/tests/api_image.rs` 6 of 6; Linux x86_64's boots ran on CI and failed
+before the fixes, its run at the landed revision owed
+(measurements/runtime-image-boot-v1/README.md).
 
 | Host | 1 stdout/stderr, end | 1 stdin | 1 terminal | 2 staging | 3 ports, grants | 4 shares at boot | 4 added | 5 stats | 6 stop |
 |---|---|---|---|---|---|---|---|---|---|
@@ -322,9 +326,8 @@ Owed beyond v1, each its own slice: a member's stdin (its input connection, §3.
 `Unsupported` by the client today) and terminal (G24); the Windows run host (§4); shares
 added while running (D214, to the run's own command); DAX windows for an orchestrated run's
 shares (D189: v1 passes no `--share-window`, so its shares go through FUSE); templates and
-pools for orchestrated runs (D25, D26: a cold boot each run until measured); a boot patience
-(the daemon's progress-based `READY` wait, daemon.rs `ready`, shared: v1 waits on facts, and a
-guest that never says `READY` holds `boot`); `attach` after the owner's crash; the run's own
+pools for orchestrated runs (D25, D26: a cold boot each run until measured); `attach` after
+the owner's crash; the run's own
 command's stdout and stderr as streams of their own (v1 gives them the run host's stderr,
 diagnostics); the launch shared with the builder's and the daemon's (§3.5); a simulator of
 image guests for orchestrators' tests.
