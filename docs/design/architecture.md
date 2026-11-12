@@ -6341,6 +6341,65 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   or disconnected, with no grants built again; disconnected keeping its address; its last
   network taken; no way out through its next network.
 
+### D230. A microVM's engine bytes through a ring in its guest's memory (decided; building)
+
+The full record, its evidence and the measurements it owes:
+[engine-ring-channel-decision-v1](../research/engine-ring-channel-decision-v1.md). D181's
+relay moves a run's engine connection over vsock, which bounds it: 256 MiB took 244 ms
+guest to host and 124 ms host to guest relayed on KVM, and vsock's best (the credit fix
+with a 4 MiB window) still 84 and 86 ms, where a ring both sides share moved it in 3.8
+and 25.1 ms (vsock-path-v1, r378, r429, r430). The target is 10x the relayed path's
+throughput both ways, small requests no slower, on every host.
+
+- **The ring is guest RAM.** Init's relay makes each slot from a memory file of its own,
+  has the guest's kernel pin its pages long-term (an io_uring registered buffer:
+  `FOLL_LONGTERM`, so compaction, offlining and khugepaged leave them), reads their
+  guest-physical addresses from `/proc/self/pagemap`, and offers them in its hello. The
+  host reaches them as it reaches virtqueues, through `GuestMemory`, on KVM, HVF and WHP
+  alike: no window, no device, no snapshot format. Init makes the io_uring instance
+  before it forks the relay and holds it for the VM's life, so a relay that dies leaves
+  its slots pinned, and the device never writes a page its guest has reused.
+- **The host end is the VM process's vsock device.** Once the engine's hello reader has
+  checked the run's token, the device attaches an offered ring to the connection and moves
+  its bytes between the ring's pages and the host socket the daemon already serves
+  (Windows: the VM's relay onto the daemon's pipe, as before), by `readv` and `writev` as
+  it moves packets now. Not the daemon: it would map memory the guest writes, where shards
+  keeps guest-driven parsing in the confined VM process (D30, D31). Not a pump thread
+  between the device and the daemon: one more wakeup and Unix socket hop each way, which
+  the relay's own hop shows costs about 10 µs a round trip (r378, r421) and macOS's
+  stream sockets 22 µs (PM M83).
+- **Wakeups are vsock bytes to a side that said it waits** (a flag beside the ring, set
+  with a full fence before it sleeps, swapped clear by the side that publishes: netring's
+  protocol, PM M83). A message costs the wakeups it costs today; a bulk transfer rings
+  only where a side ran dry or full. No spinning in this decision: adaptive spinning waits
+  on measurement.
+- **vsock stays** for setup, the token, doorbells, half-close and EOF, and the whole path
+  wherever no ring is made: a host or guest of a build without rings, a guest kernel
+  without io_uring's sparse buffer table (Linux 5.19) or pagemap's frame numbers, a relay
+  out of slots, an offer the device refuses.
+- **Security.** Nothing of an offer is used before the token is checked (it names guest
+  memory the host writes). Every extent must be guest RAM on 4 KiB boundaries, the slot
+  whole; positions are read once a turn and believed only within the ring; offsets are
+  positions modulo the ring; bytes are moved by system calls on pinned pages and never
+  parsed by the host; ring memory is the guest's, so no host memory grows with a guest's
+  asks. Only the relay maps its slots.
+- **Snapshots.** Templates hold no ring. A microVM saved whole keeps its slots and init's
+  instance; its restore resets every stream (D12), and the next connections offer the
+  same slots afresh.
+
+| Literal / bound | Source or derivation |
+| --- | --- |
+| Ring per direction, 2 MiB | Bandwidth-delay product: 10x the faster relayed baseline (256 MiB / 12.36 ms = 21.7 GB/s, r429) times one way of the relayed 64 B round trip at p99 (129 / 2 µs, r378), 1.40 MB, up to a power of two. A sweep from 256 KiB to 4 MiB is owed. |
+| Control page, 4 KiB; fields 128 bytes apart | The smallest page of every supported guest; Apple silicon's 128-byte line (hw.cachelinesize), x86's paired-line prefetch. |
+| Slots a relay pins, max(1, floor(CPUs / 2)) | A ringed stream keeps two guest threads busy (its client's and the relay's), so no more than half the CPUs' streams move at once. |
+| Doorbell 0x01; offer header 16 bytes, extents 16 bytes, reply 8 bytes | Protocol constants of version 1. |
+| Offer extents at most (4 KiB + 2 S) / 4 KiB | A slot's pages, none merged. |
+
+Owed to ROOT, none run by its implementer: correctness and hostile-offer E2E, and
+throughput, small-request latency (paced and back to back), connection setup, CPU and
+pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64; compile checks of
+macOS, Windows and aarch64.
+
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
 Decided by the user on 2026-10-14 ("so long as they apply appropriately to microvms").
