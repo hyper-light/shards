@@ -2034,10 +2034,9 @@ mod tests {
                     })
                     .unwrap();
                 drop(observed_state);
-                assert!(
-                    !timeout.timed_out(),
-                    "waiter must observe inline native completion"
-                );
+                if timeout.timed_out() {
+                    return Err(Refusal::Launch(crate::LaunchError::Observer));
+                }
             }
             Ok(())
         }
@@ -2053,7 +2052,9 @@ mod tests {
             Ok(crate::managed_receipt(self.0.clone()))
         }
         fn attach(&mut self, identity: &Identity) -> Result<crate::ManagedReceipt, Refusal> {
-            assert_eq!(identity, &self.0.identity);
+            if identity != &self.0.identity {
+                return Err(Refusal::Launch(crate::LaunchError::Observer));
+            }
             Ok(crate::managed_receipt(self.0.clone()))
         }
     }
