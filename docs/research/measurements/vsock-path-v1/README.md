@@ -83,4 +83,29 @@ On HVF the 4 MiB window holds too (guest to host direct 18 GB/s); relayed traffi
 about 86 ms from 1 MiB, bound by the guest relay; host to guest at about 85 ms, bound by the
 guest's sub-4 KiB receive buffers. Host socket buffers of 256 KiB measure the same as 4 MiB.
 
-Not measured yet: Windows (WHP) at all, aarch64 Linux KVM.
+r-jupiter (2026-11-12, WHP: Windows 11 Pro build 26200, x86_64, 32 CPUs; quiet, CPU 1-9 % in the 6 s
+before and after each run as `Get-Counter` read it, since the harness's load field is empty on
+Windows, which has no load average; 11 rounds; abab7e2bd's base config, a 64 KiB window and the
+fixed credit rule; run by kiln agent jupiter-whp-runs, its log on jupiter at `~/g121-wv-logs/4b.log`):
+
+| arm | n | p50 | p90 | p99 | max | MiB/s at p50 |
+|---|---|---|---|---|---|---|
+| host->guest direct | 11 | 362.5 ms | 369.0 | 371.8 | 371.8 | 706 |
+| host->guest relayed | 11 | 366.0 ms | 375.3 | 378.4 | 378.4 | 699 |
+| guest->host direct | 11 | 567.8 ms | 580.0 | 598.5 | 598.5 | 451 |
+| guest->host relayed | 11 | 486.8 ms | 523.9 | 534.1 | 534.1 | 526 |
+| echo direct | 11 | 505.4 ms | 546.7 | 549.2 | 549.2 | 507 |
+| echo relayed | 11 | 612.3 ms | 635.3 | 637.9 | 637.9 | 418 |
+| 64 B round trip direct | 22,000 | 153.7 us | 175.2 | 218.5 | 567.2 | |
+| 64 B round trip relayed | 22,000 | 175.4 us | 229.0 | 283.3 | 844.0 | |
+
+At the same window and credit rule, WHP's path takes 3.0 to 3.3 times KVM's (r429) and HVF's (r433)
+host to guest relayed, 2.9 times KVM's and 6.3 times HVF's guest to host direct, and 4.3 to 5.1
+times HVF's 64-byte round trip. Not explained yet: the first suspect is WHP's cost per exit (each
+virtqueue notify an MMIO exit handled through `WHvRunVirtualProcessor`), which
+docs/research/virtio-io-exits.md's M8 asks to count per transfer. The window sweep
+(`VSOCK_BENCH_CONFIGS`) wasn't run on Windows, nor the shared ring's ceiling: `dax_ring_measurement`
+maps its file with mmap(2), so it skips there. The VM's CPU split is Linux's alone.
+
+Not measured yet: aarch64 Linux KVM; on Windows, the window sweep, the shared ring's ceiling, and why
+WHP's path costs 3 to 6 times the others'.
