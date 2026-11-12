@@ -4,14 +4,15 @@ The record behind D234 (docs/design/architecture.md). Step 38 of kiln plan
 01a1cd8e862e7169a074db3d5fa33f3d; its planning research is kiln research
 01a1cda5426f73cc86b87e7749163666, reproduced below as kiln graded it (each finding's
 grade and score are kiln's, from its sources' kinds, how many agree and whether each quote
-was found where cited; `f1` to `f38` are its findings in order).
+was found where cited; `f1` to `f39` are its findings in order).
 
 - **Question.** What does Hex's node, now its own Shards guest's PID 1 (D215), need of
   shards-init to run as one designated workload's command instead, and how is each grant
   checked at build and at run?
 - **Revisions read.** shards: origin/p/integrate-engine-20261111 032b63b1c (paths below are
   repo-relative there); D231: p/runtime-image-boot-v1 75c36864f; Hex: main 24c100f8 (its
-  guest.rs, node.rs, bundle.rs and gpu.rs unchanged since cd78e56a); Linux: torvalds/linux
+  guest.rs, node.rs, bundle.rs and gpu.rs unchanged since cd78e56a) and 0f28f75e (its
+  hex-api devices.rs, f39); shards' D232, merged from origin/main c4ae59ee (f39); Linux: torvalds/linux
   79eb6679; man-pages: man7.org as fetched 2026-11-11; moby/profiles seccomp v0.2.3; moby
   1e9198df (its daemon/oci_linux.go and hack/dind); systemd b4259f37 (its
   constants.h, notify-recv.c and CGROUP_DELEGATION.md; systemd.service(5) and sd_notify(3)
@@ -27,7 +28,7 @@ was found where cited; `f1` to `f38` are its findings in order).
 
 **Research:** Plan step 38 [Shards]: shards-init grants one designated workload what Hex's node needs, each grant checked at build and at run: Hex ROOT's 8-item list in the step (mounts and /run, a writable delegated cgroup v2 subtree, descriptor limits, ready-by time, GPU words and DRM render nodes, subreaper, exit policy). Rules as plan step 5's goal. Full step: kiln plan 01a1cd8e862e7169a074db3d5fa33f3d.
 
-38 findings (A 30, B 6, C 2) from 48 sources (32 internal, 16 external)
+39 findings (A 31, B 6, C 2) from 49 sources (33 internal, 16 external)
 
 - **C · 65 (moderate)** Step 38 grants one designated workload, by name and checked at build and at run, exactly: a writable delegated cgroup v2 subtree for its boxes, CAP_SYS_ADMIN for its boxes' namespaces (never a blanket --privileged), DRM render nodes through D44's device rules, and Hex ROOT's eight items (mounts and /run, descriptors, ready-by time, GPU words, channel, readiness, reaping, end); default deny holds and nothing else in the microVM gains from it. [1]
   _1 independent source (kiln's records); 4 of 4 quotes found where cited_
@@ -242,6 +243,13 @@ was found where cited; `f1` to `f38` are its findings in order).
   _1 independent source (code); 2 of 2 quotes found where cited_
   - [10] "/// Read, 64 bits in one access: the host's wall-clock time when read, in nanoseconds" (line 101) · quote found
   - [10] "a restored guest's is its snapshot's; shards-init sets CLOCK_REALTIME from this." (line 103) · quote found
+- **A · 97 (high)** shards now names a microVM's GPUs by their exact host identities (D232 on main, merged into this branch): a run's `--gpu-device ID` or shards-api's `gpu_devices`, which the VM process binds every Venus context to before the guest runs. Hex keys its GPUs by the same physical identities (packed PCI address, Metal registry ID), so shards can tell a workload its GPUs from its own selection, with no text of the caller's. [12][49]
+  _2 independent sources (a document, code); 5 of 5 quotes found where cited_
+  - [12] "### D232. A microVM's GPU by its host GPUs' exact identities (built; real-GPU validation owed)" (line 21799 (after the merge of origin/main c4ae59ee)) · quote found
+  - [12] "- *The flag.* `run --kernel … --gpu-device ID`, repeatable, implying `--gpu`; shards-api's" (line 21813) · quote found
+  - [12] "before any guest context or window exists (`vm::gpu_selection`), refusing one missing," (line 21816) · quote found
+  - [49] "/// A physical identity within its runtime pool. A GPU key is the native unsigned 64-bit" (line 56) · quote found
+  - [49] "/// identity: packed PCI domain:32/bus:8/device:5/function:3 on PCI hosts, Metal registry ID on" (line 57) · quote found
 
 **Sources**
 
@@ -259,10 +267,10 @@ was found where cited; `f1` to `f38` are its findings in order).
 12. shards architecture.md at 032b63b1c (D42, D109, D115, D144-D146, D192, D215, restore) (a document, internal) — docs/design/architecture.md
 13. AGENTFILE_ARCH.md at 032b63b1c: build privileges only under --allow (a document, internal) — docs/architecture/AGENTFILE_ARCH.md
 14. D231 (decided; building) on p/runtime-image-boot-v1 75c36864f: an image booted for an orchestrator (a document, internal) — p/runtime-image-boot-v1 (75c36864f): docs/design/architecture.md
-15. Hex main 24c100f8: crates/hex-cli/src/guest.rs, what hex does as a Shards guest's PID 1 (code, internal) — Hex main (24c100f8): crates/hex-cli/src/guest.rs
-16. Hex main 24c100f8: crates/hex-node/src/node.rs, the node's owner, capabilities, device programs, subreaper (code, internal) — Hex main (24c100f8): crates/hex-node/src/node.rs
-17. Hex main 24c100f8: crates/hex-core/src/bundle.rs, root and rootless owners (code, internal) — Hex main (24c100f8): crates/hex-core/src/bundle.rs
-18. Hex main 24c100f8: crates/hex-runtime/src/guest/gpu.rs, the guest GPU boot authority (code, internal) — Hex main (24c100f8): crates/hex-runtime/src/guest/gpu.rs
+15. Hex main 24c100f8: crates/hex-cli/src/guest.rs, what hex does as a Shards guest's PID 1 (code, internal) — Hex main: crates/hex-cli/src/guest.rs
+16. Hex main 24c100f8: crates/hex-node/src/node.rs, the node's owner, capabilities, device programs, subreaper (code, internal) — Hex main: crates/hex-node/src/node.rs
+17. Hex main 24c100f8: crates/hex-core/src/bundle.rs, root and rootless owners (code, internal) — Hex main: crates/hex-core/src/bundle.rs
+18. Hex main 24c100f8: crates/hex-runtime/src/guest/gpu.rs, the guest GPU boot authority (code, internal) — Hex main: crates/hex-runtime/src/guest/gpu.rs
 19. Hex commit 9c75ca76's subject: a node's start fits every descriptor bound to its hard limit (a measurement, internal) — git -C <Hex checkout> log -1 --format=%s 9c75ca7645a61703eb22b635276b31feb47736b3 · 2026-11-11
 20. shards' vendored seccomp default against moby/profiles seccomp v0.2.3, and its CAP_SYS_ADMIN rules (a measurement, internal) — curl -o default.json https://raw.githubusercontent.com/moby/profiles/seccomp/v0.2.3/seccomp/default.json; cmp default.json <(git show 032b63b1c:crates/seccomp/data/default.json); python3 listing each rule whose includes.caps names CAP_SYS_ADMIN; grep -c '"pivot_root"' default.json · 2026-11-11
 21. Linux kernel: Documentation/admin-guide/cgroup-v2.rst (official docs, external) — https://raw.githubusercontent.com/torvalds/linux/79eb6679ef6a0d5ea68da53a8321fb1dc72299b9/Documentation/admin-guide/cgroup-v2.rst
@@ -286,10 +294,11 @@ was found where cited; `f1` to `f38` are its findings in order).
 39. opencontainers/cgroups devices/ebpf_linux.go (runc's device filter attach flags) (code, internal) — https://raw.githubusercontent.com/opencontainers/cgroups/b62147e9bdc67f63540ce198bc3e071ab89de6f7/devices/ebpf_linux.go
 40. runc docs/cgroup-v2.md (rootless delegation) (official docs, external) — https://raw.githubusercontent.com/opencontainers/runc/c0512b4ff3fddab104cad9fadf3fdcc8d8b9a193/docs/cgroup-v2.md
 41. Podman --sdnotify option (NOTIFY_SOCKET proxied into a container) (official docs, external) — https://raw.githubusercontent.com/containers/podman/326546529da0f02947212532e21b2e0e64222d85/docs/source/markdown/options/sdnotify.md
-42. Hex main 24c100f8: crates/hex-runtime/src/linux/oci/init.rs, a box's root switch (code, internal) — Hex main (24c100f8): crates/hex-runtime/src/linux/oci/init.rs
+42. Hex main 24c100f8: crates/hex-runtime/src/linux/oci/init.rs, a box's root switch (code, internal) — Hex main: crates/hex-runtime/src/linux/oci/init.rs
 43. shards CLAUDE.md at 032b63b1c: one binary, separate VM and network processes (a document, internal) — CLAUDE.md
 44. moby hack/dind: Docker in Docker's own entrypoint (cgroup v2 nesting) (code, internal) — https://raw.githubusercontent.com/moby/moby/1e9198df7debc4af8c1e7c1c2e668d33c6fc5170/hack/dind
 45. systemd src/basic/constants.h (NOTIFY_BUFFER_MAX) (code, internal) — https://raw.githubusercontent.com/systemd/systemd/b4259f378b0cf2f7836529e549efe7c165b28e96/src/basic/constants.h
 46. systemd src/shared/notify-recv.c (receiving sd_notify messages) (code, internal) — https://raw.githubusercontent.com/systemd/systemd/b4259f378b0cf2f7836529e549efe7c165b28e96/src/shared/notify-recv.c
 47. systemd.service(5): NotifyAccess= (official docs, external) — https://man7.org/linux/man-pages/man5/systemd.service.5.html
 48. Linux kernel: fs/file.c (nr_open's default and ceiling) (code, internal) — https://raw.githubusercontent.com/torvalds/linux/79eb6679ef6a0d5ea68da53a8321fb1dc72299b9/fs/file.c
+49. Hex main 0f28f75e: crates/hex-api/src/devices.rs, a device's physical identity (GPU key) (code, internal) — Hex main: crates/hex-api/src/devices.rs
