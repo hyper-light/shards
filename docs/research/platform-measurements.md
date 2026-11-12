@@ -21234,3 +21234,45 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | Reproduced live on macOS arm64 and Linux x86_64 (out of memory at 2,097 to 2,169 MiB), green after, five mutations caught, raw logs under `results/`. |
   | R11, R12 | One implementation, no platform branch. Unit tests: macOS arm64 and Windows x86_64 (jupiter), the whole crate each. Linux x86_64: the fuzz runs and the crossover. Lint: all 7 targets. Owed: the crate's tests natively on Linux arm64, Windows arm64 and musl, which CI's matrix runs. |
   | R15, R16 | No children started. Scratch on adacachy, adacachy2 and jupiter removed; this Mac's under /tmp removed after. |
+
+### M525. main's CI failures of 2026-11-12: six causes, each reproduced, and the checks of their fixes
+
+- **Question.** Why did main's arm64 jobs (runs 43230466376, 43250570050), a shipper test on
+  three more jobs, and the firecracker comparison's restore bench (every run since d217bbbed)
+  fail, and is each fault the product's or its test's?
+- **Method.** Each failure run where it failed: CI's musl jobs in their own pinned image
+  (`rust:1.98.1-alpine@sha256:7cc1c22d…`) under Docker's default seccomp profile, as the
+  checkout's owner (scripts/musl-ci); glibc natively (x86_64, adacachy, kernel 7.2.9) or in
+  Debian's rust image with seccomp off (arm64, the Lima VM g121-winarm, kernel 7.0.0-38);
+  the same unconfined, to separate seccomp's part; the shipper tests beside six busy loops;
+  the code-mode helper stopped and continued as it waits; `shards restore DIR --no-console`
+  with a stand-in VM process (no hypervisor). Harnesses, logs, sources and mutants:
+  [the record](measurements/ci-green-arm64-v1/README.md). Revisions 7ad28fab1 (before) and
+  89c6a1da9 (after), 2026-11-12.
+- **Found.**
+
+  | Failure | Cause | Before | After |
+  |---|---|---|---|
+  | init `managed::tests` ×2: clone3 ENOSYS | the fixture's clone3, which Docker's profile answers ENOSYS | fail, arm64 and x86_64 musl; pass unconfined | pass: 197 of 197 on arm64 and x86_64 musl, x86_64 and arm64 glibc |
+  | server `an_unusable_helper_control_is_not_admitted` | musl's O_ACCMODE holds O_PATH, which std's custom_flags then masks: the fixture opened no O_PATH descriptor | fail on musl, seccomp or none | pass, 47 of 47 server tests on each of the four |
+  | server `a_worker_not_reaped_ends_no_other` (1) | the helper's clone3, ENOSYS under Docker's profile | fail, `first=[(2,-1,-1),(1,-1,-1)]` | pass |
+  | the same (2), x86_64 | a stopped helper resumes poll(2) by restart_syscall, which its filter killed (audit: syscall 219) | stopped and continued: 0 of 10 on x86_64 glibc and musl; 10 of 10 on arm64 | 10 of 10 on each, its workers stopped too |
+  | testguest `udp_interception_parser_has_explicit_origins` | stale: 961bba34c refuses the two origins it expected parsed | fail on every Linux target | pass |
+  | shards `a_part_refused_goes_again_in_its_lines_place` | the test retried a close only on ConnectionAborted, and unwrapped its sends; the shipper retries both after any error | 2 of 40 runs failed so, beside 6 busy loops (arm64 musl) | 140 of 140; Windows x86_64 6 of 6; macOS arm64 1 of 1 |
+  | the restore bench, "no working set kept" | da8bcd272 put `--console-said`/`--said-to` after `restore`, where the CLI reads its directory | Linux: the VM given no `--working-set`; macOS: its broker's template `<cwd>/--console-said` (the mutant's order) | given it, the writer opening DIR's generation; macOS: the template DIR |
+
+- **Mutants** (arm64 musl), each killed for its reason: the helper's allowlist without clone
+  (SIGSYS); the product's F_SETFL error ignored; the fixture opened O_RDONLY ("not O_PATH:
+  0o400000"); UDP's two origins accepted again; the console options put after `restore`
+  again (cli::said_options: `"restore", "--console-said", "2048"` where `"restore",
+  "snapshot", "--no-console"` was).
+- **Reading.** Four faults were the tests' and three the product's: the code-mode helper made
+  no worker under a seccomp profile that answers clone3 ENOSYS, as containers' do; on x86_64
+  it died of its own filter after a stop, a freeze (init's pause and commit) or a debugger's
+  attach; and a restore that quotes its console kept no working set on Linux and Windows, and
+  on macOS was served its files without the template's guard (PM M165). What would falsify a
+  fix: a failure of these tests on a host where the record's harness says its cause is gone.
+- **Unverified.** The restore bench itself and every real-VM run (ROOT's: the firecracker
+  comparison job on main's next run); clippy on the targets the record lists as running; one x86_64 glibc
+  failure of `a_worker_not_reaped_ends_no_other` after both fixes, at load 30, whose output
+  was lost to a filter (no seccomp kill logged; 66 runs since passed).

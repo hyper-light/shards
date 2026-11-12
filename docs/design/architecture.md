@@ -18240,7 +18240,8 @@ see; a build's `LABEL` or `--label`, or a run's `--label`, may not set one (audi
 reserves no label: recorded as ours).
 
 **The build** (`shards_agentfile::agentfile`), and the daemon again:
-- No volume over a domain's root, `/proc`, `/sys` or `/dev` (`covers_domain_mounts`), its
+- No volume over a domain's root, `/proc`, `/sys` or `/dev`, nor at or under its scratch,
+  `/tmp` (`domain_mount`, typed `DomainMount`; the scratch since 2026-11-12, below), its
   path rooted at `/` as Docker roots a relative `VOLUME` (measured: `VOLUME rel` mounts at
   `/rel`): a domain's are its init's.
 - One volume at each mount point in a stage's lineage: a domain is given what is mounted
@@ -18256,8 +18257,9 @@ reserves no label: recorded as ours).
 - Each of the image's mount points is marked for its agents and harnesses (the guest's
   entry carries `domains`); one `FOR` scopes is not mounted in the run's own root
   (`domain-volume=`, which the workload's setup passes over). A Docker `VOLUME` over a
-  domain's root, `/proc`, `/sys` or `/dev` (a base image's `VOLUME /dev/shm`) stays the run's
-  own root's: Docker mounts it there (measured), and no domain is given it.
+  domain's root, `/proc`, `/sys` or `/dev` (a base image's `VOLUME /dev/shm`), or at or under
+  `/tmp` (a base image's `VOLUME /tmp`), stays the run's own root's: Docker mounts it there
+  (measured), and no domain is given it.
 - A run's own `-v` or `--mount` of a volume or a directory at one of them stands in for it,
   as Docker's does for an image's `VOLUME` (D109), and is given as the Agentfile gives the volume
   (a Docker `VOLUME`'s stand-in too, which before went to no domain). A tmpfs (`--tmpfs`,
@@ -18321,6 +18323,57 @@ reserves no label: recorded as ours).
   and the gates now on the verified file, the domains' filter, the in-VM server, the
   network process's grants and `-p`'s refusal, each failing its E2E. Init's duplicate
   refusal is reached only past the daemon's: unit-tested.
+
+**A domain's `/tmp` is its own, as its root and system are** (2026-11-12, kiln plan
+01a1cd8e862e7169a074db3d5fa33f3d, step 7). Init makes a domain's scratch and moves it onto
+`/tmp` (D139) before the domain's volumes. So a volume given a domain at or under `/tmp`
+never worked:
+- **Under `/tmp`** (`/tmp/x`): its mount point, made in the root's skeleton, lies beneath
+  the scratch. `move_mount` finds no `/tmp/x` there (ENOENT), so the domain fails as it
+  starts (`mounting its volumes: errno 2`).
+- **At `/tmp`**: the volume goes over the scratch. The domain no longer sees what was staged
+  into it (D231). What the domain writes there reaches the volume, never the scratch its
+  server reads handed files from (D139).
+
+Both were reproduced live, with init's system calls in its order, in a user and mount
+namespace on Linux 7.2.9 x86_64; a volume at `/data` mounted as the control
+(`docs/research/measurements/s7-scratch-volume/repro.py`, `repro-adacachy.log`).
+
+Two ways out were weighed:
+- **Mount it over the scratch**, mounts by depth as shards' own run root has them
+  (`crates/shards/src/setup.rs`, after moby's `sortMounts`). Each mount point would have to be made in each
+  domain's fresh scratch. Staged files beneath a volume would have to be refused at both
+  ends, or the volume would cover them. A volume at `/tmp` would still hide the scratch.
+- **Refuse it**, as `/proc`, `/sys` and `/dev` are already refused. This needs no new mount
+  step and no new staging rule, and `/tmp` stays the domain's own. A harness that keeps
+  state puts its volume outside `/tmp` and points `HOME` (`run.env`, 997f4e47e) or its own
+  variable there, as kiln's Agentfiles already do (plan steps 19, 21, 27 and 28).
+
+The second is taken, with one typed refusal, `DomainMount::Scratch`, at each end:
+- **An Agentfile's `VOLUME` at or under `/tmp`** is refused by the build (`VOLUME may not be
+  at or under /tmp, a domain's own scratch: /tmp/x`), by the daemon for what it reads in an
+  image, and by init.
+- **A Docker `VOLUME` there** stays the run's own root's: accepted and mounted as Docker
+  mounts it, given to no domain (a base image's `VOLUME /tmp`), as `/dev/shm` is. A run's
+  `--tmpfs /tmp` may then stand there.
+
+Tested on Linux x86_64 (`mutate.py`, `mutate-adacachy.log`), and again at the merge with
+main on Linux x86_64, macOS arm64 and Windows x86_64, where `volumes.rs`'s test is Unix's
+alone; `scripts/lint` clean on all seven targets:
+- the build's refusals and a Dockerfile's `VOLUME /tmp /tmp/x` kept (`tests/agentfile.rs`);
+- a crafted image's volume at `/tmp` and at `/tmp/cache`, refused by the daemon (`agentfile.rs`);
+- a Docker `VOLUME /tmp` and `/tmp/x`, given to no domain and passed `--tmpfs /tmp`
+  (`volumes.rs`);
+- init's `domain_mount` and `given_at`, a volume an image's symlink leads into `/tmp`
+  included (`no_volume_lies_in_what_init_mounts_for_a_domain`).
+
+The code before the change fails the new tests, and so does each guard removed alone:
+the build's, the daemon's re-check, its Docker `VOLUME` guard, init's `/tmp` guard and
+init's refusal of a declared volume led there.
+
+Owed to a real-VM run, both cases on KVM, Hypervisor.framework and WHP:
+- an Agentfile's volume under and at `/tmp` refused;
+- a base image's `VOLUME /tmp` kept to the run's root while its domains keep their scratch.
 
 ### D108. `buildx policy eval` and `test`, SSH certificates, and a failing step's lines
 

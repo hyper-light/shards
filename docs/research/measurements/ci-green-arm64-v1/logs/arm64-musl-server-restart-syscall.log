@@ -1,0 +1,7 @@
+CapEff:	00000000a80425fb
+Seccomp:	2
+CapEff:	0000000000000000
+Seccomp:	2
+     Running unittests src/main.rs (target/aarch64-unknown-linux-musl/test-release/deps/shards_server-ada2ce19a7cf5d67)
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+EXIT=0
