@@ -636,8 +636,9 @@ mod hosted {
         crate::setup::security_setup(&mut setup, &run, version, None, &[], nesting.grant())
             .map_err(no(Cause::Request))?;
         let server = match &agentfile {
-            Some(_) => {
+            Some(a) => {
                 setup.extend(crate::setup::domain_seccomp(version).map_err(no(Cause::Boot))?);
+                setup.extend(a.image_env.iter().cloned());
                 Some(crate::guest::server_device(home).map_err(no(Cause::Boot))?)
             }
             None => None,

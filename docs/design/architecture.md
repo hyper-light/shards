@@ -21439,6 +21439,47 @@ own writable layer is the uppermost for `/`, and D235's `image_root` gives that 
 image root's owner and mode. **Owed (ROOT):** the same in a real microVM on KVM,
 Hypervisor.framework and WHP.
 
+**A member's environment: init's, the image's, its own, its run's** (2026-11-12, kiln plan
+01a1cd8e862e7169a074db3d5fa33f3d, step 7). A member got init's `PATH` (its directory, its
+`bin`, Docker's), `HOME=/tmp` and `SHARDS_DOMAIN`, then its config's `run.env` (997f4e47e),
+then what D231 stages: none of the image's own `Env`. The sources on that order:
+- OCI image-spec v1.1.0 config.md, `Env`: "These values act as defaults and are merged with
+  any specified when creating a container."
+- moby docker-v29.0.0 daemon/commit.go, `merge`: the run's `-e` kept, and each of the image's
+  appended whose name it does not give; then `CreateDaemonEnvironment` lays that over Docker's
+  own `PATH` and `HOSTNAME` (daemon/container/env.go, `ReplaceOrAppendEnvValues`).
+- Kubernetes, "Define Environment Variables for a Container": "The environment variables set
+  using the env or envFrom field override any environment variables specified in the container
+  image."
+- D231: what is staged goes "over its image's".
+
+So a member's environment is, the last given of each name winning: init's own; over it, the
+image's `Env`; over that, its config's `run.env`, its own, as a pod's container's `env` goes
+over its image's, where the image's is every member's and the run's command's alike; over all,
+what its run stages. Two names keep init's rules:
+- **`PATH`**: init's is the member's directory and its `bin`, then the image's `PATH` where it
+  gives one, else Docker's: the image's replaces Docker's default, as in a container, and a
+  member's own program is still found before the system's (part one). Its program is found on
+  the `PATH` it runs with, a staged one included, where it was found on `run.env`'s alone.
+- **`HOME`**: never the image's. One value for every member is private to none, which a
+  member's `HOME` must be (step 7's acceptance), and the system it would name is read-only to
+  a domain. A member's `HOME` is its scratch unless its own `run.env`, or its run, names one.
+
+`SHARDS_DOMAIN` in the image's `Env` is refused, as in `run.env` and in staging, at each end:
+the build of an image with agents or harnesses (`agentfile::image_env`, `ImageEnvRefused`), the
+daemon's and the run host's reading of the image (`run::prepare`, `agentfile::members_env`),
+and init (`shards_abi::run::members::image_envs`), all in the build's words. The image's
+`Env` reaches init as `image-env=` setup entries, beside the domains' filter. An image of
+neither agents nor harnesses keeps its `ENV` as BuildKit writes it. Tests: the order, the two
+rules and the refusals (`a_members_environment_is_inits_then_its_images_then_its_own`); the
+program found on the `PATH` it runs with
+(`a_members_program_is_found_on_the_path_it_runs_with`); the entries made and read
+(`the_images_variables_are_checked_as_staged_ones`); the daemon's
+(`the_images_environment_is_its_members_as_its_build_checks_it`); the build's
+(`an_image_with_members_never_names_their_domain_in_its_env`). **Owed (ROOT):** a member's
+`env` in a real microVM on KVM, Hypervisor.framework and WHP, of an image whose `ENV` sets
+`PATH`, `HOME` and another name.
+
 Part two, after `no_new_privs`, before its command:
 
 - **Landlock** (Documentation/userspace-api/landlock.rst; ABI 6 at least, which Linux 6.12

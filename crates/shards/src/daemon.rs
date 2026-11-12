@@ -3829,10 +3829,11 @@ impl<D: Disk> Daemon<D> {
                 if joins_host {
                     prepared.spec.setup.extend(crate::setup::binds(&run, kernel)?);
                 }
-                // An Agentfile's image: the filter its domains run under (D59). Its init
-                // starts no domain without one.
-                if prepared.agentfile.is_some() {
+                // An Agentfile's image: the filter its domains run under (D59), which its
+                // init starts none without, and the image's environment they start with.
+                if let Some(a) = &prepared.agentfile {
                     prepared.spec.setup.extend(crate::setup::domain_seccomp(kernel)?);
+                    prepared.spec.setup.extend(a.image_env.iter().cloned());
                     // Its domains' plug roots (D235), beneath which what is plugged into one
                     // as it runs lies, at its host path.
                     prepared.spec.setup.extend(crate::setup::plug_roots(&points));
