@@ -561,6 +561,11 @@ pub mod kind {
     /// moved its readiness (D234), `shards_abi::run::kind::READY`'s payload as its guest
     /// sent it (`shards_abi::run::nesting::Ready`). [`READY`] is the VM's own.
     pub const WORKLOAD_READY: u8 = 90;
+    /// Daemon → a slot's client of a run, an exec or an attach, last: the daemon's side of
+    /// the request ended without its last word (`EXIT`, `END` or `RESTART`), its microVM's
+    /// connection closed or the daemon's handling of it ended first. A slot that ends
+    /// without any last word ended with its daemon (D185).
+    pub const UNANSWERED: u8 = 91;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the

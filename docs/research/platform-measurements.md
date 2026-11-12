@@ -21476,3 +21476,153 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   has a different cause and is owed a live repro: at c01aeb941 (job 131325553441) the
   share process and the VM process themselves were still running E2E's bound after the
   client's TerminateProcess.
+
+### M529. What limits how many threads a Windows process may have, and what each costs it (D181)
+
+- **Question.** Windows keeps no count of a process's threads, and `platform::thread_limit`
+  said none there, so the daemon took POSIX's least, 64 threads: 27 clients, 13 connections
+  a microVM's engine, which answered 503 to engine_ring's 32 streams at once on WHP
+  (ring-pins-v1 r16). What does limit a Windows process's threads, what does one cost it,
+  which of that can a process read, and does Windows refuse a thread where a count from
+  those says?
+- **Method.** `measurements/win-thread-limits` (`run.sh`) on jupiter (Windows 10.0.26200.9974,
+  AMD Ryzen AI Max+ 395, 32 CPUs, 123.6 GiB; in kiln's job, which sets no memory limit;
+  shared with other work, the system's commit 39 to 60 GB of its 141 GB), release builds,
+  2026-11-12:
+  - the host's limits (GetSystemInfo, GlobalMemoryStatusEx, GetPerformanceInfo) and the
+    job's (QueryInformationJobObject); the PE headers' SizeOfStackReserve and
+    SizeOfStackCommit, the harness's and a test-release `shards.exe`'s;
+  - the main thread and a thread std starts by default: GetCurrentThreadStackLimits, each
+    region of its stack (VirtualQuery), its stack guarantee (SetThreadStackGuarantee(0)), its
+    TEB's region (NtCurrentTeb, winnt.h) and winternl.h's TEB;
+  - bursts of 2,000 and 20,000 threads held parked with their JoinHandles: the process's
+    commit (PrivateUsage), pool quota and handles, and the system's (CommitTotal), a thread;
+  - a copy of the harness in a job holding its process's commit to 16, 64 and 256 MiB
+    (JOB_OBJECT_LIMIT_PROCESS_MEMORY), which starts threads, each parked before the next,
+    until Windows refuses one, and lets them all go before it says anything;
+  - `crates/vmm` platform/windows_process.rs's tests, natively, test-release, then under five
+    mutants of it (`measurements/win-thread-limits/mutations`).
+
+  Raw: `measurements/win-thread-limits/results/jupiter-2026-11-12.txt`.
+- **Found.**
+  - Address space: 140,737,488,224,256 B a process (128 TiB less 128 KiB, `ullTotalVirtual`);
+    a std thread reserves 2 MiB (std's default, `RUST_MIN_STACK` unset), the main thread its
+    image's 1 MiB: 67,108,863 threads.
+  - Commit: the host's limit, 141,087,805,440 B (`ullTotalPageFile`, as CommitLimit). In a job
+    holding its process to 64 MiB, `ullTotalPageFile` and `ullAvailPageFile` still said the
+    host's: a job's limits are read from the job.
+  - A std thread's stack as it begins: 24,576 B of guard pages (PAGE_GUARD: std's
+    SetThreadStackGuarantee(0x5000), 20,480, and a page) below its pages in use, 4,096 B, the
+    image's SizeOfStackCommit (`shards.exe`'s too, the linker's default); but 8,192 B in use
+    for the first thread std starts in a process (a test's job child: 40,960 B counted so,
+    then 36,864 B for the next), and for every thread under the test harness's output
+    capture. Its TEB: 8,192 B (its region; the TEBs' shared allocation grew so by it),
+    winternl.h's 6,024 B in two pages.
+  - Charged the process a std thread, parked: 47,655 to 48,009 B in the bursts, 47,847 to
+    48,094 B in the jobs; nonpaged pool quota 137 B; one handle while its JoinHandle lives.
+    About 7 KB of it past its stack's pages and its TEB: its share of the heap.
+  - Charged the system: 83.5 KB a thread, the median of eight bursts of 20,000, four of them
+    within 77 to 84 KB (the system's commit moved by −0.5 to +3.0 GB across a burst with
+    other work): about 35 KB more than the process's, the kernel's for its kernel stack,
+    which no call reports a thread.
+  - In the jobs: Windows started 333, 1,380 and 5,563 threads of 16, 64 and 256 MiB and
+    refused the next with ERROR_COMMITMENT_LIMIT (1455), 16,384, 20,480 and 24,576 B short of
+    the limit. Counted as `thread_limit` counts one (guard, initial commit and TEB: 36,864 B),
+    the limits hold 455, 1,820 and 7,281.
+  - The job child's first version started threads without waiting for each to begin. Once
+    it was refused at 1,659 threads (40,049 B a thread, threads not yet begun having
+    committed no guarantee) and then died of stack overflow (0xC00000FD), two of its threads
+    unable to grow their stacks; twice it was refused at 1,377 (48,254 B a thread) and ended
+    clean. Parked one by one, six children ran clean.
+  - The tests: green, `thread_limit` 3,827,251 on jupiter and the job child's 64 threads
+    charged 47,360 B each, counted 36,864 B. Mutants: `thread_limit` saying none again (the
+    old code) fails both live tests; the reservation counted as committed fails both; the
+    job's limit unread fails the job's ("not the job's limit: 141087805440"); every committed
+    page of the stack counted fails the live test's thread that touched 256 KiB (303,104 B
+    counted against 45,056 B); the TEB uncounted survives, an undercount, which only loosens
+    the limit and no test holds the count from above. platform::windows_thread's two
+    raised-priority tests failed alike on main's own vmm, which this change leaves as it is;
+    kiln's job holds its processes to a priority class (LimitFlags 0x20), a likely cause,
+    not checked.
+- **Consequence.** D181: on Windows `thread_limit` is the fewest of the address space over a
+  thread's reservation, the commit limit (`ullTotalPageFile`, or the job's where less) over
+  the commit Windows charges every thread (its stack's guard pages and initial commit, its
+  TEB), and a process's 2^24 handles: on jupiter 3,827,251 threads, 1,913,620 clients.
+  Since it counts less than Windows charges (the pages a thread's code touches, about 7 KB
+  of heap, and the kernel's 35 KB or so, which no call reports a thread), it is never under
+  what Windows starts, and over it by that (455/333, 1,820/1,380 and 7,281/5,563 in the
+  jobs).
+- **Unverified.** The pins test's 32 streams at once past the old bound on WHP (ROOT's); a
+  Windows on arm64 (no host); a job nested under one holding it to less, whose limit its
+  processes cannot read; the kernel's share on a quiet host.
+
+### M530. WHP microVMs that "stopped before the command ended": kiln's sweep had ended their daemon, and the client blamed the microVM (D185)
+
+- **Question.** On jupiter (WHP), ROOT's run-only tester of engine_ring saw two runs end with
+  status 125, "the command's microVM stopped before the command ended": the bulk test's
+  `run -d --name prov --use-api-socket` after 1.30 s, and the pins test's plain `run -d
+  --name bare --cpus 1 ... sleep` after 4.86 s, neither daemon's log saying a word of it
+  (ring-pins-v1's r16). What stopped them: WHP's exits, the VM process's job (D141), the
+  guest, vsock, the run's connection, or the daemon?
+- **Method.** jupiter (Windows 11 Pro 10.0.26200, AMD64, 32 CPUs), 2026-11-12, main
+  3103d2eab and the fix 037fe95d4, test-release; harnesses and every log in
+  [the record](measurements/whp-early-stop/README.md).
+  - The failure's own records: the tester's transcript, which kept its test output (r2), and
+    jupiter's kiln agent log over the run (r1); kiln's source at origin/main ed0c9d3bd for
+    what that log said, and sysinfo 0.39.6's process ending on Windows.
+  - The symptom looked for without kiln's sweep: 628 runs of plain, detached and fresh-home
+    first runs, 4 or 8 at a time and alone, and engine_ring three times, each a `kiln run`
+    (r3).
+  - Reproduced (R09, `harness/kill.sh`): a run's daemon ended mid-run with `taskkill /F`, as
+    the sweep ends one, in a fresh home's first `run -d` (1.5 s in, its template booting) and
+    in an attached `run --rm ... sleep 30` (2.2 s in); and, the case the words were written
+    for, the run's VM process ended instead, its daemon alive. A diagnostic build
+    (`harness/diag.patch`, not merged) said how each side of the slot ended.
+  - The fix: its unit tests, then each guard removed (`harness/unit.sh`), on Linux, macOS
+    and Windows, and the shards binary's whole unit suite; `kill.sh` again with the fix.
+- **Found.**
+  - kiln ended them. At 16:00:49.831Z its agent "stopping what agents' commands left running,
+    now that they're between turns" ended 48108 (the eng-ring-2 daemon, whose log's lines are
+    "shards daemon 48108"), its template VM and its network process; at 16:01:00.376Z 50456
+    (eng-pins-1-4's daemon) and 36004, its VM, whose debug lines end that test's log (r1).
+    kiln holds each agent session's processes in a job of its own and, every 10 s while the
+    agent is between turns, ends those not under its harness by their parents (harness/
+    host.rs `watch`, survivors.rs `scan`): a shards daemon outlives the client that started
+    it (D26), so it is one, and its VMs go with it. On Windows the end is `taskkill /F` at once
+    (sysinfo takes only Kill there); on Linux and macOS SIGTERM, then a kill 3 s on.
+  - Both clients had printed their microVM's ID, which the daemon says once it has made the
+    run, before its VM boots: each daemon was booting its run's template when it was ended
+    (r2).
+  - Outside an agent session, nothing stopped early: 0 of 628 runs, and in 3 engine_ring
+    rounds only the pins test's 503, the admission gap ring-pins-v1's r16 names (r3).
+  - The daemon ended mid-run reproduced the symptom exactly, 6 of 6 (3 fresh-home `run -d`,
+    3 attached): status 125, "the command's microVM stopped before the command ended", the
+    ID printed first by `run -d`, a daemon.log of its start alone. The run's VM ended instead
+    said the same words, 4 of 4 (a first pick of the newest VM ended the pool's spare, and
+    its 2 runs passed), while its daemon's log said "VM N ended before its command did".
+    The client could not tell the two apart: its slot ended with no word either way (the
+    diagnostic build: an end, not an error, read by the client) (r4).
+  - With the fix the daemon ended mid-run said "the daemon ended before the command did",
+    6 of 6 (3 and 3), and the VM ended "the command's microVM stopped before the command
+    ended", 3 of 3 (r4).
+  - The unit tests, on Linux: green; with the relay's `UNANSWERED` a no-op, the relay's test
+    failed ("left: Some([12]) right: Some([12, 91])"); with the client's line for a wordless
+    end put back, the client's test failed (its words against "the daemon ended before the
+    command did"); the shards binary's unit suite passed in test-release, 730 of 730, 14
+    ignored (r5). On Windows, green, and the relay's test red without its guard, as on
+    Linux; the rest of Windows' and macOS' as the record's Owed says. In the dev profile
+    the suite ended at a stack overflow of a test's `policy` thread (Rego) on Linux and
+    Windows alike, code this change leaves alone.
+- **Consequence (D185).** The cause is outside shards: kiln's between-turns sweep ends a
+  shards daemon, and every microVM it holds, once the agent whose command started it is
+  between turns, whatever still uses it. For agents in kiln sessions: wait for a run that
+  needs its daemon within the turn, or run it through `kiln run` (background), whose
+  processes live until the run ends. shards' part was to name the wrong end: a slot whose
+  daemon ended read as its microVM's stop, as M188's and M331's daemons that exited under
+  their clients did. Now the slot's daemon says `UNANSWERED` where a run's, an exec's or an
+  attach's side ended without its last word (`EXIT`, `END`, `RESTART`), and a slot that ends
+  with no last word is said to be its daemon's end.
+- **Unverified.** The real-VM suites with the fix (ROOT's); the sweep's own end of a daemon
+  on Linux and macOS, by SIGTERM, for which the daemon installs no handler, so that its
+  default ends it as a kill does: held there by the unit tests alone; GitHub's windows-2025
+  failures of the same day are not this (no kiln there; M528).

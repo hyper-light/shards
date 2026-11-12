@@ -3672,13 +3672,9 @@ fn builtin(
         // Init's `/proc`, through which a joiner's mounts are read from within its mount
         // namespace, whose own `/proc` is its PID namespace's, with no `/proc/self` for
         // this process (proc_self_get_link).
-        let procfs = joiner.filter(|_| kind == run::builtin::CHANGES).map(|_| {
-            use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
-                .open("/proc")
-        });
+        let procfs = joiner
+            .filter(|_| kind == run::builtin::CHANGES)
+            .map(|_| crate::opath::open("/proc", libc::O_DIRECTORY));
         // A joiner's files and processes: its mount namespace, its root and its `/proc`
         // with it. Its cgroup's, and its layers', are read where init sees them. A copy into
         // or out of the workload is in the workload's mount namespace too: its volumes and
@@ -3856,7 +3852,12 @@ fn builtin(
             Ok(()) => 0,
             Err(e) => {
                 let _ = writeln!(File::from(stderr_w), "{e}");
-                1
+                // A device in use, said apart, for its host to say so by its kind (D235).
+                if kind == run::builtin::DEVICE && e.kind() == io::ErrorKind::ResourceBusy {
+                    i32::from(run::builtin::DEVICE_BUSY)
+                } else {
+                    1
+                }
             }
         };
         // SAFETY: _exit(2) ends the child without running init's exit paths.
@@ -3913,7 +3914,7 @@ fn files_alone() -> io::Result<()> {
 }
 
 /// File `name` of directory `dir`, read whole.
-fn read_at(dir: &File, name: &std::ffi::CStr) -> io::Result<Vec<u8>> {
+fn read_at(dir: &OwnedFd, name: &std::ffi::CStr) -> io::Result<Vec<u8>> {
     // SAFETY: openat(2) of a NUL-terminated name in a directory this process holds.
     let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
     if fd < 0 {

@@ -1,0 +1,40 @@
+# r5 (Linux). The fix's unit tests green, then each guard removed, red for its reason; then
+# the shards binary's whole unit suite. harness/unit.sh on adacachy (CachyOS, Linux
+# 7.2.9-2-cachyos, x86_64, 32 CPUs, load ~36 from others' work), at 037fe95d4 (the fix's
+# commit), rustc 1.98.1 (48a229cea 2026-09-01), SHARDS_HELPERS=skip with empty init and
+# server binaries (no guest is booted by these tests), 2026-11-12 ~21:50Z-22:10Z.
+#
+# Guard A (`red-relay`): the relay's `living.answer(&answer, kind::UNANSWERED, &[])` made a
+#   no-op: main's relay, which ended a run's slot with no word either way.
+# Guard B (`red-client`): the client's line for a slot's wordless end put back to main's
+#   words, "the command's microVM stopped before the command ended; see {}" (the product's
+#   line alone: a first try's sed changed the test's own expected text too, and its red
+#   run passed for that reason; the anchored sed changes one line, `git diff --stat` below).
+# The first `full` ran in the dev profile and ended at a stack overflow of a test's 'policy'
+# thread (Rego), code this change leaves alone; CI's unit tests run test-release, as here.
+
+HEAD 037fe95d442c7bd8d04fa019c260905a35a904b7 A run's client tells its daemon's end from its microVM's
+host: Linux x86_64 7.2.9-2-cachyos; rustc 1.98.1 (48a229cea 2026-09-01)
+ipc-kinds: exit 0 in 0 s: test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 58 filtered out; finished in 0.00s
+green: exit 0 in 14 s: test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 740 filtered out; finished in 0.01s
+mutant A lines: 1
+red-relay: exit 101 in 16 s: test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 743 filtered out; finished in 0.01s
+test daemon::tests::a_side_that_ends_without_its_last_word_says_so ... FAILED
+thread 'daemon::tests::a_side_that_ends_without_its_last_word_says_so' (3399578) panicked at crates/shards/src/daemon.rs:11329:17:
+assertion `left == right` failed: a request of kind 5 its side left unanswered
+  left: Some([12])
+ right: Some([12, 91])
+mutant B:  crates/shards/src/cli/client.rs | 2 +-
+mutant B:  1 file changed, 1 insertion(+), 1 deletion(-)
+red-client: exit 101 in 18 s: test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 743 filtered out; finished in 0.00s
+test cli::client::tests::a_runs_client_tells_its_daemons_end_from_its_microvms ... FAILED
+thread 'cli::client::tests::a_runs_client_tells_its_daemons_end_from_its_microvms' (3407788) panicked at crates/shards/src/cli/client.rs:1799:13:
+assertion `left == right` failed: kind 5
+  left: "the command's microVM stopped before the command ended; see home/daemon.log"
+ right: "the daemon ended before the command did; see home/daemon.log"
+tree restored clean
+full: exit 0 in 208 s: test result: ok. 730 passed; 0 failed; 14 ignored; 0 measured; 0 filtered out; finished in 21.89s
+done
+
+# clippy -D warnings, shards and shards-ipc, all targets, x86_64-unknown-linux-gnu, at
+# 037fe95d4: CLIPPY-EXIT 0 in 53 s (no lint; aws-lc-sys's build notices alone).
