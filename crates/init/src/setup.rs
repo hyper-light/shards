@@ -717,7 +717,7 @@ pub fn nofile_hard(setup: &[Vec<u8>]) -> Option<u64> {
         .filter_map(|e| std::str::from_utf8(e.strip_prefix(b"ulimit=")?).ok())
         .filter_map(ulimit)
         .find(|(resource, _)| *resource == libc::RLIMIT_NOFILE)
-        .map(|(_, limit)| u64::from(limit.rlim_max))
+        .map(|(_, limit)| limit.rlim_max)
 }
 
 /// A shared directory's setup, `WHICH\0DEST\0FLAGS\0NAME`: its four parts, NAME one of a

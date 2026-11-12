@@ -330,10 +330,6 @@ impl Readiness {
         self.timer.as_ref().map(|t| t.as_raw_fd())
     }
 
-    pub fn state(&self) -> State {
-        self.state
-    }
-
     /// Moves it by `event`: what the host is told of the move.
     fn on(&mut self, event: Event) -> Option<Ready> {
         let (state, told) = step(self.state, event, self.deadline);
@@ -601,18 +597,16 @@ mod tests {
         let receiver = UnixDatagram::bind(&path).unwrap();
         let on: libc::c_int = 1;
         // SAFETY: setsockopt(2) of an int option on our own socket.
-        assert_eq!(
-            unsafe {
-                libc::setsockopt(
-                    receiver.as_raw_fd(),
-                    libc::SOL_SOCKET,
-                    libc::SO_PASSCRED,
-                    (&raw const on).cast(),
-                    size_of::<libc::c_int>() as libc::socklen_t,
-                )
-            },
-            0
-        );
+        let set = unsafe {
+            libc::setsockopt(
+                receiver.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PASSCRED,
+                (&raw const on).cast(),
+                size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        assert_eq!(set, 0);
         let sender = UnixDatagram::unbound().unwrap();
         sender.connect(&path).unwrap();
         (OwnedFd::from(receiver), sender)
@@ -693,7 +687,7 @@ mod tests {
         let mut outside = Readiness::new(receiver, None, None, "/run/workload");
         sender.send(b"READY=1").unwrap();
         assert_eq!(outside.datagram(), None);
-        assert_eq!(outside.state(), State::Starting);
+        assert_eq!(outside.state, State::Starting);
 
         // Held to its own: past PIPE_BUF, or other assignments alone, nothing; READY=1 once.
         let dir2 = shards_testdir::TempDir::new("notify-ready-own").unwrap();
@@ -705,14 +699,14 @@ mod tests {
         assert_eq!(own.datagram(), None);
         sender.send(b"STATUS=starting").unwrap();
         assert_eq!(own.datagram(), None);
-        assert_eq!(own.state(), State::Starting);
+        assert_eq!(own.state, State::Starting);
         sender.send(b"READY=1").unwrap();
         assert_eq!(own.datagram(), Some(Ready::OnTime));
-        assert_eq!(own.state(), State::Ready);
+        assert_eq!(own.state, State::Ready);
         sender.send(b"READY=1").unwrap();
         assert_eq!(own.datagram(), None, "no new event");
         own.exited();
-        assert_eq!(own.state(), State::Exited);
+        assert_eq!(own.state, State::Exited);
         assert_eq!((own.socket(), own.timer()), (None, None));
 
         // A ready-by already passed: its timer fires at once, and READY=1 after it is late.
@@ -732,10 +726,10 @@ mod tests {
             matches!(passed, Ready::Passed(by) if by >= S as u64),
             "{passed:?}"
         );
-        assert_eq!(late.state(), State::ReadyByPassed);
+        assert_eq!(late.state, State::ReadyByPassed);
         assert_eq!(late.timer(), None);
         sender.send(b"READY=1").unwrap();
         assert!(matches!(late.datagram(), Some(Ready::Late(by)) if by >= S as u64));
-        assert_eq!(late.state(), State::Ready);
+        assert_eq!(late.state, State::Ready);
     }
 }
