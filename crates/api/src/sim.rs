@@ -449,6 +449,7 @@ mod tests {
             cmdline: String::new(),
             vcpus: 1,
             memory_mib: min_memory_mib(std::env::consts::ARCH),
+            gpu: false,
             disks: vec![],
             shares: vec![],
             ports: vec![PORT],

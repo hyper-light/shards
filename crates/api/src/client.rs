@@ -264,6 +264,9 @@ fn arguments(spec: &GuestSpec, vsock: &Path, said: usize) -> Result<Vec<OsString
         "--console-said".into(),
         said.to_string().into(),
     ]);
+    if spec.gpu {
+        args.push("--gpu".into());
+    }
     Ok(args)
 }
 
@@ -1241,6 +1244,7 @@ mod tests {
             cmdline: "console=ttyS0 quiet".into(),
             vcpus: 2,
             memory_mib: 256,
+            gpu: false,
             disks: vec![
                 Disk {
                     path: "/d/root".into(),
@@ -1299,6 +1303,22 @@ mod tests {
         };
         let args = arguments(&initrd, Path::new("/p/v"), 2048).unwrap();
         assert_eq!(args.get(3..5).unwrap(), ["--initrd", "/k/initrd"]);
+    }
+
+    /// A GPU adds `--gpu` to the flags and nothing else, whichever the init (D215).
+    #[test]
+    fn shared_venus_is_enabled_only_when_requested() {
+        for init in [
+            Init::Executable("/k/init".into()),
+            Init::Initrd("/k/initrd".into()),
+        ] {
+            let cpu = GuestSpec { init, ..spec() };
+            assert!(!cpu.gpu);
+            let mut expected = arguments(&cpu, Path::new("/p/v"), 2048).unwrap();
+            expected.push("--gpu".into());
+            let gpu = GuestSpec { gpu: true, ..cpu };
+            assert_eq!(arguments(&gpu, Path::new("/p/v"), 2048).unwrap(), expected);
+        }
     }
 
     /// A path ending in `:ro`, which shards would read as a mode, is refused by name (D215).
@@ -1586,6 +1606,7 @@ mod tests {
                 cmdline: "console=ttyS0 quiet shards_test=echo".into(),
                 vcpus: 1,
                 memory_mib: crate::min_memory_mib(std::env::consts::ARCH).max(256),
+                gpu: false,
                 disks: vec![],
                 shares: vec![],
                 ports: vec![1234, 1236],

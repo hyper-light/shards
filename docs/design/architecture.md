@@ -21418,7 +21418,8 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   `buffer_sizes` are the OS's SO_SNDBUF/SO_RCVBUF.
 
 **What it holds to** (the requirement its tests cite as D215):
-- *A spec* becomes `run --kernel`'s flags as vm_run.rs reads them, the kernel first. A
+- *A spec* becomes `run --kernel`'s flags as vm_run.rs reads them, the kernel first; one
+  that asks for a GPU adds `--gpu`, which `shards` runs in the GPU's VM process (D144). A
   disk's or a share's path that ends in `:ro`, which shards would read as a mode, is
   refused `Unsupported`. Past shards-vmm's bounds (no vCPU; memory odd or under the least)
   it is refused `Bounds` before anything boots, and the hypervisor's own refusal of its

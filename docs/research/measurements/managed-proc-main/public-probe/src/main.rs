@@ -178,6 +178,7 @@ fn run() -> Result<(), Failure> {
         cmdline: String::new(),
         vcpus: 1,
         memory_mib: 256,
+        gpu: false,
         disks: vec![],
         shares: vec![],
         ports: vec![1],

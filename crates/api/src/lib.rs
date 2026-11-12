@@ -56,6 +56,9 @@ pub struct GuestSpec {
     pub vcpus: u32,
     /// Its memory, in MiB: even, at least [`min_memory_mib`].
     pub memory_mib: u64,
+    /// A GPU (`--gpu`): Venus over the host's own Vulkan driver, rendered by the GPU's VM
+    /// process (D144, D201, D202, D208).
+    pub gpu: bool,
     /// Its disks, `/dev/vda` on, in order.
     pub disks: Vec<Disk>,
     /// Host directories it sees as virtio-fs `shards0`, `shards1`, ..., in order, fixed at
@@ -587,6 +590,7 @@ mod tests {
             cmdline: String::new(),
             vcpus: 1,
             memory_mib: 256,
+            gpu: false,
             disks: vec![],
             shares: vec![],
             ports: vec![1],
@@ -598,34 +602,43 @@ mod tests {
     /// vCPU, odd memory, too little (D215).
     #[test]
     fn bounds_are_refused_by_name() {
-        assert!(check(&spec()).is_ok());
         let refused = |s: GuestSpec| match check(&s) {
             Err(Refusal::Bounds { what, .. }) => what,
             other => panic!("{other:?}"),
         };
-        assert_eq!(refused(GuestSpec { vcpus: 0, ..spec() }), "vcpus");
-        assert_eq!(
-            refused(GuestSpec {
-                memory_mib: 257,
-                ..spec()
-            }),
-            "memory_mib"
-        );
-        let least = min_memory_mib(std::env::consts::ARCH);
-        assert_eq!(
-            refused(GuestSpec {
-                memory_mib: least - 2,
-                ..spec()
-            }),
-            "memory_mib"
-        );
-        assert!(
-            check(&GuestSpec {
-                memory_mib: least,
-                ..spec()
-            })
-            .is_ok()
-        );
+        for gpu in [false, true] {
+            let base = GuestSpec { gpu, ..spec() };
+            assert!(check(&base).is_ok());
+            assert_eq!(
+                refused(GuestSpec {
+                    vcpus: 0,
+                    ..base.clone()
+                }),
+                "vcpus"
+            );
+            assert_eq!(
+                refused(GuestSpec {
+                    memory_mib: 257,
+                    ..base.clone()
+                }),
+                "memory_mib"
+            );
+            let least = min_memory_mib(std::env::consts::ARCH);
+            assert_eq!(
+                refused(GuestSpec {
+                    memory_mib: least - 2,
+                    ..base.clone()
+                }),
+                "memory_mib"
+            );
+            assert!(
+                check(&GuestSpec {
+                    memory_mib: least,
+                    ..base
+                })
+                .is_ok()
+            );
+        }
     }
 
     /// More vCPUs than this process may run on, and more ports than the muxer's

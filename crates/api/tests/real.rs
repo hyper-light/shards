@@ -41,6 +41,7 @@ fn specs() -> Option<impl Fn(&str) -> GuestSpec> {
         cmdline: format!("console=ttyS0 quiet shards_test={mode}"),
         vcpus: 1,
         memory_mib: min_memory_mib(std::env::consts::ARCH).max(256),
+        gpu: false,
         disks: vec![],
         shares: vec![],
         ports: vec![1234, 1236],
