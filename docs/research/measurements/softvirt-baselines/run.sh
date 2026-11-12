@@ -78,7 +78,7 @@ if [ -r /dev/kvm ] && [ -w /dev/kvm ] && [ -x "$out/uml/linux-$linux/usr/gen_ini
     cat > "$out/kvm/config.json" <<EOF
 {"boot-source": {"kernel_image_path": "$out/kvm/vmlinux", "initrd_path": "$out/kvm/initramfs.cpio",
   "boot_args": "console=ttyS0 reboot=k panic=1 rdinit=/init quiet softvirt.restart"},
- "machine-config": {"vcpu_count": 2, "mem_size_mib": 1024}}
+ "drives": [], "machine-config": {"vcpu_count": 2, "mem_size_mib": 1024}}
 EOF
     kvm=yes
 fi

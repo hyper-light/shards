@@ -20,6 +20,7 @@ if [ ! -x "$root/usr/bin/python3" ]; then
         chown -R '"$(id -u):$(id -g)"' /r'
 fi
 cp "$out/pagemap" "$root/pagemap"
+mkdir -p "$root/proc" "$root/sys" "$root/dev" "$root/tmp"
 cat > "$root/init" <<'INIT'
 #!/bin/sh
 mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev; mount -t tmpfs tmp /tmp

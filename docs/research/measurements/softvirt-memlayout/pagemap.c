@@ -126,7 +126,7 @@ int main(int argc, char **argv) {
     closedir(d);
     printf("- processes with resident pages: %zu (unreadable: %zu)\n", procs, unreadable);
     printf("- guest mappings (VMAs): %" PRIu64 "\n", all.vmas);
-    printf("- resident pages: %" PRIu64 " (%" PRIu64 " MiB)\n", all.resident, all.resident * PAGE >> 20);
+    printf("- resident pages: %" PRIu64 " (%" PRIu64 " MiB)\n", all.resident, (uint64_t)(all.resident * PAGE >> 20));
     printf("- runs (host mappings at 4 KiB): %" PRIu64 ", %.1f pages a run\n", all.runs,
            all.runs ? (double)all.resident / (double)all.runs : 0.0);
     printf("- runs split at 2 MiB units: %" PRIu64 "\n", all.huge_runs);
