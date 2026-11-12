@@ -1,0 +1,20 @@
+# c2c4547c dae + the fix; 2026-11-12T22:01:33Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 69.79 78.28 61.97
+test spec::tests::a_spec_its_resolvers_push_past_a_frame_is_refused ... ok
+test workload::tests::frames_wait_for_the_dial_one_for_each_thing_pending ... ok
+test workload::tests::a_signal_connection_saying_anything_else_is_lost ... ok
+test workload::tests::a_signal_connection_is_watched_from_its_dial ... ok
+test workload::tests::a_frame_the_guest_cannot_be_sent_fails_its_caller_and_every_later_one ... ok
+test workload::tests::an_exec_frame_stays_within_what_a_frame_carries ... ok
+test workload::tests::an_exec_waiting_for_a_dial_that_fails_fails_with_it ... ok
+test workload::tests::an_exec_whose_frame_cannot_be_sent_ends_at_once_with_why ... ok
+test workload::tests::an_exec_whose_frame_the_guest_never_read_fails_as_its_connection_closes ... ok
+test workload::tests::a_guest_that_says_its_end_has_ended_its_run ... ok
+test workload::tests::only_execs_fail_as_the_signal_connection_goes ... ok
+test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+## shards-vm (all) exit 0
+test run::signals_end_tests::the_relays_end_is_said_last_on_its_signal_connection ... ok
+test result: ok. 207 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.05s
+## shards-init (all) exit 0
+## workload:: x200: pass 200 fail 0
+## signals_end_tests x300: pass 300 fail 0
+# done 2026-11-12T22:02:03Z

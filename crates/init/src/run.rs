@@ -2207,6 +2207,33 @@ fn connect_result(fd: RawFd) -> io::Result<()> {
     }
 }
 
+/// Says the relay's end, last, on the signal connection `signals` ([`kind::SIGNALS_END`]):
+/// nothing reads it from now on, and the host tells the run's end by it from the
+/// connection's loss (D16). A connect still under way, as a run can end before its first
+/// poll finishes it, is waited for: the kernel ends one within its connect timeout (Linux 6.18
+/// net/vmw_vsock/af_vsock.c l. 136, 1509, 1652), and sends nothing on it before (l. 2075).
+/// Its frame takes room nothing else takes by now, the managed control's having ended.
+fn say_signals_end(signals: &File, connected: bool) {
+    let fd = signals.as_raw_fd();
+    if !connected {
+        let mut p = libc::pollfd {
+            fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: poll(2) of one pollfd of a descriptor the relay holds open.
+        while unsafe { libc::poll(&mut p, 1, -1) } < 0 {
+            if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                return;
+            }
+        }
+        if connect_result(fd).is_err() {
+            return;
+        }
+    }
+    let _ = write(fd, &run::header(kind::SIGNALS_END, 0));
+}
+
 /// Writes one frame, blocking.
 pub(crate) fn send(conn: &File, kind: u8, payload: &[u8]) -> io::Result<()> {
     let len = u32::try_from(payload.len()).map_err(|_| io::Error::other("frame too long"))?;
@@ -5495,7 +5522,7 @@ impl Workload {
                                         kind::SIGNAL => {
                                             if let Some(sig) = sig(payload)
                                                 && running
-                                                && (1..=64).contains(&sig)
+                                                && (1..=run::NSIG).contains(&sig)
                                             {
                                                 // SAFETY: kill(2) of our own child, not yet reaped.
                                                 unsafe { libc::kill(pid, sig as libc::c_int) };
@@ -5525,7 +5552,7 @@ impl Workload {
                                         kind::EXEC_SIGNAL => {
                                             if let Some((id, rest)) = id_and(payload)
                                                 && let Some(sig) = sig(&rest)
-                                                && (1..=64).contains(&sig)
+                                                && (1..=run::NSIG).contains(&sig)
                                                 && let Some(e) = execs
                                                     .iter()
                                                     .find(|e| e.id == id && e.pid > 0 && e.status.is_none())
@@ -5737,6 +5764,9 @@ impl Workload {
         }
         if let Some(fd) = host {
             set_nonblocking(fd, false);
+        }
+        if let Some(signals) = &signals {
+            say_signals_end(signals, signals_connected);
         }
         let result = match fatal {
             Some(failure) => {
@@ -6587,6 +6617,39 @@ mod exec_link_tests {
         theirs.write_all(&run::header(kind::STDIN, 0)).unwrap();
         e.on_conn(libc::POLLIN, &mut [0; 64], &mut Outbox::default(), 0, || 0);
         assert!(e.finished());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod signals_end_tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+
+    /// The relay's end of a signal connection, as the relay holds it: non-blocking.
+    fn ours() -> (File, UnixStream) {
+        let (ours, host) = UnixStream::pair().unwrap();
+        let ours = File::from(OwnedFd::from(ours));
+        set_nonblocking(ours.as_raw_fd(), true);
+        (ours, host)
+    }
+
+    /// The relay's end is said last on its signal connection, its connect finished first
+    /// where the relay had yet to see it finish; the host reads it whole, then the end.
+    #[test]
+    fn the_relays_end_is_said_last_on_its_signal_connection() {
+        for connected in [true, false] {
+            let (signals, mut host) = ours();
+            say_signals_end(&signals, connected);
+            drop(signals);
+            let mut said = Vec::new();
+            host.read_to_end(&mut said).unwrap();
+            assert_eq!(said, run::header(kind::SIGNALS_END, 0), "connected: {connected}");
+        }
+        // A host gone first hears nothing, and the relay waits for nothing.
+        let (signals, host) = ours();
+        drop(host);
+        say_signals_end(&signals, false);
     }
 }
 

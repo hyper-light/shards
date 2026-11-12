@@ -1,0 +1,36 @@
+# red: origin/main d35c4cf79 + host-red-tests.patch; 2026-11-12T21:18:45Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 25.03 42.04 34.74
+# cargo test -p shards-vm-process --bin shards-vm --profile test-release -- workload::tests::red_
+
+running 3 tests
+test workload::tests::red_a_frame_the_guest_cannot_be_sent_is_told_it_went ... FAILED
+test workload::tests::red_an_exec_whose_frame_cannot_be_sent_waits ... FAILED
+test workload::tests::red_an_exec_whose_frame_the_guest_never_read_waits ... FAILED
+
+failures:
+
+---- workload::tests::red_a_frame_the_guest_cannot_be_sent_is_told_it_went stdout ----
+
+thread 'workload::tests::red_a_frame_the_guest_cannot_be_sent_is_told_it_went' (2154220) panicked at crates/vm-process/src/../../shards/src/workload.rs:3035:9:
+the failed send told sent: true; later ones told sent: [true, true, true]; queued for ever: 3
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- workload::tests::red_an_exec_whose_frame_cannot_be_sent_waits stdout ----
+
+thread 'workload::tests::red_an_exec_whose_frame_cannot_be_sent_waits' (2154221) panicked at crates/vm-process/src/../../shards/src/workload.rs:3060:9:
+the exec still waits after 5 s: Err(Timeout)
+
+---- workload::tests::red_an_exec_whose_frame_the_guest_never_read_waits stdout ----
+
+thread 'workload::tests::red_an_exec_whose_frame_the_guest_never_read_waits' (2154222) panicked at crates/vm-process/src/../../shards/src/workload.rs:3086:9:
+the exec still waits after 5 s: Err(Timeout)
+
+
+failures:
+    workload::tests::red_a_frame_the_guest_cannot_be_sent_is_told_it_went
+    workload::tests::red_an_exec_whose_frame_cannot_be_sent_waits
+    workload::tests::red_an_exec_whose_frame_the_guest_never_read_waits
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 48 filtered out; finished in 10.00s
+
+error: test failed, to rerun pass `-p shards-vm-process --bin shards-vm`
+## exit 101
