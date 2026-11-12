@@ -6531,13 +6531,17 @@ throughput both ways, small requests no slower, on every host.
 | Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2 | Protocol constants. |
 | Offer extents at most (4 KiB + 2 S) / 4 KiB | A slot's pages, none merged. |
 
-Owed to ROOT, none run by its implementers: correctness and hostile-offer E2E, the pins
-E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back and a
-shrinking room let idle slots go, a stream past the room goes plain; at 1, 2 and many
-vCPUs with as many streams as vCPUs and twice that), and throughput, small-request latency
-(paced and back to back), connection setup with its slot's making, a ring's ramp, CPU and
-pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64; compile checks of
-macOS, Windows and aarch64.
+The pins E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back
+and a shrinking room let idle slots go, a stream past the room goes plain; at 1, 2 and many
+vCPUs with as many streams as vCPUs and twice that) and the bulk test ran green on KVM x86_64
+and arm64 (L1) and HVF; on WHP x86_64 the give-back and the shrinking room, the bulk test once
+in two (its microVM stopped, as one with no engine did), and the pins test was refused past
+13 connections at once by the daemon's bound on Windows (D181's share of `clients_for` 64
+threads, as Windows states no thread limit), not the ring's (ring-pins-v1 r13, r16). Every
+supported target lints clean (r15, r16). Owed to ROOT: correctness and hostile-offer E2E; the
+pins E2E on WHP arm64, and on WHP x86_64 past that bound; and throughput, small-request
+latency (paced and back to back), connection setup with its slot's making, a ring's ramp, CPU
+and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
