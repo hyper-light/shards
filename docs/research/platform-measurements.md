@@ -21277,7 +21277,7 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   failure of `a_worker_not_reaped_ends_no_other` after both fixes, at load 30, whose output
   was lost to a filter (no seccomp kill logged; 66 runs since passed).
 
-### M526. What a log stream's write meets once its receiver has ended the connection (D163)
+### M527. What a log stream's write meets once its receiver has ended the connection (D163)
 
 - **Question.** CI's unit tests failed `daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place`
   now and then (runs 43183804136 and 43189239973 on x86_64 Linux, 43250570050 on aarch64

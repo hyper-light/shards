@@ -125,7 +125,7 @@ impl Held {
     /// timeout, [`timed_out`]) once the connection carries messages ([`Conn::handshaken`]),
     /// it is one of the messages written on it, which its end is followed with, though not
     /// its connection's first whole: such a write may have put any of it there, and on
-    /// macOS says nothing of what it put, write(2) returning the error alone (PM M526).
+    /// macOS says nothing of what it put, write(2) returning the error alone (PM M527).
     fn write(&mut self, conn: &mut Conn, first: bool) -> io::Result<()> {
         let written = conn.write_all(&self.message).and_then(|()| conn.flush());
         if let Err(e) = &written

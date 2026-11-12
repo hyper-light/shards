@@ -13038,7 +13038,7 @@ and the way every later one sends.
     restarts, a timeout after a partition) is held, and written again, in order, on the
     next. srslog, go-gelf and fluent-logger-golang lose it.
   - An end that a write meets before the stream finds it is followed as one it finds
-    (PM M526). A write after its receiver's end meets EPIPE, on a unix socket at once and
+    (PM M527). A write after its receiver's end meets EPIPE, on a unix socket at once and
     over TCP once the reset its first write drew has come; one under way as its receiver
     ends meets EPIPE or a reset. The stream then does as it does finding a reset: what the
     connection held goes again in its place, the message being written among it once the

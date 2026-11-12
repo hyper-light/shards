@@ -1,4 +1,4 @@
-# A log stream's write that meets its receiver's end (D163, PM M526)
+# A log stream's write that meets its receiver's end (D163, PM M527)
 
 CI's unit tests (`cargo test -p shards --bin shards --profile test-release`) failed
 `daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place` now and then:
@@ -20,7 +20,7 @@ colours stripped; each file keeps the failing test's lines.
 - Policy: origin/main 87bf86b31's `docs/development-rules.md`, SHA-256
   `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`; role implementer.
 - Owned paths: `crates/shards/src/daemon/ship/stream.rs`, this directory, D163's stream
-  bullets in `docs/design/architecture.md`, PM M526.
+  bullets in `docs/design/architecture.md`, PM M527.
 - Hosts: Adas-MacBook-Pro-2.local (macOS 26 / Darwin 25.4.0, arm64, 18 cores, shared with
   other sessions: load 15-211 during these runs); adacachy2 (CachyOS, Linux 7.3.3,
   x86_64, 32 cores), reached through kiln, every build and run bounded by a transient
@@ -105,7 +105,7 @@ SHA-256: red (main's code, the new test and `evidence-test.rs`) 180724d8…, the
 
 | what | host | command | result | record |
 |---|---|---|---|---|
-| ends a write meets | both | `python3 -I endmet.py` ×3 | table in PM M526 | `runs/*-endmet.txt` |
+| ends a write meets | both | `python3 -I endmet.py` ×3 | table in PM M527 | `runs/*-endmet.txt` |
 | one send(2) of 16 MiB | both | `python3 -I onesend.py` | macOS: EPIPE, none said sent; Linux: the part, then the error | `runs/*-onesend.txt` |
 | what a connection takes | both | `python3 -I absorbed.py 5` | Linux TCP 2,720,256, unix 233,152; macOS TCP 548,188-1,465,848, unix 12,288 | `runs/*-absorbed.txt` |
 | main's ship tests | Mac 87bf86b31 | `shards daemon::ship` | 29 passed, 1 ignored | `runs/mac-87bf86b31-ship.txt` |
@@ -131,11 +131,23 @@ SHA-256: red (main's code, the new test and `evidence-test.rs`) 180724d8…, the
 The mutant is the fix with one text removed: in `pump`'s write on an existing connection,
 `Err(self.write_failed(e))` as `Err(e)` (`mutant.diff`), the path the flaky test met.
 
+## The merged revisions
+
+- 23aeed57c, this branch merged with main 5333c2747, which brought main's ship-test change
+  (ee6347ef8): on Linux, main 5333c2747 with this branch's stream.rs (its only compiled
+  difference from main; `linux-build.sh merged 5333c2747`, then `linux-merged.sh merged`):
+  `daemon::ship` 29 passed, 1 ignored; the flaky test 200 of 200 and the new test 200 of
+  200, 32 at once; clippy clean (`runs/linux-merged.txt`).
+- Main then moved to ad600dd52 (rego work, and its own PM M526): this record renumbered
+  M527, and main merged again. FINAL-ROWS
+
 ## Owed and unverified
 
 - Windows: not run here (no Windows host in this task). The new test runs on CI's Windows
   lanes; where a Windows connection holds 16 MiB the test passes through the stream's look
   at the socket rather than its write, which this record has not measured.
 - aarch64 Linux (CI 43250570050's lane) and musl: not run here; CI runs them.
+- clippy on macOS (the changed code has no platform's own lines), and the Mac A/B past 312
+  and 309 runs (stopped for the new test's repeats).
 - The coordinator's checks (R14/R15): profiling, benchmarks, real-VM E2E, audits and the
   seven-target lint were not run, as the implementer's scope.
