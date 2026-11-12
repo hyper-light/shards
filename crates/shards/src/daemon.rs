@@ -11702,9 +11702,11 @@ mod tests {
         let mut spare = Reserve::default();
         assert!(spare_held(&mut spare));
         let client = UnixStream::connect(&path).unwrap();
+        // Bounded before it is refused: macOS refuses setsockopt(2) on a socket whose
+        // connection has ended (EINVAL; CI run 43189239973, aarch64-apple-darwin).
+        client.set_read_timeout(Some(PATIENCE)).unwrap();
         assert!(refuse_api(&listener, &mut spare));
         assert!(spare.is_some(), "the spare not made again");
-        client.set_read_timeout(Some(PATIENCE)).unwrap();
         assert!(
             matches!(shards_ipc::recv(&client), Ok(None)),
             "the client was not refused"
