@@ -434,7 +434,7 @@ fn launch(
 /// `shards run --kernel …` for `spec`, its vsock at `vsock`, its console's last `said` bytes
 /// kept to quote. `--kernel` comes first, as the command line knows a direct boot by it
 /// (`cli/mod.rs`).
-fn argument_copy(value: &std::ffi::OsStr) -> Result<OsString, Refusal> {
+pub(crate) fn argument_copy(value: &std::ffi::OsStr) -> Result<OsString, Refusal> {
     let mut copy = OsString::new();
     copy.try_reserve_exact(value.len())
         .map_err(|_| Refusal::Launch(crate::LaunchError::Allocation))?;
@@ -543,11 +543,36 @@ pub fn recorded_console_bytes(kernel: &Path) -> usize {
     crate::said::kept(kernel)
 }
 
+/// The same existing console learning with the initialized native runtime home,
+/// rather than an inherited or a workload's environment. This does not verify a kernel.
+pub fn recorded_console_bytes_at(kernel: &Path, paths: &RuntimePaths) -> usize {
+    crate::said::kept_at(paths.home(), kernel)
+}
+
 pub fn prepare_boot(
     spec: &GuestSpec,
     binary: &Path,
     vsock: &Path,
     console_bytes: usize,
+) -> Result<crate::PreparedBoot, Refusal> {
+    prepare_boot_inner(spec, binary, vsock, console_bytes, None)
+}
+
+pub fn prepare_native_boot(
+    spec: &GuestSpec,
+    binary: &Path,
+    vsock: &Path,
+    native: crate::NativeBoot<'_>,
+) -> Result<crate::PreparedBoot, Refusal> {
+    prepare_boot_inner(spec, binary, vsock, native.console_kept, Some(native))
+}
+
+fn prepare_boot_inner(
+    spec: &GuestSpec,
+    binary: &Path,
+    vsock: &Path,
+    console_bytes: usize,
+    native: Option<crate::NativeBoot<'_>>,
 ) -> Result<crate::PreparedBoot, Refusal> {
     check(spec)?;
     if !binary.is_absolute() || binary.as_os_str().as_encoded_bytes().contains(&0) {
@@ -569,6 +594,9 @@ pub fn prepare_boot(
         .checked_mul(ESCAPED)
         .and_then(|n| n.checked_add(tail(0)))
         .ok_or(Refusal::Launch(crate::LaunchError::Count))?;
+    // Retain original typed rights and pin before producing any opaque argv.
+    let startup = crate::native::Inputs::new(spec, console_bytes, native.as_ref())?;
+    let runtime_paths = native.map(|native| native.paths.try_clone()).transpose()?;
     let mut arguments = arguments(spec, vsock, console_bytes)?;
     arguments
         .try_reserve_exact(1)
@@ -587,9 +615,10 @@ pub fn prepare_boot(
         vsock: PathBuf::from(argument_copy(vsock.as_os_str())?),
         ports,
         output_bytes,
-        runtime_paths: None,
+        runtime_paths,
         gpu_devices,
         gpu_report: None,
+        startup,
     })
 }
 

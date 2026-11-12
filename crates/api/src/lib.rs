@@ -31,6 +31,7 @@ use std::time::{Duration, Instant};
 mod client;
 pub mod conformance;
 pub mod image;
+mod native;
 pub mod physical;
 mod said;
 pub mod sim;
@@ -46,8 +47,9 @@ mod proc_allocation;
 
 pub use client::{
     ConfiguredShards, ManagedGuest, Shards, attach_managed, boot_managed, connect_borrowed, connect_prepared,
-    prepare_boot, recorded_console_bytes,
+    prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at,
 };
+pub use native::{ImageIdentity, NativeBoot, NativeImages, NativeStartup, verify_native_image};
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
 
 /// A guest to boot.
@@ -96,6 +98,7 @@ pub struct PreparedBoot {
     runtime_paths: Option<RuntimePaths>,
     gpu_devices: Vec<PhysicalGpu>,
     gpu_report: Option<([u8; 16], std::time::Instant)>,
+    startup: native::Inputs,
 }
 
 /// Pure immutable request. The final native launcher separately owns and renders
@@ -140,6 +143,9 @@ impl PreparedBoot {
     }
     /// Copies only its client's explicit pair, before native effects.
     pub fn with_runtime_paths(mut self, paths: &RuntimePaths) -> Result<Self, Refusal> {
+        if self.startup.is_bound() && self.runtime_paths.as_ref().is_some_and(|known| known != paths) {
+            return Err(Refusal::Launch(LaunchError::NativeInputs));
+        }
         self.runtime_paths = Some(paths.try_clone()?);
         Ok(self)
     }
@@ -190,6 +196,12 @@ pub enum LaunchError {
     Allocation,
     Observer,
     NativeRefused,
+    ImageMissing,
+    ImageSize,
+    ImageDigest,
+    ImageChanged,
+    ImageDeadline,
+    NativeInputs,
 }
 impl std::fmt::Display for LaunchError {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -203,6 +215,12 @@ impl std::fmt::Display for LaunchError {
             Self::Allocation => "managed boot preparation storage is unavailable",
             Self::Observer => "native observation has no positive terminal receipt",
             Self::NativeRefused => "the canonical native owner refused the managed operation",
+            Self::ImageMissing => "native startup has no declared image for the exact role",
+            Self::ImageSize => "native image declaration requires positive byte length",
+            Self::ImageDigest => "native image bytes differ from the declared full SHA-256",
+            Self::ImageChanged => "native image identity or length changed during verification",
+            Self::ImageDeadline => "native image verification reached the original deadline",
+            Self::NativeInputs => "native startup inputs disagree with their initialized configuration",
         })
     }
 }
