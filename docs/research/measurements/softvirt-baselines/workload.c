@@ -7,7 +7,7 @@
 // Method and results: docs/research/platform-measurements.md (the softvirt entries).
 //
 //   cc -O2 -static -o workload workload.c && ./workload [-n N] [mode...]
-//   modes: syscall forkexec fault pipe (all when none is named)
+//   modes: syscall forkexec fault pipe compute (all when none is named)
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -141,6 +141,31 @@ static void m_pipe(uint64_t *s) {
     report("pipe", "one byte there and back", s, done);
 }
 
+// User code alone, no kernel entry: FNV-1a over 256 KiB (an L2-sized buffer), a load, an
+// xor and a multiply a byte. What a translator costs a guest's own instructions and
+// memory accesses, which hardware virtualization runs untouched.
+static void m_compute(uint64_t *s) {
+    size_t len = 256 << 10, count = n / 20 ? n / 20 : 1;
+    unsigned char *buf = malloc(len);
+    if (!buf)
+        return;
+    for (size_t i = 0; i < len; i++)
+        buf[i] = (unsigned char)(i * 131);
+    volatile uint64_t sink = 0;
+    for (size_t i = 0; i < warm / 20 + count; i++) {
+        uint64_t t = now_ns();
+        uint64_t h = 1469598103934665603ULL;
+        for (size_t k = 0; k < len; k++)
+            h = (h ^ buf[k]) * 1099511628211ULL;
+        sink += h;
+        uint64_t d = now_ns() - t;
+        if (i >= warm / 20)
+            s[i - warm / 20] = d;
+    }
+    free(buf);
+    report("compute", "FNV-1a over 256 KiB", s, count);
+}
+
 struct mode {
     const char *name;
     void (*run)(uint64_t *);
@@ -148,6 +173,7 @@ struct mode {
 
 static const struct mode modes[] = {
     {"syscall", m_syscall}, {"forkexec", m_forkexec}, {"fault", m_fault}, {"pipe", m_pipe},
+    {"compute", m_compute},
 };
 
 int main(int argc, char **argv) {
