@@ -1,0 +1,144 @@
+# R10: the light gate on the merged revision e0b04ab84 (p/ring-pins-v1 with origin/main c4ae59ee0)
+# runner: adacachy (451397fcc585f7f7cb9aaf00e42064bb), reached by ssh while kiln timed out; under systemd-run --user -p MemoryMax=16G, -j4, a clone of the synced checkout at e0b04ab84
+# script: ~/g121-tmp/ring-pins-gate2.sh (each step as echoed); output filtered to test names, results and diagnostics
+
+# revision e0b04ab84dfea53504e5cd702f77c02097c439f9 (Merge origin/main (c4ae59ee0) into p/ring-pins-v1 before it goes to main)
+# runner adacachy, Linux 7.2.9-2-cachyos, rustc 1.98.1 (48a229cea 2026-09-01), 2026-11-12T06:45:57Z, load 136.73 109.66 82.44
+== fmt (cargo fmt --all --check)
+fmt-ok
+== unit: cargo test -j4 -p shards-abi --lib
+test ring::tests::frames_that_follow_each_other_are_one_extent ... ok
+test ring::tests::an_offer_reads_back_as_it_was_written ... ok
+test ring::tests::an_offers_length_is_read_from_its_fixed_part_alone ... ok
+test ring::tests::the_control_pages_fields_fit_it_each_on_a_line_of_its_own ... ok
+test ring::tests::an_offer_is_refused_for_each_way_it_can_be_wrong ... ok
+test ring::tests::the_largest_ring_is_the_largest_whose_every_turn_is_one_call ... ok
+test ring::tests::the_control_bytes_are_four_and_distinct ... ok
+test ring::tests::the_longest_offer_is_a_slot_of_single_pages ... ok
+test ring::tests::replies_read_back_and_nothing_else_reads_as_one ... ok
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+== unit: cargo test -j4 -p shards-vmm --lib -- devices::virtio::vsock
+test devices::virtio::vsock::conn::ringed::tests::a_refused_offer_leaves_the_connection_plain ... ok
+test devices::virtio::vsock::conn::ringed::tests::a_swap_crossing_the_hosts_end_is_refused_and_the_end_follows ... ok
+test devices::virtio::vsock::conn::ringed::tests::a_relays_first_bytes_reach_the_host_though_it_rings_only_a_waiting_device ... ok
+test devices::virtio::vsock::conn::ringed::tests::bytes_after_a_relays_detach_before_the_devices_end_the_connection ... ok
+test devices::virtio::vsock::conn::ringed::tests::an_offer_the_owner_could_not_read_is_answered_refused ... ok
+test devices::virtio::vsock::conn::ringed::tests::a_swaps_offer_in_pieces_is_answered_once_whole ... ok
+test devices::virtio::vsock::conn::ringed::tests::a_full_ring_stops_the_host_socket_until_the_guest_rings ... ok
+test devices::virtio::vsock::ring::tests::a_guest_waiting_is_told_once_and_its_flag_cleared ... ok
+test devices::virtio::vsock::conn::ringed::tests::a_connection_whose_owner_offers_nothing_is_plain ... ok
+test devices::virtio::vsock::ring::tests::a_full_ring_takes_no_more_and_the_host_socket_waits ... ok
+test devices::virtio::vsock::ring::tests::an_offer_of_memory_the_guest_lacks_or_a_ring_holds_is_refused ... ok
+test devices::virtio::vsock::conn::ringed::tests::each_side_ends_its_writes_after_its_last_bytes ... ok
+test devices::virtio::vsock::conn::ringed::tests::bytes_past_a_swaps_offer_end_the_connection_after_its_detach ... ok
+test devices::virtio::vsock::conn::ringed::tests::a_detach_is_answered_once_the_pins_are_gone_and_plain_vsock_follows ... ok
+test devices::virtio::vsock::conn::ringed::tests::a_clients_end_reaches_the_host_after_its_last_bytes_and_doorbells_go_on ... ok
+test devices::virtio::vsock::conn::ringed::tests::a_byte_that_is_no_doorbell_resets_the_connection_after_its_detach ... ok
+test devices::virtio::vsock::ring::tests::what_the_device_writes_is_noted_while_a_move_watches ... ok
+test devices::virtio::vsock::ring::tests::an_attached_ring_says_it_waits_for_the_relays_first_bytes ... ok
+test devices::virtio::vsock::conn::ringed::tests::an_attached_connections_bytes_cross_through_its_ring_and_its_doorbells ... ok
+test devices::virtio::vsock::conn::ringed::tests::a_swap_lets_the_old_slot_go_and_takes_the_new_one ... ok
+test devices::virtio::vsock::ring::tests::an_offer_that_names_a_page_twice_is_refused ... ok
+test devices::virtio::vsock::ring::tests::positions_the_guest_could_not_have_reached_end_the_ring ... ok
+test devices::virtio::vsock::ring::tests::the_host_sockets_end_is_said_and_its_errors_end_the_ring ... ok
+test devices::virtio::vsock::conn::ringed::tests::the_hosts_end_lets_the_ring_go_and_its_shutdown_waits_for_the_relays_detach ... ok
+test devices::virtio::vsock::ring::tests::an_attached_slots_pages_are_pinned_until_it_goes ... ok
+test devices::virtio::vsock::ring::tests::bytes_cross_each_way_through_scattered_pages_and_round_the_rings_end ... ok
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 405 filtered out; finished in 0.69s
+== unit: cargo test -j4 -p shards-init
+test engine::tests::departure_is_only_the_clients_reset_read_or_broken_write ... ok
+test engine::tests::an_engine_reset_is_still_said ... ok
+test engine::tests::a_client_that_leaves_a_line_unread_is_not_a_fault ... ok
+test engine::tests::a_client_gone_before_the_next_line_is_not_a_fault ... ok
+test engine::tests::the_relays_socket_asks_for_the_hosts_window ... ok
+test ring::tests::a_fresh_slot_is_reset_before_its_offer ... ok
+test ring::tests::a_host_byte_no_device_says_is_no_word_of_the_slot ... ok
+test ring::tests::a_stream_learns_the_rings_it_needs ... ok
+test ring::tests::a_refused_slot_is_freed_and_the_connection_goes_on_plain ... ok
+test ring::tests::a_stream_past_the_room_goes_over_plain_vsock ... ok
+test ring::tests::a_slot_with_no_word_of_its_device_stays_pinned ... ok
+test ring::tests::a_told_room_owes_what_it_is_short_of_the_working_room ... ok
+test ring::tests::a_word_wakes_the_idle_streams ... ok
+test ring::tests::init_says_nothing_to_a_relay_that_made_no_slot ... ok
+test ring::tests::the_devices_detach_is_read_and_nothing_past_it ... ok
+test ring::tests::bytes_cross_whole_and_every_slot_is_freed_after_its_detach ... ok
+test ring::tests::the_relay_frees_a_slot_only_after_the_devices_detach ... ok
+test ring::tests::the_room_asks_idle_streams_alone_and_a_give_back_asks_them_all ... ok
+test ring::tests::the_supply_leaves_pins_what_the_run_does_not_need ... ok
+test ring::tests::the_table_holds_as_many_slots_as_the_descriptors_let_streams_hold ... ok
+test ring::tests::the_relay_joins_a_leaf_of_the_runs_cgroup ... ok
+test ring::tests::concurrent_streams_each_have_a_slot_and_free_it ... ok
+test ring::tests::with_no_budget_pins_are_bounded_by_the_available_memory ... ok
+test ring::tests::a_stream_starts_where_the_last_one_ended ... ok
+test result: ok. 180 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.88s
+== clippy -D warnings, x86_64-unknown-linux-gnu: -p shards-abi -p shards-vmm -p shards-init --all-targets
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 39.41s
+== clippy -D warnings, x86_64-unknown-linux-musl: -p shards-init -p shards-abi --all-targets
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.53s
+== clippy -D warnings, aarch64-unknown-linux-musl: -p shards-init -p shards-abi --all-targets
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.73s
+== scripts/check-development-policy
+Development policy checks passed; evidence/coordinator review is still required.
+== M1: the relay frees its slot without hearing the device's DETACH (ask_detach's hear_detach removed)
+mutated lines: 1
+== M2: the device says DETACH with the slot's pins still held (let_go's drop(r) made a forget)
+mutated lines: 1
+test devices::virtio::vsock::conn::ringed::tests::a_byte_that_is_no_doorbell_resets_the_connection_after_its_detach ... FAILED
+test devices::virtio::vsock::conn::ringed::tests::a_detach_is_answered_once_the_pins_are_gone_and_plain_vsock_follows ... FAILED
+test devices::virtio::vsock::conn::ringed::tests::the_hosts_end_lets_the_ring_go_and_its_shutdown_waits_for_the_relays_detach ... FAILED
+test devices::virtio::vsock::conn::ringed::tests::bytes_past_a_swaps_offer_end_the_connection_after_its_detach ... FAILED
+test devices::virtio::vsock::conn::ringed::tests::a_swap_lets_the_old_slot_go_and_takes_the_new_one ... FAILED
+thread 'devices::virtio::vsock::conn::ringed::tests::a_byte_that_is_no_doorbell_resets_the_connection_after_its_detach' (85239) panicked at crates/vmm/src/devices/virtio/vsock/conn/ringed.rs:1074:9:
+thread 'devices::virtio::vsock::conn::ringed::tests::a_detach_is_answered_once_the_pins_are_gone_and_plain_vsock_follows' (85242) panicked at crates/vmm/src/devices/virtio/vsock/conn/ringed.rs:1093:9:
+thread 'devices::virtio::vsock::conn::ringed::tests::the_hosts_end_lets_the_ring_go_and_its_shutdown_waits_for_the_relays_detach' (85266) panicked at crates/vmm/src/devices/virtio/vsock/conn/ringed.rs:1119:9:
+thread 'devices::virtio::vsock::conn::ringed::tests::bytes_past_a_swaps_offer_end_the_connection_after_its_detach' (85264) panicked at crates/vmm/src/devices/virtio/vsock/conn/ringed.rs:1200:9:
+thread 'devices::virtio::vsock::conn::ringed::tests::a_swap_lets_the_old_slot_go_and_takes_the_new_one' (85247) panicked at crates/vmm/src/devices/virtio/vsock/conn/ringed.rs:1142:9:
+test result: FAILED. 11 passed; 5 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.08s
+== M3: a slot made whatever the room (Pool::fits always true)
+mutated lines: 1
+test ring::tests::a_stream_past_the_room_goes_over_plain_vsock ... FAILED
+test ring::tests::bytes_cross_whole_and_every_slot_is_freed_after_its_detach ... FAILED
+test ring::tests::with_no_budget_pins_are_bounded_by_the_available_memory ... FAILED
+thread 'ring::tests::a_stream_past_the_room_goes_over_plain_vsock' (89467) panicked at crates/init/src/ring.rs:2373:9:
+thread '<unnamed>' (89569) panicked at crates/init/src/ring.rs:2128:34:
+thread 'ring::tests::bytes_cross_whole_and_every_slot_is_freed_after_its_detach' (89471) panicked at crates/init/src/ring.rs:2223:45:
+thread 'ring::tests::with_no_budget_pins_are_bounded_by_the_available_memory' (89494) panicked at crates/init/src/ring.rs:2398:9:
+test result: FAILED. 16 passed; 3 failed; 0 ignored; 0 measured; 162 filtered out; finished in 1.06s
+== restored: 0 files differ from the revision
+== E2E compiled, not run: clippy -D warnings -p shards --test engine_ring (x86_64 gnu, as scripts/lint: zig C, SHARDS_HELPERS=skip, placeholder guest binaries)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/g121-tmp/ring-pins-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_gnu': '/home/adalundhe/g121-tmp/ring-pins-tree/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_gnu: /home/adalundhe/g121-tmp/ring-pins-tree/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/ring-pins-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/ring-pins-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/g121-tmp/ring-pins-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 14s
+== done 2026-11-12T06:50:09Z
+
+# M1 above printed nothing its filter kept: its test binary died of a signal. The journal of the gate unit:
+#   2026-11-11T22:48:39-08:00 adacachy systemd-coredump[70338]: Process 70291 (shards_init-efa) of user 1000 dumped core.
+# With the guard removed the relay unmapped its slot while the device stand-in still read and wrote it
+# (the stand-in reaches the slot by its address): the use after free the device's DETACH exists to prevent.
+# M1 again, same tree and mutation, full output (another timing: the guard's assertion):
+#   cargo test -j4 -p shards-init -- ring::tests::the_relay_frees_a_slot_only_after_the_devices_detach
+test ring::tests::the_relay_frees_a_slot_only_after_the_devices_detach ... FAILED
+thread 'ring::tests::the_relay_frees_a_slot_only_after_the_devices_detach' (398933) panicked at crates/init/src/ring.rs:2324:9:
+assertion `left == right` failed: the relay let go of its slot before the device's DETACH
+  left: Some(false)
+ right: Some(true)
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 180 filtered out; finished in 0.05s
+
+# M3 also failed bytes_cross_whole_and_every_slot_is_freed_after_its_detach, whose room is unbounded so that M3 changes
+# nothing of it: its device stand-in panicked (ring.rs:2128) on a SWAP after its own DETACH, a race the protocol
+# allows (a swap crossing the host's end, which the device refuses: Refusal::Ended, tested in ringed.rs) and the
+# stand-in did not answer. Fixed in the stand-in in the next commit (r4).

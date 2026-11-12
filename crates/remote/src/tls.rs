@@ -79,8 +79,24 @@ fn certified(identity: &Identity) -> Result<CertifiedKey, Error> {
     ))
 }
 
+/// How long a connection held to `bound` of silence, its idle timeout (RFC 9000 §10.1), goes
+/// unheard before it sends a keep-alive, a PING for which its peer restarts its own idle timer
+/// (§10.1.2): a quarter of `bound`. §10.1 makes an idle timeout last at least three probe
+/// timeouts, for "multiple probes to be sent and lost, prior to idle timeout"; held to that
+/// rule, `bound` takes three keep-alives, a quarter, a half and three quarters of it after the
+/// last packet either way (quinn-proto restarts the interval at each packet sent or received),
+/// and no more, as unneeded PINGs cost (§10.1.2). A live peer is lost only if all three are, or
+/// a stall of three quarters of `bound` holds either side up; a dead one is let go at most a
+/// quarter of `bound` past it, as only the first packet sent since the last one heard restarts
+/// this side's own timer (§10.1). focal's transport keeps its connections so (../focal
+/// crates/focal-wire transport.rs), and D180's were from the start.
+pub(crate) fn keep_alive(bound: Duration) -> Duration {
+    bound / 4
+}
+
 /// The transport both sides run: idle after [`QUIET`] unheard, its handshake held to [`IDLE`]
-/// by its driver (net.rs), kept alive four times within [`IDLE`], as RFC 9000 §10.1.2 has an
+/// by its driver (net.rs), kept alive as one held to [`IDLE`] is ([`keep_alive`]: its bound
+/// before [`QUIET`], where D176 part 6 left its keep-alive), as RFC 9000 §10.1.2 has an
 /// endpoint that awaits its peer's answer send PINGs to defer its peer's idle timeout (and
 /// more often than the 30 s it finds most middleboxes keep a UDP flow's state for), and only
 /// the streams the protocol has, bidirectional ones a client opens, a command or a join each.
@@ -91,7 +107,7 @@ fn transport(serves: bool) -> Result<TransportConfig, Error> {
     let mut transport = TransportConfig::default();
     let idle = IdleTimeout::try_from(QUIET).map_err(|_| Error::new("an idle bound QUIC cannot carry"))?;
     transport.max_idle_timeout(Some(idle));
-    transport.keep_alive_interval(Some(IDLE / 4));
+    transport.keep_alive_interval(Some(keep_alive(IDLE)));
     transport.max_concurrent_uni_streams(VarInt::from_u32(0));
     if !serves {
         transport.max_concurrent_bidi_streams(VarInt::from_u32(0));

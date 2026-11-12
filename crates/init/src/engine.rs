@@ -70,8 +70,10 @@ pub struct Relay {
 /// offers a ring where `rings` (its host takes them, D230) and the guest can pin one.
 pub fn start(token: [u8; run::TOKEN], rings: bool) -> io::Result<Relay> {
     let (ours, theirs) = crate::hostbind::seqpacket()?;
-    // Made before the fork, so that the relay inherits it and init keeps it (ring.rs).
+    // Made before the fork, so that the relay inherits it and init keeps it (ring.rs); and
+    // the page and eventfd through which init's builtins tell the relay its run's room.
     let pinner = if rings { crate::ring::pinner() } else { None };
+    let bell = pinner.as_ref().and_then(|_| crate::ring::share());
     // SAFETY: fork(2) from init, which has no other thread: the child runs only this
     // module's code, on descriptors of its own.
     match unsafe { libc::fork() } {
@@ -79,7 +81,7 @@ pub fn start(token: [u8; run::TOKEN], rings: bool) -> io::Result<Relay> {
         0 => {
             let pinned = pinner.as_ref().map(|p| p.as_raw_fd());
             crate::dnsrelay::keep_only(
-                &[Some(theirs.as_raw_fd()), pinned]
+                &[Some(theirs.as_raw_fd()), pinned, bell]
                     .into_iter()
                     .flatten()
                     .collect::<Vec<_>>(),
@@ -158,11 +160,12 @@ fn relay(conn: UnixStream, token: &[u8; run::TOKEN]) {
             "shards-init: engine relay keeps Linux's vsock buffer: {e}"
         );
     }
-    // A ring offered in its hello where its relay has a slot (D230): taken, the
-    // connection runs through it; refused, it goes on over vsock, its hello said.
+    // A ring offered in its hello where the room fits a slot (D230): taken, the connection
+    // runs through it; refused, or let go with what it held passed on, it goes on over
+    // vsock, its hello said.
     let said = match crate::ring::hello(&conn, &host, token) {
-        Ok(crate::ring::Offered::Ringed) => return,
-        Ok(crate::ring::Offered::Refused) => true,
+        Ok(crate::ring::Offered::Done) => return,
+        Ok(crate::ring::Offered::Unringed) => true,
         Ok(crate::ring::Offered::Plain) => false,
         Err(e) => {
             let _ = writeln!(io::stderr(), "shards-init: engine ring hello: {e}");

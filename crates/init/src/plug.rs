@@ -531,7 +531,7 @@ pub fn make_cap() -> io::Result<()> {
 }
 
 /// [`CAP`]'s bytes: `u64::MAX` where it has none.
-fn cap() -> u64 {
+pub(crate) fn cap() -> u64 {
     CAP.get()
         .map_or(u64::MAX, |s| s.cap.load(std::sync::atomic::Ordering::SeqCst))
 }
@@ -652,7 +652,7 @@ fn reclaimed(short: bool, was: u64, now: u64) -> bool {
 /// pages back and read them again, 2,899 times at the median and 16,327 at p90 on CI's EPYC
 /// 7763s, and three reads in 144 took over twice their CPU's time with none, the slowest
 /// 2.77 times; with it, 1 and 687 times, the slowest 1.12 times (PM M321).
-fn working_room() -> u64 {
+pub(crate) fn working_room() -> u64 {
     // SAFETY: sysconf(3) reads a value of the running kernel's.
     let cpus = u64::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).map_or(1, |c| c.max(1));
     working_room_of(cpus, page_size())

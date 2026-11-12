@@ -1,0 +1,47 @@
+{
+  "POLICY_READ": true,
+  "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "source": "origin/main, read in full with git show before any edit, build or run",
+  "files": {
+    "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "AGENTS.md": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+    "docs/development-evidence.md": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+    "CLAUDE.md": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f"
+  },
+  "development_rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "rules_acknowledged": "R01-R16 read in full; docs/development-evidence.md checklist read in full; AGENTS.md read in full; the worktree's copies of all four files are byte-identical to origin/main's",
+  "role": "implementer",
+  "coordinator": "ROOT (kiln agent 01a148884a4770fdaf0111f3f792a248, session g121-7b)",
+  "task": "Defect H1 (docs/research/measurements/harness-bringup-v1/README.md): the managed owner-output subscription is lost after QUIET (100 s) of harness silence because the managed owner endpoint's QUIC transport sets no keep-alive. Give it a keep-alive derived (RFC 9000 10.1, 10.1.2) from one place shared with D180's contexts, check the subscriber side and whether QUIET is derived; red/green/mutation light tests; leave the ignored live harness_bringup.rs case for ROOT.",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/owner-keepalive-v1",
+  "branch": "p/owner-keepalive-v1",
+  "base": "origin/p/integrate-engine-20261111 1da9132b7fa6e38105165671e29c2d53dfed2f8c",
+  "owned_paths": [
+    "the managed owner endpoint's transport config (crates/shards/src/daemon/managed*.rs)",
+    "crates/remote's shared transport config, if the derivation moves there (crates/remote/src/tls.rs: minimal edits, the crypto provider untouched; p/aes256-only-v1 owns it)",
+    "their tests",
+    "docs/design/architecture.md: the D180 managed-output paragraph",
+    "docs/research/measurements/owner-keepalive-v1/**"
+  ],
+  "limits": [
+    "no builds on this Mac (its disk is low)",
+    "builds and light tests on kiln runner kiln-a094a12d.attlocal.net (8fadc1ec213332e16cb0d915a3fb913f) with cwd = this worktree, after pgrep -x amphora-bench finds nothing, under systemd-run --user --scope -q -p MemoryMax=24G, -j4, TMPDIR=$HOME/g121-tmp, zig 0.16.0 at $HOME/.local/share/shards-zig/zig-x86_64-linux-0.16.0 on PATH; or adacachy (451397fcc585f7f7cb9aaf00e42064bb); needs <= cpus=4,mem=16g",
+    "light tests only: no real-VM E2E, profiling, benchmarks or audits (ROOT's); the ignored live harness_bringup.rs case is ROOT's to run",
+    "no subagents spawned; no push, merge or rebase",
+    "commits via /Users/adalundhe/.kiln-run/bin/gits with named paths only; final line exactly Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>; never force, never disable signing"
+  ],
+  "gates": "on touched crates: cargo fmt --check, cargo clippy -D warnings, unit tests, scripts/check-development-policy",
+  "read_at": "2026-11-12T03:29:28Z",
+  "reread": [
+    {
+      "at": "2026-11-12T06:25Z",
+      "why": "session restart (about 04:44Z) killed this implementer mid-task; ROOT restarted it",
+      "origin/main": "c4ae59ee094dcdf99e5dcd47ed46952d53e4f1e6",
+      "result": "AGENTS.md, docs/development-rules.md, docs/development-evidence.md and CLAUDE.md on origin/main hash the same as at bff3015182ad754274f1048ce393ac12cb6cd91f: no policy change"
+    }
+  ],
+  "course_corrections": [
+    "ROOT, relaying the person's rule (verbatim): \"To speed up work and not leave numerous subagents running for extended periods, all subagents are only required to verify unit tests relevant to their changes and any light integration tests relevant. Once complete, they should merge their work to main and end.\" This replaces the brief's 'do not push': after red, green, mutation and gates, merge origin/main, re-run the relevant tests, push HEAD:main fast-forward only, report, end. It supersedes R15's no-self-merge for this lane by the person's instruction (development-rules.md: current explicit user instructions override older repository instructions).",
+    "ROOT, relaying the person's rule (verbatim): \"new rule before you ask me for help you need to do research and figure out a way to fucking unblock yourself.\""
+  ]
+}
