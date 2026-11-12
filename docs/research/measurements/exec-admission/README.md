@@ -166,4 +166,5 @@ directory's default; the runs used the tree's pinned 1.98.1):
 - The relay's `exec_failures` flush and its cut and restore paths run only in a real guest.
 - Found, not changed: the host's `to_guest` returns true when its send on the signal
   connection fails, and frames queue for ever once that connection is gone while the
-  workload runs: an exec asked for then waits until the workload ends.
+  workload runs: an exec asked for then waits until the workload ends. Fixed since:
+  [../signal-link/README.md](../signal-link/README.md).

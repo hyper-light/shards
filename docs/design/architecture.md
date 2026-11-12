@@ -392,7 +392,49 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     those a fault raises (BUS, FPE, ILL, SEGV, SYS, TRAP), which a process cannot block
     safely, and those Linux has no number for.
   - They travel on a second vsock connection that the guest opens once the command runs,
-    so unread stdin cannot hold them up.
+    so unread stdin cannot hold them up. Terminal sizes, execs (`EXEC`) and the host's
+    answers on its network (D124) travel on it too.
+  - **That connection's state is explicit** (`workload::Link`): idle (no workload, or its
+    run over), awaiting the guest's dial, connected, or lost. Each frame meets it at once:
+    it goes, it waits for the dial, or it is refused with why (`Unsent`). Before
+    (d35c4cf79), a send that failed was taken as sent and every frame after it waited for
+    a dial that never came, so that an exec asked for then waited for the workload's end;
+    so did one whose frame the guest closed the connection on unread. Reproduced and held
+    by unit tests, mutation-checked (docs/research/measurements/signal-link).
+  - What is asked for before the dial waits for it, as for a restored guest's dial again
+    (D176), one frame for each thing pending and no time bound: a signal once, as Linux
+    holds a standard signal pending once (6.18 kernel/signal.c `legacy_queue`); the
+    terminal's latest size; an exec's start, then its signals and latest size; each ask's
+    latest answer. So no more wait than `NSIG` (64) signals and a size for the workload and
+    for each exec on its way, and an answer for each ask. A real-time signal sent twice
+    before the dial reaches the command once. A number that is no Linux signal (`1..=64`,
+    `_NSIG`) is refused, as init would drop it.
+  - The guest says its relay's end last on the connection (`SIGNALS_END`), its command and
+    its execs over, as the managed control says its own (`MANAGED_CONTROL_END`). The host
+    reads the connection, where nothing else comes: closed without that end, a failed read
+    or send, or anything else said, and the connection is lost. Without that end the host
+    could not tell a lost connection from a run over, as the guest closes it just before
+    its exit status, on another connection.
+  - Lost is for good in its VM process. The guest dials the port once, so that a workload
+    dialing it finds it taken (AGENTFILE_ARCH.md §9.7), and only a copy restored from a save
+    dials again, in a VM process of its own (D176). A redial in place, gated by a token as
+    a restore's is, would be a protocol of its own for a loss no run has shown: not built.
+    From the loss on, every frame is refused with the connection's own error, every exec
+    still waiting for its connection fails with it (`shards exec` says "the guest's signal
+    connection is lost: Broken pipe (os error 32)"), and the VM process's log, its
+    daemon's, says it once.
+  - The run goes on: its stdin, output and end travel on the run connection, which the loss
+    leaves whole. containerd ends a task whose shim connection closes (v2.4.2
+    core/runtime/v2/shim.go `cleanupAfterDeadShim`: the shim's `delete`, then `TaskExit`),
+    as that close is the shim's death, and the shim held the task's stdio and exit; here
+    init holds them, and still says the command's end. Where nothing else reaches the
+    command, its microVM ends: a SIGKILL its daemon sends (`kill`, a stop past its grace)
+    or that its VM sends as the daemon goes, refused for a lost connection, stops the
+    machine at once, where the daemon's fallback waited out a teardown slice and a VM
+    whose daemon had gone found no end at all; a stop signal refused as the daemon goes
+    waits out no grace (moby docker-v29.8.1 daemon/stop.go waits 2 s on a stop signal it
+    could not send). `run --kernel` ends as a signal it cannot forward would end it. A
+    joiner's SIGKILL refused so leaves its provider's microVM running (D119).
   - Through the daemon, a signal that arrives once the run's record is made, before the
     command runs, waits for it (D26). `run --kernel`, whose process is the VM, ends as that
     signal would end it. dockerd instead drops a signal sent before its container starts

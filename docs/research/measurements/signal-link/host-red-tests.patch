@@ -1,0 +1,98 @@
+diff --git a/crates/shards/src/workload.rs b/crates/shards/src/workload.rs
+index c6a14f9df..b2b0fec0e 100644
+--- a/crates/shards/src/workload.rs
++++ b/crates/shards/src/workload.rs
+@@ -2996,4 +2996,93 @@ mod tests {
+             Some("the guest sent a malformed readiness")
+         );
+     }
++
++    /// An exec's request as the daemon brings it, its stdio the null device's.
++    fn red_request() -> ExecRequest {
++        let (client, _peer) = shards_ipc::Stream::pair().unwrap();
++        let null = || fs::OpenOptions::new().read(true).write(true).open("/dev/null").unwrap();
++        ExecRequest {
++            spec: Spec {
++                argv: vec![b"true".to_vec()],
++                ..Spec::default()
++            },
++            interactive: false,
++            detached: false,
++            number: 1,
++            daemon: None,
++            client,
++            stdin: null(),
++            stdout: null(),
++            stderr: null(),
++        }
++    }
++
++    /// Red at d35c4cf79: a signal connection whose send fails, its guest's end gone. Its
++    /// caller is told the frame went, and every frame after it queues for a dial that never
++    /// comes.
++    #[test]
++    fn red_a_frame_the_guest_cannot_be_sent_is_told_it_went() {
++        let (host, guest) = UnixStream::pair().unwrap();
++        drop(guest);
++        let to = ToGuest::new(Signals {
++            conn: Some(host),
++            queued: Vec::new(),
++            running: true,
++        });
++        let first = signal_guest(&to, 15);
++        let later: Vec<bool> = (0..3).map(|_| signal_guest(&to, 15)).collect();
++        let queued = lock(&to).queued.len();
++        assert!(
++            !first && later.iter().all(|sent| !sent) && queued == 0,
++            "the failed send told sent: {first}; later ones told sent: {later:?}; queued for ever: {queued}"
++        );
++    }
++
++    /// Red at d35c4cf79: an exec whose frame cannot be sent is told it went, and waits for its
++    /// connection until the workload ends.
++    #[test]
++    fn red_an_exec_whose_frame_cannot_be_sent_waits() {
++        static TO: ToGuest = ToGuest::new(Signals::new());
++        let (_serial, _port, _acceptor) = exec_port_test();
++        let (host, guest) = UnixStream::pair().unwrap();
++        drop(guest);
++        *lock(&TO) = Signals {
++            conn: Some(host),
++            queued: Vec::new(),
++            running: true,
++        };
++        let (said, heard) = std::sync::mpsc::channel();
++        std::thread::spawn(move || {
++            let _ = said.send(exec_session(&TO, &mut red_request()));
++        });
++        let got = heard.recv_timeout(std::time::Duration::from_secs(5));
++        hellos::close();
++        assert!(matches!(got, Ok(Err(_))), "the exec still waits after 5 s: {got:?}");
++    }
++
++    /// Red at d35c4cf79: an exec whose frame went, the guest's end of the signal connection
++    /// closing before it read it, waits for its connection until the workload ends: nothing
++    /// sees the connection's end.
++    #[test]
++    fn red_an_exec_whose_frame_the_guest_never_read_waits() {
++        static TO: ToGuest = ToGuest::new(Signals::new());
++        let (_serial, _port, _acceptor) = exec_port_test();
++        let (host, mut guest) = UnixStream::pair().unwrap();
++        *lock(&TO) = Signals {
++            conn: Some(host),
++            queued: Vec::new(),
++            running: true,
++        };
++        let (said, heard) = std::sync::mpsc::channel();
++        std::thread::spawn(move || {
++            let _ = said.send(exec_session(&TO, &mut red_request()));
++        });
++        let mut h = [0u8; run::HEADER];
++        guest.read_exact(&mut h).unwrap();
++        assert_eq!(run::parse_header(h).map(|(which, _)| which), Some(kind::EXEC));
++        drop(guest);
++        let got = heard.recv_timeout(std::time::Duration::from_secs(5));
++        hellos::close();
++        assert!(matches!(got, Ok(Err(_))), "the exec still waits after 5 s: {got:?}");
++    }
+ }
