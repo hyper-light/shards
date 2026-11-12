@@ -1,0 +1,10 @@
+[package]
+name = "at-bound"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[dependencies]
+shards-rego = { path = "../../../../../crates/rego" }
+[profile.release]
+debug = 0
+[workspace]

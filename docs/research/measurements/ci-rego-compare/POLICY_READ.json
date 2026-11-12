@@ -1,0 +1,45 @@
+{
+  "type": "POLICY_READ",
+  "revision": "87bf86b31dda134b1db6fbe60d69be4a9d46d1fe",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "source": "origin/main, read with git show after git fetch origin main",
+  "role": "implementer",
+  "coordinator": "the session coordinating the fixes of main's CI failures (the person asked for them fixed)",
+  "documents": {
+    "AGENTS.md": {
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+      "read": "full"
+    },
+    "docs/development-rules.md": {
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "read": "full"
+    },
+    "docs/development-evidence.md": {
+      "bytes": 3325,
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+      "read": "full"
+    },
+    "CLAUDE.md": {
+      "bytes": 17012,
+      "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f",
+      "read": "full"
+    }
+  },
+  "rules_acknowledged": "R01-R16 read in full; the development-evidence.md checklist read in full",
+  "landing": "the person's rule of 2026-11-12 (verbatim in the coordinator's brief and the user's memory): subagents test their change, merge origin/main, fast-forward main themselves and end; it supersedes AGENTS.md's 'Subagents do not merge themselves to main' for this work",
+  "base": "origin/main 87bf86b31dda134b1db6fbe60d69be4a9d46d1fe",
+  "branch": "p/ci-rego-compare-v1",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/ci-rego",
+  "task": "CI's fuzz job (run 43250570050, commit 7ad28fab1, job 131294914800) ran out of memory in fuzz/fuzz_targets/rego-builtins.rs on oom-36ae0bf37f861e2c1c0a53790963b4d52e20913c, lt(33, 3e33333333332). Make number comparison bounded in time and memory without changing any result, then every path from a builtin to unbounded work from an operand's exponent; OPA v1.14.1's behaviour on such operands decides the answer; light tests, fuzzing as CI does, one mutant per fix, evidence here.",
+  "owned_paths": [
+    "crates/rego/src/{number.rs,value.rs,parser.rs}, crates/rego/src/funcs/{collections/numbers.rs,encoding.rs,strings.rs,time.rs}",
+    "crates/rego/tests/{builtins.rs,numbers.rs}, crates/rego/testdata/{numbers,parse}{,-oracle}.json",
+    "fuzz/fuzz_targets/rego-builtins.rs",
+    "docs/design/architecture.md (D98), docs/research/platform-measurements.md (one entry)",
+    "docs/research/measurements/ci-rego-compare/**"
+  ],
+  "constraints": "no subagents; light tests only (no real-VM E2E, benchmarks, audits or seven-target lint); this Mac above its 30 GiB floor (138 GiB free at the start); Linux through kiln on 00aad8daff2fa3c9daa65d53c425d450 (adacachy2) under systemd-run --user --scope -q -p MemoryMax=16G -p CPUQuota=400% and -j4; never adacachy; signed gits, named paths, never force; commits end Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+  "read_at": "2026-11-12"
+}

@@ -10300,6 +10300,11 @@ agents' (D59), never the command's (D115). So a sandboxed run could not be grant
   the start is refused. networks' `egress_names_each_destination_and_its_port` holds the
   option's reading.
 
+**Since (D236).** An Agentfile's `NETWORK --egress=HOST:PORT` grants its members
+destinations as this option grants a network's: one parser for both, which refuses a host
+whose last label is all digits and `localhost`, and takes `host.docker.internal` for the
+host itself, the gateway at that port alone, its loopback there.
+
 **Next.** IPv6 destinations (the network process learns A records alone); a destination
 on a network whose members' images have agents with grants of their own, held apart by
 the address its flows come from; a run's own grant on the default bridge, if one is
@@ -19464,10 +19469,9 @@ held to more than OPA's answers:
   `tests/numbers.rs` holds 135 long numbers' texts and `abs` of the fuzzer's operands
   to OPA's own (lengths, ends and SHA-256, `scripts/rego/generate numbers`).
   `number.rs`'s tests hold the leading digits and the shortest decimal to the exact
-  decimals, and the bounds to the powers they bound. Left, owed (M524's Open): `floor`,
-  `ceil`, `round` and integer formatting of such a number, whose answer is all of an
-  integer's digits, still convert through num-bigint; numbers past 1e536870938 are refused
-  where Go reads them.
+  decimals, and the bounds to the powers they bound. M524's Open (`floor`, `ceil`, `round`
+  and integer formatting of such a number, whose answer is all of an integer's digits;
+  numbers past 1e536870938 refused where Go reads them) is closed below (M526).
 - The rewrite of local variables walked as OPA's does, and OPA's way is exponential:
   rewriteEveryStatement (ast/compile.go) rewrites a statement's body, then walks the
   whole statement again (rewriteDeclaredVarsInExpr), whose walk rewrites each
@@ -19502,6 +19506,48 @@ held to more than OPA's answers:
   unknown, and a node finds a
   child by name, as OPA's typeTreeNode does with its map. The times after: owed, the
   nesting bench's M510 inputs and deeper (`rego-nesting/run.sh`).
+- Numbers whose exponents are large, the rest (M526; `docs/research/measurements/ci-rego-compare`).
+  CI's fuzzing found ten builtin calls whose work grew with an exponent's value, such as
+  `lt(33, 3e33333333332)`: besides the text above, the comparison scaled both numbers by
+  powers of 5 and 2 as long as their exponents' gap, addition shifted the smaller operand
+  as far (Go's `uadd` does too), and an exact integer was made whole. Now:
+  - The comparison makes p × 5^n × 2^s exactly only while n ≤ bits(q)/2, the most a power
+    of five dividing q can have. Past that the sides can't be equal, and bounds on 5^n
+    (the text's, with exponents wide enough for n up to 2^64), refined until they decide,
+    answer. The work is bounded by the mantissas, and every order the exact scaling gave
+    is kept (20,000 random pairs; convergents of log2 10 within 2^-64 of each other). OPA
+    panics on most such pairs ("illegal value": `big.Rat.SetString` refuses |exp5| > 10^6
+    and |exp2| > 10^7, go1.26.1 `math/big/ratconv.go`; `big.Float.SetString`, exponents
+    past int32). Shards answers exactly.
+  - Addition and subtraction keep the smaller operand's bits within prec + 2 of the
+    larger's top, the rest a sticky bit (and a borrow). The round bit is then at or above
+    the cut, so the result rounds as Go's exact sum does (160,000 random sums and
+    differences against it).
+  - Go's `pow5` squares its factor once past its last use. Past MaxExp that is an unread
+    +Inf there, and it was an error here: 1e536870939 through 1e646456992, finite in Go,
+    failed (M524's Open). A 5^n past Go's exponents is +Inf, and z over it zero, so
+    `-1e-1000000000` reads as -0. The parser says "number too big" for a literal Go reads
+    as ±Inf, as OPA's does.
+  - An exact integer whose MantExp is past 10^5 (`number::MAX_EXPONENT`) is not made: its
+    decimal is all its digits, a num-bigint conversion growing faster than their count
+    (near n^1.8 here), where the text above writes leading digits and zeros. `floor`,
+    `ceil`, `round`, `rem`, `bits.*`, `numbers.range*`, `format_int` and `units.parse*`
+    fail with "number too big", the error OPA's parser gives such a literal
+    (`ast/parser.go` `parseNumber`, v1.14.1); `time.*` keep OPA's "timestamp too big".
+    The bound is OPA's own on a number in Rego source, set for this cost
+    (golang/go#11068), so no builtin makes an integer a policy could not write. At it,
+    `ceil` and `round` answer in about 80 ms. Past it OPA's cost grows with the
+    exponent's value: 41.7 s for `ceil(1e3000000)`, 10.4 s for the fuzzer's
+    `ceil(266000000e2028020)`; ASan's fuzzer passed 2 GB on such integers (M524's Open).
+    Alternatives: Go's big.Float range (MaxExp 2^31: integers of 646 million digits, hours
+    in OPA and here); Go's big.Rat limits (10^7 bits: 23 s for one conversion here); a
+    conversion lean in memory (M524's Open), which bounds memory but not the time a
+    number's size asks. The difference from OPA: OPA writes those integers, in time
+    growing with the exponent's value, or panics (`bits.lsh` past its memory,
+    `makeslice`); shards refuses them. `bits.lsh`'s chosen limit of 2^32 bits gives way
+    to the same bound.
+  - `numbers.range` stays unbounded, as OPA's. The fuzz target asks it for at most one
+    number per byte of its input.
 - Left: a rule whose local-variable rewrite errs is rewritten OPA's way, so an
   erroring rule of `every` statements and comprehensions alternating takes OPA's time.
   Evaluation asks no bound of a policy, as OPA's does not (`numbers.range` over any
@@ -21990,8 +22036,13 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   program runs, within `run::MAX_PAYLOAD`. Native-sign-in delegation, not opacity (G18): the
   member reads what it is given.
 - *Ports and grants.* Published ports bound by `publish::bind`, only for a port the image
-  gives a member for ingress (D122) or for the run's own command; egress, remote MCP hosts
-  and DNS the image grants, kept or dropped by the orchestrator, never added.
+  gives a member for ingress (D122) or for the run's own command; egress, remote MCP hosts,
+  destinations (D236) and DNS the image grants, kept or dropped by the orchestrator, never
+  added. Each port bound names whom it reaches (`Bound::to`, channel version 3), so that a publish grant
+  names its "to whom": each member the image gives it, by declared index, at the member's
+  own port (another where an `EXPOSE` maps it), several where several claim it (the one
+  listening takes each connection); none where it reaches the run's own command. The rule
+  is `read ports`' (`agentfile::receiving`), one function for both.
 - *Shares.* At boot, as the run's `-v`, given to the members the image's `VOLUME` there is
   for (D109). Added while running: D214's path to the run's command, owed; to a member,
   refused (its mounts are made as it starts).
@@ -22136,6 +22187,97 @@ says; the report pipe on a Windows host; the seven-target lint.
 
 **What would falsify it.** A client that needs shards to own its VM processes after all (then
 D215's spawn alone).
+
+### D236. A network's destinations: a member reaches the hosts its grants name, the host itself at one port (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 9, and the harness bring-up's
+finding H2 (docs/research/measurements/harness-bringup-v1): an Agentfile's egress named
+ports alone. `NETWORK --egress=443` with `EXPOSE 443 AS egress` let a harness open TCP 443 to
+any address past its microVM, and `--dns` let it resolve any name, where Codex needed
+`api.openai.com` and `chatgpt.com` alone. Nor could a member reach kiln's MCP, served over
+HTTP at `/api/mcp` on kiln's `http_addr` (`0.0.0.0:7070` by default, kiln
+`crates/kiln/src/config.rs`): the host itself is what `Policy::Ports` never reaches (its
+gateway and loopback refused, rootless-security.md R4.16). Only a remote `MCP` server's grant
+named a host (D59 part seven); a run's command had D192's.
+
+**Alternatives.**
+- *A directive of its own* (`EGRESS host:port FOR member`): a second grammar for what a
+  network's boundary says already, where D192 put destinations on a network. Not taken
+  (R13).
+- *Names held by what a flow says* (TLS SNI, HTTP Host: Squid's ACLs, cloud firewalls'
+  FQDN rules): a client chooses what it says (domain fronting; ECH hides SNI). Not taken: a
+  flow reaches the addresses its resolver path answered, which is what D59 holds.
+- *Learned addresses held per member in the guest* (Cilium's toFQDNs policy programs each
+  endpoint's allowed addresses from the DNS answers its proxy relays; dnsmasq's `--nftset`):
+  D192's "held apart by the address its flows come from". Not built here: what the union
+  cannot hold is refused instead (below), which lifts once it is.
+- *The host at an address of its own* outside eth0's subnet (Docker Desktop's
+  192.168.65.254, Lima's 192.168.5.2): any such address can be one of a user's own
+  networks. The gateway is never a destination (it is the network process), and D124 takes
+  it for the host's loopback already.
+
+**Decided.**
+- *Grammar.* `NETWORK --egress=HOST:PORT`, beside ports: TCP; HOST a host's name (RFC 1035
+  §2.3.1 and RFC 1123 §2.1 labels, the last not all digits, RFC 3696 §2, so that no port or
+  mapping reads as one), an IPv4 address, or `host.docker.internal`, the host itself (Docker
+  Desktop's name for it; `.internal` is the top-level domain ICANN reserved for private use,
+  2024, so no name in the DNS is it). Refused, saying why: one on `--expose` or `--ingress`
+  (a destination is reached, never let in), on a network carrying no TCP, a pattern, an IPv6
+  address (as D192), UDP, and `localhost` (the asker's own, RFC 6761 §6.3). One parser,
+  `shards_dns::destination`, reads D192's option and the Agentfile.
+- *Who, to whom, which port, which way.* The network's members (`CONNECT … ON` it, within its
+  `FOR`) for whom the microVM's boundary opens the port outward (`EXPOSE … AS egress`, or both
+  ways, `FOR` it; D122's `--agents` and `--harnesses` naming them): the host named, at its
+  port, out. Two boundaries, as a port's (§12 answer 6); an internal network's reach nothing.
+- *Names.* A member asks the agents' resolver for its destinations' names alone, as a remote
+  MCP server's (`--dns` neither needed nor implied). The host itself is in its hosts file at
+  eth0's gateway and never asked of a resolver: the network process forwards no question for
+  it. A remote MCP server's URL may name the host itself too (`MCP kiln FROM
+  http://host.docker.internal:7070/api/mcp FOR codex`, kiln's MCP), which its grant then is.
+- *Held.* The network process's policy names each destination beside the MCP servers'
+  (`encode_policy`): a flow to its port reaches only an address its resolver answered for the
+  name through it, or the address it is; the host itself is the gateway at that TCP port
+  alone, which it takes to the host's IPv4 loopback there (`Config::host_side`). The guest
+  lets the member out on that port (its gate, the switch, init's forward chain); the run's own
+  processes (`confine_eth0`) and its engine's members (D181) reach the gateway by TCP at its
+  resolver's port alone.
+- *Refused where it cannot be held* (`agentfile::held`, at build and as the daemon reads the
+  normalized Agentfile): the network process holds the whole microVM to the union of its
+  members' names on a port, and a member's init lets it out on that port to any address. So
+  on a TCP port that one member reaches by name (a destination, or a remote MCP server), every
+  other member granted the port is granted the same names and none a port grant of it; else
+  the image is refused, naming both members and what each reaches. Remote MCP servers beside
+  another member's other grants on one port, which passed before, are refused alike.
+- *Orchestrators* keep or drop destinations (`Narrowing.destinations`, D231, channel version
+  3), never add one. The build labels them (`vnd.osi.agentfile.destinations`) for Docker and
+  Kubernetes; the daemon holds a run to its own reading of the image (D109).
+
+```dockerfile
+HARNESS codex FROM ./codex
+NETWORK --egress=api.openai.com:443 --egress=chatgpt.com:443 --egress=host.docker.internal:7070 provider FOR codex
+EXPOSE --harnesses=codex 443 7070 AS egress FOR provider
+CONNECT codex WITH codex ON provider
+```
+
+**Literals.** `host.docker.internal`, Docker Desktop's documented name; TCP port 53, DNS's
+(RFC 1035 §4.2.2), the gateway's one service to the run's processes; 63, a label's most, and
+253, a name's as text, its 255 octets on the wire less its first length and the root's (RFC
+1035 §2.3.4), as D192 had them. No bound, wait or size of its own.
+
+**Evidence.** The implementer's record, light tests on Linux x86_64 (adacachy) and the
+supported targets' lint: docs/research/measurements/s9-grants-v1.
+
+**Evidence owed** (ROOT). On real microVMs (KVM, HVF, WHP): a member granted provider names
+reaches them and nothing else (another host on their port, another port, an address no answer
+gave), and resolves them alone; one granted `host.docker.internal:PORT` reaches a listener on
+the host's loopback at PORT and no other port of the host, while the run's own command and
+another member reach neither; an image `held` refuses fails its build, and its run when
+crafted. The bring-up's examples (docs/examples/harness-codex, harness-claude) moved to
+destinations once run so.
+
+**What would falsify it.** A provider whose clients reach it at addresses its names never
+answer (then address ranges as grants); a member that must reach one port by name beside
+another member's other names (then the per-member hold above, which lifts the refusal).
 
 ## 4. Start path (≤ 5 ms budget)
 

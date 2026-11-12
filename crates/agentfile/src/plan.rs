@@ -5119,6 +5119,7 @@ impl Planner<'_> {
             crate::agentfile::reach(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::ingress(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::connections(&t.agentfile).map_err(Fail::new)?;
+            crate::agentfile::held(&t.agentfile).map_err(Fail::new)?;
             // Its grants, for Docker and Kubernetes to see: the daemon holds a run to its
             // own reading of the normalized Agentfile, never to these (D109).
             let grants = crate::agentfile::grants(&t.agentfile);
@@ -5132,6 +5133,7 @@ impl Planner<'_> {
             }
             for (label, list) in [
                 (crate::agentfile::MCP_LABEL, &grants.mcp),
+                (crate::agentfile::DESTINATIONS_LABEL, &grants.destinations),
                 (crate::agentfile::EGRESS_DECLARED_LABEL, &grants.egress_declared),
                 (crate::agentfile::EGRESS_LABEL, &grants.egress),
             ] {

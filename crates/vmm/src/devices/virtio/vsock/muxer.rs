@@ -776,12 +776,6 @@ fn serve(accept: impl FnOnce(UnixStream) -> crate::vm::Admission) -> io::Result<
     }
     match accept(theirs) {
         crate::vm::Admission::Accepted => {}
-        crate::vm::Admission::Full => {
-            return Err(io::Error::new(
-                io::ErrorKind::ConnectionRefused,
-                "host port admission is full",
-            ));
-        }
         crate::vm::Admission::Closed => {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionRefused,

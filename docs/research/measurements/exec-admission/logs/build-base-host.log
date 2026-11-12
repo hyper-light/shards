@@ -1,0 +1,24 @@
+   Compiling libc v0.2.189
+   Compiling autocfg v1.5.1
+   Compiling shards-abi v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/abi)
+   Compiling memchr v2.8.3
+   Compiling regex-syntax v0.8.11
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/vmm)
+   Compiling shards-vm-process v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/vm-process)
+   Compiling shards-template v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/template)
+   Compiling shards-dns v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/dns)
+   Compiling num-traits v0.2.19
+   Compiling aho-corasick v1.1.5
+   Compiling num-integer v0.1.47
+   Compiling shards-netring v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/netring)
+   Compiling shards-ipc v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/ipc)
+   Compiling shards-syscall-filter v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/syscall-filter)
+   Compiling num-bigint v0.4.8
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/testdir)
+   Compiling regex-automata v0.4.18
+   Compiling shards-net v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/net)
+   Compiling regex v1.13.1
+   Compiling shards-cmdline v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/cmdline)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 12.64s
+  Executable unittests src/main.rs (/home/adalundhe/g121-tmp/xa-exec/target/test-release/deps/shards_vm-a95c0ad9f3e71ef0)
+exit 0

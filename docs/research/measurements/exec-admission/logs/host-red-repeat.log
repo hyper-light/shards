@@ -1,0 +1,6 @@
+# host red, repeated: origin/main 451672250 + the red tests; 2026-11-12T19:54:58Z; load 26.85 27.66 27.50
+  Executable unittests src/main.rs (/home/adalundhe/g121-tmp/xa-exec/target-red/test-release/deps/shards_vm-a95c0ad9f3e71ef0)
+12 of 64 execs: [(0, Full, Err(Timeout)), (5, Full, Err(Timeout)), (6, Full, Err(Timeout)), (15, Full, Err(Timeout)), (17, Full, Err(Timeout)), (20, Full, Err(Timeout)), (26, Full, Err(Timeout)), (30, Full, Err(Timeout)), (37, Full, Err(Timeout)), (40, Full, Err(Timeout)), (44, Full, Err(Timeout)), (49, Full, Err(Timeout))]
+3 of 64 execs: [(1, Accepted, Err(Timeout)), (11, Full, Err(Timeout)), (39, Full, Err(Timeout))]
+7 of 64 execs: [(2, Full, Err(Timeout)), (5, Full, Err(Timeout)), (9, Full, Err(Timeout)), (14, Full, Err(Timeout)), (16, Full, Err(Timeout)), (30, Full, Err(Timeout)), (31, Full, Err(Timeout))]
+execs_at_once x50 on origin/main: pass 12 fail 38; execs refused Full 88, admitted then lost 39 (of 3200)

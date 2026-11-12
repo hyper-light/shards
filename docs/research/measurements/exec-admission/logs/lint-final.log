@@ -1,0 +1,9 @@
+# clippy -D warnings of shards-vmm, shards-vm-process, shards-init, --all-targets; 2026-11-12T20:20:27Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); clippy 0.1.98 (48a229ceae 2026-09-01)
+## fmt exit 0
+## x86_64-unknown-linux-gnu exit 0
+## aarch64-unknown-linux-gnu exit 0
+## x86_64-pc-windows-msvc exit 0
+## aarch64-pc-windows-msvc exit 0
+## x86_64-unknown-linux-musl exit 0
+## aarch64-unknown-linux-musl exit 0
+# done 2026-11-12T20:20:46Z

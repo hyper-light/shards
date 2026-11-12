@@ -1,0 +1,11 @@
+[package]
+name = "bigint-text"
+version = "0.0.0"
+edition = "2024"
+publish = false
+[dependencies]
+num-bigint = "=0.4.8"
+[profile.release]
+debug = 0
+
+[workspace]

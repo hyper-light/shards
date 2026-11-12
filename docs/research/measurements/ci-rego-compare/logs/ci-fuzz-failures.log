@@ -1,0 +1,143 @@
+CI's fuzz job, hyper-light/shards ci.yml: each failing job's failure lines (gh api repos/hyper-light/shards/actions/jobs/JOB/logs, colours stripped).
+
+## job 131294914800
+2026-11-12T15:46:39.8510475Z Done 2284430 runs in 61 second(s)
+2026-11-12T15:47:41.2737450Z Done 1257214 runs in 61 second(s)
+2026-11-12T15:48:42.5759341Z Done 2987298 runs in 61 second(s)
+2026-11-12T15:49:44.0034426Z Done 4232911 runs in 61 second(s)
+2026-11-12T15:50:45.2731951Z Done 1837762 runs in 61 second(s)
+2026-11-12T15:51:46.6853295Z Done 2711557 runs in 61 second(s)
+2026-11-12T15:52:48.1202376Z Done 283449 runs in 61 second(s)
+2026-11-12T15:52:48.4365010Z      Running `fuzz/target/x86_64-unknown-linux-gnu/release/rego-builtins -artifact_prefix=/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/ -max_total_time=60 -rss_limit_mb=2048 -max_len=65536 /home/runner/work/shards/shards/fuzz/corpus/rego-builtins`
+2026-11-12T15:53:17.4579963Z ==206296== ERROR: libFuzzer: out-of-memory (used: 2166Mb; limit: 2048Mb)
+2026-11-12T15:53:17.5241921Z artifact_prefix='/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/'; Test unit written to /home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/oom-36ae0bf37f861e2c1c0a53790963b4d52e20913c
+2026-11-12T15:53:17.5242476Z Base64: bHQKWzMzLDNlMzMzMzMzMzMzMzJd
+2026-11-12T15:53:17.5242681Z SUMMARY: libFuzzer: out-of-memory
+
+## job 131291702610
+2026-11-12T15:41:44.7142964Z Done 1927361 runs in 61 second(s)
+2026-11-12T15:42:46.2488313Z Done 1113659 runs in 61 second(s)
+2026-11-12T15:43:47.6557760Z Done 2744044 runs in 61 second(s)
+2026-11-12T15:44:49.1959524Z Done 2455671 runs in 61 second(s)
+2026-11-12T15:45:50.5571163Z Done 1339558 runs in 61 second(s)
+2026-11-12T15:46:52.1196196Z Done 1525411 runs in 61 second(s)
+2026-11-12T15:47:53.7007037Z Done 186876 runs in 61 second(s)
+2026-11-12T15:47:54.1179145Z      Running `fuzz/target/x86_64-unknown-linux-gnu/release/rego-builtins -artifact_prefix=/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/ -max_total_time=60 -rss_limit_mb=2048 -max_len=65536 /home/runner/work/shards/shards/fuzz/corpus/rego-builtins`
+2026-11-12T15:48:42.1471252Z ==137338== ERROR: libFuzzer: out-of-memory (used: 2086Mb; limit: 2048Mb)
+2026-11-12T15:48:42.1989128Z artifact_prefix='/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/'; Test unit written to /home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/oom-56d2aa9c9126ae5b1404f8e4ac124e9bc19850b8
+2026-11-12T15:48:42.1990139Z Base64: Y2VpbApbMjY2MDAwMDAwZTIwMjgwMjBdCQ==
+2026-11-12T15:48:42.1990454Z SUMMARY: libFuzzer: out-of-memory
+
+## job 131224103825
+2026-11-12T13:51:06.6979582Z Done 1986563 runs in 61 second(s)
+2026-11-12T13:52:08.2256582Z Done 1057482 runs in 61 second(s)
+2026-11-12T13:53:09.6226782Z Done 2433761 runs in 61 second(s)
+2026-11-12T13:54:11.1691431Z Done 2666807 runs in 61 second(s)
+2026-11-12T13:55:12.5131857Z Done 1205714 runs in 61 second(s)
+2026-11-12T13:56:14.0672685Z Done 1590036 runs in 61 second(s)
+2026-11-12T13:57:15.6378743Z Done 188903 runs in 61 second(s)
+2026-11-12T13:57:16.0313084Z      Running `fuzz/target/x86_64-unknown-linux-gnu/release/rego-builtins -artifact_prefix=/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/ -max_total_time=60 -rss_limit_mb=2048 -max_len=65536 /home/runner/work/shards/shards/fuzz/corpus/rego-builtins`
+2026-11-12T13:57:58.0616562Z ==140420== ERROR: libFuzzer: out-of-memory (used: 2120Mb; limit: 2048Mb)
+2026-11-12T13:57:58.1521383Z artifact_prefix='/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/'; Test unit written to /home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/oom-4b431d4a9980bfc277352f46ea1c9d70669ec749
+2026-11-12T13:57:58.1522305Z Base64: YWJzClsNODAwMDAwMDAwMDBlMDAwMjkxNzQ2ODBdCQ==
+2026-11-12T13:57:58.1522646Z SUMMARY: libFuzzer: out-of-memory
+
+## job 131084056354
+2026-11-12T10:10:30.8657583Z Done 2802085 runs in 61 second(s)
+2026-11-12T10:11:32.3211169Z Done 1325961 runs in 61 second(s)
+2026-11-12T10:12:33.6591868Z Done 3079106 runs in 61 second(s)
+2026-11-12T10:13:35.1678328Z Done 2886551 runs in 61 second(s)
+2026-11-12T10:14:36.5044258Z Done 1534044 runs in 61 second(s)
+2026-11-12T10:15:37.9858102Z Done 2555792 runs in 61 second(s)
+2026-11-12T10:16:39.4666352Z Done 241543 runs in 61 second(s)
+2026-11-12T10:16:39.8272998Z      Running `fuzz/target/x86_64-unknown-linux-gnu/release/rego-builtins -artifact_prefix=/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/ -max_total_time=60 -rss_limit_mb=2048 -max_len=65536 /home/runner/work/shards/shards/fuzz/corpus/rego-builtins`
+2026-11-12T10:17:06.8532248Z ==179140== ERROR: libFuzzer: out-of-memory (used: 2109Mb; limit: 2048Mb)
+2026-11-12T10:17:06.9173054Z artifact_prefix='/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/'; Test unit written to /home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/oom-b6644dc21fe88fed2b6fedf9c1ccc3f2413f56f2
+2026-11-12T10:17:06.9173786Z Base64: bHQKWw0xMjAyMDIyMjIyMjAwMDAwRTAyOTcxMzgxMjIwMDk1NzcsCjFd
+2026-11-12T10:17:06.9174100Z SUMMARY: libFuzzer: out-of-memory
+
+## job 131065942830
+2026-11-12T08:37:23.3903258Z Done 2134660 runs in 61 second(s)
+2026-11-12T08:38:24.9217490Z Done 1102470 runs in 61 second(s)
+2026-11-12T08:39:26.3067673Z Done 1880759 runs in 61 second(s)
+2026-11-12T08:40:27.8797143Z Done 2580368 runs in 61 second(s)
+2026-11-12T08:41:29.2570417Z Done 1309872 runs in 61 second(s)
+2026-11-12T08:42:30.8370147Z Done 1742071 runs in 61 second(s)
+2026-11-12T08:43:32.4177667Z Done 193665 runs in 61 second(s)
+2026-11-12T08:43:32.8127513Z      Running `fuzz/target/x86_64-unknown-linux-gnu/release/rego-builtins -artifact_prefix=/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/ -max_total_time=60 -rss_limit_mb=2048 -max_len=65536 /home/runner/work/shards/shards/fuzz/corpus/rego-builtins`
+2026-11-12T08:44:16.8402837Z ==143090== ERROR: libFuzzer: out-of-memory (used: 2049Mb; limit: 2048Mb)
+2026-11-12T08:44:16.9391389Z artifact_prefix='/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/'; Test unit written to /home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/oom-b34d25a1ec612a7b3653f2119ee9c1c030311995
+2026-11-12T08:44:16.9392338Z Base64: YWJzCls5ZTk5OTk5OTVd
+2026-11-12T08:44:16.9392644Z SUMMARY: libFuzzer: out-of-memory
+
+## job 131032746880
+2026-11-12T07:18:33.2491297Z Done 2301392 runs in 61 second(s)
+2026-11-12T07:19:34.7486531Z Done 1143686 runs in 61 second(s)
+2026-11-12T07:20:36.1316565Z Done 2856816 runs in 61 second(s)
+2026-11-12T07:21:37.6813620Z Done 2571148 runs in 61 second(s)
+2026-11-12T07:22:39.0293443Z Done 1376954 runs in 61 second(s)
+2026-11-12T07:23:40.5810801Z Done 1843112 runs in 61 second(s)
+2026-11-12T07:24:42.1343418Z Done 194121 runs in 61 second(s)
+2026-11-12T07:24:42.5295995Z      Running `fuzz/target/x86_64-unknown-linux-gnu/release/rego-builtins -artifact_prefix=/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/ -max_total_time=60 -rss_limit_mb=2048 -max_len=65536 /home/runner/work/shards/shards/fuzz/corpus/rego-builtins`
+2026-11-12T07:25:49.5611578Z ==142780== ERROR: libFuzzer: out-of-memory (used: 2075Mb; limit: 2048Mb)
+2026-11-12T07:25:50.0095063Z artifact_prefix='/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/'; Test unit written to /home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/oom-c427225dc3cb87dfa8f80f3a903e006ecf5d9271
+2026-11-12T07:25:50.0096402Z Base64: bnVtYmVycy5yYW5nZV9zdGVwCg1bLTU4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4LA0zNTgwMDAwMDAsODMzOTQxMTI2NDA0MTNdDQ==
+2026-11-12T07:25:50.0097162Z SUMMARY: libFuzzer: out-of-memory
+
+## job 131027488850
+2026-11-12T07:05:14.2969711Z Done 2094712 runs in 61 second(s)
+2026-11-12T07:06:15.7497756Z Done 1108164 runs in 61 second(s)
+2026-11-12T07:07:17.0855136Z Done 3074306 runs in 61 second(s)
+2026-11-12T07:08:18.5532809Z Done 2457135 runs in 61 second(s)
+2026-11-12T07:09:19.8585523Z Done 1487099 runs in 61 second(s)
+2026-11-12T07:10:21.3224770Z Done 1883700 runs in 61 second(s)
+2026-11-12T07:11:22.7956749Z Done 262385 runs in 61 second(s)
+2026-11-12T07:11:23.1567958Z      Running `fuzz/target/x86_64-unknown-linux-gnu/release/rego-builtins -artifact_prefix=/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/ -max_total_time=60 -rss_limit_mb=2048 -max_len=65536 /home/runner/work/shards/shards/fuzz/corpus/rego-builtins`
+2026-11-12T07:12:03.1816311Z ==193683== ERROR: libFuzzer: out-of-memory (used: 2108Mb; limit: 2048Mb)
+2026-11-12T07:12:03.2682308Z artifact_prefix='/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/'; Test unit written to /home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/oom-2c3031fca23d849e4c554a649402e0be76035321
+2026-11-12T07:12:03.2683490Z Base64: ZGl2ClszMzMzMzM3MzMzMzMzZTAwMDAwMDAwMTMwOTUxOTA5CiwzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM0XQ==
+2026-11-12T07:12:03.2684006Z SUMMARY: libFuzzer: out-of-memory
+
+## job 131024449164
+2026-11-12T06:55:43.7910910Z Done 3408435 runs in 61 second(s)
+2026-11-12T06:56:45.1961122Z Done 1545396 runs in 61 second(s)
+2026-11-12T06:57:46.4991512Z Done 4469809 runs in 61 second(s)
+2026-11-12T06:58:47.9252747Z Done 3507325 runs in 61 second(s)
+2026-11-12T06:59:49.2078448Z Done 2144937 runs in 61 second(s)
+2026-11-12T07:00:50.6208891Z Done 1255578 runs in 61 second(s)
+2026-11-12T07:01:52.0653162Z Done 282730 runs in 61 second(s)
+2026-11-12T07:01:52.3834416Z      Running `fuzz/target/x86_64-unknown-linux-gnu/release/rego-builtins -artifact_prefix=/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/ -max_total_time=60 -rss_limit_mb=2048 -max_len=65536 /home/runner/work/shards/shards/fuzz/corpus/rego-builtins`
+2026-11-12T07:02:24.4041736Z ==205076== ERROR: libFuzzer: out-of-memory (used: 2071Mb; limit: 2048Mb)
+2026-11-12T07:02:24.4696880Z artifact_prefix='/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/'; Test unit written to /home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/oom-2f44b671f03f4747c5bfd562ead26e99b33f6d99
+2026-11-12T07:02:24.4697699Z Base64: ZGl2Cls0DSwNDTgwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMjA0OTIwNDk2MzgyMzA0ZTEyMTcyNDAyXQ==
+2026-11-12T07:02:24.4698097Z SUMMARY: libFuzzer: out-of-memory
+
+## job 131022114790
+2026-11-12T06:50:56.2750846Z Done 2114523 runs in 61 second(s)
+2026-11-12T06:51:57.8002639Z Done 1095438 runs in 61 second(s)
+2026-11-12T06:52:59.1899537Z Done 2938000 runs in 61 second(s)
+2026-11-12T06:54:00.7357749Z Done 2610163 runs in 61 second(s)
+2026-11-12T06:55:02.0872802Z Done 1413942 runs in 61 second(s)
+2026-11-12T06:56:03.6445346Z Done 1758472 runs in 61 second(s)
+2026-11-12T06:57:05.2098534Z Done 187916 runs in 61 second(s)
+2026-11-12T06:57:05.6387429Z      Running `fuzz/target/x86_64-unknown-linux-gnu/release/rego-builtins -artifact_prefix=/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/ -max_total_time=60 -rss_limit_mb=2048 -max_len=65536 /home/runner/work/shards/shards/fuzz/corpus/rego-builtins`
+2026-11-12T06:57:56.6675682Z ==137686== ERROR: libFuzzer: out-of-memory (used: 2053Mb; limit: 2048Mb)
+2026-11-12T06:57:56.7600351Z artifact_prefix='/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/'; Test unit written to /home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/oom-e381e7bcec6803c4740f098b8a69a5e05e1fc362
+2026-11-12T06:57:56.7602031Z Base64: bWF4ClsNWzQ0MjIyMjIyMjIyMjIyMjIyMjAwMDAwMDA4ODU0MDI5LDIyMjIyMjIwMDAwMDAyMjIyMjIyMjIyMjIyMjIyMDAwMDAwMDg4NTQwMjksMjIyMjIyMjAwMDAwMDA4ODU0MDA4ODU0MDI5LDIyZTIyMjI0NDQ0CQkJXV0=
+2026-11-12T06:57:56.7603141Z SUMMARY: libFuzzer: out-of-memory
+
+## job 130975787902
+2026-11-12T04:58:38.8155807Z Done 2288062 runs in 61 second(s)
+2026-11-12T04:59:40.3405203Z Done 1090137 runs in 61 second(s)
+2026-11-12T05:00:41.7494870Z Done 2543596 runs in 61 second(s)
+2026-11-12T05:01:43.3311388Z Done 2578716 runs in 61 second(s)
+2026-11-12T05:02:44.6920483Z Done 1544492 runs in 61 second(s)
+2026-11-12T05:03:46.2436177Z Done 1779980 runs in 61 second(s)
+2026-11-12T05:04:47.8165301Z Done 176605 runs in 61 second(s)
+2026-11-12T05:04:48.2286501Z      Running `fuzz/target/x86_64-unknown-linux-gnu/release/rego-builtins -artifact_prefix=/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/ -max_total_time=60 -rss_limit_mb=2048 -max_len=65536 /home/runner/work/shards/shards/fuzz/corpus/rego-builtins`
+2026-11-12T05:05:25.1334599Z artifact_prefix='/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/'; Test unit written to /home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/slow-unit-9672ac8d2f8a968b4c6bbbac5c5ab8e5b0358805
+2026-11-12T05:05:25.1337036Z Base64: Y2VpbApbMmUwMDE3NTI1MjVd
+2026-11-12T05:05:25.2582450Z ==131851== ERROR: libFuzzer: out-of-memory (used: 2053Mb; limit: 2048Mb)
+2026-11-12T05:05:25.3814914Z artifact_prefix='/home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/'; Test unit written to /home/runner/work/shards/shards/fuzz/artifacts/rego-builtins/oom-da39a3ee5e6b4b0d3255bfef95601890afd80709
+2026-11-12T05:05:25.3815829Z Base64: 
+2026-11-12T05:05:25.3816061Z SUMMARY: libFuzzer: out-of-memory

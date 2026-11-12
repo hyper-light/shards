@@ -1,0 +1,34 @@
+{
+  "POLICY_READ": true,
+  "revision": "451672250c7837e88d4fe71479a1a3d760d3268d",
+  "source": "origin/main, read in full with git show before any edit, build or run",
+  "files": {
+    "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "AGENTS.md": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+    "docs/development-evidence.md": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63"
+  },
+  "development_rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "coordinator": "ROOT, session g121-46 (kiln agent 01a148884a4770fdaf0111f3f792a248)",
+  "task": "Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d step 9: explicit grants let a member reach kiln's MCP and its providers by name, default deny, the same checks at build and at run; and, from Hex step 15's finding, D231's published ports name the member that receives them.",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/s9-grants",
+  "branch": "p/s9-grants-v1",
+  "base": "origin/main 451672250 (fast-forwarded to a7dbf1446 before the first edit)",
+  "owned_paths": [
+    "member grants: crates/agentfile (destinations, held), crates/dns (the destination grammar), crates/net (named grants, the host), crates/init netplan/links and the grant lines of domains.rs, crates/shards agentfile.rs, daemon.rs's policy, networks.rs's parser, api_run.rs's narrowing",
+    "publish's receiving member: crates/api image wire Bound/Receiving, api_run.rs published(), agentfile::receiving shared with read ports",
+    "docs/design/architecture.md D236 and the D192/D231 lines it touches, docs/architecture/AGENTFILE_ARCH.md §4.6, this directory"
+  ],
+  "not_owned": [
+    "step 5: a member's stdio plumbing",
+    "step 7: harness_env, ENV, HOME, the working directory and mount order in crates/init/src/domains.rs",
+    "step 8: project paths, shares and inotify"
+  ],
+  "limits": [
+    "no builds on this Mac (load about 200); light tests on adacachy (Linux x86_64), the Mac Studio adas-mac-studio.local-2 (macOS arm64, and scripts/lint for all seven targets) and the Windows 11 guest on adacachy (Windows x86_64)",
+    "unit and light integration tests of the code touched; no suites, real-VM E2E or measurements (ROOT's)",
+    "commits via /Users/adalundhe/.kiln-run/bin/gits with named paths; merge origin/main in and push to main fast-forward, never force"
+  ],
+  "rules_acknowledged": "R01-R16 read in full; docs/development-evidence.md checklist read in full; AGENTS.md read in full; the 2026-11-12 rule (subagents test their change, merge to main themselves, end) read in the coordinator's brief",
+  "read_at": "2026-11-12"
+}
