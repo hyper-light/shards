@@ -4,7 +4,7 @@
 cd ~/g121-tmp/to-guest/src
 export CARGO_TARGET_DIR=$HOME/g121-tmp/to-guest/target
 log=../logs/${1:-linux}.log
-echo "# $(git log --oneline -1 | cut -c1-12) + the fix; $(date -u +%FT%TZ) $(uname -srm); $(rustc --version); load $(cut -d' ' -f1-3 /proc/loadavg)" > $log
+echo "# $(git rev-parse --short=12 HEAD); $(date -u +%FT%TZ) $(uname -srm); $(rustc --version); load $(cut -d' ' -f1-3 /proc/loadavg)" > $log
 nice -n 10 cargo test -p shards-vm-process --bin shards-vm --profile test-release -j 12 2>&1 | grep -E "^test .*(FAILED|signal|dial|frame|exec_whose|guest_that|only_execs)|test result|panicked" >> $log; echo "## shards-vm (all) exit ${PIPESTATUS[0]}" >> $log
 nice -n 10 cargo test -p shards-init --profile test-release -j 12 2>&1 | grep -E "^test .*(FAILED|signals_end)|test result|panicked" >> $log; echo "## shards-init (all) exit ${PIPESTATUS[0]}" >> $log
 bin=$(ls -t $CARGO_TARGET_DIR/test-release/deps/shards_vm-* | grep -v '\.d$' | head -1)

@@ -5,7 +5,7 @@
 cd ~/g121-tmp/to-guest
 export CARGO_TARGET_DIR=$HOME/g121-tmp/to-guest/target-mut
 log=logs/mutations.log
-echo "# mutations of the fix; $(date -u +%FT%TZ) $(uname -srm); $(cd src && rustc --version); load $(cut -d' ' -f1-3 /proc/loadavg)" > $log
+echo "# mutations of the fix, $(cd src && git rev-parse --short=12 HEAD); $(date -u +%FT%TZ) $(uname -srm); $(cd src && rustc --version); load $(cut -d' ' -f1-3 /proc/loadavg)" > $log
 run() { # name, then cargo test's arguments
   name=$1; shift
   rsync -a --delete --exclude /target src/ mut/

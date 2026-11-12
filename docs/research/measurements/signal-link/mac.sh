@@ -1,11 +1,14 @@
 #!/bin/bash
-# On the Mac Studio (kiln's adas-mac-studio.local-2), in kiln's synced copy of the worktree:
-# scripts/lint for macOS and the two Windows targets (cargo-xwin, LLVM, NASM), then the VM
-# process's tests (every workload test among them) on macOS arm64, the workload's 200 times.
+# On the Mac Studio (kiln's adas-mac-studio.local-2), in a clone of the branch at its commit
+# (~/to-guest/src: kiln's sync of the whole worktree timed out): scripts/lint for macOS and
+# the two Windows targets (cargo-xwin, LLVM, NASM), then the VM process's tests (every workload
+# test among them) on macOS arm64, the workload's 200 times.
 export CARGO_TARGET_DIR=$HOME/to-guest-target
+# zig 0.16.0, pinned by digest, for the guest binaries' C that `shards`' build compiles.
+command -v zig > /dev/null || PATH="$(mkdir -p ~/to-guest/tools && TMPDIR=~/to-guest/tools scripts/install-zig):$PATH"
 log=docs/research/measurements/signal-link/logs/mac.log
 mkdir -p "$(dirname "$log")"
-echo "# $(git log --oneline -1 | cut -c1-12) + the fix (synced); $(date -u +%FT%TZ) $(uname -srm) $(sw_vers -productVersion); $(rustc --version); $(cargo clippy --version)" > $log
+echo "# $(git rev-parse --short=12 HEAD); $(date -u +%FT%TZ) $(uname -srm) $(sw_vers -productVersion); $(rustc --version); $(cargo clippy --version)" > $log
 nice -n 10 scripts/lint aarch64-apple-darwin x86_64-pc-windows-msvc aarch64-pc-windows-msvc > /tmp/tg-lint.out 2>&1
 rc=$?
 grep -E "^== |^(warning|error)" -A 8 /tmp/tg-lint.out | grep -vE "^\s+(Compiling|Checking)" | head -120 >> $log

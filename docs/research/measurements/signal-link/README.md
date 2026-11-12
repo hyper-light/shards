@@ -5,7 +5,8 @@ ROOT's goal for session g121-46: the exec-admission lane found (its record,
 process's `to_guest` returned true when its send on the guest's signal connection failed, and
 that frames then queued for ever while the workload ran, so that an exec asked for after that
 waited for the workload's end. Implementer lane `p/to-guest-v1`, from origin/main
-`d35c4cf79`, origin/main `c2c4547c1` merged in before any edit. Policy
+`d35c4cf79`, origin/main `c2c4547c1` merged in before any edit and `5564278e3` before the
+final checks (`f5bfab285`). Policy
 `docs/development-rules.md` SHA-256
 `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`, read in full first.
 Owned paths: `crates/shards/src/workload.rs` and `workload/hellos.rs`, their callers in
@@ -97,13 +98,16 @@ shards-init's suites:
 | `only_execs_fail_as_the_signal_connection_goes` | | ok |
 | init `the_relays_end_is_said_last_on_its_signal_connection` | | ok |
 
-Linux x86_64 (adacachy, under its load of 70 to 79 on 32 cores),
-[logs/linux-green.log](logs/linux-green.log) ([linux.sh](linux.sh)): shards-vm 57 of 57,
-shards-init 207 (1 ignored, as before), the workload tests 200 of 200 runs, the guest's end
-300 of 300.
+At the branch's merged revision `f5bfab285` (origin/main `5564278e3` in), Linux x86_64
+(adacachy, under its load of 51 to 85 on 32 cores), [logs/linux-green.log](logs/linux-green.log)
+([linux.sh](linux.sh)): shards-vm 57 of 57, shards-init 212 (1 ignored, as on main), the
+workload tests 200 of 200 runs, the guest's end 300 of 300. macOS 26.4 arm64 (the Mac
+Studio), [logs/mac.log](logs/mac.log) ([mac.sh](mac.sh)): shards-vm 52 of 52 (the rest are
+Linux's), the workload tests 200 of 200 runs.
 
-Mutations, each a guard removed ([mutate.py](mutate.py), [mutations.sh](mutations.sh)),
-all red for their reason, [logs/mutations.log](logs/mutations.log):
+Mutations, each a guard removed ([mutate.py](mutate.py), [mutations.sh](mutations.sh)), in
+the same run, on `f5bfab285`: all red for their reason, [logs/mutations.log](logs/mutations.log)
+(the first pass, on `c2c4547c1` with the fix, red alike):
 
 | Mutation | Fails |
 | --- | --- |
@@ -126,11 +130,19 @@ all red for their reason, [logs/mutations.log](logs/mutations.log):
 - Shared code only: the link, its watch and the guest's end use the `platform` sockets and
   `shards_ipc::Polled`; no platform adapter added. No new syscall in the VM process's
   seccomp filter (a socket's dup and read, as `serve` already makes).
-- Linux x86_64: above. `scripts/lint` for the four Linux targets, from adacachy (zig),
-  [logs/lint-linux.log](logs/lint-linux.log) ([lint-linux.sh](lint-linux.sh)).
-- macOS arm64 and the two Windows targets: `scripts/lint aarch64-apple-darwin
-  x86_64-pc-windows-msvc aarch64-pc-windows-msvc` and the VM process's tests on the Mac
-  Studio, [logs/mac.log](logs/mac.log) ([mac.sh](mac.sh)).
+- Lint, `f5bfab285`, all seven targets:
+  - `scripts/lint` for the four Linux targets, from adacachy (zig 0.17.0): clean,
+    [logs/lint-linux.log](logs/lint-linux.log) ([lint-linux.sh](lint-linux.sh)).
+  - `scripts/lint aarch64-apple-darwin x86_64-pc-windows-msvc aarch64-pc-windows-msvc` on the
+    Mac Studio (zig 0.16.0 by `scripts/install-zig`, cargo-xwin, LLVM, NASM),
+    [logs/mac.log](logs/mac.log): macOS clean; it stops at x86_64 Windows on **main's own
+    error**, in shards-vmm's test target (`crates/vmm/src/platform/windows_process.rs`
+    l. 544, `undocumented_unsafe_blocks`, its SAFETY comment above `assert_ne!` rather than
+    the `unsafe` inside it), from cacbd8883 (D181, PM M526), which nothing of this change
+    touches.
+  - So the rest of `scripts/lint`'s Windows clippy, the workspace less shards-vmm's own
+    targets (its library linted still, as the rest's dependency), for both Windows targets:
+    clean, [logs/lint-windows.log](logs/lint-windows.log) ([lint-windows.sh](lint-windows.sh)).
 - Windows: no test of this change runs there (the workload's tests are Unix's); its build is
   the lint's. AF_UNIX on Windows resets a peer that writes after the other end closed, and
   it loses what it had not read (PM M358): a frame sent just as the guest says its end can
@@ -171,7 +183,7 @@ all red for their reason, [logs/mutations.log](logs/mutations.log):
 | R09, R10 | Red, green, mutations above, logs kept. |
 | R11, R12 | Above. |
 | R15 | Implementer; merged to main by the person's 2026-11-12 rule; real VMs ROOT's. |
-| R16 | Work dirs `~/g121-tmp/to-guest` on adacachy and `~/to-guest-target` on the Mac Studio: build output and copies, removed after. |
+| R16 | Work dirs `~/g121-tmp/to-guest` on adacachy, `~/to-guest` and `~/to-guest-target` on the Mac Studio: build output, copies and zig, removed after. |
 
 ## Owed to ROOT
 
@@ -181,3 +193,4 @@ all red for their reason, [logs/mutations.log](logs/mutations.log):
   or a reset vsock stream), with `shards exec`, `kill` and a daemon's end seen to end at once.
 - The paused-microVM lock wait above, and a guest that never dials.
 - aarch64 Linux and Windows tests.
+- Main's Windows clippy error above (cacbd8883's lane, or ROOT's).

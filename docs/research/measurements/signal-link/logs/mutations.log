@@ -1,14 +1,14 @@
-# mutations of the fix; 2026-11-12T22:02:03Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 77.15 79.44 62.79
+# mutations of the fix; 2026-11-12T22:26:35Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 51.34 78.35 83.83
 applied HM1-failed-send-told-sent
 ## HM1-failed-send-told-sent: cargo test -p shards-vm-process --bin shards-vm -- workload::
 test workload::tests::a_frame_the_guest_cannot_be_sent_fails_its_caller_and_every_later_one ... FAILED
 test workload::tests::a_guest_that_says_its_end_has_ended_its_run ... FAILED
 test workload::tests::an_exec_whose_frame_cannot_be_sent_ends_at_once_with_why ... FAILED
-thread 'workload::tests::a_frame_the_guest_cannot_be_sent_fails_its_caller_and_every_later_one' (3673236) panicked at crates/vm-process/src/../../shards/src/workload.rs:3294:44:
-thread 'workload::tests::a_guest_that_says_its_end_has_ended_its_run' (3673239) panicked at crates/vm-process/src/../../shards/src/workload.rs:3369:9:
-thread 'workload::tests::an_exec_whose_frame_cannot_be_sent_ends_at_once_with_why' (3673256) panicked at crates/vm-process/src/../../shards/src/workload.rs:3272:22:
+thread 'workload::tests::a_frame_the_guest_cannot_be_sent_fails_its_caller_and_every_later_one' (476650) panicked at crates/vm-process/src/../../shards/src/workload.rs:3308:44:
+thread 'workload::tests::a_guest_that_says_its_end_has_ended_its_run' (476655) panicked at crates/vm-process/src/../../shards/src/workload.rs:3386:9:
+thread 'workload::tests::an_exec_whose_frame_cannot_be_sent_ends_at_once_with_why' (476671) panicked at crates/vm-process/src/../../shards/src/workload.rs:3283:9:
 the exec did not fail at once: Err(Timeout)
-test result: FAILED. 29 passed; 3 failed; 0 ignored; 0 measured; 25 filtered out; finished in 5.01s
+test result: FAILED. 29 passed; 3 failed; 0 ignored; 0 measured; 25 filtered out; finished in 5.00s
 ## HM1-failed-send-told-sent exit 101
 applied HM2-lost-link-takes-frames
 ## HM2-lost-link-takes-frames: cargo test -p shards-vm-process --bin shards-vm -- workload::
@@ -16,61 +16,61 @@ test workload::tests::a_frame_the_guest_cannot_be_sent_fails_its_caller_and_ever
 test workload::tests::a_signal_connection_saying_anything_else_is_lost ... FAILED
 test workload::tests::a_signal_connection_is_watched_from_its_dial ... FAILED
 test workload::tests::an_exec_whose_frame_the_guest_never_read_fails_as_its_connection_closes ... FAILED
-thread 'workload::tests::a_frame_the_guest_cannot_be_sent_fails_its_caller_and_every_later_one' (3683025) panicked at crates/vm-process/src/../../shards/src/workload.rs:3307:13:
+thread 'workload::tests::a_frame_the_guest_cannot_be_sent_fails_its_caller_and_every_later_one' (479678) panicked at crates/vm-process/src/../../shards/src/workload.rs:3318:13:
   left: Ok(())
  right: Err(Lost(Failed { kind: BrokenPipe, os: Some(32) }))
-thread 'workload::tests::a_signal_connection_saying_anything_else_is_lost' (3683034) panicked at crates/vm-process/src/../../shards/src/workload.rs:3402:9:
+thread 'workload::tests::a_signal_connection_saying_anything_else_is_lost' (479692) panicked at crates/vm-process/src/../../shards/src/workload.rs:3422:9:
   left: Ok(())
  right: Err(Lost(Protocol))
-thread 'workload::tests::a_signal_connection_is_watched_from_its_dial' (3683033) panicked at crates/vm-process/src/../../shards/src/workload.rs:3390:9:
+thread 'workload::tests::a_signal_connection_is_watched_from_its_dial' (479689) panicked at crates/vm-process/src/../../shards/src/workload.rs:3410:9:
   left: Ok(())
  right: Err(Lost(Closed))
-thread 'workload::tests::an_exec_whose_frame_the_guest_never_read_fails_as_its_connection_closes' (3683042) panicked at crates/vm-process/src/../../shards/src/workload.rs:3351:9:
-test result: FAILED. 28 passed; 4 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.01s
+thread 'workload::tests::an_exec_whose_frame_the_guest_never_read_fails_as_its_connection_closes' (479699) panicked at crates/vm-process/src/../../shards/src/workload.rs:3368:9:
+test result: FAILED. 28 passed; 4 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
 ## HM2-lost-link-takes-frames exit 101
 applied HM3-no-watch
 ## HM3-no-watch: cargo test -p shards-vm-process --bin shards-vm -- workload::
 test workload::tests::a_guest_that_says_its_end_has_ended_its_run ... FAILED
 test workload::tests::a_signal_connection_saying_anything_else_is_lost ... FAILED
+test workload::tests::an_exec_whose_frame_the_guest_never_read_fails_as_its_connection_closes ... FAILED
 test workload::tests::a_signal_connection_is_watched_from_its_dial ... FAILED
 test workload::tests::an_exec_waiting_for_a_dial_that_fails_fails_with_it ... FAILED
-test workload::tests::an_exec_whose_frame_the_guest_never_read_fails_as_its_connection_closes ... FAILED
-thread 'workload::tests::a_guest_that_says_its_end_has_ended_its_run' (3686298) panicked at crates/vm-process/src/../../shards/src/workload.rs:3277:22:
+thread 'workload::tests::a_guest_that_says_its_end_has_ended_its_run' (480718) panicked at crates/vm-process/src/../../shards/src/workload.rs:3288:9:
 the exec did not fail at once: Err(Timeout)
-thread 'workload::tests::a_signal_connection_saying_anything_else_is_lost' (3686309) panicked at crates/vm-process/src/../../shards/src/workload.rs:3406:9:
+thread 'workload::tests::a_signal_connection_saying_anything_else_is_lost' (480725) panicked at crates/vm-process/src/../../shards/src/workload.rs:3426:9:
   left: Ok(())
  right: Err(Lost(Protocol))
-thread 'workload::tests::a_signal_connection_is_watched_from_its_dial' (3686308) panicked at crates/vm-process/src/../../shards/src/workload.rs:3394:9:
+thread 'workload::tests::an_exec_whose_frame_the_guest_never_read_fails_as_its_connection_closes' (480732) panicked at crates/vm-process/src/../../shards/src/workload.rs:3288:9:
+the exec did not fail at once: Err(Timeout)
+thread 'workload::tests::a_signal_connection_is_watched_from_its_dial' (480724) panicked at crates/vm-process/src/../../shards/src/workload.rs:3414:9:
   left: Err(Lost(Failed { kind: BrokenPipe, os: Some(32) }))
  right: Err(Lost(Closed))
-thread 'workload::tests::an_exec_waiting_for_a_dial_that_fails_fails_with_it' (3686313) panicked at crates/vm-process/src/../../shards/src/workload.rs:3277:22:
+thread 'workload::tests::an_exec_waiting_for_a_dial_that_fails_fails_with_it' (480730) panicked at crates/vm-process/src/../../shards/src/workload.rs:3288:9:
 the exec did not fail at once: Err(Timeout)
-thread 'workload::tests::an_exec_whose_frame_the_guest_never_read_fails_as_its_connection_closes' (3686317) panicked at crates/vm-process/src/../../shards/src/workload.rs:3277:22:
-the exec did not fail at once: Err(Timeout)
-test result: FAILED. 27 passed; 5 failed; 0 ignored; 0 measured; 25 filtered out; finished in 15.00s
+test result: FAILED. 27 passed; 5 failed; 0 ignored; 0 measured; 25 filtered out; finished in 15.02s
 ## HM3-no-watch exit 101
 applied HM4-taken-unwatched
 ## HM4-taken-unwatched: cargo test -p shards-vm-process --bin shards-vm -- workload::
 test workload::tests::a_signal_connection_is_watched_from_its_dial ... FAILED
-thread 'workload::tests::a_signal_connection_is_watched_from_its_dial' (3696582) panicked at crates/vm-process/src/../../shards/src/workload.rs:3390:9:
+thread 'workload::tests::a_signal_connection_is_watched_from_its_dial' (486685) panicked at crates/vm-process/src/../../shards/src/workload.rs:3410:9:
   left: Err(Lost(Failed { kind: BrokenPipe, os: Some(32) }))
  right: Err(Lost(Closed))
 test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
 ## HM4-taken-unwatched exit 101
 applied HM5-loss-fails-no-exec
 ## HM5-loss-fails-no-exec: cargo test -p shards-vm-process --bin shards-vm -- workload::
-test workload::tests::an_exec_waiting_for_a_dial_that_fails_fails_with_it ... FAILED
 test workload::tests::an_exec_whose_frame_the_guest_never_read_fails_as_its_connection_closes ... FAILED
-thread 'workload::tests::an_exec_waiting_for_a_dial_that_fails_fails_with_it' (3698236) panicked at crates/vm-process/src/../../shards/src/workload.rs:3273:22:
+test workload::tests::an_exec_waiting_for_a_dial_that_fails_fails_with_it ... FAILED
+thread 'workload::tests::an_exec_whose_frame_the_guest_never_read_fails_as_its_connection_closes' (489080) panicked at crates/vm-process/src/../../shards/src/workload.rs:3284:9:
 the exec did not fail at once: Err(Timeout)
-thread 'workload::tests::an_exec_whose_frame_the_guest_never_read_fails_as_its_connection_closes' (3698239) panicked at crates/vm-process/src/../../shards/src/workload.rs:3273:22:
+thread 'workload::tests::an_exec_waiting_for_a_dial_that_fails_fails_with_it' (489076) panicked at crates/vm-process/src/../../shards/src/workload.rs:3284:9:
 the exec did not fail at once: Err(Timeout)
-test result: FAILED. 30 passed; 2 failed; 0 ignored; 0 measured; 25 filtered out; finished in 10.01s
+test result: FAILED. 30 passed; 2 failed; 0 ignored; 0 measured; 25 filtered out; finished in 10.00s
 ## HM5-loss-fails-no-exec exit 101
 applied HM6-end-taken-for-a-loss
 ## HM6-end-taken-for-a-loss: cargo test -p shards-vm-process --bin shards-vm -- workload::
 test workload::tests::a_guest_that_says_its_end_has_ended_its_run ... FAILED
-thread 'workload::tests::a_guest_that_says_its_end_has_ended_its_run' (3715982) panicked at crates/vm-process/src/../../shards/src/workload.rs:3372:9:
+thread 'workload::tests::a_guest_that_says_its_end_has_ended_its_run' (494635) panicked at crates/vm-process/src/../../shards/src/workload.rs:3389:9:
   left: "the guest's signal connection is lost: Broken pipe (os error 32)"
  right: "the container is not running"
 test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.01s
@@ -78,14 +78,14 @@ test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out
 applied HM7-end-keeps-a-loss
 ## HM7-end-keeps-a-loss: cargo test -p shards-vm-process --bin shards-vm -- workload::
 test workload::tests::a_guest_that_says_its_end_has_ended_its_run ... FAILED
-thread 'workload::tests::a_guest_that_says_its_end_has_ended_its_run' (3719359) panicked at crates/vm-process/src/../../shards/src/workload.rs:3273:22:
+thread 'workload::tests::a_guest_that_says_its_end_has_ended_its_run' (497144) panicked at crates/vm-process/src/../../shards/src/workload.rs:3284:9:
 the exec did not fail at once: Err(Timeout)
-test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 5.02s
+test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 5.01s
 ## HM7-end-keeps-a-loss exit 101
 applied HM8-no-coalescing
 ## HM8-no-coalescing: cargo test -p shards-vm-process --bin shards-vm -- workload::
 test workload::tests::frames_wait_for_the_dial_one_for_each_thing_pending ... FAILED
-thread 'workload::tests::frames_wait_for_the_dial_one_for_each_thing_pending' (3724567) panicked at crates/vm-process/src/../../shards/src/workload.rs:3472:13:
+thread 'workload::tests::frames_wait_for_the_dial_one_for_each_thing_pending' (505369) panicked at crates/vm-process/src/../../shards/src/workload.rs:3496:13:
   left: (18, [0, 0, 0, 15])
  right: (18, [0, 0, 0, 2])
 test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.01s
@@ -93,15 +93,15 @@ test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out
 applied HM9-exec-frames-unchecked
 ## HM9-exec-frames-unchecked: cargo test -p shards-vm-process --bin shards-vm -- workload::
 test workload::tests::frames_wait_for_the_dial_one_for_each_thing_pending ... FAILED
-thread 'workload::tests::frames_wait_for_the_dial_one_for_each_thing_pending' (3726188) panicked at crates/vm-process/src/../../shards/src/workload.rs:3432:9:
+thread 'workload::tests::frames_wait_for_the_dial_one_for_each_thing_pending' (506936) panicked at crates/vm-process/src/../../shards/src/workload.rs:3452:9:
   left: Ok(())
  right: Err(NotRunning)
-test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.01s
+test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
 ## HM9-exec-frames-unchecked exit 101
 applied HM10-any-signal-number
 ## HM10-any-signal-number: cargo test -p shards-vm-process --bin shards-vm -- workload::
 test workload::tests::frames_wait_for_the_dial_one_for_each_thing_pending ... FAILED
-thread 'workload::tests::frames_wait_for_the_dial_one_for_each_thing_pending' (3731172) panicked at crates/vm-process/src/../../shards/src/workload.rs:3424:9:
+thread 'workload::tests::frames_wait_for_the_dial_one_for_each_thing_pending' (508389) panicked at crates/vm-process/src/../../shards/src/workload.rs:3444:9:
   left: Ok(())
  right: Err(NoSuchSignal(65))
 test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.01s
@@ -109,25 +109,25 @@ test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out
 applied HM11-every-wait-fails
 ## HM11-every-wait-fails: cargo test -p shards-vm-process --bin shards-vm -- workload::
 test workload::tests::only_execs_fail_as_the_signal_connection_goes ... FAILED
-thread 'workload::tests::only_execs_fail_as_the_signal_connection_goes' (3733823) panicked at crates/vm-process/src/../../shards/src/workload.rs:3509:9:
+thread 'workload::tests::only_execs_fail_as_the_signal_connection_goes' (509132) panicked at crates/vm-process/src/../../shards/src/workload.rs:3536:9:
   left: 3
  right: 1
-test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.03s
+test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
 ## HM11-every-wait-fails exit 101
 applied GM1-no-end-said
 ## GM1-no-end-said: cargo test -p shards-init -- signals_end_tests
 test run::signals_end_tests::the_relays_end_is_said_last_on_its_signal_connection ... FAILED
-thread 'run::signals_end_tests::the_relays_end_is_said_last_on_its_signal_connection' (3742969) panicked at crates/init/src/run.rs:6647:13:
+thread 'run::signals_end_tests::the_relays_end_is_said_last_on_its_signal_connection' (513199) panicked at crates/init/src/run.rs:6648:13:
   left: []
  right: [50, 0, 0, 0, 0, 0, 0, 0]
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 207 filtered out; finished in 0.00s
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 212 filtered out; finished in 0.00s
 ## GM1-no-end-said exit 101
 applied GM2-connect-not-waited
 ## GM2-connect-not-waited: cargo test -p shards-init -- signals_end_tests
 test run::signals_end_tests::the_relays_end_is_said_last_on_its_signal_connection ... FAILED
-thread 'run::signals_end_tests::the_relays_end_is_said_last_on_its_signal_connection' (3747964) panicked at crates/init/src/run.rs:6650:13:
+thread 'run::signals_end_tests::the_relays_end_is_said_last_on_its_signal_connection' (519408) panicked at crates/init/src/run.rs:6651:13:
   left: []
  right: [50, 0, 0, 0, 0, 0, 0, 0]
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 207 filtered out; finished in 0.00s
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 212 filtered out; finished in 0.00s
 ## GM2-connect-not-waited exit 101
-# done 2026-11-12T22:04:07Z
+# done 2026-11-12T22:28:34Z
