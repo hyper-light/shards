@@ -1,0 +1,6 @@
+binary: /work/target/aarch64-unknown-linux-musl/test-release/deps/shards-d12343c4e6a0e366
+test cli::vm_flags::vm_flags_use_the_same_value_aware_grammar_before_the_workload ... ok
+test cli::said_options::learning_a_restores_console_moves_none_of_its_words ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 737 filtered out; finished in 0.00s
+RESULT filter=daemon::ship:: n=40 burn=6 pass=40 fail=0
+EXIT=0
