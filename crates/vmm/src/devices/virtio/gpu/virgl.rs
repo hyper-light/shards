@@ -542,6 +542,11 @@ impl Drop for Vulkan {
 /// device-local (D202).
 type UuidText = [c_char; 33]; // Vulkan UUID16 -> hex32 plus the C terminator.
 
+struct SelectedGpu {
+    text: UuidText,
+    native: shards_abi::gpu::ResolvedGpu,
+}
+
 fn uuid_text(uuid: &[u8; 16]) -> Result<UuidText, String> {
     let mut text = [0; 33];
     let digits = b"0123456789abcdef";
@@ -577,7 +582,7 @@ impl Drop for HeldDriver {
     }
 }
 
-fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<UuidText>, HeldDriver), String> {
+fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<SelectedGpu>, HeldDriver), String> {
     selection::check_selection(selected).map_err(|e| e.to_string())?;
     let vk = Vulkan::open()?;
     // Vulkan 1.1 defines ID properties and Properties2. Venus itself requires
@@ -676,15 +681,18 @@ fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<UuidText>, HeldDri
             .try_reserve_exact(selected.len())
             .map_err(|_| "Vulkan UUID selection storage is unavailable")?;
         let mut total = 0u64;
-        for index in indices {
+        for (position, index) in indices.into_iter().enumerate() {
             let device = *devices.get(index).ok_or("Vulkan selection index is invalid")?;
             if !selected.is_empty() {
-                uuids.push(uuid_text(
-                    &properties
-                        .get(index)
-                        .ok_or("Vulkan selection identity is missing")?
-                        .uuid,
-                )?);
+                let props = properties
+                    .get(index)
+                    .ok_or("Vulkan selection identity is missing")?;
+                let physical = selected.get(position).ok_or("Vulkan selection order changed")?;
+                uuids.push(SelectedGpu {
+                    text: uuid_text(&props.uuid)?,
+                    native: selection::resolved(*physical, props, cfg!(target_os = "macos"))
+                        .map_err(|error| error.to_string())?,
+                });
             }
             #[cfg(windows)]
             if if selected.is_empty() {
@@ -829,7 +837,7 @@ pub struct Venus {
     contexts: Vec<u32>,
     page: u64,
     host_visible: u64,
-    selected: Vec<UuidText>,
+    selected: Vec<SelectedGpu>,
     /// The render server's thread, which ends as the renderer lets its connection go.
     #[cfg(target_os = "linux")]
     server: Option<std::thread::JoinHandle<()>>,
@@ -857,6 +865,37 @@ impl Venus {
     /// Starts the renderer, Venus alone: once a process.
     pub fn new() -> Result<Venus, String> {
         Self::new_selected(&[])
+    }
+
+    /// A native query through the same renderer/context selection path as a VM.
+    /// No guest commands or VkDevice workloads are submitted by this probe.
+    pub fn probe_gpu(selected: &[PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, String> {
+        use shards_abi::gpu::GpuProbe;
+        if selected.is_empty() {
+            return Err("an exact GPU probe requires a nonempty native selection".into());
+        }
+        let mut venus = Self::new_selected(selected)?;
+        if venus.selected.len() != selected.len() {
+            return Err("renderer probe lost its exact selection".into());
+        }
+        let mut devices = Vec::new();
+        devices
+            .try_reserve_exact(selected.len())
+            .map_err(|_| "GPU probe storage unavailable")?;
+        devices.extend(venus.selected.iter().map(|selected| selected.native));
+        // One private process/context: 1 is the first nonzero virtio context ID.
+        // create_context returns only after the renderer's positive selection ACK.
+        venus
+            .create_context(1, CAPSET_VENUS, b"shards-gpu-selection-probe")
+            .map_err(|error| format!("GPU probe selection ACK refused: {error:?}"))?;
+        let probe = GpuProbe {
+            devices,
+            host_visible_bytes: venus.host_visible,
+        };
+        probe.check(selected).map_err(|error| error.to_string())?;
+        venus.destroy_context(1);
+        drop(venus);
+        Ok(probe)
     }
 
     pub fn new_selected(selected: &[PhysicalGpu]) -> Result<Venus, String> {
@@ -1221,7 +1260,7 @@ impl Renderer for Venus {
         pointers
             .try_reserve_exact(self.selected.len())
             .map_err(|_| Refused(resp::ERR_OUT_OF_MEMORY))?;
-        pointers.extend(self.selected.iter().map(|uuid| uuid.as_ptr()));
+        pointers.extend(self.selected.iter().map(|selected| selected.text.as_ptr()));
         let count = u32::try_from(pointers.len()).map_err(|_| Refused(resp::ERR_INVALID_PARAMETER))?;
         let nlen = u32::try_from(name.len()).map_err(|_| Refused(resp::ERR_INVALID_PARAMETER))?;
         // SAFETY: the name's bytes, `nlen` of them, which the renderer copies.

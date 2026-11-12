@@ -923,6 +923,17 @@ type Devices = (
     Vec<crate::devices::virtio::block::DiskSize>,
 );
 
+/// Query the carried GPU process's actual selection path without booting a VM.
+#[cfg(feature = "gpu")]
+pub fn probe_gpu(selected: &[gpu_selection::PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, String> {
+    gpu::virgl::Venus::probe_gpu(selected)
+}
+
+#[cfg(not(feature = "gpu"))]
+pub fn probe_gpu(_selected: &[gpu_selection::PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, String> {
+    Err("GPU probing requires the carried GPU renderer process".into())
+}
+
 /// A GPU's renderer, and the length of the window its blobs are mapped into: what the
 /// host's GPUs say they have of memory the host can map, which Venus tells the guest, the
 /// most a guest can have mapped at once (D144, D201).

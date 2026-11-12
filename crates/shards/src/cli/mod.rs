@@ -1006,7 +1006,10 @@ fn utf8(args: &[OsString]) -> Result<Vec<String>, String> {
 /// The VM process's binary for `args`, which `shards` carries and writes out (helpers.rs):
 /// the GPU's where its own options (those before `--`) ask for a GPU (D144).
 fn vm_binary(args: &[OsString]) -> Result<PathBuf, String> {
-    if args.iter().take_while(|a| *a != "--").any(|a| a == "--gpu") {
+    if ["--gpu", "--gpu-probe", "--gpu-device"]
+        .into_iter()
+        .any(|flag| crate::spec::has_vm_flag(args, flag))
+    {
         crate::helpers::vm_gpu()
     } else {
         crate::helpers::vm()
@@ -1093,7 +1096,7 @@ fn console_said<T>(
 }
 
 /// [`console_said`] on Unix: the report's recorder, `shardsd console-said`, started on a
-/// pipe's read end, out of reach of the VM's terminal, and the pipe's other end given the VM
+/// pipe's read end, detached only for standalone launches, and the pipe's other end given the VM
 /// as `--said-to FD` once this process becomes it, as [`said_kept`] leaves it open through
 /// the exec. The recorder records what the VM tells as it exits, and is reaped by the kernel.
 #[cfg(unix)]
@@ -1113,7 +1116,7 @@ fn said_recorded(args: &[OsString]) -> (Vec<OsString>, Option<std::os::fd::Owned
                 kept.as_ref(),
             ],
             &[(from_vm.as_fd(), 3), (stderr.as_fd(), 2)],
-            true,
+            !crate::spec::has_vm_flag(args, "--host-managed"),
         )
         .map_err(|e| format!("{}: {e}", recorder.display()))?;
         Ok(std::os::fd::OwnedFd::from(to_recorder))
@@ -1149,12 +1152,15 @@ fn said_kept(to: Option<std::os::fd::OwnedFd>) -> Result<(), String> {
 /// open nothing it is not granted, it first starts the VM's broker, `shardsd grants`, on a
 /// socket the VM then asks on (`--grants`; docs/research/macos-confinement.md §3). The VM
 /// keeps this process: its terminal, its signals, its exit status. The broker leads a
-/// session of its own, out of reach of a Ctrl-C meant for the VM, exits once the VM has
+/// session of its own only for standalone launches, exits once the VM has
 /// all it needs, and is reaped by the kernel, since SIGCHLD stays ignored through the exec.
 #[cfg(target_os = "macos")]
 fn vm(args: &[OsString]) -> ExitCode {
     use std::os::fd::{AsFd as _, IntoRawFd as _};
     if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
+        return instead(args);
+    }
+    if crate::spec::has_vm_flag(args, "--gpu-probe") {
         return instead(args);
     }
     // Its shares served before its VM process starts, sandboxed (shares.rs).
@@ -1192,7 +1198,7 @@ fn vm(args: &[OsString]) -> ExitCode {
         &broker,
         &broker_args,
         &[(theirs.as_fd(), 3), (stderr.as_fd(), 2)],
-        true,
+        !crate::spec::has_vm_flag(args, "--host-managed"),
     );
     if let Err(e) = spawned {
         return failed(&format!("{}: {e}", broker.display()));
@@ -1232,6 +1238,9 @@ fn vm(args: &[OsString]) -> ExitCode {
 /// the kernel, since SIGCHLD stays ignored through the exec.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn vm(args: &[OsString]) -> ExitCode {
+    if crate::spec::has_vm_flag(args, "--gpu-probe") {
+        return instead(args);
+    }
     // Its shares served before it becomes the VM, which confines itself (shares.rs).
     let (args, shared) = match shares::served(args) {
         Ok(served) => served,
@@ -1298,7 +1307,7 @@ fn working_set_writer(args: &[OsString]) -> Result<Option<Vec<OsString>>, String
         &writer,
         &["working-set".as_ref(), "--template".as_ref(), dir.as_os_str()],
         &[(from_vm.as_fd(), 3), (stderr.as_fd(), 2)],
-        true,
+        !crate::spec::has_vm_flag(args, "--host-managed"),
     );
     if let Err(e) = spawned {
         shards_vmm::debug!(
@@ -1372,6 +1381,9 @@ fn working_set_writer(_: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
 fn vm(args: &[OsString]) -> ExitCode {
     use std::os::windows::io::{AsHandle as _, OwnedHandle};
     if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
+        return instead(args);
+    }
+    if crate::spec::has_vm_flag(args, "--gpu-probe") {
         return instead(args);
     }
     // Made before any process of the run's, and held until this process ends, its last

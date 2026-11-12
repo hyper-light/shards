@@ -17,6 +17,46 @@ pub struct Properties {
     pub host_memory_valid: u32,
 }
 
+/// The same immutable native properties used to resolve the selector, retained
+/// with its context whitelist. PCI always includes the domain; LUID stays bytes.
+pub fn resolved(
+    physical: PhysicalGpu,
+    props: &Properties,
+    metal: bool,
+) -> Result<shards_abi::gpu::ResolvedGpu, JoinError> {
+    physical.check().map_err(JoinError::Selection)?;
+    if props.uuid == [0; 16] {
+        return Err(JoinError::InvalidUuid);
+    }
+    let pci = if props.pci_valid != 0 {
+        let pci = PhysicalGpu::Pci {
+            domain: props.domain,
+            bus: u8::try_from(props.bus).map_err(|_| JoinError::InvalidNative)?,
+            device: u8::try_from(props.device).map_err(|_| JoinError::InvalidNative)?,
+            function: u8::try_from(props.function).map_err(|_| JoinError::InvalidNative)?,
+        };
+        pci.check().map_err(|_| JoinError::InvalidNative)?;
+        Some(pci)
+    } else {
+        None
+    };
+    let luid = (props.luid_valid != 0).then_some(props.luid);
+    let exact = match physical {
+        PhysicalGpu::Pci { .. } => pci == Some(physical),
+        PhysicalGpu::MetalRegistry(id) => metal && luid == Some(id.to_be_bytes()),
+        PhysicalGpu::Luid(id) => !metal && luid == Some(id.to_le_bytes()),
+    };
+    if !exact {
+        return Err(JoinError::Missing);
+    }
+    Ok(shards_abi::gpu::ResolvedGpu {
+        physical,
+        uuid: props.uuid,
+        pci,
+        luid,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinError {
     Selection(PhysicalGpuError),
@@ -205,6 +245,38 @@ mod tests {
         assert_eq!(resolve(&[PhysicalGpu::Luid(id)], &[windows], false), Ok(vec![0]));
         assert_eq!(
             resolve(&[PhysicalGpu::MetalRegistry(id)], &[windows], false),
+            Err(JoinError::Missing)
+        );
+        let receipt = resolved(PhysicalGpu::MetalRegistry(id), &metal, true).unwrap();
+        assert_eq!(receipt.luid, Some(id.to_be_bytes()));
+        assert_eq!(receipt.pci, None);
+        assert!(resolved(PhysicalGpu::MetalRegistry(id), &windows, false).is_err());
+        let receipt = resolved(PhysicalGpu::Luid(id), &windows, false).unwrap();
+        assert_eq!(receipt.luid, Some(id.to_le_bytes()));
+        assert!(resolved(PhysicalGpu::Luid(id), &metal, false).is_err());
+    }
+
+    #[test]
+    fn probe_receipt_keeps_complete_pci_and_raw_live_luid_without_conflating_keys() {
+        let mut props = properties(2);
+        props.luid = 7u64.to_le_bytes();
+        props.luid_valid = 1;
+        let receipt = resolved(PhysicalGpu::Luid(7), &props, false).unwrap();
+        assert_eq!(receipt.physical, PhysicalGpu::Luid(7));
+        assert_eq!(receipt.pci, Some(pci(2)));
+        assert_eq!(receipt.luid, Some(7u64.to_le_bytes()));
+        assert_eq!(receipt.uuid, [2; 16]);
+        props.domain = 0;
+        assert_eq!(resolved(pci(2), &props, false), Err(JoinError::Missing));
+        props.pci_valid = 0;
+        let receipt = resolved(PhysicalGpu::Luid(7), &props, false).unwrap();
+        assert_eq!(
+            receipt.pci, None,
+            "unknown domain cannot become an assumed PCI identity"
+        );
+        props.luid = 8u64.to_le_bytes();
+        assert_eq!(
+            resolved(PhysicalGpu::Luid(7), &props, false),
             Err(JoinError::Missing)
         );
     }
