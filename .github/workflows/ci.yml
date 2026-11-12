@@ -32,6 +32,7 @@ on:
       - "!.github/workflows/windows-wake.yml"
       - "!.github/workflows/whp-passthrough.yml"
       - "!.github/workflows/migrate-e2e.yml"
+      - "!.github/workflows/softvirt-traps.yml"
   pull_request:
 
 permissions:

@@ -1,0 +1,164 @@
+host Darwin 25.4.0 arm64 rustc 1.98.1 at 2026-11-12T09:32:20Z
+clippy_testguest_aarch64_musl_exit=0
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-f3c85564b0a14e58/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_aarch64_unknown_linux_musl': '/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_aarch64_unknown_linux_musl: /Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-f3c85564b0a14e58/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-f3c85564b0a14e58/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: info: available CPUs for architecture 'aarch64':
+warning: aws-lc-sys@0.45.0:  a64fx
+warning: aws-lc-sys@0.45.0:  ampere1
+warning: aws-lc-sys@0.45.0:  ampere1a
+warning: aws-lc-sys@0.45.0:  ampere1b
+warning: aws-lc-sys@0.45.0:  apple_a10
+warning: aws-lc-sys@0.45.0:  apple_a11
+warning: aws-lc-sys@0.45.0:  apple_a12
+warning: aws-lc-sys@0.45.0:  apple_a13
+warning: aws-lc-sys@0.45.0:  apple_a14
+warning: aws-lc-sys@0.45.0:  apple_a15
+warning: aws-lc-sys@0.45.0:  apple_a16
+warning: aws-lc-sys@0.45.0:  apple_a17
+warning: aws-lc-sys@0.45.0:  apple_a18
+warning: aws-lc-sys@0.45.0:  apple_a7
+warning: aws-lc-sys@0.45.0:  apple_a8
+warning: aws-lc-sys@0.45.0:  apple_a9
+warning: aws-lc-sys@0.45.0:  apple_m1
+warning: aws-lc-sys@0.45.0:  apple_m2
+warning: aws-lc-sys@0.45.0:  apple_m3
+warning: aws-lc-sys@0.45.0:  apple_m4
+warning: aws-lc-sys@0.45.0:  apple_s10
+warning: aws-lc-sys@0.45.0:  apple_s4
+warning: aws-lc-sys@0.45.0:  apple_s5
+warning: aws-lc-sys@0.45.0:  apple_s6
+warning: aws-lc-sys@0.45.0:  apple_s7
+warning: aws-lc-sys@0.45.0:  apple_s8
+warning: aws-lc-sys@0.45.0:  apple_s9
+warning: aws-lc-sys@0.45.0:  carmel
+warning: aws-lc-sys@0.45.0:  cobalt_100
+warning: aws-lc-sys@0.45.0:  cortex_a320
+warning: aws-lc-sys@0.45.0:  cortex_a34
+warning: aws-lc-sys@0.45.0:  cortex_a35
+warning: aws-lc-sys@0.45.0:  cortex_a510
+warning: aws-lc-sys@0.45.0:  cortex_a520
+warning: aws-lc-sys@0.45.0:  cortex_a520ae
+warning: aws-lc-sys@0.45.0:  cortex_a53
+warning: aws-lc-sys@0.45.0:  cortex_a55
+warning: aws-lc-sys@0.45.0:  cortex_a57
+warning: aws-lc-sys@0.45.0:  cortex_a65
+warning: aws-lc-sys@0.45.0:  cortex_a65ae
+warning: aws-lc-sys@0.45.0:  cortex_a710
+warning: aws-lc-sys@0.45.0:  cortex_a715
+warning: aws-lc-sys@0.45.0:  cortex_a72
+warning: aws-lc-sys@0.45.0:  cortex_a720
+warning: aws-lc-sys@0.45.0:  cortex_a720ae
+nesting_no_run_aarch64_musl_exit=0
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_unknown_linux_musl
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/l1-s38/aarch64-unknown-linux-musl/test-release/build/aws-lc-sys-6bea913ea08cdf1f/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_aarch64_unknown_linux_musl': '/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_aarch64_unknown_linux_musl: /Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/l1-s38/aarch64-unknown-linux-musl/test-release/build/aws-lc-sys-6bea913ea08cdf1f/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/l1-s38/aarch64-unknown-linux-musl/test-release/build/aws-lc-sys-6bea913ea08cdf1f/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: info: available CPUs for architecture 'aarch64':
+warning: aws-lc-sys@0.45.0:  a64fx
+warning: aws-lc-sys@0.45.0:  ampere1
+warning: aws-lc-sys@0.45.0:  ampere1a
+warning: aws-lc-sys@0.45.0:  ampere1b
+warning: aws-lc-sys@0.45.0:  apple_a10
+warning: aws-lc-sys@0.45.0:  apple_a11
+warning: aws-lc-sys@0.45.0:  apple_a12
+warning: aws-lc-sys@0.45.0:  apple_a13
+warning: aws-lc-sys@0.45.0:  apple_a14
+warning: aws-lc-sys@0.45.0:  apple_a15
+warning: aws-lc-sys@0.45.0:  apple_a16
+warning: aws-lc-sys@0.45.0:  apple_a17
+warning: aws-lc-sys@0.45.0:  apple_a18
+warning: aws-lc-sys@0.45.0:  apple_a7
+warning: aws-lc-sys@0.45.0:  apple_a8
+warning: aws-lc-sys@0.45.0:  apple_a9
+warning: aws-lc-sys@0.45.0:  apple_m1
+warning: aws-lc-sys@0.45.0:  apple_m2
+warning: aws-lc-sys@0.45.0:  apple_m3
+warning: aws-lc-sys@0.45.0:  apple_m4
+warning: aws-lc-sys@0.45.0:  apple_s10
+warning: aws-lc-sys@0.45.0:  apple_s4
+warning: aws-lc-sys@0.45.0:  apple_s5
+warning: aws-lc-sys@0.45.0:  apple_s6
+warning: aws-lc-sys@0.45.0:  apple_s7
+clippy_nesting_aarch64_musl_exit=0
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_unknown_linux_musl
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/l1-s38/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-b76a701ca7356376/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_aarch64_unknown_linux_musl': '/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_aarch64_unknown_linux_musl: /Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/l1-s38/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-b76a701ca7356376/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/l1-s38/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-b76a701ca7356376/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: info: available CPUs for architecture 'aarch64':
+warning: aws-lc-sys@0.45.0:  a64fx
+warning: aws-lc-sys@0.45.0:  ampere1
+warning: aws-lc-sys@0.45.0:  ampere1a
+warning: aws-lc-sys@0.45.0:  ampere1b
+warning: aws-lc-sys@0.45.0:  apple_a10
+warning: aws-lc-sys@0.45.0:  apple_a11
+warning: aws-lc-sys@0.45.0:  apple_a12
+warning: aws-lc-sys@0.45.0:  apple_a13
+warning: aws-lc-sys@0.45.0:  apple_a14
+warning: aws-lc-sys@0.45.0:  apple_a15
+warning: aws-lc-sys@0.45.0:  apple_a16
+warning: aws-lc-sys@0.45.0:  apple_a17
+warning: aws-lc-sys@0.45.0:  apple_a18
+warning: aws-lc-sys@0.45.0:  apple_a7
+warning: aws-lc-sys@0.45.0:  apple_a8
+warning: aws-lc-sys@0.45.0:  apple_a9
+warning: aws-lc-sys@0.45.0:  apple_m1
+warning: aws-lc-sys@0.45.0:  apple_m2
+warning: aws-lc-sys@0.45.0:  apple_m3
+warning: aws-lc-sys@0.45.0:  apple_m4
+warning: aws-lc-sys@0.45.0:  apple_s10
+warning: aws-lc-sys@0.45.0:  apple_s4
+warning: aws-lc-sys@0.45.0:  apple_s5
+warning: aws-lc-sys@0.45.0:  apple_s6
+warning: aws-lc-sys@0.45.0:  apple_s7
+warning: aws-lc-sys@0.45.0:  apple_s8
+warning: aws-lc-sys@0.45.0:  apple_s9
+warning: aws-lc-sys@0.45.0:  carmel
+warning: aws-lc-sys@0.45.0:  cobalt_100
+warning: aws-lc-sys@0.45.0:  cortex_a320
+warning: aws-lc-sys@0.45.0:  cortex_a34
+warning: aws-lc-sys@0.45.0:  cortex_a35
+warning: aws-lc-sys@0.45.0:  cortex_a510
+warning: aws-lc-sys@0.45.0:  cortex_a520
+warning: aws-lc-sys@0.45.0:  cortex_a520ae
+warning: aws-lc-sys@0.45.0:  cortex_a53
+warning: aws-lc-sys@0.45.0:  cortex_a55
+warning: aws-lc-sys@0.45.0:  cortex_a57
+warning: aws-lc-sys@0.45.0:  cortex_a65
+warning: aws-lc-sys@0.45.0:  cortex_a65ae
+warning: aws-lc-sys@0.45.0:  cortex_a710
+warning: aws-lc-sys@0.45.0:  cortex_a715
+warning: aws-lc-sys@0.45.0:  cortex_a72
+warning: aws-lc-sys@0.45.0:  cortex_a720
+warning: aws-lc-sys@0.45.0:  cortex_a720ae
+warning: aws-lc-sys@0.45.0:  cortex_a725

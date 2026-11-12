@@ -65,3 +65,76 @@ restored from git and touched. All 10 were killed by the test meant for them, an
 
 The HVF reader's wait and the vCPU's publication have no unit-level mutant: they need a vCPU. The HVF ignored
 test and the real-VM test hold them (owed).
+
+## CI's arm64 failure of the sampling test, and its fix (2026-11-12)
+
+CI's run 43230466376 on main failed
+`vm::guest_time::tests::samples_never_see_the_total_fall_as_vcpus_come_and_go` on both arm64 Linux jobs
+(aarch64-unknown-linux-gnu 131224103882, aarch64-unknown-linux-musl 131224103787). It panicked at
+guest_time.rs:406 with `GuestTimes { vcpus: [], departed_ns: 0 }`. Both jobs ran
+`cargo test --locked --workspace --profile test-release --no-fail-fast`, and this test was one of the crate's 483,
+run beside each other. (The run's aarch64-pc-windows-msvc job failed elsewhere: tests/engine_ring.rs did not
+compile on Windows, with an unused import and a dead `held_open`, D230's.)
+
+**The cause.**
+- Every round a vCPU thread finishes adds its last stored time, at least 50, to `departed`: its leave reads its own
+  clock, on its own thread, after its last store. So a `departed_ns` of 0 means no thread had finished a round,
+  nor started one, since a round has no early exit.
+- The test sampled a fixed 2,000 times and then set `done`. Optimized, 2,000 samples of an empty registry take
+  microseconds, and the four threads were spawned onto idle CPUs that had not yet run them. Each found `done` set
+  at its first look, and came and went never.
+- The registry holds all its state under one `Mutex`, so no memory ordering can lose a finished round: this is the
+  test's race, not the product's. The other atomics this work added are HVF's `Ran`, whose stores go before its
+  SeqCst `stints` bump and whose loads come after the reader's SeqCst load. A unit test can't reach them, and they
+  are not in this failure.
+
+**Red, live, on arm64 Linux.**
+- Host: the Lima VM g121-winarm on this Mac: Ubuntu 26.04.1, Linux 7.0.0-38-generic aarch64, 6 vCPUs, its load
+  1.5 to 3.6 from the Windows container it hosts.
+- Binary: main's test, built on adacachy for aarch64-unknown-linux-musl (static, `rust-lld`) from origin/main
+  7ad28fab1, and run in the VM at `nice 19`, `--exact`, 1,000 times (`target/gct-bins/loop.sh`, not kept).
+
+| main's test (7ad28fab1) | conditions | runs | failed |
+|---|---|---|---|
+| dev profile | the VM's 6 vCPUs | 1,000 | 0 |
+| dev profile | pinned to one CPU (`taskset -c 0`) | 1,000 | 0 |
+| dev profile | pinned to one CPU, beside a niced busy loop on it | 1,000 | 0 |
+| test-release, as CI | the VM's 6 vCPUs | 1,000 | **4**: the first, run 513, `panicked at crates/vmm/src/vm/guest_time.rs:406:9: GuestTimes { vcpus: [], departed_ns: 0 }`, CI's own symptom |
+| test-release | pinned to one CPU | 1,000 | 0 |
+
+**The fix** (e4b43764a, test only).
+- Sample until every vCPU has come and gone 100 times (`ROUNDS`), yielding between samples, however late their
+  threads first run. Its failure message says each one's rounds.
+- A guard sets `done` however the sampling ends. Before, a failed check's panic left `thread::scope` waiting for
+  ever on threads that never stopped.
+
+**The cause, shown.**
+- The test as on main, with per-thread round counters added to its failure message only (built test-release,
+  same VM, VM load 5 to 7): 3 × 1,000 runs, with 97, 122 and 120 failures.
+- Every failure said `GuestTimes { vcpus: [], departed_ns: 0 } rounds [0, 0, 0, 0]`: no thread had run a
+  single round when the sampling ended.
+
+**Red and green, the same VM, test-release** (the green binary's source is e4b43764a's, byte for byte):
+
+| binary | conditions (VM load) | runs | failed |
+|---|---|---|---|
+| main's test | 6 vCPUs (3.6) | 1,000 | 4 |
+| main's test | 6 vCPUs (7.9 to 8.3) | 1,000 | 107 |
+| the fix | 6 vCPUs (7.1), three runs | 3 × 1,000 | 0, 0, 0 |
+| the fix | one CPU, beside a niced busy loop | 1,000 | 0 |
+| main's test, then the fix, interleaved | 6 vCPUs (9.1) | 1,000 + 1,000 | 39, then 0 |
+| main's test, then the fix, interleaved | 6 vCPUs (8.1) | 1,000 + 1,000 | 0, then 0 |
+
+In all, main's test failed 150 of 4,000 runs and the fix 0 of 6,000.
+
+**The fix on every OS and architecture.**
+
+| OS / arch | where | build | what ran | result |
+|---|---|---|---|---|
+| Linux arm64 (Ubuntu 26.04.1, 7.0.0-38) | Lima VM g121-winarm | test-release, aarch64-unknown-linux-musl | the sampling test ×6,000 above; `vm::guest_time` (9), `hv::tests` (3), `platform::unix::usage_tests` (6) | all passed |
+| macOS arm64 (26.4) | Mac Studio, adas-mac-studio.local-2 | dev, native, rustc 1.98.1 | the relevant unit tests (17: `vm::guest_time`, `platform::unix::usage_tests` with `mach_ns`'s test, `hv::tests`, HVF's `a_page_written`); the sampling test ×1,000 | 17 passed; 1,000 of 1,000 |
+| Windows x86_64 (11 Pro, 10.0.26200) | jupiter, a kiln agent | dev, native, rustc 1.98.1 | `vm::guest_time` (9), `hv::tests` (3); the sampling test ×1,000 | all passed; 1,000 of 1,000 in 9.9 s |
+| Linux x86_64 (7.2.9-cachyos) | adacachy, over ssh | dev, rustc 1.98.1 | `vm::guest_time` (9); the sampling test ×1,000 | 9 passed; 1,000 of 1,000 |
+
+Not run: Windows arm64 (no host here, and CI's Windows arm64 job stops before tests at engine_ring.rs's compile
+error, which is not this branch's). The fix changes only this test.
