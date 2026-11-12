@@ -1,0 +1,10 @@
+== static musl build of harness/opath.c, kernel 7.0.0-38-generic, in the pinned rust:alpine container under Docker default seccomp:
+F_GETFL=010000000 (O_PATH set: 1)
+libc fcntl F_SETFL -> -1 errno=9 (Bad file descriptor)
+raw SYS_fcntl F_SETFL -> -1 errno=9 (Bad file descriptor)
+F_GETFL after=010000000
+== the same binary on the VM host, no container:
+F_GETFL=010000000 (O_PATH set: 1)
+libc fcntl F_SETFL -> -1 errno=9 (Bad file descriptor)
+raw SYS_fcntl F_SETFL -> -1 errno=9 (Bad file descriptor)
+F_GETFL after=010000000

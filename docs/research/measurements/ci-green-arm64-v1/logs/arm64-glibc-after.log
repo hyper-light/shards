@@ -1,0 +1,12 @@
+image: rust@sha256:a8a5f0a1e5fe7dfe1d352591e4a1c7dd2c08fd70475cae872cf3458ba0df0546
+     Running unittests src/main.rs (target/aarch64-unknown-linux-gnu/test-release/deps/shards_init-04f064d577c18960)
+test result: ok. 197 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.05s
+     Running unittests src/main.rs (target/aarch64-unknown-linux-gnu/test-release/deps/shards_server-fc34b5db58d080a7)
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+     Running unittests src/lib.rs (target/aarch64-unknown-linux-gnu/test-release/deps/shards_testguest-d34d2c23403633b3)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/main.rs (target/aarch64-unknown-linux-gnu/test-release/deps/shards_testguest-3ebd791be8da8b2b)
+test result: ok. 39 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.20s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+RESULT stopped-and-continued workers=1 n=10 pass=10 fail=0 (aarch64)
+EXIT=0

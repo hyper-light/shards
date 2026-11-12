@@ -1,0 +1,13 @@
+MUTANT helper-allows-no-clone: KILLED
+REAP_UNKNOWN first=[] control_closed=true worker_two_ran_on=false second=[] control_closed_later=true worker_two_ended=true helper_exited=false helper_code=0 helper_signal=31 helper_failure=""
+thread 'sandbox::tests::a_worker_not_reaped_ends_no_other' (110) panicked at crates/server/src/sandbox.rs:1151:9:
+MUTANT setfl-error-ignored: KILLED
+unusable_native_control_rejected=false
+thread 'server::tests::an_unusable_helper_control_is_not_admitted' (176) panicked at crates/server/src/server.rs:2573:9:
+MUTANT fixture-not-o-path: KILLED
+thread 'server::tests::an_unusable_helper_control_is_not_admitted' (241) panicked at crates/server/src/server.rs:2567:9:
+the fixture's control is not O_PATH: 0o400000
+MUTANT udp-same-namespace-accepted: KILLED
+thread 'managed_network::tests::udp_interception_parser_has_explicit_origins' (306) panicked at crates/testguest/src/managed_network.rs:983:26:
+called `Option::unwrap()` on a `None` value
+EXIT=0

@@ -204,6 +204,51 @@ fn within(path: &str, dir: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
+/// What init mounts for each domain that a volume's mount point lies in (D109). The build
+/// and the daemon refuse the same (`shards_agentfile::agentfile::DomainMount`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DomainMount {
+    /// Its root, or `/proc`, `/sys` or `/dev`, the file systems mounted there.
+    System,
+    /// `/tmp`, its scratch (D139). The scratch hides a mount point beneath it, and a volume
+    /// at it hides the scratch, where its server reads the files it hands across and what
+    /// is staged for it is written (D231).
+    Scratch,
+}
+
+impl std::fmt::Display for DomainMount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            DomainMount::System => "a volume may not cover a domain's root, /proc, /sys or /dev",
+            DomainMount::Scratch => "a volume may not be at or under /tmp, a domain's own scratch",
+        })
+    }
+}
+
+/// The [`DomainMount`] `path`, absolute and clean, lies in, if any.
+fn domain_mount(path: &str) -> Option<DomainMount> {
+    if path == "/" || ["/proc", "/sys", "/dev"].iter().any(|s| within(path, s)) {
+        Some(DomainMount::System)
+    } else if within(path, "/tmp") {
+        Some(DomainMount::Scratch)
+    } else {
+        None
+    }
+}
+
+/// Whether the domains are given the volume a run mounts at `dest`, which lies at `real`
+/// in the image: not where either lies in a [`DomainMount`]. One the Agentfile declares
+/// there (`declared`), or whose `dest` lies there, is refused, as the build and the daemon
+/// refuse it; a Docker `VOLUME` an image's symlink leads there stays the run's own root's.
+fn given_at(dest: &str, real: &str, declared: bool) -> Result<bool, DomainMount> {
+    match (domain_mount(dest), domain_mount(real)) {
+        (Some(m), _) => Err(m),
+        (None, Some(m)) if declared => Err(m),
+        (None, Some(_)) => Ok(false),
+        (None, None) => Ok(true),
+    }
+}
+
 /// Whether `d` is given the volume at `dest`: where a `VOLUME` names it, as that says;
 /// a volume no `VOLUME` scopes (Docker's own, or one with no `FOR`), every domain.
 fn given_volume(d: &Domain, dest: &str) -> bool {
@@ -1582,21 +1627,10 @@ pub fn start(
             .resolve(sh.dest.as_bytes(), false)
             .map_err(|e| fail(e.to_string()))
             .and_then(|r| String::from_utf8(r).map_err(|_| fail("a name that is not UTF-8".into())))?;
-        // A domain's root and its system's mounts are its own: a volume there would cover
-        // them (Docker refuses `/` as a destination too). One the Agentfile declares is
-        // refused, as its build refuses it; a Docker `VOLUME` an image's symlink leads
-        // there stays the run's own root's.
-        let covers = |p: &str| p == "/" || ["/proc", "/sys", "/dev"].iter().any(|s| within(p, s));
-        if covers(&sh.dest) || covers(&real) {
-            if covers(&sh.dest)
-                || domains
-                    .iter()
-                    .any(|d| d.volumes.iter().any(|r| r.path == sh.dest))
-            {
-                return Err(fail(
-                    "a volume may not cover a domain's root, /proc, /sys or /dev".into(),
-                ));
-            }
+        let declared = domains
+            .iter()
+            .any(|d| d.volumes.iter().any(|r| r.path == sh.dest));
+        if !given_at(&sh.dest, &real, declared).map_err(|m| fail(m.to_string()))? {
             continue;
         }
         let at = format!("{rw}/volumes/{k}");
@@ -3020,5 +3054,44 @@ mod tests {
         assert!(within("/proc/self", "/proc"));
         assert!(!within("/process", "/proc"));
         assert!(!within("/", "/proc"));
+    }
+
+    /// A volume is given no domain where it would lie in what init mounts for each: its
+    /// root and system, or its scratch, where a volume beneath finds no mount point and one
+    /// at it hides the scratch (docs/research/measurements/s7-scratch-volume). The
+    /// Agentfile's own are refused there, a Docker `VOLUME` an image's symlink leads there
+    /// is the run's alone, as the build and the daemon hold them.
+    #[test]
+    fn no_volume_lies_in_what_init_mounts_for_a_domain() {
+        for p in ["/", "/proc", "/sys/fs", "/dev", "/dev/shm"] {
+            assert_eq!(domain_mount(p), Some(DomainMount::System), "{p}");
+        }
+        for p in ["/tmp", "/tmp/x", "/tmp/a/b"] {
+            assert_eq!(domain_mount(p), Some(DomainMount::Scratch), "{p}");
+        }
+        for p in ["/data", "/tmpfiles", "/var/tmp", "/home/h/tmp"] {
+            assert_eq!(domain_mount(p), None, "{p}");
+        }
+        assert_eq!(given_at("/data", "/data", true), Ok(true));
+        assert_eq!(given_at("/var/run/x", "/run/x", false), Ok(true));
+        for declared in [false, true] {
+            assert_eq!(given_at("/tmp/x", "/tmp/x", declared), Err(DomainMount::Scratch));
+            assert_eq!(given_at("/tmp", "/tmp", declared), Err(DomainMount::Scratch));
+            assert_eq!(
+                given_at("/dev/shm", "/dev/shm", declared),
+                Err(DomainMount::System)
+            );
+        }
+        // Led into the scratch by the image's symlink (`/cache` -> `/tmp/cache`).
+        assert_eq!(given_at("/cache", "/tmp/cache", false), Ok(false));
+        assert_eq!(given_at("/cache", "/tmp/cache", true), Err(DomainMount::Scratch));
+        assert_eq!(given_at("/var/shm", "/dev/shm", false), Ok(false));
+        assert!(
+            DomainMount::Scratch
+                .to_string()
+                .contains("/tmp, a domain's own scratch"),
+            "{}",
+            DomainMount::Scratch
+        );
     }
 }
