@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "codex",
+  "run": {
+    "command": [
+      "codex", "exec", "--json", "--skip-git-repo-check", "--ephemeral",
+      "--dangerously-bypass-approvals-and-sandbox", "-C", "/work",
+      "Run `ls -1` in the working directory once, then reply with exactly the file names it printed, one per line, and nothing else."
+    ],
+    "env": ["CODEX_HOME=/run/codex-home"]
+  }
+}
