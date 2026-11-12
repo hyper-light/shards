@@ -1432,10 +1432,8 @@ mod tests {
         };
         let mut instance = std::ptr::null_mut();
         // SAFETY: complete ABI structures and a live output, destroyed below.
-        assert_eq!(
-            unsafe { (vk.create_instance)(&raw const info, std::ptr::null(), &raw mut instance) },
-            0
-        );
+        let made = unsafe { (vk.create_instance)(&raw const info, std::ptr::null(), &raw mut instance) };
+        assert_eq!(made, 0);
         let during = static_tls();
         // SAFETY: the instance made above, used no more.
         unsafe { (vk.destroy_instance)(instance, std::ptr::null()) };
