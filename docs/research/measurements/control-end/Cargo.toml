@@ -1,0 +1,75 @@
+# Where agent control terminates (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 10): in
+# the guest, each microVM a QUIC peer of its own reached through shards-net, or at a host
+# endpoint that carries each stream on to its microVM over vsock. Both on D180's QUIC driver
+# and TLS (AES-256-GCM alone). A workspace of its own; see README.md.
+[package]
+name = "control-end"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+# D180's QUIC driver and TLS contexts, as Shards' links and its managed owner endpoint use
+# them: TLS13_AES_256_GCM_SHA384 alone, the hybrid ML-KEM groups, raw Ed25519 keys.
+shards-remote = { path = "../../../../crates/remote" }
+# The driver's handler names hyper-quic's stream type; the same revision as shards-remote's.
+hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "233b7fcef7a363327c5439b191724a38065062cd", default-features = false }
+# The OCI image arm g runs is addressed by its blobs' SHA-256 (image.rs).
+sha2 = "0.11"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+shards-testdir = { path = "../../../../crates/testdir" }
+
+[target.'cfg(windows)'.dependencies]
+# AF_UNIX streams on Windows, for the VM's vsock socket (arm h).
+shards-afunix = { path = "../../../../crates/afunix" }
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+] }
+
+# Shards builds its TLS provider from its vendored copies; so does this, so that the
+# handshakes measured are the ones Shards makes.
+[patch.crates-io]
+aws-lc-rs = { path = "../../../../vendor/aws-lc-rs" }
+aws-lc-sys = { path = "../../../../vendor/aws-lc-sys" }
+
+# The host side as Shards' own release is built; the guest side as Shards' guest binaries
+# are (the root Cargo.toml's `guest` profile).
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = "line-tables-only"
+
+[profile.guest]
+inherits = "release"
+opt-level = "s"
+debug = false
+strip = true
+
+[workspace]
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+print_stdout = "deny"
+print_stderr = "deny"

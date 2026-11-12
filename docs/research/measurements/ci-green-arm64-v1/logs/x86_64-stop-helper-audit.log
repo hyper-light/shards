@@ -1,0 +1,27 @@
+== kernel audit records of the helper killed by its own filter (adacachy, 7.2.9-2-cachyos): syscall 219 is x86_64's restart_syscall
+1794505707.114 comm=shards-sandbox shards_server-3e0c3f7cef04a361 sig=31 syscall=219
+1794506138.924 comm=shards-sandbox shards_server-3e0c3f7cef04a361 sig=31 syscall=219
+1794506139.214 comm=shards-sandbox shards_server-3e0c3f7cef04a361 sig=31 syscall=219
+1794506139.502 comm=shards-sandbox shards_server-3e0c3f7cef04a361 sig=31 syscall=219
+1794506139.787 comm=shards-sandbox shards_server-3e0c3f7cef04a361 sig=31 syscall=219
+1794506140.074 comm=shards-sandbox shards_server-3e0c3f7cef04a361 sig=31 syscall=219
+1794506140.362 comm=shards-sandbox shards_server-3e0c3f7cef04a361 sig=31 syscall=219
+1794506140.648 comm=shards-sandbox shards_server-3e0c3f7cef04a361 sig=31 syscall=219
+1794506140.939 comm=shards-sandbox shards_server-3e0c3f7cef04a361 sig=31 syscall=219
+1794506141.226 comm=shards-sandbox shards_server-3e0c3f7cef04a361 sig=31 syscall=219
+1794506141.510 comm=shards-sandbox shards_server-3e0c3f7cef04a361 sig=31 syscall=219
+1794506144.116 comm=shards-sandbox shards_server-ae118b29741c071d sig=31 syscall=219
+1794506144.404 comm=shards-sandbox shards_server-ae118b29741c071d sig=31 syscall=219
+== harness/stop-helper.sh on x86_64, before the helper allowed restart_syscall (commit 8fce4b553 without it)
+glibc: RESULT stopped-and-continued n=10 pass=0 fail=10 (x86_64), each run: helper_signal=31 first=[(1, ...
+musl:  RESULT stopped-and-continued n=10 pass=0 fail=10 (x86_64), each run: helper_signal=31 first=[(1, ...
+== after (8fce4b553)
+glibc: RESULT stopped-and-continued n=10 pass=10 fail=0 (x86_64)
+musl:  RESULT stopped-and-continued n=10 pass=10 fail=0 (x86_64)
+glibc, WORKERS=1: RESULT stopped-and-continued workers=1 n=10 pass=10 fail=0 (x86_64)
+musl,  WORKERS=1: RESULT stopped-and-continued workers=1 n=10 pass=10 fail=0 (x86_64)
+no helper or worker kill logged after the fix
+== arm64 (Lima, musl, before and after alike): RESULT stopped-and-continued n=10 pass=10 fail=0 (aarch64); ppoll restarts as itself
+== the one unexplained x86_64 glibc failure after both fixes: the first full run of shards-server's tests right after
+   its build (load ~30), "the other worker was ended with it", its REAP_UNKNOWN line lost to the run's output filter; no
+   seccomp kill logged then; 66 full runs since (6 + 40 + 20 beside 16 busy loops) passed

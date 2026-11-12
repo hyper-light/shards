@@ -4891,3 +4891,74 @@ pub fn noise(path: &Path, mib: usize) {
     }
     file.flush().unwrap();
 }
+
+/// The pipe a test tells its daemon its host is short of memory through
+/// (`SHARDS_PRESSURE`, D188), each line a word: a FIFO on Unix, a named pipe on Windows,
+/// there before the daemon opens it as it starts.
+pub struct Told {
+    pub path: std::ffi::OsString,
+    #[cfg(windows)]
+    server: std::fs::File,
+}
+
+impl Told {
+    pub fn new(home: &Path) -> Told {
+        #[cfg(unix)]
+        {
+            let path = home.join("pressure");
+            let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: mkfifo(3) of a NUL-terminated path.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+            Told {
+                path: path.into_os_string(),
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+            use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+            use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+            use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, PIPE_TYPE_BYTE, PIPE_WAIT};
+            let _ = home;
+            let pipe = format!(r"\\.\pipe\shards-test-pressure-{}", std::process::id());
+            let name: Vec<u16> = pipe.encode_utf16().chain(Some(0)).collect();
+            // SAFETY: a NUL-terminated name and plain arguments.
+            let server = unsafe {
+                CreateNamedPipeW(
+                    name.as_ptr(),
+                    PIPE_ACCESS_DUPLEX,
+                    PIPE_TYPE_BYTE | PIPE_WAIT,
+                    1,
+                    4096,
+                    4096,
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            assert_ne!(
+                server,
+                INVALID_HANDLE_VALUE,
+                "{pipe}: {}",
+                std::io::Error::last_os_error()
+            );
+            Told {
+                path: pipe.into(),
+                // SAFETY: the pipe just made, ours alone.
+                server: std::fs::File::from(unsafe { OwnedHandle::from_raw_handle(server) }),
+            }
+        }
+    }
+
+    /// Its host's word that it is short of memory, once.
+    pub fn say(&mut self) {
+        #[cfg(unix)]
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&self.path)
+            .unwrap()
+            .write_all(b"\n")
+            .unwrap();
+        #[cfg(windows)]
+        self.server.write_all(b"\n").unwrap();
+    }
+}

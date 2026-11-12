@@ -171,7 +171,7 @@ pub fn start(spec: &mut run::Spec, given: Given) -> Result<Control, String> {
             }
         })
     {
-        super::pending().retain(|w| !super::same_token(&w.token, &token));
+        super::hellos::forget(&token);
         return Err(format!("managed capture worker: {e}"));
     }
     spec.setup.push(entry);

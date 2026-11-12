@@ -1,0 +1,63 @@
+adas-mac-studio.local-2 (32 cores, macOS 26.4, arm64), a kiln run, a fresh clone of hyper-light/shards at 89c6a1da9, 2026-11-12; build warnings and compile lines left out.
+/Users/adalundhe/cig-ci-green-tools/zig-aarch64-macos-0.16.0.tar.xz: OK
+== 89c6a1da A restore's console options go after its words: its working set is kept again zig 0.16.0 macOS 26.4 arm64 /Users/adalundhe/cig-ci-green-src
+== macOS unit tests
+test daemon::ship::renewal::tests::the_margin_is_learned_from_answers_and_expiries ... ok
+test daemon::ship::tests::what_cutting_a_long_line_costs ... ignored, a measurement (PM M494)
+test daemon::ship::oslog::tests::lines_go_in_parts_os_log_keeps_whole ... ok
+test daemon::ship::tests::parts_are_the_longest_their_receiver_takes_as_written ... ok
+test daemon::ship::tests::long_lines_go_in_parts_as_long_as_their_receiver_takes ... ok
+test daemon::ship::tests::a_part_never_cuts_a_character_in_two ... ok
+test daemon::ship::tests::a_message_refused_as_too_long_is_cut_again ... ok
+test cli::said_options::learning_a_restores_console_moves_none_of_its_words ... ok
+test daemon::ship::gcplogs::tests::partial_successes_say_what_they_refused ... ok
+test cli::vm_flags::vm_flags_use_the_same_value_aware_grammar_before_the_workload ... ok
+test daemon::ship::tests::a_shippers_place_is_kept ... ok
+test daemon::ship::splunk::tests::batches_go_full_or_as_the_log_is_caught_up_with ... ok
+test daemon::ship::splunk::tests::indexed_is_delivered ... ok
+test daemon::ship::splunk::tests::posts_follow_what_hec_refuses_as_too_large ... ok
+test daemon::ship::tests::a_place_is_kept_as_far_as_its_messages_are_delivered ... ok
+test daemon::ship::tests::segments_wholly_sent_go ... ok
+test daemon::ship::learned::tests::a_destinations_bound_is_learned_from_its_refusals_and_kept ... ok
+test daemon::ship::fluentd::tests::an_event_acked_on_no_connection_is_refused_as_too_long ... ok
+test daemon::ship::fluentd::tests::a_receiver_that_ends_a_connection_after_each_message_loses_and_cuts_nothing ... ok
+test daemon::ship::tests::parts_are_cut_where_the_ratio_of_written_bytes_says ... ok
+test daemon::ship::stream::tests::a_stream_ends_once_its_receiver_has_ended_its_side ... ok
+test daemon::ship::stream::tests::a_stream_trusts_a_ca_given_beside_the_platforms ... ok
+test daemon::ship::stream::tests::a_tls_receivers_close_notify_ends_its_connection ... ok
+test daemon::ship::stream::tests::what_a_dropped_connection_had_not_delivered_goes_on_the_next ... ok
+test daemon::ship::stream::tests::a_receiver_that_ends_connections_on_a_message_points_at_it ... ok
+test daemon::ship::gelf::tests::a_message_its_receiver_ends_connections_on_is_sent_again_cut ... ok
+test daemon::ship::stream::tests::a_unix_receiver_that_ends_connections_on_a_message_points_at_it ... ok
+test daemon::ship::gelf::tests::a_runs_last_message_refused_at_close_is_sent_again_cut ... ok
+test daemon::ship::fluentd::tests::a_lines_parts_still_to_come_go_after_a_part_cut_again ... ok
+test daemon::ship::oslog::tests::what_os_log_keeps_whole_is_learned_from_the_log ... ok
+test daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place ... ok
+test daemon::ship::stream::tests::a_stream_closed_delivers_all_it_wrote ... ok
+test result: ok. 31 passed; 0 failed; 1 ignored; 0 measured; 703 filtered out; finished in 27.13s
+== the fixed binary, restore DIR --no-console with a stand-in VM
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 47.75s
+== the VM's arguments
+restore --grants 3 --cwd /private/tmp/cig-ra-fixed /tmp/cig-ra-fixed/snap --no-console --console-said 2048 --said-to 4
+== helpers beside it
+/bin/sh /tmp/cig-ra-fixed/vm restore --grants 3 --cwd /private/tmp/cig-ra-fixed /tmp/cig-ra-fixed/snap --no-console --console-said 2048 --said-to 4
+/Users/adalundhe/cig-ci-green-src/target/test-release/shards console-said /tmp/cig-ra-fixed/home unpinned 2048
+/Users/adalundhe/cig-ci-green-src/target/test-release/shards grants --template /tmp/cig-ra-fixed/snap
+RESULT working-set writer: none
+== mutant: the options after restore, as da8bcd272 put them
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 36.02s
+== the VM's arguments
+restore --grants 3 --cwd /private/tmp/cig-ra-mutant --console-said 2048 --said-to 4 /tmp/cig-ra-mutant/snap --no-console
+== helpers beside it
+/bin/sh /tmp/cig-ra-mutant/vm restore --grants 3 --cwd /private/tmp/cig-ra-mutant --console-said 2048 --said-to 4 /tmp/cig-ra-mutant/snap --no-console
+/Users/adalundhe/cig-ci-green-src/target/test-release/shards console-said /tmp/cig-ra-mutant/home unpinned 2048
+/Users/adalundhe/cig-ci-green-src/target/test-release/shards grants --template /private/tmp/cig-ra-mutant/--console-said
+RESULT working-set writer: none
+test cli::said_options::learning_a_restores_console_moves_none_of_its_words ... FAILED
+assertion `left == right` failed: ["restore", "--console-said", "2048", "--said-to", "3", "snapshot", "--no-console"]
+  left: Some(["restore", "--console-said", "2048"])
+ right: Some(["restore", "snapshot", "--no-console"])
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 734 filtered out; finished in 0.00s
+source put back
+== DONE
+(macOS records no restore's working set, HVF's being the template's (vm::RESTORES_RECORD): "none" is its writer's expected answer there.)

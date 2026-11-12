@@ -2006,7 +2006,8 @@ fn serve_workload(
                                 to_guest,
                                 &|| moved().inspect_err(|e| report(e)),
                                 resumed,
-                            )?;
+                            )
+                            .inspect_err(|e| report(e))?;
                             layer_stays.store(
                                 request.layer_out.is_some() && crate::vm_run::layered(),
                                 std::sync::atomic::Ordering::Relaxed,

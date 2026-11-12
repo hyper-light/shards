@@ -44,6 +44,33 @@ pub struct Agentfile {
     pub receivers: Vec<shards_agentfile::agentfile::Receiver>,
 }
 
+/// Grants of destinations by name, each `host:port` as the build lists a remote MCP server
+/// or a destination (D59, D236), as the network process's policy names them
+/// (`shards_net::encode_policy`): the host, an IPv6 address in its brackets, and the TCP port.
+pub fn named(list: &[Vec<u8>]) -> Vec<(String, u16)> {
+    list.iter()
+        .filter_map(|e| {
+            let (host, port) = std::str::from_utf8(e).ok()?.rsplit_once(':')?;
+            Some((host.to_string(), port.parse().ok()?))
+        })
+        .collect()
+}
+
+/// Whom the microVM's `port` of IP protocol `proto` reaches coming in (D122): each member
+/// its image gives the port, with the member's own port there (another only where an
+/// `EXPOSE` maps it), several alike where several claim it, the one listening taking each
+/// connection; none where no member claims it, and it reaches the run's own command.
+pub fn receiving(
+    receivers: &[shards_agentfile::agentfile::Receiver],
+    proto: u8,
+    port: u16,
+) -> impl Iterator<Item = (&shards_agentfile::agentfile::Receiver, u16)> {
+    receivers
+        .iter()
+        .filter(move |r| r.at.0 == proto && r.at.1 <= port && port <= r.at.2)
+        .map(move |r| (r, r.to.1.saturating_add(port.saturating_sub(r.at.1))))
+}
+
 /// What a run's command is given of the nesting grant (D234), of what its image declares and
 /// what the run asks (`--security-opt nesting=true`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,10 +182,13 @@ pub fn joining(run: &shards_ipc::Run, joins_granted: bool) -> Result<(), Nesting
 
 impl Agentfile {
     /// Whether its agents' flows past the microVM go by IPv6 too (D99): they have IPv6, and
-    /// are granted ports or remote MCP servers past it. Their run's eth0 then needs an IPv6
-    /// address, which a network without IPv6 does not give it.
+    /// are granted ports, remote MCP servers or destinations past it. Their run's eth0 then
+    /// needs an IPv6 address, which a network without IPv6 does not give it.
     pub fn egress6(&self) -> bool {
-        self.ipv6 && (!self.grants.egress.is_empty() || !self.grants.mcp.is_empty())
+        self.ipv6
+            && (!self.grants.egress.is_empty()
+                || !self.grants.mcp.is_empty()
+                || !self.grants.destinations.is_empty())
     }
 
     /// What of `run` reaches the image's domains (D115), in the words its init refuses
@@ -218,8 +248,7 @@ impl Agentfile {
             return Err(beside::link_local(&ip.to_string()));
         }
         self.ids(&run.user, &run.group_add)?;
-        let granted = !self.grants.egress.is_empty() || !self.grants.mcp.is_empty() || self.grants.dns;
-        if run.network == "none" && (granted || self.uplink) {
+        if run.network == "none" && (self.grants.past() || self.uplink) {
             return Err(
                 "cannot run without a network: the image's Agentfile grants its agents what lies past the microVM, and --network none gives the microVM none".into(),
             );
@@ -307,6 +336,8 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
     let said = |e: Vec<u8>| fail(String::from_utf8_lossy(&e).into_owned());
     let directives = af::resolve_targets(&af::from_spec(&json).map_err(fail)?).map_err(said)?;
     af::connections(&directives).map_err(said)?;
+    // Its members' reach past the microVM held apart as its build holds it (D236).
+    af::held(&directives).map_err(said)?;
     let receivers = af::ingress(&directives).map_err(said)?;
     af::reach(&directives).map_err(said)?;
     // `NESTING` as its build checks it (D234): once, and beside no agent or harness.
@@ -328,8 +359,8 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
     // point, whose domains are given what is mounted there.
     let mut mounts = BTreeSet::new();
     for p in volumes.iter().flat_map(|v| &v.paths) {
-        if af::covers_domain_mounts(p.as_bytes()) {
-            return Err(fail(format!("{}: {p}", af::COVERS)));
+        if let Some(m) = af::domain_mount(p.as_bytes()) {
+            return Err(fail(format!("{m}: {p}")));
         }
         if !mounts.insert(clean(&format!("/{p}"))) {
             return Err(fail(format!("two of its volumes mount {p}")));
@@ -354,7 +385,7 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
         managed_labels,
         active_members,
         volumes,
-        uplink: !grants.egress.is_empty() || !grants.mcp.is_empty() || grants.dns || ingress,
+        uplink: grants.past() || ingress,
         ipv6: af::ipv6(&directives),
         grants,
         domains: u32::try_from(domains).map_err(|_| fail("more agents and harnesses than uids".into()))?,
@@ -835,6 +866,7 @@ mod tests {
             Grants {
                 egress: vec![b("443")],
                 mcp: Vec::new(),
+                destinations: Vec::new(),
                 dns: true,
                 egress_declared: Vec::new(),
                 nesting: false,
@@ -849,6 +881,16 @@ mod tests {
                 "dev",
                 vec![agent("a"), volume(None, "/dev/shm", &["a"])],
                 "VOLUME may not cover a domain's root, /proc, /sys or /dev: /dev/shm",
+            ),
+            (
+                "tmp",
+                vec![agent("a"), volume(None, "/tmp", &["a"])],
+                "VOLUME may not be at or under /tmp, a domain's own scratch: /tmp",
+            ),
+            (
+                "under-tmp",
+                vec![agent("a"), volume(Some("cache"), "/tmp/cache", &[])],
+                "VOLUME may not be at or under /tmp, a domain's own scratch: /tmp/cache",
             ),
             (
                 "twice",
@@ -922,6 +964,42 @@ mod tests {
                 "nesting-beside",
                 vec![agent("a"), Directive::Nesting],
                 nesting_beside.as_str(),
+            ),
+            // Two members granted one port past the microVM unalike, by name and by port,
+            // which its network process could not hold apart (D236).
+            (
+                "held",
+                vec![
+                    agent("a"),
+                    agent("b"),
+                    Directive::Network(Network {
+                        name: b("named"),
+                        ports: vec![(b("api.openai.com:443"), Direction::Egress)],
+                        ..Network::default()
+                    }),
+                    Directive::Network(Network {
+                        name: b("wide"),
+                        ports: vec![(b("443"), Direction::Egress)],
+                        ..Network::default()
+                    }),
+                    Directive::Expose(Exposure {
+                        ports: vec![b("443")],
+                        direction: Direction::Egress,
+                        networks: vec![b("named"), b("wide")],
+                        agents: Vec::new(),
+                        harnesses: Vec::new(),
+                    }),
+                    connect("named"),
+                    Directive::Connect(Connect {
+                        kind: None,
+                        from: vec![b("b")],
+                        both_ways: true,
+                        to: vec![b("b")],
+                        on: vec![b("wide")],
+                        ports: Vec::new(),
+                    }),
+                ],
+                "TCP port 443 past the microVM: agent a reaches api.openai.com and agent b any address there, by a port grant",
             ),
         ] {
             let json = spec(&directives);

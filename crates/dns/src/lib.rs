@@ -447,10 +447,123 @@ impl Stream {
     }
 }
 
+/// The host itself, as a destination names it (D236): Docker Desktop's name for the host its
+/// containers reach, under `.internal`, the top-level domain ICANN reserved for private use
+/// (2024), so that no name in the DNS is it. A microVM reaches it at its gateway, which its
+/// network process takes to the host's loopback at the granted port alone (as D124 takes
+/// the gateway for a run on the host's network); it is never asked of a resolver.
+pub const HOST: &str = "host.docker.internal";
+
+/// A host's name as the DNS has one (RFC 1035 §2.3.1, RFC 1123 §2.1): labels of letters,
+/// digits and hyphens, none at a label's ends, each at most 63 bytes, 253 in all; its last
+/// not all digits, as no top-level domain is (RFC 3696 §2), so that no port or address
+/// reads as one.
+pub fn host_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 253
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+        && name
+            .rsplit('.')
+            .next()
+            .is_some_and(|tld| !tld.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// A destination as a grant names one, `HOST:PORT` of TCP (D192, D236): a host's name,
+/// lowered, or an IPv4 address, and its port, 1 to 65535. A name of loopback (`localhost`,
+/// RFC 6761 §6.3) is refused: it is the asker's own, never past its microVM, where the host
+/// is [`HOST`].
+pub fn destination(entry: &str) -> Result<(String, u16), String> {
+    let Some((host, port)) = entry.rsplit_once(':') else {
+        return Err(format!("{entry}: a destination is HOST:PORT"));
+    };
+    let Some(port) = port.parse::<u16>().ok().filter(|p| *p > 0) else {
+        return Err(format!("{entry}: {port} is no TCP port, 1 to 65535"));
+    };
+    let host = host.to_ascii_lowercase();
+    if host.parse::<Ipv4Addr>().is_err() && !host_name(&host) {
+        return Err(format!(
+            "{entry}: {host} is neither a host's name nor an IPv4 address"
+        ));
+    }
+    if host == "localhost" || host.ends_with(".localhost") {
+        return Err(format!(
+            "{entry}: {host} is the asker's own loopback (RFC 6761), never past its microVM; the host is {HOST}"
+        ));
+    }
+    Ok((host, port))
+}
+
 #[cfg(test)]
 #[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    /// A destination is `HOST:PORT` of TCP: a host's name, lowered, or an IPv4 address, the
+    /// host itself by its reserved name; an all-digit name (which a port or a mapping would
+    /// read as), a pattern, an IPv6 address and the asker's own loopback are refused, saying
+    /// which and why.
+    #[test]
+    fn a_destination_names_a_host_and_its_port() {
+        assert_eq!(
+            destination("API.OpenAI.com:443"),
+            Ok(("api.openai.com".to_string(), 443))
+        );
+        assert_eq!(destination("192.0.2.7:8080"), Ok(("192.0.2.7".to_string(), 8080)));
+        assert_eq!(
+            destination("Host.Docker.Internal:7070"),
+            Ok((HOST.to_string(), 7070))
+        );
+        assert_eq!(destination("kiln:7070"), Ok(("kiln".to_string(), 7070)));
+        for (entry, why) in [
+            ("a.example", "a.example: a destination is HOST:PORT"),
+            ("a.example:0", "a.example:0: 0 is no TCP port, 1 to 65535"),
+            (
+                "a.example:443/udp",
+                "a.example:443/udp: 443/udp is no TCP port, 1 to 65535",
+            ),
+            (
+                "8081:80",
+                "8081:80: 8081 is neither a host's name nor an IPv4 address",
+            ),
+            (
+                "1.2.3:80",
+                "1.2.3:80: 1.2.3 is neither a host's name nor an IPv4 address",
+            ),
+            (
+                "*.example:443",
+                "*.example:443: *.example is neither a host's name nor an IPv4 address",
+            ),
+            (
+                "[::1]:443",
+                "[::1]:443: [::1] is neither a host's name nor an IPv4 address",
+            ),
+            (
+                "a.example.:443",
+                "a.example.:443: a.example. is neither a host's name nor an IPv4 address",
+            ),
+            (
+                "localhost:7070",
+                "localhost:7070: localhost is the asker's own loopback (RFC 6761), never past its microVM; the host is host.docker.internal",
+            ),
+            (
+                "a.LocalHost:1",
+                "a.LocalHost:1: a.localhost is the asker's own loopback (RFC 6761), never past its microVM; the host is host.docker.internal",
+            ),
+        ] {
+            assert_eq!(destination(entry), Err(why.to_string()), "{entry}");
+        }
+        assert!(host_name(&format!("{}.example", "a".repeat(63))));
+        assert!(!host_name(&format!("{}.example", "a".repeat(64))));
+        // 253 bytes in all at most.
+        assert!(host_name(&format!("{}a", "a.".repeat(126))));
+        assert!(!host_name(&format!("{}ab", "a.".repeat(126))));
+    }
 
     fn query(name: &str, qtype: u16) -> Vec<u8> {
         let mut q = vec![0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];

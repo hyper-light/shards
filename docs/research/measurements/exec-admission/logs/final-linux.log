@@ -1,0 +1,10 @@
+# final tree, Linux unit tests; 2026-11-12T20:17:20Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 48.76 38.62 38.99
+test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+## shards-vm (all) exit 0
+test result: ok. 203 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.04s
+## shards-init (all) exit 0
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 418 filtered out; finished in 0.13s
+## shards-vmm vsock exit 0
+## workload:: x200: pass 200 fail 0
+## exec_link_tests x300: pass 300 fail 0
+# done 2026-11-12T20:17:50Z

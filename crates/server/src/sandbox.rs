@@ -299,14 +299,18 @@ fn worker_calls() -> Vec<libc::c_long> {
 /// descriptors, polling, atomic worker/pidfd creation, killing and reaping, and parent
 /// identity/death setup before the worker's stricter filter, and what a worker calls to
 /// confine itself further before it reads its program (`prctl`, `seccomp`), which its
-/// own filter then refuses.
+/// own filter then refuses. And `restart_syscall`, which the kernel has a process call to
+/// resume a wait a stop broke into (poll's, Linux fs/select.c): a job-control stop, a
+/// cgroup's freeze (init's pause and commit) or a debugger's attach. It resumes only that
+/// call (kernel/signal.c `restart_block`), so it allows no other.
 fn helper_calls() -> Vec<libc::c_long> {
     let mut calls = worker_calls();
     calls.extend([
         libc::SYS_recvmsg,
         libc::SYS_sendmsg,
         libc::SYS_ppoll,
-        libc::SYS_clone3,
+        libc::SYS_restart_syscall,
+        libc::SYS_clone,
         libc::SYS_getpid,
         libc::SYS_getppid,
         libc::SYS_pidfd_send_signal,
@@ -557,7 +561,7 @@ fn serve_helper() -> Result<(), HelperFailure> {
         .map_err(|_| HelperCause::Io("its control poll slot", io::ErrorKind::OutOfMemory, None))?;
     let result = (|| -> Result<(), HelperCause> {
         loop {
-            // Every birth reserves its next poll slot before clone3. Rebuilding this
+            // Every birth reserves its next poll slot before clone. Rebuilding this
             // derived readiness view therefore allocates nothing after a birth.
             set.clear();
             for fd in std::iter::once(control).chain(workers.iter().map(|w| w.pidfd.as_raw_fd())) {
@@ -614,27 +618,27 @@ fn serve_helper() -> Result<(), HelperFailure> {
                         Worker::said(control, id, -1, -1)?;
                         continue;
                     }
-                    let mut pidfd = -1;
+                    let mut pidfd: libc::c_int = -1;
                     // SAFETY: getpid identifies this freshly exec'd, single-threaded helper.
                     let parent = unsafe { libc::getpid() };
-                    let mut args = libc::clone_args {
-                        flags: libc::CLONE_PIDFD as u64,
-                        pidfd: (&raw mut pidfd) as u64,
-                        child_tid: 0,
-                        parent_tid: 0,
-                        exit_signal: libc::SIGCHLD as u64,
-                        stack: 0,
-                        stack_size: 0,
-                        tls: 0,
-                        set_tid: 0,
-                        set_tid_size: 0,
-                        cgroup: 0,
-                    };
-                    // SAFETY: fork-like clone3 from the fresh single-threaded helper.
-                    // CLONE_PIDFD reserves/stores the parent handle before publishing
-                    // a child (Linux 6.18.48 kernel/fork.c, copy_process).
+                    // clone(2), which carries this request whole, as glibc's fork calls it
+                    // (sysdeps/unix/sysv/linux/arch-fork.h); not clone3, which Docker's
+                    // default seccomp profile answers ENOSYS (crates/seccomp/data/default.json).
+                    // SAFETY: fork-like clone from the fresh single-threaded helper.
+                    // CLONE_PIDFD reserves/stores the parent handle, through the third
+                    // argument (parent_tid), before publishing a child (Linux 6.18.48
+                    // kernel/fork.c, the clone entry and copy_process). No stack, TLS or
+                    // child TID: the last two arguments are 0 in either order an
+                    // architecture takes them.
                     let pid = unsafe {
-                        libc::syscall(libc::SYS_clone3, &raw mut args, size_of::<libc::clone_args>())
+                        libc::syscall(
+                            libc::SYS_clone,
+                            (libc::CLONE_PIDFD | libc::SIGCHLD) as libc::c_long,
+                            0 as libc::c_long,
+                            &raw mut pidfd,
+                            0 as libc::c_long,
+                            0 as libc::c_long,
+                        )
                     };
                     if pid < 0 {
                         Worker::said(control, id, -1, -1)?;
