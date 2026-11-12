@@ -71,9 +71,9 @@ reaching another) are owed as real-VM observations (§8 of the record).
   for it is owed.
 - R09: the three defects of 2026-11-12 (below) were each reproduced live before their fixes.
   The three `taken::linux` failures are not attributed until reproduced (below).
-- R11/R12: Linux and macOS only for the run host in v1; Windows refused `Unsupported` (owed,
-  not a platform limit); the run host's launch is a third copy of the builder's and the
-  daemon's (owed, record §3.5).
+- R11/R12: the run host on Linux, macOS and Windows, its serving one implementation over
+  `shards_ipc::Stream`; Windows arm64 unbuilt and unrun (above); the run host's launch is a
+  third copy of the builder's and the daemon's (owed, record §3.5).
 - R14/R15/R16: no profiling or benchmarks run; one kiln agent on jupiter, at ROOT's word,
   for the Windows host's build and its WHP runs; kiln's headroom guard froze the first
   Linux run on adacachy and was not bypassed; runner caches left in place.
@@ -94,9 +94,16 @@ is `cargo test --profile test-release -p shards --test api_image`, serial
 | adalundhe-macbook-pro (M5 Max, macOS 26.5.2) | arm64 HVF | 686514aa0 | 5 passed; stats FAILED as on WHP |
 | jupiter | x86_64 WHP | e1be4007c + the link lock fix + the VM's report | 6 passed |
 | adalundhe-macbook-pro | arm64 HVF | f6051bc93 | 6 passed, 4.12 s |
+| kiln-a094 (Fedora 44, kernel 6.19.10, i9-14900HX) | x86_64 KVM | 5333c2747, main after the Linux landing | 6 passed, 49.98 s |
+| jupiter, a stale tree by mistake | x86_64 WHP | e1be4007c, without the link lock fix | `stats_read_the_run_and_a_member` FAILED `no answer within 120s` again: the lock's second live red |
+| adalundhe-macbook-pro | arm64 HVF | 731b5e54f, the Windows host (one implementation over `shards_ipc::Stream`) | 6 passed, 20.71 s; `api_run` unit 9/9 |
+| kiln-a094 | x86_64 KVM | 731b5e54f | 6 passed, 4.28 s; `api_run` unit 9/9; clippy (`-p shards -p shards-api -p shards-ipc --all-targets -D warnings`) clean |
+| jupiter (a fresh clone) | x86_64 WHP | 731b5e54f | 6 passed, 147.32 s with its test guest's build; `api_run` unit 9/9; clippy (`--target x86_64-pc-windows-msvc`, the same three crates) clean |
 
-Owed: the whole file on Linux x86_64 KVM at the landed revision (CI's run of f6051bc93,
-43291010930, was queued as it landed) and on arm64 KVM.
+Owed: arm64 KVM (no arm64 Linux host here has KVM; boot.rs's nested path), and Windows
+arm64: unbuilt, as jupiter has no C compiler for it (aws-lc-sys needs clang-cl: Build Tools'
+`VC/Tools/Llvm` holds clang-format and clang-tidy alone, and neither ARM64 `cl.exe` nor ARM64
+libraries are installed), and no host here runs WHP on arm64 (record §4).
 
 Causes, each reproduced live before its fix:
 1. **A request a warm VM refuses** (686514aa0). The run host's `RunHead` kept `RunHead`'s

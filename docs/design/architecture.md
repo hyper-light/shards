@@ -22005,21 +22005,28 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 `docker run`'s `128 + signal`; every wait is on a fact.
 
 **Built:** the abi entries, init's staging, member ends, `ATTEND` and `STATS` scopes, the VM
-process's relay of member ends, `shards_api::image` and `shards api-run` on Linux and macOS;
-a boot within the orchestrator's patience (`Images::boot`), its refusal quoting what the run
-host and its VM said last. **Owed:** the Windows run host (refused `Unsupported` there, its
-AppContainer launch not written), a member's stdin and terminal, DAX windows for its shares,
-templates and pools, shares added while running, `attach` after the owner's crash, one launch
-shared with the builder's and the daemon's, and a simulator.
+process's relay of member ends, `shards_api::image` and `shards api-run` on Linux, macOS and
+Windows; a boot within the orchestrator's patience (`Images::boot`), its refusal quoting what
+the run host and its VM said last. On Windows the run host starts its VM as the daemon does
+(D141, D142, D195): in a job of its own whose last handle it holds, which ends the VM, network
+and share processes as it ends, however it ends, where Unix has `STOP_ORDER`'s SIGKILL; the VM
+process confined in an AppContainer made suspended, its link, grants, null device and network
+handed by name, its network process started on the suspended VM, each share's stream a byte
+pair handed after `RUN` (D197). **Owed:** Windows arm64's build and its WHP runs (below), a
+member's stdin and terminal, DAX windows for its shares, templates and pools, shares added
+while running, `attach` after the owner's crash, one launch shared with the builder's and the
+daemon's, and a simulator.
 
-**Tested** (real VMs, `crates/shards/tests/api_image.rs`, 2026-11-12): 6 of 6 on macOS arm64
-HVF (an M5 Max, macOS 26.5.2) at f6051bc93, after main's CI failed every boot: the run
-host's request kept no log retention, which a warm VM refuses, and its follower held the
-link's lock for the run's life; each reproduced live before its fix
-(runtime-image-boot-v1/README.md). **Evidence owed** (ROOT): the whole file on Linux x86_64
-KVM at the landed revision (CI's run of f6051bc93 was queued as it landed); KVM arm64 (no
-arm64 Linux host here has KVM; the nested path of boot.rs); the run host's resident, CPU and
-kernel cost per microVM against the daemon's per run and Firecracker's (R14).
+**Tested** (real VMs, `crates/shards/tests/api_image.rs`, 2026-11-12): 6 of 6 on Linux x86_64
+KVM (Fedora 44, at 5333c2747, main), macOS arm64 HVF (an M5 Max, macOS 26.5.2) and Windows
+x86_64 WHP (Windows 11 26200), after main's CI failed every boot: the run host's request
+kept no log retention, which a warm VM refuses, and its follower held the link's lock for the
+run's life; each reproduced live before its fix (runtime-image-boot-v1/README.md). **Evidence
+owed** (ROOT): KVM arm64 (no arm64 Linux host here has KVM; the nested path of boot.rs);
+Windows arm64: unbuilt (jupiter has no C compiler for it: aws-lc-sys needs clang-cl) and no
+host here runs WHP on arm64 (GitHub's windows-11-arm has no hypervisor platform, PM M172;
+nested Windows 11 arm64 on an M-series Mac gets no partition, D209); the run host's resident,
+CPU and kernel cost per microVM against the daemon's per run and Firecracker's (R14).
 
 **What would falsify it.** A run host costing more per microVM than the daemon per run (then
 one host per orchestrator); an orchestrator needing to link the VMM; credentials a member
