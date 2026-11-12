@@ -19,6 +19,8 @@ mod managed_reap;
 #[cfg(target_os = "linux")]
 mod nesting;
 #[cfg(target_os = "linux")]
+mod plugged;
+#[cfg(target_os = "linux")]
 mod workload;
 
 fn main() {

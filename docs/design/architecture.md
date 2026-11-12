@@ -1106,9 +1106,12 @@ for the exit status.
       it calls keeps [PM M98]), and on Linux the least of
       `RLIMIT_NPROC`, `threads-max` and the `pids.max` of its control groups, up to the
       root its namespace sees, where a container's limit is (Linux
-      Documentation/admin-guide/cgroup-v2.rst). Where none is said, POSIX's
-      `_POSIX_THREAD_THREADS_MAX` (64). `SHARDS_MAX_CLIENTS` sets fewer. The 256
-      before was chosen, not derived.
+      Documentation/admin-guide/cgroup-v2.rst). Windows keeps no count of them: there
+      they are the fewest its address space, its commit limit (its job's, where that
+      holds it to less) and a process's handles hold of a thread, each cost read off a
+      thread started as std starts every thread of shards' (D181, PM M529). Where none
+      is said, POSIX's `_POSIX_THREAD_THREADS_MAX` (64), which Windows took before.
+      `SHARDS_MAX_CLIENTS` sets fewer. The 256 before was chosen, not derived.
     - A client that waits long, on a microVM's end (`wait`) or its output
       (`logs -f`), counts among those in hand no more, so that waiters shut out no
       client however many there are. A thread that cannot be spawned still drops its
@@ -6112,13 +6115,71 @@ there where the container is not removed.
 - **No microVM's engine takes the host's daemon.** Each of its connections holds a thread
   of the daemon's, and is counted as a client in hand (`busy`), of the clients the
   daemon's threads hold (`most_clients`: the process's thread limit past the daemon's own
-  threads, at a client's two each; macOS gives 16,384 threads a process). A microVM's
+  threads, at a client's two each; macOS gives 16,384 threads a process, and Windows'
+  is derived, below). A microVM's
   engine holds an equal share of them alone, among the host's own clients and each
   microVM whose engine holds any: one alone holds half, two a third each. Past its share,
   or where the daemon holds as many clients as its threads do, a connection is answered
   503 with why and closed; one of its own going makes room. Without it, a workload's
   1,023 idle connections (the vsock muxer's bound, Firecracker's) held as many of the
   daemon's threads, and sixteen microVMs held them all.
+- **On Windows the thread limit is derived (PM M529).** Windows keeps no count of a
+  process's threads ("The number of threads a process can create is limited by the
+  available virtual memory", CreateThread), so `platform::thread_limit` said none there and
+  `most_clients` took POSIX's least, 64: 27 clients, of which a microVM's engine alone held
+  13, and the 32 streams at once of engine_ring's pins test at 32 vCPUs were answered 503 on
+  WHP (ring-pins-v1 r16). It is now the fewest threads any of three limits holds of one:
+  - the process's address space (MEMORYSTATUSEX's `ullTotalVirtual`, "the size of the
+    user-mode portion of the virtual address space") of a thread's stack's reservation,
+    which "is limited to the virtual address range" (Thread Stack Size);
+  - its commit limit of the commit a thread is charged: its stack's "initially committed
+    pages ... remove pages from the system total commit limit, which is the size of the
+    page file plus the size of the physical memory" (Thread Stack Size). The limit is
+    `ullTotalPageFile`, "the current committed memory limit for the system or the current
+    process, whichever is smaller", or the process's job's where less, which that leaves
+    out (in a job holding it to 64 MiB it said the host's 141 GB): the job's
+    `JOB_OBJECT_LIMIT_PROCESS_MEMORY` or `JOB_OBJECT_LIMIT_JOB_MEMORY`
+    (JOBOBJECT_BASIC_LIMIT_INFORMATION), read by QueryInformationJobObject of "the
+    immediate job of the calling process". A job above that one holding it to less ("the
+    most restrictive memory limit in the job chain") is not for the process to read;
+  - a process's 2^24 handles ("Kernel Objects"), of which a thread whose handle is kept
+    (std's `JoinHandle`) holds one; the daemon drops its clients' as it starts them.
+
+  Each cost is read on the daemon's own host, off a thread started as std starts every
+  thread of shards' (`thread::Builder`, std's default stack: `RUST_MIN_STACK`, else
+  2 MiB): the reservation GetCurrentThreadStackLimits gives; what Windows commits of every
+  thread's stack however far its code goes, its initial commit ("the initially committed
+  size is the default size specified in the executable header", Thread Stack Size: the
+  image's `SizeOfStackCommit`, the linker's 4 KB) and its guard pages, VirtualQuery's
+  PAGE_GUARD regions (std's `SetThreadStackGuarantee(0x5000)` and a page); and winternl.h's
+  TEB in whole pages, the least a TEB is ("Do not assume a maximum size for this
+  structure"). Not the pages its code has touched, which differ from thread to thread: a
+  process's first thread runs its one-time initialization on its own stack, a page more,
+  and under a test's output capture so does each. On jupiter (Windows 11, 10.0.26200;
+  123.6 GiB, a commit limit of 141.1 GB) a thread reserves 2 MiB and is counted 4 KiB of
+  initial commit, 24 KiB of guard pages and 8 KiB of TEB: its commit holds 3,827,251
+  threads, its address space 67,108,863 and its handles 16,777,216, so 1,913,620 clients,
+  956,810 of them a microVM's engine's alone.
+
+  Windows charges a thread more than any call reports of it, which is not counted, so that
+  the threads said are never fewer than Windows starts: the pages its code touches and its
+  share of the heap (in jobs of 16, 64 and 256 MiB each std thread was charged 47.9 KB,
+  36.9 KB of it counted; the limits said 455, 1,820 and 7,281 threads, and Windows started
+  333, 1,380 and 5,563, then refused the next, ERROR_COMMITMENT_LIMIT, with less than a
+  counted thread's commit left), and the kernel's own commit for its kernel stack, which
+  "can vary among different hardware platforms and different versions of the operating
+  system" (Using the Kernel Stack): about 35 KB of the system's commit more a thread on
+  jupiter, from bursts of 20,000 threads that other work's commit moved by up to 3 GB. As
+  Linux's `threads-max` counts a thread's kernel stack and not its user stack, this is a
+  limit, not what is free on a loaded host: a client whose thread cannot be started is
+  dropped, logged, as on every host. Tested natively on jupiter (windows_process.rs:
+  `the_threads_held_are_the_fewest_each_limit_holds`;
+  `a_thread_limit_is_what_the_host_holds_of_a_thread`, red while `thread_limit` said none,
+  and a thread that has touched 256 KiB of its stack counted as a fresh one;
+  `a_jobs_commit_limit_holds_the_threads_it_says`, a child in a job of its own whose limit
+  is the job's over a thread's count, and whose 64 threads Windows charged at least what
+  was counted of them). Owed: the pins test's 32 streams at once past the old bound on WHP
+  (ROOT's).
 
 Tested on real microVMs (`a_runs_command_reaches_its_own_microvms_engine`: made, started,
 waited for, logged, listed, inspected and removed through it, the host's other microVM and
@@ -15190,8 +15251,12 @@ It is shards' own MCP's, and its runtime shards' to choose (AGENTFILE_ARCH §11 
   by pidfd. For each program it forks a worker, which holds the program's socket alone
   and loads a filter of its own before it reads the program: reading and writing, its
   memory, futexes, the clock, the kernel's randomness and exiting; any other call, or one
-  of another ABI (x32), kills it (`SECCOMP_RET_KILL_PROCESS`). A worker opens nothing: no
-  file, socket, process or descriptor. Each tool it calls is a frame to the instance over
+  of another ABI (x32), kills it (`SECCOMP_RET_KILL_PROCESS`). Both filters allow
+  `restart_syscall`, by which the kernel resumes a wait a stop broke into where no handler
+  ran (a cgroup's freeze for init's pause and commit, a job-control stop, a debugger): a
+  timed futex wait's on every architecture, and the helper's poll on x86_64 (PM M525,
+  M527). It calls only the restart the interrupted call left, else fails with EINTR, so it
+  allows no other call. A worker opens nothing: no file, socket, process or descriptor. Each tool it calls is a frame to the instance over
   its socket, which the instance answers as it answers its caller's MCP call of that tool,
   under the same grants, with the same refusals. Helper and workers are the instance's
   uid, gid and cgroup, its agent's (D60): a program's memory and CPU are its caller's,
@@ -15229,6 +15294,9 @@ Tested: in crates/server, on Linux, `a_program_calls_its_tools_over_its_socket`,
 cannot hold, a throw, an error's positions, a syntax error's, a promise nothing settles),
 `frames_are_read_whole_and_within_their_bound`,
 `a_worker_is_ended_for_a_call_its_filter_refuses` (`openat`, and x32 on x86_64, SIGSYS),
+`a_worker_stopped_in_a_timed_wait_lives_on` and `the_helper_stopped_in_its_poll_lives_on`
+(each stopped and continued in its wait under its own filter; without `restart_syscall`
+the worker dies on x86_64 and arm64, the helper on x86_64: PM M527),
 `initialize_begins_a_session`, `a_cancellation_names_a_request_in_its_own_session`,
 `a_programs_call_is_its_callers`; on real microVMs,
 `code_mode_runs_a_program_with_the_callers_grants`: a's program finds itself, its peers,
@@ -22206,6 +22274,93 @@ says; the report pipe on a Windows host; the seven-target lint.
 
 **What would falsify it.** A client that needs shards to own its VM processes after all (then
 D215's spawn alone).
+
+### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's; case handling and host edits' notices owed; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 8: kiln reads a session's diffs,
+HEAD and checkpoints on the host at the session's own path, so a member (an agent or
+harness, D59) must see the project at that same absolute path, writable, its writes the
+host's. D214's `plug volume` reached the run's command alone. A member's mount namespace is
+its own, its root a read-only overlay of the image as built, and its Landlock ruleset fixed
+as it execs: no rule is added to a running process's domain (landlock(7)), so a path the
+image lacks could never become a writable mount point in a running member.
+
+**Alternatives.**
+- *A tmpfs at each root, as a domain starts:* it hides the image's own `/home`, `/mnt` and
+  `/srv`, users' homes in many images (`/home/node`). Not taken.
+- *Landlock's every right beneath `/`:* it widens a receiving domain's Unix sockets'
+  directories, writable tmpfs, past making sockets. Not taken.
+- *A root covered at plug time:* Landlock skips the dentries a mount hides
+  (security/landlock/fs.c, `is_access_to_paths_allowed`, "Ignores hidden mount points",
+  Linux v6.18), so a rule on a covered root is lost. Not taken: a plug lies strictly
+  beneath a root.
+- *Directories shared up front at their host paths:* Docker Desktop shares `/Users`,
+  `/Volumes`, `/private`, `/tmp` and `/var/folders` into its VM; Lima and Colima the home. A
+  member's default deny (D59) gives nothing up front; here a root grants nothing until a
+  plug lands in it.
+
+**Decided.**
+- *Plug roots* (`shards_abi::run::plug`): setup entries `plug-root=/X`, named by the host
+  from data: its OS's own, Apple's standard directories of homes and mountable disks on macOS
+  (`/Users`, `/Volumes`; File System Programming Guide, "macOS Standard Directories"), the
+  Filesystem Hierarchy Standard 3.0's users' and mounted data on Linux (§3.8 `/home`, §3.11
+  `/media`, §3.12 `/mnt`, §3.17 `/srv`), WSL's root of a Windows host's drives (`/mnt`,
+  DrvFs's `automount.root`, drive C: at `/mnt/c`); and on Unix the top-level directory of
+  each host path a run's binds give it, so that a project a run starts beside names the root
+  of what is plugged later (setup.rs `plug_roots`). One rule, on host and guest alike
+  (`root_name`), refuses a root that is not one top-level directory, or is one of init's
+  own: `proc`, `sys`, `dev`, `tmp`, `etc`, `run`. `/root` is left out: images keep it 0700,
+  which a member never traverses; `/opt` too, the system's packages.
+- *Provisioned as a domain starts* (domains.rs): each root made in its skeleton where the
+  image lacks it; its root overlay given a writable layer, a tmpfs that init alone writes,
+  `upper` given the image root's owner and mode; Landlock's every right beneath each root.
+  A root grants nothing until a plug lands there: it lies on the domain's root mount, which
+  stays read-only (`SYSTEM`, pinned by `a_plug_root_lies_on_a_read_only_root`). A run whose
+  host names no root starts as before.
+- *A plug into a member* (init hotplug.rs, `share ADDR TAG DST ro|rw member N`): DST
+  strictly beneath one of the run's roots (`plug::beneath`), else refused naming them; the
+  share mounted `nosuid`, `nodev`, the files its host made named the member's (D38's owner
+  word) while the mount is writable, then made read-only where asked; the member's mount
+  namespace entered through a pidfd of one of its command's processes (two `NSpid:`
+  numbers, the inner not 1: not its namespace's init, which keeps a mount namespace of its
+  own, nor its in-VM server instance, which shares its cgroup in init's namespace), its
+  cgroup checked again once held, so that no PID another took meanwhile is entered; its
+  mount points made through a copy of its root's mount, attached nowhere and made writable
+  (open_tree, mount_setattr clearing `MOUNT_ATTR_RDONLY`), the root found as the domain's
+  own walk finds it and no symlink followed beneath it (openat2 `RESOLVE_NO_SYMLINKS`,
+  `RESOLVE_NO_XDEV`), so that nothing is made outside it.
+- *The daemon's:* `shards plug volume --for NAME MICROVM SOURCE:PATH[:ro]`, NAME an agent or
+  harness as an Agentfile's `FOR` names one, which runs a command; `unplug volume` by its
+  path, as D214's.
+- *The orchestrator's* (D231's run host; shards-api's image channel, version 4):
+  `ImageGuest::plug(member, host, at, read_only, patience)` and `unplug(at, patience)`. On
+  the wire, `PLUG` carries a `PlugAsk` (its id, the member's index, the host's directory,
+  the path, read-only), `UNPLUG` an `UnplugAsk` (its id, the path), and `PLUGGED` answers
+  each by id, done or refused by kind (`PlugRefusal`: `Request`, `Member`, `Outside`,
+  `Taken`, `Host`, `Device`, `Unknown`, `Busy`; `ImageRefusal::Plug` for the caller). The
+  version moves to 4, as a host of version 3 ends a run on a kind it does not know: a
+  mismatch is refused as the run is asked instead. `shards api-run` checks an ask as init
+  does (`plug::beneath`, against the roots it named), serves the directory by a share
+  process of its own, plugs it into its VM's bus (`DEVICE`, answered `DEVICED` on the VM's
+  link) and has init mount it in the member; init's `DEVICE` built-in says a mount in use by
+  its exit status (`DEVICE_BUSY`, EBUSY's number), so that an unplug's `Busy` is typed. Its
+  VM has D214's slots, as a daemon run's.
+
+**Verified** (adacachy, KVM x86_64, Linux 7.2.9): `a_project_is_plugged_into_a_running_agent_at_its_host_path`
+(tests/plug.rs): the agent, given its roots, makes nothing beneath any (EROFS, 30, for a
+directory and a file); a project plugged outside every root is refused naming them; plugged
+beneath one, the agent reads the host's file and writes its own, which the host reads; it is
+unplugged, plugged again and unplugged as the agent runs. Mutation: with no Landlock rule
+beneath the roots, the agent writes nothing there and the test fails.
+`a_project_is_plugged_into_the_running_harness` (tests/api_image.rs) holds the
+orchestrator's: refused outside the roots (`Outside`) and for a member of files alone
+(`Member`); plugged at its host path, read and written by the harness; unplugged, and a
+second unplug `Unknown`. HVF, WHP and arm64 KVM are owed (ROOT's).
+
+**Known limits.** A project in `/tmp` (macOS's `/private/tmp` as `/tmp`, a Linux host's
+`/tmp`) is no root's: the domain's own scratch is there. A path beneath a root through a
+symlink of the image's beneath it is refused. The directories made for a plug's mount point
+stay, empty and root's, once it is unplugged.
 
 ### D236. A network's destinations: a member reaches the hosts its grants name, the host itself at one port (built; real-VM validation owed)
 

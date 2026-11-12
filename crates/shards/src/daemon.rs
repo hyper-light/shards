@@ -134,7 +134,7 @@ const DEFAULT_POOL: usize = 2;
 
 /// The PCI slots each run's microVM has for devices plugged into it (D214): four, or what
 /// SHARDS_PCI_SLOTS says, 0 for none.
-fn pci_slots() -> u8 {
+pub(crate) fn pci_slots() -> u8 {
     std::env::var("SHARDS_PCI_SLOTS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -3833,6 +3833,9 @@ impl<D: Disk> Daemon<D> {
                 // starts no domain without one.
                 if prepared.agentfile.is_some() {
                     prepared.spec.setup.extend(crate::setup::domain_seccomp(kernel)?);
+                    // Its domains' plug roots (D235), beneath which what is plugged into one
+                    // as it runs lies, at its host path.
+                    prepared.spec.setup.extend(crate::setup::plug_roots(&points));
                 }
                 // A joiner's are volumes of its microVM's join share, each named so that no
                 // other microVM can guess it (D119), as no run's own shares are its.

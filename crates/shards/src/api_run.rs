@@ -457,6 +457,8 @@ mod hosted {
         server: Option<PathBuf>,
         /// Its managed output's members, labels and active ones, where it has any.
         capture: Option<(u32, Vec<u32>)>,
+        /// Its domains' plug roots (D235), by name (`Users`), as its setup names them.
+        roots: Vec<Vec<u8>>,
     }
 
     pub(super) fn run(
@@ -642,6 +644,19 @@ mod hosted {
             }
             None => None,
         };
+        // Its domains' plug roots (D235), as a daemon's run names them: this host's own and
+        // each share's top-level directory, beneath which a plug asked of it lies.
+        let roots = match &agentfile {
+            Some(_) => crate::setup::plug_roots(&points),
+            None => Vec::new(),
+        };
+        setup.extend(roots.iter().cloned());
+        let roots = roots
+            .iter()
+            .filter_map(|e| e.strip_prefix(protocol::plug::ROOT_KEY))
+            .filter_map(protocol::plug::root_name)
+            .map(<[u8]>::to_vec)
+            .collect();
         // Grants past the microVM: the run's own processes kept to eth0's subnet (D59).
         if agentfile.as_ref().is_some_and(|a| a.grants.past()) {
             setup.push(b"confine-eth0".to_vec());
@@ -691,6 +706,7 @@ mod hosted {
             init,
             server,
             capture,
+            roots,
         })
     }
 
@@ -770,6 +786,11 @@ mod hosted {
         ];
         if let Some(server) = &plan.server {
             args.extend(["--pmem".into(), server.clone().into()]);
+        }
+        // Slots for what is plugged into it as it runs (D214, D235), as a daemon run's.
+        let slots = crate::daemon::pci_slots();
+        if slots > 0 {
+            args.extend(["--pci-slots".into(), slots.to_string().into()]);
         }
         if !plan.dirs.is_empty() {
             args.extend(["--shares".into(), plan.dirs.len().to_string().into()]);
@@ -1184,6 +1205,31 @@ mod hosted {
         /// `STOP` asked, or the owner gone: the run's end is `Stopped`.
         stopping: std::sync::atomic::AtomicBool,
         next_exec: std::sync::atomic::AtomicU64,
+        /// The home, whose private directory each share process keeps its ghosts in.
+        home: &'a Path,
+        /// The run's members, and its domains' plug roots by name (D235).
+        members: &'a [wire::MemberInfo],
+        roots: &'a [Vec<u8>],
+        /// Each device step asked of the VM and not yet answered (`DEVICED`), by its number;
+        /// none once the VM's link has closed, as nothing will answer one then.
+        devices: Mutex<Option<Vec<Asked>>>,
+        /// What is plugged into the run's members, by the path it is at.
+        plugged: Mutex<HashMap<String, Plugged>>,
+        /// On Windows the run's job, which each plug's share process is made in too.
+        #[cfg(windows)]
+        job: &'a shards_ipc::GroupJob,
+    }
+
+    /// A device step asked of the VM: its number, and who waits for its answer.
+    type Asked = (u64, std::sync::mpsc::Sender<Result<String, String>>);
+
+    /// A host directory plugged into a member (D235): its place on the microVM's PCI bus
+    /// (`devfn`), its guest's address of it, the member's index, and its share process.
+    struct Plugged {
+        devfn: u8,
+        address: String,
+        member: u32,
+        share: Shares,
     }
 
     fn channel_of(c: managed::Channel) -> Channel {
@@ -1384,11 +1430,23 @@ mod hosted {
                 held: Mutex::new(Some(HashMap::new())),
                 stopping: std::sync::atomic::AtomicBool::new(false),
                 next_exec: std::sync::atomic::AtomicU64::new(0),
+                home,
+                members: &plan.members,
+                roots: &plan.roots,
+                devices: Mutex::new(Some(Vec::new())),
+                plugged: Mutex::new(HashMap::new()),
+                #[cfg(windows)]
+                job: &launched.job,
             };
             answers
                 .send(wire::to_client::STARTED, &[&started])
                 .map_err(|e| boot(format!("its orchestrator: {e}")))?;
             serve(&live, input, &launched, client);
+            // What was plugged in goes with the VM: each share process ends as its streams
+            // close (`Shares::end`).
+            for (_, p) in std::mem::take(&mut *lock(&live.plugged)) {
+                p.share.end();
+            }
             Ok(())
         })();
         // Its processes gone, whatever ended it: the VM killed where it runs on, then each
@@ -1497,6 +1555,8 @@ mod hosted {
                 {
                     held.remove(&u64::from_be_bytes(*number));
                 }
+            } else if m.kind == kind::DEVICED {
+                answered_device(live, &m.payload);
             } else if let Some((answer, payload)) = super::relayed(m.kind, &m.payload) {
                 let _ = live.answers.send(answer, &[&payload]);
             }
@@ -1504,6 +1564,8 @@ mod hosted {
         // No VM takes an exec now: their clients' ends go, and each waiting for its exit
         // hears its end.
         lock(&live.held).take();
+        // Device steps no answer will come for: their askers hear the VM has gone.
+        *lock(&live.devices) = None;
         if let Some(why) = failed {
             return RunEnd::Failed(why);
         }
@@ -1551,6 +1613,46 @@ mod hosted {
                         && let Ok(answer) = wire::StatsAnswer::encode(ask.id, Err("no thread to ask it on"))
                     {
                         let _ = live.answers.send(wire::to_client::STATS, &[&answer]);
+                    }
+                }
+                // On a thread of its own, as stats: a plug's guest steps hold up nothing else.
+                wire::to_host::PLUG | wire::to_host::UNPLUG => {
+                    let asked = if which == wire::to_host::PLUG {
+                        let Ok(ask) = wire::PlugAsk::decode(&payload) else {
+                            break;
+                        };
+                        let id = ask.id;
+                        (
+                            id,
+                            std::thread::Builder::new()
+                                .name("api-run plug".into())
+                                .spawn_scoped(scope, move || plugged(live, id, plug(live, &ask))),
+                        )
+                    } else {
+                        let Ok(ask) = wire::UnplugAsk::decode(&payload) else {
+                            break;
+                        };
+                        let id = ask.id;
+                        (
+                            id,
+                            std::thread::Builder::new()
+                                .name("api-run unplug".into())
+                                .spawn_scoped(scope, move || {
+                                    let (result, share) = unplug(live, &ask);
+                                    plugged(live, id, result);
+                                    // Its share process ends as its device's stream closes.
+                                    if let Some(share) = share {
+                                        share.end();
+                                    }
+                                }),
+                        )
+                    };
+                    if let (id, Err(_)) = asked {
+                        plugged(
+                            live,
+                            id,
+                            Err((wire::PlugRefusal::Device, "no thread to ask it on".into())),
+                        );
                     }
                 }
                 _ => break,
@@ -1638,42 +1740,58 @@ mod hosted {
                 m.to_string().into_bytes(),
             ],
         };
+        match builtin(live, protocol::builtin::STATS, args) {
+            Ok(Said {
+                status: Some(0), out, ..
+            }) => answer(Ok(&out)),
+            Ok(Said { err, .. }) => answer(Err(String::from_utf8_lossy(&err).trim_end())),
+            Err(e) => answer(Err(&e)),
+        }
+    }
+
+    /// What a built-in of init's said: its exit status, its answer, and why it failed.
+    struct Said {
+        status: Option<u8>,
+        out: Vec<u8>,
+        err: Vec<u8>,
+    }
+
+    /// Runs init's built-in `which` with `args` through an exec on the VM's link: what it
+    /// said, each of its streams read whole within the run protocol's bound (init's answers
+    /// are a few lines).
+    fn builtin(live: &Live<'_>, which: u8, args: Vec<Vec<u8>>) -> Result<Said, String> {
         let spec = protocol::Spec {
             argv: args,
-            builtin: protocol::builtin::STATS,
+            builtin: which,
             ..Default::default()
         };
-        let asked = (|| -> Result<(Stream, std::io::PipeReader, std::io::PipeReader), String> {
-            let (client, theirs) = Stream::pair().map_err(|e| e.to_string())?;
-            let (out_r, out_w) = std::io::pipe().map_err(|e| e.to_string())?;
-            let (err_r, err_w) = std::io::pipe().map_err(|e| e.to_string())?;
-            let null = std::fs::File::open(crate::os::NULL).map_err(|e| e.to_string())?;
-            let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let mut payload = number.to_be_bytes().to_vec();
-            payload.push(0);
-            spec.encode_into(&mut payload);
-            let handed = shards_ipc::handed(&theirs).map_err(|e| e.to_string())?;
-            let fds = [handed.as_fd(), null.as_fd(), out_w.as_fd(), err_w.as_fd()];
-            // Held until the VM says it has it; none once its link has closed.
-            match lock(&live.held).as_mut() {
-                Some(held) => {
-                    held.insert(number, theirs.try_clone().map_err(|e| e.to_string())?);
+        let (client, mut out, mut err) =
+            (|| -> Result<(Stream, std::io::PipeReader, std::io::PipeReader), String> {
+                let (client, theirs) = Stream::pair().map_err(|e| e.to_string())?;
+                let (out_r, out_w) = std::io::pipe().map_err(|e| e.to_string())?;
+                let (err_r, err_w) = std::io::pipe().map_err(|e| e.to_string())?;
+                let null = std::fs::File::open(crate::os::NULL).map_err(|e| e.to_string())?;
+                let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut payload = number.to_be_bytes().to_vec();
+                payload.push(0);
+                spec.encode_into(&mut payload);
+                let handed = shards_ipc::handed(&theirs).map_err(|e| e.to_string())?;
+                let fds = [handed.as_fd(), null.as_fd(), out_w.as_fd(), err_w.as_fd()];
+                // Held until the VM says it has it; none once its link has closed.
+                match lock(&live.held).as_mut() {
+                    Some(held) => {
+                        held.insert(number, theirs.try_clone().map_err(|e| e.to_string())?);
+                    }
+                    None => return Err("the run has ended".into()),
                 }
-                None => return Err("the run has ended".into()),
-            }
-            if let Err(e) = shards_ipc::send(&lock(&live.link), kind::EXEC_RUN, &payload, &fds) {
-                if let Some(held) = lock(&live.held).as_mut() {
-                    held.remove(&number);
+                if let Err(e) = shards_ipc::send(&lock(&live.link), kind::EXEC_RUN, &payload, &fds) {
+                    if let Some(held) = lock(&live.held).as_mut() {
+                        held.remove(&number);
+                    }
+                    return Err(e.to_string());
                 }
-                return Err(e.to_string());
-            }
-            Ok((client, out_r, err_r))
-        })();
-        let (client, mut out, mut err) = match asked {
-            Ok(asked) => asked,
-            Err(e) => return answer(Err(&e)),
-        };
-        // Init's own answer, a few lines; read whole, each within the run protocol's bound.
+                Ok((client, out_r, err_r))
+            })()?;
         let bound = u64::from(protocol::MAX_PAYLOAD);
         let mut said = Vec::new();
         let mut why = Vec::new();
@@ -1683,9 +1801,227 @@ mod hosted {
             Ok(Some(m)) if m.kind == kind::EXIT => m.payload.first().copied(),
             _ => None,
         };
-        match status {
-            Some(0) => answer(Ok(&said)),
-            _ => answer(Err(String::from_utf8_lossy(&why).trim_end())),
+        Ok(Said {
+            status,
+            out: said,
+            err: why,
+        })
+    }
+
+    /// A plug's or an unplug's outcome, told its orchestrator (`PLUGGED`).
+    fn plugged(live: &Live<'_>, id: u32, result: Result<(), (wire::PlugRefusal, String)>) {
+        if let Ok(payload) = (wire::PlugAnswer { id, result }).encode() {
+            let _ = live.answers.send(wire::to_client::PLUGGED, &[&payload]);
+        }
+    }
+
+    /// The run's plug roots, as a refusal names them.
+    fn named(roots: &[Vec<u8>]) -> String {
+        let all: Vec<String> = roots
+            .iter()
+            .map(|r| format!("/{}", String::from_utf8_lossy(r)))
+            .collect();
+        if all.is_empty() {
+            "the run has no plug roots".into()
+        } else {
+            format!("the run's plug roots are {}", all.join(", "))
+        }
+    }
+
+    /// `ask`'s host directory plugged into its member (D235), as `shards plug volume --for`
+    /// plugs one into a daemon's run (daemon/devices.rs): checked here, and by its guest's
+    /// init again; served by a share process of its own; plugged into the microVM's bus;
+    /// then mounted in the member at its path by init, the host's files the member's.
+    fn plug(live: &Live<'_>, ask: &wire::PlugAsk) -> Result<(), (wire::PlugRefusal, String)> {
+        use wire::PlugRefusal as R;
+        let member = live
+            .members
+            .iter()
+            .find(|m| m.index == ask.member)
+            .ok_or_else(|| {
+                (
+                    R::Request,
+                    format!("member {}: the image declares none", ask.member),
+                )
+            })?;
+        if !member.runs {
+            return Err((
+                R::Member,
+                format!("{}: files alone, it runs nothing", member.name),
+            ));
+        }
+        if !Path::new(&ask.host).is_absolute() {
+            return Err((R::Request, format!("{}: not an absolute path", ask.host)));
+        }
+        let roots: Vec<&[u8]> = live.roots.iter().map(Vec::as_slice).collect();
+        match protocol::plug::beneath(ask.at.as_bytes(), &roots) {
+            Ok(_) => {}
+            Err(protocol::plug::Outside::Rootless) => {
+                return Err((
+                    R::Outside,
+                    format!("{}: not beneath a plug root: {}", ask.at, named(live.roots)),
+                ));
+            }
+            Err(_) => return Err((R::Request, format!("{}: not a plain absolute path", ask.at))),
+        }
+        if lock(&live.plugged).contains_key(&ask.at) {
+            return Err((R::Taken, format!("{} has something plugged in already", ask.at)));
+        }
+        let dir = shards_vmm::platform::open_dir(Path::new(&ask.host))
+            .map_err(|e| (R::Host, format!("{}: {e}", ask.host)))?;
+        if !dir
+            .metadata()
+            .map_err(|e| (R::Host, format!("{}: {e}", ask.host)))?
+            .is_dir()
+        {
+            return Err((R::Host, format!("{}: not a directory", ask.host)));
+        }
+        let dirs = [(OwnedFd::from(dir), ask.read_only, OsString::new())];
+        #[cfg(unix)]
+        let share = start_shares(live.home, &dirs).map_err(|e| (R::Host, e))?;
+        #[cfg(windows)]
+        let share = start_shares(live.home, &dirs, live.job).map_err(|e| (R::Host, e))?;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let tag = format!(
+            "shards-plug{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let step = [&[shards_ipc::device::SHARE][..], tag.as_bytes()].concat();
+        // On Unix its connection, which the share process sends and holds until it is
+        // taken (M24); on Windows its stream itself, a duplex pipe made here (D197).
+        #[cfg(unix)]
+        let answer = match shards_ipc::recv(&share.door) {
+            Ok(Some(ends)) if ends.kind == kind::SHARE_ENDS => match ends.fds.first() {
+                Some(conn) => {
+                    let answer = ask_device(live, &step, &[conn.as_fd()]);
+                    let _ = shards_ipc::send(&share.door, kind::TAKEN, &[], &[]);
+                    answer
+                }
+                None => Err("its share process sent no connection".into()),
+            },
+            Ok(_) => Err("its share process sent no connection".into()),
+            Err(e) => Err(format!("its share process: {e}")),
+        };
+        #[cfg(windows)]
+        let answer = match share.ends.first() {
+            Some(end) => ask_device(live, &step, &[end.as_fd()]),
+            None => Err("no stream was made for its share".into()),
+        };
+        let placed = answer.and_then(|a| {
+            a.split_once(' ')
+                .and_then(|(d, addr)| Some((d.parse::<u8>().ok()?, addr.to_string())))
+                .ok_or_else(|| format!("its microVM answered {a:?}"))
+        });
+        let (devfn, address) = match placed {
+            Ok(placed) => placed,
+            Err(e) => {
+                share.end();
+                return Err((R::Device, e));
+            }
+        };
+        let flag = if ask.read_only { "ro" } else { "rw" };
+        let index = ask.member.to_string();
+        if let Err((_, e)) = guest_device(live, &["share", &address, &tag, &ask.at, flag, "member", &index]) {
+            // Taken off again, its guest having found it or not.
+            let _ = guest_device(live, &["unmount", &address, &ask.at, "member", &index]);
+            let _ = ask_device(live, &[shards_ipc::device::UNPLUG, devfn], &[]);
+            share.end();
+            return Err((R::Device, e));
+        }
+        lock(&live.plugged).insert(
+            ask.at.clone(),
+            Plugged {
+                devfn,
+                address,
+                member: ask.member,
+                share,
+            },
+        );
+        Ok(())
+    }
+
+    /// What is plugged in at `ask`'s path let go of (D235): unmounted in its member by init,
+    /// refused while anything there uses it, then taken off the microVM's bus; its share
+    /// process given back, to be reaped once its stream has closed.
+    fn unplug(
+        live: &Live<'_>,
+        ask: &wire::UnplugAsk,
+    ) -> (Result<(), (wire::PlugRefusal, String)>, Option<Shares>) {
+        use wire::PlugRefusal as R;
+        let Some((devfn, address, member)) = lock(&live.plugged)
+            .get(&ask.at)
+            .map(|p| (p.devfn, p.address.clone(), p.member))
+        else {
+            return (
+                Err((R::Unknown, format!("nothing is plugged in at {}", ask.at))),
+                None,
+            );
+        };
+        let index = member.to_string();
+        if let Err((busy, e)) = guest_device(live, &["unmount", &address, &ask.at, "member", &index]) {
+            return (Err((if busy { R::Busy } else { R::Device }, e)), None);
+        }
+        if let Err(e) = ask_device(live, &[shards_ipc::device::UNPLUG, devfn], &[]) {
+            return (Err((R::Device, e)), None);
+        }
+        (Ok(()), lock(&live.plugged).remove(&ask.at).map(|p| p.share))
+    }
+
+    /// Runs init's `DEVICE` built-in with `args` in the guest (init hotplug.rs): its answer,
+    /// or why it failed, and whether for something there in use (`DEVICE_BUSY`).
+    fn guest_device(live: &Live<'_>, args: &[&str]) -> Result<String, (bool, String)> {
+        let argv = args.iter().map(|a| a.as_bytes().to_vec()).collect();
+        match builtin(live, protocol::builtin::DEVICE, argv) {
+            Ok(Said {
+                status: Some(0), out, ..
+            }) => Ok(String::from_utf8_lossy(&out).trim().to_string()),
+            Ok(Said { status, err, .. }) => Err((
+                status == Some(protocol::builtin::DEVICE_BUSY),
+                format!("its guest: {}", String::from_utf8_lossy(&err).trim()),
+            )),
+            Err(e) => Err((false, format!("its guest: {e}"))),
+        }
+    }
+
+    /// Asks the VM device step `step` (`DEVICE`), with `fds`, and waits for its answer
+    /// (`DEVICED`), as the daemon asks one (daemon/devices.rs `ask_device`).
+    fn ask_device(live: &Live<'_>, step: &[u8], fds: &[BorrowedFd<'_>]) -> Result<String, String> {
+        let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (told, answer) = std::sync::mpsc::channel();
+        match lock(&live.devices).as_mut() {
+            Some(asked) => asked.push((number, told)),
+            None => return Err("its microVM stopped".into()),
+        }
+        let ask = [&number.to_be_bytes()[..], step].concat();
+        if let Err(e) = shards_ipc::send(&lock(&live.link), kind::DEVICE, &ask, fds) {
+            if let Some(asked) = lock(&live.devices).as_mut() {
+                asked.retain(|(n, _)| *n != number);
+            }
+            return Err(format!("asking its microVM: {e}"));
+        }
+        answer
+            .recv()
+            .unwrap_or_else(|_| Err("its microVM stopped".into()))
+            .map_err(|e| format!("its microVM: {e}"))
+    }
+
+    /// The VM's answer to the device step its payload numbers (`DEVICED`), to its asker.
+    fn answered_device(live: &Live<'_>, payload: &[u8]) {
+        let Some((number, said)) = payload.split_first_chunk::<8>() else {
+            return;
+        };
+        let number = u64::from_be_bytes(*number);
+        let mut devices = lock(&live.devices);
+        let Some(asked) = devices.as_mut() else {
+            return;
+        };
+        if let Some(i) = asked.iter().position(|(n, _)| *n == number) {
+            let (_, told) = asked.swap_remove(i);
+            let text = String::from_utf8_lossy(said.get(1..).unwrap_or_default()).into_owned();
+            let _ = told.send(match said.first() {
+                Some(0) => Ok(text),
+                _ => Err(text),
+            });
         }
     }
 }

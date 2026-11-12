@@ -136,6 +136,119 @@ fn devices_are_plugged_into_a_run_and_its_disk_grows() {
     shards(&["rm"], &["-f", "plugged"]);
 }
 
+/// A project plugged into a running agent at its host path (D235): an Agentfile's agent,
+/// given its host's plug roots as its run starts (and the top-level directory of the
+/// directory bound at the start), can make nothing beneath any of them, as its root is
+/// read-only, until a host directory is plugged into it (`--for`) beneath one; then it
+/// reads the host's file there and writes its own, which is the host's. One plugged outside
+/// every root is refused naming them; the project is unplugged as the agent runs.
+#[test]
+fn a_project_is_plugged_into_a_running_agent_at_its_host_path() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, _repos) = common::writable_registry();
+    let home = TempDir::new("plugm");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| {
+        let r = run_shards_env(&[], args, &env, TIMEOUT);
+        assert_eq!(r.status, Some(0), "shards {args:?}: {}\n{}", r.stderr, r.stdout);
+        r.stdout
+    };
+    // The host's project, and a directory beside it bound as the run starts: by their
+    // real paths, so that the bound one names its top-level directory a root (macOS's
+    // /private), as the project's path is.
+    let files = TempDir::new("plugm-files");
+    for dir in ["proj", "bound"] {
+        std::fs::create_dir(files.join(dir)).unwrap();
+    }
+    let proj = std::fs::canonicalize(files.join("proj")).unwrap();
+    let bound = std::fs::canonicalize(files.join("bound")).unwrap();
+    std::fs::write(proj.join("from-host"), "host\n").unwrap();
+    let dest = common::at_host_path(&proj);
+    // The roots this host's run is given, as `shards` names them (setup.rs): its OS's own
+    // and the bound directory's top.
+    let roots = common::plug_roots(&bound);
+
+    // The agent: the test guest, which says what it saw in the project's `seen`.
+    let agent = TempDir::new("plugm-agent");
+    std::fs::create_dir_all(agent.join("bin")).unwrap();
+    std::fs::copy(common::test_guest(), agent.join("bin/testguest")).unwrap();
+    let mut command = vec!["bin/testguest".to_string(), "plugged".into(), dest.clone()];
+    command.extend(roots.iter().cloned());
+    let command: Vec<String> = command.iter().map(|w| format!("{w:?}")).collect();
+    std::fs::write(
+        agent.join("agent.json"),
+        format!(r#"{{"name":"a","run":{{"command":[{}]}}}}"#, command.join(",")),
+    )
+    .unwrap();
+    let tag = format!("127.0.0.1:{port}/team/plugm-a:1");
+    shards(&["build", "agent", agent.to_str().unwrap(), "-t", &tag]);
+    shards(&["push", "agent", &tag]);
+    let ctx = TempDir::new("plugm-ctx");
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT a FROM {tag}\n"),
+    )
+    .unwrap();
+    shards(&["build", "-t", "plugm:1", ctx.to_str().unwrap()]);
+    let bind = format!("{}:/bound", bound.display());
+    shards(&["run", "-d", "--name", "plugm", "-v", &bind, "plugm:1", "sleep"]);
+
+    // Outside every root: refused, the roots named.
+    let outside = format!("{}:/outside/proj", proj.display());
+    let refused = run_shards_env(
+        &["plug"],
+        &["volume", "--for", "a", "plugm", &outside],
+        &env,
+        TIMEOUT,
+    );
+    assert_ne!(refused.status, Some(0), "{}", refused.stdout);
+    assert!(
+        refused.stderr.contains("not beneath a plug root") && refused.stderr.contains(roots[0].as_str()),
+        "{}",
+        refused.stderr
+    );
+    // Beneath one, at its host path.
+    let spec = format!("{}:{dest}", proj.display());
+    let said = shards(&["plug", "volume", "--for", "a", "plugm", &spec]);
+    assert!(said.starts_with(&format!("{dest} ")), "{said}");
+    let seen_at = proj.join("seen");
+    let started = std::time::Instant::now();
+    let seen = loop {
+        if let Ok(seen) = std::fs::read_to_string(&seen_at) {
+            break seen;
+        }
+        assert!(
+            started.elapsed() < TIMEOUT,
+            "the agent wrote no {}",
+            seen_at.display()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    for root in &roots {
+        let line = format!("root {root} mkdir errno 30 create errno 30");
+        assert!(seen.lines().any(|l| l == line), "no {line:?} in\n{seen}");
+    }
+    assert!(seen.lines().any(|l| l == "from-host host"), "{seen}");
+    assert!(seen.lines().any(|l| l == "from-member ok"), "{seen}");
+    assert_eq!(
+        std::fs::read_to_string(proj.join("from-member")).unwrap(),
+        "member\n"
+    );
+
+    // Unplugged as the agent runs; plugged again, refused nowhere.
+    shards(&["unplug", "volume", "plugm", &dest]);
+    shards(&["plug", "volume", "--for", "a", "plugm", &spec]);
+    shards(&["unplug", "volume", "plugm", &dest]);
+    shards(&["rm", "-f", "plugm"]);
+}
+
 /// The host's QEMU edu function (1234:11e8), where it has one: a test function its own
 /// host gave it (`--pci-tests`), as a nested guest of the L1 tests has with
 /// SHARDS_L1_PCI_TESTS (boot.rs).
