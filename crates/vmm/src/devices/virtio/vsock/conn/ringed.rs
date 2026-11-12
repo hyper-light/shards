@@ -46,6 +46,9 @@ pub(super) struct Ringed {
     /// The ring for the guest is full: the host socket is read no more until the guest
     /// rings.
     full: bool,
+    /// The guest's client ended its writes ([`abi::END`]): once the ring for the host is
+    /// drained, the host socket's writes end.
+    ended: bool,
 }
 
 /// What a turn of the host socket into the ring for the guest came to.
@@ -116,7 +119,7 @@ impl Conn {
 
     /// The owner's offer, as its cue arrives: attached, or refused.
     fn cue(&mut self, handle: RingHandle) -> bool {
-        let Some(offer) = handle.take() else {
+        let Some(offered) = handle.take() else {
             // The host sent something before any offer: none is coming.
             self.ringing = Ringing::Plain;
             return false;
@@ -125,7 +128,7 @@ impl Conn {
         match (&self.stream).read(&mut byte) {
             Ok(1) if byte == [CUE] => {}
             Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {
-                handle.offer(offer);
+                handle.put(offered);
                 return true;
             }
             Ok(0) => {
@@ -139,13 +142,14 @@ impl Conn {
                 return true;
             }
         }
-        self.ringing = match Ring::attach(handle.memory(), &offer) {
+        self.ringing = match offered.and_then(|offer| Ring::attach(handle.memory(), &offer)) {
             Ok(ring) => Ringing::Ringed(Box::new(Ringed {
                 ring,
                 replied: false,
                 doorbell: false,
                 blocked: false,
                 full: false,
+                ended: false,
             })),
             Err(refusal) => {
                 debug!("vsock: port {}: a ring refused: {refusal:?}", self.local_port);
@@ -186,10 +190,10 @@ impl Conn {
     /// nothing is left of it, so that the guest's shutdown may follow. True where no ring
     /// is attached.
     pub(super) fn ring_drained(&mut self) -> io::Result<bool> {
-        let send_closed = self.guest_send_closed;
         let Ringing::Ringed(r) = &mut self.ringing else {
             return Ok(true);
         };
+        let send_closed = self.guest_send_closed || r.ended;
         let quantum = r.ring.size();
         let mut moved = 0usize;
         let drained = loop {
@@ -210,21 +214,29 @@ impl Conn {
             }
         };
         r.blocked = !drained;
+        // The guest's client ended its writes: they end at the host too, after its last.
+        if drained && r.ended && !self.host_write_shut {
+            self.host_write_shut = true;
+            let _ = self.stream.shutdown(std::net::Shutdown::Write);
+        }
         Ok(drained)
     }
 
-    /// What the guest sent on an attached connection: doorbells, any other byte a broken
-    /// rule. Whether it was a ring's to handle.
+    /// What the guest sent on an attached connection: doorbells, and once its client's
+    /// end; any other byte a broken rule. Whether it was a ring's to handle.
     pub(super) fn ring_doorbells(&mut self, h: &Header, payload: &[Span], mem: &GuestMemory) -> bool {
         let Ringing::Ringed(r) = &mut self.ringing else {
             return false;
         };
         // The guest has rung: room may have come in the ring for the guest.
         r.full = false;
-        if !doorbells_only(payload, mem) {
-            debug!("vsock: port {}: a byte that is no doorbell", self.local_port);
-            self.kill();
-            return true;
+        match signals(payload, mem) {
+            Some(ended) => r.ended |= ended,
+            None => {
+                debug!("vsock: port {}: a byte that is no doorbell", self.local_port);
+                self.kill();
+                return true;
+            }
         }
         self.fwd_cnt += h.len;
         if self.guest_needs_credit() {
@@ -279,26 +291,29 @@ fn broken(e: Broken) -> io::Error {
     io::Error::other(format!("its ring: {e:?}"))
 }
 
-/// Whether every payload byte is a doorbell.
-fn doorbells_only(payload: &[Span], mem: &GuestMemory) -> bool {
-    let Ok(access) = mem.access() else {
-        return false;
-    };
+/// What the guest's bytes say, where each is a doorbell or its client's end: whether one is
+/// its end. None where any is neither.
+fn signals(payload: &[Span], mem: &GuestMemory) -> Option<bool> {
+    let access = mem.access().ok()?;
+    let mut ended = false;
     let mut chunk = [0u8; 64];
     for s in payload {
         let mut at = 0usize;
         while at < s.len {
             let n = (s.len - at).min(chunk.len());
-            let Some(buf) = chunk.get_mut(..n) else {
-                return false;
-            };
-            if access.read(s.gpa + at as u64, buf).is_err() || buf.iter().any(|&b| b != abi::DOORBELL) {
-                return false;
+            let buf = chunk.get_mut(..n)?;
+            access.read(s.gpa + at as u64, buf).ok()?;
+            for &b in buf.iter() {
+                match b {
+                    abi::DOORBELL => {}
+                    abi::END => ended = true,
+                    _ => return None,
+                }
             }
             at += n;
         }
     }
-    true
+    Some(ended)
 }
 
 /// Writes `bytes` into the guest's buffer `space`, in its order: whether all fit.
@@ -547,6 +562,22 @@ mod tests {
     }
 
     #[test]
+    fn an_offer_the_owner_could_not_read_is_answered_refused() {
+        let mut g = Guest::connect();
+        g.handle.refuse(Refusal::Malformed);
+        (&g.owner).write_all(&[CUE]).unwrap();
+        g.turn();
+        let (h, said) = g.next().unwrap();
+        assert_eq!(h.op, op::RW);
+        assert_eq!(
+            Reply::parse(said.try_into().unwrap()),
+            Some(Reply::Refused(Refusal::Malformed))
+        );
+        g.send(b"plain after");
+        assert_eq!(g.read_owner(11), b"plain after");
+    }
+
+    #[test]
     fn a_connection_whose_owner_offers_nothing_is_plain() {
         let mut g = Guest::connect();
         (&g.owner).write_all(b"no ring").unwrap();
@@ -586,6 +617,25 @@ mod tests {
         assert_eq!(g.take(0), b"goodbye");
         let (h, _) = g.next().unwrap();
         assert_eq!((h.op, h.flags), (op::SHUTDOWN, shutdown::SEND));
+    }
+
+    #[test]
+    fn a_clients_end_reaches_the_host_after_its_last_bytes_and_doorbells_go_on() {
+        let mut g = Guest::connect();
+        assert_eq!(g.offer(whole(SLOT)), Reply::Attached);
+        g.put(0, b"request body");
+        g.send(&[abi::END]);
+        g.owner.set_nonblocking(false).unwrap();
+        let mut got = Vec::new();
+        (&g.owner).read_to_end(&mut got).unwrap();
+        assert_eq!(got, b"request body");
+        g.owner.set_nonblocking(true).unwrap();
+        // The answer still comes, and the relay still rings for it.
+        (&g.owner).write_all(b"answer").unwrap();
+        g.turn();
+        assert_eq!(g.take(0), b"answer");
+        g.send(&[abi::DOORBELL]);
+        assert!(g.next().is_none(), "no reset: a doorbell after the end is the relay's right");
     }
 
     #[test]

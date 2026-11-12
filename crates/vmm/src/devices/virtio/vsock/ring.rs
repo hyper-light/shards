@@ -29,8 +29,11 @@ use crate::platform::UnixStream;
 #[derive(Clone)]
 pub struct RingHandle {
     memory: Arc<GuestMemory>,
-    offer: Arc<Mutex<Option<Offer>>>,
+    offer: Arc<Mutex<Option<Offered>>>,
 }
+
+/// What the owner made of the guest's offer: the slot it names, or why its bytes name none.
+pub(super) type Offered = Result<Offer, Refusal>;
 
 impl std::fmt::Debug for RingHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -42,7 +45,8 @@ impl std::fmt::Debug for RingHandle {
 pub const CUE: u8 = 0;
 
 impl RingHandle {
-    pub(crate) fn new(memory: Arc<GuestMemory>) -> RingHandle {
+    /// A connection's handle, whose rings are attached in `memory`: the muxer's, or a test's.
+    pub fn new(memory: Arc<GuestMemory>) -> RingHandle {
         RingHandle {
             memory,
             offer: Arc::new(Mutex::new(None)),
@@ -51,11 +55,22 @@ impl RingHandle {
 
     /// Has the device attach `offer` as [`CUE`], which the owner writes next, reaches it.
     pub fn offer(&self, offer: Offer) {
-        *crate::sync::lock(&self.offer) = Some(offer);
+        self.put(Ok(offer));
     }
 
-    /// The offer, once: the device's, as the cue reaches it.
-    pub(super) fn take(&self) -> Option<Offer> {
+    /// Has the device refuse the guest's offer, for `why`, as [`CUE`] reaches it: an offer
+    /// whose bytes the owner could not read as one is answered all the same, so that the
+    /// guest's relay, which waits for an answer, has one.
+    pub fn refuse(&self, why: Refusal) {
+        self.put(Err(why));
+    }
+
+    pub(super) fn put(&self, offered: Offered) {
+        *crate::sync::lock(&self.offer) = Some(offered);
+    }
+
+    /// What the owner offered, once: the device's, as the cue reaches it.
+    pub(super) fn take(&self) -> Option<Offered> {
         crate::sync::lock(&self.offer).take()
     }
 

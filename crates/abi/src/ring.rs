@@ -61,6 +61,12 @@ pub const MAX_RING: u32 = 2 << 20;
 
 /// The byte either side sends the other on an attached connection: look at the rings.
 pub const DOORBELL: u8 = 0x01;
+/// The byte the relay sends once its client has ended its writes, after its last bytes are
+/// in the ring for the host: the device passes them on, then ends the host socket's
+/// writes. A vsock shutdown would end the relay's doorbells with them, and a client that
+/// has ended its writes may still be reading a long answer, whose ring the relay must
+/// still be able to ring the device about. Any byte but these two is a broken rule.
+pub const END: u8 = 0x02;
 
 /// An offer's fixed part: magic, version, a reserved u16, the ring's length and the count
 /// of extents.
@@ -353,8 +359,8 @@ mod tests {
         assert_eq!(Reply::parse(*b"RNG\x04\0\0\0\0"), None);
         assert_eq!(Reply::parse(*b"RNG\0\0\0\0\x01"), None);
         assert_eq!(Reply::parse(*b"XNG\0\0\0\0\0"), None);
-        // No doorbell is a reply's first byte, so the two never read as each other.
-        assert_ne!(Reply::Attached.encode()[0], DOORBELL);
+        // No doorbell or end is a reply's first byte, so they never read as each other.
+        assert!(![DOORBELL, END].contains(&Reply::Attached.encode()[0]));
     }
 
     #[test]
