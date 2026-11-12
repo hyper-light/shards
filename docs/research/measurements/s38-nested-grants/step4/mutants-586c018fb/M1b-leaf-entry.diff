@@ -1,0 +1,10 @@
+--- crates/init/src/run.rs.orig	2026-11-12 00:09:38.352580825 -0800
++++ crates/init/src/run.rs	2026-11-12 00:09:38.358904330 -0800
+@@ -904,7 +904,6 @@
+     if nesting {
+         made.extend([
+             b"cgroups-rw".to_vec(),
+-            run::nesting::GRANT.to_vec(),
+             crate::readiness::NOTIFY.to_vec(),
+         ]);
+         made.extend(gpus);

@@ -1,0 +1,12 @@
+--- crates/init/src/readiness.rs.orig	2026-11-12 00:09:49.557465644 -0800
++++ crates/init/src/readiness.rs	2026-11-12 00:09:49.560422369 -0800
+@@ -362,9 +362,6 @@
+             return None;
+         }
+         let sender = pid.and_then(|p| std::fs::read_to_string(format!("/proc/{p}/cgroup")).ok())?;
+-        if !within(&sender, &self.workload) {
+-            return None;
+-        }
+         let now = boot_now().ok()?;
+         self.on(Event::Ready(now))
+     }

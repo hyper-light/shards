@@ -1,0 +1,12 @@
+--- crates/init/src/run.rs.orig	2026-11-12 00:09:46.744494569 -0800
++++ crates/init/src/run.rs	2026-11-12 00:09:46.747782903 -0800
+@@ -1327,9 +1327,6 @@
+         return Ok(());
+     };
+     let now = now()?;
+-    if granted && now == workload {
+-        return Err(errno(refused));
+-    }
+     enter_cgroup(&now).map_err(errno)
+ }
+ 

@@ -1,0 +1,21 @@
+   Compiling shards-init v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.20s
+     Running unittests src/main.rs (/home/adalundhe/s38-init-step4/target/x86_64-unknown-linux-musl/debug/deps/shards_init-451fb1ae2b80b18c)
+
+running 1 test
+
+thread 'run::nesting_tests::on_a_real_kernel_the_granted_command_sits_in_its_leaf_and_its_root_is_inits' (3034789) panicked at crates/init/src/run.rs:6674:9:
+assertion `left == right` failed
+  left: "enter=ok userns=ok unshare=ok mount=ok cgroups-rw=ok nesting=ok root=[3034791] leaf=[] boxes=ok enable=16 box-limits=13 root-memory=1 root-pids=1 "
+ right: "enter=ok userns=ok unshare=ok mount=ok cgroups-rw=ok nesting=ok root=[] leaf=[3034791] boxes=ok enable=ok box-limits=ok root-memory=1 root-pids=1 "
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test run::nesting_tests::on_a_real_kernel_the_granted_command_sits_in_its_leaf_and_its_root_is_inits ... FAILED
+
+failures:
+
+failures:
+    run::nesting_tests::on_a_real_kernel_the_granted_command_sits_in_its_leaf_and_its_root_is_inits
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 196 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`

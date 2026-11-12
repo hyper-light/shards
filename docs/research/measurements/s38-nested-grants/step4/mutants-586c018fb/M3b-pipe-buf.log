@@ -1,0 +1,24 @@
+   Compiling shards-init v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.03s
+     Running unittests src/main.rs (/home/adalundhe/s38-init-step4/target/x86_64-unknown-linux-musl/debug/deps/shards_init-451fb1ae2b80b18c)
+
+running 1 test
+test readiness::tests::a_granted_runs_readiness_moves_by_its_socket_and_timer ... FAILED
+
+failures:
+
+---- readiness::tests::a_granted_runs_readiness_moves_by_its_socket_and_timer stdout ----
+
+thread 'readiness::tests::a_granted_runs_readiness_moves_by_its_socket_and_timer' (817384) panicked at crates/init/src/readiness.rs:699:9:
+assertion `left == right` failed
+  left: Some(OnTime)
+ right: None
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    readiness::tests::a_granted_runs_readiness_moves_by_its_socket_and_timer
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 194 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`

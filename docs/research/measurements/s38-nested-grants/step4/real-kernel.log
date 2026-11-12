@@ -1,0 +1,9 @@
+   Compiling shards-init v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.11s
+     Running unittests src/main.rs (/home/adalundhe/s38-init-step4/target/x86_64-unknown-linux-musl/debug/deps/shards_init-451fb1ae2b80b18c)
+
+running 1 test
+test run::nesting_tests::on_a_real_kernel_the_granted_command_sits_in_its_leaf_and_its_root_is_inits ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 196 filtered out; finished in 0.01s
+

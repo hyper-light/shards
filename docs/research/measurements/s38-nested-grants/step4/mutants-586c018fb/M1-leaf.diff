@@ -1,0 +1,11 @@
+--- crates/init/src/setup.rs.orig	2026-11-12 00:09:36.124603718 -0800
++++ crates/init/src/setup.rs	2026-11-12 00:09:36.133146189 -0800
+@@ -622,7 +622,7 @@
+ pub fn enter_leaf(root: &str) -> io::Result<()> {
+     let mut procs = std::fs::OpenOptions::new()
+         .write(true)
+-        .open(format!("{root}/{}/cgroup.procs", crate::run::LEAF))?;
++        .open(format!("{root}/cgroup.procs"))?;
+     io::Write::write_all(&mut procs, b"0")
+ }
+ 
