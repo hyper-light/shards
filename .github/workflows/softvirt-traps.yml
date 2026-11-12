@@ -8,7 +8,8 @@ name: softvirt traps
 on:
   push:
     paths:
-      - docs/research/measurements/softvirt-traps/**
+      - docs/research/measurements/softvirt-traps/linux.c
+      - docs/research/measurements/softvirt-traps/windows.c
       - .github/workflows/softvirt-traps.yml
   workflow_dispatch:
 

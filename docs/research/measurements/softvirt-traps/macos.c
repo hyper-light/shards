@@ -116,40 +116,54 @@ static mach_port_t new_port(void) {
     return port;
 }
 
-// Answers one exception and waits for the next, in one mach_msg: the faulting thread
-// resumes at the instruction after the one that raised it, x0 = 0. Returns the
-// receive's result (MACH_RCV_TIMED_OUT once `timeout_ms` passes with none).
+// Answers one exception and waits for the next, in one mach_msg, which sends from and
+// receives into the same buffer: the faulting thread resumes at the instruction after
+// the one that raised it, x0 = 0. A message of another shape is answered with failure
+// (the kernel then goes on as if no one had caught it) rather than left to hang its
+// thread. Returns the receive's result (MACH_RCV_TIMED_OUT once `timeout_ms` passes).
 static kern_return_t serve_exceptions(mach_port_t port, size_t limit, unsigned timeout_ms,
                                       size_t *served) {
-    exc_request req;
-    exc_reply rep;
-    kern_return_t kr = mach_msg(&req.head, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof req, port,
+    union {
+        exc_request req;
+        exc_reply rep;
+    } m;
+    kern_return_t kr = mach_msg(&m.req.head, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof m, port,
                                 timeout_ms, MACH_PORT_NULL);
     while (kr == KERN_SUCCESS) {
-        if (req.head.msgh_id != 2406 || req.code_count != 2 ||
-            req.state_count != ARM_THREAD_STATE64_COUNT)
-            return KERN_FAILURE;
+        int ours = m.req.head.msgh_id == 2406 && m.req.code_count == 2 &&
+                   m.req.state_count == ARM_THREAD_STATE64_COUNT;
+        if (!ours)
+            fprintf(stderr, "unexpected exception message: id %d, %u codes, %u state words\n",
+                    m.req.head.msgh_id, m.req.code_count, m.req.state_count);
         state64 st;
-        memcpy(&st, req.state, sizeof st);
+        memcpy(&st, m.req.state, sizeof st);
         st.pc += 4;
         st.x[0] = 0;
-        memset(&rep, 0, sizeof rep);
-        rep.head.msgh_bits = MACH_MSGH_BITS(MACH_MSGH_BITS_REMOTE(req.head.msgh_bits), 0);
-        rep.head.msgh_remote_port = req.head.msgh_remote_port;
-        rep.head.msgh_size = sizeof rep;
-        rep.head.msgh_id = req.head.msgh_id + 100;
-        rep.ndr = NDR_record;
-        rep.ret = KERN_SUCCESS;
-        rep.flavor = ARM_THREAD_STATE64;
-        rep.state_count = ARM_THREAD_STATE64_COUNT;
-        memcpy(rep.state, &st, sizeof st);
+        mach_msg_bits_t bits = m.req.head.msgh_bits;
+        mach_port_t reply = m.req.head.msgh_remote_port;
+        mach_msg_id_t id = m.req.head.msgh_id;
+        memset(&m.rep, 0, sizeof m.rep);
+        m.rep.head.msgh_bits = MACH_MSGH_BITS(MACH_MSGH_BITS_REMOTE(bits), 0);
+        m.rep.head.msgh_remote_port = reply;
+        m.rep.head.msgh_size = sizeof m.rep;
+        m.rep.head.msgh_id = id + 100;
+        m.rep.ndr = NDR_record;
+        m.rep.ret = ours ? KERN_SUCCESS : KERN_FAILURE;
+        m.rep.flavor = ARM_THREAD_STATE64;
+        m.rep.state_count = ARM_THREAD_STATE64_COUNT;
+        memcpy(m.rep.state, &st, sizeof st);
+        if (!ours) {
+            mach_msg(&m.rep.head, MACH_SEND_MSG, sizeof m.rep, 0, MACH_PORT_NULL,
+                     MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+            return KERN_FAILURE;
+        }
         (*served)++;
         if (*served >= limit) {
-            return mach_msg(&rep.head, MACH_SEND_MSG, sizeof rep, 0, MACH_PORT_NULL,
+            return mach_msg(&m.rep.head, MACH_SEND_MSG, sizeof m.rep, 0, MACH_PORT_NULL,
                             MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
         }
-        kr = mach_msg(&rep.head, MACH_SEND_MSG | MACH_RCV_MSG | MACH_RCV_TIMEOUT, sizeof rep,
-                      sizeof req, port, timeout_ms, MACH_PORT_NULL);
+        kr = mach_msg(&m.rep.head, MACH_SEND_MSG | MACH_RCV_MSG | MACH_RCV_TIMEOUT, sizeof m.rep,
+                      sizeof m, port, timeout_ms, MACH_PORT_NULL);
     }
     return kr;
 }
