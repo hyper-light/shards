@@ -1,0 +1,70 @@
+{
+  "type": "POLICY_READ",
+  "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "ref": "origin/main",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "coordinator": "ROOT 01a148884a4770fdaf0111f3f792a248",
+  "date": "2026-11-11",
+  "documents": {
+    "AGENTS.md": {
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+      "read": "full",
+      "source": "origin/main"
+    },
+    "docs/development-rules.md": {
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "read": "full (R01-R16)",
+      "source": "origin/main"
+    },
+    "docs/development-evidence.md": {
+      "bytes": 3325,
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+      "read": "full",
+      "source": "origin/main"
+    },
+    "CLAUDE.md": {
+      "bytes": 17012,
+      "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f",
+      "read": "full",
+      "source": "origin/main (identical in this worktree)"
+    }
+  },
+  "task": "ring-pins-v1: bound D230's engine-ring pins: no pins until the first engine connection; at most as many slots as concurrent ringed connections need, within the existing cap; a slot's pages released once unused, only after the device acknowledges a detach (new step in shards_abi::ring and the vsock device); pinned total reported in the VM's own accounting; R03 derivations for every new number; vsock fallback and D230 security properties kept",
+  "branch": "p/ring-pins-v1",
+  "base": "origin/p/integrate-engine-20261111 82083f27",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/ring-pins-v1",
+  "owned_paths": [
+    "crates/init/src/ring.rs",
+    "crates/init/src/engine.rs (ring parts only)",
+    "crates/abi/src/ring.rs",
+    "crates/vmm/src/devices/virtio/vsock/ring.rs",
+    "crates/vmm/src/devices/virtio/vsock/conn/ringed.rs",
+    "crates/shards/tests/engine_ring.rs",
+    "the D230 record (docs/design/architecture.md D230, docs/research/engine-ring-channel-decision-v1.md)",
+    "docs/research/measurements/ring-pins-v1/**"
+  ],
+  "light_test_scope": "unit and light tests, fmt, clippy -D warnings (x86_64 gnu; x86_64 and aarch64 musl for guest crates), scripts/check-development-policy, on kiln runner kiln-a094a12d (8fadc1ec213332e16cb0d915a3fb913f) under systemd-run --user --scope -p MemoryMax=24G, -j4, only when no amphora-bench runs, or adacachy (451397fcc585f7f7cb9aaf00e42064bb); needs <= cpus=4,mem=16g,disk=40g; no builds on this Mac; no real-VM suites, profiling, benchmarks or audits (ROOT's); real-VM tests written for ROOT to run",
+  "constraints": "no subagents; signed commits through /Users/adalundhe/.kiln-run/bin/gits with named paths, never force, never disable signing, final line Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>; no push (superseded below)",
+  "rechecked": [
+    {
+      "date": "2026-11-12",
+      "why": "context loss (session restart ~04:44Z); policy re-read in full",
+      "revision": "c4ae59ee094dcdf99e5dcd47ed46952d53e4f1e6",
+      "ref": "origin/main",
+      "same_as_receipt": [
+        "AGENTS.md",
+        "docs/development-rules.md",
+        "docs/development-evidence.md"
+      ],
+      "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+    }
+  ],
+  "superseding_instruction": {
+    "from": "the person, verbatim through ROOT, 2026-11-11/12",
+    "text": "To speed up work and not leave numerous subagents running for extended periods, all subagents are only required to verify unit tests relevant to their changes and any light integration tests relevant. Once complete, they should merge their work to main and end.",
+    "effect": "merge origin/main into p/ring-pins-v1, re-run the relevant light tests, push HEAD to main fast-forward only (never force, signed); this supersedes R15's 'subagents do not merge themselves to main' as a current explicit user instruction (development-rules.md preamble); pending real-VM checks recorded as owed"
+  }
+}

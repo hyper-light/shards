@@ -79,10 +79,10 @@ impl RingHandle {
     }
 }
 
-/// The most iovecs one `readv` or `writev` takes: Linux's UIO_MAXIOV and macOS's IOV_MAX,
-/// 1,024 each (include/uapi/linux/uio.h; sys/uio.h). A ring of single pages needs at most
-/// a ring's pages, 512 for the largest.
-const MOST_SPANS: usize = 1024;
+/// The most iovecs one `readv` or `writev` takes ([`abi::MOST_IOVECS`]): a turn of the
+/// largest ring, its pages each apart, needs 513, so every turn is one call
+/// ([`abi::MAX_RING`]'s derivation).
+const MOST_SPANS: usize = abi::MOST_IOVECS as usize;
 
 /// Why a ring's peer cannot be believed, or its host socket failed: the connection ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,7 +263,7 @@ impl Ring {
         // waits for the relay's first bytes: the relay rings only a side that says it waits
         // (Dekker's handshake), and nothing else has the device look at the ring for the
         // host before a doorbell, so a device that said nothing never heard the first
-        // request (docs/research/measurements/ring-pins-v1/logs/r1-red-first-request.txt).
+        // request (logs/r1-red-first-request.txt of docs/research/measurements/ring-pins-v1).
         ring.store_u64(field::TO_HOST_TAIL, 0);
         ring.store_u64(field::TO_GUEST_HEAD, 0);
         ring.memory
@@ -276,6 +276,11 @@ impl Ring {
     pub fn size(&self) -> usize {
         // The offer's ring is at most `MAX_RING`, a u32.
         self.size as usize
+    }
+
+    /// The bytes of the guest's memory it holds pinned: its slot's.
+    pub fn pinned(&self) -> u64 {
+        self.pinned.iter().map(|&(_, len)| len).sum()
     }
 
     pub(super) fn memory(&self) -> &Arc<GuestMemory> {
@@ -551,11 +556,12 @@ mod tests {
     fn an_attached_ring_says_it_waits_for_the_relays_first_bytes() {
         let memory = memory();
         let offer = whole(2 << 20);
-        let _ring = Ring::attach(&memory, &offer).unwrap();
+        let ring = Ring::attach(&memory, &offer).unwrap();
         assert_eq!(
             guest_u32(&memory, &offer, field::HOST_WAITS_DATA).load(Ordering::SeqCst),
             1
         );
+        assert_eq!(ring.pinned(), abi::slot_len(RING));
     }
 
     #[test]

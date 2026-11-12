@@ -1035,7 +1035,7 @@ fn cstr_of(s: &str) -> Result<CString, String> {
 }
 
 /// `MemAvailable` of `/proc/meminfo`, in bytes.
-fn available_memory() -> Result<u64, String> {
+pub(crate) fn available_memory() -> Result<u64, String> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
     meminfo
         .lines()

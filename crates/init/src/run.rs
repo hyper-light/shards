@@ -3518,14 +3518,21 @@ fn builtin(
             run::builtin::METRICS => metrics(&mut out, args, &cgroup, joiner.is_some(), domains),
             // Its answer a line, whose end says it is whole: one its host took past its
             // deadline is still what was given back (reclaim.rs `given`).
+            // Its engine's idle ring slots go too, after this answer's measure, and the next
+            // answer counts them (D230, ring.rs `given`); with no slot made, nothing.
             run::builtin::RECLAIM => reclaim_cold(RUN_CGROUP).and_then(|freed| {
                 let unplugging = crate::plug::shrink_run(RUN_CGROUP)?;
+                let freed = freed.saturating_add(crate::ring::given());
+                crate::ring::give_back();
                 writeln!(out, "{freed} {unplugging}")
             }),
+            // Its engine's relay told first, which lets its idle ring slots go where the room
+            // is short of what the run needs to go on (D230); with no slot made, nothing.
             run::builtin::ROOM => args
                 .first()
                 .map(|a| room_of(a))
                 .transpose()
+                .inspect(|room| crate::ring::told(*room))
                 .and_then(|room| crate::plug::hold_within(RUN_CGROUP, room))
                 .and_then(|held| held.map_or(Ok(()), |held| write!(out, "{held}"))),
             run::builtin::FREEZE => freeze(&cgroup, args.first().is_some_and(|a| a == b"1")),
