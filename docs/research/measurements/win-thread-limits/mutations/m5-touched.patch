@@ -1,0 +1,11 @@
+--- a/crates/vmm/src/platform/windows_process.rs
++++ b/crates/vmm/src/platform/windows_process.rs
+@@ -190,7 +190,7 @@
+             if end <= at {
+                 return None;
+             }
+-            if region.State == MEM_COMMIT && region.Protect & PAGE_GUARD != 0 {
++            if region.State == MEM_COMMIT {
+                 guard = guard.checked_add(end - at)?;
+             }
+             at = end;

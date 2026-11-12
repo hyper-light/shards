@@ -21276,3 +21276,82 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   comparison job on main's next run); clippy on the targets the record lists as running; one x86_64 glibc
   failure of `a_worker_not_reaped_ends_no_other` after both fixes, at load 30, whose output
   was lost to a filter (no seccomp kill logged; 66 runs since passed).
+
+### M526. What limits how many threads a Windows process may have, and what each costs it (D181)
+
+- **Question.** Windows keeps no count of a process's threads, and `platform::thread_limit`
+  said none there, so the daemon took POSIX's least, 64 threads: 27 clients, 13 connections
+  a microVM's engine, which answered 503 to engine_ring's 32 streams at once on WHP
+  (ring-pins-v1 r16). What does limit a Windows process's threads, what does one cost it,
+  which of that can a process read, and does Windows refuse a thread where a count from
+  those says?
+- **Method.** `measurements/win-thread-limits` (`run.sh`) on jupiter (Windows 10.0.26200.9974,
+  AMD Ryzen AI Max+ 395, 32 CPUs, 123.6 GiB; in kiln's job, which sets no memory limit;
+  shared with other work, the system's commit 39 to 60 GB of its 141 GB), release builds,
+  2026-11-12:
+  - the host's limits (GetSystemInfo, GlobalMemoryStatusEx, GetPerformanceInfo) and the
+    job's (QueryInformationJobObject); the PE headers' SizeOfStackReserve and
+    SizeOfStackCommit, the harness's and a test-release `shards.exe`'s;
+  - the main thread and a thread std starts by default: GetCurrentThreadStackLimits, each
+    region of its stack (VirtualQuery), its stack guarantee (SetThreadStackGuarantee(0)), its
+    TEB's region (NtCurrentTeb, winnt.h) and winternl.h's TEB;
+  - bursts of 2,000 and 20,000 threads held parked with their JoinHandles: the process's
+    commit (PrivateUsage), pool quota and handles, and the system's (CommitTotal), a thread;
+  - a copy of the harness in a job holding its process's commit to 16, 64 and 256 MiB
+    (JOB_OBJECT_LIMIT_PROCESS_MEMORY), which starts threads, each parked before the next,
+    until Windows refuses one, and lets them all go before it says anything;
+  - `crates/vmm` platform/windows_process.rs's tests, natively, test-release, then under five
+    mutants of it (`measurements/win-thread-limits/mutations`).
+
+  Raw: `measurements/win-thread-limits/results/jupiter-2026-11-12.txt`.
+- **Found.**
+  - Address space: 140,737,488,224,256 B a process (128 TiB less 128 KiB, `ullTotalVirtual`);
+    a std thread reserves 2 MiB (std's default, `RUST_MIN_STACK` unset), the main thread its
+    image's 1 MiB: 67,108,863 threads.
+  - Commit: the host's limit, 141,087,805,440 B (`ullTotalPageFile`, as CommitLimit). In a job
+    holding its process to 64 MiB, `ullTotalPageFile` and `ullAvailPageFile` still said the
+    host's: a job's limits are read from the job.
+  - A std thread's stack as it begins: 24,576 B of guard pages (PAGE_GUARD: std's
+    SetThreadStackGuarantee(0x5000), 20,480, and a page) below its pages in use, 4,096 B, the
+    image's SizeOfStackCommit (`shards.exe`'s too, the linker's default); but 8,192 B in use
+    for the first thread std starts in a process (a test's job child: 40,960 B counted so,
+    then 36,864 B for the next), and for every thread under the test harness's output
+    capture. Its TEB: 8,192 B (its region; the TEBs' shared allocation grew so by it),
+    winternl.h's 6,024 B in two pages.
+  - Charged the process a std thread, parked: 47,655 to 48,009 B in the bursts, 47,847 to
+    48,094 B in the jobs; nonpaged pool quota 137 B; one handle while its JoinHandle lives.
+    About 7 KB of it past its stack's pages and its TEB: its share of the heap.
+  - Charged the system: 83.5 KB a thread, the median of eight bursts of 20,000, four of them
+    within 77 to 84 KB (the system's commit moved by −0.5 to +3.0 GB across a burst with
+    other work): about 35 KB more than the process's, the kernel's for its kernel stack,
+    which no call reports a thread.
+  - In the jobs: Windows started 333, 1,380 and 5,563 threads of 16, 64 and 256 MiB and
+    refused the next with ERROR_COMMITMENT_LIMIT (1455), 16,384, 20,480 and 24,576 B short of
+    the limit. Counted as `thread_limit` counts one (guard, initial commit and TEB: 36,864 B),
+    the limits hold 455, 1,820 and 7,281.
+  - The job child's first version started threads without waiting for each to begin. Once
+    it was refused at 1,659 threads (40,049 B a thread, threads not yet begun having
+    committed no guarantee) and then died of stack overflow (0xC00000FD), two of its threads
+    unable to grow their stacks; twice it was refused at 1,377 (48,254 B a thread) and ended
+    clean. Parked one by one, six children ran clean.
+  - The tests: green, `thread_limit` 3,827,251 on jupiter and the job child's 64 threads
+    charged 47,360 B each, counted 36,864 B. Mutants: `thread_limit` saying none again (the
+    old code) fails both live tests; the reservation counted as committed fails both; the
+    job's limit unread fails the job's ("not the job's limit: 141087805440"); every committed
+    page of the stack counted fails the live test's thread that touched 256 KiB (303,104 B
+    counted against 45,056 B); the TEB uncounted survives, an undercount, which only loosens
+    the limit and no test holds the count from above. platform::windows_thread's two
+    raised-priority tests failed alike on main's own vmm, which this change leaves as it is;
+    kiln's job holds its processes to a priority class (LimitFlags 0x20), a likely cause,
+    not checked.
+- **Consequence.** D181: on Windows `thread_limit` is the fewest of the address space over a
+  thread's reservation, the commit limit (`ullTotalPageFile`, or the job's where less) over
+  the commit Windows charges every thread (its stack's guard pages and initial commit, its
+  TEB), and a process's 2^24 handles: on jupiter 3,827,251 threads, 1,913,620 clients.
+  Since it counts less than Windows charges (the pages a thread's code touches, about 7 KB
+  of heap, and the kernel's 35 KB or so, which no call reports a thread), it is never under
+  what Windows starts, and over it by that (455/333, 1,820/1,380 and 7,281/5,563 in the
+  jobs).
+- **Unverified.** The pins test's 32 streams at once past the old bound on WHP (ROOT's); a
+  Windows on arm64 (no host); a job nested under one holding it to less, whose limit its
+  processes cannot read; the kernel's share on a quiet host.
