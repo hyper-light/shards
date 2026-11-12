@@ -307,9 +307,19 @@ static int child_main(const char *mode) {
         return 0;
     }
     if (!strcmp(mode, "taskport")) {
-        // Send our own task port to the parent through the bootstrap port it gave us.
+        // Send our own task port to the parent through the exception port it gave us at
+        // spawn. (Not the bootstrap port: a sandboxed child's runtime reaches launchd
+        // through that one as it starts, so replacing it breaks the child.)
         mach_port_t bp = MACH_PORT_NULL;
-        task_get_special_port(mach_task_self(), TASK_BOOTSTRAP_PORT, &bp);
+        exception_mask_t masks[EXC_TYPES_COUNT];
+        mach_msg_type_number_t count = EXC_TYPES_COUNT;
+        exception_handler_t handlers[EXC_TYPES_COUNT];
+        exception_behavior_t behaviors[EXC_TYPES_COUNT];
+        thread_state_flavor_t flavors[EXC_TYPES_COUNT];
+        kern_return_t gk = task_get_exception_ports(mach_task_self(), EXC_MASK_BREAKPOINT, masks,
+                                                    &count, handlers, behaviors, flavors);
+        if (gk == KERN_SUCCESS && count > 0)
+            bp = handlers[0];
         struct {
             mach_msg_header_t head;
             mach_msg_body_t body;
@@ -337,7 +347,7 @@ static int child_main(const char *mode) {
 
 static void t_taskport(void) {
     mach_port_t port = new_port();
-    pid_t pid = spawn_child("taskport", MACH_PORT_NULL, 0, port);
+    pid_t pid = spawn_child("taskport", port, EXC_MASK_BREAKPOINT, MACH_PORT_NULL);
     if (pid < 0) {
         note("taskport", "spawn", "failed");
         return;
@@ -345,18 +355,22 @@ static void t_taskport(void) {
     mach_port_t task = MACH_PORT_NULL;
     kern_return_t kr = task_for_pid(mach_task_self(), pid, &task);
     printf("- parent: task_for_pid(child): %s\n", mach_error_string(kr));
-    struct {
-        mach_msg_header_t head;
-        mach_msg_body_t body;
-        mach_msg_port_descriptor_t task;
-        mach_msg_trailer_t trailer;
+    union {
+        struct {
+            mach_msg_header_t head;
+            mach_msg_body_t body;
+            mach_msg_port_descriptor_t task;
+        } m;
+        char room[4096];
     } msg;
     memset(&msg, 0, sizeof msg);
-    kr = mach_msg(&msg.head, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof msg, port, 3000,
-                  MACH_PORT_NULL);
-    printf("- parent: receiving the child's task port: %s\n", mach_error_string(kr));
-    if (kr == KERN_SUCCESS && (msg.head.msgh_bits & MACH_MSGH_BITS_COMPLEX))
-        task = msg.task.name;
+    kr = mach_msg(&msg.m.head, MACH_RCV_MSG | MACH_RCV_TIMEOUT | MACH_RCV_LARGE, 0, sizeof msg,
+                  port, 3000, MACH_PORT_NULL);
+    printf("- parent: receiving the child's task port: %s (id %d, %u bytes)\n",
+           mach_error_string(kr), msg.m.head.msgh_id, msg.m.head.msgh_size);
+    if (kr == KERN_SUCCESS && (msg.m.head.msgh_bits & MACH_MSGH_BITS_COMPLEX) &&
+        msg.m.body.msgh_descriptor_count == 1)
+        task = msg.m.task.name;
     if (task == MACH_PORT_NULL) {
         note("taskport", "parent drives child", "no task port");
         kill(pid, SIGKILL);
