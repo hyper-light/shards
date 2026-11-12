@@ -10300,6 +10300,11 @@ agents' (D59), never the command's (D115). So a sandboxed run could not be grant
   the start is refused. networks' `egress_names_each_destination_and_its_port` holds the
   option's reading.
 
+**Since (D236).** An Agentfile's `NETWORK --egress=HOST:PORT` grants its members
+destinations as this option grants a network's: one parser for both, which refuses a host
+whose last label is all digits and `localhost`, and takes `host.docker.internal` for the
+host itself, the gateway at that port alone, its loopback there.
+
 **Next.** IPv6 destinations (the network process learns A records alone); a destination
 on a network whose members' images have agents with grants of their own, held apart by
 the address its flows come from; a run's own grant on the default bridge, if one is
@@ -22050,8 +22055,13 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   program runs, within `run::MAX_PAYLOAD`. Native-sign-in delegation, not opacity (G18): the
   member reads what it is given.
 - *Ports and grants.* Published ports bound by `publish::bind`, only for a port the image
-  gives a member for ingress (D122) or for the run's own command; egress, remote MCP hosts
-  and DNS the image grants, kept or dropped by the orchestrator, never added.
+  gives a member for ingress (D122) or for the run's own command; egress, remote MCP hosts,
+  destinations (D236) and DNS the image grants, kept or dropped by the orchestrator, never
+  added. Each port bound names whom it reaches (`Bound::to`, channel version 3), so that a publish grant
+  names its "to whom": each member the image gives it, by declared index, at the member's
+  own port (another where an `EXPOSE` maps it), several where several claim it (the one
+  listening takes each connection); none where it reaches the run's own command. The rule
+  is `read ports`' (`agentfile::receiving`), one function for both.
 - *Shares.* At boot, as the run's `-v`, given to the members the image's `VOLUME` there is
   for (D109). Added while running: D214's path to the run's command, owed; to a member,
   refused (its mounts are made as it starts).
@@ -22189,6 +22199,97 @@ says; the report pipe on a Windows host; the seven-target lint.
 
 **What would falsify it.** A client that needs shards to own its VM processes after all (then
 D215's spawn alone).
+
+### D236. A network's destinations: a member reaches the hosts its grants name, the host itself at one port (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 9, and the harness bring-up's
+finding H2 (docs/research/measurements/harness-bringup-v1): an Agentfile's egress named
+ports alone. `NETWORK --egress=443` with `EXPOSE 443 AS egress` let a harness open TCP 443 to
+any address past its microVM, and `--dns` let it resolve any name, where Codex needed
+`api.openai.com` and `chatgpt.com` alone. Nor could a member reach kiln's MCP, served over
+HTTP at `/api/mcp` on kiln's `http_addr` (`0.0.0.0:7070` by default, kiln
+`crates/kiln/src/config.rs`): the host itself is what `Policy::Ports` never reaches (its
+gateway and loopback refused, rootless-security.md R4.16). Only a remote `MCP` server's grant
+named a host (D59 part seven); a run's command had D192's.
+
+**Alternatives.**
+- *A directive of its own* (`EGRESS host:port FOR member`): a second grammar for what a
+  network's boundary says already, where D192 put destinations on a network. Not taken
+  (R13).
+- *Names held by what a flow says* (TLS SNI, HTTP Host: Squid's ACLs, cloud firewalls'
+  FQDN rules): a client chooses what it says (domain fronting; ECH hides SNI). Not taken: a
+  flow reaches the addresses its resolver path answered, which is what D59 holds.
+- *Learned addresses held per member in the guest* (Cilium's toFQDNs policy programs each
+  endpoint's allowed addresses from the DNS answers its proxy relays; dnsmasq's `--nftset`):
+  D192's "held apart by the address its flows come from". Not built here: what the union
+  cannot hold is refused instead (below), which lifts once it is.
+- *The host at an address of its own* outside eth0's subnet (Docker Desktop's
+  192.168.65.254, Lima's 192.168.5.2): any such address can be one of a user's own
+  networks. The gateway is never a destination (it is the network process), and D124 takes
+  it for the host's loopback already.
+
+**Decided.**
+- *Grammar.* `NETWORK --egress=HOST:PORT`, beside ports: TCP; HOST a host's name (RFC 1035
+  §2.3.1 and RFC 1123 §2.1 labels, the last not all digits, RFC 3696 §2, so that no port or
+  mapping reads as one), an IPv4 address, or `host.docker.internal`, the host itself (Docker
+  Desktop's name for it; `.internal` is the top-level domain ICANN reserved for private use,
+  2024, so no name in the DNS is it). Refused, saying why: one on `--expose` or `--ingress`
+  (a destination is reached, never let in), on a network carrying no TCP, a pattern, an IPv6
+  address (as D192), UDP, and `localhost` (the asker's own, RFC 6761 §6.3). One parser,
+  `shards_dns::destination`, reads D192's option and the Agentfile.
+- *Who, to whom, which port, which way.* The network's members (`CONNECT … ON` it, within its
+  `FOR`) for whom the microVM's boundary opens the port outward (`EXPOSE … AS egress`, or both
+  ways, `FOR` it; D122's `--agents` and `--harnesses` naming them): the host named, at its
+  port, out. Two boundaries, as a port's (§12 answer 6); an internal network's reach nothing.
+- *Names.* A member asks the agents' resolver for its destinations' names alone, as a remote
+  MCP server's (`--dns` neither needed nor implied). The host itself is in its hosts file at
+  eth0's gateway and never asked of a resolver: the network process forwards no question for
+  it. A remote MCP server's URL may name the host itself too (`MCP kiln FROM
+  http://host.docker.internal:7070/api/mcp FOR codex`, kiln's MCP), which its grant then is.
+- *Held.* The network process's policy names each destination beside the MCP servers'
+  (`encode_policy`): a flow to its port reaches only an address its resolver answered for the
+  name through it, or the address it is; the host itself is the gateway at that TCP port
+  alone, which it takes to the host's IPv4 loopback there (`Config::host_side`). The guest
+  lets the member out on that port (its gate, the switch, init's forward chain); the run's own
+  processes (`confine_eth0`) and its engine's members (D181) reach the gateway by TCP at its
+  resolver's port alone.
+- *Refused where it cannot be held* (`agentfile::held`, at build and as the daemon reads the
+  normalized Agentfile): the network process holds the whole microVM to the union of its
+  members' names on a port, and a member's init lets it out on that port to any address. So
+  on a TCP port that one member reaches by name (a destination, or a remote MCP server), every
+  other member granted the port is granted the same names and none a port grant of it; else
+  the image is refused, naming both members and what each reaches. Remote MCP servers beside
+  another member's other grants on one port, which passed before, are refused alike.
+- *Orchestrators* keep or drop destinations (`Narrowing.destinations`, D231, channel version
+  3), never add one. The build labels them (`vnd.osi.agentfile.destinations`) for Docker and
+  Kubernetes; the daemon holds a run to its own reading of the image (D109).
+
+```dockerfile
+HARNESS codex FROM ./codex
+NETWORK --egress=api.openai.com:443 --egress=chatgpt.com:443 --egress=host.docker.internal:7070 provider FOR codex
+EXPOSE --harnesses=codex 443 7070 AS egress FOR provider
+CONNECT codex WITH codex ON provider
+```
+
+**Literals.** `host.docker.internal`, Docker Desktop's documented name; TCP port 53, DNS's
+(RFC 1035 §4.2.2), the gateway's one service to the run's processes; 63, a label's most, and
+253, a name's as text, its 255 octets on the wire less its first length and the root's (RFC
+1035 §2.3.4), as D192 had them. No bound, wait or size of its own.
+
+**Evidence.** The implementer's record, light tests on Linux x86_64 (adacachy) and the
+supported targets' lint: docs/research/measurements/s9-grants-v1.
+
+**Evidence owed** (ROOT). On real microVMs (KVM, HVF, WHP): a member granted provider names
+reaches them and nothing else (another host on their port, another port, an address no answer
+gave), and resolves them alone; one granted `host.docker.internal:PORT` reaches a listener on
+the host's loopback at PORT and no other port of the host, while the run's own command and
+another member reach neither; an image `held` refuses fails its build, and its run when
+crafted. The bring-up's examples (docs/examples/harness-codex, harness-claude) moved to
+destinations once run so.
+
+**What would falsify it.** A provider whose clients reach it at addresses its names never
+answer (then address ranges as grants); a member that must reach one port by name beside
+another member's other names (then the per-member hold above, which lifts the refusal).
 
 ## 4. Start path (≤ 5 ms budget)
 

@@ -563,7 +563,7 @@ pub fn join(id: u32, asked: &Asked, published: &[Egress]) -> Result<Joined, Stri
         },
         ingress: Vec::new(),
         dns,
-        mcp: Vec::new(),
+        named: Vec::new(),
         connects: false,
         accepts: false,
         unix: Vec::new(),

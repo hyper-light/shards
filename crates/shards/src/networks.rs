@@ -89,46 +89,23 @@ pub const HOST_IPV4: &str = "com.docker.network.host_ipv4";
 pub const HOST_IPV6: &str = "com.docker.network.host_ipv6";
 /// shards' own option, not dockerd's: the destinations past their microVMs that its
 /// members' own commands may reach, each `HOST:PORT` of TCP, comma-separated, a host a name
-/// or an IPv4 address (D192). Default deny: nothing else, and of names only those the
-/// destinations name, resolved through each member's network process alone.
+/// or an IPv4 address (D192), or the host itself, `host.docker.internal`, at its gateway
+/// (D236). Default deny: nothing else, and of names only those the destinations name,
+/// resolved through each member's network process alone.
 pub const EGRESS: &str = "shards.egress";
 
-/// [`EGRESS`]'s destinations, each a host (lowercased) and a TCP port, as given.
+/// [`EGRESS`]'s destinations, each a host (lowercased) and a TCP port, as given: each as an
+/// Agentfile's `NETWORK --egress=HOST:PORT` names one (`shards_dns::destination`, D236),
+/// the host itself among them.
 pub fn parse_egress(value: &str) -> Result<Vec<(String, u16)>, String> {
     let mut out = Vec::new();
     for entry in value.split(',').map(str::trim) {
         if entry.is_empty() {
             return Err("an empty destination, where each is HOST:PORT".into());
         }
-        let Some((host, port)) = entry.rsplit_once(':') else {
-            return Err(format!("{entry}: a destination is HOST:PORT"));
-        };
-        let Some(port) = port.parse::<u16>().ok().filter(|p| *p > 0) else {
-            return Err(format!("{entry}: {port} is no TCP port, 1 to 65535"));
-        };
-        let host = host.to_ascii_lowercase();
-        if host.parse::<Ipv4Addr>().is_err() && !host_name(&host) {
-            return Err(format!(
-                "{entry}: {host} is neither a host's name nor an IPv4 address"
-            ));
-        }
-        out.push((host, port));
+        out.push(shards_net::dns::destination(entry)?);
     }
     Ok(out)
-}
-
-/// A host's name as DNS has one (RFC 1035 §2.3.1, RFC 1123 §2.1): labels of letters,
-/// digits and hyphens, none at a label's ends, each at most 63 bytes, 253 in all.
-fn host_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 253
-        && name.split('.').all(|label| {
-            !label.is_empty()
-                && label.len() <= 63
-                && !label.starts_with('-')
-                && !label.ends_with('-')
-                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        })
 }
 
 impl Network {
