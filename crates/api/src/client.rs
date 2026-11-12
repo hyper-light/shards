@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use crate::stream::{self, Socket};
 use crate::{
     BorrowFailure, End, Guest, GuestSpec, Guests, HandshakeError, HandshakePhase, Identity, Init, Refusal,
-    ReplyError, Stream, allowed, backend, check,
+    ReplyError, RuntimePaths, Stream, allowed, backend, check,
 };
 
 /// The guests the `shards` binary boots: [`GuestSpec::binary`], else `SHARDS_BIN`, else
@@ -35,6 +35,66 @@ pub struct Shards;
 impl Shards {
     pub fn new() -> Shards {
         Shards
+    }
+
+    /// A client's explicit runtime directories (`SHARDS_CACHE`, `SHARDS_HOME`), also given its
+    /// managed launcher's VM processes (D232). This provider never inherits the environment.
+    pub fn configured(cache: PathBuf, home: PathBuf) -> Result<ConfiguredShards, Refusal> {
+        Ok(ConfiguredShards {
+            paths: RuntimePaths::new(cache, home)?,
+        })
+    }
+}
+
+impl RuntimePaths {
+    pub fn new(cache: PathBuf, home: PathBuf) -> Result<Self, Refusal> {
+        for path in [&cache, &home] {
+            if !path.is_absolute() || path.as_os_str().as_encoded_bytes().contains(&0) {
+                return Err(Refusal::Bounds {
+                    what: "runtime directories",
+                    why: "SHARDS_CACHE and SHARDS_HOME require explicit absolute paths without NUL".into(),
+                });
+            }
+        }
+        Ok(Self { cache, home })
+    }
+    pub fn cache(&self) -> &Path {
+        &self.cache
+    }
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+    pub fn try_clone(&self) -> Result<Self, Refusal> {
+        Self::new(
+            PathBuf::from(argument_copy(self.cache.as_os_str())?),
+            PathBuf::from(argument_copy(self.home.as_os_str())?),
+        )
+    }
+}
+
+/// The same client/drain/watch protocol, with exactly its client's explicit helper cache and
+/// runtime home (D232). This stores no inventory or holders.
+#[derive(Debug)]
+pub struct ConfiguredShards {
+    paths: RuntimePaths,
+}
+
+impl ConfiguredShards {
+    pub fn cache(&self) -> &Path {
+        self.paths.cache()
+    }
+    pub fn home(&self) -> &Path {
+        self.paths.home()
+    }
+    pub fn runtime_paths(&self) -> &RuntimePaths {
+        &self.paths
+    }
+
+    fn environment(&self, command: &mut Command) {
+        command
+            .env_clear()
+            .env("SHARDS_CACHE", self.paths.cache())
+            .env("SHARDS_HOME", self.paths.home());
     }
 }
 
@@ -65,48 +125,7 @@ const REQUEST: usize = "CONNECT ".len() + "4294967295".len() + "\n".len();
 
 impl Guests for Shards {
     fn probe_gpu(&self, spec: &GuestSpec, patience: Duration) -> Result<crate::GpuProbe, Refusal> {
-        let began = Instant::now();
-        let deadline = began
-            .checked_add(patience)
-            .filter(|_| patience != Duration::MAX)
-            .ok_or(Refusal::GpuProbe(crate::GpuProbeError::Pending))?;
-        if patience.is_zero() {
-            return Err(Refusal::GpuProbe(crate::GpuProbeError::Pending));
-        }
-        let bound = crate::physical::probe_bytes(spec.gpu_devices.len()).map_err(Refusal::GpuProbe)?;
-        let guest = launch(spec, Some(bound))?;
-        let left = deadline
-            .checked_duration_since(Instant::now())
-            .ok_or(Refusal::GpuProbe(crate::GpuProbeError::Pending))?;
-        match guest.wait_for(left)? {
-            Some(End::PowerOff) => {}
-            Some(end) => return Err(Refusal::Ended(end)),
-            None => {
-                guest.stop()?;
-                return Err(Refusal::GpuProbe(crate::GpuProbeError::Pending));
-            }
-        }
-        if Instant::now() >= deadline {
-            return Err(Refusal::GpuProbe(crate::GpuProbeError::Pending));
-        }
-        if !guest.process_exited()? {
-            return Err(Refusal::GpuProbe(crate::GpuProbeError::Pending));
-        }
-        let mut tail = lock(&guest.shared.tail);
-        if let Some(why) = tail.probe_error {
-            return Err(Refusal::GpuProbe(why));
-        }
-        if tail.bytes.len() > bound {
-            return Err(Refusal::GpuProbe(crate::GpuProbeError::Count));
-        }
-        let text = std::str::from_utf8(tail.bytes.make_contiguous())
-            .map_err(|_| Refusal::GpuProbe(crate::GpuProbeError::Syntax))?;
-        let probe = crate::GpuProbe::parse(text).map_err(Refusal::GpuProbe)?;
-        probe.check(&spec.gpu_devices).map_err(Refusal::GpuProbe)?;
-        if Instant::now() >= deadline {
-            return Err(Refusal::GpuProbe(crate::GpuProbeError::Pending));
-        }
-        Ok(probe)
+        probe_gpu(spec, patience, None)
     }
     fn backend(&self) -> Result<crate::Backend, Refusal> {
         backend()
@@ -121,6 +140,65 @@ impl Guests for Shards {
         backend()?;
         Ok(Box::new(take_back(identity, spec)?))
     }
+}
+
+impl Guests for ConfiguredShards {
+    fn probe_gpu(&self, spec: &GuestSpec, patience: Duration) -> Result<crate::GpuProbe, Refusal> {
+        probe_gpu(spec, patience, Some(self))
+    }
+    fn backend(&self) -> Result<crate::Backend, Refusal> {
+        backend()
+    }
+    fn boot(&self, spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal> {
+        Ok(Box::new(launch(spec, None, Some(self))?))
+    }
+    fn attach(&self, identity: &Identity, spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal> {
+        check(spec)?;
+        backend()?;
+        Ok(Box::new(take_back(identity, spec)?))
+    }
+}
+
+fn probe_gpu(
+    spec: &GuestSpec,
+    patience: Duration,
+    environment: Option<&ConfiguredShards>,
+) -> Result<crate::GpuProbe, Refusal> {
+    let deadline = Instant::now()
+        .checked_add(patience)
+        .filter(|_| !patience.is_zero() && patience != Duration::MAX)
+        .ok_or(Refusal::GpuProbe(crate::GpuProbeError::Pending))?;
+    let bound = crate::physical::probe_bytes(spec.gpu_devices.len()).map_err(Refusal::GpuProbe)?;
+    let guest = launch(spec, Some(bound), environment)?;
+    let left = deadline
+        .checked_duration_since(Instant::now())
+        .ok_or(Refusal::GpuProbe(crate::GpuProbeError::Pending))?;
+    match guest.wait_for(left)? {
+        Some(End::PowerOff) => {}
+        Some(end) => return Err(Refusal::Ended(end)),
+        None => {
+            guest.stop()?;
+            return Err(Refusal::GpuProbe(crate::GpuProbeError::Pending));
+        }
+    }
+    if Instant::now() >= deadline || !guest.process_exited()? {
+        return Err(Refusal::GpuProbe(crate::GpuProbeError::Pending));
+    }
+    let mut tail = lock(&guest.shared.tail);
+    if let Some(why) = tail.probe_error {
+        return Err(Refusal::GpuProbe(why));
+    }
+    if tail.bytes.len() > bound {
+        return Err(Refusal::GpuProbe(crate::GpuProbeError::Count));
+    }
+    let text = std::str::from_utf8(tail.bytes.make_contiguous())
+        .map_err(|_| Refusal::GpuProbe(crate::GpuProbeError::Syntax))?;
+    let probe = crate::GpuProbe::parse(text).map_err(Refusal::GpuProbe)?;
+    probe.check(&spec.gpu_devices).map_err(Refusal::GpuProbe)?;
+    if Instant::now() >= deadline {
+        return Err(Refusal::GpuProbe(crate::GpuProbeError::Pending));
+    }
+    Ok(probe)
 }
 
 /// How a guest taken back by [`Guests::attach`] ends where this client did not stop it: its
@@ -214,33 +292,45 @@ fn take_back(identity: &Identity, _spec: &GuestSpec) -> Result<ShardsGuest, Refu
 
 /// Boots `spec`'s guest through shards.
 fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
-    launch(spec, None)
+    launch(spec, None, None)
 }
 
 /// The same bounded output/watcher ownership as a guest; Some is an exact probe
 /// byte budget and selects the no-VM CLI mode, never a second process manager.
-fn launch(spec: &GuestSpec, probe: Option<usize>) -> Result<ShardsGuest, Refusal> {
+fn launch(
+    spec: &GuestSpec,
+    probe: Option<usize>,
+    environment: Option<&ConfiguredShards>,
+) -> Result<ShardsGuest, Refusal> {
     check(spec)?;
+    let configured_binary = if environment.is_some() {
+        Some(
+            spec.binary
+                .as_ref()
+                .filter(|binary| binary.is_absolute() && !binary.as_os_str().as_encoded_bytes().contains(&0))
+                .ok_or(Refusal::Launch(crate::LaunchError::Binary))?,
+        )
+    } else {
+        None
+    };
     backend()?;
     let dir = PrivateDir::new()?;
     let vsock = dir.0.join("v");
     // What its console keeps to quote, as its kernel's records say (D12).
     let said = probe.unwrap_or_else(|| crate::said::kept(&spec.kernel));
-    let mut args = arguments(spec, &vsock, said)?;
-    if probe.is_some() {
-        args.try_reserve_exact(1)
-            .map_err(|_| Refusal::GpuProbe(crate::GpuProbeError::Allocation))?;
-        let mut flag = OsString::new();
-        flag.try_reserve_exact("--gpu-probe".len())
-            .map_err(|_| Refusal::GpuProbe(crate::GpuProbeError::Allocation))?;
-        flag.push("--gpu-probe");
-        args.push(flag);
-    }
-    let binary = spec
-        .binary
-        .clone()
-        .or_else(|| std::env::var_os("SHARDS_BIN").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("shards"));
+    let args = if probe.is_some() {
+        probe_arguments(spec)?
+    } else {
+        arguments(spec, &vsock, said)?
+    };
+    let binary = if let Some(binary) = configured_binary {
+        PathBuf::from(argument_copy(binary.as_os_str())?)
+    } else {
+        spec.binary
+            .clone()
+            .or_else(|| std::env::var_os("SHARDS_BIN").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("shards"))
+    };
     // One pipe for both, read in the order shards wrote; this process keeps a writer of
     // its own to say, after shards' end, where shards' words end.
     let piped = |e: io::Error| Refusal::Boot(format!("a pipe for shards' output: {e}"));
@@ -273,7 +363,11 @@ fn launch(spec: &GuestSpec, probe: Option<usize>) -> Result<ShardsGuest, Refusal
         scratch.resize(bound, 0);
         probe_scratch = Some(scratch);
     }
-    let child = Command::new(&binary)
+    let mut command = Command::new(&binary);
+    if let Some(environment) = environment {
+        environment.environment(&mut command);
+    }
+    let child = command
         .args(&args)
         .stdin(Stdio::null())
         .stdout(stdout)
@@ -357,6 +451,29 @@ fn decimal(value: impl std::fmt::Display) -> Result<OsString, Refusal> {
     std::fmt::write(&mut text, format_args!("{value}"))
         .map_err(|_| Refusal::Launch(crate::LaunchError::Allocation))?;
     argument_copy(std::ffi::OsStr::new(&text))
+}
+
+/// The renderer query opens no workload, shares, console recorder or VM. Kernel
+/// is retained solely for the existing VM parser's required run grammar.
+fn probe_arguments(spec: &GuestSpec) -> Result<Vec<OsString>, Refusal> {
+    let count = spec
+        .gpu_devices
+        .len()
+        .checked_mul(2)
+        .and_then(|devices| devices.checked_add(4))
+        .ok_or(Refusal::Launch(crate::LaunchError::Count))?;
+    let mut args = Vec::new();
+    args.try_reserve_exact(count)
+        .map_err(|_| Refusal::Launch(crate::LaunchError::Allocation))?;
+    argument_push(&mut args, "run")?;
+    argument_push(&mut args, "--kernel")?;
+    argument_push(&mut args, &spec.kernel)?;
+    argument_push(&mut args, "--gpu-probe")?;
+    for device in &spec.gpu_devices {
+        argument_push(&mut args, "--gpu-device")?;
+        args.push(crate::physical::argument(*device).map_err(Refusal::Gpu)?);
+    }
+    Ok(args)
 }
 
 fn arguments(spec: &GuestSpec, vsock: &Path, said: usize) -> Result<Vec<OsString>, Refusal> {
@@ -448,12 +565,20 @@ pub fn prepare_boot(
         .checked_mul(ESCAPED)
         .and_then(|n| n.checked_add(tail(0)))
         .ok_or(Refusal::Launch(crate::LaunchError::Count))?;
+    let mut arguments = arguments(spec, vsock, console_bytes)?;
+    arguments
+        .try_reserve_exact(1)
+        .map_err(|_| Refusal::Launch(crate::LaunchError::Allocation))?;
+    // Only prepared native launches keep the existing helpers in their original
+    // scope. This marker grants no physical identity/device authority.
+    argument_push(&mut arguments, "--host-managed")?;
     Ok(crate::PreparedBoot {
         binary: PathBuf::from(argument_copy(binary.as_os_str())?),
-        arguments: arguments(spec, vsock, console_bytes)?,
+        arguments,
         vsock: PathBuf::from(argument_copy(vsock.as_os_str())?),
         ports,
         output_bytes,
+        runtime_paths: None,
     })
 }
 
@@ -2013,8 +2138,13 @@ mod tests {
         );
         let words: Vec<_> = plan.arguments().iter().map(|arg| arg.to_str().unwrap()).collect();
         assert_eq!(
-            words.iter().rev().take(3).copied().collect::<Vec<_>>(),
-            ["metal:0000000000000007", "--gpu-device", "--gpu"]
+            words.iter().rev().take(4).copied().collect::<Vec<_>>(),
+            [
+                "--host-managed",
+                "metal:0000000000000007",
+                "--gpu-device",
+                "--gpu"
+            ]
         );
         let identity = Identity {
             pid: 42,
@@ -2041,6 +2171,98 @@ mod tests {
             prepare_boot(&spec, &binary, &socket, usize::MAX),
             Err(Refusal::Launch(crate::LaunchError::Count))
         ));
+    }
+
+    /// D232: native containment is explicit only for managed plans. The
+    /// standalone CPU/GPU argument bytes stay exact, even for flag-like values.
+    #[test]
+    fn prepared_marker_preserves_standalone_arguments_and_flag_values() {
+        let dir = shards_testdir::TempDir::new("api-managed-marker").unwrap();
+        let binary = dir.join("never-started");
+        let socket = dir.join("v");
+        for gpu in [false, true] {
+            for cmdline in ["--host-managed", "--", "console=ttyS0"] {
+                let mut spec = spec();
+                spec.gpu = gpu;
+                spec.cmdline = cmdline.into();
+                let standalone = arguments(&spec, &socket, 17).unwrap();
+                let plan = prepare_boot(&spec, &binary, &socket, 17).unwrap();
+                assert_eq!(
+                    plan.arguments().get(..standalone.len()),
+                    Some(standalone.as_slice())
+                );
+                assert_eq!(plan.arguments().last(), Some(&OsString::from("--host-managed")));
+                assert_eq!(plan.arguments().len(), standalone.len() + 1);
+            }
+        }
+        assert_eq!(std::fs::read_dir(&*dir).unwrap().count(), 0);
+    }
+
+    /// D231: renderer initialization cannot carry an inner workload or start
+    /// its file/console helpers while resolving the exact selected identities.
+    #[test]
+    fn gpu_probe_arguments_carry_only_the_exact_native_query() {
+        let mut spec = spec();
+        spec.cmdline = "--host-managed --gpu-probe".into();
+        spec.shares.push(crate::Share {
+            dir: "/not-opened".into(),
+            read_only: false,
+        });
+        spec.disks.push(crate::Disk {
+            path: "/not-opened/disk".into(),
+            read_only: false,
+        });
+        spec.gpu_devices = vec![crate::PhysicalGpu::MetalRegistry(7)];
+        assert_eq!(
+            probe_arguments(&spec).unwrap(),
+            [
+                OsString::from("run"),
+                OsString::from("--kernel"),
+                spec.kernel.into_os_string(),
+                OsString::from("--gpu-probe"),
+                OsString::from("--gpu-device"),
+                OsString::from("metal:0000000000000007"),
+            ]
+        );
+    }
+
+    /// D231, D232: the configured probe uses its client's explicit pair, without a
+    /// PATH/binary/environment fallback or additional guest/provider authority.
+    #[test]
+    fn configured_node_roots_are_explicit_and_the_command_environment_is_closed() {
+        let dir = shards_testdir::TempDir::new("api-node-roots").unwrap();
+        let cache = dir.join("cache");
+        let home = dir.join("home");
+        let node = Shards::configured(cache.clone(), home.clone()).unwrap();
+        assert_eq!(node.cache(), cache);
+        assert_eq!(node.home(), home);
+        let plan = prepare_boot(&spec(), &dir.join("never-started"), &dir.join("v"), 17).unwrap();
+        assert_eq!(plan.runtime_paths(), None);
+        let plan = plan.with_runtime_paths(node.runtime_paths()).unwrap();
+        assert_eq!(plan.runtime_paths(), Some(node.runtime_paths()));
+        assert_eq!(node.runtime_paths().try_clone().unwrap(), *node.runtime_paths());
+        assert!(Shards::configured("relative".into(), home.clone()).is_err());
+        assert!(Shards::configured(cache.clone(), "".into()).is_err());
+        let mut command = Command::new(dir.join("never-started"));
+        command.env("FORBIDDEN_MODEL_INPUT", "value");
+        node.environment(&mut command);
+        assert_eq!(
+            command
+                .get_envs()
+                .map(|(name, value)| (name.to_owned(), value.map(OsString::from)))
+                .collect::<Vec<_>>(),
+            [
+                (OsString::from("SHARDS_CACHE"), Some(cache.into_os_string())),
+                (OsString::from("SHARDS_HOME"), Some(home.into_os_string())),
+            ]
+        );
+        let mut spec = spec();
+        spec.binary = None;
+        assert!(matches!(
+            launch(&spec, Some(1), Some(&node)),
+            Err(Refusal::Launch(crate::LaunchError::Binary))
+        ));
+        assert_eq!(std::fs::read_dir(&*dir).unwrap().count(), 0);
     }
 
     /// D215, D231: exercise real bounded pipe/watch/parse wiring with an owned

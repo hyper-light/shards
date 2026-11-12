@@ -44,8 +44,8 @@ mod while_runs;
 mod proc_allocation;
 
 pub use client::{
-    ManagedGuest, Shards, attach_managed, boot_managed, connect_borrowed, connect_prepared, prepare_boot,
-    recorded_console_bytes,
+    ConfiguredShards, ManagedGuest, Shards, attach_managed, boot_managed, connect_borrowed, connect_prepared,
+    prepare_boot, recorded_console_bytes,
 };
 pub use physical::{GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
 
@@ -92,6 +92,7 @@ pub struct PreparedBoot {
     vsock: PathBuf,
     ports: Vec<u32>,
     output_bytes: usize,
+    runtime_paths: Option<RuntimePaths>,
 }
 impl PreparedBoot {
     pub fn binary(&self) -> &std::path::Path {
@@ -109,6 +110,22 @@ impl PreparedBoot {
     pub fn output_bytes(&self) -> usize {
         self.output_bytes
     }
+    pub fn runtime_paths(&self) -> Option<&RuntimePaths> {
+        self.runtime_paths.as_ref()
+    }
+    /// Copies only its client's explicit pair, before native effects.
+    pub fn with_runtime_paths(mut self, paths: &RuntimePaths) -> Result<Self, Refusal> {
+        self.runtime_paths = Some(paths.try_clone()?);
+        Ok(self)
+    }
+}
+
+/// A configured client's two runtime directories, shared as values by its probe
+/// provider and prepared native launch. No ambient or workload environment input.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RuntimePaths {
+    cache: PathBuf,
+    home: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -372,6 +389,9 @@ pub enum ProcessFailure {
     Poisoned {
         what: &'static str,
     },
+    /// Positive exact PID/birth observation found the controller outside the
+    /// committed native scope. This supplies no scope-empty/terminal proof.
+    DifferentScope,
 }
 
 impl std::fmt::Display for ProcessFailure {
@@ -396,6 +416,7 @@ impl std::fmt::Display for ProcessFailure {
                 write!(f, "{operation:?}: unrepresented I/O cause ({kind:?})")
             }
             Self::Poisoned { what } => write!(f, "{what}: poisoned native scope state"),
+            Self::DifferentScope => f.write_str("the held process is outside its committed native scope"),
         }
     }
 }
