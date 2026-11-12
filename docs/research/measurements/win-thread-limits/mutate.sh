@@ -1,5 +1,5 @@
 #!/bin/sh
-# PM M526: the Windows unit tests of how many threads a process may have
+# PM M528: the Windows unit tests of how many threads a process may have
 # (crates/vmm platform/windows_process.rs), green, then under each mutant in mutations/, each
 # reverted after it. On Windows (Git Bash), from the repository's root; needs cargo 1.98.1.
 set -u

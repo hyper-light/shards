@@ -1,0 +1,25 @@
+host adacachy2, Linux 7.3.3-1-cachyos x86_64, 32 cores, at 2026-11-12T19:23:56Z
+rustc 1.100.0-nightly (0ed41eb41 2026-09-04), cargo-fuzz 0.13.1
+fuzz build: 77 s
+replay oom-2c3031fca23d849e4c554a649402e0be76035321: exit 0 in 0 s, Executed docs/research/measurements/ci-rego-compare/artifacts/oom-2c3031fca23d849e4c554a649402e0be76035321 in 0 ms
+replay oom-2f44b671f03f4747c5bfd562ead26e99b33f6d99: exit 0 in 0 s, Executed docs/research/measurements/ci-rego-compare/artifacts/oom-2f44b671f03f4747c5bfd562ead26e99b33f6d99 in 0 ms
+replay oom-36ae0bf37f861e2c1c0a53790963b4d52e20913c: exit 0 in 0 s, Executed docs/research/measurements/ci-rego-compare/artifacts/oom-36ae0bf37f861e2c1c0a53790963b4d52e20913c in 0 ms
+replay oom-4b431d4a9980bfc277352f46ea1c9d70669ec749: exit 0 in 0 s, Executed docs/research/measurements/ci-rego-compare/artifacts/oom-4b431d4a9980bfc277352f46ea1c9d70669ec749 in 0 ms
+replay oom-56d2aa9c9126ae5b1404f8e4ac124e9bc19850b8: exit 0 in 0 s, Executed docs/research/measurements/ci-rego-compare/artifacts/oom-56d2aa9c9126ae5b1404f8e4ac124e9bc19850b8 in 0 ms
+replay oom-b34d25a1ec612a7b3653f2119ee9c1c030311995: exit 0 in 0 s, Executed docs/research/measurements/ci-rego-compare/artifacts/oom-b34d25a1ec612a7b3653f2119ee9c1c030311995 in 0 ms
+replay oom-b6644dc21fe88fed2b6fedf9c1ccc3f2413f56f2: exit 0 in 0 s, Executed docs/research/measurements/ci-rego-compare/artifacts/oom-b6644dc21fe88fed2b6fedf9c1ccc3f2413f56f2 in 0 ms
+replay oom-c427225dc3cb87dfa8f80f3a903e006ecf5d9271: exit 0 in 0 s, Executed docs/research/measurements/ci-rego-compare/artifacts/oom-c427225dc3cb87dfa8f80f3a903e006ecf5d9271 in 0 ms
+replay oom-e381e7bcec6803c4740f098b8a69a5e05e1fc362: exit 0 in 0 s, Executed docs/research/measurements/ci-rego-compare/artifacts/oom-e381e7bcec6803c4740f098b8a69a5e05e1fc362 in 0 ms
+replay slow-unit-9672ac8d2f8a968b4c6bbbac5c5ab8e5b0358805: exit 0 in 0 s, Executed docs/research/measurements/ci-rego-compare/artifacts/slow-unit-9672ac8d2f8a968b4c6bbbac5c5ab8e5b0358805 in 0 ms
+rego-builtins, 600 s: exit 0, Done 2205952 runs in 601 second(s)
+auth, 60 s: exit 0, Done 2740055 runs in 61 second(s)
+cmdline, 60 s: exit 0, Done 1704918 runs in 61 second(s)
+gotime, 60 s: exit 0, Done 5034454 runs in 61 second(s)
+layers, 60 s: exit 0, Done 4664165 runs in 61 second(s)
+oci, 60 s: exit 0, Done 2721139 runs in 61 second(s)
+reference, 60 s: exit 0, Done 4504491 runs in 61 second(s)
+rego, 60 s: exit 0, Done 350367 runs in 61 second(s)
+snapshot-state, 60 s: exit 0, Done 19567834 runs in 61 second(s)
+tar, 60 s: exit 0, Done 10325531 runs in 61 second(s)
+url, 60 s: exit 0, Done 2230388 runs in 61 second(s)
+done at 2026-11-12T19:45:34Z

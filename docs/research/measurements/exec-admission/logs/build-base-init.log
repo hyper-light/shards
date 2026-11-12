@@ -1,0 +1,8 @@
+   Compiling shards-erofs v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/erofs)
+   Compiling shards-user v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/user)
+   Compiling shards-devcgroup v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/devcgroup)
+   Compiling shards-archive v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/archive)
+   Compiling shards-init v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/init)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 7.17s
+  Executable unittests src/main.rs (/home/adalundhe/g121-tmp/xa-exec/target/test-release/deps/shards_init-283e5c1ae3c0c939)
+exit 0

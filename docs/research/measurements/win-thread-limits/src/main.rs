@@ -1,5 +1,5 @@
 //! What limits how many threads a Windows process may have, and what each thread costs it
-//! (D181's admission on Windows, PM M526). Prints, for this host and build:
+//! (D181's admission on Windows, PM M528). Prints, for this host and build:
 //!
 //! - the host's limits: its page size and allocation granularity, the process's user address
 //!   space (MEMORYSTATUSEX's ullTotalVirtual), its commit limit (ullTotalPageFile, "for the

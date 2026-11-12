@@ -2,7 +2,7 @@
 //! (testdata/numbers-oracle.json, written by scripts/rego/generate).
 
 use shards_rego::funcs::{self, Context};
-use shards_rego::number::Float;
+use shards_rego::number::{self, Float};
 use shards_rego::value::{self, Value};
 
 fn text(f: &Float) -> String {
@@ -79,13 +79,20 @@ fn numbers_read_and_write_as_go_reads_and_writes_them() {
             }
             continue;
         }
+        let want = |k: &str| n.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // Go's ±Inf is an error here (number::OVERFLOW): OPA makes no infinities of its own.
+        if want("text").ends_with("Inf") {
+            if !matches!(got, Err(ref e) if *e == number::OVERFLOW) {
+                failed.push(format!("{s:?}: {got:?}, Go reads it as {}", want("text")));
+            }
+            continue;
+        }
         let Ok(f) = got else {
             failed.push(format!("{s:?}: refused, Go reads it"));
             continue;
         };
-        let want = |k: &str| n.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let flag = |k: &str| n.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
-        let (int, exact) = f.int();
+        let (int, exact) = f.int().unwrap();
         let got = (text(&f), f.is_int(), int.to_string(), exact, f.signbit());
         let wanted = (
             want("text"),

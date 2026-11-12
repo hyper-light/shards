@@ -3399,7 +3399,7 @@ impl<D: Disk> Daemon<D> {
             .agentfile
             .as_ref()
             .map(|a| &a.grants)
-            .filter(|g| !g.egress.is_empty() || !g.mcp.is_empty() || g.dns);
+            .filter(|g| g.past());
         // Its user network's own destinations for its members' commands (D192, the
         // network's shards.egress): kept apart from an image's agents' grants, whose flows
         // its network process could not tell from the command's, so refused beside them,
@@ -3459,14 +3459,13 @@ impl<D: Disk> Daemon<D> {
                         return None;
                     }
                 };
-                let named: Vec<(String, u16)> = g
-                    .mcp
-                    .iter()
-                    .filter_map(|e| {
-                        let (host, port) = std::str::from_utf8(e).ok()?.rsplit_once(':')?;
-                        Some((host.to_string(), port.parse().ok()?))
-                    })
-                    .collect();
+                // Its remote MCP servers' and its networks' destinations (D236), each by name.
+                let mut named = crate::agentfile::named(&g.mcp);
+                for d in crate::agentfile::named(&g.destinations) {
+                    if !named.contains(&d) {
+                        named.push(d);
+                    }
+                }
                 Some(shards_net::encode_policy(&ports, &named, g.dns))
             }
         };
@@ -11703,9 +11702,11 @@ mod tests {
         let mut spare = Reserve::default();
         assert!(spare_held(&mut spare));
         let client = UnixStream::connect(&path).unwrap();
+        // Bounded before it is refused: macOS refuses setsockopt(2) on a socket whose
+        // connection has ended (EINVAL; CI run 43189239973, aarch64-apple-darwin).
+        client.set_read_timeout(Some(PATIENCE)).unwrap();
         assert!(refuse_api(&listener, &mut spare));
         assert!(spare.is_some(), "the spare not made again");
-        client.set_read_timeout(Some(PATIENCE)).unwrap();
         assert!(
             matches!(shards_ipc::recv(&client), Ok(None)),
             "the client was not refused"

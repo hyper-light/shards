@@ -213,6 +213,13 @@ fn what_the_image_does_not_grant_is_refused_before_boot() {
         ..Narrowing::default()
     };
     assert!(matches!(refused(s), ImageRefusal::Widening(_)));
+    // A destination the image grants none of (D236).
+    let mut s = spec(&home, "api-refused:1");
+    s.egress = Narrowing {
+        destinations: Keep::Only(vec!["host.docker.internal:7070".into()]),
+        ..Narrowing::default()
+    };
+    assert!(matches!(refused(s), ImageRefusal::Widening(_)));
     let mut s = spec(&home, "api-refused:1");
     s.publish = vec![Publish {
         guest_port: 9000,
@@ -294,8 +301,17 @@ fn a_published_ingress_port_reaches_its_member() {
         host_port: 0,
     }];
     let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
-    let bound = guest.published().first().copied().expect("a bound port");
+    let bound = guest.published().first().cloned().expect("a bound port");
     assert_eq!((bound.guest_port, bound.proto), (7100, Proto::Tcp));
+    // It names whom it reaches: the harness, at its own port.
+    let [to] = bound.to.as_slice() else {
+        panic!("{bound:?}");
+    };
+    let member = guest.members().iter().find(|m| m.index == to.member).unwrap();
+    assert_eq!(
+        (member.kind, member.name.as_str(), to.port),
+        (MemberKind::Harness, "codex", 7100)
+    );
     // The listener comes up once its member runs: asked until it answers, within the bound.
     let deadline = std::time::Instant::now() + TIMEOUT;
     let answer = loop {

@@ -1,0 +1,13 @@
+host adacachy2 Linux 7.3.3-1-cachyos x86_64, Python 3.14.9, OpenSSL 3.6.5 29 Sep 2026
+tcp: blocked: ECONNRESET; after: ok, EPIPE; after, unread: ECONNRESET, EPIPE
+tls: blocked: ECONNRESET; after: ok, EPIPE; after, unread: ok, EPIPE
+unix: blocked: EPIPE; after: EPIPE, EPIPE; after, unread: EPIPE, EPIPE
+host adacachy2 Linux 7.3.3-1-cachyos x86_64, Python 3.14.9, OpenSSL 3.6.5 29 Sep 2026
+tcp: blocked: ECONNRESET; after: ok, EPIPE; after, unread: ECONNRESET, EPIPE
+tls: blocked: ECONNRESET; after: ok, EPIPE; after, unread: ok, EPIPE
+unix: blocked: EPIPE; after: EPIPE, EPIPE; after, unread: EPIPE, EPIPE
+host adacachy2 Linux 7.3.3-1-cachyos x86_64, Python 3.14.9, OpenSSL 3.6.5 29 Sep 2026
+tcp: blocked: ECONNRESET; after: ok, EPIPE; after, unread: ECONNRESET, EPIPE
+tls: blocked: ECONNRESET; after: ok, EPIPE; after, unread: ok, EPIPE
+unix: blocked: EPIPE; after: EPIPE, EPIPE; after, unread: EPIPE, EPIPE
+0

@@ -21,6 +21,7 @@ pub mod capture;
 #[path = "workload/hellos.rs"]
 mod hellos;
 pub use hellos::exec_port;
+use hellos::register;
 
 use crate::spec::{
     INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT, LogRetention, now,
@@ -163,7 +164,7 @@ pub fn await_resumed(tokens: &[u8]) -> Result<Resumed, String> {
     let signals = match wait(signal) {
         Ok(signals) => signals,
         Err(e) => {
-            pending().retain(|w| !same_token(&w.token, run_token));
+            hellos::forget(run_token);
             return Err(e);
         }
     };
@@ -805,6 +806,11 @@ pub fn serve(
             }
             true
         }
+        // An exec its joiners' microVM runs, which went without a connection.
+        kind::EXEC_FAILED => {
+            exec_failed(payload);
+            true
+        }
         _ => false,
     };
     // A microVM that stays keeps its files, as they are now its command has ended:
@@ -1234,8 +1240,9 @@ fn send(conn: &mut UnixStream, which: u8, payload: &[u8]) -> io::Result<()> {
     conn.write_all(payload)
 }
 
-/// An exec waiting for the guest's connection: its token, its id, and where its
-/// connection goes, or why there is none ([`kind::EXEC_FAILED`]).
+/// What waits for a guest's connection to the exec port, and where it goes, or why there is
+/// none: an exec's, by the id its guest's [`kind::EXEC_FAILED`] names; a restored run's
+/// (D176); a capture's.
 enum Target {
     Exec {
         id: u32,
@@ -1260,58 +1267,15 @@ impl Target {
     }
 }
 
-struct Waiting {
-    token: [u8; run::TOKEN],
-    target: Target,
-    incoming: Option<UnixStream>,
-}
-
-fn register(token: [u8; run::TOKEN], target: Target) -> Result<(), String> {
-    if !hellos::admitting() {
-        return Err("owned HELLO listener is closed".into());
-    }
-    let mut waiting = pending();
-    if waiting.iter().any(|w| same_token(&w.token, &token)) {
-        return Err("a duplicate owned HELLO token".into());
-    }
-    waiting
-        .try_reserve(1)
-        .map_err(|e| format!("reserving an owned HELLO slot: {e}"))?;
-    if !hellos::admitting() {
-        return Err("owned HELLO listener is closed".into());
-    }
-    waiting.push(Waiting {
-        token,
-        target,
-        incoming: None,
-    });
-    Ok(())
-}
-
-/// The execs waiting for their connections. Emptied when the workload ends, which tells
-/// each still waiting that it never started.
-static PENDING: Mutex<Vec<Waiting>> = Mutex::new(Vec::new());
 static NEXT_EXEC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-
-fn pending() -> std::sync::MutexGuard<'static, Vec<Waiting>> {
-    PENDING.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// Exec `id` will have no connection, for `why`, as the guest said: it fails with it.
 fn exec_failed(payload: &[u8]) {
     let Some((id, why)) = payload.split_first_chunk::<4>() else {
         return;
     };
-    let id = u32::from_be_bytes(*id);
-    let waiting = {
-        let mut waiting = pending();
-        waiting
-            .iter()
-            .position(|w| w.target.id() == Some(id))
-            .map(|i| waiting.swap_remove(i))
-    };
-    if let Some(w) = waiting {
-        w.target.deliver(Err(String::from_utf8_lossy(why).into_owned()));
+    if let Some(target) = hellos::fail(u32::from_be_bytes(*id)) {
+        target.deliver(Err(String::from_utf8_lossy(why).into_owned()));
     }
 }
 
@@ -1516,23 +1480,6 @@ pub fn same_token(a: &[u8; run::TOKEN], b: &[u8; run::TOKEN]) -> bool {
     a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
 }
 
-/// A connection whose hello, its header checked, has come whole, saying `token`: to the
-/// exec its token names, or closed.
-fn heard(conn: UnixStream, token: &[u8; run::TOKEN]) {
-    let to = {
-        let mut waiting = pending();
-        waiting
-            .iter()
-            .position(|w| same_token(&w.token, token))
-            .map(|i| waiting.swap_remove(i).target)
-    };
-    if let Some(to) = to
-        && conn.set_nonblocking(false).is_ok()
-    {
-        to.deliver(Ok(conn));
-    }
-}
-
 /// The null device, which stands in for the stdio of a client this VM lets go of: held from
 /// its start ([`hold_null`]), /dev/null, or on Windows the NUL its spawner gave it, as its
 /// AppContainer opens no file by name, NUL among them on Windows Server (PM M351).
@@ -1619,7 +1566,7 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     register(token, Target::Exec { id, to: tx })?;
     if !to_guest(to, kind::EXEC, &payload) {
-        pending().retain(|w| w.token != token);
+        hellos::forget(&token);
         return Err("the container is not running".into());
     }
     let mut conn = rx
@@ -1952,7 +1899,7 @@ pub fn join(
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     register(token, Target::Exec { id, to: tx })?;
     if !to_guest(to, kind::EXEC, &payload) {
-        pending().retain(|w| w.token != token);
+        hellos::forget(&token);
         return Err("the container whose network it joins is not running".into());
     }
     let stream = rx
@@ -2362,7 +2309,18 @@ mod tests {
 
     use super::*;
     use crate::segments::{log_segment, new_segment};
-    static HELLO_TESTS: Mutex<()> = Mutex::new(());
+
+    /// The exec port's tests one at a time, each with a port of its own.
+    fn exec_port_test() -> (
+        std::sync::MutexGuard<'static, ()>,
+        shards_vmm::vm::ServedPort,
+        hellos::Acceptor,
+    ) {
+        let serial = hellos::TESTS.lock().unwrap_or_else(PoisonError::into_inner);
+        hellos::reopen();
+        let (port, acceptor) = exec_port().unwrap();
+        (serial, port, acceptor)
+    }
 
     #[test]
     fn quiesce_replies_resolve_only_the_waiting_request() {
@@ -2441,11 +2399,11 @@ mod tests {
 
     /// The exec port hands a connection only to the exec whose token its HELLO names:
     /// one naming another, or saying anything else first, is closed, and the exec still
-    /// gets its own.
+    /// gets its own. Connections that say nothing are admitted while anything waits, and
+    /// held no more than wait: the one silent longest goes first.
     #[test]
     fn exec_connections_go_only_to_the_exec_they_name() {
-        let _serial = HELLO_TESTS.lock().unwrap();
-        let (port, acceptor) = exec_port().unwrap();
+        let (_serial, port, acceptor) = exec_port_test();
         let token = [7u8; run::TOKEN];
         let capture_token = [9u8; run::TOKEN];
         let resumed_token = [10u8; run::TOKEN];
@@ -2456,35 +2414,27 @@ mod tests {
         register(capture_token, Target::Capture(capture_to)).unwrap();
         register(resumed_token, Target::Resumed(resumed_to)).unwrap();
         let mut idle_peers = Vec::new();
-        for _ in 0..3 {
+        for _ in 0..4 {
             let (peer, candidate) = UnixStream::pair().unwrap();
             assert_eq!(port.accept(candidate), shards_vmm::vm::Admission::Accepted);
+            peer.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
             idle_peers.push(peer);
         }
-        let (mut excess, candidate) = UnixStream::pair().unwrap();
-        assert_eq!(port.accept(candidate), shards_vmm::vm::Admission::Full);
-        assert!(matches!(excess.read(&mut [0]), Ok(0)));
         let server = std::thread::spawn(move || acceptor.run());
+        // Four held where three wait: the first, silent as long as any, goes.
+        assert!(matches!(idle_peers[0].read(&mut [0]), Ok(0)));
         let hello = |token: &[u8]| {
-            let started = std::time::Instant::now();
-            loop {
-                let (mut guest, host) = UnixStream::pair().unwrap();
-                guest
-                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                    .unwrap();
-                guest
-                    .write_all(&run::header(kind::HELLO, token.len() as u32))
-                    .unwrap();
-                guest.write_all(token).unwrap();
-                match port.accept(host) {
-                    shards_vmm::vm::Admission::Accepted => return guest,
-                    shards_vmm::vm::Admission::Full => {
-                        assert!(started.elapsed() < std::time::Duration::from_secs(5));
-                        std::thread::yield_now();
-                    }
-                    shards_vmm::vm::Admission::Closed => panic!("owned listener closed"),
-                }
-            }
+            let (mut guest, host) = UnixStream::pair().unwrap();
+            guest
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            guest
+                .write_all(&run::header(kind::HELLO, token.len() as u32))
+                .unwrap();
+            guest.write_all(token).unwrap();
+            assert_eq!(port.accept(host), shards_vmm::vm::Admission::Accepted);
+            guest
         };
         let mut wrong = [7u8; run::TOKEN];
         wrong[run::TOKEN - 1] = 8;
@@ -2526,8 +2476,11 @@ mod tests {
             arrived.recv_timeout(std::time::Duration::from_secs(5)),
             Ok(Ok(_))
         ));
-        // Its own wait is over; the list is every test's, which others add to meanwhile.
-        assert!(!pending().iter().any(|w| w.token == token));
+        assert!(hellos::fail(1).is_none(), "its wait is over");
+        // Nothing waits now: every connection that never spoke has gone.
+        for mut idle in idle_peers {
+            assert!(matches!(idle.read(&mut [0]), Ok(0)));
+        }
         hellos::close();
         drop(port);
         server.join().unwrap();
@@ -2558,23 +2511,83 @@ mod tests {
         );
     }
 
+    /// An exec's connection, admitted before the acceptor took it, stays its own as another
+    /// exec stops waiting: it had waited in that exec's slot, and went with it.
+    #[test]
+    fn an_admitted_connection_outlives_another_execs_wait() {
+        let (_serial, port, acceptor) = exec_port_test();
+        let (first, _first_gets) = std::sync::mpsc::sync_channel(1);
+        let (second, second_gets) = std::sync::mpsc::sync_channel(1);
+        register([41; run::TOKEN], Target::Exec { id: 41, to: first }).unwrap();
+        register([42; run::TOKEN], Target::Exec { id: 42, to: second }).unwrap();
+        let (mut guest, host) = UnixStream::pair().unwrap();
+        guest
+            .write_all(&run::header(kind::HELLO, run::TOKEN as u32))
+            .unwrap();
+        guest.write_all(&[42; run::TOKEN]).unwrap();
+        assert_eq!(port.accept(host), shards_vmm::vm::Admission::Accepted);
+        // The first exec's guest says it has no connection, before the acceptor has run.
+        exec_failed(&[&41u32.to_be_bytes()[..], b"refused"].concat());
+        let server = std::thread::spawn(move || acceptor.run());
+        let got = second_gets.recv_timeout(std::time::Duration::from_secs(5));
+        hellos::close();
+        drop(port);
+        server.join().unwrap();
+        assert!(
+            matches!(got, Ok(Ok(_))),
+            "the second exec lost its connection: {got:?}"
+        );
+    }
+
+    /// Execs at once, as ROOT's 64 (adacachy, 2026-11-12), each registering as the others'
+    /// guests connect: every one is admitted and gets its own connection.
+    #[test]
+    fn execs_at_once_each_get_their_own_connection() {
+        let (_serial, port, acceptor) = exec_port_test();
+        let server = std::thread::spawn(move || acceptor.run());
+        let results: Vec<_> = std::thread::scope(|s| {
+            let port = &port;
+            let execs: Vec<_> = (0..64u32)
+                .map(|i| {
+                    s.spawn(move || {
+                        let mut token = [0x5a; run::TOKEN];
+                        token[..4].copy_from_slice(&i.to_be_bytes());
+                        let (to, gets) = std::sync::mpsc::sync_channel(1);
+                        register(token, Target::Exec { id: 1000 + i, to }).unwrap();
+                        let (mut guest, host) = UnixStream::pair().unwrap();
+                        guest
+                            .write_all(&run::header(kind::HELLO, run::TOKEN as u32))
+                            .unwrap();
+                        guest.write_all(&token).unwrap();
+                        let admitted = port.accept(host);
+                        let got = gets
+                            .recv_timeout(std::time::Duration::from_secs(5))
+                            .map(|r| r.is_ok());
+                        (i, admitted, got)
+                    })
+                })
+                .collect();
+            execs.into_iter().map(|e| e.join().unwrap()).collect()
+        });
+        hellos::close();
+        drop(port);
+        server.join().unwrap();
+        let failed: Vec<_> = results
+            .iter()
+            .filter(|(_, admitted, got)| *admitted != shards_vmm::vm::Admission::Accepted || *got != Ok(true))
+            .collect();
+        assert!(failed.is_empty(), "{} of 64 execs: {failed:?}", failed.len());
+    }
+
     /// An exec the guest could make no connection for fails with what the guest said,
     /// rather than wait for one (review 8.8); another exec waits on.
     #[test]
     fn an_exec_the_guest_cannot_connect_fails_with_why() {
-        let _serial = HELLO_TESTS.lock().unwrap();
+        let (_serial, _port, _acceptor) = exec_port_test();
         let (to, failed) = std::sync::mpsc::sync_channel(1);
         let (other, waits) = std::sync::mpsc::sync_channel(1);
-        pending().push(Waiting {
-            token: [3; run::TOKEN],
-            target: Target::Exec { id: 41, to },
-            incoming: None,
-        });
-        pending().push(Waiting {
-            token: [4; run::TOKEN],
-            target: Target::Exec { id: 42, to: other },
-            incoming: None,
-        });
+        register([3; run::TOKEN], Target::Exec { id: 41, to }).unwrap();
+        register([4; run::TOKEN], Target::Exec { id: 42, to: other }).unwrap();
         exec_failed(
             &[
                 &41u32.to_be_bytes()[..],
@@ -2588,7 +2601,8 @@ mod tests {
         );
         assert!(waits.try_recv().is_err(), "another exec failed with it");
         exec_failed(&[0, 0]);
-        pending().retain(|w| w.target.id() != Some(42));
+        assert!(hellos::fail(42).is_some(), "it still waits");
+        hellos::close();
     }
 
     /// A logger keeps each record whole and indexes it, with its stream and whether it

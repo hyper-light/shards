@@ -29,6 +29,24 @@ impl std::fmt::Display for Error {
 const MIN_EXP: i64 = i32::MIN as i64;
 const MAX_EXP: i64 = i32::MAX as i64;
 
+/// A text Go's `SetString` refuses: its exponent is past what Go reads.
+const OUT_OF_RANGE: Error = Error("exponent out of range");
+
+/// A value Go rounds to ±Inf (`setExpAndRound`). OPA makes no infinities of its own,
+/// so it is an error here; OPA's parser calls such a literal too big.
+pub const OVERFLOW: Error = Error("exponent overflow");
+
+/// OPA's bound on a number: a literal whose `MantExp` is past ±10^5 is refused (ast/parser.go
+/// `parseNumber`, v1.14.1) because writing a big.Float's text costs more than linear time in
+/// its exponent (golang/go#11068). Builtins here make no exact integer past it (D98): its
+/// decimal is every one of its digits, made in time growing faster than their count, from
+/// an exponent of a few digits. (A float's shortest text is written whatever its exponent,
+/// from the leading digits `shortest` reads, and zeros.)
+pub const MAX_EXPONENT: i64 = 100_000;
+
+/// What a number past `MAX_EXPONENT` is, in OPA's parser's words.
+pub const TOO_BIG: Error = Error("number too big");
+
 /// A `big.Float` that is zero or finite (OPA makes no infinities: it refuses division
 /// by zero first, and what overflows Go's exponent is an error here).
 #[derive(Debug, Clone)]
@@ -42,6 +60,16 @@ pub struct Float {
 
 fn bits(m: &BigUint) -> i64 {
     i64::try_from(m.bits()).unwrap_or(i64::MAX)
+}
+
+/// `m × 2^exp` as a mantissa at exponent `at`, and whether bits below `at` were dropped.
+fn at_exponent(m: &BigUint, exp: i64, at: i64) -> (BigUint, bool) {
+    let gap = exp.abs_diff(at);
+    if exp >= at {
+        return (m << gap, false);
+    }
+    let dropped = m.trailing_zeros().is_some_and(|tz| tz < gap);
+    (m >> gap, dropped)
 }
 
 impl Float {
@@ -84,7 +112,7 @@ impl Float {
             return Ok(());
         }
         if e > MAX_EXP {
-            return Err(Error("exponent overflow"));
+            return Err(OVERFLOW);
         }
         let have = self.mant.bits();
         let prec = u64::from(self.prec);
@@ -96,17 +124,17 @@ impl Float {
             self.mant >>= cut;
             self.exp = self
                 .exp
-                .checked_add(i64::try_from(cut).map_err(|_| Error("exponent overflow"))?)
-                .ok_or(Error("exponent overflow"))?;
+                .checked_add(i64::try_from(cut).map_err(|_| OVERFLOW)?)
+                .ok_or(OVERFLOW)?;
             if rbit && (sticky || self.mant.bit(0)) {
                 self.mant += 1u32;
                 if self.mant.bits() > prec {
                     self.mant >>= 1u32;
-                    self.exp = self.exp.checked_add(1).ok_or(Error("exponent overflow"))?;
+                    self.exp = self.exp.checked_add(1).ok_or(OVERFLOW)?;
                 }
             }
             if self.go_exp() > MAX_EXP {
-                return Err(Error("exponent overflow"));
+                return Err(OVERFLOW);
             }
         }
         Ok(())
@@ -167,13 +195,18 @@ impl Float {
         };
         let ge = z.go_exp();
         if !(MIN_EXP..=MAX_EXP).contains(&ge) {
-            return Err(Error("exponent overflow"));
+            return Err(OUT_OF_RANGE);
         }
         if e5 == 0 {
             z.round(false)?;
             return Ok(z);
         }
-        let p = pow5(e5.unsigned_abs(), prec + 64)?;
+        let p = match pow5(e5.unsigned_abs(), prec + 64) {
+            Ok(p) => p,
+            // Go's 5^|e5| past its exponents is +Inf, and z over it is zero.
+            Err(_) if e5 < 0 => return Ok(Float::zero(prec, neg)),
+            Err(e) => return Err(e),
+        };
         if e5 < 0 {
             Float::quo(&z, &p, prec)
         } else {
@@ -201,45 +234,45 @@ impl Float {
         }
     }
 
-    /// The exact sum of two magnitudes, aligned to the lower exponent.
-    fn aligned(x: &Float, y: &Float) -> (BigUint, BigUint, i64) {
-        match x.exp.cmp(&y.exp) {
-            Ordering::Less => {
-                let shift = u64::try_from(y.exp - x.exp).unwrap_or(0);
-                (x.mant.clone(), &y.mant << shift, x.exp)
-            }
-            Ordering::Greater => {
-                let shift = u64::try_from(x.exp - y.exp).unwrap_or(0);
-                (&x.mant << shift, y.mant.clone(), y.exp)
-            }
-            Ordering::Equal => (x.mant.clone(), y.mant.clone(), x.exp),
-        }
+    /// Two nonzero magnitudes as mantissas at one exponent, for their sum or difference
+    /// rounded to `prec` bits, and whether bits below that exponent were dropped. Go
+    /// aligns to the lower exponent however far apart the two are (`uadd`, `usub`), a
+    /// shift as long as the gap. The larger's mantissa (at most `prec` bits) is kept
+    /// whole; the other's bits more than `prec + 2` below the larger's top are dropped
+    /// for a sticky bit. That rounds as Go does: the sum is at least 2^(top - 1), and the
+    /// difference with a smaller one that far below at least 2^(top - 2), so the round
+    /// bit is at or above the exponent, and what is dropped is only ever below it.
+    fn aligned(x: &Float, y: &Float, prec: u32) -> (BigUint, BigUint, i64, bool) {
+        let top = x.go_exp().max(y.go_exp());
+        let floor = top.saturating_sub(i64::from(prec)).saturating_sub(2);
+        let at = x.exp.min(y.exp).max(floor);
+        let (a, a_dropped) = at_exponent(&x.mant, x.exp, at);
+        let (b, b_dropped) = at_exponent(&y.mant, y.exp, at);
+        (a, b, at, a_dropped || b_dropped)
     }
 
     fn uadd(x: &Float, y: &Float, prec: u32, neg: bool) -> Result<Float, Error> {
-        let (a, b, exp) = Float::aligned(x, y);
+        let (a, b, exp, dropped) = Float::aligned(x, y, prec);
         Float {
             prec,
             neg,
             mant: a + b,
             exp,
         }
-        .rounded(false)
+        .rounded(dropped)
     }
 
     /// `|x| - |y|`, with `|x| > |y|`.
     fn usub(x: &Float, y: &Float, prec: u32, neg: bool) -> Result<Float, Error> {
-        let (a, b, exp) = Float::aligned(x, y);
+        let (a, b, exp, dropped) = Float::aligned(x, y, prec);
         if a <= b {
             return Ok(Float::zero(prec, false));
         }
-        Float {
-            prec,
-            neg,
-            mant: a - b,
-            exp,
-        }
-        .rounded(false)
+        // What y dropped is a fraction below the exponent: the difference is one less
+        // there, and a fraction more.
+        let d = a - b;
+        let mant = if dropped { d - 1u32 } else { d };
+        Float { prec, neg, mant, exp }.rounded(dropped)
     }
 
     /// `z.Set(x)` for a z of precision `prec`.
@@ -298,7 +331,7 @@ impl Float {
         if x.is_zero() || y.is_zero() {
             return Ok(Float::zero(prec, neg));
         }
-        let exp = x.exp.checked_add(y.exp).ok_or(Error("exponent overflow"))?;
+        let exp = x.exp.checked_add(y.exp).ok_or(OVERFLOW)?;
         Float {
             prec,
             neg,
@@ -324,12 +357,12 @@ impl Float {
         let num = &x.mant << shift;
         let q = &num / &y.mant;
         let sticky = (&num % &y.mant).bits() != 0;
-        let shift = i64::try_from(shift).map_err(|_| Error("exponent overflow"))?;
+        let shift = i64::try_from(shift).map_err(|_| OVERFLOW)?;
         let exp = x
             .exp
             .checked_sub(y.exp)
             .and_then(|e| e.checked_sub(shift))
-            .ok_or(Error("exponent overflow"))?;
+            .ok_or(OVERFLOW)?;
         Float {
             prec,
             neg,
@@ -385,10 +418,14 @@ impl Float {
         i64::from(self.prec) <= e || self.min_prec() <= e
     }
 
-    /// `x.Int(nil)`: truncated toward zero, and whether that is exact.
-    pub fn int(&self) -> (BigInt, bool) {
+    /// `x.Int(nil)`: truncated toward zero, and whether that is exact; past
+    /// `MAX_EXPONENT`, refused, the integer as long as its exponent's value.
+    pub fn int(&self) -> Result<(BigInt, bool), Error> {
         if self.is_zero() {
-            return (BigInt::default(), true);
+            return Ok((BigInt::default(), true));
+        }
+        if self.go_exp() > MAX_EXPONENT {
+            return Err(TOO_BIG);
         }
         let exact = self.is_int();
         let mag = if self.exp >= 0 {
@@ -397,7 +434,7 @@ impl Float {
             &self.mant >> self.exp.unsigned_abs()
         };
         let sign = if self.neg { Sign::Minus } else { Sign::Plus };
-        (BigInt::from_biguint(sign, mag), exact)
+        Ok((BigInt::from_biguint(sign, mag), exact))
     }
 
     /// `x.Text(format, -1)` for `'f'` and `'g'`: the shortest decimal that reads back as x.
@@ -499,7 +536,6 @@ pub fn exact_parts(s: &str) -> Result<(bool, BigUint, i64, i64), Error> {
     if r.peek().is_some() {
         return Err(Error("expected end of string"));
     }
-    let overflow = Error("exponent overflow");
     let mut e2: i64 = 0;
     let mut e5: i64 = 0;
     if fcount < 0 {
@@ -509,14 +545,14 @@ pub fn exact_parts(s: &str) -> Result<(bool, BigUint, i64, i64), Error> {
                 e2 = fcount;
             }
             2 => e2 = fcount,
-            8 => e2 = fcount.checked_mul(3).ok_or(overflow.clone())?,
-            _ => e2 = fcount.checked_mul(4).ok_or(overflow.clone())?,
+            8 => e2 = fcount.checked_mul(3).ok_or(OUT_OF_RANGE)?,
+            _ => e2 = fcount.checked_mul(4).ok_or(OUT_OF_RANGE)?,
         }
     }
     if ebase == 10 {
-        e5 = e5.checked_add(exp).ok_or(overflow.clone())?;
+        e5 = e5.checked_add(exp).ok_or(OUT_OF_RANGE)?;
     }
-    e2 = e2.checked_add(exp).ok_or(overflow)?;
+    e2 = e2.checked_add(exp).ok_or(OUT_OF_RANGE)?;
     Ok((neg, mant, e2, e5))
 }
 
@@ -646,9 +682,7 @@ fn scan_exponent(r: &mut Reader<'_>) -> Result<(i64, u32), Error> {
     if !has {
         return Err(Error("number has no digits"));
     }
-    let exp = digits
-        .parse::<i64>()
-        .map_err(|_| Error("exponent out of range"))?;
+    let exp = digits.parse::<i64>().map_err(|_| OUT_OF_RANGE)?;
     if inval_sep || prev == b'_' {
         return Err(Error("'_' must separate successive digits"));
     }
@@ -686,7 +720,9 @@ const POW5: [u64; 28] = [
     7450580596923828125,
 ];
 
-/// Go's `pow5` on a Float of precision `prec`.
+/// Go's `pow5` on a Float of precision `prec`. Go squares `f` once more after its last
+/// use, which past its exponents only makes it +Inf, unread; that squaring is left out
+/// here, where it would be an error.
 fn pow5(n: u64, prec: u32) -> Result<Float, Error> {
     let m = (POW5.len() - 1) as u64;
     if n <= m {
@@ -701,8 +737,10 @@ fn pow5(n: u64, prec: u32) -> Result<Float, Error> {
         if n & 1 != 0 {
             z = Float::mul(&z, &f, prec)?;
         }
-        f = Float::mul(&f, &f, fprec)?;
         n >>= 1;
+        if n > 0 {
+            f = Float::mul(&f, &f, fprec)?;
+        }
     }
     Ok(z)
 }
@@ -981,25 +1019,36 @@ fn decimal_zeros(n: &BigUint, a: i64, b: i64) -> Option<i64> {
 /// A bound m × 2^e.
 type Bound = (BigUint, i64);
 
+/// A bound m × 2^e whose e may be past an i64: 5^n has 2.33 n bits, and a comparison's n
+/// is a gap between two i64 exponents (value.rs's `scaled_cmp`).
+pub(crate) type WideBound = (BigUint, i128);
+
+/// `pow5_wide`'s bounds, where their exponents are i64s.
+fn pow5_bounds(n: u64, p: u64) -> Option<(Bound, Bound)> {
+    let ((lo, a), (hi, b)) = pow5_wide(n, p);
+    Some(((lo, i64::try_from(a).ok()?), (hi, i64::try_from(b).ok()?)))
+}
+
 /// 5^n from below and from above, each m × 2^e with m of about p bits: squarings and
 /// products by 5, each cut to p bits, rounding down for the one and up for the other.
-/// Exact where 5^n has p bits or fewer.
-fn pow5_bounds(n: u64, p: u64) -> Option<(Bound, Bound)> {
-    let mut lo: Bound = (BigUint::from(1u32), 0);
+/// Exact where 5^n has p bits or fewer. The exponents are at most 2.33 × 2^64 + p, well
+/// within an i128.
+pub(crate) fn pow5_wide(n: u64, p: u64) -> (WideBound, WideBound) {
+    let mut lo: WideBound = (BigUint::from(1u32), 0);
     let mut hi = lo.clone();
     for i in (0..u64::BITS - n.leading_zeros()).rev() {
-        lo = cut(&lo.0 * &lo.0, lo.1.checked_mul(2)?, p, false);
-        hi = cut(&hi.0 * &hi.0, hi.1.checked_mul(2)?, p, true);
+        lo = cut(&lo.0 * &lo.0, lo.1 * 2, p, false);
+        hi = cut(&hi.0 * &hi.0, hi.1 * 2, p, true);
         if (n >> i) & 1 == 1 {
             lo = cut(lo.0 * 5u32, lo.1, p, false);
             hi = cut(hi.0 * 5u32, hi.1, p, true);
         }
     }
-    Some((lo, hi))
+    (lo, hi)
 }
 
 /// m × 2^e cut to p bits, rounding down or up.
-fn cut(m: BigUint, e: i64, p: u64, up: bool) -> Bound {
+fn cut(m: BigUint, e: i128, p: u64, up: bool) -> WideBound {
     let have = m.bits();
     if have <= p {
         return (m, e);
@@ -1010,7 +1059,7 @@ fn cut(m: BigUint, e: i64, p: u64, up: bool) -> Bound {
     if up && dropped {
         kept += 1u32;
     }
-    (kept, e.saturating_add(i64::try_from(s).unwrap_or(i64::MAX)))
+    (kept, e + i128::from(s))
 }
 
 /// ⌊n × 2^t × f⌋, or ⌊n × 2^t / f⌋ for `mul` false, f = m × 2^e not zero.
@@ -1277,5 +1326,156 @@ mod tests {
         assert!(text.bytes().skip(1).all(|b| b == b'0'));
         // Grown once, to its length.
         assert_eq!(text.capacity(), text.len());
+    }
+}
+
+/// Sums, readings and integers of numbers whose exponents are far apart or large.
+#[cfg(test)]
+mod exponent_tests {
+    use std::cmp::Ordering;
+
+    use num_bigint::BigUint;
+
+    use super::{Float, MAX_EXPONENT, OUT_OF_RANGE, OVERFLOW, TOO_BIG};
+
+    /// Go's alignment, as it was here: the lower exponent, however far.
+    fn aligned_whole(x: &Float, y: &Float) -> (BigUint, BigUint, i64) {
+        let at = x.exp.min(y.exp);
+        let up = |f: &Float| &f.mant << u64::try_from(f.exp - at).unwrap();
+        (up(x), up(y), at)
+    }
+
+    /// `x + y`, or `x - y` with `sub`, as Go makes it: exact, then rounded once.
+    fn go_add(x: &Float, y: &Float, prec: u32, sub: bool) -> Float {
+        let y_neg = y.neg != sub;
+        let (a, b, exp) = aligned_whole(x, y);
+        let (neg, mant) = if x.neg == y_neg {
+            (x.neg, a + b)
+        } else if a > b {
+            (x.neg, a - b)
+        } else if b > a {
+            (y_neg, b - a)
+        } else {
+            return Float::zero(prec, false);
+        };
+        Float { prec, neg, mant, exp }.rounded(false).unwrap()
+    }
+
+    /// xorshift64*: the same cases on every run.
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, n: u64) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) % n
+        }
+
+        /// A mantissa of at most `prec` bits: all ones, a power of two, one past it, or
+        /// random bits.
+        fn mantissa(&mut self, prec: u32) -> BigUint {
+            let bits = 1 + self.below(u64::from(prec));
+            let top = BigUint::from(1u32) << (bits - 1);
+            match self.below(5) {
+                0 => (&top << 1u32) - 1u32,
+                1 => top,
+                2 => top + 1u32,
+                _ => (0..bits).fold(BigUint::default(), |m, _| (m << 1u32) + self.below(2)) | top,
+            }
+        }
+
+        fn float(&mut self, prec: u32, exp: i64) -> Float {
+            let (neg, mant) = (self.below(2) == 0, self.mantissa(prec));
+            Float { prec, neg, mant, exp }.rounded(false).unwrap()
+        }
+    }
+
+    /// Sums and differences with the smaller's bits dropped below the larger's
+    /// precision round as the exact ones do: ties, carries, borrows, gaps on both sides
+    /// of where the dropping starts.
+    #[test]
+    fn sums_and_differences_round_as_the_exact_ones() {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        let (mut checked, mut dropping) = (0, 0);
+        for _ in 0..40000 {
+            let prec = [53, 64, 100, 200][usize::try_from(rng.below(4)).unwrap()];
+            let x = rng.float(prec, 0);
+            let gap = i64::try_from(rng.below(u64::from(prec) * 3)).unwrap() - i64::from(prec);
+            let y = rng.float(prec, -gap);
+            dropping += usize::from(Float::aligned(&x, &y, prec).3);
+            for (a, b) in [(&x, &y), (&y, &x)] {
+                for sub in [false, true] {
+                    let got = if sub {
+                        Float::sub(a, b, prec)
+                    } else {
+                        Float::add(a, b, prec)
+                    }
+                    .unwrap();
+                    let want = go_add(a, b, prec, sub);
+                    let op = if sub { "-" } else { "+" };
+                    assert!(
+                        Float::compare(&got, &want) == Ordering::Equal && got.neg == want.neg,
+                        "{a:?} {op} {b:?}: {got:?}, Go {want:?}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 160000);
+        assert!(
+            (5000..35000).contains(&dropping),
+            "{dropping} of 40000 pairs dropped bits"
+        );
+    }
+
+    /// Exponents 1.2 billion apart align in the precision's bits, not the gap's.
+    #[test]
+    fn alignment_is_bounded_by_the_precision_not_the_gap() {
+        let (x, y) = (
+            Float::parse("1e600000000").unwrap(),
+            Float::parse("1e-600000000").unwrap(),
+        );
+        let (a, b, _, dropped) = Float::aligned(&x, &y, 64);
+        assert!(
+            a.bits() <= 64 + 2 && b.bits() <= 64 + 2 && dropped,
+            "{} {}",
+            a.bits(),
+            b.bits()
+        );
+        for z in [Float::add(&x, &y, 64).unwrap(), Float::sub(&x, &y, 64).unwrap()] {
+            assert_eq!(Float::compare(&z, &x), Ordering::Equal);
+        }
+    }
+
+    /// As Go 1.26.1's SetString reads these (MantExp, ±Inf, ±0, refused).
+    #[test]
+    fn huge_exponents_read_as_go_reads_them() {
+        // 5^(6e8) is finite; Go squares its pow5's factor once more past MaxExp, unread.
+        assert_eq!(Float::parse("1e600000000").unwrap().go_exponent(), 1993156857);
+        assert_eq!(Float::parse("1e-600000000").unwrap().go_exponent(), -1993156856);
+        // Go's +Inf.
+        assert_eq!(Float::parse("1e700000000").unwrap_err(), OVERFLOW);
+        // Go's 5^(1e9) is +Inf, and 1 over it -0 here.
+        let z = Float::parse("-1e-1000000000").unwrap();
+        assert!(z.is_zero() && z.signbit());
+        let z = Float::parse("1e-700000000").unwrap();
+        assert!(z.is_zero() && !z.signbit());
+        // Past MaxExp before any scaling: Go's SetString refuses it.
+        assert_eq!(Float::parse("1e3000000000").unwrap_err(), OUT_OF_RANGE);
+    }
+
+    /// Exact integers end where OPA's parser does, MantExp 1e5 inclusive; below 1, they
+    /// are 0, however small.
+    #[test]
+    fn integers_end_at_opas_bound() {
+        let f = |s: &str| Float::parse(s).unwrap();
+        assert_eq!(f("0x1p99999").go_exponent(), MAX_EXPONENT);
+        assert_eq!(f("0x1p99999").int().unwrap().0.bits(), 100000);
+        assert_eq!(f("-0x1p99999").int().unwrap().0.bits(), 100000);
+        assert_eq!(f("0x1p100000").int().unwrap_err(), TOO_BIG);
+        assert_eq!(f("-1e600000000").int().unwrap_err(), TOO_BIG);
+        assert_eq!(f("0x1p-100002").int().unwrap(), (Default::default(), false));
+        assert_eq!(f("0e99999").int().unwrap(), (Default::default(), true));
     }
 }

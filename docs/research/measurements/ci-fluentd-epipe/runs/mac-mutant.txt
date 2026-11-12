@@ -1,0 +1,23 @@
+# the mutant (stream.rs eb8e0dcc: mutant.diff) over fe44bc8ca, Mac
+# shards-mutant --exact daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen --test-threads 1
+
+running 1 test
+test daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen ... FAILED
+
+failures:
+
+---- daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen stdout ----
+
+thread 'daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen' (82314037) panicked at crates/shards/src/daemon/ship/stream.rs:1538:17:
+assertion `left == right` failed: tcp: Broken pipe (os error 32)
+  left: BrokenPipe
+ right: ConnectionAborted
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 734 filtered out; finished in 2.04s
+
+/tmp/ci-fluentd-build/bin/shards-mutant --exact  --test-threads 1 2>&1  0.01s user 0.02s system 0% cpu 3.302 total
