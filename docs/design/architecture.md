@@ -7095,6 +7095,22 @@ descriptors.
   write, one reading 16 KiB at a time, 60 ms apart, was let go of a request's time in, 3 s
   in the test, still reading). A stop's slot is not counted: the daemon holds that session
   until its exit, which is how `daemon stop` learns of it.
+- **Whose end a run's client heard** (PM M530). A run's, an exec's and an attach's slot
+  passes on what its VM says, so the slot ends both where the VM's connection closes with no
+  last word and where the daemon itself ends: a killed daemon closes every slot it served.
+  The client said the same of both, "the command's microVM stopped before the command
+  ended", and blamed the microVM for kiln's between-turns sweep, which ended the WHP E2E's
+  daemons with `taskkill /F` (jupiter's kiln.log, 2026-11-12): a hunt through WHP, the VMM
+  and the guest. M188's and M331's daemons that exited under their clients were taken so too.
+  Now the slot says `UNANSWERED`, last, where the run's side ended without its last word
+  (`EXIT`, `END`, `RESTART`), and the client says so as the microVM's stop; a slot that ends
+  with no last word at all is its daemon's end, and the client says "the daemon ended before
+  the command did". A command's client (`END`) reads any early end as its daemon's already;
+  a socket's peer (a daemon of a build from before slots) is the run's VM. Held by
+  `a_side_that_ends_without_its_last_word_says_so` and
+  `a_runs_client_tells_its_daemons_end_from_its_microvms`, each red with its guard removed
+  (M530 says on which hosts); live on WHP, a daemon ended mid-run said so and a VM ended
+  said the microVM's words.
 - **Many clients on one list** (PM M262). On macOS a client waiting in select(2) for its
   slot could stop waking at all while the others took theirs: 12 of 16 clients slept
   through 20 s of records others took, and one of an E2E test's 16 waited 60 s while its
@@ -21482,6 +21498,31 @@ artifact pushed to a registry; beside it is an agent of files alone. The agent r
 The run's stdout stays empty, and the agent of files alone runs nothing. Each of these
 mutations fails the test: hiding no other domain, keeping the bounding set, leaving the
 system writable.
+
+**A member's root shows the image's directories as the image made them** (2026-11-12,
+kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 7). A domain's root is an overlay of the
+image under a skeleton tmpfs. The skeleton holds what init mounts over and the image may
+lack: `/etc` always, and every mount point of its sockets, its server and its volumes, each
+with its parents. overlayfs shows a directory both layers hold with the upper one's owner
+and mode (Documentation/filesystems/overlayfs.rst, "Directories"), and the skeleton made
+every directory root's, 0755. So a volume at `/home/node/.cache` showed the image's
+`/home/node` (1000:1000 0750) as 0:0 0755, and `/etc` and the root as the skeleton's too.
+Reproduced live with init's system calls in its order, in a user and mount namespace with
+subordinate IDs on Linux 7.2.9 x86_64 (`docs/research/measurements/s7-home-workdir`,
+`repro.py`, `repro-adacachy.log`).
+
+Now each directory the skeleton makes that the image has takes the image's owner and mode
+(fchownat, then fchmodat: a chown clears set-ID bits), and the skeleton's tmpfs root takes
+the image root's (its `mode`, `uid` and `gid` options). A directory the image lacks stays
+root's, 0755, as a mount point's. `a_skeletons_directories_are_the_images_own` runs the
+real `skeleton` and `image_root` in a user and mount namespace and compares the root,
+`/home`, `/home/node`, `/etc` and `/tmp` with the image's, and their owners too where it
+runs as root of IDs past its own (`unshare --map-auto --map-root-user`). It fails at the
+base revision, and with either guard removed: the owner and mode copied, the root's options
+(`mutate4.sh`, `mutate4-adacachy.log`). Where a domain has plug roots (D235), its root's
+own writable layer is the uppermost for `/`, and D235's `image_root` gives that layer the
+image root's owner and mode. **Owed (ROOT):** the same in a real microVM on KVM,
+Hypervisor.framework and WHP.
 
 Part two, after `no_new_privs`, before its command:
 

@@ -1,0 +1,42 @@
+# r1. What ended the WHP E2E's daemons: kiln's between-turns sweep (R09's evidence of the
+# reported symptom's cause). jupiter (Windows 11 Pro 10.0.26200, AMD64, 32 CPUs), kiln's agent
+# log C:\Users\corph\AppData\Local\kiln\agent\kiln.log, ANSI colours stripped, read 2026-11-12
+# ~21:20Z: every line of 15:47:07Z-16:01:01Z that names the ring-e2e-whp session
+# (01a1d070f1867083a86047794511720f, ROOT's run-only tester of engine_ring on WHP) or a sweep
+# of its commands' processes (other agents' sweeps of the same minutes, hexup-win's, left out).
+#
+# The session starts (15:47:07Z); its first sweep stops its own `tail -F c.log | grep` monitor
+# (15:52:58Z); then, while its engine_ring run 1 goes on under its harness:
+#   16:00:49.831Z: 48108, the shards daemon of eng-ring-2 (its daemon.log's lines are
+#     "shards daemon 48108: ..."), 47156, that daemon's template VM (`--layer
+#     ...\eng-ring-2\layers\48108-0`), 28788 its network process (`--host-address ...`);
+#   16:01:00.376Z: 50456, the daemon of eng-pins-1-4, 36004 its VM (whose debug lines are the
+#     last of eng-pins-1-4's daemon.log: "[36004 4557593us DEBUG] unclaimed port write 0xcfa"),
+#     48188 its network process, and 48108 again.
+# Each test's client then said "the command's microVM stopped before the command ended"
+# (r2), status 125 after 1.302 s (bulk) and 4.858 s (pins).
+#
+# kiln's own source for it (hyper-light/kiln origin/main ed0c9d3bd, 2026-11-12 12:46 -0800):
+# - crates/kiln/src/harness/host.rs `watch`, every WATCH_EVERY (10 s): "Agents between turns
+#   whose harness runs: what their commands left running apart from it (`nohup … &`, a
+#   daemon, what a harness before this one started) goes now. Their harness's own background
+#   tasks run under it, and end with the agent."
+# - crates/kiln/src/harness/survivors.rs `scan`: a session's processes are its job's
+#   (os/contain_windows.rs: `Local\kiln-agent-<session>`, "a process leaves a job only if the
+#   job lets it break away, and these don't"); those not under its harness by their parents
+#   are `apart`, "left running". A shards daemon outlives the client that started it (D26),
+#   so its parent has gone: it is apart, and the VMs and network processes under it with it.
+# - survivors.rs `stop`: `kill_with(Signal::Term)`, else `kill()`, then a kill past GRACE (3 s).
+#   sysinfo 0.39.6 (kiln's Cargo.lock) takes only Kill on Windows (src/windows/system.rs
+#   `declare_signals!`), so there it is `kill()` at once: `taskkill.exe /PID <pid> /F`
+#   (src/windows/process.rs `kill_with`), a forced end, as harness/kill.sh ends a daemon. On
+#   Linux and macOS it is SIGTERM first.
+
+2026-11-12T15:47:07.299885Z  INFO work handed: its receipt is signed as the session takes it up session=01a1d070f1867083a86047794511720f why=a subagent's task, passed on unchanged as kiln started it
+2026-11-12T15:47:07.483718Z  INFO headroom: held until the engine lets it in session="01a1d070f1867083a86047794511720f"
+2026-11-12T15:47:07.483964Z  INFO headroom: let in session=01a1d070f1867083a86047794511720f why="a person's: never held"
+2026-11-12T15:47:07.484651Z  INFO took up work handed to it: signed its receipt session=01a1d070f1867083a86047794511720f why=a subagent's task, passed on unchanged as kiln started it
+2026-11-12T15:52:58.413685Z  INFO stopping what agents' commands left running, now that they're between turns count=2 what=["20968 C:\\Program Files\\Git\\usr\\bin\\tail.exe -n +1 -F /c/Users/corph/ring-e2e-whp-logs/c.log", "47284 C:\\Program Files\\Git\\usr\\bin\\grep.exe -E --line-buffered ^test |test result:|panicked|error(\\[|:)|vCPUs"]
+2026-11-12T15:53:09.035389Z  INFO stopping what agents' commands left running, now that they're between turns count=2 what=["20968 C:\\Program Files\\Git\\usr\\bin\\tail.exe -n +1 -F /c/Users/corph/ring-e2e-whp-logs/c.log", "47284 C:\\Program Files\\Git\\usr\\bin\\grep.exe -E --line-buffered ^test |test result:|panicked|error(\\[|:)|vCPUs"]
+2026-11-12T16:00:49.831428Z  INFO stopping what agents' commands left running, now that they're between turns count=3 what=["48108 C:\\Users\\corph\\ring-e2e-whp\\target\\e2e\\shards-912577379bee69c9\\shards.exe daemon --ready 3", "47156 C:\\Users\\corph\\AppData\\Local\\shards\\helpers\\f819f63b6b9e1542492c1a74e3b0c44298fc\n… 267 bytes omitted …\nr C:\\Users\\corph\\AppData\\Local\\Temp\\shards-tests\\32016\\eng-ring-2\\layers\\48108-0", "28788 C:\\Users\\corph\\AppData\\Local\\shards\\helpers\\f819f63b6b9e1542492c1a74e3b0c44298fc\n… 267 bytes omitted …\ness 127.0.0.1 --host-address fe80::8f83:553:eb23:1d28 --host-address 172.17.96.1"]
+2026-11-12T16:01:00.376721Z  INFO stopping what agents' commands left running, now that they're between turns count=4 what=["50456 C:\\Users\\corph\\ring-e2e-whp\\target\\e2e\\shards-912577379bee69c9\\shards.exe daemon --ready 3", "36004 C:\\Users\\corph\\AppData\\Local\\shards\\helpers\\f819f63b6b9e1542492c1a74e3b0c44298fc\n… 267 bytes omitted …\nC:\\Users\\corph\\AppData\\Local\\Temp\\shards-tests\\32016\\eng-pins-1-4\\layers\\50456-0", "48188 C:\\Users\\corph\\AppData\\Local\\shards\\helpers\\f819f63b6b9e1542492c1a74e3b0c44298fc\n… 267 bytes omitted …\ness 127.0.0.1 --host-address fe80::8f83:553:eb23:1d28 --host-address 172.17.96.1", "48108 C:\\Users\\corph\\ring-e2e-whp\\target\\e2e\\shards-912577379bee69c9\\shards.exe daemon --ready 3"]
