@@ -13042,6 +13042,25 @@ and the way every later one sends.
   - What a connection had not delivered when it ended (a reset, a receiver that
     restarts, a timeout after a partition) is held, and written again, in order, on the
     next. srslog, go-gelf and fluent-logger-golang lose it.
+  - An end that a write meets before the stream finds it is followed as one it finds
+    (PM M527). A write after its receiver's end meets EPIPE, on a unix socket at once and
+    over TCP once the reset its first write drew has come; one under way as its receiver
+    ends meets EPIPE or a reset. The stream then does as it does finding a reset: what the
+    connection held goes again in its place, the message being written among it once the
+    connection carried messages (over TLS, its handshake done), and the end is asked of
+    and said as any other (`ConnectionAborted`). Whether any of that message went is not
+    asked: macOS's write(2) that put part of it on the connection and then met the end
+    says the error alone, where Linux's says the part. A receiver that ends a connection
+    once more than its bound has come ends it on a message still being written wherever
+    the connection holds less than the message: Fluent Bit's forward input closes one as
+    its buffer is full at `buffer_max_size` (fluent-bit f5a3cd20,
+    plugins/in_forward/fw_conn.c, `fw_conn_event`), and a connection took 2,720,256 bytes
+    over loopback TCP on Linux before its writer waited, 1,465,848 on macOS, 233,152 and
+    12,288 over a unix socket. Such a message had been its caller's to give again, never
+    held, so never shown refused nor cut, and its run's log stopped there; and the close
+    said the write's own error, `Broken pipe`, which CI's unit tests met (runs
+    43183804136, 43189239973, 43250570050). A write its timeout gave up stays its
+    caller's: the stream's own wait, not its receiver's end.
   - A connection ends only once nothing is held: what is held is written on one where
     there is none and waited on until it is delivered, so that a receiver's end after the
     stream's is its answer to it, and one before it is followed as any other: the close

@@ -1,0 +1,4 @@
+296c296
+<                 Some(e) => Err(self.write_failed(e)),
+---
+>                 Some(e) => Err(e),

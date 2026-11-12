@@ -1,0 +1,12 @@
+host Adas-MacBook-Pro-2.local Darwin 25.4.0 arm64, Python 3.9.6, LibreSSL 2.8.3
+tcp: blocked: ECONNRESET; after: ok, EPIPE; after, unread: EPIPE, EPIPE
+tls: blocked: EPIPE; after: ok, EPIPE; after, unread: ok, EPIPE
+unix: blocked: EPIPE; after: EPIPE, EPIPE; after, unread: EPIPE, EPIPE
+host Adas-MacBook-Pro-2.local Darwin 25.4.0 arm64, Python 3.9.6, LibreSSL 2.8.3
+tcp: blocked: EPIPE; after: ok, EPIPE; after, unread: EPIPE, EPIPE
+tls: blocked: EPIPE; after: ok, EPIPE; after, unread: ok, EPIPE
+unix: blocked: EPIPE; after: EPIPE, EPIPE; after, unread: EPIPE, EPIPE
+host Adas-MacBook-Pro-2.local Darwin 25.4.0 arm64, Python 3.9.6, LibreSSL 2.8.3
+tcp: blocked: ECONNRESET; after: ok, EPIPE; after, unread: EPIPE, EPIPE
+tls: blocked: EPIPE; after: ok, EPIPE; after, unread: ok, EPIPE
+unix: blocked: EPIPE; after: EPIPE, EPIPE; after, unread: EPIPE, EPIPE

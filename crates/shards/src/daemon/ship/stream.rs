@@ -6,14 +6,18 @@
 //! ends connections on a message it will not take is seen to. Until then it is held, and
 //! written again, after those held before it, on the next connection should this one end
 //! first: a receiver that restarts, or a connection reset, costs a message sent twice,
-//! never one lost. A connection is ended only once nothing is held: so a receiver's end
-//! after this one's is its answer to it, and one before it, the run's last message among
-//! those held, is followed as any other is (`Stream::suspect`). Then TLS's close_notify is
-//! sent, its write side shut, what the receiver still sends (TLS 1.3's session tickets, its
-//! own close_notify) read and let go, and its socket closed once all is acknowledged. A
-//! socket closed with bytes unread resets its connection, and what was written on it and
-//! not yet sent goes with it (PM M233): srslog, go-gelf and fluent-logger-golang close
-//! theirs so, and lose that tail.
+//! never one lost. An end that a write meets before the stream finds it (EPIPE, a reset)
+//! is followed as one it finds, the message being written held with the rest: a receiver
+//! that ends a connection once more than its bound has come (Fluent Bit's forward input)
+//! ends it on a message still being written, where the connection holds less than the
+//! message. A connection is ended only once nothing is held: so a
+//! receiver's end after this one's is its answer to it, and one before it, the run's last
+//! message among those held, is followed as any other is (`Stream::suspect`). Then TLS's
+//! close_notify is sent, its write side shut, what the receiver still sends (TLS 1.3's
+//! session tickets, its own close_notify) read and let go, and its socket closed once all
+//! is acknowledged. A socket closed with bytes unread resets its connection, and what was
+//! written on it and not yet sent goes with it (PM M233): srslog, go-gelf and
+//! fluent-logger-golang close theirs so, and lose that tail.
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
@@ -117,14 +121,22 @@ impl Held {
         }
     }
 
-    /// Writes it on `conn`.
+    /// Writes it on `conn`. Where the write meets the connection's end (any failure but a
+    /// timeout, [`timed_out`]) once the connection carries messages ([`Conn::handshaken`]),
+    /// it is one of the messages written on it, which its end is followed with, though not
+    /// its connection's first whole: such a write may have put any of it there, and on
+    /// macOS says nothing of what it put, write(2) returning the error alone (PM M527).
     fn write(&mut self, conn: &mut Conn, first: bool) -> io::Result<()> {
-        conn.write_all(&self.message)?;
-        conn.flush()?;
+        let written = conn.write_all(&self.message).and_then(|()| conn.flush());
+        if let Err(e) = &written
+            && (timed_out(e) || !conn.handshaken())
+        {
+            return written;
+        }
         self.at = Some(conn.written());
         self.had = None;
-        self.first = first;
-        Ok(())
+        self.first = first && written.is_ok();
+        written
     }
 }
 
@@ -135,6 +147,14 @@ fn aborted(held: usize) -> io::Error {
         io::ErrorKind::ConnectionAborted,
         format!("its receiver ended the connection with {held} messages it may not have, sent again"),
     )
+}
+
+/// Whether a write's failure is its connection's own wait given up: the write timeout
+/// `Conn::open` sets, its receiver having taken nothing for so long. Any other is the
+/// connection's end met by the write: its receiver's reset, or a write after its end
+/// (EPIPE), which `settle` finds by looking where it comes first (`Peer::Reset`).
+fn timed_out(e: &io::Error) -> bool {
+    matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
 }
 
 impl Stream {
@@ -187,10 +207,11 @@ impl Stream {
     /// from one before it written on it first; alone on a connection of its own where its
     /// receiver ends one after each message. While its receiver is asked what it did with
     /// what is held, it is waited on first, so that nothing waits in memory past what its
-    /// receiver has. Once written, a message is held until it is delivered; one that is not
-    /// is its caller's to give again (`ConnectionAborted` where its receiver ended a
-    /// connection with messages held). `wait` waits for the receiver, and says when the
-    /// daemon stops.
+    /// receiver has. Once written, or begun on a connection whose end its write met
+    /// (`Held::write`), a message is held until it is delivered, where its receiver's ends
+    /// are followed; one that is not is its caller's to give again (`ConnectionAborted`
+    /// where a connection ended with messages held). `wait` waits for the receiver, and
+    /// says when the daemon stops.
     pub(super) fn send(&mut self, message: &[u8], wait: &Wait<'_>) -> io::Result<()> {
         loop {
             if self.settle() {
@@ -221,14 +242,35 @@ impl Stream {
         };
         let mut held = Held::new(message.to_vec());
         let first = self.held.is_empty() && conn.written() == 0;
-        if let Err(e) = held.write(conn, first) {
-            self.conn = None;
-            self.ended_with(false);
-            return Err(e);
+        let Err(e) = held.write(conn, first) else {
+            self.held.push_back(held);
+            self.settle();
+            return Ok(());
+        };
+        // Begun on the connection whose end its write met, where its receiver's ends are
+        // followed: held, to go again in its place, and no longer its caller's to give.
+        let taken = held.at.is_some() && !self.answered;
+        if taken {
+            self.held.push_back(held);
         }
-        self.held.push_back(held);
-        self.settle();
-        Ok(())
+        let e = self.write_failed(e);
+        if taken { Ok(()) } else { Err(e) }
+    }
+
+    /// Follows a write on its connection that failed with `e`, the connection let go: an
+    /// end the write met (any failure but a timeout, [`timed_out`]) is followed as one
+    /// `settle` finds (a reset), what the connection held going again in its place, and
+    /// says so as `settle`'s does (`ConnectionAborted`) where it ended with messages held.
+    /// A write its timeout gave up is `e`, what was written before it followed so all the
+    /// same.
+    fn write_failed(&mut self, e: io::Error) -> io::Error {
+        self.conn = None;
+        self.sent = false;
+        if self.ended_with(false) && !timed_out(&e) {
+            aborted(self.held.len())
+        } else {
+            e
+        }
     }
 
     /// Writes what is to go now: on a connection made where there is none, the probe alone
@@ -250,12 +292,10 @@ impl Stream {
                     break;
                 }
             }
-            if let Some(e) = failed {
-                self.conn = None;
-                self.ended_with(false);
-                return Err(e);
-            }
-            return Ok(());
+            return match failed {
+                Some(e) => Err(self.write_failed(e)),
+                None => Ok(()),
+            };
         }
         if let (Asking::Probe { .. }, Some(probe)) = (self.asking, &self.probe) {
             let mut conn = Conn::open(&self.to, self.timeouts)?;
@@ -276,14 +316,26 @@ impl Stream {
             held.had = None;
         }
         let alone = self.queued();
+        let mut failed = None;
         for (i, held) in self.held.iter_mut().enumerate() {
             if alone && i > 0 {
                 break;
             }
-            held.write(&mut conn, i == 0)?;
+            if let Err(e) = held.write(&mut conn, i == 0) {
+                failed = Some(e);
+                break;
+            }
         }
-        self.conn = Some(conn);
-        Ok(())
+        match failed {
+            None => {
+                self.conn = Some(conn);
+                Ok(())
+            }
+            // Given up at its timeout, or ended before it carried any of what is held (its
+            // TLS handshake refused): as a connection not made, it says nothing of them.
+            Some(e) if timed_out(&e) || !self.held.iter().any(|h| h.at.is_some()) => Err(e),
+            Some(e) => Err(self.write_failed(e)),
+        }
     }
 
     /// Follows its connection: lets go of the messages delivered, those its receiver has had
@@ -498,8 +550,9 @@ impl Stream {
     /// Ends its connection once all held is delivered and its receiver has all written on
     /// it. What is held is written on a connection where there is none and waited on until
     /// it is delivered, its receiver asked as [`Asking`] says: so a receiver's end that
-    /// comes after this one's is its answer to it, and one before it is followed, and says
-    /// so (`ErrorKind::ConnectionAborted`), what it held kept for the next try, as its
+    /// comes after this one's is its answer to it, and one before it, found as it settles or
+    /// met by a write, is followed, and says so (`ErrorKind::ConnectionAborted`), what it
+    /// held kept for the next try, as its
     /// driver cuts again what it is shown to refuse ([`Stream::suspect`]). Where the end
     /// fails, what was not delivered stays held, for the next try. `wait` waits for the
     /// receiver, and says when the daemon stops.
@@ -726,6 +779,15 @@ impl Conn {
             Conn::Tcp(c) => c.written,
             Conn::Tls(s) => s.sock.written,
             Conn::Unix(_, written) => *written,
+        }
+    }
+
+    /// Whether what is written on it goes to its receiver: over TLS, once its handshake is
+    /// done, before which nothing of a message does.
+    fn handshaken(&self) -> bool {
+        match self {
+            Conn::Tls(s) => !s.conn.is_handshaking(),
+            Conn::Tcp(_) | Conn::Unix(..) => true,
         }
     }
 
@@ -1365,6 +1427,130 @@ pub(super) mod tests {
                 match got_frames.recv_timeout(Duration::from_secs(20)) {
                     Ok(f) => frames.push(String::from_utf8(f).unwrap()),
                     Err(e) => panic!("{want}: {e}: {frames:?}"),
+                }
+            }
+        }
+    }
+
+    /// Reads `conn` by `read`, each NUL-ended frame it carries sent on `got`, until one of
+    /// more than 100 bytes, or more than 100 bytes without a NUL, has come: then ends it at
+    /// once, its socket closed with the rest unread, as Fluent Bit's forward input ends a
+    /// connection once its buffer is full at `buffer_max_size` (fluent-bit f5a3cd20,
+    /// plugins/in_forward/fw_conn.c, fw_conn_event), not waiting for the message's end.
+    /// False where `got` is gone.
+    fn ends_past_100<C>(
+        mut conn: C,
+        got: &std::sync::mpsc::Sender<Vec<u8>>,
+        read: impl Fn(&mut C, &mut [u8]) -> io::Result<usize>,
+    ) -> bool {
+        let mut held = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match read(&mut conn, &mut buf) {
+                Ok(0) | Err(_) => return true,
+                Ok(n) => held.extend_from_slice(&buf[..n]),
+            }
+            while let Some(end) = held.iter().position(|&b| b == 0) {
+                if end > 100 {
+                    return true;
+                }
+                let frame: Vec<u8> = held.drain(..=end).take(end).collect();
+                if got.send(frame).is_err() {
+                    return false;
+                }
+            }
+            if held.len() > 100 {
+                return true;
+            }
+        }
+    }
+
+    /// Do: over TCP, TLS and a unix socket, to a receiver of NUL-ended messages that ends
+    /// its connection, the rest unread, once more than 100 bytes of one have come
+    /// ([`ends_past_100`]): send a short message, then one of 16 MiB, six times the most a
+    /// connection took from its writer before the writer waited, its receiver reading 4,096
+    /// bytes and then nothing (docs/research/measurements/ci-fluentd-epipe/absorbed.py:
+    /// 2,720,256 bytes over loopback TCP on Linux, 1,465,848 on macOS, less over a unix
+    /// socket), so that its receiver ends the connection while it is written, and the write
+    /// meets that end (EPIPE, or a reset) before the stream sees it; then close as a
+    /// shipper does, again while the close says its receiver ended the connection with
+    /// messages held. Expect the end followed as one the stream sees: the long message
+    /// held, each close until it is pointed at saying `ConnectionAborted`, and it pointed
+    /// at once two connections have ended on it alone; then, put back as two short pieces,
+    /// every message received and the close ended.
+    #[test]
+    fn a_write_that_meets_its_receivers_end_is_followed_as_one_seen() {
+        let (server, client) = tls();
+        let (_stop, stopped) = shards_ipc::Stream::pair().unwrap();
+        let wait = Wait(&stopped);
+        let long = [vec![b'L'; 16 << 20], vec![0]].concat();
+        for via in ["tcp", "tls", "unix"] {
+            let dir = shards_testdir::TempDir::new("wm").unwrap();
+            let (got, got_frames) = std::sync::mpsc::channel::<Vec<u8>>();
+            let to = if via == "unix" {
+                let path = dir.join("r.sock");
+                let listener = shards_vmm::platform::UnixListener::bind(&path).unwrap();
+                std::thread::spawn(move || {
+                    while let Ok((conn, _)) = listener.accept() {
+                        if !ends_past_100(conn, &got, |c, buf| shards_ipc::read(&*c, buf)) {
+                            return;
+                        }
+                    }
+                });
+                To::Unix(path)
+            } else {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let port = listener.local_addr().unwrap().port();
+                let tls = (via == "tls").then(|| server.clone());
+                let to = if tls.is_some() {
+                    To::Tls(format!("localhost:{port}"), client.clone())
+                } else {
+                    To::Tcp(format!("127.0.0.1:{port}"))
+                };
+                std::thread::spawn(move || {
+                    for conn in listener.incoming() {
+                        let Ok(conn) = conn else { return };
+                        let going = match &tls {
+                            None => ends_past_100(conn, &got, |c, buf| shards_ipc::read(&*c, buf)),
+                            Some(server) => {
+                                let tls = rustls::StreamOwned::new(
+                                    rustls::ServerConnection::new(server.clone()).unwrap(),
+                                    conn,
+                                );
+                                ends_past_100(tls, &got, |t, buf| t.read(buf))
+                            }
+                        };
+                        if !going {
+                            return;
+                        }
+                    }
+                });
+                to
+            };
+            let mut stream = Stream::new(to, [None; 2]);
+            stream.send(b"first\0", &wait).unwrap();
+            stream.send(&long, &wait).unwrap();
+            let at = loop {
+                if let Some(at) = stream.suspect(10) {
+                    break at;
+                }
+                let e = stream.close(&wait).unwrap_err();
+                assert_eq!(e.kind(), io::ErrorKind::ConnectionAborted, "{via}: {e}");
+            };
+            assert_eq!(
+                stream.held.get(at).map(|h| h.message.len()),
+                Some(long.len()),
+                "{via}"
+            );
+            stream.replace(at, vec![b"piece1\0".to_vec(), b"piece2\0".to_vec()]);
+            stream.close(&wait).unwrap();
+            let mut frames: Vec<String> = Vec::new();
+            for want in ["first", "piece1", "piece2"] {
+                while !frames.iter().any(|f| f == want) {
+                    match got_frames.recv_timeout(Duration::from_secs(20)) {
+                        Ok(f) => frames.push(String::from_utf8(f).unwrap()),
+                        Err(e) => panic!("{via}: {want}: {e}: {frames:?}"),
+                    }
                 }
             }
         }

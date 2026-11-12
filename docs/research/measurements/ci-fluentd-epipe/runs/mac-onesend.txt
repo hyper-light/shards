@@ -1,0 +1,7 @@
+host Adas-MacBook-Pro-2.local Darwin 25.4.0 arm64
+tcp: first send(2) of 16777216: EPIPE; next: EPIPE
+tcp: first send(2) of 16777216: EPIPE; next: EPIPE
+tcp: first send(2) of 16777216: EPIPE; next: EPIPE
+unix: first send(2) of 16777216: EPIPE; next: EPIPE
+unix: first send(2) of 16777216: EPIPE; next: EPIPE
+unix: first send(2) of 16777216: EPIPE; next: EPIPE

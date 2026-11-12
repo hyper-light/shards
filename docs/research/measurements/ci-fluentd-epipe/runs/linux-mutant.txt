@@ -1,0 +1,25 @@
+== 2026-11-12T19:56:06Z Linux 7.3.3-1-cachyos x86_64 mutant2 at fe44bc8ca
+fe44bc8c Merge softvirt: the software-virtualization record, PM M516 to M523, and their harnesses
+stream.rs: eb8e0dcc4bce11524a6314e844e9b076fe246c0a8aa0e3ba5ad543521ae71511  -
+rustc 1.98.1 (48a229cea 2026-09-01)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 1m 28s
+  Executable unittests src/main.rs (/home/adalundhe/ci-fluentd-epipe/target/test-release/deps/shards-99924c38b6116f7e)
+
+running 1 test
+test daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen ... FAILED
+
+failures:
+
+---- daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen stdout ----
+
+thread 'daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen' (1030274) panicked at crates/shards/src/daemon/ship/stream.rs:1538:17:
+assertion `left == right` failed: tcp: Connection reset by peer (os error 104)
+  left: ConnectionReset
+ right: ConnectionAborted
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 738 filtered out; finished in 0.41s
