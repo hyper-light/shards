@@ -5879,6 +5879,8 @@ is an experimental component with [daemon admission/independent channel credit](
 | One connection/subscription/pending record/command slot per active channel | experimental same-transport composition; active member count and two channels are trusted-plan admitted, not multiplied by wire IDs |
 | Zero initial cursor/no UNI streams/no QUIC datagrams/pre-accept buffered bytes | no prior records, one bidirectional subscription, no DATAGRAM application protocol/early-data queue |
 | Record/transport/crypto/datagram capacities and patience | explicit caller-retained admission, checked for zero/overflow/protocol field bounds; no hidden default |
+| Keep-alive a quarter of each side's own patience | `tls::keep_alive`, the one derivation D180's transport also takes (at `IDLE`, its 2.5 s unchanged): RFC 9000 §10.1 makes an idle timeout last at least three probe timeouts, for "multiple probes to be sent and lost, prior to idle timeout", so a patience holds three keep-alives (§10.1.2's PINGs, which restart the peer's idle timer) and no more; the connection takes the lesser patience (§10.1), which that side's own keep-alive holds |
+| Patience at least 1 ms | RFC 9000 §18.2: an idle timeout is whole milliseconds, and 0 is none; a shorter patience is refused (`AdmissionError::Patience`), as it would bound nothing and ping in a busy loop |
 | Receive turns | admitted queued datagram bytes divided by RFC9000 maximum UDP payload (existing driver DATAGRAM), at least one before bind |
 | One-nanosecond bounded timer floor | smallest nonzero Duration, avoiding socket timeout zero; actual OS rounding remains measured, not hardcoded |
 | Excluded ports80/443 | owner's explicit output-endpoint requirement; OS otherwise chooses |
@@ -5886,6 +5888,21 @@ is an experimental component with [daemon admission/independent channel credit](
 
 Linux light tests/clippy pass; authentication/native byte delivery, adversarial
 cleanup, all other targets and allocation/kernel accounting remain coordinator gates.
+
+A quiet channel is no idle connection: its owner awaits its output however long a
+harness's model says nothing. The transport sent no keep-alive, so a subscription that
+heard nothing for its patience (`QUIET`, 100 s, which the daemon gives every endpoint)
+was lost: finding H1 of [harness-bringup-v1](../research/measurements/harness-bringup-v1/README.md),
+bracketed live at 75 s kept and 125 s lost. Each side now keeps its connection alive at a
+quarter of its own patience, an owner's through `client_config` as the endpoint's
+([owner-keepalive-v1](../research/measurements/owner-keepalive-v1/README.md): a subscription
+quiet past its patience by a keep-alive interval lives and carries its next record, held by
+either side's keep-alive; red without it, at the patience). A dead owner is still let go, at
+most a quarter of the patience past it (`QUIET` + `QUIET`/4 = 125 s; it was `QUIET`), as only
+the first packet sent since the last one heard restarts the endpoint's idle timer (RFC 9000
+§10.1); its endpoint's one connection is held that long, and a restarted owner refused
+meanwhile. The patience reuses D180's `QUIET`, derived for contexts over real links (RFC 1122
+§4.2.3.5's R2, D176 part 6), without a derivation of its own for a loopback owner.
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
