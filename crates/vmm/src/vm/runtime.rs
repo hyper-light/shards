@@ -1905,6 +1905,7 @@ mod tests {
                 hotplug_mib: 0,
                 reporting: false,
                 gpu: None,
+                gpu_devices: Vec::new(),
                 swap_mib: 0,
                 share_window_mib: 0,
                 layer_mib: 0,

@@ -21504,12 +21504,16 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   `buffer_sizes` are the OS's SO_SNDBUF/SO_RCVBUF.
 
 **What it holds to** (the requirement its tests cite as D215):
-- *A spec* becomes `run --kernel`'s flags as vm_run.rs reads them, the kernel first. A
+- *A spec* becomes `run --kernel`'s flags as vm_run.rs reads them, the kernel first; one
+  that asks for a GPU adds `--gpu`, which `shards` runs in the GPU's VM process (D144), and
+  one that names the host's GPUs adds `--gpu-device` for each, by its exact identity (D231). A
   disk's or a share's path that ends in `:ro`, which shards would read as a mode, is
   refused `Unsupported`. Past shards-vmm's bounds (no vCPU; memory odd or under the least)
   it is refused `Bounds` before anything boots, and the hypervisor's own refusal of its
-  vCPUs comes back as `Bounds` too; a host without a backend (macOS x86_64, Windows arm64)
-  is refused `NoBackend`, by name.
+  vCPUs comes back as `Bounds` too; a host without a backend (macOS x86_64) is refused
+  `NoBackend`, by name. Windows on arm64 is WHP's, the VMM's `hv::whp_arm64` (D209): the
+  API names the backend the VMM builds on each host, and a host whose hypervisor runs no
+  guest says so as its VM process starts (`check_host`).
 - *A guest's socket directory* is the client's alone (0700), named apart from its pid,
   short enough to bind (else /tmp on Unix; refused by name on Windows), and removed with
   the guest.

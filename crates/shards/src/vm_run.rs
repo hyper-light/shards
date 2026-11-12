@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--share DIR[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N [--pci-slots-iommu]] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console [--console-said N]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--share DIR[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu | --gpu-probe] [--gpu-device ID]...] [--host-managed] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N [--pci-slots-iommu]] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console [--console-said N]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --share: the host directory DIR, as virtio-fs tag shards0, shards1, ... in order;
@@ -49,6 +49,14 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
          /dev/dri/renderD128, where its kernel has DRM's virtio-gpu driver. With
          --snapshot-dir, a snapshot is refused once the guest has made a context or a
          resource of the GPU's: those are its host driver's, which no snapshot holds.
+  --gpu-device: a host GPU its Venus contexts render on, by its exact identity:
+                pci:DOMAIN:BUS:DEVICE.FUNCTION, metal:REGISTRY-ID or luid:LUID (this
+                boot's), in hex; again for each GPU, none twice. Implies --gpu.
+  --gpu-probe: no guest: the GPU's renderer alone, which writes to stdout each GPU it was
+               given (or finds), its exact identities and host-visible memory, once its
+               contexts accept them, and ends. Implies --gpu; no workload, devices or snapshot.
+  --host-managed: the program that started shards contains it (D232): the processes shards
+                  starts beside the VM stay in its process group, not sessions of their own.
   --pci-test: a PCI bus with a test function at 00:01.0, the identification and liveness
               registers of QEMU's edu device in its BAR 0, for testing the bus. Not with
               --snapshot-dir.
@@ -221,6 +229,9 @@ impl Common {
     ) -> Result<bool, String> {
         let w = &mut self.workload;
         match arg {
+            // Containment is established by the native launcher and interpreted
+            // by the parent CLI only. It grants no guest/device authority.
+            "--host-managed" => {}
             "--no-console" => self.console = Console::Discard,
             "--console-said" => {
                 self.said = Some(
@@ -307,6 +318,7 @@ impl Common {
 
 /// What `vm run` boots.
 enum Mode {
+    GpuProbe,
     /// The kernel and init as given.
     Plain,
     /// Into an image, for a command.
@@ -315,7 +327,10 @@ enum Mode {
     Template(PathBuf),
     /// Into an image, as a warm VM that takes one command from the daemon on `fd`;
     /// with a snapshot policy, it saves a template on the way.
-    Warm { rootfs: PathBuf, fd: LinkArg },
+    Warm {
+        rootfs: PathBuf,
+        fd: LinkArg,
+    },
 }
 
 /// What names a VM's link to its daemon (`--warm`, `--resume`): its descriptor's number on
@@ -373,6 +388,7 @@ struct Run {
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut args = args;
     let mut rootfs = None;
+    let mut gpu_probe = false;
     let mut cfg = Config::new(PathBuf::new(), None);
     // Its disks and shared directories charge its I/O limits, whose rates its run brings
     // (D178).
@@ -472,6 +488,25 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             }
             "--nested" => cfg.nested = true,
             "--gpu" => cfg.gpu = true,
+            "--gpu-probe" => {
+                gpu_probe = true;
+                cfg.gpu = true;
+            }
+            "--gpu-device" => {
+                let device = text(value("--gpu-device")?)?
+                    .parse::<vm::gpu_selection::PhysicalGpu>()
+                    .map_err(|error| format!("--gpu-device: {error}"))?;
+                if cfg.gpu_devices.len() >= vm::gpu_selection::MAX_PHYSICAL_GPUS {
+                    return Err("--gpu-device count exceeds the physical device-index space".into());
+                }
+                cfg.gpu_devices
+                    .try_reserve(1)
+                    .map_err(|_| "--gpu-device storage unavailable")?;
+                cfg.gpu_devices.push(device);
+                vm::gpu_selection::check_selection(&cfg.gpu_devices)
+                    .map_err(|error| format!("--gpu-device: {error}"))?;
+                cfg.gpu = true;
+            }
             "--pci-test" => cfg.pci_test = vec![(vm::TEST_DEVICE, 0)],
             "--pci-tests" => cfg.pci_test = pci_tests(&text(value("--pci-tests")?)?)?,
             // Slots of its PCI bus kept for devices plugged into it as it runs (D214).
@@ -543,6 +578,17 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     cfg.vsock = common.vsock.map(VsockHost::at);
     cfg.net = common.net.take();
     let command = !common.workload.argv.is_empty();
+    if gpu_probe
+        && (warm.is_some()
+            || rootfs.is_some()
+            || cfg.snapshot.is_some()
+            || attach.is_some()
+            || command
+            || common.workload_options
+            || !cfg.vfio.is_empty())
+    {
+        return Err("--gpu-probe cannot boot a workload, attach devices or write a snapshot".into());
+    }
     if let Some(fd) = warm {
         let rootfs = rootfs.ok_or("--warm needs --rootfs")?;
         if command || common.workload_options || cfg.vsock.is_some() {
@@ -572,6 +618,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         Some(rootfs) if cfg.snapshot.is_some() => Mode::Template(rootfs),
         Some(_) => return Err("--rootfs needs a command after --, or --snapshot-dir for a template".into()),
         None if command => return Err("a command needs --rootfs".into()),
+        None if gpu_probe => Mode::GpuProbe,
         None => Mode::Plain,
     };
     // Quoted as it fails where it is supervised to its end (`supervise`), not where it
@@ -1233,6 +1280,21 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         }
     };
     match mode {
+        Mode::GpuProbe => match vm::probe_gpu(&cfg.gpu_devices)
+            .and_then(|probe| probe.encode().map_err(|error| error.to_string()))
+        {
+            Ok(text) => match std::io::stdout().lock().write_all(text.as_bytes()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    report(error);
+                    ExitCode::FAILURE
+                }
+            },
+            Err(error) => {
+                report(error);
+                ExitCode::FAILURE
+            }
+        },
         Mode::Plain => supervise(start(&cfg), cfg.console, false, said_to),
         Mode::Template(rootfs) => {
             boot_into(&mut cfg, rootfs, true);

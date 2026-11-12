@@ -109,6 +109,7 @@ pub type Program = dyn Fn(&SimHost) -> End + Send + Sync;
 pub struct SimGuests {
     program: Arc<Program>,
     booted: Mutex<Booted>,
+    gpu_probe: Option<crate::GpuProbe>,
 }
 
 /// The guests a simulator booted: each one's identity's start, and its state while anything holds
@@ -126,10 +127,17 @@ impl std::fmt::Debug for SimGuests {
 }
 
 impl SimGuests {
+    /// Explicit model input; it is never a native device/ACK witness.
+    pub fn with_gpu_probe(mut self, probe: crate::GpuProbe) -> Result<Self, Refusal> {
+        probe.selectors().map_err(Refusal::GpuProbe)?;
+        self.gpu_probe = Some(probe);
+        Ok(self)
+    }
     pub fn new(program: impl Fn(&SimHost) -> End + Send + Sync + 'static) -> SimGuests {
         SimGuests {
             program: Arc::new(program),
             booted: Mutex::new(Booted::default()),
+            gpu_probe: None,
         }
     }
 }
@@ -199,6 +207,21 @@ impl SimHost {
 }
 
 impl Guests for SimGuests {
+    fn probe_gpu(&self, spec: &GuestSpec, patience: Duration) -> Result<crate::GpuProbe, Refusal> {
+        check(spec)?;
+        if patience.is_zero()
+            || patience == Duration::MAX
+            || std::time::Instant::now().checked_add(patience).is_none()
+        {
+            return Err(Refusal::GpuProbe(crate::GpuProbeError::Pending));
+        }
+        let probe = self
+            .gpu_probe
+            .as_ref()
+            .ok_or(Refusal::GpuProbe(crate::GpuProbeError::Unavailable))?;
+        probe.check(&spec.gpu_devices).map_err(Refusal::GpuProbe)?;
+        probe.try_clone().map_err(Refusal::GpuProbe)
+    }
     fn backend(&self) -> Result<crate::Backend, Refusal> {
         backend()
     }
@@ -300,6 +323,9 @@ struct SimGuest {
 }
 
 impl Guest for SimGuest {
+    fn process_exited(&self) -> Result<bool, Refusal> {
+        Ok(lock(&self.shared).end.is_some())
+    }
     fn connect(&self, port: u32, patience: Duration) -> Result<Box<dyn Stream>, Refusal> {
         allowed(&self.ports, port)?;
         // None: past `Instant`'s range (`Duration::MAX`): until the guest listens or ends.
@@ -449,6 +475,8 @@ mod tests {
             cmdline: String::new(),
             vcpus: 1,
             memory_mib: min_memory_mib(std::env::consts::ARCH),
+            gpu: false,
+            gpu_devices: Vec::new(),
             disks: vec![],
             shares: vec![],
             ports: vec![PORT],
