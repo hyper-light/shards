@@ -1,0 +1,18 @@
+host adacachy Linux 7.2.9-2-cachyos x86_64, 2026-11-12T21:49:35Z, base c2c4547c1, domains.rs 5301786f186f9a48
+running 17 tests
+................/ 751 as 751;/home 755 as 755;/home/node 750 as 750;/etc 711 as 711;/tmp 1777 as 1777;/home/node/.cache 755 as No such file or directory (os error 2);
+.
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 191 filtered out; finished in 0.00s
+== as root of the subordinate IDs
+/ 0:0 751 as 0:0 751;/home 0:0 755 as 0:0 755;/home/node 1000:1000 750 as 1000:1000 750;/etc 0:0 711 as 0:0 711;/tmp 0:0 1777 as 0:0 1777;/home/node/.cache 0:0 755 as No such file or directory (os error 2);
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 191 filtered out; finished in 0.00s
+== rustfmt --check crates/init/src/domains.rs
+rustfmt exit=0
+== cargo clippy -p shards-init --all-targets -- -D warnings
+clippy exit=0
+test ring::tests::with_no_budget_pins_are_bounded_by_the_available_memory ... ok
+test ring::tests::a_stream_starts_where_the_last_one_ended ... ok
+test result: ok. 207 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.04s
+exit=0
+
+[exited with code 0]

@@ -21414,6 +21414,30 @@ The run's stdout stays empty, and the agent of files alone runs nothing. Each of
 mutations fails the test: hiding no other domain, keeping the bounding set, leaving the
 system writable.
 
+**A member's root shows the image's directories as the image made them** (2026-11-12,
+kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 7). A domain's root is an overlay of the
+image under a skeleton tmpfs. The skeleton holds what init mounts over and the image may
+lack: `/etc` always, and every mount point of its sockets, its server and its volumes, each
+with its parents. overlayfs shows a directory both layers hold with the upper one's owner
+and mode (Documentation/filesystems/overlayfs.rst, "Directories"), and the skeleton made
+every directory root's, 0755. So a volume at `/home/node/.cache` showed the image's
+`/home/node` (1000:1000 0750) as 0:0 0755, and `/etc` and the root as the skeleton's too.
+Reproduced live with init's system calls in its order, in a user and mount namespace with
+subordinate IDs on Linux 7.2.9 x86_64 (`docs/research/measurements/s7-home-workdir`,
+`repro.py`, `repro-adacachy.log`).
+
+Now each directory the skeleton makes that the image has takes the image's owner and mode
+(fchownat, then fchmodat: a chown clears set-ID bits), and the skeleton's tmpfs root takes
+the image root's (its `mode`, `uid` and `gid` options). A directory the image lacks stays
+root's, 0755, as a mount point's. `a_skeletons_directories_are_the_images_own` runs the
+real `skeleton` and `image_root` in a user and mount namespace and compares the root,
+`/home`, `/home/node`, `/etc` and `/tmp` with the image's, and their owners too where it
+runs as root of IDs past its own (`unshare --map-auto --map-root-user`). It fails at the
+base revision, and with either guard removed: the owner and mode copied, the root's options
+(`mutate4.sh`, `mutate4-adacachy.log`). Where a domain has plug roots (D235), its root's
+own writable layer is the uppermost for `/`; that layer's owner and mode are D235's to
+match. **Owed (ROOT):** the same in a real microVM on KVM, Hypervisor.framework and WHP.
+
 Part two, after `no_new_privs`, before its command:
 
 - **Landlock** (Documentation/userspace-api/landlock.rst; ABI 6 at least, which Linux 6.12
