@@ -1,0 +1,25 @@
+mutant check-beside applied
+== mutant check-beside: exit=101; failing tests: an_agentfile_declaring_nesting_builds nesting_is_refused_beside_an_agent_or_harness 
+test result: FAILED. 30 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+mutant check-twice applied
+== mutant check-twice: exit=101; failing tests: nesting_is_declared_once 
+test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+mutant nesting-beside applied
+== mutant nesting-beside: exit=101; failing tests: a_normalized_agentfile_records_nesting 
+test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+mutant nesting-twice applied
+== mutant nesting-twice: exit=101; failing tests: a_normalized_agentfile_records_nesting 
+test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+mutant arguments applied
+== mutant arguments: exit=101; failing tests: nesting_takes_no_arguments 
+test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+== restored, unmutated: exit=0
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.53s
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 56.13s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== clippy -p shards-agentfile --all-targets -D warnings: exit=0
+== fmt --check -p shards-agentfile: exit=0
+ssh-exit=0
