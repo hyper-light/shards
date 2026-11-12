@@ -20782,3 +20782,51 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     - At 24.5 pages a run, 65,530 mappings hold about 6 GiB resident a process.
   - The guest kernel is shards' own. A host-mapped engine sets its folio sizes, which
     count, and not the host's `vm.max_map_count`, which its user cannot change.
+
+### M521. What a binary translator costs a guest, on its host's own architecture: QEMU's TCG against native and KVM (softvirt)
+
+- **Question.** The other way to run a guest without hardware virtualization is to
+  translate its code. A guest's system call then becomes a call, not a host trap, and on
+  macOS and Windows translation is the only rootless route (M517). What does the
+  established portable translator, QEMU's TCG, cost each kind of guest work, translating
+  user code alone (user mode) and a whole guest, its kernel too, through a software MMU
+  (full system)?
+- **Method.** `docs/research/measurements/softvirt-dbt/run.sh` at 3b3645d6a, M519's
+  workload (static), on kiln-a094a12d (Intel Core i9-14900HX, Fedora 44, Linux 6.19.10,
+  other jobs running).
+  - QEMU 11.0.3 (Alpine's packages, in a container), user mode (`qemu-x86_64`).
+  - The same, full system: `-accel tcg,thread=multi -cpu max -smp 2 -m 1024`, shards'
+    pinned kernel 6.18.48, the workload its init.
+  - Native, and Firecracker v1.18.0 on KVM with the same kernel and init.
+
+  Three rounds of the four interleaved, pinned to cores 0-15. Raw:
+  `measurements/softvirt-dbt/results/x86_64-fedora44-i9-14900hx.md`.
+- **Results** (p50 range over the three rounds):
+
+  | mode | native | TCG, user mode | TCG, full system | KVM (Firecracker) |
+  |---|---|---|---|---|
+  | syscall `getppid` (ns) | 67-220 | 339-348 | 441-476 | 72-80 |
+  | compute, FNV-1a 256 KiB (us) | 206-222 | 237-243 | 252-268 | 206-237 |
+  | 16 first-touch faults (us) | 8.55-8.62 | 8.79-9.32 | 145-150 | 9.04-9.80 |
+  | fork, exec, exit, wait (us) | 58.5-71.5 | 245-300 | 1,512-1,626 | 60.4-68.0 |
+  | pipe, there and back (us) | 3.02-3.05 | 2.90-3.36 | 18.8-22.5 | 5.19-5.58 |
+
+  Native's system call varied by round (67, 137 and 220 ns at p50, each round tight
+  within itself) on the same pinned cores. User mode's exec runs the new image natively:
+  its fork-exec row is part translation, part native.
+- **Found.**
+  - A full-system translator serves a guest's system call, its own kernel's entry, work
+    and return all translated, in 0.44 to 0.48 us: under Linux's cheapest trap (0.70 us
+    to a handler in the same process, M516), 9 times under gVisor's (4.1 to 4.3 us,
+    M519), and 7 to 13 times under the Mac's (3.4 to 5.7 us, M517). QEMU's TCG is
+    portable, not tuned for one architecture translating itself.
+  - Translated code costs little here: compute ran at 1.1 times native in user mode, 1.2
+    times in full system with every load through the software MMU.
+  - What full-system translation pays for is the guest's memory management:
+    - a first-touch page fault 9.2 us (17 times native);
+    - a process made and gone 1.5 to 1.6 ms (21 to 28 times);
+    - a pipe's two context switches 19 to 23 us (6 to 7 times).
+
+    These are where a translator of shards' own would have to beat QEMU: faults filled
+    without a full guest exception round, and context switches that keep the translation
+    and TLB of each address space.
