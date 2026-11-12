@@ -1,0 +1,14 @@
+#### stage tests at 0d63d6bf2 (2026-11-12T15:23:25Z), kiln runner 00aad8daff2fa3c9daa65d53c425d450
+Linux 7.3.3-1-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+2026-11-12T15:23:45Z
+== test-api: cargo test -p shards-api -j4
+== test-api exit 0
+test result: ok. 93 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; finished in 1.16s
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.40s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== test-api-run: cargo test -p shards --bin shards --profile test-release -j4 api_run
+== test-api-run exit 0
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 730 filtered out; finished in 0.00s
+#### stage tests exit 0

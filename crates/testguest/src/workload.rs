@@ -749,6 +749,19 @@ pub fn main() -> ! {
             }
             0
         }
+        // Each KEY's value in /proc/vmstat, as the kernel says it (`nr_foll_pin_acquired`, ...):
+        // `KEY VALUE`, or `KEY none`.
+        "vmstat" => {
+            let stat = std::fs::read_to_string("/proc/vmstat").unwrap_or_default();
+            for key in args.get(1..).unwrap_or_default() {
+                let value = stat
+                    .lines()
+                    .find_map(|l| l.strip_prefix(key.as_str())?.strip_prefix(' '))
+                    .unwrap_or("none");
+                let _ = writeln!(io::stdout(), "{key} {value}");
+            }
+            0
+        }
         // The objects in use of slab cache NAME, as /proc/slabinfo says them: `slab NAME N`,
         // or `slab NAME none`.
         "slab" => {

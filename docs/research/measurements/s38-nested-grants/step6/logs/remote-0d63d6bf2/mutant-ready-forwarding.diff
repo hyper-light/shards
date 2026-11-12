@@ -1,0 +1,19 @@
+--- /home/adalundhe/s38-api-step6/orig	2026-11-12 07:32:49.789310956 -0800
++++ crates/shards/src/api_run.rs	2026-11-12 07:32:49.794990641 -0800
+@@ -160,16 +160,6 @@
+             };
+             Some((wire::to_client::MEMBER_ENDED, ended.encode()))
+         }
+-        kind::WORKLOAD_READY => match wire::Ready::decode(payload) {
+-            Some(ready) => Some((wire::to_client::READY, ready.encode().to_vec())),
+-            None => {
+-                let _ = writeln!(
+-                    io::stderr(),
+-                    "shards api-run: a readiness its guest said malformed: {payload:?}"
+-                );
+-                None
+-            }
+-        },
+         _ => None,
+     }
+ }

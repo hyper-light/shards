@@ -1,0 +1,14 @@
+#### stage audit at 93ce2e26aec83a1804f833778136c1de652a4835 (2026-11-12T14:45:02Z), kiln runner 00aad8daff2fa3c9daa65d53c425d450
+Linux 7.3.3-1-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+2026-11-12T14:45:21Z
+audit exit 0
+derived   the run's events
+derived   /run/shards 0755
+derived   credentials buffer 32
+derived   notify queue
+own      marker 7: held by the grant's WORKLOAD_READY
+own      run kind 49: held by the grant's READY
+own      ipc kind 90: held by the grant's WORKLOAD_READY
+planned 31, underived or unplanned 0
+#### stage audit exit 0

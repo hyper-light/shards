@@ -644,7 +644,7 @@ impl TxBuf {
     }
 
     /// Writes as much as the socket takes without blocking; frees the buffer once empty.
-    fn flush_to(&mut self, stream: &mut UnixStream) -> io::Result<usize> {
+    fn flush_to(&mut self, stream: &mut impl std::io::Write) -> io::Result<usize> {
         let mut total = 0;
         loop {
             let (front, _) = self.data.as_slices();
@@ -820,18 +820,17 @@ mod tests {
         // Each byte its offset modulo a prime, so that one out of place shows.
         let pattern: Vec<u8> = (0..1usize << 20).map(|i| (i % 251) as u8).collect();
         g.mem.access().unwrap().write(BASE, &pattern).unwrap();
-        let (mut ours, mut host) = UnixStream::pair().unwrap();
-        ours.set_nonblocking(true).unwrap();
-        host.set_nonblocking(true).unwrap();
+        // The host end holds what it took until it reads, as much as macOS's Unix sockets do
+        // (XNU's 8 KiB): a socket pair's buffers are its platform's, and over Windows' AF_UNIX
+        // the ring never wrapped (jupiter, 2026-11-12), so this one holds a known amount.
+        let mut host = Taker {
+            got: Vec::new(),
+            unread: 0,
+            room: 8 * 1024,
+        };
         let limit = WINDOW_MOST as usize;
         let mut b = TxBuf::default();
-        let (mut sent, mut got) = (0usize, Vec::new());
-        let mut buf = vec![0u8; 7919];
-        let mut read = |host: &mut UnixStream, got: &mut Vec<u8>| match host.read(&mut buf) {
-            Ok(n) => got.extend_from_slice(&buf[..n]),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Err(e) => panic!("reading the host end: {e}"),
-        };
+        let mut sent = 0usize;
         let mut wrapped = false;
         for step in 0..2000usize {
             let len = 1 + (step * 7717) % super::super::packet::MAX_PAYLOAD as usize;
@@ -842,17 +841,17 @@ mod tests {
             wrapped |= !b.data.as_slices().1.is_empty();
             assert!(b.data.capacity() <= limit, "{} bytes of room", b.data.capacity());
             if step % 3 == 0 {
-                b.flush_to(&mut ours).unwrap();
+                b.flush_to(&mut host).unwrap();
             }
             if step % 5 == 0 {
-                read(&mut host, &mut got);
+                host.read(7919);
             }
         }
         assert!(wrapped, "the ring never wrapped");
         // The host takes most of it: the room it keeps follows what is left.
         while b.len() > 100_000 {
-            b.flush_to(&mut ours).unwrap();
-            read(&mut host, &mut got);
+            b.flush_to(&mut host).unwrap();
+            host.read(7919);
         }
         let left = b.len();
         b.fit(left);
@@ -861,14 +860,44 @@ mod tests {
             "{} bytes of room for {left}",
             b.data.capacity()
         );
-        while got.len() < sent {
-            b.flush_to(&mut ours).unwrap();
-            read(&mut host, &mut got);
+        while host.got.len() < sent {
+            b.flush_to(&mut host).unwrap();
+            host.read(7919);
         }
         assert_eq!(b.data.capacity(), 0, "an empty buffer keeps no room");
-        assert_eq!(got.len(), sent);
-        let first_wrong = got.iter().enumerate().find(|&(i, &v)| v != (i % 251) as u8);
+        assert_eq!(host.got.len(), sent);
+        let first_wrong = host.got.iter().enumerate().find(|&(i, &v)| v != (i % 251) as u8);
         assert_eq!(first_wrong, None, "of {sent} bytes");
+    }
+
+    /// A host end that takes what it has room for and holds it until it's read: `got` is
+    /// everything it took, `unread` what it holds.
+    struct Taker {
+        got: Vec<u8>,
+        unread: usize,
+        room: usize,
+    }
+
+    impl Taker {
+        fn read(&mut self, n: usize) {
+            self.unread = self.unread.saturating_sub(n);
+        }
+    }
+
+    impl std::io::Write for Taker {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let n = bytes.len().min(self.room.saturating_sub(self.unread));
+            if n == 0 {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            self.got.extend_from_slice(&bytes[..n]);
+            self.unread += n;
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     /// Sends `len` bytes, packets of the largest size a driver sends, from a guest whose

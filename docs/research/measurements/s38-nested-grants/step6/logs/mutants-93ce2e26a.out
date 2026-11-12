@@ -1,0 +1,60 @@
+#### stage mutants at 93ce2e26aec83a1804f833778136c1de652a4835 (2026-11-12T14:45:59Z), kiln runner 00aad8daff2fa3c9daa65d53c425d450
+Linux 7.3.3-1-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+2026-11-12T14:51:08Z
+== mutant-consent: cargo test -p shards --bin shards --profile test-release -j4 api_run::tests::the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it
+== mutant-consent exit 101
+MUTANT consent: its test's exit 101
+test api_run::tests::the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it ... FAILED
+thread 'api_run::tests::the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it' (1739558) panicked at crates/shards/src/api_run.rs:1535:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 737 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-ready-by-passthrough: cargo test -p shards --bin shards --profile test-release -j4 api_run::tests::the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it
+== mutant-ready-by-passthrough exit 101
+MUTANT ready-by-passthrough: its test's exit 101
+warning: unused variable: `ready_by`
+test api_run::tests::the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it ... FAILED
+thread 'api_run::tests::the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it' (1853570) panicked at crates/shards/src/api_run.rs:1540:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 737 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-conversion: cargo test -p shards --bin shards --profile test-release -j4 api_run::tests::a_deadline_is_its_budget_past_the_clock_as_the_request_arrives
+== mutant-conversion exit 101
+MUTANT conversion: its test's exit 101
+test api_run::tests::a_deadline_is_its_budget_past_the_clock_as_the_request_arrives ... FAILED
+thread 'api_run::tests::a_deadline_is_its_budget_past_the_clock_as_the_request_arrives' (1997313) panicked at crates/shards/src/api_run.rs:1485:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 737 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-overflow: cargo test -p shards --bin shards --profile test-release -j4 api_run::tests::a_deadline_is_its_budget_past_the_clock_as_the_request_arrives
+== mutant-overflow exit 101
+MUTANT overflow: its test's exit 101
+test api_run::tests::a_deadline_is_its_budget_past_the_clock_as_the_request_arrives ... FAILED
+thread 'api_run::tests::a_deadline_is_its_budget_past_the_clock_as_the_request_arrives' (2123516) panicked at crates/shards/src/api_run.rs:1499:27:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 737 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-widening: cargo test -p shards --bin shards --profile test-release -j4 api_run::tests::the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it
+== mutant-widening exit 101
+MUTANT widening: its test's exit 101
+test api_run::tests::the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it ... FAILED
+thread 'api_run::tests::the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it' (2210581) panicked at crates/shards/src/api_run.rs:1556:40:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 737 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-ready-forwarding: cargo test -p shards --bin shards --profile test-release -j4 api_run::tests::the_vms_link_is_relayed_to_the_orchestrator_as_its_guest_said_it
+== mutant-ready-forwarding exit 101
+MUTANT ready-forwarding: its test's exit 101
+test api_run::tests::the_vms_link_is_relayed_to_the_orchestrator_as_its_guest_said_it ... FAILED
+thread 'api_run::tests::the_vms_link_is_relayed_to_the_orchestrator_as_its_guest_said_it' (2319210) panicked at crates/shards/src/api_run.rs:1649:74:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 737 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-ready-taken: cargo test -p shards-api --lib -j4 image::session::tests::readiness_is_told_as_it_moves
+== mutant-ready-taken exit 101
+MUTANT ready-taken: its test's exit 101
+error: test failed, to rerun pass `-p shards-api --lib`
+== mutant-ungranted-wait: cargo test -p shards-api --lib -j4 image::session::tests::readiness_is_told_as_it_moves
+== mutant-ungranted-wait exit 101
+MUTANT ungranted-wait: its test's exit 101
+warning: unused variable: `granted`
+test image::session::tests::readiness_is_told_as_it_moves ... FAILED
+thread 'image::session::tests::readiness_is_told_as_it_moves' (134344) panicked at crates/api/src/image/session.rs:759:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 101 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-api --lib`
+#### stage mutants exit 0

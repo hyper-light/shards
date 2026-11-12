@@ -15,7 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::wire::{self, Channel, MemberInfo, RunEnd, Stats, StatsScope};
+use super::wire::{self, Channel, MemberInfo, Ready, RunEnd, Stats, StatsScope};
 use super::{ImageGuest, ImageRefusal, ImageSpec, MemberEnd, MemberName};
 
 /// The most of a member channel's bytes the client lets its host send ahead of what the
@@ -52,6 +52,9 @@ struct State {
     ends: HashMap<u32, u32>,
     stats: HashMap<u32, Result<Stats, String>>,
     next_ask: u32,
+    /// The run's own command's readiness under the nesting grant (D234), as its init last
+    /// said it: init owns it, and moves it by D234's table.
+    ready: Option<Ready>,
     end: Option<RunEnd>,
     /// The host's process has exited and is reaped.
     exited: bool,
@@ -213,6 +216,9 @@ pub(super) struct Session {
     members: Vec<MemberInfo>,
     published: Vec<wire::Bound>,
     outputs: Mutex<HashMap<(u32, Channel), io::PipeReader>>,
+    /// Its command has the nesting grant (D234): its spec asked for it, and its host, which
+    /// refuses a grant it cannot give, started it.
+    nesting: bool,
 }
 
 impl Session {
@@ -318,6 +324,7 @@ impl Session {
             members: started.members,
             published: started.published,
             outputs: Mutex::new(HashMap::new()),
+            nesting: request.nesting,
         };
         session.pump_outputs()?;
         Ok(session)
@@ -469,6 +476,7 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
             let answer = wire::StatsAnswer::decode(payload).map_err(bad)?;
             state.stats.insert(answer.id, answer.result);
         }
+        k::READY => state.ready = Some(wire::ready(payload).map_err(bad)?),
         k::ENDED => {
             let end = wire::RunEnd::decode(payload).map_err(bad)?;
             if state.end.replace(end).is_some() {
@@ -517,6 +525,31 @@ fn quoted(said: &VecDeque<u8>) -> String {
     }
     let bytes: Vec<u8> = said.iter().copied().collect();
     format!(": {}", String::from_utf8_lossy(&bytes).trim_end())
+}
+
+/// What a wait for the readiness of a run's command past `seen` finds in `s`: a refusal at
+/// once where the command has no nesting grant (`granted`), whose readiness is the grant's
+/// (D234); its latest, once that differs from `seen`; else the run's end, or its host gone
+/// without one; else nothing yet.
+fn ready_past(s: &State, granted: bool, seen: Option<Ready>) -> Option<Result<Ready, ImageRefusal>> {
+    if !granted {
+        return Some(Err(ImageRefusal::Spec {
+            what: "nesting",
+            why: "readiness is the nesting grant's (D234), which the run does not ask for".into(),
+        }));
+    }
+    if let Some(ready) = s.ready.filter(|_| s.ready != seen) {
+        return Some(Ok(ready));
+    }
+    if let Some(end) = &s.end {
+        return Some(Err(ImageRefusal::Ended(end.clone())));
+    }
+    s.gone().then(|| {
+        Err(ImageRefusal::Host(format!(
+            "the run host exited without its run's end{}",
+            quoted(&s.said)
+        )))
+    })
 }
 
 impl ImageGuest for Session {
@@ -596,6 +629,12 @@ impl ImageGuest for Session {
         })
     }
 
+    fn wait_ready(&self, seen: Option<Ready>, timeout: Duration) -> Result<Option<Ready>, ImageRefusal> {
+        self.shared
+            .wait(timeout, |s| ready_past(s, self.nesting, seen))
+            .transpose()
+    }
+
     fn stop(&self) -> Result<(), ImageRefusal> {
         // Asked of the host, which kills its VM at once and says the run's end; a host that
         // cannot be asked is killed itself, and its VM's link closing ends the VM's run
@@ -632,5 +671,124 @@ impl Drop for Session {
         if !lock(&self.shared.state).gone() {
             let _ = self.stop();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A session's shared state with no host behind it: its answers taken as its reader
+    /// takes them.
+    fn shared() -> Shared {
+        Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+            to_host: Mutex::new(None),
+        }
+    }
+
+    /// A refusal comes back typed by its cause, its host's words unchanged: the nesting
+    /// grant asked of an image that does not give it (D234) a widening, in the daemon's
+    /// words; a crafted image's (NESTING beside an agent) the image's, in its build's, as
+    /// the daemon's read of the image says them.
+    #[test]
+    fn refusals_come_typed_in_their_hosts_words() {
+        let undeclared = shards_abi::run::nesting::undeclared();
+        let crafted = format!(
+            "the image's Agentfile (sha256:00): {}",
+            shards_abi::run::beside::nesting("agent", "a")
+        );
+        for (cause, why, typed) in [
+            (
+                wire::Cause::Widening,
+                &undeclared,
+                ImageRefusal::Widening(undeclared.clone()),
+            ),
+            (wire::Cause::Image, &crafted, ImageRefusal::Image(crafted.clone())),
+        ] {
+            let s = shared();
+            let refused = wire::Refused {
+                cause,
+                why: why.clone(),
+            }
+            .encode()
+            .unwrap();
+            assert_eq!(take(&s, wire::to_client::REFUSED, &refused), Ok(false));
+            assert_eq!(lock(&s.state).refused, Some(typed));
+        }
+    }
+
+    /// How long a test waits for what should come at once: only a failing test waits it
+    /// out, as crates/shards/tests/api_image.rs's `TIMEOUT` bounds its waits.
+    const BOUND: Duration = Duration::from_secs(120);
+
+    /// A wait with no clock for the readiness past `seen`, on a thread of its own, its
+    /// answer sent on as it comes: a test that fails ends at once, never held by its waiter.
+    fn waiter(
+        s: &Arc<Shared>,
+        seen: Option<Ready>,
+    ) -> std::sync::mpsc::Receiver<Result<Option<Ready>, ImageRefusal>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let s = Arc::clone(s);
+        std::thread::spawn(move || {
+            let _ = tx.send(s.wait(Duration::MAX, |st| ready_past(st, true, seen)).transpose());
+        });
+        rx
+    }
+
+    /// READY moves the run's readiness as its host relays it (D234), and answers a waiter
+    /// with no clock as it is taken: its first, then each that differs from what the waiter
+    /// saw, and none past what it saw. One that is no readiness breaks the channel; the
+    /// run's end ends a wait for a newer one, and what came before it is still told. A run
+    /// without the grant is refused a wait at once; a host gone without its run's end ends
+    /// one.
+    #[test]
+    fn readiness_is_told_as_it_moves() {
+        let s = Arc::new(shared());
+        let wait = |seen, timeout| s.wait(timeout, |st| ready_past(st, true, seen)).transpose();
+        assert_eq!(wait(None, Duration::ZERO), Ok(None));
+        let first = waiter(&s, None);
+        assert_eq!(
+            take(&s, wire::to_client::READY, &Ready::Passed(3).encode()),
+            Ok(false)
+        );
+        assert_eq!(first.recv_timeout(BOUND).unwrap(), Ok(Some(Ready::Passed(3))));
+        assert_eq!(wait(None, Duration::ZERO), Ok(Some(Ready::Passed(3))));
+        assert_eq!(wait(Some(Ready::Passed(3)), Duration::ZERO), Ok(None));
+        let next = waiter(&s, Some(Ready::Passed(3)));
+        assert_eq!(
+            take(&s, wire::to_client::READY, &Ready::Late(9).encode()),
+            Ok(false)
+        );
+        assert_eq!(next.recv_timeout(BOUND).unwrap(), Ok(Some(Ready::Late(9))));
+        for malformed in [&[1, 0, 0, 0, 0, 0, 0, 0, 1][..], &[], &[2; 10]] {
+            assert!(
+                take(&s, wire::to_client::READY, malformed).is_err(),
+                "{malformed:?}"
+            );
+        }
+        assert_eq!(lock(&s.state).ready, Some(Ready::Late(9)));
+        let ended = RunEnd::Exited(0).encode().unwrap();
+        assert_eq!(take(&s, wire::to_client::ENDED, &ended), Ok(true));
+        assert_eq!(
+            wait(Some(Ready::Late(9)), BOUND),
+            Err(ImageRefusal::Ended(RunEnd::Exited(0)))
+        );
+        assert_eq!(wait(None, Duration::ZERO), Ok(Some(Ready::Late(9))));
+        assert!(matches!(
+            s.wait(BOUND, |st| ready_past(st, false, None)),
+            Some(Err(ImageRefusal::Spec { what: "nesting", .. }))
+        ));
+        let gone = shared();
+        {
+            let mut st = lock(&gone.state);
+            st.exited = true;
+            st.answered = true;
+        }
+        assert!(matches!(
+            gone.wait(BOUND, |st| ready_past(st, true, None)),
+            Some(Err(ImageRefusal::Host(_)))
+        ));
     }
 }

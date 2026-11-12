@@ -1,0 +1,17 @@
+#### stage tests at 05d19eb33e8df57ba5ebd01d044ffe34e485860d (2026-11-12T14:19:36Z), host adalundhe@192.168.1.77
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+2026-11-12T14:20:18Z
+== test-api: cargo test -p shards-api -j4
+== test-api exit 101
+test result: ok. 93 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; finished in 2.82s
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test a_connect_waits_for_a_guest_that_listens_late ... FAILED
+test client::the_longest_report_shards_writes_is_quoted_whole ... FAILED
+thread 'a_connect_waits_for_a_guest_that_listens_late' (3996136) panicked at crates/api/tests/sim.rs:134:5:
+thread 'client::the_longest_report_shards_writes_is_quoted_whole' (3996227) panicked at crates/api/tests/sim.rs:406:22:
+test result: FAILED. 14 passed; 2 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.72s
+error: test failed, to rerun pass `-p shards-api --test sim`
+== test-api-run: cargo test -p shards --bin shards --profile test-release -j4 api_run
+== test-api-run exit 143
+Terminated                 systemd-run --user --scope -q -p MemoryMax=16G -p CPUQuota=400% "$@" > "$D/logs/$name.log" 2>&1

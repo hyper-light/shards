@@ -1,0 +1,128 @@
+# The pushed source's gates on every supported target (revision ea3482851: 4a3861e4a, then the Unix-only
+# helpers of engine_ring.rs gated #[cfg(unix)] and a Windows test's unsafe block documented, the two errors
+# scripts/lint x86_64-pc-windows-msvc found on 4a3861e4a; main's own Windows lint failed on the second)
+#
+# 1. Linux (x86_64 and aarch64, glibc and musl): kiln-a094a12d, a clone at ea3482851, under systemd-run --user
+#    -p MemoryMax=24G -p Nice=10; then the E2E and unit tests again on the same tree.
+# revision ea348285119c396454c0e3c843cc4f43b8a1c907 with 0 files changed; kiln-a094a12d.attlocal.net; Linux 6.19.10-300.fc44.x86_64; rustc 1.98.1 (48a229cea 2026-09-01); zig 0.16.0; 2026-11-12T14:47:28Z
+# scripts/lint x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+LINT-EXIT 0
+      1 == format
+      1 == x86_64-unknown-linux-gnu
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.54s
+      1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+      1 == aarch64-unknown-linux-gnu
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.02s
+      1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+      1 == x86_64-unknown-linux-musl
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.88s
+      1 == aarch64-unknown-linux-musl
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.26s
+#    (the build script's note on the gpu feature's renderer, a check build's; no lint said anything; warm
+#     from the same targets' lint of 4a3861e4a, LINT-EXIT 0 too, 1m51s to 1m57s a target cold)
+# cargo test --locked --profile test-release -p shards --test engine_ring -- --test-threads 1 --nocapture (Linux KVM x86_64)
+RING-EXIT 0
+test a_microvms_engine_carries_bulk_whole_both_ways ... ok
+test an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends ... 1 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+1 vCPUs: 14 rings attached and let go, 3227648 bytes pinned and unpinned; 0 pages pinned again
+2 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+2 vCPUs: 30 rings attached and let go, 5398528 bytes pinned and unpinned; 0 pages pinned again
+32 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+32 vCPUs: 437 rings attached and let go, 109826048 bytes pinned and unpinned; 0 pages pinned again
+test result: ok. 4 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 67.53s
+#    (a_give_back_lets_an_idle_slot_go and a_shrinking_room_..._goes_plain ok, their "ok" lines after their
+#     own output; ignored: common::port_probe, a helper; engine_ring_measurement, the coordinator's)
+# unit tests (Linux x86_64)
+-- cargo test --locked -p shards-abi --lib
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+-- cargo test --locked -p shards-vmm --lib -- devices::virtio::vsock
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 418 filtered out; finished in 1.04s
+-- cargo test --locked -p shards-init
+test result: ok. 197 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.05s
+END 2026-11-12T14:51:08Z
+#
+# 2. Windows (x86_64 and aarch64, MSVC, through cargo-xwin) and macOS (arm64): this Mac (macOS 26.4.1 arm64),
+#    the worktree at ea3482851 (its source; records changed beside it, no .rs), nice 10.
+# 2a. scripts/lint x86_64-pc-windows-msvc aarch64-pc-windows-msvc aarch64-apple-darwin, on 4a3861e4a first: the Windows lint
+#     failed (engine_ring.rs: held_open dead and the Write import unused on Windows; cli/mod.rs:2022, main's, an
+#     unsafe block clippy counted undocumented), fixed in 33cc69d1e and ea3482851. Then, on ea3482851:
+# revision ea348285119c396454c0e3c843cc4f43b8a1c907 (its source; 5 records changed, no .rs), macOS 26.4.1 arm64, rustc 1.98.1 (48a229cea 2026-09-01), 2026-11-12T14:46:20Z
+# scripts/lint x86_64-pc-windows-msvc aarch64-pc-windows-msvc aarch64-apple-darwin
+LINT-EXIT 0
+   1 == format
+   1 == x86_64-pc-windows-msvc
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 14s
+   1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 41.53s
+   1 == aarch64-pc-windows-msvc
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 7m 24s
+   1 == aarch64-apple-darwin
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.42s
+   1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.24s
+#     (aarch64-apple-darwin on 4a3861e4a also: workspace 17m23s cold, its gpu feature 1m13s, nothing said)
+#
+# 2b. Unit tests on macOS arm64 (ea3482851): abi and init; the vsock device's hung (below)
+-- cargo test --locked -p shards-abi --lib
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+-- cargo test --locked -p shards-vmm --lib -- devices::virtio::vsock
+error: test failed, to rerun pass `-p shards-vmm --lib`
+-- cargo test --locked -p shards-init
+test result: ok. 17 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s
+END 2026-11-12T15:30:09Z
+#     the vsock run above never ended: three of vsock/ring.rs's tests (a_full_ring_takes_no_more_and_the_host_socket_waits,
+#     bytes_cross_each_way_through_scattered_pages_and_round_the_rings_end, what_the_device_writes_is_noted_while_a_move_watches)
+#     stood at their write_all to a socket pair's daemon end (sample(1) of the test process, 31 min in): each writes up
+#     to a ring and 100 bytes (64 KiB) before the ring reads, and a macOS Unix stream socket holds 8 KiB each way. Their
+#     pairs hold twice a ring since a1fc36a84. On a1fc36a84:
+# revision a1fc36a845c6192a4974280a1261c012c0ff0d52 (its source; records changed beside it, no .rs), macOS 26.4.1 arm64, rustc 1.98.1 (48a229cea 2026-09-01), 2026-11-12T15:31:09Z
+# scripts/lint aarch64-apple-darwin
+LINT-EXIT 0
+   1 == format
+   1 == aarch64-apple-darwin
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 30.98s
+   1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.99s
+-- cargo test --locked -p shards-vmm --lib -- devices::virtio::vsock
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 401 filtered out; finished in 2.00s
+END 2026-11-12T15:32:10Z
+#
+# 3. Linux again on a1fc36a84 (kiln-a094a12d), its four targets' lint and the vsock device's tests:
+# revision a1fc36a845c6192a4974280a1261c012c0ff0d52 with 0 files changed; kiln-a094a12d.attlocal.net; Linux 6.19.10-300.fc44.x86_64; rustc 1.98.1 (48a229cea 2026-09-01); zig 0.16.0; 2026-11-12T15:31:47Z
+# scripts/lint x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+LINT-EXIT 0
+      1 == format
+      1 == x86_64-unknown-linux-gnu
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.02s
+      1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.27s
+      1 == aarch64-unknown-linux-gnu
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.41s
+      1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.67s
+      1 == x86_64-unknown-linux-musl
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.86s
+      1 == aarch64-unknown-linux-musl
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.00s
+-- cargo test --locked -p shards-vmm --lib -- devices::virtio::vsock
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 418 filtered out; finished in 0.92s
+END 2026-11-12T15:32:40Z
+#
+# 4. Windows natively: a run-only agent on jupiter (Windows 10.0.26200, x86_64; rustc 1.98.1, the repo's pin), a
+#    scratch clone at ea3482851, at ROOT's leave:
+#    cargo test --locked -p shards-vmm --lib -- devices::virtio::vsock
+running 39 tests
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 389 filtered out; finished in 0.45s
+#    (Windows compiles the vsock device's tests but vsock/ring.rs's, which are Unix's: a1fc36a84 changes none it runs.)
+#    cargo test --locked -p shards --bin shards -- served_pipes_tests (cli/mod.rs's Windows tests, ea3482851's
+#    change among them) did not build there: aws-lc-sys "NASM command not found! Build cannot continue."
+#    (nasm_builder.rs:137; the repo builds AWS-LC's assembly from source, AWS_LC_SYS_PREBUILT_NASM=0). Owed:
+#    that run on a Windows host with NASM. It is compiled, and clippy-clean, for both Windows targets (2a).
+#    The agent, waiting on a person's approval after that, was stopped; its clone and target removed.
+#
+# Each target's fmt and clippy -D warnings (and its gpu builds where scripts/lint makes them): LINT-EXIT 0 on
+# the source pushed, every supported target (resources/supported-targets.txt): x86_64 and aarch64 Linux
+# glibc and musl (a1fc36a84), x86_64 and aarch64 Windows MSVC (ea3482851, whose source differs from a1fc36a84
+# in Unix tests alone), aarch64 macOS (a1fc36a84).

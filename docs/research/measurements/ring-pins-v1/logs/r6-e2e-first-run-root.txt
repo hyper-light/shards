@@ -1,0 +1,46 @@
+# The engine ring E2E (crates/shards/tests/engine_ring.rs) run for the first time: ROOT, Linux KVM, adacachy
+# source: p/whp-parity-fixes 3d49939ca (main 16c72cc32 + the emitter Cmd, guest_time and vsock-test fixes)
+# command (~/g121-tmp/whpfix.sh, under a systemd unit with a 24 GiB budget, nice 10):
+#   cargo test --locked --profile test-release -p shards --test engine_ring -- --test-threads 1
+# its key lines (~/g121-tmp/whpfix-logs/ring.log on adacachy):
+
+27:test a_give_back_lets_an_idle_slot_go ...    Compiling libc v0.2.189
+168:[2400462    1985124us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+169:[2400462    1995144us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (HostEnded)
+170:[2400462    2104142us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+171:[2400462    2105986us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (HostEnded)
+658:[2400462    1985124us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+659:[2400462    1995144us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (HostEnded)
+660:[2400462    2104142us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+661:[2400462    2105986us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (HostEnded)
+666:test a_microvms_engine_carries_bulk_whole_both_ways ... --- /home/adalundhe/g121-tmp/shards-tests/2229944/eng-ring-2/daemon.log, its last 7 lines
+684:test a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain ... --- /home/adalundhe/g121-tmp/shards-tests/2229944/eng-room-3/daemon.log, its last 100 lines
+973:[399153    1373156us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+974:[399153    1376446us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (HostEnded)
+975:[399153    1410317us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+976:[399153    1411476us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (HostEnded)
+1105:test an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends ... --- /home/adalundhe/g121-tmp/shards-tests/2229944/eng-pins-1-4/daemon.log, its last 100 lines
+1172:[2716961     524858us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+1173:[2716961     525362us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (HostEnded)
+1174:[2716961     538001us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+1175:[2716961     539845us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (HostEnded)
+1176:[2716961     561891us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+1183:[2716961    1278388us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (HostEnded)
+1184:[2716961    1298592us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+1185:[2716961    1299330us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (HostEnded)
+1186:[2716961    1332550us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+1187:[2716961    1337306us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (Asked)
+1188:[2716961    1337327us DEBUG] vsock: port 1029: an engine ring attached, 20480 bytes pinned
+1189:[2716961    1338119us DEBUG] vsock: port 1029: an engine ring let go, 20480 bytes unpinned (Asked)
+1190:[2716961    1338149us DEBUG] vsock: port 1029: an engine ring attached, 36864 bytes pinned
+1191:[2716961    1339162us DEBUG] vsock: port 1029: an engine ring let go, 36864 bytes unpinned (Asked)
+1192:[2716961    1339178us DEBUG] vsock: port 1029: an engine ring attached, 69632 bytes pinned
+1193:[2716961    1339816us DEBUG] vsock: port 1029: an engine ring let go, 69632 bytes unpinned (Asked)
+1194:[2716961    1339834us DEBUG] vsock: port 1029: an engine ring attached, 135168 bytes pinned
+1195:[2716961    1340707us DEBUG] vsock: port 1029: an engine ring let go, 135168 bytes unpinned (Asked)
+1196:[2716961    1340735us DEBUG] vsock: port 1029: an engine ring attached, 266240 bytes pinned
+1197:[2716961    1341957us DEBUG] vsock: port 1029: an engine ring let go, 266240 bytes unpinned (Asked)
+1198:[2716961    1341993us DEBUG] vsock: port 1029: an engine ring attached, 528384 bytes pinned
+1199:[2716961    1345391us DEBUG] vsock: port 1029: an engine ring let go, 528384 bytes unpinned (Asked)
+1200:[2716961    1345442us DEBUG] vsock: port 1029: an engine ring attached, 1052672 bytes pinned
+1201:[2716961    1347292us DEBUG] vsock: port 1029: an engine ring let go, 1052672 bytes unpinned (HostEnded)
