@@ -221,6 +221,9 @@ pub const RUN_VALUED: &[&str] = &[
     "-e",
     "--grants",
     "--gpu-device",
+    "--gpu-report",
+    "--gpu-report-scope",
+    "--host-lifeline",
     "--hostname",
     "--init",
     "--initrd",
@@ -302,7 +305,15 @@ mod tests {
                 .map(|word| std::ffi::OsString::from(*word))
                 .collect::<Vec<_>>()
         };
-        for flag in ["--host-managed", "--gpu", "--gpu-probe", "--gpu-device"] {
+        for flag in [
+            "--host-managed",
+            "--gpu",
+            "--gpu-probe",
+            "--gpu-device",
+            "--gpu-report",
+            "--gpu-report-scope",
+            "--host-lifeline",
+        ] {
             assert!(has_vm_flag(&args(&["run", flag]), flag));
             assert!(has_vm_flag(&args(&["restore", "snapshot", flag]), flag));
             assert!(!has_vm_flag(&args(&["run", "--", flag]), flag));

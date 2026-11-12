@@ -460,7 +460,7 @@ fn assemble(
     console: Console,
     said: usize,
     hosts: super::Hosts<'_>,
-    gpu: Option<u64>,
+    gpu: Option<super::MachineGpu<'_, '_>>,
     pci: super::Pci<'_>,
 ) -> Result<Assembled, String> {
     let ram = ram_bytes(config.memory_mib)?;
@@ -488,7 +488,7 @@ fn assemble(
     // A GPU's window, at the first GiB boundary past all of that, as long as the renderer
     // says (D144, D201, D202).
     let gpu = gpu
-        .map(|saw| super::gpu_layout(saw, top, &config.gpu_devices))
+        .map(|g| super::gpu_layout(g.saw, top, &config.gpu_devices, g.report))
         .transpose()?;
     let top = match &gpu {
         Some((_, r)) => r
@@ -813,6 +813,10 @@ fn assigning(
 
 /// A machine that boots `cfg.kernel`.
 pub fn build(cfg: &Config) -> Result<Machine, String> {
+    build_reported(cfg, None)
+}
+
+pub fn build_reported(cfg: &Config, report: Option<&mut super::GpuReportTo<'_>>) -> Result<Machine, String> {
     let ram = ram_bytes(cfg.memory_mib)?;
     let mut config = super::machine_config(cfg)?;
     let layer = super::boot_layer(cfg)?;
@@ -861,7 +865,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             cfg.console,
             cfg.said,
             hosts,
-            (cfg.gpu || !cfg.gpu_devices.is_empty()).then_some(0),
+            (cfg.gpu || !cfg.gpu_devices.is_empty()).then_some(super::MachineGpu { saw: 0, report }),
             super::Pci {
                 test: &cfg.pci_test,
                 vfio: &cfg.vfio,
@@ -1102,7 +1106,7 @@ pub fn restore(
         console,
         said,
         hosts,
-        snap.config.gpu,
+        snap.config.gpu.map(|saw| super::MachineGpu { saw, report: None }),
         super::Pci {
             slots: snap.config.pci_slots,
             ..super::Pci::default()

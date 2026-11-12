@@ -232,6 +232,18 @@ impl Common {
             // Containment is established by the native launcher and interpreted
             // by the parent CLI only. It grants no guest/device authority.
             "--host-managed" => {}
+            #[cfg(unix)]
+            "--host-lifeline" => {
+                // run() already armed this explicit reader before parser effects.
+                // Consume/validate the same valued grammar without adopting it twice.
+                let value = text(value("--host-lifeline")?)?;
+                if value.is_empty()
+                    || !value.bytes().all(|byte| byte.is_ascii_digit())
+                    || value.parse::<i32>().ok().is_none_or(|fd| fd < 3)
+                {
+                    return Err("--host-lifeline requires its inherited read descriptor".into());
+                }
+            }
             "--no-console" => self.console = Console::Discard,
             "--console-said" => {
                 self.said = Some(
@@ -383,12 +395,40 @@ struct Run {
     attach: Option<String>,
     /// Where it tells its spawner how its console's report came out ([`Common::said_to`]).
     said_to: Option<LinkArg>,
+    gpu_report: Option<GpuReportTarget>,
+}
+
+struct GpuReportTarget {
+    to: LinkArg,
+    scope: [u8; 16],
+}
+
+#[cfg(unix)]
+fn gpu_report_arg(value: String) -> Result<LinkArg, String> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("--gpu-report requires its inherited writer descriptor".into());
+    }
+    let fd = value.parse::<i32>().map_err(|why| why.to_string())?;
+    if fd < 3 {
+        return Err("--gpu-report cannot name a standard stream".into());
+    }
+    Ok(fd)
+}
+
+#[cfg(windows)]
+fn gpu_report_arg(value: String) -> Result<LinkArg, String> {
+    if value != "gpu-report" {
+        return Err("--gpu-report requires its exact named-Given writer".into());
+    }
+    Ok(value)
 }
 
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut args = args;
     let mut rootfs = None;
     let mut gpu_probe = false;
+    let mut gpu_report = None;
+    let mut gpu_scope = None;
     let mut cfg = Config::new(PathBuf::new(), None);
     // Its disks and shared directories charge its I/O limits, whose rates its run brings
     // (D178).
@@ -409,6 +449,19 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             continue;
         }
         match arg.as_str() {
+            "--gpu-report" => {
+                let to = gpu_report_arg(text(value("--gpu-report")?)?)?;
+                if gpu_report.replace(to).is_some() {
+                    return Err("--gpu-report given twice".into());
+                }
+            }
+            "--gpu-report-scope" => {
+                let scope = shards_abi::gpu::uuid_from_hex(&text(value("--gpu-report-scope")?)?)
+                    .map_err(|why| why.to_string())?;
+                if scope == [0; 16] || gpu_scope.replace(scope).is_some() {
+                    return Err("--gpu-report-scope must name one nonzero native scope".into());
+                }
+            }
             "--kernel" => kernel = Some(PathBuf::from(value("--kernel")?)),
             "--initrd" => cfg.initrd = Some(PathBuf::from(value("--initrd")?)),
             "--init" => cfg.init = Some(PathBuf::from(value("--init")?)),
@@ -585,11 +638,16 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             || attach.is_some()
             || command
             || common.workload_options
-            || !cfg.vfio.is_empty())
+            || !cfg.vfio.is_empty()
+            || gpu_report.is_some()
+            || gpu_scope.is_some())
     {
         return Err("--gpu-probe cannot boot a workload, attach devices or write a snapshot".into());
     }
     if let Some(fd) = warm {
+        if gpu_report.is_some() || gpu_scope.is_some() {
+            return Err("a warm guest cannot carry another native scope's GPU report".into());
+        }
         let rootfs = rootfs.ok_or("--warm needs --rootfs")?;
         if command || common.workload_options || cfg.vsock.is_some() {
             return Err(
@@ -611,6 +669,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             workload: common.workload,
             attach,
             said_to: None,
+            gpu_report: None,
         });
     }
     let mode = match rootfs {
@@ -620,6 +679,13 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         None if command => return Err("a command needs --rootfs".into()),
         None if gpu_probe => Mode::GpuProbe,
         None => Mode::Plain,
+    };
+    let gpu_report = match (gpu_report, gpu_scope) {
+        (None, None) => None,
+        (Some(to), Some(scope)) if matches!(mode, Mode::Plain) && !cfg.gpu_devices.is_empty() => {
+            Some(GpuReportTarget { to, scope })
+        }
+        _ => return Err("a GPU report requires one exact selection/scope and a fresh direct boot".into()),
     };
     // Quoted as it fails where it is supervised to its end (`supervise`), not where it
     // serves a command.
@@ -632,6 +698,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         workload: common.workload,
         said_to: common.said_to.take(),
         attach,
+        gpu_report,
     })
 }
 
@@ -1164,6 +1231,143 @@ fn report(message: impl Display) {
     let _ = writeln!(std::io::stderr(), "shards: {message}");
 }
 
+#[derive(Clone, Copy)]
+enum InputOwner {
+    Console,
+    #[cfg(unix)]
+    Lifeline,
+}
+
+fn collected_args(mut args: impl Iterator<Item = OsString>) -> std::io::Result<Vec<OsString>> {
+    let (_, bound) = args.size_hint();
+    let bound = bound.ok_or(std::io::ErrorKind::InvalidInput)?;
+    let mut words = Vec::new();
+    words
+        .try_reserve_exact(bound)
+        .map_err(|_| std::io::ErrorKind::OutOfMemory)?;
+    // Native argv and all existing callers have a finite exact upper count.
+    // An iterator that violates its declared bound cannot drive an initializer.
+    for _ in 0..bound {
+        let Some(word) = args.next() else { break };
+        words.push(word);
+    }
+    if args.next().is_some() {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    }
+    Ok(words)
+}
+
+#[cfg(unix)]
+fn lifeline_fd(args: &[OsString]) -> std::io::Result<Option<i32>> {
+    let mut words = args.iter();
+    let mut managed = false;
+    let mut lifeline = None;
+    while let Some((word, value)) = crate::spec::next_word(&mut words) {
+        if word == "--" {
+            break;
+        }
+        if word == "--host-managed" {
+            managed = true;
+        }
+        if word == "--host-lifeline" {
+            let text = value
+                .and_then(|value| value.to_str())
+                .ok_or(std::io::ErrorKind::InvalidInput)?;
+            if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(std::io::ErrorKind::InvalidInput.into());
+            }
+            let fd = text
+                .parse::<i32>()
+                .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+            if fd < 3 || lifeline.replace(fd).is_some() {
+                return Err(std::io::ErrorKind::InvalidInput.into());
+            }
+        }
+    }
+    if lifeline.is_some() && !managed {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    }
+    Ok(lifeline)
+}
+
+#[cfg(unix)]
+fn lifeline_open(reader: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    let fd = reader.as_raw_fd();
+    // SAFETY: read-only descriptor flags of the explicit pipe held by reader.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_NONBLOCK != 0 {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    }
+    let mut event = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one pollfd of the owned read pipe, zero-time preflight. EOF/data/error
+    // is fatal; no GPU, VM, native file mutation or wait is performed here.
+    let ready = unsafe { libc::poll(&raw mut event, 1, 0) };
+    if ready < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if ready != 0 {
+        return Err(std::io::ErrorKind::BrokenPipe.into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn arm_input(args: &[OsString]) -> std::io::Result<InputOwner> {
+    let Some(fd) = lifeline_fd(args)? else {
+        return Ok(InputOwner::Console);
+    };
+    let mut reader = handed("--host-lifeline", fd).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+    lifeline_open(&reader)?;
+    // Replace the existing console-in owner, before parse_run can initialize VM
+    // devices. Its native helper alone holds the other end; no heartbeat exists.
+    let mut name = String::new();
+    name.try_reserve_exact("console-in".len())
+        .map_err(|_| std::io::ErrorKind::OutOfMemory)?;
+    name.push_str("console-in");
+    let (mut armed, mut ready) = std::io::pipe()?;
+    let _worker: std::thread::JoinHandle<()> = std::thread::Builder::new().name(name).spawn(move || {
+        // The creator cannot initialize devices until this existing input owner
+        // is running with its reader and has rechecked the early-EOF condition.
+        if lifeline_open(&reader).is_err() || ready.write_all(&[1u8]).is_err() {
+            end_lifeline();
+        }
+        drop(ready);
+        let mut byte = [0u8; 1];
+        let _ended = reader.read(&mut byte);
+        end_lifeline();
+    })?;
+    let mut marker = [0u8; 1];
+    armed.read_exact(&mut marker)?;
+    if marker != [1u8] {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    Ok(InputOwner::Lifeline)
+}
+
+#[cfg(unix)]
+fn end_lifeline() -> ! {
+    // EOF, an error or unexpected data ends THIS VMM, including initialization.
+    // This is not proof that its renderer/grants/helper native scope is empty.
+    // No diagnostic/atexit callback may delay this fence. The existing native
+    // observer records process failure and retains uncertain scope claims.
+    // SAFETY: POSIX _exit terminates only this owned VMM, without PID lookup,
+    // destructors or atexit handlers that may hold initializer locks.
+    unsafe { libc::_exit(libc::EXIT_FAILURE) }
+}
+
+#[cfg(not(unix))]
+fn arm_input(_args: &[OsString]) -> std::io::Result<InputOwner> {
+    Ok(InputOwner::Console)
+}
+
 fn forward_stdin(handle: vm::Handle) {
     let spawned = std::thread::Builder::new()
         .name("console-in".into())
@@ -1256,13 +1460,28 @@ fn boot_into(cfg: &mut Config, rootfs: PathBuf, template: bool) {
 }
 
 pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
+    let args = match collected_args(args) {
+        Ok(args) => args,
+        Err(why) => {
+            report(why);
+            return ExitCode::FAILURE;
+        }
+    };
+    let input = match arm_input(&args) {
+        Ok(input) => input,
+        Err(why) => {
+            report(why);
+            return ExitCode::FAILURE;
+        }
+    };
     let Run {
         mut cfg,
         mode,
         workload,
         attach,
         said_to,
-    } = match parsed(parse_run(args), RUN_USAGE) {
+        gpu_report,
+    } = match parsed(parse_run(args.into_iter()), RUN_USAGE) {
         Ok(run) => run,
         Err(code) => return code,
     };
@@ -1276,6 +1495,16 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         Ok(to) => to,
         Err(e) => {
             report(e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let gpu_report = match gpu_report
+        .map(|request| handed("--gpu-report", request.to).map(|writer| (request.scope, writer)))
+        .transpose()
+    {
+        Ok(report) => report,
+        Err(why) => {
+            report(why);
             return ExitCode::FAILURE;
         }
     };
@@ -1295,13 +1524,19 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Mode::Plain => supervise(start(&cfg), cfg.console, false, said_to),
+        Mode::Plain => supervise(
+            start_reported(&cfg, gpu_report),
+            cfg.console,
+            false,
+            said_to,
+            input,
+        ),
         Mode::Template(rootfs) => {
             boot_into(&mut cfg, rootfs, true);
             // Restored copies dial the host through this device, served by whatever
             // restores them.
             cfg.vsock.get_or_insert_with(VsockHost::default);
-            supervise(start(&cfg), cfg.console, true, said_to)
+            supervise(start(&cfg), cfg.console, true, said_to, input)
         }
         Mode::Workload(rootfs) => run_in(cfg, rootfs, &workload),
         Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd),
@@ -1373,7 +1608,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         (Ok((handle, _)), Some(to)) => to.hand_after(handle, RECORD_FOR),
         _ => None,
     };
-    let code = supervise(started, console, false, said_to);
+    let code = supervise(started, console, false, said_to, InputOwner::Console);
     if let Some(h) = handing {
         h.now();
     }
@@ -2069,6 +2304,13 @@ fn max_rss_kib() -> u64 {
 /// snapshot directory it saves to and its vsock socket: on Linux by Landlock, on macOS by
 /// what its spawner grants it (D30). A warm VM's run log comes open from its daemon.
 fn start(cfg: &Config) -> Result<(Handle, Running), vm::StartError> {
+    start_reported(cfg, None)
+}
+
+fn start_reported(
+    cfg: &Config,
+    report_to: Option<([u8; 16], std::fs::File)>,
+) -> Result<(Handle, Running), vm::StartError> {
     // Whole paths: grants and Landlock's rules name each file whole, a VM on macOS runs in
     // its sandbox's container rather than the caller's directory, and a snapshot records
     // its files by absolute path anyway.
@@ -2133,7 +2375,25 @@ fn start(cfg: &Config) -> Result<(Handle, Running), vm::StartError> {
         crate::confine::gpu_paths(&mut paths);
     }
     confine(&paths)?;
-    vm::start(cfg)
+    match report_to {
+        None => vm::start(cfg),
+        Some((scope, writer)) => {
+            let mut writer = Some(writer);
+            let mut report = |probe| {
+                let mut to = writer
+                    .take()
+                    .ok_or_else(|| shards_abi::gpu::GpuProbeError::Scope.to_string())?;
+                let frame = shards_abi::gpu::GpuReport { scope, probe }
+                    .encode()
+                    .map_err(|why| why.to_string())?;
+                to.write_all(frame.as_bytes()).map_err(|why| why.to_string())?;
+                // This sole VMM writer closes before any guest vCPU starts.
+                drop(to);
+                Ok(())
+            };
+            vm::start_gpu_report(cfg, &mut report)
+        }
+    }
 }
 
 /// A host whose microVMs take no snapshots, arm64 KVM's (D154), says so before a VM starts
@@ -2919,6 +3179,7 @@ fn supervise(
     console: Console,
     template: bool,
     said_to: Option<std::fs::File>,
+    input: InputOwner,
 ) -> ExitCode {
     let (handle, running) = match started {
         Ok(v) => v,
@@ -2928,7 +3189,9 @@ fn supervise(
         }
     };
     let terminal = (console == Console::Stdout).then(RawTerminal::enable).flatten();
-    forward_stdin(handle.clone());
+    if matches!(input, InputOwner::Console) {
+        forward_stdin(handle.clone());
+    }
     let reason = running.wait();
     drop(terminal);
     report_timing(&handle, None);
@@ -3007,6 +3270,173 @@ mod said {
         assert_eq!(
             last_said(said, Cut(2048)),
             format!(", its console's last lines, those before them lost past the 2048 bytes kept:{lines}")
+        );
+    }
+}
+
+#[cfg(test)]
+mod managed_report_tests {
+    use super::*;
+
+    fn parse(extra: &[&str]) -> Result<Run, String> {
+        let mut args = vec![
+            "--kernel",
+            "/never-opened/kernel",
+            "--gpu-device",
+            "pci:7:02:01.0",
+        ];
+        args.extend_from_slice(extra);
+        parse_run(args.into_iter().map(OsString::from))
+    }
+
+    #[test]
+    fn managed_report_requires_one_scope_and_complete_fresh_boot_selection() {
+        let scope = "03".repeat(16);
+        let target = if cfg!(windows) { "gpu-report" } else { "9" };
+        let run = parse(&["--gpu-report", target, "--gpu-report-scope", &scope]).unwrap();
+        assert_eq!(run.gpu_report.unwrap().scope, [3; 16]);
+        for bad in [
+            vec!["--gpu-report", target],
+            vec!["--gpu-report-scope", &scope],
+            vec![
+                "--gpu-report",
+                target,
+                "--gpu-report",
+                target,
+                "--gpu-report-scope",
+                &scope,
+            ],
+            vec![
+                "--gpu-report",
+                target,
+                "--gpu-report-scope",
+                &scope,
+                "--gpu-report-scope",
+                &scope,
+            ],
+            vec![
+                "--gpu-report",
+                target,
+                "--gpu-report-scope",
+                &scope,
+                "--gpu-probe",
+            ],
+            vec![
+                "--gpu-report",
+                target,
+                "--gpu-report-scope",
+                &scope,
+                "--rootfs",
+                "/image",
+                "--snapshot-dir",
+                "/template",
+            ],
+            vec![
+                "--gpu-report",
+                target,
+                "--gpu-report-scope",
+                &scope,
+                "--rootfs",
+                "/image",
+                "--warm",
+                target,
+            ],
+        ] {
+            assert!(parse(&bad).is_err(), "{bad:?}");
+        }
+        assert!(parse(&["--gpu-report", target, "--gpu-report-scope", &"00".repeat(16)]).is_err());
+        assert!(
+            parse(&[
+                "--gpu-report",
+                target,
+                "--gpu-report-scope",
+                &format!("+{}", "3".repeat(31))
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_run(
+                [
+                    "--kernel",
+                    "/kernel",
+                    "--gpu-report",
+                    target,
+                    "--gpu-report-scope",
+                    &scope
+                ]
+                .into_iter()
+                .map(OsString::from)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn managed_report_names_in_values_and_guest_argv_are_never_host_flags() {
+        let run = parse(&["--cmdline", "--gpu-report"]).unwrap();
+        assert!(run.gpu_report.is_none());
+        let run = parse(&["--rootfs", "/image", "--", "--gpu-report", "9"]).unwrap();
+        assert!(run.gpu_report.is_none());
+        #[cfg(unix)]
+        for value in ["+9", "0", "1", "2", "-1", "99999999999999999999999"] {
+            assert!(gpu_report_arg(value.into()).is_err());
+        }
+        #[cfg(windows)]
+        for value in ["9", "ask", "answer", "working-set", "said-to"] {
+            assert!(gpu_report_arg(value.into()).is_err());
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod lifeline_tests {
+    use super::*;
+    use std::os::fd::{AsRawFd as _, IntoRawFd as _, OwnedFd};
+
+    fn words(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(|word| OsString::from(*word)).collect()
+    }
+
+    /// D233: the pre-init gate observes the actual pipe's early EOF and
+    /// disposes its owned read end without spawning an input worker/VM/GPU.
+    #[test]
+    fn managed_lifeline_early_eof_refuses_before_initialization() {
+        let (reader, writer) = std::io::pipe().unwrap();
+        let fd = reader.into_raw_fd();
+        drop(writer);
+        let args = words(&["--host-managed", "--host-lifeline", &fd.to_string()]);
+        let result = arm_input(&args);
+        assert!(matches!(result, Err(why) if why.kind() == std::io::ErrorKind::BrokenPipe));
+    }
+
+    /// D233: ordinary stdin remains Console, flag-looking values/workload
+    /// arguments confer no lifecycle authority, and a retained writer is open.
+    #[test]
+    fn managed_lifeline_preserves_normal_input_and_requires_explicit_reader() {
+        for args in [
+            words(&["--kernel", "/kernel"]),
+            words(&["--host-managed", "--cmdline", "--host-lifeline"]),
+            words(&["--host-managed", "--", "--host-lifeline", "9"]),
+        ] {
+            assert!(matches!(arm_input(&args).unwrap(), InputOwner::Console));
+        }
+        for args in [
+            words(&["--host-lifeline", "9"]),
+            words(&["--host-managed", "--host-lifeline", "+9"]),
+            words(&["--host-managed", "--host-lifeline", "1"]),
+            words(&["--host-managed", "--host-lifeline", "9", "--host-lifeline", "10"]),
+        ] {
+            assert!(lifeline_fd(&args).is_err());
+        }
+        let (reader, writer) = std::io::pipe().unwrap();
+        let reader = std::fs::File::from(OwnedFd::from(reader));
+        lifeline_open(&reader).unwrap();
+        let raw = reader.as_raw_fd();
+        assert!(raw >= 3);
+        drop(writer);
+        assert_eq!(
+            lifeline_open(&reader).unwrap_err().kind(),
+            std::io::ErrorKind::BrokenPipe
         );
     }
 }

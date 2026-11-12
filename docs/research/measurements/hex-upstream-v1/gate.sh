@@ -32,7 +32,14 @@ run() {
 	shift
 	local log=$out/$step.log
 	{ echo "\$ $*"; git rev-parse HEAD; git status --porcelain | head -20; } >"$log"
-	systemd-run --user --scope -q -p MemoryMax=24G env $(zig_env $gnu) "$@" >>"$log" 2>&1
+	# zig's cc builds C for clippy as scripts/lint does; a test that links C (the shards
+	# binary's, aws-lc's) takes the host's cc, as zig instruments a debug build with UBSan,
+	# whose runtime the link lacks.
+	if [ "$step" = test-shards-unit ]; then
+		systemd-run --user --scope -q -p MemoryMax=24G "$@" >>"$log" 2>&1
+	else
+		systemd-run --user --scope -q -p MemoryMax=24G env $(zig_env $gnu) "$@" >>"$log" 2>&1
+	fi
 	local status=$?
 	printf '%-18s exit %s  ' "$step" "$status"
 	grep -E '^test result:|^error(\[|:)|warning: unused|FAILED|panicked' "$log" | tail -4 | tr '\n' ' '
@@ -52,7 +59,9 @@ for step in "$@"; do
 	test-abi) run test-abi cargo test --no-fail-fast -j4 --target $gnu -p shards-abi ;;
 	test-vmm) run test-vmm cargo test --no-fail-fast -j4 --target $gnu -p shards-vmm --lib ;;
 	test-gpu-device) run test-gpu-device cargo test --no-fail-fast -j4 --target $gnu -p shards-vmm --lib devices::virtio::gpu:: ;;
-	test-shards-unit) run test-shards-unit cargo test --no-fail-fast -j4 --target $gnu -p shards --bin shards ;;
+	# The binary's modules these ports touch; its whole suite is ROOT's, in test-release, where
+	# a debug build's deeper frames overflow a test thread's stack (thread 'policy').
+	test-shards-unit) run test-shards-unit cargo test --no-fail-fast -j4 --target $gnu -p shards --bin shards -- vm_run:: spec:: cli:: ;;
 	*) echo "unknown step $step" >&2 ;;
 	esac
 done
