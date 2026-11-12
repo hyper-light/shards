@@ -1,0 +1,19 @@
+# command: python3 -I docs/research/measurements/audit-fix-host-v1/terminal-fixture.py /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/deps/shards-590c76d8cc8bee5d daemon::managed::terminal_order_tests::native_readonly_file_error_keeps_logical_completion_and_retires_driver /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/audit-fixtures/readonly-1 20000
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: f6258de43e66aeebee25affd50d724d926fb8c5e
+# source diff vs HEAD (excluding this evidence directory): 508 lines, sha256 d3ed3f76c556b76fd289f30a7f257404e8a2d7a16186e921718e2979a412f53f
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T21:19:57Z
+argv ['/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/deps/shards-590c76d8cc8bee5d', '--exact', 'daemon::managed::terminal_order_tests::native_readonly_file_error_keeps_logical_completion_and_retires_driver', '--ignored', '--nocapture', '--test-threads=1'] prefix None
+
+running 1 test
+test daemon::managed::terminal_order_tests::native_readonly_file_error_keeps_logical_completion_and_retires_driver ... TERMINAL_ORDER event=main-enter case=readonly-file semantics=empty-unsubscribed
+shards daemon 10126: managed output metadata member 0 channel 1: Bad file descriptor (os error 9)
+TERMINAL_ORDER event=driver-return result=Ok(())
+TERMINAL_ORDER result=pass case=readonly-file bytes=0
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 706 filtered out; finished in 0.04s
+
+metadata bytes b''
+# exit: 0 at 2026-11-11T21:19:57Z

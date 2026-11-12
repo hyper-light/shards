@@ -1,0 +1,24 @@
+# command: lockf /tmp/g121-mac.lock cargo test -j2 -p shards-vm-process --bin shards-vm -- vm_run::
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: d1f892fc40c555a82bc34ef02a1e124f1d692bde
+# source diff vs HEAD (excluding this evidence directory): 285 lines, sha256 d2b0d9ce380704f7f74f5a9e283d6669e546834f28664d08ee721602c2b1616e
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T21:27:29Z
+# free GiB on /Users/adalundhe: 34
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/vmm)
+   Compiling shards-vm-process v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/vm-process)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.97s
+     Running unittests src/main.rs (target/debug/deps/shards_vm-9f74ba2411604028)
+
+running 7 tests
+test vm_run::tests::test_functions_are_placed_as_asked ... ok
+test vm_run::said::a_guests_last_words_move_no_terminal ... ok
+test vm_run::tests::memory_max_is_what_the_guest_may_have_in_all ... ok
+test vm_run::tests::paths_are_taken_in_any_bytes ... ok
+test vm_run::tests::valued_flags_need_their_values ... ok
+test vm_run::tests::a_boot_into_an_image_keeps_its_options_the_kernels ... ok
+test vm_run::tests::a_served_share_takes_its_socket_once ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.01s
+
+# exit: 0 at 2026-11-11T21:27:34Z

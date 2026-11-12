@@ -69,8 +69,8 @@ impl From<String> for StartError {
 mod aarch64;
 #[cfg(all(hv, target_arch = "aarch64"))]
 use aarch64 as machine;
-#[cfg(all(hv, target_arch = "x86_64"))]
 mod cmdline;
+pub use cmdline::with_kernel_options;
 #[cfg(all(hv, target_arch = "x86_64"))]
 mod x86_64;
 #[cfg(all(hv, target_arch = "x86_64"))]
@@ -1059,15 +1059,15 @@ impl gpu::Window for crate::hv::Window {
 /// byte a kernel writes to its console is an exit or two, and a boot writes some 18 KB: of a
 /// cold boot's kernel to its panic with no root, 1.64 s of 2.14 on CI's windows-2022, 0.99 of
 /// 1.49 on windows-2025, and 37 of 65 ms on an M5 Max's HVF (PM M376). What it says stays
-/// in its ring buffer, which `dmesg` reads.
+/// in its ring buffer, which `dmesg` reads. Only the kernel's own words name a level, and it
+/// is told before init's arguments, where it reads it ([`with_kernel_options`]).
 #[cfg(hv)]
 fn kernel_cmdline(cfg: &Config) -> std::borrow::Cow<'_, str> {
-    let told = cfg
-        .cmdline
+    let told = cmdline::kernel_part(&cfg.cmdline)
         .split_whitespace()
         .any(|word| word == "quiet" || word.starts_with("loglevel="));
     if cfg.console == Console::Discard && !told {
-        format!("{} quiet", cfg.cmdline).into()
+        with_kernel_options(&cfg.cmdline, ["quiet"]).into()
     } else {
         cfg.cmdline.as_str().into()
     }
@@ -2776,6 +2776,25 @@ mod tests {
         // A word that only starts with one is no level.
         let other = format!("{base} quietly loglevels=1");
         assert_eq!(told(&other, Console::Discard), format!("{other} quiet"));
+    }
+
+    /// The kernel is told `quiet` before Linux's init-argument delimiter, where it reads it,
+    /// and only its own words tell it a level: past `--` they are init's arguments, which it
+    /// keeps whole (finding 3 of audit-fix-host-v1: `quiet` became init's last argument).
+    #[test]
+    fn quiet_goes_before_inits_arguments_which_name_no_level() {
+        let told = |cmdline: &str| {
+            let mut cfg = Config::new("k".into(), None);
+            cfg.cmdline = cmdline.into();
+            cfg.console = Console::Discard;
+            kernel_cmdline(&cfg).into_owned()
+        };
+        assert_eq!(
+            told("console=ttyS0 -- managed-network capabilities"),
+            "console=ttyS0 quiet -- managed-network capabilities"
+        );
+        assert_eq!(told("console=ttyS0 -- quiet"), "console=ttyS0 quiet -- quiet");
+        assert_eq!(told("loglevel=7 -- x"), "loglevel=7 -- x");
     }
 
     /// BARs are placed from the window's start, each at the next multiple of its size,

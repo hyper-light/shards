@@ -1,0 +1,39 @@
+# command: lockf /tmp/g121-mac.lock env SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/audit-placeholders/shards-init SHARDS_SERVER_BINARY=/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/audit-placeholders/shards-server cargo test -j2 -p shards --bin shards -- daemon::tests::metrics_ daemon::health::
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: 759f0312bb9acada05f8e8e47f82f3b60df65c3e
+# source diff vs HEAD (excluding this evidence directory): 418 lines, sha256 c3ff5bfb68c8547b1597c1bdc27d11f3b519996da92f164e028e2f198e09b577
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T21:48:44Z
+# free GiB on /Users/adalundhe: 35
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling shards v0.7.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/shards)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.73s
+     Running unittests src/main.rs (target/debug/deps/shards-590c76d8cc8bee5d)
+
+running 11 tests
+test daemon::health::tests::output_is_kept_to_its_limit ... ok
+test daemon::health::tests::probes_come_at_their_intervals ... ok
+test daemon::health::tests::checks_run_their_command_or_none ... ok
+test daemon::health::tests::the_last_five_results_are_kept ... ok
+test daemon::health::tests::probe_results_move_the_health_status ... ok
+test daemon::health::tests::the_start_period_forgives_failures_until_the_first_success ... ok
+test daemon::tests::metrics_in_a_paused_providers_microvm_are_refused_at_once ... ok
+test daemon::tests::metrics_errors_are_passed_on_as_they_come ... ok
+test daemon::tests::metrics_refusals_say_why ... ok
+test daemon::health::tests::an_exec_is_waited_for_as_long_as_its_microvm_runs ... ok
+test daemon::tests::metrics_whose_microvm_runs_nothing_are_ended ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 700 filtered out; finished in 10.06s
+
+# exit: 0 at 2026-11-11T21:49:18Z

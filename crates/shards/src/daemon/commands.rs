@@ -697,7 +697,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Ok(p) => p,
             Err(e) => return refuse(format!("Error exporting container {given}: {e}")),
         };
-        let ended = self.exec_on(&id, &spec, false, [null.as_fd(), out.as_fd(), into.as_fd()]);
+        let ended = self.exec_on(
+            &id,
+            &spec,
+            false,
+            [null.as_fd(), out.as_fd(), into.as_fd()],
+            super::health::Wait::Ending,
+        );
         drop(into);
         let mut why = String::new();
         let _ = said.read_to_string(&mut why);
@@ -786,7 +792,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
             } else {
                 [null.as_fd(), file.as_fd(), into.as_fd()]
             };
-            let ended = self.exec_on(&id, &spec, kind == builtin::EXTRACT, stdio);
+            let ended = self.exec_on(
+                &id,
+                &spec,
+                kind == builtin::EXTRACT,
+                stdio,
+                super::health::Wait::Ending,
+            );
             drop(into);
             let mut said = Vec::new();
             let _ = errs.read_to_end(&mut said);

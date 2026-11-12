@@ -1,0 +1,33 @@
+# command: lockf /tmp/g121-mac.lock cargo test -j2 -p shards-vmm --lib -- vm::tests::quiet_goes_before_inits_arguments_which_name_no_level vm::tests::a_console_nobody_reads_is_told_only_errors
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: d1f892fc40c555a82bc34ef02a1e124f1d692bde
+# source diff vs HEAD (excluding this evidence directory): 280 lines, sha256 83c9ee0e97c44711e32d630de04ac73664f49c3515187a07152438e1d03b4dbc
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T21:27:05Z
+# free GiB on /Users/adalundhe: 34
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.63s
+     Running unittests src/lib.rs (target/debug/deps/shards_vmm-4c1e918450b93796)
+
+running 2 tests
+test vm::tests::a_console_nobody_reads_is_told_only_errors ... ok
+test vm::tests::quiet_goes_before_inits_arguments_which_name_no_level ... FAILED
+
+failures:
+
+---- vm::tests::quiet_goes_before_inits_arguments_which_name_no_level stdout ----
+
+thread 'vm::tests::quiet_goes_before_inits_arguments_which_name_no_level' (66356490) panicked at crates/vmm/src/vm/mod.rs:2792:9:
+assertion `left == right` failed
+  left: "console=ttyS0 -- managed-network capabilities quiet"
+ right: "console=ttyS0 quiet -- managed-network capabilities"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    vm::tests::quiet_goes_before_inits_arguments_which_name_no_level
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 406 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-vmm --lib`
+# exit: 101 at 2026-11-11T21:27:11Z

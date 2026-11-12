@@ -1,0 +1,21 @@
+# command: lockf /tmp/g121-mac.lock cargo test -j2 -p shards-vmm --lib -- vm::cmdline:: vm::tests::quiet_goes_before_inits_arguments_which_name_no_level vm::tests::a_console_nobody_reads_is_told_only_errors
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: d1f892fc40c555a82bc34ef02a1e124f1d692bde
+# source diff vs HEAD (excluding this evidence directory): 293 lines, sha256 58949761b5e9c1378dceeecf579b9129963bc5caf5fdc5b7444901456920c06e
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T21:38:11Z
+# free GiB on /Users/adalundhe: 33
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.48s
+     Running unittests src/lib.rs (target/debug/deps/shards_vmm-4c1e918450b93796)
+
+running 5 tests
+test vm::cmdline::tests::delimiter_matches_kernel_quotes_and_values ... ok
+test vm::cmdline::tests::the_kernels_part_ends_at_the_first_delimiter ... ok
+test vm::cmdline::tests::kernel_options_precede_the_first_delimiter_on_every_architecture ... ok
+test vm::tests::quiet_goes_before_inits_arguments_which_name_no_level ... ok
+test vm::tests::a_console_nobody_reads_is_told_only_errors ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 403 filtered out; finished in 0.00s
+
+# exit: 0 at 2026-11-11T21:38:14Z

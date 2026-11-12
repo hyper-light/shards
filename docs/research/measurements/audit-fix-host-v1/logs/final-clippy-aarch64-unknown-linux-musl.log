@@ -1,0 +1,39 @@
+# Kiln run r391 on 451397fcc585f7f7cb9aaf00e42064bb (adacachy, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g, timeout_s 600,
+#   cross-checking aarch64-unknown-linux-musl with zig 0.17.0 as its C compiler through scripts/zig-cc (as scripts/lint does; this
+#   Mac's pinned zig is 0.16.0).
+# full log on the runner: target/audit-logs/final-clippy-aarch64-unknown-linux-musl.log, 16989 bytes,
+#   sha256 3520c0da31c7431fd5cbfa14cde3646b5ae6db8cd5c37d0d93d06ecac884afba.
+# Below: its lines other than cargo's 132 "Checking"/"Compiling" progress lines (whose own sha256 is
+#   57830918594cb2ae0eb36b117b23a28535b164d32bdaca9daa14e3ea9f39cfc4), verbatim.
+# Note: aws-lc's neon_sha3_check feature probe fails under zig 0.17 ("unknown CPU: 'armv8.4'"), so aws-lc skips three
+#   SHA-3 assembly files; that is the vendored C build's own fallback, not a lint result of this branch.
+# host Linux 7.2.9-2-cachyos x86_64
+# head 7f9c6f38686099eb2a344ea7f6184f73f3b30228
+# uncommitted: 
+rustc 1.98.1 (48a229cea 2026-09-01)
+0.17.0
+# command: CC_aarch64_unknown_linux_musl=$PWD/scripts/zig-cc AR_aarch64_unknown_linux_musl=$PWD/scripts/zig-ar ZIG_TARGET=aarch64-linux-musl SHARDS_HELPERS=skip SHARDS_INIT_BINARY=$PWD/target/audit-placeholders/guest SHARDS_SERVER_BINARY=$PWD/target/audit-placeholders/guest cargo clippy -j2 -p shards -p shards-remote -p shards-vmm -p shards-vm-process --all-targets --target aarch64-unknown-linux-musl -- -D warnings
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_unknown_linux_musl
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/target/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-3beed23ce7e24585/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_aarch64_unknown_linux_musl': '/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_aarch64_unknown_linux_musl: /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/target/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-3beed23ce7e24585/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/target/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-3beed23ce7e24585/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: info: available CPUs for architecture 'aarch64':
+warning: aws-lc-sys@0.45.0:  (zig's list of aarch64 CPU names, a64fx to xgene1: 98 lines, omitted here; in the full log)
+warning: aws-lc-sys@0.45.0: 
+warning: aws-lc-sys@0.45.0: error: unknown CPU: 'armv8.4'
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' failed - Err(Error { kind: ToolExecError, message: "command did not execute successfully (status code exit status: 1): LC_ALL=\"C\" \"/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/scripts/zig-cc\" \"-O0\" \"-ffunction-sections\" \"-fdata-sections\" \"-fPIC\" \"-g\" \"-gdwarf-4\" \"-fno-omit-frame-pointer\" \"-mno-omit-leaf-frame-pointer\" \"--target=aarch64-unknown-linux-musl\" \"-Werror\" \"-Wall\" \"-Wextra\" \"-march=armv8.4-a+sha3\" \"-Wno-unused-parameter\" \"-o\" \"/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/target/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-3beed23ce7e24585/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o\" \"-c\" \"/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/vendor/aws-lc-sys/aws-lc/tests/compiler_features_tests/neon_sha3_check.c\"" }).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/target/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-3beed23ce7e24585/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: Skipping due to missing compiler features: "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/vendor/aws-lc-sys/aws-lc/third_party/s2n-bignum/s2n-bignum-imported/arm/sha3/sha3_keccak2_f1600.S"
+warning: aws-lc-sys@0.45.0: Skipping due to missing compiler features: "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/vendor/aws-lc-sys/aws-lc/third_party/s2n-bignum/s2n-bignum-imported/arm/sha3/sha3_keccak4_f1600_alt2.S"
+warning: aws-lc-sys@0.45.0: Skipping due to missing compiler features: "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/vendor/aws-lc-sys/aws-lc/third_party/s2n-bignum/s2n-bignum-imported/arm/sha3/sha3_keccak_f1600_alt.S"
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 02s
+# exit 0

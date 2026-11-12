@@ -1,0 +1,8 @@
+# Provenance of final-clippy-x86_64-unknown-linux-musl.raw.log, the verbatim log of kiln run r377.
+# runner: 451397fcc585f7f7cb9aaf00e42064bb (adacachy, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g, timeout_s 600;
+#   zig 0.17.0 as the musl target's C compiler through scripts/zig-cc, as scripts/lint does (CLAUDE.md pins zig 0.16.0 on this Mac).
+# raw log: 11516 bytes, sha256 65278e86f83bba5cf64281ef585681047ee1a44c7f9188017573a33fb134d3f1, equal to the runner's own
+#   `sha256sum target/audit-logs/final-clippy-x86_64-unknown-linux-musl.log`.
+# source: committed 3c46eb7a91e7addf32b543b84adb4d95099fa605 with no uncommitted change (before the tests' portability fix,
+#   which changes test code only; its unix branch is the same conversion).
+# scope: --all-targets of shards, shards-remote, shards-vmm and shards-vm-process for x86_64-unknown-linux-musl. Exit 0.

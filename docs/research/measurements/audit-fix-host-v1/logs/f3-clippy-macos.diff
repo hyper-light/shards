@@ -1,0 +1,293 @@
+diff --git a/crates/shards/src/vm_run.rs b/crates/shards/src/vm_run.rs
+index e4f8c05f4..46f476a0f 100644
+--- a/crates/shards/src/vm_run.rs
++++ b/crates/shards/src/vm_run.rs
+@@ -1191,14 +1191,21 @@ fn boot_into(cfg: &mut Config, rootfs: PathBuf, template: bool) {
+     // (EPERM, kernel/sched/syscalls.c); `rt_group_sched=0` (Linux 6.16) leaves real-time
+     // time to the guest's own budget, which a run's `--cpu-rt-period` and
+     // `--cpu-rt-runtime` set.
+-    cfg.cmdline
+-        .push_str(" quiet noautogroup rt_group_sched=0 shards_root=/dev/pmem0");
+     // Its CPUs past the first brought online by shards-init where its backend's boots wait
+     // on them (PM M379).
+-    cfg.cmdline.push_str(shards_vmm::vm::late_cpus_cmdline(cfg.vcpus));
+-    if template {
+-        cfg.cmdline.push_str(" shards_template=1");
+-    }
++    // Each the kernel's, before init's arguments where its command line has them (`--`):
++    // the kernel reads them there, and init finds `shards_root` and `shards_template` in
++    // its environment.
++    let options = [
++        "quiet",
++        "noautogroup",
++        "rt_group_sched=0",
++        "shards_root=/dev/pmem0",
++    ]
++    .into_iter()
++    .chain(shards_vmm::vm::late_cpus_cmdline(cfg.vcpus).split_whitespace())
++    .chain(template.then_some("shards_template=1"));
++    cfg.cmdline = shards_vmm::vm::with_kernel_options(&cfg.cmdline, options);
+ }
+ 
+ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
+@@ -2954,6 +2961,34 @@ mod tests {
+             assert!(e.contains(why), "{bad}: {e}");
+         }
+     }
++
++    /// A boot into an image tells the kernel its options before Linux's init-argument
++    /// delimiter, where it reads them and where init finds those it takes from its
++    /// environment (`shards_root`, `shards_template`); a command line given `--` keeps what
++    /// follows it init's, whole (finding 3 of audit-fix-host-v1: they became init's
++    /// arguments). One without the delimiter has them appended, as it always had.
++    #[test]
++    fn a_boot_into_an_image_keeps_its_options_the_kernels() {
++        let booted = |cmdline: &str, template: bool| {
++            let mut cfg = Config::new(PathBuf::from("k"), None);
++            cfg.cmdline = cmdline.into();
++            boot_into(&mut cfg, PathBuf::from("rootfs"), template);
++            cfg.cmdline
++        };
++        let options = "quiet noautogroup rt_group_sched=0 shards_root=/dev/pmem0";
++        assert_eq!(
++            booted("console=ttyS0 -- managed-network capabilities", true),
++            format!("console=ttyS0 {options} shards_template=1 -- managed-network capabilities")
++        );
++        assert_eq!(
++            booted("console=ttyS0 \"--\"\tx  'y z'", false),
++            format!("console=ttyS0 {options} \"--\"\tx  'y z'")
++        );
++        assert_eq!(
++            booted("console=ttyS0 earlycon panic=-1", true),
++            format!("console=ttyS0 earlycon panic=-1 {options} shards_template=1")
++        );
++    }
+     use std::os::unix::ffi::OsStrExt as _;
+ 
+     /// Each flag `spec::RUN_VALUED` names is one `run` reads a value after: given last, with none,
+diff --git a/crates/vmm/src/vm/cmdline.rs b/crates/vmm/src/vm/cmdline.rs
+index 942fa3c2b..b8b5e8ff8 100644
+--- a/crates/vmm/src/vm/cmdline.rs
++++ b/crates/vmm/src/vm/cmdline.rs
+@@ -1,14 +1,66 @@
+-//! Required x86 kernel options stay before Linux's init-argument delimiter.
++//! Kernel options stay before Linux's init-argument delimiter, on every architecture: the
++//! x86 machine's required options, `quiet`, and those of a boot into an image.
+ 
++#[cfg(all(hv, target_arch = "x86_64"))]
+ use crate::arch::x86_64::{boot::BootError, layout};
+ 
+-/// Keeps the existing append order without moving machine options into init's argv.
++/// `told` with `options` where Linux's kernel reads them: before its first init-argument
++/// delimiter, each followed by a space, so that the delimiter and everything after it stay
++/// init's, byte for byte; or, with no delimiter, appended, each after a space, as shards
++/// always appended them.
++pub fn with_kernel_options<'o>(told: &str, options: impl IntoIterator<Item = &'o str>) -> String {
++    let mut composed = String::new();
++    let Ok(()) = compose(told, options, &mut |part| {
++        composed.push_str(part);
++        Ok::<(), std::convert::Infallible>(())
++    });
++    composed
++}
++
++/// The kernel's own part of `told`: what precedes its first init-argument delimiter.
++#[cfg(hv)]
++pub(super) fn kernel_part(told: &str) -> &str {
++    split(told).map_or(told, |(kernel, _)| kernel)
++}
++
++/// `told` at its first init-argument delimiter: the kernel's part, and init's from the
++/// delimiter on. The delimiter starts at an ASCII byte, so both are whole UTF-8.
++fn split(told: &str) -> Option<(&str, &str)> {
++    let at = init_delimiter(told)?;
++    Some((told.get(..at)?, told.get(at..)?))
++}
++
++/// Hands `write` the parts of `told` with `options` placed as [`with_kernel_options`] says.
++fn compose<'o, E>(
++    told: &str,
++    options: impl IntoIterator<Item = &'o str>,
++    write: &mut impl FnMut(&str) -> Result<(), E>,
++) -> Result<(), E> {
++    let Some((kernel, init)) = split(told) else {
++        write(told)?;
++        for option in options {
++            write(" ")?;
++            write(option)?;
++        }
++        return Ok(());
++    };
++    write(kernel)?;
++    for option in options {
++        write(option)?;
++        write(" ")?;
++    }
++    write(init)
++}
++
++/// [`with_kernel_options`] of the x86 machine's required options, into the boot protocol's
++/// command line: keeps the existing append order without moving them into init's argv.
++#[cfg(all(hv, target_arch = "x86_64"))]
+ pub(super) fn with_machine_options<'a>(
+     told: &str,
+     options: &[Option<&str>],
+     bytes: &'a mut [u8; layout::CMDLINE_MAX],
+ ) -> Result<&'a str, BootError> {
+-    let options = options.iter().flatten();
++    let options = options.iter().flatten().copied();
+     let len = options.clone().try_fold(told.len(), |len, option| {
+         len.checked_add(1)?.checked_add(option.len())
+     });
+@@ -26,7 +78,7 @@ pub(super) fn with_machine_options<'a>(
+         return Err(failure());
+     }
+     let mut used = 0usize;
+-    let mut write = |part: &str| -> Result<(), BootError> {
++    compose(told, options, &mut |part: &str| -> Result<(), BootError> {
+         let end = used.checked_add(part.len()).ok_or_else(failure)?;
+         bytes
+             .get_mut(used..end)
+@@ -34,21 +86,7 @@ pub(super) fn with_machine_options<'a>(
+             .copy_from_slice(part.as_bytes());
+         used = end;
+         Ok(())
+-    };
+-    if let Some(at) = init_delimiter(told) {
+-        write(told.get(..at).ok_or_else(failure)?)?;
+-        for option in options {
+-            write(option)?;
+-            write(" ")?;
+-        }
+-        write(told.get(at..).ok_or_else(failure)?)?;
+-    } else {
+-        write(told)?;
+-        for option in options {
+-            write(" ")?;
+-            write(option)?;
+-        }
+-    }
++    })?;
+     std::str::from_utf8(bytes.get(..used).ok_or_else(failure)?).map_err(|_| failure())
+ }
+ 
+@@ -138,6 +176,43 @@ mod tests {
+         }
+     }
+ 
++    /// Options go before the first delimiter, each followed by a space, init's part kept byte
++    /// for byte; without a delimiter they are appended as shards always appended them, each
++    /// after a space; on every architecture.
++    #[test]
++    fn kernel_options_precede_the_first_delimiter_on_every_architecture() {
++        let options = ["quiet", "shards_root=/dev/pmem0"];
++        for delimiter in ["--", "\"--\""] {
++            let prefix = "console=ttyS0 shards_root=/x\t";
++            let tail = format!("{delimiter}\tmanaged-network  'x y' \"λ\" \\ -- shards_root=/y\n");
++            assert_eq!(
++                with_kernel_options(&format!("{prefix}{tail}"), options),
++                format!("{prefix}quiet shards_root=/dev/pmem0 {tail}")
++            );
++        }
++        assert_eq!(
++            with_kernel_options("-- init", options),
++            "quiet shards_root=/dev/pmem0 -- init"
++        );
++        for (told, expected) in [
++            ("", " quiet shards_root=/dev/pmem0"),
++            ("a  ", "a   quiet shards_root=/dev/pmem0"),
++            ("x=\"--\" --=v", "x=\"--\" --=v quiet shards_root=/dev/pmem0"),
++        ] {
++            assert_eq!(with_kernel_options(told, options), expected);
++        }
++        assert_eq!(with_kernel_options("a -- b", []), "a -- b");
++    }
++
++    #[cfg(hv)]
++    #[test]
++    fn the_kernels_part_ends_at_the_first_delimiter() {
++        assert_eq!(kernel_part("a \"--\" b -- c"), "a ");
++        assert_eq!(kernel_part("a b"), "a b");
++        assert_eq!(kernel_part("--"), "");
++    }
++
++    #[cfg(all(hv, target_arch = "x86_64"))]
+     #[test]
+     fn required_options_precede_only_the_first_delimiter_and_keep_raw_tail() {
+         let options = [Some("reboot=k"), Some("pci=off"), Some("cpuhp.parallel=0")];
+@@ -159,6 +234,7 @@ mod tests {
+         );
+     }
+ 
++    #[cfg(all(hv, target_arch = "x86_64"))]
+     #[test]
+     fn without_delimiter_existing_order_and_spacing_are_unchanged() {
+         let mut bytes = [0; layout::CMDLINE_MAX];
+@@ -186,6 +262,7 @@ mod tests {
+         );
+     }
+ 
++    #[cfg(all(hv, target_arch = "x86_64"))]
+     #[test]
+     fn command_line_max_includes_the_nul_and_overflow_is_typed() {
+         let options = [Some("reboot=k"), Some("pci=off")];
+diff --git a/crates/vmm/src/vm/mod.rs b/crates/vmm/src/vm/mod.rs
+index a075a0f6f..70f7e5496 100644
+--- a/crates/vmm/src/vm/mod.rs
++++ b/crates/vmm/src/vm/mod.rs
+@@ -69,8 +69,8 @@ impl From<String> for StartError {
+ mod aarch64;
+ #[cfg(all(hv, target_arch = "aarch64"))]
+ use aarch64 as machine;
+-#[cfg(all(hv, target_arch = "x86_64"))]
+ mod cmdline;
++pub use cmdline::with_kernel_options;
+ #[cfg(all(hv, target_arch = "x86_64"))]
+ mod x86_64;
+ #[cfg(all(hv, target_arch = "x86_64"))]
+@@ -1059,15 +1059,15 @@ impl gpu::Window for crate::hv::Window {
+ /// byte a kernel writes to its console is an exit or two, and a boot writes some 18 KB: of a
+ /// cold boot's kernel to its panic with no root, 1.64 s of 2.14 on CI's windows-2022, 0.99 of
+ /// 1.49 on windows-2025, and 37 of 65 ms on an M5 Max's HVF (PM M376). What it says stays
+-/// in its ring buffer, which `dmesg` reads.
++/// in its ring buffer, which `dmesg` reads. Only the kernel's own words name a level, and it
++/// is told before init's arguments, where it reads it ([`with_kernel_options`]).
+ #[cfg(hv)]
+ fn kernel_cmdline(cfg: &Config) -> std::borrow::Cow<'_, str> {
+-    let told = cfg
+-        .cmdline
++    let told = cmdline::kernel_part(&cfg.cmdline)
+         .split_whitespace()
+         .any(|word| word == "quiet" || word.starts_with("loglevel="));
+     if cfg.console == Console::Discard && !told {
+-        format!("{} quiet", cfg.cmdline).into()
++        with_kernel_options(&cfg.cmdline, ["quiet"]).into()
+     } else {
+         cfg.cmdline.as_str().into()
+     }
+@@ -2778,6 +2778,25 @@ mod tests {
+         assert_eq!(told(&other, Console::Discard), format!("{other} quiet"));
+     }
+ 
++    /// The kernel is told `quiet` before Linux's init-argument delimiter, where it reads it,
++    /// and only its own words tell it a level: past `--` they are init's arguments, which it
++    /// keeps whole (finding 3 of audit-fix-host-v1: `quiet` became init's last argument).
++    #[test]
++    fn quiet_goes_before_inits_arguments_which_name_no_level() {
++        let told = |cmdline: &str| {
++            let mut cfg = Config::new("k".into(), None);
++            cfg.cmdline = cmdline.into();
++            cfg.console = Console::Discard;
++            kernel_cmdline(&cfg).into_owned()
++        };
++        assert_eq!(
++            told("console=ttyS0 -- managed-network capabilities"),
++            "console=ttyS0 quiet -- managed-network capabilities"
++        );
++        assert_eq!(told("console=ttyS0 -- quiet"), "console=ttyS0 quiet -- quiet");
++        assert_eq!(told("loglevel=7 -- x"), "loglevel=7 -- x");
++    }
++
+     /// BARs are placed from the window's start, each at the next multiple of its size,
+     /// and one past the window's end is refused, the window as it was.
+     #[test]

@@ -408,7 +408,13 @@ fn cgroup_metrics_use_declared_scopes_without_merging_member_output() {
         let unavailable = fixture.command(&["read", "metrics", &id], WITHIN);
         save("paused.stdout", unavailable.stdout.as_bytes());
         save("paused.stderr", unavailable.stderr.as_bytes());
-        assert_ne!(unavailable.status, Some(0), "{unavailable}");
+        assert_eq!(unavailable.status, Some(1), "{unavailable}");
+        assert!(
+            unavailable.stderr.contains(&format!(
+                "shards: read metrics: {id} is paused: its metrics can be read once it is unpaused"
+            )),
+            "{unavailable}"
+        );
         assert!(
             unavailable.stdout.is_empty(),
             "no fresh cached artifact while paused"

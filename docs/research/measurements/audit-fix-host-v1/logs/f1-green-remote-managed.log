@@ -1,0 +1,52 @@
+# command: lockf /tmp/g121-mac.lock cargo test -j2 -p shards-remote --lib -- managed::
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: bff3015182ad754274f1048ce393ac12cb6cd91f
+# source diff vs HEAD (excluding this evidence directory): 479 lines, sha256 eb79cd62b493437c8618bb249b55ba9042d3cf1b46361fb413ce61d9900a8969
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T21:02:44Z
+# free GiB on /Users/adalundhe: 42
+   Compiling aws-lc-sys v0.45.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/vendor/aws-lc-sys)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal_prefixed
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-36ab4b99a2242c95/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-36ab4b99a2242c95/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-36ab4b99a2242c95/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-36ab4b99a2242c95/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling aws-lc-rs v1.18.1 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/vendor/aws-lc-rs)
+   Compiling rustls-webpki v0.103.16
+   Compiling hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling shards-remote v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/remote)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 07s
+     Running unittests src/lib.rs (target/debug/deps/shards_remote-8029ec18f05f9971)
+
+running 18 tests
+test managed::tests::refusal_categories_preserve_scope_and_stale_generation ... ok
+test managed::tests::a_record_cannot_be_acked_before_it_was_sent ... ok
+test managed::tests::terminal_finish_never_revives_an_aborted_slot_or_ending ... ok
+test managed::tests::terminal_ack_notification_exposes_finished_after_releasing_shared ... ok
+test managed::tests::terminal_observations_do_not_infer_completion_from_equal_cursors ... ok
+test managed::tests::only_a_contiguous_application_ack_returns_credit ... ok
+test managed::tests::observer_loss_retains_only_the_unacknowledged_record_for_the_same_cursor ... ok
+test managed::tests::replay_and_forward_cursors_do_not_subscribe_to_a_new_stream ... ok
+test managed::tests::finishing_releases_the_last_record_only_after_its_application_ack ... ok
+test managed::tests::controls_preserve_scope_and_cursor_across_every_split ... ok
+test managed::tests::rejection_debug_never_prints_captured_content ... ok
+test managed::tests::control_lengths_and_tags_are_refused_before_payload_allocation ... ok
+test managed::tests::capture_reconnect_preserves_the_borrowed_record_and_cursor ... ok
+test managed::tests::finish_after_the_native_driver_drops_keeps_the_disconnect_error ... ok
+test managed::tests::finish_coalesces_a_queued_wake_for_an_empty_stream ... ok
+test managed::tests::growth_prepares_real_storage_and_refusal_preserves_the_previous_window ... ok
+test managed::tests::finish_coalesces_the_queued_record_wake_without_discarding_the_record ... ok
+test managed::tests::prepared_capture_storage_is_transferred_and_recycled_after_ack ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+# exit: 0 at 2026-11-11T21:03:52Z

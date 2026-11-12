@@ -1191,14 +1191,21 @@ fn boot_into(cfg: &mut Config, rootfs: PathBuf, template: bool) {
     // (EPERM, kernel/sched/syscalls.c); `rt_group_sched=0` (Linux 6.16) leaves real-time
     // time to the guest's own budget, which a run's `--cpu-rt-period` and
     // `--cpu-rt-runtime` set.
-    cfg.cmdline
-        .push_str(" quiet noautogroup rt_group_sched=0 shards_root=/dev/pmem0");
     // Its CPUs past the first brought online by shards-init where its backend's boots wait
     // on them (PM M379).
-    cfg.cmdline.push_str(shards_vmm::vm::late_cpus_cmdline(cfg.vcpus));
-    if template {
-        cfg.cmdline.push_str(" shards_template=1");
-    }
+    // Each the kernel's, before init's arguments where its command line has them (`--`):
+    // the kernel reads them there, and init finds `shards_root` and `shards_template` in
+    // its environment.
+    let options = [
+        "quiet",
+        "noautogroup",
+        "rt_group_sched=0",
+        "shards_root=/dev/pmem0",
+    ]
+    .into_iter()
+    .chain(shards_vmm::vm::late_cpus_cmdline(cfg.vcpus).split_whitespace())
+    .chain(template.then_some("shards_template=1"));
+    cfg.cmdline = shards_vmm::vm::with_kernel_options(&cfg.cmdline, options);
 }
 
 pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
@@ -2953,6 +2960,34 @@ mod tests {
             let e = pci_tests(bad).unwrap_err();
             assert!(e.contains(why), "{bad}: {e}");
         }
+    }
+
+    /// A boot into an image tells the kernel its options before Linux's init-argument
+    /// delimiter, where it reads them and where init finds those it takes from its
+    /// environment (`shards_root`, `shards_template`); a command line given `--` keeps what
+    /// follows it init's, whole (finding 3 of audit-fix-host-v1: they became init's
+    /// arguments). One without the delimiter has them appended, as it always had.
+    #[test]
+    fn a_boot_into_an_image_keeps_its_options_the_kernels() {
+        let booted = |cmdline: &str, template: bool| {
+            let mut cfg = Config::new(PathBuf::from("k"), None);
+            cfg.cmdline = cmdline.into();
+            boot_into(&mut cfg, PathBuf::from("rootfs"), template);
+            cfg.cmdline
+        };
+        let options = "quiet noautogroup rt_group_sched=0 shards_root=/dev/pmem0";
+        assert_eq!(
+            booted("console=ttyS0 -- managed-network capabilities", true),
+            format!("console=ttyS0 {options} shards_template=1 -- managed-network capabilities")
+        );
+        assert_eq!(
+            booted("console=ttyS0 \"--\"\tx  'y z'", false),
+            format!("console=ttyS0 {options} \"--\"\tx  'y z'")
+        );
+        assert_eq!(
+            booted("console=ttyS0 earlycon panic=-1", true),
+            format!("console=ttyS0 earlycon panic=-1 {options} shards_template=1")
+        );
     }
     use std::os::unix::ffi::OsStrExt as _;
 

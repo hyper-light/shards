@@ -1,14 +1,66 @@
-//! Required x86 kernel options stay before Linux's init-argument delimiter.
+//! Kernel options stay before Linux's init-argument delimiter, on every architecture: the
+//! x86 machine's required options, `quiet`, and those of a boot into an image.
 
+#[cfg(all(hv, target_arch = "x86_64"))]
 use crate::arch::x86_64::{boot::BootError, layout};
 
-/// Keeps the existing append order without moving machine options into init's argv.
+/// `told` with `options` where Linux's kernel reads them: before its first init-argument
+/// delimiter, each followed by a space, so that the delimiter and everything after it stay
+/// init's, byte for byte; or, with no delimiter, appended, each after a space, as shards
+/// always appended them.
+pub fn with_kernel_options<'o>(told: &str, options: impl IntoIterator<Item = &'o str>) -> String {
+    let mut composed = String::new();
+    let Ok(()) = compose(told, options, &mut |part| {
+        composed.push_str(part);
+        Ok::<(), std::convert::Infallible>(())
+    });
+    composed
+}
+
+/// The kernel's own part of `told`: what precedes its first init-argument delimiter.
+#[cfg(hv)]
+pub(super) fn kernel_part(told: &str) -> &str {
+    split(told).map_or(told, |(kernel, _)| kernel)
+}
+
+/// `told` at its first init-argument delimiter: the kernel's part, and init's from the
+/// delimiter on. The delimiter starts at an ASCII byte, so both are whole UTF-8.
+fn split(told: &str) -> Option<(&str, &str)> {
+    let at = init_delimiter(told)?;
+    Some((told.get(..at)?, told.get(at..)?))
+}
+
+/// Hands `write` the parts of `told` with `options` placed as [`with_kernel_options`] says.
+fn compose<'o, E>(
+    told: &str,
+    options: impl IntoIterator<Item = &'o str>,
+    write: &mut impl FnMut(&str) -> Result<(), E>,
+) -> Result<(), E> {
+    let Some((kernel, init)) = split(told) else {
+        write(told)?;
+        for option in options {
+            write(" ")?;
+            write(option)?;
+        }
+        return Ok(());
+    };
+    write(kernel)?;
+    for option in options {
+        write(option)?;
+        write(" ")?;
+    }
+    write(init)
+}
+
+/// [`with_kernel_options`] of the x86 machine's required options, into the boot protocol's
+/// command line: keeps the existing append order without moving them into init's argv.
+#[cfg(all(hv, target_arch = "x86_64"))]
 pub(super) fn with_machine_options<'a>(
     told: &str,
     options: &[Option<&str>],
     bytes: &'a mut [u8; layout::CMDLINE_MAX],
 ) -> Result<&'a str, BootError> {
-    let options = options.iter().flatten();
+    let options = options.iter().flatten().copied();
     let len = options.clone().try_fold(told.len(), |len, option| {
         len.checked_add(1)?.checked_add(option.len())
     });
@@ -26,7 +78,7 @@ pub(super) fn with_machine_options<'a>(
         return Err(failure());
     }
     let mut used = 0usize;
-    let mut write = |part: &str| -> Result<(), BootError> {
+    compose(told, options, &mut |part: &str| -> Result<(), BootError> {
         let end = used.checked_add(part.len()).ok_or_else(failure)?;
         bytes
             .get_mut(used..end)
@@ -34,21 +86,7 @@ pub(super) fn with_machine_options<'a>(
             .copy_from_slice(part.as_bytes());
         used = end;
         Ok(())
-    };
-    if let Some(at) = init_delimiter(told) {
-        write(told.get(..at).ok_or_else(failure)?)?;
-        for option in options {
-            write(option)?;
-            write(" ")?;
-        }
-        write(told.get(at..).ok_or_else(failure)?)?;
-    } else {
-        write(told)?;
-        for option in options {
-            write(" ")?;
-            write(option)?;
-        }
-    }
+    })?;
     std::str::from_utf8(bytes.get(..used).ok_or_else(failure)?).map_err(|_| failure())
 }
 
@@ -138,6 +176,43 @@ mod tests {
         }
     }
 
+    /// Options go before the first delimiter, each followed by a space, init's part kept byte
+    /// for byte; without a delimiter they are appended as shards always appended them, each
+    /// after a space; on every architecture.
+    #[test]
+    fn kernel_options_precede_the_first_delimiter_on_every_architecture() {
+        let options = ["quiet", "shards_root=/dev/pmem0"];
+        for delimiter in ["--", "\"--\""] {
+            let prefix = "console=ttyS0 shards_root=/x\t";
+            let tail = format!("{delimiter}\tmanaged-network  'x y' \"λ\" \\ -- shards_root=/y\n");
+            assert_eq!(
+                with_kernel_options(&format!("{prefix}{tail}"), options),
+                format!("{prefix}quiet shards_root=/dev/pmem0 {tail}")
+            );
+        }
+        assert_eq!(
+            with_kernel_options("-- init", options),
+            "quiet shards_root=/dev/pmem0 -- init"
+        );
+        for (told, expected) in [
+            ("", " quiet shards_root=/dev/pmem0"),
+            ("a  ", "a   quiet shards_root=/dev/pmem0"),
+            ("x=\"--\" --=v", "x=\"--\" --=v quiet shards_root=/dev/pmem0"),
+        ] {
+            assert_eq!(with_kernel_options(told, options), expected);
+        }
+        assert_eq!(with_kernel_options("a -- b", []), "a -- b");
+    }
+
+    #[cfg(hv)]
+    #[test]
+    fn the_kernels_part_ends_at_the_first_delimiter() {
+        assert_eq!(kernel_part("a \"--\" b -- c"), "a ");
+        assert_eq!(kernel_part("a b"), "a b");
+        assert_eq!(kernel_part("--"), "");
+    }
+
+    #[cfg(all(hv, target_arch = "x86_64"))]
     #[test]
     fn required_options_precede_only_the_first_delimiter_and_keep_raw_tail() {
         let options = [Some("reboot=k"), Some("pci=off"), Some("cpuhp.parallel=0")];
@@ -159,6 +234,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(hv, target_arch = "x86_64"))]
     #[test]
     fn without_delimiter_existing_order_and_spacing_are_unchanged() {
         let mut bytes = [0; layout::CMDLINE_MAX];
@@ -186,6 +262,7 @@ mod tests {
         );
     }
 
+    #[cfg(all(hv, target_arch = "x86_64"))]
     #[test]
     fn command_line_max_includes_the_nul_and_overflow_is_typed() {
         let options = [Some("reboot=k"), Some("pci=off")];

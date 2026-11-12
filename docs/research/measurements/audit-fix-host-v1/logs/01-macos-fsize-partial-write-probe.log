@@ -1,0 +1,10 @@
+# command: python3 -I /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/docs/research/measurements/audit-fix-host-v1/fsize-probe.py
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: bff3015182ad754274f1048ce393ac12cb6cd91f
+# source diff vs HEAD (excluding this evidence directory): 0 lines, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T20:54:29Z
+first write returned 10
+second write error 27 File too large
+size 10 limits restored True
+# exit: 0 at 2026-11-11T20:54:29Z

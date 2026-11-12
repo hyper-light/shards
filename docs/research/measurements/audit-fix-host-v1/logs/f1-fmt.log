@@ -1,0 +1,75 @@
+# command: cargo fmt --all --check
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: bff3015182ad754274f1048ce393ac12cb6cd91f
+# source diff vs HEAD (excluding this evidence directory): 479 lines, sha256 eb79cd62b493437c8618bb249b55ba9042d3cf1b46361fb413ce61d9900a8969
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T21:05:08Z
+# free GiB on /Users/adalundhe: 41
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/shards/src/daemon/managed.rs:1922:
+             member: 0,
+             channel,
+         };
+-        let (endpoint, producer, control) =
+-            Endpoint::bind(server, owner, scope, admitted(capacity, shards_remote::tls::QUIET)).unwrap();
++        let (endpoint, producer, control) = Endpoint::bind(
++            server,
++            owner,
++            scope,
++            admitted(capacity, shards_remote::tls::QUIET),
++        )
++        .unwrap();
+         (scope, endpoint, producer, control)
+     }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/shards/src/daemon/managed.rs:1968:
+         let mut unchanged = 0;
+         for n in 0..100_000 {
+             let began = start + std::time::Duration::from_millis(n);
+-            quantum.consumed(
+-                began,
+-                began + std::time::Duration::from_millis(1),
+-                desired as u64,
+-            );
++            quantum.consumed(began, began + std::time::Duration::from_millis(1), desired as u64);
+             if quantum.desired() == desired {
+                 unchanged += 1;
+                 if unchanged == 64 {
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/shards/src/daemon/managed.rs:2034:
+         );
+         assert_eq!(lock(&output.learning).admitted, capacity);
+         assert_eq!(producer.storage_capacity(), storage);
+-        assert_eq!(*lock(&budget), Some(0), "the refused growth's charge stayed taken");
++        assert_eq!(
++            *lock(&budget),
++            Some(0),
++            "the refused growth's charge stayed taken"
++        );
+         assert_eq!(*lock(&output.life), Life::Serving);
+         assert!(!matches!(output.control.state(), State::Aborted(_)));
+     }
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/shards/src/daemon/managed.rs:2155:
+         });
+         let (mut outputs, mut producers, mut endpoints) = (Vec::new(), Vec::new(), Vec::new());
+         for (index, channel) in [Channel::Stdout, Channel::Stderr].into_iter().enumerate() {
+-            let (scope, endpoint, producer, control) =
+-                bound(&server, owner.fingerprint(), channel, capacity);
++            let (scope, endpoint, producer, control) = bound(&server, owner.fingerprint(), channel, capacity);
+             let output = Arc::new(output(
+                 scope,
+                 &endpoint,
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/shards/src/daemon/managed.rs:2199:
+             Subscriber {
+                 scope: stdout.scope,
+                 config: Some(
+-                    shards_remote::managed::client_config(&owner, server.fingerprint(), admitted(capacity, PATIENCE))
+-                        .unwrap(),
++                    shards_remote::managed::client_config(
++                        &owner,
++                        server.fingerprint(),
++                        admitted(capacity, PATIENCE),
++                    )
++                    .unwrap(),
+                 ),
+                 pending: Vec::new(),
+                 at: None,
+# exit: 1 at 2026-11-11T21:05:15Z

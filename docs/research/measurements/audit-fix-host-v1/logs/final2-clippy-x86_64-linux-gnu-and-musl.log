@@ -1,0 +1,24 @@
+# Kiln run on 451397fcc585f7f7cb9aaf00e42064bb (adacachy, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g, timeout_s 600,
+#   at the final 7f9c6f38686099eb2a344ea7f6184f73f3b30228 with no uncommitted change (synced: 146 files sent, 14 removed).
+# Full logs on the runner: target/audit-logs/final2-clippy-x86_64-unknown-linux-gnu.log (12202 bytes,
+#   sha256 0fc1c06fee443da0fbc907e0fb65a88066c8cd017254d721165831b3cdf52660) and
+#   target/audit-logs/final2-clippy-x86_64-unknown-linux-musl.log (3211 bytes,
+#   sha256 9c9bfc7b9b0b4ea407c6da874f5d377854a55ca4df61ce022bf9e5ef199ab611).
+# Below, verbatim, each log without cargo's "Checking"/"Compiling" progress lines and aws-lc-sys's build notes.
+== x86_64-unknown-linux-gnu: 12202 bytes, sha256 0fc1c06fee443da0fbc907e0fb65a88066c8cd017254d721165831b3cdf52660
+# host Linux 7.2.9-2-cachyos x86_64
+# head 7f9c6f38686099eb2a344ea7f6184f73f3b30228
+# uncommitted: 
+rustc 1.98.1 (48a229cea 2026-09-01)
+# command: SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/target/audit-placeholders/guest SHARDS_SERVER_BINARY=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/target/audit-placeholders/guest cargo clippy -j2 -p shards -p shards-remote -p shards-vmm -p shards-vm-process --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 22s
+# exit 0
+== x86_64-unknown-linux-musl: 3211 bytes, sha256 9c9bfc7b9b0b4ea407c6da874f5d377854a55ca4df61ce022bf9e5ef199ab611
+# host Linux 7.2.9-2-cachyos x86_64
+# head 7f9c6f38686099eb2a344ea7f6184f73f3b30228
+# uncommitted: 
+rustc 1.98.1 (48a229cea 2026-09-01)
+# command: CC_x86_64_unknown_linux_musl=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/scripts/zig-cc AR_x86_64_unknown_linux_musl=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/scripts/zig-ar ZIG_TARGET=x86_64-linux-musl SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/target/audit-placeholders/guest SHARDS_SERVER_BINARY=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/target/audit-placeholders/guest cargo clippy -j2 -p shards -p shards-remote -p shards-vmm -p shards-vm-process --all-targets --target x86_64-unknown-linux-musl -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 32.28s
+# exit 0
+gnu 0 musl 0

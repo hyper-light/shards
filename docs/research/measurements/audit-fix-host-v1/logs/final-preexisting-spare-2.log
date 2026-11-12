@@ -1,0 +1,41 @@
+# command: lockf /tmp/g121-mac.lock env SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/audit-placeholders/shards-init SHARDS_SERVER_BINARY=/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/audit-placeholders/shards-server cargo test -j2 -p shards --bin shards -- --exact daemon::tests::a_client_no_descriptor_is_left_for_is_refused_with_the_spare
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: 3c46eb7a91e7addf32b543b84adb4d95099fa605
+# source diff vs HEAD (excluding this evidence directory): 0 lines, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T22:03:35Z
+# free GiB on /Users/adalundhe: 33
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s
+     Running unittests src/main.rs (target/debug/deps/shards-590c76d8cc8bee5d)
+
+running 1 test
+test daemon::tests::a_client_no_descriptor_is_left_for_is_refused_with_the_spare ... FAILED
+
+failures:
+
+---- daemon::tests::a_client_no_descriptor_is_left_for_is_refused_with_the_spare stdout ----
+
+thread 'daemon::tests::a_client_no_descriptor_is_left_for_is_refused_with_the_spare' (66903294) panicked at crates/shards/src/daemon.rs:11583:49:
+called `Result::unwrap()` on an `Err` value: Os { code: 22, kind: InvalidInput, message: "Invalid argument" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    daemon::tests::a_client_no_descriptor_is_left_for_is_refused_with_the_spare
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 710 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --bin shards`
+# exit: 101 at 2026-11-11T22:03:37Z
