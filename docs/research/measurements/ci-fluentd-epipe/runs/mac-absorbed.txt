@@ -1,0 +1,3 @@
+host Adas-MacBook-Pro-2.local Darwin 25.4.0 arm64
+tcp: n=5 min=548188 max=1465848 all=[548188, 621916, 1383928, 1433080, 1465848]
+unix: n=5 min=12288 max=12288 all=[12288, 12288, 12288, 12288, 12288]

@@ -21105,3 +21105,81 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     translator adds instruction decoding, x86 flag handling, branch-target lookup and
     the guest kernel's own code (M521: 1.1 to 1.3 times native). They bound the design;
     the prototype measures how close it comes.
+
+### M526. What a log stream's write meets once its receiver has ended the connection (D163)
+
+- **Question.** CI's unit tests failed `daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place`
+  now and then (runs 43183804136 and 43189239973 on x86_64 Linux, 43250570050 on aarch64
+  Linux): the close said `Broken pipe (os error 32)`, where D163 says a receiver's end
+  before the stream's is followed and the close says `ConnectionAborted`. What does a
+  stream's write meet once its receiver has ended the connection, how much does a
+  connection take before its writer waits, and what did the stream make of it?
+- **Method.** `docs/research/measurements/ci-fluentd-epipe/` (its README has every command,
+  revision and log): `endmet.py` (a writer blocked as its receiver reads 4,096 bytes and
+  closes with the rest unread; two writes after the receiver's close, with nothing and
+  with a byte unread; 3 rounds), `onesend.py` (what one blocking send(2) of 16 MiB says
+  as its receiver ends the connection; 3 rounds), `absorbed.py` (what a connection takes
+  before its writer waits, its receiver reading 4,096 bytes and then nothing; 5 rounds),
+  every socket with the platform's defaults as `Stream` makes them; and the unit tests,
+  `--profile test-release`, of main (87bf86b31, fe44bc8ca), of main with the new test
+  (`a_write_that_meets_its_receivers_end_is_followed_as_one_seen`), with the fix, and
+  with one text of the fix removed, each test alone in its process (`repeat.sh`), many at
+  once. On Adas-MacBook-Pro-2.local (Darwin 25.4.0, arm64, 18 cores, shared: load 15 to
+  211) and adacachy2 (CachyOS, Linux 7.3.3, x86_64, 32 cores; every run a user unit
+  bounded to 4 CPUs and 16 GiB), 2026-11-12.
+- **Found.** What a write meets, the same in every round but where a cell says "or":
+
+  | | blocked as its receiver ends | two writes after a clean end | two writes after an end with bytes unread | one send(2) of 16 MiB |
+  |---|---|---|---|---|
+  | Linux TCP | ECONNRESET | ok, EPIPE | ECONNRESET, EPIPE | 523,856 sent, then ECONNRESET |
+  | Linux TLS | ECONNRESET | ok, EPIPE | ok, EPIPE | |
+  | Linux unix | EPIPE | EPIPE, EPIPE | EPIPE, EPIPE | 109,632 to 146,176 sent, then EPIPE |
+  | macOS TCP | ECONNRESET or EPIPE | ok, EPIPE | EPIPE, EPIPE | EPIPE, none said sent |
+  | macOS TLS | EPIPE | ok, EPIPE | ok, EPIPE | |
+  | macOS unix | EPIPE | EPIPE, EPIPE | EPIPE, EPIPE | EPIPE, none said sent |
+
+  What a connection took before its writer waited: Linux 2,720,256 bytes over TCP (all 5
+  rounds) and 233,152 over a unix socket; macOS 548,188 to 1,465,848 over TCP and 12,288
+  over a unix socket.
+
+  The flaky test, alone in its process, many at once:
+
+  | build | host | runs at once | n | failed |
+  |---|---|---|---|---|
+  | main 87bf86b31 | macOS, load 86 to 211 | 8 | 200 | 3, each `gelf.rs:304:27: Broken pipe (os error 32)` |
+  | main fe44bc8ca | Linux, load 3 to 4 | 8 | 200 | 0 |
+  | main fe44bc8ca | Linux | 32 | 200 | 1, `Broken pipe (os error 32)` |
+  | main fe44bc8ca | Linux | 32 | 1,000 | 17, each `Broken pipe (os error 32)` |
+  | main, beside the fix | Linux, load up to 76 | 16 of each | 1,000 | 19, each `Broken pipe (os error 32)` |
+  | the fix, beside main | Linux, the same | 16 of each | 1,000 | 0 |
+  | main 87bf86b31, beside the fix | macOS, load 59 to 117 | 8 of each | 312 | 0 |
+  | the fix, beside main | macOS, the same | 8 of each | 309 | 0 |
+
+  The new test: before the fix, its send of 16 MiB said `Broken pipe` (macOS) and
+  `Connection reset by peer` (Linux); driven as a shipper drives it (`evidence-test.rs`),
+  40 tries over each transport and neither host took the message once, held it, or was
+  shown it refused. With the fix: 200 of 200 passed on Linux, 32 at once (load up to 78),
+  and 200 of 200 on macOS, 8 at once (load 110 to 129); a first version that asked whether
+  any of the message went by the bytes written failed on macOS 50 times of 50. With the
+  fix but for one text (`Err(self.write_failed(e))` as `Err(e)`, a write on an existing
+  connection): failed on both, at its close, `tcp: Connection reset by peer (os error
+  104)` on Linux and `tcp: Broken pipe (os error 32)` on macOS.
+- **Reading.**
+  - A write meets its receiver's end before the stream's look does wherever the end
+    comes between the two, or while the write is under way. The flaky test's close wrote
+    a line's last part on the connection whose receiver had just ended it on the part
+    before (a unix socket meets EPIPE at once; TCP once its first write drew the reset),
+    and said the write's error. The shipper tries again after any error, and the stream
+    had followed the end there, so nothing was lost, as M525 found when it made the test
+    try again as the shipper does; but on a new connection the stream followed none.
+  - A message still being written as its receiver ends the connection is one the receiver
+    refuses as it reads past its bound, wherever the message is longer than what the
+    connection holds (above): the stream gave it back to its caller unheld, so no end
+    ever pointed at it, nothing cut it, and its run's log stopped there. Now it is held,
+    and the end followed as one the stream finds.
+  - Whether any of such a message went cannot be read from the count of bytes written:
+    macOS's write(2) says the error alone. So it is held once its connection carried
+    messages (over TLS, its handshake done).
+  - What would show this wrong: a host whose write after its receiver's end succeeds and
+    is never followed by an end the stream finds; or one where a connection holds 16 MiB,
+    which leaves the new test to the stream's look, not its write.
