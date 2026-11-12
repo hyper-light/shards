@@ -324,7 +324,7 @@ struct SimGuest {
 
 impl Guest for SimGuest {
     fn process_exited(&self) -> Result<bool, Refusal> {
-        Ok(lock(&self.shared.state).end.is_some())
+        Ok(lock(&self.shared).end.is_some())
     }
     fn connect(&self, port: u32, patience: Duration) -> Result<Box<dyn Stream>, Refusal> {
         allowed(&self.ports, port)?;

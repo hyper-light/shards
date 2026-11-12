@@ -141,6 +141,7 @@ impl std::error::Error for LaunchError {}
 /// Stdio created by the API's existing bounded drain path. The native owner
 /// consumes only these output handles; stdin is its native null device. No extra
 /// inherited handles, output socket export or post-spawn placement is permitted.
+#[derive(Debug)]
 pub struct LaunchIo {
     pub stdout: std::io::PipeWriter,
     pub stderr: std::io::PipeWriter,

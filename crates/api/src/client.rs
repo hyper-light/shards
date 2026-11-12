@@ -1368,6 +1368,12 @@ pub struct ManagedGuest {
     shared: triomphe::Arc<Shared>,
 }
 
+impl std::fmt::Debug for ManagedGuest {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.debug_struct("ManagedGuest").finish_non_exhaustive()
+    }
+}
+
 fn managed_shared(keep: usize, recovered: bool) -> Result<triomphe::Arc<Shared>, Refusal> {
     let mut bytes = VecDeque::new();
     bytes
@@ -1626,9 +1632,10 @@ impl Guest for ManagedGuest {
         )
     }
     fn stop(&self) -> Result<(), Refusal> {
-        self.process.stop()?;
+        // Native stop may complete inline and wake a concurrent waiter. Publish
+        // the request first; an uncertain native result cannot undo its effects.
         lock(&self.shared.state).stopping = true;
-        Ok(())
+        self.process.stop()
     }
     fn wait_for(&self, timeout: Duration) -> Result<Option<End>, Refusal> {
         let deadline = Instant::now().checked_add(timeout);
@@ -1833,13 +1840,164 @@ mod tests {
     use super::*;
     use crate::{Disk, Share};
 
+    #[derive(Default)]
+    struct NativeState {
+        end: Option<crate::ManagedEnd>,
+        acknowledged: bool,
+        io: Option<crate::LaunchIo>,
+    }
+    struct ModelNative {
+        identity: Identity,
+        state: Mutex<NativeState>,
+        changed: Condvar,
+        coordinate_stop: bool,
+        stops: std::sync::atomic::AtomicUsize,
+    }
+    impl ModelNative {
+        fn publish(&self, scope: crate::TerminalScope) {
+            let mut state = self.state.lock().unwrap();
+            state.end = Some(crate::ManagedEnd {
+                status: crate::ManagedStatus::Code(0),
+                scope,
+            });
+            if scope == crate::TerminalScope::Released {
+                state.io.take();
+            }
+            self.changed.notify_all();
+        }
+    }
+    impl crate::ManagedProcess for ModelNative {
+        fn identity(&self) -> Result<&Identity, Refusal> {
+            Ok(&self.identity)
+        }
+        fn terminal(&self) -> Result<Option<crate::ManagedEnd>, Refusal> {
+            Ok(self.state.lock().unwrap().end)
+        }
+        fn wait_for(&self, patience: Duration) -> Result<Option<crate::ManagedEnd>, Refusal> {
+            let mut state = self.state.lock().unwrap();
+            if patience == Duration::MAX {
+                while !state
+                    .end
+                    .is_some_and(|end| end.scope == crate::TerminalScope::Released)
+                {
+                    state = self.changed.wait(state).unwrap();
+                }
+            } else {
+                state = self
+                    .changed
+                    .wait_timeout_while(state, patience, |state| {
+                        !state
+                            .end
+                            .is_some_and(|end| end.scope == crate::TerminalScope::Released)
+                    })
+                    .unwrap()
+                    .0;
+            }
+            Ok(state
+                .end
+                .filter(|end| end.scope == crate::TerminalScope::Released))
+        }
+        fn stop(&self) -> Result<(), Refusal> {
+            self.stops.fetch_add(1, Ordering::SeqCst);
+            self.publish(crate::TerminalScope::Released);
+            if self.coordinate_stop {
+                let state = self.state.lock().unwrap();
+                let (observed_state, timeout) = self
+                    .changed
+                    .wait_timeout_while(state, crate::conformance::PATIENCE.get(), |state| {
+                        !state.acknowledged
+                    })
+                    .unwrap();
+                drop(observed_state);
+                assert!(
+                    !timeout.timed_out(),
+                    "waiter must observe inline native completion"
+                );
+            }
+            Ok(())
+        }
+    }
+    struct ModelLauncher(Arc<ModelNative>);
+    impl crate::ManagedLauncher for ModelLauncher {
+        fn launch(
+            &mut self,
+            _: &crate::PreparedBoot,
+            io: crate::LaunchIo,
+        ) -> Result<Arc<dyn crate::ManagedProcess>, Refusal> {
+            self.0.state.lock().unwrap().io = Some(io);
+            Ok(self.0.clone())
+        }
+        fn attach(&mut self, identity: &Identity) -> Result<Arc<dyn crate::ManagedProcess>, Refusal> {
+            assert_eq!(identity, &self.0.identity);
+            Ok(self.0.clone())
+        }
+    }
+    fn managed_model(coordinate_stop: bool) -> (ManagedGuest, Arc<ModelNative>) {
+        let socket = Path::new("/model/native/v");
+        let plan = prepare_boot(&spec(), Path::new("/model/never-executed"), socket, 0).unwrap();
+        let native = Arc::new(ModelNative {
+            identity: Identity {
+                pid: 42,
+                started: 7,
+                vsock: socket.into(),
+            },
+            state: Mutex::new(NativeState::default()),
+            changed: Condvar::new(),
+            coordinate_stop,
+            stops: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let guest = boot_managed(plan, &mut ModelLauncher(native.clone())).unwrap();
+        (guest, native)
+    }
+
+    /// D215, D232: helper scope and handle ownership remain live after
+    /// controller exit, and dropping a retained protocol handle cannot stop it.
+    #[test]
+    fn managed_scope_and_checked_clones_retain_native_lifetime() {
+        let (guest, native) = managed_model(false);
+        let retained = guest.try_clone().unwrap();
+        drop(retained);
+        assert_eq!(native.stops.load(Ordering::SeqCst), 0);
+        native.publish(crate::TerminalScope::Process);
+        assert!(guest.process_exited().unwrap());
+        assert_eq!(
+            guest.terminal_scope().unwrap(),
+            Some(crate::TerminalScope::Process)
+        );
+        assert_eq!(guest.wait_for(Duration::ZERO).unwrap(), None);
+        native.publish(crate::TerminalScope::Released);
+        assert_eq!(
+            guest.wait_for(crate::conformance::PATIENCE.get()).unwrap(),
+            Some(End::PowerOff)
+        );
+        drop(guest);
+        assert_eq!(native.stops.load(Ordering::SeqCst), 0);
+    }
+
+    /// D215, D232: a native stop can publish inline, before stop() returns;
+    /// a concurrent waiter must observe Stopped rather than unsolicited poweroff.
+    #[test]
+    fn managed_inline_stop_completion_is_already_stopped_to_waiters() {
+        let (guest, native) = managed_model(true);
+        let waiting = guest.try_clone().unwrap();
+        let observed = native.clone();
+        let waiter = std::thread::spawn(move || {
+            let result = waiting.wait_for(crate::conformance::PATIENCE.get());
+            observed.state.lock().unwrap().acknowledged = true;
+            observed.changed.notify_all();
+            result
+        });
+        guest.stop().unwrap();
+        assert_eq!(waiter.join().unwrap().unwrap(), Some(End::Stopped));
+    }
+
     /// D215, D232: pure preparation launches nothing and preserves the exact
     /// native command/ports; wrong endpoint/port fail before borrowed observation.
     #[test]
     fn prepared_boot_is_pure_and_connections_stay_in_its_exact_grant() {
         let directory = shards_testdir::TempDir::new("api-prepared").unwrap();
-        let binary = directory.0.join("never-started");
-        let socket = directory.0.join("v");
+        let binary = directory.join("never-started");
+        let socket = directory.join("v");
         let mut spec = spec();
         spec.gpu = true;
         spec.gpu_devices = vec![crate::PhysicalGpu::MetalRegistry(7)];
@@ -1848,7 +2006,7 @@ mod tests {
         assert_eq!(plan.vsock(), socket);
         assert_eq!(plan.ports(), &[1024]);
         assert_eq!(
-            std::fs::read_dir(&directory.0).unwrap().count(),
+            std::fs::read_dir(&*directory).unwrap().count(),
             0,
             "no mkdir/socket/process side effects"
         );
@@ -1867,7 +2025,7 @@ mod tests {
             Err(Refusal::Launch(crate::LaunchError::Port))
         ));
         let foreign = Identity {
-            vsock: directory.0.join("foreign"),
+            vsock: directory.join("foreign"),
             ..identity
         };
         assert!(matches!(
@@ -1891,7 +2049,7 @@ mod tests {
     fn gpu_probe_protocol_requires_exact_completed_receipt() {
         use std::os::unix::fs::PermissionsExt;
         let directory = shards_testdir::TempDir::new("api-gpu-probe").unwrap();
-        let binary = directory.0.join("fixture");
+        let binary = directory.join("fixture");
         let native = crate::PhysicalGpu::MetalRegistry(7);
         let expected = crate::GpuProbe {
             devices: vec![crate::ResolvedGpu {
