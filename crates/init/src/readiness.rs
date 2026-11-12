@@ -395,7 +395,6 @@ impl Readiness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::fd::AsRawFd as _;
 
     const S: i64 = 1_000_000_000;
 
