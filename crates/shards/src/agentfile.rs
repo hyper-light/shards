@@ -42,9 +42,6 @@ pub struct Agentfile {
     pub ipv6: bool,
     /// Who each port coming in past the microVM reaches (D122), for `shards read ports`.
     pub receivers: Vec<shards_agentfile::agentfile::Receiver>,
-    /// Whether it declares `NESTING` (D234), which its read refuses beside an agent or
-    /// harness, as its build does.
-    pub nesting: bool,
 }
 
 /// What a run's command is given of the nesting grant (D234), of what its image declares and
@@ -118,7 +115,7 @@ fn asks_nesting(run: &shards_ipc::Run) -> bool {
 /// not, as shards-init refuses it again: its image must declare it, and `--cgroupns host`
 /// and `--pid host` undo it. A deadline is the grant's alone.
 pub fn nesting(agentfile: Option<&Agentfile>, run: &shards_ipc::Run) -> Result<Nesting, NestingRefused> {
-    let declared = agentfile.is_some_and(|a| a.nesting);
+    let declared = agentfile.is_some_and(|a| a.grants.nesting);
     if !asks_nesting(run) {
         return match (run.ready_by, declared) {
             (Some(_), _) => Err(NestingRefused::Ungranted),
@@ -312,6 +309,8 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
     af::connections(&directives).map_err(said)?;
     let receivers = af::ingress(&directives).map_err(said)?;
     af::reach(&directives).map_err(said)?;
+    // `NESTING` as its build checks it (D234): once, and beside no agent or harness.
+    af::nesting(&directives).map_err(|e| fail(e.to_string()))?;
     let text = |b: &[u8]| {
         String::from_utf8(b.to_vec()).map_err(|_| fail("a volume's name or path that is not UTF-8".into()))
     };
@@ -360,7 +359,6 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
         grants,
         domains: u32::try_from(domains).map_err(|_| fail("more agents and harnesses than uids".into()))?,
         receivers,
-        nesting: false,
     };
     Ok(agentfile)
 }
@@ -845,6 +843,7 @@ mod tests {
         let e = agentfile(&root_with("good-again", file(&good)), "sha256:00").unwrap_err();
         assert!(e.contains("its content hashes to"), "{e}");
         // What a crafted image holds and no build makes: refused as the build refuses it.
+        let nesting_beside = shards_abi::run::beside::nesting("agent", "a");
         for (name, directives, said) in [
             (
                 "dev",
@@ -918,6 +917,12 @@ mod tests {
                 ],
                 "an internal network has no resolver past the microVM to ask",
             ),
+            // The nesting grant beside an agent (D234), in the build's words and init's.
+            (
+                "nesting-beside",
+                vec![agent("a"), Directive::Nesting],
+                nesting_beside.as_str(),
+            ),
         ] {
             let json = spec(&directives);
             let got = agentfile(&root_with(name, file(&json)), &digest(&json));
@@ -957,6 +962,12 @@ mod tests {
             .map(|r| r.name.as_slice())
             .collect();
         assert_eq!(names, [b"a".as_slice(), b"b".as_slice()], "{got:?}");
+        // An image declaring the nesting grant alone (D234): declared, its grant the run's
+        // to ask for.
+        let json = spec(&[Directive::Nesting]);
+        let got = agentfile(&root_with("nesting", file(&json)), &digest(&json)).unwrap();
+        assert!(got.grants.nesting, "{got:?}");
+        assert_eq!(got.domains, 0);
         let e = agentfile(&root_with("none", None), "sha256:01").unwrap_err();
         assert!(e.contains("the image's root holds none"), "{e}");
         let link = Kind::Symlink(b"/etc/x".to_vec().into_boxed_slice());
@@ -975,7 +986,10 @@ mod tests {
         use shards_abi::run::nesting::{self, Grant};
         use shards_ipc::Run;
         let declaring = Agentfile {
-            nesting: true,
+            grants: shards_agentfile::agentfile::Grants {
+                nesting: true,
+                ..Default::default()
+            },
             ..Agentfile::default()
         };
         let silent = Agentfile::default();
@@ -1065,5 +1079,20 @@ mod tests {
         assert_eq!(joining(&plain, true), Err(NestingRefused::Joiner));
         assert_eq!(joining(&asks, false), Err(NestingRefused::Joined));
         assert_eq!(joining(&asks, true), Err(NestingRefused::Joiner));
+    }
+
+    /// The words refusing the nesting grant beside an image's agent or harness are one set
+    /// (D234): the build's (shards_agentfile), the daemon's read of the image, and init's.
+    #[test]
+    fn the_nesting_grant_beside_a_domain_is_refused_in_one_set_of_words() {
+        use shards_agentfile::agentfile::{TargetKind, nesting_beside};
+        assert_eq!(
+            nesting_beside(TargetKind::Agent, b"a"),
+            shards_abi::run::beside::nesting("agent", "a")
+        );
+        assert_eq!(
+            nesting_beside(TargetKind::Harness, b"h"),
+            shards_abi::run::beside::nesting("harness", "h")
+        );
     }
 }

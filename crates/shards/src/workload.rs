@@ -2938,4 +2938,48 @@ mod tests {
             assert!(matches!(read_all(&mut u), Heard::Whole(Hello::Offered(Err(_)))));
         }
     }
+
+    /// Its command's readiness under the nesting grant (D234) is handed on as the guest
+    /// sends it, each move's payload whole; a READY that reads as no readiness breaks the
+    /// run's protocol.
+    #[test]
+    fn a_runs_readiness_is_handed_on_as_it_comes() {
+        use run::nesting::Ready;
+        let frame = |which: u8, payload: &[u8]| {
+            let mut f = run::header(which, u32::try_from(payload.len()).unwrap()).to_vec();
+            f.extend_from_slice(payload);
+            f
+        };
+        let heard = Mutex::new(Vec::new());
+        let readiness = |payload: &[u8]| heard.lock().unwrap().push(payload.to_vec());
+        let relayed = |frames: &[Vec<u8>]| {
+            let (mut guest, host) = UnixStream::pair().unwrap();
+            for f in frames {
+                guest.write_all(f).unwrap();
+            }
+            drop(guest);
+            let mut reader = io::BufReader::new(shards_ipc::Polled(&host));
+            let records = RunRecords {
+                processes: None,
+                members: None,
+                readiness: Some(&readiness),
+                host_net: None,
+            };
+            relay(&mut reader, &Timing::new(), None, None, records)
+        };
+        let moves = [Ready::Passed(3).encode(), Ready::Late(5).encode()];
+        let ended = relayed(&[
+            frame(kind::READY, &moves[0]),
+            frame(kind::READY, &moves[1]),
+            frame(kind::EXIT, &0u32.to_be_bytes()),
+        ])
+        .unwrap();
+        assert_eq!(ended.status, 0);
+        assert_eq!(*heard.lock().unwrap(), moves.map(|m| m.to_vec()));
+        let broken = relayed(&[frame(kind::READY, &[0; 9])]);
+        assert_eq!(
+            broken.err().as_deref(),
+            Some("the guest sent a malformed readiness")
+        );
+    }
 }

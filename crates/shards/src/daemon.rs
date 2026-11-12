@@ -3816,7 +3816,7 @@ impl<D: Disk> Daemon<D> {
                     .or(prepared.gpu.as_deref())
                     .unwrap_or_else(|| crate::run::kernel_of(&prepared.boot));
                 let kernel = crate::guest::version_of(booted)?;
-                let granted = nesting.clone().map_err(|e| e.to_string())?;
+                let granted = nesting.as_ref().map_err(ToString::to_string)?;
                 crate::setup::security_setup(
                     &mut prepared.spec.setup,
                     &run,
