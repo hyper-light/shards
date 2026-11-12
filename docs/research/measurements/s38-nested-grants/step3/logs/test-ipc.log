@@ -1,0 +1,72 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running unittests src/lib.rs (/home/adalundhe/s38-daemon-test/target/debug/deps/shards_ipc-2e3ebfa25be3e050)
+
+running 59 tests
+test slots::fifo::tests::a_lists_waiting_slots_are_those_no_client_took ... ok
+test slots::fifo::tests::clients_waiting_on_one_list_each_take_a_slot ... ok
+test slots::fifo::tests::a_client_waits_for_a_slot_and_passes_over_a_removed_one ... ok
+test slots::tests::a_request_is_answered_through_its_slot ... ok
+test slots::tests::a_sessions_streams_carry_what_each_side_writes ... ok
+test slots::tests::a_client_hears_there_is_no_daemon ... ok
+test slots::tests::records_name_their_slots ... ok
+test slots::tests::served_is_whether_a_daemon_holds_the_lists ... ok
+test slots::tests::what_a_daemon_before_left_goes_as_the_next_opens_its_slots ... ok
+test slots::fifo::tests::a_killed_client_ends_its_session ... ok
+test spawner::tests::a_spawner_makes_children_as_this_process_would ... ok
+test slots::tests::an_answer_is_waited_for_no_longer_than_asked ... ok
+test spawner::tests::children ... ignored, run by a_spawner_makes_children_as_this_process_would, with a spawner
+test spawner::tests::gone ... ignored, run by a_spawner_that_has_gone_is_made_again, with a spawner
+test spawner::tests::group ... ignored, run by a_groups_spawner_makes_its_children_apart, with a spawner
+test spawner::tests::let_go ... ignored, run by what_this_process_lets_go_of_no_child_holds, with a spawner
+test spawner::tests::spawner ... ignored, the spawner the tests here make, run by them
+test slots::fifo::tests::clients_waiting_on_one_list_wake_for_its_records ... ok
+test tests::a_daemon_is_exiting_while_its_process_lives ... ok
+test tests::a_daemon_whose_id_another_process_has_now_does_not_live ... ok
+test tests::a_run_head_reads_back_as_written ... ok
+test tests::a_runs_every_descriptor_goes_in_one_message ... ok
+test tests::a_runs_request_with_the_longest_spec_is_one_message ... ok
+test tests::a_sheet_reads_as_it_was_written ... ok
+test tests::attach_requests_round_trip ... ok
+test tests::every_message_kind_has_its_own_number ... ok
+test tests::execs_round_trip_and_nothing_else_decodes ... ok
+test tests::progress_reads_as_it_was_written ... ok
+test tests::registry_env_values_are_found_by_their_whole_name ... ok
+test tests::runs_round_trip_and_nothing_else_decodes ... ok
+test spawner::tests::what_this_process_lets_go_of_no_child_holds ... ok
+test unix::tests::a_child_spawned_in_an_environment_has_it_alone ... ok
+test tests::working_sets_cross_in_parts_and_come_back_whole ... ok
+test unix::tests::a_descriptor_given_its_own_number_reaches_the_child ... ok
+test unix::tests::a_deadline_bounds_the_whole_message ... ok
+test unix::tests::a_read_waits_as_a_read_would ... ok
+test unix::tests::a_reaped_child_is_never_signalled ... ok
+test unix::tests::a_send_cut_short_is_finished_from_where_it_stopped ... ok
+test unix::tests::a_signals_linux_number_names_it_on_every_system ... ok
+test unix::tests::an_end_inside_a_message_is_an_error ... ok
+test unix::tests::children_get_swapped_descriptors_each_where_it_belongs ... ok
+test unix::tests::children_get_the_descriptors_they_are_given ... ok
+test unix::tests::descriptors_anywhere_in_a_message_are_taken ... ok
+test unix::tests::descriptors_past_the_limit_are_closed ... ok
+test unix::tests::detached_children_lead_their_own_session ... ok
+test unix::tests::empty_messages_and_clean_ends ... ok
+test unix::tests::ending_a_stream_reaches_a_peer_that_ended_its_side_first ... ok
+test unix::tests::fault_signals_sent_are_forwarded_and_faults_end_the_process ... ok
+test unix::tests::large_payloads_arrive_whole_with_their_descriptors ... ok
+test unix::tests::limits_hold_on_both_ends ... ok
+test unix::tests::linux_names_its_own_real_time_signals ... ok
+test unix::tests::messages_are_taken_whole_as_they_come ... ok
+test unix::tests::messages_carry_payloads_and_working_descriptors ... ok
+test unix::tests::peers_are_known_by_their_user ... ok
+test unix::tests::signal_child ... ok
+test unix::tests::statuses_and_signals ... ok
+test spawner::tests::a_groups_spawner_makes_its_children_apart ... ok
+test spawner::tests::a_spawner_that_has_gone_is_made_again ... ok
+test unix::tests::a_read_sees_its_peers_end_that_lands_as_it_starts ... ok
+
+test result: ok. 54 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 12.00s
+
+   Doc-tests shards_ipc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

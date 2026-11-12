@@ -1,0 +1,12 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:19:17.134010585 -0800
++++ crates/shards/src/setup.rs	2026-11-12 02:19:17.142179847 -0800
+@@ -760,8 +760,7 @@
+     }
+     // Docker's AppArmor's mount rule first, so that its profile's errno is the one a
+     // syscall both refuse returns (the most recent filter's).
+-    if nesting.is_none()
+-        && let Some(filter) = mounts(run, &security, kernel)?
++    if let Some(filter) = mounts(run, &security, kernel)?
+     {
+         setup.push(filter);
+     }

@@ -1,0 +1,11 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:18:39.373461786 -0800
++++ crates/shards/src/agentfile.rs	2026-11-12 02:18:39.376481301 -0800
+@@ -118,7 +118,7 @@
+     let declared = agentfile.is_some_and(|a| a.grants.nesting);
+     if !asks_nesting(run) {
+         return match (run.ready_by, declared) {
+-            (Some(_), _) => Err(NestingRefused::Ungranted),
++            (Some(_), _) => Ok(Nesting::Neither),
+             (None, true) => Ok(Nesting::Unasked),
+             (None, false) => Ok(Nesting::Neither),
+         };

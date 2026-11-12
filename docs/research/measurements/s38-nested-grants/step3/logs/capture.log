@@ -1,0 +1,187 @@
+   Compiling libc v0.2.189
+   Compiling typenum v1.20.1
+   Compiling cfg-if v1.0.5
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling fs_extra v1.3.0
+   Compiling dunce v1.0.5
+   Compiling pkg-config v0.3.34
+   Compiling proc-macro2 v1.0.107
+   Compiling autocfg v1.5.1
+   Compiling quote v1.0.47
+   Compiling hybrid-array v0.4.15
+   Compiling unicode-ident v1.0.26
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/s38-daemon-test/src/vendor/aws-lc-rs)
+   Compiling jobserver v0.1.35
+   Compiling cpufeatures v0.3.1
+   Compiling crypto-common v0.2.2
+   Compiling cc v1.5.1
+   Compiling block-buffer v0.12.1
+   Compiling zeroize v1.9.0
+   Compiling const-oid v0.10.2
+   Compiling syn v3.0.6
+   Compiling memchr v2.8.3
+   Compiling digest v0.11.3
+   Compiling cmake v0.1.58
+   Compiling serde_core v1.0.229
+   Compiling sha2 v0.11.0
+   Compiling zmij v1.0.23
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys)
+   Compiling num-traits v0.2.19
+   Compiling zlib-rs v0.6.8
+   Compiling serde_json v1.0.151
+   Compiling aho-corasick v1.1.5
+   Compiling rustls-pki-types v1.15.1
+   Compiling regex-syntax v0.8.11
+   Compiling itoa v1.0.18
+   Compiling shards-abi v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/abi)
+   Compiling serde v1.0.229
+   Compiling regex-automata v0.4.18
+   Compiling serde_derive v1.0.229
+   Compiling once_cell v1.21.4
+   Compiling version_check v0.9.5
+   Compiling generic-array v0.14.7
+   Compiling regex v1.13.1
+   Compiling num-integer v0.1.47
+   Compiling untrusted v0.9.0
+   Compiling base64 v0.23.1
+   Compiling num-bigint v0.4.8
+   Compiling flate2 v1.1.10
+   Compiling twox-hash v2.1.4
+   Compiling subtle v2.6.1
+   Compiling ruzstd v0.9.1
+   Compiling rand_core v0.10.1
+   Compiling foldhash v0.2.0
+   Compiling shards-template v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/template)
+   Compiling alloc-no-stdlib v2.0.4
+   Compiling shards-erofs v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/erofs)
+   Compiling shards-image v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/image)
+   Compiling alloc-stdlib v0.2.4
+   Compiling portable-atomic v1.15.0
+   Compiling log v0.4.34
+   Compiling libm v0.2.16
+   Compiling getrandom v0.4.3
+   Compiling rustls v0.23.46
+   Compiling brotli-decompressor v5.0.3
+   Compiling shards-cmdline v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/cmdline)
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling shards-ipc v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/ipc)
+   Compiling unsize v1.1.0
+   Compiling keccak v0.2.2
+   Compiling thiserror v2.0.21
+   Compiling powerfmt v0.2.0
+   Compiling deranged v0.5.8
+   Compiling num-conv v0.2.2
+   Compiling time-core v0.1.9
+   Compiling tinyvec v1.13.3
+   Compiling time v0.3.55
+   Compiling sha3 v0.11.0
+   Compiling shards-agentfile v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/agentfile)
+   Compiling digest v0.10.7
+   Compiling brotli v8.0.4
+   Compiling chacha20 v0.10.2
+   Compiling tracing-core v0.1.36
+   Compiling thiserror-impl v2.0.21
+   Compiling openssl-probe v0.2.1
+   Compiling pin-project-lite v0.2.17
+   Compiling httparse v1.10.1
+   Compiling siphasher v1.0.4
+   Compiling cpufeatures v0.2.17
+   Compiling sha1 v0.10.7
+   Compiling fastbloom v0.17.0
+   Compiling tracing v0.1.44
+   Compiling rustls-native-certs v0.8.4
+   Compiling rand v0.10.3
+   Compiling hashbrown v0.17.1
+   Compiling rand_pcg v0.10.2
+   Compiling shards-netring v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/netring)
+   Compiling shards-syscall-filter v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/syscall-filter)
+   Compiling percent-encoding v2.3.2
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/vmm)
+   Compiling libbz2-rs-sys v0.2.5
+   Compiling rustc-hash v2.1.3
+   Compiling lru-slab v0.1.3
+   Compiling bytes v1.12.1
+   Compiling slab v0.4.12
+   Compiling bzip2 v0.6.1
+   Compiling form_urlencoded v1.2.2
+   Compiling hashlink v0.12.2
+   Compiling triomphe v0.1.17
+   Compiling sha1-checked v0.10.0
+   Compiling yasna v0.6.0
+   Compiling unicode-normalization v0.1.25
+   Compiling pem v4.0.0
+   Compiling shards-seccomp v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/seccomp)
+   Compiling shards v0.7.0 (/home/adalundhe/s38-daemon-test/src/crates/shards)
+   Compiling lzma-rust2 v0.21.0
+   Compiling encoding_rs v0.8.35
+   Compiling iri-string v0.7.14
+   Compiling shards-dns v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/dns)
+   Compiling arraydeque v0.5.1
+   Compiling shards-devcgroup v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/devcgroup)
+   Compiling yaml-rust2 v0.13.0
+   Compiling shards-net v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/net)
+   Compiling shards-build v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/build)
+   Compiling shards-git v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/git)
+   Compiling shards-api v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/api)
+   Compiling shards-rego v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/rego)
+   Compiling shards-archive v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/archive)
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/testdir)
+   Compiling shards-flate v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/flate)
+   Compiling shards-gateway v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/gateway)
+   Compiling shards-user v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/user)
+   Compiling shards-tui v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/tui)
+   Compiling shards-ext4 v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/ext4)
+   Compiling shards-bus v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/bus)
+   Compiling shards-zstd v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/zstd)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/cc9admQq.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/ccKupyMZ.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+   Compiling rustls-webpki v0.103.16
+   Compiling hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling shards-gitsign v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/gitsign)
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling shards-tuf v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/tuf)
+   Compiling shards-remote v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/remote)
+   Compiling shards-sigstore v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/sigstore)
+   Compiling shards-registry v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/registry)
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/testguest)
+   Compiling rcgen v0.14.10
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6m 04s
+     Running unittests src/main.rs (/home/adalundhe/s38-daemon-test/target/debug/deps/shards-56fa3109d4065a35)
+
+running 1 test
+GOLDEN default x86_64 5b2b34f20829bb1fb022ad62070dced0a6bdd9c84c10b11a28042cd7b03c227d ["seccomp"]
+GOLDEN sys-admin x86_64 c48f56d50a73cb36af895f0c42546ac10fae507349d3316806935c3bfe383dbf ["caps=2820941307", "seccomp-mounts", "seccomp"]
+GOLDEN all-but-chown x86_64 26a009d82c18913c6111f98ac78365e386b6d9007d3ba0fcea606f3dcd5a5133 ["caps=2199023255550", "seccomp-mounts", "seccomp"]
+GOLDEN net-admin-alone x86_64 78b8bedfb4b374af629c4d94a36e5359a238792055e8ae5929015e8a4b75e089 ["caps=4096", "seccomp"]
+GOLDEN privileged x86_64 fcf57dca954aa4e69be29a5abec2fa2cd234cde51e7a8ecd9e243636958604da ["caps=2199023255551", "privileged", "devices=p\0"]
+GOLDEN apparmor-unconfined x86_64 7f3bc88392aeee1b9c7803ebb401c478ed0eb750c02fa977467707faa21f2fc7 ["caps=2820941307", "seccomp"]
+GOLDEN seccomp-unconfined x86_64 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 []
+GOLDEN own-profile x86_64 a3ad1399e10b9a1e669bc84ae575a7f1ed91801e70df220c8b8e78cea20451e2 ["seccomp"]
+GOLDEN cgroups-nnp x86_64 7533876735aeb2218d3635951243e91b17994b120ef4c4f84cd5cd15382dce7d ["cgroups-rw", "nnp", "seccomp"]
+GOLDEN host-network x86_64 e7cd4df00bed84d6e66f332c9d2868fa018a0ddd5a99b85c32c3940964988708 ["seccomp", "network=host", "seccomp-binds"]
+GOLDEN cgroupns-pid-host x86_64 d8618bbda440c020da75ba3a0f906af23461bb5bcd1f2cc08da4cf72093a28ec ["cgroupns=host", "pid=host", "seccomp"]
+test setup::tests::golden_capture ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 726 filtered out; finished in 0.13s
+

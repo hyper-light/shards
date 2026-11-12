@@ -1,0 +1,12 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:16:51.049777845 -0800
++++ crates/shards/src/agentfile.rs	2026-11-12 02:16:51.051777820 -0800
+@@ -144,9 +144,6 @@
+ /// microVM has it (`joins_granted`), whose command is its only principal, and where the run
+ /// asks for it, never a joiner's; in that order, as shards-init refuses each again.
+ pub fn joining(run: &shards_ipc::Run, joins_granted: bool) -> Result<(), NestingRefused> {
+-    if joins_granted {
+-        return Err(NestingRefused::Joiner);
+-    }
+     if asks_nesting(run) {
+         return Err(NestingRefused::Joined);
+     }

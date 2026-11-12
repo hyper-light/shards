@@ -1,0 +1,11 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:16:09.002298495 -0800
++++ crates/shards/src/agentfile.rs	2026-11-12 02:16:09.005343539 -0800
+@@ -115,7 +115,7 @@
+ /// not, as shards-init refuses it again: its image must declare it, and `--cgroupns host`
+ /// and `--pid host` undo it. A deadline is the grant's alone.
+ pub fn nesting(agentfile: Option<&Agentfile>, run: &shards_ipc::Run) -> Result<Nesting, NestingRefused> {
+-    let declared = agentfile.is_some_and(|a| a.grants.nesting);
++    let declared = agentfile.is_some();
+     if !asks_nesting(run) {
+         return match (run.ready_by, declared) {
+             (Some(_), _) => Err(NestingRefused::Ungranted),
