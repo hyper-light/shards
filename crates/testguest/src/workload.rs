@@ -692,6 +692,10 @@ pub fn main() -> ! {
                 }
             }
         }
+        // A nested runtime under the nesting grant (D234; nesting.rs): `nesting CASE`, and
+        // what each of its boxes runs, `nesting-box WHAT`.
+        "nesting" => crate::nesting::nesting(args.get(1..).unwrap_or_default()),
+        "nesting-box" => crate::nesting::in_box(args.get(1..).unwrap_or_default()),
         // Its IPC as it has it (D156): its namespace, its /dev/shm's size or none, and
         // whether it sees System V segment KEY and file /dev/shm/KEY.
         "ipc" => ipc_report(arg(1)),

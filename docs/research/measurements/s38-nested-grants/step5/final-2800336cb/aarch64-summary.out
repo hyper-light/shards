@@ -1,0 +1,6 @@
+host Darwin 25.4.0 arm64 rustc 1.98.1 at 2026-11-12T16:00:51Z commit 2800336cb14da9211c144f2eaecae9fc309066c0
+nesting_no_run_aarch64_musl_exit=0
+  Executable tests/nesting.rs (target/l1-s38/aarch64-unknown-linux-musl/test-release/deps/nesting-b8e7c5fda9ac5c73)
+clippy_nesting_aarch64_musl_exit=0
+    Checking shards v0.7.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/shards)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.05s

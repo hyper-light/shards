@@ -12,8 +12,9 @@ Three checks, each against this checkout:
 2. No backticked token of **Wire.**, or of the grant's own bullets, is a literal missing
    from PLANNED: each is planned, or an existing name another D-entry owns (EXISTING).
 3. The identifiers are their tables' next free values (marker 7 above shards_abi::marker,
-   run kind 49 above shards_abi::run::kind, ipc kind 90 above shards_ipc's kinds), or,
-   once their step has landed, held by the grant's own constant and nothing else.
+   run kind 49 above shards_abi::run::kind, ipc kind 90 above shards_ipc's kinds, image
+   wire kind 23 above shards-api's to_client kinds), or, once their step has landed, held
+   by the grant's own constant and nothing else.
 
 Prints each literal's verdict and the count underived; exits 1 if any check fails.
 """
@@ -57,6 +58,10 @@ PLANNED = [
     ("/run/shards 0755", "`/run/shards`'s mode, 0755"),
     ("credentials buffer 32", "The credentials buffer, 32 bytes"),
     ("notify queue", "The notify queue"),
+    ("to_client::READY = 23", "The run host's READY, shards-api's image wire kind `to_client::READY` = 23"),
+    ("VERSION 2", "The image wire's `VERSION` 2"),
+    ("the request's ready-by section", "The daemon's request carries the deadline as its extension section `ready-by`"),
+    ("wait_ready", "`wait_ready`: shards-api's way to wait"),
 ]
 
 # Backticked names in D234 that are no literal of its own: each is another entry's.
@@ -158,6 +163,9 @@ def main():
     run_kinds = {int(n) for n in re.findall(r"pub const \w+: u8 = (\d+);", kinds)}
     ipc = (ROOT / "crates/ipc/src/lib.rs").read_text(encoding="utf-8")
     ipc_kinds = {int(n) for n in re.findall(r"pub const [A-Z_0-9]+: u8 = (\d+);", ipc)}
+    wire = (ROOT / "crates/api/src/image/wire.rs").read_text(encoding="utf-8")
+    to_client = section(wire, "pub mod to_client", "\n}")
+    client_kinds = {int(n) for n in re.findall(r"pub const \w+: u8 = (\d+);", to_client)}
     # Each identifier is free, its table's next, or already the grant's own (its constant
     # named as D234 names it, once its step has landed), and taken by nothing else.
     def holders(text, ty, value):
@@ -166,6 +174,7 @@ def main():
         ("marker 7", 7, markers, "u32", taken, r"^WORKLOAD_READY$"),
         ("run kind 49", 49, kinds, "u8", run_kinds, r"^READY$"),
         ("ipc kind 90", 90, ipc, "u8", ipc_kinds, r"^WORKLOAD_READY$"),
+        ("image wire kind 23", 23, to_client, "u8", client_kinds, r"^READY$"),
     ]
     for name, value, text, ty, used, own in checks:
         held = holders(text, ty, value)
