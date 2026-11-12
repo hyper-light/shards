@@ -1,0 +1,28 @@
+{
+  "POLICY_READ": {
+    "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+    "ref": "origin/main",
+    "rules": "docs/development-rules.md",
+    "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "read_in_full": [
+      "AGENTS.md",
+      "docs/development-rules.md (R01-R16)",
+      "docs/development-evidence.md",
+      "CLAUDE.md"
+    ],
+    "role": "implementer",
+    "coordinator": "ROOT 01a148884a4770fdaf0111f3f792a248",
+    "date": "2026-11-11",
+    "task": "vsock window v1: finish and verify the device-wide shared vsock window budget (conn.rs, muxer.rs), raise host-side vsock socket buffers to the window, raise the engine relay's guest vsock buffer to the window through a constant shared in crates/abi; unit/light tests, red/green/mutation evidence, gates on kiln runner adacachy",
+    "branch": "p/vsock-window-v1",
+    "base": "origin/p/vsock-credit-v1 1e448c7ec150a9366deb036cca3687d65991d5c7",
+    "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/vsock-window-v1",
+    "owned_paths": [
+      "crates/vmm/src/devices/virtio/vsock/**",
+      "crates/init/src/engine.rs",
+      "crates/abi/src/** (the shared window constant only)",
+      "docs/research/measurements/vsock-window-v1/**"
+    ],
+    "light_test_scope": "unit and light tests only, on kiln runner adacachy (451397fcc585f7f7cb9aaf00e42064bb), needs <= cpus=4,mem=8g,disk=16g, -j4, timeout <= 1800 s; no builds on this Mac (below its 30 GiB floor); no real-VM E2E, profiling, benchmarks or audits (ROOT's)"
+  }
+}

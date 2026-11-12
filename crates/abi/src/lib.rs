@@ -50,6 +50,17 @@ pub const fn gateway_mac(gateway: [u8; 4]) -> [u8; 6] {
     [0x02, 0x42, a, b, c, d]
 }
 
+/// The most a vsock stream's receiver lets its peer send ahead of what it has taken (its
+/// `buf_alloc`, virtio 1.3 §5.10.6.3): the most window the VMM gives a connection
+/// (devices/virtio/vsock/conn.rs `WINDOW_MOST`), and the buffer the engine relay asks its
+/// guest socket for (init engine.rs), as Linux sends no more unacknowledged than its own
+/// buffer (8ee784fdf006). The knee of guest-to-host throughput over windows, each the guest's
+/// buffer as well, 256 MiB directly over vsock (p50 of 11 rounds): on KVM in 194.8 ms through
+/// 64 KiB, 87.5 through 256 KiB, 55.5 through 1 MiB, 52.6 through 4 MiB and 57.7 through
+/// 16 MiB (r429); on Hypervisor.framework in 37.7 through 256 KiB, 20.7 through 1 MiB and
+/// 14.3 through 4 MiB (r433; docs/research/measurements/vsock-window-v1).
+pub const VSOCK_WINDOW: u32 = 4 << 20;
+
 /// The window its host's memory pressure is measured over (D188; `vmm` platform/pressure.rs,
 /// its PSI trigger's and its other hosts' repeat): a guest that grew less than this ago is
 /// taken for one growing, whatever its host says meanwhile (init plug.rs, PM M466).

@@ -1,0 +1,23 @@
+# runner 451397 (adacachy), 2026-11-11, at the source of green.log. Paths of the runner's copy shortened to $R.
+== cargo fmt --all --check
+== exit 0
+== python3 scripts/check-development-policy
+Development policy checks passed; evidence/coordinator review is still required.
+== exit 0
+== cargo clippy -j4 -p shards-vmm --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.29s
+== exit 0
+== cargo clippy -j4 -p shards-abi --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+== exit 0
+== cargo clippy -j4 -p shards-init --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.04s
+== exit 0
+== PATH=$HOME/.local/share/shards-zig/zig-x86_64-linux-0.16.0:$PATH env CC_x86_64_unknown_linux_musl=$R/scripts/zig-cc AR_x86_64_unknown_linux_musl=$R/scripts/zig-ar ZIG_TARGET=x86_64-linux-musl cargo clippy -j4 -p shards-init --all-targets --target x86_64-unknown-linux-musl -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+== exit 0
+== PATH=... env CC_aarch64_unknown_linux_musl=$R/scripts/zig-cc AR_aarch64_unknown_linux_musl=$R/scripts/zig-ar ZIG_TARGET=aarch64-linux-musl cargo clippy -j4 -p shards-init --all-targets --target aarch64-unknown-linux-musl -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+== exit 0
+# The first clippy of shards-vmm at an earlier draft failed (clippy::assertions_on_constants on
+# `assert!(cfg!(windows), ..)` in the host-socket test); rewritten as a guarded match arm, then clean.

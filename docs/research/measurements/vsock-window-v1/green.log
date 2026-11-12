@@ -1,0 +1,70 @@
+# runner 451397 (adacachy), 2026-11-11; source 1e448c7ec150a9366deb036cca3687d65991d5c7 + working tree
+# (p/vsock-window-v1 before its commit): M crates/abi/src/lib.rs, crates/init/src/engine.rs,
+# crates/vmm/src/devices/virtio/vsock/{conn,muxer}.rs; ?? docs/research/measurements/vsock-window-v1/
+# Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); net.core.wmem_max 4194304,
+# wmem_default 212992, rmem_max 4194304.
+
+## cargo test -j4 -p shards-vmm --lib -- devices::virtio::vsock
+running 40 tests
+test devices::virtio::vsock::conn::tests::host_initiated_connections_answer_ok_or_time_out ... ok
+test devices::virtio::vsock::conn::tests::a_credit_request_is_answered ... ok
+test devices::virtio::vsock::conn::tests::host_eof_is_a_half_close ... ok
+test devices::virtio::vsock::conn::tests::a_guest_buffer_below_the_window_is_credited_before_it_is_used_up ... ok
+test devices::virtio::vsock::muxer::tests::handshake_lines_are_bounded_by_the_protocols_words ... ok
+test devices::virtio::vsock::conn::tests::host_data_is_read_into_guest_memory_within_the_guest_credit ... ok
+test devices::virtio::vsock::conn::tests::a_window_grows_only_once_its_guest_uses_it ... ok
+test devices::virtio::vsock::muxer::tests::handshakes_arrive_in_pieces_and_leave_later_data_unread ... ok
+test devices::virtio::vsock::conn::tests::a_guest_whose_buffer_shrinks_is_owed_its_update ... ok
+test devices::virtio::vsock::muxer::tests::local_ports_stay_in_range_and_unique ... ok
+test devices::virtio::vsock::muxer::tests::a_silent_handshake_keeps_its_slot_until_a_newcomer_wants_it ... ok
+test devices::virtio::vsock::muxer::tests::parses_connect_lines_and_nothing_else ... ok
+test devices::virtio::vsock::muxer::tests::a_save_holds_one_saves_worth_however_many_came_before ... ok
+test devices::virtio::vsock::conn::tests::guest_data_reaches_the_host_and_credit_flows_back ... ok
+test devices::virtio::vsock::conn::tests::a_guest_that_ignores_credit_is_reset ... ok
+test devices::virtio::vsock::muxer::tests::host_sockets_ask_for_their_buffers_where_this_process_may ... ok
+test devices::virtio::vsock::muxer::tests::ports_served_for_every_connection_get_each ... ok
+test devices::virtio::vsock::muxer::tests::past_its_slots_a_dial_is_refused_at_once ... ok
+test devices::virtio::vsock::muxer::tests::saved_streams_round_trip ... ok
+test devices::virtio::vsock::conn::tests::a_window_grows_no_further_than_the_guests_buffer ... ok
+test devices::virtio::vsock::muxer::tests::restores_reset_held_streams_first_and_keep_their_ports ... ok
+test devices::virtio::vsock::muxer::tests::served_ports_get_connections_without_socket_files ... ok
+test devices::virtio::vsock::packet::tests::round_trips_every_field_at_its_uapi_offset ... ok
+test devices::virtio::vsock::muxer::tests::what_the_guest_sent_before_its_end_is_read_whole_whatever_the_host_writes ... ok
+test devices::virtio::vsock::muxer::tests::stray_resets_owed_follow_the_guests_rings ... ok
+test devices::virtio::vsock::tests::the_rings_hold_a_guest_sockets_credit ... ok
+test devices::virtio::vsock::tests::a_refused_worker_leaves_the_device_whole ... ok
+test devices::virtio::vsock::muxer::tests::two_connections_share_the_lent_window ... ok
+test devices::virtio::vsock::tests::a_round_delivers_a_ring_of_rx_at_most ... ok
+test devices::virtio::vsock::muxer::tests::past_its_descriptors_a_dial_is_refused_at_once ... ok
+test devices::virtio::vsock::tests::a_flooded_tx_queue_leaves_rx_its_turn ... ok
+test devices::virtio::vsock::tests::a_flooded_worker_keeps_up_and_stops ... ok
+test devices::virtio::vsock::poll::tests::a_pollers_waits_follow_their_interests ... ok
+test devices::virtio::vsock::conn::tests::a_window_never_takes_back_what_it_gave ... ok
+test devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it ... ok
+test devices::virtio::vsock::poll::tests::a_half_closed_peer_is_readable_but_not_a_reason_to_wake_a_writer ... ok
+test devices::virtio::vsock::conn::tests::a_buffer_never_holds_room_past_the_credit ... ok
+test devices::virtio::vsock::conn::tests::a_ring_keeps_the_guests_order_and_gives_back_its_room ... ok
+test devices::virtio::vsock::poll::tests::a_wait_wakes_for_data_that_comes_while_it_waits ... ok
+test devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds ... ok
+
+test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 393 filtered out; finished in 0.39s
+
+## cargo test -j4 -p shards-vmm --lib -- --nocapture --exact <busy device> <host sockets>
+running 2 tests
+asked for 262144 each way: [212992, 212992] became [524288, 524288]
+test devices::virtio::vsock::muxer::tests::host_sockets_ask_for_their_buffers_where_this_process_may ... ok
+4000 steps: lent at most 4128768 of 4128768; 293 windows grown, 180 shrunk; 44 guests reset past their windows
+test devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 431 filtered out; finished in 0.40s
+
+## cargo test -j4 -p shards-init --target x86_64-unknown-linux-gnu
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496)
+test frames::tests::frames_cost ... ignored, a measurement
+test result: ok. 146 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+## cargo test -j4 -p shards-init --target x86_64-unknown-linux-gnu -- --nocapture engine::tests
+running 1 test
+test engine::tests::the_relays_socket_asks_for_the_hosts_window ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 146 filtered out; finished in 0.00s
+(no SKIP line: this host's kernel made the AF_VSOCK socket, and read both options back as 4194304)

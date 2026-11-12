@@ -28,7 +28,7 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use super::Span;
-use super::conn::Conn;
+use super::conn::{Conn, WINDOW_LENT};
 use super::packet::{HOST_CID, Header, TYPE_STREAM, op};
 use super::poll::{Interest, Ready};
 use crate::debug;
@@ -47,6 +47,19 @@ const MIN_HANDSHAKE: usize = handshake_len(decimal_digits(0), LF);
 const MAX_HANDSHAKE: usize = handshake_len(decimal_digits(u32::MAX), CRLF);
 /// Host ports for host-initiated connections come from [2^30, 2^31), as in Firecracker.
 const LOCAL_PORT_BASE: u32 = 1 << 30;
+/// What a connection's host socket is asked to buffer each way (SO_SNDBUF, SO_RCVBUF), as
+/// a sender's bytes in flight are bounded by its send buffer (XNU bsd/kern/uipc_usrreq.c):
+/// the smallest measured within the noise of the best with the most window, on
+/// Hypervisor.framework. 256 MiB took 14.3 ms guest to host through 256 KiB socket buffers
+/// and through 4 MiB ones, relayed 87.0 and 85.9, host to guest 85.7 and 85.5 (p50 of 11
+/// rounds, r433), where macOS's own 8 KiB (net.local.stream.sendspace) took 355.1 guest to
+/// host with the least window (r421; docs/research/measurements/vsock-window-v1).
+const SOCKET_BUFFER: u32 = 256 << 10;
+/// Whether this process sizes its host sockets ([`SOCKET_BUFFER`]): not on Linux, whose
+/// confined VM process's seccomp filter allows no setsockopt (shards' confine.rs), so that
+/// one would end it (SIGSYS), and whose own default, net.core.wmem_default's 212,992 bytes,
+/// is about that size already.
+const SIZES_SOCKETS: bool = cfg!(not(target_os = "linux"));
 
 /// The handshake's words (firecracker docs/vsock.md: `CONNECT PORT\n`, PORT in decimal),
 /// whose line a client's terminal may end with `\r\n` as well.
@@ -197,6 +210,9 @@ pub struct Muxer {
     spare: Option<Spare>,
     local_ports: HashSet<u32>,
     last_local_port: u32,
+    /// The device's lent window ([`WINDOW_LENT`]) its connections hold, summed: never more
+    /// than it ([`Muxer::next_rx`]).
+    lent: u64,
 }
 
 impl std::fmt::Debug for Muxer {
@@ -246,6 +262,7 @@ impl Muxer {
             spare,
             local_ports: HashSet::new(),
             last_local_port: LOCAL_PORT_BASE - 1,
+            lent: 0,
         })
     }
 
@@ -253,6 +270,7 @@ impl Muxer {
     pub fn reset(&mut self) {
         self.handshakes.clear();
         self.conns.clear();
+        self.lent = 0;
         #[cfg(windows)]
         self.lingering.clear();
         self.rxq.clear();
@@ -348,6 +366,7 @@ impl Muxer {
         let Some(c) = self.conns.remove(&key) else {
             return;
         };
+        self.lent = self.lent.saturating_sub(u64::from(c.lent()));
         if c.allocated_port {
             self.local_ports.remove(&key.local_port);
         }
@@ -386,7 +405,12 @@ impl Muxer {
             self.remove(key);
             return;
         }
+        let held = u64::from(conn.lent());
         conn.on_guest_packet(h, payload, mem);
+        self.lent = self
+            .lent
+            .saturating_sub(held)
+            .saturating_add(u64::from(conn.lent()));
         self.enqueue(key);
     }
 
@@ -434,6 +458,9 @@ impl Muxer {
         };
         match connected {
             Ok(stream) => {
+                if SIZES_SOCKETS {
+                    size_buffers(&stream);
+                }
                 self.make_room();
                 self.conns
                     .insert(key, Conn::guest_initiated(stream, self.guest_cid, request));
@@ -467,7 +494,11 @@ impl Muxer {
             let Some(conn) = self.conns.get_mut(&key) else {
                 continue;
             };
-            let h = conn.next_rx(space);
+            // What no other connection holds of the lent window is this one's to take.
+            let others = self.lent.saturating_sub(u64::from(conn.lent()));
+            let spare = u64::from(WINDOW_LENT).saturating_sub(others);
+            let h = conn.next_rx(space, u32::try_from(spare).unwrap_or(0));
+            self.lent = others.saturating_add(u64::from(conn.lent()));
             if conn.has_pending_rx() {
                 self.rxq.push_back(key);
             } else {
@@ -537,9 +568,11 @@ impl Muxer {
                     let Some(c) = self.conns.get_mut(&key) else {
                         continue;
                     };
+                    let held = u64::from(c.lent());
                     if e.write {
                         c.on_writable();
                     }
+                    self.lent = self.lent.saturating_sub(held).saturating_add(u64::from(c.lent()));
                     if e.read {
                         c.on_readable();
                     }
@@ -606,6 +639,9 @@ impl Muxer {
             debug!("vsock: host connection: {e}");
             return;
         }
+        if SIZES_SOCKETS {
+            size_buffers(&stream);
+        }
         self.handshakes.push(Handshake {
             stream,
             line: Vec::with_capacity(MAX_HANDSHAKE),
@@ -668,6 +704,21 @@ impl Muxer {
         }
     }
 
+    /// What holds of the muxer between any two of its calls (tests): its lent window what its
+    /// connections hold, together, and never more than [`WINDOW_LENT`]; and each
+    /// connection's own ([`Conn::check`]).
+    #[cfg(test)]
+    fn check(&self) -> Result<(), String> {
+        let held: u64 = self.conns.values().map(|c| u64::from(c.lent())).sum();
+        if held != self.lent || self.lent > u64::from(WINDOW_LENT) {
+            return Err(format!(
+                "lent {} of {WINDOW_LENT}, where its connections hold {held}",
+                self.lent
+            ));
+        }
+        self.conns.values().try_for_each(Conn::check)
+    }
+
     /// The earliest deadline of any connection. Handshakes have none ([`Handshake::heard`]).
     pub fn next_deadline(&self) -> Option<Instant> {
         self.conns.values().filter_map(Conn::expiry).min()
@@ -699,6 +750,11 @@ impl Drop for Muxer {
 fn serve(accept: impl FnOnce(UnixStream) -> crate::vm::Admission) -> io::Result<UnixStream> {
     let (ours, theirs) = UnixStream::pair()?;
     ours.set_nonblocking(true)?;
+    // Ours is sized as its connection is made (Muxer::guest_connect); theirs sends the
+    // host's bytes.
+    if SIZES_SOCKETS {
+        size_buffers(&theirs);
+    }
     match accept(theirs) {
         crate::vm::Admission::Accepted => {}
         crate::vm::Admission::Full => {
@@ -715,6 +771,93 @@ fn serve(accept: impl FnOnce(UnixStream) -> crate::vm::Admission) -> io::Result<
         }
     }
     Ok(ours)
+}
+
+/// The buffers [`size_buffers`] asks for.
+#[cfg(unix)]
+const BUFFERS: [(libc::c_int, &str); 2] = [(libc::SO_SNDBUF, "SO_SNDBUF"), (libc::SO_RCVBUF, "SO_RCVBUF")];
+#[cfg(windows)]
+const BUFFERS: [(i32, &str); 2] = [
+    (windows_sys::Win32::Networking::WinSock::SO_SNDBUF, "SO_SNDBUF"),
+    (windows_sys::Win32::Networking::WinSock::SO_RCVBUF, "SO_RCVBUF"),
+];
+
+/// Asks the host's kernel to buffer [`SOCKET_BUFFER`] each way on a connection's host
+/// socket. A size it refuses or cuts is said, and the socket kept: a smaller buffer only
+/// costs speed.
+fn size_buffers(stream: &UnixStream) {
+    for (option, name) in BUFFERS {
+        match set_buffer(stream.raw_socket(), option, SOCKET_BUFFER) {
+            Ok(got) if got >= SOCKET_BUFFER as usize => {}
+            Ok(got) => debug!("vsock: a host socket's {name} is {got} bytes of {SOCKET_BUFFER} asked"),
+            Err(e) => debug!("vsock: a host socket's {name}: {e}"),
+        }
+    }
+}
+
+/// Sets a socket's buffer `option` to `bytes`, and says what the kernel made of it: Linux
+/// doubles what it takes (socket(7)), and cuts it to net.core.wmem_max or rmem_max first.
+#[cfg(unix)]
+fn set_buffer(socket: crate::platform::RawSocket, option: libc::c_int, bytes: u32) -> io::Result<usize> {
+    let want = libc::c_int::try_from(bytes).map_err(io::Error::other)?;
+    let size = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: setsockopt(2) of an int option from `want`, `size` its length, on a socket
+    // the caller holds.
+    let set = unsafe { libc::setsockopt(socket, libc::SOL_SOCKET, option, (&raw const want).cast(), size) };
+    if set != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    buffer_size(socket, option)
+}
+
+/// A socket's buffer `option`, in bytes.
+#[cfg(unix)]
+fn buffer_size(socket: crate::platform::RawSocket, option: libc::c_int) -> io::Result<usize> {
+    let mut got: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: getsockopt(2) of an int option into `got`, `len` its length, on a socket the
+    // caller holds.
+    let read = unsafe {
+        libc::getsockopt(
+            socket,
+            libc::SOL_SOCKET,
+            option,
+            (&raw mut got).cast(),
+            &raw mut len,
+        )
+    };
+    if read != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    usize::try_from(got).map_err(io::Error::other)
+}
+
+/// Sets a socket's buffer `option` to `bytes`, and says what Winsock made of it.
+#[cfg(windows)]
+fn set_buffer(socket: crate::platform::RawSocket, option: i32, bytes: u32) -> io::Result<usize> {
+    use windows_sys::Win32::Networking::WinSock::{SOL_SOCKET, setsockopt};
+    let want = i32::try_from(bytes).map_err(io::Error::other)?;
+    let size = i32::try_from(std::mem::size_of::<i32>()).map_err(io::Error::other)?;
+    // SAFETY: setsockopt of an int option from `want`, `size` its length, on a socket the
+    // caller holds.
+    if unsafe { setsockopt(socket, SOL_SOCKET, option, (&raw const want).cast(), size) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    buffer_size(socket, option)
+}
+
+/// A socket's buffer `option`, in bytes.
+#[cfg(windows)]
+fn buffer_size(socket: crate::platform::RawSocket, option: i32) -> io::Result<usize> {
+    use windows_sys::Win32::Networking::WinSock::{SOL_SOCKET, getsockopt};
+    let mut got: i32 = 0;
+    let mut len = i32::try_from(std::mem::size_of::<i32>()).map_err(io::Error::other)?;
+    // SAFETY: getsockopt of an int option into `got`, `len` its length, on a socket the
+    // caller holds.
+    if unsafe { getsockopt(socket, SOL_SOCKET, option, (&raw mut got).cast(), &raw mut len) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    usize::try_from(got).map_err(io::Error::other)
 }
 
 /// Reads a handshake line without consuming anything after it. `Some(port)` once the line
@@ -856,6 +999,8 @@ mod tests {
     use std::io::Write as _;
     use std::time::Duration;
 
+    use super::super::conn::{WINDOW_LEAST, WINDOW_MOST};
+    use super::super::packet::MAX_PAYLOAD;
     use super::*;
 
     #[test]
@@ -1393,5 +1538,440 @@ mod tests {
         let b = m.allocate_local_port();
         assert!((LOCAL_PORT_BASE..1 << 31).contains(&a) && (LOCAL_PORT_BASE..1 << 31).contains(&b));
         assert_ne!(a, b);
+    }
+
+    // The device's lent window (conn.rs, WINDOW_LENT), over connections to a port this
+    // process serves for every connection, their guests' credit kept as Linux keeps it.
+
+    /// Where the guest's packets are, in its memory.
+    const PACKETS: u64 = 0x8000_0000;
+
+    /// The bytes a guest sends: each its offset in its stream, modulo a prime, so that one
+    /// out of place shows. A packet's are this from its offset's place.
+    fn pattern() -> &'static [u8] {
+        static PATTERN: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+        PATTERN.get_or_init(|| (0..MAX_PAYLOAD as usize + 251).map(|i| (i % 251) as u8).collect())
+    }
+
+    /// A muxer serving port 54 for every connection, and where their host ends arrive.
+    fn served_every() -> (Muxer, std::sync::mpsc::Receiver<UnixStream>) {
+        let (sender, arrived) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            path: None,
+            ports: Vec::new(),
+            every: vec![(54, sender.into())],
+        };
+        (Muxer::new(host, 3).unwrap(), arrived)
+    }
+
+    /// A guest's end of one connection to port 54, as Linux keeps it: what our latest
+    /// packet let it send (virtio_transport_space_update) within its own buffer
+    /// (8ee784fdf006); and the host's end, which checks that it reads the guest's bytes in
+    /// order.
+    struct Peer {
+        key: Key,
+        host: UnixStream,
+        /// Its own buffer.
+        buf_alloc: u32,
+        tx_cnt: u32,
+        heard_fwd: u32,
+        heard_buf: u32,
+        /// The furthest our packets let it send.
+        edge: u32,
+        /// Packets whose window was less than the one before.
+        shrunk: usize,
+        read: usize,
+        reset: bool,
+    }
+
+    impl Peer {
+        /// Guest port `from`, its buffer `buf_alloc`, asks to connect; [`hear`] the answer.
+        fn connect(
+            m: &mut Muxer,
+            arrived: &std::sync::mpsc::Receiver<UnixStream>,
+            mem: &GuestMemory,
+            from: u32,
+            buf_alloc: u32,
+        ) -> Peer {
+            m.on_guest_packet(
+                &Header {
+                    buf_alloc,
+                    ..request(54, from)
+                },
+                &[],
+                mem,
+            );
+            let host = arrived.try_recv().unwrap();
+            host.set_nonblocking(true).unwrap();
+            Peer {
+                key: Key {
+                    local_port: 54,
+                    peer_port: from,
+                },
+                host,
+                buf_alloc,
+                tx_cnt: 0,
+                heard_fwd: 0,
+                heard_buf: 0,
+                edge: 0,
+                shrunk: 0,
+                read: 0,
+                reset: false,
+            }
+        }
+
+        /// What Linux lets it send now: the lesser of our window and its own buffer, past
+        /// what it sent that it has not heard we forwarded (virtio_transport_has_space).
+        fn credit(&self) -> u32 {
+            self.heard_buf
+                .min(self.buf_alloc)
+                .saturating_sub(self.tx_cnt.wrapping_sub(self.heard_fwd))
+        }
+
+        /// Sends `n` bytes, a packet's at most, of the [`pattern`].
+        fn send(&mut self, m: &mut Muxer, mem: &GuestMemory, n: u32) {
+            let at = (self.tx_cnt % 251) as usize;
+            let bytes = &pattern()[at..at + n as usize];
+            mem.access().unwrap().write(PACKETS, bytes).unwrap();
+            let span = Span {
+                gpa: PACKETS,
+                ptr: mem.host_ptr(PACKETS, bytes.len()).unwrap(),
+                len: bytes.len(),
+            };
+            let h = Header {
+                op: op::RW,
+                len: n,
+                buf_alloc: self.buf_alloc,
+                ..request(54, self.key.peer_port)
+            };
+            m.on_guest_packet(&h, &[span], mem);
+            self.tx_cnt = self.tx_cnt.wrapping_add(n);
+        }
+
+        /// Sends all Linux lets it, a packet at a time, the host reading as it goes where
+        /// `reading`.
+        fn send_all(&mut self, m: &mut Muxer, mem: &GuestMemory, reading: bool) {
+            while self.credit() > 0 {
+                self.send(m, mem, self.credit().min(MAX_PAYLOAD));
+                if reading {
+                    self.drain(m);
+                }
+            }
+        }
+
+        /// The host reads all it can, each byte checked, and the muxer writes what it holds
+        /// as the socket turns writable, until neither moves.
+        fn drain(&mut self, m: &mut Muxer) {
+            let mut buf = [0u8; MAX_PAYLOAD as usize];
+            loop {
+                let mut moved = false;
+                loop {
+                    match self.host.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let at = self.read % 251;
+                            assert!(
+                                buf[..n] == pattern()[at..at + n],
+                                "port {}: bytes {} to {} not the guest's",
+                                self.key.peer_port,
+                                self.read,
+                                self.read + n
+                            );
+                            self.read += n;
+                            moved = true;
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(e) => panic!("reading the host end: {e}"),
+                    }
+                }
+                m.on_events(&[Ready {
+                    token: Some(Token::Conn(self.key)),
+                    read: false,
+                    write: true,
+                }]);
+                if !moved {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Gives the guest every packet the muxer has for it, each to its peer: (guest port, op,
+    /// window), in order. No window is less than the least, no right edge moves left (RFC
+    /// 1122 §4.2.2.16), and the muxer's bounds hold after each ([`Muxer::check`]).
+    fn hear(m: &mut Muxer, peers: &mut [Peer]) -> Vec<(u32, u16, u32)> {
+        let mut heard = Vec::new();
+        while let Some(h) = m.next_rx(&[]) {
+            m.check().unwrap();
+            heard.push((h.dst_port, h.op, h.buf_alloc));
+            let Some(p) = peers.iter_mut().find(|p| p.key.peer_port == h.dst_port) else {
+                continue;
+            };
+            if h.op == op::RST {
+                p.reset = true;
+                continue;
+            }
+            assert!(
+                h.buf_alloc >= WINDOW_LEAST,
+                "port {}: a window of {}",
+                h.dst_port,
+                h.buf_alloc
+            );
+            let edge = h.fwd_cnt.wrapping_add(h.buf_alloc);
+            assert!(
+                edge.wrapping_sub(p.edge) < 1 << 31,
+                "port {}: the right edge moved left, from {} to {edge}",
+                h.dst_port,
+                p.edge
+            );
+            if h.buf_alloc < p.heard_buf {
+                p.shrunk += 1;
+            }
+            (p.heard_fwd, p.heard_buf, p.edge) = (h.fwd_cnt, h.buf_alloc, edge);
+        }
+        heard
+    }
+
+    /// A lone connection is offered the most window once its guest has used half of what it
+    /// had, all the device lends: it may send all of it with the host reading none, and a
+    /// byte past it resets it.
+    #[test]
+    fn a_lone_connection_is_offered_the_most_window_and_reset_past_it() {
+        let (mut m, arrived) = served_every();
+        let mem = GuestMemory::anonymous(&[(PACKETS, 1 << 16)]).unwrap();
+        let mut p = Peer::connect(&mut m, &arrived, &mem, 49_152, WINDOW_MOST);
+        let heard = hear(&mut m, std::slice::from_mut(&mut p));
+        assert_eq!(heard, [(49_152, op::RESPONSE, WINDOW_LEAST)]);
+        p.send(&mut m, &mem, WINDOW_LEAST / 2);
+        p.drain(&mut m);
+        let heard = hear(&mut m, std::slice::from_mut(&mut p));
+        assert_eq!(
+            heard,
+            [(49_152, op::CREDIT_UPDATE, WINDOW_MOST)],
+            "a lone connection's window, its guest's buffer the most"
+        );
+        p.send_all(&mut m, &mem, false);
+        assert_eq!(p.tx_cnt, WINDOW_LEAST / 2 + WINDOW_MOST);
+        assert_eq!(
+            m.conns[&p.key].interest(),
+            (true, true),
+            "what the window let through was refused"
+        );
+        p.send(&mut m, &mem, 1);
+        let heard = hear(&mut m, std::slice::from_mut(&mut p));
+        assert_eq!(
+            heard.first().map(|&(_, op, _)| op),
+            Some(op::RST),
+            "a byte past the window was taken"
+        );
+    }
+
+    /// Two connections share what the device lends: the second is given the least window
+    /// while the first holds all of it, and all of it once the first's guest has sent what
+    /// it was given and the host has taken that.
+    #[test]
+    fn two_connections_share_the_lent_window() {
+        let (mut m, arrived) = served_every();
+        let mem = GuestMemory::anonymous(&[(PACKETS, 1 << 16)]).unwrap();
+        let mut peers = vec![
+            Peer::connect(&mut m, &arrived, &mem, 49_152, WINDOW_MOST),
+            Peer::connect(&mut m, &arrived, &mem, 49_153, WINDOW_MOST),
+        ];
+        hear(&mut m, &mut peers);
+        for (i, window) in [(0, WINDOW_MOST), (1, WINDOW_LEAST)] {
+            peers[i].send(&mut m, &mem, WINDOW_LEAST / 2);
+            peers[i].drain(&mut m);
+            let port = peers[i].key.peer_port;
+            assert_eq!(hear(&mut m, &mut peers), [(port, op::CREDIT_UPDATE, window)]);
+        }
+        // The second uses half its window again; the first sends all it was given, which the
+        // host takes.
+        peers[1].send(&mut m, &mem, WINDOW_LEAST / 2);
+        peers[1].drain(&mut m);
+        peers[0].send_all(&mut m, &mem, true);
+        assert_eq!(
+            hear(&mut m, &mut peers),
+            [
+                (49_153, op::CREDIT_UPDATE, WINDOW_MOST),
+                (49_152, op::CREDIT_UPDATE, WINDOW_LEAST)
+            ]
+        );
+    }
+
+    /// Connections side by side as a busy device has them: guests sending what Linux lets
+    /// them, now and then past it; their buffers raised and lowered; hosts reading now and
+    /// then; connections ending and new ones made. After every step the muxer's bounds hold
+    /// ([`Muxer::check`]), no window is under the least and no right edge moves left
+    /// ([`hear`]), no guest that kept to its credit is reset, and each host reads its guest's
+    /// bytes in order. At the end, the hosts having taken all, every guest has credit.
+    #[test]
+    fn a_busy_device_keeps_its_window_bounds() {
+        const STEPS: usize = 4000;
+        let (mut m, arrived) = served_every();
+        let mem = GuestMemory::anonymous(&[(PACKETS, 1 << 16)]).unwrap();
+        // xorshift64* (Vigna, 2016), seeded: the same steps every run.
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = |n: usize| {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            (state.wrapping_mul(0x2545_f491_4f6c_dd1d) % n as u64) as usize
+        };
+        let buffers = [16 * 1024, 256 * 1024, WINDOW_MOST];
+        let mut peers: Vec<Peer> = Vec::new();
+        // Guests that sent past what they were given.
+        let mut broke: Vec<u32> = Vec::new();
+        let (mut from, mut most_lent, mut grown, mut shrunk) = (50_000, 0, 0, 0);
+        for step in 0..STEPS {
+            let roll = next(100);
+            let one = if peers.is_empty() {
+                None
+            } else {
+                Some(next(peers.len()))
+            };
+            match (roll, one) {
+                (0..=4, _) if peers.len() < 8 => {
+                    let buf_alloc = buffers[next(buffers.len())];
+                    peers.push(Peer::connect(&mut m, &arrived, &mem, from, buf_alloc));
+                    from += 1;
+                }
+                (5, Some(i)) => {
+                    let gone = peers.swap_remove(i);
+                    shrunk += gone.shrunk;
+                    let rst = Header {
+                        op: op::RST,
+                        ..request(54, gone.key.peer_port)
+                    };
+                    m.on_guest_packet(&rst, &[], &mem);
+                }
+                // Past what it was given, once it was given something.
+                (6, Some(i)) if peers[i].heard_buf > 0 => {
+                    let p = &mut peers[i];
+                    let mut past = p.edge.wrapping_sub(p.tx_cnt).saturating_add(1);
+                    while past > 0 {
+                        let n = past.min(MAX_PAYLOAD);
+                        p.send(&mut m, &mem, n);
+                        past -= n;
+                    }
+                    broke.push(p.key.peer_port);
+                }
+                (7..=45, Some(i)) => {
+                    let p = &mut peers[i];
+                    let n = (1 + next(MAX_PAYLOAD as usize)) as u32;
+                    let n = n.min(p.credit());
+                    if n > 0 {
+                        p.send(&mut m, &mem, n);
+                    }
+                }
+                (46..=70, Some(i)) => peers[i].drain(&mut m),
+                (71..=95, _) => {
+                    let heard = hear(&mut m, &mut peers);
+                    grown += heard
+                        .iter()
+                        .filter(|&&(_, op, window)| op == op::CREDIT_UPDATE && window > WINDOW_LEAST)
+                        .count();
+                }
+                (96..=97, Some(i)) => {
+                    // Its program sets its buffer, and Linux says so at once.
+                    let p = &mut peers[i];
+                    p.buf_alloc = buffers[next(buffers.len())];
+                    let said = Header {
+                        op: op::CREDIT_UPDATE,
+                        buf_alloc: p.buf_alloc,
+                        ..request(54, p.key.peer_port)
+                    };
+                    m.on_guest_packet(&said, &[], &mem);
+                }
+                _ => {}
+            }
+            m.check().unwrap_or_else(|e| panic!("step {step}: {e}"));
+            most_lent = most_lent.max(m.lent);
+            if let Some(p) = peers
+                .iter()
+                .find(|p| p.reset && !broke.contains(&p.key.peer_port))
+            {
+                panic!(
+                    "step {step}: port {} was reset, its guest within what it was given",
+                    p.key.peer_port
+                );
+            }
+            shrunk += peers.iter().filter(|p| p.reset).map(|p| p.shrunk).sum::<usize>();
+            peers.retain(|p| !p.reset);
+        }
+        // The hosts take all, and every guest hears what it is owed.
+        for _ in 0..2 {
+            for p in &mut peers {
+                p.drain(&mut m);
+            }
+            hear(&mut m, &mut peers);
+        }
+        m.check().unwrap();
+        for p in peers.iter().filter(|p| !broke.contains(&p.key.peer_port)) {
+            assert!(!p.reset, "port {} was reset", p.key.peer_port);
+            assert_eq!(
+                p.read, p.tx_cnt as usize,
+                "port {}: its host's bytes",
+                p.key.peer_port
+            );
+            assert!(p.credit() > 0, "port {} waits for credit", p.key.peer_port);
+        }
+        shrunk += peers.iter().map(|p| p.shrunk).sum::<usize>();
+        println!(
+            "{STEPS} steps: lent at most {most_lent} of {WINDOW_LENT}; {grown} windows grown, \
+             {shrunk} shrunk; {} guests reset past their windows",
+            broke.len()
+        );
+        assert!(
+            grown > 0 && shrunk > 0 && most_lent > 0,
+            "the lent window was not exercised"
+        );
+    }
+
+    /// A connection's host sockets ask for SOCKET_BUFFER each way where this process sizes
+    /// them, and keep the kernel's own on Linux, whose VM process may make no setsockopt
+    /// (SIZES_SOCKETS). Asked, a Unix kernel gives that, or more than it gave before where
+    /// it cuts what an unprivileged process asks (Linux: net.core.wmem_max), and the socket
+    /// carries bytes as before; Windows may refuse, which leaves it its size.
+    #[test]
+    fn host_sockets_ask_for_their_buffers_where_this_process_may() {
+        let sizes = |socket| BUFFERS.map(|(option, _)| buffer_size(socket, option).unwrap());
+        let (mut fresh, mut peer) = UnixStream::pair().unwrap();
+        let before = sizes(fresh.raw_socket());
+        for ((option, name), was) in BUFFERS.into_iter().zip(before) {
+            match set_buffer(fresh.raw_socket(), option, SOCKET_BUFFER) {
+                Ok(got) => assert!(
+                    got >= SOCKET_BUFFER as usize || got > was,
+                    "{name}: {was} bytes, then {got} asked for {SOCKET_BUFFER}"
+                ),
+                Err(e) if cfg!(windows) => println!("{name} refused: {e}"),
+                Err(e) => panic!("{name}: {e}"),
+            }
+        }
+        println!(
+            "asked for {SOCKET_BUFFER} each way: {before:?} became {:?}",
+            sizes(fresh.raw_socket())
+        );
+        fresh.write_all(b"x").unwrap();
+        let mut byte = [0u8; 1];
+        peer.read_exact(&mut byte).unwrap();
+        // A served port's connection, both its ends.
+        let (mut m, arrived) = served_every();
+        let mem = GuestMemory::anonymous(&[(PACKETS, 1 << 16)]).unwrap();
+        m.on_guest_packet(&request(54, 49_152), &[], &mem);
+        let theirs = arrived.try_recv().unwrap();
+        let key = Key {
+            local_port: 54,
+            peer_port: 49_152,
+        };
+        for made in [sizes(theirs.raw_socket()), sizes(m.conns[&key].fd())] {
+            if cfg!(target_os = "linux") {
+                assert_eq!(made, before, "a Linux VM process sized a socket");
+            } else {
+                assert!(
+                    made.iter().all(|&s| s >= SOCKET_BUFFER as usize) || cfg!(windows),
+                    "{made:?}"
+                );
+            }
+        }
     }
 }

@@ -1,0 +1,123 @@
+# python3 -I docs/research/measurements/vsock-window-v1/mutants/run.py . ~/.cache/vsock-window-v1-mutants
+# runner 451397 (adacachy), Linux 7.2.9-2-cachyos x86_64, rustc 1.98.1, 2026-11-11, at the final source.
+== M1 a window takes what other connections hold: conn.rs header() without .min(room)
+   exit 101; killed; failed: devices::virtio::vsock::conn::tests::guest_data_reaches_the_host_and_credit_flows_back, devices::virtio::vsock::muxer::tests::two_connections_share_the_lent_window, devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds, devices::virtio::vsock::conn::tests::a_window_never_takes_back_what_it_gave
+   | thread 'devices::virtio::vsock::conn::tests::guest_data_reaches_the_host_and_credit_flows_back' (4178278) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:1027:9:
+   | assertion `left == right` failed
+   |   left: (6, 32768, 262144)
+   |  right: (6, 32768, 65536)
+   | thread 'devices::virtio::vsock::muxer::tests::two_connections_share_the_lent_window' (4178299) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1705:23:
+   | called `Result::unwrap()` on an `Err` value: "lent 8257536 of 4128768, where its connections hold 8257536"
+   | ---- devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds stdout ----
+   | thread 'devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds' (4178282) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1705:23:
+   | called `Result::unwrap()` on an `Err` value: "lent 4259856 of 4128768, where its connections hold 4259856"
+   | ---- devices::virtio::vsock::conn::tests::a_window_never_takes_back_what_it_gave stdout ----
+   | thread 'devices::virtio::vsock::conn::tests::a_window_never_takes_back_what_it_gave' (4178277) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:952:9:
+   | assertion `left == right` failed: the right edge moved: window 4194304 at 1081344
+   |   left: 5275648
+   |  right: 4227072
+== M2 spare counts nothing others hold: muxer.rs next_rx()
+   exit 101; killed; failed: devices::virtio::vsock::muxer::tests::two_connections_share_the_lent_window, devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds
+   | thread 'devices::virtio::vsock::muxer::tests::two_connections_share_the_lent_window' (4188603) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1705:23:
+   | called `Result::unwrap()` on an `Err` value: "lent 8257536 of 4128768, where its connections hold 8257536"
+   | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+   | thread 'devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds' (4188586) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1705:23:
+   | called `Result::unwrap()` on an `Err` value: "lent 4259856 of 4128768, where its connections hold 4259856"
+== M3 the right edge may move left: header() without .max(self.exposure())
+   exit 101; killed; failed: devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds, devices::virtio::vsock::conn::tests::a_window_never_takes_back_what_it_gave
+   | thread 'devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds' (1304) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1721:13:
+   | port 50013: the right edge moved left, from 187061 to 182753
+   | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+   | thread 'devices::virtio::vsock::conn::tests::a_window_never_takes_back_what_it_gave' (1298) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:952:9:
+   | assertion `left == right` failed: the right edge moved: window 65536 at 1081344
+   |   left: 1146880
+   |  right: 4227072
+== M4 a window past the guest's buffer: header() without .min(self.guest_buf_alloc)
+   exit 101; killed; failed: devices::virtio::vsock::conn::tests::a_window_grows_no_further_than_the_guests_buffer
+   | thread 'devices::virtio::vsock::conn::tests::a_window_grows_no_further_than_the_guests_buffer' (9137) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:912:9:
+   | assertion `left == right` failed: a window past what the guest's buffer lets it send
+   |   left: (6, 4194304)
+   |  right: (6, 262144)
+== M5 a window grows without the guest using it: asked is always WINDOW_MOST
+   exit 101; killed; failed: devices::virtio::vsock::conn::tests::a_window_grows_only_once_its_guest_uses_it, devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it, devices::virtio::vsock::muxer::tests::two_connections_share_the_lent_window
+   | thread 'devices::virtio::vsock::conn::tests::a_window_grows_only_once_its_guest_uses_it' (16954) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:874:9:
+   | assertion `left == right` failed: a connection held lent window before its guest sent anything
+   |   left: (2, 4194304, 4128768)
+   |  right: (2, 65536, 0)
+   | thread 'devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it' (16961) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1744:9:
+   | assertion `left == right` failed
+   |   left: [(49152, 2, 4194304)]
+   |  right: [(49152, 2, 65536)]
+   | thread 'devices::virtio::vsock::muxer::tests::two_connections_share_the_lent_window' (16976) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1785:13:
+   | assertion `left == right` failed
+   |   left: []
+   |  right: [(49152, 6, 4194304)]
+== M6 an update owed only after data: on_guest_packet()'s check for RW alone
+   exit 101; killed; failed: devices::virtio::vsock::conn::tests::a_guest_whose_buffer_shrinks_is_owed_its_update, devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds
+   | thread 'devices::virtio::vsock::conn::tests::a_guest_whose_buffer_shrinks_is_owed_its_update' (24614) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:989:9:
+   | assertion `left == right` failed: a guest whose buffer shrank waits for an update that never comes
+   |   left: None
+   |  right: Some((6, 16384))
+   | thread 'devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds' (24632) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1887:42:
+   | step 428: port 54 to guest port 50001: window 4063216, exposure 3346115, held 0, room 0, credit owed true pending Pending { rst: false, response: false, request: false, shutdown: 0, rw: false, credit_update: false, credit_answer: false }, killed false
+== M7 a guest may send the most window whatever it was given: send_host()'s check
+   exit 101; killed; failed: devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds, devices::virtio::vsock::conn::tests::a_window_never_takes_back_what_it_gave, devices::virtio::vsock::conn::tests::a_guest_that_ignores_credit_is_reset, devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it
+   | thread 'devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds' (31674) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1887:42:
+   | step 86: lent 4299030527 of 4128768, where its connections hold 4299030527
+   | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+   | thread 'devices::virtio::vsock::conn::tests::a_window_never_takes_back_what_it_gave' (31668) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:967:9:
+   | a byte past the window was taken
+   | ---- devices::virtio::vsock::conn::tests::a_guest_that_ignores_credit_is_reset stdout ----
+   | thread 'devices::virtio::vsock::conn::tests::a_guest_that_ignores_credit_is_reset' (31660) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:1143:9:
+   | 4194304 bytes past a full socket never tripped the credit check
+   | ---- devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it stdout ----
+   | thread 'devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it' (31675) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1762:9:
+   | assertion `left == right` failed: a byte past the window was taken
+   |   left: None
+   |  right: Some(3)
+== M8 lent not recounted as the host takes bytes: muxer.rs on_events()
+   exit 101; killed; failed: devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds
+   | thread 'devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds' (40806) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1886:42:
+   | step 431: lent 3975401 of 4128768, where its connections hold 3959299
+   | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+== M9 buffer room past what the guest may send: append() without .min(limit.max(needed))
+   exit 101; killed; failed: devices::virtio::vsock::conn::tests::a_buffer_never_holds_room_past_the_credit, devices::virtio::vsock::conn::tests::a_ring_keeps_the_guests_order_and_gives_back_its_room
+   | thread 'devices::virtio::vsock::conn::tests::a_buffer_never_holds_room_past_the_credit' (50175) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:767:13:
+   | 131070 bytes of room for 65536
+   | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+   | thread 'devices::virtio::vsock::conn::tests::a_ring_keeps_the_guests_order_and_gives_back_its_room' (50180) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:816:13:
+   | 7408448 bytes of room
+== M10 room never given back: fit() always returns
+   exit 101; killed; failed: devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds, devices::virtio::vsock::conn::tests::a_ring_keeps_the_guests_order_and_gives_back_its_room
+   | thread 'devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds' (60713) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1887:42:
+   | step 127: port 54 to guest port 50000: window 120644, exposure 96190, held 0, room 196624, credit owed false pending Pending { rst: false, response: false, request: false, shutdown: 0, rw: false, credit_update: false, credit_answer: false }, killed false
+   | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+   | thread 'devices::virtio::vsock::conn::tests::a_ring_keeps_the_guests_order_and_gives_back_its_room' (60705) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:833:9:
+   | 4194304 bytes of room for 93565
+== M11 new bytes that span the ring's wrap written second part first: append()
+   exit 101; killed; failed: devices::virtio::vsock::conn::tests::a_ring_keeps_the_guests_order_and_gives_back_its_room
+   | thread 'devices::virtio::vsock::conn::tests::a_ring_keeps_the_guests_order_and_gives_back_its_room' (70504) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:845:9:
+   | assertion `left == right` failed: of 7556173 bytes
+   |   left: Some((374581, 1))
+   |  right: None
+== M12 no setsockopt: muxer.rs set_buffer() (Unix)
+   exit 101; killed; failed: devices::virtio::vsock::muxer::tests::host_sockets_ask_for_their_buffers_where_this_process_may
+   | thread 'devices::virtio::vsock::muxer::tests::host_sockets_ask_for_their_buffers_where_this_process_may' (78793) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1945:28:
+   | SO_SNDBUF: 212992 bytes, then 212992 asked for 262144
+   | note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+== M13 a Linux VM process sizes its host sockets: SIZES_SOCKETS true
+   exit 101; killed; failed: devices::virtio::vsock::muxer::tests::host_sockets_ask_for_their_buffers_where_this_process_may
+   | thread 'devices::virtio::vsock::muxer::tests::host_sockets_ask_for_their_buffers_where_this_process_may' (92899) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1968:17:
+   | assertion `left == right` failed: a Linux VM process sized a socket
+   |   left: [524288, 524288]
+   |  right: [212992, 212992]
+== M14 the relay's socket sized without its maximum first: engine.rs ask_window()
+   exit 101; killed; failed: engine::tests::the_relays_socket_asks_for_the_hosts_window
+   | thread 'engine::tests::the_relays_socket_asks_for_the_hosts_window' (129482) panicked at crates/init/src/engine.rs:237:9:
+   | assertion `left == right` failed
+   |   left: (262144, 262144)
+   |  right: (4194304, 4194304)
+== 14 of 14 mutants killed
+== restored vmm: exit 0; test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 393 filtered out; finished in 0.39s
+== restored init: exit 0; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 146 filtered out; finished in 0.00s
+mutants harness exit 0

@@ -12,6 +12,7 @@
 use std::io::{self, Write as _};
 use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use shards_abi::run;
 
@@ -129,6 +130,14 @@ fn relay(conn: UnixStream, token: &[u8; run::TOKEN]) {
     let Ok(host) = crate::run::dial(run::ENGINE_PORT, true) else {
         return;
     };
+    if let Err(e) = ask_window(host.as_raw_fd())
+        && !WINDOW_REFUSAL_SAID.swap(true, Ordering::Relaxed)
+    {
+        let _ = writeln!(
+            io::stderr(),
+            "shards-init: engine relay keeps Linux's vsock buffer: {e}"
+        );
+    }
     let mut hello = [0u8; run::HEADER + run::TOKEN];
     let header = run::header(run::kind::HELLO, run::TOKEN as u32);
     for (out, byte) in hello.iter_mut().zip(header.iter().chain(token)) {
@@ -150,5 +159,87 @@ fn relay(conn: UnixStream, token: &[u8; run::TOKEN]) {
         // Successful engine EOF already ended both Unix halves in the pump.
         let _ = conn.shutdown(std::net::Shutdown::Both);
         let _ = writeln!(io::stderr(), "shards-init: engine relay: {error:?}");
+    }
+}
+
+/// SO_VM_SOCKETS_BUFFER_SIZE and SO_VM_SOCKETS_BUFFER_MAX_SIZE, options of level AF_VSOCK
+/// that take a u64 (include/uapi/linux/vm_sockets.h), which the libc crate does not have.
+const SO_VM_SOCKETS_BUFFER_SIZE: libc::c_int = 0;
+const SO_VM_SOCKETS_BUFFER_MAX_SIZE: libc::c_int = 2;
+
+/// Whether a relay's socket that kept Linux's buffer was said: once, as every connection's
+/// socket is the same kernel's.
+static WINDOW_REFUSAL_SAID: AtomicBool = AtomicBool::new(false);
+
+/// Asks the relay's vsock socket to buffer the host's whole window
+/// ([`shards_abi::VSOCK_WINDOW`]): Linux sends no more unacknowledged than its own buffer
+/// (8ee784fdf006), 256 KiB unless its program raises it (VSOCK_DEFAULT_BUFFER_SIZE,
+/// net/vmw_vsock/af_vsock.c), and is sent no more than that. Its maximum first, which bounds
+/// the size (`vsock_update_buffer_size`); Linux tells the host the new size at once
+/// (`virtio_transport_notify_buffer_size`).
+fn ask_window(fd: RawFd) -> io::Result<()> {
+    let window = u64::from(shards_abi::VSOCK_WINDOW);
+    for option in [SO_VM_SOCKETS_BUFFER_MAX_SIZE, SO_VM_SOCKETS_BUFFER_SIZE] {
+        // SAFETY: setsockopt(2) of a u64 option from `window`, its size the length, on a
+        // socket the caller holds.
+        let set = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::AF_VSOCK,
+                option,
+                (&raw const window).cast(),
+                std::mem::size_of::<u64>() as libc::socklen_t,
+            )
+        };
+        if set != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::fd::FromRawFd as _;
+
+    use super::*;
+
+    /// The relay's socket asks for the host's whole window, its maximum first, which bounds
+    /// the size: a vsock socket of this kernel reads both back as the window.
+    #[test]
+    fn the_relays_socket_asks_for_the_hosts_window() {
+        // SAFETY: socket(2) with constant arguments.
+        let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+        if fd < 0 {
+            println!("SKIP: no vsock sockets here: {}", io::Error::last_os_error());
+            return;
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+        ask_window(sock.as_raw_fd()).unwrap();
+        let read = |option| {
+            let mut got = 0u64;
+            let mut len = std::mem::size_of::<u64>() as libc::socklen_t;
+            // SAFETY: getsockopt(2) of a u64 option into `got`, `len` its length.
+            let rc = unsafe {
+                libc::getsockopt(
+                    sock.as_raw_fd(),
+                    libc::AF_VSOCK,
+                    option,
+                    (&raw mut got).cast(),
+                    &raw mut len,
+                )
+            };
+            assert_eq!(rc, 0, "{}", io::Error::last_os_error());
+            got
+        };
+        let window = u64::from(shards_abi::VSOCK_WINDOW);
+        assert_eq!(
+            (
+                read(SO_VM_SOCKETS_BUFFER_MAX_SIZE),
+                read(SO_VM_SOCKETS_BUFFER_SIZE)
+            ),
+            (window, window)
+        );
     }
 }

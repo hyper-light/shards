@@ -1,0 +1,75 @@
+# bash docs/research/measurements/vsock-window-v1/red/run.sh . ~/.cache/vsock-window-v1-red
+# runner 451397 (adacachy), Linux 7.2.9-2-cachyos x86_64, rustc 1.98.1, 2026-11-11, at the final test text.
+# Compile, "Running" and passing-test lines filtered out:
+#   grep -v -E '^\s+Compiling|^\s+Finished|^\s+Running|^test .* \.\.\. ok$|^$'
+== base 1e448c7ec150a9366deb036cca3687d65991d5c7 + overlay
+running 1 test
+test devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it ... FAILED
+failures:
+---- devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it stdout ----
+thread 'devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it' (276377) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1610:9:
+assertion `left == right` failed: a lone connection's window, its guest's buffer the most
+  left: [(49152, 6, 65536)]
+ right: [(49152, 6, 4194304)]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+failures:
+    devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 424 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-vmm --lib`
+== base exit 101
+== root: base + root-start.patch + overlay
+running 7 tests
+test devices::virtio::vsock::conn::tests::a_window_grows_only_once_its_guest_uses_it ... FAILED
+test devices::virtio::vsock::conn::tests::a_guest_whose_buffer_shrinks_is_owed_its_update ... FAILED
+test devices::virtio::vsock::conn::tests::a_window_grows_no_further_than_the_guests_buffer ... FAILED
+test devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it ... FAILED
+test devices::virtio::vsock::muxer::tests::two_connections_share_the_lent_window ... FAILED
+test devices::virtio::vsock::conn::tests::a_window_never_takes_back_what_it_gave ... FAILED
+test devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds ... FAILED
+failures:
+---- devices::virtio::vsock::conn::tests::a_window_grows_only_once_its_guest_uses_it stdout ----
+thread 'devices::virtio::vsock::conn::tests::a_window_grows_only_once_its_guest_uses_it' (303661) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:880:9:
+assertion `left == right` failed: a connection held lent window before its guest sent anything
+  left: (2, 4194304, 4128768)
+ right: (2, 65536, 0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+---- devices::virtio::vsock::conn::tests::a_guest_whose_buffer_shrinks_is_owed_its_update stdout ----
+thread 'devices::virtio::vsock::conn::tests::a_guest_whose_buffer_shrinks_is_owed_its_update' (303657) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:995:9:
+assertion `left == right` failed: a guest whose buffer shrank waits for an update that never comes
+  left: None
+ right: Some((6, 16384))
+---- devices::virtio::vsock::conn::tests::a_window_grows_no_further_than_the_guests_buffer stdout ----
+thread 'devices::virtio::vsock::conn::tests::a_window_grows_no_further_than_the_guests_buffer' (303659) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:919:9:
+assertion `left == right` failed: a window past what the guest's buffer lets it send
+  left: (6, 4194304)
+ right: (6, 262144)
+---- devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it stdout ----
+thread 'devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it' (303665) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1622:9:
+assertion `left == right` failed
+  left: [(49152, 2, 4194304)]
+ right: [(49152, 2, 65536)]
+---- devices::virtio::vsock::muxer::tests::two_connections_share_the_lent_window stdout ----
+thread 'devices::virtio::vsock::muxer::tests::two_connections_share_the_lent_window' (303666) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1663:13:
+assertion `left == right` failed
+  left: []
+ right: [(49152, 6, 4194304)]
+---- devices::virtio::vsock::conn::tests::a_window_never_takes_back_what_it_gave stdout ----
+thread 'devices::virtio::vsock::conn::tests::a_window_never_takes_back_what_it_gave' (303663) panicked at crates/vmm/src/devices/virtio/vsock/conn.rs:959:9:
+assertion `left == right` failed: the right edge moved: window 65536 at 1081344
+  left: 1146880
+ right: 4227072
+---- devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds stdout ----
+thread 'devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds' (303664) panicked at crates/vmm/src/devices/virtio/vsock/muxer.rs:1794:13:
+port 50076 waits for credit
+failures:
+    devices::virtio::vsock::conn::tests::a_guest_whose_buffer_shrinks_is_owed_its_update
+    devices::virtio::vsock::conn::tests::a_window_grows_no_further_than_the_guests_buffer
+    devices::virtio::vsock::conn::tests::a_window_grows_only_once_its_guest_uses_it
+    devices::virtio::vsock::conn::tests::a_window_never_takes_back_what_it_gave
+    devices::virtio::vsock::muxer::tests::a_busy_device_keeps_its_window_bounds
+    devices::virtio::vsock::muxer::tests::a_lone_connection_is_offered_the_most_window_and_reset_past_it
+    devices::virtio::vsock::muxer::tests::two_connections_share_the_lent_window
+test result: FAILED. 0 passed; 7 failed; 0 ignored; 0 measured; 424 filtered out; finished in 0.33s
+error: test failed, to rerun pass `-p shards-vmm --lib`
+== root exit 101
+red harness exit 0
