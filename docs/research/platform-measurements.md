@@ -21106,6 +21106,135 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     the guest kernel's own code (M521: 1.1 to 1.3 times native). They bound the design;
     the prototype measures how close it comes.
 
+### M524. A number's text when its decimal runs to millions of digits: only the digits Go reads of it (D98)
+
+- **Question.** CI's fuzz job (GitHub run 43230466376, job 131224103825) ran
+  `fuzz_targets/rego-builtins.rs` out of memory: `abs` of 80000000000e00029174680, a
+  number read from the operands' JSON, "out-of-memory (used: 2120Mb; limit: 2048Mb)" under
+  `-rss_limit_mb=2048`. What does OPA spend on it, what did this port, why, and what does
+  the answer need?
+- **Method.** At 7ad28fab1 (before) and d5707dbca (after), 2026-11-12:
+  - OPA's answer: `scripts/rego/generate numbers` (OPA v1.14.1, Go 1.26.1) records
+    `FloatToNumber(NumberToFloat(s))`'s length, ends and SHA-256 for 135 numbers, and
+    `abs` of the fuzzer's operands through topdown's builtin on their JSON. Go's cost:
+    `measurements/rego-bignum/gotext` under `/usr/bin/time -l`.
+  - The fuzz target, built by `cargo +nightly-2026-09-05 fuzz build` with ASan (as CI
+    builds it) and with `-s none`, run alone on the artifact with CI's flags through
+    `measurements/rego-bignum/ptime.py` (wall time, CPU and the child's peak RSS by
+    getrusage); then CI's flags for 300 s, seeded with the artifact.
+  - `measurements/rego-bignum/abs`: `abs` as the fuzz target calls it, built as shards'
+    release is (fat LTO), its peak RSS by getrusage; a copy in each checkout.
+  - The crossover: `measurements/rego-bignum/crossover.rs` (number.rs takes it by
+    #[path]), built for release. 400 samples a size after 20 warm-ups, each a fresh
+    random 64-bit mantissa; the two ways interleaved, their order alternating.
+  - Hosts:
+    - this Mac (Apple M5 Max, 18 cores, macOS 26.4.1), unclamped through
+      `macos-sched/launchd-run.sh`, shared with other projects' work (load average 45 to
+      230);
+    - adacachy2 (AMD Ryzen 9 9950X3D2, Linux 7.3.3-1-cachyos, load 2 to 6), each libFuzzer
+      run under `systemd-run --user --scope -p MemoryMax=8G nice -n 10`.
+
+    adacachy, which the brief named, was not used: kiln's headroom guard there had frozen
+    57 cgroups, this run's scope among them (cgroup.freeze 1, do_freezer_trap), to a
+    learned knee of 0.32 cores.
+
+  Raw: `measurements/rego-bignum/results/macos-arm64.txt` and
+  `linux-x86_64-adacachy2.txt`.
+- **Found.**
+  - Go's `Text` (decimal.go `init`, ftoa.go `roundShortest`) computes the float's exact
+    decimal and both neighbours' half an ulp away, whole. Here that is three conversions
+    of a 96.9-Mbit integer to 29.2 million digits, for an answer of "8" and 29,174,690
+    zeros. Go: 63.4 s, 447 MB peak, 1.55 GB allocated in all.
+  - This port did the same through num-bigint 0.4.8, whose `to_str_radix` has divided and
+    conquered over Burnikel-Ziegler since 0.4.7: not quadratic, but 30 s a conversion,
+    170 MiB, alone (this Mac). Its division clones its operands at each level of its
+    recursion. Under ASan, whose quarantine holds what is freed, the process passed 2 GB
+    in 8 to 11 s: 2,097 to 2,169 MiB (CI's: 2,120 MB). The heap at the report was as in
+    CI's: 112 to 114 MB live, quarantine 247 to 264 MB in 343,197 to 390,438 chunks. Its
+    largest blocks were num-bigint's digit buffer, reserved before converting
+    (29,174,692 bytes), and the shifted mantissa and its clone (12,114,536 bytes each).
+    The first of the three conversions had not ended.
+  - roundShortest reads at most ⌊(prec+1)·log10 2⌋ + 3 digits of the three decimals
+    (`digits_read`, proved there): 23 at OPA's 64 bits. Computing only those, exact:
+
+    | `abs` of the fuzzer's number | before | after |
+    |---|---|---|
+    | release (fat LTO), Mac | 92.2 s, 280.6 MiB | 28.6 ms, 57.4 MiB |
+    | fuzz target, no sanitizer, Mac | 258.4 s, 308.7 MiB | 139 ms, 82.6 MiB |
+    | fuzz target, ASan, Mac | out of memory at 11.3 s (2,169 MiB) | 352 ms, 134.4 MiB |
+    | fuzz target, ASan, adacachy2 | out of memory at 8.2 s (2,115 MiB) | 361 ms, 151.5 MiB |
+    | OPA (Go's `Text`), Mac | 63.4 s, 447 MB | |
+
+    The text is 29,174,691 bytes (27.8 MiB). Release's peak is about the text twice: the
+    string, then the number's own copy of it; the fuzz target adds its JSON.
+  - The crossover. D is the exact decimal's digits and read is 23. Go's way and the
+    leading digits, p50 ns of n = 400 each, positive exponents (negative ones' leading
+    digits cost less, and were the cheaper wherever they apply, from D/read 4.26 on both
+    hosts):
+
+    | D | D/read | Mac: Go's | Mac: leading | Linux: Go's | Linux: leading |
+    |---|---|---|---|---|---|
+    | 97 | 4.22 | 917 | 2,000 | 601 | 1,062 |
+    | 157 | 6.83 | 1,583 | 1,792 | 991 | 1,082 |
+    | 173 | 7.52 | 1,792 | 1,833 | 1,072 | 1,133 |
+    | 190 | 8.26 | 1,958 | 1,791 | 1,152 | 1,112 |
+    | 230 | 10.00 | 2,708 | 1,750 | 1,543 | 1,132 |
+    | 1,056 | 45.91 | 18,333 | 1,667 | 12,784 | 1,313 |
+    | 19,160 | 833.04 | 1,469,083 | 2,416 | 924,597 | 1,683 |
+
+    The leading digits cost about the same at every size: at most some 30 squarings at
+    three words, for the exponents Go reads. Go's way grows with D. On both hosts, from
+    D/read 8.26 the leading digits were the cheaper at every size measured, for both
+    signs; that is `LEADING_FROM`. Below it Go's way is the cheaper (1.8 to 2.2 times at
+    D/read 4.22), and the two give the same digits.
+  - Byte for byte OPA's:
+    - `tests/numbers.rs`: 135 texts, both sides of the crossover, and `abs` of the
+      fuzzer's operands, against OPA's digests;
+    - `number.rs`'s tests: 1,500 random 64-bit floats, exponents 2^6 to 2^15 of either
+      sign. Their leading digits, lengths and exponents are held to the exact decimals,
+      the shortest decimal to Go's way, and the bounds to the powers and floors they
+      bound.
+
+    Mutations, each alone, each caught: unknown digits read as zeros; the upper bound
+    rounded down; trailing zeros ignored; three digits too few read (the walk then refused
+    and went Go's way, still exact); the leading digits never taken.
+  - CI's flags for 300 s, seeded with the artifact: Mac, 77,484 runs; adacachy2, 92,971
+    runs (peak 1,299 MiB). Neither found anything.
+- **So.** `Float::shortest` computes the digits roundShortest reads where the whole
+  decimals have `LEADING_FROM` times as many, and goes Go's way below that (D98).
+- **Open.** Found on the way, each its own change, owed:
+  - `floor`, `ceil` and `round` of such a number keep Go's way. Their float's precision is
+    its integer's bits, so the shortest decimal is all of them (29.2 million significant
+    digits here), and each conversion is num-bigint's. Under ASan each still passes 2 GB
+    on this Mac: `floor` at 2,143 MB (9.4 s), `round` and `format_int(n, 10)` at 2,108 MB
+    (8.3 s). Without a sanitizer, the three conversions take what `abs` took before. What
+    would serve them:
+    - a conversion lean in memory, with no allocation a level and one scratch arena;
+    - one conversion in place of three, the neighbours being the integer ∓ 0.5.
+
+    That would take them under the fuzzer's limit up to tens of millions of digits. Past
+    that, the text itself, hundreds of MB held three times (the string, the number, its
+    JSON), meets the 2 GB.
+  - Reading a number departs from Go's past a decimal exponent of 2^29. Go's `pow5`
+    squares its factor once more after the last bit it needs, letting that unused square
+    overflow to ±Inf; this port's returns "exponent overflow". Go reads 1e536870939
+    through 1e646456992 as finite (`MantExp` up to 2,147,483,644), and 1e646456993 as
+    +Inf. This port refuses all of them, and reads 1e536870938 as Go does.
+- **Rules** (policy df2acf47, role implementer, at d5707dbca):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap, expect or indexing in production (`scripts/lint`: clippy `-D warnings` on all 7 targets, clean). Size-derived arithmetic is checked or saturating, and both fuzz runs had cargo-fuzz's overflow checks on. `m - 1` is on a mantissa that is never zero (`halves` keeps prec + 1 bits). Gap: none known. |
+  | R02 | Sources: Go 1.26's math/big decimal.go and ftoa.go; num-bigint 0.4.8's convert.rs and division.rs (0.5.1's are the same); OPA v1.14.1's topdown builtins and parser; golang/go#11068. Alternatives weighed: a faster exact conversion (Karatsuba or NTT in base 10^k, as the brief suggested), which still writes the three whole decimals the answer does not need; and num-bigint 0.5. |
+  | R03 | `digits_read`'s 3 comes from its proof, and its extra 1 covers the product's rounding in f64. `leading`'s slack of 2 covers a length estimate within 1 and neighbours within 1 of x. The first precision (q's bits, one a squaring, a word) is a speed choice only: correctness holds at any precision. `LEADING_FROM` is measured on two hosts (`crossover.rs`, raw results kept). |
+  | R04 | No lifecycle state. The choice of way is a function of the float; a refusal is typed (`Option`, `bool`) and goes Go's way. |
+  | R05 | No cache, wait or new interface: private functions in number.rs, the harness taken by #[path]. |
+  | R06, R07, R13 | About 200 lines. The comments carry the proof, the derivations and Go's names. |
+  | R08, R14 | Against OPA on this input: 28.6 ms and 57.4 MiB, against Go's 63.4 s and 447 MB. These measurements are an implementer's, taken at ROOT's word (the brief); R14 gives profiling to the coordinator, so they are owed ROOT's review. |
+  | R09, R10 | Reproduced live on macOS arm64 and Linux x86_64 (out of memory at 2,097 to 2,169 MiB), green after, five mutations caught, raw logs under `results/`. |
+  | R11, R12 | One implementation, no platform branch. Unit tests: macOS arm64 and Windows x86_64 (jupiter), the whole crate each. Linux x86_64: the fuzz runs and the crossover. Lint: all 7 targets. Owed: the crate's tests natively on Linux arm64, Windows arm64 and musl, which CI's matrix runs. |
+  | R15, R16 | No children started. Scratch on adacachy, adacachy2 and jupiter removed; this Mac's under /tmp removed after. |
+
 ### M525. main's CI failures of 2026-11-12: six causes, each reproduced, and the checks of their fixes
 
 - **Question.** Why did main's arm64 jobs (runs 43230466376, 43250570050), a shipper test on

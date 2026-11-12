@@ -6531,13 +6531,17 @@ throughput both ways, small requests no slower, on every host.
 | Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2 | Protocol constants. |
 | Offer extents at most (4 KiB + 2 S) / 4 KiB | A slot's pages, none merged. |
 
-Owed to ROOT, none run by its implementers: correctness and hostile-offer E2E, the pins
-E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back and a
-shrinking room let idle slots go, a stream past the room goes plain; at 1, 2 and many
-vCPUs with as many streams as vCPUs and twice that), and throughput, small-request latency
-(paced and back to back), connection setup with its slot's making, a ring's ramp, CPU and
-pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64; compile checks of
-macOS, Windows and aarch64.
+The pins E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back
+and a shrinking room let idle slots go, a stream past the room goes plain; at 1, 2 and many
+vCPUs with as many streams as vCPUs and twice that) and the bulk test ran green on KVM x86_64
+and arm64 (L1) and HVF; on WHP x86_64 the give-back and the shrinking room, the bulk test once
+in two (its microVM stopped, as one with no engine did), and the pins test was refused past
+13 connections at once by the daemon's bound on Windows (D181's share of `clients_for` 64
+threads, as Windows states no thread limit), not the ring's (ring-pins-v1 r13, r16). Every
+supported target lints clean (r15, r16). Owed to ROOT: correctness and hostile-offer E2E; the
+pins E2E on WHP arm64, and on WHP x86_64 past that bound; and throughput, small-request
+latency (paced and back to back), connection setup with its slot's making, a ring's ramp, CPU
+and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
@@ -19385,6 +19389,32 @@ held to more than OPA's answers:
   walk that meets it (three times as long each level: 12 deep 3.25 s, now 0.5 ms); the
   safety check's and print rewrite's outputs read again for each expression, and each
   equality copying the whole safe set (cubic: 1000 closures in a body 42 s, now 0.48 s).
+- A number's text (`number.rs`). Go's `Text` (decimal.go's `init`, ftoa.go's
+  `roundShortest`) computes a float's exact decimal and both its neighbours' half an ulp
+  away, whole. A number read from JSON may carry an exponent up to Go's limit: OPA's
+  parser refuses such a literal past a binary exponent of 10^5 ("number too big",
+  golang/go#11068), but input, data and builtins' results do not pass through it. `abs`
+  of the fuzzer's 80000000000e00029174680 is "8" and 29,174,690 zeros, and Go takes 63 s
+  and 447 MB to write it. This port's three num-bigint conversions took ASan's fuzzer
+  past 2 GB in 11 s (CI's fuzz job; M524). roundShortest reads at most
+  ⌊(prec + 1)·log10 2⌋ + 3 digits of each (`digits_read`, proved there). So where the
+  whole decimals have 8.26 times as many digits or more (`LEADING_FROM`, the two ways'
+  measured crossover on arm64 macOS and x86_64 Linux, M524), only those are computed,
+  each exact (`leading`):
+  - the integer's leading digits, ⌊V / 10^j⌋, from bounds of its power of five at p bits
+    from below and from above, p doubling until their floors agree (they differ only
+    within the bounds' gap of an integer, and V / 10^j is none);
+  - the decimal's length and exponent, from V's twos and fives.
+
+  A walk that would read past them goes Go's way. `abs` of that number now: 29 ms and
+  57 MiB (was 92 s and 281 MiB), 361 ms under ASan's fuzzer. Byte for byte OPA's:
+  `tests/numbers.rs` holds 135 long numbers' texts and `abs` of the fuzzer's operands
+  to OPA's own (lengths, ends and SHA-256, `scripts/rego/generate numbers`).
+  `number.rs`'s tests hold the leading digits and the shortest decimal to the exact
+  decimals, and the bounds to the powers they bound. Left, owed (M524's Open): `floor`,
+  `ceil`, `round` and integer formatting of such a number, whose answer is all of an
+  integer's digits, still convert through num-bigint; numbers past 1e536870938 are refused
+  where Go reads them.
 - The rewrite of local variables walked as OPA's does, and OPA's way is exponential:
   rewriteEveryStatement (ast/compile.go) rewrites a statement's body, then walks the
   whole statement again (rewriteDeclaredVarsInExpr), whose walk rewrites each
