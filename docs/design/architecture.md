@@ -1106,9 +1106,12 @@ for the exit status.
       it calls keeps [PM M98]), and on Linux the least of
       `RLIMIT_NPROC`, `threads-max` and the `pids.max` of its control groups, up to the
       root its namespace sees, where a container's limit is (Linux
-      Documentation/admin-guide/cgroup-v2.rst). Where none is said, POSIX's
-      `_POSIX_THREAD_THREADS_MAX` (64). `SHARDS_MAX_CLIENTS` sets fewer. The 256
-      before was chosen, not derived.
+      Documentation/admin-guide/cgroup-v2.rst). Windows keeps no count of them: there
+      they are the fewest its address space, its commit limit (its job's, where that
+      holds it to less) and a process's handles hold of a thread, each cost read off a
+      thread started as std starts every thread of shards' (D181, PM M529). Where none
+      is said, POSIX's `_POSIX_THREAD_THREADS_MAX` (64), which Windows took before.
+      `SHARDS_MAX_CLIENTS` sets fewer. The 256 before was chosen, not derived.
     - A client that waits long, on a microVM's end (`wait`) or its output
       (`logs -f`), counts among those in hand no more, so that waiters shut out no
       client however many there are. A thread that cannot be spawned still drops its
@@ -6112,13 +6115,71 @@ there where the container is not removed.
 - **No microVM's engine takes the host's daemon.** Each of its connections holds a thread
   of the daemon's, and is counted as a client in hand (`busy`), of the clients the
   daemon's threads hold (`most_clients`: the process's thread limit past the daemon's own
-  threads, at a client's two each; macOS gives 16,384 threads a process). A microVM's
+  threads, at a client's two each; macOS gives 16,384 threads a process, and Windows'
+  is derived, below). A microVM's
   engine holds an equal share of them alone, among the host's own clients and each
   microVM whose engine holds any: one alone holds half, two a third each. Past its share,
   or where the daemon holds as many clients as its threads do, a connection is answered
   503 with why and closed; one of its own going makes room. Without it, a workload's
   1,023 idle connections (the vsock muxer's bound, Firecracker's) held as many of the
   daemon's threads, and sixteen microVMs held them all.
+- **On Windows the thread limit is derived (PM M529).** Windows keeps no count of a
+  process's threads ("The number of threads a process can create is limited by the
+  available virtual memory", CreateThread), so `platform::thread_limit` said none there and
+  `most_clients` took POSIX's least, 64: 27 clients, of which a microVM's engine alone held
+  13, and the 32 streams at once of engine_ring's pins test at 32 vCPUs were answered 503 on
+  WHP (ring-pins-v1 r16). It is now the fewest threads any of three limits holds of one:
+  - the process's address space (MEMORYSTATUSEX's `ullTotalVirtual`, "the size of the
+    user-mode portion of the virtual address space") of a thread's stack's reservation,
+    which "is limited to the virtual address range" (Thread Stack Size);
+  - its commit limit of the commit a thread is charged: its stack's "initially committed
+    pages ... remove pages from the system total commit limit, which is the size of the
+    page file plus the size of the physical memory" (Thread Stack Size). The limit is
+    `ullTotalPageFile`, "the current committed memory limit for the system or the current
+    process, whichever is smaller", or the process's job's where less, which that leaves
+    out (in a job holding it to 64 MiB it said the host's 141 GB): the job's
+    `JOB_OBJECT_LIMIT_PROCESS_MEMORY` or `JOB_OBJECT_LIMIT_JOB_MEMORY`
+    (JOBOBJECT_BASIC_LIMIT_INFORMATION), read by QueryInformationJobObject of "the
+    immediate job of the calling process". A job above that one holding it to less ("the
+    most restrictive memory limit in the job chain") is not for the process to read;
+  - a process's 2^24 handles ("Kernel Objects"), of which a thread whose handle is kept
+    (std's `JoinHandle`) holds one; the daemon drops its clients' as it starts them.
+
+  Each cost is read on the daemon's own host, off a thread started as std starts every
+  thread of shards' (`thread::Builder`, std's default stack: `RUST_MIN_STACK`, else
+  2 MiB): the reservation GetCurrentThreadStackLimits gives; what Windows commits of every
+  thread's stack however far its code goes, its initial commit ("the initially committed
+  size is the default size specified in the executable header", Thread Stack Size: the
+  image's `SizeOfStackCommit`, the linker's 4 KB) and its guard pages, VirtualQuery's
+  PAGE_GUARD regions (std's `SetThreadStackGuarantee(0x5000)` and a page); and winternl.h's
+  TEB in whole pages, the least a TEB is ("Do not assume a maximum size for this
+  structure"). Not the pages its code has touched, which differ from thread to thread: a
+  process's first thread runs its one-time initialization on its own stack, a page more,
+  and under a test's output capture so does each. On jupiter (Windows 11, 10.0.26200;
+  123.6 GiB, a commit limit of 141.1 GB) a thread reserves 2 MiB and is counted 4 KiB of
+  initial commit, 24 KiB of guard pages and 8 KiB of TEB: its commit holds 3,827,251
+  threads, its address space 67,108,863 and its handles 16,777,216, so 1,913,620 clients,
+  956,810 of them a microVM's engine's alone.
+
+  Windows charges a thread more than any call reports of it, which is not counted, so that
+  the threads said are never fewer than Windows starts: the pages its code touches and its
+  share of the heap (in jobs of 16, 64 and 256 MiB each std thread was charged 47.9 KB,
+  36.9 KB of it counted; the limits said 455, 1,820 and 7,281 threads, and Windows started
+  333, 1,380 and 5,563, then refused the next, ERROR_COMMITMENT_LIMIT, with less than a
+  counted thread's commit left), and the kernel's own commit for its kernel stack, which
+  "can vary among different hardware platforms and different versions of the operating
+  system" (Using the Kernel Stack): about 35 KB of the system's commit more a thread on
+  jupiter, from bursts of 20,000 threads that other work's commit moved by up to 3 GB. As
+  Linux's `threads-max` counts a thread's kernel stack and not its user stack, this is a
+  limit, not what is free on a loaded host: a client whose thread cannot be started is
+  dropped, logged, as on every host. Tested natively on jupiter (windows_process.rs:
+  `the_threads_held_are_the_fewest_each_limit_holds`;
+  `a_thread_limit_is_what_the_host_holds_of_a_thread`, red while `thread_limit` said none,
+  and a thread that has touched 256 KiB of its stack counted as a fresh one;
+  `a_jobs_commit_limit_holds_the_threads_it_says`, a child in a job of its own whose limit
+  is the job's over a thread's count, and whose 64 threads Windows charged at least what
+  was counted of them). Owed: the pins test's 32 streams at once past the old bound on WHP
+  (ROOT's).
 
 Tested on real microVMs (`a_runs_command_reaches_its_own_microvms_engine`: made, started,
 waited for, logged, listed, inspected and removed through it, the host's other microVM and

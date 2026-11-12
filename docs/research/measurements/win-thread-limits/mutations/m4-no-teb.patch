@@ -1,0 +1,11 @@
+--- a/crates/vmm/src/platform/windows_process.rs
++++ b/crates/vmm/src/platform/windows_process.rs
+@@ -199,7 +199,7 @@
+         let whole = |bytes: usize| bytes.div_ceil(page).checked_mul(page);
+         let committed = guard
+             .checked_add(whole(stack_commit()?)?)?
+-            .checked_add(whole(size_of::<TEB>())?)?;
++            .checked_add(0)?;
+         Some(Thread {
+             reserved: u64::try_from(high.checked_sub(low)?).ok()?,
+             committed: u64::try_from(committed).ok()?,
