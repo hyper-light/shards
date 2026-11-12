@@ -20830,3 +20830,33 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     These are where a translator of shards' own would have to beat QEMU: faults filled
     without a full guest exception round, and context switches that keep the translation
     and TLB of each address space.
+
+### M522. A sandboxed parent drives its sandboxed child: M517's task port under App Sandbox (softvirt, D30)
+
+- **Question.** M517 found a parent can drive its child's memory and threads without
+  root, through the task port the child sends it. shards' VM process runs in App Sandbox
+  (D30), and its children would too. Does the handoff hold there, and at what cost?
+- **Method.** `measurements/softvirt-traps/macos.c` at a5e6b162f, which hands the task
+  port over the child's exception port (set at spawn). An Info.plist goes in
+  `__TEXT,__info_plist`, and the binary is ad-hoc signed with the hardened runtime,
+  `com.apple.security.app-sandbox` and `com.apple.security.cs.allow-jit`. Parent and
+  child both sandboxed. adas-mac-studio.local-2 (M3 Ultra, macOS 26.4), n=20000, three
+  runs, 2026-11-12. Raw: `results/macos-arm64-m3ultra-app-sandbox.md`.
+- **Results** (p50 range over the three runs):
+  - The child sent its task port; `task_for_pid` failed.
+  - The parent received the port, allocated in the child, listed its thread.
+  - `mach_vm_map` of a 16 KiB page into the child: 500 ns; `mach_vm_deallocate`: 667 to
+    708 ns.
+  - `thread_get_state`: 625 ns.
+  - `brk` as a Mach exception to the parent: 5.4 to 5.7 us; a fault, 6.7 to 6.8 us.
+  - JIT write protection off and on: 83 ns.
+- **Found.**
+  - The handoff holds under App Sandbox at the unsandboxed cost (M517's 500 ns a map).
+    App Sandbox costs a fault delivered to the parent about 1.2 us more (6.7 to 6.8
+    against M517's 5.4 to 5.7 us); a `brk` it moves not past the runs' spread.
+  - It must not go over the bootstrap port. With the task port handed over there
+    (9d08a3ddd), the sandboxed child's runtime, which messages launchd through that port
+    as it starts, sent the parent a message of another size ("(ipc/rcv) msg too large"),
+    and no task port came.
+  - Without an embedded Info.plist, the sandboxed binary died at launch (SIGTRAP), as
+    crates/vm-process/build.rs records for shards' own VM process.

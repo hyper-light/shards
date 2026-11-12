@@ -131,9 +131,10 @@ A KVM guest runs a guest's system calls, faults, processes and own code at nativ
   host process a guest process would hit the kernel's default `vm.max_map_count`
   (65,530) at 560 to 690 MiB resident. Every folio size always gives 24.5 pages a run,
   about 6 GiB a process, for 6% more memory (M520).
-- **macOS lets a parent drive its child without root.** The child hands over its own
-  task port; mapping a page into it costs 0.5 us (M517). App Sandbox's answer is still
-  open.
+- **macOS lets a parent drive its child without root, in App Sandbox too.** The child
+  hands over its own task port, through the exception port its parent set (the bootstrap
+  port breaks a sandboxed child's start). Mapping a page into it costs 0.5 us, sandboxed
+  or not (M517, M522).
 
 ## Questions, each with what settles it
 
@@ -142,7 +143,7 @@ A KVM guest runs a guest's system calls, faults, processes and own code at nativ
    queued).
 3. Guest JITs (V8, the JVM) under checked or translated code: how often real agent
    workloads make code writable and executable again.
-4. macOS: the child's task port under App Sandbox, where shards' VM process runs (D30).
+4. macOS: answered (M522). The handoff holds in App Sandbox at the same cost.
 5. The isolation core: what each route must trust, and its size.
 6. Attestation roots per host, without root: TPM access on Linux and Windows, macOS's.
 7. A translator of shards' own: what faults, process creation and context switches cost
