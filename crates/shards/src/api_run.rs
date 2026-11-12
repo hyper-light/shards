@@ -7,11 +7,9 @@
 //! share and VM processes, plays the daemon's side of the VM's link (warm.rs) for that one
 //! run, and owns its managed output (P3). Its children go with it: the VM is told at
 //! `TAKEN` that its run is killed if its link closes (`STOP_ORDER`), the network process
-//! goes as the VM's doorbell end does, the share process as its streams close. And the run
-//! goes with its owner: its stdin closing kills the VM.
-
-// Windows' run host is owed (`hosted`): its helpers are Unix's alone until then.
-#![cfg_attr(not(unix), allow(dead_code))]
+//! goes as the VM's doorbell end does, the share process as its streams close; on Windows
+//! each is made in a job whose last handle is this process's, which ends them as it ends,
+//! however it ends. And the run goes with its owner: its stdin closing kills the VM.
 
 use std::io::{self, Write as _};
 use std::process::ExitCode;
@@ -260,30 +258,17 @@ fn ports_granted(
     Ok(())
 }
 
-#[cfg(windows)]
-mod hosted {
-    use super::{Answers, Cause, No, wire};
-
-    pub(super) fn run(_: &Answers, _: &wire::Request, _: std::io::Stdin) -> Result<(), No> {
-        Err(No(
-            Cause::Unsupported,
-            "an orchestrator's run on Windows: its VM's launch in an AppContainer, with its network and shares by named handles (D141, D142, D197), is owed (D231)".into(),
-        ))
-    }
-}
-
-#[cfg(unix)]
 mod hosted {
     use std::collections::HashMap;
     use std::ffi::{OsStr, OsString};
     use std::io::{self, Read as _, Write as _};
-    use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
-    use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard, PoisonError};
 
     use shards_abi::run::{self as protocol, managed};
     use shards_api::image::wire::{self, Cause, Channel, RunEnd};
+    use shards_ipc::Stream;
+    use shards_ipc::fd::{AsFd as _, BorrowedFd, OwnedFd};
     use shards_ipc::kind;
 
     use super::{Answers, No, no};
@@ -292,6 +277,10 @@ mod hosted {
     fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
         m.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// What the VM is told its link is: a descriptor's number on Unix, a handle's name on
+    /// Windows (daemon.rs `VM_LINK`).
+    const LINK: &str = if cfg!(windows) { "daemon" } else { "3" };
 
     /// The run, prepared: its spec, its members, its ports bound, its policy, its
     /// directories open, and what its VM boots.
@@ -544,11 +533,105 @@ mod hosted {
     /// The run's processes, started: its network's, its shares', its VM's.
     struct Launched {
         vm: shards_ipc::Child,
-        link: UnixStream,
-        net: Option<(shards_ipc::Child, UnixStream)>,
-        shares: Option<(shards_ipc::Child, UnixStream)>,
+        link: Stream,
+        net: Option<(crate::netproc::NetProcess, crate::netproc::Control)>,
+        shares: Option<Shares>,
+        /// On Windows the job each of them is made in, whose last handle is this
+        /// process's (`GroupJob::ending_with_this_process`): they end as it ends, however
+        /// it ends, as a direct boot's do (D141, D197); let go of once they are reaped.
+        #[cfg(windows)]
+        job: shards_ipc::GroupJob,
     }
 
+    /// The run's share process (share.rs), and what of it its VM is handed: on Unix its
+    /// connection, on which it hands the VM each share's stream; on Windows each share's
+    /// stream itself (D197), sent after the run's request.
+    struct Shares {
+        child: shards_ipc::Child,
+        #[cfg(unix)]
+        door: Stream,
+        #[cfg(windows)]
+        ends: Vec<OwnedFd>,
+    }
+
+    impl Shares {
+        /// Its end, its VM's gone: what of it this process holds let go of, the last of its
+        /// streams where the VM never took them (a run refused before `TAKEN`), then waited
+        /// for as a network process is, [`crate::netproc::GRACE`] at most, and ended. Waited
+        /// for with its door still held here, it never went (CI run 43230466376,
+        /// `a_share_at_a_granted_volume_reaches_the_harness`, this process in `do_wait`).
+        fn end(self) {
+            let Shares {
+                child,
+                #[cfg(unix)]
+                door,
+                #[cfg(windows)]
+                ends,
+            } = self;
+            #[cfg(unix)]
+            drop(door);
+            #[cfg(windows)]
+            drop(ends);
+            crate::netproc::reap(&child);
+        }
+    }
+
+    /// The VM process's arguments, as the daemon's for a run's VM (daemon.rs `cold`): its
+    /// guest, booted in its warm mode for the one run handed it on its link, the in-VM
+    /// server's device after its root, and its shares' count.
+    fn vm_args(plan: &Plan) -> Vec<OsString> {
+        let mut cmdline = shards_vmm::vm::Config::new(plan.kernel.clone(), None).cmdline;
+        if let Some(bridge) = &plan.bridge {
+            cmdline.push(' ');
+            cmdline.push_str(&bridge.cmdline());
+        }
+        let mut args: Vec<OsString> = vec![
+            "run".into(),
+            "--kernel".into(),
+            plan.kernel.clone().into(),
+            "--cmdline".into(),
+            cmdline.into(),
+            "--cpus".into(),
+            plan.prepared.size.0.to_string().into(),
+            "--memory".into(),
+            plan.prepared.size.1.to_string().into(),
+            "--rootfs".into(),
+            plan.prepared.rootfs.clone().into(),
+            "--init".into(),
+            plan.init.clone().into(),
+            // Memory its workload frees given back to the host as it reports it (D151).
+            "--reporting".into(),
+            "--warm".into(),
+            LINK.into(),
+        ];
+        if let Some(server) = &plan.server {
+            args.extend(["--pmem".into(), server.clone().into()]);
+        }
+        if !plan.dirs.is_empty() {
+            args.extend(["--shares".into(), plan.dirs.len().to_string().into()]);
+        }
+        args
+    }
+
+    /// The home's private directory, made if it is not there: where a share process keeps
+    /// the files a restored guest holds that no path reaches (D176; daemon.rs
+    /// `private_dir`).
+    fn private_dir(home: &Path) -> Result<std::fs::File, String> {
+        let at = home.join(crate::daemon::PRIVATE);
+        match crate::os::owner_only_dir(std::fs::DirBuilder::new().recursive(true)).create(&at) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
+                return Err(format!("{}: {e}", at.display()));
+            }
+            _ => {}
+        }
+        #[cfg(unix)]
+        return std::fs::File::open(&at).map_err(|e| format!("{}: {e}", at.display()));
+        // A directory opens on Windows only with backup semantics.
+        #[cfg(windows)]
+        shards_vmm::platform::open_dir(&at).map_err(|e| format!("{}: {e}", at.display()))
+    }
+
+    #[cfg(unix)]
     fn launch(home: &Path, plan: &Plan) -> Result<Launched, No> {
         let boot = |e: String| No(Cause::Boot, e);
         // Its network process, denying all until its policy comes, as a daemon run's.
@@ -566,44 +649,13 @@ mod hosted {
         } else {
             Some(start_shares(home, &plan.dirs).map_err(boot)?)
         };
-        let (ours, theirs) = UnixStream::pair().map_err(|e| boot(format!("the VM's link: {e}")))?;
+        let (ours, theirs) = Stream::pair().map_err(|e| boot(format!("the VM's link: {e}")))?;
         let grants = if cfg!(target_os = "macos") {
-            Some(UnixStream::pair().map_err(|e| boot(format!("the VM's grants: {e}")))?)
+            Some(Stream::pair().map_err(|e| boot(format!("the VM's grants: {e}")))?)
         } else {
             None
         };
-        let mut args: Vec<OsString> = vec![
-            "run".into(),
-            "--kernel".into(),
-            plan.kernel.clone().into(),
-            "--cmdline".into(),
-            {
-                let mut cmdline = shards_vmm::vm::Config::new(plan.kernel.clone(), None).cmdline;
-                if let Some(bridge) = &plan.bridge {
-                    cmdline.push(' ');
-                    cmdline.push_str(&bridge.cmdline());
-                }
-                cmdline.into()
-            },
-            "--cpus".into(),
-            plan.prepared.size.0.to_string().into(),
-            "--memory".into(),
-            plan.prepared.size.1.to_string().into(),
-            "--rootfs".into(),
-            plan.prepared.rootfs.clone().into(),
-            "--init".into(),
-            plan.init.clone().into(),
-            // Memory its workload frees given back to the host as it reports it (D151).
-            "--reporting".into(),
-            "--warm".into(),
-            "3".into(),
-        ];
-        if let Some(server) = &plan.server {
-            args.extend(["--pmem".into(), server.clone().into()]);
-        }
-        if !plan.dirs.is_empty() {
-            args.extend(["--shares".into(), plan.dirs.len().to_string().into()]);
-        }
+        let mut args = vm_args(plan);
         if grants.is_some() {
             args.extend(["--grants".into(), "4".into()]);
         }
@@ -616,7 +668,8 @@ mod hosted {
                 release.into(),
             ]);
         }
-        let null = std::fs::File::open("/dev/null").map_err(|e| boot(format!("/dev/null: {e}")))?;
+        let null =
+            std::fs::File::open(crate::os::NULL).map_err(|e| boot(format!("{}: {e}", crate::os::NULL)))?;
         let err = io::stderr();
         let mut fds: Vec<(BorrowedFd<'_>, i32)> = vec![
             (null.as_fd(), 0),
@@ -680,30 +733,169 @@ mod hosted {
         })
     }
 
+    /// [`launch`] on Windows (D141, D142, D195), as the daemon starts a run's VM: every
+    /// process of the run's made in a job of this process's that ends them as it ends; the
+    /// VM process confined in an AppContainer of its own, made suspended, given by name its
+    /// link (`daemon`, the other end of a pair of this process's), the null device, the
+    /// pipes it asks for its files on and its network's ring and doorbells; its network
+    /// process started next, given the VM's process to watch; then the VM runs, and this
+    /// process answers what it asks for on a thread of its own, which ends as the VM does.
+    #[cfg(windows)]
+    fn launch(home: &Path, plan: &Plan) -> Result<Launched, No> {
+        use std::os::windows::io::{AsHandle as _, OwnedHandle};
+        let boot = |e: String| No(Cause::Boot, e);
+        // Made before any process of the run's, and held until each is reaped.
+        let job = shards_ipc::GroupJob::ending_with_this_process()
+            .map_err(|e| boot(format!("the run's job: {e}")))?;
+        // Its network, denying all until its policy comes, as a daemon run's.
+        let network = match &plan.bridge {
+            Some(bridge) => {
+                let mac = shards_net::random_mac().map_err(|e| boot(format!("a guest's MAC: {e}")))?;
+                let (ready, side) =
+                    crate::netproc::prepare(shards_net::Policy::DenyAll, &mac, bridge).map_err(boot)?;
+                Some((mac, ready, side))
+            }
+            None => None,
+        };
+        let shares = if plan.dirs.is_empty() {
+            None
+        } else {
+            Some(start_shares(home, &plan.dirs, &job).map_err(boot)?)
+        };
+        let (ours, theirs) = Stream::pair().map_err(|e| boot(format!("the VM's link: {e}")))?;
+        // Its end, the VM's alone once given it: this process's copy goes, so that the
+        // VM's end is the end this process reads.
+        let link = theirs.share().map_err(|e| boot(format!("the VM's link: {e}")))?;
+        drop(theirs);
+        let container = crate::helpers::containers()
+            .and_then(|records| {
+                shards_ipc::AppContainer::new("vm", &records)
+                    .map_err(|e| format!("the VM's AppContainer: {e}"))
+            })
+            .map_err(boot)?;
+        // A pipe each way: the VM's requests, and the answers.
+        let pipes = std::io::pipe().and_then(|asks| Ok((asks, std::io::pipe()?)));
+        let ((asks_from, asks_to), (answers_from, answers_to)) =
+            pipes.map_err(|e| boot(format!("the VM's grants: {e}")))?;
+        let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
+        // The null device, for the stdio it lets go of: its AppContainer opens no file by
+        // name, NUL among them on Windows Server (PM M351).
+        let null =
+            std::fs::File::open(crate::os::NULL).map_err(|e| boot(format!("{}: {e}", crate::os::NULL)))?;
+        let mut given = vec![
+            shards_ipc::Given {
+                name: "ask",
+                handle: asks_to.as_handle(),
+            },
+            shards_ipc::Given {
+                name: "answer",
+                handle: answers_from.as_handle(),
+            },
+            shards_ipc::Given {
+                name: LINK,
+                handle: link.as_handle(),
+            },
+            shards_ipc::Given {
+                name: "null",
+                handle: null.as_handle(),
+            },
+        ];
+        let mut sockets = Vec::new();
+        if let Some((_, _, side)) = &network {
+            given.extend(side.given());
+            sockets.extend([side.shared(), side.release()]);
+        }
+        let mut args = vm_args(plan);
+        if let Some((mac, _, _)) = &network {
+            args.extend(["--net".into(), crate::netproc::VmSide::arg(mac).into()]);
+        }
+        let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
+        let err = io::stderr();
+        let env = crate::netproc::child_env();
+        let binary = crate::helpers::vm().map_err(boot)?;
+        let suspended = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
+            program: &binary,
+            args: &argv,
+            grants_at: 1,
+            given: &given,
+            stdin: None,
+            stdout: err.as_handle(),
+            stderr: err.as_handle(),
+            sockets: &sockets,
+            env: &crate::netproc::env_pairs(&env),
+            container: Some(&container),
+            holds: shards_ipc::Holds::Hypervisor,
+            group: Some(&job),
+            graphics: false,
+        })
+        .map_err(|e| boot(format!("starting {}: {e}", binary.display())))?;
+        // Shared with it already, and its handles duplicated into it.
+        drop((given, sockets));
+        // Its network process, given the VM's process to watch, before the VM runs; its
+        // control this process's, where the run's published ports and policy go.
+        let net = match network {
+            Some((_, ready, side)) => {
+                let started = crate::netproc::start(ready, &suspended, Some(&job)).map_err(boot)?;
+                let control = crate::netproc::Control {
+                    socket: side.control,
+                    pid: started.id(),
+                };
+                Some((started, control))
+            }
+            None => None,
+        };
+        let giver = suspended
+            .giver()
+            .map_err(|e| boot(format!("answering the VM: {e}")))?;
+        let gives = suspended
+            .giver()
+            .map_err(|e| boot(format!("the VM's link: {e}")))?
+            .into_handle();
+        let mut vm = suspended
+            .resume()
+            .map_err(|e| boot(format!("starting {}: {e}", binary.display())))?;
+        // Its AppContainer's profile goes once it has.
+        vm.hold(container);
+        // What this process sends on its link goes to the VM: handles duplicated into it.
+        ours.gives_to(gives);
+        drop((asks_to, answers_from, link, null));
+        let grants = crate::grant::Link {
+            from: std::fs::File::from(OwnedHandle::from(asks_from)),
+            to: std::fs::File::from(OwnedHandle::from(answers_to)),
+        };
+        if let Err(e) = std::thread::Builder::new()
+            .name("vm grants".into())
+            .spawn(move || {
+                let _ = crate::grant_answer::serve(&grants, &giver);
+            })
+        {
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+            return Err(boot(format!("answering the VM: {e}")));
+        }
+        Ok(Launched {
+            vm,
+            link: ours,
+            net,
+            shares,
+            job,
+        })
+    }
+
     /// The share process (share.rs) serving `dirs`, as the daemon starts a run's
     /// (daemon.rs `started_shares`): its connection to it at 3, each directory at 4 + i,
     /// the home's private directory after them. The VM's end of its connection goes with
     /// the run, which hands the VM each share's stream (`SHARE_ENDS`).
-    fn start_shares(
-        home: &Path,
-        dirs: &[(OwnedFd, bool, OsString)],
-    ) -> Result<(shards_ipc::Child, UnixStream), String> {
+    #[cfg(unix)]
+    fn start_shares(home: &Path, dirs: &[(OwnedFd, bool, OsString)]) -> Result<Shares, String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
-        let (vm, share) = UnixStream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
+        let (door, share) = Stream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
         for (_, read_only, only) in dirs {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
         }
         let err = io::stderr();
-        let ghosts_at = home.join(crate::daemon::PRIVATE);
-        match crate::os::owner_only_dir(std::fs::DirBuilder::new().recursive(true)).create(&ghosts_at) {
-            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
-                return Err(format!("{}: {e}", ghosts_at.display()));
-            }
-            _ => {}
-        }
-        let ghosts = std::fs::File::open(&ghosts_at).map_err(|e| format!("{}: {e}", ghosts_at.display()))?;
+        let ghosts = private_dir(home)?;
         let number = |at: usize| i32::try_from(at).map_err(|_| "too many shares".to_string());
         let mut fds = vec![(err.as_fd(), 2), (share.as_fd(), 3)];
         for (i, (dir, _, _)) in dirs.iter().enumerate() {
@@ -712,14 +904,62 @@ mod hosted {
         fds.push((ghosts.as_fd(), number(4usize.saturating_add(dirs.len()))?));
         let child = shards_ipc::spawn_in(&exe, &args, &fds, false, &[])
             .map_err(|e| format!("starting the share process: {e}"))?;
-        Ok((child, vm))
+        Ok(Shares { child, door })
+    }
+
+    /// [`start_shares`] on Windows (D197), as a direct boot's (cli/shares.rs `served`): each
+    /// share's stream a duplex pipe this process makes, its server end the share process's
+    /// and its other the VM's, which the run's request hands it. Each directory at 4 + i,
+    /// the home's private directory at 4 + n and each share's end of its stream at
+    /// 5 + n + i, as its Unix twin is numbered; made in the run's job, detached from the
+    /// console, out of reach of a Ctrl-C meant for this process's owner.
+    #[cfg(windows)]
+    fn start_shares(
+        home: &Path,
+        dirs: &[(OwnedFd, bool, OsString)],
+        job: &shards_ipc::GroupJob,
+    ) -> Result<Shares, String> {
+        let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
+        let streams = dirs
+            .iter()
+            .map(|_| shards_ipc::byte_pair())
+            .collect::<io::Result<Vec<_>>>()
+            .map_err(|e| format!("a share's stream: {e}"))?;
+        let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        for (_, read_only, only) in dirs {
+            args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
+            args.push(only.as_os_str());
+        }
+        let n = dirs.len();
+        let number = |at: usize| i32::try_from(at).map_err(|_| "too many shares".to_string());
+        let err = io::stderr();
+        let ghosts = private_dir(home)?;
+        let mut fds = vec![
+            (err.as_fd(), 2),
+            (ghosts.as_fd(), number(4usize.saturating_add(n))?),
+        ];
+        for (i, ((dir, _, _), (server, _))) in dirs.iter().zip(&streams).enumerate() {
+            fds.push((dir.as_fd(), number(4usize.saturating_add(i))?));
+            fds.push((
+                server.as_fd(),
+                number(5usize.saturating_add(n).saturating_add(i))?,
+            ));
+        }
+        let env = crate::netproc::child_env();
+        let child =
+            shards_ipc::spawn_detached(Some(job), &exe, &args, &fds, &crate::netproc::env_pairs(&env))
+                .map_err(|e| format!("starting the share process: {e}"))?;
+        Ok(Shares {
+            child,
+            ends: streams.into_iter().map(|(_, vm)| vm).collect(),
+        })
     }
 
     /// Tells the network process, before the VM has the run, its published ports and its
     /// policy, each answered by its own kind in the order asked (daemon/networks.rs
     /// `Asks`); the descriptors kept until answered (M24).
     fn tell_net(
-        net: &UnixStream,
+        net: &crate::netproc::Control,
         listeners: &[publish::Listener],
         egress: Option<&[u8]>,
     ) -> Result<(), String> {
@@ -771,8 +1011,12 @@ mod hosted {
     struct Live<'a> {
         answers: &'a Answers,
         flows: Mutex<Flows>,
-        capture: Option<Mutex<UnixStream>>,
-        link: Mutex<UnixStream>,
+        capture: Option<Mutex<Stream>>,
+        link: Mutex<Stream>,
+        /// Each exec's client end, by its number, held until the VM says it has it
+        /// (`EXEC_TAKEN`), as the daemon holds an exec's (M24): none once the link has
+        /// closed, when no VM will.
+        held: Mutex<Option<HashMap<u64, Stream>>>,
         /// `STOP` asked, or the owner gone: the run's end is `Stopped`.
         stopping: std::sync::atomic::AtomicBool,
         next_exec: std::sync::atomic::AtomicU64,
@@ -851,15 +1095,15 @@ mod hosted {
     }
 
     /// Hands the VM its run, as the daemon hands a warm VM one (daemon.rs `hand_over`): once
-    /// it is `READY`, `RUN` with the run's head, spec and descriptors, then `TAKEN`; then
-    /// `STOP_ORDER`, SIGKILL with no grace, so that a VM whose link closes, this process
-    /// gone, ends its run.
+    /// it is `READY`, `RUN` with the run's head, spec and descriptors, on Windows its
+    /// shares' streams after it (D197), then `TAKEN`; then `STOP_ORDER`, SIGKILL with no
+    /// grace, so that a VM whose link closes, this process gone, ends its run.
     fn hand_over(
-        link: &UnixStream,
+        link: &Stream,
         plan: &Plan,
-        client: &UnixStream,
-        shares: Option<&UnixStream>,
-        capture: Option<&UnixStream>,
+        client: &Stream,
+        shares: Option<&Shares>,
+        capture: Option<&Stream>,
     ) -> Result<(), String> {
         match shards_ipc::recv(link) {
             Ok(Some(m)) if m.kind == kind::READY => super::say(format_args!("its guest is ready")),
@@ -867,7 +1111,7 @@ mod hosted {
             Ok(None) => return Err("the VM ended before it was ready".into()),
             Err(e) => return Err(format!("the VM was not ready: {e}")),
         }
-        let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+        let null = std::fs::File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let err = io::stderr();
         let mut payload = Vec::new();
         shards_ipc::RunHead {
@@ -880,13 +1124,30 @@ mod hosted {
         }
         .encode_into(&mut payload);
         plan.prepared.spec.encode_into(&mut payload);
+        // A stream's end as a message hands it on: borrowed on Unix, a handle of its own on
+        // Windows (`shards_ipc::handed`).
+        let client = shards_ipc::handed(client).map_err(|e| format!("the run's client: {e}"))?;
+        let capture = capture
+            .map(shards_ipc::handed)
+            .transpose()
+            .map_err(|e| format!("the run's managed output: {e}"))?;
         // The run's own command's stdin is the null device, its output this process's
         // diagnostics: the orchestrator's channel carries its members'.
         let mut fds: Vec<BorrowedFd<'_>> = vec![client.as_fd(), null.as_fd(), err.as_fd(), err.as_fd()];
-        fds.extend(shares.map(UnixStream::as_fd));
-        fds.extend(capture.map(UnixStream::as_fd));
+        #[cfg(unix)]
+        fds.extend(shares.map(|s| s.door.as_fd()));
+        fds.extend(capture.as_ref().map(|c| c.as_fd()));
         shards_ipc::send(link, kind::RUN, &payload, &fds)
             .map_err(|e| format!("handing the VM its run: {e}"))?;
+        // MAX_FDS a message at most; the VM takes the run only once it has them all.
+        #[cfg(windows)]
+        if let Some(shares) = shares {
+            let ends: Vec<BorrowedFd<'_>> = shares.ends.iter().map(|e| e.as_fd()).collect();
+            for batch in ends.chunks(shards_ipc::MAX_FDS) {
+                shards_ipc::send(link, kind::SHARE_ENDS, &[], batch)
+                    .map_err(|e| format!("handing the VM its shares' streams: {e}"))?;
+            }
+        }
         match shards_ipc::recv(link) {
             Ok(Some(m)) if m.kind == kind::TAKEN => super::say(format_args!("its VM took the run")),
             Ok(Some(m)) => return Err(format!("the VM said message kind {} for its run", m.kind)),
@@ -899,6 +1160,17 @@ mod hosted {
         shards_ipc::send(link, kind::STOP_ORDER, &order, &[]).map_err(|e| format!("the VM's stop order: {e}"))
     }
 
+    /// A pair for a stream the VM is handed, as the daemon makes each (daemon/managed.rs,
+    /// the managed output's): on Windows one of bytes alone written in messages, each end
+    /// saying the end of its writes as a socket's half-close does, its other end's handle
+    /// given the VM ([`Stream::plain_pair`]).
+    fn handed_pair() -> io::Result<(Stream, Stream)> {
+        #[cfg(unix)]
+        return Stream::pair();
+        #[cfg(windows)]
+        Stream::plain_pair()
+    }
+
     fn launch_and_serve(answers: &Answers, input: io::Stdin, home: &Path, plan: Plan) -> Result<(), No> {
         let boot = |e: String| No(Cause::Boot, e);
         super::say(format_args!(
@@ -906,24 +1178,25 @@ mod hosted {
             plan.prepared.image_id, plan.prepared.size.0, plan.prepared.size.1
         ));
         let launched = launch(home, &plan)?;
-        super::say(format_args!("its VM process {} started; waiting for its guest", launched.vm.id()));
+        super::say(format_args!(
+            "its VM process {} started; waiting for its guest",
+            launched.vm.id()
+        ));
         let served = (|| -> Result<(), No> {
             if let Some((_, control)) = &launched.net {
                 tell_net(control, &plan.listeners, plan.egress.as_deref()).map_err(boot)?;
             }
             let (client, client_theirs) =
-                UnixStream::pair().map_err(|e| boot(format!("the run's client: {e}")))?;
+                handed_pair().map_err(|e| boot(format!("the run's client: {e}")))?;
             let capture = match plan.capture {
-                Some(_) => {
-                    Some(UnixStream::pair().map_err(|e| boot(format!("the run's managed output: {e}")))?)
-                }
+                Some(_) => Some(handed_pair().map_err(|e| boot(format!("the run's managed output: {e}")))?),
                 None => None,
             };
             hand_over(
                 &launched.link,
                 &plan,
                 &client_theirs,
-                launched.shares.as_ref().map(|(_, s)| s),
+                launched.shares.as_ref(),
                 capture.as_ref().map(|(_, theirs)| theirs),
             )
             .map_err(boot)?;
@@ -957,6 +1230,7 @@ mod hosted {
                 flows: Mutex::new(Flows::default()),
                 capture: capture.map(|(ours, _)| Mutex::new(ours)),
                 link: Mutex::new(link),
+                held: Mutex::new(Some(HashMap::new())),
                 stopping: std::sync::atomic::AtomicBool::new(false),
                 next_exec: std::sync::atomic::AtomicU64::new(0),
             };
@@ -967,16 +1241,17 @@ mod hosted {
             Ok(())
         })();
         // Its processes gone, whatever ended it: the VM killed where it runs on, then each
-        // reaped once nothing of this process's holds it up; its anonymous volumes removed,
-        // as `--rm`'s are. The share process goes as its connections to the VM close, its
-        // door the last of them where the VM never took it (a run refused before `TAKEN`):
-        // waited for with that door still held here, it never went (CI run 43230466376,
-        // `a_share_at_a_granted_volume_reaches_the_harness`, this process in `do_wait`).
+        // reaped once nothing of this process's holds it up, the share process as its
+        // connections to the VM close (`Shares::end`); on Windows its job let go of last,
+        // which ends whatever of them is left; its anonymous volumes removed, as `--rm`'s
+        // are.
         let Launched {
             vm,
             link,
             net,
             shares,
+            #[cfg(windows)]
+            job,
         } = launched;
         let _ = vm.kill(shards_ipc::signal::SIGKILL);
         let _ = vm.wait();
@@ -985,10 +1260,11 @@ mod hosted {
             drop(control);
             crate::netproc::reap(&child);
         }
-        if let Some((child, door)) = shares {
-            drop(door);
-            let _ = child.wait();
+        if let Some(shares) = shares {
+            shares.end();
         }
+        #[cfg(windows)]
+        drop(job);
         if !plan.made.is_empty() {
             let store = crate::volumes::Store::new(home);
             let _held = crate::volumes::lock();
@@ -1005,7 +1281,7 @@ mod hosted {
     /// the VM's link on threads of their own, the owner's asks on this one. The VM's end
     /// says the run's (`ENDED`), which has the owner close its channel; `STOP`, or the
     /// channel closed first, kills the VM, whose end then says `Stopped`.
-    fn serve(live: &Live<'_>, input: io::Stdin, launched: &Launched, client: UnixStream) {
+    fn serve(live: &Live<'_>, input: io::Stdin, launched: &Launched, client: Stream) {
         std::thread::scope(|scope| {
             if let Some(capture) = &live.capture
                 && let Ok(reading) = lock(capture).try_clone()
@@ -1038,6 +1314,7 @@ mod hosted {
                 // Nothing would say its end: the run is ended now, and said so.
                 live.stopping.store(true, std::sync::atomic::Ordering::SeqCst);
                 let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
+                lock(&live.held).take();
                 if let Ok(payload) = RunEnd::Failed("the run host could not follow its VM".into()).encode() {
                     let _ = live.answers.send(wire::to_client::ENDED, &[&payload]);
                 }
@@ -1047,9 +1324,9 @@ mod hosted {
         drop(client);
     }
 
-    /// Reads the VM's link until it closes: each member's end to the orchestrator, the run's
-    /// status from its `DONE`.
-    fn follow(live: &Live<'_>, link: &UnixStream) -> RunEnd {
+    /// Reads the VM's link until it closes: each member's end to the orchestrator, each
+    /// exec's client end let go of as the VM takes it, the run's status from its `DONE`.
+    fn follow(live: &Live<'_>, link: &Stream) -> RunEnd {
         let mut status = None;
         let failed = loop {
             let m = match shards_ipc::recv(link) {
@@ -1069,10 +1346,20 @@ mod hosted {
                             .send(wire::to_client::MEMBER_ENDED, &[&ended.encode()]);
                     }
                 }
+                kind::EXEC_TAKEN => {
+                    if let Some(number) = m.payload.first_chunk::<8>()
+                        && let Some(held) = lock(&live.held).as_mut()
+                    {
+                        held.remove(&u64::from_be_bytes(*number));
+                    }
+                }
                 kind::DONE => status = m.payload.first().copied(),
                 _ => {}
             }
         };
+        // No VM takes an exec now: their clients' ends go, and each waiting for its exit
+        // hears its end.
+        lock(&live.held).take();
         if let Some(why) = failed {
             return RunEnd::Failed(why);
         }
@@ -1131,7 +1418,7 @@ mod hosted {
 
     /// Reads the run's managed output until it ends: each member's bytes to the
     /// orchestrator within its room, its channel's end, each record's credit renewed.
-    fn records(live: &Live<'_>, mut capture: UnixStream) {
+    fn records(live: &Live<'_>, mut capture: Stream) {
         loop {
             let mut header = [0u8; protocol::HEADER];
             if capture.read_exact(&mut header).is_err() {
@@ -1192,7 +1479,7 @@ mod hosted {
     }
 
     /// Answers `ask` with init's `STATS` of its scope, through an exec on the VM's link as
-    /// `shards stats` asks it (daemon/commands.rs `usage_of`), on a thread of its own.
+    /// a health check's exec is sent (daemon/health.rs `send_exec`), on a thread of its own.
     fn stats(live: &Live<'_>, ask: wire::StatsAsk) {
         let answer = |result: Result<&[u8], &str>| {
             if let Ok(payload) = wire::StatsAnswer::encode(ask.id, result) {
@@ -1212,17 +1499,30 @@ mod hosted {
             builtin: protocol::builtin::STATS,
             ..Default::default()
         };
-        let asked = (|| -> Result<(UnixStream, std::io::PipeReader, std::io::PipeReader), String> {
-            let (client, theirs) = UnixStream::pair().map_err(|e| e.to_string())?;
+        let asked = (|| -> Result<(Stream, std::io::PipeReader, std::io::PipeReader), String> {
+            let (client, theirs) = Stream::pair().map_err(|e| e.to_string())?;
             let (out_r, out_w) = std::io::pipe().map_err(|e| e.to_string())?;
             let (err_r, err_w) = std::io::pipe().map_err(|e| e.to_string())?;
-            let null = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;
+            let null = std::fs::File::open(crate::os::NULL).map_err(|e| e.to_string())?;
             let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let mut payload = number.to_be_bytes().to_vec();
             payload.push(0);
             spec.encode_into(&mut payload);
-            let fds = [theirs.as_fd(), null.as_fd(), out_w.as_fd(), err_w.as_fd()];
-            shards_ipc::send(&lock(&live.link), kind::EXEC_RUN, &payload, &fds).map_err(|e| e.to_string())?;
+            let handed = shards_ipc::handed(&theirs).map_err(|e| e.to_string())?;
+            let fds = [handed.as_fd(), null.as_fd(), out_w.as_fd(), err_w.as_fd()];
+            // Held until the VM says it has it; none once its link has closed.
+            match lock(&live.held).as_mut() {
+                Some(held) => {
+                    held.insert(number, theirs.try_clone().map_err(|e| e.to_string())?);
+                }
+                None => return Err("the run has ended".into()),
+            }
+            if let Err(e) = shards_ipc::send(&lock(&live.link), kind::EXEC_RUN, &payload, &fds) {
+                if let Some(held) = lock(&live.held).as_mut() {
+                    held.remove(&number);
+                }
+                return Err(e.to_string());
+            }
             Ok((client, out_r, err_r))
         })();
         let (client, mut out, mut err) = match asked {
