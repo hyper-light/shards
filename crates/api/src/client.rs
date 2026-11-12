@@ -683,21 +683,27 @@ struct PrivateDir(PathBuf);
 /// Windows' 108 (afunix.h, `UNIX_PATH_MAX`): the least of them.
 const SOCKET_PATH: usize = 103;
 
+/// The two numbers that make the name of one of this process's private objects (a guest's
+/// socket directory, a GPU report's pipe) its own: unique in this process by its counter,
+/// and apart from every other process's by the process's nonce, 64 bits of std's
+/// `RandomState`, seeded from the OS's random source, which no earlier process of the same
+/// pid shares and no other user can guess and take first. So one that exists is refused,
+/// not passed over.
+pub(crate) fn private_name() -> (u64, u64) {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    static NONCE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let nonce = *NONCE.get_or_init(|| RandomState::new().hash_one(std::process::id()));
+    (nonce, NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
 impl PrivateDir {
     fn new() -> Result<PrivateDir, Refusal> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         #[expect(
             clippy::disallowed_methods,
             reason = "a guest's socket directory, made 0700 and removed with its guest, no test's"
         )]
         let tmp = socket_dir(std::env::temp_dir())?;
-        // Unique in this process by its counter, and apart from every other process's by
-        // the process's nonce: 64 bits of std's `RandomState`, seeded from the OS's random
-        // source, which no earlier process of the same pid shares and no other user can
-        // guess and take first. So one that exists is refused, not passed over.
-        static NONCE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-        let nonce = NONCE.get_or_init(|| RandomState::new().hash_one(std::process::id()));
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let (nonce, n) = private_name();
         let dir = tmp.join(format!("shards-api-{nonce:016x}-{n}"));
         #[cfg(unix)]
         let builder = {

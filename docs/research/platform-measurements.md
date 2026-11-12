@@ -21763,3 +21763,62 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     since NR_CPUS rose (its `api_image` hangs first).
   - arm64 on KVM (the nested L1) and WHP: its tasks a vCPU and its costs a vCPU, unmeasured.
   - macOS, whose storm runs at HVF's most vCPUs.
+
+### M533. A second GPU report of one scope on Windows, refused ERROR_PIPE_BUSY (D232, D233)
+
+- **Question.** shards-api's `physical::report` tests failed on Windows when run side by
+  side and passed one at a time (step 9's report, at a7dbf1446). Did the client's own pipe
+  code fail, would it under clients of its own, and what does Windows say?
+- **Method.** `docs/research/measurements/api-flakes/` (its README has the harness, every
+  revision and binary): the library tests built at `test-release` and run again and again
+  on jupiter (Windows x86_64, 32 CPUs, rustc 1.98.1; a kiln runner beside CI's jobs),
+  2026-11-12: `physical::report` side by side as libtest runs them, and one at a time; a
+  new test, two reports of one scope at once and one beside an earlier report's writer, on
+  main's code and on the fix's.
+- **Found.**
+
+  | build | args | runs failed |
+  |---|---|---|
+  | main ad600dd52 | `physical::report` | 40 of 40 |
+  | main ad600dd52 | `physical::report --test-threads=1` | 0 of 40 |
+  | main c2c4547c1 | `physical::report` | 40 of 40 |
+  | main c2c4547c1 and the new test | the new test alone | 20 of 20 |
+  | the fix | `physical::report` | 0 of 200 |
+  | main c2c4547c1, runs interleaved with the fix's | the whole library | 11 of 40 |
+  | the fix, runs interleaved with main's | the whole library | 4 of 40 |
+
+  Every failure was `CreateNamedPipeW`'s, `ManagedIo { operation: "GPU report pipe", code:
+  Some(231) }`: ERROR_PIPE_BUSY. The pipe's name was the report's scope
+  (`\\.\pipe\shards-api-gpu-<scope>`), one instance, FILE_FLAG_FIRST_PIPE_INSTANCE; the
+  six tests' fixtures share one scope, so any two at once met; and the new test met it
+  alone, twice over: a second report of the scope while the first lived, and one beside
+  an earlier report's writer, whose instance outlives its receiver. In the whole library,
+  main's 11 failed runs were 8 of these and 3 that hung; the fix's 4 all hung, in
+  `client::borrowed_tests::exact_bytes_clone_and_half_close`, past 120 s, a fault of its
+  own that main has too, measured apart.
+- **Reading.**
+  - The fault was the client's, not its tests': a scope names a report's frame
+    (`GpuReport::parse` checks it) and nothing makes it unique to one report at a time, so
+    a client that boots two guests in one native scope, or one again while a VM process
+    still holds the last one's writer, was refused on Windows alone (its Unix pipe has no
+    name). An instance "is always deleted when the last handle to the instance of the named
+    pipe is closed", and the pipe's name is "the unique pipe name"
+    ([CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea)).
+  - Windows names the second instance's refusal ERROR_PIPE_BUSY here, not the
+    ERROR_ACCESS_DENIED the same page gives FILE_FLAG_FIRST_PIPE_INSTANCE: the instance
+    count is checked first.
+  - Not a client to make wait: a named pipe client that meets ERROR_PIPE_BUSY "uses the
+    WaitNamedPipe function to wait for an instance of the named pipe to become available"
+    ([Named Pipe Client](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-client)),
+    but this pipe's one client is the report's own writer, opened by the same call that
+    made the pipe; an instance another holds is no report's, and refused.
+  - The fix names the pipe as Windows names its own anonymous ones ("implemented using a
+    named pipe with a unique name",
+    [Anonymous Pipe Operations](https://learn.microsoft.com/en-us/windows/win32/ipc/anonymous-pipe-operations),
+    which also says they take no overlapped reads, so this one stays named): the client
+    process's nonce and counter (`client::private_name`, which its socket directories
+    already used), `\\.\pipe\shards-api-gpu-<nonce>-<n>`. The scope stays in the frame.
+    FILE_FLAG_FIRST_PIPE_INSTANCE and the writer's process check stay: a name another took
+    first is refused, never joined.
+  - What would show this wrong: a refusal of a report's pipe with no other of this
+    process's alive, or a frame of one report read by another.
