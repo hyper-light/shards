@@ -39,6 +39,15 @@ pub fn env(image: &[CString], member: u32, setup: &[Vec<u8>]) -> Result<Vec<CStr
     Ok(out)
 }
 
+/// Member `member`'s working directory, where its run names one: the project path it works
+/// in, absolute and plain, checked again here as the host checked it; one at most.
+pub fn workdir(member: u32, setup: &[Vec<u8>]) -> Result<Option<CString>, String> {
+    members::workdir_of(setup, member)
+        .map_err(|e| format!("a staged working directory: {e}"))?
+        .map(|w| CString::new(w).map_err(|_| "a staged working directory holding a NUL".to_string()))
+        .transpose()
+}
+
 /// Writes the files staged for `member` beneath `home`, a directory descriptor of its
 /// scratch tmpfs, each owned by `owner` (uid, gid), its directories made 0700 and owned
 /// so, nothing followed that a link could redirect, and nothing written twice. `home` is
@@ -178,6 +187,32 @@ mod tests {
     fn the_domains_label_is_never_staged() {
         let crafted = vec![[members::ENV_KEY, b"0\0SHARDS_DOMAIN=agent x"].concat()];
         assert!(env(&cstrings(&["A=b"]), 0, &crafted).is_err());
+    }
+
+    /// A member's working directory is the one its run names, read again as the host made
+    /// it; a crafted relative or escaping one, or a second, is refused here too.
+    #[test]
+    fn a_working_directory_is_read_again_in_the_guest() {
+        let setup = vec![
+            members::workdir(1, b"/Users/ada/proj").unwrap(),
+            members::env(1, b"A=b").unwrap(),
+        ];
+        assert_eq!(
+            workdir(1, &setup).unwrap(),
+            Some(CString::new("/Users/ada/proj").unwrap())
+        );
+        assert_eq!(workdir(0, &setup).unwrap(), None);
+        for crafted in [&b"1\0proj"[..], b"1\0/Users/../etc", b"1\0/Users//x"] {
+            let setup = vec![[members::WORKDIR_KEY, crafted].concat()];
+            assert!(workdir(1, &setup).is_err(), "{crafted:?}");
+        }
+        let mut twice = setup.clone();
+        twice.push(members::workdir(1, b"/elsewhere").unwrap());
+        assert!(
+            workdir(1, &twice)
+                .unwrap_err()
+                .contains("second working directory")
+        );
     }
 
     /// Entries naming a member the run starts nothing for are refused as a whole.

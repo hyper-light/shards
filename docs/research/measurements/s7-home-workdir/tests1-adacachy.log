@@ -1,0 +1,17 @@
+== i1-abi.log
+$ cargo test -j12 -p shards-abi members
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+exit=0
+== i1-init.log
+$ cargo test -j12 -p shards-init
+test result: ok. 211 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.04s
+exit=0
+== i1-agentfile.log
+$ cargo test -j12 -p shards-agentfile --test agentfile
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+exit=0
+== i1-shards.log
+$ cargo test -j12 -p shards --bin shards -- agentfile:: api_run::
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 727 filtered out; finished in 0.01s
+exit=0

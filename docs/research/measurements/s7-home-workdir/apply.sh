@@ -6,7 +6,7 @@ src=$PWD
 cd ~/g121-tmp/s7p2/shards
 git checkout -q -- .
 git clean -fdq
-git cat-file -e "$rev^{commit}" 2>/dev/null || git fetch -q origin main
+git cat-file -e "$rev^{commit}" 2>/dev/null || git fetch -q origin main p/s7-part2-v1
 git checkout -q --detach "$rev"
 if [ -f "$src/files.sha256" ]; then
   (cd "$src/files" && sha256sum -c --quiet "$src/files.sha256")

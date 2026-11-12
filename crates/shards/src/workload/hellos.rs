@@ -113,6 +113,21 @@ pub(super) fn forget(token: &[u8; run::TOKEN]) {
     drop(claim(token));
 }
 
+/// Every exec that waits, failed with `why`: each asked the guest for its connection on the
+/// signal connection, which has ended or failed, and the guest may never have read the
+/// asking. How many there were. A restored run's waits and a capture's (D176), which ask
+/// nothing there, wait on.
+pub(super) fn fail_execs(why: &str) -> usize {
+    let mut w = waiters();
+    let failed = w
+        .waiting
+        .extract_if(.., |x| x.target.id().is_some())
+        .map(|x| x.target.deliver(Err(why.to_string())))
+        .count();
+    WAITING.store(w.waiting.len(), Ordering::Release);
+    failed
+}
+
 /// The port closes as its workload ends: what waits is let go of, which tells each that its
 /// connection will not come, nothing more is admitted, and the acceptor ends.
 pub(super) fn close() {

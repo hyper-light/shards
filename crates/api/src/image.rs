@@ -69,6 +69,10 @@ pub struct MemberSpec {
     /// Variables over its image's, each `(KEY, VALUE)`; `SHARDS_DOMAIN` is init's.
     pub env: Vec<(String, Secret)>,
     pub files: Vec<MemberFile>,
+    /// Its working directory, absolute and plain: the project path it works in, which must be
+    /// there as it starts (D231); none for its image's (its config's `run.workdir`, in its
+    /// directory).
+    pub workdir: Option<String>,
     /// Its stdin, a pipe the orchestrator writes ([`ImageGuest::take_input`]); else
     /// `/dev/null`, as every member's is today.
     pub stdin: bool,
@@ -321,11 +325,20 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
                 bytes: f.bytes.clone(),
             });
         }
+        if let Some(w) = &m.workdir
+            && !shards_abi::run::members::workdir_ok(w.as_bytes())
+        {
+            return Err(ImageRefusal::Spec {
+                what: "a member's working directory",
+                why: format!("{w:?}: {}", shards_abi::run::members::Error::Workdir),
+            });
+        }
         members.push(wire::MemberStage {
             kind: m.member.kind,
             name: m.member.name.clone(),
             env,
             files,
+            workdir: m.workdir.clone(),
         });
     }
     let mut shares = Vec::with_capacity(spec.shares.len());
@@ -402,6 +415,7 @@ mod tests {
                     mode: 0o600,
                     bytes: Secret::from("{}"),
                 }],
+                workdir: Some("/Users/ada/proj".into()),
                 stdin: false,
                 terminal: false,
             }],
@@ -425,6 +439,7 @@ mod tests {
         let r = request(&spec()).unwrap();
         assert_eq!(r.members[0].env, vec![Secret::from("OPENAI_API_KEY=sk-1")]);
         assert_eq!(r.members[0].files[0].mode, 0o600);
+        assert_eq!(r.members[0].workdir.as_deref(), Some("/Users/ada/proj"));
         assert!(r.shares[0].read_only);
         assert_eq!((r.nesting, r.ready_by), (false, None));
         assert_eq!(wire::Request::decode(&r.encode().unwrap()).unwrap(), r);
@@ -494,6 +509,21 @@ mod tests {
         let mut s = spec();
         s.shares[0].at = "work".into();
         assert_eq!(refused(s), "a share");
+        for relative_or_escaping in [
+            "proj",
+            "./proj",
+            "/Users/ada/../../etc",
+            "/Users//ada",
+            "/Users/ada/",
+        ] {
+            let mut s = spec();
+            s.members[0].workdir = Some(relative_or_escaping.into());
+            assert_eq!(
+                refused(s),
+                "a member's working directory",
+                "{relative_or_escaping}"
+            );
+        }
         let mut s = spec();
         s.members[0].terminal = true;
         assert_eq!(refused(s), "a member's terminal");

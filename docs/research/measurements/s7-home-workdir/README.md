@@ -82,3 +82,110 @@ mount namespace.
   (`stat` of `/home/node` under a volume at `/home/node/.cache`).
 - With plug roots (D235), the root's own writable layer is the uppermost for `/`. Step 8's
   50ed65bbb gives it the image root's owner and mode; its record holds that evidence.
+
+## Item 1: the image's ENV reaches each member
+
+### Gap
+
+At ad600dd52 nothing carried an image's config `Env` to init: the daemon composed it into the
+run's own command's environment alone (run.rs `compose`), and init gave each member its own
+`PATH`, `HOME=/tmp`, `SHARDS_DOMAIN`, its `run.env` and what D231 stages. The new unit tests
+are the red: none of them can pass without the entries, the order and the refusals.
+
+### Decision (R02, R03, R05, R12)
+
+Recorded in D59 ("A member's environment: init's, the image's, its own, its run's"), with its
+sources: OCI image-spec v1.1.0 config.md (`Env`), moby docker-v29.0.0 daemon/commit.go
+`merge` and `CreateDaemonEnvironment`, Kubernetes' "Define Environment Variables for a
+Container", and D231's own rule. The order, the last given winning: init's, the image's
+(`PATH` folded under the member's own directories, `HOME` never the image's), `run.env`,
+what is staged. `SHARDS_DOMAIN` is refused in the image's `Env` at build, by the daemon and
+the run host, and by init, with one check (`shards_abi::run::members::variable_ok`) and one
+text (`ImageEnvRefused`). No new literal: `image-env=` is a setup key beside D231's.
+
+Alternatives weighed:
+- the image's `HOME` as any other name: one value can be private to no more than one member,
+  and it names the read-only system;
+- the image's `Env` over `run.env`: the member's config is particular to it and written for
+  it, and the image's is every member's and the command's.
+
+### State and code (R01, R04, R06, R07, R13)
+
+- No panic path: each entry is checked where it is read, refusals are `Err`, and no index or
+  arithmetic is used.
+- The refusal is typed (`shards_agentfile::agentfile::ImageEnvRefused`, the abi's `Error`),
+  and its text is rendered once.
+- `harness_env` takes the image's entries; the program lookup moved to `start`, after the
+  staged variables, so the program is found on the `PATH` it runs with (`executable`).
+
+### Red, green and mutation (R10)
+
+`mutate1.sh` lays each variant `mutants1.py` writes over the change and runs the test that
+must fail for it. `mutate1-adacachy.log`: the image's `Env` given no member, the image's
+`HOME` taken as any other name, the program found on a `PATH` other than the one it runs with,
+the build's check removed, and the daemon's entries never made each fail their test; the
+change whole passes them all.
+
+`tests1-adacachy.log`, the change on 1e6bbeada (main 34215b23e with item 4) on Linux x86_64:
+shards-abi's members tests (10), all of shards-init (211 passed, 1 ignored as before),
+shards-agentfile's agentfile tests (37), and shards' `agentfile::` and `api_run::` tests (18).
+rustfmt and clippy (all targets, `-D warnings`) are clean on the four crates.
+
+### Owed (ROOT)
+
+- A member's `env` in a real microVM on KVM, Hypervisor.framework and WHP, of an image whose
+  `ENV` sets `PATH`, `HOME` and another name, with a `run.env` and a staged variable over them.
+
+## Item 2: a working directory the run names
+
+### Change
+
+`MemberSpec::workdir` (shards_api), the project path a member works in, reaches init end to
+end: the image channel's request carries it, appended in version 5 (step 8's plugs took 4);
+the run host stages it as `member-workdir=<index>\0<path>`; init enters it as the member
+starts, where it entered `<dir>/<run.workdir>` before. It is absolute and plain, with no
+empty, `.` or `..` component and within PATH_MAX (`shards_abi::run::members::workdir_ok`).
+A relative or escaping one is refused by `shards_api::image` before the run host starts
+(`ImageRefusal::Spec`, "a member's working directory"), by the run host (`api_run::staged`),
+and by init, which reads the entries again (`staged::workdir`), as is a second one for one
+member (`Error::Twice`). Init also holds the image's own `run.workdir` to the build's rule,
+relative and never leaving its directory (`domains::inside`, the twin of shards_image osi.rs
+`inside`), where before a crafted `osi.json` could name `../../etc`.
+
+### Decision (R02, R05, R13)
+
+Recorded in D231 ("A member's working directory"). The working directory must be there as
+the member starts, as an exec's must be (D27, runc's exec), and none is made: a missing one
+fails the start, `entering its working directory`. A process's working directory is the
+directory it entered, under whatever is mounted there later, so a project plugged into a
+running member (D235) is not the working directory of a member that started before it. Making
+the directory where it is missing was weighed and not taken: beneath a plug root it would be
+an empty directory that a later plug covers, and the member would work in that, never in its
+project.
+
+### Red, green and mutation (R10)
+
+The new tests are the red: none can pass without the field, the entries and the checks.
+`mutate2.sh` lays each variant `mutants2.py` writes over the change and runs the test that
+must fail for it. `mutate2-adacachy.log`: a relative working directory taken as one, a second
+staged by the run host, the client's check removed, init ignoring the entries, the image's own
+`run.workdir` let out of its directory, and the request's working directories not read back
+each fail their test; the change whole passes them all.
+
+`tests2-adacachy.log`, the change on 6243ca378 (main 41e5a0943 with item 1) on Linux x86_64:
+shards-abi's members tests (11), shards-api's image tests (15), all of shards-init (215
+passed, 1 ignored as before), shards' `api_run::` tests (10), and the E2E test binary
+`api_image` built. rustfmt and clippy (all targets, `-D warnings`) are clean on the four
+crates, and clippy of shards-abi, shards-api and shards-init on aarch64 glibc and both musl
+targets.
+
+### Owed
+
+- A boot-time way to have the project at its path as the member starts (a share given a
+  member at its host path at boot, or a member started once its project is plugged): D235's
+  and the orchestrator's to choose. Until then an orchestrator that plugs the project as the
+  member runs names no working directory, and passes the project path to the harness itself:
+  ACP's `session/new` takes a `cwd`, which "MUST be an absolute path" (agentclientprotocol.com,
+  "Session Setup").
+- Real-VM runs on KVM, Hypervisor.framework and WHP (ROOT): a member started in a named
+  working directory, and refused one that is missing.

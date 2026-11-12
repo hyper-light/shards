@@ -135,6 +135,7 @@ fn staged_credentials_reach_the_harness_and_its_output_and_end_come_back() {
             mode: 0o600,
             bytes: Secret(token.to_vec()),
         }],
+        workdir: None,
         stdin: false,
         terminal: false,
     }];
@@ -195,6 +196,7 @@ fn what_the_image_does_not_grant_is_refused_before_boot() {
         member,
         env: vec![("K".into(), Secret::from("v"))],
         files: Vec::new(),
+        workdir: None,
         stdin: false,
         terminal: false,
     };

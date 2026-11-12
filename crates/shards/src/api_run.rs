@@ -207,6 +207,7 @@ fn members_of(labels: &[String], active: &[u32]) -> Vec<wire::MemberInfo> {
 fn staged(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<Vec<u8>>, No> {
     use shards_abi::run::members as staging;
     let mut entries = Vec::new();
+    let mut worked = std::collections::BTreeSet::new();
     for m in &request.members {
         let info = members
             .iter()
@@ -236,6 +237,19 @@ fn staged(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<V
             entries.push(
                 staging::file(info.index, f.mode, f.path.as_bytes(), &f.bytes.0)
                     .map_err(|e| No(Cause::Request, format!("{}: {}: {e}", m.name, f.path)))?,
+            );
+        }
+        // Its working directory, the project path it works in: one, as the guest takes one.
+        if let Some(w) = &m.workdir {
+            if !worked.insert(info.index) {
+                return Err(No(
+                    Cause::Request,
+                    format!("{}: {}", m.name, staging::Error::Twice),
+                ));
+            }
+            entries.push(
+                staging::workdir(info.index, w.as_bytes())
+                    .map_err(|e| No(Cause::Request, format!("{}: {w:?}: {e}", m.name)))?,
             );
         }
     }
@@ -638,8 +652,9 @@ mod hosted {
         crate::setup::security_setup(&mut setup, &run, version, None, &[], nesting.grant())
             .map_err(no(Cause::Request))?;
         let server = match &agentfile {
-            Some(_) => {
+            Some(a) => {
                 setup.extend(crate::setup::domain_seccomp(version).map_err(no(Cause::Boot))?);
+                setup.extend(a.image_env.iter().cloned());
                 Some(crate::guest::server_device(home).map_err(no(Cause::Boot))?)
             }
             None => None,
@@ -2075,6 +2090,7 @@ mod tests {
                 mode: 0o600,
                 bytes: wire::Secret::from("x"),
             }],
+            workdir: Some("/Users/ada/proj".into()),
         }
     }
 
@@ -2088,8 +2104,27 @@ mod tests {
         )
         .ok()
         .unwrap();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         assert!(entries[0].starts_with(b"member-env=1\0K=v"));
+        assert_eq!(entries[2], b"member-workdir=1\0/Users/ada/proj");
+        // A relative or escaping working directory is refused, and so is a second one for
+        // the same member, as the guest refuses them.
+        for workdir in ["proj", "/Users/ada/../../etc"] {
+            let mut s = stage(wire::MemberKind::Harness, "codex");
+            s.workdir = Some(workdir.into());
+            assert!(
+                matches!(staged(&request(vec![s]), &members()), Err(No(Cause::Request, _))),
+                "{workdir}"
+            );
+        }
+        let twice = vec![
+            stage(wire::MemberKind::Harness, "codex"),
+            stage(wire::MemberKind::Harness, "codex"),
+        ];
+        assert!(matches!(
+            staged(&request(twice), &members()),
+            Err(No(Cause::Request, _))
+        ));
         for (kind, name, cause) in [
             (wire::MemberKind::Agent, "codex", Cause::Image),
             (wire::MemberKind::Harness, "nobody", Cause::Image),

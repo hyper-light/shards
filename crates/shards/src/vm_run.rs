@@ -1197,6 +1197,13 @@ fn serve_attach(name: &str) -> Result<(), String> {
 /// This VM's handle, once it runs: what a joiner's swap is mapped through (D159).
 static RUNNING: std::sync::OnceLock<Handle> = std::sync::OnceLock::new();
 
+/// Stops this VM's machine, once it runs: the end of a command no signal reaches (D16).
+pub fn stop() {
+    if let Some(running) = RUNNING.get() {
+        running.stop();
+    }
+}
+
 /// Maps `file`, a joiner's swap, into this VM's swap window (D159), unless a member's is
 /// mapped already, which they share: its length where this one was mapped.
 pub fn attach_swap(file: std::fs::File) -> Result<Option<u64>, String> {
