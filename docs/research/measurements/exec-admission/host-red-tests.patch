@@ -1,0 +1,123 @@
+diff --git a/crates/shards/src/workload.rs b/crates/shards/src/workload.rs
+index 5aa1cb392..6202b8302 100644
+--- a/crates/shards/src/workload.rs
++++ b/crates/shards/src/workload.rs
+@@ -2558,6 +2558,76 @@ mod tests {
+         );
+     }
+ 
++    /// An exec's connection, admitted before the acceptor took it, stays its own as another
++    /// exec stops waiting: it had waited in that exec's slot, and went with it.
++    #[test]
++    fn an_admitted_connection_outlives_another_execs_wait() {
++        let _serial = HELLO_TESTS.lock().unwrap();
++        let (port, acceptor) = exec_port().unwrap();
++        let (first, _first_gets) = std::sync::mpsc::sync_channel(1);
++        let (second, second_gets) = std::sync::mpsc::sync_channel(1);
++        register([41; run::TOKEN], Target::Exec { id: 41, to: first }).unwrap();
++        register([42; run::TOKEN], Target::Exec { id: 42, to: second }).unwrap();
++        let (mut guest, host) = UnixStream::pair().unwrap();
++        guest
++            .write_all(&run::header(kind::HELLO, run::TOKEN as u32))
++            .unwrap();
++        guest.write_all(&[42; run::TOKEN]).unwrap();
++        assert_eq!(port.accept(host), shards_vmm::vm::Admission::Accepted);
++        // The first exec's guest says it has no connection, before the acceptor has run.
++        exec_failed(&[&41u32.to_be_bytes()[..], b"refused"].concat());
++        let server = std::thread::spawn(move || acceptor.run());
++        let got = second_gets.recv_timeout(std::time::Duration::from_secs(5));
++        hellos::close();
++        drop(port);
++        server.join().unwrap();
++        assert!(
++            matches!(got, Ok(Ok(_))),
++            "the second exec lost its connection: {got:?}"
++        );
++    }
++
++    /// Execs at once, as ROOT's 64 (adacachy, 2026-11-12), each registering as the others'
++    /// guests connect: every one is admitted and gets its own connection.
++    #[test]
++    fn execs_at_once_each_get_their_own_connection() {
++        let _serial = HELLO_TESTS.lock().unwrap();
++        let (port, acceptor) = exec_port().unwrap();
++        let server = std::thread::spawn(move || acceptor.run());
++        let results: Vec<_> = std::thread::scope(|s| {
++            let port = &port;
++            let execs: Vec<_> = (0..64u32)
++                .map(|i| {
++                    s.spawn(move || {
++                        let mut token = [0x5a; run::TOKEN];
++                        token[..4].copy_from_slice(&i.to_be_bytes());
++                        let (to, gets) = std::sync::mpsc::sync_channel(1);
++                        register(token, Target::Exec { id: 1000 + i, to }).unwrap();
++                        let (mut guest, host) = UnixStream::pair().unwrap();
++                        guest
++                            .write_all(&run::header(kind::HELLO, run::TOKEN as u32))
++                            .unwrap();
++                        guest.write_all(&token).unwrap();
++                        let admitted = port.accept(host);
++                        let got = gets
++                            .recv_timeout(std::time::Duration::from_secs(5))
++                            .map(|r| r.is_ok());
++                        (i, admitted, got)
++                    })
++                })
++                .collect();
++            execs.into_iter().map(|e| e.join().unwrap()).collect()
++        });
++        hellos::close();
++        drop(port);
++        server.join().unwrap();
++        let failed: Vec<_> = results
++            .iter()
++            .filter(|(_, admitted, got)| *admitted != shards_vmm::vm::Admission::Accepted || *got != Ok(true))
++            .collect();
++        assert!(failed.is_empty(), "{} of 64 execs: {failed:?}", failed.len());
++    }
++
+     /// An exec the guest could make no connection for fails with what the guest said,
+     /// rather than wait for one (review 8.8); another exec waits on.
+     #[test]
+diff --git a/crates/shards/src/workload/hellos.rs b/crates/shards/src/workload/hellos.rs
+index d1caea9c2..5ae9d4d21 100644
+--- a/crates/shards/src/workload/hellos.rs
++++ b/crates/shards/src/workload/hellos.rs
+@@ -209,3 +209,37 @@ impl Drop for Acceptor {
+         close();
+     }
+ }
++
++#[cfg(all(test, unix))]
++#[allow(clippy::unwrap_used)]
++mod tests {
++    use super::*;
++
++    /// A guest's exec connection is admitted while an exec thread holds the waiters' lock,
++    /// as each does while it registers: refused as full, the muxer reset it, and its exec
++    /// waited for ever (ROOT's 64 execs at once, 2026-11-12).
++    #[test]
++    fn admission_takes_a_connection_while_the_waiters_lock_is_held() {
++        let (port, _acceptor) = exec_port().unwrap();
++        let (to, _gets) = std::sync::mpsc::sync_channel(1);
++        super::super::register([31; run::TOKEN], super::super::Target::Exec { id: 31, to }).unwrap();
++        let busy = super::super::pending();
++        let (_guest, host) = UnixStream::pair().unwrap();
++        let admitted = port.accept(host);
++        drop(busy);
++        assert_eq!(admitted, Admission::Accepted);
++    }
++
++    /// The same, the listener's lock held: an exec registering takes it too.
++    #[test]
++    fn admission_takes_a_connection_while_the_listeners_lock_is_held() {
++        let (port, _acceptor) = exec_port().unwrap();
++        let (to, _gets) = std::sync::mpsc::sync_channel(1);
++        super::super::register([32; run::TOKEN], super::super::Target::Exec { id: 32, to }).unwrap();
++        let busy = STATE.lock().unwrap();
++        let (_guest, host) = UnixStream::pair().unwrap();
++        let admitted = port.accept(host);
++        drop(busy);
++        assert_eq!(admitted, Admission::Accepted);
++    }
++}

@@ -1,0 +1,57 @@
+# host red, origin/main 451672250 + red tests only (no fix); 2026-11-12T19:42:20Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 2.64s
+  Executable unittests src/main.rs (/home/adalundhe/g121-tmp/xa-exec/target/test-release/deps/shards_vm-a95c0ad9f3e71ef0)
+## workload::hellos::tests::admission_takes_a_connection_while_the_waiters_lock_is_held
+workload::hellos::tests::admission_takes_a_connection_while_the_waiters_lock_is_held --- FAILED
+failures:
+---- workload::hellos::tests::admission_takes_a_connection_while_the_waiters_lock_is_held stdout ----
+thread 'workload::hellos::tests::admission_takes_a_connection_while_the_waiters_lock_is_held' (3992650) panicked at crates/vm-process/src/../../shards/src/workload/hellos.rs:230:9:
+assertion `left == right` failed
+  left: Full
+ right: Accepted
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+failures:
+    workload::hellos::tests::admission_takes_a_connection_while_the_waiters_lock_is_held
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 47 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-vm-process --bin shards-vm`
+## exit 101
+## workload::hellos::tests::admission_takes_a_connection_while_the_listeners_lock_is_held
+workload::hellos::tests::admission_takes_a_connection_while_the_listeners_lock_is_held --- FAILED
+failures:
+---- workload::hellos::tests::admission_takes_a_connection_while_the_listeners_lock_is_held stdout ----
+thread 'workload::hellos::tests::admission_takes_a_connection_while_the_listeners_lock_is_held' (3992854) panicked at crates/vm-process/src/../../shards/src/workload/hellos.rs:243:9:
+assertion `left == right` failed
+  left: Full
+ right: Accepted
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+failures:
+    workload::hellos::tests::admission_takes_a_connection_while_the_listeners_lock_is_held
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 47 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-vm-process --bin shards-vm`
+## exit 101
+## workload::tests::an_admitted_connection_outlives_another_execs_wait
+running 1 test
+workload::tests::an_admitted_connection_outlives_another_execs_wait --- FAILED
+failures:
+---- workload::tests::an_admitted_connection_outlives_another_execs_wait stdout ----
+thread 'workload::tests::an_admitted_connection_outlives_another_execs_wait' (3992994) panicked at crates/vm-process/src/../../shards/src/workload.rs:2584:9:
+the second exec lost its connection: Err(Timeout)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+failures:
+    workload::tests::an_admitted_connection_outlives_another_execs_wait
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 47 filtered out; finished in 5.00s
+error: test failed, to rerun pass `-p shards-vm-process --bin shards-vm`
+## exit 101
+## workload::tests::execs_at_once_each_get_their_own_connection
+running 1 test
+workload::tests::execs_at_once_each_get_their_own_connection --- FAILED
+failures:
+---- workload::tests::execs_at_once_each_get_their_own_connection stdout ----
+thread 'workload::tests::execs_at_once_each_get_their_own_connection' (4007175) panicked at crates/vm-process/src/../../shards/src/workload.rs:2628:9:
+5 of 64 execs: [(4, Full, Err(Timeout)), (7, Full, Err(Timeout)), (8, Accepted, Err(Timeout)), (24, Full, Err(Timeout)), (33, Full, Err(Timeout))]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+failures:
+    workload::tests::execs_at_once_each_get_their_own_connection
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 47 filtered out; finished in 5.00s
+error: test failed, to rerun pass `-p shards-vm-process --bin shards-vm`
+## exit 101
