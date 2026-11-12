@@ -193,7 +193,7 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
             }
         }
         _ => Err(invalid(
-            "use capabilities [CONFIG], sock-addr-udp4 {connected|unconnected} DEADLINE_MS {destination-only|fixed-original-peer}, sock-addr-relay4 {connected|unconnected} DEADLINE_MS {destination-only|fixed-original-peer} BUFFER_BYTES, {intercept-tcp4|intercept-tcp6} {local|forward|local-loopback|local-self|forward-relay-absent} DEADLINE_MS MARK TABLE RULE_PRIORITY, {intercept-udp4|intercept-udp6} {local|forward|local-loopback|local-self} {connected|unconnected} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
+            "use capabilities [CONFIG], sock-addr-udp4 {connected|unconnected} DEADLINE_MS {destination-only|fixed-original-peer}, sock-addr-relay4 {connected|unconnected} DEADLINE_MS {destination-only|fixed-original-peer} BUFFER_BYTES, {intercept-tcp4|intercept-tcp6} {local|forward|local-loopback|local-self|forward-relay-absent} DEADLINE_MS MARK TABLE RULE_PRIORITY, {intercept-udp4|intercept-udp6} {local|forward} {connected|unconnected} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
         )),
     }
 }
@@ -968,12 +968,23 @@ mod tests {
     fn udp_interception_parser_has_explicit_origins() {
         let args = |words: &[&str]| words.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         for protocol in ["intercept-udp4", "intercept-udp6"] {
-            for origin in ["local", "forward", "local-loopback", "local-self"] {
-                for mode in ["connected", "unconnected"] {
+            for mode in ["connected", "unconnected"] {
+                for origin in ["local", "forward"] {
                     assert!(matches!(
                         parse(&args(&[protocol, origin, mode, "1000", "1", "1000", "100"])).unwrap(),
                         Probe::InterceptUdp(_)
                     ));
+                }
+                // Refused with why: their backend holds the tuple the reply must bind
+                // (intercept/udp.rs, SAME_NAMESPACE_REPLY).
+                for origin in ["local-loopback", "local-self"] {
+                    let refused = parse(&args(&[protocol, origin, mode, "1000", "1", "1000", "100"]))
+                        .err()
+                        .unwrap();
+                    assert!(
+                        refused.to_string().contains("the backend already holds"),
+                        "{protocol} {origin} {mode}: {refused}"
+                    );
                 }
             }
         }

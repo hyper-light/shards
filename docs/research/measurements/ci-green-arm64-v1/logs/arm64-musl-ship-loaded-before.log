@@ -1,0 +1,12 @@
+run 5 FAILED:
+test daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place ... FAILED
+thread 'daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place' (303) panicked at crates/shards/src/daemon/ship/gelf.rs:304:27:
+Broken pipe (os error 32)
+test result: FAILED. 27 passed; 1 failed; 1 ignored; 0 measured; 709 filtered out; finished in 9.69s
+run 30 FAILED:
+test daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place ... FAILED
+thread 'daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place' (2106) panicked at crates/shards/src/daemon/ship/gelf.rs:304:27:
+Broken pipe (os error 32)
+test result: FAILED. 27 passed; 1 failed; 1 ignored; 0 measured; 709 filtered out; finished in 9.69s
+RESULT filter=daemon::ship:: n=40 burn=6 pass=38 fail=2
+EXIT=0

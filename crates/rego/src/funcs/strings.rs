@@ -133,7 +133,7 @@ fn format_int(_: &mut Context, args: &[Value]) -> Out {
         _ => return Err(BuiltinError::operand(2, "must be one of {2, 8, 10, 16}")),
     };
     let f = input.to_float().map_err(|e| BuiltinError::Other(e.to_string()))?;
-    let (i, _) = f.int();
+    let (i, _) = f.int().map_err(|e| BuiltinError::Other(e.to_string()))?;
     ok_str(i.to_str_radix(radix))
 }
 

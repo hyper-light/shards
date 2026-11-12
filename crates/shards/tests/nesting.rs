@@ -490,10 +490,10 @@ fn a_deadline_given_through_shards_api_is_met_or_said_passed() {
         nesting: true,
         ready_by: Some(ready_by),
     };
-    let guest = ImageShards::new().boot(&spec(TIMEOUT)).unwrap();
+    let guest = ImageShards::new().boot(&spec(TIMEOUT), TIMEOUT).unwrap();
     assert_eq!(guest.wait_ready(None, TIMEOUT).unwrap(), Some(Ready::OnTime));
     drop(guest);
-    let guest = ImageShards::new().boot(&spec(Duration::ZERO)).unwrap();
+    let guest = ImageShards::new().boot(&spec(Duration::ZERO), TIMEOUT).unwrap();
     let passed = guest.wait_ready(None, TIMEOUT).unwrap();
     assert!(matches!(passed, Some(Ready::Passed(_))), "{passed:?}");
     let late = guest.wait_ready(passed, TIMEOUT).unwrap();

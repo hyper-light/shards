@@ -1,0 +1,2 @@
+RESULT filter=daemon::ship:: n=100 burn=6 pass=100 fail=0
+EXIT=0

@@ -6531,13 +6531,17 @@ throughput both ways, small requests no slower, on every host.
 | Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2 | Protocol constants. |
 | Offer extents at most (4 KiB + 2 S) / 4 KiB | A slot's pages, none merged. |
 
-Owed to ROOT, none run by its implementers: correctness and hostile-offer E2E, the pins
-E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back and a
-shrinking room let idle slots go, a stream past the room goes plain; at 1, 2 and many
-vCPUs with as many streams as vCPUs and twice that), and throughput, small-request latency
-(paced and back to back), connection setup with its slot's making, a ring's ramp, CPU and
-pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64; compile checks of
-macOS, Windows and aarch64.
+The pins E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back
+and a shrinking room let idle slots go, a stream past the room goes plain; at 1, 2 and many
+vCPUs with as many streams as vCPUs and twice that) and the bulk test ran green on KVM x86_64
+and arm64 (L1) and HVF; on WHP x86_64 the give-back and the shrinking room, the bulk test once
+in two (its microVM stopped, as one with no engine did), and the pins test was refused past
+13 connections at once by the daemon's bound on Windows (D181's share of `clients_for` 64
+threads, as Windows states no thread limit), not the ring's (ring-pins-v1 r13, r16). Every
+supported target lints clean (r15, r16). Owed to ROOT: correctness and hostile-offer E2E; the
+pins E2E on WHP arm64, and on WHP x86_64 past that bound; and throughput, small-request
+latency (paced and back to back), connection setup with its slot's making, a ring's ramp, CPU
+and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
@@ -18236,7 +18240,8 @@ see; a build's `LABEL` or `--label`, or a run's `--label`, may not set one (audi
 reserves no label: recorded as ours).
 
 **The build** (`shards_agentfile::agentfile`), and the daemon again:
-- No volume over a domain's root, `/proc`, `/sys` or `/dev` (`covers_domain_mounts`), its
+- No volume over a domain's root, `/proc`, `/sys` or `/dev`, nor at or under its scratch,
+  `/tmp` (`domain_mount`, typed `DomainMount`; the scratch since 2026-11-12, below), its
   path rooted at `/` as Docker roots a relative `VOLUME` (measured: `VOLUME rel` mounts at
   `/rel`): a domain's are its init's.
 - One volume at each mount point in a stage's lineage: a domain is given what is mounted
@@ -18252,8 +18257,9 @@ reserves no label: recorded as ours).
 - Each of the image's mount points is marked for its agents and harnesses (the guest's
   entry carries `domains`); one `FOR` scopes is not mounted in the run's own root
   (`domain-volume=`, which the workload's setup passes over). A Docker `VOLUME` over a
-  domain's root, `/proc`, `/sys` or `/dev` (a base image's `VOLUME /dev/shm`) stays the run's
-  own root's: Docker mounts it there (measured), and no domain is given it.
+  domain's root, `/proc`, `/sys` or `/dev` (a base image's `VOLUME /dev/shm`), or at or under
+  `/tmp` (a base image's `VOLUME /tmp`), stays the run's own root's: Docker mounts it there
+  (measured), and no domain is given it.
 - A run's own `-v` or `--mount` of a volume or a directory at one of them stands in for it,
   as Docker's does for an image's `VOLUME` (D109), and is given as the Agentfile gives the volume
   (a Docker `VOLUME`'s stand-in too, which before went to no domain). A tmpfs (`--tmpfs`,
@@ -18317,6 +18323,57 @@ reserves no label: recorded as ours).
   and the gates now on the verified file, the domains' filter, the in-VM server, the
   network process's grants and `-p`'s refusal, each failing its E2E. Init's duplicate
   refusal is reached only past the daemon's: unit-tested.
+
+**A domain's `/tmp` is its own, as its root and system are** (2026-11-12, kiln plan
+01a1cd8e862e7169a074db3d5fa33f3d, step 7). Init makes a domain's scratch and moves it onto
+`/tmp` (D139) before the domain's volumes. So a volume given a domain at or under `/tmp`
+never worked:
+- **Under `/tmp`** (`/tmp/x`): its mount point, made in the root's skeleton, lies beneath
+  the scratch. `move_mount` finds no `/tmp/x` there (ENOENT), so the domain fails as it
+  starts (`mounting its volumes: errno 2`).
+- **At `/tmp`**: the volume goes over the scratch. The domain no longer sees what was staged
+  into it (D231). What the domain writes there reaches the volume, never the scratch its
+  server reads handed files from (D139).
+
+Both were reproduced live, with init's system calls in its order, in a user and mount
+namespace on Linux 7.2.9 x86_64; a volume at `/data` mounted as the control
+(`docs/research/measurements/s7-scratch-volume/repro.py`, `repro-adacachy.log`).
+
+Two ways out were weighed:
+- **Mount it over the scratch**, mounts by depth as shards' own run root has them
+  (`crates/shards/src/setup.rs`, after moby's `sortMounts`). Each mount point would have to be made in each
+  domain's fresh scratch. Staged files beneath a volume would have to be refused at both
+  ends, or the volume would cover them. A volume at `/tmp` would still hide the scratch.
+- **Refuse it**, as `/proc`, `/sys` and `/dev` are already refused. This needs no new mount
+  step and no new staging rule, and `/tmp` stays the domain's own. A harness that keeps
+  state puts its volume outside `/tmp` and points `HOME` (`run.env`, 997f4e47e) or its own
+  variable there, as kiln's Agentfiles already do (plan steps 19, 21, 27 and 28).
+
+The second is taken, with one typed refusal, `DomainMount::Scratch`, at each end:
+- **An Agentfile's `VOLUME` at or under `/tmp`** is refused by the build (`VOLUME may not be
+  at or under /tmp, a domain's own scratch: /tmp/x`), by the daemon for what it reads in an
+  image, and by init.
+- **A Docker `VOLUME` there** stays the run's own root's: accepted and mounted as Docker
+  mounts it, given to no domain (a base image's `VOLUME /tmp`), as `/dev/shm` is. A run's
+  `--tmpfs /tmp` may then stand there.
+
+Tested on Linux x86_64 (`mutate.py`, `mutate-adacachy.log`), and again at the merge with
+main on Linux x86_64, macOS arm64 and Windows x86_64, where `volumes.rs`'s test is Unix's
+alone; `scripts/lint` clean on all seven targets:
+- the build's refusals and a Dockerfile's `VOLUME /tmp /tmp/x` kept (`tests/agentfile.rs`);
+- a crafted image's volume at `/tmp` and at `/tmp/cache`, refused by the daemon (`agentfile.rs`);
+- a Docker `VOLUME /tmp` and `/tmp/x`, given to no domain and passed `--tmpfs /tmp`
+  (`volumes.rs`);
+- init's `domain_mount` and `given_at`, a volume an image's symlink leads into `/tmp`
+  included (`no_volume_lies_in_what_init_mounts_for_a_domain`).
+
+The code before the change fails the new tests, and so does each guard removed alone:
+the build's, the daemon's re-check, its Docker `VOLUME` guard, init's `/tmp` guard and
+init's refusal of a declared volume led there.
+
+Owed to a real-VM run, both cases on KVM, Hypervisor.framework and WHP:
+- an Agentfile's volume under and at `/tmp` refused;
+- a base image's `VOLUME /tmp` kept to the run's root while its domains keep their scratch.
 
 ### D108. `buildx policy eval` and `test`, SSH certificates, and a failing step's lines
 
@@ -19385,6 +19442,31 @@ held to more than OPA's answers:
   walk that meets it (three times as long each level: 12 deep 3.25 s, now 0.5 ms); the
   safety check's and print rewrite's outputs read again for each expression, and each
   equality copying the whole safe set (cubic: 1000 closures in a body 42 s, now 0.48 s).
+- A number's text (`number.rs`). Go's `Text` (decimal.go's `init`, ftoa.go's
+  `roundShortest`) computes a float's exact decimal and both its neighbours' half an ulp
+  away, whole. A number read from JSON may carry an exponent up to Go's limit: OPA's
+  parser refuses such a literal past a binary exponent of 10^5 ("number too big",
+  golang/go#11068), but input, data and builtins' results do not pass through it. `abs`
+  of the fuzzer's 80000000000e00029174680 is "8" and 29,174,690 zeros, and Go takes 63 s
+  and 447 MB to write it. This port's three num-bigint conversions took ASan's fuzzer
+  past 2 GB in 11 s (CI's fuzz job; M524). roundShortest reads at most
+  ⌊(prec + 1)·log10 2⌋ + 3 digits of each (`digits_read`, proved there). So where the
+  whole decimals have 8.26 times as many digits or more (`LEADING_FROM`, the two ways'
+  measured crossover on arm64 macOS and x86_64 Linux, M524), only those are computed,
+  each exact (`leading`):
+  - the integer's leading digits, ⌊V / 10^j⌋, from bounds of its power of five at p bits
+    from below and from above, p doubling until their floors agree (they differ only
+    within the bounds' gap of an integer, and V / 10^j is none);
+  - the decimal's length and exponent, from V's twos and fives.
+
+  A walk that would read past them goes Go's way. `abs` of that number now: 29 ms and
+  57 MiB (was 92 s and 281 MiB), 361 ms under ASan's fuzzer. Byte for byte OPA's:
+  `tests/numbers.rs` holds 135 long numbers' texts and `abs` of the fuzzer's operands
+  to OPA's own (lengths, ends and SHA-256, `scripts/rego/generate numbers`).
+  `number.rs`'s tests hold the leading digits and the shortest decimal to the exact
+  decimals, and the bounds to the powers they bound. M524's Open (`floor`, `ceil`, `round`
+  and integer formatting of such a number, whose answer is all of an integer's digits;
+  numbers past 1e536870938 refused where Go reads them) is closed below (M526).
 - The rewrite of local variables walked as OPA's does, and OPA's way is exponential:
   rewriteEveryStatement (ast/compile.go) rewrites a statement's body, then walks the
   whole statement again (rewriteDeclaredVarsInExpr), whose walk rewrites each
@@ -19419,6 +19501,48 @@ held to more than OPA's answers:
   unknown, and a node finds a
   child by name, as OPA's typeTreeNode does with its map. The times after: owed, the
   nesting bench's M510 inputs and deeper (`rego-nesting/run.sh`).
+- Numbers whose exponents are large, the rest (M526; `docs/research/measurements/ci-rego-compare`).
+  CI's fuzzing found ten builtin calls whose work grew with an exponent's value, such as
+  `lt(33, 3e33333333332)`: besides the text above, the comparison scaled both numbers by
+  powers of 5 and 2 as long as their exponents' gap, addition shifted the smaller operand
+  as far (Go's `uadd` does too), and an exact integer was made whole. Now:
+  - The comparison makes p × 5^n × 2^s exactly only while n ≤ bits(q)/2, the most a power
+    of five dividing q can have. Past that the sides can't be equal, and bounds on 5^n
+    (the text's, with exponents wide enough for n up to 2^64), refined until they decide,
+    answer. The work is bounded by the mantissas, and every order the exact scaling gave
+    is kept (20,000 random pairs; convergents of log2 10 within 2^-64 of each other). OPA
+    panics on most such pairs ("illegal value": `big.Rat.SetString` refuses |exp5| > 10^6
+    and |exp2| > 10^7, go1.26.1 `math/big/ratconv.go`; `big.Float.SetString`, exponents
+    past int32). Shards answers exactly.
+  - Addition and subtraction keep the smaller operand's bits within prec + 2 of the
+    larger's top, the rest a sticky bit (and a borrow). The round bit is then at or above
+    the cut, so the result rounds as Go's exact sum does (160,000 random sums and
+    differences against it).
+  - Go's `pow5` squares its factor once past its last use. Past MaxExp that is an unread
+    +Inf there, and it was an error here: 1e536870939 through 1e646456992, finite in Go,
+    failed (M524's Open). A 5^n past Go's exponents is +Inf, and z over it zero, so
+    `-1e-1000000000` reads as -0. The parser says "number too big" for a literal Go reads
+    as ±Inf, as OPA's does.
+  - An exact integer whose MantExp is past 10^5 (`number::MAX_EXPONENT`) is not made: its
+    decimal is all its digits, a num-bigint conversion growing faster than their count
+    (near n^1.8 here), where the text above writes leading digits and zeros. `floor`,
+    `ceil`, `round`, `rem`, `bits.*`, `numbers.range*`, `format_int` and `units.parse*`
+    fail with "number too big", the error OPA's parser gives such a literal
+    (`ast/parser.go` `parseNumber`, v1.14.1); `time.*` keep OPA's "timestamp too big".
+    The bound is OPA's own on a number in Rego source, set for this cost
+    (golang/go#11068), so no builtin makes an integer a policy could not write. At it,
+    `ceil` and `round` answer in about 80 ms. Past it OPA's cost grows with the
+    exponent's value: 41.7 s for `ceil(1e3000000)`, 10.4 s for the fuzzer's
+    `ceil(266000000e2028020)`; ASan's fuzzer passed 2 GB on such integers (M524's Open).
+    Alternatives: Go's big.Float range (MaxExp 2^31: integers of 646 million digits, hours
+    in OPA and here); Go's big.Rat limits (10^7 bits: 23 s for one conversion here); a
+    conversion lean in memory (M524's Open), which bounds memory but not the time a
+    number's size asks. The difference from OPA: OPA writes those integers, in time
+    growing with the exponent's value, or panics (`bits.lsh` past its memory,
+    `makeslice`); shards refuses them. `bits.lsh`'s chosen limit of 2^32 bits gives way
+    to the same bound.
+  - `numbers.range` stays unbounded, as OPA's. The fuzz target asks it for at most one
+    number per byte of its input.
 - Left: a rule whose local-variable rewrite errs is rewritten OPA's way, so an
   erroring rule of `every` statements and comprehensions alternating takes OPA's time.
   Evaluation asks no bound of a policy, as OPA's does not (`numbers.range` over any
@@ -21921,17 +22045,22 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 **Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
 `docker run`'s `128 + signal`; every wait is on a fact.
 
-**Built so far** (branch `p/runtime-image-boot-v1`, light checks only): the abi entries,
-init's staging, member ends, `ATTEND` and `STATS` scopes, the VM process's relay of member
-ends, `shards_api::image` and `shards api-run` on Linux and macOS. **Owed:** the Windows run
-host (refused `Unsupported` there, its AppContainer launch not written), a member's stdin and
-terminal, DAX windows for its shares, templates and pools, a boot patience, shares added
-while running, `attach` after the owner's crash, one launch shared with the builder's and the
-daemon's, and a simulator.
+**Built:** the abi entries, init's staging, member ends, `ATTEND` and `STATS` scopes, the VM
+process's relay of member ends, `shards_api::image` and `shards api-run` on Linux and macOS;
+a boot within the orchestrator's patience (`Images::boot`), its refusal quoting what the run
+host and its VM said last. **Owed:** the Windows run host (refused `Unsupported` there, its
+AppContainer launch not written), a member's stdin and terminal, DAX windows for its shares,
+templates and pools, shares added while running, `attach` after the owner's crash, one launch
+shared with the builder's and the daemon's, and a simulator.
 
-**Evidence owed** (ROOT): real-VM E2E on KVM x86_64 and arm64 and HVF
-(`crates/shards/tests/api_image.rs`); the run host's resident, CPU and kernel cost per
-microVM against the daemon's per run and Firecracker's (R14).
+**Tested** (real VMs, `crates/shards/tests/api_image.rs`, 2026-11-12): 6 of 6 on macOS arm64
+HVF (an M5 Max, macOS 26.5.2) at f6051bc93, after main's CI failed every boot: the run
+host's request kept no log retention, which a warm VM refuses, and its follower held the
+link's lock for the run's life; each reproduced live before its fix
+(runtime-image-boot-v1/README.md). **Evidence owed** (ROOT): the whole file on Linux x86_64
+KVM at the landed revision (CI's run of f6051bc93 was queued as it landed); KVM arm64 (no
+arm64 Linux host here has KVM; the nested path of boot.rs); the run host's resident, CPU and
+kernel cost per microVM against the daemon's per run and Firecracker's (R14).
 
 **What would falsify it.** A run host costing more per microVM than the daemon per run (then
 one host per orchestrator); an orchestrator needing to link the VMM; credentials a member

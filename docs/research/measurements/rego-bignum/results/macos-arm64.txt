@@ -1,0 +1,225 @@
+PM M524, this Mac: Apple M5 Max (18 cores, 128 GB), macOS 26.4.1 (25E253), rustc 1.98.1,
+cargo 1.100.0-nightly (b2e9d5f9d 2026-09-02), cargo-fuzz 0.13.1, go1.26.1, 2026-11-12; each run
+unclamped through macos-sched/launchd-run.sh, the host shared with other projects' work
+(load average 45 to 230). before: 7ad28fab1; after: the change (d5707dbca's number.rs).
+
+### Go's Text on the fuzzer's number (gotext, /usr/bin/time -l)
+prec=64 exp=96916226 isint=true format=f
+len=29174691
+head=8000000000000000000000000000000000000000000000000000000000000000
+tail=0000000000000000000000000000000000000000000000000000000000000000
+sha256=450f319c10ec564c5efca6277f3685890c7d8102cd0babb42285b1f1b6c957dc
+parse=429.833µs text=1m3.446818167s totalalloc=1550MB sys=435MB
+       63.49 real        62.54 user         0.67 sys
+           447283200  maximum resident set size
+       1305897076796  instructions retired
+        269479094038  cycles elapsed
+           445711248  peak memory footprint
+
+### the fuzz target, before, ASan: rego-builtins -rss_limit_mb=2048 -max_len=65536 oom-4b431d4a...
+==21979== ERROR: libFuzzer: out-of-memory (used: 2133Mb; limit: 2048Mb)
+   To change the out-of-memory limit use -rss_limit_mb=<N>
+Live Heap Allocations: 112479111 bytes in 302 chunks; quarantined: 263797096 bytes in 390438 chunks; 456986 other chunks; total chunks: 847726; showing top 95% (at most 8 unique contexts)
+29174692 byte(s) (25%) in 1 allocation(s)
+21233960 byte(s) (18%) in 1 allocation(s)
+15675064 byte(s) (13%) in 19 allocation(s)
+12114536 byte(s) (10%) in 1 allocation(s)
+12114536 byte(s) (10%) in 1 allocation(s)
+3147912 byte(s) (2%) in 1 allocation(s)
+1826056 byte(s) (1%) in 1 allocation(s)
+1826056 byte(s) (1%) in 1 allocation(s)
+SUMMARY: libFuzzer: out-of-memory
+ptime: exit=71 wall=11.253s user=9.546s sys=0.443s maxrss=2168.8MiB
+
+### the fuzz target, each run alone with CI's flags (fz-<when>-<sanitizer>)
+== after-address oom-4b431d4a9980bfc277352f46ea1c9d70669ec749
+Executed /tmp/shards-bignum/artifact/oom-4b431d4a9980bfc277352f46ea1c9d70669ec749 in 352 ms
+ptime: exit=0 wall=1.185s user=0.349s sys=0.062s maxrss=134.4MiB
+== before-none oom-4b431d4a9980bfc277352f46ea1c9d70669ec749
+Executed /tmp/shards-bignum/artifact/oom-4b431d4a9980bfc277352f46ea1c9d70669ec749 in 258364 ms
+ptime: exit=0 wall=258.818s user=255.078s sys=2.065s maxrss=308.7MiB
+== after-none oom-4b431d4a9980bfc277352f46ea1c9d70669ec749
+Executed /tmp/shards-bignum/artifact/oom-4b431d4a9980bfc277352f46ea1c9d70669ec749 in 139 ms
+ptime: exit=0 wall=0.609s user=0.133s sys=0.011s maxrss=82.6MiB
+== after-address abs-negexp
+Executed /tmp/shards-bignum/inputs/abs-negexp in 6 ms
+ptime: exit=0 wall=0.103s user=0.006s sys=0.053s maxrss=40.3MiB
+== after-address floor-artifact
+==43399== ERROR: libFuzzer: out-of-memory (used: 2143Mb; limit: 2048Mb)
+   To change the out-of-memory limit use -rss_limit_mb=<N>
+SUMMARY: libFuzzer: out-of-memory
+ptime: exit=71 wall=9.350s user=8.761s sys=0.516s maxrss=2174.5MiB
+== after-address abs-1e6e8
+Executed /tmp/shards-bignum/inputs/abs-1e6e8 in 3 ms
+ptime: exit=0 wall=0.102s user=0.006s sys=0.053s maxrss=39.7MiB
+== after-address abs-max
+Executed /tmp/shards-bignum/inputs/abs-max in 0 ms
+ptime: exit=0 wall=0.054s user=0.006s sys=0.045s maxrss=39.6MiB
+== after-address fmtint-artifact
+==54276== ERROR: libFuzzer: out-of-memory (used: 2108Mb; limit: 2048Mb)
+   To change the out-of-memory limit use -rss_limit_mb=<N>
+SUMMARY: libFuzzer: out-of-memory
+ptime: exit=71 wall=8.281s user=7.865s sys=0.394s maxrss=2126.1MiB
+== after-address round-artifact
+==54697== ERROR: libFuzzer: out-of-memory (used: 2108Mb; limit: 2048Mb)
+   To change the out-of-memory limit use -rss_limit_mb=<N>
+SUMMARY: libFuzzer: out-of-memory
+ptime: exit=71 wall=8.283s user=7.852s sys=0.393s maxrss=2132.9MiB
+(abs-negexp: abs of 80000000000e-00029174680; floor-artifact, round-artifact: floor and round
+ of the fuzzer's number; fmtint-artifact: format_int(it, 10); abs-1e6e8, abs-max: abs of 1e600000000
+ and 1e646456992, which this port refuses to read, "exponent overflow", where Go reads them)
+
+### abs as the fuzz target calls it, release (fat LTO): measurements/rego-bignum/abs
+== before
+abs: 92.203488 s, 29174691 bytes of text, peak resident 280.6 MiB
+ptime: exit=0 wall=92.413s user=90.891s sys=0.906s maxrss=280.6MiB
+== after
+abs: 0.028600 s, 29174691 bytes of text, peak resident 57.4 MiB
+ptime: exit=0 wall=0.233s user=0.024s sys=0.007s maxrss=57.4MiB
+
+### the fuzz target, after, ASan: -max_total_time=300 -rss_limit_mb=2048 -max_len=65536, corpus: the artifact
+INFO: Seed: 2302863495
+INFO: seed corpus: files: 1 min: 31b max: 31b total: 31b rss: 38Mb
+#32	pulse  cov: 797 ft: 881 corp: 15/383b lim: 31 exec/s: 16 rss: 387Mb
+#64	pulse  cov: 803 ft: 904 corp: 19/498b lim: 31 exec/s: 32 rss: 387Mb
+#128	pulse  cov: 927 ft: 1212 corp: 26/631b lim: 31 exec/s: 42 rss: 387Mb
+#256	pulse  cov: 977 ft: 1416 corp: 38/855b lim: 31 exec/s: 85 rss: 387Mb
+#512	pulse  cov: 1007 ft: 1512 corp: 54/1180b lim: 31 exec/s: 64 rss: 948Mb
+#1024	pulse  cov: 1036 ft: 1598 corp: 81/1749b lim: 31 exec/s: 78 rss: 948Mb
+#2048	pulse  cov: 1082 ft: 1914 corp: 108/2280b lim: 31 exec/s: 107 rss: 948Mb
+#4096	pulse  cov: 1117 ft: 2108 corp: 136/2784b lim: 31 exec/s: 136 rss: 948Mb
+#8192	pulse  cov: 1211 ft: 2474 corp: 173/3403b lim: 31 exec/s: 148 rss: 948Mb
+#16384	pulse  cov: 1310 ft: 2904 corp: 229/4434b lim: 35 exec/s: 168 rss: 1137Mb
+#32768	pulse  cov: 1412 ft: 3261 corp: 313/5977b lim: 35 exec/s: 186 rss: 1137Mb
+#65536	pulse  cov: 1455 ft: 3591 corp: 404/7816b lim: 89 exec/s: 240 rss: 1220Mb
+Done 77484 runs in 303 second(s)
+(exit 0; no artifact written)
+
+### mutations of number.rs, each alone: cargo test -p shards-rego --profile test-release --lib number::
+M1 unknown digits read as 0: exit 101; failed: ['test number::tests::round_shortest_refuses_digits_it_does_not_hold ... FAILED']
+    thread 'number::tests::round_shortest_refuses_digits_it_does_not_hold' (81365982) panicked at crates/rego/src/number.rs:1203:9:
+    assertion failed: !round_shortest(&mut d, &lower, &upper, !m.bit(1))
+M2 both bounds round down: exit 101; failed: ['test number::tests::bounds_enclose_the_power_of_five ... FAILED', 'test number::tests::scaled_floors_hold_the_exact_floor ... FAILED']
+    thread 'number::tests::bounds_enclose_the_power_of_five' (81366854) panicked at crates/rego/src/number.rs:1233:17:
+    thread 'number::tests::scaled_floors_hold_the_exact_floor' (81366857) panicked at crates/rego/src/number.rs:1258:13:
+M3 trailing zeros ignored: exit 101; failed: ['test number::tests::leading_digits_are_the_exact_decimals ... FAILED']
+    thread 'number::tests::leading_digits_are_the_exact_decimals' (81368103) panicked at crates/rego/src/number.rs:1163:17:
+    assertion `left == right` failed: 20902432758401644930 × 2^6708
+M4 too few digits read: exit 101; failed: ['test number::tests::shortest_from_leading_digits_is_go_s ... FAILED']
+    thread 'number::tests::shortest_from_leading_digits_is_go_s' (81369178) panicked at crates/rego/src/number.rs:1193:9:
+M5 leading path disabled: exit 101; failed: ['test number::tests::the_fuzzers_number_is_written_whole_from_its_first_digits ... FAILED']
+    thread 'number::tests::the_fuzzers_number_is_written_whole_from_its_first_digits' (81370281) panicked at crates/rego/src/number.rs:1273:9:
+    assertion failed: decimal_len(&m, e) >= LEADING_FROM * digits_read(64) as f64
+restored: True
+
+### Float::parse at Go's exponent limit (this port), against Go 1.26.1's SetString
+this port: 1e536870938 ok exp 1783446653; 1e536870939, 1e600000000, 1e646456992, 1e646456993 refused: exponent overflow
+Go:        1e536870938 ok exp 1783446653; 1e536870939 ok exp 1783446656; 1e600000000 ok exp 1993156857;
+           1e646456992 ok exp 2147483644; 1e646456993 ok, +Inf
+
+### crossover (after): cargo test -p shards-rego --release --lib crossover -- --ignored --nocapture
+macos aarch64: sign D D/read exact(n p50 p90 p99 max) leading(n p50 p90 p99 max) exact/leading
++1 50 2.17 400 500 583 625 2083 - -
++1 55 2.39 400 541 583 667 708 - -
++1 60 2.61 400 584 667 708 750 - -
++1 67 2.91 400 625 667 709 750 - -
++1 73 3.17 400 667 709 791 1584 - -
++1 81 3.52 400 709 791 792 875 - -
++1 89 3.87 400 792 834 917 1541 - -
++1 97 4.22 400 917 1000 1042 1167 400 2000 2125 2209 3708 0.46
++1 107 4.65 400 1041 1084 1166 2333 400 2042 2166 2250 3000 0.51
++1 118 5.13 400 1125 1208 1250 1292 400 2000 2125 2291 4833 0.56
++1 130 5.65 400 1209 1292 1375 7417 400 1875 2000 2084 6666 0.64
++1 143 6.22 400 1334 1417 1500 2292 400 1875 2000 4209 12625 0.71
++1 157 6.83 400 1583 1625 1708 4041 400 1792 1917 2042 9292 0.88
++1 173 7.52 400 1792 1875 1917 3000 400 1833 1916 2000 5500 0.98
++1 190 8.26 400 1958 2042 2208 2375 400 1791 1875 2166 4542 1.09
++1 209 9.09 400 2292 2416 2750 3208 400 1750 1875 2125 4500 1.31
++1 230 10.00 400 2708 2833 3208 4042 400 1750 1875 2792 147625 1.55
++1 253 11.00 400 3125 3250 3708 4709 400 1792 1916 2208 3541 1.74
++1 278 12.09 400 3709 3834 4375 5250 400 1833 1917 2209 2416 2.02
++1 306 13.30 400 4291 4500 5167 6292 400 1833 1958 2291 3000 2.34
++1 336 14.61 400 5167 5334 5834 7250 400 1792 1917 2167 2584 2.88
++1 370 16.09 400 6000 6209 6958 7083 400 1875 2000 2292 3209 3.20
++1 407 17.70 400 7167 7416 8000 8916 400 1875 2000 2333 12542 3.82
++1 448 19.48 400 8541 8834 9916 23708 400 1916 2042 2458 6042 4.46
++1 493 21.43 400 10250 10625 12000 23333 400 1916 2041 3250 5250 5.35
++1 542 23.57 400 9958 10042 10708 11917 400 1500 1583 1667 9042 6.64
++1 596 25.91 400 12084 12958 15292 33792 400 1500 1708 2417 13250 8.06
++1 656 28.52 400 11208 13875 23084 42458 400 1583 2041 2625 5209 7.08
++1 721 31.35 400 12625 15625 29125 38958 400 1584 1958 3250 11000 7.97
++1 793 34.48 400 15958 16542 19125 35083 400 1833 1958 2834 4000 8.71
++1 873 37.96 400 15083 18334 29208 45875 400 1541 1917 3000 4250 9.79
++1 960 41.74 400 15875 18708 29375 39000 400 1583 1958 2333 4416 10.03
++1 1056 45.91 400 18333 21959 23417 38583 400 1667 2000 2834 3834 11.00
++1 1161 50.48 400 23666 28167 35834 49375 400 1584 2042 3125 16209 14.94
++1 1277 55.52 400 25584 30125 31959 50875 400 1584 2041 2542 4166 16.15
++1 1405 61.09 400 28834 29375 30458 31584 400 1542 1625 1750 2500 18.70
++1 1546 67.22 400 31833 32333 33375 35041 400 1583 1666 1709 2291 20.11
++1 1700 73.91 400 36000 36583 42958 66875 400 1583 1667 2167 4042 22.74
++1 1870 81.30 400 41292 47625 51042 71625 400 1750 2167 3083 5083 23.60
++1 2057 89.43 400 46583 47458 64459 83334 400 1625 1750 2375 10917 28.67
++1 2572 111.83 400 70833 71458 72792 73375 400 1667 1750 1834 2667 42.49
++1 3215 139.78 400 91125 104458 122208 150792 400 1708 2250 3750 5000 53.35
++1 4018 174.70 400 121625 124334 163083 202709 400 1750 1958 4959 5625 69.50
++1 5023 218.39 400 188917 209958 234416 247375 400 1750 2209 5125 12917 107.95
++1 6278 272.96 400 241792 245583 302042 315666 400 1791 2042 4208 5792 135.00
++1 7848 341.22 400 330750 374708 416291 460459 400 1875 2542 4542 5000 176.40
++1 9810 426.52 400 534208 597167 635167 697125 400 2000 3083 4792 5500 267.10
++1 12262 533.13 400 669042 750250 789750 950708 400 2000 2916 5375 30125 334.52
++1 15328 666.43 400 906875 1017333 1054875 1092208 400 2042 3084 5417 6167 444.11
++1 19160 833.04 400 1469083 1632458 1737083 1774542 400 2416 4125 6125 23292 608.06
++1 leading digits cheaper at every D from D/read Some(8.26086956521739)
+-1 51 2.22 400 500 542 625 2042 - -
+-1 56 2.43 400 500 583 625 1958 - -
+-1 61 2.65 400 625 667 750 750 - -
+-1 67 2.91 400 625 708 750 750 - -
+-1 74 3.22 400 667 750 792 833 - -
+-1 81 3.52 400 833 875 917 958 - -
+-1 90 3.91 400 833 875 1416 2750 - -
+-1 98 4.26 400 916 959 1000 1042 400 500 542 625 625 1.83
+-1 108 4.70 400 1000 1083 1125 2583 400 500 542 625 1500 2.00
+-1 119 5.17 400 1125 1208 1250 1625 400 500 542 584 1250 2.25
+-1 130 5.65 400 1208 1250 1292 2000 400 500 542 625 625 2.42
+-1 143 6.22 400 1250 1333 1375 2125 400 542 584 625 667 2.31
+-1 157 6.83 400 1500 1542 1625 3209 400 584 625 709 750 2.57
+-1 174 7.57 400 1709 1792 1917 3583 400 666 708 792 19875 2.57
+-1 191 8.30 400 1916 1959 2083 3625 400 667 709 750 917 2.87
+-1 210 9.13 400 2167 2250 2417 16333 400 667 709 791 1333 3.25
+-1 231 10.04 400 2542 2625 2750 3166 400 625 667 709 750 4.07
+-1 254 11.04 400 2917 3875 6083 20500 400 666 875 1042 2792 4.38
+-1 279 12.13 400 3417 3500 3625 5500 400 708 750 792 833 4.83
+-1 306 13.30 400 3875 4000 4125 5584 400 667 750 792 833 5.81
+-1 337 14.65 400 4583 4667 5458 15625 400 709 791 917 2458 6.46
+-1 371 16.13 400 5417 5500 6125 7542 400 708 750 834 1000 7.65
+-1 408 17.74 400 6333 6417 6500 7542 400 709 791 834 834 8.93
+-1 448 19.48 400 7667 7750 7917 9834 400 750 792 875 10375 10.22
+-1 494 21.48 400 9375 9459 10208 10292 400 709 791 834 834 13.22
+-1 543 23.61 400 11208 11875 17292 86916 400 750 875 1333 3291 14.94
+-1 596 25.91 400 16166 17083 27791 46333 400 1000 1084 2042 3958 16.17
+-1 657 28.57 400 14167 15333 34750 56208 400 1000 1125 2333 9542 14.17
+-1 722 31.39 400 13708 16791 33541 55917 400 833 1084 1541 3416 16.46
+-1 794 34.52 400 17625 18750 32709 63875 400 1042 1167 2042 11792 16.91
+-1 873 37.96 400 19958 21208 42959 58083 400 1042 1167 1500 13500 19.15
+-1 961 41.78 400 19125 22583 36958 55667 400 875 1125 1667 11625 21.86
+-1 1056 45.91 400 24791 26958 52541 80209 400 1083 1208 2416 10583 22.89
+-1 1162 50.52 400 26834 31000 34458 63250 400 875 1083 1625 2875 30.67
+-1 1278 55.57 400 29500 29875 35208 55750 400 875 917 1458 3083 33.71
+-1 1406 61.13 400 34292 40750 54541 81167 400 916 1208 1667 3583 37.44
+-1 1546 67.22 400 40708 44167 54792 73208 400 1042 1250 1917 2917 39.07
+-1 1701 73.96 400 42917 50125 71917 81334 400 917 1167 1875 3625 46.80
+-1 1871 81.35 400 49291 56292 59375 73292 400 875 1167 1584 2250 56.33
+-1 2058 89.48 400 57334 57875 59958 72375 400 917 1000 1042 1417 62.52
+-1 2572 111.83 400 84916 85958 102917 133959 400 917 1000 1500 3250 92.60
+-1 3215 139.78 400 111625 126500 149166 165667 400 1000 1292 1917 6625 111.62
+-1 4019 174.74 400 154542 179875 218708 243875 400 1083 1459 2416 3166 142.70
+-1 5024 218.43 400 237208 267084 308333 322750 400 1000 1375 2209 3125 237.21
+-1 6279 273.00 400 310459 349375 383083 400583 400 1125 1667 3417 3875 275.96
+-1 7849 341.26 400 444000 501125 549000 583834 400 1208 2000 3750 15834 367.55
+-1 9810 426.52 400 670084 759250 795125 827083 400 1209 1959 3708 13209 554.25
+-1 12263 533.17 400 851708 962791 1029208 1082083 400 1292 2334 3500 4333 659.22
+-1 15329 666.48 400 1220291 1394917 1454542 1475542 400 1250 1959 3625 4333 976.23
+-1 19160 833.04 400 1815542 2059375 2161583 2217083 400 1375 2625 4083 5584 1320.39
+-1 leading digits cheaper at every D from D/read Some(4.260869565217392)
+both signs: from D/read Some(8.26086956521739)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 25 filtered out; finished in 5.02s

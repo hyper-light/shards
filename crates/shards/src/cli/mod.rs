@@ -1085,12 +1085,16 @@ fn instead(args: &[OsString]) -> ExitCode {
 /// `args` (a VM's, `run` or `restore` first) with what the VM keeps of its console learned
 /// and its report recorded, where it quotes its console as it fails (said.rs, D12): the
 /// bytes its kernel's records need (`--console-said N`, unless its starter gave them), and
-/// the pipe it tells how its report came out on (`--said-to`), which `record` takes the
-/// other end of. Learning fails no boot: where it cannot, the VM keeps what it is given, or
-/// what a kernel with no records keeps, and nothing is recorded.
+/// the pipe it tells how its report came out on (`--said-to`, the word `record` gives with
+/// what it takes the other end of). Learning fails no boot: where it cannot, the VM keeps
+/// what it is given, or what a kernel with no records keeps, and nothing is recorded. Both
+/// go after every word of `args`, each kept in its place: a restore's directory stays the
+/// word after `restore`, where this module reads it ([`has_vm_flag`], the working set's
+/// [`recording_restore`], a restore's template on macOS). A VM that quotes its console is
+/// given no `--` (said.rs `quotes`), so neither goes to its workload.
 fn console_said<T>(
     args: &[OsString],
-    record: impl FnOnce(&std::path::Path, &crate::said::Learned, usize) -> Result<T, String>,
+    record: impl FnOnce(&std::path::Path, &crate::said::Learned, usize) -> Result<(T, OsString), String>,
 ) -> (Vec<OsString>, Option<T>) {
     let Some(kernel) = crate::said::quotes(args) else {
         return (args.to_vec(), None);
@@ -1106,18 +1110,20 @@ fn console_said<T>(
     let learned = crate::said::learn(&home, kernel.as_deref());
     let kept = given.unwrap_or(learned.kept);
     let mut with: Vec<OsString> = Vec::with_capacity(args.len().saturating_add(4));
-    with.extend(args.first().cloned());
+    with.extend(args.iter().cloned());
     if given.is_none() {
         with.extend(["--console-said".into(), kept.to_string().into()]);
     }
     let recording = match record(&home, &learned, kept) {
-        Ok(recording) => Some(recording),
+        Ok((recording, to)) => {
+            with.extend(["--said-to".into(), to]);
+            Some(recording)
+        }
         Err(e) => {
             shards_vmm::debug!("not recording the console's report: {e}");
             None
         }
     };
-    with.extend(args.iter().skip(1).cloned());
     (with, recording)
 }
 
@@ -1127,8 +1133,8 @@ fn console_said<T>(
 /// the exec. The recorder records what the VM tells as it exits, and is reaped by the kernel.
 #[cfg(unix)]
 fn said_recorded(args: &[OsString]) -> (Vec<OsString>, Option<std::os::fd::OwnedFd>) {
-    use std::os::fd::AsFd as _;
-    let (mut with, to) = console_said(args, |home, learned, kept| {
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+    console_said(args, |home, learned, kept| {
         let (from_vm, to_recorder) = std::io::pipe().map_err(|e| format!("its pipe: {e}"))?;
         let recorder = shardsd()?;
         let stderr = std::io::stderr();
@@ -1145,13 +1151,10 @@ fn said_recorded(args: &[OsString]) -> (Vec<OsString>, Option<std::os::fd::Owned
             !has_vm_flag(args, "--host-managed"),
         )
         .map_err(|e| format!("{}: {e}", recorder.display()))?;
-        Ok(std::os::fd::OwnedFd::from(to_recorder))
-    });
-    if let Some(to) = &to {
-        use std::os::fd::AsRawFd as _;
-        with.splice(1..1, ["--said-to".into(), to.as_raw_fd().to_string().into()]);
-    }
-    (with, to)
+        let to = std::os::fd::OwnedFd::from(to_recorder);
+        let fd = to.as_raw_fd().to_string().into();
+        Ok((to, fd))
+    })
 }
 
 /// Keeps `to`, the VM's end of its report's pipe ([`said_recorded`]), open through the exec
@@ -1671,15 +1674,12 @@ fn vm(args: &[OsString]) -> ExitCode {
     };
     // What it keeps of its console learned, and the pipe it tells how its report came out
     // on (D12), given it as [`SAID_TO`]: this process, which waits for it, records that.
-    let (mut args, said) = console_said(&args, |home, learned, kept| {
+    let (args, said) = console_said(&args, |home, learned, kept| {
         let (from_vm, to_this) = std::io::pipe().map_err(|e| format!("its pipe: {e}"))?;
         let recording = (home.to_path_buf(), learned.pin.clone(), kept, from_vm);
-        Ok((recording, OwnedHandle::from(to_this)))
+        Ok(((recording, OwnedHandle::from(to_this)), SAID_TO.into()))
     });
     let (recording, said_to) = said.unzip();
-    if said_to.is_some() {
-        args.splice(1..1, ["--said-to".into(), SAID_TO.into()]);
-    }
     // Its shares served before its VM process starts, in its AppContainer (shares.rs).
     let (args, shared, share_process) = match shares::served(&args, &job) {
         Ok(shared) => shared,
@@ -2237,5 +2237,26 @@ mod vm_flags {
             &args(&["run", "--gpu-device", "pci:0:01:00.0", "--host-managed"]),
             "--host-managed"
         ));
+    }
+}
+
+#[cfg(test)]
+mod said_options {
+    use std::ffi::OsString;
+
+    /// A restore that quotes its console (`--no-console`) is given what learning it adds
+    /// after every word it was given: its snapshot directory stays the word after `restore`,
+    /// where the CLI reads it. Put after `restore`, the options made `--said-to` the
+    /// directory the working set's writer was started for, and a restore kept none.
+    #[test]
+    fn learning_a_restores_console_moves_none_of_its_words() {
+        let args: Vec<OsString> = ["restore", "snapshot", "--no-console"].map(OsString::from).into();
+        let (with, recorded) = super::console_said(&args, |_, _, _| Ok(((), OsString::from("3"))));
+        assert_eq!(recorded, Some(()), "{with:?}");
+        assert_eq!(with.get(..args.len()), Some(args.as_slice()), "{with:?}");
+        let added: Vec<&str> = with.iter().skip(args.len()).filter_map(|w| w.to_str()).collect();
+        assert_eq!(added.first(), Some(&"--console-said"), "{added:?}");
+        assert_eq!(added.get(2..), Some(["--said-to", "3"].as_slice()), "{added:?}");
+        assert!(super::has_vm_flag(&with, "--said-to"), "{with:?}");
     }
 }

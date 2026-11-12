@@ -1,0 +1,26 @@
+1e30 add 1e-30: 31 chars in 11.458µs
+1e30 sub 1e-30: 31 chars in 3.917µs
+1e30 mul 1e-30: 21 chars in 15.667µs
+1e30 quo 1e-30: 61 chars in 5.208µs
+1e300 add -1e-300: 301 chars in 22.291µs
+1e300 sub -1e-300: 301 chars in 4µs
+1e300 mul -1e-300: 2 chars in 2.166µs
+1e300 quo -1e-300: 602 chars in 70.333µs
+-1e30000 add 1e-30000: 30002 chars in 3.247208ms
+-1e30000 sub 1e-30000: 30002 chars in 3.668083ms
+-1e30000 mul 1e-30000: 22 chars in 3.792µs
+-1e30000 quo 1e-30000: 60002 chars in 494.62775ms
+1e-21306 add 0x1p-70777: 28 chars in 5.228293167s
+1e-21306 sub 0x1p-70777: 28 chars in 6.01915375s
+1e-21306 mul 0x1p-70777: 27 chars in 20.253660458s
+1e-21306 quo 0x1p-70777: 21 chars in 9µs
+1e-76573 add 0x1p-254370: 28 chars in 54.623618625s
+1e-76573 sub 0x1p-254370: 29 chars in 49.100601417s
+1e-76573 mul 0x1p-254370: 30 chars in 2m55.963201166s
+1e-76573 quo 0x1p-254370: 21 chars in 8.25µs
+1e-97879 add 0x1p-325147: 28 chars in 53.516441708s
+1e-97879 sub 0x1p-325147: 28 chars in 27.981474625s
+
+[killed]
+1e-97879 mul 0x1p-325147: 28 chars in 2m58.693909416s
+1e-97879 quo 0x1p-325147: 21 chars in 66.084µs
