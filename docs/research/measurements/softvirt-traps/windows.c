@@ -14,6 +14,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <intrin.h>
+#pragma comment(lib, "advapi32.lib")
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -382,6 +383,12 @@ int wmain(int argc, wchar_t **argv) {
     printf("- processors: %lu; page %lu bytes; allocation granularity %lu bytes\n",
            (unsigned long)si.dwNumberOfProcessors, (unsigned long)si.dwPageSize,
            (unsigned long)si.dwAllocationGranularity);
+    wchar_t cpu[128];
+    DWORD cpu_len = sizeof cpu;
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                     L"ProcessorNameString", RRF_RT_REG_SZ, NULL, cpu, &cpu_len) ==
+        ERROR_SUCCESS)
+        printf("- cpu: %ls\n", cpu);
     printf("\n| test | variant | n | p50 ns | p90 ns | p99 ns | max ns |\n");
     printf("|---|---|---|---|---|---|---|\n");
     fflush(stdout);
