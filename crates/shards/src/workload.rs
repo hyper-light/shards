@@ -1357,6 +1357,11 @@ enum Target {
     },
     Resumed(std::sync::mpsc::SyncSender<Result<UnixStream, String>>),
     Capture(std::sync::mpsc::SyncSender<Result<UnixStream, String>>),
+    /// A member's input connection (capture.rs `start`), by the member's index.
+    Input {
+        member: u32,
+        to: std::sync::mpsc::SyncSender<(u32, UnixStream)>,
+    },
 }
 
 impl Target {
@@ -1369,6 +1374,14 @@ impl Target {
     fn deliver(self, result: Result<UnixStream, String>) {
         let to = match self {
             Self::Exec { to, .. } | Self::Resumed(to) | Self::Capture(to) => to,
+            // An input that never comes is its init's to tell (`managed::InputEnded`), as the
+            // connection it dialed fails there: nothing waits on it here.
+            Self::Input { member, to } => {
+                if let Ok(conn) = result {
+                    let _ = to.try_send((member, conn));
+                }
+                return;
+            }
         };
         let _ = to.try_send(result);
     }

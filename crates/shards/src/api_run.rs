@@ -256,6 +256,42 @@ fn staged(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<V
     Ok(entries)
 }
 
+/// The members whose stdin `request` asks to write, by their declared index: each one the
+/// image declares and runs, ascending; every other member's stdin is `/dev/null` (plan step
+/// 5, D231 decision §3.3).
+fn inputs(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<u32>, No> {
+    let mut inputs = Vec::new();
+    for m in request.members.iter().filter(|m| m.input) {
+        let info = members
+            .iter()
+            .find(|i| i.kind == m.kind && i.name == m.name)
+            .ok_or_else(|| {
+                No(
+                    Cause::Image,
+                    format!("{:?} {}: the image declares no such member", m.kind, m.name),
+                )
+            })?;
+        if !info.runs {
+            return Err(No(
+                Cause::Image,
+                format!(
+                    "{:?} {}: files alone, which run nothing to read a stdin",
+                    m.kind, m.name
+                ),
+            ));
+        }
+        if inputs.contains(&info.index) {
+            return Err(No(
+                Cause::Request,
+                format!("{:?} {}: its input asked for twice", m.kind, m.name),
+            ));
+        }
+        inputs.push(info.index);
+    }
+    inputs.sort_unstable();
+    Ok(inputs)
+}
+
 /// What of `granted` the orchestrator keeps: all of it, or each it names, each one
 /// `granted` holds as written; any other is a widening, refused by name.
 fn kept(what: &str, granted: &[Vec<u8>], keep: &wire::Keep) -> Result<Vec<Vec<u8>>, No> {
@@ -471,6 +507,8 @@ mod hosted {
         server: Option<PathBuf>,
         /// Its managed output's members, labels and active ones, where it has any.
         capture: Option<(u32, Vec<u32>)>,
+        /// The members whose stdin its orchestrator writes, by their declared index.
+        inputs: Vec<u32>,
         /// Its domains' plug roots (D235), by name (`Users`), as its setup names them.
         roots: Vec<Vec<u8>>,
     }
@@ -580,6 +618,7 @@ mod hosted {
         }
         let members = super::members_of(&labels, &active);
         let staged = super::staged(request, &members)?;
+        let inputs = super::inputs(request, &members)?;
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
         let egress = super::egress(agentfile.as_ref().map(|a| &a.grants), &request.egress)?;
         if egress.is_some() {
@@ -688,6 +727,13 @@ mod hosted {
                 activation.extend_from_slice(&m.to_be_bytes());
             }
             setup.push(activation);
+            if !inputs.is_empty() {
+                let mut named = managed::INPUT_KEY.to_vec();
+                for m in &inputs {
+                    named.extend_from_slice(&m.to_be_bytes());
+                }
+                setup.push(named);
+            }
             Some((count, active.clone()))
         };
         setup.extend(staged);
@@ -721,6 +767,7 @@ mod hosted {
             init,
             server,
             capture,
+            inputs,
             roots,
         })
     }
@@ -1207,10 +1254,45 @@ mod hosted {
         ended: HashMap<(u32, Channel), bool>,
     }
 
+    /// A member's stdin, which its orchestrator writes (plan step 5): its guest's input
+    /// connection once its VM hands it over, what the orchestrator sent and its writer has
+    /// not yet written, the room it was given and has not used, and its end.
+    #[derive(Default)]
+    struct Feed {
+        conn: Conn,
+        queued: std::collections::VecDeque<Vec<u8>>,
+        room: u64,
+        /// The orchestrator's end or abort, to go after what is queued.
+        end: Option<wire::StreamEnd>,
+        /// Its init told its end, or the run's ended: nothing more goes.
+        ended: bool,
+    }
+
+    /// A member's input connection, as far as this host has it: once here, never again.
+    #[derive(Default)]
+    enum Conn {
+        #[default]
+        Awaited,
+        Here(Stream),
+        Gone,
+    }
+
+    impl Conn {
+        /// Ends it, and none comes after.
+        fn end(&mut self) {
+            if let Conn::Here(conn) = std::mem::replace(self, Conn::Gone) {
+                shards_ipc::end(&conn);
+            }
+        }
+    }
+
     /// What the serving threads share.
     struct Live<'a> {
         answers: &'a Answers,
         flows: Mutex<Flows>,
+        /// Each input member's stdin, by its index.
+        feeds: Mutex<HashMap<u32, Feed>>,
+        fed: std::sync::Condvar,
         capture: Option<Mutex<Stream>>,
         link: Mutex<Stream>,
         /// Each exec's client end, by its number, held until the VM says it has it
@@ -1440,6 +1522,8 @@ mod hosted {
             let live = Live {
                 answers,
                 flows: Mutex::new(Flows::default()),
+                feeds: Mutex::new(plan.inputs.iter().map(|m| (*m, Feed::default())).collect()),
+                fed: std::sync::Condvar::new(),
                 capture: capture.map(|(ours, _)| Mutex::new(ours)),
                 link: Mutex::new(link),
                 held: Mutex::new(Some(HashMap::new())),
@@ -1507,6 +1591,16 @@ mod hosted {
     /// channel closed first, kills the VM, whose end then says `Stopped`.
     fn serve(live: &Live<'_>, input: io::Stdin, launched: &Launched, client: Stream) {
         std::thread::scope(|scope| {
+            let members: Vec<u32> = lock(&live.feeds).keys().copied().collect();
+            for member in members {
+                let started = std::thread::Builder::new()
+                    .name("api-run input".into())
+                    .spawn_scoped(scope, move || write_input(live, member));
+                if let Err(e) = started {
+                    let _ = writeln!(io::stderr(), "shards api-run: member {member}'s input: {e}");
+                    end_input(live, member);
+                }
+            }
             if let Some(capture) = &live.capture
                 && let Ok(reading) = lock(capture).try_clone()
             {
@@ -1572,6 +1666,10 @@ mod hosted {
                 }
             } else if m.kind == kind::DEVICED {
                 answered_device(live, &m.payload);
+            } else if m.kind == kind::MANAGED_INPUT {
+                input_arrived(live, &m.payload, m.fds);
+            } else if m.kind == kind::MANAGED_INPUT_ENDED {
+                input_ended(live, &m.payload);
             } else if let Some((answer, payload)) = super::relayed(m.kind, &m.payload) {
                 let _ = live.answers.send(answer, &[&payload]);
             }
@@ -1581,6 +1679,11 @@ mod hosted {
         lock(&live.held).take();
         // Device steps no answer will come for: their askers hear the VM has gone.
         *lock(&live.devices) = None;
+        // Its VM gone: no input goes on.
+        let members: Vec<u32> = lock(&live.feeds).keys().copied().collect();
+        for member in members {
+            end_input(live, member);
+        }
         if let Some(why) = failed {
             return RunEnd::Failed(why);
         }
@@ -1612,6 +1715,22 @@ mod hosted {
                     let room = flows.room.entry(key).or_insert(0);
                     *room = room.saturating_add(credit.bytes);
                     if live.flush(&mut flows, key).is_err() || live.grant(&mut flows, key).is_err() {
+                        break;
+                    }
+                }
+                wire::to_host::INPUT => {
+                    let Ok(given) = wire::Input::decode(&payload) else {
+                        break;
+                    };
+                    if input_given(live, given).is_err() {
+                        break;
+                    }
+                }
+                wire::to_host::INPUT_END => {
+                    let Ok(end) = wire::InputEnd::decode(&payload) else {
+                        break;
+                    };
+                    if input_end(live, end).is_err() {
                         break;
                     }
                 }
@@ -1675,6 +1794,215 @@ mod hosted {
         }
         live.stopping.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = vm.kill(shards_ipc::signal::SIGKILL);
+    }
+
+    /// A member's input connection, as its VM handed it over (`MANAGED_INPUT`): on Unix beside
+    /// the message, its VM's copy going as the VM is told this host has it (M24); on Windows,
+    /// where a VM gives its host no handle, a pipe this host makes, whose other end the VM is
+    /// given to relay the connection onto, as the daemon gives one (daemon.rs). Its
+    /// orchestrator is then given room for its first part. One the run does not await is
+    /// closed, or given no pipe: its init then tells its input's end.
+    fn input_arrived(live: &Live<'_>, payload: &[u8], fds: Vec<OwnedFd>) {
+        let member = <[u8; 4]>::try_from(payload).map(u32::from_be_bytes).ok();
+        let awaited = member.filter(|m| {
+            lock(&live.feeds)
+                .get(m)
+                .is_some_and(|f| matches!(f.conn, Conn::Awaited) && !f.ended)
+        });
+        #[cfg(unix)]
+        let conn = {
+            if let Err(e) = shards_ipc::send(&lock(&live.link), kind::MANAGED_INPUT, payload, &[]) {
+                let _ = writeln!(io::stderr(), "shards api-run: answering a member's input: {e}");
+            }
+            fds.into_iter().next().map(Stream::from)
+        };
+        #[cfg(windows)]
+        let conn = {
+            drop(fds);
+            let given = awaited
+                .ok_or("an input the run does not await".to_string())
+                .and_then(|_| {
+                    let (ours, theirs) = handed_pair().map_err(|e| e.to_string())?;
+                    let shared = theirs.share().map_err(|e| e.to_string())?;
+                    shards_ipc::send(&lock(&live.link), kind::MANAGED_INPUT, payload, &[shared.as_fd()])
+                        .map_err(|e| format!("giving its VM its pipe: {e}"))?;
+                    Ok(ours)
+                });
+            match given {
+                Ok(ours) => Some(ours),
+                Err(why) => {
+                    let _ = writeln!(io::stderr(), "shards api-run: a member's input connection: {why}");
+                    let _ = shards_ipc::send(&lock(&live.link), kind::MANAGED_INPUT, payload, &[]);
+                    None
+                }
+            }
+        };
+        let (Some(member), Some(conn)) = (awaited, conn) else {
+            let _ = writeln!(
+                io::stderr(),
+                "shards api-run: a member's input connection the run does not await, or without its descriptor"
+            );
+            return;
+        };
+        let room = protocol::CHUNK as u64;
+        {
+            let mut feeds = lock(&live.feeds);
+            let Some(feed) = feeds
+                .get_mut(&member)
+                .filter(|f| matches!(f.conn, Conn::Awaited) && !f.ended)
+            else {
+                shards_ipc::end(&conn);
+                return;
+            };
+            feed.conn = Conn::Here(conn);
+            feed.room = feed.room.saturating_add(room);
+        }
+        live.fed.notify_all();
+        let given = wire::InputRoom { member, bytes: room };
+        let _ = live.answers.send(wire::to_client::INPUT_ROOM, &[&given.encode()]);
+    }
+
+    /// A member's input's end, as its init told it (`MANAGED_INPUT_ENDED`): its orchestrator
+    /// told, its connection ended here.
+    fn input_ended(live: &Live<'_>, payload: &[u8]) {
+        let Ok(ended) = managed::InputEnded::decode(payload) else {
+            let _ = writeln!(
+                io::stderr(),
+                "shards api-run: a member's input end said malformed"
+            );
+            return;
+        };
+        end_input(live, ended.member);
+        let told = wire::InputEnded {
+            member: ended.member,
+            written: ended.written,
+            end: match ended.end {
+                managed::InputEnd::Closed => wire::StreamEnd::Closed,
+                managed::InputEnd::Aborted(errno) => wire::StreamEnd::Aborted(errno),
+            },
+        };
+        let _ = live.answers.send(wire::to_client::INPUT_ENDED, &[&told.encode()]);
+    }
+
+    /// Ends member `member`'s input here: nothing more goes, its connection ended, its
+    /// writer told.
+    fn end_input(live: &Live<'_>, member: u32) {
+        if let Some(feed) = lock(&live.feeds).get_mut(&member) {
+            feed.ended = true;
+            feed.queued.clear();
+            feed.conn.end();
+        }
+        live.fed.notify_all();
+    }
+
+    /// The orchestrator's bytes for a member's stdin, within the room it was given: queued
+    /// for its writer. Past its room, or for a member with no input, its contract is broken.
+    fn input_given(live: &Live<'_>, given: wire::Input) -> Result<(), ()> {
+        let mut feeds = lock(&live.feeds);
+        let feed = feeds.get_mut(&given.member).ok_or(())?;
+        let n = u64::try_from(given.bytes.len()).map_err(|_| ())?;
+        if n > feed.room || feed.end.is_some() {
+            return Err(());
+        }
+        feed.room -= n;
+        if !feed.ended && n > 0 {
+            feed.queued.push_back(given.bytes);
+        }
+        drop(feeds);
+        live.fed.notify_all();
+        Ok(())
+    }
+
+    /// The orchestrator's end of a member's stdin, or its abort, which ends its connection at
+    /// once, so that a writer held by a member that does not read lets go.
+    fn input_end(live: &Live<'_>, end: wire::InputEnd) -> Result<(), ()> {
+        let mut feeds = lock(&live.feeds);
+        let feed = feeds.get_mut(&end.member).ok_or(())?;
+        if feed.end.replace(end.end).is_some() {
+            return Err(());
+        }
+        if matches!(end.end, wire::StreamEnd::Aborted(_)) {
+            feed.queued.clear();
+            if let Conn::Here(conn) = &feed.conn {
+                shards_ipc::end(conn);
+            }
+        }
+        drop(feeds);
+        live.fed.notify_all();
+        Ok(())
+    }
+
+    /// What a member's input writer does next.
+    enum Write {
+        Part(Stream, Vec<u8>),
+        End(Stream),
+        Done,
+    }
+
+    /// Writes member `member`'s input to its connection as it comes, each part one `STDIN`
+    /// frame, the orchestrator given room for each part once it is in the connection, and its
+    /// end an empty frame; ends with its input. A part the connection refuses is not
+    /// delivered, nor any after: its init tells how the input ended.
+    fn write_input(live: &Live<'_>, member: u32) {
+        loop {
+            let next = {
+                let mut feeds = lock(&live.feeds);
+                loop {
+                    let Some(feed) = feeds.get_mut(&member) else {
+                        break Write::Done;
+                    };
+                    if feed.ended {
+                        break Write::Done;
+                    }
+                    if let Conn::Here(conn) = &feed.conn {
+                        let wants = !feed.queued.is_empty() || feed.end == Some(wire::StreamEnd::Closed);
+                        if wants {
+                            let Ok(conn) = conn.try_clone() else {
+                                break Write::Done;
+                            };
+                            break match feed.queued.pop_front() {
+                                Some(part) => Write::Part(conn, part),
+                                None => Write::End(conn),
+                            };
+                        }
+                    }
+                    feeds = live.fed.wait(feeds).unwrap_or_else(PoisonError::into_inner);
+                }
+            };
+            match next {
+                Write::Part(conn, part) => {
+                    let sent = u32::try_from(part.len()).ok().filter(|len| {
+                        (&conn)
+                            .write_all(&protocol::header(protocol::kind::STDIN, *len))
+                            .and_then(|()| (&conn).write_all(&part))
+                            .is_ok()
+                    });
+                    let Some(len) = sent else {
+                        // Its init tells how the input ended; nothing more goes meanwhile.
+                        if let Some(feed) = lock(&live.feeds).get_mut(&member) {
+                            feed.queued.clear();
+                            feed.conn.end();
+                        }
+                        continue;
+                    };
+                    if let Some(feed) = lock(&live.feeds).get_mut(&member) {
+                        feed.room = feed.room.saturating_add(u64::from(len));
+                    }
+                    let room = wire::InputRoom {
+                        member,
+                        bytes: u64::from(len),
+                    };
+                    let _ = live.answers.send(wire::to_client::INPUT_ROOM, &[&room.encode()]);
+                }
+                Write::End(conn) => {
+                    // Every part before it is in the connection; its init closes the
+                    // member's stdin, then tells the end.
+                    let _ = (&conn).write_all(&protocol::header(protocol::kind::STDIN, 0));
+                    return;
+                }
+                Write::Done => return,
+            }
+        }
     }
 
     /// Reads the run's managed output until it ends: each member's bytes to the
@@ -2091,6 +2419,7 @@ mod tests {
                 bytes: wire::Secret::from("x"),
             }],
             workdir: Some("/Users/ada/proj".into()),
+            input: false,
         }
     }
 

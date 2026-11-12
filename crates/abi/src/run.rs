@@ -196,6 +196,11 @@ pub mod kind {
     /// there from now on as an ended run's; a signal connection that ends without it is
     /// lost (D16).
     pub const SIGNALS_END: u8 = 50;
+    /// Guest to host, on the signal connection, within the managed control scope: a member's
+    /// input has ended, as [`managed::InputEnded`](super::managed::InputEnded) encodes it.
+    /// The input itself comes host to guest on the member's own connection, as [`STDIN`]
+    /// frames, an empty one its owner's end.
+    pub const MANAGED_INPUT_ENDED: u8 = 51;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its

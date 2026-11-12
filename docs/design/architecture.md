@@ -6035,6 +6035,86 @@ the first packet sent since the last one heard restarts the endpoint's idle time
 meanwhile. The patience reuses D180's `QUIET`, derived for contexts over real links (RFC 1122
 §4.2.3.5's R2, D176 part 6), without a derivation of its own for a loopback owner.
 
+#### A member's stdin, a stream its owner writes (plan step 5; P3's input, G24)
+
+A HARNESS is driven over its stdio (Claude Code's stream-json, Codex's app-server, ACP), so
+its owner holds its stdin as it holds its stdout and stderr. Input stays closed unless the
+owner asks for it as the run is made (managed-runtime-plan.md P3: "explicitly closed unless
+a native adapter or authorized session owns it"): a member it does not name has `/dev/null`,
+as before. The daemon's owner names members by the run's annotation `shards.stdin` (`KIND:NAME`
+each, comma-separated: `shards run vm --annotation shards.stdin=harness:codex IMAGE`; the
+Engine API's `HostConfig.Annotations` alike), shards' own key, as `shards.egress` is a
+network's (D192), since an OCI runtime takes its options in annotations (OCI runtime-spec
+config.md, "Annotations"; Kata Containers' `io.katacontainers.*` and gVisor's `dev.gvisor.*`
+the same way). A name the image does not declare, a member that runs no program, and a name
+given twice are refused, the run with them. The design is D231 decision v1's §3.3
+([record](../research/runtime-image-boot-decision-v1.md)), now built for the daemon's owner;
+`shards api-run`'s orchestrator path (`MemberSpec::stdin`, refused `Unsupported` there still)
+is the next slice.
+
+- **In the guest** (crates/init `input.rs`): the member's fd 0 is the read end of a pipe whose
+  write end init holds, nonblocking, and its owner's bytes come on a connection of the
+  member's own, which init dials to the exec port saying a token the VM process minted for that
+  member (`managed-input-token=`), as an exec's connection says its own. They come as `STDIN`
+  frames, an empty one the owner's end, as a command's and an exec's stdin do; init writes
+  every byte to the pipe as it came, whatever its frames, and reads the connection again only
+  once all it read is in the pipe. So the member's reading paces its owner's writing through
+  vsock's own credit (virtio 1.3 §5.10.6.3; the device reads a host socket only while its
+  guest has credit, conn.rs `interest`), and a stdin no one reads holds up nothing else: no
+  other member's input, no output channel, no control frame. However it ends, init closes the
+  pipe, so the member reads its end, and tells the owner, on the managed control connection,
+  how and how many bytes the member's stdin took (`MANAGED_INPUT_ENDED`,
+  `managed::InputEnded`): its owner's end (`Closed`), the member no longer reading (`EPIPE`,
+  seen as the pipe's POLLERR whether or not its owner writes, fs/pipe.c `pipe_poll`), the
+  connection refused, failing or ending without its owner's end (its errno, `ECONNRESET` for
+  an end), a frame of another kind (`EPROTO`), or no room for its relay (`ENOMEM`). None is
+  dropped: a dial that fails at once is an input that has ended, told as any other.
+- **In the VM process** (workload/capture.rs, warm.rs): each connection whose hello says an
+  input token goes to the run's owner as an engine connection goes (`MANAGED_INPUT`; D181):
+  beside the message on Unix, the VM's copy held until the owner says it has it (M24); on
+  Windows, where a VM gives its owner no handle, the owner answers with the pipe the VM relays
+  it onto (`relay_engine`). The input's end is passed on, checked once a member.
+- **The owner's endpoint** (crates/remote `managed::input`): one per input member, on the
+  managed transport (its ALPN, AES-256-GCM alone, the owner's key pinned, one connection, one
+  bidirectional stream), its scope the run, its generation, the member and channel 0 (the run
+  protocol's stdin). The owner subscribes with the first of its bytes it has not seen taken;
+  the endpoint says where the next record goes and how long it may be (`Taken`) once the
+  record before is in the member's connection, so one record is in flight and the endpoint
+  holds one at most. A record is taken whole or not at all: one cut short by a lost connection
+  is let go, and the owner's next subscription, which may be a record behind, is told where to
+  go on; one ahead of what was taken is refused. The owner's end and its abort (an errno) are
+  frames of their own; an abort is heard while a record waits for a member that does not read
+  it, and ends the member's connection under the relay. The input's end comes back (`Ended`,
+  the bytes taken and the errno), then the stream's FIN. An owner's connection lost or closed
+  takes nothing from the member: what it sent whole goes on, and its stdin stays open.
+  Its states: `Free → Coming → Whole → Relaying → Free`, `Free → Ending → Closing → Ended`,
+  any of them `→ Ending` by an abort, every one `→ Revoked` as the run's scope ends.
+
+| Literal | Derivation/source |
+| --- | --- |
+| A record at most `run::CHUNK` | one `STDIN` frame to the member's init, which carries at most what the guest reads of a stream at once, as a command's and an exec's stdin frames do |
+| Init's relay buffer, one pipe's capacity | `F_GETPIPE_SZ` of the member's own pipe (pipe(7)): one read of the connection never takes more than the member's stdin holds at once |
+| Input token `run::TOKEN`, one a member | the exec port's own (abi run.rs), checked in constant time |
+| Frames: subscribe 58 bytes, record head 13, end 17, taken and ended 17 | tag + u32 length (crate::frame), then the run ID (32), u64 generation, u32 member, u8 channel, u64 offset; a u64 offset; a u64 and an i32; a u64 and a u32 |
+| An end's errno 0, an abort's above 0 | `InputEnd::Closed`, `InputEnd::Aborted(errno)`, typed on every wire |
+| The endpoint's receive window: a record's head, the record and an end, at least a subscription | what the owner may send before the endpoint reads it |
+| Patience `QUIET`, keep-alive a quarter of it | the output endpoint's (above) |
+
+Tested: abi `run::managed` (the input entries, one token a member, the end's codec); init
+`input` (binary, no newline, invalid UTF-8 across split frames reach the pipe exactly; an
+unread stdin stops the connection's reading and resumes as it is read; a member that stops
+reading ends its input as `EPIPE` idle and writing; a connection cut short or of another
+protocol, and a hello that cannot go, end typed) and `capture` (the end's room reserved and
+told before the scope's end); remote `managed::input` (frames; a record taken whole once the
+last is delivered; resubscription and refusals by scope, generation, channel and offset; an
+abort held by an unread record closes its connection; revocation), and over the real transport
+a stranger's key refused, exact bytes, a record held until delivered, a vanished owner's
+record going on and its next subscription told where to go on, and the end. Written for the
+coordinator's real-VM suite: `tests/managed_output.rs` `member_stdin` (a harness echoing its
+stdin: exact JSON lines and bytes past a pipe's capacity, a stranger refused, a resumed
+owner, its end; and a member that ends, its input `EPIPE`).
+[Record](../research/measurements/member-stdin-v1/README.md).
+
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
 The [current guest stream pump closing record](../research/measurements/managed-engine-relay-root/README.md)

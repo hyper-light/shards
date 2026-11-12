@@ -143,6 +143,28 @@ directory's default; the runs used the tree's pinned 1.98.1):
 - Not run: aarch64 Linux and aarch64 Windows tests (no such host here), the workspace-wide
   `scripts/lint`, any real VM (ROOT's).
 
+## Member stdin connections (plan step 5)
+
+Built on this admission by `p/s5-stdio-v1` ([member-stdin-v1](../member-stdin-v1/README.md)):
+
+- **Host.** Each member whose owner writes its stdin has a token of its own, which the VM
+  process registers before the run's setup goes to the guest (`register(token,
+  Target::Input { member, to })`, workload/capture.rs `start_inputs`); a registration whose
+  setup never goes is dropped with `hellos::forget(&token)`. A HELLO saying it delivers the
+  connection to the input's hand-over thread (`Target::deliver`'s `Input` arm), which passes
+  it to the run's owner (`MANAGED_INPUT`) as an engine connection goes.
+- **Guest.** Init's input relay has explicit states of its own (`Dialing → Hello →
+  Relaying`, each into `Ended`; crates/init `input.rs`), as an exec's `Link` has. The host
+  says nothing on an input connection before its owner's first bytes, so a loss there is
+  never silent and never waited on: a connect that fails (`connect_result`), a hello that
+  cannot go, a connection that ends or fails before the owner's end, each closes the
+  member's stdin, so the member reads its end, and is told its owner typed
+  (`MANAGED_INPUT_ENDED`: the bytes its stdin took and the errno, `ECONNRESET` for an end
+  without the owner's) on the managed control connection, whose room for it is reserved as
+  the run starts. The member is not killed, as an exec's process is: an exec's stdio has no
+  other reader once its connection is lost, while a member's stdout, stderr and life stay
+  its owner's (P3: a lost stream ends that stream, not the member).
+
 ## Rules
 
 | Rule | Evidence / gap |

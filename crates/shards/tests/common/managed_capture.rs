@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use hyper_quic::{ClientConfig, StreamId};
 use sha2::{Digest as _, Sha256};
-use shards_abi::run::managed::{Channel, Event as CaptureEvent, Record, StreamState};
+use shards_abi::run::managed::{Channel, Event as CaptureEvent, InputEnd, Record, StreamState};
 use shards_remote::frame::{self, Tag};
 use shards_remote::identity::{Fingerprint, Identity};
 use shards_remote::managed::{self, Admitted, Reason, RunId, Scope};
@@ -601,7 +601,8 @@ impl Metadata {
             let member = member.parse().ok()?;
             let channel = channel.parse().ok()?;
             let address: SocketAddr = address.parse().ok()?;
-            if !matches!(channel, 1 | 2)
+            // 1 and 2 a member's output channels, 0 its input (plan step 5).
+            if !matches!(channel, 0..=2)
                 || !address.ip().is_loopback()
                 || endpoints.insert((member, channel), address).is_some()
             {
@@ -624,6 +625,289 @@ impl Metadata {
             generation: self.generation,
             member,
             channel,
+        }
+    }
+}
+
+/// What an owner writing a member's input heard of its endpoint.
+#[derive(Debug)]
+pub(super) enum InputHeard {
+    Said(managed::input::Said),
+    End,
+    Lost(Option<u64>),
+    Failed(String),
+}
+
+pub(super) enum InputAsk {
+    Connect(SocketAddr),
+    Send(Vec<u8>),
+    /// Closes its connection, as an owner that goes does: its member's input stays open.
+    Close,
+}
+
+/// An owner of a member's input, as an orchestrator's adapter is: it subscribes, then sends
+/// what it is asked to, and tells what the endpoint says.
+struct InputClient {
+    config: Option<ClientConfig>,
+    scope: managed::input::Scope,
+    offset: u64,
+    stream: Option<(ConnKey, StreamId)>,
+    pending: Vec<u8>,
+    inbound: Vec<u8>,
+    heard: mpsc::Sender<InputHeard>,
+    deadline: Instant,
+    done: bool,
+}
+
+impl InputClient {
+    fn flush(&mut self, io: &mut Io<'_>) {
+        let Some((conn, stream)) = self.stream else {
+            return;
+        };
+        while !self.pending.is_empty() {
+            match io.write(conn, stream, &self.pending) {
+                Ok(0) => return,
+                Ok(n) => drop(self.pending.drain(..n)),
+                Err(error) => {
+                    let _ = self.heard.send(InputHeard::Failed(error.to_string()));
+                    self.done = true;
+                    return;
+                }
+            }
+        }
+    }
+}
+
+impl Handler for InputClient {
+    type Command = InputAsk;
+    fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, _: &[u8]) -> Result<(), Close> {
+        let stream = io.open(conn).map_err(|_| Close {
+            code: 1,
+            why: "fixture input stream failed",
+        })?;
+        self.stream = Some((conn, stream));
+        let mut first = managed::input::subscribe(self.scope, self.offset).to_vec();
+        first.append(&mut self.pending);
+        self.pending = first;
+        self.flush(io);
+        Ok(())
+    }
+    fn opened(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+    fn readable(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) {
+        loop {
+            let (bytes, ended) = match io.read(conn, stream) {
+                Read::Bytes(bytes) => (bytes, false),
+                Read::End(bytes) => (bytes, true),
+                Read::Blocked => return,
+                Read::Reset => {
+                    let _ = self.heard.send(InputHeard::Failed("input stream reset".into()));
+                    self.done = true;
+                    return;
+                }
+            };
+            self.inbound.extend_from_slice(&bytes);
+            loop {
+                match managed::input::said(&self.inbound) {
+                    Ok(Some((said, n))) => {
+                        let _ = self.heard.send(InputHeard::Said(said));
+                        self.inbound.drain(..n);
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        let _ = self.heard.send(InputHeard::Failed(error.to_string()));
+                        self.done = true;
+                        return;
+                    }
+                }
+            }
+            if ended {
+                let _ = self.heard.send(InputHeard::End);
+                return;
+            }
+        }
+    }
+    fn writable(&mut self, io: &mut Io<'_>, _: ConnKey, _: StreamId) {
+        self.flush(io);
+    }
+    fn stopped(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {
+        let _ = self.heard.send(InputHeard::Failed("input stream stopped".into()));
+        self.done = true;
+    }
+    fn lost(&mut self, _: &mut Io<'_>, _: ConnKey, _: &str, code: Option<u64>) {
+        let _ = self.heard.send(InputHeard::Lost(code));
+        self.done = true;
+    }
+    fn command(&mut self, io: &mut Io<'_>, ask: InputAsk) {
+        match ask {
+            InputAsk::Connect(address) => {
+                if let Some(Err(error)) = self.config.take().map(|config| io.connect(address, config)) {
+                    let _ = self.heard.send(InputHeard::Failed(error.to_string()));
+                    self.done = true;
+                }
+            }
+            InputAsk::Send(bytes) => {
+                self.pending.extend_from_slice(&bytes);
+                self.flush(io);
+            }
+            InputAsk::Close => {
+                if let Some((conn, _)) = self.stream {
+                    io.close(conn, 0, "fixture input owner gone");
+                }
+                self.done = true;
+            }
+        }
+    }
+    fn done(&self) -> bool {
+        self.done
+    }
+    fn due(&self) -> Option<Instant> {
+        Some(self.deadline)
+    }
+    fn timeout(&mut self, _: &mut Io<'_>, _: Instant) {
+        let _ = self
+            .heard
+            .send(InputHeard::Failed("input writer deadline".into()));
+        self.done = true;
+    }
+}
+
+/// A member's input, written by its owner over its endpoint: one record in flight, each
+/// sent once the endpoint says the last was taken.
+pub(super) struct InputWriter {
+    pub(super) sender: Sender<InputAsk>,
+    pub(super) heard: mpsc::Receiver<InputHeard>,
+    thread: Option<JoinHandle<Result<(), shards_remote::Error>>>,
+    /// Where the next record goes and how long it may be, as last said.
+    pub(super) at: u64,
+    room: usize,
+}
+
+impl InputWriter {
+    /// Subscribes to `member`'s input at `address`, from offset `offset`, and waits to be
+    /// told where its first record goes.
+    pub(super) fn start(
+        owner: &Identity,
+        metadata: &Metadata,
+        member: u32,
+        address: SocketAddr,
+        offset: u64,
+        until: Instant,
+    ) -> Result<Self, InputHeard> {
+        let patience = until.saturating_duration_since(Instant::now());
+        let admitted = Admitted {
+            record_bytes: shards_abi::run::CHUNK,
+            transport_bytes: u64::try_from(managed::input::TAKEN_BYTES).unwrap(),
+            // RFC 8446 Handshake length: uint24 plus the four-byte handshake header.
+            handshake_bytes: (1 << 24) - 1 + 4,
+            datagram_bytes: managed::DATAGRAM_BYTES,
+            patience,
+        };
+        let (heard, hearing) = mpsc::channel();
+        let client = InputClient {
+            config: Some(managed::input::client_config(owner, metadata.server, admitted).unwrap()),
+            scope: managed::input::Scope {
+                run: RunId(Sha256::digest(metadata.run.as_bytes()).into()),
+                generation: metadata.generation,
+                member,
+            },
+            offset,
+            stream: None,
+            pending: Vec::new(),
+            inbound: Vec::new(),
+            heard,
+            deadline: until,
+            done: false,
+        };
+        let (mut driver, sender) = Driver::bind_bounded(
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+            client,
+            DriverLimits {
+                connections: 1,
+                command_slots: 4,
+                queued_datagram_bytes: admitted.datagram_bytes,
+                handshake_patience: patience,
+            },
+        )
+        .unwrap();
+        let thread = std::thread::Builder::new()
+            .name("fixture-input".into())
+            .spawn(move || driver.run())
+            .unwrap();
+        sender.send(Command::Handler(InputAsk::Connect(address))).unwrap();
+        let mut writer = Self {
+            sender,
+            heard: hearing,
+            thread: Some(thread),
+            at: offset,
+            room: 0,
+        };
+        writer.taken(until)?;
+        Ok(writer)
+    }
+
+    /// Waits for the endpoint to say where the next record goes.
+    fn taken(&mut self, until: Instant) -> Result<u64, InputHeard> {
+        match self
+            .heard
+            .recv_timeout(until.saturating_duration_since(Instant::now()))
+        {
+            Ok(InputHeard::Said(managed::input::Said::Taken { accepted, room })) => {
+                self.at = accepted;
+                self.room = room as usize;
+                Ok(accepted)
+            }
+            Ok(other) => Err(other),
+            Err(_) => Err(InputHeard::Failed(
+                "no taken within the fixture's patience".into(),
+            )),
+        }
+    }
+
+    /// Writes `bytes` to the member's stdin, a record at a time, each within the room it was
+    /// told, waiting for each to be taken; the offset after them.
+    pub(super) fn write_all(&mut self, bytes: &[u8], until: Instant) -> Result<u64, InputHeard> {
+        for part in bytes.chunks(self.room.max(1)) {
+            let mut frame = Vec::new();
+            managed::input::record(self.at, part, &mut frame).unwrap();
+            self.sender.send(Command::Handler(InputAsk::Send(frame))).unwrap();
+            let before = self.at;
+            let at = self.taken(until)?;
+            // A record is taken whole, at its offset.
+            if Some(at) != before.checked_add(part.len() as u64) {
+                return Err(InputHeard::Failed(format!(
+                    "a record of {} bytes at {before} taken to {at}",
+                    part.len()
+                )));
+            }
+        }
+        Ok(self.at)
+    }
+
+    /// Ends the member's stdin (`errno` 0) or aborts it, and waits for its end.
+    pub(super) fn end(&mut self, errno: i32, until: Instant) -> Result<(u64, InputEnd), InputHeard> {
+        self.sender
+            .send(Command::Handler(InputAsk::Send(
+                managed::input::end(self.at, errno).to_vec(),
+            )))
+            .unwrap();
+        match self
+            .heard
+            .recv_timeout(until.saturating_duration_since(Instant::now()))
+        {
+            Ok(InputHeard::Said(managed::input::Said::Ended { written, end })) => Ok((written, end)),
+            Ok(other) => Err(other),
+            Err(_) => Err(InputHeard::Failed("no end within the fixture's patience".into())),
+        }
+    }
+}
+
+impl Drop for InputWriter {
+    fn drop(&mut self) {
+        let _ = self.sender.send(Command::Handler(InputAsk::Close));
+        self.sender.request_stop();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
 }

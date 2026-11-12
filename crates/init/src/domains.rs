@@ -21,8 +21,10 @@
 //! - has only its own loopback, brought up;
 //! - runs as uid and gid `200000 + n`, the n-th domain's, with no supplementary groups and
 //!   no capability left, bounding set included, and `no_new_privs` set;
-//! - holds no descriptor of init's but its stdio: stdin `/dev/null`, stdout and stderr one
-//!   pipe that init relays a line at a time, each line prefixed with the domain;
+//! - holds no descriptor of init's but its stdio: stdin `/dev/null`, or where its owner
+//!   asked for its input as the run was made a pipe whose write end init holds
+//!   ([`crate::input`]), stdout and stderr pipes of their own that init relays to its
+//!   owner as managed records ([`crate::capture`]);
 //! - runs the command its config says, a relative program its directory's, a bare name
 //!   found on `PATH` before it starts.
 
@@ -773,6 +775,8 @@ pub struct Started {
     pub lifecycle: crate::managed::Owned,
     pub stdout: crate::capture::Pipe,
     pub stderr: crate::capture::Pipe,
+    /// Its stdin, where its owner asked for it: else `/dev/null`.
+    pub input: Option<crate::input::Input>,
     /// Its end has been told its owner (`MEMBER_ENDED`, D231).
     pub end_told: bool,
 }
@@ -871,6 +875,9 @@ struct Prepared {
     /// Where it sends the listener of the chooser's filter, and the filter, for a domain
     /// among several given a port (D122, crate::chooser).
     chooser: Option<(RawFd, *const libc::sock_fprog)>,
+    /// Its stdin: the read end of its input's pipe, where its owner asked for its input
+    /// ([`crate::input`]); else `/dev/null`, opened as it starts.
+    stdin: Option<RawFd>,
     /// Its root: the image as built, a mount not yet attached.
     root: RawFd,
     /// The run's plug roots (D235), `/Users`, beneath which Landlock grants it every right.
@@ -1941,6 +1948,18 @@ pub fn start(
         len: u16::try_from(notify_ops.len()).map_err(|_| "the chooser's filter is too long")?,
         filter: notify_ops.as_ptr().cast_mut(),
     };
+    // The members whose stdin their owner writes, each with its connection's token; every
+    // one a member that starts here, else the run is refused, as a staging entry is.
+    let inputs =
+        shards_abi::run::managed::input_tokens(setup).map_err(|e| format!("its members' input: {e}"))?;
+    if let Some((member, _)) = inputs
+        .iter()
+        .find(|(m, _)| !domains.iter().any(|d| d.id.checked_sub(FIRST_ID) == Some(*m)))
+    {
+        return Err(format!(
+            "an input is asked for member {member}, which this image starts no program for"
+        ));
+    }
     let mut started = Vec::new();
     for (i, d) in domains.iter().enumerate() {
         let member =
@@ -2120,6 +2139,7 @@ pub fn start(
             resolv: d.resolv.clone(),
             go: None,
             chooser: None,
+            stdin: None,
         };
         let mut prepared = prepared;
         // A candidate for a port several are given: the channel its listener comes on.
@@ -2155,6 +2175,15 @@ pub fn start(
             crate::capture::Pipe::make().map_err(|e| format!("{}: its stdout pipe: {e}", d.label))?;
         let (stderr, stderr_write) =
             crate::capture::Pipe::make().map_err(|e| format!("{}: its stderr pipe: {e}", d.label))?;
+        let (input, stdin) = match inputs.iter().find(|(m, _)| *m == member) {
+            Some((_, token)) => {
+                let (input, stdin) = crate::input::Input::open(member, token)
+                    .map_err(|e| format!("{}: its stdin pipe: {e}", d.label))?;
+                (Some(input), Some(stdin))
+            }
+            None => (None, None),
+        };
+        prepared.stdin = stdin.as_ref().map(AsRawFd::as_raw_fd);
         let mut launch = crate::managed::Launch::new(last_cap, cgroup)
             .map_err(|e| format!("{}: preparing its owner: {e}", d.label))?;
         let mut args = CloneArgs {
@@ -2194,6 +2223,9 @@ pub fn start(
         let mut lifecycle = launch
             .parent(pid, admitted.into_file())
             .map_err(|e| format!("{}: retaining its owner: {e}", d.label))?;
+        // Its stdin's read end is the member's alone: init holding it would keep the pipe
+        // read after the member is gone, and so hide its end.
+        drop(stdin);
         drop(stdout_write);
         drop(stderr_write);
         drop(root);
@@ -2246,6 +2278,7 @@ pub fn start(
             lifecycle,
             stdout,
             stderr,
+            input,
             end_told: false,
         });
     }
@@ -2848,11 +2881,14 @@ fn child(
             }
         }
         // Its stdio, and no other descriptor of init's.
-        let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+        let input = match p.stdin {
+            Some(fd) => fd,
+            None => libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC),
+        };
         let status = libc::fcntl(setup, libc::F_DUPFD_CLOEXEC, libc::STDERR_FILENO + 2);
-        if devnull < 0
+        if input < 0
             || status < 0
-            || libc::dup2(devnull, 0) < 0
+            || libc::dup2(input, 0) < 0
             || libc::dup2(stdout, 1) < 0
             || libc::dup2(out, 2) < 0
         {
