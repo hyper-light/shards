@@ -16,6 +16,9 @@ use crate::debug;
 use crate::memory::GuestMemory;
 use crate::platform::{AsRawSocket, RawSocket, UnixStream};
 
+mod ringed;
+use ringed::Ringing;
+
 /// Receive buffer advertised per connection (`buf_alloc`), which bounds what we hold for
 /// a host socket that is not reading. Firecracker's CONN_TX_BUF_SIZE.
 pub const BUF_ALLOC: u32 = 64 * 1024;
@@ -75,6 +78,8 @@ pub struct Conn {
     pub queued: bool,
     /// Whether `local_port` was allocated for a host-initiated connection.
     pub allocated_port: bool,
+    /// Its engine ring, where it may have one (D230; ringed.rs).
+    ringing: Ringing,
 }
 
 impl std::fmt::Debug for Conn {
@@ -122,6 +127,7 @@ impl Conn {
             expiry: None,
             queued: false,
             allocated_port: false,
+            ringing: Ringing::Plain,
         }
     }
 
@@ -155,6 +161,7 @@ impl Conn {
     pub fn has_pending_rx(&self) -> bool {
         let p = self.pending;
         p.rst || p.response || p.request || p.shutdown != 0 || p.rw || p.credit_update || p.credit_answer
+            || self.ring_owes()
     }
 
     pub fn expiry(&self) -> Option<Instant> {
@@ -168,6 +175,8 @@ impl Conn {
     /// its side, all it sent read, and the socket may close at once.
     #[cfg(windows)]
     pub fn linger(mut self) -> Option<Conn> {
+        // Its ring goes with the connection; only the host socket lingers.
+        self.ringing = Ringing::Plain;
         if !self.host_write_shut {
             self.host_write_shut = true;
             let _ = self.stream.shutdown(Shutdown::Write);
@@ -193,6 +202,7 @@ impl Conn {
     /// Ends the connection: an RST goes to the guest and buffered data is dropped.
     pub fn kill(&mut self) {
         self.killed = true;
+        self.ringing = Ringing::Plain;
         self.tx_buf = TxBuf::default();
         self.pending = Pending {
             rst: true,
@@ -203,6 +213,9 @@ impl Conn {
 
     /// Which host-socket events the connection waits for: (readable, writable).
     pub fn interest(&self) -> (bool, bool) {
+        if let Some(ringed) = self.ring_interest() {
+            return ringed;
+        }
         let read = !self.killed
             && self.phase == Phase::Established
             && !self.host_eof
@@ -214,6 +227,9 @@ impl Conn {
 
     /// The host socket has data, EOF or an error to report.
     pub fn on_readable(&mut self) {
+        if self.ring_on_readable() {
+            return;
+        }
         if !self.killed && self.phase == Phase::Established && !self.host_eof {
             self.pending.rw = true;
         }
@@ -301,6 +317,9 @@ impl Conn {
             h.flags = flags;
             return Some(h);
         }
+        if let Some(h) = self.ring_next_rx(space) {
+            return Some(h);
+        }
         if self.pending.rw
             && let Some(h) = self.read_host(space)
         {
@@ -369,7 +388,7 @@ impl Conn {
         }
         match (h.op, self.phase) {
             (op::RW, Phase::Established) if !self.guest_send_closed => {
-                if h.len == 0 {
+                if h.len == 0 || self.ring_doorbells(h, payload, mem) {
                     return;
                 }
                 if let Err(e) = self.send_host(payload, mem) {
@@ -444,7 +463,7 @@ impl Conn {
     fn flush(&mut self) -> io::Result<()> {
         let n = self.tx_buf.flush_to(&mut self.stream)?;
         self.fwd_cnt += n as u32;
-        if !self.tx_buf.is_empty() {
+        if !self.tx_buf.is_empty() || !self.ring_drained()? {
             return Ok(());
         }
         if self.guest_send_closed && !self.host_write_shut {

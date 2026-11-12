@@ -24,6 +24,7 @@ use std::os::fd::FromRawFd;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
@@ -197,6 +198,9 @@ pub struct Muxer {
     spare: Option<Spare>,
     local_ports: HashSet<u32>,
     last_local_port: u32,
+    /// The guest's memory, once the device is activated: what a ring port's connections'
+    /// rings are attached in (D230).
+    memory: Option<Arc<GuestMemory>>,
 }
 
 impl std::fmt::Debug for Muxer {
@@ -246,6 +250,7 @@ impl Muxer {
             spare,
             local_ports: HashSet::new(),
             last_local_port: LOCAL_PORT_BASE - 1,
+            memory: None,
         })
     }
 
@@ -291,6 +296,11 @@ impl Muxer {
     }
 
     /// The sizes of the RX and TX rings the guest negotiated, which bound the RSTs owed.
+    /// The guest memory a ring port's connections' rings are attached in (D230).
+    pub fn set_memory(&mut self, memory: Arc<GuestMemory>) {
+        self.memory = Some(memory);
+    }
+
     pub fn set_rings(&mut self, rx: u16, tx: u16) {
         self.max_stray_rsts = stray_rsts_bound(rx, tx);
     }
@@ -405,7 +415,13 @@ impl Muxer {
         // the guest runs, and a later dial, by a workload, is refused (AGENTFILE_ARCH.md
         // §9.7).
         let served = self.served.remove(&key.local_port);
-        let connected = match (served.as_ref(), self.every.get(&key.local_port)) {
+        let every = self.every.get(&key.local_port);
+        // A ring port's connection comes with the handle its owner offers a ring through.
+        let ring = every
+            .filter(|port| port.ringed())
+            .and_then(|_| self.memory.clone())
+            .map(super::ring::RingHandle::new);
+        let connected = match (served.as_ref(), every) {
             (Some(port), _) => serve(|stream| {
                 if port.send(stream).is_ok() {
                     crate::vm::Admission::Accepted
@@ -413,7 +429,7 @@ impl Muxer {
                     crate::vm::Admission::Closed
                 }
             }),
-            (None, Some(port)) => serve(|stream| port.accept(stream)),
+            (None, Some(port)) => serve(|stream| port.accept_with(stream, ring.clone())),
             (None, None) => match &self.listener {
                 Some((path, _)) => {
                     let mut target = OsString::from(path.as_os_str());
@@ -435,8 +451,11 @@ impl Muxer {
         match connected {
             Ok(stream) => {
                 self.make_room();
-                self.conns
-                    .insert(key, Conn::guest_initiated(stream, self.guest_cid, request));
+                let mut conn = Conn::guest_initiated(stream, self.guest_cid, request);
+                if let Some(ring) = ring {
+                    conn.ringable(ring);
+                }
+                self.conns.insert(key, conn);
                 self.enqueue(key);
             }
             Err(e) => {

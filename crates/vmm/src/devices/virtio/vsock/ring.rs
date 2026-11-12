@@ -11,14 +11,58 @@
 //! kernel.
 
 use std::io;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
+use std::sync::{Arc, Mutex};
 
 use shards_abi::ring::{self as abi, Offer, Refusal, field};
 
 use super::{Span, readv, writev};
 use crate::memory::GuestMemory;
 use crate::platform::UnixStream;
+
+/// What a ring port's owner offers a connection's ring through (D230), given with the
+/// connection ([`crate::vm::ServedPort::Ringed`]). The owner reads the guest's hello,
+/// checks its token, then [`offer`](RingHandle::offer)s what it offered and writes one byte
+/// of its own, [`CUE`], before anything else of the connection: the device takes that byte
+/// as its cue, attaches the ring or refuses it, and answers the guest
+/// ([`shards_abi::ring::Reply`]) before anything the host sends after.
+#[derive(Clone)]
+pub struct RingHandle {
+    memory: Arc<GuestMemory>,
+    offer: Arc<Mutex<Option<Offer>>>,
+}
+
+impl std::fmt::Debug for RingHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RingHandle").finish_non_exhaustive()
+    }
+}
+
+/// The owner's cue: the byte it writes after its offer, which the device takes and drops.
+pub const CUE: u8 = 0;
+
+impl RingHandle {
+    pub(crate) fn new(memory: Arc<GuestMemory>) -> RingHandle {
+        RingHandle {
+            memory,
+            offer: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Has the device attach `offer` as [`CUE`], which the owner writes next, reaches it.
+    pub fn offer(&self, offer: Offer) {
+        *crate::sync::lock(&self.offer) = Some(offer);
+    }
+
+    /// The offer, once: the device's, as the cue reaches it.
+    pub(super) fn take(&self) -> Option<Offer> {
+        crate::sync::lock(&self.offer).take()
+    }
+
+    pub(super) fn memory(&self) -> &Arc<GuestMemory> {
+        &self.memory
+    }
+}
 
 /// The most iovecs one `readv` or `writev` takes: Linux's UIO_MAXIOV and macOS's IOV_MAX,
 /// 1,024 each (include/uapi/linux/uio.h; sys/uio.h). A ring of single pages needs at most
@@ -204,6 +248,16 @@ impl Ring {
         ring.store_u64(field::TO_HOST_TAIL, 0);
         ring.store_u64(field::TO_GUEST_HEAD, 0);
         Ok(ring)
+    }
+
+    /// Each ring's length in bytes.
+    pub fn size(&self) -> usize {
+        // The offer's ring is at most `MAX_RING`, a u32.
+        self.size as usize
+    }
+
+    pub(super) fn memory(&self) -> &Arc<GuestMemory> {
+        &self.memory
     }
 
     fn word<T>(&self, offset: u64) -> *mut T {
