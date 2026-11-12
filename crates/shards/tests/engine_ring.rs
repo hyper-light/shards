@@ -493,8 +493,8 @@ struct Budget {
 }
 
 impl Budget {
-    /// None where this Linux host has no user's manager on its bus, said so.
-    fn new(home: &Path) -> Option<Budget> {
+    /// Why not, where this Linux host has no user's manager on its bus.
+    fn new(home: &Path) -> Result<Budget, String> {
         if cfg!(target_os = "linux") {
             #[cfg(unix)]
             // SAFETY: getuid(2) takes nothing and cannot fail.
@@ -506,18 +506,20 @@ impl Budget {
                 .unwrap_or_else(|| format!("/run/user/{uid}").into())
                 .join("bus");
             if !bus.exists() {
-                eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
-                return None;
+                return Err(format!(
+                    "no user's systemd manager here: {} is not",
+                    bus.display()
+                ));
             }
             let parent = format!("shardsring{}.slice", std::process::id());
             let dir = PathBuf::from(format!(
                 "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{parent}"
             ));
-            Some(Budget { parent, dir })
+            Ok(Budget { parent, dir })
         } else {
             let parent = format!("shardsring{}", std::process::id());
             let dir = home.join("groups").join(&parent);
-            Some(Budget { parent, dir })
+            Ok(Budget { parent, dir })
         }
     }
 
@@ -579,8 +581,12 @@ fn a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain() {
     }
     let (image, _) = served();
     let home = TempDir::new("eng-room");
-    let Some(budget) = Budget::new(&home) else {
-        return;
+    let budget = match Budget::new(&home) {
+        Ok(budget) => budget,
+        Err(why) => {
+            eprintln!("SKIP: {why}");
+            return;
+        }
     };
     let debug: [(&str, &OsStr); 1] = [("SHARDS_LOG", "debug".as_ref())];
     let pulled = shards_with(&home, &["pull", "-q", &image], &debug);
