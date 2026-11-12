@@ -1,0 +1,15 @@
+--- /home/adalundhe/s38-api-step6/orig	2026-11-12 07:34:05.043921259 -0800
++++ crates/api/src/image/session.rs	2026-11-12 07:34:05.046432607 -0800
+@@ -532,12 +532,6 @@
+ /// (D234); its latest, once that differs from `seen`; else the run's end, or its host gone
+ /// without one; else nothing yet.
+ fn ready_past(s: &State, granted: bool, seen: Option<Ready>) -> Option<Result<Ready, ImageRefusal>> {
+-    if !granted {
+-        return Some(Err(ImageRefusal::Spec {
+-            what: "nesting",
+-            why: "readiness is the nesting grant's (D234), which the run does not ask for".into(),
+-        }));
+-    }
+     if let Some(ready) = s.ready.filter(|_| s.ready != seen) {
+         return Some(Ok(ready));
+     }

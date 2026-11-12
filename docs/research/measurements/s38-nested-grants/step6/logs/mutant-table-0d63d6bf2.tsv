@@ -1,0 +1,9 @@
+mutant	file	test	exit	panicked at
+consent	crates/shards/src/api_run.rs	api_run::tests::the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it	101	crates/shards/src/api_run.rs:1535:9
+ready-by-passthrough	crates/shards/src/api_run.rs	api_run::tests::the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it	101	crates/shards/src/api_run.rs:1540:9
+conversion	crates/shards/src/api_run.rs	api_run::tests::a_deadline_is_its_budget_past_the_clock_as_the_request_arrives	101	crates/shards/src/api_run.rs:1485:9
+overflow	crates/shards/src/api_run.rs	api_run::tests::a_deadline_is_its_budget_past_the_clock_as_the_request_arrives	101	crates/shards/src/api_run.rs:1499:27
+widening	crates/shards/src/api_run.rs	api_run::tests::the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it	101	crates/shards/src/api_run.rs:1556:40
+ready-forwarding	crates/shards/src/api_run.rs	api_run::tests::the_vms_link_is_relayed_to_the_orchestrator_as_its_guest_said_it	101	crates/shards/src/api_run.rs:1649:74
+ready-taken	crates/api/src/image/session.rs	image::session::tests::readiness_is_told_as_it_moves	101	crates/api/src/image/session.rs:751:9
+ungranted-wait	crates/api/src/image/session.rs	image::session::tests::readiness_is_told_as_it_moves	101	crates/api/src/image/session.rs:773:9

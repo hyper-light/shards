@@ -1,0 +1,10 @@
+--- /home/adalundhe/s38-api-step6/orig	2026-11-12 07:27:44.315231758 -0800
++++ crates/shards/src/api_run.rs	2026-11-12 07:27:44.349231458 -0800
+@@ -467,7 +467,6 @@
+             } else {
+                 Vec::new()
+             },
+-            ready_by,
+             remove: true,
+             ..Default::default()
+         }

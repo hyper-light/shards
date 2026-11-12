@@ -1,0 +1,14 @@
+--- /home/adalundhe/s38-api-step6/orig	2026-11-12 07:26:30.334884759 -0800
++++ crates/shards/src/api_run.rs	2026-11-12 07:26:30.340233353 -0800
+@@ -462,11 +462,6 @@
+             .into(),
+             publish,
+             binds,
+-            security_opt: if request.nesting {
+-                vec!["nesting=true".into()]
+-            } else {
+-                Vec::new()
+-            },
+             ready_by,
+             remove: true,
+             ..Default::default()

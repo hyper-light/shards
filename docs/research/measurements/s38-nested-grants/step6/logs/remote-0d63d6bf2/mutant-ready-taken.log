@@ -1,0 +1,24 @@
+   Compiling shards-api v0.1.0 (/home/adalundhe/s38-api-step6/src/crates/api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+     Running unittests src/lib.rs (/home/adalundhe/s38-api-step6/target/debug/deps/shards_api-9e7d13efbf3b4fbf)
+
+running 1 test
+test image::session::tests::readiness_is_told_as_it_moves ... FAILED
+
+failures:
+
+---- image::session::tests::readiness_is_told_as_it_moves stdout ----
+
+thread 'image::session::tests::readiness_is_told_as_it_moves' (1413320) panicked at crates/api/src/image/session.rs:751:9:
+assertion `left == right` failed
+  left: Err("unknown answer kind 23")
+ right: Ok(false)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    image::session::tests::readiness_is_told_as_it_moves
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 101 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-api --lib`
