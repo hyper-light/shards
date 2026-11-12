@@ -6,7 +6,7 @@ set -u
 rev=$1 targets=$2; shift 2
 base=$HOME/g121-tmp/s7p2
 cd "$base/shards" || exit 2
-git fetch -q origin p/s7-part2-v1 main && git checkout -q --detach "$rev" || exit 3
+git fetch -q origin p/s7-part2-v1 p/s7-part2-land main && git checkout -q --detach "$rev" || exit 3
 echo "== $(git log --oneline -1) $(date -u +%FT%TZ)"
 export PATH="$base/zig-aarch64-macos-0.16.0:$PATH" SHARDS_HELPERS=skip
 : > "$base/fake-init"; : > "$base/fake-server"

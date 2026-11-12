@@ -248,11 +248,15 @@ on x86_64 and aarch64, glibc and musl.
   (`lint-mac-pkgs-item1.log`, `lint-mac-pkgs-item2.log`, adacachy for x86_64 Linux glibc).
   Their light tests ran on Linux x86_64 (adacachy) and macOS arm64 (the Mac Studio,
   `lint-mac-item1.log`, `test-mac-item2.log`).
-- The full `scripts/lint` stops at x86_64-pc-windows-msvc on main's own shards-vmm lib test
-  (windows_process.rs:544, PM M526's SAFETY comment placement), outside this change. Its owner
-  is fixing it, and the per-crate lint covers the targets after it.
-- **Owed**: the host crates' light tests on Windows (jupiter had no idle cores; see
-  Operations), and every real-VM run (ROOT).
+- While items 1 and 2 landed, the full `scripts/lint` stopped at x86_64-pc-windows-msvc on
+  main's own shards-vmm lib test (windows_process.rs:544, PM M526's SAFETY comment
+  placement), outside this change, and the per-crate lint covered the targets after it. With
+  main's fix (4f3c06255) in, `scripts/lint` passes whole at a1e1ca716, main with all four items:
+  format and the seven targets (`lint-mac-final.log`).
+- Windows x86_64 (jupiter, `test-windows-item2.log`): shards-abi passes whole; shards-api's lib
+  passes but for two physical::report tests, a module this change does not touch (reported).
+- **Owed**: the shards binary's light tests on Windows (jupiter had no idle cores), and every
+  real-VM run (ROOT).
 - No platform adapter is added: the change rides existing seams (setup entries, the image
   channel, `skeleton`, `staged`).
 
