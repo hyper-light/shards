@@ -1031,7 +1031,10 @@ mod hosted {
             let following = std::thread::Builder::new()
                 .name("api-run link".into())
                 .spawn_scoped(scope, || {
-                    let end = match lock(&live.link).try_clone() {
+                    // Its clone taken and the lock let go of before it is read: a match's
+                    // guard would be held through `follow`, and an exec's send wait out the run.
+                    let link = lock(&live.link).try_clone();
+                    let end = match link {
                         Ok(link) => follow(live, &link),
                         Err(e) => RunEnd::Failed(format!("the VM's link: {e}")),
                     };
