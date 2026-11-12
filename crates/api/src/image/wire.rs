@@ -12,9 +12,11 @@
 use std::net::{IpAddr, SocketAddr};
 
 use shards_abi::run;
+pub use shards_abi::run::nesting::Ready;
 
-/// The channel's version, the first byte of [`Request`]: changed only by appending.
-pub const VERSION: u8 = 1;
+/// The channel's version, the first byte of [`Request`]: changed only by appending. 2
+/// appends the nesting grant's consent and deadline (D234).
+pub const VERSION: u8 = 2;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -44,6 +46,9 @@ pub mod to_client {
     pub const STATS: u8 = 21;
     /// [`RunEnd`](super::RunEnd), last: the run has ended.
     pub const ENDED: u8 = 22;
+    /// [`Ready`](super::Ready): the run's own command moved its readiness under the nesting
+    /// grant (D234), as its init said it ([`ready`](super::ready) reads it).
+    pub const READY: u8 = 23;
 }
 
 /// Why a payload could not be read or written.
@@ -202,6 +207,12 @@ pub struct Request {
     pub publish: Vec<Publish>,
     pub egress: Narrowing,
     pub shares: Vec<ShareAt>,
+    /// The nesting grant for the run's own command (D234), as `--security-opt nesting=true`
+    /// asks for it.
+    pub nesting: bool,
+    /// The grant's deadline (D234): a budget in nanoseconds from when the run host reads
+    /// this request, which it makes an instant on its own clock; none for none.
+    pub ready_by: Option<u64>,
 }
 
 /// Room for `bytes` more of member `member`'s `channel`.
@@ -650,6 +661,14 @@ impl Request {
             w.text(&s.at)?;
             w.u8(u8::from(s.read_only));
         }
+        w.u8(u8::from(self.nesting));
+        match self.ready_by {
+            None => w.u8(0),
+            Some(budget) => {
+                w.u8(1);
+                w.u64(budget);
+            }
+        }
         w.done()
     }
 
@@ -724,6 +743,8 @@ impl Request {
             let read_only = r.flag()?;
             shares.push(ShareAt { host, at, read_only });
         }
+        let nesting = r.flag()?;
+        let ready_by = if r.flag()? { Some(r.u64()?) } else { None };
         r.end()?;
         Ok(Request {
             image,
@@ -734,6 +755,8 @@ impl Request {
             publish,
             egress,
             shares,
+            nesting,
+            ready_by,
         })
     }
 }
@@ -1018,6 +1041,20 @@ impl RunEnd {
     }
 }
 
+/// What a [`to_client::READY`] says: its payload is [`Ready::encode`]'s nine bytes, as the
+/// guest's init sent them; anything else is refused, its state's tag named where it is
+/// nine bytes long (none of its versions has it, or it is on time with a lateness).
+pub fn ready(payload: &[u8]) -> Result<Ready, WireError> {
+    let mut r = Reader(payload);
+    let state = r.u8()?;
+    r.u64()?;
+    r.end()?;
+    Ready::decode(payload).ok_or(WireError::Tag {
+        what: "a readiness",
+        tag: state,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1062,6 +1099,8 @@ mod tests {
                 at: "/work".into(),
                 read_only: false,
             }],
+            nesting: false,
+            ready_by: None,
         }
     }
 
@@ -1077,6 +1116,33 @@ mod tests {
         assert_eq!(
             Request::decode(&with_command.encode().unwrap()).unwrap(),
             with_command
+        );
+        // The nesting grant asked for (D234), with no deadline and at a deadline's edges;
+        // and a deadline in a request that does not ask for it, which its host refuses.
+        for (nesting, ready_by) in [
+            (true, None),
+            (true, Some(0)),
+            (true, Some(u64::MAX)),
+            (false, Some(1)),
+        ] {
+            let asked = Request {
+                nesting,
+                ready_by,
+                ..request()
+            };
+            assert_eq!(Request::decode(&asked.encode().unwrap()).unwrap(), asked);
+        }
+        let asked = Request {
+            nesting: true,
+            ready_by: Some(0x0102_0304_0506_0708),
+            ..request()
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(
+            asked.get(asked.len() - 10..).unwrap(),
+            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8],
+            "appended last: the grant's flag, then the deadline's"
         );
         for c in [
             Credit {
@@ -1178,6 +1244,22 @@ mod tests {
         let mut bytes = request().encode().unwrap();
         bytes[0] = VERSION + 1;
         assert_eq!(Request::decode(&bytes), Err(WireError::Version(VERSION + 1)));
+        // A request of version 1, without the nesting grant's fields, is no request of
+        // this one's: refused by its version, never read with the grant defaulted.
+        let mut v1 = request().encode().unwrap();
+        v1.truncate(v1.len() - 2);
+        v1[0] = 1;
+        assert_eq!(Request::decode(&v1), Err(WireError::Version(1)));
+        let mut flag = request().encode().unwrap();
+        let at = flag.len() - 2;
+        flag[at] = 2;
+        assert_eq!(
+            Request::decode(&flag),
+            Err(WireError::Tag {
+                what: "a flag",
+                tag: 2
+            })
+        );
         assert!(matches!(
             Credit::decode(&[0, 0, 0, 1, 3, 0, 0, 0, 0, 0, 0, 0, 1]),
             Err(WireError::Tag {
@@ -1216,6 +1298,39 @@ mod tests {
         assert!(!shown.contains("sk-test-123"), "{shown}");
         assert!(!shown.contains("t0p"), "{shown}");
         assert!(shown.contains("Secret(26 bytes)"), "{shown}");
+    }
+
+    /// READY reads back each readiness the guest's init says (D234), how far past its
+    /// deadline whole; a payload that is no readiness, short, long, of no state or on time
+    /// with a lateness, is refused by type, never read as one.
+    #[test]
+    fn readiness_reads_as_its_guest_said_it() {
+        for said in [
+            Ready::OnTime,
+            Ready::Late(1),
+            Ready::Late(u64::MAX),
+            Ready::Passed(0),
+            Ready::Passed(7),
+        ] {
+            assert_eq!(ready(&said.encode()), Ok(said));
+        }
+        assert_eq!(ready(&[]), Err(WireError::Short));
+        assert_eq!(ready(&[2, 0, 0, 0, 0, 0, 0, 0]), Err(WireError::Short));
+        assert_eq!(ready(&[2; 10]), Err(WireError::Trailing));
+        for (payload, tag) in [
+            ([0; 9], 0),
+            ([4, 0, 0, 0, 0, 0, 0, 0, 0], 4),
+            ([1, 0, 0, 0, 0, 0, 0, 0, 1], 1),
+        ] {
+            assert_eq!(
+                ready(&payload),
+                Err(WireError::Tag {
+                    what: "a readiness",
+                    tag
+                }),
+                "{payload:?}"
+            );
+        }
     }
 
     /// A frame past the run protocol's bound is refused before it is written or read.

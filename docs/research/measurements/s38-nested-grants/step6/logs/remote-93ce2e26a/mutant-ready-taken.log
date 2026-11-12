@@ -1,0 +1,10 @@
+   Compiling shards-api v0.1.0 (/home/adalundhe/s38-api-step6/src/crates/api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.85s
+     Running unittests src/lib.rs (/home/adalundhe/s38-api-step6/target/debug/deps/shards_api-9e7d13efbf3b4fbf)
+
+running 1 test
+test image::session::tests::readiness_is_told_as_it_moves has been running for over 60 seconds
+error: test failed, to rerun pass `-p shards-api --lib`
+
+Caused by:
+  process didn't exit successfully: `/home/adalundhe/s38-api-step6/target/debug/deps/shards_api-9e7d13efbf3b4fbf 'image::session::tests::readiness_is_told_as_it_moves'` (signal: 15, SIGTERM: termination signal)

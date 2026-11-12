@@ -12,6 +12,11 @@
 //!
 //! What a member is given is native-sign-in delegation, not an opaque credential
 //! (managed-runtime-plan.md G18): it reads every byte of it.
+//!
+//! An image declaring `NESTING` gives the run's own command the nesting grant where the
+//! spec asks for it ([`ImageSpec::nesting`], D234), with a deadline for its readiness
+//! ([`ImageSpec::ready_by`]), which the command's `READY=1` moves and
+//! [`ImageGuest::wait_ready`] tells.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -20,7 +25,7 @@ mod session;
 pub mod wire;
 
 pub use wire::{
-    Bound, Channel, Keep, MemberInfo, MemberKind, Narrowing, Proto, Publish, RunEnd, Secret, Stats,
+    Bound, Channel, Keep, MemberInfo, MemberKind, Narrowing, Proto, Publish, Ready, RunEnd, Secret, Stats,
     StatsScope,
 };
 
@@ -97,6 +102,17 @@ pub struct ImageSpec {
     /// The image's grants past the microVM, kept or dropped, never added to.
     pub egress: Narrowing,
     pub shares: Vec<ImageShare>,
+    /// The nesting grant for the run's own command (D234): the run's consent, as
+    /// `--security-opt nesting=true` gives it to `run vm`. Given only where the image's
+    /// Agentfile declares `NESTING`, and so no agent or harness: asked of an image that does
+    /// not declare it, refused as [`ImageRefusal::Widening`]; of one crafted with it beside
+    /// an agent or harness, as [`ImageRefusal::Image`].
+    pub nesting: bool,
+    /// The grant's deadline (D234): how long the run's own command has to say it is ready,
+    /// from when the run's host reads the request, which makes it an instant on the host's
+    /// clock; none for none. The grant's alone: without [`nesting`](Self::nesting), refused.
+    /// A deadline missed is told ([`Ready::Passed`]), never enforced: the run goes on.
+    pub ready_by: Option<Duration>,
     /// The `shards` binary: else `SHARDS_BIN`, else `shards` on `PATH`.
     pub binary: Option<PathBuf>,
     /// Variables of the run host's own process, over this process's: `SHARDS_HOME` (whose
@@ -185,6 +201,13 @@ pub trait ImageGuest: Send + Sync {
     /// The use of the run, of its own command or of a member, as its init reads its cgroup,
     /// waiting at most `patience` (`Duration::MAX`: until it answers or the run ends).
     fn stats(&self, scope: StatsScope, patience: Duration) -> Result<Stats, ImageRefusal>;
+    /// The readiness of the run's own command under the nesting grant (D234), as its init
+    /// last said it, once it differs from `seen` (none: once there is any), waiting at most
+    /// `timeout` (`Duration::MAX`: until it comes; `Duration::ZERO`: as it stands). Its
+    /// deadline passed ([`Ready::Passed`]) moves on to ready late at its `READY=1`; ready is
+    /// where it stays. Refused for a run whose spec does not ask for the grant, and once the
+    /// run has ended with nothing newer ([`ImageRefusal::Ended`]).
+    fn wait_ready(&self, seen: Option<Ready>, timeout: Duration) -> Result<Option<Ready>, ImageRefusal>;
     /// Ends it at once: its VM's process is killed, and [`wait_for`](Self::wait_for) then
     /// returns [`RunEnd::Stopped`]. Never refused, as a VM left running is a leak.
     fn stop(&self) -> Result<(), ImageRefusal>;
@@ -306,6 +329,17 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             read_only: s.read_only,
         });
     }
+    // The instant it becomes is nanoseconds since the Unix epoch in a u64, as `ready-by=`
+    // carries it to init (D234): a budget past what one counts could never be one.
+    let ready_by = spec
+        .ready_by
+        .map(|budget| {
+            u64::try_from(budget.as_nanos()).map_err(|_| ImageRefusal::Spec {
+                what: "the deadline",
+                why: format!("{budget:?}: past the nanoseconds a deadline counts (a u64's)"),
+            })
+        })
+        .transpose()?;
     let request = wire::Request {
         image: spec.image.clone(),
         vcpus: spec.vcpus,
@@ -315,6 +349,8 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
         publish: spec.publish.clone(),
         egress: spec.egress.clone(),
         shares,
+        nesting: spec.nesting,
+        ready_by,
     };
     // Past the channel's bound it would never be read; the guest's bound is the same one.
     request.encode().map_err(|e| ImageRefusal::Spec {
@@ -352,6 +388,8 @@ mod tests {
                 at: "/work".into(),
                 read_only: true,
             }],
+            nesting: false,
+            ready_by: None,
             binary: None,
             env: Vec::new(),
         }
@@ -364,7 +402,47 @@ mod tests {
         assert_eq!(r.members[0].env, vec![Secret::from("OPENAI_API_KEY=sk-1")]);
         assert_eq!(r.members[0].files[0].mode, 0o600);
         assert!(r.shares[0].read_only);
+        assert_eq!((r.nesting, r.ready_by), (false, None));
         assert_eq!(wire::Request::decode(&r.encode().unwrap()).unwrap(), r);
+    }
+
+    /// The nesting grant's consent and its deadline (D234) reach the run host as asked:
+    /// the deadline a budget in nanoseconds, its host's to make an instant; one past what
+    /// an instant in nanoseconds counts is refused by field before anything starts. A
+    /// deadline without the grant is the run host's to refuse, in the daemon's words.
+    #[test]
+    fn the_nesting_grant_and_its_deadline_are_asked_as_given() {
+        for (nesting, budget, sent) in [
+            (true, None, None),
+            (true, Some(Duration::ZERO), Some(0)),
+            (true, Some(Duration::new(5, 7)), Some(5_000_000_007)),
+            (true, Some(Duration::from_nanos(u64::MAX)), Some(u64::MAX)),
+            (false, Some(Duration::from_secs(1)), Some(1_000_000_000)),
+        ] {
+            let mut s = spec();
+            s.nesting = nesting;
+            s.ready_by = budget;
+            let r = request(&s).unwrap();
+            assert_eq!((r.nesting, r.ready_by), (nesting, sent), "{budget:?}");
+        }
+        let mut s = spec();
+        s.nesting = true;
+        for budget in [
+            Duration::from_nanos(u64::MAX) + Duration::from_nanos(1),
+            Duration::MAX,
+        ] {
+            s.ready_by = Some(budget);
+            assert!(
+                matches!(
+                    request(&s),
+                    Err(ImageRefusal::Spec {
+                        what: "the deadline",
+                        ..
+                    })
+                ),
+                "{budget:?}"
+            );
+        }
     }
 
     /// What the guest would refuse is refused here, by field, before anything starts.
