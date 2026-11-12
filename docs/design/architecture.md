@@ -7095,6 +7095,22 @@ descriptors.
   write, one reading 16 KiB at a time, 60 ms apart, was let go of a request's time in, 3 s
   in the test, still reading). A stop's slot is not counted: the daemon holds that session
   until its exit, which is how `daemon stop` learns of it.
+- **Whose end a run's client heard** (PM M530). A run's, an exec's and an attach's slot
+  passes on what its VM says, so the slot ends both where the VM's connection closes with no
+  last word and where the daemon itself ends: a killed daemon closes every slot it served.
+  The client said the same of both, "the command's microVM stopped before the command
+  ended", and blamed the microVM for kiln's between-turns sweep, which ended the WHP E2E's
+  daemons with `taskkill /F` (jupiter's kiln.log, 2026-11-12): a hunt through WHP, the VMM
+  and the guest. M188's and M331's daemons that exited under their clients were taken so too.
+  Now the slot says `UNANSWERED`, last, where the run's side ended without its last word
+  (`EXIT`, `END`, `RESTART`), and the client says so as the microVM's stop; a slot that ends
+  with no last word at all is its daemon's end, and the client says "the daemon ended before
+  the command did". A command's client (`END`) reads any early end as its daemon's already;
+  a socket's peer (a daemon of a build from before slots) is the run's VM. Held by
+  `a_side_that_ends_without_its_last_word_says_so` and
+  `a_runs_client_tells_its_daemons_end_from_its_microvms`, each red with its guard removed
+  (M530 says on which hosts); live on WHP, a daemon ended mid-run said so and a VM ended
+  said the microVM's words.
 - **Many clients on one list** (PM M262). On macOS a client waiting in select(2) for its
   slot could stop waking at all while the others took theirs: 12 of 16 clients slept
   through 20 s of records others took, and one of an E2E test's 16 waited 60 s while its
