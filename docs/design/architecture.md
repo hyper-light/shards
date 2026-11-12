@@ -17375,6 +17375,13 @@ The research, every finding graded with its sources:
 
   Egress past the microVM stays its network process's, on the host, and nothing in the
   guest changes it (f29).
+- *Refused with it*, by the daemon and again by init, since each undoes what the grant rests
+  on:
+  - `--cgroupns host`: the microVM's cgroup namespace (D156) in place of the subtree rooted
+    at `run/workload`, whose own limits the writable hierarchy would then reach;
+  - `--pid host`: init's PID namespace in place of the workload's own, so its boxes would
+    no longer end with it (f12, f13), and CAP_SYS_ADMIN would face init's processes and
+    their namespaces.
 - *Already the workload's, unchanged*:
   - `/proc`, `/sys`, `/dev`, and tmpfs mounts as a run asks (`--tmpfs /run`; D115's table
     gives them);

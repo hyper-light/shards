@@ -1,0 +1,18 @@
+2026-11-12T08:04:13Z round 1 runner 00aad8daff2fa3c9daa65d53c425d450 rc 1
+2026-11-12T08:04:13.332261Z ERROR the kiln server did not answer in time
+---
+2026-11-12T08:04:56Z round 1 runner 451397fcc585f7f7cb9aaf00e42064bb rc 1
+2026-11-12T08:04:56.344726Z ERROR the kiln server did not answer in time
+---
+2026-11-12T08:05:59Z round 1 runner 8fadc1ec213332e16cb0d915a3fb913f rc 0
+commit=c026df6a2dc1e9b4430ca2812e5cff03b655cc53
+Development policy checks passed; evidence/coordinator review is still required.
+policy_exit=0
+free     marker 7: the next free value
+free     run kind 49: the next free value
+free     ipc kind 90: the next free value
+planned 22, underived or unplanned 0
+audit_exit=0
+Linux x86_64
+kiln-a094a12d.attlocal.net
+---
