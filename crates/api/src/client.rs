@@ -48,7 +48,7 @@ const ESCAPED: usize = "\\u{7f}".len();
 /// writes as it ends, a reset's, with `--no-console` its guest's last console bytes escaped
 /// and their first said lost (`crates/shards/src/vm_run.rs` `supervise`, `last_said`), so a
 /// refusal quotes it whole. Its other reports are one error each.
-fn tail(said: usize) -> usize {
+pub(crate) fn tail(said: usize) -> usize {
     "shards: guest requested a reset, its console's last lines, those before them lost past the "
         .len()
         .saturating_add(usize::MAX.ilog10() as usize + 1)

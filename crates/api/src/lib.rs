@@ -30,6 +30,7 @@ use std::time::Duration;
 
 mod client;
 pub mod conformance;
+pub mod image;
 mod said;
 pub mod sim;
 mod stream;
