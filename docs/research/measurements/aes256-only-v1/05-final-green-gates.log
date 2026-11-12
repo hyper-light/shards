@@ -1,0 +1,190 @@
+# Final green and gates on the committed source. kiln's sync to the runner timed out three
+# times after the commit ("did not answer the sync in 60s"), so this ran without a sync in the
+# folder the earlier runs had synced; its Rust and harness files' git blob ids (first lines
+# below) are e12d5b96e's own (git rev-parse e12d5b96e:PATH gives the same six ids), and no Rust
+# file changed after 18:45:33, before the first sync. Its HEAD line is the folder's base; the
+# commit adds docs and logs alone beyond those files.
+# runner: kiln 8fadc1ec213332e16cb0d915a3fb913f (kiln-a094a12d.attlocal.net, Fedora 44, Linux
+# 6.19.10-300.fc44.x86_64), systemd-run --user --scope -q -p MemoryMax=24G, CARGO_BUILD_JOBS=4,
+# TMPDIR=$HOME/g121-tmp, rustc 1.98.1, zig 0.16.0; amphora-bench not running
+# command: git hash-object of the six files, then bash docs/research/measurements/aes256-only-v1/run.sh green gates
+# runner sha256 of green.log (from the first HEAD= line to before "SHA256 green.log"):
+#   459fca59cdbf770c54aaa2877d86b07c787f650e69aa644f3949833fa88d1dc8
+# runner sha256 of gates.log (from the second HEAD= line to before "SHA256 gates.log"):
+#   863688d29e653d0cef39f56117e04cb00ff0f4be24b4335eefe8857b9e20b722
+# result: shards-remote 33 + 17 passed, shards-server 47 passed; policy 0, fmt 0, clippy -D
+# warnings 0 for shards-remote (x86_64 gnu) and shards-server (x86_64 gnu, x86_64 musl, aarch64 musl)
+# ---- raw ----
+--- blob ids of the gated files here (git hash-object), to compare with e12d5b96e's:
+e7d124f83cb981bf1db5dfae52cf78e43999b0ec crates/remote/src/lib.rs
+7f8c4dcfbb3dfee960c7867cea5de070c7f8f212 crates/remote/src/tls.rs
+49a0b707a7cfb349d55be2438a4de4edd13b53be crates/server/src/server.rs
+0a5d795388599a98f4d91a85585469f9a64f80c3 docs/research/measurements/aes256-only-v1/run.sh
+bc27f6842cb432d0f29d3c74658f7c51469ebd22 docs/research/measurements/aes256-only-v1/mutate.py
+b80b5233c7562d9ed83aa8acad3dbc1019b0f599 docs/research/measurements/aes256-only-v1/mutations.sh
+HEAD=032b63b1c9b642d0e2c8af71d6f9643909416f99 host=kiln-a094a12d.attlocal.net kernel=6.19.10-300.fc44.x86_64 rustc 1.98.1 (48a229cea 2026-09-01) zig=0.16.0
+M  crates/remote/src/lib.rs
+M  crates/remote/src/tls.rs
+M  crates/server/src/server.rs
+MM docs/design/architecture.md
+A  docs/research/measurements/aes256-only-v1/01-red-base-providers.log
+AD docs/research/measurements/aes256-only-v1/02-INVALID-green-stale-mutant.log
+AD docs/research/measurements/aes256-only-v1/03-green.log
+AD docs/research/measurements/aes256-only-v1/04-mutations.log
+A  docs/research/measurements/aes256-only-v1/POLICY_READ.json
+AD docs/research/measurements/aes256-only-v1/evidence.json
+A  docs/research/measurements/aes256-only-v1/mutate.py
+A  docs/research/measurements/aes256-only-v1/mutations.sh
+A  docs/research/measurements/aes256-only-v1/run.sh
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.84s
+     Running unittests src/lib.rs (target/debug/deps/shards_remote-29bd2c628b689384)
+
+running 33 tests
+test frame::tests::frames_come_back_whole_however_they_arrive ... ok
+test frame::tests::a_request_carries_its_arguments_and_printing_variables_alone ... ok
+test managed::tests::a_record_cannot_be_acked_before_it_was_sent ... ok
+test invite::tests::a_proof_holds_for_its_secret_and_session_alone ... ok
+test managed::tests::control_lengths_and_tags_are_refused_before_payload_allocation ... ok
+test managed::tests::controls_preserve_scope_and_cursor_across_every_split ... ok
+test managed::tests::finishing_releases_the_last_record_only_after_its_application_ack ... ok
+test managed::tests::observer_loss_retains_only_the_unacknowledged_record_for_the_same_cursor ... ok
+test managed::tests::only_a_contiguous_application_ack_returns_credit ... ok
+test managed::tests::capture_reconnect_preserves_the_borrowed_record_and_cursor ... ok
+test managed::tests::finish_coalesces_the_queued_record_wake_without_discarding_the_record ... ok
+test managed::tests::refusal_categories_preserve_scope_and_stale_generation ... ok
+test managed::tests::finish_after_the_native_driver_drops_keeps_the_disconnect_error ... ok
+test managed::tests::growth_prepares_real_storage_and_refusal_preserves_the_previous_window ... ok
+test managed::tests::replay_and_forward_cursors_do_not_subscribe_to_a_new_stream ... ok
+test managed::tests::rejection_debug_never_prints_captured_content ... ok
+test managed::tests::finish_coalesces_a_queued_wake_for_an_empty_stream ... ok
+test managed::tests::terminal_ack_notification_exposes_finished_after_releasing_shared ... ok
+test managed::tests::terminal_finish_never_revives_an_aborted_slot_or_ending ... ok
+test managed::tests::terminal_observations_do_not_infer_completion_from_equal_cursors ... ok
+test managed::tests::prepared_capture_storage_is_transferred_and_recycled_after_ack ... ok
+test net::tests::a_connection_lives_while_it_is_heard_and_its_handshake_alone_is_held_to_idle ... ok
+test tls::tests::a_peer_limited_to_aes_128_gcm_is_refused_either_way ... ok
+test tls::tests::a_peer_limited_to_chacha20_poly1305_is_refused_either_way ... ok
+test net::tests::an_interrupted_receive_keeps_serving_commands ... ok
+test handshake::a_daemon_not_pinned_is_refused ... ok
+test invite::tests::an_invitation_is_written_private_and_read_back ... ok
+test identity::tests::an_identity_is_made_once_and_kept ... ok
+test tls::tests::an_earlier_shards_still_connects_on_aes_256_gcm ... ok
+test tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way ... ok
+test handshake::only_a_clients_two_way_streams_open ... ok
+test handshake::homes_connect_by_their_raw_keys ... ok
+test tls::tests::every_link_is_aes_256_gcm_at_both_ends ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/loopback.rs (target/debug/deps/loopback-526c025d4ca769b2)
+
+running 17 tests
+test a_control_stream_for_no_command_is_refused ... ok
+test a_client_not_enrolled_is_refused_by_its_frames_header ... ok
+test a_machine_takes_as_many_strangers_as_it_holds_invitations ... ok
+test a_command_whose_client_leaves_its_stream_is_hung_up ... ok
+test a_client_that_finishes_its_stream_ends_its_commands_input ... ok
+test a_commands_state_goes_with_it_while_its_connection_stays ... ok
+test a_commands_stdin_ends_as_its_client_says_or_with_the_command ... ok
+test what_a_command_made_comes_before_its_exit ... ok
+test a_streams_last_frames_and_its_end_come_at_once_and_are_all_taken ... ok
+test a_client_asked_to_send_no_more_stdin_waits_for_its_answer ... ok
+test what_steers_a_command_passes_its_stdin_waiting_for_room ... ok
+test a_command_that_reads_no_stdin_holds_up_no_other ... ok
+test a_client_joins_then_runs_commands_whose_output_crosses_whole ... ok
+test what_a_command_of_a_connection_gone_writes_reaches_no_other ... ok
+test no_daemon_answering_is_told_at_the_handshakes_bound ... ok
+test a_stranger_has_the_idle_bound_to_join ... ok
+test an_enrolled_clients_command_runs_past_the_idle_bound ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.06s
+
+   Doc-tests shards_remote
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+remote_test_exit=0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.70s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 47 tests
+test broker::tests::a_refusal_without_storage_says_it_was_refused ... ok
+test broker::tests::broker_completion_consumes_only_the_owned_request_once ... ok
+test broker::tests::broker_rejects_bad_arguments_ownership_and_exhausted_identity_before_send ... ok
+test broker::tests::broker_local_send_failure_preserves_cause_without_reusing_identity ... ok
+test broker::tests::a_file_longer_than_its_size_says_is_handed_as_before ... ok
+test broker::tests::broker_reservation_precedes_actual_send_and_retains_local_receipt ... ok
+test sandbox::tests::frames_are_read_whole_and_within_their_bound ... ok
+test broker::tests::broker_required_durable_refuses_before_opening_or_sending ... ok
+test server::json::tests::reads_what_rfc_8259_writes_and_no_more ... ok
+test broker::tests::a_small_hand_reserves_what_its_file_holds ... ok
+test server::tests::a_peers_file_is_heard_as_granted ... ok
+test broker::tests::broker_prebuilt_error_capacity_covers_actual_escaped_completion ... ok
+test sandbox::tests::a_worker_is_ended_for_a_call_its_filter_refuses ... ok
+test server::tests::a_program_is_reserved_before_its_helper_receives_authority ... ok
+test server::tests::a_typed_program_refusal_formats_without_requesting_storage ... ok
+test server::tests::a_refused_native_release_does_not_reuse_its_issued_identity ... ok
+test server::tests::an_exhausted_program_identity_cannot_release_another_worker ... ok
+test server::tests::an_expired_program_is_refused_before_native_release ... ok
+test server::tests::base64_is_rfc_4648s ... ok
+test server::tests::an_unusable_helper_control_is_not_admitted ... ok
+test server::tests::each_refused_program_allocation_precedes_native_worker_release ... ok
+test server::tests::strings_are_quoted_as_json_writes_them ... ok
+test sandbox::tests::the_call_beneath_the_tools_is_out_of_reach ... ok
+test sandbox::tests::a_program_calls_its_tools_over_its_socket ... ok
+test server::tests::a_peer_is_heard_only_as_granted ... ok
+test server::tests::a_cancellation_names_a_request_in_its_own_session ... ok
+test server::tests::a_programs_call_is_its_callers ... ok
+test server::tests::a_client_limited_to_aes_128_gcm_is_refused ... ok
+test server::tests::broker_exhausted_caller_identity_refuses_before_packet ... ok
+test server::tests::a_client_limited_to_chacha20_poly1305_is_refused ... ok
+test server::tests::what_the_current_revision_refuses ... ok
+test sandbox::tests::a_programs_broker_results_keep_their_receipt ... ok
+test server::tests::earlier_revisions_and_what_every_revision_refuses ... ok
+test server::tests::initialize_begins_a_session ... ok
+test server::tests::broker_http_and_program_callers_share_the_actual_peer_admission ... ok
+test server::tests::headers_that_differ_from_their_body_are_refused ... ok
+test server::tests::the_current_revision_is_answered_request_by_request ... ok
+test server::tests::requests_past_their_bounds_are_refused ... ok
+test server::tests::only_a_regular_file_of_the_scratch_is_handed ... ok
+test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... ok
+test sandbox::tests::what_a_program_came_to ... ok
+test server::tests::an_instance_and_its_caller_are_aes_256_gcm_at_both_ends ... ok
+test server::tests::an_instance_answers_its_own_caller_alone ... ok
+test sandbox::tests::a_refused_call_is_thrown ... ok
+test server::tests::a_program_answers_a_request_that_closes_its_connection ... ok
+test sandbox::tests::a_worker_not_reaped_ends_no_other ... ok
+test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+
+server_test_exit=0
+SHA256 green.log 459fca59cdbf770c54aaa2877d86b07c787f650e69aa644f3949833fa88d1dc8
+HEAD=032b63b1c9b642d0e2c8af71d6f9643909416f99 host=kiln-a094a12d.attlocal.net kernel=6.19.10-300.fc44.x86_64 rustc 1.98.1 (48a229cea 2026-09-01) zig=0.16.0
+M  crates/remote/src/lib.rs
+M  crates/remote/src/tls.rs
+M  crates/server/src/server.rs
+MM docs/design/architecture.md
+A  docs/research/measurements/aes256-only-v1/01-red-base-providers.log
+AD docs/research/measurements/aes256-only-v1/02-INVALID-green-stale-mutant.log
+AD docs/research/measurements/aes256-only-v1/03-green.log
+AD docs/research/measurements/aes256-only-v1/04-mutations.log
+A  docs/research/measurements/aes256-only-v1/POLICY_READ.json
+AD docs/research/measurements/aes256-only-v1/evidence.json
+A  docs/research/measurements/aes256-only-v1/mutate.py
+A  docs/research/measurements/aes256-only-v1/mutations.sh
+A  docs/research/measurements/aes256-only-v1/run.sh
+Development policy checks passed; evidence/coordinator review is still required.
+policy_exit=0
+fmt_exit=0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.51s
+clippy_remote_x86_64_gnu_exit=0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.30s
+clippy_server_x86_64_gnu_exit=0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.44s
+clippy_server_x86_64_musl_exit=0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.41s
+clippy_server_aarch64_musl_exit=0
+SHA256 gates.log 863688d29e653d0cef39f56117e04cb00ff0f4be24b4335eefe8857b9e20b722
