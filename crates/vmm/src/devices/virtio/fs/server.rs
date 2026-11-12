@@ -2542,6 +2542,7 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner),
 /// Node `node`'s path within its share, its names from the root down joined by `/`, as the
 /// guest last named them: none where its chain is broken, or longer than the tables, which
 /// is a loop no directory has.
+#[cfg(target_os = "linux")]
 fn path_of(s: &State, node: u64) -> Option<Vec<u8>> {
     let mut names: Vec<&[u8]> = Vec::new();
     let mut at = node;

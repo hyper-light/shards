@@ -1,6 +1,7 @@
 //! What a directory does with names that differ in case alone (D235): the same steps, one
 //! result each, taken by a host test in a directory of its host's and by the test guest in
-//! its view of a share of another, so that the guest's are held to the host's own.
+//! its view of a share of another, so that the guest's are held to the host's own, each
+//! rename as Linux takes one ([`renamed`]).
 
 extern crate std;
 
@@ -10,6 +11,20 @@ use std::io;
 use std::path::Path;
 use std::string::{String, ToString};
 use std::vec::Vec;
+
+/// A rename as Linux's VFS takes one (fs/namei.c `vfs_rename`, `source == target`): where
+/// both names are one file already, done, nothing changed. So a host whose file system
+/// folds case renames no name's case alone here, as a guest's kernel never asks its share
+/// to, and as Linux's own case-insensitive file systems do none (tmpfs `casefold` on Linux
+/// 7.2.9: `rename foo Foo` succeeds and `ls` says `foo`; D235).
+fn renamed(from: &Path, to: &Path) -> io::Result<()> {
+    if let (Ok(a), Ok(b)) = (fs::canonicalize(from), fs::canonicalize(to))
+        && a == b
+    {
+        return Ok(());
+    }
+    fs::rename(from, to)
+}
 
 /// Each step's result, `STEP RESULT`: `ok`, the bytes read, the names listed, or the
 /// error's kind.
@@ -45,7 +60,7 @@ pub fn steps(dir: &Path) -> Vec<String> {
     out.push(format!("read Foo {}", said(fs::read_to_string(dir.join("Foo")))));
     out.push(format!(
         "rename Foo Bar {}",
-        done(fs::rename(dir.join("Foo"), dir.join("Bar")))
+        done(renamed(&dir.join("Foo"), &dir.join("Bar")))
     ));
     for name in ["foo", "FOO", "Foo", "Bar", "bar"] {
         out.push(format!("stat {name} {}", found(name)));
@@ -63,13 +78,13 @@ pub fn steps(dir: &Path) -> Vec<String> {
     // Renames that change a name's case alone, a directory's and a file's.
     out.push(format!(
         "rename Dir dIR {}",
-        done(fs::rename(dir.join("Dir"), dir.join("dIR")))
+        done(renamed(&dir.join("Dir"), &dir.join("dIR")))
     ));
     out.push(format!("list {}", said(list())));
     out.push(format!("write low {}", done(fs::write(dir.join("low"), "three"))));
     out.push(format!(
         "rename low LOW {}",
-        done(fs::rename(dir.join("low"), dir.join("LOW")))
+        done(renamed(&dir.join("low"), &dir.join("LOW")))
     ));
     out.push(format!("list {}", said(list())));
     out.push(format!("read low {}", said(fs::read_to_string(dir.join("low")))));

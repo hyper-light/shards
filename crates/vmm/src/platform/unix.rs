@@ -2622,7 +2622,7 @@ mod notify {
                     } else if mask & libc::IN_Q_OVERFLOW != 0 {
                         // Events were lost: every sink is told, of no watch (-1).
                         let mut told: Vec<u64> = Vec::new();
-                        for (_, w) in waking.iter() {
+                        for w in waking.values() {
                             for (number, sink) in &w.sinks {
                                 if !told.contains(number) {
                                     told.push(*number);

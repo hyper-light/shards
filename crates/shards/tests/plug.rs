@@ -12,7 +12,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
+use common::{TempDir, Vm, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
 const TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -247,6 +247,56 @@ fn a_project_is_plugged_into_a_running_agent_at_its_host_path() {
     shards(&["plug", "volume", "--for", "a", "plugm", &spec]);
     shards(&["unplug", "volume", "plugm", &dest]);
     shards(&["rm", "-f", "plugm"]);
+}
+
+/// A host's edit wakes an inotify watch in the guest (D235): a watcher in a running
+/// microVM, of a bind, of a read-only bind and of a volume plugged in as it runs, is told
+/// of a file the host writes there (`IN_MODIFY` and its name) and of one the host removes
+/// (`IN_MODIFY` of the directory itself), though nothing in the guest changed either; and
+/// the host's files are as the host left them.
+#[test]
+fn a_host_edit_wakes_a_watch_in_the_guest() {
+    if cannot_run_vms() {
+        return;
+    }
+    /// Test patience, a loaded host's: never a runtime policy.
+    const PATIENCE: Duration = Duration::from_secs(60);
+    let (image, _) = served();
+    let home = TempDir::new("notice");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |command: &[&str], args: &[&str]| {
+        let r = run_shards_env(command, args, &env, TIMEOUT);
+        assert_eq!(r.status, Some(0), "shards {command:?} {args:?}: {}\n{}", r.stderr, r.stdout);
+        r.stdout
+    };
+    let files = TempDir::new("notice-files");
+    let dirs = ["rw", "ro", "plugged"].map(|d| files.join(d));
+    for dir in &dirs {
+        std::fs::create_dir(dir).unwrap();
+    }
+    let rw = format!("{}:/rw", dirs[0].display());
+    let ro = format!("{}:/ro:ro", dirs[1].display());
+    shards(&["run"], &["-d", "--name", "noticed", "-v", &rw, "-v", &ro, &image, "sleep"]);
+    let plugged = format!("{}:/plugged", dirs[2].display());
+    shards(&["plug"], &["volume", "noticed", &plugged]);
+    let vm_env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
+    for (dir, at) in dirs.iter().zip(["/rw", "/ro", "/plugged"]) {
+        let mut watch = Vm::spawn_env(&["exec", "noticed", "/bin/testguest", "inotify", at], &vm_env);
+        watch.wait_for("inotify ready", PATIENCE);
+        std::fs::write(dir.join("f"), "host").unwrap();
+        watch.wait_for("inotify IN_MODIFY f", PATIENCE);
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "host", "{at}");
+        std::fs::remove_file(dir.join("f")).unwrap();
+        watch.wait_for("inotify IN_MODIFY|IN_ISDIR ", PATIENCE);
+        watch.kill();
+        let left: Vec<_> = std::fs::read_dir(dir).unwrap().collect();
+        assert!(left.is_empty(), "{at}: {left:?}");
+    }
+    shards(&["rm"], &["-f", "noticed"]);
 }
 
 /// Names that differ in case alone, through a share, are what its host makes of them
