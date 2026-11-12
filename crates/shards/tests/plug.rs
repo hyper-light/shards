@@ -362,9 +362,12 @@ fn notices_latency() {
 /// Names that differ in case alone, through a share, are what its host makes of them
 /// (D235): the steps of `shards_testguest::case` taken in the guest's view of a share give
 /// what they give on the host itself, in a directory beside it, whether the host's
-/// filesystem tells case (Linux's) or not (macOS's APFS, Windows' NTFS). A case-only rename
-/// is no step: Linux's VFS takes a rename onto the same inode as done (fs/namei.c
-/// `vfs_rename`), so no guest asks one of its host.
+/// filesystem tells case (Linux's) or not (macOS's APFS, Windows' NTFS): a name of another
+/// case found and created over as the host finds it, and none left found once the host
+/// renamed or removed it through another case. A rename of a name's case alone is held, on
+/// both, to Linux's rule (fs/namei.c `vfs_rename`: two names of one inode, done, nothing
+/// changed), which is all a guest's kernel does with one and Linux's own case-insensitive
+/// file systems do.
 #[test]
 fn a_shares_names_are_its_hosts_case_and_all() {
     if cannot_run_vms() {

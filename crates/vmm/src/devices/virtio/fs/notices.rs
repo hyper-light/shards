@@ -422,11 +422,15 @@ mod tests {
                 .arg("sh")
                 .arg(path)
                 .status();
+            // cmd's own quoting, which no argument of Rust's quoting is.
             #[cfg(windows)]
-            let wrote = std::process::Command::new("cmd")
-                .arg("/c")
-                .arg(format!("echo x> \"{}\"", path.display()))
-                .status();
+            let wrote = {
+                use std::os::windows::process::CommandExt as _;
+                std::process::Command::new("cmd")
+                    .arg("/c")
+                    .raw_arg(format!("echo x> \"{}\"", path.display()))
+                    .status()
+            };
             assert!(wrote.unwrap().success());
         };
         write(&root.join("unheld").join("u"));
