@@ -38,7 +38,7 @@ impl Shards {
     }
 
     /// A client's explicit runtime directories (`SHARDS_CACHE`, `SHARDS_HOME`), also given its
-    /// managed launcher's VM processes (D232). This provider never inherits the environment.
+    /// managed launcher's VM processes (D233). This provider never inherits the environment.
     pub fn configured(cache: PathBuf, home: PathBuf) -> Result<ConfiguredShards, Refusal> {
         Ok(ConfiguredShards {
             paths: RuntimePaths::new(cache, home)?,
@@ -73,7 +73,7 @@ impl RuntimePaths {
 }
 
 /// The same client/drain/watch protocol, with exactly its client's explicit helper cache and
-/// runtime home (D232). This stores no inventory or holders.
+/// runtime home (D233). This stores no inventory or holders.
 #[derive(Debug)]
 pub struct ConfiguredShards {
     paths: RuntimePaths,
@@ -2077,7 +2077,7 @@ mod tests {
         (guest, native)
     }
 
-    /// D215, D232: helper scope and handle ownership remain live after
+    /// D215, D233: helper scope and handle ownership remain live after
     /// controller exit, and dropping a retained protocol handle cannot stop it.
     #[test]
     fn managed_scope_and_checked_clones_retain_native_lifetime() {
@@ -2101,7 +2101,7 @@ mod tests {
         assert_eq!(native.stops.load(Ordering::SeqCst), 0);
     }
 
-    /// D215, D232: a native stop can publish inline, before stop() returns;
+    /// D215, D233: a native stop can publish inline, before stop() returns;
     /// a concurrent waiter must observe Stopped rather than unsolicited poweroff.
     #[test]
     fn managed_inline_stop_completion_is_already_stopped_to_waiters() {
@@ -2118,7 +2118,7 @@ mod tests {
         assert_eq!(waiter.join().unwrap().unwrap(), Some(End::Stopped));
     }
 
-    /// D215, D232: pure preparation launches nothing and preserves the exact
+    /// D215, D233: pure preparation launches nothing and preserves the exact
     /// native command/ports; wrong endpoint/port fail before borrowed observation.
     #[test]
     fn prepared_boot_is_pure_and_connections_stay_in_its_exact_grant() {
@@ -2174,7 +2174,7 @@ mod tests {
         ));
     }
 
-    /// D232: native containment is explicit only for managed plans. The
+    /// D233: native containment is explicit only for managed plans. The
     /// standalone CPU/GPU argument bytes stay exact, even for flag-like values.
     #[test]
     fn prepared_marker_preserves_standalone_arguments_and_flag_values() {
@@ -2199,7 +2199,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(&*dir).unwrap().count(), 0);
     }
 
-    /// D231: renderer initialization cannot carry an inner workload or start
+    /// D232: renderer initialization cannot carry an inner workload or start
     /// its file/console helpers while resolving the exact selected identities.
     #[test]
     fn gpu_probe_arguments_carry_only_the_exact_native_query() {
@@ -2227,7 +2227,7 @@ mod tests {
         );
     }
 
-    /// D231, D232: the configured probe uses its client's explicit pair, without a
+    /// D232, D233: the configured probe uses its client's explicit pair, without a
     /// PATH/binary/environment fallback or additional guest/provider authority.
     #[test]
     fn configured_node_roots_are_explicit_and_the_command_environment_is_closed() {
@@ -2266,7 +2266,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(&*dir).unwrap().count(), 0);
     }
 
-    /// D215, D231: exercise real bounded pipe/watch/parse wiring with an owned
+    /// D215, D232: exercise real bounded pipe/watch/parse wiring with an owned
     /// protocol fixture process. This is not a renderer/native GPU witness.
     #[cfg(unix)]
     #[test]

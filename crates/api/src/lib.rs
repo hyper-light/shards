@@ -66,7 +66,7 @@ pub struct GuestSpec {
     /// process (D144, D201, D202, D208); a selection below implies it.
     pub gpu: bool,
     /// The host GPUs its Venus contexts render on, each named by its exact native identity
-    /// (`--gpu-device`, D231), never a model name or an ordinal; none, those the renderer
+    /// (`--gpu-device`, D232), never a model name or an ordinal; none, those the renderer
     /// finds, as `gpu` alone gives.
     pub gpu_devices: Vec<PhysicalGpu>,
     /// Its disks, `/dev/vda` on, in order.

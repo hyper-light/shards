@@ -55,7 +55,7 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
   --gpu-probe: no guest: the GPU's renderer alone, which writes to stdout each GPU it was
                given (or finds), its exact identities and host-visible memory, once its
                contexts accept them, and ends. Implies --gpu; no workload, devices or snapshot.
-  --host-managed: the program that started shards contains it (D232): the processes shards
+  --host-managed: the program that started shards contains it (D233): the processes shards
                   starts beside the VM stay in its process group, not sessions of their own.
   --pci-test: a PCI bus with a test function at 00:01.0, the identification and liveness
               registers of QEMU's edu device in its BAR 0, for testing the bus. Not with

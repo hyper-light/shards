@@ -292,7 +292,7 @@ pub fn has_vm_flag(args: &[std::ffi::OsString], flag: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// D232: a prepared host containment marker cannot be forged by a flag
+    /// D233: a prepared host containment marker cannot be forged by a flag
     /// value, a snapshot path or the guest workload's arguments.
     #[test]
     fn vm_flags_use_the_same_value_aware_grammar_before_the_workload() {

@@ -21506,7 +21506,7 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
 **What it holds to** (the requirement its tests cite as D215):
 - *A spec* becomes `run --kernel`'s flags as vm_run.rs reads them, the kernel first; one
   that asks for a GPU adds `--gpu`, which `shards` runs in the GPU's VM process (D144), and
-  one that names the host's GPUs adds `--gpu-device` for each, by its exact identity (D231). A
+  one that names the host's GPUs adds `--gpu-device` for each, by its exact identity (D232). A
   disk's or a share's path that ends in `:ro`, which shards would read as a mode, is
   refused `Unsupported`. Past shards-vmm's bounds (no vCPU; memory odd or under the least)
   it is refused `Bounds` before anything boots, and the hypervisor's own refusal of its
