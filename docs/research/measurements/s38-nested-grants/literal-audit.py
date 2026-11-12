@@ -7,8 +7,8 @@ still free in their tables.
 
 Three checks, each against this checkout:
 1. Each planned literal (PLANNED, the names, paths, modes, bounds and identifiers D234's
-   **Decided.** and **Wire.** sections give the grant) appears in **Literals.** on a line
-   that says where it comes from (a ':' after it on its bullet).
+   **Decided.** and **Wire.** sections give the grant) opens a bullet of **Literals.**, and
+   that bullet goes on to say where it comes from (a clause after it).
 2. No backticked token of **Wire.**, or of the grant's own bullets, is a literal missing
    from PLANNED: each is planned, or an existing name another D-entry owns (EXISTING).
 3. The identifiers are their tables' next free values: marker 7 above shards_abi::marker,
@@ -91,6 +91,13 @@ EXISTING = {
     "HARNESS": "the Agentfile's directive",
     "run": "the CLI's command",
     "create": "the CLI's command",
+    "/proc": "the workload's existing mount (D115)",
+    "/sys": "the workload's existing mount (D115)",
+    "/dev": "the workload's existing mount (D44)",
+    "/run/shards": "D181's directory, engine.sock's",
+    "security.insecure": "BuildKit's entitlement (f32)",
+    "security.nesting": "Incus's option (f32)",
+    "socket": "Docker's profile's rule name (moby/profiles v0.2.3)",
 }
 
 
@@ -109,7 +116,9 @@ def main():
     bullets = re.split(r"\n- ", literals)
     for name, opening in PLANNED:
         bullet = next((b for b in bullets if opening in b), None)
-        derived = bullet is not None and ":" in bullet[bullet.index(opening) + len(opening) - 1:]
+        # Its derivation: the words its bullet gives after naming it, at least a clause.
+        rest = "" if bullet is None else bullet[bullet.index(opening) + len(opening):]
+        derived = len(re.findall(r"[A-Za-z0-9']+", rest)) >= 3
         if not derived:
             failures += 1
         print(f"{'derived  ' if derived else 'UNDERIVED'} {name}")
