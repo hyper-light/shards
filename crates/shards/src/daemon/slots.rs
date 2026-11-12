@@ -657,7 +657,7 @@ impl<D: Disk> Daemon<D> {
             };
             // A run's, an exec's or an attach's side that ended with no last word is said to
             // have (UNANSWERED): its client tells that end, its microVM's, from the end of a
-            // slot whose daemon itself ended, which says nothing (PM M528).
+            // slot whose daemon itself ended, which says nothing (PM M530).
             if ended_here
                 && !answered
                 && sent.is_ok()

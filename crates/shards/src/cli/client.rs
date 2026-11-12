@@ -509,7 +509,7 @@ enum Ran {
 /// answer to the client's asking to be ended before its run was made. Through a slot
 /// (`through_slot`), its daemon says UNANSWERED where the run's side ended first, its
 /// microVM's: a slot that ends with no last word ended with its daemon, which a client
-/// once took for its microVM's stop (kiln's sweep of a daemon, PM M528).
+/// once took for its microVM's stop (kiln's sweep of a daemon, PM M530).
 fn ran_on(
     request: &Attached,
     home: &Path,
@@ -1743,7 +1743,7 @@ mod tests {
 
     /// Through a slot, a run's, an exec's or an attach's daemon says UNANSWERED where the
     /// request's side ended first, its microVM's end; a slot that ends with no last word
-    /// ended with its daemon, as kiln's sweep ended one mid-run (PM M528), and is said so,
+    /// ended with its daemon, as kiln's sweep ended one mid-run (PM M530), and is said so,
     /// not taken for the microVM's stop. A socket's peer is the run's microVM.
     #[test]
     fn a_runs_client_tells_its_daemons_end_from_its_microvms() {

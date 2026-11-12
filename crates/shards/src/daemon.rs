@@ -11322,7 +11322,7 @@ mod tests {
     /// `RESTART`) is said to have, last (UNANSWERED): its client tells that end, its
     /// microVM's, from its slot's ending with no word at all, which is its daemon's own. A
     /// client took a daemon that kiln's sweep ended for its microVM's stop, and said so
-    /// (PM M528). One whose side said its last word hears nothing after it, nor does a
+    /// (PM M530). One whose side said its last word hears nothing after it, nor does a
     /// command's client, which takes any end before its END for its daemon's.
     #[test]
     fn a_side_that_ends_without_its_last_word_says_so() {
