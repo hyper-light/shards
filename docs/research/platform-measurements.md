@@ -21822,3 +21822,66 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     first is refused, never joined.
   - What would show this wrong: a refusal of a report's pipe with no other of this
     process's alive, or a frame of one report read by another.
+
+### M534. A GPU probe's test on macOS, Pending: a real guest's patience on a new script's first start (D215, D232)
+
+- **Question.** `client::tests::gpu_probe_protocol_requires_exact_completed_receipt` failed on
+  macOS now and then, `GpuProbe(Pending)` where its stand-in's report was due (step 9's
+  report, at a7dbf1446). What did its probe wait on?
+- **Method.** `docs/research/measurements/api-flakes/` (`runs.sh`, `first-exec.py`; its README
+  names every build): shards-api's test binaries at `test-release`, run again and again on
+  adas-mac-studio.local-2 (M3 Ultra, 32 CPUs, macOS 26.4) in kiln's shell (priority 20,
+  nice 10) and as launchd jobs of the user's session (Interactive: priority 31, nice 0;
+  `macos-sched/launchd-run.sh`), under its co-tenants (load average 5 to 27), 2026-11-12;
+  M463's harness (tests/sim.rs `the_waits_of_these_tests`, n 40) there; and `first-exec.py`
+  (a new script's first start against its second, n 60) there and on Adas-MacBook-Pro-2
+  (M5 Max, 18 CPUs, macOS 26.4.1, an agent's session, load 13 to 23).
+- **Found.** Runs failed, every failure `GpuProbe(Pending)`:
+
+  | build | test | kiln's shell | launchd |
+  |---|---|---|---|
+  | main c2c4547c1 | alone | 9 of 100 | 89 of 100 |
+  | main c2c4547c1 | the whole library | 37 of 100 | 12 of 100 |
+  | main 99d88fccf | alone | 14 of 100 | 9 of 100 |
+  | main 99d88fccf | the whole library | 32 of 100 | |
+  | the fix | alone (in tests/sim.rs) | 0 of 200 | 0 of 200 |
+  | the fix less its first start | alone | 0 of 200 (c2c4547c1) | 1 of 200 (c2c4547c1, a probe past 8.8 s), 0 of 200 |
+  | the fix less its bound (a guest's) | alone | | 0 of 200 |
+
+  What a start costs (`first-exec.py`, ms):
+
+  | | Mac Studio, kiln's shell | Mac Studio, launchd | MacBook |
+  |---|---|---|---|
+  | a new script, its first start | p50 145.6, p99 412.1 | p50 183.4, p99 362.8 | p50 182.0, p99 279.4 |
+  | the same script, started again | p50 5.6, p99 8.3 | p50 13.6, p99 46.3 | p50 21.9, p99 106.8 |
+  | a new copy of /usr/bin/true | p50 93.1, p99 452.8 | p50 94.7, p99 249.6 | p50 88.9, p99 181.3 |
+  | /bin/sh reading a new script | p50 5.9, p99 8.7 | p50 16.3, p99 63.6 | p50 17.5, p99 169.4 |
+
+  An earlier probe of the same kind there started the first scripts of a new directory in
+  2,561 and 7,166 ms. Each new file carries `com.apple.provenance`.
+
+  M463's waits of a stand-in (n 40), each a new one as main makes them, then each started
+  once before (the fix):
+
+  | wait | kiln's shell, new | launchd, new | kiln's shell, started | launchd, started |
+  |---|---|---|---|---|
+  | a stand-in ending first, refused | p50 300.4 ms, max 4.97 s | p50 284.5 ms, max 7.19 s | p50 4.0 ms, max 43.0 ms | p50 10.1 ms, max 17.5 ms |
+  | a stand-in exiting 0, its end | p50 300.2 ms, max 4.98 s | p50 285.9 ms, max 5.83 s | p50 3.9 ms, max 9.4 ms | p50 10.2 ms, max 15.0 ms |
+- **Reading.**
+  - The test bounded a probe of a new script by `conformance::PATIENCE`, twice a real guest's
+    slowest power-off (M463's 134 ms): another wait's record. macOS assesses a new executable
+    as it first starts: 90 to 180 ms at the median and past 7 s at worst here, where the
+    same file's next start takes 6 to 22 ms. The probe's start ran past 268 ms, and it was
+    Pending.
+  - M463's record of a new stand-in's start, 4.4 s, is past too (4.97 s and 7.19 s here),
+    and a probe bounded by twice it, 8.8 s, failed once in 200.
+  - The fix: the test moves among the stand-ins it is one of, tests/sim.rs, to their patience
+    (M463) and their install(1) (no ETXTBSY on Linux), its refusals' causes asserted exactly
+    (a refused report's Pending no longer passes); and each stand-in starts once, untimed,
+    as `stand_in` makes it (`--warm` first, which no launch gives shards), so a test times
+    its stand-in's own work: 4 to 10 ms at the median and 43 ms at most here, where new ones
+    took 0.3 s and up to 7.2 s. Either half alone failed once in 200 or not at all: the
+    bound alone leaves macOS's assessment inside the probe, the start alone a guest's
+    patience on a stand-in. Both stay.
+  - What would show this wrong: a stand-in started once whose next start takes as long as a
+    new one's, or a probe of one past the stand-ins' patience.
