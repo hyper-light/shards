@@ -424,6 +424,7 @@ impl Muxer {
                         Some(dialled) => dialled.and_then(|s| s.set_nonblocking(true).map(|()| s)),
                         None => connect_nonblocking(target),
                     }
+                    .inspect(size_buffers)
                     .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", target.display())))
                 }
                 None => Err(io::Error::new(
@@ -606,6 +607,7 @@ impl Muxer {
             debug!("vsock: host connection: {e}");
             return;
         }
+        size_buffers(&stream);
         self.handshakes.push(Handshake {
             stream,
             line: Vec::with_capacity(MAX_HANDSHAKE),
@@ -694,10 +696,43 @@ impl Drop for Muxer {
     }
 }
 
+/// Measurement only (docs/research/measurements/vsock-path-v1, never merged): sets the send
+/// and receive buffers of a host socket to `SHARDS_VSOCK_SOCKBUF` bytes, where given.
+fn size_buffers(stream: &UnixStream) {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd as _;
+        static SIZE: std::sync::OnceLock<Option<libc::c_int>> = std::sync::OnceLock::new();
+        let Some(size) = *SIZE.get_or_init(|| {
+            std::env::var("SHARDS_VSOCK_SOCKBUF")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        }) else {
+            return;
+        };
+        for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
+            // SAFETY: setsockopt(2) of an int option on a socket this process holds.
+            unsafe {
+                libc::setsockopt(
+                    stream.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    option,
+                    (&raw const size).cast(),
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            };
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = stream;
+}
+
 /// A connection to a port this process serves: the muxer's end of a socket pair, whose
 /// other end goes to the port's sender. Refused once nothing receives there.
 fn serve(accept: impl FnOnce(UnixStream) -> crate::vm::Admission) -> io::Result<UnixStream> {
     let (ours, theirs) = UnixStream::pair()?;
+    size_buffers(&ours);
+    size_buffers(&theirs);
     ours.set_nonblocking(true)?;
     match accept(theirs) {
         crate::vm::Admission::Accepted => {}
