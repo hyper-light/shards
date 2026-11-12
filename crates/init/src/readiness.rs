@@ -75,9 +75,9 @@ fn boot_now() -> io::Result<i64> {
     if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &raw mut ts) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    i64::from(ts.tv_sec)
+    ts.tv_sec
         .checked_mul(1_000_000_000)
-        .and_then(|ns| ns.checked_add(i64::from(ts.tv_nsec)))
+        .and_then(|ns| ns.checked_add(ts.tv_nsec))
         .ok_or_else(|| io::Error::other("CLOCK_BOOTTIME past what nanoseconds in an i64 hold"))
 }
 
@@ -642,12 +642,12 @@ mod tests {
             Some((7, Some(me)))
         );
         assert_eq!(&buf[..7], b"READY=1");
-        sender.send(&vec![b'a'; libc::PIPE_BUF]).unwrap();
+        sender.send(&[b'a'; libc::PIPE_BUF]).unwrap();
         assert_eq!(
             receive(receiver.as_raw_fd(), &mut buf).unwrap(),
             Some((libc::PIPE_BUF, Some(me)))
         );
-        sender.send(&vec![b'a'; libc::PIPE_BUF + 1]).unwrap();
+        sender.send(&[b'a'; libc::PIPE_BUF + 1]).unwrap();
         assert_eq!(
             receive(receiver.as_raw_fd(), &mut buf).unwrap(),
             Some((libc::PIPE_BUF + 1, Some(me)))
