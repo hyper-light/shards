@@ -44,11 +44,45 @@ enum Transfer {
     Taken,
 }
 
+/// Where `take` rechecks the original deadline after its own work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recheck {
+    Frame,
+    Parse,
+}
+
+/// The clock of `take`'s rechecks. A test makes one recheck see the deadline
+/// pass exactly there; production always reads the monotonic clock.
+#[derive(Debug, Default)]
+struct Clock {
+    #[cfg(test)]
+    expire_at: Option<Recheck>,
+}
+
+impl Clock {
+    fn expired(
+        &self,
+        deadline: Instant,
+        #[cfg_attr(
+            not(test),
+            expect(unused_variables, reason = "only a test chooses the recheck that expires")
+        )]
+        recheck: Recheck,
+    ) -> bool {
+        #[cfg(test)]
+        if self.expire_at == Some(recheck) {
+            return true;
+        }
+        Instant::now() >= deadline
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Receiver {
     request: Request,
     transfer: Transfer,
     reader: Reader,
+    clock: Clock,
 }
 
 pub(super) fn io_error(operation: &'static str, error: io::Error) -> Refusal {
@@ -97,6 +131,7 @@ impl Receiver {
                 request,
                 transfer: Transfer::Available,
                 reader,
+                clock: Clock::default(),
             },
             writer,
         ))
@@ -115,7 +150,7 @@ impl Receiver {
             return Err(pending());
         }
         let bytes = self.reader.frame(deadline)?;
-        if Instant::now() >= deadline {
+        if self.clock.expired(deadline, Recheck::Frame) {
             return Err(pending());
         }
         if bytes.len() > super::report_bytes(self.request.selected.len()).map_err(Refusal::GpuProbe)? {
@@ -123,7 +158,7 @@ impl Receiver {
         }
         let text = std::str::from_utf8(bytes).map_err(|_| Refusal::GpuProbe(GpuProbeError::Syntax))?;
         let report = GpuReport::parse(text, self.request.scope, &self.request.selected);
-        if Instant::now() >= deadline {
+        if self.clock.expired(deadline, Recheck::Parse) {
             return Err(pending());
         }
         report.map_err(Refusal::GpuProbe)
@@ -209,6 +244,46 @@ mod tests {
             assert!(receiver.take(Duration::from_secs(1)).is_err());
             receiver.finish().unwrap();
         }
+    }
+
+    /// Write one complete frame and take it, the deadline seen to pass at `late`
+    /// alone. The writer's EOF precedes the take, so the read itself never waits.
+    fn take_expiring_at(late: Option<Recheck>) -> Result<GpuReport, Refusal> {
+        let (request, expected) = fixture();
+        let (mut receiver, mut writer) = Receiver::new(request).unwrap();
+        receiver.clock.expire_at = late;
+        writer.write_all(expected.encode().unwrap().as_bytes()).unwrap();
+        drop(writer);
+        let taken = receiver.take(Duration::from_secs(1));
+        receiver.finish().unwrap();
+        taken
+    }
+
+    /// D232: take a complete frame whose read ends as the original deadline
+    /// passes; expect Pending, never the frame.
+    #[test]
+    fn private_report_frame_read_ending_at_the_deadline_is_pending() {
+        assert!(matches!(
+            take_expiring_at(Some(Recheck::Frame)),
+            Err(Refusal::GpuProbe(GpuProbeError::Pending))
+        ));
+    }
+
+    /// D232: take a valid frame whose parse ends as the original deadline
+    /// passes; expect Pending, never the parsed report.
+    #[test]
+    fn private_report_parse_ending_at_the_deadline_is_pending() {
+        assert!(matches!(
+            take_expiring_at(Some(Recheck::Parse)),
+            Err(Refusal::GpuProbe(GpuProbeError::Pending))
+        ));
+    }
+
+    /// D232: take the same frame with neither recheck expired; expect the
+    /// report, so both Pending results above come from their recheck alone.
+    #[test]
+    fn private_report_neither_recheck_expired_transfers_the_frame() {
+        assert_eq!(take_expiring_at(None).unwrap(), fixture().1);
     }
 
     /// A zero remaining caller budget cannot replace the original create budget
