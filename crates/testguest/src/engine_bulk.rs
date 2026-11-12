@@ -25,7 +25,9 @@ const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0100_0000_01b3;
 
 fn fnv(hash: u64, bytes: &[u8]) -> u64 {
-    bytes.iter().fold(hash, |h, &b| (h ^ u64::from(b)).wrapping_mul(FNV_PRIME))
+    bytes
+        .iter()
+        .fold(hash, |h, &b| (h ^ u64::from(b)).wrapping_mul(FNV_PRIME))
 }
 
 /// The pattern's first `n` bytes' FNV-1a.
@@ -113,7 +115,8 @@ fn ask(conn: &mut UnixStream, method: &str, path: &str, body: &str, extra: &str)
         "{method} {path} HTTP/1.1\r\nHost: api\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra}\r\n{body}",
         body.len()
     );
-    conn.write_all(request.as_bytes()).map_err(|e| format!("{method} {path}: {e}"))
+    conn.write_all(request.as_bytes())
+        .map_err(|e| format!("{method} {path}: {e}"))
 }
 
 /// An answer's status line and fields, its head read a byte at a time so that nothing of
@@ -142,14 +145,19 @@ fn field<'a>(fields: &'a [(String, String)], name: &str) -> Option<&'a str> {
 }
 
 /// A body read as it comes, chunked or not, to its end, each piece to `take`.
-fn body(conn: &mut UnixStream, fields: &[(String, String)], take: &mut dyn FnMut(&[u8]) -> Result<(), String>) -> Result<(), String> {
+fn body(
+    conn: &mut UnixStream,
+    fields: &[(String, String)],
+    take: &mut dyn FnMut(&[u8]) -> Result<(), String>,
+) -> Result<(), String> {
     let mut buf = vec![0u8; 256 << 10];
     if field(fields, "transfer-encoding").is_some_and(|v| v.contains("chunked")) {
         loop {
             let mut line = Vec::new();
             let mut byte = [0u8; 1];
             while !line.ends_with(b"\r\n") {
-                conn.read_exact(&mut byte).map_err(|e| format!("a chunk's size: {e}"))?;
+                conn.read_exact(&mut byte)
+                    .map_err(|e| format!("a chunk's size: {e}"))?;
                 line.extend_from_slice(&byte);
             }
             let text = String::from_utf8_lossy(&line);
@@ -164,7 +172,8 @@ fn body(conn: &mut UnixStream, fields: &[(String, String)], take: &mut dyn FnMut
                 left -= want;
             }
             let mut crlf = [0u8; 2];
-            conn.read_exact(&mut crlf).map_err(|e| format!("a chunk's end: {e}"))?;
+            conn.read_exact(&mut crlf)
+                .map_err(|e| format!("a chunk's end: {e}"))?;
             if size == 0 {
                 return Ok(());
             }
@@ -206,7 +215,11 @@ impl Frames {
         }
     }
 
-    fn feed(&mut self, mut bytes: &[u8], out: &mut dyn FnMut(&[u8]) -> Result<(), String>) -> Result<(), String> {
+    fn feed(
+        &mut self,
+        mut bytes: &[u8],
+        out: &mut dyn FnMut(&[u8]) -> Result<(), String>,
+    ) -> Result<(), String> {
         while !bytes.is_empty() {
             if self.left == 0 {
                 let (one, rest) = bytes.split_first().ok_or("a frame")?;
@@ -258,7 +271,11 @@ fn logs(container: &str, n: u64) -> Result<u128, String> {
     };
     let multiplexed = !field(&fields, "content-type").is_some_and(|v| v.contains("raw-stream"));
     body(&mut conn, &fields, &mut |piece| {
-        if multiplexed { frames.feed(piece, &mut check) } else { check(piece) }
+        if multiplexed {
+            frames.feed(piece, &mut check)
+        } else {
+            check(piece)
+        }
     })?;
     let took = started.elapsed().as_nanos();
     if at != n {
@@ -362,6 +379,10 @@ fn ping(m: usize, gap_us: u64) -> Result<String, String> {
         took.push(t.elapsed().as_nanos());
     }
     took.sort_unstable();
-    let at = |q: usize| took.get((took.len().saturating_sub(1)) * q / 100).copied().unwrap_or(0);
+    let at = |q: usize| {
+        took.get((took.len().saturating_sub(1)) * q / 100)
+            .copied()
+            .unwrap_or(0)
+    };
     Ok(format!("ping {m} {} {} {} {}", at(50), at(90), at(99), at(100)))
 }

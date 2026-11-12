@@ -116,7 +116,12 @@ impl Slot {
 
     /// Every position and flag back to zero, as an offer starts.
     fn reset(&self) {
-        for f in [field::TO_HOST_HEAD, field::TO_HOST_TAIL, field::TO_GUEST_HEAD, field::TO_GUEST_TAIL] {
+        for f in [
+            field::TO_HOST_HEAD,
+            field::TO_HOST_TAIL,
+            field::TO_GUEST_HEAD,
+            field::TO_GUEST_TAIL,
+        ] {
             self.word(f).store(0, Ordering::Relaxed);
         }
         for f in [
@@ -207,7 +212,10 @@ pub fn take() -> Option<Slot> {
             Some(slot)
         }
         Err(e) => {
-            let _ = writeln!(io::stderr(), "shards-init: engine rings: {e}; plain vsock from here");
+            let _ = writeln!(
+                io::stderr(),
+                "shards-init: engine rings: {e}; plain vsock from here"
+            );
             p.broken = Some(e);
             None
         }
@@ -224,7 +232,8 @@ pub fn give(slot: Slot) {
 impl Pool {
     fn make(&mut self) -> io::Result<Slot> {
         let index = u32::try_from(self.made).map_err(|_| io::Error::other("slot index"))?;
-        let len = usize::try_from(abi::slot_len(abi::MAX_RING)).map_err(|_| io::Error::other("slot length"))?;
+        let len =
+            usize::try_from(abi::slot_len(abi::MAX_RING)).map_err(|_| io::Error::other("slot length"))?;
         // SAFETY: memfd_create(2) of a NUL-terminated name.
         let fd = unsafe { libc::memfd_create(c"shards-engine-ring".as_ptr(), libc::MFD_CLOEXEC) };
         if fd < 0 {
@@ -283,7 +292,10 @@ impl Pool {
             register(&self.pinner, IORING_REGISTER_BUFFERS2, &table)?;
             self.registered = true;
         }
-        let iov = libc::iovec { iov_base: at, iov_len: len };
+        let iov = libc::iovec {
+            iov_base: at,
+            iov_len: len,
+        };
         let update = RsrcUpdate2 {
             offset: index,
             resv: 0,
@@ -327,7 +339,8 @@ impl Pool {
 }
 
 fn register<T>(ring: &OwnedFd, opcode: libc::c_uint, arg: &T) -> io::Result<()> {
-    let size = libc::c_uint::try_from(std::mem::size_of::<T>()).map_err(|_| io::Error::other("io_uring argument"))?;
+    let size = libc::c_uint::try_from(std::mem::size_of::<T>())
+        .map_err(|_| io::Error::other("io_uring argument"))?;
     // SAFETY: io_uring_register(2) of our instance, with an argument of the size it reads.
     let rc = unsafe {
         libc::syscall(
@@ -338,13 +351,20 @@ fn register<T>(ring: &OwnedFd, opcode: libc::c_uint, arg: &T) -> io::Result<()> 
             libc::c_long::from(size),
         )
     };
-    if rc < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+    if rc < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 fn page() -> io::Result<u64> {
     // SAFETY: sysconf(3) of a constant name.
     let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    u64::try_from(page).ok().filter(|p| *p > 0).ok_or_else(|| io::Error::other("the page size"))
+    u64::try_from(page)
+        .ok()
+        .filter(|p| *p > 0)
+        .ok_or_else(|| io::Error::other("the page size"))
 }
 
 /// What became of a connection's offer.
@@ -484,8 +504,11 @@ fn pump(conn: &UnixStream, host: &File, slot: &Slot) -> io::Result<()> {
         let came = (want_room && slot.word(field::TO_HOST_TAIL).load(Ordering::Acquire) != taken)
             || (want_data && slot.word(field::TO_GUEST_HEAD).load(Ordering::Acquire) != given);
         if !came {
-            let client = (if up == Up::Reading && !host_ended && room > 0 { libc::POLLIN } else { 0 })
-                | (if client_full { libc::POLLOUT } else { 0 });
+            let client = (if up == Up::Reading && !host_ended && room > 0 {
+                libc::POLLIN
+            } else {
+                0
+            }) | (if client_full { libc::POLLOUT } else { 0 });
             let host_events = libc::POLLIN | if owed.any() { libc::POLLOUT } else { 0 };
             wait(conn.as_raw_fd(), client, host.as_raw_fd(), host_events)?;
         }
@@ -521,7 +544,12 @@ impl Owed {
             }
             // SAFETY: send(2) of one byte from a local, never blocking, never raising SIGPIPE.
             let n = unsafe {
-                libc::send(host, (&raw const byte).cast(), 1, libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL)
+                libc::send(
+                    host,
+                    (&raw const byte).cast(),
+                    1,
+                    libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+                )
             };
             match n {
                 1 => *owed = false,
@@ -557,7 +585,10 @@ fn drain_signals(host: RawFd) -> io::Result<Signals> {
             Ok(0) => return Ok(Signals::Ended),
             Ok(n) => {
                 if buf.get(..n).is_none_or(|b| b.iter().any(|&b| b != abi::DOORBELL)) {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "a byte that is no doorbell"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "a byte that is no doorbell",
+                    ));
                 }
                 said = Signals::Rung;
             }
@@ -584,7 +615,11 @@ fn send(fd: RawFd, iov: &[libc::iovec; 2]) -> io::Result<usize> {
 
 /// One recvmsg(2) or sendmsg(2) of `iov`, never blocking, never raising SIGPIPE.
 fn msg(fd: RawFd, iov: &[libc::iovec; 2], out: bool) -> io::Result<usize> {
-    let used = if iov.get(1).is_none_or(|v| v.iov_len == 0) { 1 } else { 2 };
+    let used = if iov.get(1).is_none_or(|v| v.iov_len == 0) {
+        1
+    } else {
+        2
+    };
     // SAFETY: an all-zero msghdr is valid; its iovecs are set below.
     let mut m: libc::msghdr = unsafe { std::mem::zeroed() };
     m.msg_iov = iov.as_ptr().cast_mut();
@@ -620,7 +655,12 @@ fn set_nonblocking(fd: RawFd) -> io::Result<()> {
 }
 
 /// Sleeps until the client or the host has what this side waits for.
-fn wait(client: RawFd, client_events: libc::c_short, host: RawFd, host_events: libc::c_short) -> io::Result<()> {
+fn wait(
+    client: RawFd,
+    client_events: libc::c_short,
+    host: RawFd,
+    host_events: libc::c_short,
+) -> io::Result<()> {
     let mut fds = [
         libc::pollfd {
             fd: if client_events == 0 { -1 } else { client },
@@ -714,7 +754,8 @@ mod tests {
             let head = slot.word(field::TO_HOST_HEAD).load(Ordering::Acquire);
             while taken < head {
                 // SAFETY: a byte of the ring the relay published.
-                out.took.push(unsafe { slot.byte(abi::CONTROL + taken % SIZE).read() });
+                out.took
+                    .push(unsafe { slot.byte(abi::CONTROL + taken % SIZE).read() });
                 taken += 1;
                 moved = true;
             }
@@ -726,7 +767,10 @@ mod tests {
             let mut room = SIZE - (given - freed);
             while (given as usize) < answer.len() && room > 0 {
                 // SAFETY: a byte of the ring for the guest with room.
-                unsafe { slot.byte(abi::CONTROL + SIZE + given % SIZE).write(answer[given as usize]) };
+                unsafe {
+                    slot.byte(abi::CONTROL + SIZE + given % SIZE)
+                        .write(answer[given as usize])
+                };
                 given += 1;
                 room -= 1;
                 moved = true;
@@ -759,7 +803,8 @@ mod tests {
                 continue;
             }
             slot.flag(field::HOST_WAITS_DATA).store(1, Ordering::SeqCst);
-            slot.flag(field::HOST_WAITS_ROOM).store(u32::from(room == 0), Ordering::SeqCst);
+            slot.flag(field::HOST_WAITS_ROOM)
+                .store(u32::from(room == 0), Ordering::SeqCst);
             fence(Ordering::SeqCst);
             if slot.word(field::TO_HOST_HEAD).load(Ordering::Acquire) == taken
                 && slot.word(field::TO_GUEST_TAIL).load(Ordering::Acquire) == freed
@@ -780,7 +825,9 @@ mod tests {
     }
 
     fn pattern(n: usize, salt: u8) -> Vec<u8> {
-        (0..n).map(|i| (i as u8).wrapping_mul(7).wrapping_add(salt)).collect()
+        (0..n)
+            .map(|i| (i as u8).wrapping_mul(7).wrapping_add(salt))
+            .collect()
     }
 
     /// A client's request and the engine's answer, each bigger than a ring, through the

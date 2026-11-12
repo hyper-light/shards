@@ -848,7 +848,11 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Sorted, Failu
             .unwrap_or(standby.len());
         standby.insert(at, b"engine".to_vec());
     }
-    Ok(Sorted { standby, engine, rings })
+    Ok(Sorted {
+        standby,
+        engine,
+        rings,
+    })
 }
 
 /// A token written as hex, two digits a byte.

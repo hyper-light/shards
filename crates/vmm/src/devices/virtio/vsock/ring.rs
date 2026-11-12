@@ -400,7 +400,8 @@ impl Ring {
     /// some came meanwhile, so that it need not wait (Dekker's handshake: the guest
     /// publishes its head, fences, then looks at this flag).
     pub fn wait_for_data(&self) -> Result<bool, Broken> {
-        self.memory.device_wrote(self.control_gpa + field::HOST_WAITS_DATA, 4);
+        self.memory
+            .device_wrote(self.control_gpa + field::HOST_WAITS_DATA, 4);
         self.flag(field::HOST_WAITS_DATA).store(1, Ordering::SeqCst);
         fence(Ordering::SeqCst);
         let came = self.pending_to_host()? > 0;
@@ -413,7 +414,8 @@ impl Ring {
     /// Says the device waits for room in the ring for the guest, then looks again, as
     /// [`wait_for_data`](Self::wait_for_data) does.
     pub fn wait_for_room(&mut self) -> Result<bool, Broken> {
-        self.memory.device_wrote(self.control_gpa + field::HOST_WAITS_ROOM, 4);
+        self.memory
+            .device_wrote(self.control_gpa + field::HOST_WAITS_ROOM, 4);
         self.flag(field::HOST_WAITS_ROOM).store(1, Ordering::SeqCst);
         fence(Ordering::SeqCst);
         let came = self.room_to_guest()? > 0;
@@ -514,7 +516,9 @@ mod tests {
     }
 
     fn pattern(n: usize, salt: u8) -> Vec<u8> {
-        (0..n).map(|i| (i as u8).wrapping_mul(31).wrapping_add(salt)).collect()
+        (0..n)
+            .map(|i| (i as u8).wrapping_mul(31).wrapping_add(salt))
+            .collect()
     }
 
     #[test]
@@ -578,7 +582,10 @@ mod tests {
                     (&daemon).read_exact(&mut buf).unwrap();
                     got.extend_from_slice(&buf);
                 }
-                assert_eq!(guest_u64(&memory, &offer, field::TO_HOST_TAIL).load(Ordering::Acquire), head);
+                assert_eq!(
+                    guest_u64(&memory, &offer, field::TO_HOST_TAIL).load(Ordering::Acquire),
+                    head
+                );
             }
             assert_eq!(got, sent);
             // Host to guest, the same.
@@ -620,10 +627,16 @@ mod tests {
         assert_eq!(ring.room_to_guest().unwrap(), 0);
         // Full, it waits; the guest takes some, and it does not.
         assert!(!ring.wait_for_room().unwrap());
-        assert_eq!(guest_u32(&memory, &offer, field::HOST_WAITS_ROOM).load(Ordering::SeqCst), 1);
+        assert_eq!(
+            guest_u32(&memory, &offer, field::HOST_WAITS_ROOM).load(Ordering::SeqCst),
+            1
+        );
         guest_take(&memory, &offer, 0, 100);
         assert!(ring.wait_for_room().unwrap());
-        assert_eq!(guest_u32(&memory, &offer, field::HOST_WAITS_ROOM).load(Ordering::SeqCst), 0);
+        assert_eq!(
+            guest_u32(&memory, &offer, field::HOST_WAITS_ROOM).load(Ordering::SeqCst),
+            0
+        );
         assert_eq!(ring.from_host(&host).unwrap().moved, 100);
     }
 
@@ -638,7 +651,10 @@ mod tests {
         guest_u32(&memory, &offer, field::GUEST_WAITS_DATA).store(1, Ordering::SeqCst);
         (&daemon).write_all(b"hello").unwrap();
         assert!(ring.from_host(&host).unwrap().ring);
-        assert_eq!(guest_u32(&memory, &offer, field::GUEST_WAITS_DATA).load(Ordering::SeqCst), 0);
+        assert_eq!(
+            guest_u32(&memory, &offer, field::GUEST_WAITS_DATA).load(Ordering::SeqCst),
+            0
+        );
         (&daemon).write_all(b"again").unwrap();
         assert!(!ring.from_host(&host).unwrap().ring);
         // Waiting for room: what the device takes rings it.
@@ -708,7 +724,12 @@ mod tests {
         let written = memory.device_written();
         // The control page, and the three pages of the ring for the guest written.
         let ring_start = (2 << 20) + abi::CONTROL + u64::from(RING);
-        for page in [2 << 20, ring_start, ring_start + abi::PAGE, ring_start + 2 * abi::PAGE] {
+        for page in [
+            2 << 20,
+            ring_start,
+            ring_start + abi::PAGE,
+            ring_start + 2 * abi::PAGE,
+        ] {
             assert!(written.contains(&page), "{page:#x} not in {written:x?}");
         }
     }

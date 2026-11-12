@@ -1365,7 +1365,12 @@ impl Unheard {
         }
         // A header that is no hello's, or says more than a token and an offer, is closed
         // as soon as it has come.
-        let len = match self.hello.first_chunk::<{ run::HEADER }>().copied().and_then(run::parse_header) {
+        let len = match self
+            .hello
+            .first_chunk::<{ run::HEADER }>()
+            .copied()
+            .and_then(run::parse_header)
+        {
             Some((kind::HELLO, len)) => len as usize,
             _ => return Heard::Refused,
         };
@@ -2844,7 +2849,9 @@ mod tests {
         #[test]
         fn a_plain_hello_is_heard_and_what_follows_it_left_unread() {
             let (mut u, mut guest) = unheard();
-            guest.write_all(&[hello(&TOKEN, &[]), b"GET /_ping".to_vec()].concat()).unwrap();
+            guest
+                .write_all(&[hello(&TOKEN, &[]), b"GET /_ping".to_vec()].concat())
+                .unwrap();
             assert!(matches!(read_all(&mut u), Heard::Whole(Hello::Plain)));
             let mut rest = [0u8; 10];
             (&u.conn).read_exact(&mut rest).unwrap();
@@ -2855,7 +2862,9 @@ mod tests {
         fn an_offer_after_the_token_is_read_whole() {
             let (mut u, mut guest) = unheard();
             let o = offer();
-            guest.write_all(&[hello(&TOKEN, &o.encode()), b"after".to_vec()].concat()).unwrap();
+            guest
+                .write_all(&[hello(&TOKEN, &o.encode()), b"after".to_vec()].concat())
+                .unwrap();
             match read_all(&mut u) {
                 Heard::Whole(Hello::Offered(Ok(got))) => assert_eq!(got, o),
                 _ => panic!("no offer heard"),
@@ -2886,7 +2895,9 @@ mod tests {
         #[test]
         fn an_offer_whose_bytes_say_no_slot_is_heard_as_malformed() {
             let (mut u, mut guest) = unheard();
-            guest.write_all(&hello(&TOKEN, b"not an offer, 32 bytes long.....")).unwrap();
+            guest
+                .write_all(&hello(&TOKEN, b"not an offer, 32 bytes long....."))
+                .unwrap();
             assert!(matches!(read_all(&mut u), Heard::Whole(Hello::Offered(Err(_)))));
         }
     }

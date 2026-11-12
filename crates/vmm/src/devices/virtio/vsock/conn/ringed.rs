@@ -146,12 +146,12 @@ impl Conn {
             Ok(ring) => {
                 debug!("vsock: port {}: an engine ring attached", self.local_port);
                 Ringing::Ringed(Box::new(Ringed {
-                ring,
-                replied: false,
-                doorbell: false,
-                blocked: false,
-                full: false,
-                ended: false,
+                    ring,
+                    replied: false,
+                    doorbell: false,
+                    blocked: false,
+                    full: false,
+                    ended: false,
                 }))
             }
             Err(refusal) => {
@@ -271,7 +271,10 @@ impl Conn {
             self.ringing = Ringing::Plain;
         }
         if !put(&memory, space, &bytes) {
-            debug!("vsock: port {}: an RX buffer too short for a ring's packet", self.local_port);
+            debug!(
+                "vsock: port {}: an RX buffer too short for a ring's packet",
+                self.local_port
+            );
             self.kill();
             self.pending = Default::default();
             return Some(self.header(op::RST));
@@ -464,7 +467,8 @@ mod tests {
         }
 
         fn shutdown(&mut self, flags: u32) {
-            self.m.on_guest_packet(&header(op::SHUTDOWN, 0, flags), &[], &self.mem);
+            self.m
+                .on_guest_packet(&header(op::SHUTDOWN, 0, flags), &[], &self.mem);
         }
 
         fn word(&self, at: u64) -> &'static AtomicU64 {
@@ -538,7 +542,10 @@ mod tests {
         g.put(0, &up);
         g.send(&[abi::DOORBELL]);
         assert_eq!(g.read_owner(up.len()), up);
-        assert_eq!(g.word(field::TO_HOST_TAIL).load(Ordering::Acquire), up.len() as u64);
+        assert_eq!(
+            g.word(field::TO_HOST_TAIL).load(Ordering::Acquire),
+            up.len() as u64
+        );
         // Host to guest: what the owner writes fills the ring for the guest, and a relay
         // that waits is rung once, with one doorbell byte.
         g.flag(field::GUEST_WAITS_DATA).store(1, Ordering::SeqCst);
@@ -638,7 +645,10 @@ mod tests {
         g.turn();
         assert_eq!(g.take(0), b"answer");
         g.send(&[abi::DOORBELL]);
-        assert!(g.next().is_none(), "no reset: a doorbell after the end is the relay's right");
+        assert!(
+            g.next().is_none(),
+            "no reset: a doorbell after the end is the relay's right"
+        );
     }
 
     #[test]
@@ -656,7 +666,10 @@ mod tests {
         }
         g.turn();
         g.turn();
-        assert_eq!(g.word(field::TO_GUEST_HEAD).load(Ordering::Acquire), u64::from(RING));
+        assert_eq!(
+            g.word(field::TO_GUEST_HEAD).load(Ordering::Acquire),
+            u64::from(RING)
+        );
         assert_eq!(g.flag(field::HOST_WAITS_ROOM).load(Ordering::SeqCst), 1);
         let mut got = g.take(0);
         // Room made, the relay rings, and the rest comes.

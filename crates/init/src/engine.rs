@@ -78,7 +78,12 @@ pub fn start(token: [u8; run::TOKEN], rings: bool) -> io::Result<Relay> {
         -1 => Err(io::Error::last_os_error()),
         0 => {
             let pinned = pinner.as_ref().map(|p| p.as_raw_fd());
-            crate::dnsrelay::keep_only(&[Some(theirs.as_raw_fd()), pinned].into_iter().flatten().collect::<Vec<_>>());
+            crate::dnsrelay::keep_only(
+                &[Some(theirs.as_raw_fd()), pinned]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>(),
+            );
             let mut tag = [0u8; 1];
             if let Ok((1, Some(listener))) = crate::hostbind::recv_fd(theirs.as_raw_fd(), &mut tag, 0)
                 && tag == [LISTENER]

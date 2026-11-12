@@ -48,7 +48,10 @@ fn home(name: &str) -> Option<(TempDir, String)> {
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// A `--use-api-socket` run named `prov`, its engine answering, and a joiner of it,
@@ -90,7 +93,10 @@ fn bulk(home: &Path, args: &[&str]) -> String {
 }
 
 fn nanos(line: &str) -> u64 {
-    line.rsplit(' ').next().and_then(|n| n.parse().ok()).unwrap_or_else(|| panic!("no time in {line:?}"))
+    line.rsplit(' ')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no time in {line:?}"))
 }
 
 /// Bytes of a log and of a stdin, each larger than many rings, cross whole through a
@@ -151,10 +157,17 @@ fn engine_ring_measurement() {
     }
     let host = shards_in(&home, &["version"]).stdout;
     let load = std::fs::read_to_string("/proc/loadavg").unwrap_or_else(|_| "unknown".into());
-    println!("engine-ring: {rounds} rounds of {bytes} bytes; load {}; {}", load.trim(), host.lines().next().unwrap_or_default());
+    println!(
+        "engine-ring: {rounds} rounds of {bytes} bytes; load {}; {}",
+        load.trim(),
+        host.lines().next().unwrap_or_default()
+    );
     println!("| arm | n | p50 ms | p90 | p99 | max | MiB/s at p50 |");
     println!("|---|---|---|---|---|---|---|");
-    for (name, samples) in [("engine to command (log)", &mut logs), ("command to engine (stdin)", &mut stdin)] {
+    for (name, samples) in [
+        ("engine to command (log)", &mut logs),
+        ("command to engine (stdin)", &mut stdin),
+    ] {
         samples.sort_unstable();
         let at = |q: usize| samples[(samples.len() - 1) * q / 100] as f64 / 1e6;
         println!(

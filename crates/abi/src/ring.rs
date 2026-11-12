@@ -134,7 +134,11 @@ impl Offer {
         out.extend_from_slice(&VERSION.to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
         out.extend_from_slice(&self.ring.to_le_bytes());
-        out.extend_from_slice(&u32::try_from(self.extents.len()).unwrap_or(u32::MAX).to_le_bytes());
+        out.extend_from_slice(
+            &u32::try_from(self.extents.len())
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
         for e in &self.extents {
             out.extend_from_slice(&e.gpa.to_le_bytes());
             out.extend_from_slice(&e.len.to_le_bytes());
@@ -179,7 +183,11 @@ impl Offer {
                 return Err(Malformed::Length);
             };
             let (gpa, len) = (u64::from_le_bytes(*gpa), u64::from_le_bytes(*len));
-            if len == 0 || !gpa.is_multiple_of(PAGE) || !len.is_multiple_of(PAGE) || gpa.checked_add(len).is_none() {
+            if len == 0
+                || !gpa.is_multiple_of(PAGE)
+                || !len.is_multiple_of(PAGE)
+                || gpa.checked_add(len).is_none()
+            {
                 return Err(Malformed::Extent);
             }
             total = total.checked_add(len).ok_or(Malformed::Size)?;
@@ -323,8 +331,14 @@ mod tests {
         let half = slot_len(MAX_RING) / PAGE / 2 * PAGE;
         assert_eq!(with(24, &(half + PAGE).to_le_bytes()), Err(Malformed::Size));
         let mut huge = good.clone();
-        huge.splice(16..32, [0u8; 8].into_iter().chain((u64::MAX - 4095).to_le_bytes()));
-        huge.splice(32..48, [0u8; 8].into_iter().chain((u64::MAX - 4095).to_le_bytes()));
+        huge.splice(
+            16..32,
+            [0u8; 8].into_iter().chain((u64::MAX - 4095).to_le_bytes()),
+        );
+        huge.splice(
+            32..48,
+            [0u8; 8].into_iter().chain((u64::MAX - 4095).to_le_bytes()),
+        );
         assert_eq!(Offer::parse(&huge), Err(Malformed::Size));
     }
 

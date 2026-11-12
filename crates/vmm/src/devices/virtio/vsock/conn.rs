@@ -179,7 +179,13 @@ impl Conn {
 
     pub fn has_pending_rx(&self) -> bool {
         let p = self.pending;
-        p.rst || p.response || p.request || p.shutdown != 0 || p.rw || p.credit_update || p.credit_answer
+        p.rst
+            || p.response
+            || p.request
+            || p.shutdown != 0
+            || p.rw
+            || p.credit_update
+            || p.credit_answer
             || self.ring_owes()
     }
 
