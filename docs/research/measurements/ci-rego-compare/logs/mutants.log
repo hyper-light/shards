@@ -1,0 +1,100 @@
+mutants of the working tree on 944f1622031de7fecd7de99f649cec7da9e34afa
+
+## comparison: the exact product made for every power of five a u32 holds (crates/rego/src/value.rs)
+$ cargo test -p shards-rego --lib -- value::tests::numbers_compare_exactly_at_every_distance
+exit 101 after 123.2 s
+test value::tests::numbers_compare_exactly_at_every_distance has been running for over 60 seconds
+test value::tests::numbers_compare_exactly_at_every_distance ... FAILED
+thread 'value::tests::numbers_compare_exactly_at_every_distance' (81647693) panicked at crates/rego/src/value.rs:899:14:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 60.53s
+killed
+
+## alignment: Go's, to the lower exponent however far (crates/rego/src/number.rs)
+$ cargo test -p shards-rego --lib -- number::tests::alignment_is_bounded_by_the_precision_not_the_gap
+exit 101 after 38.9 s
+test number::tests::alignment_is_bounded_by_the_precision_not_the_gap ... FAILED
+thread 'number::tests::alignment_is_bounded_by_the_precision_not_the_gap' (81676648) panicked at crates/rego/src/number.rs:1007:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 2.72s
+killed
+
+## alignment: the borrow of what the smaller dropped (crates/rego/src/number.rs)
+$ cargo test -p shards-rego --lib -- number::tests::sums_and_differences_round_as_the_exact_ones
+exit 101 after 20.8 s
+test number::tests::sums_and_differences_round_as_the_exact_ones ... FAILED
+thread 'number::tests::sums_and_differences_round_as_the_exact_ones' (81683948) panicked at crates/rego/src/number.rs:984:21:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.06s
+killed
+
+## pow5: the squaring after the factor's last use (crates/rego/src/number.rs)
+$ cargo test -p shards-rego --lib -- number::tests::huge_exponents_read_as_go_reads_them
+exit 101 after 52.9 s
+test number::tests::huge_exponents_read_as_go_reads_them ... FAILED
+thread 'number::tests::huge_exponents_read_as_go_reads_them' (81690241) panicked at crates/rego/src/number.rs:1020:48:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.11s
+killed
+
+## parse: Go's z / +Inf, zero (crates/rego/src/number.rs)
+$ cargo test -p shards-rego --lib -- number::tests::huge_exponents_read_as_go_reads_them
+exit 101 after 47.1 s
+test number::tests::huge_exponents_read_as_go_reads_them ... FAILED
+thread 'number::tests::huge_exponents_read_as_go_reads_them' (81696246) panicked at crates/rego/src/number.rs:1026:48:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.07s
+killed
+
+## text: the bound on numbers (crates/rego/src/number.rs)
+$ cargo test -p shards-rego --lib -- number::tests::texts_and_integers_end_at_opas_bound
+exit 101 after 45.6 s
+test number::tests::texts_and_integers_end_at_opas_bound ... FAILED
+thread 'number::tests::texts_and_integers_end_at_opas_bound' (81702314) panicked at crates/rego/src/number.rs:1043:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 5.60s
+killed
+
+## int: the bound on numbers (crates/rego/src/number.rs)
+$ cargo test -p shards-rego --lib -- number::tests::texts_and_integers_end_at_opas_bound
+exit 101 after 30.2 s
+test number::tests::texts_and_integers_end_at_opas_bound ... FAILED
+thread 'number::tests::texts_and_integers_end_at_opas_bound' (81706885) panicked at crates/rego/src/number.rs:1046:42:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 2.23s
+killed
+
+## bits.lsh: the bound on numbers, before the shift (crates/rego/src/funcs/collections/numbers.rs)
+$ cargo test -p shards-rego --test builtins numbers_with_huge
+exit 101 after 34.0 s
+test numbers_with_huge_exponents_answer_in_bounded_work ... FAILED
+thread 'numbers_with_huge_exponents_answer_in_bounded_work' (81711990) panicked at crates/rego/tests/builtins.rs:351:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.40s
+killed
+
+## units.parse: the bound on numbers (crates/rego/src/funcs/encoding.rs)
+$ cargo test -p shards-rego --test builtins numbers_with_huge
+exit 101 after 41.8 s
+test numbers_with_huge_exponents_answer_in_bounded_work ... FAILED
+thread 'numbers_with_huge_exponents_answer_in_bounded_work' (81718997) panicked at crates/rego/tests/builtins.rs:351:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 2.00s
+killed
+
+## parser: Go's ±Inf, too big (crates/rego/src/parser.rs)
+$ cargo test -p shards-rego --test parse
+exit 101 after 49.9 s
+test modules_parse_as_opa_parses_them ... FAILED
+test a_long_line_of_tabs_parses_in_time ... ok
+thread 'modules_parse_as_opa_parses_them' (81726664) panicked at crates/rego/tests/parse.rs:31:5:
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.84s
+killed
+
+restored; the unmutated tests:
+$ cargo test -p shards-rego --lib -- number::tests value::tests
+exit 0 after 39.2 s
+test number::tests::alignment_is_bounded_by_the_precision_not_the_gap ... ok
+test number::tests::huge_exponents_read_as_go_reads_them ... ok
+test value::tests::the_fuzzers_comparisons_answer_without_scaling_by_their_exponents ... ok
+test value::tests::numbers_compare_exactly_at_every_distance ... ok
+test number::tests::texts_and_integers_end_at_opas_bound ... ok
+test number::tests::sums_and_differences_round_as_the_exact_ones ... ok
+test value::tests::orders_are_those_the_exact_scaling_gave ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 5.10s
+$ cargo test -p shards-rego --test builtins numbers_with_huge
+exit 0 after 50.1 s
+test numbers_with_huge_exponents_answer_in_bounded_work ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 1.39s
+green

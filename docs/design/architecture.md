@@ -19419,6 +19419,45 @@ held to more than OPA's answers:
   unknown, and a node finds a
   child by name, as OPA's typeTreeNode does with its map. The times after: owed, the
   nesting bench's M510 inputs and deeper (`rego-nesting/run.sh`).
+- Numbers whose exponents are large (M524; `docs/research/measurements/ci-rego-compare`).
+  CI's fuzzing found ten builtin calls whose work grew with an exponent's value, such as
+  `lt(33, 3e33333333332)`: the comparison scaled both numbers by powers of 5 and 2 as
+  long as their exponents' gap, addition shifted the smaller operand as far (Go's `uadd`
+  does too), and a number's text and an exact integer were made whole. Now:
+  - The comparison makes p × 5^n × 2^s exactly only while n ≤ bits(q)/2, the most a power
+    of five dividing q can have. Past that the sides can't be equal, and bounds on 5^n,
+    refined until they decide, answer. The work is bounded by the mantissas, and every
+    order the exact scaling gave is kept (20,000 random pairs; convergents of log2 10
+    within 2^-64 of each other). OPA panics on most such pairs ("illegal value":
+    `big.Rat.SetString` refuses |exp5| > 10^6 and |exp2| > 10^7, go1.26.1
+    `math/big/ratconv.go`; `big.Float.SetString`, exponents past int32). Shards answers
+    exactly.
+  - Addition and subtraction keep the smaller operand's bits within prec + 2 of the
+    larger's top, the rest a sticky bit (and a borrow). The round bit is then at or above
+    the cut, so the result rounds as Go's exact sum does (160,000 random sums and
+    differences against it).
+  - Go's `pow5` squares its factor once past its last use. Past MaxExp that is an unread
+    +Inf there, and it was an error here: `1e600000000` failed. A 5^n past Go's exponents
+    is +Inf, and z over it zero, so `-1e-1000000000` reads as -0. The parser says "number
+    too big" for a literal Go reads as ±Inf, as OPA's does.
+  - A builtin writes no number text, and makes no exact integer, whose MantExp is past
+    ±10^5 (`number::MAX_EXPONENT`). It fails with "number too big", the error OPA's parser
+    gives such a literal (`ast/parser.go` `parseNumber`, v1.14.1); `time.*` keep OPA's
+    "timestamp too big". The bound is OPA's own on a number in Rego source, set for this
+    cost (golang/go#11068), so a builtin makes no number a policy could not write. At it,
+    shards writes a text in about 80 ms and the tiniest `g` texts in about 0.3 s. Past it
+    the cost grows with the exponent's value, as OPA's does: OPA took 15.7 s for
+    `abs(1e3000000)`, 41.7 s for `ceil(1e3000000)` and over 120 s for four of the ten,
+    and Go's text of a number near 2^-325147 took 54 s. Alternatives measured: Go's
+    big.Float range (MaxExp 2^31: texts of 646 million digits, hours in OPA and here);
+    Go's big.Rat limits (10^7 bits: 23 s for one text here, num-bigint converting near
+    n^1.8); float64's range (RFC 8259's interoperable one), which would change answers
+    OPA and shards give today between 10^309 and 10^30102. The difference from OPA: OPA
+    writes those texts, in time growing with the exponent's value, or panics; shards
+    refuses them. `bits.lsh`'s chosen limit of 2^32 bits gives way to the same bound
+    (OPA's Go panics, `makeslice`, past its memory).
+  - `numbers.range` stays unbounded, as OPA's. The fuzz target asks it for at most one
+    number per byte of its input.
 - Left: a rule whose local-variable rewrite errs is rewritten OPA's way, so an
   erroring rule of `every` statements and comprehensions alternating takes OPA's time.
   Evaluation asks no bound of a policy, as OPA's does not (`numbers.range` over any

@@ -1,0 +1,14 @@
+abs[1e30102]: n=21 p50 75.517 p90 192.596 max 222.421 ms, text 30103 chars
+abs[1e-30103]: n=21 p50 319.833 p90 521.124 max 580.848 ms, text 8 chars
+ceil[1e30102]: n=21 p50 78.129 p90 199.477 max 272.475 ms, text 30102 chars
+round[-1e30102]: n=21 p50 52.705 p90 187.227 max 221.159 ms, text 30103 chars
+abs[1e-30000]: n=21 p50 324.608 p90 438.869 max 563.040 ms, text 8 chars
+plus[1e30102,1e-30103]: n=21 p50 24.907 p90 79.896 max 307.229 ms, text 30103 chars
+div[1,3e30102]: n=21 p50 312.871 p90 406.151 max 640.576 ms, text 28 chars
+bits.lsh[1,99999]: n=21 p50 1.714 p90 71.017 max 201.469 ms, text 30103 chars
+format_int[1e30102,10]: n=21 p50 1.897 p90 69.645 max 146.196 ms, text 1 chars
+units.parse_bytes["1e30102"]: n=21 p50 2.311 p90 50.506 max 195.897 ms, text 30102 chars
+lt[33,3e33333333332]: n=21 p50 0.002 p90 0.004 max 0.034 ms, text 1 chars
+lt["x",1]: n=21 p50 0.000 p90 0.000 max 0.000 ms, text 1 chars
+abs[9e9999995]: n=21 p50 0.002 p90 0.002 max 0.005 ms, text 0 chars
+ceil[266000000e2028020]: n=21 p50 0.002 p90 0.002 max 0.021 ms, text 0 chars
