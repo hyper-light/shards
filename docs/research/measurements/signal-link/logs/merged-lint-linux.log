@@ -1,0 +1,136 @@
+# scripts/lint x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-musl; 54735c4ae318; 2026-11-12T23:46:39Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); clippy 0.1.98 (48a229ceae 2026-09-01); zig 0.16.0
+== format
+== x86_64-unknown-linux-gnu
+--
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/g121-tmp/to-guest2/target-lint/x86_64-unknown-linux-gnu/debug/build/aws-lc-sys-d8595155b841fac6/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_gnu': '/home/adalundhe/g121-tmp/to-guest2/src/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_gnu: /home/adalundhe/g121-tmp/to-guest2/src/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/to-guest2/target-lint/x86_64-unknown-linux-gnu/debug/build/aws-lc-sys-d8595155b841fac6/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/to-guest2/target-lint/x86_64-unknown-linux-gnu/debug/build/aws-lc-sys-d8595155b841fac6/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/g121-tmp/to-guest2/target-lint/x86_64-unknown-linux-gnu/debug/build/aws-lc-sys-d8595155b841fac6/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+--
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.35s
+== aarch64-unknown-linux-gnu
+--
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/g121-tmp/to-guest2/target-lint/aarch64-unknown-linux-gnu/debug/build/aws-lc-sys-15a0f5d5299202fc/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_aarch64_unknown_linux_gnu': '/home/adalundhe/g121-tmp/to-guest2/src/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_aarch64_unknown_linux_gnu: /home/adalundhe/g121-tmp/to-guest2/src/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/to-guest2/target-lint/aarch64-unknown-linux-gnu/debug/build/aws-lc-sys-15a0f5d5299202fc/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/to-guest2/target-lint/aarch64-unknown-linux-gnu/debug/build/aws-lc-sys-15a0f5d5299202fc/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: info: available CPUs for architecture 'aarch64':
+warning: aws-lc-sys@0.45.0:  a64fx
+warning: aws-lc-sys@0.45.0:  ampere1
+warning: aws-lc-sys@0.45.0:  ampere1a
+warning: aws-lc-sys@0.45.0:  ampere1b
+warning: aws-lc-sys@0.45.0:  apple_a10
+warning: aws-lc-sys@0.45.0:  apple_a11
+warning: aws-lc-sys@0.45.0:  apple_a12
+warning: aws-lc-sys@0.45.0:  apple_a13
+warning: aws-lc-sys@0.45.0:  apple_a14
+warning: aws-lc-sys@0.45.0:  apple_a15
+warning: aws-lc-sys@0.45.0:  apple_a16
+warning: aws-lc-sys@0.45.0:  apple_a17
+warning: aws-lc-sys@0.45.0:  apple_a18
+warning: aws-lc-sys@0.45.0:  apple_a7
+warning: aws-lc-sys@0.45.0:  apple_a8
+warning: aws-lc-sys@0.45.0:  apple_a9
+warning: aws-lc-sys@0.45.0:  apple_m1
+warning: aws-lc-sys@0.45.0:  apple_m2
+warning: aws-lc-sys@0.45.0:  apple_m3
+warning: aws-lc-sys@0.45.0:  apple_m4
+warning: aws-lc-sys@0.45.0:  apple_s10
+warning: aws-lc-sys@0.45.0:  apple_s4
+warning: aws-lc-sys@0.45.0:  apple_s5
+warning: aws-lc-sys@0.45.0:  apple_s6
+warning: aws-lc-sys@0.45.0:  apple_s7
+warning: aws-lc-sys@0.45.0:  apple_s8
+warning: aws-lc-sys@0.45.0:  apple_s9
+warning: aws-lc-sys@0.45.0:  carmel
+warning: aws-lc-sys@0.45.0:  cobalt_100
+warning: aws-lc-sys@0.45.0:  cortex_a320
+warning: aws-lc-sys@0.45.0:  cortex_a34
+warning: aws-lc-sys@0.45.0:  cortex_a35
+warning: aws-lc-sys@0.45.0:  cortex_a510
+warning: aws-lc-sys@0.45.0:  cortex_a520
+warning: aws-lc-sys@0.45.0:  cortex_a520ae
+warning: aws-lc-sys@0.45.0:  cortex_a53
+warning: aws-lc-sys@0.45.0:  cortex_a55
+warning: aws-lc-sys@0.45.0:  cortex_a57
+warning: aws-lc-sys@0.45.0:  cortex_a65
+warning: aws-lc-sys@0.45.0:  cortex_a65ae
+warning: aws-lc-sys@0.45.0:  cortex_a710
+warning: aws-lc-sys@0.45.0:  cortex_a715
+warning: aws-lc-sys@0.45.0:  cortex_a72
+warning: aws-lc-sys@0.45.0:  cortex_a720
+warning: aws-lc-sys@0.45.0:  cortex_a720ae
+warning: aws-lc-sys@0.45.0:  cortex_a725
+warning: aws-lc-sys@0.45.0:  cortex_a73
+warning: aws-lc-sys@0.45.0:  cortex_a75
+warning: aws-lc-sys@0.45.0:  cortex_a76
+warning: aws-lc-sys@0.45.0:  cortex_a76ae
+warning: aws-lc-sys@0.45.0:  cortex_a77
+warning: aws-lc-sys@0.45.0:  cortex_a78
+warning: aws-lc-sys@0.45.0:  cortex_a78ae
+warning: aws-lc-sys@0.45.0:  cortex_a78c
+warning: aws-lc-sys@0.45.0:  cortex_r82
+warning: aws-lc-sys@0.45.0:  cortex_r82ae
+warning: aws-lc-sys@0.45.0:  cortex_x1
+warning: aws-lc-sys@0.45.0:  cortex_x1c
+warning: aws-lc-sys@0.45.0:  cortex_x2
+warning: aws-lc-sys@0.45.0:  cortex_x3
+warning: aws-lc-sys@0.45.0:  cortex_x4
+warning: aws-lc-sys@0.45.0:  cortex_x925
+warning: aws-lc-sys@0.45.0:  cyclone
+warning: aws-lc-sys@0.45.0:  emag
+warning: aws-lc-sys@0.45.0:  exynos_m1
+warning: aws-lc-sys@0.45.0:  exynos_m2
+warning: aws-lc-sys@0.45.0:  exynos_m3
+warning: aws-lc-sys@0.45.0:  exynos_m4
+warning: aws-lc-sys@0.45.0:  exynos_m5
+warning: aws-lc-sys@0.45.0:  falkor
+warning: aws-lc-sys@0.45.0:  fujitsu_monaka
+warning: aws-lc-sys@0.45.0:  gb10
+warning: aws-lc-sys@0.45.0:  generic
+warning: aws-lc-sys@0.45.0:  grace
+warning: aws-lc-sys@0.45.0:  kryo
+warning: aws-lc-sys@0.45.0:  neoverse_512tvb
+warning: aws-lc-sys@0.45.0:  neoverse_e1
+warning: aws-lc-sys@0.45.0:  neoverse_n1
+warning: aws-lc-sys@0.45.0:  neoverse_n2
+warning: aws-lc-sys@0.45.0:  neoverse_n3
+warning: aws-lc-sys@0.45.0:  neoverse_v1
+warning: aws-lc-sys@0.45.0:  neoverse_v2
+## scripts/lint (4 Linux targets) exit 0
+# done 2026-11-12T23:57:30Z
+
+# every target's header and end:
+== format
+== x86_64-unknown-linux-gnu
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 09s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.35s
+== aarch64-unknown-linux-gnu
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 37s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.04s
+== x86_64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 16s
+== aarch64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 09s

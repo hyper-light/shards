@@ -231,6 +231,19 @@ The first slice's link tests now take the sender's thread (`taken`, `send_frames
 send no longer fails its own frame's caller, which it has answered already (held), but every
 frame after it, and any exec waiting, as the watch reads the end.
 
+### At the merged revision
+
+At `54735c4ae` (origin/main `e7825cb32` merged in, its managed inputs among it):
+adacachy's KVM, under its load of 64 to 191: shards-vm 60 of 60, shards-init 228 (1
+ignored, as on main) ([logs/merged-unit.log](logs/merged-unit.log)); the four new E2E tests
+again, each ok: [logs/merged-pause.log](logs/merged-pause.log) (33 s),
+[logs/merged-lost.log](logs/merged-lost.log) (46 s), [logs/merged-end.log](logs/merged-end.log)
+(5 s), [logs/merged-restore.log](logs/merged-restore.log) (2 s); `scripts/lint` for the four
+Linux targets ([logs/merged-lint-linux.log](logs/merged-lint-linux.log)). The Mac Studio:
+`scripts/lint` for macOS and both Windows targets, clean now that main's own Windows error
+is mended (13681de5d); shards-vm 55 of 55 on macOS 26.4 arm64, the workload's tests 200 of
+200 ([logs/merged-mac.log](logs/merged-mac.log)).
+
 ### Item 2: E2E tests of the owed cases, each run once on KVM (adacachy)
 
 - `a_lost_signal_connection_fails_execs_and_kills_at_once` (containers.rs): an init built
