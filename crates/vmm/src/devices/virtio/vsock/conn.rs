@@ -407,7 +407,7 @@ impl Conn {
             h.flags = flags;
             return Some(h);
         }
-        if let Some(h) = self.ring_next_rx(space) {
+        if let Some(h) = self.ring_next_rx(space, spare) {
             return Some(h);
         }
         if self.pending.rw
