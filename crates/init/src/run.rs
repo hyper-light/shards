@@ -3493,9 +3493,10 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
 /// reports on the run connection.
 struct Exec {
     id: u32,
-    conn: Option<File>,
-    /// Its nonblocking connect has completed.
-    connected: bool,
+    link: Link,
+    /// The relay generation whose host asked for it (`born`, D176): only that host waits
+    /// for its connection.
+    born: u64,
     /// Its process, or 0 if it never started.
     pid: libc::pid_t,
     stdin: Option<OwnedFd>,
@@ -3527,6 +3528,44 @@ struct Exec {
     /// Init's own work for a joiner (D119), its built-in in a child of init's: spared as
     /// the workload's end ends the rest, as the joiner is.
     into_joiner: bool,
+}
+
+/// How far an exec's connection to the host has come. The host says nothing on it before
+/// it has the exec (its first STDIN frame, or a joiner's SAVE): until then the host may
+/// never have had it, and may be waiting for it.
+enum Link {
+    /// Its nonblocking connect in progress.
+    Dialing(File),
+    /// Connected, nothing heard from the host on it yet.
+    Unheard(File),
+    /// The host has said something on it: it has the exec.
+    Heard(File),
+    Gone,
+}
+
+impl Link {
+    fn conn(&self) -> Option<&File> {
+        match self {
+            Link::Dialing(conn) | Link::Unheard(conn) | Link::Heard(conn) => Some(conn),
+            Link::Gone => None,
+        }
+    }
+
+    /// Its connect completed.
+    fn connected(&mut self) {
+        *self = match std::mem::replace(self, Link::Gone) {
+            Link::Dialing(conn) => Link::Unheard(conn),
+            other => other,
+        };
+    }
+
+    /// The host said something on it.
+    fn heard(&mut self) {
+        *self = match std::mem::replace(self, Link::Gone) {
+            Link::Unheard(conn) => Link::Heard(conn),
+            other => other,
+        };
+    }
 }
 
 /// A joiner's writable layer after its end (D119), as the workload's is after its own
@@ -4313,8 +4352,8 @@ impl Exec {
             .map_err(|e| Some((id, format!("connecting to the host for the command: {e}"))))?;
         let mut exec = Exec {
             id,
-            conn: Some(conn),
-            connected: false,
+            link: Link::Dialing(conn),
+            born: 0,
             pid: 0,
             stdin: None,
             stdout: None,
@@ -4478,7 +4517,13 @@ impl Exec {
             && self.stdout.is_none()
             && self.stderr.is_none()
             && !matches!(self.save, Save::Sending(_))
-            && (self.conn.is_none() || self.ended && self.to_conn.is_empty() && !self.joined)
+            && match self.link {
+                Link::Gone => true,
+                Link::Heard(_) => self.ended && self.to_conn.is_empty() && !self.joined,
+                // A host that has said nothing may never have had it: closed now, it would
+                // not hear; it is kept until the host speaks on it or lets go of it.
+                Link::Dialing(_) | Link::Unheard(_) => false,
+            }
     }
 
     /// Whether its end is all said and its connection waits for the host: a joiner's
@@ -4499,9 +4544,9 @@ impl Exec {
             .iter()
             .find(|(j, _)| *j == self.id)
             .and_then(|(_, k)| Some((k.lower.try_clone().ok()?, k.upper.try_clone().ok()?)));
-        let (Some((lower, upper)), Some(conn)) = (kept, self.conn.as_ref()) else {
+        let (Some((lower, upper)), Some(conn)) = (kept, self.link.conn()) else {
             self.save = Save::Done;
-            self.conn = None;
+            self.link = Link::Gone;
             return;
         };
         // SAFETY: init is single-threaded, so its child may run anything.
@@ -4522,11 +4567,128 @@ impl Exec {
         }
         if pid < 0 {
             self.save = Save::Done;
-            self.conn = None;
+            self.link = Link::Gone;
         } else {
             self.save = Save::Sending(pid);
         }
     }
+
+    /// Its connection's events, `revents`, read through `buf`. One lost before the host
+    /// spoke on it goes to [`Exec::lose`], with `failures`, the relay's generation `born` and
+    /// the microVM's `generation`.
+    fn on_conn(
+        &mut self,
+        revents: libc::c_short,
+        buf: &mut [u8],
+        failures: &mut Outbox,
+        born: u64,
+        generation: impl Fn() -> u64,
+    ) {
+        let Some(fd) = self.link.conn().map(AsRawFd::as_raw_fd) else {
+            return;
+        };
+        if let Link::Dialing(_) = self.link {
+            match connect_result(fd) {
+                Ok(()) => self.link.connected(),
+                Err(e) => self.lose(&format!("connecting: {e}"), failures, born, generation),
+            }
+            return;
+        }
+        if revents & libc::POLLOUT != 0 {
+            match write(fd, self.to_conn.pending()) {
+                Ok(n) => self.to_conn.written(n),
+                Err(e) if matches!(self.link, Link::Unheard(_)) => {
+                    self.lose(&format!("writing: {e}"), failures, born, generation);
+                    return;
+                }
+                Err(_) => self.link = Link::Gone,
+            }
+        }
+        if revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 && self.link.conn().is_some() {
+            match read(fd, buf) {
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
+                Ok(0) if matches!(self.link, Link::Unheard(_)) => {
+                    self.lose("the host closed it", failures, born, generation);
+                }
+                Err(e) if matches!(self.link, Link::Unheard(_)) => {
+                    self.lose(&format!("reading: {e}"), failures, born, generation);
+                }
+                // The end of the host's stdin; past a joiner's end, of its asking (D119).
+                Ok(0) | Err(_) => {
+                    self.stdin_eof = true;
+                    if self.awaiting_host() {
+                        self.link = Link::Gone;
+                    }
+                }
+                Ok(n) => {
+                    self.link.heard();
+                    self.from_conn.extend_from_slice(buf.get(..n).unwrap_or_default());
+                    let live = self.stdin.is_some();
+                    let (mut closed, mut save, to) = (false, false, &mut self.to_stdin);
+                    let whole = each_frame(&mut self.from_conn, |which, payload| {
+                        if which == kind::STDIN {
+                            closed |= payload.is_empty();
+                            if live {
+                                to.extend(&[payload]);
+                            }
+                        }
+                        save |= which == kind::SAVE;
+                    });
+                    self.stdin_eof |= closed || !whole;
+                    // A joiner's writable layer, as the host asks once it has its end; a
+                    // connection that says what no frame is ends its asking.
+                    if save && self.joined && self.save == Save::Unasked {
+                        self.save = Save::Asked;
+                    } else if !whole && self.awaiting_host() {
+                        self.link = Link::Gone;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Its connection lost, `why`, before the host said anything on it: the host may never
+    /// have had it, and its exec would wait for it until the workload ends. Where that host
+    /// is the one this relay serves (the relay's generation `born`, the microVM's
+    /// `generation` the same: no restore since, D176), the host hears why on the workload's
+    /// connection by the exec's id ([`kind::EXEC_FAILED`], into `failures`), and the exec's
+    /// process, which no client will hear, is killed, as moby kills an exec's process once
+    /// its client has gone (docker-v29.8.1 daemon/exec.go, ContainerExecStart). The process
+    /// starts as its connection is dialed, not once it is up: waiting would put the dial's
+    /// round trip on every exec's start, for a loss that comes only where the host's port
+    /// refuses it (its workload ending) or lets go of it unheard. An exec of the microVM
+    /// saved, whose connection a restore reset, is let go of as the restore lets go of every
+    /// one.
+    fn lose(&mut self, why: &str, failures: &mut Outbox, born: u64, generation: impl Fn() -> u64) {
+        self.link = Link::Gone;
+        self.stdin_eof = true;
+        if self.born != born || generation() != born {
+            return;
+        }
+        let killed = self.pid > 0 && self.status.is_none();
+        if killed {
+            // SAFETY: kill(2) of init's own child, not yet reaped.
+            unsafe { libc::kill(self.pid, libc::SIGKILL) };
+        }
+        let killed = if killed { "; the command was killed" } else { "" };
+        exec_failed(
+            failures,
+            self.id,
+            &format!("the command's connection to the host failed before the host had it: {why}{killed}"),
+        );
+    }
+}
+
+/// Tells the host that exec `id` has no connection, and `why`: its [`kind::EXEC_FAILED`]
+/// frame, into `failures`, which go on the workload's connection, where the host fails that
+/// exec with them.
+fn exec_failed(failures: &mut Outbox, id: u32, why: &str) {
+    let len = u32::try_from(why.len().saturating_add(4)).unwrap_or(u32::MAX);
+    failures.extend(&[
+        &run::header(kind::EXEC_FAILED, len),
+        &id.to_be_bytes(),
+        why.as_bytes(),
+    ]);
 }
 
 /// Sends the workload's writable layer on `conn` from a child of init's, as the host asks
@@ -4688,6 +4850,10 @@ impl Workload {
         let mut to_stdin = Outbox::default();
         let mut stdin_eof = false;
         let mut to_host = Outbox::default();
+        // What the host is yet to hear of execs that have no connection (EXEC_FAILED), held
+        // while a cut is not open: a save (D176) carries none of them to the microVM restored
+        // from it, whose host never asked for those execs, and gives its own the same ids.
+        let mut exec_failures = Outbox::default();
         let mut status: Option<u32> = None;
         let mut execs: Vec<Exec> = Vec::new();
         let mut buf = vec![0u8; CHUNK];
@@ -4815,10 +4981,15 @@ impl Workload {
             // (flakes plan step 3, PM M328).
             if host.is_none() {
                 to_host.clear();
+                exec_failures.clear();
                 cut = Cut::Open;
             }
+            if cut.open() && !exec_failures.is_empty() {
+                to_host.extend(&[exec_failures.pending()]);
+                exec_failures.clear();
+            }
             for e in &mut execs {
-                if e.conn.is_none() {
+                if e.link.conn().is_none() {
                     e.to_conn.clear();
                 }
             }
@@ -5023,7 +5194,7 @@ impl Workload {
                 poll(r.timer(), libc::POLLIN, Owner::ReadyBy);
             }
             for (i, e) in execs.iter().enumerate() {
-                let conn_events = if !e.connected {
+                let conn_events = if matches!(e.link, Link::Dialing(_)) {
                     libc::POLLOUT
                 } else if matches!(e.save, Save::Sending(_)) {
                     // A joiner's layer is written to it meanwhile, by a child of init's.
@@ -5037,7 +5208,7 @@ impl Workload {
                         }
                 };
                 poll(
-                    e.conn.as_ref().map(AsRawFd::as_raw_fd),
+                    e.link.conn().map(AsRawFd::as_raw_fd),
                     conn_events,
                     Owner::Exec(i, Part::Conn),
                 );
@@ -5196,8 +5367,8 @@ impl Workload {
                                 // than waiting on the rest.
                                 e.save = Save::Done;
                                 if code != 0 {
-                                    e.conn = None;
-                                } else if let Some(conn) = &e.conn {
+                                    e.link = Link::Gone;
+                                } else if let Some(conn) = e.link.conn() {
                                     set_nonblocking(conn.as_raw_fd(), true);
                                 }
                             }
@@ -5342,17 +5513,13 @@ impl Workload {
                                             hosts,
                                             &self.domains,
                                         ) {
-                                            Ok(e) => execs.push(e),
+                                            Ok(mut e) => {
+                                                e.born = born;
+                                                execs.push(e);
+                                            }
                                             // Said where the host hears it, which otherwise
                                             // waits for the exec's connection (review 8.8).
-                                            Err(Some((id, why))) => {
-                                                let len = u32::try_from(4 + why.len()).unwrap_or(u32::MAX);
-                                                to_host.extend(&[
-                                                    &run::header(kind::EXEC_FAILED, len),
-                                                    &id.to_be_bytes(),
-                                                    why.as_bytes(),
-                                                ]);
-                                            }
+                                            Err(Some((id, why))) => exec_failed(&mut exec_failures, id, &why),
                                             Err(None) => {}
                                         },
                                         kind::EXEC_SIGNAL => {
@@ -5481,57 +5648,7 @@ impl Workload {
                         };
                         match part {
                             Part::Conn => {
-                                if !e.connected {
-                                    match connect_result(fd) {
-                                        Ok(()) => e.connected = true,
-                                        Err(_) => e.conn = None,
-                                    }
-                                    continue;
-                                }
-                                if p.revents & libc::POLLOUT != 0 {
-                                    match write(fd, e.to_conn.pending()) {
-                                        Ok(n) => e.to_conn.written(n),
-                                        Err(_) => e.conn = None,
-                                    }
-                                }
-                                if p.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
-                                    && e.conn.is_some()
-                                {
-                                    match read(fd, &mut buf) {
-                                        Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
-                                        // The end of the host's stdin; past a joiner's end,
-                                        // of its asking (D119).
-                                        Ok(0) | Err(_) => {
-                                            e.stdin_eof = true;
-                                            if e.awaiting_host() {
-                                                e.conn = None;
-                                            }
-                                        }
-                                        Ok(n) => {
-                                            e.from_conn.extend_from_slice(buf.get(..n).unwrap_or_default());
-                                            let live = e.stdin.is_some();
-                                            let (mut closed, mut save, to) = (false, false, &mut e.to_stdin);
-                                            let whole = each_frame(&mut e.from_conn, |which, payload| {
-                                                if which == kind::STDIN {
-                                                    closed |= payload.is_empty();
-                                                    if live {
-                                                        to.extend(&[payload]);
-                                                    }
-                                                }
-                                                save |= which == kind::SAVE;
-                                            });
-                                            e.stdin_eof |= closed || !whole;
-                                            // A joiner's writable layer, as the host asks once
-                                            // it has its end; a connection that says what no
-                                            // frame is ends its asking.
-                                            if save && e.joined && e.save == Save::Unasked {
-                                                e.save = Save::Asked;
-                                            } else if !whole && e.awaiting_host() {
-                                                e.conn = None;
-                                            }
-                                        }
-                                    }
-                                }
+                                e.on_conn(p.revents, &mut buf, &mut exec_failures, born, generation)
                             }
                             Part::Stdin => feed(&mut e.stdin, &mut e.to_stdin),
                             Part::Stdout => drain_into(&mut e.stdout, kind::STDOUT, &mut buf, &mut e.to_conn),
@@ -5553,9 +5670,10 @@ impl Workload {
             if lost {
                 lost = false;
                 for e in &mut execs {
-                    e.conn = None;
+                    e.link = Link::Gone;
                     e.stdin_eof = true;
                 }
+                exec_failures.clear();
                 match tokens.take().map(|t| redial(&t)) {
                     Some(Ok((run, signal))) => {
                         conn = run;
@@ -6205,6 +6323,270 @@ pub(crate) fn write(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod exec_link_tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+    use std::os::unix::process::ExitStatusExt as _;
+
+    /// An exec as `Exec::start` leaves one, its HELLO to say, its process `child`'s, asked
+    /// for by the relay's first generation (0).
+    fn exec(id: u32, child: Option<&std::process::Child>, link: Link) -> Exec {
+        let mut to_conn = Outbox::default();
+        to_conn.extend(&[&run::header(kind::HELLO, run::TOKEN as u32), &[7; run::TOKEN]]);
+        Exec {
+            id,
+            link,
+            born: 0,
+            pid: child.map_or(0, |c| c.id() as libc::pid_t),
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            tty: false,
+            from_conn: Vec::new(),
+            to_stdin: Outbox::default(),
+            stdin_eof: false,
+            to_conn,
+            status: None,
+            ended: false,
+            joined: false,
+            oom: None,
+            pids: None,
+            engine_made: false,
+            proxy: None,
+            save: Save::Unasked,
+            into_joiner: false,
+        }
+    }
+
+    /// A process of the test's own, as an exec's runs: until something ends it.
+    fn running() -> std::process::Child {
+        std::process::Command::new("sleep").arg("600").spawn().unwrap()
+    }
+
+    /// The signal that ended `child`: SIGKILL where something killed it, else SIGTERM, which
+    /// this sends it, as the test's own end of it (a SIGKILL sent before wins).
+    fn ended_by(child: &mut std::process::Child) -> Option<i32> {
+        // SAFETY: kill(2) of the test's own child, not yet waited for.
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+        child.wait().unwrap().signal()
+    }
+
+    /// The EXEC_FAILED frames `failures` holds: each exec's id and why.
+    fn said(failures: &Outbox) -> Vec<(u32, String)> {
+        let mut held = failures.pending().to_vec();
+        let mut found = Vec::new();
+        assert!(each_frame(&mut held, |which, payload| {
+            assert_eq!(which, kind::EXEC_FAILED);
+            let (id, why) = payload.split_at(4);
+            found.push((
+                u32::from_be_bytes(id.try_into().unwrap()),
+                String::from_utf8_lossy(why).into_owned(),
+            ));
+        }));
+        found
+    }
+
+    /// One end of a connection whose other end has gone, as a host that let go of it
+    /// leaves it.
+    fn let_go() -> File {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        drop(theirs);
+        let ours = File::from(OwnedFd::from(ours));
+        ended(&ours);
+        ours
+    }
+
+    /// Waits, at most 5 s, until `conn` reads as at its end: a child another test's spawn has
+    /// forked holds a copy of every descriptor until it execs.
+    fn ended(conn: &File) {
+        let mut p = libc::pollfd {
+            fd: conn.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd.
+        assert_eq!(unsafe { libc::poll(&mut p, 1, 5000) }, 1);
+        assert_ne!(p.revents & libc::POLLHUP, 0, "its other end has gone");
+    }
+
+    /// A nonblocking connect the kernel refuses as it completes, as the host's refusal
+    /// resets a guest's; and what holds the loopback port it was refused at, bound and not
+    /// listened on, so that no other process may take it meanwhile (nor may the connect's
+    /// own port be it, connecting to itself).
+    fn refused() -> (File, File) {
+        let tcp = || {
+            // SAFETY: socket(2) with constant arguments.
+            let fd = unsafe {
+                libc::socket(
+                    libc::AF_INET,
+                    libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+                    0,
+                )
+            };
+            assert!(fd >= 0, "{}", io::Error::last_os_error());
+            // SAFETY: a fresh descriptor nothing else owns.
+            unsafe { File::from_raw_fd(fd) }
+        };
+        let mut addr = libc::sockaddr_in {
+            sin_family: libc::AF_INET as libc::sa_family_t,
+            sin_port: 0,
+            sin_addr: libc::in_addr {
+                s_addr: u32::from(std::net::Ipv4Addr::LOCALHOST).to_be(),
+            },
+            sin_zero: [0; 8],
+        };
+        let mut len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        let holder = tcp();
+        // SAFETY: bind(2) and getsockname(2) with a sockaddr_in of `len` bytes.
+        unsafe {
+            assert_eq!(libc::bind(holder.as_raw_fd(), (&raw const addr).cast(), len), 0);
+            assert_eq!(
+                libc::getsockname(holder.as_raw_fd(), (&raw mut addr).cast(), &mut len),
+                0
+            );
+        }
+        let sock = tcp();
+        // SAFETY: a valid sockaddr_in of its size.
+        let rc = unsafe { libc::connect(sock.as_raw_fd(), (&raw const addr).cast(), len) };
+        let e = io::Error::last_os_error();
+        assert!(
+            rc != 0 && e.raw_os_error() == Some(libc::EINPROGRESS),
+            "connect: {rc} {e}"
+        );
+        let mut p = libc::pollfd {
+            fd: sock.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd.
+        assert_eq!(unsafe { libc::poll(&mut p, 1, 5000) }, 1);
+        (sock, holder)
+    }
+
+    /// An exec whose connect the host refuses (the muxer's reset, as the exec port's
+    /// admission refuses it) tells the host on the workload's connection, by its id: the
+    /// host's exec waited for ever. Its process, which no client will hear, is killed, as
+    /// moby kills an exec whose client has gone (daemon/exec.go, ContainerExecStart).
+    #[test]
+    fn an_exec_whose_connect_fails_says_so_and_its_process_ends() {
+        let mut child = running();
+        let (refused, _port) = refused();
+        let mut e = exec(41, Some(&child), Link::Dialing(refused));
+        let mut failures = Outbox::default();
+        e.on_conn(
+            libc::POLLOUT | libc::POLLERR,
+            &mut [0; 64],
+            &mut failures,
+            0,
+            || 0,
+        );
+        let said = said(&failures);
+        let ended = ended_by(&mut child);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(said[0].0, 41);
+        assert!(
+            said[0].1.contains("connecting") && said[0].1.contains("refused"),
+            "{}",
+            said[0].1
+        );
+        assert_eq!(ended, Some(libc::SIGKILL));
+        assert!(matches!(e.link, Link::Gone));
+    }
+
+    /// The same where the host let go of the connection before it said anything on it, as
+    /// its HELLO goes out or after: the host may never have had it.
+    #[test]
+    fn an_exec_whose_connection_ends_before_the_host_speaks_says_so() {
+        for (revents, how) in [
+            (libc::POLLOUT, "writing"),
+            (libc::POLLIN | libc::POLLHUP, "closed"),
+        ] {
+            let mut child = running();
+            let mut e = exec(42, Some(&child), Link::Unheard(let_go()));
+            if revents & libc::POLLOUT == 0 {
+                e.to_conn.clear();
+            }
+            let mut failures = Outbox::default();
+            e.on_conn(revents, &mut [0; 64], &mut failures, 0, || 0);
+            let said = said(&failures);
+            let ended = ended_by(&mut child);
+            assert_eq!(said.len(), 1, "{how}: {said:?}");
+            assert_eq!(said[0].0, 42, "{how}");
+            assert!(said[0].1.contains(how), "{how}: {}", said[0].1);
+            assert_eq!(ended, Some(libc::SIGKILL), "{how}");
+            assert!(matches!(e.link, Link::Gone), "{how}");
+            assert!(e.stdin_eof, "{how}: its stdin ends with it");
+        }
+    }
+
+    /// An exec whose process has ended already says so, and is killed by no one.
+    #[test]
+    fn an_ended_exec_whose_connection_fails_says_so_alone() {
+        let mut e = exec(46, None, Link::Unheard(let_go()));
+        e.to_conn.clear();
+        e.status = Some(0);
+        let mut failures = Outbox::default();
+        e.on_conn(libc::POLLIN | libc::POLLHUP, &mut [0; 64], &mut failures, 0, || 0);
+        let said = said(&failures);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(!said[0].1.contains("killed"), "{}", said[0].1);
+    }
+
+    /// Once the host has said something on it, the host has the exec: its connection's end
+    /// is its stdin's, as before, and nothing is said on the workload's.
+    #[test]
+    fn a_connection_the_host_spoke_on_ends_as_its_stdin() {
+        let mut child = running();
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        let mut e = exec(43, Some(&child), Link::Unheard(File::from(OwnedFd::from(ours))));
+        e.to_conn.clear();
+        theirs.write_all(&run::header(kind::STDIN, 0)).unwrap();
+        let mut failures = Outbox::default();
+        e.on_conn(libc::POLLIN, &mut [0; 64], &mut failures, 0, || 0);
+        assert!(matches!(e.link, Link::Heard(_)));
+        assert!(e.stdin_eof, "its empty STDIN closes its stdin");
+        drop(theirs);
+        ended(e.link.conn().unwrap());
+        e.on_conn(libc::POLLIN | libc::POLLHUP, &mut [0; 64], &mut failures, 0, || 0);
+        assert!(matches!(e.link, Link::Heard(_)), "its end read");
+        assert!(said(&failures).is_empty());
+        assert_eq!(ended_by(&mut child), Some(libc::SIGTERM), "it runs on, as before");
+    }
+
+    /// An exec of the microVM saved, whose connection a restore reset (D176), is let go of as
+    /// every such exec is: its host is the saved microVM's, not this one's.
+    #[test]
+    fn an_exec_a_restore_reset_is_let_go_of_unsaid() {
+        let mut child = running();
+        let mut e = exec(44, Some(&child), Link::Unheard(let_go()));
+        e.to_conn.clear();
+        let mut failures = Outbox::default();
+        e.on_conn(libc::POLLIN | libc::POLLHUP, &mut [0; 64], &mut failures, 0, || 1);
+        assert!(said(&failures).is_empty());
+        assert_eq!(ended_by(&mut child), Some(libc::SIGTERM));
+        assert!(matches!(e.link, Link::Gone));
+    }
+
+    /// An exec that has said all it has keeps its connection until the host speaks on it or
+    /// lets go of it: closed first, a host that never had it would not hear.
+    #[test]
+    fn an_ended_exec_waits_to_hear_from_the_host() {
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        let mut e = exec(45, None, Link::Unheard(File::from(OwnedFd::from(ours))));
+        e.to_conn.clear();
+        (e.status, e.ended) = (Some(0), true);
+        assert!(!e.finished(), "not yet heard");
+        theirs.write_all(&run::header(kind::STDIN, 0)).unwrap();
+        e.on_conn(libc::POLLIN, &mut [0; 64], &mut Outbox::default(), 0, || 0);
+        assert!(e.finished());
     }
 }
 

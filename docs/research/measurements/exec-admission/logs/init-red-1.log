@@ -1,0 +1,36 @@
+# init red: origin/main 451672250 with the exec connection's handling moved, unchanged, into Exec::on_conn (Link states), + tests; 2026-11-12T19:44:44Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01)
+   Compiling shards-init v0.1.0 (/home/adalundhe/g121-tmp/xa-exec/src/crates/init)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 6.90s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/xa-exec/target/test-release/deps/shards_init-283e5c1ae3c0c939)
+running 5 tests
+test run::exec_link_tests::an_ended_exec_waits_to_hear_from_the_host ... FAILED
+test run::exec_link_tests::an_exec_a_restore_reset_is_let_go_of_unsaid ... FAILED
+test run::exec_link_tests::a_connection_the_host_spoke_on_ends_as_its_stdin ... ok
+test run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so ... FAILED
+test run::exec_link_tests::an_exec_whose_connect_fails_says_so_and_its_process_ends ... FAILED
+failures:
+---- run::exec_link_tests::an_ended_exec_waits_to_hear_from_the_host stdout ----
+thread 'run::exec_link_tests::an_ended_exec_waits_to_hear_from_the_host' (221859) panicked at crates/init/src/run.rs:6459:9:
+not yet heard
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+---- run::exec_link_tests::an_exec_a_restore_reset_is_let_go_of_unsaid stdout ----
+thread 'run::exec_link_tests::an_exec_a_restore_reset_is_let_go_of_unsaid' (221860) panicked at crates/init/src/run.rs:6447:9:
+assertion failed: matches!(e.link, Link::Gone)
+---- run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so stdout ----
+thread 'run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so' (221862) panicked at crates/init/src/run.rs:6410:13:
+assertion `left == right` failed: writing: []
+  left: []
+ right: [42]
+---- run::exec_link_tests::an_exec_whose_connect_fails_says_so_and_its_process_ends stdout ----
+thread 'run::exec_link_tests::an_exec_whose_connect_fails_says_so_and_its_process_ends' (221861) panicked at crates/init/src/run.rs:6389:9:
+assertion `left == right` failed: []
+  left: 0
+ right: 1
+failures:
+    run::exec_link_tests::an_ended_exec_waits_to_hear_from_the_host
+    run::exec_link_tests::an_exec_a_restore_reset_is_let_go_of_unsaid
+    run::exec_link_tests::an_exec_whose_connect_fails_says_so_and_its_process_ends
+    run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so
+test result: FAILED. 1 passed; 4 failed; 0 ignored; 0 measured; 198 filtered out; finished in 5.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+## exit 101
