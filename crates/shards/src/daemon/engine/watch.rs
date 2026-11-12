@@ -41,11 +41,13 @@ fn gone_within(client: &UnixStream, limit: Duration) -> bool {
 }
 
 /// A sample of a microVM: its workload's use as its guest's cgroup has it, its own cost
-/// to the host as the host has it (its VM process), and when it was taken, on the host's
-/// clock, which the guest's own does not keep on a loaded host.
+/// to the host as the host has it (its VM process), what its vCPUs ran of its guest as its
+/// hypervisor has it, and when it was taken, on the host's clock, which the guest's own
+/// does not keep on a loaded host.
 struct Sample {
     guest: crate::daemon::commands::Usage,
     host: Option<shards_vmm::platform::Usage>,
+    vcpus: Option<shards_vmm::vm::GuestTimes>,
     /// Nanoseconds on the host's monotonic clock.
     at: u64,
     /// Its wall time, for the API's `read`.
@@ -60,10 +62,18 @@ impl<D: Disk> Daemon<D> {
             _ => None,
         };
         let guest = pid.and_then(|_| self.usage_of(id)).unwrap_or_default();
+        // Its vCPUs' guest time before its VM process's CPU time, which it is part of: the
+        // later read is never the less.
+        let vcpus = pid.and_then(|_| {
+            self.guest_times_of(id)
+                .map_err(|e| crate::daemon::log(format!("container {id}: its guest time: {e}")))
+                .ok()
+        });
         let host = pid.and_then(|pid| shards_vmm::platform::process_usage(pid).ok());
         Sample {
             guest,
             host,
+            vcpus,
             at: u64::try_from(shards_vmm::log::uptime_us().saturating_mul(1000)).unwrap_or(u64::MAX),
             read: crate::containers::now(),
         }
@@ -75,7 +85,8 @@ impl<D: Disk> Daemon<D> {
     /// host's clock times its vCPUs, so that a client's percentage of the two is its share
     /// of the vCPUs it had, as `shards stats vm` works it out. Beside it, `microvm`: what it
     /// costs the host, its VM process's own memory and its CPU time, vCPUs and devices
-    /// together.
+    /// together, and of that time what its vCPUs ran of its guest, each's by its index, those
+    /// it no longer has in its total: the VMM's own is the rest.
     pub(super) fn engine_stats(&self, conn: &UnixStream, given: &str, call: &Call<'_>) -> Done {
         let id = match self.resolve(given) {
             Ok(id) => id,
@@ -225,11 +236,26 @@ fn document(id: &str, name: &str, now: &Sample, before: Option<&Sample>) -> Valu
             },
         },
     });
-    if let (Some(host), Some(d)) = (now.host, doc.as_object_mut()) {
-        d.insert(
-            "microvm".into(),
-            json!({ "footprint": host.footprint, "resident": host.resident, "cpu_ns": host.cpu_ns }),
-        );
+    let mut microvm = serde_json::Map::new();
+    if let Some(host) = now.host {
+        microvm.insert("footprint".into(), host.footprint.into());
+        microvm.insert("resident".into(), host.resident.into());
+        microvm.insert("cpu_ns".into(), host.cpu_ns.into());
+    }
+    if let Some(t) = &now.vcpus {
+        microvm.insert("guest_ns".into(), t.total_ns().into());
+        microvm.insert("departed_guest_ns".into(), t.departed_ns.into());
+        let vcpus = t.vcpus.iter().map(|v| {
+            let mut vcpu = json!({ "index": v.index, "guest_ns": v.guest_ns });
+            if let (Some(why), Some(o)) = (&v.unread, vcpu.as_object_mut()) {
+                o.insert("unread".into(), why.as_str().into());
+            }
+            vcpu
+        });
+        microvm.insert("vcpus".into(), vcpus.collect());
+    }
+    if let (false, Some(d)) = (microvm.is_empty(), doc.as_object_mut()) {
+        d.insert("microvm".into(), microvm.into());
     }
     doc
 }
@@ -251,6 +277,7 @@ mod tests {
                 ..Default::default()
             },
             host: None,
+            vcpus: None,
             at,
             read: 0,
         };
@@ -273,6 +300,60 @@ mod tests {
             document("id", "/n", &now, None)["precpu_stats"]
                 .get("system_cpu_usage")
                 .is_none()
+        );
+        assert!(d.get("microvm").is_none(), "nothing of its host's read");
+    }
+
+    /// Beside its VM process's CPU time, what its vCPUs ran of its guest: its total, those
+    /// gone in it, and each vCPU's by index, one unread saying why; the VMM's own the rest.
+    #[test]
+    fn a_microvms_guest_time_is_its_vcpus_and_those_gone() {
+        use shards_vmm::vm::{GuestTimes, VcpuTime};
+        let now = Sample {
+            guest: Default::default(),
+            host: Some(shards_vmm::platform::Usage {
+                resident: 1,
+                footprint: 2,
+                cpu_ns: 10_000,
+                faults: 0,
+            }),
+            vcpus: Some(GuestTimes {
+                vcpus: vec![
+                    VcpuTime {
+                        index: 0,
+                        guest_ns: 4_000,
+                        unread: None,
+                    },
+                    VcpuTime {
+                        index: 2,
+                        guest_ns: 3_000,
+                        unread: Some("gone".into()),
+                    },
+                ],
+                departed_ns: 1_500,
+            }),
+            at: 1,
+            read: 0,
+        };
+        let d = document("id", "/n", &now, None);
+        let m = &d["microvm"];
+        assert_eq!(m["cpu_ns"], 10_000);
+        assert_eq!(m["guest_ns"], 8_500);
+        assert_eq!(m["departed_guest_ns"], 1_500);
+        assert_eq!(
+            m["vcpus"],
+            json!([{ "index": 0, "guest_ns": 4_000 }, { "index": 2, "guest_ns": 3_000, "unread": "gone" }])
+        );
+        assert_eq!(
+            m["cpu_ns"].as_u64().unwrap() - m["guest_ns"].as_u64().unwrap(),
+            1_500
+        );
+        // Its VM process unread, its guest time still said.
+        let alone = Sample { host: None, ..now };
+        let d = document("id", "/n", &alone, None);
+        assert_eq!(
+            (d["microvm"].get("cpu_ns"), &d["microvm"]["guest_ns"]),
+            (None, &json!(8_500))
         );
     }
 }
