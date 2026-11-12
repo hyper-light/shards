@@ -78,4 +78,4 @@ Owed to ROOT: a granted run's start against an ungranted one (docs/research/meas
 
 | Step | Commit | Checks | Outcome |
 |---|---|---|---|
-| 1. D234, the record, this skeleton | (this commit) | scripts/check-development-policy on a Linux runner | recorded in the handoff |
+| 1. D234, the record, this skeleton | 534a1401a to e57f32a4e (merged with origin/main at c63b3e944) | `python3 scripts/check-development-policy` at e57f32a4e on adacachy (Linux x86_64, Python 3.14.8). The script's ten input files went by `git archive e57f32a4e … \| ssh adalundhe@192.168.1.77` into a temporary directory, because kiln's Linux runners did not answer (place timeouts, a link down) after its restart | exit 0: "Development policy checks passed; evidence/coordinator review is still required." |
