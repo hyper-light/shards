@@ -692,6 +692,10 @@ pub mod builtin {
     /// shards-init hotplug.rs): `disk ADDR DST [ro]`, `share ADDR TAG DST [ro]`, `unmount
     /// ADDR DST`, `grow ADDR DST SECTORS`, ADDR the function's PCI address.
     pub const DEVICE: u8 = 17;
+    /// [`DEVICE`]'s exit status where what it would let go of is in use, EBUSY's number
+    /// (include/uapi/asm-generic/errno-base.h), so that its host says why by its kind
+    /// (D235); 1 for any other failure.
+    pub const DEVICE_BUSY: u8 = 16;
     /// On-demand OTLP JSON cgroup metrics: the supervisor's canonical run and
     /// physical provider IDs; no actor-supplied labels or collection authority.
     pub const METRICS: u8 = 18;

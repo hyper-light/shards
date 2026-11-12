@@ -30,6 +30,13 @@ WHP and arm64 KVM, the measurements and the merge gate's suites.
   `nosuid`, `nodev`, its host's files the member's. `upper` takes the image root's owner and
   mode. `SYSTEM` pins the domain's read-only root.
 
+- **C, the orchestrator's plugs.** shards-api's image channel, version 4: `PLUG`,
+  `UNPLUG`, answered `PLUGGED` by id, refusals by kind (`PlugRefusal`); `ImageGuest::plug`
+  and `unplug`. `shards api-run` checks the ask against its roots, serves the directory by a
+  share process of its own, plugs it into its VM (`DEVICE`, `DEVICED`) and has init mount it
+  in the member. Init's `DEVICE` built-in exits `DEVICE_BUSY` for a mount in use. Its VM
+  has D214's slots.
+
 ## Live runs (R09, R10)
 
 Real VMs where this lane could run them (KVM on adacachy), as light integration tests of the
@@ -39,6 +46,12 @@ change; ROOT's sweeps are owed on every other backend.
 |---|---|---|
 | `tests/plug.rs a_project_is_plugged_into_a_running_agent_at_its_host_path` (KVM x86_64) | `ad4c91cd1`, again at `774e9736` after main merged | pass, 32.5 s cold (first build's downloads), 0.73 to 0.85 s warm |
 | the same, guard removed: no Landlock rule beneath the roots (`exec_child`'s plug-root loop skipped) | `ad4c91cd1` | fails as it should: the agent writes nothing beneath its root, "the agent wrote no …/proj/seen" (120.8 s, the test's patience) |
+
+| `tests/api_image.rs a_project_is_plugged_into_the_running_harness` (KVM x86_64) | the branch at `ba42effd` | pass, 3 of 3 runs beside `a_share_at_a_granted_volume_reaches_the_harness` |
+
+Before main's `Shares::end` (CI run 43230466376's fix), this lane's first runs of both
+api_image tests hung: the run host waited on its share process with that process's
+connection still held. Main's fix, merged in, ended it; nothing of this change's.
 
 The test's agent records, before its plug, a directory's and a file's creation beneath each
 root (EROFS, 30, each); after it, the host's file read and its own written, which the host
@@ -54,6 +67,10 @@ stand for the guest binaries `build.rs` embeds, which these tests never read.
 | Linux x86_64 (adacachy) | `8c3e591a7` | clippy `-D warnings` of shards-init, shards-testguest and shards-abi for x86_64 and aarch64 musl: clean. Tests: init 209, abi 50 and 2, cmdline 40 and 13, the shards binary's `setup::` and `daemon::devices` 11, and tests/plug.rs on KVM 3 of 3 (D214's own plug test among them, 25.9 s): pass |
 | macOS arm64 (Mac Studio) | `fc1c507ef` | `scripts/lint`, all seven targets (format; clippy `-D warnings` for aarch64-apple-darwin, x86_64 and aarch64 Linux gnu and musl, x86_64 and aarch64 Windows): pass. Tests: abi 50 and 2, cmdline 40 and 16, api 84, 16, the shards binary's `setup::`, `daemon::devices` and `api_run::` 21: pass |
 | Windows x86_64 (the Windows 11 guest on adacachy) | `8c3e591a7` | abi 50 and 2, cmdline 41 and 16, the shards binary's `setup::` and `daemon::devices` 11: pass |
+
+| Linux x86_64 (adacachy), C | `1a1aa475b` | clippy `-D warnings` of shards-init, shards-testguest and shards-abi for x86_64 and aarch64 musl, and of shards, shards-api and shards-abi for x86_64 gnu: clean. Tests: init 209, abi 51 and 2, api 94 and 16, the shards binary's `setup::`, `daemon::devices` and `api_run::` 21; on KVM tests/api_image.rs's plug, share and stats tests 3 of 3 (45 s) and tests/plug.rs 3 of 3 (12 s): pass |
+| macOS arm64 (Mac Studio), C | `1a1aa475b` | `scripts/lint`, all seven targets: pass. Tests: abi 51 and 2, cmdline 40 and 16, the shards binary's 21: pass; api 84 of 85, `client::tests::gpu_probe_protocol_requires_exact_completed_receipt` failing as at step 9's base (its record) |
+| Windows x86_64 (the Windows 11 guest), C | `1a1aa475b` | abi 51 and 2, cmdline 41 and 16, the shards binary's `setup::`, `daemon::devices` and `api_run::` 21: pass; api 66 of 67, `physical::report::tests::private_report_transfers_exactly_once_after_writer_eof` failing as at step 9's base (ERROR_PIPE_BUSY in parallel, its record) |
 
 `fc1c507ef` is `8c3e591a7` with one test's assertion formatted. Linux arm64 has no host here
 for tests; its lint passes, and CI's arm64 runners run the suites on main.
@@ -79,4 +96,10 @@ for tests; its lint passes, and CI's arm64 runners run the suites on main.
 ## Owed to ROOT
 
 - Real-VM runs of `tests/plug.rs a_project_is_plugged_into_a_running_agent_at_its_host_path`
-  on HVF (macOS arm64), WHP (Windows x86_64) and arm64 KVM (L1).
+  and `tests/api_image.rs a_project_is_plugged_into_the_running_harness` on HVF (macOS
+  arm64), WHP (Windows x86_64) and arm64 KVM (L1).
+- Hex's caller side of the orchestrator's plugs (`ImageGuest::plug`, `unplug`), and its
+  vendored shards-api at version 4.
+- Step 8's other two parts: names that differ in case alone on case-insensitive hosts, and
+  host edits waking a guest's inotify (design and the case reproduction's state in the
+  report).

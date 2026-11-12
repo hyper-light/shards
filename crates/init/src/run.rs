@@ -3856,7 +3856,12 @@ fn builtin(
             Ok(()) => 0,
             Err(e) => {
                 let _ = writeln!(File::from(stderr_w), "{e}");
-                1
+                // A device in use, said apart, for its host to say so by its kind (D235).
+                if kind == run::builtin::DEVICE && e.kind() == io::ErrorKind::ResourceBusy {
+                    i32::from(run::builtin::DEVICE_BUSY)
+                } else {
+                    1
+                }
             }
         };
         // SAFETY: _exit(2) ends the child without running init's exit paths.

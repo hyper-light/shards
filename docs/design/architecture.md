@@ -22207,7 +22207,7 @@ says; the report pipe on a Windows host; the seven-target lint.
 **What would falsify it.** A client that needs shards to own its VM processes after all (then
 D215's spawn alone).
 
-### D235. A project plugged into a running member at its host path (built: the daemon's plugs; the orchestrator's, case handling and host edits' notices next; real-VM validation owed)
+### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's; case handling and host edits' notices owed; real-VM validation owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 8: kiln reads a session's diffs,
 HEAD and checkpoints on the host at the session's own path, so a member (an agent or
@@ -22264,14 +22264,30 @@ image lacks could never become a writable mount point in a running member.
 - *The daemon's:* `shards plug volume --for NAME MICROVM SOURCE:PATH[:ro]`, NAME an agent or
   harness as an Agentfile's `FOR` names one, which runs a command; `unplug volume` by its
   path, as D214's.
+- *The orchestrator's* (D231's run host; shards-api's image channel, version 4):
+  `ImageGuest::plug(member, host, at, read_only, patience)` and `unplug(at, patience)`. On
+  the wire, `PLUG` carries a `PlugAsk` (its id, the member's index, the host's directory,
+  the path, read-only), `UNPLUG` an `UnplugAsk` (its id, the path), and `PLUGGED` answers
+  each by id, done or refused by kind (`PlugRefusal`: `Request`, `Member`, `Outside`,
+  `Taken`, `Host`, `Device`, `Unknown`, `Busy`; `ImageRefusal::Plug` for the caller). The
+  version moves to 4, as a host of version 3 ends a run on a kind it does not know: a
+  mismatch is refused as the run is asked instead. `shards api-run` checks an ask as init
+  does (`plug::beneath`, against the roots it named), serves the directory by a share
+  process of its own, plugs it into its VM's bus (`DEVICE`, answered `DEVICED` on the VM's
+  link) and has init mount it in the member; init's `DEVICE` built-in says a mount in use by
+  its exit status (`DEVICE_BUSY`, EBUSY's number), so that an unplug's `Busy` is typed. Its
+  VM has D214's slots, as a daemon run's.
 
 **Verified** (adacachy, KVM x86_64, Linux 7.2.9): `a_project_is_plugged_into_a_running_agent_at_its_host_path`
 (tests/plug.rs): the agent, given its roots, makes nothing beneath any (EROFS, 30, for a
 directory and a file); a project plugged outside every root is refused naming them; plugged
 beneath one, the agent reads the host's file and writes its own, which the host reads; it is
 unplugged, plugged again and unplugged as the agent runs. Mutation: with no Landlock rule
-beneath the roots, the agent writes nothing there and the test fails. HVF, WHP and arm64
-KVM are owed (ROOT's).
+beneath the roots, the agent writes nothing there and the test fails.
+`a_project_is_plugged_into_the_running_harness` (tests/api_image.rs) holds the
+orchestrator's: refused outside the roots (`Outside`) and for a member of files alone
+(`Member`); plugged at its host path, read and written by the harness; unplugged, and a
+second unplug `Unknown`. HVF, WHP and arm64 KVM are owed (ROOT's).
 
 **Known limits.** A project in `/tmp` (macOS's `/private/tmp` as `/tmp`, a Linux host's
 `/tmp`) is no root's: the domain's own scratch is there. A path beneath a root through a

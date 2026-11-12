@@ -134,7 +134,7 @@ const DEFAULT_POOL: usize = 2;
 
 /// The PCI slots each run's microVM has for devices plugged into it (D214): four, or what
 /// SHARDS_PCI_SLOTS says, 0 for none.
-fn pci_slots() -> u8 {
+pub(crate) fn pci_slots() -> u8 {
     std::env::var("SHARDS_PCI_SLOTS")
         .ok()
         .and_then(|s| s.parse().ok())
