@@ -1,0 +1,15 @@
+# R09 red: a ringed connection's first request never reaches the host (D230 as merged)
+# source: 032b63b1c (origin/p/integrate-engine-20261111) + the test below only (crates/vmm/src/devices/virtio/vsock/conn/ringed.rs)
+# runner: adacachy (451397fcc585f7f7cb9aaf00e42064bb), linux/x86_64, rustc 1.98.1
+# command: CARGO_TARGET_DIR=$HOME/g121-tmp/ring-pins-target systemd-run --user --scope -q -p MemoryMax=16G cargo test -j4 -p shards-vmm --lib -- devices::virtio::vsock::conn::ringed
+# date: 2026-11-11
+test devices::virtio::vsock::conn::ringed::tests::a_relays_first_bytes_reach_the_host_though_it_rings_only_a_waiting_device ... FAILED
+
+---- devices::virtio::vsock::conn::ringed::tests::a_relays_first_bytes_reach_the_host_though_it_rings_only_a_waiting_device stdout ----
+thread '...' panicked at crates/vmm/src/devices/virtio/vsock/conn/ringed.rs:526:72:
+0 of 34 bytes came
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 445 filtered out; finished in 0.01s
+# Cause: Ring::attach (vsock/ring.rs) stores its tail and head but never HOST_WAITS_DATA; the relay
+# (init ring.rs pump) rings the device only where that flag is set, so its first bytes are never
+# announced, and nothing else has the device look at the ring for the host before a doorbell.

@@ -593,6 +593,15 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
         // `--security-opt writable-cgroups=true`: the cgroup hierarchy writable.
         let flags = libc::MS_REMOUNT | libc::MS_BIND | libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV;
         mount("", "/sys/fs/cgroup", "", flags, "")?;
+    } else if entry == shards_abi::run::nesting::GRANT {
+        // The nesting grant (D234): the command into its leaf, the hierarchy made writable
+        // by the `cgroups-rw` before this entry, its namespace still rooted at the workload's
+        // cgroup.
+        enter_leaf("/sys/fs/cgroup").map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+    } else if let Some(list) = entry.strip_prefix(shards_abi::run::nesting::GPUS) {
+        // The grant's GPUs (D234), where its command reads them.
+        write_gpus(std::path::Path::new(GPUS_FILE), list)
+            .map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
     } else if text == "readonly" {
         // runc's remount of the root: this mount namespace's, read-only.
         mount(
@@ -604,6 +613,111 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
         )?;
     }
     Ok(())
+}
+
+/// Puts this process, the command's standby, in the leaf [`crate::run::LEAF`] of `root`,
+/// its cgroup namespace's root as its own mount shows it: under the nesting grant (D234) its
+/// command starts there, so that the root holds no process and the workload may enable
+/// controllers for children beside the leaf (cgroup-v2.rst, "no internal processes").
+pub fn enter_leaf(root: &str) -> io::Result<()> {
+    let mut procs = std::fs::OpenOptions::new()
+        .write(true)
+        .open(format!("{root}/{}/cgroup.procs", crate::run::LEAF))?;
+    io::Write::write_all(&mut procs, b"0")
+}
+
+/// Where a run given the nesting grant finds the GPUs it names (D234): one identity a line,
+/// in D232's grammar, beside its microVM's engine's socket (D181).
+pub const GPUS_FILE: &str = "/run/shards/gpus";
+
+/// Writes the run's GPUs, `list` a `gpus=` entry's value, to `path` ([`GPUS_FILE`]),
+/// readable by every user of the run, whose GPUs they are, and by none to write: made new by
+/// the command's standby, before the command starts, in place of what the image or a run
+/// before left there, a link among it.
+fn write_gpus(path: &std::path::Path, list: &[u8]) -> io::Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+    let gpus =
+        shards_abi::run::nesting::selection(list).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+    let mut lines = String::new();
+    for gpu in &gpus {
+        lines.push_str(&format!("{gpu}\n"));
+    }
+    if let Some(dir) = path.parent() {
+        crate::readiness::own_dir(dir)?;
+    }
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o444)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    io::Write::write_all(&mut file, lines.as_bytes())?;
+    // As asked, whatever the run's umask took of it.
+    file.set_permissions(std::fs::Permissions::from_mode(0o444))
+}
+
+/// The most `fs.nr_open` the kernels shards' guests run take, `sysctl_nr_open_max`
+/// (fs/file.c): INT_MAX, bounded by how many pointers a `size_t` counts, rounded down to a
+/// whole word of bits (`& -BITS_PER_LONG`); 2147483584 on every 64-bit kernel. Past it, the
+/// kernel refuses the write (EINVAL), and a nofile limit past `fs.nr_open` (EPERM).
+pub const NR_OPEN_MAX: u64 = {
+    let int_max = i32::MAX as u64;
+    let pointers = usize::MAX as u64 / size_of::<*const u8>() as u64;
+    let least = if int_max < pointers { int_max } else { pointers };
+    least & !(usize::BITS as u64 - 1)
+};
+
+/// What `fs.nr_open` must be for a run given the nesting grant (D234), whose own
+/// `--ulimit nofile` hard limit setrlimit(2) refuses past it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NrOpen {
+    /// It holds the run's limit already, or the run asks none.
+    Keep,
+    /// Raised to the run's limit.
+    Raise(u64),
+    /// The run's limit, `asked`, is past the kernel's own ceiling: the start fails.
+    Refused { asked: u64, ceiling: u64 },
+}
+
+/// [`NrOpen`] for a run whose nofile hard limit is `hard`, where `fs.nr_open` is `now`:
+/// never lowered, never past [`NR_OPEN_MAX`].
+pub fn nr_open(hard: Option<u64>, now: u64) -> NrOpen {
+    match hard {
+        Some(asked) if asked > NR_OPEN_MAX => NrOpen::Refused {
+            asked,
+            ceiling: NR_OPEN_MAX,
+        },
+        Some(asked) if asked > now => NrOpen::Raise(asked),
+        _ => NrOpen::Keep,
+    }
+}
+
+/// Refusing a nofile hard limit past the kernel's ceiling for `fs.nr_open`, naming both.
+pub fn nr_open_refused(asked: u64, ceiling: u64) -> String {
+    let asked = if asked == libc::RLIM_INFINITY {
+        "unlimited".to_string()
+    } else {
+        asked.to_string()
+    };
+    format!(
+        "cannot give the command its --ulimit nofile hard limit, {asked}: this kernel's ceiling for fs.nr_open, which the limit may not pass, is {ceiling}"
+    )
+}
+
+/// The run's `--ulimit nofile` hard limit, as its last `ulimit=nofile=` entry sets it,
+/// RLIM_INFINITY for -1; none where it gives none.
+pub fn nofile_hard(setup: &[Vec<u8>]) -> Option<u64> {
+    setup
+        .iter()
+        .rev()
+        .filter_map(|e| std::str::from_utf8(e.strip_prefix(b"ulimit=")?).ok())
+        .filter_map(ulimit)
+        .find(|(resource, _)| *resource == libc::RLIMIT_NOFILE)
+        .map(|(_, limit)| limit.rlim_max)
 }
 
 /// A shared directory's setup, `WHICH\0DEST\0FLAGS\0NAME`: its four parts, NAME one of a
@@ -1175,6 +1289,21 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
     if text == "cgroups-rw" {
         return format!("error remounting the cgroup hierarchy writable: {err}");
     }
+    if entry == shards_abi::run::nesting::GRANT {
+        return format!(
+            "moving the command into its cgroup's leaf, {}, for its nesting grant: {err}",
+            crate::run::LEAF
+        );
+    }
+    if entry == crate::readiness::NOTIFY {
+        return format!(
+            "making the command's notify socket at {}: {err}",
+            crate::readiness::NOTIFY_SOCKET
+        );
+    }
+    if entry.starts_with(shards_abi::run::nesting::GPUS) {
+        return format!("writing the command's GPUs to {GPUS_FILE}: {err}");
+    }
     if text == "engine" {
         return format!(
             "making its microVM's engine at {}: {err}",
@@ -1248,5 +1377,116 @@ mod tests {
         for bad in ["owner=5", "owner=a:6", "owner=5:"] {
             assert!(owner_of(bad).unwrap().is_err(), "{bad}");
         }
+    }
+
+    /// A cgroup tree of plain files, as a test may make one: its root's and its leaf's
+    /// `cgroup.procs`, each empty.
+    fn tree(name: &str) -> shards_testdir::TempDir {
+        let dir = shards_testdir::TempDir::new(name).unwrap();
+        std::fs::create_dir(dir.path().join(crate::run::LEAF)).unwrap();
+        std::fs::write(dir.path().join("cgroup.procs"), b"").unwrap();
+        std::fs::write(dir.path().join(crate::run::LEAF).join("cgroup.procs"), b"").unwrap();
+        dir
+    }
+
+    /// Under the nesting grant (D234) the command's standby enters the leaf `init` of its
+    /// cgroup namespace's root, and never the root, which holds no process of it.
+    #[test]
+    fn a_granted_command_starts_in_its_leaf() {
+        let dir = tree("leaf");
+        let root = dir.path().to_str().unwrap();
+        enter_leaf(root).unwrap();
+        assert_eq!(std::fs::read(dir.path().join("init/cgroup.procs")).unwrap(), b"0");
+        assert_eq!(
+            std::fs::read(dir.path().join("cgroup.procs")).unwrap(),
+            b"",
+            "the root holds none"
+        );
+        // No leaf, no start: init makes it before any process of the command's is born.
+        std::fs::remove_dir_all(dir.path().join("init")).unwrap();
+        assert_eq!(enter_leaf(root).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(std::fs::read(dir.path().join("cgroup.procs")).unwrap(), b"");
+    }
+
+    /// The run's GPUs, one identity a line in D232's grammar, in a file every user of the
+    /// run may read and none write; made new over a link or a file the image left there;
+    /// none written of a selection that is not D232's.
+    #[test]
+    fn the_runs_gpus_are_written_read_only_one_a_line() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = shards_testdir::TempDir::new("gpus").unwrap();
+        let path = dir.path().join("shards/gpus");
+        write_gpus(&path, b"metal:1,pci:0000:2:00.0").unwrap_err();
+        assert!(!path.exists());
+        write_gpus(&path, b"metal:00000001000002a1,pci:0:03:00.1").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "metal:00000001000002a1\npci:00000000:03:00.1\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+            0o444
+        );
+        // What the image left there, a link to a file of its, goes; the file it led to stays.
+        let target = dir.path().join("elsewhere");
+        std::fs::write(&target, b"theirs").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        write_gpus(&path, b"luid:0000000000000001").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"theirs");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "luid:0000000000000001\n");
+        // A directory where /run/shards would be is refused, as is a link there.
+        let linked = dir.path().join("linked");
+        std::os::unix::fs::symlink(dir.path().join("shards"), &linked).unwrap();
+        assert_eq!(
+            write_gpus(&linked.join("gpus"), b"metal:1")
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOTDIR)
+        );
+    }
+
+    /// `fs.nr_open` for a granted run (D234): raised to the run's own nofile hard limit
+    /// where that is higher; kept where it holds it, or where the run asks none; never
+    /// lowered; refused past the kernel's own ceiling, `sysctl_nr_open_max`, both named.
+    #[test]
+    fn nr_open_is_raised_to_the_runs_own_ask_within_the_kernels_ceiling() {
+        // fs/file.c: min(INT_MAX, SIZE_MAX / sizeof(void *)) & -BITS_PER_LONG, 64-bit.
+        assert_eq!(NR_OPEN_MAX, 2_147_483_584);
+        let default = 1_048_576;
+        assert_eq!(nr_open(None, default), NrOpen::Keep);
+        assert_eq!(nr_open(Some(1024), default), NrOpen::Keep);
+        assert_eq!(nr_open(Some(default), default), NrOpen::Keep);
+        assert_eq!(nr_open(Some(default + 1), default), NrOpen::Raise(default + 1));
+        assert_eq!(nr_open(Some(NR_OPEN_MAX), default), NrOpen::Raise(NR_OPEN_MAX));
+        for past in [NR_OPEN_MAX + 1, u64::from(u32::MAX), libc::RLIM_INFINITY] {
+            assert_eq!(
+                nr_open(Some(past), default),
+                NrOpen::Refused {
+                    asked: past,
+                    ceiling: NR_OPEN_MAX
+                }
+            );
+        }
+        assert_eq!(
+            nr_open_refused(NR_OPEN_MAX + 1, NR_OPEN_MAX),
+            "cannot give the command its --ulimit nofile hard limit, 2147483585: this kernel's ceiling for fs.nr_open, which the limit may not pass, is 2147483584"
+        );
+        assert!(nr_open_refused(libc::RLIM_INFINITY, NR_OPEN_MAX).contains("limit, unlimited:"));
+        // The run's own ask: its last nofile entry, -1 unlimited; other limits none of it.
+        let setup = |list: &[&str]| list.iter().map(|e| e.as_bytes().to_vec()).collect::<Vec<_>>();
+        assert_eq!(nofile_hard(&setup(&["readonly", "ulimit=nproc=1:2"])), None);
+        assert_eq!(
+            nofile_hard(&setup(&["ulimit=nofile=1024:271062", "ulimit=nproc=1:2"])),
+            Some(271_062)
+        );
+        assert_eq!(
+            nofile_hard(&setup(&["ulimit=nofile=1:2", "ulimit=nofile=3:2000000"])),
+            Some(2_000_000)
+        );
+        assert_eq!(
+            nofile_hard(&setup(&["ulimit=nofile=-1:-1"])),
+            Some(libc::RLIM_INFINITY)
+        );
     }
 }

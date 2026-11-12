@@ -215,6 +215,13 @@ impl Config {
                 if !e.contains('=') || e.starts_with('=') {
                     return bad(format!("an OSI config's run.env entry {e:?} is no NAME=value"));
                 }
+                // A domain's name is the runtime's word, never its image's: init sets it (as D231's
+                // staging refuses it).
+                if e.split_once('=').is_some_and(|(name, _)| name == "SHARDS_DOMAIN") {
+                    return bad(
+                        "an OSI config's run.env sets SHARDS_DOMAIN, which the runtime sets: a domain's own name",
+                    );
+                }
             }
         }
         for s in &self.skills {
@@ -302,6 +309,10 @@ mod tests {
                 "empty",
             ),
             (br#"{"schemaVersion":1,"name":"main","extra":1}"#, "unknown field"),
+            (
+                br#"{"schemaVersion":1,"name":"main","run":{"command":["bin/agent"],"env":["SHARDS_DOMAIN=agent x"]}}"#,
+                "SHARDS_DOMAIN",
+            ),
         ] {
             let e = Config::parse(bytes).unwrap_err().to_string();
             assert!(e.contains(why), "{}: {e}", String::from_utf8_lossy(bytes));

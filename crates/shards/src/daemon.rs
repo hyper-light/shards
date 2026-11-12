@@ -78,7 +78,8 @@ mod packed;
 mod parents;
 mod processes;
 mod ps;
-mod publish;
+// The run host's too, an orchestrator's run's (api_run.rs, D231).
+pub(crate) mod publish;
 mod pull;
 mod push;
 mod reclaim;
@@ -1034,6 +1035,9 @@ struct Inbox {
     /// The device steps its VM was asked for (`DEVICE`, D214) and has yet to answer, each
     /// by its number.
     devices: Vec<(u64, mpsc::Sender<Result<String, String>>)>,
+    /// The guest times its VM was asked for (`GUEST_TIME`) and has yet to answer, each by
+    /// its number.
+    guest_times: Vec<(u64, mpsc::Sender<Result<shards_vmm::vm::GuestTimes, String>>)>,
     /// The snapshot it was saved as, where the save stops it: its end is the save's.
     saved_as: Option<String>,
     /// Its microVM's own engine (D181): the connections its VM hands over are its
@@ -5581,6 +5585,7 @@ impl<D: Disk> Daemon<D> {
             precopying: None,
             pausing: Default::default(),
             devices: Default::default(),
+            guest_times: Default::default(),
             saved_as: None,
             engine,
         }));
@@ -5665,6 +5670,9 @@ impl<D: Disk> Daemon<D> {
                         let _ = told.send(moves::Rounds::Done(Err("its microVM stopped".into())));
                     }
                     for (_, told) in inbox.pausing.drain(..) {
+                        let _ = told.send(Err("its microVM stopped".into()));
+                    }
+                    for (_, told) in inbox.guest_times.drain(..) {
                         let _ = told.send(Err("its microVM stopped".into()));
                     }
                     if !inbox.ended {
@@ -5844,6 +5852,24 @@ impl<D: Disk> Daemon<D> {
                         let _ = told.send(match said.first() {
                             Some(0) => Ok(text),
                             _ => Err(text),
+                        });
+                    }
+                }
+                // Its VM's answer to the guest times it was asked for.
+                kind::GUEST_TIMED => {
+                    if let Some((number, said)) = m.payload.split_first_chunk::<8>()
+                        && let Some(i) = inbox
+                            .guest_times
+                            .iter()
+                            .position(|(n, _)| *n == u64::from_be_bytes(*number))
+                    {
+                        let (_, told) = inbox.guest_times.swap_remove(i);
+                        let text = String::from_utf8_lossy(said.get(1..).unwrap_or_default());
+                        let _ = told.send(match said.first() {
+                            Some(0) => shards_vmm::vm::GuestTimes::decode(&text).ok_or_else(|| {
+                                format!("its VM's guest times as no VM writes them: {text:?}")
+                            }),
+                            _ => Err(text.into_owned()),
                         });
                     }
                 }

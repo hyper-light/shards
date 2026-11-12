@@ -142,10 +142,15 @@ pub(super) fn served(args: &[OsString]) -> Result<(Vec<OsString>, Vec<std::os::f
     fds.push((ghosts.as_fd(), number(4usize.saturating_add(dirs.len()))?));
     // SAFETY: signal(2) setting SIGCHLD's disposition, before any thread starts.
     unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
-    // A session of its own, out of reach of a Ctrl-C meant for the VM, as the grants
-    // broker's.
-    shards_ipc::spawn(&exe, &share_args(&shares), &fds, true)
-        .map_err(|e| format!("starting the share process: {e}"))?;
+    // Standalone shares detach from terminal interrupts. A prepared native launch
+    // keeps this helper inside its original process-group/cgroup scope.
+    shards_ipc::spawn(
+        &exe,
+        &share_args(&shares),
+        &fds,
+        !super::has_vm_flag(args, "--host-managed"),
+    )
+    .map_err(|e| format!("starting the share process: {e}"))?;
     drop((theirs, dirs, ghosts));
     let mut ends = Vec::with_capacity(shares.len());
     while ends.len() < shares.len() {

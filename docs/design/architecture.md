@@ -4768,6 +4768,39 @@ mode 2, and a network namespace of `lo` alone. Mutation-checked: without its uid
 as root; without the groups, the bounding set (`000001ffffffffff`), `no_new_privs`, its
 network namespace (`lo,eth0`) or its own seccomp filter (mode 0), the test fails.
 
+**AES-256-GCM, both ways (Ada, 2026-11-11: "all such communications should be AESGCM256
+bidirectional encrypted").** The mutual TLS an agent speaks to its instance carries that
+agent's control of shards: its MCP requests, code mode's programs (D136), its requests to and
+answers from the agents it is granted (below) and the files it hands across (D139). Its
+provider (`prepare`) is aws-lc-rs's narrowed to `TLS13_AES_256_GCM_SHA384`, where it took any
+of aws-lc-rs's three TLS 1.3 suites in its client's order (rustls's `ignore_client_order`
+off): a client of Go's crypto/tls on hardware with AES-GCM, which offers AES-128-GCM first
+(go1.26.1 src/crypto/tls/defaults.go), was given AES-128-GCM, and a client offering
+ChaCha20-Poly1305 or AES-128-GCM alone was given it. TLS 1.3 selects one suite for both
+directions and keys each apart (RFC 8446 §4.1.3, §7.3); over a stream socket there are no
+QUIC Initial packets, and only the ClientHello and ServerHello go before the suite's keys
+(§2). A client offering no AES-256-GCM is refused at its handshake
+(`PeerIncompatible::NoCipherSuitesInCommon` at the instance, handshake_failure to the client,
+§4.1.1), its connection closed as any refused handshake's is. The TLS an agent's MCP client
+runs on offers it: OpenSSL 3.6.4 and 4.1.0, and Node.js 24.14.1 on OpenSSL 3.5.5, offer
+AES-256-GCM first by default; Go offers all three; rustls's aws-lc-rs provider offers it
+first. A client offering only AES-128-GCM, the one suite RFC 8446 §9.1 makes mandatory, is
+refused. The provider is the instance's own, not the QUIC links' (`shards_remote::tls`, D180):
+the instance links crates.io's rustls, whose `CryptoProvider` is not hyper-tls's type, so one
+shared object would put hyper-tls in every microVM's server device, beside or instead of
+rustls, where TLS compiled into init was measured at 3.0 MiB of every microVM's memory (PM
+M122).
+Tested: `an_instance_and_its_caller_are_aes_256_gcm_at_both_ends`, clients in aws-lc-rs's order
+and in both of Go's (red on the base: Go's order with AES-GCM given AES-128-GCM),
+`a_client_limited_to_chacha20_poly1305_is_refused` and
+`a_client_limited_to_aes_128_gcm_is_refused` (red on the base: answered), the handshake run in
+memory against the instance's own configuration. Mutation-checked: ChaCha20-Poly1305 allowed
+again after AES-256-GCM fails the ChaCha20-Poly1305 client's test (answered) and the both-ends
+test (Go's order without AES-GCM given ChaCha20-Poly1305), and AES-128-GCM allowed fails the
+AES-128-GCM client's test and the both-ends test (Go's order with AES-GCM given AES-128-GCM)
+([evidence](../research/measurements/aes256-only-v1/evidence.json)). Owed: the in-VM server's
+E2E on a real microVM under it (tests/isolation.rs, tests/mcp.rs).
+
 **Messages, as granted.** init derives who may message whom from the Agentfile
 (`netplan::channels`): each `CONNECT`'s agents send requests to those after `TO`, both
 ways with `WITH`, and each `ATTACH`'s harnesses to its agents; the receiver answers. For
@@ -4952,6 +4985,58 @@ shards' JSON is Docker's, its maps sorted (the full suite found it: an Engine AP
 shards moved to 1.98.1 with them (rust-toolchain.toml, tests/toolchain.rs). The binary then
 carries two TLS implementations, rustls for registries and hyper-tls for QUIC: what that
 costs the binary and its launch (M113's 2.5 ms) is part 5's to measure.
+
+**AES-256-GCM, both ways (Ada, 2026-11-11: "all such communications should be AESGCM256
+bidirectional encrypted").** Every QUIC link shards makes, a context's (`shards/1`) and the
+managed output's (`shards-managed-output/1`), is built under one provider, `tls::provider`:
+hyper-quic's node provider (aws-lc-rs, the hybrid post-quantum groups SecP384r1MLKEM1024,
+X25519MLKEM768 and SecP256r1MLKEM768 alone) with its TLS 1.3 suites narrowed to
+`TLS13_AES_256_GCM_SHA384`, where the node provider allowed ChaCha20-Poly1305 too (hyper-raft
+233b7fce crates/hyper-quic/src/crypto/rustls.rs, `NODE_CIPHER_SUITES`). kiln's reach links
+narrow the same provider the same way (kiln d4990d3b crates/kiln/src/reach/e2e.rs, `PROVIDER`).
+- **What it covers.** TLS 1.3 selects one suite for a connection (RFC 8446 §4.1.3) and keys
+  each direction with its own secret (§7.3, `[sender]_write_key`); QUIC protects every
+  Handshake and 1-RTT packet with the negotiated AEAD under a secret for each direction (RFC
+  9001 §5, §5.1), and their headers with AES-256 (§5.4.3). So a command, its stdin, output
+  and exit status, a join's proof and a managed record cross under AES-256-GCM each way, and
+  with early data off on both sides (`tls.rs`: RFC 9001 §4.6's 0-RTT) nothing goes before
+  those keys.
+- **What no conforming QUIC changes.** "Initial packets use AEAD_AES_128_GCM with keys
+  derived from the Destination Connection ID field of the first Initial packet sent by the
+  client", and Retry packets AEAD_AES_128_GCM under a key RFC 9001 publishes (§5, §5.2,
+  §5.8): keys anyone who sees the packets derives ("not protected with a secret key", §7).
+  They carry the ClientHello and ServerHello, which TLS 1.3 over TCP sends in the clear too
+  (RFC 8446 §2), their acknowledgments and a refusal's CONNECTION_CLOSE, nothing of a
+  command. hyper-quic takes the Initial suite from aws-lc-rs's own table whatever a
+  configuration offers (`initial_suite`), so narrowing the offer leaves Initial packets as
+  RFC 9001 has them.
+- **A peer that offers no AES-256-GCM is refused** at its handshake, as client or as daemon:
+  the side choosing finds no suite in common (`PeerIncompatible::NoCipherSuitesInCommon`, RFC
+  8446 §4.1.1's handshake_failure), and its peer is told so as QUIC's CRYPTO_ERROR 0x128 (RFC
+  9001 §4.8). Each side's `ConnectionError` says it; the driver's handlers hear of it as of any
+  refused handshake (`net::Handler::lost`, its words and no code).
+- **Compatibility.** A shards of before offered AES-256-GCM first, and a daemon takes its
+  client's order (hyper-tls `choose_suite_and_kx_group`, `ignore_client_order` off), so two
+  shards negotiated AES-256-GCM already, and a machine updated and one not yet still connect
+  on it: no suite negotiated between shards changes, and only peers that would choose another
+  suite are refused. A peer of another implementation that prefers another suite but offers this
+  one gets it: Go's crypto/tls offers all three, AES-128-GCM first on hardware with AES-GCM
+  and ChaCha20-Poly1305 first without (go1.26.1 src/crypto/tls/defaults.go). A peer
+  offering only AES-128-GCM, the one suite RFC 8446 §9.1 makes mandatory (AES-256-GCM is a
+  SHOULD), is refused.
+
+Tested in `crates/remote` (`tls::tests`, over the in-process exchange of `lib.rs`'s handshake
+tests, both endpoints at loopback addresses): both kinds of link report
+`TLS13_AES_256_GCM_SHA384` at both ends; a peer offering ChaCha20-Poly1305, AES-128-GCM and
+AES-256-GCM in that order gets AES-256-GCM either way (red on the base: a daemon chose
+ChaCha20-Poly1305 for it); a peer limited to ChaCha20-Poly1305 (red on the base: connected) or
+to AES-128-GCM is refused either way, the refusing side's `TransportError` CRYPTO_ERROR 0x128
+for want of a suite in common and its peer's `ConnectionClosed` with that code; a shards of
+before, under the node provider, connects either way on AES-256-GCM; and `tests/loopback.rs`'s
+daemons and clients, over UDP on 127.0.0.1, run under it unchanged. Mutation-checked:
+ChaCha20-Poly1305 allowed again after AES-256-GCM fails the ChaCha20-Poly1305 test (connected
+under it) and the preference test (chosen), and AES-128-GCM allowed fails the AES-128-GCM test
+and the preference test the same way ([evidence](../research/measurements/aes256-only-v1/evidence.json)).
 
 **Part 1, built.** `crates/remote`: the identity (`identity.rs`), the TLS of raw keys
 (`tls.rs`), the stream's frames (`frame.rs`: the request, stdin, stdout and stderr as they
@@ -5861,7 +5946,8 @@ of moby's stringid.GenerateRandomID (`containers::new_id`); it was read up to 4 
 #### Managed owner-output transport under D180 (P1/P3 component)
 
 The managed output service reuses the native QUIC driver and TLS raw-key identity,
-with a distinct ALPN and one owning identity/subscription. It carries whole checked
+with a distinct ALPN and one owning identity/subscription; its TLS is D180's provider,
+AES-256-GCM alone both ways. It carries whole checked
 capture records, retains one admitted record until a contiguous application ACK,
 and never owns the VM through an observer connection. No persistent spool is implied.
 The caller must retain an actual resource reservation for its explicit allowances;
@@ -5879,6 +5965,8 @@ is an experimental component with [daemon admission/independent channel credit](
 | One connection/subscription/pending record/command slot per active channel | experimental same-transport composition; active member count and two channels are trusted-plan admitted, not multiplied by wire IDs |
 | Zero initial cursor/no UNI streams/no QUIC datagrams/pre-accept buffered bytes | no prior records, one bidirectional subscription, no DATAGRAM application protocol/early-data queue |
 | Record/transport/crypto/datagram capacities and patience | explicit caller-retained admission, checked for zero/overflow/protocol field bounds; no hidden default |
+| Keep-alive a quarter of each side's own patience | `tls::keep_alive`, the one derivation D180's transport also takes (at `IDLE`, its 2.5 s unchanged): RFC 9000 §10.1 makes an idle timeout last at least three probe timeouts, for "multiple probes to be sent and lost, prior to idle timeout", so a patience holds three keep-alives (§10.1.2's PINGs, which restart the peer's idle timer) and no more; the connection takes the lesser patience (§10.1), which that side's own keep-alive holds |
+| Patience at least 1 ms | RFC 9000 §18.2: an idle timeout is whole milliseconds, and 0 is none; a shorter patience is refused (`AdmissionError::Patience`), as it would bound nothing and ping in a busy loop |
 | Receive turns | admitted queued datagram bytes divided by RFC9000 maximum UDP payload (existing driver DATAGRAM), at least one before bind |
 | One-nanosecond bounded timer floor | smallest nonzero Duration, avoiding socket timeout zero; actual OS rounding remains measured, not hardcoded |
 | Excluded ports80/443 | owner's explicit output-endpoint requirement; OS otherwise chooses |
@@ -5886,6 +5974,21 @@ is an experimental component with [daemon admission/independent channel credit](
 
 Linux light tests/clippy pass; authentication/native byte delivery, adversarial
 cleanup, all other targets and allocation/kernel accounting remain coordinator gates.
+
+A quiet channel is no idle connection: its owner awaits its output however long a
+harness's model says nothing. The transport sent no keep-alive, so a subscription that
+heard nothing for its patience (`QUIET`, 100 s, which the daemon gives every endpoint)
+was lost: finding H1 of [harness-bringup-v1](../research/measurements/harness-bringup-v1/README.md),
+bracketed live at 75 s kept and 125 s lost. Each side now keeps its connection alive at a
+quarter of its own patience, an owner's through `client_config` as the endpoint's
+([owner-keepalive-v1](../research/measurements/owner-keepalive-v1/README.md): a subscription
+quiet past its patience by a keep-alive interval lives and carries its next record, held by
+either side's keep-alive; red without it, at the patience). A dead owner is still let go, at
+most a quarter of the patience past it (`QUIET` + `QUIET`/4 = 125 s; it was `QUIET`), as only
+the first packet sent since the last one heard restarts the endpoint's idle timer (RFC 9000
+§10.1); its endpoint's one connection is held that long, and a restarted owner refused
+meanwhile. The patience reuses D180's `QUIET`, derived for contexts over real links (RFC 1122
+§4.2.3.5's R2, D176 part 6), without a derivation of its own for a loopback owner.
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
@@ -5991,7 +6094,9 @@ there where the container is not removed.
   reach the microVM.
 - **How a request travels, by no socket of the host's.** The command's connection is
   taken by a process of init's (outside the command's cgroup, as the DNS relay is, started
-  before the command so that what keeps it from starting keeps the command from starting),
+  before the command so that what keeps it from starting keeps the command from starting;
+  inside the run's from its first engine ring slot, a leaf `run/engine` beside the
+  workload's, so that its slots are the run's memory, D230),
   which dials the host over vsock (`ENGINE_PORT`) for each, says a hello with its run's
   token first, and relays the bytes each way; the host's end ends the client's both ways,
   so that no relay outlives a connection the engine closed. The VM process registers the
@@ -6344,7 +6449,8 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
 ### D230. A microVM's engine bytes through a ring in its guest's memory (decided; building)
 
 The full record, its evidence and the measurements it owes:
-[engine-ring-channel-decision-v1](../research/engine-ring-channel-decision-v1.md). D181's
+[engine-ring-channel-decision-v1](../research/engine-ring-channel-decision-v1.md) (section
+16: pins bounded by use and by the run's room, protocol version 2, ring-pins-v1). D181's
 relay moves a run's engine connection over vsock, which bounds it: 256 MiB took 244 ms
 guest to host and 124 ms host to guest relayed on KVM, and vsock's best (the credit fix
 with a 4 MiB window) still 84 and 86 ms, where a ring both sides share moved it in 3.8
@@ -6359,6 +6465,25 @@ throughput both ways, small requests no slower, on every host.
   alike: no window, no device, no snapshot format. Init makes the io_uring instance
   before it forks the relay and holds it for the VM's life, so a relay that dies leaves
   its slots pinned, and the device never writes a page its guest has reused.
+- **Pins only for streams, freed on the device's word.** A slot is made as a stream (an
+  engine connection) starts and freed as it ends or as the room asks for it while it is
+  idle, never pooled: an idle microVM pins nothing. The relay frees a slot only after the
+  device's `DETACH`, which it says once it has dropped its pins and will write the slot no
+  more: asked (the relay's `DETACH` or `SWAP`), as the host's socket ends, and before every
+  RST it sends itself. A slot with no such word (a device's reset, a restore) stays pinned
+  and counted.
+- **Supply is the run's room (D188); cost is the run's.** The relay joins the run's cgroup
+  (`run/engine`) with its first slot, so that its slots are the run's memory, which the
+  budget's hold, its give-back and its metrics read, and are counted pinned to init
+  (`VmPin`). A slot is made only where the budget's hold leaves it past what the run holds
+  and the room the run needs to go on (`working_room`), or with no budget where the
+  guest's `MemAvailable` does; a stream it cannot fit goes over plain vsock. A told room
+  short of the run's working room has idle slots let go; a give-back (`RECLAIM`) lets every
+  idle slot go, counted by the next answer. A live stream is never broken: it keeps its
+  ring, grown no further, until it goes idle or ends. No user knob.
+- **A stream's rings are its own, learned.** A ring its producer fills whole within one
+  wake of its consumer held it back: it is swapped (`SWAP`) for one twice as large, within
+  the room; the next stream starts at the ring the last one needed.
 - **The host end is the VM process's vsock device.** Once the engine's hello reader has
   checked the run's token, the device attaches an offered ring to the connection and moves
   its bytes between the ring's pages and the host socket the daemon already serves
@@ -6370,36 +6495,47 @@ throughput both ways, small requests no slower, on every host.
   stream sockets 22 µs (PM M83).
 - **Wakeups are vsock bytes to a side that said it waits** (a flag beside the ring, set
   with a full fence before it sleeps, swapped clear by the side that publishes: netring's
-  protocol, PM M83). A message costs the wakeups it costs today; a bulk transfer rings
-  only where a side ran dry or full. No spinning in this decision: adaptive spinning waits
-  on measurement.
-- **A client's end is a byte, not a vsock shutdown** (`END`): the relay must still ring the
-  device about room in the ring for the guest while its client, writes ended, reads a long
-  answer; the device ends the host socket's writes once the ring for the host is drained.
-- **vsock stays** for setup, the token, doorbells, the end, and the whole path
-  wherever no ring is made: a host or guest of a build without rings, a guest kernel
-  without io_uring's sparse buffer table (Linux 5.19) or pagemap's frame numbers, a relay
-  out of slots, an offer the device refuses.
+  protocol, PM M83); the device says it waits from the moment it attaches (a device that
+  did not hung every first request, ring-pins-v1 r1 and ROOT's r521). A message costs the
+  wakeups it costs today; a bulk transfer rings only where a side ran dry or full. No
+  spinning in this decision.
+- **Control bytes, then plain.** On an attached connection each side's bytes are control
+  bytes (`DOORBELL`, the client's `END`, `DETACH`, `SWAP` and its offer) until that side's
+  `DETACH`; after it, plain vsock. What the slot still holds each way when the device lets
+  go, the relay passes on: to its client, and to the host as plain bytes.
+- **vsock stays** for setup, the token, the control bytes, and the whole path wherever no
+  ring is made: a host or guest of another protocol version, a guest kernel without
+  io_uring's sparse buffer table (Linux 5.19) or pagemap's frame numbers, a stream the
+  room cannot fit, an offer the device refuses.
 - **Security.** Nothing of an offer is used before the token is checked (it names guest
-  memory the host writes). Every extent must be guest RAM on 4 KiB boundaries, the slot
-  whole; positions are read once a turn and believed only within the ring; offsets are
-  positions modulo the ring; bytes are moved by system calls on pinned pages and never
-  parsed by the host; ring memory is the guest's, so no host memory grows with a guest's
-  asks. Only the relay maps its slots.
+  memory the host writes); a swap's offer comes only on a connection already checked.
+  Every extent must be guest RAM on 4 KiB boundaries, the slot whole; positions are read
+  once a turn and believed only within the ring; offsets are positions modulo the ring;
+  bytes are moved by system calls on pinned pages and never parsed by the host; ring
+  memory is the guest's, so no host memory grows with a guest's asks. Only the relay maps
+  its slots.
 - **Snapshots.** Templates hold no ring. A microVM saved whole keeps its slots and init's
-  instance; its restore resets every stream (D12), and the next connections offer the
-  same slots afresh.
+  instance; its restore resets every stream (D12), whose slots stay pinned for want of a
+  word, and the next streams make slots of their own.
 
 | Literal / bound | Source or derivation |
 | --- | --- |
-| Ring per direction, 2 MiB | Bandwidth-delay product: 10x the faster relayed baseline (256 MiB / 12.36 ms = 21.7 GB/s, r429) times one way of the relayed 64 B round trip at p99 (129 / 2 µs, r378), 1.40 MB, up to a power of two. A sweep from 256 KiB to 4 MiB is owed. |
+| Ring per direction, learned per stream from `MIN_RING` to `MAX_RING` | A ring its producer fills whole within one wake of its consumer (bytes found in it as the consumer wakes from waiting on it empty, or put in it between ringing a sleeping consumer and its first take) is the stream's rate times the wake, censored at the ring: doubled, the search for an unknown bound by doubling (Bentley and Yao, 1976), a power of two for mask arithmetic. The next stream starts at the last one's need; a relay's first at `MIN_RING`. |
+| `MIN_RING` 4 KiB | The least an offer names: a page of every supported guest. |
+| `MAX_RING` 2 MiB | The largest power of two each turn of which one `readv`/`writev` reaches whole, its pages each apart: a turn of S bytes from any offset spans S/4096 + 1 pages, within 1,024 iovecs (Linux `UIO_MAXIOV`, macOS `IOV_MAX`): 513 for 2 MiB, 1,025 for 4 MiB. |
 | Control page, 4 KiB; fields 128 bytes apart | The smallest page of every supported guest; Apple silicon's 128-byte line (hw.cachelinesize), x86's paired-line prefetch. |
-| Slots a relay pins, max(1, floor(CPUs / 2)) | A ringed stream keeps two guest threads busy (its client's and the relay's), so no more than half the CPUs' streams move at once. |
-| Doorbell 0x01, end 0x02; offer header 16 bytes, extents 16 bytes, reply 8 bytes | Protocol constants of version 1. |
+| Slots in use | No count: one a stream (two while it swaps), within the room. |
+| Room for pins | With a budget: init's hold (`plug::cap`) less what the run holds (`memory.current`, the slots among it) and its working room (`plug::working_room`, D188, PM M309/M321, of the CPUs online as read); with none: `MemAvailable` (free pages less the zones' high watermarks and reserves, with reclaimable cache) less the working room. Read as each slot is made. |
+| Idle slots owed a told room | The working room less the room told, where positive. |
+| Fixed-buffer table | Twice the relay's `RLIMIT_NOFILE` over 3 (a stream's client, vsock and wake descriptors; two slots while it swaps), within io_uring's 16,384 (`IORING_MAX_REG_BUFFERS`). |
+| Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2 | Protocol constants. |
 | Offer extents at most (4 KiB + 2 S) / 4 KiB | A slot's pages, none merged. |
 
-Owed to ROOT, none run by its implementer: correctness and hostile-offer E2E, and
-throughput, small-request latency (paced and back to back), connection setup, CPU and
+Owed to ROOT, none run by its implementers: correctness and hostile-offer E2E, the pins
+E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back and a
+shrinking room let idle slots go, a stream past the room goes plain; at 1, 2 and many
+vCPUs with as many streams as vCPUs and twice that), and throughput, small-request latency
+(paced and back to back), connection setup with its slot's making, a ring's ramp, CPU and
 pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64; compile checks of
 macOS, Windows and aarch64.
 
@@ -17148,6 +17284,222 @@ Tested (E2E; each guard mutation-checked, the mutant built and run, killed unles
 - **Unmeasured until PM M146 and M147:** the start path's cost of the command's PID
   namespace, and of `--init`'s reaper, forked as such a run starts.
 
+### D234. A nested runtime's grant: one run's command makes boxes in its own microVM (decided; building)
+
+**Why.** Hex runs its node as a Shards guest's own PID 1 (D215's direct boot, no
+Agentfile). That PID 1 mounts the node's file systems, gives the node its descriptor limit,
+starts the node and its relay within its host's deadline, and powers the guest off when
+either ends (f3).
+
+Run as the command of a shards run instead, the node would gain templates, warm pools,
+D188's budgets and give-back, metrics and default-deny networks, and every microVM would
+boot one way (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, steps 38 and 39).
+
+A shards workload already has most of what that PID 1 does (f12, f13, f14, f27, f28). What
+it lacks is the authority to make boxes:
+- a cgroup subtree it may write (f5, f8, f9);
+- CAP_SYS_ADMIN and CAP_NET_ADMIN (f10);
+- a filter that lets it mount and pivot_root (f16, f17);
+- its deadline on its own clock (f23, f24, f25);
+- a readiness word (f26);
+- its GPUs' identities (f22, f39).
+
+The research, every finding graded with its sources:
+[nesting-grant-decision-v1](../research/nesting-grant-decision-v1.md) (`fN` below).
+
+**Decided.**
+- *The grant, nesting.* It is one fixed bundle, given to a run's own command (the
+  workload) only where all three of these hold:
+  - the image's Agentfile declares it: `NESTING`, a directive with no arguments (f31);
+  - the run asks for it: `--security-opt nesting=true` on `run` and `create`, and `nesting`
+    in shards-api's image spec (D231, f34). The key is shards' own: dockerd refuses keys it
+    does not know, and the difference is recorded as ours;
+  - the image declares no `AGENT` and no `HARNESS`, because the grant makes its command its
+    microVM's only principal (f18, f19).
+
+  Otherwise it is refused with its reason, by the build, by the daemon, and again by init
+  against the image as built (D109's rule, f30). An image that declares it, run without
+  the run asking, runs without it and says so (D109: never dropped unsaid). The image's
+  word and the run's are both needed, as for BuildKit's `security.insecure`, Incus's
+  `security.nesting` and shards' own builds under `--allow` (f32).
+- *What it gives the workload, and each exec into it.* An exec takes the workload's
+  process spec, as runc's does and D42's filter is:
+  - **A writable, delegated cgroup subtree.** Its cgroup namespace stays rooted at
+    `run/workload`, and that hierarchy is mounted writable in its mount namespace
+    (`cgroups-rw`, f7). Its command starts in the leaf `run/workload/init`, so its
+    namespace root holds no process and it may enable cpu, cpuset, io, memory and pids for
+    children beside the leaf at once (f8, f9). Each exec joins the leaf, never the root,
+    so no exec races the workload's controllers (moby's hack/dind loops on that race,
+    f35).
+    nsdelegate keeps the root's own limits init's, and every process inside the subtree
+    (f6).
+  - **CAP_SYS_ADMIN and CAP_NET_ADMIN**, beside Docker's default set (f10). These cover its
+    boxes' namespaces, mounts and pivot_root, their loopback, and their device programs.
+  - **Docker's default filter, resolved for those capabilities, with `pivot_root` added**
+    (f16), and without D121's mount filter (f17). The capabilities open `bpf` and
+    `perf_event_open` there, as Docker's profile opens them for CAP_SYS_ADMIN. Everything
+    the profile refuses whatever the capabilities stays refused (f27,
+    crates/seccomp/data/default.json):
+    - AF_ALG and AF_VSOCK sockets (its `socket` rules skip families 38 and 40);
+    - io_uring, userfaultfd, keyctl and kexec (no rule names them);
+    - modules (only CAP_SYS_MODULE opens them).
+  - **Its descriptors.** The default of 1048576 stands (f14). Where the run's own `--ulimit
+    nofile` hard limit is above `fs.nr_open`, init first raises `fs.nr_open` to it (f15).
+    Above the kernel's own ceiling (`sysctl_nr_open_max`, fs/file.c), the start fails,
+    naming both numbers.
+  - **Its deadline**, where the run gives one: `SHARDS_READY_BY`, an instant on the guest's
+    CLOCK_BOOTTIME in nanoseconds, the clock Hex's HEX_BOOT_READY_BY uses (f24). The run
+    carries its caller's deadline as the host's wall-clock time. Init converts it when the
+    run reaches it, from `HOST_TIME` (the host's wall clock in nanoseconds, read in one
+    access; crates/abi/src/lib.rs, f38) and its own CLOCK_BOOTTIME, so neither a template's
+    restore nor a pool's wait counts against it (f23, f25).
+  - **Its GPUs' identities**, where the run names its GPUs (`--gpu-device`, shards-api's
+    `gpu_devices`; D232). Init writes them before the command starts to `/run/shards/gpus`
+    (mode 0444), one a line in `shards_abi::gpu`'s grammar. They are the GPUs the VM
+    process bound and no others, the identities Hex's node keys its GPUs by (packed PCI
+    address, Metal registry ID), never text a caller could word as it likes (f22, f39). A box
+    sees them only where its runtime puts them. Render nodes come only through D44's rules
+    (`--gpus`, `--device`). The workload's device filter is attached BPF_F_ALLOW_MULTI, so
+    it still bounds any device programs the workload puts on its boxes (f20, f21).
+  - **A readiness word**: `NOTIFY_SOCKET=/run/shards/notify`, sd_notify's datagram socket
+    (f26). `READY=1` from one of the workload's own processes moves its readiness (below),
+    writes WORKLOAD_READY on the control page, and tells the host.
+- *Never given*:
+  - to an image's agents and harnesses (refused beside them);
+  - to a run joining its microVM (`--network container:`), refused by the daemon and again
+    by init;
+  - to a build's steps, whose privileges stay `RUN --security=insecure` under `--allow`
+    (f32);
+  - to any other run: a pooled or restored microVM's standby takes it only from its own
+    run's setup entries, as it takes `cgroups-rw` (f7).
+
+  Egress past the microVM stays its network process's, on the host, and nothing in the
+  guest changes it (f29).
+- *Refused with it*, by the daemon and again by init, since each undoes what the grant rests
+  on:
+  - `--cgroupns host`: the microVM's cgroup namespace (D156) in place of the subtree rooted
+    at `run/workload`, whose own limits the writable hierarchy would then reach;
+  - `--pid host`: init's PID namespace in place of the workload's own, so its boxes would
+    no longer end with it (f12, f13), and CAP_SYS_ADMIN would face init's processes and
+    their namespaces.
+- *Already the workload's, unchanged*:
+  - `/proc`, `/sys`, `/dev`, and tmpfs mounts as a run asks (`--tmpfs /run`; D115's table
+    gives them);
+  - shares at the paths a run names (`-v`, D109);
+  - reaping: it is PID 1 of its own PID namespace, and Hex's node is already a subreaper
+    (f12);
+  - its end: the run ends with it, and its boxes end with its PID namespace (f13);
+  - no initramfs to leave (f28);
+  - its channel to the host, the agent-control endpoint (plan step 11), never vsock
+    (f27).
+
+**Wire.** From the daemon to init, as the run's setup entries, each checked by init against
+the image as built:
+- `nesting`: the grant (the leaf, the writable hierarchy, init's own checks, `/run/shards`).
+- `ready-by=<ns>`: the deadline, in nanoseconds since the Unix epoch on the host's clock.
+- `gpus=<identity>[,<identity>…]`: the run's own GPU selection, which init checks with
+  `shards_abi::gpu`'s grammar.
+- The capabilities and the filter travel as every run's do. No `seccomp-mounts=` is sent.
+
+From the guest to the host: a run message of a new kind, READY (`run::kind` 49, relayed to
+the daemon as ipc kind 90), carrying the readiness
+state and, for a late or missed deadline, how far past it. It is relayed as a run event and
+to D231's run host.
+
+**Readiness** (init is its one owner; R04):
+
+| From | Event | To |
+|---|---|---|
+| starting | `READY=1` from a workload process | ready |
+| starting | the deadline passes, where there is one | ready-by passed |
+| ready-by passed | `READY=1` | ready (late, by how much) |
+| ready | `READY=1` | ready (no new event) |
+| starting, ready or ready-by passed | the workload's main process ends | exited (terminal) |
+
+Unknown keys are ignored, as sd_notify(3) says the service manager does ("Unknown
+assignments are ignored", f36). Two kinds of datagram are ignored outright:
+- one past PIPE_BUF, as systemd ignores a truncated message (src/shared/notify-recv.c);
+- one from a process outside the workload's cgroup, as systemd's `NotifyAccess=all` accepts
+  only "all members of the service's control group" (systemd.service(5)).
+
+On time means READY=1 at or before the deadline: the deadline's own nanosecond is on time,
+and late is after it, by how much. A missed deadline is reported, not enforced: the caller set
+it, and stopping the run is the caller's decision.
+
+**Literals.** None is chosen:
+- The leaf's name, `init`: the name moby's hack/dind gives the leaf a nested runtime moves
+  itself into (f35).
+- The notify datagram's bound, PIPE_BUF: systemd's NOTIFY_BUFFER_MAX
+  (src/basic/constants.h:35, f36).
+- The deadline: the caller's, and none where it gives none. A host wall-clock step between
+  the daemon's conversion and init's read shifts it by that step.
+- `fs.nr_open`: the run's own ask. The kernel's own ceiling refuses anything above it
+  (f37).
+- The GPUs' identities: as many as the run names, at most D232's `MAX_PHYSICAL_GPUS`,
+  in its grammar.
+- `WORKLOAD_READY` = 7 in `shards_abi::marker`, which holds 1 to 6 on main at 43114652a.
+  The guest's READY message is `shards_abi::run::kind` 49 (0 to 3 and 16 to 48 are taken), and
+  its relay to the daemon is `shards_ipc` kind 90 (kinds run to 89; 128 and 148 stand apart).
+  These are identifiers, not quantities: each is its table's next free value, checked again
+  when its step merges, as D numbers are.
+- `/run/shards/notify` and `/run/shards/gpus`: beside `/run/shards/engine.sock` (D181).
+- The identities file's mode, 0444: readable by every user of the run, as the GPUs are
+  the run's own; init alone writes the file, before the command starts.
+- The names: `NESTING`, `nesting=true`, and the setup words `nesting`, `ready-by=` and
+  `gpus=` are shards' own. `NOTIFY_SOCKET` and `READY=1` are sd_notify's.
+  `SHARDS_READY_BY` takes the place of Hex's HEX_BOOT_READY_BY.
+- CAP_SYS_ADMIN (21) and CAP_NET_ADMIN (12): the kernel's numbers
+  (include/uapi/linux/capability.h).
+- The controllers the workload may enable: those init already enables for `run`.
+- The notify socket's mode, 0666, as engine.sock's (crates/init/src/engine.rs): every user of
+  the run reaches it. Only the run's own processes see its path, and the sender check bounds
+  whose READY=1 counts.
+- READY's payload, 9 bytes: its state, 1 on time, 2 late, 3 passed, in the order of the
+  table's reportable moves, then the nanoseconds past the deadline as a big-endian u64, the
+  width of the guest clock's nanoseconds. Integers are big-endian, as the run protocol's
+  other frames are.
+- Init's own names: the standby's `notify` entry, and its listener's tag `N`, as engine's
+  listener is `E` (crates/init/src/engine.rs).
+- `NR_OPEN_MAX`, 2147483584 on a 64-bit guest: computed in init from fs/file.c's own formula
+  for `sysctl_nr_open_max` (f37), never chosen.
+
+**Alternatives, and why not.** Their sources are in the record.
+- `--privileged`: every device, `/proc` and `/sys` unmasked and writable, every capability,
+  and no filter. The step asks for none of that, and shards already has a narrower
+  writable subtree (f1, f7).
+- Docker's own flags: `--cap-add SYS_ADMIN`, `--cap-add NET_ADMIN`, `writable-cgroups=true`,
+  `apparmor=unconfined` and a profile with pivot_root (f16, f17).
+  - The image declares nothing, so no build can check them or refuse them beside domains.
+  - There is no single grant to refuse a joiner by.
+  - The workload stays in its namespace root, where its first controller write fails
+    EBUSY (f9).
+  - There is no deadline, readiness or GPU identities.
+- A user-namespace grant (Hex's rootless node). It is tighter: no capability in the
+  microVM's initial namespace, and no device programs (f11). But the kernel refuses a
+  fresh /proc in a user namespace under shards' masked /proc, and Docker refuses writable
+  cgroups with user namespaces (f33). It stays a later layer, for where /proc can be given
+  whole.
+- Hex keeping its own PID 1 (D215): two ways to boot a microVM, and Hex's without
+  templates, pools, budgets or default-deny networks (f3).
+- The image's word alone: every run of an image would escalate as its author says, where
+  established nesting grants ask the operator too (f32).
+
+**Evidence owed** (ROOT):
+- the real-VM E2E (`crates/shards/tests/nesting.rs`, plan step 5) on KVM x86_64, nested
+  arm64 KVM, HVF with its GPU, and WHP;
+- mutations of its guards;
+- `scripts/lint` on the seven targets;
+- a granted run's start against an ungranted one (build-ab, R14).
+
+The evidence record is
+[s38-nested-grants](../research/measurements/s38-nested-grants/README.md).
+
+**What would falsify it.**
+- Hex's node needing a capability or syscall beyond these to make its boxes. That one
+  would then be added, by name, with its reason.
+- A box reaching past the workload's subtree, its devices or its filter.
+- A domain's or another run's process reachable from a granted workload.
+
 ### D114. The build cache: cache mounts kept across builds, steps keyed by what they read, and its collection
 
 D50 left three things open: `RUN --mount=type=cache` lived in the builder microVM, gone
@@ -21418,12 +21770,16 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   `buffer_sizes` are the OS's SO_SNDBUF/SO_RCVBUF.
 
 **What it holds to** (the requirement its tests cite as D215):
-- *A spec* becomes `run --kernel`'s flags as vm_run.rs reads them, the kernel first. A
+- *A spec* becomes `run --kernel`'s flags as vm_run.rs reads them, the kernel first; one
+  that asks for a GPU adds `--gpu`, which `shards` runs in the GPU's VM process (D144), and
+  one that names the host's GPUs adds `--gpu-device` for each, by its exact identity (D232). A
   disk's or a share's path that ends in `:ro`, which shards would read as a mode, is
   refused `Unsupported`. Past shards-vmm's bounds (no vCPU; memory odd or under the least)
   it is refused `Bounds` before anything boots, and the hypervisor's own refusal of its
-  vCPUs comes back as `Bounds` too; a host without a backend (macOS x86_64, Windows arm64)
-  is refused `NoBackend`, by name.
+  vCPUs comes back as `Bounds` too; a host without a backend (macOS x86_64) is refused
+  `NoBackend`, by name. Windows on arm64 is WHP's, the VMM's `hv::whp_arm64` (D209): the
+  API names the backend the VMM builds on each host, and a host whose hypervisor runs no
+  guest says so as its VM process starts (`check_host`).
 - *A guest's socket directory* is the client's alone (0700), named apart from its pid,
   short enough to bind (else /tmp on Unix; refused by name on Windows), and removed with
   the guest.
@@ -21450,6 +21806,174 @@ suite and E2E on HVF.
 
 **What would falsify it.** A conforming client that needs to link the VMM; a host class
 whose runs are slower than its record (a new record, not a raised bound).
+
+### D231. An image booted for an orchestrator: a run of its own, hosted by one `shards` process (decided; building)
+
+**Why.** An orchestrator that runs each harness in a microVM of its own (Hex, for every
+kiln harness) needs an Agentfile's image booted under shards-init, which applies the
+Agentfile (each member started in its confined domain, its grants enforced, D59, D109), with
+no daemon: its records, pools and runs are a home's and Docker's, where the orchestrator owns
+each microVM's life as it owns each direct boot's (D215). D215's direct boot runs the
+orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternatives:
+[runtime-image-boot-decision-v1](../research/runtime-image-boot-decision-v1.md).
+
+**Decided.**
+- *One host per run.* `shards_api::image::ImageShards::boot` starts `shards api-run`, an
+  internal command, and speaks to it over that process's stdin and stdout, where alone the
+  request's credentials travel. The run host prepares the run with the daemon's own
+  functions (`run::prepare`, `volumes::open_for`, `setup::setup`, `security_setup`,
+  `domain_seccomp`, `guest::server_device`, managed capture admission, the egress policy),
+  starts the VM process cold in its warm mode with its network process through the
+  builder's launch made shared, and plays the daemon's side of the warm link for that one
+  run (`READY`, `RUN`, `TAKEN`, `STOP_ORDER` of SIGKILL so that the run ends with its host,
+  the run's messages, execs). It owns the run's managed output (P3) and relays each
+  member's channels and end to the orchestrator. Its channel closing ends the run.
+- *Members' streams and ends.* stdout and stderr are managed capture's, credited per
+  channel by the orchestrator's reads; a member's end is `MEMBER_ENDED` (its status as
+  `docker run` reports one), sent by init once, when its population has ended. stdin
+  (closed unless asked for at create, then a pipe fed by a connection of the member's own,
+  dialed to the exec port with a token, as an exec's is) and a terminal (G24) are owed,
+  refused `Unsupported` on every host.
+- *Staging.* `member-env=` and `member-file=` setup entries, by the member's declared
+  index: variables over its image's (`SHARDS_DOMAIN` refused), regular files under its home
+  tmpfs at relative paths, owned by its uid, permission bits alone, applied before its
+  program runs, within `run::MAX_PAYLOAD`. Native-sign-in delegation, not opacity (G18): the
+  member reads what it is given.
+- *Ports and grants.* Published ports bound by `publish::bind`, only for a port the image
+  gives a member for ingress (D122) or for the run's own command; egress, remote MCP hosts
+  and DNS the image grants, kept or dropped by the orchestrator, never added.
+- *Shares.* At boot, as the run's `-v`, given to the members the image's `VOLUME` there is
+  for (D109). Added while running: D214's path to the run's command, owed; to a member,
+  refused (its mounts are made as it starts).
+- *Stats.* `builtin::STATS` with a scope: the workload's (as before), the run's, or a
+  member's cgroup.
+- *Stop.* The VM process killed at once, as `Guest::stop`.
+- *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
+  the members start.
+
+**Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
+`docker run`'s `128 + signal`; every wait is on a fact.
+
+**Built so far** (branch `p/runtime-image-boot-v1`, light checks only): the abi entries,
+init's staging, member ends, `ATTEND` and `STATS` scopes, the VM process's relay of member
+ends, `shards_api::image` and `shards api-run` on Linux and macOS. **Owed:** the Windows run
+host (refused `Unsupported` there, its AppContainer launch not written), a member's stdin and
+terminal, DAX windows for its shares, templates and pools, a boot patience, shares added
+while running, `attach` after the owner's crash, one launch shared with the builder's and the
+daemon's, and a simulator.
+
+**Evidence owed** (ROOT): real-VM E2E on KVM x86_64 and arm64 and HVF
+(`crates/shards/tests/api_image.rs`); the run host's resident, CPU and kernel cost per
+microVM against the daemon's per run and Firecracker's (R14).
+
+**What would falsify it.** A run host costing more per microVM than the daemon per run (then
+one host per orchestrator); an orchestrator needing to link the VMM; credentials a member
+must not read (then plan P10's opaque broker).
+
+### D232. A microVM's GPU by its host GPUs' exact identities (built; real-GPU validation owed)
+
+**Why.** A host with several GPUs, or an orchestrator dividing a host's GPUs among microVMs
+(Hex places each GPU guest on the GPUs it chose), needs a guest's Venus contexts to render on
+the GPUs it was given and on no other. A `--gpu` VM's renderer offered every Vulkan device the
+host's loader found (D144, D201, D202). A model name or an ordinal names no device across
+reboots, driver updates or hot plug; a device's own identity does.
+
+**Decided.**
+- *Identities.* `shards_abi::gpu::PhysicalGpu`: a PCI address (durable on Linux and Windows),
+  a Metal registry ID (macOS), or the current boot's DXGI LUID (Windows: this boot's only,
+  rejoined, never kept as PCI). One grammar (`pci:DOMAIN:BUS:DEVICE.FUNCTION`, `metal:HEX`,
+  `luid:HEX`), checked in the no_std ABI shards-api and the VM process share; a selection
+  names an identity once.
+- *The flag.* `run --kernel … --gpu-device ID`, repeatable, implying `--gpu`; shards-api's
+  `GuestSpec.gpu_devices` becomes it (D215).
+- *Binding.* The VM process resolves each identity to the host's live Vulkan device UUIDs
+  before any guest context or window exists (`vm::gpu_selection`), refusing one missing,
+  ambiguous, aliased or foreign, and creates every Venus context of the VM bound to exactly
+  those: virglrenderer's physical-device filter and the selection's transport to its render
+  server (`resources/gpu/physical-{linux,krunkit}.patch`, `physical-transport-*.patch`,
+  applied by `scripts/gpu-libs`) and an identity bridge reading each device's ID, PCI and
+  memory properties through the pinned Vulkan headers (`resources/gpu/native-identity.c`). A
+  context whose selection fails is destroyed before the guest hears of it.
+- *Probe and report.* `--gpu-probe` runs the renderer alone and prints each GPU's identities,
+  name and host-visible memory (`shards_abi::gpu::probe`, versioned; `Guests::probe_gpu`
+  reads it); a managed launch's VM process writes the same report, framed with its launch's
+  scope, to its client's private pipe before the guest runs (`--gpu-report`, D233).
+- *Snapshots.* Format 29 keeps the selection, rejoined as a snapshot restores; 28 reads.
+- *The driver held.* The renderer keeps the host's Vulkan loader and an instance for its life
+  (`HeldDriver`): unheld, each context loaded the driver anew, and NVIDIA's static-TLS
+  library could not load at a VM's 19th (Hex's measurement).
+
+**Literals.** `MAX_PHYSICAL_GPUS`, 65,536, a u16's every index: the render server transport's
+own bound on a context's identities (`VIRGL_DEVICE_UUID_MAX_COUNT`, `1 + UINT16_MAX`), which
+bounds that message's payload; it came from Hex's scheduler's u16 device index, and is owed a
+derivation of shards' own (R03). `GPU_NAME_BYTES`, 256: Vulkan's
+`VK_MAX_PHYSICAL_DEVICE_NAME_SIZE`. The probe's byte bounds are its encoding's longest lines
+for the count (`probe.rs`). Snapshot format 29.
+
+**Held.** A GPU VM process for Windows on arm64 (`gpu_target`, gpu-libs' arm64 build): never
+built or run for that target; ROOT's GPU lane holds it.
+
+**Evidence.** Hex's research on the filter and transport (Hex's
+docs/hex-venus-physical-filter) and the managed-virtio-gpu lane's check of these patches'
+bytes (docs/research/measurements/managed-virtio-gpu/DESTROY-CONTRACT.md, selected-de0a);
+docs/research/measurements/hex-upstream-v1: on an RTX 5060 Ti (Linux, NVIDIA 615.78.08) the
+renderer's, the held driver's and the selection's tests, the identity bridge's thin archive
+red and green, and the held driver's red and green; strict clippy and unit tests on x86_64
+Linux.
+
+**Evidence owed** (ROOT). A GPU VM with `--gpu-device` on each GPU host class (Linux NVIDIA,
+AMD and Intel, macOS Metal, Windows x86_64): rendering on the selected GPU and no other; a
+wrong identity refused; a format-29 snapshot restored; no 19th-context failure in a GPU VM
+running a Vulkan program 30 times; the seven-target lint.
+
+**What would falsify it.** A driver whose device UUIDs change within a boot (then rejoin per
+context); GPUs Vulkan cannot tell apart by UUID.
+
+### D233. A client that contains its own VM processes launches them through its native owner (built; real-VM validation owed)
+
+**Why.** shards-api's client spawns the VM process (D215). A client that must contain every
+process it starts, in a cgroup or a Job object (Hex's node, for its accounting and its
+cleanup), needs to start the VM process itself, inside its own scope, and still use the
+API's protocol: its output drained, its end, its connections.
+
+**Decided.**
+- *Prepare, then launch.* `prepare_boot` (`prepare_native_boot` with typed startup inputs)
+  returns the binary, arguments, socket, ports and output bound, launching nothing; the
+  client's `ManagedLauncher` starts it with the API's output pipes and hands back its native
+  receipt (`ManagedProcess`: identity, wait, stop, terminal), which the client allocated,
+  fallibly, before any effect: `ManagedReceipt` is that allocation, a triomphe `Arc` coerced by
+  `unsize` (`=1.1.0`, the one new dependency; alternatives in Hex's
+  docs/design/managed-native-receipts.md), so no allocation follows the launch.
+  `boot_managed` and `attach_managed` give it the API's client; no second process record.
+- *Ends.* A receipt's end tells the process's exit (`TerminalScope::Process`) from its whole
+  scope's release (`Released`), which its native owner alone says; a stop's intent is
+  published before the native stop, which may complete inline.
+- *Scope.* `Refusal::Scope` keeps a scope's typed failure before its process's identity is
+  known; `--host-managed` keeps the processes shards starts beside the VM in the client's
+  process group; `Shards::configured(cache, home)` gives its probe and launches exactly the
+  client's `SHARDS_CACHE` and `SHARDS_HOME`, the environment otherwise cleared.
+- *Images.* `verify_native_image` checks a declared executable's whole bytes (length,
+  SHA-256) against the same open file by the caller's deadline: a content witness, not
+  permission to run it.
+- *Connections.* `connect_before(port, deadline)` dials under an absolute deadline, a socket
+  completed after it never published; `connect_once_before` dials once, refused at once where
+  nothing listens.
+- *The report.* D232's report reaches the client on its private pipe: one complete scoped
+  frame by the deadline, anything else uncertainty.
+
+**Literals.** None new beyond D232's; every wait is the caller's deadline.
+
+**Evidence.** Hex's design records (docs/design/managed-native-receipts.md,
+native-physical-report.md in Hex) and the failures each port's commit cites (an inline stop,
+Hex's 74481869; a late dial, db481f0e); shards-api's unit tests here (the native model, the
+report pipe, the single attempt, the refusal chain).
+
+**Evidence owed** (ROOT). A client's native launcher (a Linux cgroup, a Windows Job object,
+macOS) booting real guests through `boot_managed`: scope released and refused as its receipt
+says; the report pipe on a Windows host; the seven-target lint.
+
+**What would falsify it.** A client that needs shards to own its VM processes after all (then
+D215's spawn alone).
 
 ## 4. Start path (≤ 5 ms budget)
 

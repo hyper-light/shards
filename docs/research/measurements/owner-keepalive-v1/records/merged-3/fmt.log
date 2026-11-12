@@ -1,0 +1,8 @@
+== 2026-11-12T07:09:49Z fmt: cargo fmt --all --check
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+32
+ 23:09:49 up 7 days,  3:06, 856 users,  load average: 53.63, 68.88, 76.30
+2bc20a5be5cc5510aa38d4371f9de3f654d786c7262e1dd340ed2e0ef1991f5a  crates/remote/src/managed.rs
+20427b504a65c03aded2ca86eed30f52d0bf641e92ceed2735ff50b9ff2e8b98  crates/remote/src/tls.rs
+exit 0 2026-11-12T07:10:00Z

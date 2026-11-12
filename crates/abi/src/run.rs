@@ -9,6 +9,8 @@
 use alloc::vec::Vec;
 
 pub mod managed;
+pub mod members;
+pub mod nesting;
 pub mod quiesce;
 
 /// The host port the guest dials for its workload.
@@ -176,6 +178,14 @@ pub mod kind {
     pub const QUIESCE_REFUSED: u8 = 46;
     /// Guest to host, on the signal connection: the managed control scope ended normally.
     pub const MANAGED_CONTROL_END: u8 = 47;
+    /// Guest to host, on the workload's connection, once a member's population has ended
+    /// (D231): its member index and its status, as
+    /// [`members::Ended`](super::members::Ended) encodes them; once a member.
+    pub const MEMBER_ENDED: u8 = 48;
+    /// Guest to host, on the workload's connection of a run given the nesting grant (D234):
+    /// its readiness moved, as [`nesting::Ready`](super::nesting::Ready) encodes it: ready,
+    /// on time or late, or its ready-by passed.
+    pub const READY: u8 = 49;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its
@@ -565,6 +575,15 @@ pub mod beside {
         )
     }
 
+    /// Refusing the nesting grant (D234) beside an image's agent or harness, `kind` and
+    /// `name`: the build's words for the directive beside them, the daemon's for the run,
+    /// and shards-init's for the command.
+    pub fn nesting(kind: &str, name: &str) -> String {
+        format!(
+            "cannot give the command the nesting grant: the grant makes the command its microVM's only principal, and the image's Agentfile declares {kind} {name}"
+        )
+    }
+
     /// Refusing `--pid host`: the microVM's PID namespace, the parent of theirs.
     pub fn pid_host() -> String {
         format!(
@@ -675,6 +694,19 @@ pub mod builtin {
     /// On-demand OTLP JSON cgroup metrics: the supervisor's canonical run and
     /// physical provider IDs; no actor-supplied labels or collection authority.
     pub const METRICS: u8 = 18;
+    /// As a run's own command, for an orchestrator's run of an image's members (D231): no
+    /// command of the image's runs, and the microVM holds as for [`HOLD`], but the image's
+    /// agents and harnesses start; the run ends as it is stopped.
+    pub const ATTEND: u8 = 19;
+
+    /// [`STATS`]'s one argument, whose cgroup it reads (D231): none for the workload's, as
+    /// `stats` reads it; [`RUN`](stats::RUN) for the run's, its command's and every
+    /// member's; [`MEMBER`](stats::MEMBER) then a member's index, in decimal, for that
+    /// member's.
+    pub mod stats {
+        pub const RUN: &[u8] = b"run";
+        pub const MEMBER: &[u8] = b"member";
+    }
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as
@@ -1025,6 +1057,12 @@ mod tests {
         assert_eq!(
             beside::id("uid", 200_001, 2),
             "cannot run as uid 200001: the image's Agentfile runs its agents and harnesses as 200000 to 200001, and their in-VM servers as 4394304 to 4394305, which no other process of the microVM takes"
+        );
+        // The nesting grant beside a domain (D234), in the words the build, the daemon and
+        // init share.
+        assert_eq!(
+            beside::nesting("agent", "a"),
+            "cannot give the command the nesting grant: the grant makes the command its microVM's only principal, and the image's Agentfile declares agent a"
         );
     }
 

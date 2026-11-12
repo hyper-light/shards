@@ -257,6 +257,24 @@ pub fn range(setup: &[Vec<u8>]) -> Option<Result<(u64, u64), String>> {
     entry_range(setup, ENTRY, "join")
 }
 
+/// Refuses a joiner the nesting grant (D234): one into a microVM whose run has it
+/// (`granted`), whose command is that microVM's only principal; and one whose own entries
+/// (`setup`) carry any of the grant's, which is never a joiner's, as its standby would
+/// otherwise apply them to itself.
+pub fn nesting(granted: bool, setup: &[Vec<u8>]) -> Result<(), String> {
+    use shards_abi::run::nesting::{GPUS, GRANT, READY_BY};
+    if granted {
+        return Err(shards_abi::run::nesting::joiner());
+    }
+    if setup
+        .iter()
+        .any(|e| e == GRANT || e.starts_with(READY_BY) || e.starts_with(GPUS))
+    {
+        return Err(shards_abi::run::nesting::joined());
+    }
+    Ok(())
+}
+
 /// The range `setup`'s join layer entry names, if it has one; a malformed one is refused.
 pub fn layer_range(setup: &[Vec<u8>]) -> Option<Result<(u64, u64), String>> {
     entry_range(setup, LAYER_ENTRY, "join layer")
@@ -1329,6 +1347,23 @@ fn receive_with(sock: &OwnedFd) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// No joiner joins a microVM given the nesting grant, nor takes the grant (D234): each
+    /// refused in its words; a joiner of a microVM without it, asking for none, goes on.
+    #[test]
+    fn no_joiner_joins_or_takes_the_nesting_grant() {
+        let setup = |list: &[&str]| list.iter().map(|e| e.as_bytes().to_vec()).collect::<Vec<_>>();
+        let plain = setup(&["join=1048576,4096", "readonly"]);
+        assert_eq!(nesting(false, &plain), Ok(()));
+        assert_eq!(nesting(true, &plain), Err(shards_abi::run::nesting::joiner()));
+        for asks in ["nesting", "ready-by=1", "gpus=metal:1"] {
+            assert_eq!(
+                nesting(false, &setup(&["join=1048576,4096", asks])),
+                Err(shards_abi::run::nesting::joined()),
+                "{asks}"
+            );
+        }
+    }
 
     #[test]
     fn a_join_entry_names_its_range() {

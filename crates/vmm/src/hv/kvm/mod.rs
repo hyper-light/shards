@@ -799,6 +799,32 @@ impl Drop for Vcpu {
     }
 }
 
+/// A vCPU's guest run time, read from any thread: its thread's guest time as Linux keeps it
+/// ([`thread_guest_ns`](crate::platform::thread_guest_ns)), charged as KVM_RUN runs its guest
+/// in whole scheduler ticks, and said in 10 ms steps. Its thread is the one its vCPU names
+/// ([`this_thread`]), until the vCPU drops: reading it costs the vCPU nothing.
+#[derive(Debug, Clone)]
+pub struct GuestClock(Arc<Mutex<Option<Thread>>>);
+
+impl GuestClock {
+    /// The nanoseconds its vCPU has run its guest; an error once the vCPU has gone.
+    pub fn read(&self) -> Result<u64> {
+        let thread = *lock(&self.0);
+        let tid = thread.map(|t| t.tid).ok_or_else(|| Error::Call {
+            op: "reading its guest time",
+            error: "its vCPU has gone".into(),
+        })?;
+        crate::platform::thread_guest_ns(tid).map_err(call("reading its vCPU thread's guest time"))
+    }
+}
+
+impl Vcpu {
+    /// Its guest's run time, for any thread to read.
+    pub fn guest_clock(&self) -> Result<GuestClock> {
+        Ok(GuestClock(self.thread.clone()))
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

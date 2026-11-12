@@ -272,7 +272,9 @@ broken connection ends today; the relay ends its client the same way.
 **Many connections.** Each connection has a ring of its own, so none waits behind another.
 The worker turns between connections as now.
 
-**Sizes from data (R03).** Every literal and its derivation:
+**Sizes from data (R03).** Every literal and its derivation, as first decided; the ring's
+length, the slots' count and their lives are superseded by section 16 (ring-pins-v1),
+whose table holds:
 
 | literal | value | derivation |
 |---|---|---|
@@ -302,7 +304,7 @@ once the vsock socket is closed on the guest's side and the device's RST or repl
 and the device refuses an offer of a slot whose pages it still holds for another
 connection (the host is the authority on which slots are in use).
 
-## 8. Protocol (version 1)
+## 8. Protocol (version 1; version 2 in section 16)
 
 On `ENGINE_PORT`, after the hello's header and token, a relay whose run's spec carries
 `engine-ring=1` may send an offer in the same hello: the hello's payload is then the token
@@ -464,3 +466,175 @@ implementer builds on the Linux runner alone.
   outside the command's cgroup (D181), so the workload's memory limit does not count it.
   Charging it to the workload would need the relay's slots in the workload's cgroup. Kept
   outside, as the relay's own memory is today, unless the person says otherwise.
+  **Answered (2026-11-11, through ROOT):** no C, and no user knob; demand is the run's
+  (a slot a stream), supply is the budget owner's (the room init is told, D188), cost is
+  the run's (the slots in the run's cgroup, outside the workload's). Section 16.
+
+## 16. Pins bounded by use and by the run's room (ring-pins-v1, protocol version 2)
+
+Implementer record, branch `p/ring-pins-v1` from `origin/p/integrate-engine-20261111`
+(032b63b1c). POLICY_READ: origin/main bff3015182ad754274f1048ce393ac12cb6cd91f, rules sha256
+df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3, role implementer,
+coordinator ROOT 01a148884a4770fdaf0111f3f792a248
+([receipt](measurements/ring-pins-v1/POLICY_READ.json)); evidence in
+[measurements/ring-pins-v1](measurements/ring-pins-v1/README.md). Nothing here ran on a VM.
+
+**The need.** As first built a relay pinned up to max(1, CPUs/2) slots of 2 x 2 MiB + 4 KiB
+for the VM's life, outside the workload's cgroup: 64 MiB on a 32-vCPU guest, for hundreds
+of microVMs a host. The person's terms (2026-11-11, through ROOT): an idle microVM pins
+nothing; pins are bounded by what is used; no number that is not learned or derived; V > 1
+designed for (bounds that read CPUs read them as applied); no CPU cap at all; demand the
+run's, supply the budget owner's room (D188), cost the run's; no user knob.
+
+**What a slot's life is now.**
+1. *Made as a stream starts*, from a memory file, pinned on init's instance (the instance
+   and its pins are unchanged: a relay that dies leaves them pinned), where the room fits
+   it, in the stream's starting ring; else the stream goes over plain vsock with a plain
+   hello. Nothing is made before the first stream; nothing is kept for later ones.
+2. *Grown while the stream needs it.* A ring the producer fills whole within its consumer's
+   wake held the stream back: the relay swaps it (`SWAP` and an offer) for one twice as
+   large, within the room. Growth stops at `MAX_RING`, at the room, or once the stream's
+   ring holds it back no more.
+3. *Freed after the device's `DETACH`*, and never before: as the stream ends (the host's
+   end, which the device says by `DETACH`; or the client's departure, which the relay says
+   by `DETACH` and hears answered), as the room asks for it while idle, or as a swap's old
+   slot. One whose `DETACH` never comes stays pinned, counted (`lost`), until the VM ends.
+
+**The detach protocol (version 2; `shards_abi::ring`).** On an attached connection each
+side's bytes are control bytes until its own `DETACH`, then plain vsock:
+- relay to device: `DOORBELL` 0x01, `END` 0x02 (its client's end), `DETACH` 0x03 (let go;
+  plain from here), `SWAP` 0x04 then an offer (let go and take this slot instead);
+- device to relay: `DOORBELL` 0x01, `DETACH` 0x03: *I hold no pin of the slot and will
+  write it no more; the positions I published last are final.* Said in answer to the
+  relay's `DETACH` or `SWAP` (then the swap's reply, `Refused(Ended)` where the host had
+  already ended), as the host's socket ends (the host's end, once the relay's own `DETACH`
+  has come, is vsock's `SHUTDOWN(SEND)`, so that a `SWAP` crossing it is still answered),
+  and before an RST the device sends itself (a broken rule, a failed host socket), where
+  the guest's credit has room for it. The device lets its `Ring` go (dropping its
+  `GuestMemory` pins) before it queues `DETACH`, in its one worker thread, so the guest
+  reads the word only after the last write.
+- The relay frees a slot only on the device's `DETACH`; after it the relay passes on what
+  the slot still holds: the host's bytes its client has not had, to the client, and its
+  client's bytes the device had not taken, to the host as plain bytes, then its client's
+  end where it came, before any plain byte of the connection. A connection that ends with
+  no `DETACH` (a device reset, a restore's RSTs, an RST without credit for the word) keeps
+  its slot pinned.
+- The merged version 1 attached without saying the device waits (`HOST_WAITS_DATA`), so a
+  relay that rings only a side that says it waits never told it of a connection's first
+  request: every ringed engine connection hung (logs/r1, red; ROOT's r521 on real VMs:
+  engine_ring 0 of 1, the engine suite 9 of 27 failed, all timeouts). The device now says it
+  waits as it attaches (3480f9299, cherry-picked as cc1b52e61).
+
+States (R04). Device (`conn/ringed.rs`): `Plain`, `Ringable`, `Refused` (a reply owed, the
+host's end after it where it had come), `Ringed`, `Detached` (why: asked, the host's end,
+broken; the old ring's reply owed or not; its `DETACH` said or not; the guest's bytes
+unheard, plain, a swap's offer in pieces, or answered). Relay (`init ring.rs`): a stream
+pumps until its device lets go, its room asks for it while idle, its ring holds it back
+(swap: grown, kept, unringed, done, lost), its client goes, or the connection ends with no
+word; each ends in the slot's release or its loss.
+
+**Supply, accounting and pressure (D188).**
+- *Where pins are counted.* The relay joins `run/engine`, a leaf of the run's cgroup (a
+  parent with controllers holds no process: cgroup-v2.rst "No Internal Process
+  Constraint"), as it makes its first slot, before any slot's pages are charged (a page's
+  charge stays where it was made: "Memory Ownership"). So the slots are the run's memory:
+  `memory.current` of `/sys/fs/cgroup/run`, which `plug::hold_within` (ROOM), `shrink_run`
+  and `reclaim_cold` (RECLAIM) and the run's metrics (`read metrics`, scope run) read; the
+  workload's own cgroup and limits are untouched (D181: the relay stays outside it). The
+  kernel also counts every slot pinned to init, whose memory the instance was made in
+  (`VmPin` of `/proc/1/status`; v6.18 io_uring/io_uring.c 3858, io_uring/rsrc.c 68-80), and
+  the device logs each ring's bytes as it attaches and lets it go (`SHARDS_LOG=debug`).
+- *Admission.* A slot of L bytes (or a swap's new one, the old still held) is made only
+  where L fits: with a budget, `plug::cap()` less the run's `memory.current` (and the
+  slots, where the join failed) less `plug::working_room()`; with none, `MemAvailable`
+  less the working room; less slots being made. Read as applied, so V's working room is
+  of the CPUs online then.
+- *Pressure.* `ROOM` tells the relay first (`ring::told`, before `hold_within`): a told room
+  R short of the working room W owes W - R bytes of idle slots, which idle streams pay as
+  their slots go. `RECLAIM` asks every idle slot (`ring::give_back`, after its own
+  measure); what goes, the next `RECLAIM` answer adds (`ring::given`), each byte once. Both
+  reach the relay through a page and an eventfd init makes before it forks the relay
+  (`ring::share`) and owns; both do nothing where the relay has made no slot, and never
+  wait or fail their builtin. A live stream is never broken: idle is a stream asleep with
+  both rings empty and nothing owed; a live one keeps its ring, grown no further, and goes
+  plain at its next idle moment if the room still asks.
+
+**Numbers (R03).**
+
+| Number | Value | Derivation, cold start, bounds |
+| --- | --- | --- |
+| Stream's ring | `MIN_RING`..`MAX_RING`, powers of two | Learned per stream: the bytes found in a ring as its consumer wakes (or put between ringing a sleeping consumer and its first take) are its rate times that wake; a ring filled whole is the bound censored, doubled (Bentley and Yao 1976, doubling search; within 2x of the need). Cold start: the ring the last stream of the relay needed (a power of two past the most it held at a wake, past a ring that held it back), a relay's first at `MIN_RING`. Adversarial: the workload's own streams only cost the run's room. Test: `a_stream_learns_the_rings_it_needs`, `a_stream_starts_where_the_last_one_ended`. |
+| `MIN_RING` | 4 KiB | The least an offer names, a page of every guest. |
+| `MAX_RING` | 2 MiB | Largest power of two whose every turn one readv/writev reaches whole (S/4096 + 1 pages within 1,024 iovecs). Test: `the_largest_ring_is_the_largest_whose_every_turn_is_one_call`. |
+| Slots | none counted | One a stream, two while it swaps; bounded by the room. |
+| Room for pins | read as applied | Above. Test: `the_supply_leaves_pins_what_the_run_does_not_need`. |
+| Owed by a told room | W - R where positive | Test: `a_told_room_owes_what_it_is_short_of_the_working_room`. |
+| Fixed-buffer table | 2 x floor(RLIMIT_NOFILE / 3), at most 16,384 | A stream holds 3 descriptors and at most 2 slots, so the relay's descriptor limit (init's default 1,024 gives 682 entries, 5.4 KiB of the guest kernel's) bounds the slots at once; io_uring registers at most `IORING_MAX_REG_BUFFERS`. Test: `the_table_holds_as_many_slots_as_the_descriptors_let_streams_hold`. |
+| Control bytes, version | 0x01-0x04, 2 | Protocol constants; any other byte is a broken rule. |
+| The relay's read of the device's control bytes | 3 bytes a read (`MOST_SAID`) | The most the device says between two of a stream's reads (once a turn): a doorbell for each of the relay's two wait flags it found set (it rings once a flag it finds set, and clears it) and its `DETACH`. More is read on; the length bounds no behavior. |
+| The device's read of the relay's control bytes | a byte a read | The relay says each control byte with a send of its own, so a packet holds one; a swap's offer, after its byte, is read whole. |
+| Stand-in's 50 ms before its guard check | tests only | Time for a relay that would free early to do so; a correct one holds the slot however long. |
+
+No idle timeout: an idle slot goes when the room or a give-back asks for it, or when its
+stream ends; holding it costs nothing anyone asked for until then.
+
+**Alternatives weighed (R02).** Sources: Linux v6.18 io_uring/rsrc.c (a registered
+buffer's pages pinned `FOLL_LONGTERM`, mm/gup.c; an update to an empty entry unpins at
+once; `IORING_MAX_REG_BUFFERS`), Documentation/admin-guide/cgroup-v2.rst ("No Internal
+Process Constraint", "Memory Ownership"), Documentation/admin-guide/mm/pagemap.rst,
+mm/page_alloc.c and mm/show_mem.c (`MemAvailable`), eventfd(2).
+- *Slots made as the relay starts, kept for the VM's life* (version 1): pins whatever the
+  use, 64 MiB at 32 vCPUs. Refused by the person's terms: an idle microVM pins nothing.
+- *Freed slots pooled for the next stream* (a cache): it saves a slot's making (populate,
+  pin, pagemap) per stream, but holds pins with no stream, and no measurement shows the
+  making's cost matters (R05: no cache without a measured benefit). Not built; the making's
+  cost by ring is among the measurements owed.
+- *A slot freed when the relay is done with it, with no word of the device's*: the device's
+  worker may be mid-turn on its pages, and a freed page goes back to the guest's allocator,
+  so the host would write memory the guest has reused. Refused (security); the device's
+  `DETACH` after its pins are dropped is the guard.
+- *An idle timeout*: a chosen number (R03), and holding an idle slot costs nothing anyone
+  asked for until the room or a give-back asks for it.
+- *Pins counted outside the run* (version 1, the relay's own cgroup): the budget's hold, its
+  give-back and the run's metrics would not see them; the person's terms put the cost on
+  the run. *Charged to the workload's own cgroup*: its limit would count buffers it did not
+  ask for, and the relay would live in the workload's cgroup, which D181 keeps it out of.
+  Chosen: a leaf of the run's cgroup beside the workload's (`run/engine`).
+- *One ring length for every stream* (version 1's 2 MiB): every small request would pin
+  4 MiB + 4 KiB; a learned length starts at a page and grows only where the stream shows
+  its ring holds it back.
+- *Init telling the relay through a socket*: init's builtins answer the daemon from init's
+  one thread and must never wait for the relay or handle a full buffer; a page of atomics
+  and an eventfd, made before the fork, never block.
+
+**Tests (unit; light; adacachy, linux/x86_64; [evidence](measurements/ring-pins-v1/README.md)).**
+Red first: the first request's hang (logs/r1). The merged revision (logs/r3), dcddaf476
+(logs/r4) and the pushed one (logs/r5): fmt; abi, the vsock device's and init's unit tests; clippy -D warnings on
+x86_64 glibc and x86_64 and aarch64 musl; the policy check; the E2E file compiled. Guard
+mutations (r3): the relay freeing its slot without hearing the device's `DETACH` either
+fails `the_relay_frees_a_slot_only_after_the_devices_detach` ("the relay let go of its
+slot before the device's DETACH") or, as the timing falls, kills the test process: the
+device stand-in read and wrote the slot the relay had unmapped, the use after free the
+guard prevents; the device saying `DETACH` with its pins held fails five device tests, the
+guard among them (`a_detach_is_answered_once_the_pins_are_gone_and_plain_vsock_follows`);
+a slot made whatever the room fails `a_stream_past_the_room_goes_over_plain_vsock`; the
+first-request fix removed fails both of its tests (logs/r2). The pin and unpin calls
+themselves run on the runner's kernel
+(`a_slots_pins_count_to_the_instances_maker_and_go_with_its_entry`: `VmPin` up by the
+slot's pages, and back as its entry is emptied).
+
+**Owed to ROOT (real VMs, measurements; none run here).**
+- E2E (`crates/shards/tests/engine_ring.rs`): `an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends`
+  (1, 2 and the host's vCPUs; V and 2V streams at once), `a_give_back_lets_an_idle_slot_go`
+  (`SHARDS_PRESSURE`), `a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain`
+  (a user slice's `MemoryHigh`), and the existing bulk and measurement tests, on KVM x86_64
+  and arm64, HVF, WHP x86_64 and arm64; the engine suite (D181), isolation's token test,
+  budget and reclaim suites (a run with no engine socket unaffected).
+- E2E mutations: `told()` removed from `ROOM` (the shrinking-room test must fail: pins past
+  the room); the leaf join removed (`read metrics` scope run must lose the slots' bytes:
+  pins outside `memory.current`).
+- Measurements: slot making and freeing cost by ring (populate, pin, pagemap; unpin,
+  unmap), connection setup and first-message latency for 64 B to 1 MiB on fresh and kept
+  connections against plain vsock (the cold start's cost), a bulk stream's ramp (swaps and
+  their round trips) against a fixed 2 MiB ring, throughput 256 MiB each way, the device
+  worker's CPU, and the run's memory with pins at V = 1, 2, many.

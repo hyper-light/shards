@@ -1,0 +1,112 @@
+--- a/crates/vmm/src/devices/virtio/gpu/virgl.rs
++++ b/crates/vmm/src/devices/virtio/gpu/virgl.rs
+@@ -1190,6 +1190,9 @@
+ mod tests {
+     use super::*;
+ 
++    /// The host's Vulkan, one test at a time: what one loads, another's snapshot would see.
++    static VULKAN: Mutex<()> = Mutex::new(());
++
+     #[cfg(target_os = "macos")]
+     unsafe extern "C" {
+         /// Metal's GPU, retained, or null where the Mac has none (a virtual one, as CI's).
+@@ -1285,6 +1288,7 @@
+     /// and refused where the guest says it is larger than its memory.
+     #[test]
+     fn the_renderer_offers_venus_and_holds_its_blobs() {
++        let _host = VULKAN.lock().unwrap_or_else(PoisonError::into_inner);
+         if let Err(why) = has_gpu() {
+             println!("SKIP: {why}");
+             return;
+@@ -1323,4 +1327,91 @@
+         assert!(venus.map(7).is_err());
+         venus.destroy_context(1);
+     }
++
++    /// The objects loaded into this process that take static TLS, by name: whose DT_FLAGS has
++    /// DF_STATIC_TLS (elf.h: 30 and 0x10), the initial-exec TLS whose space glibc never gives
++    /// back once its module unloads, so that each load of such an object anew takes more.
++    #[cfg(target_os = "linux")]
++    fn static_tls() -> std::collections::BTreeSet<String> {
++        #[repr(C)]
++        struct Dyn {
++            tag: i64,
++            val: u64,
++        }
++        unsafe extern "C" fn each(info: *mut libc::dl_phdr_info, _: usize, data: *mut c_void) -> c_int {
++            // SAFETY: the set passed below, alive through the walk; the linker's own entry.
++            let (names, info) = unsafe { (&mut *data.cast::<std::collections::BTreeSet<String>>(), &*info) };
++            if info.dlpi_name.is_null() || info.dlpi_phdr.is_null() {
++                return 0;
++            }
++            // SAFETY: a NUL-terminated name of the dynamic linker's.
++            let name = unsafe { std::ffi::CStr::from_ptr(info.dlpi_name) }.to_string_lossy().into_owned();
++            // SAFETY: the object's program headers, as many as the linker says.
++            let headers = unsafe { std::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) };
++            for header in headers.iter().filter(|header| header.p_type == libc::PT_DYNAMIC) {
++                let mut at = std::ptr::with_exposed_provenance::<Dyn>(
++                    usize::try_from(info.dlpi_addr.wrapping_add(header.p_vaddr)).unwrap(),
++                );
++                loop {
++                    // SAFETY: the object's loaded dynamic section, read up to its DT_NULL.
++                    let entry = unsafe { at.read() };
++                    if entry.tag == 0 {
++                        break;
++                    }
++                    if entry.tag == 30 && entry.val & 0x10 != 0 && !name.is_empty() {
++                        names.insert(name.clone());
++                    }
++                    // SAFETY: the next entry of the same section, which ends at its DT_NULL.
++                    at = unsafe { at.add(1) };
++                }
++            }
++            0
++        }
++        let mut names = std::collections::BTreeSet::new();
++        // SAFETY: the callback above, given the set it fills.
++        unsafe { libc::dl_iterate_phdr(Some(each), std::ptr::from_mut(&mut names).cast()) };
++        names
++    }
++
++    /// On this host's GPU, with what `host_visible` gives the renderer kept: a context's own
++    /// opening of the loader and an instance of it, as each render-server context makes them,
++    /// loads no static-TLS object anew while it lives and unloads none after: the host's driver
++    /// stays loaded between contexts. Unheld, every context loaded NVIDIA's driver anew, its
++    /// libnvidia-tls taking static TLS each time, until the 19th context could not load it.
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn a_contexts_instance_loads_no_static_tls_driver_anew_while_the_renderer_holds_it() {
++        let _host = VULKAN.lock().unwrap_or_else(PoisonError::into_inner);
++        let kept = match host_visible() {
++            Ok(kept) => kept,
++            Err(why) => {
++                println!("SKIP: {why}");
++                return;
++            }
++        };
++        let before = static_tls();
++        let vk = Vulkan::open().unwrap();
++        let info = InstanceCreateInfo {
++            s_type: STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
++            next: std::ptr::null(),
++            flags: 0,
++            application: std::ptr::null(),
++            layers: 0,
++            layer_names: std::ptr::null(),
++            extensions: 0,
++            extension_names: std::ptr::null(),
++        };
++        let mut instance = std::ptr::null_mut();
++        // SAFETY: complete ABI structures and a live output, destroyed below.
++        assert_eq!(unsafe { (vk.create_instance)(&raw const info, std::ptr::null(), &raw mut instance) }, 0);
++        let during = static_tls();
++        // SAFETY: the instance made above, used no more.
++        unsafe { (vk.destroy_instance)(instance, std::ptr::null()) };
++        drop(vk);
++        let after = static_tls();
++        drop(kept);
++        let anew: Vec<&String> = during.difference(&before).collect();
++        assert!(anew.is_empty(), "a context's instance loaded {anew:?} anew");
++        assert_eq!(after, before, "a context's instance unloaded a static-TLS object");
++    }
+ }

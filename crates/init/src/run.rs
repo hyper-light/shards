@@ -46,6 +46,10 @@ fn setup_failed(message: impl Into<String>) -> Failure {
     }
 }
 
+/// Whether the run's owner hears each member's end (`member-ends`, D231): set as its spec
+/// arrives, once a boot, as init serves one run.
+static MEMBER_ENDS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// `page_reporting.flush` (resources/kernel/patches/0005), where the kernel has it: opened
 /// by a template's init before its root is the workload's, whose sysfs is read-only, and
 /// by a builder's before it answers its host's asks to give back (D188); kept for
@@ -208,6 +212,10 @@ pub fn main(device: &str, template: bool) -> ! {
     let signals = dial(run::SIGNAL_PORT, false).ok();
     let started = standby.and_then(|standby| {
         let (spec, standby) = receive(&conn, standby)?;
+        MEMBER_ENDS.store(
+            spec.setup.iter().any(|e| e == run::members::ENDS),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         // What processes the run's members start and end (D123), listened to before any
         // starts; none of a visit to a stopped microVM's files, which runs nothing.
         let procs = (spec.builtin != run::builtin::HOLD)
@@ -638,6 +646,9 @@ struct Inherited {
     /// Its setup entries an exec's standby applies too: `ulimit=`, `oom=`, and its
     /// seccomp filter and no_new_privs, as runc's exec takes the container's (D42).
     setup: Vec<Vec<u8>>,
+    /// The nesting grant's environment (D234), `NOTIFY_SOCKET` and `SHARDS_READY_BY`, over
+    /// what the run or an exec gives its own.
+    env: Vec<Vec<u8>>,
 }
 
 /// The workload's [`Inherited`], once it starts.
@@ -768,6 +779,50 @@ fn default_caps() -> u64 {
     }
 }
 
+/// What of a run's setup undoes its nesting grant (D234), in init's words: the microVM's
+/// cgroup namespace for the command (`--cgroupns host`), or init's PID namespace
+/// (`--pid host`).
+fn undoes_nesting(setup: &[Vec<u8>]) -> Option<String> {
+    if setup.iter().any(|e| e == b"cgroupns=host") {
+        return Some(run::nesting::cgroupns_host());
+    }
+    if setup.iter().any(|e| e == b"pid=host") {
+        return Some(run::nesting::pid_host());
+    }
+    None
+}
+
+/// Init's part of a run's nesting grant (D234), before any process of its command is born:
+/// its own check against the image as built (D109), which must declare `NESTING` and no
+/// agent or harness; the command kept in a cgroup namespace of its own, whose root's limits
+/// nsdelegate keeps init's; `fs.nr_open` raised to the run's own `--ulimit nofile` hard
+/// limit, where that is higher, a limit past the kernel's ceiling refused; and the leaf the
+/// command starts in.
+fn grant_nesting(setup: &[Vec<u8>]) -> Result<(), Failure> {
+    crate::domains::nesting().map_err(|refused| setup_failed(refused.to_string()))?;
+    if let Some(why) = undoes_nesting(setup) {
+        return Err(setup_failed(why));
+    }
+    let now = crate::setup::read_sysctl("fs.nr_open")
+        .and_then(|n| n.parse::<u64>().map_err(|e| format!("reading fs.nr_open: {e}")))
+        .map_err(setup_failed)?;
+    match crate::setup::nr_open(crate::setup::nofile_hard(setup), now) {
+        crate::setup::NrOpen::Keep => {}
+        crate::setup::NrOpen::Raise(to) => {
+            crate::setup::write_sysctl("fs.nr_open", &to.to_string()).map_err(setup_failed)?;
+        }
+        crate::setup::NrOpen::Refused { asked, ceiling } => {
+            return Err(setup_failed(crate::setup::nr_open_refused(asked, ceiling)));
+        }
+    }
+    match std::fs::create_dir(workload_leaf()) {
+        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => Err(setup_failed(format!(
+            "making the leaf of the command's cgroup, {LEAF}: {e}"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// A spec's setup entries as init sorts them: the standby's own, and its microVM's
 /// engine's token (D181), and whether its host takes engine rings (D230).
 struct Sorted {
@@ -778,11 +833,13 @@ struct Sorted {
 
 /// [`Inherited`]'s, and the standby's own, of a spec's setup entries; sysctls are
 /// written here, by init. Its engine's token is init's, and its socket the standby's to
-/// make (`engine`), as the run's mounts are made, before its root is made read-only.
+/// make (`engine`), as the run's mounts are made, before its root is made read-only; so is
+/// the nesting grant's part (D234), whose deadline is init's.
 fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Sorted, Failure> {
     let mut standby = Vec::new();
     let mut engine = None;
     let mut rings = false;
+    let (mut nesting, mut gpus) = (false, None);
     for entry in entries {
         if entry == shards_abi::ring::SPEC {
             rings = true;
@@ -827,6 +884,15 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Sorted, Failu
             // Init's, as the run starts (`Standby::start`).
         } else if entry.starts_with(b"devices=") {
             // Init's, done as the workload's limits are (`limit`).
+        } else if entry == run::nesting::GRANT {
+            // The nesting grant (D234): the standby's part of it, made after the run's
+            // mounts (below).
+            nesting = true;
+        } else if entry.starts_with(run::nesting::GPUS) {
+            gpus = Some(entry.clone());
+        } else if entry.starts_with(run::nesting::READY_BY) || entry == crate::readiness::NOTIFY {
+            // Its deadline, init's (`Standby::start`); its socket, which the grant alone
+            // makes, never a daemon's entry.
         } else {
             if entry.starts_with(b"ulimit=")
                 || entry.starts_with(b"oom=")
@@ -841,13 +907,26 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Sorted, Failu
             standby.push(entry.clone());
         }
     }
+    // Made where the run's mounts are, before its root is made read-only: its microVM's
+    // engine's socket (D181); and the nesting grant's part (D234), its hierarchy made
+    // writable, its command moved into the leaf, its notify socket, its GPUs' file.
+    let mut made = Vec::new();
     if engine.is_some() {
-        let at = standby
-            .iter()
-            .position(|e| e == b"readonly")
-            .unwrap_or(standby.len());
-        standby.insert(at, b"engine".to_vec());
+        made.push(b"engine".to_vec());
     }
+    if nesting {
+        made.extend([
+            b"cgroups-rw".to_vec(),
+            run::nesting::GRANT.to_vec(),
+            crate::readiness::NOTIFY.to_vec(),
+        ]);
+        made.extend(gpus);
+    }
+    let at = standby
+        .iter()
+        .position(|e| e == b"readonly")
+        .unwrap_or(standby.len());
+    standby.splice(at..at, made);
     Ok(Sorted {
         standby,
         engine,
@@ -879,6 +958,31 @@ fn token_of(hex: &[u8]) -> Option<[u8; run::TOKEN]> {
 /// VM's CPU time in ns from /proc/stat, as dockerd's system usage, which `stats` clients
 /// divide by (D27), and its online CPUs; and the bytes its interfaces received and sent but
 /// loopback's (/proc/net/dev), as libnetwork counts a container's endpoints.
+/// The cgroup `STATS` reads for `args` (D231): `own`, the workload's or a joiner's, with
+/// none; the run's with `run`; a member's with `member` and its index, while it runs. A
+/// joiner's exec reads its own alone.
+fn stats_cgroup(
+    args: &[Vec<u8>],
+    own: &str,
+    joiner: bool,
+    member: impl Fn(u32) -> Option<String>,
+) -> io::Result<String> {
+    use run::builtin::stats;
+    match args {
+        [] => Ok(own.to_string()),
+        [scope] if !joiner && scope == stats::RUN => Ok(RUN_CGROUP.to_string()),
+        [scope, index] if !joiner && scope == stats::MEMBER => {
+            let index = std::str::from_utf8(index)
+                .ok()
+                .and_then(|i| i.parse::<u32>().ok())
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            member(index)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no member {index} runs")))
+        }
+        _ => Err(io::ErrorKind::InvalidInput.into()),
+    }
+}
+
 fn stats(cgroup: &str) -> String {
     let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
     let cg = |f: &str| read(&format!("{cgroup}/{f}"));
@@ -1065,6 +1169,20 @@ pub fn joiner_path(id: impl std::fmt::Display) -> String {
     format!("{RUN_PATH}/join-{id}")
 }
 const WORKLOAD_CGROUP: &str = "/sys/fs/cgroup/run/workload";
+/// The leaf of the workload's cgroup that its command starts in under the nesting grant
+/// (D234), and each of its execs joins: the name moby's hack/dind gives the leaf a nested
+/// runtime moves itself into (f35).
+pub const LEAF: &str = "init";
+
+/// [`LEAF`], as init sees the hierarchy.
+fn workload_leaf() -> String {
+    format!("{WORKLOAD_CGROUP}/{LEAF}")
+}
+
+/// Whether the run has the nesting grant (D234): set before any process of its command is
+/// born, once a boot, as init serves one run; read by its execs' and joiners' standbys,
+/// init's forks, as they are born, and by the reaper's clone under `--init`.
+static GRANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The cgroup v2 hierarchy (Linux Documentation/admin-guide/cgroup-v2.rst), (D156), as runc gives
 /// a container its own: mounted with `nsdelegate`, so that a cgroup namespace bounds what
@@ -1119,23 +1237,15 @@ fn cgroups() -> Result<(), Failure> {
 /// Returns the errno of the step that failed.
 fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
     let errno = |e: io::Error| e.raw_os_error().unwrap_or(libc::EIO);
-    // A joiner's exec joins the joiner's own cgroup (D119), which /proc names.
-    let cgroup = match join.filter(|_| joiner) {
-        Some(pid) => joiner_cgroup(pid)?,
-        None => WORKLOAD_CGROUP.to_string(),
-    };
-    let enter = |cgroup: &str| {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(format!("{cgroup}/cgroup.procs"))
-            .and_then(|mut f| f.write_all(b"0"))
-    };
-    match (enter(&cgroup), join.filter(|_| !joiner)) {
-        (Ok(()), _) => {}
-        // An exec's, where the workload's cgroup takes no process: the cgroup its process
-        // is in now, as runc's exec joins container init's (D173; workload_cgroup_of).
-        (Err(_), Some(pid)) => enter(&workload_cgroup_of(pid)?).map_err(errno)?,
-        (Err(e), None) => return Err(errno(e)),
+    match join {
+        // A joiner's exec joins the joiner's own cgroup (D119), which /proc names.
+        Some(pid) if joiner => enter_cgroup(&joiner_cgroup(pid)?).map_err(errno)?,
+        Some(pid) => join_workload(
+            WORKLOAD_CGROUP,
+            GRANTED.load(std::sync::atomic::Ordering::Relaxed),
+            || workload_cgroup_of(pid),
+        )?,
+        None => enter_cgroup(WORKLOAD_CGROUP).map_err(errno)?,
     }
     let last = || io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
     if let Some(pid) = join {
@@ -1207,6 +1317,41 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
         }
     }
     own_proc()
+}
+
+/// Puts this process, an exec's standby, in the cgroup the workload's execs join, under
+/// `workload`: that cgroup, or, where it takes no process, the one the workload's process
+/// is in now (`now`), as runc's exec falls back to container init's (D173). Under the
+/// nesting grant (D234), its leaf; and where the leaf takes none, the workload's process's
+/// cgroup, but never the namespace root, whose controllers the workload may be enabling as
+/// an exec comes (moby's hack/dind loops on that race, f35). The errno of what failed.
+fn join_workload(
+    workload: &str,
+    granted: bool,
+    now: impl FnOnce() -> Result<String, i32>,
+) -> Result<(), i32> {
+    let errno = |e: io::Error| e.raw_os_error().unwrap_or(libc::EIO);
+    let first = if granted {
+        format!("{workload}/{LEAF}")
+    } else {
+        workload.to_string()
+    };
+    let Err(refused) = enter_cgroup(&first) else {
+        return Ok(());
+    };
+    let now = now()?;
+    if granted && now == workload {
+        return Err(errno(refused));
+    }
+    enter_cgroup(&now).map_err(errno)
+}
+
+/// Puts this process in the cgroup at `dir`.
+fn enter_cgroup(dir: &str) -> io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(format!("{dir}/cgroup.procs"))
+        .and_then(|mut f| f.write_all(b"0"))
 }
 
 /// The cgroup joiner `pid`'s process is in (D119), as `/proc/PID/cgroup` names it from
@@ -1374,7 +1519,14 @@ fn fork_in(ns: Option<&OwnedFd>) -> Result<libc::pid_t, Failure> {
 /// ([`Born::Own`]), it shows the workload and its execs none of the microVM's other
 /// processes, an agent's or init's, as a container sees none of its host's.
 fn clone_reaper(uid: libc::uid_t, gid: libc::gid_t) -> Result<libc::pid_t, Failure> {
-    let (pid, ready) = spawn_reaper(WORKLOAD_CGROUP, Ids::Known(uid, gid), "the workload's")?;
+    // Under the nesting grant, in the leaf the command starts in (D234), so that no process
+    // of the workload's is in its cgroup namespace's root.
+    let cgroup = if GRANTED.load(std::sync::atomic::Ordering::Relaxed) {
+        workload_leaf()
+    } else {
+        WORKLOAD_CGROUP.to_string()
+    };
+    let (pid, ready) = spawn_reaper(&cgroup, Ids::Known(uid, gid), "the workload's")?;
     await_reaper(pid, ready, "the workload's")
 }
 
@@ -2169,6 +2321,8 @@ struct Said {
     binds: Option<OwnedFd>,
     /// Its microVM's engine's listener, where its run has one (D181).
     engine: Option<OwnedFd>,
+    /// Its notify socket, under the nesting grant (D234).
+    notify: Option<OwnedFd>,
     /// Its report, where it could not exec.
     report: Vec<u8>,
 }
@@ -2182,6 +2336,7 @@ fn reports(err: &OwnedFd) -> Said {
             Ok((n, fd)) => match (buf.get(..n), fd) {
                 (Some([crate::hostbind::LISTENER]), Some(fd)) => said.binds = Some(fd),
                 (Some([crate::engine::LISTENER]), Some(fd)) => said.engine = Some(fd),
+                (Some([crate::readiness::LISTENER]), Some(fd)) => said.notify = Some(fd),
                 (Some(report), _) => said.report.extend_from_slice(report),
                 (None, _) => {}
             },
@@ -2243,6 +2398,11 @@ struct Workload {
     hosts: Option<crate::hostbind::Supervisor>,
     /// Its microVM's engine's listener (D181), as the standby made it, for init's relay.
     engine: Option<OwnedFd>,
+    /// Its notify socket under the nesting grant (D234), as the standby made it, until its
+    /// readiness holds it.
+    notify: Option<OwnedFd>,
+    /// Its readiness, init's to move, under the nesting grant (D234).
+    readiness: Option<crate::readiness::Readiness>,
 }
 
 /// A pty's master, and the path of its peer, which the standby opens as the workload's
@@ -2601,6 +2761,25 @@ impl Standby {
     /// standby that has ended is replaced first. With it, the image's Agentfile as read
     /// before the workload starts, for a run that starts its domains (D115).
     fn start(self, spec: &Spec) -> Result<(Workload, Option<crate::domains::Read>), Failure> {
+        // The nesting grant (D234), where the run carries it: its deadline moved onto the
+        // guest's clock first, as the run arrives, and its timer armed. A visit to a stopped
+        // microVM's files, and an orchestrator's run of the image's members, run no command
+        // of the image's to give it to.
+        let grant = if matches!(spec.builtin, run::builtin::HOLD | run::builtin::ATTEND) {
+            None
+        } else {
+            run::nesting::read(&spec.setup).map_err(|e| setup_failed(e.to_string()))?
+        };
+        let deadline = grant
+            .as_ref()
+            .and_then(|g| g.ready_by)
+            .map(crate::readiness::arrived)
+            .transpose()
+            .map_err(setup_failed)?;
+        let timer = deadline
+            .map(crate::readiness::timer)
+            .transpose()
+            .map_err(|e| setup_failed(format!("the timer of its ready-by: {e}")))?;
         // What its microVM may still plug, its run's own, which its VM set before its run
         // came, where the kernel reports it (D149): before anything of the run's starts.
         crate::plug::report_pluggable()
@@ -2694,9 +2873,15 @@ impl Standby {
         if spec.setup.iter().any(|e| e == b"network=host") {
             crate::net::host_loopback().map_err(|e| setup_failed(format!("the host's loopback: {e}")))?;
         }
+        // Init's part of the nesting grant (D234), before any process of its command, its
+        // reaper under `--init` among them, is born.
+        if grant.is_some() {
+            grant_nesting(&spec.setup)?;
+            GRANTED.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         // Where its command is born (D115): where the template's standby was, PID 1 of a
         // namespace of its own, but for `--init` and `--pid host`.
-        let born = if spec.builtin == run::builtin::HOLD {
+        let born = if matches!(spec.builtin, run::builtin::HOLD | run::builtin::ATTEND) {
             Born::Own
         } else if spec.setup.iter().any(|e| e == b"pid=host") {
             Born::Host
@@ -2757,6 +2942,11 @@ impl Standby {
             }
             return standby.hold(&spec.setup).map(|held| (held, None));
         }
+        // An orchestrator's run of the image's members (D231): no command of the image's,
+        // the standby holding as a visit's does, and the members starting beside it.
+        if spec.builtin == run::builtin::ATTEND {
+            return standby.hold(&spec.setup).map(|held| (held, declared));
+        }
         // Its devices first, as dockerd finds them and runc makes their nodes (D44), init's: in
         // the /dev it shares with the workload, the limits and filter on the cgroup it is
         // outside of.
@@ -2799,6 +2989,10 @@ impl Standby {
                 ))
             })?;
         }
+        // The nesting grant's environment (D234), its command's and each exec's.
+        if grant.is_some() {
+            inherited.env = crate::readiness::environment(deadline);
+        }
         let _ = WORKLOAD.set(inherited.clone());
         // On the host's network (D124): the process that makes its binds the host's, there
         // before its command, which may bind at once.
@@ -2820,6 +3014,21 @@ impl Standby {
         w.hosts = hosts;
         if let (Some(relay), Some(listener)) = (relay, w.engine.take()) {
             relay.give(&listener);
+        }
+        // Its readiness under the nesting grant (D234), init's to move from here: the socket
+        // its standby made, which a standby that could not make it reported instead.
+        if grant.is_some() {
+            let Some(socket) = w.notify.take() else {
+                // SAFETY: kill(2) of the workload, our own child: the run fails whole.
+                unsafe { libc::kill(w.pid, libc::SIGKILL) };
+                return Err(setup_failed("the command's notify socket was not made"));
+            };
+            let workload = WORKLOAD_CGROUP
+                .strip_prefix("/sys/fs/cgroup")
+                .unwrap_or(WORKLOAD_CGROUP);
+            w.readiness = Some(crate::readiness::Readiness::new(
+                socket, timer, deadline, workload,
+            ));
         }
         Ok((w, declared))
     }
@@ -2899,6 +3108,8 @@ impl Standby {
             binds: None,
             hosts: None,
             engine: None,
+            notify: None,
+            readiness: None,
         })
     }
 
@@ -2939,7 +3150,15 @@ impl Standby {
             .into_iter()
             .map(|e| crate::setup::with_owner(e, uid, gid))
             .collect();
-        let env = user::prepare_env(&spec.env, uid, passwd).map_err(setup_failed)?;
+        let env = if process.env.is_empty() {
+            user::prepare_env(&spec.env, uid, passwd)
+        } else {
+            // The nesting grant's (D234), over what the run or exec gives.
+            let mut all = spec.env.clone();
+            all.extend(process.env.iter().cloned());
+            user::prepare_env(&all, uid, passwd)
+        }
+        .map_err(setup_failed)?;
         let cwd = if exec {
             exec_cwd(&spec.cwd)?
         } else if matches!(standby.born, Born::Joined(..)) {
@@ -3037,6 +3256,7 @@ impl Standby {
         let Said {
             binds,
             engine,
+            notify,
             report,
         } = reports(&err);
         drop(err);
@@ -3082,6 +3302,8 @@ impl Standby {
                 binds,
                 hosts: None,
                 engine,
+                notify,
+                readiness: None,
             });
         };
         // The terminal carries everything; the pipes go unused.
@@ -3104,6 +3326,8 @@ impl Standby {
             binds,
             hosts: None,
             engine,
+            notify,
+            readiness: None,
         })
     }
 }
@@ -3190,6 +3414,9 @@ fn standby(ends: Ends, isolation: Isolation) -> ! {
         // Its microVM's engine's socket (D181), whose listener init is given.
         let applied = if entry == b"engine" {
             crate::engine::listen(err.as_raw_fd())
+        } else if entry == crate::readiness::NOTIFY {
+            // The nesting grant's notify socket (D234), whose descriptor init is given.
+            crate::readiness::listen(err.as_raw_fd())
         } else {
             crate::setup::apply(entry)
         };
@@ -3514,18 +3741,28 @@ fn builtin(
                 .map_err(io::Error::other)
                 .and_then(|()| crate::plug::report_pluggable())
                 .and_then(|()| crate::plug::rehold_run(RUN_CGROUP)),
-            run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),
+            run::builtin::STATS => stats_cgroup(args, &cgroup, joiner.is_some(), |m| {
+                domains.iter().find(|d| d.member == m).map(|d| d.cgroup.clone())
+            })
+            .and_then(|scope| out.write_all(stats(&scope).as_bytes())),
             run::builtin::METRICS => metrics(&mut out, args, &cgroup, joiner.is_some(), domains),
             // Its answer a line, whose end says it is whole: one its host took past its
             // deadline is still what was given back (reclaim.rs `given`).
+            // Its engine's idle ring slots go too, after this answer's measure, and the next
+            // answer counts them (D230, ring.rs `given`); with no slot made, nothing.
             run::builtin::RECLAIM => reclaim_cold(RUN_CGROUP).and_then(|freed| {
                 let unplugging = crate::plug::shrink_run(RUN_CGROUP)?;
+                let freed = freed.saturating_add(crate::ring::given());
+                crate::ring::give_back();
                 writeln!(out, "{freed} {unplugging}")
             }),
+            // Its engine's relay told first, which lets its idle ring slots go where the room
+            // is short of what the run needs to go on (D230); with no slot made, nothing.
             run::builtin::ROOM => args
                 .first()
                 .map(|a| room_of(a))
                 .transpose()
+                .inspect(|room| crate::ring::told(*room))
                 .and_then(|room| crate::plug::hold_within(RUN_CGROUP, room))
                 .and_then(|held| held.map_or(Ok(()), |held| write!(out, "{held}"))),
             run::builtin::FREEZE => freeze(&cgroup, args.first().is_some_and(|a| a == b"1")),
@@ -3706,6 +3943,9 @@ fn start_joiner(
         .transpose()
         .map_err(setup_failed)?;
     joiner_takes(&spec.setup)?;
+    // The nesting grant (D234): none joins a microVM given it, and none is given it.
+    crate::join::nesting(GRANTED.load(std::sync::atomic::Ordering::Relaxed), &spec.setup)
+        .map_err(setup_failed)?;
     // Beside the microVM's agents and harnesses, as its run is (D115).
     if let Some(b) = BESIDE.get() {
         b.refuse(&spec.setup, "run")?;
@@ -4374,6 +4614,20 @@ enum Owner {
     Procs,
     /// The process that makes the run's binds the host's (D124).
     Hosts,
+    /// The notify socket of a run given the nesting grant (D234).
+    Notify,
+    /// Its ready-by's timer.
+    ReadyBy,
+}
+
+/// Tells the host where a granted run's readiness moved (D234), and marks it ready on the
+/// control page, where it is.
+fn tell_ready(said: run::nesting::Ready, to_host: &mut Outbox) {
+    if !matches!(said, run::nesting::Ready::Passed(_)) {
+        let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_READY);
+    }
+    let said = said.encode();
+    to_host.extend(&[&run::header(kind::READY, said.len() as u32), &said]);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -4462,6 +4716,22 @@ impl Workload {
         let mut fatal = None;
         'relay: loop {
             let exited = status.is_some();
+            // Each member's end, once its whole population has ended, told its owner once
+            // and before the run's own end (D231); one still running as the run ends goes
+            // with it, which the run's end says.
+            if !exited && MEMBER_ENDS.load(std::sync::atomic::Ordering::Relaxed) {
+                for d in self.domains.iter_mut().filter(|d| !d.end_told) {
+                    if let Some(status) = d.lifecycle.ended_status() {
+                        let ended = run::members::Ended {
+                            member: d.member,
+                            status,
+                        }
+                        .encode();
+                        to_host.extend(&[&run::header(kind::MEMBER_ENDED, ended.len() as u32), &ended]);
+                        d.end_told = true;
+                    }
+                }
+            }
             if exited {
                 for domain in &mut self.domains {
                     domain.stdout.abort();
@@ -4746,6 +5016,12 @@ impl Workload {
                 libc::POLLIN,
                 Owner::Hosts,
             );
+            // A granted run's readiness (D234): its socket, read on while the workload runs,
+            // and its ready-by's timer, until it fires.
+            if let Some(r) = self.readiness.as_ref() {
+                poll(r.socket(), libc::POLLIN, Owner::Notify);
+                poll(r.timer(), libc::POLLIN, Owner::ReadyBy);
+            }
             for (i, e) in execs.iter().enumerate() {
                 let conn_events = if !e.connected {
                     libc::POLLOUT
@@ -4823,6 +5099,10 @@ impl Workload {
                             if pid == main {
                                 let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_EXITED);
                                 status = Some(code);
+                                // Its readiness ends with it (D234): nothing moves it after.
+                                if let Some(r) = self.readiness.as_mut() {
+                                    r.exited();
+                                }
                                 // A run ends with its main process; the runs joined
                                 // to its network outlive it, as Docker's do (D119), but those
                                 // its own engine made, which end with it (D181): each the
@@ -5165,6 +5445,16 @@ impl Workload {
                         }
                     }
                     Owner::Procs => keep_processes(&mut self.procs, &mut to_host),
+                    Owner::Notify => {
+                        if let Some(said) = self.readiness.as_mut().and_then(|r| r.datagram()) {
+                            tell_ready(said, &mut to_host);
+                        }
+                    }
+                    Owner::ReadyBy => {
+                        if let Some(said) = self.readiness.as_mut().and_then(|r| r.due()) {
+                            tell_ready(said, &mut to_host);
+                        }
+                    }
                     Owner::Hosts => {
                         let alive = self
                             .hosts
@@ -6072,5 +6362,168 @@ mod cut_tests {
         reader.read_exact(&mut header).unwrap();
         assert_eq!(header, run::header(kind::QUIESCED, 0));
         assert!(!cut.sending(&Outbox::default()));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod stats_scope_tests {
+    use super::*;
+
+    fn member(m: u32) -> Option<String> {
+        (m == 2).then(|| format!("{RUN_CGROUP}/domains/harness-codex"))
+    }
+
+    /// STATS reads the workload's cgroup with no argument, as `shards stats` asks it; the
+    /// run's with `run`; a running member's with `member <index>` (D231); a joiner's exec its
+    /// own alone; anything else is refused, never read as another scope.
+    #[test]
+    fn stats_read_the_scope_asked_for() {
+        let own = "/sys/fs/cgroup/run/workload";
+        assert_eq!(stats_cgroup(&[], own, false, member).unwrap(), own);
+        assert_eq!(
+            stats_cgroup(&[b"run".to_vec()], own, false, member).unwrap(),
+            RUN_CGROUP
+        );
+        assert_eq!(
+            stats_cgroup(&[b"member".to_vec(), b"2".to_vec()], own, false, member).unwrap(),
+            "/sys/fs/cgroup/run/domains/harness-codex"
+        );
+        let refused = |args: &[&[u8]], joiner: bool| {
+            let args: Vec<Vec<u8>> = args.iter().map(|a| a.to_vec()).collect();
+            stats_cgroup(&args, own, joiner, member).unwrap_err().kind()
+        };
+        assert_eq!(refused(&[b"member", b"3"], false), io::ErrorKind::NotFound);
+        assert_eq!(refused(&[b"member", b"x"], false), io::ErrorKind::InvalidInput);
+        assert_eq!(refused(&[b"member"], false), io::ErrorKind::InvalidInput);
+        assert_eq!(refused(&[b"workload"], false), io::ErrorKind::InvalidInput);
+        assert_eq!(refused(&[b"run"], true), io::ErrorKind::InvalidInput);
+        assert_eq!(refused(&[b"member", b"2"], true), io::ErrorKind::InvalidInput);
+    }
+}
+
+#[cfg(test)]
+mod nesting_tests {
+    use super::*;
+
+    /// The grant is refused where the command would have the microVM's cgroup or PID
+    /// namespace (D234), each in its own words, and no other entry refuses it.
+    #[test]
+    fn the_grant_is_refused_with_the_microvms_cgroup_or_pid_namespace() {
+        let entries = |l: &[&str]| l.iter().map(|e| e.as_bytes().to_vec()).collect::<Vec<_>>();
+        assert_eq!(
+            undoes_nesting(&entries(&["nesting", "cgroupns=host"])),
+            Some(run::nesting::cgroupns_host())
+        );
+        assert_eq!(
+            undoes_nesting(&entries(&["nesting", "pid=host"])),
+            Some(run::nesting::pid_host())
+        );
+        assert_eq!(
+            undoes_nesting(&entries(&["nesting", "cgroups-rw", "ipc=host", "uts=host"])),
+            None
+        );
+    }
+
+    /// A cgroup tree of plain files: the workload's cgroup, its leaf and a box beneath it,
+    /// each with an empty `cgroup.procs`.
+    fn tree(name: &str) -> (shards_testdir::TempDir, String) {
+        let dir = shards_testdir::TempDir::new(name).unwrap();
+        let workload = dir.path().join("workload");
+        for d in [workload.clone(), workload.join(LEAF), workload.join("boxes/b1")] {
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("cgroup.procs"), b"").unwrap();
+        }
+        let workload = workload.to_str().unwrap().to_string();
+        (dir, workload)
+    }
+
+    fn procs(dir: &str) -> String {
+        std::fs::read_to_string(format!("{dir}/cgroup.procs")).unwrap()
+    }
+
+    /// An exec of a run given the nesting grant joins its leaf, never its cgroup
+    /// namespace's root (D234): where the leaf takes no process, the cgroup the workload's
+    /// process is in, beneath the root, and never the root itself. Without the grant, the
+    /// workload's cgroup, as before (D173).
+    #[test]
+    fn a_granted_runs_execs_join_its_leaf_never_its_root() {
+        let (_dir, w) = tree("exec-leaf");
+        let leaf = format!("{w}/{LEAF}");
+        // Not asked where the workload's process is: the leaf took it.
+        let unasked = || Err(libc::ESRCH);
+        join_workload(&w, true, unasked).unwrap();
+        assert_eq!(procs(&leaf), "0");
+        assert_eq!(procs(&w), "", "the root holds none");
+        // The leaf gone: the cgroup the workload's process is in now, beneath the root.
+        std::fs::remove_dir_all(&leaf).unwrap();
+        let in_box = format!("{w}/boxes/b1");
+        join_workload(&w, true, || Ok(in_box.clone())).unwrap();
+        assert_eq!(procs(&in_box), "0");
+        // But never the root itself, where the workload's process is.
+        assert_eq!(join_workload(&w, true, || Ok(w.clone())), Err(libc::ENOENT));
+        assert_eq!(procs(&w), "");
+
+        let (_dir, w) = tree("exec-plain");
+        join_workload(&w, false, unasked).unwrap();
+        assert_eq!(procs(&w), "0");
+        assert_eq!(procs(&format!("{w}/{LEAF}")), "");
+    }
+
+    fn setup(list: &[&str]) -> Vec<Vec<u8>> {
+        list.iter().map(|e| e.as_bytes().to_vec()).collect()
+    }
+
+    /// A granted run's setup as init sorts it (D234): the grant's part the standby's, after
+    /// the run's mounts and before its root goes read-only, its hierarchy made writable
+    /// before its leaf is entered; its deadline init's; none of it an exec's. An ungranted
+    /// run's as before, a daemon's `notify` making no socket.
+    #[test]
+    fn the_grants_part_is_the_standbys_after_the_runs_mounts() {
+        let mut inherited = Inherited::default();
+        let sorted = sort_setup(
+            &setup(&[
+                "tmpfs=/run\0",
+                "nesting",
+                "ready-by=1",
+                "gpus=metal:1",
+                "ulimit=nofile=1:2",
+                "readonly",
+            ]),
+            &mut inherited,
+        )
+        .map_err(|f| f.message)
+        .unwrap();
+        assert_eq!(
+            sorted.standby,
+            setup(&[
+                "tmpfs=/run\0",
+                "ulimit=nofile=1:2",
+                "cgroups-rw",
+                "nesting",
+                "notify",
+                "gpus=metal:1",
+                "readonly",
+            ])
+        );
+        assert_eq!(inherited.setup, setup(&["ulimit=nofile=1:2"]));
+        assert!(inherited.env.is_empty(), "init's to set");
+
+        let sorted = sort_setup(
+            &setup(&["tmpfs=/run\0", "notify", "readonly"]),
+            &mut Inherited::default(),
+        )
+        .map_err(|f| f.message)
+        .unwrap();
+        assert_eq!(sorted.standby, setup(&["tmpfs=/run\0", "readonly"]));
+
+        let engine = format!("engine={}", "00".repeat(run::TOKEN));
+        let sorted = sort_setup(&setup(&[&engine, "nesting"]), &mut Inherited::default())
+            .map_err(|f| f.message)
+            .unwrap();
+        assert_eq!(
+            sorted.standby,
+            setup(&["engine", "cgroups-rw", "nesting", "notify"])
+        );
     }
 }

@@ -1,0 +1,12 @@
+--- a/crates/api/src/client.rs
++++ b/crates/api/src/client.rs
+@@ -2097,8 +2097,7 @@
+             }
+             Err(Attempt::Refused(why)) => return Err(Refusal::Channel { port, why }),
+             Err(Attempt::Absolute(failure)) => {
+-                if matches!(budget, ConnectBudget::Once(_))
+-                    || !failure.retryable()
++                if !failure.retryable()
+                     || left().is_some_and(|l| l.is_zero())
+                 {
+                     return Err(Refusal::Connect { port, failure });

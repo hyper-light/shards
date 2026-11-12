@@ -26,7 +26,7 @@
 
 use std::ffi::{CStr, CString};
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use crate::json::{self, Value};
 
@@ -223,6 +223,72 @@ fn owner(
     }
     let u = shards_user::resolve(chown.as_bytes(), passwd, group)?;
     Ok((u.uid, u.gid))
+}
+
+/// Why init refuses a run its nesting grant, of what the image as built declares (D234).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Nesting {
+    /// Its normalized Agentfile declares no `NESTING`, or it has none.
+    Undeclared,
+    /// It declares the grant beside an agent or harness, `kind` and `name`: the grant
+    /// makes the command its microVM's only principal.
+    Beside { kind: &'static str, name: String },
+    /// Its normalized Agentfile, as built, could not be read.
+    Unread(String),
+}
+
+impl std::fmt::Display for Nesting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Nesting::Undeclared => f.write_str(&shards_abi::run::nesting::undeclared()),
+            Nesting::Beside { kind, name } => f.write_str(&shards_abi::run::beside::nesting(kind, name)),
+            Nesting::Unread(why) => write!(
+                f,
+                "cannot give the command the nesting grant: its image's Agentfile, as built: {why}"
+            ),
+        }
+    }
+}
+
+/// Init's own check of a run carrying the nesting grant (D234), against the image as
+/// built, never the run's root, which the run and `cp` write (D109): its normalized
+/// Agentfile must declare `NESTING`, and no agent or harness beside it.
+pub fn nesting() -> Result<(), Nesting> {
+    let Some(root) = as_built().map_err(Nesting::Unread)? else {
+        return Err(match std::fs::symlink_metadata("/.agentfile.json") {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Nesting::Undeclared,
+            _ => Nesting::Unread("its layers were not kept".into()),
+        });
+    };
+    let Some(text) = built_file(&root, "/.agentfile.json").map_err(Nesting::Unread)? else {
+        return Err(Nesting::Undeclared);
+    };
+    nesting_of(&text)
+}
+
+/// What `text`, an image's normalized Agentfile, declares of the grant: `NESTING`, a
+/// top-level `"nesting": true` (written only where declared, so that every Agentfile
+/// without it reads as before), and no agent or harness beside it.
+fn nesting_of(text: &[u8]) -> Result<(), Nesting> {
+    let spec = json::parse(text).map_err(|e| Nesting::Unread(format!("/.agentfile.json: {e}")))?;
+    if spec.get("schemaVersion").and_then(Value::u64) != Some(1) {
+        return Err(Nesting::Unread(
+            "/.agentfile.json: a schema version this init does not know".into(),
+        ));
+    }
+    if spec.get("nesting") != Some(&Value::Bool(true)) {
+        return Err(Nesting::Undeclared);
+    }
+    for (kind, list) in [("agent", "agents"), ("harness", "harnesses")] {
+        if let Some(d) = spec.get(list).map(Value::array).and_then(<[Value]>::first) {
+            let name = d.get("name").and_then(Value::str).unwrap_or_default();
+            return Err(Nesting::Beside {
+                kind,
+                name: name.to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// What the image's normalized Agentfile says to start: every domain's directory, the
@@ -450,6 +516,37 @@ fn quote(s: &str) -> String {
     out
 }
 
+/// A supplied domain's environment: init's `PATH` (its own directory first), `HOME=/tmp` and
+/// `SHARDS_DOMAIN`, then its config's `run.env`, each name once and the last given winning, so a
+/// harness.json sets its harness's `HOME` or `PATH` (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
+/// master step 7: run.env was appended after init's before, and a program reads the first).
+/// `SHARDS_DOMAIN` is init's alone: a domain's own name, never its image's word.
+fn harness_env(path: &str, label: &str, given: &[String]) -> Result<Vec<String>, String> {
+    let mut env = vec![
+        format!("PATH={path}"),
+        "HOME=/tmp".to_string(),
+        format!("SHARDS_DOMAIN={label}"),
+    ];
+    for e in given {
+        let Some((name, _)) = e.split_once('=').filter(|(name, _)| !name.is_empty()) else {
+            return Err(format!("{label}: run.env entry {e:?} is no NAME=value"));
+        };
+        if name == "SHARDS_DOMAIN" {
+            return Err(format!(
+                "{label}: run.env sets SHARDS_DOMAIN, which is init's: a domain's own name"
+            ));
+        }
+        let at = env
+            .iter()
+            .position(|kept| kept.split_once('=').is_some_and(|(n, _)| n == name));
+        match at.and_then(|i| env.get_mut(i)) {
+            Some(kept) => kept.clone_from(e),
+            None => env.push(e.clone()),
+        }
+    }
+    Ok(env)
+}
+
 fn domain(
     kind: &str,
     name: &str,
@@ -488,14 +585,15 @@ fn domain(
     // A supplied bare command lives in its own artifact before the system tools.
     // The inherited PATH also lets an explicit launcher such as nohup find its child.
     let path = format!("{dir}:{dir}/bin:{PATH}");
-    let mut env = vec![
-        cstr(&format!("PATH={path}"))?,
-        cstr("HOME=/tmp")?,
-        cstr(&format!("SHARDS_DOMAIN={label}"))?,
-    ];
-    for e in run.get("env").and_then(Value::strings).unwrap_or_default() {
-        env.push(cstr(&e)?);
-    }
+    let given = run.get("env").and_then(Value::strings).unwrap_or_default();
+    let env = harness_env(&path, &label, &given)?;
+    // Its program is found on the PATH it runs with: init's, unless run.env gave its own.
+    let path = env
+        .iter()
+        .find_map(|e| e.strip_prefix("PATH="))
+        .unwrap_or(&path)
+        .to_string();
+    let env = env.iter().map(|e| cstr(e)).collect::<Result<Vec<_>, _>>()?;
     let first = command.first().map(String::as_str).unwrap_or_default();
     let program = if first.starts_with('/') {
         first.to_string()
@@ -551,6 +649,8 @@ pub struct Started {
     pub lifecycle: crate::managed::Owned,
     pub stdout: crate::capture::Pipe,
     pub stderr: crate::capture::Pipe,
+    /// Its end has been told its owner (`MEMBER_ENDED`, D231).
+    pub end_told: bool,
 }
 
 impl Started {
@@ -1035,7 +1135,7 @@ fn cstr_of(s: &str) -> Result<CString, String> {
 }
 
 /// `MemAvailable` of `/proc/meminfo`, in bytes.
-fn available_memory() -> Result<u64, String> {
+pub(crate) fn available_memory() -> Result<u64, String> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").map_err(|e| format!("/proc/meminfo: {e}"))?;
     meminfo
         .lines()
@@ -1349,8 +1449,13 @@ pub fn start(
     setup: &[Vec<u8>],
 ) -> Result<Vec<Started>, String> {
     if domains.is_empty() {
+        crate::staged::check(setup, |_| false)?;
         return Ok(Vec::new());
     }
+    // What an orchestrator stages goes into a member this run starts, or nowhere (D231).
+    crate::staged::check(setup, |m| {
+        domains.iter().any(|d| d.id.checked_sub(FIRST_ID) == Some(m))
+    })?;
     let shm = shm_of(setup)?;
     // The kernel's log holds what it says of the domains' processes (a fault, an OOM kill
     // naming each process of their cgroup): only for CAP_SYSLOG, which no run of an
@@ -1668,6 +1773,11 @@ pub fn start(
             .collect();
         // Its scratch, which its instance holds too, to read the files it hands across.
         let scratch = scratch(lower, d.id).map_err(|e| format!("{}: its /tmp: {e}", d.label))?;
+        // What its orchestrator staged for it (D231): its files in its home before anything
+        // of it runs, its variables over its image's.
+        crate::staged::files(scratch.as_ref().map(AsFd::as_fd), (d.id, d.id), member, setup)
+            .map_err(|e| format!("{}: {e}", d.label))?;
+        let env = crate::staged::env(&d.env, member, setup).map_err(|e| format!("{}: {e}", d.label))?;
         let dir = server.start(
             i,
             d,
@@ -1723,12 +1833,7 @@ pub fn start(
                 .map(|a| a.as_ptr())
                 .chain([std::ptr::null()])
                 .collect(),
-            envp: d
-                .env
-                .iter()
-                .map(|a| a.as_ptr())
-                .chain([std::ptr::null()])
-                .collect(),
+            envp: env.iter().map(|a| a.as_ptr()).chain([std::ptr::null()]).collect(),
             last_cap,
             net_handled: match &d.link {
                 Some(l) => {
@@ -1867,6 +1972,7 @@ pub fn start(
             lifecycle,
             stdout,
             stderr,
+            end_told: false,
         });
     }
     drop(joined);
@@ -2650,6 +2756,108 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
     use super::*;
+
+    /// Init's own check of the nesting grant against the image as built (D234): granted
+    /// only where the normalized Agentfile declares `NESTING` (`"nesting": true`) and no
+    /// agent or harness; each refusal in the words the build and the daemon share.
+    #[test]
+    fn init_refuses_the_grant_unless_the_image_as_built_declares_it_alone() {
+        let lists = r#""skills":[],"mcp":[],"networks":[],"connections":[],"attachments":[],"exposures":[],"volumes":[]"#;
+        let spec = |agents: &str, harnesses: &str, nesting: &str| {
+            format!(r#"{{"schemaVersion":1,"agents":[{agents}],"harnesses":[{harnesses}],{lists}{nesting}}}"#)
+        };
+        let agent = r#"{"name":"a","source":"./a","to":"/agents/a","processes":null}"#;
+        let harness = r#"{"name":"h","source":"./h","to":"/harness/h","processes":null}"#;
+        assert_eq!(nesting_of(spec("", "", r#","nesting":true"#).as_bytes()), Ok(()));
+        for undeclared in [
+            spec("", "", ""),
+            spec("", "", r#","nesting":false"#),
+            spec("", "", r#","nesting":"true""#),
+            spec("", "", r#","nesting":1"#),
+            spec("", "", r#","nesting":null"#),
+            spec(agent, "", ""),
+        ] {
+            assert_eq!(
+                nesting_of(undeclared.as_bytes()),
+                Err(Nesting::Undeclared),
+                "{undeclared}"
+            );
+        }
+        assert_eq!(
+            nesting_of(spec(agent, harness, r#","nesting":true"#).as_bytes()),
+            Err(Nesting::Beside {
+                kind: "agent",
+                name: "a".into()
+            })
+        );
+        assert_eq!(
+            nesting_of(spec("", harness, r#","nesting":true"#).as_bytes()),
+            Err(Nesting::Beside {
+                kind: "harness",
+                name: "h".into()
+            })
+        );
+        assert!(matches!(
+            nesting_of(br#"{"schemaVersion":2,"nesting":true}"#),
+            Err(Nesting::Unread(_))
+        ));
+        assert!(matches!(nesting_of(b"{"), Err(Nesting::Unread(_))));
+        assert_eq!(
+            Nesting::Undeclared.to_string(),
+            "cannot give the command the nesting grant: the image's Agentfile declares no NESTING"
+        );
+        assert_eq!(
+            Nesting::Beside {
+                kind: "harness",
+                name: "h".into()
+            }
+            .to_string(),
+            shards_abi::run::beside::nesting("harness", "h")
+        );
+    }
+
+    /// A harness.json's run.env sets its harness's HOME and PATH, the last given winning, and never
+    /// its domain's name (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, master step 7).
+    #[test]
+    fn run_env_replaces_inits_defaults_and_never_the_domains_name() {
+        let given = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            harness_env("/d:/d/bin:/usr/bin", "harness agy", &[]).unwrap(),
+            [
+                "PATH=/d:/d/bin:/usr/bin",
+                "HOME=/tmp",
+                "SHARDS_DOMAIN=harness agy"
+            ]
+        );
+        let env = harness_env(
+            "/d:/d/bin:/usr/bin",
+            "harness agy",
+            &given(&[
+                "HOME=/home/agy",
+                "LANG=C.UTF-8",
+                "HOME=/home/two",
+                "PATH=/opt/agy/bin",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            env,
+            [
+                "PATH=/opt/agy/bin",
+                "HOME=/home/two",
+                "SHARDS_DOMAIN=harness agy",
+                "LANG=C.UTF-8"
+            ]
+        );
+        for (bad, why) in [
+            ("SHARDS_DOMAIN=agent x", "SHARDS_DOMAIN"),
+            ("NOEQUALS", "NAME=value"),
+            ("=x", "NAME=value"),
+        ] {
+            let e = harness_env("/d", "harness agy", &given(&[bad])).unwrap_err();
+            assert!(e.contains(why), "{bad}: {e}");
+        }
+    }
 
     /// The host's entries (volumes.rs, `open`): those for the domains, with their tag,
     /// cleaned mount point and flags; a file bound alone, and the run's own, left out.

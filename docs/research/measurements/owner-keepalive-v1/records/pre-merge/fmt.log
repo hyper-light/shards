@@ -1,0 +1,49 @@
+== 2026-11-12T06:29:25Z fmt: cargo fmt --all --check
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+32
+ 22:29:25 up 7 days,  2:26, 576 users,  load average: 49.18, 55.06, 69.27
+e2eda2f06a80b090f6dcba57560f1ffbb51f1bc9a41ce32994cc73da50f239ad  crates/remote/src/managed.rs
+03ed6a6c4e131d7270da93b4bf7284b6c750e73d54fbff3f95075f68c9a16051  crates/remote/src/tls.rs
+Diff in /home/adalundhe/owner-keepalive-v1/src/crates/remote/src/managed.rs:1515:
+             assert!(interval > Duration::ZERO, "{bound:?}");
+             assert!(interval * 3 < bound, "{bound:?}: {interval:?}");
+             assert!(interval * 4 <= bound, "{bound:?}: {interval:?}");
+-            assert!((interval + Duration::from_nanos(1)) * 4 > bound, "{bound:?}: {interval:?}");
++            assert!(
++                (interval + Duration::from_nanos(1)) * 4 > bound,
++                "{bound:?}: {interval:?}"
++            );
+         }
+     }
+ 
+Diff in /home/adalundhe/owner-keepalive-v1/src/crates/remote/src/managed.rs:1547:
+             ),
+             Err(Error::Admission(AdmissionError::Patience))
+         ));
+-        assert!(client_config(&identity, identity.fingerprint(), admitted(Duration::from_millis(1))).is_ok());
++        assert!(
++            client_config(
++                &identity,
++                identity.fingerprint(),
++                admitted(Duration::from_millis(1))
++            )
++            .is_ok()
++        );
+     }
+ 
+     /// What an owner's stream brought it, or that its connection was lost.
+Diff in /home/adalundhe/owner-keepalive-v1/src/crates/remote/src/managed.rs:1719:
+                 let left = within.checked_sub(start.elapsed()).ok_or(state)?;
+                 if self.changed.recv_timeout(left).is_err() {
+                     let state = self.control.state();
+-                    return if want(state) { Ok(start.elapsed()) } else { Err(state) };
++                    return if want(state) {
++                        Ok(start.elapsed())
++                    } else {
++                        Err(state)
++                    };
+                 }
+             }
+         }
+exit 1 2026-11-12T06:29:34Z

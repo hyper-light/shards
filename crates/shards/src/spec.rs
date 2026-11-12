@@ -220,6 +220,10 @@ pub const RUN_VALUED: &[&str] = &[
     "--env",
     "-e",
     "--grants",
+    "--gpu-device",
+    "--gpu-report",
+    "--gpu-report-scope",
+    "--host-lifeline",
     "--hostname",
     "--init",
     "--initrd",
@@ -256,11 +260,9 @@ pub const RUN_VALUED: &[&str] = &[
 /// through this, so a flag it reads a value after that `RUN_VALUED` does not list is refused
 /// there as needing one, every time, and never read as a flag where the line is read ahead
 /// of it (cli/shares.rs `take`), which reads it through this too.
-pub fn next_word(
-    args: &mut impl Iterator<Item = std::ffi::OsString>,
-) -> Option<(std::ffi::OsString, Option<std::ffi::OsString>)> {
+pub fn next_word<T: AsRef<std::ffi::OsStr>>(args: &mut impl Iterator<Item = T>) -> Option<(T, Option<T>)> {
     let word = args.next()?;
-    let valued = word.to_str().is_some_and(|w| RUN_VALUED.contains(&w));
+    let valued = word.as_ref().to_str().is_some_and(|w| RUN_VALUED.contains(&w));
     let value = if valued { args.next() } else { None };
     Some((word, value))
 }

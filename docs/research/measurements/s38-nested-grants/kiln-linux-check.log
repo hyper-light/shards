@@ -1,0 +1,16 @@
+2026-11-12T07:57:05Z round 1 runner 00aad8daff2fa3c9daa65d53c425d450 rc 1
+2026-11-12T07:57:05.129546Z ERROR 00aad8daff2fa3c9daa65d53c425d450 no longer has this run (its runner restarted)
+---
+2026-11-12T07:59:26Z round 1 runner 451397fcc585f7f7cb9aaf00e42064bb rc 1
+commit=c026df6a2dc1e9b4430ca2812e5cff03b655cc53
+Development policy checks passed; evidence/coordinator review is still required.
+policy_exit=0
+free     marker 7: the next free value
+free     run kind 49: the next free value
+free     ipc kind 90: the next free value
+planned 22, underived or unplanned 0
+audit_exit=0
+Linux x86_64
+adacachy
+2026-11-12T07:59:26.242328Z ERROR refused: 451397fcc585f7f7cb9aaf00e42064bb sent no receipt of it
+---

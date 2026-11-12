@@ -16,6 +16,9 @@
 #   this process as on macOS, with shards' patch for Windows, resources/gpu) and
 #   epoxy.lib. Vulkan is the host's, its loader (vulkan-1.dll) opened as the renderer
 #   starts.
+# - Every host: libshards_gpu_selection.a (shards_gpu_selection.lib on Windows), the identity
+#   bridge (resources/gpu/native-identity.c) that binds a VM's Venus contexts to the GPUs it
+#   was given (D232); and the renderer patched for that (resources/gpu/physical-*.patch).
 # Needs python3 (3.10 or later on Windows), for meson and ninja, pinned by hash in a
 # virtual environment of the build's own, and a C compiler: Xcode's command-line tools on
 # macOS, the host's `cc` on Linux, and on Windows LLVM's clang-cl with Visual Studio's
@@ -91,9 +94,19 @@ tar -xzf "$work/virgl.tar.gz" -C "$work/src"
 tar -xzf "$work/epoxy.tar.gz" -C "$work/src"
 if [ "$host" = Windows-x86_64 ]; then
     patch -p1 -s -d "$work/src/$virgl_name" <"$repo/resources/gpu/venus-windows.patch"
-    fetch "$vkh_url" vkh.tar.gz "$vkh_sha256"
-    tar -xzf "$work/vkh.tar.gz" -C "$work/src"
 fi
+# Each Venus context bound to the GPUs its VM was given (D232): the renderer's physical-device
+# filter, then the selection's transport to its render server, for the renderer this host
+# builds (resources/gpu), after Windows' own patch where it has one.
+case $host in
+Linux-*) selector_pin=linux ;;
+*) selector_pin=krunkit ;;
+esac
+patch -p1 -s -d "$work/src/$virgl_name" <"$repo/resources/gpu/physical-$selector_pin.patch"
+patch -p1 -s -d "$work/src/$virgl_name" <"$repo/resources/gpu/physical-transport-$selector_pin.patch"
+# Vulkan's headers, for Windows' renderer and every host's identity bridge.
+fetch "$vkh_url" vkh.tar.gz "$vkh_sha256"
+tar -xzf "$work/vkh.tar.gz" -C "$work/src"
 
 # meson and ninja, as PyPI published them: ninja's wheels for macOS, for Linux on x86_64
 # and arm64, with glibc (manylinux) and with musl (musllinux), and for x86_64 Windows.
@@ -237,6 +250,31 @@ else
     ar rcsD "$out/librender_server.a" "${objects[@]}"
     cp "$work/virgl/src/libvirglrenderer.a" "$prefix/lib/libepoxy.a" "$out/"
     libs=(libvirglrenderer.a librender_server.a libepoxy.a)
+fi
+# The identity bridge (D232): reads a selected GPU's identities through the pinned Vulkan
+# structures, calling only the loader's functions the VM process hands it; a library linked
+# beside the renderer's, no program of its own.
+mkdir "$work/selection-src"
+cp "$repo/resources/gpu/native-identity.c" "$work/selection-src/"
+vkh=$(native "$work/src/Vulkan-Headers-1.3.252/include")
+cat >"$work/selection-src/meson.build" <<EOF
+project('shards-gpu-selection', 'c', default_options: ['c_std=c11', 'warning_level=3', 'werror=true'])
+static_library('shards_gpu_selection', 'native-identity.c', c_args: ['-I$vkh'], install: false)
+EOF
+setup selection "$(native "$work/selection")" "$(native "$work/selection-src")" ${win[@]+"${win[@]}"}
+ninja --quiet -C "$(native "$work/selection")"
+if [ "$host" = Windows-x86_64 ]; then
+    cp "$work/selection/shards_gpu_selection.lib" "$out/"
+    libs+=(shards_gpu_selection.lib)
+elif [[ $host == Linux-* ]]; then
+    # meson makes a library it does not install a thin archive (GNU ar's T), whose members name
+    # objects in this build's scratch, removed as it ends: the bridge's object archived whole,
+    # as the render server's are.
+    ar rcsD "$out/libshards_gpu_selection.a" "$work/selection/libshards_gpu_selection.a.p/"*.o
+    libs+=(libshards_gpu_selection.a)
+else
+    cp "$work/selection/libshards_gpu_selection.a" "$out/"
+    libs+=(libshards_gpu_selection.a)
 fi
 cp "$work/src/$virgl_name/src/virglrenderer.h" "$out/include/"
 (cd "$out" && sha256 "${libs[@]}")

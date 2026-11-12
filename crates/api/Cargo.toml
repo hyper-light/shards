@@ -11,14 +11,15 @@ publish = false
 [dependencies]
 sha2 = "0.11"
 shards-abi = { path = "../abi" }
-triomphe = { version = "=0.1.17", default-features = false, features = ["std"] }
+triomphe = { version = "=0.1.17", default-features = false, features = ["std", "unsize"] }
+unsize = "=1.1.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 shards-afunix = { path = "../afunix" }
-windows-sys = { workspace = true }
+windows-sys = { workspace = true, features = ["Win32_System_Pipes"] }
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }

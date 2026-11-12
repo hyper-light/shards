@@ -1,0 +1,4 @@
+== 2026-11-12T06:34:28Z fmt (re-run after the formatting fix): cargo fmt --all --check
+2bc20a5be5cc5510aa38d4371f9de3f654d786c7262e1dd340ed2e0ef1991f5a  crates/remote/src/managed.rs
+03ed6a6c4e131d7270da93b4bf7284b6c750e73d54fbff3f95075f68c9a16051  crates/remote/src/tls.rs
+exit 0 2026-11-12T06:34:37Z

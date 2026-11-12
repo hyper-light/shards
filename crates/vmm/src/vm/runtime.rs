@@ -7,6 +7,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak, mpsc};
 use std::thread::JoinHandle;
 
 use super::barrier::Barrier;
+use super::guest_time::{self, GuestClocks, GuestTimes};
 use super::hold::Hold;
 use super::live::{self, Pages};
 use super::machine::{self, Machine};
@@ -861,6 +862,13 @@ impl Handle {
     pub fn prefetched(&self) -> usize {
         self.shared.kept.get().map_or(0, machine::prefetched)
     }
+
+    /// What each of its vCPUs has run of its guest, by index, read now, and what those it no
+    /// longer has ran: on HVF a vCPU in its guest leaves it once to be read
+    /// (`hv::GuestClock`), and no sample waits for a vCPU's device access or holds one up.
+    pub fn guest_times(&self) -> GuestTimes {
+        self.shared.guest.sample()
+    }
 }
 
 #[derive(Debug)]
@@ -905,6 +913,8 @@ struct Shared {
     /// The host's hold on the vCPUs' CPU time, a run's limit (D191), and its governor's
     /// thread, made as the first limit comes and joined as the machine is taken apart.
     hold: Hold,
+    /// Each vCPU's guest time by its index, and the time of those gone, for its stats.
+    guest: GuestClocks,
     governor: Mutex<Option<JoinHandle<()>>>,
     /// Its group's governor's thread (D183), made as its run's group comes.
     group_governor: Mutex<Option<JoinHandle<()>>>,
@@ -993,6 +1003,7 @@ impl Shared {
             saving: Mutex::new(false),
             saved: Condvar::new(),
             hold: Hold::new(vcpus as usize),
+            guest: GuestClocks::default(),
             governor: Mutex::new(None),
             group_governor: Mutex::new(None),
         }
@@ -1201,6 +1212,26 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), super::StartError> {
     check_host()?;
     check_vcpus(cfg.vcpus)?;
     launch(machine::build(cfg)?, cfg.snapshot.clone(), false, cfg.join).map_err(super::StartError::from)
+}
+
+/// The same boot, with one borrowed initial-report writer at GPU construction.
+/// The callback returns before launch starts any guest vCPU or publishes Handle.
+pub fn start_gpu_report(
+    cfg: &Config,
+    report: &mut super::GpuReportTo<'_>,
+) -> Result<(Handle, Running), super::StartError> {
+    if cfg.gpu_devices.is_empty() {
+        return Err(super::StartError::GpuProbe(shards_abi::gpu::GpuProbeError::Empty));
+    }
+    check_host()?;
+    check_vcpus(cfg.vcpus)?;
+    launch(
+        machine::build_reported(cfg, Some(report))?,
+        cfg.snapshot.clone(),
+        false,
+        cfg.join,
+    )
+    .map_err(super::StartError::from)
 }
 
 /// The most stage-2 pages `snap`'s guest can have, RAM and pmem regions (each its file
@@ -1603,6 +1634,11 @@ fn vcpu_thread(
     if let Err(e) = sh.hold.register(index) {
         warn!("vCPU {index}: its CPU time unread, so not held to its run's CPUs: {e}");
     }
+    // Its guest time among its machine's, before its machine is said to be started: read a
+    // last time as this goes, on this thread, before the vCPU itself goes (dropped after).
+    let _guest = sh
+        .guest
+        .join(u32::try_from(index).unwrap_or(u32::MAX), guest_clock(&vcpu));
     let _ = created.send(Ok(set_up));
     if let Some(offset) = sh.wait_release()
         && let Err(e) = machine::set_counter_offset(&mut vcpu, offset)
@@ -1626,6 +1662,12 @@ fn vcpu_thread(
             Err(e) => return sh.stop(ExitReason::Error(format!("vCPU {index}: {e}"))),
         }
     }
+}
+
+/// How vCPU `vcpu`'s guest time is read, from any thread: its hypervisor's clock.
+fn guest_clock(vcpu: &hv::Vcpu) -> Result<guest_time::Read, String> {
+    let clock = vcpu.guest_clock().map_err(|e| e.to_string())?;
+    Ok(Box::new(move || clock.read().map_err(|e| e.to_string())))
 }
 
 /// Writes the snapshot the guest asks for, once every vCPU has parked.
@@ -1905,6 +1947,7 @@ mod tests {
                 hotplug_mib: 0,
                 reporting: false,
                 gpu: None,
+                gpu_devices: Vec::new(),
                 swap_mib: 0,
                 share_window_mib: 0,
                 layer_mib: 0,

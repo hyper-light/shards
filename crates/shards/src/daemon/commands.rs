@@ -1642,6 +1642,43 @@ impl<D: crate::containers::Disk> Daemon<D> {
             .unwrap_or_else(|_| Err("its microVM stopped".into()))
     }
 
+    /// What each vCPU of run `id`'s microVM has run of its guest, and what those it no longer
+    /// has ran: its VM asked (`GUEST_TIME`), on a joiner's (D119) link its provider's, and its
+    /// answer (`GUEST_TIMED`) waited for as long as a warm VM may take to say it has taken a
+    /// run, as it answers on receipt too.
+    pub(super) fn guest_times_of(&self, id: &str) -> Result<shards_vmm::vm::GuestTimes, String> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let (inbox, socket) = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(t)) => (t.inbox.clone(), t.socket.clone()),
+            _ => return Err("it is not running".into()),
+        };
+        let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (told, answer) = std::sync::mpsc::channel();
+        {
+            let mut inbox = lock(&inbox);
+            if inbox.ended {
+                return Err("it is not running".into());
+            }
+            inbox.guest_times.push((number, told));
+        }
+        if let Err(e) = socket.send(shards_ipc::kind::GUEST_TIME, &number.to_be_bytes(), &[]) {
+            lock(&inbox).guest_times.retain(|(n, _)| *n != number);
+            return Err(format!("asking its microVM: {e}"));
+        }
+        let answered = answer.recv_timeout(super::TAKE_TIMEOUT);
+        if answered.is_err() {
+            lock(&inbox).guest_times.retain(|(n, _)| *n != number);
+        }
+        match answered {
+            Ok(said) => said,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
+                "its microVM did not answer in {} s",
+                super::TAKE_TIMEOUT.as_secs()
+            )),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("its microVM stopped".into()),
+        }
+    }
+
     /// Whether run `id` runs joined to another's network (D119): in its provider's
     /// microVM, keeping no layer of its own yet.
     pub(super) fn joined_run(&self, id: &str) -> bool {

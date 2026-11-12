@@ -4,6 +4,8 @@
 #[cfg(hv)]
 use std::path::Path;
 use std::path::PathBuf;
+#[path = "../devices/virtio/gpu/selection.rs"]
+pub mod gpu_selection;
 #[cfg(hv)]
 use std::sync::Arc;
 #[cfg(hv)]
@@ -16,6 +18,19 @@ use crate::memory::{FileSpan, GuestMemory};
 use crate::devices::virtio::gpu;
 #[cfg(hv)]
 use crate::devices::virtio::{head, mem, pmem, vsock};
+
+/// The managed caller's private writer, borrowed only while its renderer is made.
+/// It introduces no owner, thread, saved report or guest-visible descriptor.
+pub type GpuReportTo<'a> = dyn FnMut(shards_abi::gpu::GpuProbe) -> Result<(), String> + 'a;
+
+/// A machine's GPU as it is assembled (D144, D232): the window its guest saw (0 for a new
+/// machine, as long as its renderer says), and the writer its selection's report goes to as the
+/// renderer is made, a managed boot's alone.
+#[cfg(hv)]
+pub(crate) struct MachineGpu<'r, 'a> {
+    saw: u64,
+    report: Option<&'r mut GpuReportTo<'a>>,
+}
 
 /// A boot refusal kept typed until presentation; other startup errors retain their
 /// existing owned messages while those seams are migrated.
@@ -39,6 +54,7 @@ use crate::devices::virtio::{head, mem, pmem, vsock};
 pub enum StartError {
     CommandLine(crate::arch::x86_64::boot::BootError),
     Legacy(String),
+    GpuProbe(shards_abi::gpu::GpuProbeError),
 }
 
 impl std::fmt::Display for StartError {
@@ -46,6 +62,7 @@ impl std::fmt::Display for StartError {
         match self {
             Self::CommandLine(error) => std::fmt::Display::fmt(error, f),
             Self::Legacy(message) => f.write_str(message),
+            Self::GpuProbe(why) => why.fmt(f),
         }
     }
 }
@@ -55,6 +72,7 @@ impl std::error::Error for StartError {
         match self {
             Self::CommandLine(error) => std::error::Error::source(error),
             Self::Legacy(_) => None,
+            Self::GpuProbe(why) => std::error::Error::source(why),
         }
     }
 }
@@ -158,6 +176,8 @@ pub const RESTORES_RECORD: bool = cfg!(any(hv = "kvm", hv = "whp"));
 #[cfg(any(hv, test))]
 mod barrier;
 pub mod group;
+mod guest_time;
+pub use guest_time::{GuestTimes, VcpuTime};
 #[cfg(any(hv, test))]
 mod hold;
 pub mod live;
@@ -166,7 +186,7 @@ mod runtime;
 #[cfg(hv)]
 pub use runtime::{
     Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
-    restore_from, restores_here, start, working_set_limit,
+    restore_from, restores_here, start, start_gpu_report, working_set_limit,
 };
 
 #[cfg(all(hv, target_arch = "aarch64"))]
@@ -186,6 +206,14 @@ pub use unsupported::{
     Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
     restore_from, restores_here, start, working_set_limit,
 };
+
+#[cfg(not(hv))]
+pub fn start_gpu_report(
+    cfg: &Config,
+    _report: &mut GpuReportTo<'_>,
+) -> Result<(Handle, Running), StartError> {
+    start(cfg)
+}
 
 /// The host sides of a VM's devices that live outside it.
 #[cfg(hv)]
@@ -921,18 +949,38 @@ type Devices = (
     Vec<crate::devices::virtio::block::DiskSize>,
 );
 
+/// Query the carried GPU process's actual selection path without booting a VM.
+#[cfg(feature = "gpu")]
+pub fn probe_gpu(selected: &[gpu_selection::PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, String> {
+    gpu::virgl::Venus::probe_gpu(selected)
+}
+
+#[cfg(not(feature = "gpu"))]
+pub fn probe_gpu(_selected: &[gpu_selection::PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, String> {
+    Err("GPU probing requires the carried GPU renderer process".into())
+}
+
 /// A GPU's renderer, and the length of the window its blobs are mapped into: what the
 /// host's GPUs say they have of memory the host can map, which Venus tells the guest, the
 /// most a guest can have mapped at once (D144, D201).
 #[cfg(all(hv, feature = "gpu"))]
-fn gpu_renderer() -> Result<(Box<dyn gpu::Renderer>, u64), String> {
-    let venus = gpu::virgl::Venus::new()?;
+fn gpu_renderer(
+    selected: &[gpu_selection::PhysicalGpu],
+    report: Option<&mut GpuReportTo<'_>>,
+) -> Result<(Box<dyn gpu::Renderer>, u64), String> {
+    let mut venus = gpu::virgl::Venus::new_selected(selected)?;
+    if let Some(report) = report {
+        report(venus.selection_report(selected).map_err(|why| why.to_string())?)?;
+    }
     let len = venus.host_visible();
     Ok((Box::new(venus), len))
 }
 
 #[cfg(all(hv, not(feature = "gpu")))]
-fn gpu_renderer() -> Result<(Box<dyn gpu::Renderer>, u64), String> {
+fn gpu_renderer(
+    _selected: &[gpu_selection::PhysicalGpu],
+    _report: Option<&mut GpuReportTo<'_>>,
+) -> Result<(Box<dyn gpu::Renderer>, u64), String> {
     Err("this VM process renders no GPU: shards' GPU VM process does, on macOS, Linux and Windows (D144, D201, D202)".into())
 }
 
@@ -943,9 +991,11 @@ fn gpu_renderer() -> Result<(Box<dyn gpu::Renderer>, u64), String> {
 fn gpu_layout(
     saw: u64,
     top: u64,
+    selected: &[gpu_selection::PhysicalGpu],
+    report: Option<&mut GpuReportTo<'_>>,
 ) -> Result<(Box<dyn gpu::Renderer>, crate::devices::virtio::ShmRegion), String> {
     const GIB: u64 = 1 << 30;
-    let (renderer, offers) = gpu_renderer()?;
+    let (renderer, offers) = gpu_renderer(selected, report)?;
     let page = crate::platform::page_size().map_err(|e| format!("the host's page size: {e}"))? as u64;
     let offers = offers
         .checked_next_multiple_of(page)
@@ -1112,6 +1162,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         reporting: cfg.reporting,
         // Its window's length, once the machine has its renderer (aarch64.rs `build`).
         gpu: None,
+        gpu_devices: gpu_selection::copy_selection(&cfg.gpu_devices).map_err(|e| e.to_string())?,
         swap_mib: cfg.swap_mib,
         share_window_mib: cfg.share_window_mib,
         // Its file system's length, once its layer is open (`boot_layer`).
@@ -1201,6 +1252,9 @@ pub struct Config {
     /// once the guest has made a context or a resource, which are its host driver's and no
     /// snapshot holds; a template is saved before any (D150).
     pub gpu: bool,
+    /// Exact immutable native GPU identities, resolved to live Vulkan UUIDs before
+    /// any guest context or host-visible window is exposed.
+    pub gpu_devices: Vec<gpu_selection::PhysicalGpu>,
     /// A swap window of this many MiB (D159): a virtio-pmem device, last of its devices, a
     /// run's swap file mapped into it as it is given one; 0 for none. Hidden from the guest
     /// until its init shows it (`control::SHOW_SWAP`).
@@ -2383,6 +2437,7 @@ impl Config {
             hotplug_mib: 0,
             reporting: false,
             gpu: false,
+            gpu_devices: Vec::new(),
             swap_mib: 0,
             share_window_mib: 0,
             layer: None,
@@ -2867,6 +2922,7 @@ mod tests {
             hotplug_mib: 0,
             reporting: false,
             gpu: None,
+            gpu_devices: Vec::new(),
             swap_mib: 0,
             share_window_mib: 0,
             layer_mib: 0,

@@ -1,0 +1,1368 @@
+//! `shards api-run`: an image's run for an orchestrator, hosted by this process (D231).
+//! shards-api's image boot starts one for each microVM and speaks to it over its stdin and
+//! stdout (`shards_api::image::wire`): a request in; the run's start, each member's output
+//! and end, stats and the run's end out. It is to its run what the daemon is to each of its
+//! runs, and nothing more: it prepares the run with the daemon's own functions (`run`,
+//! `volumes`, `setup`, `agentfile`, `daemon::publish`, `netproc`), starts the run's network,
+//! share and VM processes, plays the daemon's side of the VM's link (warm.rs) for that one
+//! run, and owns its managed output (P3). Its children go with it: the VM is told at
+//! `TAKEN` that its run is killed if its link closes (`STOP_ORDER`), the network process
+//! goes as the VM's doorbell end does, the share process as its streams close. And the run
+//! goes with its owner: its stdin closing kills the VM.
+
+// Windows' run host is owed (`hosted`): its helpers are Unix's alone until then.
+#![cfg_attr(not(unix), allow(dead_code))]
+
+use std::io::{self, Write as _};
+use std::process::ExitCode;
+use std::sync::{Mutex, PoisonError};
+
+use shards_api::image::wire::{self, Cause};
+
+/// Why the run will not be, for the orchestrator.
+struct No(Cause, String);
+
+fn no(cause: Cause) -> impl Fn(String) -> No {
+    move |why| No(cause, why)
+}
+
+/// The answers' channel, this process's stdout: one frame at a time, whichever thread
+/// sends it.
+struct Answers(Mutex<io::Stdout>);
+
+impl Answers {
+    /// Frames `parts` as one payload of `kind`, written in one turn.
+    fn send(&self, kind: u8, parts: &[&[u8]]) -> io::Result<()> {
+        let len = parts
+            .iter()
+            .try_fold(0usize, |n, p| n.checked_add(p.len()))
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let header = wire::header(kind, len).map_err(io::Error::other)?;
+        let mut out = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        out.write_all(&header)?;
+        for p in parts {
+            out.write_all(p)?;
+        }
+        out.flush()
+    }
+}
+
+/// `shards api-run`: not for people to run. The run's end is said as its VM ends, before
+/// its owner closes the channel; a run that never started is refused instead.
+pub fn command() -> ExitCode {
+    let answers = Answers(Mutex::new(io::stdout()));
+    match host(&answers) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(No(cause, why)) => {
+            let _ = writeln!(io::stderr(), "shards api-run: {why}");
+            let refused = wire::Refused { cause, why };
+            let _ = refused
+                .encode()
+                .map(|p| answers.send(wire::to_client::REFUSED, &[&p]));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn host(answers: &Answers) -> Result<(), No> {
+    let mut input = io::stdin();
+    let request = match wire::read_frame(&mut input) {
+        Ok(Some((wire::to_host::CREATE, payload))) => {
+            wire::Request::decode(&payload).map_err(|e| No(Cause::Request, e.to_string()))?
+        }
+        Ok(Some((kind, _))) => {
+            return Err(No(
+                Cause::Request,
+                format!("message kind {kind} before the request"),
+            ));
+        }
+        Ok(None) => return Err(No(Cause::Request, "the channel closed before its request".into())),
+        Err(e) => return Err(No(Cause::Request, format!("the request: {e}"))),
+    };
+    hosted::run(answers, &request, input)
+}
+
+/// Members a request names, by their declared index, from the image's managed plan's
+/// labels (`agent NAME`, `harness NAME`; agentfile.rs `managed_plan`) and which of them run.
+fn members_of(labels: &[String], active: &[u32]) -> Vec<wire::MemberInfo> {
+    labels
+        .iter()
+        .enumerate()
+        .filter_map(|(i, label)| {
+            let index = u32::try_from(i).ok()?;
+            let (kind, name) = label.split_once(' ')?;
+            let kind = match kind {
+                "agent" => wire::MemberKind::Agent,
+                "harness" => wire::MemberKind::Harness,
+                _ => return None,
+            };
+            Some(wire::MemberInfo {
+                index,
+                kind,
+                name: name.to_string(),
+                runs: active.contains(&index),
+            })
+        })
+        .collect()
+}
+
+/// The setup entries staging what `request` gives each member (D231), each member one the
+/// image declares and runs, each entry checked as the guest checks it.
+fn staged(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<Vec<u8>>, No> {
+    use shards_abi::run::members as staging;
+    let mut entries = Vec::new();
+    for m in &request.members {
+        let info = members
+            .iter()
+            .find(|i| i.kind == m.kind && i.name == m.name)
+            .ok_or_else(|| {
+                No(
+                    Cause::Image,
+                    format!("{:?} {}: the image declares no such member", m.kind, m.name),
+                )
+            })?;
+        if !info.runs {
+            return Err(No(
+                Cause::Image,
+                format!(
+                    "{:?} {}: files alone, which run nothing to read what is staged",
+                    m.kind, m.name
+                ),
+            ));
+        }
+        for e in &m.env {
+            entries.push(
+                staging::env(info.index, &e.0)
+                    .map_err(|e| No(Cause::Request, format!("{}: a variable: {e}", m.name)))?,
+            );
+        }
+        for f in &m.files {
+            entries.push(
+                staging::file(info.index, f.mode, f.path.as_bytes(), &f.bytes.0)
+                    .map_err(|e| No(Cause::Request, format!("{}: {}: {e}", m.name, f.path)))?,
+            );
+        }
+    }
+    Ok(entries)
+}
+
+/// What of `granted` the orchestrator keeps: all of it, or each it names, each one
+/// `granted` holds as written; any other is a widening, refused by name.
+fn kept(what: &str, granted: &[Vec<u8>], keep: &wire::Keep) -> Result<Vec<Vec<u8>>, No> {
+    match keep {
+        wire::Keep::All => Ok(granted.to_vec()),
+        wire::Keep::Only(items) => items
+            .iter()
+            .map(|item| {
+                granted
+                    .iter()
+                    .find(|g| g.as_slice() == item.as_bytes())
+                    .cloned()
+                    .ok_or_else(|| {
+                        No(
+                            Cause::Widening,
+                            format!("{what} {item}: the image grants no such"),
+                        )
+                    })
+            })
+            .collect(),
+    }
+}
+
+/// The run's network process's policy: the image's grants past the microVM (D59), as the
+/// daemon reads them, narrowed by the request and never widened (D231); none where nothing
+/// is left.
+fn egress(
+    grants: Option<&shards_agentfile::agentfile::Grants>,
+    narrowing: &wire::Narrowing,
+) -> Result<Option<Vec<u8>>, No> {
+    let none = shards_agentfile::agentfile::Grants::default();
+    let g = grants.unwrap_or(&none);
+    let ports = kept("egress", &g.egress, &narrowing.egress)?;
+    let mcp = kept("remote MCP server", &g.mcp, &narrowing.mcp)?;
+    let dns = g.dns && narrowing.dns;
+    if ports.is_empty() && mcp.is_empty() && !dns {
+        return Ok(None);
+    }
+    let text: Vec<String> = ports
+        .iter()
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect();
+    let ports = if text.is_empty() {
+        shards_net::Ports::default()
+    } else {
+        shards_net::Ports::parse(&text.join(","))
+            .map_err(|e| No(Cause::Image, format!("the image's egress grants: {e}")))?
+    };
+    let named: Vec<(String, u16)> = mcp
+        .iter()
+        .filter_map(|e| {
+            let (host, port) = std::str::from_utf8(e).ok()?.rsplit_once(':')?;
+            Some((host.to_string(), port.parse().ok()?))
+        })
+        .collect();
+    Ok(Some(shards_net::encode_policy(&ports, &named, dns)))
+}
+
+/// Refuses a published port that would widen the run: one the image's Agentfile declares
+/// `AS egress` (a destination, never a listener), and, for a run with no command of its
+/// own, one the image gives no member for ingress (D122).
+fn ports_granted(
+    publish: &[wire::Publish],
+    agentfile: Option<&crate::agentfile::Agentfile>,
+    has_command: bool,
+) -> Result<(), No> {
+    let proto_of = |p: wire::Proto| match p {
+        wire::Proto::Tcp => (6u8, shards_net::Proto::Tcp, "tcp"),
+        wire::Proto::Udp => (17u8, shards_net::Proto::Udp, "udp"),
+    };
+    for p in publish {
+        let (number, proto, name) = proto_of(p.proto);
+        if let Some(a) = agentfile {
+            let text: Vec<String> = a
+                .grants
+                .egress_declared
+                .iter()
+                .map(|e| String::from_utf8_lossy(e).into_owned())
+                .collect();
+            let declared = shards_net::Ports::parse(&text.join(",")).unwrap_or_default();
+            if declared.has(proto, p.guest_port) {
+                return Err(No(
+                    Cause::Widening,
+                    format!(
+                        "port {}/{name}: the image's Agentfile declares it AS egress, a port its members reach out to",
+                        p.guest_port
+                    ),
+                ));
+            }
+        }
+        let received = agentfile.is_some_and(|a| {
+            a.receivers
+                .iter()
+                .any(|r| r.at.0 == number && r.at.1 <= p.guest_port && p.guest_port <= r.at.2)
+        });
+        if !has_command && !received {
+            return Err(No(
+                Cause::Widening,
+                format!(
+                    "port {}/{name}: the image gives no member this port coming in (EXPOSE … AS ingress), and the run has no command of its own",
+                    p.guest_port
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+mod hosted {
+    use super::{Answers, Cause, No, wire};
+
+    pub(super) fn run(_: &Answers, _: &wire::Request, _: std::io::Stdin) -> Result<(), No> {
+        Err(No(
+            Cause::Unsupported,
+            "an orchestrator's run on Windows: its VM's launch in an AppContainer, with its network and shares by named handles (D141, D142, D197), is owed (D231)".into(),
+        ))
+    }
+}
+
+#[cfg(unix)]
+mod hosted {
+    use std::collections::HashMap;
+    use std::ffi::{OsStr, OsString};
+    use std::io::{self, Read as _, Write as _};
+    use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
+    use std::os::unix::net::UnixStream;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+
+    use shards_abi::run::{self as protocol, managed};
+    use shards_api::image::wire::{self, Cause, Channel, RunEnd};
+    use shards_ipc::kind;
+
+    use super::{Answers, No, no};
+    use crate::daemon::publish;
+
+    fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+        m.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The run, prepared: its spec, its members, its ports bound, its policy, its
+    /// directories open, and what its VM boots.
+    struct Plan {
+        prepared: crate::run::Prepared,
+        members: Vec<wire::MemberInfo>,
+        listeners: Vec<publish::Listener>,
+        egress: Option<Vec<u8>>,
+        dirs: Vec<(OwnedFd, bool, OsString)>,
+        /// The anonymous volumes its `VOLUME`s made, removed as it ends (`--rm`'s).
+        made: Vec<String>,
+        bridge: Option<shards_net::bridge::Bridge>,
+        kernel: PathBuf,
+        init: PathBuf,
+        server: Option<PathBuf>,
+        /// Its managed output's members, labels and active ones, where it has any.
+        capture: Option<(u32, Vec<u32>)>,
+    }
+
+    pub(super) fn run(answers: &Answers, request: &wire::Request, input: io::Stdin) -> Result<(), No> {
+        let home = shards_ipc::home().map_err(no(Cause::Boot))?;
+        let plan = plan(request, &home)?;
+        launch_and_serve(answers, input, &home, plan)
+    }
+
+    /// The request as `shards run` would have asked it of a daemon: the image, its own
+    /// command or none, its published ports, its shares as `-v`, and a network only where
+    /// something goes past the microVM.
+    fn as_run(request: &wire::Request) -> shards_ipc::Run {
+        let publish = request
+            .publish
+            .iter()
+            .map(|p| shards_ipc::Publish {
+                port: p.guest_port,
+                proto: match p.proto {
+                    wire::Proto::Tcp => "tcp".into(),
+                    wire::Proto::Udp => "udp".into(),
+                },
+                host_ip: p.host.map(|h| h.to_string()).unwrap_or_default(),
+                host_port: if p.host_port == 0 {
+                    String::new()
+                } else {
+                    p.host_port.to_string()
+                },
+            })
+            .collect();
+        let binds = request
+            .shares
+            .iter()
+            .map(|s| format!("{}:{}{}", s.host, s.at, if s.read_only { ":ro" } else { "" }))
+            .collect();
+        // With none of its own, an empty entrypoint and a command the run never sends, as
+        // `ATTEND` takes its place: the image's command is not composed in.
+        let (entrypoint, cmd) = match &request.command {
+            Some(argv) => (Some(Vec::new()), argv.clone()),
+            None => (Some(Vec::new()), vec!["attend".into()]),
+        };
+        // A guest of the caller's, as `shards run` takes one (cli/request.rs).
+        let given = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .filter(|v| !v.is_empty() && Path::new(v).is_absolute())
+        };
+        shards_ipc::Run {
+            image: request.image.clone(),
+            kernel: given("SHARDS_KERNEL"),
+            init: given("SHARDS_INIT"),
+            entrypoint,
+            cmd,
+            network: if request.publish.is_empty() {
+                "none"
+            } else {
+                "bridge"
+            }
+            .into(),
+            publish,
+            binds,
+            remove: true,
+            ..Default::default()
+        }
+    }
+
+    fn plan(request: &wire::Request, home: &Path) -> Result<Plan, No> {
+        let mut run = as_run(request);
+        let say = |line: &str| {
+            let _ = writeln!(io::stderr(), "{line}");
+        };
+        let cancel = shards_registry::http::Cancel::new();
+        let mut prepared = crate::run::prepare(&run, home, &say, &cancel).map_err(no(Cause::Image))?;
+        if request.vcpus > 0 {
+            prepared.size.0 = request.vcpus;
+        }
+        if request.memory_mib > 0 {
+            prepared.size.1 = request.memory_mib;
+        }
+        let agentfile = prepared.agentfile.clone();
+        let (labels, active) = agentfile
+            .as_ref()
+            .map(|a| (a.managed_labels.clone(), a.active_members.clone()))
+            .unwrap_or_default();
+        if request.command.is_none() && active.is_empty() {
+            return Err(No(
+                Cause::Image,
+                format!(
+                    "{}: no member of its Agentfile runs, and the run has no command",
+                    request.image
+                ),
+            ));
+        }
+        let members = super::members_of(&labels, &active);
+        let staged = super::staged(request, &members)?;
+        super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
+        let egress = super::egress(agentfile.as_ref().map(|a| &a.grants), &request.egress)?;
+        if egress.is_some() {
+            run.network = "bridge".into();
+        }
+        if let Some(a) = &agentfile {
+            a.refuse(&run).map_err(no(Cause::Request))?;
+        }
+        let bridge = if run.network == "bridge" {
+            Some(
+                shards_net::bridge::elected_here(&mut |note| say(&note))
+                    .ok_or_else(|| No(Cause::Boot, shards_net::bridge::NO_SUBNET.into()))?,
+            )
+        } else {
+            None
+        };
+        // Its published ports, bound now, as dockerd's allocator binds them (D31).
+        let (bindings, alone) = publish::wanted(&run, &prepared.exposed);
+        if let Some(e) = publish::unsupported(&bindings) {
+            return Err(No(Cause::Request, e));
+        }
+        let bound = publish::bind(&bindings, &alone, None, publish::v6_listenable(), |_, _| {
+            publish::InUse::Host
+        })
+        .map_err(no(Cause::Boot))?;
+        // Its volumes: each share at its path as `-v` puts it, given where the image's
+        // `VOLUME` there is for a member (D109), each other `VOLUME` a volume of the store.
+        let store = crate::volumes::Store::new(home);
+        let from = |_: &str| -> Result<Vec<crate::volumes::MountPoint>, String> {
+            Err("--volumes-from is no orchestrated run's".into())
+        };
+        let points = crate::volumes::register(
+            &store,
+            &run,
+            &prepared.image_volumes,
+            agentfile.as_ref().map(|a| a.volumes.as_slice()),
+            &from,
+            "",
+        )
+        .map_err(no(Cause::Boot))?;
+        let points: Vec<crate::volumes::MountPoint> = points.into_iter().map(|(p, _)| p).collect();
+        let made = points
+            .iter()
+            .filter(|p| p.kind == "volume" && store.get(&p.name).is_some_and(|v| v.anonymous))
+            .map(|p| p.name.clone())
+            .collect();
+        let opened = crate::volumes::open_for(&points, true, &store, &crate::volumes::Access::default())
+            .map_err(no(Cause::Boot))?;
+        // Its setup, as the daemon composes a run's (daemon.rs `start`): its mounts, its
+        // capabilities beside its domains, its security, its domains' filter, its managed
+        // output, what it stages, its members' ends asked for, and its own command or
+        // `ATTEND`.
+        let (_, _, most) = crate::run::sizes(&run.resources, crate::build::host_memory());
+        let mut setup = crate::setup::setup(&run, &opened.mounts, None, Some(crate::run::shm_bytes(most)))
+            .map_err(no(Cause::Request))?;
+        if let Some(a) = agentfile.as_ref().filter(|a| a.domains > 0 && a.uplink) {
+            setup.retain(|e| !e.starts_with(b"caps="));
+            setup.push(format!("caps={}", a.caps(&run)).into_bytes());
+        }
+        let boot = match &prepared.boot {
+            crate::run::Boot::Given(cfg) => (cfg.kernel.clone(), cfg.init.clone()),
+            crate::run::Boot::Stored(guest) => (guest.kernel.clone(), Some(guest.init.clone())),
+        };
+        let (kernel, init) = (
+            boot.0,
+            boot.1.ok_or_else(|| No(Cause::Boot, "no init to boot".into()))?,
+        );
+        let version = crate::guest::version_of(&kernel).map_err(no(Cause::Boot))?;
+        setup.extend(crate::setup::security_setup(&run, version, None, &[]).map_err(no(Cause::Request))?);
+        let server = match &agentfile {
+            Some(_) => {
+                setup.extend(crate::setup::domain_seccomp(version).map_err(no(Cause::Boot))?);
+                Some(crate::guest::server_device(home).map_err(no(Cause::Boot))?)
+            }
+            None => None,
+        };
+        // Grants past the microVM: the run's own processes kept to eth0's subnet (D59).
+        if agentfile
+            .as_ref()
+            .is_some_and(|a| !a.grants.egress.is_empty() || !a.grants.mcp.is_empty() || a.grants.dns)
+        {
+            setup.push(b"confine-eth0".to_vec());
+        }
+        let capture = if active.is_empty() {
+            None
+        } else {
+            let count =
+                u32::try_from(labels.len()).map_err(|_| No(Cause::Image, "too many members".into()))?;
+            setup.push(format!("managed-capacity={}", protocol::MAX_PAYLOAD).into_bytes());
+            setup.push(format!("managed-members={count}").into_bytes());
+            let mut activation = managed::ACTIVE_KEY.to_vec();
+            for m in &active {
+                activation.extend_from_slice(&m.to_be_bytes());
+            }
+            setup.push(activation);
+            Some((count, active.clone()))
+        };
+        setup.extend(staged);
+        setup.push(protocol::members::ENDS.to_vec());
+        prepared.spec.setup = setup;
+        prepared.spec.cgroup = crate::resources::cgroup(&run.resources, prepared.cpus)
+            .map_err(|e| No(Cause::Request, e.message(format_args!("its limits"))))?;
+        if bridge.is_some() {
+            prepared.spec.resolv = Some(crate::build::step::resolv_with(
+                &crate::build::step::host_resolv(),
+                false,
+                &[],
+                &[],
+                &[],
+            ));
+        }
+        if request.command.is_none() {
+            prepared.spec.argv.clear();
+            prepared.spec.builtin = protocol::builtin::ATTEND;
+        }
+        crate::spec::fits(&prepared.spec).map_err(no(Cause::Request))?;
+        Ok(Plan {
+            prepared,
+            members,
+            listeners: bound.listeners,
+            egress,
+            dirs: opened.dirs,
+            made,
+            bridge,
+            kernel,
+            init,
+            server,
+            capture,
+        })
+    }
+
+    /// The run's processes, started: its network's, its shares', its VM's.
+    struct Launched {
+        vm: shards_ipc::Child,
+        link: UnixStream,
+        net: Option<(shards_ipc::Child, UnixStream)>,
+        shares: Option<(shards_ipc::Child, UnixStream)>,
+    }
+
+    fn launch(home: &Path, plan: &Plan) -> Result<Launched, No> {
+        let boot = |e: String| No(Cause::Boot, e);
+        // Its network process, denying all until its policy comes, as a daemon run's.
+        let (net, side) = match &plan.bridge {
+            Some(bridge) => {
+                let mac = shards_net::random_mac().map_err(|e| boot(format!("a guest's MAC: {e}")))?;
+                let (child, side) =
+                    crate::netproc::start(shards_net::Policy::DenyAll, &mac, bridge, None).map_err(boot)?;
+                (Some((child, mac)), Some(side))
+            }
+            None => (None, None),
+        };
+        let shares = if plan.dirs.is_empty() {
+            None
+        } else {
+            Some(start_shares(home, &plan.dirs).map_err(boot)?)
+        };
+        let (ours, theirs) = UnixStream::pair().map_err(|e| boot(format!("the VM's link: {e}")))?;
+        let grants = if cfg!(target_os = "macos") {
+            Some(UnixStream::pair().map_err(|e| boot(format!("the VM's grants: {e}")))?)
+        } else {
+            None
+        };
+        let mut args: Vec<OsString> = vec![
+            "run".into(),
+            "--kernel".into(),
+            plan.kernel.clone().into(),
+            "--cmdline".into(),
+            {
+                let mut cmdline = shards_vmm::vm::Config::new(plan.kernel.clone(), None).cmdline;
+                if let Some(bridge) = &plan.bridge {
+                    cmdline.push(' ');
+                    cmdline.push_str(&bridge.cmdline());
+                }
+                cmdline.into()
+            },
+            "--cpus".into(),
+            plan.prepared.size.0.to_string().into(),
+            "--memory".into(),
+            plan.prepared.size.1.to_string().into(),
+            "--rootfs".into(),
+            plan.prepared.rootfs.clone().into(),
+            "--init".into(),
+            plan.init.clone().into(),
+            // Memory its workload frees given back to the host as it reports it (D151).
+            "--reporting".into(),
+            "--warm".into(),
+            "3".into(),
+        ];
+        if let Some(server) = &plan.server {
+            args.extend(["--pmem".into(), server.clone().into()]);
+        }
+        if !plan.dirs.is_empty() {
+            args.extend(["--shares".into(), plan.dirs.len().to_string().into()]);
+        }
+        if grants.is_some() {
+            args.extend(["--grants".into(), "4".into()]);
+        }
+        let release = crate::netproc::VM_RELEASE_FD.to_string();
+        if let Some((_, mac)) = &net {
+            args.extend([
+                "--net".into(),
+                crate::netproc::VmSide::arg(mac).into(),
+                "--net-release".into(),
+                release.into(),
+            ]);
+        }
+        let null = std::fs::File::open("/dev/null").map_err(|e| boot(format!("/dev/null: {e}")))?;
+        let err = io::stderr();
+        let mut fds: Vec<(BorrowedFd<'_>, i32)> = vec![
+            (null.as_fd(), 0),
+            (err.as_fd(), 1),
+            (err.as_fd(), 2),
+            (theirs.as_fd(), 3),
+        ];
+        if let Some((_, granted)) = &grants {
+            fds.push((granted.as_fd(), 4));
+        }
+        if let Some(side) = &side {
+            let [r, s, w] = crate::netproc::VM_FDS;
+            fds.extend([
+                (side.region.as_fd(), r),
+                (side.sleeps.as_fd(), s),
+                (side.rings.as_fd(), w),
+                (side.release.as_fd(), crate::netproc::VM_RELEASE_FD),
+            ]);
+        }
+        let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
+        let env = crate::netproc::child_env();
+        let binary = crate::helpers::vm().map_err(boot)?;
+        let spawned = shards_ipc::spawn_in(&binary, &argv, &fds, false, &crate::netproc::env_pairs(&env));
+        drop(fds);
+        let vm = match spawned {
+            Ok(vm) => vm,
+            Err(e) => {
+                if let Some((child, _)) = &net {
+                    crate::netproc::reap(child);
+                }
+                return Err(boot(format!("starting {}: {e}", binary.display())));
+            }
+        };
+        drop(theirs);
+        // On macOS the VM, in App Sandbox from its launch, asks this process for the files
+        // its arguments name (D30), on a thread of its own that ends with the VM.
+        if let Some((ours, granted)) = grants {
+            drop(granted);
+            #[cfg(target_os = "macos")]
+            if let Err(e) = std::thread::Builder::new()
+                .name("vm grants".into())
+                .spawn(move || {
+                    let _ = crate::grant_answer::serve(&ours, None);
+                })
+            {
+                let _ = vm.kill(shards_ipc::signal::SIGKILL);
+                return Err(boot(format!("answering the VM: {e}")));
+            }
+            #[cfg(not(target_os = "macos"))]
+            drop(ours);
+        }
+        let net = match (net, side) {
+            (Some((child, _)), Some(side)) => Some((child, side.control)),
+            _ => None,
+        };
+        Ok(Launched {
+            vm,
+            link: ours,
+            net,
+            shares,
+        })
+    }
+
+    /// The share process (share.rs) serving `dirs`, as the daemon starts a run's
+    /// (daemon.rs `started_shares`): its connection to it at 3, each directory at 4 + i,
+    /// the home's private directory after them. The VM's end of its connection goes with
+    /// the run, which hands the VM each share's stream (`SHARE_ENDS`).
+    fn start_shares(
+        home: &Path,
+        dirs: &[(OwnedFd, bool, OsString)],
+    ) -> Result<(shards_ipc::Child, UnixStream), String> {
+        let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
+        let (vm, share) = UnixStream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
+        let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        for (_, read_only, only) in dirs {
+            args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
+            args.push(only.as_os_str());
+        }
+        let err = io::stderr();
+        let ghosts_at = home.join(crate::daemon::PRIVATE);
+        match crate::os::owner_only_dir(std::fs::DirBuilder::new().recursive(true)).create(&ghosts_at) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
+                return Err(format!("{}: {e}", ghosts_at.display()));
+            }
+            _ => {}
+        }
+        let ghosts = std::fs::File::open(&ghosts_at).map_err(|e| format!("{}: {e}", ghosts_at.display()))?;
+        let number = |at: usize| i32::try_from(at).map_err(|_| "too many shares".to_string());
+        let mut fds = vec![(err.as_fd(), 2), (share.as_fd(), 3)];
+        for (i, (dir, _, _)) in dirs.iter().enumerate() {
+            fds.push((dir.as_fd(), number(4usize.saturating_add(i))?));
+        }
+        fds.push((ghosts.as_fd(), number(4usize.saturating_add(dirs.len()))?));
+        let child = shards_ipc::spawn_in(&exe, &args, &fds, false, &[])
+            .map_err(|e| format!("starting the share process: {e}"))?;
+        Ok((child, vm))
+    }
+
+    /// Tells the network process, before the VM has the run, its published ports and its
+    /// policy, each answered by its own kind in the order asked (daemon/networks.rs
+    /// `Asks`); the descriptors kept until answered (M24).
+    fn tell_net(
+        net: &UnixStream,
+        listeners: &[publish::Listener],
+        egress: Option<&[u8]>,
+    ) -> Result<(), String> {
+        let mut asked = Vec::new();
+        for batch in listeners.chunks(shards_ipc::MAX_FDS) {
+            let ports: Vec<u8> = batch
+                .iter()
+                .flat_map(|l| {
+                    let [hi, lo] = l.guest_port.to_be_bytes();
+                    [hi, lo, l.proto]
+                })
+                .collect();
+            let fds: Vec<crate::netproc::Lent<'_>> =
+                batch.iter().map(|l| crate::netproc::lend(&l.fd)).collect();
+            crate::netproc::send(net, kind::PUBLISH, &ports, &fds)
+                .map_err(|e| format!("published ports: {e}"))?;
+            asked.push((kind::PUBLISH, "published ports"));
+        }
+        if let Some(policy) = egress {
+            crate::netproc::send(net, kind::NET_POLICY, policy, &[])
+                .map_err(|e| format!("egress grants: {e}"))?;
+            asked.push((kind::NET_POLICY, "egress grants"));
+        }
+        for (which, what) in asked {
+            match crate::netproc::recv(net) {
+                Ok(Some(m)) if m.kind == which => {}
+                Ok(_) => return Err(format!("{what}: the network process did not take them")),
+                Err(e) => return Err(format!("{what}: the network process: {e}")),
+            }
+        }
+        Ok(())
+    }
+
+    /// The run's managed output, owned here: each active member channel's credit and what
+    /// is waiting of it for the orchestrator's room.
+    #[derive(Default)]
+    struct Flows {
+        /// The orchestrator's room for each channel, in bytes.
+        room: HashMap<(u32, Channel), u64>,
+        /// A record's bytes the orchestrator had no room for yet.
+        waiting: HashMap<(u32, Channel), Vec<u8>>,
+        /// A credit granted the guest that no record has used yet.
+        granted: HashMap<(u32, Channel), bool>,
+        /// The channel has ended.
+        ended: HashMap<(u32, Channel), bool>,
+    }
+
+    /// What the serving threads share.
+    struct Live<'a> {
+        answers: &'a Answers,
+        flows: Mutex<Flows>,
+        capture: Option<Mutex<UnixStream>>,
+        link: Mutex<UnixStream>,
+        /// `STOP` asked, or the owner gone: the run's end is `Stopped`.
+        stopping: std::sync::atomic::AtomicBool,
+        next_exec: std::sync::atomic::AtomicU64,
+    }
+
+    fn channel_of(c: managed::Channel) -> Channel {
+        match c {
+            managed::Channel::Stdout => Channel::Stdout,
+            managed::Channel::Stderr => Channel::Stderr,
+        }
+    }
+
+    fn managed_channel(c: Channel) -> managed::Channel {
+        match c {
+            Channel::Stdout => managed::Channel::Stdout,
+            Channel::Stderr => managed::Channel::Stderr,
+        }
+    }
+
+    impl Live<'_> {
+        /// Grants the guest a record on `key`'s channel where it has none, its room is
+        /// not spent, nothing waits of it, and it has not ended: as many bytes as the
+        /// orchestrator has room for, past the record's head, within the protocol's
+        /// ceiling and at least a record of an errno's (`Credit::decode`'s least).
+        fn grant(&self, flows: &mut Flows, key: (u32, Channel)) -> io::Result<()> {
+            let Some(capture) = &self.capture else {
+                return Ok(());
+            };
+            let room = flows.room.get(&key).copied().unwrap_or(0);
+            if room == 0
+                || flows.granted.get(&key).copied().unwrap_or(false)
+                || flows.ended.get(&key).copied().unwrap_or(false)
+                || flows.waiting.get(&key).is_some_and(|w| !w.is_empty())
+            {
+                return Ok(());
+            }
+            let least = (managed::HEADER + size_of::<i32>()) as u64;
+            let capacity = room
+                .saturating_add(managed::HEADER as u64)
+                .clamp(least, u64::from(protocol::MAX_PAYLOAD));
+            let credit = managed::Credit {
+                member: key.0,
+                channel: managed_channel(key.1),
+                capacity,
+            }
+            .encode()
+            .map_err(|e| io::Error::other(e.to_string()))?;
+            let mut frame = protocol::header(kind_credit(), managed::CREDIT_LEN as u32).to_vec();
+            frame.extend_from_slice(&credit);
+            lock(capture).write_all(&frame)?;
+            flows.granted.insert(key, true);
+            Ok(())
+        }
+
+        /// Sends what waits of `key`'s channel within the orchestrator's room.
+        fn flush(&self, flows: &mut Flows, key: (u32, Channel)) -> io::Result<()> {
+            let room = flows.room.entry(key).or_insert(0);
+            let Some(waiting) = flows.waiting.get_mut(&key) else {
+                return Ok(());
+            };
+            let n = usize::try_from(*room).unwrap_or(usize::MAX).min(waiting.len());
+            if n > 0 {
+                let part: Vec<u8> = waiting.drain(..n).collect();
+                *room = room.saturating_sub(n as u64);
+                self.answers.send(
+                    wire::to_client::OUTPUT,
+                    &[&wire::Output::head(key.0, key.1), &part],
+                )?;
+            }
+            Ok(())
+        }
+    }
+
+    fn kind_credit() -> u8 {
+        protocol::kind::MANAGED_CREDIT
+    }
+
+    /// Hands the VM its run, as the daemon hands a warm VM one (daemon.rs `hand_over`): once
+    /// it is `READY`, `RUN` with the run's head, spec and descriptors, then `TAKEN`; then
+    /// `STOP_ORDER`, SIGKILL with no grace, so that a VM whose link closes, this process
+    /// gone, ends its run.
+    fn hand_over(
+        link: &UnixStream,
+        plan: &Plan,
+        client: &UnixStream,
+        shares: Option<&UnixStream>,
+        capture: Option<&UnixStream>,
+    ) -> Result<(), String> {
+        match shards_ipc::recv(link) {
+            Ok(Some(m)) if m.kind == kind::READY => {}
+            Ok(Some(m)) => return Err(format!("the VM said message kind {} before it was ready", m.kind)),
+            Ok(None) => return Err("the VM ended before it was ready".into()),
+            Err(e) => return Err(format!("the VM was not ready: {e}")),
+        }
+        let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
+        let err = io::stderr();
+        let mut payload = Vec::new();
+        shards_ipc::RunHead {
+            flags: if plan.listeners.is_empty() {
+                0
+            } else {
+                shards_ipc::RUN_PUBLISHED
+            },
+            ..Default::default()
+        }
+        .encode_into(&mut payload);
+        plan.prepared.spec.encode_into(&mut payload);
+        // The run's own command's stdin is the null device, its output this process's
+        // diagnostics: the orchestrator's channel carries its members'.
+        let mut fds: Vec<BorrowedFd<'_>> = vec![client.as_fd(), null.as_fd(), err.as_fd(), err.as_fd()];
+        fds.extend(shares.map(UnixStream::as_fd));
+        fds.extend(capture.map(UnixStream::as_fd));
+        shards_ipc::send(link, kind::RUN, &payload, &fds)
+            .map_err(|e| format!("handing the VM its run: {e}"))?;
+        match shards_ipc::recv(link) {
+            Ok(Some(m)) if m.kind == kind::TAKEN => {}
+            Ok(Some(m)) => return Err(format!("the VM said message kind {} for its run", m.kind)),
+            Ok(None) => return Err("the VM ended before it took its run".into()),
+            Err(e) => return Err(format!("the VM did not take its run: {e}")),
+        }
+        let mut order = Vec::with_capacity(12);
+        order.extend_from_slice(&0u32.to_be_bytes());
+        order.extend_from_slice(&0u64.to_be_bytes());
+        shards_ipc::send(link, kind::STOP_ORDER, &order, &[]).map_err(|e| format!("the VM's stop order: {e}"))
+    }
+
+    fn launch_and_serve(answers: &Answers, input: io::Stdin, home: &Path, plan: Plan) -> Result<(), No> {
+        let boot = |e: String| No(Cause::Boot, e);
+        let launched = launch(home, &plan)?;
+        let served = (|| -> Result<(), No> {
+            if let Some((_, control)) = &launched.net {
+                tell_net(control, &plan.listeners, plan.egress.as_deref()).map_err(boot)?;
+            }
+            let (client, client_theirs) =
+                UnixStream::pair().map_err(|e| boot(format!("the run's client: {e}")))?;
+            let capture = match plan.capture {
+                Some(_) => {
+                    Some(UnixStream::pair().map_err(|e| boot(format!("the run's managed output: {e}")))?)
+                }
+                None => None,
+            };
+            hand_over(
+                &launched.link,
+                &plan,
+                &client_theirs,
+                launched.shares.as_ref().map(|(_, s)| s),
+                capture.as_ref().map(|(_, theirs)| theirs),
+            )
+            .map_err(boot)?;
+            let published: Vec<wire::Bound> = plan
+                .listeners
+                .iter()
+                .filter_map(|l| {
+                    Some(wire::Bound {
+                        guest_port: l.guest_port,
+                        proto: match l.proto {
+                            publish::TCP => wire::Proto::Tcp,
+                            publish::UDP => wire::Proto::Udp,
+                            _ => return None,
+                        },
+                        host: l.at,
+                    })
+                })
+                .collect();
+            let started = wire::Started {
+                members: plan.members.clone(),
+                published,
+            }
+            .encode()
+            .map_err(|e| boot(e.to_string()))?;
+            let link = launched
+                .link
+                .try_clone()
+                .map_err(|e| boot(format!("the VM's link: {e}")))?;
+            let live = Live {
+                answers,
+                flows: Mutex::new(Flows::default()),
+                capture: capture.map(|(ours, _)| Mutex::new(ours)),
+                link: Mutex::new(link),
+                stopping: std::sync::atomic::AtomicBool::new(false),
+                next_exec: std::sync::atomic::AtomicU64::new(0),
+            };
+            answers
+                .send(wire::to_client::STARTED, &[&started])
+                .map_err(|e| boot(format!("its orchestrator: {e}")))?;
+            serve(&live, input, &launched, client);
+            Ok(())
+        })();
+        // Its processes gone, whatever ended it: the VM killed where it runs on, then each
+        // reaped; its anonymous volumes removed, as `--rm`'s are.
+        let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
+        let _ = launched.vm.wait();
+        if let Some((child, _)) = &launched.net {
+            crate::netproc::reap(child);
+        }
+        if let Some((child, _)) = &launched.shares {
+            let _ = child.wait();
+        }
+        if !plan.made.is_empty() {
+            let store = crate::volumes::Store::new(home);
+            let _held = crate::volumes::lock();
+            for name in &plan.made {
+                if let Err(e) = store.remove(name) {
+                    let _ = writeln!(io::stderr(), "shards api-run: its volume {name}: {e}");
+                }
+            }
+        }
+        served
+    }
+
+    /// Serves the run until it ends and its owner has heard: the run's managed output and
+    /// the VM's link on threads of their own, the owner's asks on this one. The VM's end
+    /// says the run's (`ENDED`), which has the owner close its channel; `STOP`, or the
+    /// channel closed first, kills the VM, whose end then says `Stopped`.
+    fn serve(live: &Live<'_>, input: io::Stdin, launched: &Launched, client: UnixStream) {
+        std::thread::scope(|scope| {
+            if let Some(capture) = &live.capture
+                && let Ok(reading) = lock(capture).try_clone()
+            {
+                let started = std::thread::Builder::new()
+                    .name("api-run output".into())
+                    .spawn_scoped(scope, move || records(live, reading));
+                if let Err(e) = started {
+                    let _ = writeln!(io::stderr(), "shards api-run: its members' output: {e}");
+                }
+            }
+            let following = std::thread::Builder::new()
+                .name("api-run link".into())
+                .spawn_scoped(scope, || {
+                    let end = match lock(&live.link).try_clone() {
+                        Ok(link) => follow(live, &link),
+                        Err(e) => RunEnd::Failed(format!("the VM's link: {e}")),
+                    };
+                    let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
+                    let end = if live.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                        RunEnd::Stopped
+                    } else {
+                        end
+                    };
+                    if let Ok(payload) = end.encode() {
+                        let _ = live.answers.send(wire::to_client::ENDED, &[&payload]);
+                    }
+                });
+            if following.is_err() {
+                // Nothing would say its end: the run is ended now, and said so.
+                live.stopping.store(true, std::sync::atomic::Ordering::SeqCst);
+                let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
+                if let Ok(payload) = RunEnd::Failed("the run host could not follow its VM".into()).encode() {
+                    let _ = live.answers.send(wire::to_client::ENDED, &[&payload]);
+                }
+            }
+            asks(live, input, &launched.vm, scope);
+        });
+        drop(client);
+    }
+
+    /// Reads the VM's link until it closes: each member's end to the orchestrator, the run's
+    /// status from its `DONE`.
+    fn follow(live: &Live<'_>, link: &UnixStream) -> RunEnd {
+        let mut status = None;
+        let failed = loop {
+            let m = match shards_ipc::recv(link) {
+                Ok(Some(m)) => m,
+                Ok(None) => break None,
+                Err(e) => break Some(format!("the VM's link: {e}")),
+            };
+            match m.kind {
+                kind::MEMBER_ENDED => {
+                    if let Some(e) = protocol::members::Ended::decode(&m.payload) {
+                        let ended = wire::MemberEnded {
+                            member: e.member,
+                            status: e.status,
+                        };
+                        let _ = live
+                            .answers
+                            .send(wire::to_client::MEMBER_ENDED, &[&ended.encode()]);
+                    }
+                }
+                kind::DONE => status = m.payload.first().copied(),
+                _ => {}
+            }
+        };
+        if let Some(why) = failed {
+            return RunEnd::Failed(why);
+        }
+        match status {
+            Some(s) => RunEnd::Exited(u32::from(s)),
+            None => RunEnd::Failed(
+                "the VM ended without its run's end; its last words are on this host's stderr".into(),
+            ),
+        }
+    }
+
+    /// The orchestrator's asks, until its channel closes: credit, stats, stop. A channel
+    /// closed without `STOP` is its owner gone, which ends the run as `STOP` does; one
+    /// closed after the run's end is its owner having heard it.
+    fn asks<'scope, 'env>(
+        live: &'env Live<'env>,
+        mut input: io::Stdin,
+        vm: &'env shards_ipc::Child,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+    ) {
+        while let Ok(Some((which, payload))) = wire::read_frame(&mut input) {
+            match which {
+                wire::to_host::CREDIT => {
+                    let Ok(credit) = wire::Credit::decode(&payload) else {
+                        break;
+                    };
+                    let key = (credit.member, credit.channel);
+                    let mut flows = lock(&live.flows);
+                    let room = flows.room.entry(key).or_insert(0);
+                    *room = room.saturating_add(credit.bytes);
+                    if live.flush(&mut flows, key).is_err() || live.grant(&mut flows, key).is_err() {
+                        break;
+                    }
+                }
+                // On a thread of its own: an exec its guest is slow to answer holds up no
+                // credit and no stop.
+                wire::to_host::STATS => {
+                    let Ok(ask) = wire::StatsAsk::decode(&payload) else {
+                        break;
+                    };
+                    let asked = std::thread::Builder::new()
+                        .name("api-run stats".into())
+                        .spawn_scoped(scope, move || stats(live, ask));
+                    if asked.is_err()
+                        && let Ok(answer) = wire::StatsAnswer::encode(ask.id, Err("no thread to ask it on"))
+                    {
+                        let _ = live.answers.send(wire::to_client::STATS, &[&answer]);
+                    }
+                }
+                _ => break,
+            }
+        }
+        live.stopping.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = vm.kill(shards_ipc::signal::SIGKILL);
+    }
+
+    /// Reads the run's managed output until it ends: each member's bytes to the
+    /// orchestrator within its room, its channel's end, each record's credit renewed.
+    fn records(live: &Live<'_>, mut capture: UnixStream) {
+        loop {
+            let mut header = [0u8; protocol::HEADER];
+            if capture.read_exact(&mut header).is_err() {
+                return;
+            }
+            let Some((which, len)) = protocol::parse_header(header) else {
+                return;
+            };
+            if which != protocol::kind::MANAGED {
+                return;
+            }
+            let mut record = Vec::new();
+            if record.try_reserve_exact(len as usize).is_err() {
+                return;
+            }
+            record.resize(len as usize, 0);
+            if capture.read_exact(&mut record).is_err() {
+                return;
+            }
+            let Ok(parsed) = managed::Record::decode(&record) else {
+                return;
+            };
+            let key = (parsed.member, channel_of(parsed.channel));
+            let mut flows = lock(&live.flows);
+            flows.granted.insert(key, false);
+            let sent = match parsed.event {
+                managed::Event::Open(_) => Ok(()),
+                managed::Event::Data(bytes) => {
+                    flows.waiting.entry(key).or_default().extend_from_slice(bytes);
+                    live.flush(&mut flows, key)
+                }
+                managed::Event::End | managed::Event::Aborted(_) => {
+                    flows.ended.insert(key, true);
+                    // What waits of it goes first, as its room allows; the rest with its end.
+                    let rest = flows.waiting.remove(&key).unwrap_or_default();
+                    let mut sent = Ok(());
+                    if !rest.is_empty() {
+                        sent = live.answers.send(
+                            wire::to_client::OUTPUT,
+                            &[&wire::Output::head(key.0, key.1), &rest],
+                        );
+                    }
+                    let end = wire::OutputEnd {
+                        member: key.0,
+                        channel: key.1,
+                        end: match parsed.event {
+                            managed::Event::Aborted(errno) => wire::StreamEnd::Aborted(errno),
+                            _ => wire::StreamEnd::Closed,
+                        },
+                    };
+                    sent.and_then(|()| live.answers.send(wire::to_client::OUTPUT_END, &[&end.encode()]))
+                }
+            };
+            if sent.is_err() || live.grant(&mut flows, key).is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Answers `ask` with init's `STATS` of its scope, through an exec on the VM's link as
+    /// `shards stats` asks it (daemon/commands.rs `usage_of`), on a thread of its own.
+    fn stats(live: &Live<'_>, ask: wire::StatsAsk) {
+        let answer = |result: Result<&[u8], &str>| {
+            if let Ok(payload) = wire::StatsAnswer::encode(ask.id, result) {
+                let _ = live.answers.send(wire::to_client::STATS, &[&payload]);
+            }
+        };
+        let args: Vec<Vec<u8>> = match ask.scope {
+            wire::StatsScope::Command => Vec::new(),
+            wire::StatsScope::Run => vec![protocol::builtin::stats::RUN.to_vec()],
+            wire::StatsScope::Member(m) => vec![
+                protocol::builtin::stats::MEMBER.to_vec(),
+                m.to_string().into_bytes(),
+            ],
+        };
+        let spec = protocol::Spec {
+            argv: args,
+            builtin: protocol::builtin::STATS,
+            ..Default::default()
+        };
+        let asked = (|| -> Result<(UnixStream, std::io::PipeReader, std::io::PipeReader), String> {
+            let (client, theirs) = UnixStream::pair().map_err(|e| e.to_string())?;
+            let (out_r, out_w) = std::io::pipe().map_err(|e| e.to_string())?;
+            let (err_r, err_w) = std::io::pipe().map_err(|e| e.to_string())?;
+            let null = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;
+            let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut payload = number.to_be_bytes().to_vec();
+            payload.push(0);
+            spec.encode_into(&mut payload);
+            let fds = [theirs.as_fd(), null.as_fd(), out_w.as_fd(), err_w.as_fd()];
+            shards_ipc::send(&lock(&live.link), kind::EXEC_RUN, &payload, &fds).map_err(|e| e.to_string())?;
+            Ok((client, out_r, err_r))
+        })();
+        let (client, mut out, mut err) = match asked {
+            Ok(asked) => asked,
+            Err(e) => return answer(Err(&e)),
+        };
+        // Init's own answer, a few lines; read whole, each within the run protocol's bound.
+        let bound = u64::from(protocol::MAX_PAYLOAD);
+        let mut said = Vec::new();
+        let mut why = Vec::new();
+        let _ = (&mut out).take(bound).read_to_end(&mut said);
+        let _ = (&mut err).take(bound).read_to_end(&mut why);
+        let status = match shards_ipc::recv(&client) {
+            Ok(Some(m)) if m.kind == kind::EXIT => m.payload.first().copied(),
+            _ => None,
+        };
+        match status {
+            Some(0) => answer(Ok(&said)),
+            _ => answer(Err(String::from_utf8_lossy(&why).trim_end())),
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn members() -> Vec<wire::MemberInfo> {
+        members_of(&["agent helper".into(), "harness codex".into()], &[1])
+    }
+
+    /// Labels become members by their declared index; only an active one runs.
+    #[test]
+    fn members_are_the_images_labels() {
+        let m = members();
+        assert_eq!(m.len(), 2);
+        assert_eq!(
+            (m[0].index, m[0].kind, m[0].name.as_str(), m[0].runs),
+            (0, wire::MemberKind::Agent, "helper", false)
+        );
+        assert_eq!(
+            (m[1].index, m[1].kind, m[1].name.as_str(), m[1].runs),
+            (1, wire::MemberKind::Harness, "codex", true)
+        );
+    }
+
+    fn request(members: Vec<wire::MemberStage>) -> wire::Request {
+        wire::Request {
+            image: "i".into(),
+            vcpus: 0,
+            memory_mib: 0,
+            command: None,
+            members,
+            publish: Vec::new(),
+            egress: wire::Narrowing::default(),
+            shares: Vec::new(),
+        }
+    }
+
+    fn stage(kind: wire::MemberKind, name: &str) -> wire::MemberStage {
+        wire::MemberStage {
+            kind,
+            name: name.into(),
+            env: vec![wire::Secret::from("K=v")],
+            files: vec![wire::StagedFile {
+                path: "f".into(),
+                mode: 0o600,
+                bytes: wire::Secret::from("x"),
+            }],
+        }
+    }
+
+    /// Staging goes to the member named, by its index; a member the image does not declare,
+    /// or one of files alone, is refused by name, nothing staged.
+    #[test]
+    fn staging_names_a_running_member() {
+        let entries = staged(
+            &request(vec![stage(wire::MemberKind::Harness, "codex")]),
+            &members(),
+        )
+        .ok()
+        .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].starts_with(b"member-env=1\0K=v"));
+        for (kind, name, cause) in [
+            (wire::MemberKind::Agent, "codex", Cause::Image),
+            (wire::MemberKind::Harness, "nobody", Cause::Image),
+            (wire::MemberKind::Agent, "helper", Cause::Image),
+        ] {
+            match staged(&request(vec![stage(kind, name)]), &members()) {
+                Err(No(c, _)) => assert_eq!(c, cause),
+                Ok(_) => panic!("{kind:?} {name} staged"),
+            }
+        }
+    }
+
+    /// The image's grants are kept, narrowed or dropped by the orchestrator; any it names
+    /// that the image does not grant is refused as a widening; nothing left, no policy.
+    #[test]
+    fn grants_narrow_and_never_widen() {
+        let grants = shards_agentfile::agentfile::Grants {
+            egress: vec![b"443/tcp".to_vec(), b"53/udp".to_vec()],
+            mcp: vec![b"mcp.example:443".to_vec()],
+            dns: true,
+            egress_declared: Vec::new(),
+        };
+        let all = egress(Some(&grants), &wire::Narrowing::default()).ok().unwrap();
+        assert!(all.is_some());
+        let narrowed = wire::Narrowing {
+            egress: wire::Keep::Only(vec!["443/tcp".into()]),
+            mcp: wire::Keep::Only(Vec::new()),
+            dns: false,
+        };
+        let one = egress(Some(&grants), &narrowed).ok().unwrap().unwrap();
+        assert_ne!(Some(one.clone()), all);
+        let none = wire::Narrowing {
+            egress: wire::Keep::Only(Vec::new()),
+            mcp: wire::Keep::Only(Vec::new()),
+            dns: false,
+        };
+        assert_eq!(egress(Some(&grants), &none).ok().unwrap(), None);
+        let wider = wire::Narrowing {
+            egress: wire::Keep::Only(vec!["22/tcp".into()]),
+            ..wire::Narrowing::default()
+        };
+        assert!(matches!(
+            egress(Some(&grants), &wider),
+            Err(No(Cause::Widening, _))
+        ));
+        // An image with no grants: DNS asked for is no DNS, never a grant.
+        assert_eq!(egress(None, &wire::Narrowing::default()).ok().unwrap(), None);
+        let asked = wire::Narrowing {
+            mcp: wire::Keep::Only(vec!["mcp.example:443".into()]),
+            ..wire::Narrowing::default()
+        };
+        assert!(matches!(egress(None, &asked), Err(No(Cause::Widening, _))));
+    }
+
+    /// With no command of its own, a run publishes only ports the image gives a member
+    /// coming in.
+    #[test]
+    fn ports_need_a_receiver_without_a_command() {
+        let p = |port| wire::Publish {
+            guest_port: port,
+            proto: wire::Proto::Tcp,
+            host: None,
+            host_port: 0,
+        };
+        let agentfile = crate::agentfile::Agentfile {
+            receivers: vec![shards_agentfile::agentfile::Receiver {
+                at: (6, 8000, 8010),
+                to: (6, 8000, 8010),
+                kind: shards_agentfile::agentfile::TargetKind::Harness,
+                name: b"codex".to_vec(),
+            }],
+            ..Default::default()
+        };
+        assert!(ports_granted(&[p(8005)], Some(&agentfile), false).is_ok());
+        assert!(matches!(
+            ports_granted(&[p(9000)], Some(&agentfile), false),
+            Err(No(Cause::Widening, _))
+        ));
+        assert!(ports_granted(&[p(9000)], Some(&agentfile), true).is_ok());
+        let udp = wire::Publish {
+            proto: wire::Proto::Udp,
+            ..p(8005)
+        };
+        assert!(matches!(
+            ports_granted(&[udp], Some(&agentfile), false),
+            Err(No(Cause::Widening, _))
+        ));
+    }
+}
