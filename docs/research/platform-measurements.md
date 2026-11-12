@@ -20733,3 +20733,52 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     gVisor asks, under 1.05 us a system call, only the in-process trap (0.70 us) or no
     trap at all reaches. Its process creation, 100 to 128 us, is near native's 66 us:
     no design that makes a host process for each guest process gets there.
+
+### M520. How many host mappings a guest's memory needs, and what the guest kernel's folio sizes do to it (softvirt)
+
+- **Question.** A software hypervisor that runs each guest address space in a host process
+  of its own maps guest pages into it from a guest-memory file. Each run of pages whose
+  virtual addresses and guest-physical frames both follow on is one host mapping, and
+  Linux caps a process at `vm.max_map_count` mappings: 65,530 by default (M516). How
+  fragmented does shards' own guest kernel keep agent-like processes' memory? Does
+  anything the guest kernel controls change it?
+- **Method.** `docs/research/measurements/softvirt-memlayout/` at e24270009.
+  - A Firecracker v1.18.0 microVM on kiln-a094a12d's KVM: shards' pinned kernel 6.18.48,
+    2 vCPUs, 2 GiB, an Alpine root with python3 and nodejs.
+  - In it, python3 holds a 1,000,000-entry dict and 200,000 small objects; node holds
+    1,000,000 objects and 200,000 Buffers.
+  - 25 s after both start, `pagemap.c` (as root) walks every process's maps and pagemap,
+    counting runs.
+  - The same work, killed and the page cache dropped between, under four policies of the
+    guest's transparent huge pages:
+    - its default (THP on madvise, no smaller folio sizes);
+    - THP always;
+    - 64 KiB folios always (multi-size THP);
+    - every size from 8 KiB to 2 MiB always.
+
+  Raw: `measurements/softvirt-memlayout/results/x86_64-firecracker-guest.md`, with a first
+  count under the default alone at dc05f8142.
+- **Results:**
+
+  | policy | resident | host mappings (runs) | pages a run | python3's runs | node's runs |
+  |---|---|---|---|---|---|
+  | default (THP madvise) | 395 MiB | 37,857 | 2.7 | 20,725 | 16,874 |
+  | THP always | 389 MiB | 40,779 | 2.4 | 17,842 | 22,674 |
+  | 64 KiB folios always | 392 MiB | 12,806 | 7.8 | 2,858 | 9,683 |
+  | every size always | 418 MiB | 4,377 | 24.5 | 1,039 | 3,068 |
+
+- **Found.**
+  - Under the guest kernel's default, a process's resident memory lies in runs of 2.2 to
+    2.7 pages. python3's 161 MiB took 20,725 host mappings, node's 234 MiB 16,874.
+  - At the kernel's default of 65,530 a process, that would cap a guest process at 560 to
+    690 MiB resident. The first count, with a git commit before it, found the same: 2.2
+    pages a run.
+  - THP always changed nothing: 72 MiB went into 2 MiB folios, but the rest stayed as
+    fragmented.
+  - Smaller folios are what join pages:
+    - 64 KiB folios cut the mappings 3 times (python3's 7 times).
+    - Every size always cuts them 8.6 times, to 24.5 pages a run, for 6% more resident
+      memory (418 against 395 MiB).
+    - At 24.5 pages a run, 65,530 mappings hold about 6 GiB resident a process.
+  - The guest kernel is shards' own. A host-mapped engine sets its folio sizes, which
+    count, and not the host's `vm.max_map_count`, which its user cannot change.
