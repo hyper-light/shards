@@ -21912,7 +21912,12 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   member reads what it is given.
 - *Ports and grants.* Published ports bound by `publish::bind`, only for a port the image
   gives a member for ingress (D122) or for the run's own command; egress, remote MCP hosts
-  and DNS the image grants, kept or dropped by the orchestrator, never added.
+  and DNS the image grants, kept or dropped by the orchestrator, never added. Each port
+  bound names whom it reaches (`Bound::to`, channel version 3), so that a publish grant
+  names its "to whom": each member the image gives it, by declared index, at the member's
+  own port (another where an `EXPOSE` maps it), several where several claim it (the one
+  listening takes each connection); none where it reaches the run's own command. The rule
+  is `read ports`' (`agentfile::receiving`), one function for both.
 - *Shares.* At boot, as the run's `-v`, given to the members the image's `VOLUME` there is
   for (D109). Added while running: D214's path to the run's command, owed; to a member,
   refused (its mounts are made as it starts).

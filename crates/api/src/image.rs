@@ -25,8 +25,8 @@ mod session;
 pub mod wire;
 
 pub use wire::{
-    Bound, Channel, Keep, MemberInfo, MemberKind, Narrowing, Proto, Publish, Ready, RunEnd, Secret, Stats,
-    StatsScope,
+    Bound, Channel, Keep, MemberInfo, MemberKind, Narrowing, Proto, Publish, Ready, Receiving, RunEnd,
+    Secret, Stats, StatsScope,
 };
 
 /// A member, as the image's Agentfile names it.
@@ -186,7 +186,7 @@ pub trait Images: Send + Sync {
 pub trait ImageGuest: Send + Sync {
     /// Every member the image declares, by its declared index.
     fn members(&self) -> &[MemberInfo];
-    /// Each port published, as bound.
+    /// Each port published, as bound, and the members it reaches ([`Bound::to`]).
     fn published(&self) -> &[Bound];
     /// A member's channel, as a pipe's read end, its bytes exactly as the member wrote
     /// them, ending at the channel's end; once each. What no one reads backs up into that

@@ -15,8 +15,9 @@ use shards_abi::run;
 pub use shards_abi::run::nesting::Ready;
 
 /// The channel's version, the first byte of [`Request`]: changed only by appending. 2
-/// appends the nesting grant's consent and deadline (D234).
-pub const VERSION: u8 = 2;
+/// appends the nesting grant's consent and deadline (D234); 3, to each published port in
+/// [`Started`], the members it reaches.
+pub const VERSION: u8 = 3;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -253,11 +254,25 @@ pub struct MemberInfo {
 }
 
 /// A published port, bound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bound {
     pub guest_port: u16,
     pub proto: Proto,
     pub host: SocketAddr,
+    /// Whom it reaches (D122): each member the image gives this port coming in, several
+    /// alike where several claim it (the one listening takes each connection); none where
+    /// no member claims it, and it reaches the run's own command.
+    pub to: Vec<Receiving>,
+}
+
+/// A member a published port reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Receiving {
+    /// Its declared index, as [`MemberInfo::index`] says it.
+    pub member: u32,
+    /// The member's own port there: the guest port, unless an `EXPOSE` maps it to another
+    /// (`<port>:<member_port>`, D122).
+    pub port: u16,
 }
 
 /// The run runs.
@@ -832,6 +847,11 @@ impl Started {
             w.u8(b.proto as u8);
             w.ip(Some(b.host.ip()));
             w.u16(b.host.port());
+            w.count(b.to.len())?;
+            for r in &b.to {
+                w.u32(r.member);
+                w.u16(r.port);
+            }
         }
         w.done()
     }
@@ -848,7 +868,7 @@ impl Started {
                 runs: r.flag()?,
             });
         }
-        let n = r.count(2 + 1 + 1 + 2)?;
+        let n = r.count(2 + 1 + 1 + 2 + 4)?;
         let mut published = Vec::with_capacity(n);
         for _ in 0..n {
             let guest_port = r.u16()?;
@@ -858,10 +878,19 @@ impl Started {
                 tag: 0,
             })?;
             let port = r.u16()?;
+            let receivers = r.count(4 + 2)?;
+            let mut to = Vec::with_capacity(receivers);
+            for _ in 0..receivers {
+                to.push(Receiving {
+                    member: r.u32()?,
+                    port: r.u16()?,
+                });
+            }
             published.push(Bound {
                 guest_port,
                 proto,
                 host: SocketAddr::new(ip, port),
+                to,
             });
         }
         r.end()?;
@@ -1162,6 +1191,8 @@ mod tests {
             let ask = StatsAsk { id: 9, scope };
             assert_eq!(StatsAsk::decode(&ask.encode()).unwrap(), ask);
         }
+        // A port no member claims (the run's own command's), one member's, and one two
+        // members claim, one of them at a port of its own (D122).
         let started = Started {
             members: vec![MemberInfo {
                 index: 1,
@@ -1169,13 +1200,41 @@ mod tests {
                 name: "main".into(),
                 runs: false,
             }],
-            published: vec![Bound {
-                guest_port: 8080,
-                proto: Proto::Tcp,
-                host: "[::1]:40000".parse().unwrap(),
-            }],
+            published: vec![
+                Bound {
+                    guest_port: 8080,
+                    proto: Proto::Tcp,
+                    host: "[::1]:40000".parse().unwrap(),
+                    to: Vec::new(),
+                },
+                Bound {
+                    guest_port: 53,
+                    proto: Proto::Udp,
+                    host: "127.0.0.1:5353".parse().unwrap(),
+                    to: vec![Receiving { member: 1, port: 53 }],
+                },
+                Bound {
+                    guest_port: 8081,
+                    proto: Proto::Tcp,
+                    host: "0.0.0.0:8081".parse().unwrap(),
+                    to: vec![
+                        Receiving { member: 0, port: 80 },
+                        Receiving {
+                            member: u32::MAX,
+                            port: u16::MAX,
+                        },
+                    ],
+                },
+            ],
         };
         assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
+        let bytes = started.encode().unwrap();
+        for cut in 0..bytes.len() {
+            assert!(
+                Started::decode(bytes.get(..cut).unwrap()).is_err(),
+                "cut at {cut}"
+            );
+        }
         let refused = Refused {
             cause: Cause::Widening,
             why: "egress 22/tcp: the image grants none".into(),
@@ -1289,6 +1348,16 @@ mod tests {
         w.u8(0);
         w.u32(u32::MAX);
         assert_eq!(Request::decode(&w.0), Err(WireError::Short));
+        // A port said to reach four billion members, in a few bytes.
+        let mut w = Writer(Vec::new());
+        w.u32(0);
+        w.u32(1);
+        w.u16(80);
+        w.u8(Proto::Tcp as u8);
+        w.ip(Some("127.0.0.1".parse().unwrap()));
+        w.u16(8080);
+        w.u32(u32::MAX);
+        assert_eq!(Started::decode(&w.0), Err(WireError::Short));
     }
 
     /// A staged credential never reaches Debug.

@@ -44,6 +44,21 @@ pub struct Agentfile {
     pub receivers: Vec<shards_agentfile::agentfile::Receiver>,
 }
 
+/// Whom the microVM's `port` of IP protocol `proto` reaches coming in (D122): each member
+/// its image gives the port, with the member's own port there (another only where an
+/// `EXPOSE` maps it), several alike where several claim it, the one listening taking each
+/// connection; none where no member claims it, and it reaches the run's own command.
+pub fn receiving(
+    receivers: &[shards_agentfile::agentfile::Receiver],
+    proto: u8,
+    port: u16,
+) -> impl Iterator<Item = (&shards_agentfile::agentfile::Receiver, u16)> {
+    receivers
+        .iter()
+        .filter(move |r| r.at.0 == proto && r.at.1 <= port && port <= r.at.2)
+        .map(move |r| (r, r.to.1.saturating_add(port.saturating_sub(r.at.1))))
+}
+
 /// What a run's command is given of the nesting grant (D234), of what its image declares and
 /// what the run asks (`--security-opt nesting=true`).
 #[derive(Debug, Clone, PartialEq, Eq)]
