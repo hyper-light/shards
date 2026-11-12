@@ -87,10 +87,13 @@ fn tz_time(a: &Value) -> Result<TzTime, BuiltinError> {
         _ => return Err(BuiltinError::operand_type(1, a, TZ_EXPECTED)),
     };
     let f = n.to_float().map_err(|e| BuiltinError::Other(e.to_string()))?;
-    let (i, exact) = f.int();
-    let ns = i64::try_from(&i)
+    // Go's Int64, exact or "timestamp too big"; an integer past the bound on numbers is
+    // no int64 either, and is not made.
+    let ns = f
+        .int()
         .ok()
-        .filter(|_| exact)
+        .filter(|(_, exact)| *exact)
+        .and_then(|(i, _)| i64::try_from(&i).ok())
         .ok_or_else(|| BuiltinError::Other("timestamp too big".into()))?;
     Ok(TzTime { ns, loc, layout })
 }

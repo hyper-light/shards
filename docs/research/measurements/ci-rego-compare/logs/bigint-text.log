@@ -1,0 +1,7 @@
+# bigint-text (num-bigint 0.4.8's to_str_radix(10) of 0xdeadbeef12345677 << bits, and 5^(bits/2)),
+# cargo +1.98.1 build --release, this Mac (Apple M5 Max, macOS 26.4.1), one run each, 2026-11-12
+bits=100000 digits=30123 to_str_radix=16.593334ms 5^(bits/2)=1.584791ms (116097 bits)
+bits=332193 digits=100020 to_str_radix=42.681667ms 5^(bits/2)=5.700292ms (385663 bits)
+bits=1000000 digits=301050 to_str_radix=448.180167ms 5^(bits/2)=446.265541ms (1160965 bits)
+bits=3321929 digits=1000020 to_str_radix=3.444463083s 5^(bits/2)=1.269062833s (3856639 bits)
+bits=10000000 digits=3010320 to_str_radix=22.715425042s 5^(bits/2)=7.113037833s (11609641 bits)

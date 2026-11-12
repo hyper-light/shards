@@ -703,13 +703,14 @@ fn units_parse_bytes(_: &mut Context, args: &[Value]) -> Out {
     if mant.bits() != 0 && !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&exp2) {
         return Err(conv());
     }
-    let total = Float::parse(num)
-        .and_then(|f| {
-            let m = Float::from_u64(m, 64)?;
-            Float::mul(&f, &m, 64)
-        })
-        .map(|p| p.int().0)
-        .unwrap_or_default();
+    let product = Float::parse(num).and_then(|f| {
+        let m = Float::from_u64(m, 64)?;
+        Float::mul(&f, &m, 64)
+    });
+    let total = match product {
+        Ok(p) => p.int().map_err(|e| fail(e.0))?.0,
+        Err(_) => BigInt::default(),
+    };
     ok(Value::Number(Number(total.to_string().into())))
 }
 
@@ -815,6 +816,21 @@ impl Rat {
         self.den == BigUint::from(1u32)
     }
 
+    /// big.Float's MantExp of the value: the e with 2^(e-1) <= |r| < 2^e (0 for zero).
+    fn mant_exp(&self) -> i64 {
+        if self.num.bits() == 0 {
+            return 0;
+        }
+        let len = |b: &BigUint| i64::try_from(b.bits()).unwrap_or(i64::MAX);
+        let d = len(&self.num).saturating_sub(len(&self.den));
+        let at_least = if d >= 0 {
+            self.num >= (&self.den << d.unsigned_abs())
+        } else {
+            (&self.num << d.unsigned_abs()) >= self.den
+        };
+        if at_least { d.saturating_add(1) } else { d }
+    }
+
     fn int_text(&self) -> String {
         let sign = if self.neg { Sign::Minus } else { Sign::Plus };
         BigInt::from_biguint(sign, self.num.clone()).to_string()
@@ -894,6 +910,11 @@ fn units_parse(_: &mut Context, args: &[Value]) -> Out {
     };
     let n = Rat::parse(num).ok_or_else(|| fail("could not parse amount to a number"))?;
     let r = n.mul(&x);
+    // Go's limits leave numbers of millions of digits; past the bound on numbers, the
+    // text is not made.
+    if r.mant_exp() > number::MAX_EXPONENT {
+        return Err(fail(number::TOO_BIG.0));
+    }
     if r.is_int() {
         return ok(Value::Number(Number(r.int_text().into())));
     }
