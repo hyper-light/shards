@@ -58,12 +58,23 @@ struct State {
     /// Its answers have all been read: its stdout has ended.
     answered: bool,
     said: VecDeque<u8>,
+    /// Its diagnostics have all been read: its stderr has ended, its VM's with it.
+    said_all: bool,
 }
 
 impl State {
     /// The host is gone and has said all it will.
     fn gone(&self) -> bool {
         self.exited && self.answered
+    }
+}
+
+/// `refused` with the host's last diagnostics, where its run did not boot: what its VM said
+/// as it ended, the only words of why (`the VM ended before it took its run`).
+fn with_said(refused: ImageRefusal, said: &VecDeque<u8>) -> ImageRefusal {
+    match refused {
+        ImageRefusal::Boot(why) => ImageRefusal::Boot(format!("{why}{}", quoted(said))),
+        other => other,
     }
 }
 
@@ -284,10 +295,14 @@ impl Session {
             end_it(&shared);
             return Err(e);
         }
-        // Started, refused, or gone: whichever comes first, within the caller's patience.
+        // Started, refused, or gone: whichever comes first, within the caller's patience. A
+        // refusal is the host's last word, told once it has exited and said all it will.
         let outcome = shared.wait(patience, |s| {
-            if let Some(r) = s.refused.take() {
-                return Some(Err(r));
+            if s.refused.is_some() {
+                if !(s.gone() && s.said_all) {
+                    return None;
+                }
+                return s.refused.take().map(|r| Err(with_said(r, &s.said)));
             }
             if let Some(started) = s.started.take() {
                 return Some(Ok(started));
@@ -313,7 +328,12 @@ impl Session {
             }
             None => {
                 end_it(&shared);
-                let said = quoted(&lock(&shared.state).said);
+                let mut state = lock(&shared.state);
+                // Refused, by a host that has not yet exited: its refusal still.
+                if let Some(r) = state.refused.take() {
+                    return Err(with_said(r, &state.said));
+                }
+                let said = quoted(&state.said);
                 return Err(ImageRefusal::Boot(format!(
                     "the run did not start within {patience:?}{said}"
                 )));
@@ -495,13 +515,15 @@ fn keep_said(shared: &Shared, mut said: std::process::ChildStderr) {
     let mut buf = [0u8; 4096];
     while let Ok(n) = said.read(&mut buf) {
         if n == 0 {
-            return;
+            break;
         }
         let mut state = lock(&shared.state);
         state.said.extend(buf.get(..n).unwrap_or_default());
         let over = state.said.len().saturating_sub(keep);
         state.said.drain(..over);
     }
+    lock(&shared.state).said_all = true;
+    shared.changed.notify_all();
 }
 
 /// Waits for the host to exit, then reaps it under the state's lock as `exited` is set.
