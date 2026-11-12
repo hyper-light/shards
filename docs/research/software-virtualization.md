@@ -136,6 +136,40 @@ A KVM guest runs a guest's system calls, faults, processes and own code at nativ
   port breaks a sandboxed child's start). Mapping a page into it costs 0.5 us, sandboxed
   or not (M517, M522).
 
+## Where this points (a proposal, 2026-11-12; the decision waits on a prototype)
+
+Three engines fit the decisions above (rootless, one binary, a real guest kernel):
+
+| engine | hosts | a guest system call | a guest's own code | what it must trust to isolate | what fails R08 or R12 |
+|---|---|---|---|---|---|
+| **Trap engine**: guest programs run natively in confined host processes; a paravirtualized guest kernel (User-mode Linux's design) serves their seccomp traps from a process of its own | Linux only | 2.6 to 3.9 us, 0.82 to 0.88 spinning a core (M516's floor; UML today 8.7 us, M519) | 1.0x | the host kernel's process isolation and seccomp; the stub, the guest kernel's confinement, the guest-memory mapper | system calls about 1.6 times better than gVisor, not 4 to 5; Linux alone (a second engine for macOS and Windows); host mappings bounded by `vm.max_map_count` unless the guest kernel keeps every folio size (M520) |
+| **Translation engine**: one confined host process a microVM translates the guest, its kernel too, through a software MMU; a guest system call is a call | Linux, macOS (`MAP_JIT`, allow-jit in App Sandbox), Windows: every target | 0.44 to 0.48 us in QEMU's untuned TCG (M521) | 1.1 to 1.3x in QEMU (M521) | the code generator's isolation of generated code (its memory accesses and control flow), the MMU and trap mediation; the confined process as a second wall | QEMU's faults (17x), processes (21 to 28x) and context switches (6 to 7x): its design, to beat |
+| **Hybrid**: native guest programs in child processes whose memory the parent maps (Mach task ports, M517 and M522), translation or rewriting only of what traps | arm64 hosts | a trap each: 5.4 to 6.8 us on a Mac (M522) | 1.0x | as the trap engine, with each code page checked before it runs | the Mac's traps cost 7 to 15 times the translator's call |
+
+The translation engine is the one to prototype:
+- It is the only one under R08's system-call bar.
+- It is the only one that is one implementation for every target (R12).
+- Its losses are where QEMU's design, not translation, pays:
+  - a TLB flushed at each address-space switch;
+  - a guest fault taken as a full guest exception;
+  - translations not shared between processes.
+- It keeps what Nitro Sandboxes give up: all guest state is in shards' process, so
+  snapshots, copy-on-write templates, saves, moves and elastic memory carry over.
+
+The isolation core to keep small and checkable is the generated code's memory and control
+flow isolation. RockSalt and VeriWasm check that property of compiled code; the confined
+host process stays as the second wall.
+
+The prototype, in order, each step measured against M521 and M519 before the next:
+1. A same-ISA user-mode translator on Linux, x86_64 and arm64: compute and system-call
+   costs against QEMU user mode and native, with guest memory reached through the
+   software MMU against a mapped region.
+2. Full system: shards' pinned kernel under it, then faults, processes and pipes
+   against QEMU TCG, gVisor and KVM. The translation and TLB are kept per address space,
+   and code shared between processes is translated once.
+3. macOS and Windows hosts: the same engine, its JIT through `MAP_JIT` and Windows'
+   protection changes (M517, M518).
+
 ## Questions, each with what settles it
 
 1. Windows' costs: M518 (GitHub's windows-2025 and windows-11-arm runners, queued).
