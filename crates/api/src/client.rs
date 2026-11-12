@@ -1830,6 +1830,12 @@ mod tests {
             pid, expected_started, failure: crate::ProcessFailure::Exited | crate::ProcessFailure::Os {
                 operation: crate::ProcessOperation::PidfdOpen | crate::ProcessOperation::RegisterExit | crate::ProcessOperation::ReadStat,
                 code: libc::ESRCH,
+            } | crate::ProcessFailure::Os {
+                // Reaped between its pidfd's open and its stat's: procfs's lookup finds no
+                // entry (ENOENT), or its permission check of one still cached no task (ESRCH,
+                // fs/proc/base.c proc_pid_permission).
+                operation: crate::ProcessOperation::OpenStat,
+                code: libc::ENOENT | libc::ESRCH,
             }
         }) if pid == identity.pid && expected_started == identity.started),
             "{:?}",
@@ -1971,6 +1977,12 @@ mod tests {
             pid, expected_started, failure: crate::ProcessFailure::Exited | crate::ProcessFailure::Os {
                 operation: crate::ProcessOperation::PidfdOpen | crate::ProcessOperation::RegisterExit | crate::ProcessOperation::ReadStat,
                 code: libc::ESRCH,
+            } | crate::ProcessFailure::Os {
+                // Reaped between its pidfd's open and its stat's: procfs's lookup finds no
+                // entry (ENOENT), or its permission check of one still cached no task (ESRCH,
+                // fs/proc/base.c proc_pid_permission).
+                operation: crate::ProcessOperation::OpenStat,
+                code: libc::ENOENT | libc::ESRCH,
             }
         }) if pid == identity.pid && expected_started == identity.started),
             "{:?}",
