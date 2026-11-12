@@ -1216,6 +1216,14 @@ impl Vcpu {
         }
     }
 
+    /// Its guest's run time, for any thread to read.
+    pub fn guest_clock(&self) -> Result<GuestClock> {
+        Ok(GuestClock {
+            partition: self.partition.clone(),
+            index: self.index,
+        })
+    }
+
     /// Makes this the boot vCPU: it enters at `entry` at EL1h with DAIF masked, its MMU and
     /// caches off, X0 as given and the other registers zero (Linux's booting.rst), running
     /// at once.
@@ -1646,6 +1654,40 @@ impl Kicker {
         // SAFETY: the partition, which this kicker holds; a vCPU that no longer exists
         // fails the call, harmlessly.
         unsafe { WHvCancelRunVirtualProcessor(self.partition.0, self.index, 0) };
+    }
+}
+
+/// A vCPU's guest run time, read from any thread: its virtual processor's runtime counters
+/// (`WHvGetVirtualProcessorCounters`, on Arm64 from Windows 11 24H2 build 26100.3915), which
+/// the hypervisor keeps and whose documentation puts no thread or state on its caller; its
+/// run time less the hypervisor's ([`whp_guest_ns`](super::whp_guest_ns)). Reading it costs
+/// its vCPU nothing.
+#[derive(Debug, Clone)]
+pub struct GuestClock {
+    partition: Arc<Partition>,
+    index: u32,
+}
+
+impl GuestClock {
+    /// The nanoseconds its vCPU has run its guest, in 100 ns steps.
+    pub fn read(&self) -> Result<u64> {
+        let mut counters = WHV_PROCESSOR_RUNTIME_COUNTERS::default();
+        // SAFETY: counters of the size given, of a virtual processor of the partition this
+        // holds: one deleted fails the call.
+        check("WHvGetVirtualProcessorCounters", unsafe {
+            WHvGetVirtualProcessorCounters(
+                self.partition.0,
+                self.index,
+                WHvProcessorCounterSetRuntime,
+                (&raw mut counters).cast(),
+                size_of::<WHV_PROCESSOR_RUNTIME_COUNTERS>() as u32,
+                std::ptr::null_mut(),
+            )
+        })?;
+        Ok(super::whp_guest_ns(
+            counters.TotalRuntime100ns,
+            counters.HypervisorRuntime100ns,
+        ))
     }
 }
 

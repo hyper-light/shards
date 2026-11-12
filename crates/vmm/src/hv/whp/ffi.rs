@@ -108,6 +108,7 @@ winhv! {
     fn WHvGetVirtualProcessorCpuidOutput(partition: WHV_PARTITION_HANDLE, index: u32, eax: u32, ecx: u32, output: *mut WHV_CPUID_OUTPUT);
     fn WHvTranslateGva(partition: WHV_PARTITION_HANDLE, index: u32, gva: u64, flags: WHV_TRANSLATE_GVA_FLAGS, result: *mut WHV_TRANSLATE_GVA_RESULT, gpa: *mut u64);
     fn WHvGetInterruptTargetVpSet(partition: WHV_PARTITION_HANDLE, destination: u64, mode: WHV_INTERRUPT_DESTINATION_MODE, vps: *mut u32, count: u32, written: *mut u32);
+    fn WHvGetVirtualProcessorCounters(partition: WHV_PARTITION_HANDLE, index: u32, set: WHV_PROCESSOR_COUNTER_SET, buffer: *mut c_void, size: u32, written: *mut u32);
     // Virtual PCI devices, a host's function assigned to a partition (D154).
     fn WHvAllocateVpciResource(provider: *const windows_sys::core::GUID, flags: WHV_ALLOCATE_VPCI_RESOURCE_FLAGS, descriptor: *const c_void, size: u32, resource: *mut HANDLE);
     fn WHvCreateVpciDevice(partition: WHV_PARTITION_HANDLE, id: u64, resource: HANDLE, flags: WHV_CREATE_VPCI_DEVICE_FLAGS, event: HANDLE);

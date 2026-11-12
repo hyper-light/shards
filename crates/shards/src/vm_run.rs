@@ -1024,6 +1024,13 @@ pub fn hold_cpus(cpus: u32) -> Result<(), String> {
         .hold_cpus(cpus)
 }
 
+/// What each of this VM's vCPUs has run of its guest, by index, read now, and what those it
+/// no longer has ran (`GUEST_TIME`), beside which this process's own CPU time is its total's
+/// less theirs.
+pub fn guest_times() -> Result<shards_vmm::vm::GuestTimes, String> {
+    Ok(RUNNING.get().ok_or("the microVM has not started")?.guest_times())
+}
+
 /// This VM paused where it is, every vCPU held out of its guest (`frozen`), or let go on
 /// (`PAUSE`): returns once each is held.
 pub fn pause(frozen: bool) -> Result<(), String> {
