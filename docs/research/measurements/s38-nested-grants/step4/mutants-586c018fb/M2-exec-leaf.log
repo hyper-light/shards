@@ -1,0 +1,24 @@
+   Compiling shards-init v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.34s
+     Running unittests src/main.rs (/home/adalundhe/s38-init-step4/target/x86_64-unknown-linux-musl/debug/deps/shards_init-451fb1ae2b80b18c)
+
+running 1 test
+test run::nesting_tests::a_granted_runs_execs_join_its_leaf_never_its_root ... FAILED
+
+failures:
+
+---- run::nesting_tests::a_granted_runs_execs_join_its_leaf_never_its_root stdout ----
+
+thread 'run::nesting_tests::a_granted_runs_execs_join_its_leaf_never_its_root' (801993) panicked at crates/init/src/run.rs:6420:9:
+assertion `left == right` failed
+  left: ""
+ right: "0"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    run::nesting_tests::a_granted_runs_execs_join_its_leaf_never_its_root
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 194 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`

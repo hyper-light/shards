@@ -1,0 +1,13 @@
+--- crates/init/src/setup.rs.orig	2026-11-12 00:09:55.473404797 -0800
++++ crates/init/src/setup.rs	2026-11-12 00:09:55.476273477 -0800
+@@ -687,10 +687,6 @@
+ /// never lowered, never past [`NR_OPEN_MAX`].
+ pub fn nr_open(hard: Option<u64>, now: u64) -> NrOpen {
+     match hard {
+-        Some(asked) if asked > NR_OPEN_MAX => NrOpen::Refused {
+-            asked,
+-            ceiling: NR_OPEN_MAX,
+-        },
+         Some(asked) if asked > now => NrOpen::Raise(asked),
+         _ => NrOpen::Keep,
+     }

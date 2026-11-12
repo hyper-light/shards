@@ -1,0 +1,24 @@
+   Compiling shards-init v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.30s
+     Running unittests src/main.rs (/home/adalundhe/s38-init-step4/target/x86_64-unknown-linux-musl/debug/deps/shards_init-451fb1ae2b80b18c)
+
+running 1 test
+test domains::tests::init_refuses_the_grant_unless_the_image_as_built_declares_it_alone ... FAILED
+
+failures:
+
+---- domains::tests::init_refuses_the_grant_unless_the_image_as_built_declares_it_alone stdout ----
+
+thread 'domains::tests::init_refuses_the_grant_unless_the_image_as_built_declares_it_alone' (827968) panicked at crates/init/src/domains.rs:2745:13:
+assertion `left == right` failed: {"schemaVersion":1,"agents":[],"harnesses":[],"skills":[],"mcp":[],"networks":[],"connections":[],"attachments":[],"exposures":[],"volumes":[]}
+  left: Ok(())
+ right: Err(Undeclared)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    domains::tests::init_refuses_the_grant_unless_the_image_as_built_declares_it_alone
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 194 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`

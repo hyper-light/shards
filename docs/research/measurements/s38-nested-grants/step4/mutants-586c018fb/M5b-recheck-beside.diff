@@ -1,0 +1,18 @@
+--- crates/init/src/domains.rs.orig	2026-11-12 00:10:01.167346210 -0800
++++ crates/init/src/domains.rs	2026-11-12 00:10:01.175065463 -0800
+@@ -279,15 +279,6 @@
+     if spec.get("nesting") != Some(&Value::Bool(true)) {
+         return Err(Nesting::Undeclared);
+     }
+-    for (kind, list) in [("agent", "agents"), ("harness", "harnesses")] {
+-        if let Some(d) = spec.get(list).map(Value::array).and_then(<[Value]>::first) {
+-            let name = d.get("name").and_then(Value::str).unwrap_or_default();
+-            return Err(Nesting::Beside {
+-                kind,
+-                name: name.to_string(),
+-            });
+-        }
+-    }
+     Ok(())
+ }
+ 

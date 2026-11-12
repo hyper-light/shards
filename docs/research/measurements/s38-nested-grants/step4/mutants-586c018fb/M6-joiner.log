@@ -1,0 +1,33 @@
+   Compiling shards-init v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/init)
+warning: unused variable: `granted`
+   --> crates/init/src/join.rs:264:16
+    |
+264 | pub fn nesting(granted: bool, setup: &[Vec<u8>]) -> Result<(), String> {
+    |                ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_granted`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards-init` (bin "shards-init" test) generated 1 warning (run `cargo fix --bin "shards-init" -p shards-init --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.94s
+     Running unittests src/main.rs (/home/adalundhe/s38-init-step4/target/x86_64-unknown-linux-musl/debug/deps/shards_init-451fb1ae2b80b18c)
+
+running 1 test
+test join::tests::no_joiner_joins_or_takes_the_nesting_grant ... FAILED
+
+failures:
+
+---- join::tests::no_joiner_joins_or_takes_the_nesting_grant stdout ----
+
+thread 'join::tests::no_joiner_joins_or_takes_the_nesting_grant' (839674) panicked at crates/init/src/join.rs:1355:9:
+assertion `left == right` failed
+  left: Ok(())
+ right: Err("cannot join the network of a container given the nesting grant: the grant makes its command its microVM's only principal")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    join::tests::no_joiner_joins_or_takes_the_nesting_grant
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 194 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`

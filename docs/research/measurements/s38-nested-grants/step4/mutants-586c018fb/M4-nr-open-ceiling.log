@@ -1,0 +1,24 @@
+   Compiling shards-init v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.13s
+     Running unittests src/main.rs (/home/adalundhe/s38-init-step4/target/x86_64-unknown-linux-musl/debug/deps/shards_init-451fb1ae2b80b18c)
+
+running 1 test
+test setup::tests::nr_open_is_raised_to_the_runs_own_ask_within_the_kernels_ceiling ... FAILED
+
+failures:
+
+---- setup::tests::nr_open_is_raised_to_the_runs_own_ask_within_the_kernels_ceiling stdout ----
+
+thread 'setup::tests::nr_open_is_raised_to_the_runs_own_ask_within_the_kernels_ceiling' (822207) panicked at crates/init/src/setup.rs:1459:13:
+assertion `left == right` failed
+  left: Raise(2147483585)
+ right: Refused { asked: 2147483585, ceiling: 2147483584 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    setup::tests::nr_open_is_raised_to_the_runs_own_ask_within_the_kernels_ceiling
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 194 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`

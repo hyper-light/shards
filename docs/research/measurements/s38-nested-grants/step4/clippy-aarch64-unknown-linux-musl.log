@@ -1,0 +1,20 @@
+   Compiling num-traits v0.2.19
+    Checking memchr v2.8.3
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/abi)
+    Checking regex-syntax v0.8.11
+    Checking aho-corasick v1.1.5
+    Checking num-integer v0.1.47
+    Checking regex-automata v0.4.18
+    Checking num-bigint v0.4.8
+    Checking regex v1.13.1
+    Checking shards-template v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/template)
+    Checking shards-archive v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/archive)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/cmdline)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/testdir)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/devcgroup)
+    Checking shards-dns v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/dns)
+    Checking shards-user v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/user)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/erofs)
+    Checking shards-init v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.20s

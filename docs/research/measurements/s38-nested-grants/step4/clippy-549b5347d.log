@@ -1,0 +1,55 @@
+   Compiling shards-abi v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/abi)
+    Checking memchr v2.8.3
+    Checking num-traits v0.2.19
+    Checking aho-corasick v1.1.5
+    Checking regex-syntax v0.8.11
+    Checking num-integer v0.1.47
+    Checking libc v0.2.189
+    Checking num-bigint v0.4.8
+    Checking regex-automata v0.4.18
+    Checking shards-template v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/template)
+    Checking regex v1.13.1
+    Checking shards-archive v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/archive)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/cmdline)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/testdir)
+    Checking shards-user v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/user)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/erofs)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/devcgroup)
+    Checking shards-dns v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/dns)
+    Checking shards-init v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/init)
+error: method `state` is never used
+   --> crates/init/src/readiness.rs:333:12
+    |
+309 | impl Readiness {
+    | -------------- method in this implementation
+...
+333 |     pub fn state(&self) -> State {
+    |            ^^^^^
+    |
+    = note: `-D dead-code` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: useless conversion to the same type: `u64`
+   --> crates/init/src/setup.rs:720:27
+    |
+720 |         .map(|(_, limit)| u64::from(limit.rlim_max))
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider removing `u64::from()`: `limit.rlim_max`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#useless_conversion
+    = note: `-D clippy::useless-conversion` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::useless_conversion)]`
+
+error: could not compile `shards-init` (bin "shards-init") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: unsafe block missing a safety comment
+   --> crates/init/src/readiness.rs:605:13
+    |
+605 |             unsafe {
+    |             ^^^^^^^^
+    |
+    = help: consider adding a safety comment on the preceding line
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+    = note: `-D clippy::undocumented-unsafe-blocks` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::undocumented_unsafe_blocks)]`
+
+error: could not compile `shards-init` (bin "shards-init" test) due to 2 previous errors

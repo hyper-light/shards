@@ -1,0 +1,15 @@
+--- crates/init/src/run.rs.orig	2026-11-12 00:09:42.260540663 -0800
++++ crates/init/src/run.rs	2026-11-12 00:09:42.268540581 -0800
+@@ -1318,11 +1318,7 @@
+     now: impl FnOnce() -> Result<String, i32>,
+ ) -> Result<(), i32> {
+     let errno = |e: io::Error| e.raw_os_error().unwrap_or(libc::EIO);
+-    let first = if granted {
+-        format!("{workload}/{LEAF}")
+-    } else {
+-        workload.to_string()
+-    };
++    let first = workload.to_string();
+     let Err(refused) = enter_cgroup(&first) else {
+         return Ok(());
+     };

@@ -1,0 +1,24 @@
+   Compiling shards-init v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.13s
+     Running unittests src/main.rs (/home/adalundhe/s38-init-step4/target/x86_64-unknown-linux-musl/debug/deps/shards_init-451fb1ae2b80b18c)
+
+running 1 test
+test setup::tests::a_granted_command_starts_in_its_leaf ... FAILED
+
+failures:
+
+---- setup::tests::a_granted_command_starts_in_its_leaf stdout ----
+
+thread 'setup::tests::a_granted_command_starts_in_its_leaf' (787082) panicked at crates/init/src/setup.rs:1399:9:
+assertion `left == right` failed
+  left: []
+ right: [48]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    setup::tests::a_granted_command_starts_in_its_leaf
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 194 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
