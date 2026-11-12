@@ -187,6 +187,26 @@ is of that engine's machine's. A volume it makes (`-v data:/var/lib/data`, Compo
 `MICROVM.data`, reached by no name of yours or of another microVM's, and removed with the
 microVM. A call it can't serve yet is refused with what it serves.
 
+### A runtime of its own in a microVM
+
+A program that runs boxes of its own, as runc and other container runtimes do, gets what it
+needs when its image and you both say so: the image's Agentfile says `NESTING`, and you run
+it with `shards run vm --security-opt nesting=true IMAGE`. The program then has its
+microVM's cgroups below its own to divide (`/sys/fs/cgroup`, writable; the limits you gave
+the microVM stay yours), the capabilities a runtime makes namespaces, mounts and device
+rules with (`CAP_SYS_ADMIN`, `CAP_NET_ADMIN`), and Docker's default seccomp profile for them
+with `pivot_root` added; `shards exec vm` into it has the same. Its boxes end when it does,
+it still reaches nothing of your machine's, and its network past the microVM is still only
+what you grant. It can say it's ready by writing `READY=1` to `$NOTIFY_SOCKET`, as a
+systemd service does, and its microVM's `ready` event says so (`shards watch system`). Run
+without `--security-opt nesting=true`, such an image runs without the grant and warns you;
+asked of an image without `NESTING`, it's refused. As the grant makes that program its
+microVM's only one, `NESTING` is refused beside an image's agents and harnesses, and no
+other run joins its microVM (`--network container:`). Through shards-api, an image spec's
+`nesting` asks for it, and its `ready_by` gives the program a deadline (`$SHARDS_READY_BY`,
+in nanoseconds of its own `CLOCK_BOOTTIME`); `wait_ready` says when it's ready, or that its
+deadline passed first.
+
 ### MicroVMs under your own limits
 
 On Linux, `shards run vm --cgroup-parent agents.slice IMAGE` (and Compose's `cgroup_parent:`, through

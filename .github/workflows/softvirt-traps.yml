@@ -1,0 +1,61 @@
+name: softvirt traps
+
+# What the primitives cost that a rootless software hypervisor would serve a guest with,
+# on hosts that give shards no hardware virtualization: GitHub's hosted arm64 runners
+# (cloud VMs with no /dev/kvm) and, beside them, its x86_64 runners (cloud VMs; the
+# harness uses no KVM there either). Harness and method: docs/research/measurements/
+# softvirt-traps. Runs when the harness changes, or when asked.
+on:
+  push:
+    paths:
+      - docs/research/measurements/softvirt-traps/linux.c
+      - docs/research/measurements/softvirt-traps/windows.c
+      - .github/workflows/softvirt-traps.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: cc --version | head -1; cat /proc/loadavg; nproc; free -g
+      - run: cc -O2 -Wall -Wextra -Werror -o "$RUNNER_TEMP/traps" docs/research/measurements/softvirt-traps/linux.c
+      - run: '"$RUNNER_TEMP/traps" | tee "$RUNNER_TEMP/traps-${{ matrix.runner }}.md"'
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: softvirt-traps-${{ matrix.runner }}
+          path: ${{ runner.temp }}/traps-${{ matrix.runner }}.md
+
+  # Windows' own primitives, on its hosted x86_64 runner and its arm64 one (whose image
+  # has no hypervisor platform, PM M172).
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-2025, arch: x64 }
+          - { runner: windows-11-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build and run
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set VS=%%i
+          call "%VS%\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.arch }} || exit /b 1
+          cl /nologo /O2 /W4 /Fe:%RUNNER_TEMP%\traps.exe docs\research\measurements\softvirt-traps\windows.c || exit /b 1
+          %RUNNER_TEMP%\traps.exe > %RUNNER_TEMP%\traps-${{ matrix.runner }}.md
+          type %RUNNER_TEMP%\traps-${{ matrix.runner }}.md
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: softvirt-traps-${{ matrix.runner }}
+          path: ${{ runner.temp }}/traps-${{ matrix.runner }}.md

@@ -1,0 +1,156 @@
+    Checking typenum v1.20.1
+    Checking cfg-if v1.0.5
+   Compiling libc v0.2.189
+    Checking zeroize v1.9.0
+    Checking memchr v2.8.3
+    Checking cpufeatures v0.3.1
+    Checking const-oid v0.10.2
+    Checking serde_core v1.0.229
+    Checking zlib-rs v0.6.8
+    Checking hybrid-array v0.4.15
+   Compiling jobserver v0.1.35
+   Compiling cc v1.5.1
+    Checking crypto-common v0.2.2
+    Checking block-buffer v0.12.1
+    Checking zmij v1.0.23
+    Checking digest v0.11.3
+    Checking sha2 v0.11.0
+    Checking aho-corasick v1.1.5
+   Compiling cmake v0.1.58
+    Checking rustls-pki-types v1.15.1
+   Compiling shards-abi v0.1.0 (/home/adalundhe/s38-coord-step5/crates/abi)
+    Checking regex-syntax v0.8.11
+    Checking itoa v1.0.18
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/s38-coord-step5/vendor/aws-lc-sys)
+    Checking serde_json v1.0.151
+    Checking num-traits v0.2.19
+    Checking once_cell v1.21.4
+    Checking serde v1.0.229
+    Checking num-integer v0.1.47
+    Checking base64 v0.23.1
+    Checking untrusted v0.9.0
+    Checking num-bigint v0.4.8
+    Checking regex-automata v0.4.18
+    Checking flate2 v1.1.10
+    Checking subtle v2.6.1
+    Checking twox-hash v2.1.4
+    Checking ruzstd v0.9.1
+    Checking regex v1.13.1
+    Checking generic-array v0.14.7
+    Checking shards-template v0.1.0 (/home/adalundhe/s38-coord-step5/crates/template)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/s38-coord-step5/crates/erofs)
+    Checking rand_core v0.10.1
+    Checking foldhash v0.2.0
+    Checking alloc-no-stdlib v2.0.4
+    Checking shards-image v0.1.0 (/home/adalundhe/s38-coord-step5/crates/image)
+    Checking alloc-stdlib v0.2.4
+    Checking log v0.4.34
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/s38-coord-step5/crates/cmdline)
+    Checking brotli-decompressor v5.0.3
+    Checking block-buffer v0.10.4
+    Checking crypto-common v0.1.7
+    Checking shards-ipc v0.1.0 (/home/adalundhe/s38-coord-step5/crates/ipc)
+    Checking keccak v0.2.2
+    Checking tinyvec v1.13.3
+    Checking num-conv v0.2.2
+    Checking powerfmt v0.2.0
+    Checking time-core v0.1.9
+    Checking deranged v0.5.8
+    Checking shards-agentfile v0.1.0 (/home/adalundhe/s38-coord-step5/crates/agentfile)
+    Checking sha3 v0.11.0
+    Checking digest v0.10.7
+    Checking brotli v8.0.4
+    Checking time v0.3.55
+    Checking libm v0.2.16
+    Checking getrandom v0.4.3
+    Checking portable-atomic v1.15.0
+    Checking chacha20 v0.10.2
+    Checking tracing-core v0.1.36
+    Checking siphasher v1.0.4
+    Checking openssl-probe v0.2.1
+    Checking pin-project-lite v0.2.17
+    Checking cpufeatures v0.2.17
+    Checking fastbloom v0.17.0
+    Checking sha1 v0.10.7
+    Checking tracing v0.1.44
+    Checking rustls-native-certs v0.8.4
+    Checking thiserror v2.0.21
+    Checking rand v0.10.3
+    Checking unsize v1.1.0
+    Checking hashbrown v0.17.1
+    Checking rand_pcg v0.10.2
+    Checking shards-netring v0.1.0 (/home/adalundhe/s38-coord-step5/crates/netring)
+    Checking shards-syscall-filter v0.1.0 (/home/adalundhe/s38-coord-step5/crates/syscall-filter)
+    Checking lru-slab v0.1.3
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/s38-coord-step5/crates/vmm)
+    Checking slab v0.4.12
+    Checking libbz2-rs-sys v0.2.5
+    Checking bytes v1.12.1
+    Checking rustc-hash v2.1.3
+    Checking percent-encoding v2.3.2
+    Checking bzip2 v0.6.1
+    Checking form_urlencoded v1.2.2
+   Compiling shards v0.7.0 (/home/adalundhe/s38-coord-step5/crates/shards)
+    Checking hashlink v0.12.2
+    Checking triomphe v0.1.17
+    Checking httparse v1.10.1
+    Checking sha1-checked v0.10.0
+    Checking yasna v0.6.0
+    Checking unicode-normalization v0.1.25
+    Checking pem v4.0.0
+    Checking shards-seccomp v0.1.0 (/home/adalundhe/s38-coord-step5/crates/seccomp)
+    Checking lzma-rust2 v0.21.0
+    Checking encoding_rs v0.8.35
+    Checking iri-string v0.7.14
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/s38-coord-step5/crates/devcgroup)
+    Checking arraydeque v0.5.1
+    Checking shards-dns v0.1.0 (/home/adalundhe/s38-coord-step5/crates/dns)
+    Checking yaml-rust2 v0.13.0
+    Checking shards-net v0.1.0 (/home/adalundhe/s38-coord-step5/crates/net)
+    Checking shards-build v0.1.0 (/home/adalundhe/s38-coord-step5/crates/build)
+    Checking shards-git v0.1.0 (/home/adalundhe/s38-coord-step5/crates/git)
+    Checking shards-api v0.1.0 (/home/adalundhe/s38-coord-step5/crates/api)
+    Checking shards-rego v0.1.0 (/home/adalundhe/s38-coord-step5/crates/rego)
+    Checking shards-archive v0.1.0 (/home/adalundhe/s38-coord-step5/crates/archive)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/s38-coord-step5/crates/testdir)
+    Checking shards-flate v0.1.0 (/home/adalundhe/s38-coord-step5/crates/flate)
+    Checking shards-zstd v0.1.0 (/home/adalundhe/s38-coord-step5/crates/zstd)
+    Checking shards-ext4 v0.1.0 (/home/adalundhe/s38-coord-step5/crates/ext4)
+    Checking shards-user v0.1.0 (/home/adalundhe/s38-coord-step5/crates/user)
+    Checking shards-tui v0.1.0 (/home/adalundhe/s38-coord-step5/crates/tui)
+    Checking shards-gateway v0.1.0 (/home/adalundhe/s38-coord-step5/crates/gateway)
+    Checking shards-bus v0.1.0 (/home/adalundhe/s38-coord-step5/crates/bus)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/s38-coord-step5-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/s38-coord-step5-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/s38-coord-step5-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/s38-coord-step5-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/ccELrrf1.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-coord-step5/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-coord-step5/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/cc9foaUn.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-coord-step5/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-coord-step5/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/s38-coord-step5/vendor/aws-lc-rs)
+   Compiling rustls v0.23.46
+    Checking rustls-webpki v0.103.16
+    Checking hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+    Checking shards-gitsign v0.1.0 (/home/adalundhe/s38-coord-step5/crates/gitsign)
+    Checking shards-tuf v0.1.0 (/home/adalundhe/s38-coord-step5/crates/tuf)
+    Checking hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+    Checking rustls-platform-verifier v0.7.1
+    Checking shards-registry v0.1.0 (/home/adalundhe/s38-coord-step5/crates/registry)
+    Checking shards-sigstore v0.1.0 (/home/adalundhe/s38-coord-step5/crates/sigstore)
+    Checking shards-remote v0.1.0 (/home/adalundhe/s38-coord-step5/crates/remote)
+    Checking shards-testguest v0.1.0 (/home/adalundhe/s38-coord-step5/crates/testguest)
+    Checking rcgen v0.14.10
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 07s

@@ -20528,3 +20528,580 @@ retains five actual complete-daemon native metadata/retirement cases and the
 exact seven-target gate at d2288c27, plus the separately failing real-VM
 reconnect and transport-reason diagnostic. Empty-stream cases do not prove
 nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
+
+### M516. What a rootless software hypervisor's traps cost a Linux guest, and what an unprivileged process may use (softvirt)
+
+- **Question.** Where the host gives shards no hardware virtualization
+  (`docs/research/software-virtualization.md`), a guest's code would run natively in a
+  confined child process, its system calls and faults coming back to shards. What does each
+  way of making that round trip cost, against a native system call? How far do host
+  mappings of guest pages scale? Which memory and isolation features may an unprivileged
+  process use?
+- **Method.** `docs/research/measurements/softvirt-traps/linux.c` at 27e1406a1 (its
+  `probe` test at 85f525fca), `cc -O2`, as an unprivileged user. Each variant n=20000
+  after 1000 warm-ups, one round trip a sample (`CLOCK_MONOTONIC` through the vDSO, which
+  reads in 10 to 16 ns at p50 here). The guest and the process serving it are pinned to
+  one CPU, or to two cores that are not hyperthread siblings. `maps` maps a prefaulted
+  memfd's 4 KiB pages one at a time at non-adjacent offsets, up to
+  min(vm.max_map_count + 1024, 263168), then the same memory in 2 MiB units. Raw output,
+  every run: `measurements/softvirt-traps/results/`.
+  - kiln-a094a12d: Intel Core i9-14900HX, 32 CPUs, bare metal, Fedora 44, Linux
+    6.19.10-300.fc44, other jobs running (load 7 of 32); three runs one after another,
+    2026-11-12.
+  - GitHub's ubuntu-24.04 (x86_64; `/dev/kvm` present, unused) and ubuntu-24.04-arm
+    (arm64, Arm Neoverse N2, no `/dev/kvm`) runners: 4-vCPU Azure VMs, Linux
+    7.0.0-1017-azure, GCC 13.3.0, `softvirt-traps.yml`, two runs each, 2026-11-12: run
+    43135435859 (`linux.c` at 85f525fca) and run 43162571571 (at df68484b0, whose `maps`
+    allocates its buffers before it maps; see Found). The x86_64 runs drew different CPUs:
+    an AMD EPYC 9V45, then an Intel Xeon Platinum 8573C.
+- **Results, kiln-a094a12d** (ns; run 3's distribution, then the p50 range of the three runs):
+
+  | test | variant | n | p50 | p90 | p99 | max | p50, 3 runs |
+  |---|---|---|---|---|---|---|---|
+  | native | `getppid`, no filter | 20000 | 76 | 81 | 94 | 3,654 | 63-91 |
+  | native | `getppid`, a filter allows it | 20000 | 82 | 90 | 127 | 2,644 | 79-131 |
+  | sigsys | SIGSYS to a handler in the guest's process | 20000 | 699 | 801 | 1,195 | 654,899 | 699-747 |
+  | futex | another process, same CPU | 20000 | 1,790 | 2,161 | 3,709 | 102,618 | 1,775-1,878 |
+  | futex | another process, other core | 20000 | 2,957 | 3,466 | 6,300 | 154,536 | 2,854-2,957 |
+  | futex | other core, both spinning | 20000 | 152 | 200 | 248 | 5,691 | 108-152 |
+  | handoff | SIGSYS, then futex to another process, same CPU | 20000 | 2,560 | 2,912 | 5,064 | 18,701 | 2,560-2,695 |
+  | handoff | the same, other core | 20000 | 3,866 | 4,761 | 8,133 | 980,204 | 3,489-3,866 |
+  | handoff | the same, other core spinning | 20000 | 879 | 984 | 1,152 | 10,128 | 821-879 |
+  | notify | `SECCOMP_RET_USER_NOTIF`, same CPU | 20000 | 1,863 | 2,226 | 3,984 | 22,883 | 1,832-1,972 |
+  | notify | the same, sync wake-up | 20000 | 1,776 | 2,129 | 3,504 | 22,546 | 1,776-1,912 |
+  | notify | other core | 20000 | 2,868 | 3,338 | 6,158 | 707,762 | 2,786-2,868 |
+  | notify | other core, sync wake-up | 20000 | 2,857 | 3,312 | 6,509 | 996,316 | 2,804-2,857 |
+  | sysemu | `PTRACE_SYSEMU`, registers read and written, same CPU | 20000 | 3,497 | 4,069 | 6,585 | 114,454 | 3,493-3,598 |
+  | sysemu | the same, other core | 20000 | 3,648 | 4,329 | 7,279 | 1,006,625 | 3,648-3,678 |
+  | fault | SIGSEGV, the handler `mprotect`s the page | 20000 | 1,205 | 1,347 | 2,087 | 9,874 | 1,105-1,253 |
+  | fault | SIGSEGV, the handler maps a guest page (memfd) | 20000 | 1,736 | 2,027 | 4,849 | 18,024 | 1,736-1,832 |
+  | maps | map one 4 KiB page, all 263,168 | 263168 | 989 | 1,507 | 4,276 | 1,099,226 | 989-1,020 |
+  | maps | the first 1,000 | 1000 | 755 | 1,170 | 4,428 | 7,061 | 695-755 |
+  | maps | the last 1,000 | 1000 | 983 | 1,453 | 5,257 | 14,047 | 983-1,323 |
+  | maps | first touch of a mapped page | 263168 | 620 | 808 | 1,118 | 907,899 | 613-620 |
+  | maps | unmap one page | 263168 | 843 | 1,259 | 4,197 | 1,390,798 | 843-850 |
+  | maps | map one 2 MiB unit | 514 | 764 | 1,256 | 3,627 | 4,390 | 704-793 |
+  | maps | first touch of a 2 MiB unit's 512 pages | 514 | 270,318 | 295,219 | 341,123 | 1,299,489 | 259,747-270,318 |
+  | maps | unmap one 2 MiB unit | 514 | 38,080 | 44,633 | 52,209 | 68,028 | 37,916-40,657 |
+
+- **Probes, kiln-a094a12d:** `RLIMIT_MEMLOCK` 8 MiB soft and hard. `memfd_secret`: 1 MiB
+  mapped and touched (13,754 ns a page at first touch), 64 MiB refused with `EAGAIN`, the
+  lock limit (`mm/secretmem.c`, `mlock_future_ok`). userfaultfd: user-mode-only faults
+  allowed, all faults refused (`vm.unprivileged_userfaultfd` 0). A core-scheduling cookie
+  for the process: allowed. Landlock ABI 7. `vm.max_map_count` 1,048,576 (the kernel's
+  own default is 65,530, `DEFAULT_MAX_MAP_COUNT` in `include/linux/mm.h`).
+- **Results, GitHub's ubuntu-24.04, x86_64** (ns; run 2's distribution on the Xeon
+  Platinum 8573C, then run 1's p50 on the EPYC 9V45, whose `maps` crashed):
+
+  | test | variant | n | p50 | p90 | p99 | max | p50, run 1 |
+  |---|---|---|---|---|---|---|---|
+  | native | `getppid`, no filter | 20000 | 127 | 130 | 171 | 39,424 | 160 |
+  | native | `getppid`, a filter allows it | 20000 | 148 | 150 | 186 | 17,768 | 200 |
+  | sigsys | SIGSYS to a handler in the guest's process | 20000 | 1,079 | 1,101 | 1,126 | 26,380 | 1,803 |
+  | futex | another process, same CPU | 20000 | 2,279 | 2,479 | 3,196 | 18,629 | 5,028 |
+  | futex | another process, other core | 20000 | 24,147 | 25,128 | 33,254 | 400,005 | 12,909 |
+  | futex | other core, both spinning | 20000 | 314 | 370 | 421 | 45,634 | 110 |
+  | handoff | SIGSYS, then futex to another process, same CPU | 20000 | 5,099 | 5,509 | 6,640 | 32,088 | 7,402 |
+  | handoff | the same, other core | 20000 | 24,163 | 24,971 | 31,086 | 102,857 | 14,542 |
+  | handoff | the same, other core spinning | 20000 | 1,355 | 1,421 | 1,450 | 18,063 | 2,063 |
+  | notify | `SECCOMP_RET_USER_NOTIF`, same CPU | 20000 | 2,428 | 2,550 | 3,031 | 20,528 | 5,327 |
+  | notify | the same, sync wake-up | 20000 | 2,505 | 2,560 | 3,418 | 37,941 | 5,338 |
+  | notify | other core | 20000 | 24,052 | 24,803 | 30,451 | 401,780 | 12,308 |
+  | notify | other core, sync wake-up | 20000 | 23,999 | 24,715 | 29,981 | 1,382,043 | 11,647 |
+  | sysemu | `PTRACE_SYSEMU`, registers read and written, same CPU | 20000 | 4,604 | 4,655 | 4,908 | 31,838 | 9,785 |
+  | sysemu | the same, other core | 20000 | 25,419 | 26,468 | 33,479 | 2,174,925 | 14,602 |
+  | fault | SIGSEGV, the handler `mprotect`s the page | 20000 | 2,041 | 2,068 | 2,160 | 28,623 | 3,245 |
+  | fault | SIGSEGV, the handler maps a guest page (memfd) | 20000 | 3,218 | 3,280 | 3,463 | 142,859 | 5,248 |
+  | maps | map one 4 KiB page, all 262,120 | 262120 | 1,589 | 2,114 | 4,761 | 236,613 | |
+  | maps | the first 1,000 | 1000 | 1,506 | 2,624 | 16,010 | 23,175 | |
+  | maps | the last 1,000 | 1000 | 1,647 | 2,166 | 4,705 | 8,424 | |
+  | maps | first touch of a mapped page | 262120 | 1,091 | 1,242 | 1,443 | 33,466 | |
+  | maps | unmap one page | 262120 | 2,523 | 3,155 | 4,653 | 180,934 | |
+  | maps | map one 2 MiB unit | 514 | 1,508 | 2,242 | 4,010 | 17,458 | |
+  | maps | first touch of a 2 MiB unit's 512 pages | 514 | 412,665 | 420,148 | 448,852 | 485,645 | |
+  | maps | unmap one 2 MiB unit | 514 | 40,561 | 44,130 | 62,577 | 133,605 | |
+
+- **Results, GitHub's ubuntu-24.04-arm, arm64 without `/dev/kvm`** (ns; run 2's
+  distribution, then the p50 range of both runs; run 1's `maps` crashed):
+
+  | test | variant | n | p50 | p90 | p99 | max | p50, 2 runs |
+  |---|---|---|---|---|---|---|---|
+  | native | `getppid`, no filter | 20000 | 232 | 240 | 520 | 18,544 | 232 |
+  | native | `getppid`, a filter allows it | 20000 | 248 | 248 | 528 | 18,840 | 248 |
+  | sigsys | SIGSYS to a handler in the guest's process | 20000 | 1,344 | 1,360 | 1,632 | 10,288 | 1,344-1,352 |
+  | futex | another process, same CPU | 20000 | 4,000 | 4,472 | 5,184 | 28,944 | 2,384-4,000 |
+  | futex | another process, other core | 20000 | 13,744 | 14,040 | 20,560 | 1,498,663 | 13,744-13,969 |
+  | futex | other core, both spinning | 20000 | 240 | 248 | 264 | 32,736 | 240-328 |
+  | handoff | SIGSYS, then futex to another process, same CPU | 20000 | 8,656 | 9,240 | 10,392 | 51,264 | 8,248-8,656 |
+  | handoff | the same, other core | 20000 | 15,520 | 15,872 | 17,832 | 3,463,375 | 15,520-15,968 |
+  | handoff | the same, other core spinning | 20000 | 1,592 | 1,608 | 1,880 | 25,144 | 1,568-1,592 |
+  | notify | `SECCOMP_RET_USER_NOTIF`, same CPU | 20000 | 5,632 | 5,896 | 6,592 | 73,568 | 4,760-5,632 |
+  | notify | the same, sync wake-up | 20000 | 5,352 | 5,600 | 6,224 | 60,272 | 4,696-5,352 |
+  | notify | other core | 20000 | 13,320 | 13,568 | 14,648 | 116,768 | 13,320-13,505 |
+  | notify | other core, sync wake-up | 20000 | 13,200 | 13,432 | 14,464 | 72,496 | 13,200-13,601 |
+  | sysemu | `PTRACE_SYSEMU`, registers read and written, same CPU | 20000 | 8,832 | 9,224 | 9,840 | 67,464 | 4,488-8,832 |
+  | sysemu | the same, other core | 20000 | 14,240 | 14,512 | 15,680 | 777,151 | 14,240-14,505 |
+  | fault | SIGSEGV, the handler `mprotect`s the page | 20000 | 1,928 | 1,944 | 2,000 | 16,288 | 1,928-1,944 |
+  | fault | SIGSEGV, the handler maps a guest page (memfd) | 20000 | 3,000 | 3,272 | 4,392 | 71,912 | 3,000-3,064 |
+  | maps | map one 4 KiB page, all 262,127 | 262127 | 2,040 | 2,744 | 4,744 | 204,840 | |
+  | maps | the first 1,000 | 1000 | 1,528 | 2,272 | 7,008 | 17,960 | |
+  | maps | the last 1,000 | 1000 | 2,224 | 2,864 | 4,856 | 183,976 | |
+  | maps | first touch of a mapped page | 262127 | 760 | 960 | 1,216 | 63,128 | |
+  | maps | unmap one page | 262127 | 3,416 | 4,560 | 7,952 | 301,456 | |
+  | maps | map one 2 MiB unit | 514 | 1,544 | 2,264 | 5,064 | 14,608 | |
+  | maps | first touch of a 2 MiB unit's 512 pages | 514 | 312,448 | 316,448 | 335,264 | 339,256 | |
+  | maps | unmap one 2 MiB unit | 514 | 60,440 | 65,648 | 88,680 | 172,655 | |
+
+- **Probes, the cloud VMs** (both runs agree): `RLIMIT_MEMLOCK` 8 MiB soft and hard.
+  `memfd_secret`: 1 MiB mapped and touched (first touch 11.2 and 18.2 us a page on x86_64,
+  2.8 and 3.4 us on arm64), 64 MiB refused with `EAGAIN`. userfaultfd: user-mode-only
+  faults allowed, all faults refused (`vm.unprivileged_userfaultfd` 0). A core-scheduling
+  cookie: allowed on x86_64; `ENODEV` on arm64, whose vCPUs have no SMT
+  (`sched_core_share_pid` refuses when `!sched_smt_active()`, `kernel/sched/core_sched.c`).
+  Landlock ABI 8. `vm.max_map_count` 262,144.
+- **Found.**
+  - Against run 3's native 76 ns, the trap a guest system call pays: 699 ns (9.2 times)
+    when its handler runs in the guest's own process; 2,560 ns (34 times) handed to
+    another process on the same CPU, 3,866 ns (51 times) on another core, and 879 ns
+    (11.6 times) when another core spins waiting for it. A hardware-virtualized guest pays
+    none of it: its system calls stay inside the guest.
+  - USER_NOTIF costs what a futex handoff does, 1.8 to 2.9 us; its synchronous wake-up
+    changed nothing beyond the runs' spread. ptrace's SYSEMU, the classic User-mode
+    Linux path, costs the most: 3.5 to 3.7 us.
+  - A guest page fault served by mapping a guest page costs 1.7 to 1.8 us, against 1.1
+    to 1.25 us for `mprotect` alone.
+  - Host mappings scale: the 263,168th page mapped in 0.98 to 1.32 us at p50, against
+    0.70 to 0.76 us for the first 1,000. What binds is the count. At the kernel's default
+    of 65,530, a guest whose pages are not contiguous gets about 65,500 mappings, 256 MiB
+    of 4 KiB pages. 2 MiB units map in the same 0.70 to 0.79 us and hold 512 times as much
+    memory a mapping.
+  - The tails are the host's, not the paths'. The max of every other-core variant reached
+    0.15 to 1 ms, on a host whose other jobs held load at 7; p99s stayed within 8.2 us.
+  - Unprivileged, `memfd_secret` can hold keys, not guest memory: the 8 MiB lock limit
+    stops it, and its pages cost 13.8 us each to first touch.
+  - On GitHub's cloud VMs (two runs a runner; the x86_64 runs on two CPU models):
+    - `getppid` takes 127 to 232 ns (bare metal 63 to 91) and the in-process SIGSYS trap
+      1.08 to 1.80 us on x86_64 and 1.34 to 1.35 us on arm64 (bare metal 0.70 to 0.75):
+      8.5 to 11.3 times native on x86_64 and 5.8 times on arm64, against 9.2 on bare
+      metal.
+    - Handing a trap to a process on another vCPU costs 11.6 to 25.4 us at p50 (futex,
+      USER_NOTIF, the SIGSYS handoff and SYSEMU alike): 3.8 to 8.4 times bare metal's
+      run 3. The cost is the sleeping server's wake-up: with the server spinning, the
+      handoff takes 1.36 to 2.06 us and a futex round trip 0.11 to 0.33 us. On one vCPU
+      the paths take 2.3 to 9.8 us (bare metal 1.8 to 3.6), and the same arm64 CPU model
+      gave SYSEMU 4.5 us in one run and 8.8 us in the other.
+    - The map limit binds at 262,144. The 4 KiB loop got 262,120 (x86_64) and 262,127
+      (arm64) mappings, 1 GiB of 4 KiB pages, then `ENOMEM`. With the process's other
+      mappings (`[vsyscall]`, listed but not counted, aside) both add up to 262,145, one
+      past the limit: `do_mmap` refuses only above `max_map_count` (`mm/mmap.c`), and
+      the split of the reservation each page lands in goes unchecked (`__split_vma`,
+      `mm/vma.c`). There the process can make no new mapping at all, `malloc`'s
+      included: run 1's harness allocated a buffer after the loop and crashed there on
+      both runners (fixed in df68484b0). A software MMU that maps guest pages into its
+      own process must keep its own allocations' headroom below the limit.
+    - Mapping costs more: a 4 KiB page maps in 1.59 to 2.04 us at p50 (bare metal 0.99
+      to 1.02), unmaps in 2.5 to 3.4 us (0.84 to 0.85) and is first touched in 0.76 to
+      1.09 us (0.61 to 0.62). A 2 MiB unit maps in 1.5 us (0.70 to 0.79), its 512 first
+      touches take 312 to 413 us (0.61 to 0.81 us a page), and it unmaps in 41 to 60 us.
+    - What an unprivileged process may use matches bare metal's: `memfd_secret` within
+      the 8 MiB lock limit, user-mode-only userfaultfd, Landlock (ABI 8). Core
+      scheduling exists only where vCPUs have SMT siblings to share a core with.
+    - GitHub's x86_64 Linux runner offers `/dev/kvm`; its arm64 runner does not. There
+      shards has no hardware virtualization at all, which is the case this goal serves.
+
+### M517. What a rootless software hypervisor's traps cost on macOS, and whether a parent can drive its child (softvirt)
+
+- **Question.** A Mac that gives shards no Hypervisor.framework (a macOS VM without nested
+  virtualization) has no seccomp. A guest's code can reach a hypervisor only as `brk` (a
+  rewritten `svc`) or a fault, raised as a signal in its own process or as a Mach exception
+  to another. What do those cost? Can a parent hold its child's task port, to map guest
+  memory into it and read its threads, without root or entitlements? What does publishing
+  translated code cost?
+- **Method.** `docs/research/measurements/softvirt-traps/macos.c` at 9d08a3ddd, `cc -O2`,
+  n=20000 after 1000 warm-ups, `mach_absolute_time` (41.67 ns a tick). Kiln runner
+  adas-mac-studio.local-2: Apple M3 Ultra (24 performance, 8 efficiency cores), macOS
+  26.4, load 1.8 to 2.0, 2026-11-12. Kiln's commands there run at priority 20, nice 10,
+  the clamp an agent's session runs under.
+  - Three runs so.
+  - Three of the same binary signed with the hardened runtime (ad-hoc, no entitlements).
+  - One as a launchd job of ProcessType Interactive (`macos-sched/launchd-run.sh`): unclamped.
+
+  Raw: `measurements/softvirt-traps/results/macos-arm64-m3ultra.md`. The validation run
+  before the exception server's fix: `results/macos-arm64-m3ultra-validation.md`.
+- **Results** (ns; the third clamped run's distribution, then the p50 range over every run
+  of the test, clamped, hardened and unclamped):
+
+  | test | variant | n | p50 | p90 | p99 | max | p50, all runs |
+  |---|---|---|---|---|---|---|---|
+  | native | `getppid` (each of 64 in a row) | 20000 | 69 | 70 | 89 | 324 | 69-78 |
+  | sigtrap | `brk` to a signal handler in-process | 20000 | 3,417 | 3,542 | 4,459 | 12,375 | 3,417 |
+  | machexc | `brk` as a Mach exception to a thread of the process | 20000 | 4,667 | 5,250 | 9,875 | 16,791 | 4,667-4,917 |
+  | child-brk | `brk` as a Mach exception to the parent | 20000 | 5,291 | 6,416 | 10,917 | 21,125 | 5,291-5,542 |
+  | child-fault | a load of a `PROT_NONE` page, the same | 20000 | 5,417 | 6,750 | 11,125 | 17,834 | 5,417-5,666 |
+  | taskport | `mach_vm_map` a 16 KiB page into the child | 20000 | 500 | 542 | 667 | 6,708 | 500 |
+  | taskport | `mach_vm_deallocate` it | 20000 | 667 | 709 | 875 | 8,209 | 667-708 |
+  | taskport | `thread_get_state` of the child's thread | 20000 | 625 | 666 | 834 | 7,334 | 584-625 |
+  | fault | a signal, the handler `mprotect`s the page | 20000 | 4,333 | 4,542 | 6,250 | 20,625 | 4,292-4,333 |
+  | jit | `MAP_JIT` write protection off and on | 20000 | 83 | 125 | 125 | 292 | 83 |
+  | jit | write 2 instructions, invalidate, call them | 20000 | 166 | 208 | 209 | 4,708 | 166-167 |
+
+- **Found.**
+  - Every trap costs 3.4 to 5.7 us. A `brk` to a signal handler in the same process costs
+    50 times a native system call (69 ns); a Mach exception to another process, 77 to 80
+    times. The Mac's cheapest trap is 4.9 times Linux's (0.70 us, M516).
+  - The agent's clamp moved none of these: the unclamped run's p50s lie within the
+    clamped runs'.
+  - A parent can drive its child without root or entitlements. `task_for_pid` is
+    refused. The child can send its own task port (`mach_task_self()`) to a port its
+    parent gave it at spawn (`posix_spawnattr_setspecialport_np`,
+    `TASK_BOOTSTRAP_PORT`), with or without the hardened runtime.
+    - With it, the parent maps a memory entry's 16 KiB page into the child in 0.50 us
+      and unmaps it in 0.67 us.
+    - It reads the child's thread state in 0.6 us.
+    - Untested: the same under App Sandbox, where shards' VM process runs (D30).
+  - Publishing translated code is cheap. `MAP_JIT` memory's per-thread write protection
+    turns off and on in 83 ns. Writing two instructions, invalidating the instruction
+    cache and calling them costs 167 ns. Under the hardened runtime `MAP_JIT` needs
+    `com.apple.security.cs.allow-jit`: without it, `EINVAL` (the validation run).
+  - On a Mac, then, a guest system call served by a trap costs at least 3.4 us. One that
+    translated code turns into a call into shards traps nothing. What translation costs
+    the rest of a guest's code is the next measurement.
+
+### M518. What a rootless software hypervisor's traps cost on Windows, and how its guest memory reaches another process (softvirt)
+
+- **Question.** Windows filters no system calls for a user process: its one system-call
+  mitigation, `PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY`, disallows only win32k and
+  fsctl calls. A guest's code can reach a hypervisor only as a breakpoint (a rewritten
+  system call) or a fault: in its own process, through a vectored exception handler, or
+  in another, as a debug event. What does each cost? Can a section's views put guest
+  memory into another process page by page, below the 64 KiB allocation granularity?
+  What does publishing translated code cost?
+- **Method.** `docs/research/measurements/softvirt-traps/windows.c`, `cl /nologo /O2 /W4`,
+  n=20000 after 1000 warm-ups, `QueryPerformanceCounter`, whose 10 MHz counter ticks
+  every 100 ns on both runners: every p50 below but the native rows' is a multiple of it,
+  and an 8-byte flush can read 0. GitHub's windows-2025 runner (x64: Windows Server 2025
+  Datacenter 10.0.26100, image windows-2025-vs2026 20261103.298.1) and windows-11-arm
+  runner (arm64: Windows 11 Enterprise 10.0.26200, image windows-11-vs2026-arm64
+  20261101.203.1), 4 processors each, `softvirt-traps.yml`, three runs each, 2026-11-12:
+  43135435859 (`windows.c` at 85f525fca), 43162571571 (df68484b0) and 43165501391
+  (961409a6e, which names the CPU: an AMD EPYC 7763 and a Cobalt 100).
+  - `native`: `SwitchToThread` with no other thread to run (`NtYieldExecution`), per
+    call over 64 in a row.
+  - `veh`: `__debugbreak()` served by a vectored exception handler that steps over it; a
+    load of a `PAGE_NOACCESS` page whose handler makes the page read-write.
+  - `debug`: the same breakpoint in a child started with `DEBUG_ONLY_THIS_PROCESS`,
+    served by the parent's `WaitForDebugEventEx` loop; the child times each round trip.
+  - `views`: `MapViewOfFile3` of a pagefile-backed section's 64 KiB view into an idle
+    child, then `UnmapViewOfFile2`; and a placeholder (`VirtualAlloc2`,
+    `MEM_RESERVE_PLACEHOLDER`) split at 4 KiB (`VirtualFreeEx`,
+    `MEM_PRESERVE_PLACEHOLDER`), each part replaced by a 4 KiB view
+    (`MEM_REPLACE_PLACEHOLDER`), one at a 4 KiB offset of the section, one at offset 0.
+  - `jit`: `VirtualProtect` of a code page read-write, then execute-read;
+    `FlushInstructionCache` of 8 bytes.
+
+  Raw: `measurements/softvirt-traps/results/windows-x86_64-github-windows-2025.md` and
+  `windows-arm64-github-windows-11-arm.md`.
+- **Results** (ns; run 3's distribution, then the p50 range of the three runs; `debug`
+  from runs 2 and 3, run 1's having failed):
+
+  | test | variant | host | n | p50 | p90 | p99 | max | p50, all runs |
+  |---|---|---|---|---|---|---|---|---|
+  | native | `NtYieldExecution`, each of 64 in a row | x64 | 20000 | 185 | 187 | 267 | 1,454 | 151-187 |
+  | native | the same | arm64 | 20000 | 170 | 173 | 215 | 3,365 | 104-170 |
+  | veh | breakpoint, a vectored handler in the process | x64 | 20000 | 1,600 | 1,700 | 2,700 | 36,600 | 1,200-1,600 |
+  | veh | the same | arm64 | 20000 | 1,000 | 1,100 | 1,100 | 42,100 | 700-1,000 |
+  | veh | access violation, the handler `VirtualProtect`s the page | x64 | 20000 | 3,400 | 5,100 | 6,100 | 88,200 | 2,900-3,500 |
+  | veh | the same | arm64 | 20000 | 2,200 | 2,300 | 2,400 | 103,700 | 1,700-2,200 |
+  | debug | breakpoint, a debug event to the parent | x64 | 20000 | 96,800 | 110,300 | 149,500 | 11,999,800 | 38,000-96,800 |
+  | debug | the same | arm64 | 20000 | 33,100 | 38,400 | 46,800 | 197,900 | 27,200-33,100 |
+  | views | map a 64 KiB view into the child | x64 | 20000 | 1,600 | 2,300 | 4,200 | 886,200 | 1,200-1,600 |
+  | views | the same | arm64 | 20000 | 1,100 | 1,100 | 2,400 | 28,000 | 800-1,100 |
+  | views | unmap it | x64 | 20000 | 2,000 | 2,300 | 4,700 | 1,010,100 | 1,500-2,000 |
+  | views | the same | arm64 | 20000 | 1,400 | 1,500 | 2,200 | 33,100 | 1,200-1,400 |
+  | jit | `VirtualProtect` read-write, then execute-read | x64 | 20000 | 1,100 | 1,600 | 2,000 | 1,156,200 | 800-1,100 |
+  | jit | the same | arm64 | 20000 | 900 | 1,000 | 1,000 | 23,000 | 700-900 |
+  | jit | `FlushInstructionCache` of 8 bytes | x64 | 20000 | 0 | 100 | 100 | 24,000 | 0 |
+  | jit | the same | arm64 | 20000 | 300 | 300 | 400 | 5,800 | 200-300 |
+
+  A placeholder split at 4 KiB, a 4 KiB view at a 4 KiB offset and one at offset 0: `ok`
+  in every run on both.
+- **Found.**
+  - In-process traps cost 0.7 to 1.6 us. A breakpoint to a vectored handler takes 1.2 to
+    1.6 us on x64 and 0.7 to 1.0 us on arm64, 7.9 to 8.6 and 5.9 to 6.7 times the same
+    run's `NtYieldExecution`; a fault whose handler changes the page's protection, 2.9 to
+    3.5 and 1.7 to 2.2 us. That is about Linux's in-process trap on cloud VMs (1.08 to
+    1.80 us, M516), and a fifth to half of the Mac's (3.4 us, M517).
+  - A trap served by another process costs 27 to 97 us: a debug event takes 27.2 to 33.1
+    us on arm64 and 38.0 to 96.8 us on x64, 27 to 61 times the in-process handler. One
+    of run 3's x64 round trips took 12.0 s (its p99, 150 us); the harness cannot tell a
+    pause of the VM from a stall in the debug path. Of Windows' documented interfaces,
+    only the debugging API lets one process catch another's breakpoints and faults and
+    resume it, so a hypervisor serving guest code in another process traps at this price.
+  - A debugger and a handler see the trap differently. A vectored handler finds the
+    thread's PC on the break instruction and steps it over; a debugger finds it already
+    past (21,001 of 21,001 breakpoints, the loader's own included, in both runs on both
+    architectures). Run 1's parent stepped each again, and its child died before it
+    could report (fixed in df68484b0).
+  - Guest memory reaches another process page by page. A 64 KiB view of a section maps
+    into a child in 0.8 to 1.6 us and unmaps in 1.2 to 2.0 us, and placeholders split to
+    4 KiB take 4 KiB views at any 4 KiB offset, below the allocation granularity, on both
+    architectures: the parent's hold on its child's memory that macOS's task port gives
+    (M517), without the child's help.
+  - Publishing translated code by protection change costs 0.7 to 1.1 us for the pair, 8
+    to 13 times macOS's `MAP_JIT` toggle (83 ns, M517); an 8-byte instruction-cache flush
+    stays within 0.3 us. Two views of one section, one writable and one executable, would
+    need no protection change (not measured here).
+  - On Windows, then, a trap costs at least 0.7 us in the guest's own process and 27 us
+    from another; a guest system call that translated code turns into a call traps
+    nothing.
+
+### M519. What today's rootless sandboxes without hardware virtualization cost a guest: gVisor and User-mode Linux against native and KVM (softvirt)
+
+- **Question.** The bar a software hypervisor of shards' own must clear (R08): what do the
+  established rootless designs that need no hardware virtualization cost a guest's system
+  calls, processes, page faults, context switches and own code? gVisor's systrap platform
+  reimplements Linux in a sandboxed Go kernel. User-mode Linux runs Linux itself as a
+  process, by seccomp or by ptrace. Measure on bare metal, in a VM that has no hardware
+  virtualization of its own, and in a KVM guest for the hardware's own cost.
+- **Method.** `docs/research/measurements/softvirt-baselines/`. `workload.c`, static (zig
+  0.16 cc, musl): a mode times one operation per sample.
+  - `syscall`: `getppid`.
+  - `forkexec`: fork, exec of itself to exit, wait.
+  - `fault`: 16 first-touch page faults.
+  - `pipe`: one byte to another process and back.
+  - `compute`: FNV-1a over 256 KiB, user code alone.
+
+  n=20000 (`forkexec` and `compute` 1000). The variants:
+  - gVisor release 20261109.0, `runsc --rootless --network=none --platform=systrap do`.
+  - User-mode Linux 7.3.4, x86_64 defconfig, the workload its initramfs's init,
+    `seccomp=on` and `seccomp=off` (ptrace).
+  - Firecracker v1.18.0 on KVM, shards' pinned kernel 6.18.48, 2 vCPUs, the workload its init.
+
+  Hosts:
+  - kiln-a094a12d, bare metal: Intel Core i9-14900HX, Fedora 44, Linux 6.19.10, other
+    jobs running (load 7 to 8.4); `run.sh` at dc05f8142, three rounds of every variant
+    interleaved, pinned to the performance cores 0-15.
+  - A Firecracker microVM on the same host: no VMX exposed, `/dev/kvm` absent in it, as
+    in a cloud VM without nested virtualization; 2 vCPUs, Alpine 3.24.4 root; `vm.sh`
+    at 736f90daa, one round, unpinned.
+
+  Raw, every round: `measurements/softvirt-baselines/results/x86_64-fedora44-i9-14900hx.md`.
+- **Results, bare metal** (p50 range over the three rounds; ns, us where marked):
+
+  | mode | native | gVisor systrap | UML, seccomp | UML, ptrace | KVM (Firecracker) |
+  |---|---|---|---|---|---|
+  | syscall `getppid` | 73-79 | 4,135-4,337 | 8,704 | 10,752-11,264 | 74-81 |
+  | fork, exec, exit, wait (us) | 65.9-66.5 | 500-512 | 432-450 | 509-524 | 65.8-74.9 |
+  | 16 first-touch faults (us) | 8.68-9.08 | 15.0-15.5 | 135-140 | 257-264 | 9.35-9.81 |
+  | pipe, there and back (us) | 2.94-3.12 | 10.1-10.3 | 23.3-25.3 | 28.9-30.0 | 4.93-5.39 |
+  | compute, FNV-1a 256 KiB (us) | 219-232 | 222-230 | (not run) | (not run) | 218-223 |
+
+  UML's image held the workload of its first build, before the compute mode.
+- **Results, in the VM without hardware virtualization** (p50, one round):
+
+  | mode | native | gVisor systrap | UML, seccomp | UML, ptrace |
+  |---|---|---|---|---|
+  | syscall `getppid` (ns) | 85 | 4,188 | 14,080 | 15,872 |
+  | fork, exec, exit, wait (us) | 72.5 | 877 | 453 | 562 |
+  | 16 first-touch faults (us) | 10.1 | 15.4 | 176 | 389 |
+  | pipe, there and back (us) | 5.7 | 11.2 | 40.7 | 45.1 |
+
+- **Found.**
+  - A KVM guest runs every mode at native speed, within its spread, but for the pipe's
+    second vCPU. Hardware virtualization costs a guest's system calls, faults and own
+    code nothing measurable here.
+  - Against native on bare metal, gVisor's systrap costs a system call 55 times (4.1 to
+    4.3 us), a process 7.6 times, 16 faults 1.7 times, a pipe round trip 3.3 times; its
+    user code runs at native speed (compute within the spread). User-mode Linux costs a
+    system call 110 times (seccomp) to 140 times (ptrace), faults 15 to 29 times.
+  - The VM without hardware virtualization changes little for gVisor (system call 4.2 us,
+    a process 877 us). User-mode Linux's costs grow in it: its system call 14 to 16 us,
+    its faults 1.3 times their bare-metal cost under seccomp and 1.5 times under ptrace.
+  - Against M516's floors: gVisor's 4.2 us system call is 1.6 times the 2.6 us
+    cross-process handoff, User-mode Linux's 8.7 us 3.4 times. What R08's 4 to 5 times
+    gVisor asks, under 1.05 us a system call, only the in-process trap (0.70 us) or no
+    trap at all reaches. Its process creation, 100 to 128 us, is near native's 66 us:
+    no design that makes a host process for each guest process gets there.
+
+### M520. How many host mappings a guest's memory needs, and what the guest kernel's folio sizes do to it (softvirt)
+
+- **Question.** A software hypervisor that runs each guest address space in a host process
+  of its own maps guest pages into it from a guest-memory file. Each run of pages whose
+  virtual addresses and guest-physical frames both follow on is one host mapping, and
+  Linux caps a process at `vm.max_map_count` mappings: 65,530 by default (M516). How
+  fragmented does shards' own guest kernel keep agent-like processes' memory? Does
+  anything the guest kernel controls change it?
+- **Method.** `docs/research/measurements/softvirt-memlayout/` at e24270009.
+  - A Firecracker v1.18.0 microVM on kiln-a094a12d's KVM: shards' pinned kernel 6.18.48,
+    2 vCPUs, 2 GiB, an Alpine root with python3 and nodejs.
+  - In it, python3 holds a 1,000,000-entry dict and 200,000 small objects; node holds
+    1,000,000 objects and 200,000 Buffers.
+  - 25 s after both start, `pagemap.c` (as root) walks every process's maps and pagemap,
+    counting runs.
+  - The same work, killed and the page cache dropped between, under four policies of the
+    guest's transparent huge pages:
+    - its default (THP on madvise, no smaller folio sizes);
+    - THP always;
+    - 64 KiB folios always (multi-size THP);
+    - every size from 8 KiB to 2 MiB always.
+
+  Raw: `measurements/softvirt-memlayout/results/x86_64-firecracker-guest.md`, with a first
+  count under the default alone at dc05f8142.
+- **Results:**
+
+  | policy | resident | host mappings (runs) | pages a run | python3's runs | node's runs |
+  |---|---|---|---|---|---|
+  | default (THP madvise) | 395 MiB | 37,857 | 2.7 | 20,725 | 16,874 |
+  | THP always | 389 MiB | 40,779 | 2.4 | 17,842 | 22,674 |
+  | 64 KiB folios always | 392 MiB | 12,806 | 7.8 | 2,858 | 9,683 |
+  | every size always | 418 MiB | 4,377 | 24.5 | 1,039 | 3,068 |
+
+- **Found.**
+  - Under the guest kernel's default, a process's resident memory lies in runs of 2.2 to
+    2.7 pages. python3's 161 MiB took 20,725 host mappings, node's 234 MiB 16,874.
+  - At the kernel's default of 65,530 a process, that would cap a guest process at 560 to
+    690 MiB resident. The first count, with a git commit before it, found the same: 2.2
+    pages a run.
+  - THP always changed nothing: 72 MiB went into 2 MiB folios, but the rest stayed as
+    fragmented.
+  - Smaller folios are what join pages:
+    - 64 KiB folios cut the mappings 3 times (python3's 7 times).
+    - Every size always cuts them 8.6 times, to 24.5 pages a run, for 6% more resident
+      memory (418 against 395 MiB).
+    - At 24.5 pages a run, 65,530 mappings hold about 6 GiB resident a process.
+  - The guest kernel is shards' own. A host-mapped engine sets its folio sizes, which
+    count, and not the host's `vm.max_map_count`, which its user cannot change.
+
+### M521. What a binary translator costs a guest, on its host's own architecture: QEMU's TCG against native and KVM (softvirt)
+
+- **Question.** The other way to run a guest without hardware virtualization is to
+  translate its code. A guest's system call then becomes a call, not a host trap, and on
+  macOS and Windows translation is the only rootless route (M517). What does the
+  established portable translator, QEMU's TCG, cost each kind of guest work, translating
+  user code alone (user mode) and a whole guest, its kernel too, through a software MMU
+  (full system)?
+- **Method.** `docs/research/measurements/softvirt-dbt/run.sh` at 3b3645d6a, M519's
+  workload (static), on kiln-a094a12d (Intel Core i9-14900HX, Fedora 44, Linux 6.19.10,
+  other jobs running).
+  - QEMU 11.0.3 (Alpine's packages, in a container), user mode (`qemu-x86_64`).
+  - The same, full system: `-accel tcg,thread=multi -cpu max -smp 2 -m 1024`, shards'
+    pinned kernel 6.18.48, the workload its init.
+  - Native, and Firecracker v1.18.0 on KVM with the same kernel and init.
+
+  Three rounds of the four interleaved, pinned to cores 0-15. Raw:
+  `measurements/softvirt-dbt/results/x86_64-fedora44-i9-14900hx.md`.
+- **Results** (p50 range over the three rounds):
+
+  | mode | native | TCG, user mode | TCG, full system | KVM (Firecracker) |
+  |---|---|---|---|---|
+  | syscall `getppid` (ns) | 67-220 | 339-348 | 441-476 | 72-80 |
+  | compute, FNV-1a 256 KiB (us) | 206-222 | 237-243 | 252-268 | 206-237 |
+  | 16 first-touch faults (us) | 8.55-8.62 | 8.79-9.32 | 145-150 | 9.04-9.80 |
+  | fork, exec, exit, wait (us) | 58.5-71.5 | 245-300 | 1,512-1,626 | 60.4-68.0 |
+  | pipe, there and back (us) | 3.02-3.05 | 2.90-3.36 | 18.8-22.5 | 5.19-5.58 |
+
+  Native's system call varied by round (67, 137 and 220 ns at p50, each round tight
+  within itself) on the same pinned cores. User mode's exec runs the new image natively:
+  its fork-exec row is part translation, part native.
+- **Found.**
+  - A full-system translator serves a guest's system call, its own kernel's entry, work
+    and return all translated, in 0.44 to 0.48 us: under Linux's cheapest trap (0.70 us
+    to a handler in the same process, M516), 9 times under gVisor's (4.1 to 4.3 us,
+    M519), and 7 to 13 times under the Mac's (3.4 to 5.7 us, M517). QEMU's TCG is
+    portable, not tuned for one architecture translating itself.
+  - Translated code costs little here: compute ran at 1.1 times native in user mode, 1.2
+    times in full system with every load through the software MMU.
+  - What full-system translation pays for is the guest's memory management:
+    - a first-touch page fault 9.2 us (17 times native);
+    - a process made and gone 1.5 to 1.6 ms (21 to 28 times);
+    - a pipe's two context switches 19 to 23 us (6 to 7 times).
+
+    These are where a translator of shards' own would have to beat QEMU: faults filled
+    without a full guest exception round, and context switches that keep the translation
+    and TLB of each address space.
+
+### M522. A sandboxed parent drives its sandboxed child: M517's task port under App Sandbox (softvirt, D30)
+
+- **Question.** M517 found a parent can drive its child's memory and threads without
+  root, through the task port the child sends it. shards' VM process runs in App Sandbox
+  (D30), and its children would too. Does the handoff hold there, and at what cost?
+- **Method.** `measurements/softvirt-traps/macos.c` at a5e6b162f, which hands the task
+  port over the child's exception port (set at spawn). An Info.plist goes in
+  `__TEXT,__info_plist`, and the binary is ad-hoc signed with the hardened runtime,
+  `com.apple.security.app-sandbox` and `com.apple.security.cs.allow-jit`. Parent and
+  child both sandboxed. adas-mac-studio.local-2 (M3 Ultra, macOS 26.4), n=20000, three
+  runs, 2026-11-12. Raw: `results/macos-arm64-m3ultra-app-sandbox.md`.
+- **Results** (p50 range over the three runs):
+  - The child sent its task port; `task_for_pid` failed.
+  - The parent received the port, allocated in the child, listed its thread.
+  - `mach_vm_map` of a 16 KiB page into the child: 500 ns; `mach_vm_deallocate`: 667 to
+    708 ns.
+  - `thread_get_state`: 625 ns.
+  - `brk` as a Mach exception to the parent: 5.4 to 5.7 us; a fault, 6.7 to 6.8 us.
+  - JIT write protection off and on: 83 ns.
+- **Found.**
+  - The handoff holds under App Sandbox at the unsandboxed cost (M517's 500 ns a map).
+    App Sandbox costs a fault delivered to the parent about 1.2 us more (6.7 to 6.8
+    against M517's 5.4 to 5.7 us); a `brk` it moves not past the runs' spread.
+  - It must not go over the bootstrap port. With the task port handed over there
+    (9d08a3ddd), the sandboxed child's runtime, which messages launchd through that port
+    as it starts, sent the parent a message of another size ("(ipc/rcv) msg too large"),
+    and no task port came.
+  - Without an embedded Info.plist, the sandboxed binary died at launch (SIGTRAP), as
+    crates/vm-process/build.rs records for shards' own VM process.
+
+### M523. The floors of a translation engine's own mechanisms, against QEMU's (softvirt)
+
+- **Question.** M521 found QEMU's TCG serving a guest system call under every trap, but
+  paying for the guest's memory management: a fault 17 times native, a process 21 to
+  28, a context switch 6 to 7. Is that translation's cost or QEMU's design? What do the
+  mechanisms a purpose-built engine would use cost at their floor?
+- **Method.** `docs/research/measurements/softvirt-engine/engine.c` at b4f688be4: the
+  mechanisms modelled in C, in one process, no host trap anywhere.
+  - A guest's memory: 1 GiB, touched once beforehand, so no host fault lands in a
+    measurement.
+  - Its address spaces: 4-level page tables in that memory, 4 KiB pages.
+  - A 4,096-entry software TLB, tagged by address space, its index mixed with the tag.
+
+  Each test runs n=20000 batches of 256 operations (5,000 samples of 16 faults):
+  - loads that hit, and that miss and walk 256 MiB at random, each against a native load
+    of the same pattern;
+  - an address-space switch then 16 pages touched, with the tag and with a flush;
+  - the engine's part of a guest system call (registers saved, privilege raised, a
+    handler called through its number, registers restored), against native `getppid`;
+  - 16 first-touch faults handled inside the engine (the guest kernel's handler gives
+    each a zeroed frame and builds its page tables), against 16 native first touches.
+
+  Hosts, three runs each, 2026-11-12:
+  - kiln-a094a12d: i9-14900HX, Linux 6.19.10, pinned to a performance core.
+  - adas-mac-studio.local-2: M3 Ultra, macOS 26.4, unpinned.
+
+  Raw: `measurements/softvirt-engine/results/engine-x86_64-linux-and-arm64-macos.md`.
+- **Results** (p50 range over the three runs; arm64's first run's native loads ran slower
+  than the next two, all kept in the raw file):
+
+  | mechanism | x86_64 | x86_64 native | arm64 (macOS) | arm64 native | QEMU TCG, x86_64 (M521) |
+  |---|---|---|---|---|---|
+  | load, TLB hit | 1.2-1.5 ns | 0.6 ns | 1.1-1.3 ns | 0.5-2.3 ns | |
+  | load, miss and walk (256 MiB, random) | 28.0-29.9 ns | 10.9-11.7 ns | 11.6-11.7 ns | 2.9-5.9 ns | |
+  | switch then 16 pages, tagged | 14.7-15.2 ns | | 33.8-36.4 ns | | |
+  | switch then 16 pages, flushed | 1,748-1,801 ns | | 662-682 ns | | |
+  | a system call, the engine's part | 8.7-9.1 ns | 63 ns (whole) | 8.6 ns | 70-75 ns (whole) | 441-476 ns (whole) |
+  | 16 first-touch faults | 5.5-5.9 us | 9.1-11.1 us | 1.6 us | 2.25 us | 145-150 us |
+
+- **Found.**
+  - The translation's own mechanisms cost little at their floor:
+    - a load through the software MMU, 1.1 to 1.5 ns when its translation is cached (2 to
+      2.5 times a native load), 12 to 30 ns when it walks the page tables;
+    - a guest system call's entry and return, 9 ns.
+  - An address space's switch costs nothing measurable with a tagged TLB. Flushed, as
+    QEMU's TCG flushes at each switch, the switch and its 16 pages cost 0.66 to 1.8 us.
+  - A guest fault served inside the engine costs less than a native one, 1.6 against
+    2.25 us and 5.5 to 5.9 against 9.1 to 11.1 us for 16. It takes no host trap. What
+    is left is the zeroing and page-table building that the guest's kernel would do on
+    any engine.
+  - QEMU's 145 to 150 us for 16 faults, then, is its design, not translation's floor.
+  - These are C models of what translated code would do, compiled, not a translator. A
+    translator adds instruction decoding, x86 flag handling, branch-target lookup and
+    the guest kernel's own code (M521: 1.1 to 1.3 times native). They bound the design;
+    the prototype measures how close it comes.
