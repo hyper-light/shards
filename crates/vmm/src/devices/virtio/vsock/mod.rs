@@ -10,6 +10,7 @@ mod conn;
 mod muxer;
 pub mod packet;
 mod poll;
+pub mod ring;
 
 use std::io;
 #[cfg(unix)]

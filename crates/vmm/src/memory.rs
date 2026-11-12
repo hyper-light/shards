@@ -946,7 +946,7 @@ impl GuestMemory {
     }
 
     /// Whether a pin meets `gpa..gpa+len`.
-    fn pinned(&self, gpa: u64, len: u64) -> bool {
+    pub(crate) fn pinned(&self, gpa: u64, len: u64) -> bool {
         lock(&self.pins).meets(gpa, len)
     }
 
