@@ -430,6 +430,15 @@ impl Owned {
         matches!(self.state, State::Ended { .. })
     }
 
+    /// Its status once its whole population has ended, which its owner may be told (D231);
+    /// none before, nor where it is quarantined or faulted, its emptiness unknown.
+    pub fn ended_status(&self) -> Option<u32> {
+        match self.state {
+            State::Ended { status } => Some(status),
+            _ => None,
+        }
+    }
+
     pub fn checkpoint_block(&self) -> Option<(shards_abi::run::quiesce::Reason, i32)> {
         self.state.checkpoint_block()
     }
