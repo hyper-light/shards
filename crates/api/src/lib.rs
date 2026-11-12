@@ -514,13 +514,14 @@ pub trait Guest: Send + Sync {
 }
 
 /// The backend shards boots Linux guests with on `os` and `arch` (`std::env::consts`'):
-/// KVM on Linux, Hypervisor.framework on arm64 macOS, WHP on x86_64 Windows. macOS on x86_64
-/// is out of shards' scope, and Windows on arm64 not yet done (shards' plan step 10).
+/// KVM on Linux, Hypervisor.framework on arm64 macOS, WHP on Windows (arm64's `hv::whp_arm64`,
+/// D209), each the VMM's `hv::BACKEND` there; whether a host's hypervisor runs guests is its
+/// VM process's `check_host`, as the guest boots. macOS on x86_64 is out of shards' scope.
 pub fn backend_of(os: &'static str, arch: &'static str) -> Result<Backend, Refusal> {
     match (os, arch) {
         ("linux", "x86_64" | "aarch64") => Ok(Backend::Kvm),
         ("macos", "aarch64") => Ok(Backend::HypervisorFramework),
-        ("windows", "x86_64") => Ok(Backend::WindowsHypervisorPlatform),
+        ("windows", "x86_64" | "aarch64") => Ok(Backend::WindowsHypervisorPlatform),
         _ => Err(Refusal::NoBackend { os, arch }),
     }
 }
@@ -668,8 +669,8 @@ mod tests {
         assert_eq!(UNRECORDED.get(), ms(80));
     }
 
-    /// The backend each host boots with, and the two hosts without one refused naming
-    /// them (D215).
+    /// The backend each host boots with, the VMM's on each (WHP's arm64 one too, D209), and
+    /// the host without one refused naming it (D215).
     #[test]
     fn backends_are_named_per_host() {
         assert_eq!(backend_of("linux", "x86_64"), Ok(Backend::Kvm));
@@ -688,10 +689,7 @@ mod tests {
         );
         assert_eq!(
             backend_of("windows", "aarch64"),
-            Err(Refusal::NoBackend {
-                os: "windows",
-                arch: "aarch64"
-            })
+            Ok(Backend::WindowsHypervisorPlatform)
         );
         assert_eq!(min_memory_mib("x86_64"), 128);
         assert_eq!(min_memory_mib("aarch64"), 64);
