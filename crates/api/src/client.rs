@@ -2393,6 +2393,102 @@ mod tests {
         );
     }
 
+    /// D215: a finite owned connect that expires between a retry's lifetime
+    /// observation and dial must not become an unbounded handshake. Original
+    /// production is intentionally unchanged by this source-only control.
+    #[cfg(unix)]
+    #[test]
+    fn finite_owned_retry_expiry_cannot_start_an_unbounded_handshake() {
+        let patience = crate::conformance::PATIENCE.get();
+        let dir = shards_testdir::TempDir::new("api-finite-retry").unwrap();
+        let path = dir.join("v");
+        // Check the fixture socket path before any worker. The first actual
+        // attempt then sees this owned path absent, establishing a real retry.
+        let checked = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        drop(checked);
+        std::fs::remove_file(&path).unwrap();
+        let shared = managed_shared(0, true, None).unwrap();
+        let asked = path.clone();
+        let (retry, retried) = std::sync::mpsc::sync_channel(1);
+        let (resume, resumed) = std::sync::mpsc::sync_channel(1);
+        let (finished, result) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("finite-owned-retry-control".into())
+            .spawn(move || {
+                let mut visits = 0usize;
+                let mut first_deadline = None;
+                let connected = connect_owned(&shared, &asked, 5, patience, || {
+                    visits += 1;
+                    if visits == 1 {
+                        first_deadline = Instant::now().checked_add(patience);
+                    }
+                    if visits == 2 {
+                        let deadline = first_deadline.ok_or(Refusal::Launch(crate::LaunchError::Observer))?;
+                        retry
+                            .send(deadline)
+                            .map_err(|_| Refusal::Launch(crate::LaunchError::Observer))?;
+                        resumed
+                            .recv()
+                            .map_err(|_| Refusal::Launch(crate::LaunchError::Observer))?;
+                    }
+                    Ok(None)
+                });
+                let _ = finished.send(connected.map(drop));
+            })
+            .unwrap();
+        let reached_retry = retried.recv_timeout(patience);
+        let mut listener = None;
+        let mut before_cleanup = None;
+        let mut late_dial = None;
+        let mut resumed_ok = false;
+        if let Ok(deadline) = reached_retry {
+            listener = std::os::unix::net::UnixListener::bind(&path).ok();
+            if let Some(listener) = &listener {
+                let nonblocking = listener.set_nonblocking(true);
+                if nonblocking.is_ok() {
+                    // Wait for the actual deadline fact, not a guessed delay.
+                    // The API budget began before the first gone callback, so
+                    // this later deadline cannot release it before expiry.
+                    let gate = Mutex::new(());
+                    let clock = Condvar::new();
+                    let mut held = lock(&gate);
+                    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+                        held = clock
+                            .wait_timeout(held, left)
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .0;
+                    }
+                    resumed_ok = resume.send(()).is_ok();
+                    before_cleanup = Some(result.recv_timeout(patience));
+                    late_dial = Some(listener.accept());
+                }
+            }
+        }
+        // Even the original unbounded path is made terminal through this test's
+        // own accepted socket EOF, before joining or making an oracle assertion.
+        let observed_late_dial = late_dial.as_ref().is_some_and(Result::is_ok);
+        drop(late_dial);
+        drop((listener, resume));
+        let joined = worker.join();
+        assert!(
+            reached_retry.is_ok(),
+            "a real failed first dial must reach the retry seam"
+        );
+        assert!(
+            resumed_ok,
+            "the exact expiry witness must release the retry callback"
+        );
+        assert!(
+            !observed_late_dial,
+            "an expired finite retry performed a new native dial"
+        );
+        assert!(
+            matches!(before_cleanup, Some(Ok(Err(Refusal::Channel { port: 5, .. })))),
+            "finite expiry must return without the peer EOF used only for cleanup"
+        );
+        assert!(joined.is_ok());
+    }
+
     /// D215, D233: pure preparation launches nothing and preserves the exact
     /// native command/ports; wrong endpoint/port fail before borrowed observation.
     #[test]
