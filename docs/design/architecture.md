@@ -21451,6 +21451,61 @@ suite and E2E on HVF.
 **What would falsify it.** A conforming client that needs to link the VMM; a host class
 whose runs are slower than its record (a new record, not a raised bound).
 
+### D231. An image booted for an orchestrator: a run of its own, hosted by one `shards` process (decided; building)
+
+**Why.** An orchestrator that runs each harness in a microVM of its own (Hex, for every
+kiln harness) needs an Agentfile's image booted under shards-init, which applies the
+Agentfile (each member started in its confined domain, its grants enforced, D59, D109), with
+no daemon: its records, pools and runs are a home's and Docker's, where the orchestrator owns
+each microVM's life as it owns each direct boot's (D215). D215's direct boot runs the
+orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternatives:
+[runtime-image-boot-decision-v1](../research/runtime-image-boot-decision-v1.md).
+
+**Decided.**
+- *One host per run.* `shards_api::image::ImageShards::boot` starts `shards api-run`, an
+  internal command, and speaks to it over that process's stdin and stdout, where alone the
+  request's credentials travel. The run host prepares the run with the daemon's own
+  functions (`run::prepare`, `volumes::open_for`, `setup::setup`, `security_setup`,
+  `domain_seccomp`, `guest::server_device`, managed capture admission, the egress policy),
+  starts the VM process cold in its warm mode with its network process through the
+  builder's launch made shared, and plays the daemon's side of the warm link for that one
+  run (`READY`, `RUN`, `TAKEN`, `STOP_ORDER` of SIGKILL so that the run ends with its host,
+  the run's messages, execs). It owns the run's managed output (P3) and relays each
+  member's channels and end to the orchestrator. Its channel closing ends the run.
+- *Members' streams and ends.* stdout and stderr are managed capture's, credited per
+  channel by the orchestrator's reads; a member's end is `MEMBER_ENDED` (its status as
+  `docker run` reports one), sent by init once, when its population has ended; stdin is
+  closed unless asked for at create, then a pipe fed by a connection of the member's own,
+  dialed to the exec port with a token, as an exec's is. A member's terminal: owed (G24),
+  refused `Unsupported` on every host.
+- *Staging.* `member-env=` and `member-file=` setup entries, by the member's declared
+  index: variables over its image's (`SHARDS_DOMAIN` refused), regular files under its home
+  tmpfs at relative paths, owned by its uid, permission bits alone, applied before its
+  program runs, within `run::MAX_PAYLOAD`. Native-sign-in delegation, not opacity (G18): the
+  member reads what it is given.
+- *Ports and grants.* Published ports bound by `publish::bind`, only for a port the image
+  gives a member for ingress (D122) or for the run's own command; egress, remote MCP hosts
+  and DNS the image grants, kept or dropped by the orchestrator, never added.
+- *Shares.* At boot, as the run's `-v`, given to the members the image's `VOLUME` there is
+  for (D109). Added while running: D214's path to the run's command, owed; to a member,
+  refused (its mounts are made as it starts).
+- *Stats.* `builtin::STATS` with a scope: the workload's (as before), the run's, or a
+  member's cgroup.
+- *Stop.* The VM process killed at once, as `Guest::stop`.
+- *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
+  the members start.
+
+**Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
+`docker run`'s `128 + signal`; every wait is on a fact.
+
+**Evidence owed** (ROOT): real-VM E2E on KVM x86_64 and arm64, HVF and WHP
+(`crates/shards/tests/api_image.rs`); the run host's resident, CPU and kernel cost per
+microVM against the daemon's per run and Firecracker's (R14).
+
+**What would falsify it.** A run host costing more per microVM than the daemon per run (then
+one host per orchestrator); an orchestrator needing to link the VMM; credentials a member
+must not read (then plan P10's opaque broker).
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
