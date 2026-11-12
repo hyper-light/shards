@@ -1149,11 +1149,12 @@ enum Attempt {
     Again(String),
     Refused(String),
     Allocation,
+    Absolute(HandshakeError),
 }
 
 /// The existing owned-client String boundary, with fallible growth and no
 /// allocating fallback. Borrowed errors never pass through this boundary.
-fn message(args: std::fmt::Arguments<'_>) -> Result<String, ()> {
+pub(crate) fn message(args: std::fmt::Arguments<'_>) -> Result<String, ()> {
     struct Text(String);
     impl std::fmt::Write for Text {
         fn write_str(&mut self, text: &str) -> std::fmt::Result {
@@ -1250,26 +1251,28 @@ fn handshake(
             },
         )?;
     let wait = deadline.map_or(HandshakeWait::Unbounded, HandshakeWait::Until);
-    handshake_until(vsock, port, wait, cost).map_err(|error| {
-        if matches!(
-            error,
-            HandshakeError::Io {
-                kind: io::ErrorKind::OutOfMemory,
-                ..
-            }
-        ) {
-            return Attempt::Allocation;
+    handshake_until(vsock, port, wait, cost).map_err(owned_handshake_error)
+}
+
+fn owned_handshake_error(error: HandshakeError) -> Attempt {
+    if matches!(
+        error,
+        HandshakeError::Io {
+            kind: io::ErrorKind::OutOfMemory,
+            ..
         }
-        let why = match message(format_args!("{error}")) {
-            Ok(why) => why,
-            Err(()) => return Attempt::Allocation,
-        };
-        if error.retryable() {
-            Attempt::Again(why)
-        } else {
-            Attempt::Refused(why)
-        }
-    })
+    ) {
+        return Attempt::Allocation;
+    }
+    let why = match message(format_args!("{error}")) {
+        Ok(why) => why,
+        Err(()) => return Attempt::Allocation,
+    };
+    if error.retryable() {
+        Attempt::Again(why)
+    } else {
+        Attempt::Refused(why)
+    }
 }
 
 /// One shared CONNECT/OK exchange. Each partial I/O uses the original absolute
@@ -1888,6 +1891,19 @@ impl Guest for ManagedGuest {
             },
         )
     }
+    fn connect_before(&self, port: u32, deadline: Instant) -> Result<Box<dyn Stream>, Refusal> {
+        allowed(&lock(&self.shared.state).managed_ports, port)?;
+        connect_with_budget(
+            &self.shared,
+            &self.process.identity()?.vsock,
+            port,
+            ConnectBudget::Before(deadline),
+            || {
+                self.end(&mut lock(&self.shared.state))
+                    .map(|end| end.map(Refusal::Ended))
+            },
+        )
+    }
     fn stop(&self) -> Result<(), Refusal> {
         // Native stop may complete inline and wake a concurrent waiter. Publish
         // the request first; an uncertain native result cannot undo its effects.
@@ -1962,23 +1978,69 @@ fn connect_owned(
     vsock: &Path,
     port: u32,
     patience: Duration,
+    gone: impl FnMut() -> Result<Option<Refusal>, Refusal>,
+) -> Result<Box<dyn Stream>, Refusal> {
+    connect_with_budget(shared, vsock, port, ConnectBudget::Standalone(patience), gone)
+}
+
+#[derive(Clone, Copy)]
+enum ConnectBudget {
+    /// Preserve the standalone API's documented zero/MAX behavior.
+    Standalone(Duration),
+    Before(Instant),
+}
+
+fn connect_with_budget(
+    shared: &Shared,
+    vsock: &Path,
+    port: u32,
+    budget: ConnectBudget,
     mut gone: impl FnMut() -> Result<Option<Refusal>, Refusal>,
 ) -> Result<Box<dyn Stream>, Refusal> {
     // None: past `Instant`'s range (`Duration::MAX`), so no clock: until the guest
     // listens or ends.
     let began = Instant::now();
-    let deadline = began.checked_add(patience);
+    let deadline = match budget {
+        ConnectBudget::Standalone(patience) => began.checked_add(patience),
+        ConnectBudget::Before(at) => Some(at),
+    };
     let left = || deadline.map(|d| d.saturating_duration_since(Instant::now()));
     let last = loop {
         if let Some(refusal) = gone()? {
             return Err(refusal);
         }
         let mut cost = Duration::ZERO;
-        // One dial is always made, its answer awaited for what patience has left, or,
-        // with none left (a patience of zero) or no clock, for the guest's own answer.
-        let wait = left().filter(|l| !l.is_zero());
-        match handshake(vsock, port, wait, &mut cost) {
+        // Positive finite patience and explicit deadlines keep the original instant.
+        // Standalone zero/no-clock compatibility still awaits the guest's own answer.
+        let attempt = match budget {
+            ConnectBudget::Standalone(patience) => match deadline {
+                Some(at) if !patience.is_zero() => {
+                    handshake_until(vsock, port, HandshakeWait::Until(at), &mut cost)
+                        .map_err(owned_handshake_error)
+                }
+                _ => handshake(vsock, port, None, &mut cost),
+            },
+            ConnectBudget::Before(at) => {
+                handshake_until(vsock, port, HandshakeWait::Until(at), &mut cost).map_err(Attempt::Absolute)
+            }
+        };
+        match attempt {
             Ok(s) => {
+                if let ConnectBudget::Before(at) = budget {
+                    // Identity observation and allocation spend the same cap;
+                    // a completed socket is never published after expiry.
+                    if let Some(refusal) = gone()? {
+                        return Err(refusal);
+                    }
+                    let stream = s.boxed().map_err(|_| Refusal::Allocation {
+                        what: "connection storage",
+                    })?;
+                    let mut state = lock(&shared.state);
+                    remaining(HandshakeWait::Until(at), HandshakePhase::ClearTimeouts)
+                        .map_err(|failure| Refusal::Connect { port, failure })?;
+                    state.ready = true;
+                    return Ok(stream);
+                }
                 lock(&shared.state).ready = true;
                 return s.boxed().map_err(|_| Refusal::Allocation {
                     what: "connection storage",
@@ -1990,6 +2052,11 @@ fn connect_owned(
                 });
             }
             Err(Attempt::Refused(why)) => return Err(Refusal::Channel { port, why }),
+            Err(Attempt::Absolute(failure)) => {
+                if !failure.retryable() || left().is_some_and(|l| l.is_zero()) {
+                    return Err(Refusal::Connect { port, failure });
+                }
+            }
             Err(Attempt::Again(why)) if left().is_some_and(|l| l.is_zero()) => break why,
             Err(Attempt::Again(_)) => {}
         }
@@ -2003,6 +2070,14 @@ fn connect_owned(
     if let Some(refusal) = gone()? {
         return Err(refusal);
     }
+    let ConnectBudget::Standalone(patience) = budget else {
+        return Err(Refusal::Connect {
+            port,
+            failure: HandshakeError::Expired {
+                phase: HandshakePhase::Dial,
+            },
+        });
+    };
     Err(Refusal::Channel {
         port,
         why: message(format_args!("no OK within {patience:?}: {last}")).map_err(|()| {
@@ -2022,6 +2097,16 @@ impl Guest for ShardsGuest {
         connect_owned(&self.shared, &self.vsock, port, patience, || {
             Ok(self.gone(&mut lock(&self.shared.state)))
         })
+    }
+    fn connect_before(&self, port: u32, deadline: Instant) -> Result<Box<dyn Stream>, Refusal> {
+        allowed(&self.ports, port)?;
+        connect_with_budget(
+            &self.shared,
+            &self.vsock,
+            port,
+            ConnectBudget::Before(deadline),
+            || Ok(self.gone(&mut lock(&self.shared.state))),
+        )
     }
 
     fn stop(&self) -> Result<(), Refusal> {
@@ -2391,6 +2476,48 @@ mod tests {
             matches!(lock(&shared.state).managed.as_ref(), Some(Err(_))),
             "cleanup completion cannot erase the original uncertainty"
         );
+    }
+
+    /// D215: native observation spends the caller's absolute cap; an endpoint
+    /// which already exists must not get a late CONNECT after that cap expires.
+    #[cfg(unix)]
+    #[test]
+    fn absolute_owned_connect_cannot_dial_after_native_observation_spends_its_deadline() {
+        let dir = shards_testdir::TempDir::new("api-absolute").unwrap();
+        let path = dir.join("v");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let shared = managed_shared(0, false, None).unwrap();
+        let at = Instant::now()
+            .checked_add(crate::conformance::PATIENCE.get())
+            .unwrap();
+        let mut observations = 0;
+        let connected = connect_with_budget(&shared, &path, 5, ConnectBudget::Before(at), || {
+            observations += 1;
+            let gate = Mutex::new(());
+            let clock = Condvar::new();
+            let mut held = lock(&gate);
+            while let Some(left) = at.checked_duration_since(Instant::now()) {
+                held = clock
+                    .wait_timeout(held, left)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
+            }
+            Ok(None)
+        });
+        let dial = listener.accept();
+        assert_eq!(observations, 1);
+        assert!(matches!(
+            connected,
+            Err(Refusal::Connect {
+                port: 5,
+                failure: HandshakeError::Expired {
+                    phase: HandshakePhase::Dial
+                },
+            })
+        ));
+        assert!(matches!(dial, Err(ref why) if why.kind() == io::ErrorKind::WouldBlock));
+        assert!(!lock(&shared.state).ready);
     }
 
     /// D215: a finite owned connect that expires between a retry's lifetime
@@ -3218,6 +3345,7 @@ mod tests {
                 Err(Attempt::Again(why)) => format!("again: {why}"),
                 Err(Attempt::Refused(why)) => format!("refused: {why}"),
                 Err(Attempt::Allocation) => "allocation unavailable".to_string(),
+                Err(Attempt::Absolute(why)) => format!("absolute: {why}"),
             }
         });
         let said = crate::while_runs::answer(&rx, worker, patience);

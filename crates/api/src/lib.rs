@@ -26,7 +26,7 @@
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod client;
 pub mod conformance;
@@ -608,6 +608,9 @@ pub enum Refusal {
     /// Native scope observation or cleanup failed before a controller identity
     /// was published. This never fabricates a process identity.
     Scope(ProcessFailure),
+    /// An owning connection failed within its caller's absolute deadline.
+    /// The native owner is retained; the handshake phase/cause stays typed.
+    Connect { port: u32, failure: HandshakeError },
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -628,6 +631,7 @@ pub struct Identity {
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Refusal::Connect { port, failure } => write!(f, "vsock port {port}: {failure}"),
             Refusal::Scope(failure) => write!(f, "managed scope: {failure}"),
             Refusal::ManagedIo {
                 operation,
@@ -664,6 +668,7 @@ impl std::error::Error for Refusal {
             // Each Display already ends with its failure: the cause after it is the failure's.
             Self::Process { failure, .. } | Self::Scope(failure) => std::error::Error::source(failure),
             Self::Borrowed { failure, .. } => std::error::Error::source(failure),
+            Self::Connect { failure, .. } => std::error::Error::source(failure),
             _ => None,
         }
     }
@@ -758,6 +763,12 @@ pub trait Guest: Send + Sync {
     /// `Duration::MAX` is no clock, until the guest listens or ends. A guest that has ended
     /// is refused as soon as it has, whatever patience is left.
     fn connect(&self, port: u32, patience: Duration) -> Result<Box<dyn Stream>, Refusal>;
+    /// The same owning connection, bounded by the caller's original absolute
+    /// deadline across native identity checks, retries and CONNECT/OK. An
+    /// expired deadline refuses before a dial; no relative budget is restarted.
+    /// Synchronous OS calls/scheduling are not hard real-time bounded. A stream
+    /// completed after `deadline` is closed and refused before publication.
+    fn connect_before(&self, port: u32, deadline: Instant) -> Result<Box<dyn Stream>, Refusal>;
     /// Ends it at once: its VM's process is killed (SIGKILL; on Windows, its process
     /// ended), and its [`wait_for`](Guest::wait_for) then returns [`End::Stopped`]. Never
     /// refused, as a VM left running is a leak. The VMM has no host-to-guest power-off
@@ -979,6 +990,13 @@ mod tests {
             (
                 Refusal::Scope(ProcessFailure::Exited),
                 ProcessFailure::Exited.to_string(),
+            ),
+            (
+                Refusal::Connect {
+                    port: 7,
+                    failure: HandshakeError::Closed,
+                },
+                HandshakeError::Closed.to_string(),
             ),
         ];
         for (refusal, failure) in refusals {
