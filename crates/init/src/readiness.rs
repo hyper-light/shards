@@ -248,7 +248,8 @@ fn receive(fd: RawFd, buf: &mut [u8]) -> io::Result<Option<(usize, Option<libc::
         iov_base: buf.as_mut_ptr().cast(),
         iov_len: buf.len(),
     };
-    // Room for one control message of credentials, aligned as cmsghdr is.
+    // Room for one control message of credentials, aligned as cmsghdr is: CMSG_SPACE of a
+    // ucred, its 16-byte header and its 12 bytes padded to 16, on every 64-bit Linux.
     let mut control = [0u64; 4];
     // SAFETY: CMSG_SPACE of the credentials' size.
     let space = unsafe { libc::CMSG_SPACE(size_of::<libc::ucred>() as u32) } as usize;
