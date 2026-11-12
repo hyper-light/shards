@@ -2215,9 +2215,11 @@ mod tests {
         let (vsock_guest, vsock_host) = UnixStream::pair().unwrap();
         std::thread::scope(|s| {
             let device = s.spawn(move || device(vsock_host, script));
+            // A connection the host's side ends first may refuse what is left of the
+            // request; what the device took is checked against it where that matters.
             let writer = s.spawn(|| {
-                (&client).write_all(request).unwrap();
-                client.shutdown(std::net::Shutdown::Write).unwrap();
+                let _ = (&client).write_all(request);
+                let _ = client.shutdown(std::net::Shutdown::Write);
             });
             let relay = s.spawn(move || {
                 let host = File::from(OwnedFd::from(vsock_guest));
@@ -2768,10 +2770,8 @@ mod tests {
         // SAFETY: a descriptor just made, which nothing else owns.
         let memory = unsafe { OwnedFd::from_raw_fd(memory) };
         // SAFETY: ftruncate(2) of the test's own memory file.
-        assert_eq!(
-            unsafe { libc::ftruncate(memory.as_raw_fd(), len as libc::off_t) },
-            0
-        );
+        let sized = unsafe { libc::ftruncate(memory.as_raw_fd(), len as libc::off_t) };
+        assert_eq!(sized, 0);
         // SAFETY: a shared, populated mapping of the whole file, unmapped below.
         let at = unsafe {
             libc::mmap(
