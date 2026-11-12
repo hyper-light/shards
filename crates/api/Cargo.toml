@@ -19,7 +19,7 @@ libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 shards-afunix = { path = "../afunix" }
-windows-sys = { workspace = true }
+windows-sys = { workspace = true, features = ["Win32_System_Pipes"] }
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }

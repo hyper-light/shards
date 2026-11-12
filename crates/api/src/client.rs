@@ -234,6 +234,7 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
             status: None,
             managed: None,
             managed_ports: Vec::new(),
+            report_cleanup: ReportCleanup::Complete,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -248,6 +249,7 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
         end_mark: end_mark(),
         probe: false,
         managed_owners: std::sync::atomic::AtomicUsize::new(0),
+        report: Mutex::new(None),
     });
     let (watched, watcher) = (process.clone(), shared.clone());
     std::thread::Builder::new()
@@ -387,6 +389,7 @@ fn launch(
             status: None,
             managed: None,
             managed_ports: Vec::new(),
+            report_cleanup: ReportCleanup::Complete,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -401,6 +404,7 @@ fn launch(
         end_mark: marker,
         probe: probe.is_some(),
         managed_owners: std::sync::atomic::AtomicUsize::new(0),
+        report: Mutex::new(None),
     });
     #[cfg(unix)]
     let pid = child.id();
@@ -572,6 +576,11 @@ pub fn prepare_boot(
     // Only prepared native launches keep the existing helpers in their original
     // scope. This marker grants no physical identity/device authority.
     argument_push(&mut arguments, "--host-managed")?;
+    let mut gpu_devices = Vec::new();
+    gpu_devices
+        .try_reserve_exact(spec.gpu_devices.len())
+        .map_err(|_| Refusal::Launch(crate::LaunchError::Allocation))?;
+    gpu_devices.extend_from_slice(&spec.gpu_devices);
     Ok(crate::PreparedBoot {
         binary: PathBuf::from(argument_copy(binary.as_os_str())?),
         arguments,
@@ -579,6 +588,8 @@ pub fn prepare_boot(
         ports,
         output_bytes,
         runtime_paths: None,
+        gpu_devices,
+        gpu_report: None,
     })
 }
 
@@ -722,6 +733,15 @@ struct Shared {
     probe: bool,
     /// API lifetime handles only, distinct from worker Arc refs and native holders.
     managed_owners: std::sync::atomic::AtomicUsize,
+    report: Mutex<Option<crate::physical::report::Receiver>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReportCleanup {
+    Observing,
+    Requested,
+    Uncertain,
+    Complete,
 }
 
 #[derive(Debug)]
@@ -744,6 +764,7 @@ struct State {
     /// Pending None -> native completion or failed observer; never a release ledger.
     managed: Option<Result<crate::ManagedEnd, Refusal>>,
     managed_ports: Vec<u32>,
+    report_cleanup: ReportCleanup,
 }
 
 #[derive(Debug)]
@@ -1499,7 +1520,16 @@ impl std::fmt::Debug for ManagedGuest {
     }
 }
 
-fn managed_shared(keep: usize, recovered: bool) -> Result<triomphe::Arc<Shared>, Refusal> {
+fn managed_shared(
+    keep: usize,
+    recovered: bool,
+    report: Option<crate::physical::report::Receiver>,
+) -> Result<triomphe::Arc<Shared>, Refusal> {
+    let report_cleanup = if report.is_some() {
+        ReportCleanup::Observing
+    } else {
+        ReportCleanup::Complete
+    };
     let mut bytes = VecDeque::new();
     bytes
         .try_reserve_exact(
@@ -1524,6 +1554,7 @@ fn managed_shared(keep: usize, recovered: bool) -> Result<triomphe::Arc<Shared>,
             status: None,
             managed: None,
             managed_ports: Vec::new(),
+            report_cleanup,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -1538,6 +1569,7 @@ fn managed_shared(keep: usize, recovered: bool) -> Result<triomphe::Arc<Shared>,
         end_mark: managed_marker()?,
         probe: false,
         managed_owners: std::sync::atomic::AtomicUsize::new(1),
+        report: Mutex::new(report),
     })
     .map_err(|_| Refusal::Launch(crate::LaunchError::Allocation))
 }
@@ -1583,6 +1615,74 @@ fn lossy_output(bytes: &[u8]) -> Result<String, Refusal> {
     Ok(text)
 }
 
+/// Failed completion leaves this SAME watcher owning Shared and all IO storage.
+/// After an error it subscribes to the actual native completion event; explicit
+/// stop/drop requests only retry an unavailable native wait, never periodic probes.
+fn finish_managed_report(shared: &Shared) {
+    loop {
+        let completed = match lock(&shared.report).as_mut() {
+            Some(report) => report.finish(),
+            None => Ok(()),
+        };
+        let mut state = lock(&shared.state);
+        match completed {
+            Ok(()) => {
+                state.report_cleanup = ReportCleanup::Complete;
+                return;
+            }
+            Err(why) => {
+                let requested = state.report_cleanup == ReportCleanup::Requested;
+                if state.managed.is_none() {
+                    state.managed = Some(Err(why));
+                }
+                state.exited = true;
+                state.report_cleanup = ReportCleanup::Uncertain;
+                shared.changed.notify_all();
+                // The OS completion event, not another API owner, must wake
+                // this watcher if cancellation/observation failed before it.
+                drop(state);
+                let terminal = match lock(&shared.report).as_mut() {
+                    Some(report) => report.wait_for_completion(),
+                    None => Ok(()),
+                };
+                state = lock(&shared.state);
+                match terminal {
+                    Ok(()) => {
+                        state.report_cleanup = ReportCleanup::Complete;
+                        return;
+                    }
+                    Err(why) => {
+                        // A failed native wait proves nothing. Keep the same
+                        // watcher/resources; preserve the first reported cause.
+                        if state.managed.is_none() {
+                            state.managed = Some(Err(why));
+                        }
+                        if state.report_cleanup != ReportCleanup::Requested {
+                            state.report_cleanup = ReportCleanup::Uncertain;
+                        }
+                        shared.changed.notify_all();
+                    }
+                }
+                if requested || state.report_cleanup == ReportCleanup::Requested {
+                    state.report_cleanup = ReportCleanup::Observing;
+                    drop(state);
+                    continue;
+                }
+                while state.report_cleanup == ReportCleanup::Uncertain {
+                    state = shared.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+                }
+                state.report_cleanup = ReportCleanup::Observing;
+            }
+        }
+    }
+}
+
+fn request_report_cleanup(state: &mut State) {
+    if state.report_cleanup != ReportCleanup::Complete {
+        state.report_cleanup = ReportCleanup::Requested;
+    }
+}
+
 fn watch_managed(
     shared: triomphe::Arc<Shared>,
     process: crate::ManagedReceipt,
@@ -1594,19 +1694,22 @@ fn watch_managed(
         Ok(_) => Err(Refusal::Launch(crate::LaunchError::Observer)),
         Err(why) => Err(why),
     };
+    finish_managed_report(&shared);
     let said = match writer {
         Some(writer) => lossy_output(finish_drain(&shared, writer).bytes.make_contiguous()),
         None => Ok(String::new()),
     };
     let mut state = lock(&shared.state);
     state.observed_exited = observed.is_ok();
-    state.managed = Some(match said {
-        Ok(said) => {
-            state.said = said;
-            observed
-        }
-        Err(why) => Err(why),
-    });
+    if state.managed.is_none() {
+        state.managed = Some(match said {
+            Ok(said) => {
+                state.said = said;
+                observed
+            }
+            Err(why) => Err(why),
+        });
+    }
     state.exited = true;
     shared.changed.notify_all();
 }
@@ -1630,7 +1733,15 @@ pub fn boot_managed(
     plan: crate::PreparedBoot,
     launcher: &mut dyn crate::ManagedLauncher,
 ) -> Result<ManagedGuest, Refusal> {
-    let shared = managed_shared(plan.output_bytes, false)?;
+    let (report, gpu_report) = match plan.gpu_report_request() {
+        Some(request) => {
+            let request = crate::physical::report::Request::copy_from(request)?;
+            let (receiver, writer) = crate::physical::report::Receiver::new(request)?;
+            (Some(receiver), Some(writer))
+        }
+        None => (None, None),
+    };
+    let shared = managed_shared(plan.output_bytes, false, report)?;
     let drain_name = owned_text("shards-api-managed-drain")?;
     let wait_name = owned_text("shards-api-managed-wait")?;
     let (output, writer) = io::pipe().map_err(|e| managed_io("output pipe", e))?;
@@ -1640,7 +1751,14 @@ pub fn boot_managed(
     let stderr = writer
         .try_clone()
         .map_err(|e| managed_io("output writer clone", e))?;
-    let process = launcher.launch(&plan, crate::LaunchIo { stdout, stderr })?;
+    let process = launcher.launch(
+        &plan,
+        crate::LaunchIo {
+            stdout,
+            stderr,
+            gpu_report,
+        },
+    )?;
     let identity = match process.identity() {
         Ok(identity) => identity,
         Err(why) => {
@@ -1676,7 +1794,7 @@ pub fn attach_managed(
     if identity.vsock != plan.vsock {
         return Err(Refusal::Launch(crate::LaunchError::Socket));
     }
-    let shared = managed_shared(0, true)?;
+    let shared = managed_shared(0, true, None)?;
     let wait_name = owned_text("shards-api-managed-wait")?;
     let process = launcher.attach(identity)?;
     if process.identity()? != identity {
@@ -1688,6 +1806,20 @@ pub fn attach_managed(
 }
 
 impl ManagedGuest {
+    /// Transfer the one private report within the original create deadline.
+    /// A timeout/EOF/error never proves VM or helper termination. Recovery must
+    /// use its already persisted canonical report; it cannot recreate this pipe.
+    pub fn take_gpu_report(&self, patience: Duration) -> Result<crate::physical::GpuReport, Refusal> {
+        let mut report = self.shared.report.try_lock().map_err(|error| match error {
+            std::sync::TryLockError::WouldBlock => Refusal::GpuProbe(crate::GpuProbeError::Pending),
+            std::sync::TryLockError::Poisoned(_) => Refusal::Launch(crate::LaunchError::Observer),
+        })?;
+        report
+            .as_mut()
+            .ok_or(Refusal::GpuProbe(crate::GpuProbeError::Unavailable))?
+            .take(patience)
+    }
+
     /// Shares the existing protocol/native receipt with checked handle counting.
     /// Worker references are not lifetime owners and cannot suppress last-drop stop.
     pub fn try_clone(&self) -> Result<Self, Refusal> {
@@ -1759,7 +1891,12 @@ impl Guest for ManagedGuest {
     fn stop(&self) -> Result<(), Refusal> {
         // Native stop may complete inline and wake a concurrent waiter. Publish
         // the request first; an uncertain native result cannot undo its effects.
-        lock(&self.shared.state).stopping = true;
+        {
+            let mut state = lock(&self.shared.state);
+            state.stopping = true;
+            request_report_cleanup(&mut state);
+            self.shared.changed.notify_all();
+        }
         self.process.stop()
     }
     fn wait_for(&self, timeout: Duration) -> Result<Option<End>, Refusal> {
@@ -1801,6 +1938,11 @@ impl Drop for ManagedGuest {
                 self.shared.changed.notify_all();
                 return;
             }
+        }
+        {
+            let mut state = lock(&self.shared.state);
+            request_report_cleanup(&mut state);
+            self.shared.changed.notify_all();
         }
         if !matches!(
             self.process.terminal(),
@@ -2116,6 +2258,139 @@ mod tests {
         });
         guest.stop().unwrap();
         assert_eq!(waiter.join().unwrap().unwrap(), Some(End::Stopped));
+    }
+
+    /// An explicit cleanup request is neither completion nor permission to
+    /// destroy Shared. A worker reference keeps the SAME allocation alive after
+    /// the API's reference is dropped; Complete cannot be reopened by drop.
+    #[test]
+    fn managed_report_cleanup_request_preserves_same_worker_owner_order() {
+        let shared = managed_shared(0, true, None).unwrap();
+        let worker = shared.clone();
+        {
+            let mut state = lock(&shared.state);
+            state.report_cleanup = ReportCleanup::Uncertain;
+            request_report_cleanup(&mut state);
+            assert_eq!(state.report_cleanup, ReportCleanup::Requested);
+            assert!(
+                state.managed.is_none(),
+                "a request creates no terminal observation"
+            );
+        }
+        drop(shared);
+        assert_eq!(triomphe::Arc::strong_count(&worker), 1);
+        {
+            let mut state = lock(&worker.state);
+            state.report_cleanup = ReportCleanup::Complete;
+            request_report_cleanup(&mut state);
+            assert_eq!(state.report_cleanup, ReportCleanup::Complete);
+        }
+    }
+
+    /// A later actual completion must wake the SAME watcher after cancellation
+    /// errors and last API drop, without any later API notification or polling.
+    #[cfg(windows)]
+    #[test]
+    fn managed_report_last_api_drop_before_later_native_completion_reclaims_owner() {
+        let patience = crate::conformance::PATIENCE.get();
+        let request = crate::physical::report::Request {
+            scope: [0x93; 16],
+            selected: vec![crate::PhysicalGpu::MetalRegistry(7)],
+            deadline: Instant::now().checked_add(patience).unwrap(),
+        };
+        let (receiver, mut writer) = crate::physical::report::Receiver::new(request).unwrap();
+        // Caller error, first observer error, then the old observer's retry
+        // after last-drop. New native-event waiting does not need that retry.
+        receiver.fail_cancel_calls_for_test(3);
+        let shared = managed_shared(0, true, Some(receiver)).unwrap();
+        let native = triomphe::Arc::try_new(ModelNative {
+            identity: Identity {
+                pid: 42,
+                started: 7,
+                vsock: "/model/native/v".into(),
+            },
+            state: Mutex::new(NativeState::default()),
+            changed: Condvar::new(),
+            coordinate_stop: false,
+            stops: std::sync::atomic::AtomicUsize::new(0),
+        })
+        .unwrap();
+        let watching = shared.clone();
+        let process = crate::managed_receipt(native.clone());
+        let (done, completed) = std::sync::mpsc::sync_channel(1);
+        let watcher = std::thread::Builder::new()
+            .name("report-order-control".into())
+            .spawn(move || {
+                watch_managed(watching, process, None);
+                let _ = done.send(());
+            })
+            .unwrap();
+        let guest = ManagedGuest {
+            process: crate::managed_receipt(native.clone()),
+            shared: shared.clone(),
+        };
+        // Collect every oracle before asserting: even an old stuck-watcher
+        // regression must close this fixture's writer and join its own worker.
+        let report = guest.take_gpu_report(patience);
+        // The observer must first enter its error path while an API owner still
+        // exists; otherwise Requested at its first failure can mask the old gap.
+        native.publish(crate::TerminalScope::Released);
+        let (cleanup_before, uncertainty_timed_out) = {
+            let state = lock(&shared.state);
+            let (state, timed) = shared
+                .changed
+                .wait_timeout_while(state, patience, |state| {
+                    state.report_cleanup != ReportCleanup::Uncertain
+                })
+                .unwrap_or_else(PoisonError::into_inner);
+            (state.report_cleanup, timed.timed_out())
+        };
+        drop(guest);
+        let owners = shared.managed_owners.load(Ordering::Acquire);
+        // No API owner exists and no Shared notification is sent here. The OS
+        // alone completes its pending read as this owned writer writes/closes.
+        let wrote = writer.write_all(b"later kernel completion");
+        drop(writer);
+        let completed_without_api_wake = completed.recv_timeout(patience);
+        if completed_without_api_wake.is_err() {
+            // Failure cleanup only: the frozen5ba path needs an explicit wake
+            // after its already-positive pipe completion. This cannot turn the
+            // previously captured failed oracle into a passing observation.
+            native.publish(crate::TerminalScope::Released);
+            let mut state = lock(&shared.state);
+            request_report_cleanup(&mut state);
+            shared.changed.notify_all();
+        }
+        let joined = watcher.join();
+        drop(native);
+        assert!(matches!(
+            report,
+            Err(Refusal::ManagedIo {
+                operation: "injected private report cancellation",
+                ..
+            })
+        ));
+        assert_eq!(owners, 0);
+        assert!(
+            !uncertainty_timed_out,
+            "observer must publish the exact cleanup error"
+        );
+        assert_eq!(cleanup_before, ReportCleanup::Uncertain);
+        assert!(
+            wrote.is_ok(),
+            "later owned writer must complete its actual pending read"
+        );
+        assert!(
+            completed_without_api_wake.is_ok(),
+            "native completion must wake the observer without another API notification"
+        );
+        assert!(joined.is_ok());
+        assert_eq!(lock(&shared.state).report_cleanup, ReportCleanup::Complete);
+        assert_eq!(triomphe::Arc::strong_count(&shared), 1);
+        assert!(
+            matches!(lock(&shared.state).managed.as_ref(), Some(Err(_))),
+            "cleanup completion cannot erase the original uncertainty"
+        );
     }
 
     /// D215, D233: pure preparation launches nothing and preserves the exact

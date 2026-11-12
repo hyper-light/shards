@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+pub(crate) mod report;
+
 pub use shards_abi::gpu::{
     GPU_NAME_BYTES, GpuName, GpuProbe, GpuProbeError, GpuReport, MAX_PHYSICAL_GPUS, PhysicalGpu,
     PhysicalGpuError, ResolvedGpu, check_selection, probe_bytes, report_bytes,

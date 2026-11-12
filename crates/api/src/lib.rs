@@ -94,7 +94,31 @@ pub struct PreparedBoot {
     ports: Vec<u32>,
     output_bytes: usize,
     runtime_paths: Option<RuntimePaths>,
+    gpu_devices: Vec<PhysicalGpu>,
+    gpu_report: Option<([u8; 16], std::time::Instant)>,
 }
+
+/// Pure immutable request. The final native launcher separately owns and renders
+/// the actual transferred writer; no descriptor value is embedded in this plan.
+#[derive(Debug, Clone, Copy)]
+pub struct GpuReportRequest<'a> {
+    scope: [u8; 16],
+    selected: &'a [PhysicalGpu],
+    deadline: std::time::Instant,
+}
+
+impl GpuReportRequest<'_> {
+    pub fn scope(&self) -> [u8; 16] {
+        self.scope
+    }
+    pub fn selected(&self) -> &[PhysicalGpu] {
+        self.selected
+    }
+    pub fn deadline(&self) -> std::time::Instant {
+        self.deadline
+    }
+}
+
 impl PreparedBoot {
     pub fn binary(&self) -> &std::path::Path {
         &self.binary
@@ -118,6 +142,34 @@ impl PreparedBoot {
     pub fn with_runtime_paths(mut self, paths: &RuntimePaths) -> Result<Self, Refusal> {
         self.runtime_paths = Some(paths.try_clone()?);
         Ok(self)
+    }
+
+    /// Bind a private renderer report to the original native scope and finite
+    /// absolute create budget. No channel or foreign process is created here.
+    pub fn with_gpu_report(mut self, scope: [u8; 16], deadline: std::time::Instant) -> Result<Self, Refusal> {
+        if self.gpu_report.is_some() {
+            return Err(Refusal::GpuProbe(GpuProbeError::ReportTaken));
+        }
+        if scope == [0; 16] {
+            return Err(Refusal::GpuProbe(GpuProbeError::Scope));
+        }
+        physical::check_selection(&self.gpu_devices).map_err(Refusal::Gpu)?;
+        if self.gpu_devices.is_empty() {
+            return Err(Refusal::GpuProbe(GpuProbeError::Empty));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Refusal::GpuProbe(GpuProbeError::Pending));
+        }
+        self.gpu_report = Some((scope, deadline));
+        Ok(self)
+    }
+
+    pub fn gpu_report_request(&self) -> Option<GpuReportRequest<'_>> {
+        self.gpu_report.map(|(scope, deadline)| GpuReportRequest {
+            scope,
+            deadline,
+            selected: &self.gpu_devices,
+        })
     }
 }
 
@@ -156,13 +208,18 @@ impl std::fmt::Display for LaunchError {
 }
 impl std::error::Error for LaunchError {}
 
-/// Stdio created by the API's existing bounded drain path. The native owner
-/// consumes only these output handles; stdin is its native null device. No extra
-/// inherited handles, output socket export or post-spawn placement is permitted.
+/// Stdio created by the API's existing bounded drain path and optional private
+/// GPU-report writer. The native owner allowlists these exact owned handles;
+/// stdin is its native null device. No ambient inheritance or post-spawn
+/// placement is permitted.
 #[derive(Debug)]
 pub struct LaunchIo {
     pub stdout: std::io::PipeWriter,
     pub stderr: std::io::PipeWriter,
+    /// Sole VMM-private report writer, optional for ordinary CPU compatibility.
+    /// Forward only to the confined VMM, after final transfer/allowlisting. The
+    /// VMM closes it before guest execution; no guest/helper may inherit a copy.
+    pub gpu_report: Option<std::io::PipeWriter>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
