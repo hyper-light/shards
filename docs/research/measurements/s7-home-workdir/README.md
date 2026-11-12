@@ -61,9 +61,10 @@ user and mount namespace and compares each directory with the image's. `mutate4-
 - green: passes, and passes again run as root of subordinate IDs, where owners are compared
   too.
 
-`green4-adacachy.log` is the change merged with main c2c4547c1: the domains tests, the same
-as root of subordinate IDs (`/home/node 1000:1000 750 as 1000:1000 750`), rustfmt, clippy on
-shards-init with all targets, and all of shards-init's tests (207 passed, 1 ignored as before).
+`green4-adacachy.log` is the change merged with main 34215b23e (step 8's plug roots in): the
+domains tests, the same as root of subordinate IDs (`/home/node 1000:1000 750 as 1000:1000
+750`), rustfmt, clippy on shards-init with all targets, and all of shards-init's tests (210
+passed, 1 ignored as before).
 
 The test prints SKIP and returns where the host gives an unprivileged process no user and
 mount namespace.
@@ -79,5 +80,5 @@ mount namespace.
 
 - A real microVM on KVM, Hypervisor.framework and WHP: a member's view of a volume's parents
   (`stat` of `/home/node` under a volume at `/home/node/.cache`).
-- With plug roots (D235), the root's own writable layer is the uppermost for `/`. Its owner and
-  mode are step 8's to match (its message of 2026-11-12).
+- With plug roots (D235), the root's own writable layer is the uppermost for `/`. Step 8's
+  50ed65bbb gives it the image root's owner and mode; its record holds that evidence.
