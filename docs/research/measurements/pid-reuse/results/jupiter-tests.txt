@@ -1,0 +1,18 @@
+# jupiter (Windows 11 10.0.26200, AMD Ryzen AI Max+ 395, WHP), 2026-11-12, the fix applied to 451672250;
+# crates/shards boot.rs at test-release, SHARDS_REQUIRE_VMS=1.
+$ boot.exe a_parent_that_started_after_its_child_is_not_its_parent --exact
+test a_parent_that_started_after_its_child_is_not_its_parent ... ok
+$ boot.exe a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes --exact   (3 times)
+test a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes ... ok   finished in 5.28s
+test a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes ... ok   finished in 5.13s
+test a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes ... ok   finished in 5.11s
+$ boot.exe   (the whole file, 2 times)
+test result: ok. 32 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 18.46s
+test result: ok. 32 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 10.63s
+# The mutant: live_parents's rule removed (`let later = false;`).
+$ boot.exe a_parent_that_started_after_its_child_is_not_its_parent --exact
+test a_parent_that_started_after_its_child_is_not_its_parent ... FAILED
+thread 'a_parent_that_started_after_its_child_is_not_its_parent' panicked at crates\shards\tests\boot.rs:2183:5:
+assertion `left == right` failed
+  left: [0, 4, 10, 30, 4, 30, 30, 30, 61]
+ right: [0, 4, 10, 0, 4, 30, 30, 30, 61]

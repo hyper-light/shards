@@ -1,0 +1,18 @@
+# Whether a parent-ID walk of Windows' processes takes an orphan for the child of a process
+# started after the orphan's parent ended (PM M528): the E2E harness's process tree
+# (crates/shards/tests/common `processes`, `under`) on windows-2025, which counted a ping the
+# daemon tests' sleeper left among a direct boot's processes.
+[package]
+name = "pid-reuse"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Threading",
+] }

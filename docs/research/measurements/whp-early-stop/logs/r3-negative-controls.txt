@@ -1,0 +1,27 @@
+# r3. The symptom looked for where no kiln agent session holds the processes: none in 628 runs (485 plain, 143 fresh homes)
+# and 3 engine_ring rounds. jupiter (Windows 11 Pro 10.0.26200, AMD64, 32 CPUs, WHP), main
+# 3103d2eab's test-release `shards` (sha256 2b0a1648485c09a4...), each step a `kiln run` of
+# harness/ (a run's processes live until the run ends, so no sweep ends them midway),
+# 2026-11-12 20:11Z-20:45Z, busybox:1.37 pulled once into home-a; every run's status, time and
+# stderr kept (runs.txt), failures' homes kept whole (none failed).
+#
+# harness/repro.sh home-a: plain `run --rm busybox:1.37 sleep S` (or with -d)
+#   5 runs, sleep 3, one at a time (the first boots cold): 5 rc=0, 24 s
+#   120 runs, sleep 3, one at a time: 120 rc=0, 390 s
+#   160 runs, sleep 3, 8 at a time: 160 rc=0, 82 s
+#   200 runs `-d`, sleep 5, one at a time (each returns as its command starts, so up to ~7 run
+#     at once): 200 rc=0, 145 s
+# harness/fresh.sh: a fresh home's first run (`load` of busybox.tar, then `run -d --name tI`),
+#   as engine_ring's failing runs were; prepare, the template's cold boot and the run each time
+#   3 trials, one at a time: 3 rc=0, 18 s
+#   80 trials, 4 at a time: 80 rc=0, 265 s
+#   60 trials, 4 at a time, --use-api-socket (as `prov` is): 60 rc=0, 221 s
+# harness/e2e.sh base 3: engine_ring, as the tester ran it (--test-threads 1), three rounds:
+#   every round: a_give_back ok, the bulk test ok, the shrinking room ok; the pins test
+#   failed at engine_ring.rs:429 ("api-bulk error stream 9: ping: HTTP/1.1 503 Service
+#   Unavailable", status 1 after 138-208 ms): the daemon's admission of a microVM's own
+#   engine on Windows that ring-pins-v1's r16 names a product gap (13 connections at once),
+#   not this; no status 125 in any round.
+#
+# What the runs lacked was the sweep: r1's runs were a kiln agent session's commands, ended
+# between that agent's turns; these were kiln runs. r4 ends a daemon as the sweep does.
