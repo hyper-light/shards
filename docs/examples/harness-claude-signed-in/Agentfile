@@ -1,0 +1,31 @@
+# Anthropic's Claude Code as a harness, signed in by its own login given at run time, never
+# in the image (architecture.md D54; managed-runtime plan G18, native sign-in delegation).
+#
+# Put Anthropic's musl build in claude/bin first (docs/research/measurements/
+# harness-bringup-v1/fetch.sh fetches and verifies it). At run time give it a private copy
+# of a signed-in Claude Code config directory (its .credentials.json), and a project:
+#   shards build image -t harness-claude-signed-in:1 docs/examples/harness-claude-signed-in
+#   shards run vm -d -v PRIVATE_CLAUDE_CONFIG:/run/claude-home -v PROJECT:/work:ro \
+#     --name claude harness-claude-signed-in:1 sleep 600
+# The harness reads and writes that copy (it refreshes its tokens there): copy back what
+# it refreshed (docs/research/measurements/harness-bringup-v2/credentials.py settle).
+FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+
+# The system's libraries Claude Code's musl build links (code.claude.com/docs/en/setup,
+# "Alpine Linux and musl-based distributions"), and the bash its Bash tool runs commands
+# with (/bin/bash -c in the kernel's record of this example's run): Alpine's own, not the
+# harness.
+RUN apk add --no-cache bash libgcc libstdc++
+
+HARNESS claude FROM ./claude
+
+# Its config directory, CLAUDE_CONFIG_DIR in harness.json, and its project: volumes this
+# harness alone is given, whatever a run stands in for them.
+VOLUME --target-kind=harness /run/claude-home FOR claude
+VOLUME --target-kind=harness /work FOR claude
+
+# Its network reach, every part named: names past the microVM through its resolver, and
+# TCP 443 out at both boundaries. Nothing comes in.
+NETWORK --dns --egress=443/tcp provider FOR claude
+EXPOSE --harnesses=claude 443/tcp AS egress FOR provider
+CONNECT claude WITH claude ON provider

@@ -1,0 +1,25 @@
+# OpenAI's Codex CLI as a harness, signed in by its own login given at run time, never in
+# the image (architecture.md D54; managed-runtime plan G18, native sign-in delegation).
+#
+# Put OpenAI's static Linux builds in codex/bin first (codex and codex-code-mode-host;
+# docs/research/measurements/harness-bringup-v1/fetch.sh fetches and verifies them). At
+# run time give it a private copy of a signed-in Codex home, and a project:
+#   shards build image -t harness-codex-signed-in:1 docs/examples/harness-codex-signed-in
+#   shards run vm -d -v PRIVATE_CODEX_HOME:/run/codex-home -v PROJECT:/work:ro \
+#     --name codex harness-codex-signed-in:1 sleep 600
+# The harness reads and writes that copy (it refreshes its tokens there): copy back what
+# it refreshed (docs/research/measurements/harness-bringup-v2/credentials.py settle).
+FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+
+HARNESS codex FROM ./codex
+
+# Its home, CODEX_HOME in harness.json, and its project, -C there: volumes this harness
+# alone is given, whatever a run stands in for them.
+VOLUME --target-kind=harness /run/codex-home FOR codex
+VOLUME --target-kind=harness /work FOR codex
+
+# Its network reach, every part named: names past the microVM through its resolver, and
+# TCP 443 out at both boundaries. Nothing comes in.
+NETWORK --dns --egress=443/tcp provider FOR codex
+EXPOSE --harnesses=codex 443/tcp AS egress FOR provider
+CONNECT codex WITH codex ON provider

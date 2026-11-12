@@ -17422,8 +17422,9 @@ assignments are ignored", f36). Two kinds of datagram are ignored outright:
 - one from a process outside the workload's cgroup, as systemd's `NotifyAccess=all` accepts
   only "all members of the service's control group" (systemd.service(5)).
 
-A missed deadline is reported, not enforced: the caller set it, and stopping the run is the
-caller's decision.
+On time means READY=1 at or before the deadline: the deadline's own nanosecond is on time,
+and late is after it, by how much. A missed deadline is reported, not enforced: the caller set
+it, and stopping the run is the caller's decision.
 
 **Literals.** None is chosen:
 - The leaf's name, `init`: the name moby's hack/dind gives the leaf a nested runtime moves
@@ -17450,6 +17451,17 @@ caller's decision.
 - CAP_SYS_ADMIN (21) and CAP_NET_ADMIN (12): the kernel's numbers
   (include/uapi/linux/capability.h).
 - The controllers the workload may enable: those init already enables for `run`.
+- The notify socket's mode, 0666, as engine.sock's (crates/init/src/engine.rs): every user of
+  the run reaches it. Only the run's own processes see its path, and the sender check bounds
+  whose READY=1 counts.
+- READY's payload, 9 bytes: its state, 1 on time, 2 late, 3 passed, in the order of the
+  table's reportable moves, then the nanoseconds past the deadline as a big-endian u64, the
+  width of the guest clock's nanoseconds. Integers are big-endian, as the run protocol's
+  other frames are.
+- Init's own names: the standby's `notify` entry, and its listener's tag `N`, as engine's
+  listener is `E` (crates/init/src/engine.rs).
+- `NR_OPEN_MAX`, 2147483584 on a 64-bit guest: computed in init from fs/file.c's own formula
+  for `sysctl_nr_open_max` (f37), never chosen.
 
 **Alternatives, and why not.** Their sources are in the record.
 - `--privileged`: every device, `/proc` and `/sys` unmasked and writable, every capability,
