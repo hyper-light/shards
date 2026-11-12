@@ -154,6 +154,7 @@ fn process_spec() -> crate::GuestSpec {
         vcpus: 1,
         memory_mib: 256,
         gpu: false,
+        gpu_devices: Vec::new(),
         disks: vec![],
         shares: vec![],
         ports: vec![1],

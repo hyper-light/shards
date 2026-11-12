@@ -49,6 +49,7 @@ fn spec(cmdline: &str) -> GuestSpec {
         vcpus: 1,
         memory_mib: min_memory_mib(std::env::consts::ARCH),
         gpu: false,
+        gpu_devices: Vec::new(),
         disks: vec![],
         shares: vec![],
         ports: vec![ECHO, UNSERVED],

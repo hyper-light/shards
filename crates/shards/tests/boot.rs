@@ -2288,6 +2288,7 @@ fn api_spec(cmdline: &str) -> shards_api::GuestSpec {
         vcpus: 1,
         memory_mib: 256,
         gpu: false,
+        gpu_devices: Vec::new(),
         disks: vec![],
         shares: vec![],
         ports: vec![1234, 1236],

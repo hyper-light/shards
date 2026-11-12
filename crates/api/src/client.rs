@@ -264,8 +264,29 @@ fn arguments(spec: &GuestSpec, vsock: &Path, said: usize) -> Result<Vec<OsString
         "--console-said".into(),
         said.to_string().into(),
     ]);
-    if spec.gpu {
-        args.push("--gpu".into());
+    let enabled = spec.gpu || !spec.gpu_devices.is_empty();
+    // One GPU enable argument, plus a flag/value pair per native identity.
+    let extra = spec
+        .gpu_devices
+        .len()
+        .checked_mul(2)
+        .and_then(|count| count.checked_add(usize::from(enabled)))
+        .ok_or(Refusal::Gpu(crate::PhysicalGpuError::Count))?;
+    args.try_reserve_exact(extra)
+        .map_err(|_| Refusal::Gpu(crate::PhysicalGpuError::Allocation))?;
+    let flag = |value: &str| {
+        let mut arg = OsString::new();
+        arg.try_reserve_exact(value.len())
+            .map_err(|_| Refusal::Gpu(crate::PhysicalGpuError::Allocation))?;
+        arg.push(value);
+        Ok::<_, Refusal>(arg)
+    };
+    if enabled {
+        args.push(flag("--gpu")?);
+    }
+    for device in &spec.gpu_devices {
+        args.push(flag("--gpu-device")?);
+        args.push(device.argument().map_err(Refusal::Gpu)?);
     }
     Ok(args)
 }
@@ -1245,6 +1266,7 @@ mod tests {
             vcpus: 2,
             memory_mib: 256,
             gpu: false,
+            gpu_devices: Vec::new(),
             disks: vec![
                 Disk {
                     path: "/d/root".into(),
@@ -1319,6 +1341,50 @@ mod tests {
             let gpu = GuestSpec { gpu: true, ..cpu };
             assert_eq!(arguments(&gpu, Path::new("/p/v"), 2048).unwrap(), expected);
         }
+    }
+
+    /// Exact native selection crosses the public process boundary verbatim; it
+    /// implies the renderer without a model/index/environment-based fallback.
+    #[test]
+    fn physical_gpu_arguments_preserve_the_requested_native_set() {
+        use crate::PhysicalGpu;
+        let selected = GuestSpec {
+            gpu_devices: vec![
+                PhysicalGpu::Pci {
+                    domain: u32::MAX,
+                    bus: 196,
+                    device: 0,
+                    function: 0,
+                },
+                PhysicalGpu::MetalRegistry(u64::MAX),
+            ],
+            ..spec()
+        };
+        crate::check(&selected).unwrap();
+        let args = arguments(&selected, Path::new("/p/v"), 2048).unwrap();
+        let args: Vec<&str> = args.iter().map(|arg| arg.to_str().unwrap()).collect();
+        let at = args.iter().position(|arg| *arg == "--gpu").unwrap();
+        assert_eq!(
+            args.get(at..at + 5),
+            Some(
+                [
+                    "--gpu",
+                    "--gpu-device",
+                    "pci:ffffffff:c4:00.0",
+                    "--gpu-device",
+                    "metal:ffffffffffffffff"
+                ]
+                .as_slice()
+            )
+        );
+        let repeated = GuestSpec {
+            gpu_devices: vec![PhysicalGpu::Luid(7), PhysicalGpu::Luid(7)],
+            ..spec()
+        };
+        assert_eq!(
+            crate::check(&repeated),
+            Err(Refusal::Gpu(crate::PhysicalGpuError::Duplicate))
+        );
     }
 
     /// A path ending in `:ro`, which shards would read as a mode, is refused by name (D215).
@@ -1607,6 +1673,7 @@ mod tests {
                 vcpus: 1,
                 memory_mib: crate::min_memory_mib(std::env::consts::ARCH).max(256),
                 gpu: false,
+                gpu_devices: Vec::new(),
                 disks: vec![],
                 shares: vec![],
                 ports: vec![1234, 1236],
