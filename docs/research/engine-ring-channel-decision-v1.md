@@ -608,8 +608,8 @@ mm/page_alloc.c and mm/show_mem.c (`MemAvailable`), eventfd(2).
   and an eventfd, made before the fork, never block.
 
 **Tests (unit; light; adacachy, linux/x86_64; [evidence](measurements/ring-pins-v1/README.md)).**
-Red first: the first request's hang (logs/r1). The merged revision (logs/r3) and the pushed
-one (logs/r4): fmt; abi, the vsock device's and init's unit tests; clippy -D warnings on
+Red first: the first request's hang (logs/r1). The merged revision (logs/r3), dcddaf476
+(logs/r4) and the pushed one (logs/r5): fmt; abi, the vsock device's and init's unit tests; clippy -D warnings on
 x86_64 glibc and x86_64 and aarch64 musl; the policy check; the E2E file compiled. Guard
 mutations (r3): the relay freeing its slot without hearing the device's `DETACH` either
 fails `the_relay_frees_a_slot_only_after_the_devices_detach` ("the relay let go of its

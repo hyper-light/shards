@@ -5,8 +5,10 @@ section 16 of [engine-ring-channel-decision-v1](../../engine-ring-channel-decisi
 D230 in [architecture.md](../../../design/architecture.md).
 
 - **Identity.** Branch `p/ring-pins-v1`: 3480f9299 (the first-request fix, on main as
-  cc1b52e61), 946eaa687 (version 2), e0b04ab84 (origin/main c4ae59ee0 merged in), and the
-  commit adding this record and the pin test. Role: implementer for ROOT
+  cc1b52e61), 946eaa687 (version 2), e0b04ab84 (origin/main c4ae59ee0 merged in), 02350b8d3
+  (the pin test, the stand-in's answer to a crossing swap, this record), dcddaf476
+  (origin/main d59e0705b merged in, r4), 18a1dc2b6 (two test fixes r4 found, r5), and the
+  commit adding r5, which changes no source. Role: implementer for ROOT
   (01a148884a4770fdaf0111f3f792a248); policy receipt [POLICY_READ.json](POLICY_READ.json)
   (development-rules.md sha256 df2acf47…, re-read on c4ae59ee0 after a restart, unchanged).
   Runner: adacachy, linux/x86_64, CachyOS 7.2.9, rustc 1.98.1. Merged to main at the
@@ -24,7 +26,8 @@ D230 in [architecture.md](../../../design/architecture.md).
 | [r1-red-first-request.txt](logs/r1-red-first-request.txt) | Red (R09): version 1's device never heard a ringed connection's first request (0 of 34 bytes), reproduced before its fix; ROOT's real-VM r521 shows the same hang. |
 | [r2-green-first-request.txt](logs/r2-green-first-request.txt) | Its fix green, and its guard (the flag's store) removed failing both of its tests. |
 | [r3-gate-e0b04ab84.txt](logs/r3-gate-e0b04ab84.txt) | The merged revision: fmt; unit tests (abi, the vsock device, init); clippy -D warnings on x86_64 glibc and x86_64 and aarch64 musl; the policy check; guard mutations M1-M3, each failing for its reason; the E2E file compiled. |
-| [r4-gate-final.txt](logs/r4-gate-final.txt) | The pushed revision, with the io_uring pin test: the same gate. |
+| [r4-gate-dcddaf476.txt](logs/r4-gate-dcddaf476.txt) | dcddaf476 (the pin test, the stand-in's answer to a crossing swap, origin/main d59e0705b): the same gate, the pin test, the relay's tests ten times under load, the mutations again. Found a test-harness race (one run in ten) and an unsafe block's comment, fixed in 18a1dc2b6. |
+| [r5-gate-final.txt](logs/r5-gate-final.txt) | 18a1dc2b6, whose source is the pushed revision's: the same gate, the relay's tests twenty times. |
 
 Guard mutations (r3): M1, the relay freeing its slot without hearing the device's `DETACH`,
 fails `the_relay_frees_a_slot_only_after_the_devices_detach` ("the relay let go of its slot
@@ -35,7 +38,8 @@ with the slot's pins still held, fails five device tests of `DETACH`, swaps and 
 a slot made whatever the room, fails `a_stream_past_the_room_goes_over_plain_vsock` and
 `with_no_budget_pins_are_bounded_by_the_available_memory`. Under M3 the stand-in also met a
 `SWAP` after its own `DETACH`, a race the protocol allows (the device refuses such a swap,
-`Refusal::Ended`) and the stand-in did not answer: it answers it since r4.
+`Refusal::Ended`) and the stand-in did not answer: it answers it since 02350b8d3, and in r4
+M3 fails those two tests alone.
 
 What the unit tests do not reach: the relay's tests run it against a device stand-in, its
 slots unpinned in the test's own memory, so pagemap's frame numbers (CAP_SYS_ADMIN only),
@@ -65,7 +69,7 @@ runs the pin and unpin calls themselves on the runner's kernel.
 
 | Rule | Proof, and its gap |
 |---|---|
-| R01 | Production code returns its errors: `?`, `get`, checked and saturating arithmetic on positions the host writes (each read once and believed only within the ring), poison-tolerant locks, `thread::Builder::spawn`, `try_reserve` for a swap's offer; the panic lints pass with clippy -D warnings (r3, r4). Reviewed by hand for the casts the lints allow (`as` on lengths bounded by `MAX_RING`). Tests assert. |
+| R01 | Production code returns its errors: `?`, `get`, checked and saturating arithmetic on positions the host writes (each read once and believed only within the ring), poison-tolerant locks, `thread::Builder::spawn`, `try_reserve` for a swap's offer; the panic lints pass with clippy -D warnings (r3, r5). Reviewed by hand for the casts the lints allow (`as` on lengths bounded by `MAX_RING`). Tests assert. |
 | R02 | Section 16's alternatives (version 1's pool, pooling freed slots, freeing without the device's word, an idle timeout, pins outside the run or in the workload's cgroup, one ring length, a socket from init), with Linux v6.18's io_uring, cgroup-v2, pagemap and `MemAvailable` sources. |
 | R03 | Section 16's numbers: every literal derived (the ring's bounds from a page and the iovec limit, the learned length's doubling, the table from the descriptor limit and `IORING_MAX_REG_BUFFERS`, the control bytes' reads from what each side says between them) or a protocol constant; none chosen. The learned ring's cold start and its adversarial bound (the run's own room) are recorded. |
 | R04 | Typed states and outcomes: the device's `Ringing`, `Why`, `Guest`, `Owed`, `Next`, `Bytes`; the relay's `Turned`, `Swapped`, `Disposal`, `Offered`, `Up`, `Joined`, `Unmade`; refusals typed (`Refusal::Ended` new). Tested by name (r3): the device's attach, refusal, the relay's `DETACH`, the host's end, a swap (whole, in pieces, crossing the host's end), a broken byte; the relay's hello (ringed, refused, plain), its let-go for the room and for a give-back, a swap, a slot with no word of its device. Gap: the device's per-direction flags in `Ringed` (version 1's) stay booleans. |
@@ -74,7 +78,7 @@ runs the pin and unpin calls themselves on the runner's kernel.
 | R07 | Comments carry the safety obligations, the sources and the derivations. |
 | R08 | No performance claim; the measurements are owed. |
 | R09 | The first-request hang reproduced before its fix (r1); version 1's idle pins are its source's behavior, their live red owed with the E2E (above). |
-| R10 | r1-r4, the guard mutations, this record. |
+| R10 | r1-r5, the guard mutations, this record. |
 | R11 | Verified on x86_64 Linux glibc (tests, clippy) and x86_64 and aarch64 musl (clippy, the guest's crates). The device's code on macOS arm64 and Windows, and every real VM, unverified. |
 | R12 | One device for every hypervisor (`GuestMemory`'s pins); the relay is the Linux guest's. No platform copy. |
 | R13 | Version 1's slot pool removed; the E2E reuses the engine tests' run and emitter helpers. |
