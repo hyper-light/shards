@@ -1,0 +1,41 @@
+{
+  "branch": "p/audit-fix-tests-v1",
+  "base": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "policy": "POLICY_READ.json",
+  "final_source_diff_sha256": "d289de9b66f07581022a27f0efb78a77d711aab3285cbb575295b5348bc28f50",
+  "runs": {
+    "linux": "adacachy 451397fcc585f7f7cb9aaf00e42064bb, x86_64, CachyOS 7.2.9-2, rustc 1.98.1; env logs/linux-build.env",
+    "mac": "Darwin 25.4.0 (macOS 26.4.1) arm64, rustc 1.98.1"
+  },
+  "logs": {
+    "phase-a demonstrations (findings 1, 2, 4, 5, 9, 11, 12)": "logs/phase-a.cmd, logs/phase-a.log, logs/phase-a.note, logs/phase-a-f12b.log",
+    "baseline compile of the five test targets at bff3015": "logs/linux-build-baseline.cmd, logs/linux-build-baseline.log",
+    "red round, unfixed code (findings 6, 10, 13)": "logs/red-round.sh, logs/red-round.log",
+    "first green round (fmt and a test-payload bug, kept)": "logs/green-round.sh, logs/green-round-1.log",
+    "own test hang found and fixed": "logs/f01-hang-probe.sh, logs/f01-hang-probe.log",
+    "final round before the attribution rewrite": "logs/final-round.sh, logs/final-round.log",
+    "final sources: unit tests, 8 mutations, no-run, clippy": "logs/recheck-round.sh, logs/runner-prelude.sh, logs/recheck-round.log, logs/recheck-round-stale.note",
+    "lint: testguest host and both musl guests, guest build": "logs/lint-round.sh, logs/lint-round.log",
+    "macOS clippy of the touched test targets": "logs/mac-clippy.log",
+    "macOS identity behaviour (finding 11)": "logs/f11-macos-identity.log, demos/f11_macos_identity.py, logs/f11-macos-check.log, demos/f11-macos-check/",
+    "retained real-VM records (findings 3, 10)": "logs/f03-retained-fail-status.log, logs/f10-retained-local-origins.log",
+    "policy script": "logs/check-development-policy.log",
+    "mutation patches and their generator": "mutations/*.patch, demos/make-mutations.py"
+  },
+  "findings": {
+    "1": {"status": "fixed", "demonstrated": "phase-a.log f01 (deterministic: spurious FAIL with no leak, pass with a leak); green-round-1.log count 15->10 beside the binary's other tests; recheck-round.log alone: count 10->10 equal while a socket leaked", "test": "managed_output observer_sockets_are_checked_by_identity_beside_other_tests_descriptors", "mutation": "m01"},
+    "2": {"status": "fixed; mechanically certain, campaign not run", "demonstrated": "phase-a.log f02 (libtest reports the early return ok)"},
+    "3": {"status": "fixed", "demonstrated": "f03-retained-fail-status.log: 53 retained real runs with SHARDS-TEST FAIL, all status 0", "test": "managed_network a_guest_verdict_is_its_pass_line_not_the_exit_status", "mutation": "m03"},
+    "4": {"status": "fixed; real-VM race not reproduced", "demonstrated": "phase-a.log f04: 56 of 2000 natural trials read the line before the rename; held trial deterministic"},
+    "5": {"status": "fixed; mechanically certain, campaign not run", "demonstrated": "phase-a.log f05 (create_dir_all keeps an earlier run's record)"},
+    "6": {"status": "fixed", "demonstrated": "red-round.log: Ok(Failed(WouldBlock, Some(11))); host outcome from managed-engine-relay-root/README.md", "test": "testguest late_write_waits_out_transient_errors_and_records_the_peers_answer", "mutation": "m06 (original code)"},
+    "7": {"status": "fixed; mechanically certain, campaign not run"},
+    "8": {"status": "fixed", "demonstrated": "recheck-round.log m08 (original Observer::next): 'channel is empty and sending half is closed', no driver outcome", "test": "managed_output a_lost_observer_stream_says_how_its_driver_ended", "mutation": "m08 (original code)"},
+    "9": {"status": "fixed", "demonstrated": "phase-a.log f09: the original predicate passes on empty, header-only and misread tables", "test": "managed_output tenant_exit::ended_member_absence_needs_a_live_neighbor_and_names_zombies", "mutation": "m09"},
+    "10": {"status": "fixed (refused, documented; requirement stays open)", "demonstrated": "f10-retained-local-origins.log: 8 of 8 AddrInUse errno 98; red-round.log", "test": "testguest inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence", "mutation": "m10 (original code)"},
+    "11": {"status": "fixed", "demonstrated": "phase-a.log f11: ns_last_pid reuse, the original check kills an unrelated child; pidfd check exact; f11-macos-check.log", "test": "managed_cleanup native::a_child_reaped_through_its_client_is_returned (Linux run; macOS by harness)"},
+    "12": {"status": "fixed", "demonstrated": "phase-a.log and phase-a-f12b.log: 0.0.0.0 gate takes any peer; ENETUNREACH without a route; a local connection's source differs from the gate address", "test": "managed_output broker_effects::the_gate_releases_only_a_peer_of_this_host", "mutation": "m12"},
+    "13": {"status": "fixed", "demonstrated": "red-round.log: kernel ECONNABORTED (seccomp) without cancellation reported Stopped", "test": "testguest an_aborted_accept_without_cancellation_is_a_worker_error", "mutation": "m13 (original code)"}
+  },
+  "unrun": "every VM, ignored, campaign, benchmark and profiling test; macOS cargo test --no-run (held for the 30 GiB floor; macOS clippy ran); aarch64 Linux gnu and Windows targets; scripts/lint across the seven targets"
+}

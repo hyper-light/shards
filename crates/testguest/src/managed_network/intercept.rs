@@ -249,6 +249,18 @@ fn listen(at: SocketAddr, mode: SocketMode) -> io::Result<TcpListener> {
     Ok(TcpListener::from(socket))
 }
 
+/// Whether a worker's cancellation was requested: its nonblocking eventfd holds the word,
+/// consumed here. Deadline::io reports a readable cancel as ConnectionAborted, but the I/O
+/// call itself can fail with that kind too (accept(2)'s ECONNABORTED).
+fn cancellation_observed(cancel: &impl AsRawFd) -> bool {
+    let mut word = 0u64;
+    // SAFETY: nonblocking eventfd writes into exactly one initialized uint64.
+    unsafe {
+        libc::read(cancel.as_raw_fd(), (&raw mut word).cast(), size_of_val(&word))
+            == size_of_val(&word) as isize
+    }
+}
+
 /// Two fixed workers at most. On every terminal path Drop wakes accept/read/write
 /// and joins; the original absolute deadline bounds even a missed cancellation.
 struct Worker<T = Completion> {
@@ -268,7 +280,15 @@ impl Worker {
                 let (mut stream, peer) =
                     match deadline.io(listener.as_raw_fd(), libc::POLLIN, || listener.accept()) {
                         Ok(pair) => pair,
-                        Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => return Ok(()),
+                        // A stop only where this worker's cancellation was requested.
+                        Err(e)
+                            if e.kind() == io::ErrorKind::ConnectionAborted
+                                && deadline
+                                    .cancel
+                                    .is_some_and(|cancel| cancellation_observed(&cancel)) =>
+                        {
+                            return Ok(());
+                        }
                         Err(e) => return Err(e),
                     };
                 report.accepted = report
@@ -1027,6 +1047,93 @@ mod tests {
             absence_verdict(&success, &backend(0, 0, None, Some(io::ErrorKind::NotConnected))),
             AbsenceVerdict::DirectBackendEffect
         );
+    }
+
+    /// Makes accept4(2) itself fail with ECONNABORTED on this thread and the threads it
+    /// starts, as a connection aborted before its accept would: a seccomp filter
+    /// (seccomp(2), SECCOMP_RET_ERRNO) on this thread alone, without TSYNC.
+    fn accept_aborts_here() {
+        // linux/audit.h: EM_X86_64 (62) or EM_AARCH64 (183) | __AUDIT_ARCH_64BIT | __AUDIT_ARCH_LE.
+        #[cfg(target_arch = "x86_64")]
+        const ARCH: u32 = 62 | 0x8000_0000 | 0x4000_0000;
+        #[cfg(target_arch = "aarch64")]
+        const ARCH: u32 = 183 | 0x8000_0000 | 0x4000_0000;
+        let code = |code: u32| u16::try_from(code).unwrap();
+        let load = |offset| libc::sock_filter {
+            code: code(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS),
+            jt: 0,
+            jf: 0,
+            k: offset,
+        };
+        let equal = |k, jt, jf| libc::sock_filter {
+            code: code(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K),
+            jt,
+            jf,
+            k,
+        };
+        let answer = |k| libc::sock_filter {
+            code: code(libc::BPF_RET | libc::BPF_K),
+            jt: 0,
+            jf: 0,
+            k,
+        };
+        // struct seccomp_data: nr at offset 0, arch at offset 4.
+        let filter = [
+            load(4),
+            equal(ARCH, 1, 0),
+            answer(libc::SECCOMP_RET_ALLOW),
+            load(0),
+            equal(u32::try_from(libc::SYS_accept4).unwrap(), 0, 1),
+            answer(libc::SECCOMP_RET_ERRNO | u32::try_from(libc::ECONNABORTED).unwrap()),
+            answer(libc::SECCOMP_RET_ALLOW),
+        ];
+        let program = libc::sock_fprog {
+            len: u16::try_from(filter.len()).unwrap(),
+            filter: filter.as_ptr().cast_mut(),
+        };
+        // SAFETY: prctl(2) with integer arguments, for this thread.
+        assert_eq!(unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) }, 0);
+        assert_eq!(
+            // SAFETY: a filter program the kernel copies before this returns.
+            unsafe {
+                libc::prctl(
+                    libc::PR_SET_SECCOMP,
+                    libc::SECCOMP_MODE_FILTER,
+                    &raw const program,
+                )
+            },
+            0,
+            "{}",
+            io::Error::last_os_error()
+        );
+    }
+
+    #[test]
+    fn an_aborted_accept_without_cancellation_is_a_worker_error() {
+        // Test patience: the aborted worker ends at its first accept, the cancelled at its wake.
+        let deadline = Deadline::new(Duration::from_secs(30)).unwrap();
+        let aborted = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    accept_aborts_here();
+                    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+                    let mut worker = Worker::start(listener, Reply::Backend, &deadline).unwrap();
+                    // Joined without its wake: nothing requested this worker's cancellation.
+                    worker.join().unwrap()
+                })
+                .join()
+                .unwrap()
+        });
+        assert_eq!(aborted.outcome(), WorkerOutcome::Error, "{:?}", aborted.result);
+        assert_eq!(
+            aborted.result.unwrap_err().kind(),
+            io::ErrorKind::ConnectionAborted
+        );
+        // A requested cancellation remains the worker's clean stop.
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut worker = Worker::start(listener, Reply::Backend, &deadline).unwrap();
+        let stopped = worker.finish().unwrap();
+        assert_eq!(stopped.outcome(), WorkerOutcome::Stopped, "{:?}", stopped.result);
     }
 
     #[test]

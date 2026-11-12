@@ -1,0 +1,2 @@
+# kiln run r322 on adacachy (451397fcc585f7f7cb9aaf00e42064bb), synced tree = bff3015 + this record's demos (no source change)
+. docs/research/measurements/audit-fix-tests-v1/logs/linux-build.env; mkdir -p ../afv1-logs; (time cargo test -p shards --no-run -j2 --test managed_output --test managed_network --test managed_limits --test managed_cleanup --test build) > ../afv1-logs/build1.log 2>&1; echo "exit=$?"; tail -n 25 ../afv1-logs/build1.log

@@ -1,0 +1,8 @@
+# kiln run on adacachy (451397fcc585f7f7cb9aaf00e42064bb), sync false, in the synced worktree copy; the corrected
+# demos/f12_gate.py passed inline (identical text): cd <synced copy> && python3 -I - route <<'PYEOF' ... PYEOF
+$ python3 -I demos/f12_gate.py route   (corrected script, passed inline)
+old gate 0.0.0.0:48435: first peer accepted unverified: ('127.0.0.1', 60340) (route address 192.168.1.90)
+new gate 192.168.1.90:36455: loopback refused (not bound there)
+new gate: a connection from this host came from 192.168.1.77: equal to the gate address 192.168.1.90: False; one of this host's addresses ['100.107.111.49', '127.0.0.1', '172.17.0.1', '172.18.0.1', '172.20.0.1', '172.21.0.1', '172.22.0.1', '172.23.0.1', '172.24.0.1', '172.25.0.1', '172.26.0.1', '172.30.0.1', '172.31.0.1', '192.168.1.77', '192.168.1.90', '192.168.176.1', '192.168.49.1', '192.168.58.1', '192.168.67.1', '192.168.76.1', '192.168.85.1']: True
+a peer at 203.0.113.9 (TEST-NET-3, not this host's) is this host's: False
+[exit 0]

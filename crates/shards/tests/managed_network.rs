@@ -53,7 +53,9 @@ impl Inputs {
     fn supplied() -> Self {
         let records = PathBuf::from(required("SHARDS_NETWORK_RECORDS"));
         assert!(records.is_absolute(), "record directory must be absolute");
-        std::fs::create_dir_all(&records).unwrap();
+        // A new directory: no earlier run's records are read as this run's.
+        std::fs::create_dir(&records)
+            .unwrap_or_else(|e| panic!("record directory must be new: {}: {e}", records.display()));
         let result = Self {
             kernel: absolute_file("SHARDS_KERNEL"),
             config: absolute_file("SHARDS_NETWORK_EFFECTIVE_CONFIG"),
@@ -89,7 +91,7 @@ impl Inputs {
             .iter()
             .map(|symbol| json!({"symbol":symbol,"supplied_value":config_value(&config,symbol)}))
             .collect();
-        let record = json!({"case":name,"fixture_revision":option_env!("SHARDS_NETWORK_SOURCE_REVISION").unwrap_or("not-embedded-retain-source-sha256"),"kernel":{"path":self.kernel,"sha256":digest(&self.kernel)},"config":{"path":self.config,"sha256":digest(&self.config),"provenance":self.provenance,"authority":"coordinator-supplied evidence; association with booted kernel not independently verified","symbols":values},"guest":{"path":common::test_guest(),"sha256":digest(common::test_guest())},"cli":{"path":common::shards()},"boot_ms":self.boot.as_millis(),"case_ms":self.case_ms,"memory_mib":self.memory_mib,"vcpus":self.cpus,"interception":"not installed or verified"});
+        let record = json!({"case":name,"fixture_revision":option_env!("SHARDS_NETWORK_SOURCE_REVISION").unwrap_or("not-embedded-retain-source-sha256"),"kernel":{"path":self.kernel,"sha256":digest(&self.kernel)},"config":{"path":self.config,"sha256":digest(&self.config),"provenance":self.provenance,"authority":"coordinator-supplied evidence; association with booted kernel not independently verified","symbols":values},"guest":{"path":common::test_guest(),"sha256":digest(common::test_guest())},"cli":{"path":common::shards(),"sha256":digest(common::shards())},"boot_ms":self.boot.as_millis(),"case_ms":self.case_ms,"memory_mib":self.memory_mib,"vcpus":self.cpus,"interception":"not installed or verified"});
         std::fs::write(
             self.records.join(format!("{name}.identity.json")),
             serde_json::to_vec_pretty(&record).unwrap(),
@@ -129,6 +131,19 @@ impl Inputs {
             serde_json::to_vec(&json!({"status":run.status})).unwrap(),
         )
         .unwrap();
+        // Written last: this case's run ended and each of its records above is whole. A case
+        // with an identity record and no marker was interrupted.
+        let lines = |verdict: &str| run.stdout.lines().filter(|l| l.trim_end() == verdict).count();
+        let failed = run
+            .stdout
+            .lines()
+            .filter(|l| l.contains("SHARDS-TEST FAIL"))
+            .count();
+        std::fs::write(
+            self.records.join(format!("{name}.complete.json")),
+            serde_json::to_vec(&json!({"status":run.status,"signal":run.signal,"stdout_bytes":run.stdout.len(),"stderr_bytes":run.stderr.len(),"guest_pass_lines":lines("SHARDS-TEST PASS"),"guest_fail_lines":failed})).unwrap(),
+        )
+        .unwrap();
         run
     }
 }
@@ -157,6 +172,51 @@ fn command_line(probe: &[&str]) -> String {
         line.push_str(if word.is_empty() { "\"\"" } else { word });
     }
     line
+}
+
+/// A direct-boot guest's verdict, as boot.rs reads it: exactly one `SHARDS-TEST PASS` line and
+/// no `SHARDS-TEST FAIL`. The test guest powers off after either verdict
+/// (crates/testguest/src/linux.rs), and the VMM exits 0 on every clean power-off, so the
+/// status alone accepts a failed guest.
+fn assert_guest_passed(run: &common::Run, what: &str) {
+    assert_eq!(run.status, Some(0), "{what}: {run}");
+    let lines = || run.stdout.lines().map(str::trim_end);
+    assert!(
+        !lines().any(|line| line.contains("SHARDS-TEST FAIL")),
+        "{what}: the guest's verdict is FAIL: {run}"
+    );
+    assert_eq!(
+        lines().filter(|line| *line == "SHARDS-TEST PASS").count(),
+        1,
+        "{what}: exactly one guest PASS line: {run}"
+    );
+}
+
+#[test]
+fn a_guest_verdict_is_its_pass_line_not_the_exit_status() {
+    let passed = |stdout: &str| {
+        let run = common::Run {
+            status: Some(0),
+            signal: None,
+            stdout: stdout.into(),
+            stderr: String::new(),
+            elapsed: Duration::ZERO,
+        };
+        std::panic::catch_unwind(|| assert_guest_passed(&run, "case")).is_ok()
+    };
+    // A retained real run's ending, its status 0 (managed-coordinator-boundaries/boundary0456/
+    // precommit-connected/sock-addr-precommit4-connected.stdout).
+    assert!(!passed(
+        "SHARDS-TEST FAIL managed-network probe failed; see its errno/state record\r\n"
+    ));
+    assert!(passed(
+        "managed-network capabilities kernel=6.18\r\nSHARDS-TEST PASS\r\n"
+    ));
+    assert!(!passed("managed-network capabilities kernel=6.18\r\n"));
+    assert!(!passed(
+        "SHARDS-TEST PASS\r\nSHARDS-TEST FAIL reporting the verdict: broken pipe\r\n"
+    ));
+    assert!(!passed("SHARDS-TEST PASS\r\nSHARDS-TEST PASS\r\n"));
 }
 
 #[test]
@@ -230,10 +290,15 @@ fn experimental_udp_interception(family: InterceptionFamily) {
     let inputs = Inputs::supplied();
     assert!(!common::cannot_run_vms(), "real hypervisor required");
     let origin = required("SHARDS_INTERCEPT_ORIGIN");
-    assert!(matches!(
-        origin.as_str(),
-        "local" | "forward" | "local-loopback" | "local-self"
-    ));
+    // UDP refuses local-loopback and local-self, here as in the guest: their backend binds the
+    // destination in the router's own namespace, where the reply reservation must bind that
+    // same tuple, and fails with EADDRINUSE (errno 98) in all eight retained runs
+    // (docs/research/measurements/managed-network-udp-local/coordinator-6e3d). Untested by
+    // this fixture, the requirement stays open; it is not passed.
+    assert!(
+        matches!(origin.as_str(), "local" | "forward"),
+        "UDP origin {origin:?}: local or forward; local-loopback and local-self cannot reserve the reply tuple their backend holds"
+    );
     let mode = required("SHARDS_INTERCEPT_UDP_MODE");
     assert!(matches!(mode.as_str(), "connected" | "unconnected"));
     let mark = required("SHARDS_INTERCEPT_MARK");
@@ -246,8 +311,7 @@ fn experimental_udp_interception(family: InterceptionFamily) {
     );
     let records = intercept_records(&run.stdout);
     assert_udp_records(&records, family, &origin, &mode);
-    assert_eq!(run.status, Some(0), "actual UDP guest failed: {run}");
-    assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
+    assert_guest_passed(&run, "actual UDP guest");
 }
 
 fn assert_udp_records(records: &[serde_json::Value], family: InterceptionFamily, origin: &str, mode: &str) {
@@ -278,8 +342,6 @@ fn assert_udp_records(records: &[serde_json::Value], family: InterceptionFamily,
         match origin {
             "local" => "Local",
             "forward" => "Forward",
-            "local-loopback" => "LocalLoopback",
-            "local-self" => "LocalSelf",
             other => panic!("unknown UDP origin {other}"),
         }
     );
@@ -291,27 +353,16 @@ fn assert_udp_records(records: &[serde_json::Value], family: InterceptionFamily,
             "Unconnected"
         }
     );
-    assert_eq!(
-        target["backend_inode"],
-        if matches!(origin, "local-loopback" | "local-self") {
-            router
-        } else {
-            backend
-        }
-    );
+    assert_eq!(target["backend_inode"], backend);
     assert_eq!(target["relay_inode"], router);
     assert_eq!(
         target["client_inode"],
         if origin == "forward" { client } else { router }
     );
     let destination: std::net::SocketAddr = target["destination"].as_str().unwrap().parse().unwrap();
-    let expected_ip: std::net::IpAddr = match (family, origin) {
-        (InterceptionFamily::Ipv4, "local-loopback") => "127.0.0.1",
-        (InterceptionFamily::Ipv4, "local-self") => "192.0.2.1",
-        (InterceptionFamily::Ipv4, _) => "192.0.2.2",
-        (InterceptionFamily::Ipv6, "local-loopback") => "::1",
-        (InterceptionFamily::Ipv6, "local-self") => "2001:db8:1::1",
-        (InterceptionFamily::Ipv6, _) => "2001:db8:1::2",
+    let expected_ip: std::net::IpAddr = match family {
+        InterceptionFamily::Ipv4 => "192.0.2.2",
+        InterceptionFamily::Ipv6 => "2001:db8:1::2",
     }
     .parse()
     .unwrap();
@@ -378,11 +429,9 @@ fn assert_udp_records(records: &[serde_json::Value], family: InterceptionFamily,
     for (packets, server) in [(&baseline, &backend_packets), (&intercepted, &relay_packets)] {
         let local: std::net::SocketAddr = packets[0]["local"].as_str().unwrap().parse().unwrap();
         let expected_source: std::net::IpAddr = match (family, origin) {
-            (InterceptionFamily::Ipv4, "local-loopback") => "127.0.0.1",
-            (InterceptionFamily::Ipv4, "local" | "local-self") => "192.0.2.1",
+            (InterceptionFamily::Ipv4, "local") => "192.0.2.1",
             (InterceptionFamily::Ipv4, _) => "198.51.100.2",
-            (InterceptionFamily::Ipv6, "local-loopback") => "::1",
-            (InterceptionFamily::Ipv6, "local" | "local-self") => "2001:db8:1::1",
+            (InterceptionFamily::Ipv6, "local") => "2001:db8:1::1",
             (InterceptionFamily::Ipv6, _) => "2001:db8:2::2",
         }
         .parse()
@@ -577,12 +626,10 @@ fn experimental_tcp_interception(family: InterceptionFamily) {
         assert_eq!(checked["window"], window);
         assert_eq!(checked["after_window"], "Unverified");
         assert_eq!(checked["no_second_backend_accept_or_receipt"], true);
-        assert_eq!(run.status, Some(0), "{run}");
-        assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
+        assert_guest_passed(&run, "relay-absent guest");
         return;
     }
-    assert_eq!(run.status, Some(0), "{run}");
-    assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
+    assert_guest_passed(&run, "TCP interception guest");
     let intercepted = one("Intercepted");
     assert_eq!(intercepted["original"], baseline["destination"]);
     assert_eq!(intercepted["original"], intercepted["client_peer"]);
@@ -621,8 +668,7 @@ fn direct_guest_capabilities_are_separate_from_payload_results() {
     let inputs = Inputs::supplied();
     assert!(!common::cannot_run_vms(), "real hypervisor required");
     let run = inputs.boot("capabilities", &["capabilities"]);
-    assert_eq!(run.status, Some(0), "{run}");
-    assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
+    assert_guest_passed(&run, "capabilities guest");
     assert!(
         run.stdout.contains("managed-network capabilities kernel="),
         "{run}"
@@ -665,8 +711,7 @@ fn direct_guest_native_pairs_preserve_binary_empty_and_half_close() {
                     &name,
                     &["pair", transport, address, sent, reply, &deadline, "native"],
                 );
-                assert_eq!(run.status, Some(0), "{name}: {run}");
-                assert!(run.stdout.contains("SHARDS-TEST PASS"), "{name}: {run}");
+                assert_guest_passed(&run, &name);
                 assert_eq!(
                     run.stdout
                         .lines()
@@ -929,11 +974,7 @@ fn direct_guest_socket_address_udp4_requires_original_native_tuple() {
             .iter()
             .any(|r| r["type"] == "Error" || r["type"] == "UdpError" || r["type"] == "HookError")
     );
-    assert_eq!(
-        run.status,
-        Some(0),
-        "destination rewrite alone is not compatibility success: {run}"
-    );
+    assert_guest_passed(&run, "destination rewrite alone is not compatibility success");
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1201,9 +1242,8 @@ fn direct_guest_two_leg_udp4_records_buffers_and_backend_source_change() {
         r["type"].as_str(),
         Some("Error" | "HookError" | "ForwardError" | "UdpError" | "PayloadRefusal")
     )));
-    assert_eq!(
-        run.status,
-        Some(0),
-        "finite transfer with OBSERVED upstream source change; not full native transparency: {run}"
+    assert_guest_passed(
+        &run,
+        "finite transfer with OBSERVED upstream source change; not full native transparency",
     );
 }

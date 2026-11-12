@@ -308,9 +308,8 @@ fn a_finite_held_tenant_population_can_be_cancelled_after_neighbor_progress() {
 }
 
 fn campaign(end_at: EndAt) {
-    if common::cannot_run_vms() {
-        return;
-    }
+    // An ignored campaign is run on purpose: on a host without VMs it fails, never passes.
+    assert!(!common::cannot_run_vms(), "real hypervisor required");
     let budget = Budget::new(
         input("MANAGED_LIMIT_TASKS"),
         input("MANAGED_LIMIT_RESERVED"),

@@ -1,0 +1,8 @@
+# 2026-11-11T21:41:42Z Darwin Adas-MacBook-Pro-2.local 25.4.0 Darwin Kernel Version 25.4.0: Thu Mar 19 19:33:50 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6050 arm64 26.4.1
+$ python3 -I docs/research/measurements/audit-fix-tests-v1/demos/f11_macos_identity.py
+sizeof proc_bsdinfo: 136
+A=9103 running/exiting, arg 1: started=(1794433302,991765) zombie=False
+A exited, unreaped: arg 0: n=0 errno=3; arg 1: started=(1794433302,991765) zombie=True
+A reaped: arg 1: n=0 errno=3
+B=9111 (another process) arg 1: started=(1794433303,338369) zombie=False
+[exit 0]

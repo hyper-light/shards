@@ -1,0 +1,14 @@
+# Mac (adas-macbook-pro-2, macOS 26.4.1, arm64), worktree root, 2026-11-11T22:23:09Z, available GiB before: 39
+$ SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/usr/bin/true SHARDS_SERVER_BINARY=/usr/bin/true CARGO_TERM_COLOR=never lockf -t 480 /tmp/g121-mac.lock cargo clippy -p shards -j2 --test managed_cleanup --test managed_network --test managed_limits --test build -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 33s
+[exit ]
+available GiB after: 37
+# rerun to record the exit status (zsh: the first run printed bash $PIPESTATUS, empty here)
+$ SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/usr/bin/true SHARDS_SERVER_BINARY=/usr/bin/true CARGO_TERM_COLOR=never lockf -t 480 /tmp/g121-mac.lock cargo clippy -p shards -j2 --test managed_cleanup --test managed_network --test managed_limits --test build -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.45s
+[exit 0]
+# final sources (local git diff sha256 d289de9b66f07581022a27f0efb78a77d711aab3285cbb575295b5348bc28f50), 2026-11-11T22:51:40Z, available GiB 34
+$ SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/usr/bin/true SHARDS_SERVER_BINARY=/usr/bin/true CARGO_TERM_COLOR=never lockf -t 480 /tmp/g121-mac.lock cargo clippy -p shards -j2 --test managed_cleanup --test managed_network --test managed_limits --test build -- -D warnings
+    Checking shards v0.7.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-tests-v1/crates/shards)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.79s
+[exit 0]

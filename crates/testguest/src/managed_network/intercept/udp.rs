@@ -9,6 +9,12 @@ pub(super) enum Mode {
     Unconnected,
 }
 
+/// Why UDP refuses local-loopback and local-self: their backend binds the destination in the
+/// router's own namespace, where the transparent reply socket must bind that same tuple. It
+/// fails with EADDRINUSE (errno 98) in all eight retained runs
+/// (docs/research/measurements/managed-network-udp-local/coordinator-6e3d).
+const SAME_NAMESPACE_REPLY: &str = "UDP local-loopback and local-self: the backend already holds the destination tuple the reply reservation must bind in the router's namespace (EADDRINUSE); untestable by this fixture, the requirement stays open";
+
 #[derive(Debug)]
 pub(in super::super) struct Inputs {
     network: super::Inputs,
@@ -24,10 +30,10 @@ impl Inputs {
         table: &str,
         priority: &str,
     ) -> io::Result<Self> {
-        if !matches!(origin, "local" | "forward" | "local-loopback" | "local-self") {
-            return Err(invalid(
-                "UDP experiment expects local, forward, local-loopback or local-self",
-            ));
+        match origin {
+            "local" | "forward" => {}
+            "local-loopback" | "local-self" => return Err(invalid(SAME_NAMESPACE_REPLY)),
+            _ => return Err(invalid("UDP experiment expects local or forward")),
         }
         Ok(Self {
             network: super::Inputs::parse(family, origin, millis, mark, table, priority)?,
@@ -468,15 +474,6 @@ fn scripted(
         result,
     }
 }
-fn cancellation_observed(cancel: &OwnedFd) -> bool {
-    let mut word = 0u64;
-    // SAFETY: nonblocking eventfd writes into exactly one initialized uint64.
-    unsafe {
-        libc::read(cancel.as_raw_fd(), (&raw mut word).cast(), size_of_val(&word))
-            == size_of_val(&word) as isize
-    }
-}
-
 struct ClientCompletion {
     stage: Stage,
     result: Result<UdpSocket, Fault>,
@@ -611,15 +608,11 @@ pub(in super::super) fn run(input: Inputs) -> io::Result<()> {
     let deadline = Deadline::new(input.network.within)?;
     let [router_ip, backend_ip, _, client_ip] = addresses(input.network.family);
     let [router, backend, client_ns] = prepare(&input.network, &deadline)?;
-    let loopback: IpAddr = match input.network.family {
-        Family::Ipv4 => Ipv4Addr::LOCALHOST.into(),
-        Family::Ipv6 => Ipv6Addr::LOCALHOST.into(),
-    };
     let (origin, source, backend_namespace, backend_address) = match input.network.origin {
         Origin::Local => (&router, router_ip, &backend, backend_ip),
         Origin::Forward => (&client_ns, client_ip, &backend, backend_ip),
-        Origin::LocalLoopback => (&router, loopback, &router, loopback),
-        Origin::LocalSelf => (&router, router_ip, &router, router_ip),
+        // Inputs::parse refuses these; nothing else makes UDP Inputs.
+        Origin::LocalLoopback | Origin::LocalSelf => return Err(invalid(SAME_NAMESPACE_REPLY)),
     };
     let backend_socket = in_namespace(Some(&backend_namespace.handle), || {
         udp_socket(SocketAddr::from((backend_address, 0)), SocketMode::Native)
@@ -759,9 +752,19 @@ mod tests {
     #[test]
     fn inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence() {
         for family in [Family::Ipv4, Family::Ipv6] {
-            for origin in ["local", "forward", "local-loopback", "local-self"] {
+            for origin in ["local", "forward"] {
                 for mode in ["connected", "unconnected"] {
                     assert!(Inputs::parse(family, origin, mode, "1000", "1", "1000", "100").is_ok());
+                }
+            }
+            for origin in ["local-loopback", "local-self"] {
+                for mode in ["connected", "unconnected"] {
+                    let refused =
+                        Inputs::parse(family, origin, mode, "1000", "1", "1000", "100").unwrap_err();
+                    assert!(
+                        refused.to_string().contains("the backend already holds"),
+                        "{origin} {mode}: {refused}"
+                    );
                 }
             }
         }

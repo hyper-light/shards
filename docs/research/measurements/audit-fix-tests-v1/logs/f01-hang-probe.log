@@ -1,0 +1,30 @@
+# A defect in my own first version of the finding-1 test, found and fixed before commit.
+# The first final-round run (kiln r350) hit its 600 s timeout with no output (a `| tail -c` pipe held it);
+# its last step log on the runner read "observer_sockets_are_checked_by_identity_beside_other_tests_descriptors
+# has been running for over 60 seconds". That run was killed during mutation m01, which stayed applied in the
+# runner's copy (kiln's sync sends local changes only), so the probe below ran with m01 in place.
+# command (kiln r374): sh docs/research/measurements/audit-fix-tests-v1/logs/f01-hang-probe.sh 2>&1 | tail -c 25000
+# Reading: the assertion failed (m01's blind check returns []) inside std::thread::scope, the neighbor thread
+# then waited forever at its Barrier (futex_wait) and the scope waited for it: a failure became a hang.
+# Fix: the test has no threads or barriers now (final-round.log: it fails promptly under m01), and every
+# runner script first reverts a leftover mutation and checks the tree against the local diff (runner-prelude.sh).
+binary target/debug/deps/managed_output-b7ce6a4da550e51d
+
+running 1 test
+
+thread 'observer_sockets_are_checked_by_identity_beside_other_tests_descriptors' (2019299) panicked at crates/shards/tests/managed_output.rs:549:9:
+assertion `left == right` failed: both open while it lives
+  left: []
+ right: [Held { fd: 5, inode: 1035863357 }, Held { fd: 6, inode: 1035863358 }]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+== threads of 2019296
+2019296 managed_output- wchan=futex_wait state=S
+2019299 observer_socket wchan=futex_wait state=S
+2019300 observer_socket wchan=futex_wait state=S
+2019301 managed-owner-o wchan=__skb_wait_for_more_packets state=S
+== sockets
+lrwx------ 1 adalundhe adalundhe 64 Nov 11 14:08 5 -> socket:[1035863357]
+== gdb
+/usr/bin/gdb
+ptrace: Operation not permitted.
+[killed]

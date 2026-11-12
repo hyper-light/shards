@@ -70,7 +70,7 @@ fn managed_tcp_forward_preserves_both_half_closes() {
         serde_json::to_vec_pretty(&rows).unwrap(),
     )
     .unwrap();
-    assert_eq!(run.status, Some(0), "{}\n{}", run.stdout, run.stderr);
+    assert_guest_passed(&run, "TCP forward guest");
     let one = |kind| {
         let got: Vec<_> = rows.iter().filter(|row| row["type"] == kind).collect();
         assert_eq!(got.len(), 1, "one {kind}: {rows:?}");
@@ -157,6 +157,13 @@ fn managed_engine_half_close_records_actual_host_finish() {
         ("SHARDS_KERNEL", input.kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
     ];
+    // The first command starts the home's daemon: from here on it is stopped however the
+    // test ends.
+    let mut daemon = Daemon {
+        input: &input,
+        env: &env,
+        stopped: false,
+    };
     let (image, _server) = common::served();
     let pulled = common::run_shards_env(&[], &["pull", "-q", &image], &env, input.boot);
     assert_eq!(pulled.status, Some(0), "{pulled}");
@@ -217,16 +224,46 @@ fn managed_engine_half_close_records_actual_host_finish() {
         assert_eq!(row["late_write"]["kind"], "NotAttempted");
     } else {
         assert_eq!(row["write_end"], "Open");
-        assert!(
-            matches!(row["late_write"]["kind"].as_str(), Some("Failed" | "Accepted")),
+        // The engine closes the client's two halves before its EOF (managed-engine-relay-root:
+        // "actual late X fails BrokenPipe/errno32" at every source compared), so the late byte
+        // has one answer. 32 is the guest's Linux EPIPE (asm-generic/errno-base.h).
+        assert_eq!(
+            row["late_write"],
+            json!({"kind":"Failed","error_kind":"BrokenPipe","errno":32}),
             "{row:?}"
         );
     }
-    let stop = common::run_shards_env(&[], &["stop", "daemon"], &env, input.boot);
-    std::fs::write(
-        input.records.join("engine.daemon-stop.json"),
-        serde_json::to_vec(&json!({"status":stop.status,"stdout":stop.stdout,"stderr":stop.stderr})).unwrap(),
-    )
-    .unwrap();
+    let stop = daemon.stop();
     assert_eq!(stop.status, Some(0), "{stop}");
+}
+
+/// The engine test's daemon, stopped once: by the test as it ends, or as it unwinds. Either
+/// way `engine.daemon-stop.json` records the stop.
+struct Daemon<'a> {
+    input: &'a Inputs,
+    env: &'a [(&'a str, &'a std::ffi::OsStr)],
+    stopped: bool,
+}
+
+impl Daemon<'_> {
+    fn stop(&mut self) -> common::Run {
+        self.stopped = true;
+        let stop = common::run_shards_env(&[], &["stop", "daemon"], self.env, self.input.boot);
+        let record = json!({"status":stop.status,"stdout":stop.stdout,"stderr":stop.stderr,"test_unwinding":std::thread::panicking()});
+        if let Err(error) = std::fs::write(
+            self.input.records.join("engine.daemon-stop.json"),
+            serde_json::to_vec(&record).unwrap_or_default(),
+        ) {
+            let _ = writeln!(std::io::stderr(), "engine.daemon-stop.json: {error}");
+        }
+        stop
+    }
+}
+
+impl Drop for Daemon<'_> {
+    fn drop(&mut self) {
+        if !self.stopped {
+            let _ = self.stop();
+        }
+    }
 }

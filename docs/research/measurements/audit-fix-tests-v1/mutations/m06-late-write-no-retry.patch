@@ -1,0 +1,21 @@
+--- a/crates/testguest/src/managed_network/intercept/tcp_forward.rs
++++ b/crates/testguest/src/managed_network/intercept/tcp_forward.rs
+@@ -1113,17 +1113,7 @@
+ ) -> io::Result<LateWrite> {
+     let sent = deadline.io(stream.as_raw_fd(), libc::POLLOUT, || {
+         let mut writer = stream;
+-        match writer.write(bytes) {
+-            Err(error)
+-                if matches!(
+-                    error.kind(),
+-                    io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+-                ) =>
+-            {
+-                Err(error)
+-            }
+-            answer => Ok(answer),
+-        }
++        Ok(writer.write(bytes))
+     })?;
+     Ok(match sent {
+         Ok(n) => LateWrite::Accepted(n),

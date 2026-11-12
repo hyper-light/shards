@@ -1,0 +1,13 @@
+# Mac (macOS 26.4.1, arm64), worktree root, 2026-11-11T22:34:03Z, available GiB 36
+$ CARGO_TARGET_DIR=/tmp/afv1-f11-target lockf -t 480 /tmp/g121-mac.lock cargo run --offline -j2 --manifest-path docs/research/measurements/audit-fix-tests-v1/demos/f11-macos-check/Cargo.toml
+     Locking 1 package to latest Rust 1.98.1 compatible version
+      Adding libc v0.2.189 (available: v0.2.191)
+   Compiling libc v0.2.189
+   Compiling afv1-f11-macos-check v0.0.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-tests-v1/docs/research/measurements/audit-fix-tests-v1/demos/f11-macos-check)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.42s
+     Running `/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-tests-v1/scripts/hvf-run /tmp/afv1-f11-target/debug/afv1-f11-macos-check`
+reaped child 39081: rescue needed = false (expected false)
+zombie child 39082 (waitid WNOWAIT 0): rescue needed = true (expected true; the rescue reaps it)
+running child 39083: rescue needed = true (expected true; the rescue ends and reaps it)
+live process 39084 named by an identity with another start time: rescue needed = false (expected false); left running = true (expected true)
+[exit 0]

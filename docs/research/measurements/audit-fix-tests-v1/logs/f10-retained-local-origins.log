@@ -1,0 +1,13 @@
+# Finding 10: the retained live UDP local-loopback/local-self runs (coordinator-6e3d, Fedora KVM), their faults.
+# command (Mac, worktree root at bff3015):
+$ python3 -I -c '<prints case, cargo_exit and faults of each results.json entry>' docs/research/measurements/managed-network-udp-local/coordinator-6e3d/root-managed-udp-local-6e3d-v1/results.json
+intercept-udp4-local-loopback-connected cargo_exit 101 faults [{"type": "UdpError", "role": "ReplySocket", "stage": "ReserveReplyTuple", "cause": "Io", "kind": "AddrInUse", "errno": 98}] success_records 0
+intercept-udp4-local-loopback-unconnected cargo_exit 101 faults [{"type": "UdpError", "role": "ReplySocket", "stage": "ReserveReplyTuple", "cause": "Io", "kind": "AddrInUse", "errno": 98}] success_records 0
+intercept-udp4-local-self-connected cargo_exit 101 faults [{"type": "UdpError", "role": "ReplySocket", "stage": "ReserveReplyTuple", "cause": "Io", "kind": "AddrInUse", "errno": 98}] success_records 0
+intercept-udp4-local-self-unconnected cargo_exit 101 faults [{"type": "UdpError", "role": "ReplySocket", "stage": "ReserveReplyTuple", "cause": "Io", "kind": "AddrInUse", "errno": 98}] success_records 0
+intercept-udp4-local-connected cargo_exit 0 faults [] success_records 1
+intercept-udp6-local-loopback-connected cargo_exit 101 faults [{"type": "UdpError", "role": "ReplySocket", "stage": "ReserveReplyTuple", "cause": "Io", "kind": "AddrInUse", "errno": 98}] success_records 0
+intercept-udp6-local-loopback-unconnected cargo_exit 101 faults [{"type": "UdpError", "role": "ReplySocket", "stage": "ReserveReplyTuple", "cause": "Io", "kind": "AddrInUse", "errno": 98}] success_records 0
+intercept-udp6-local-self-connected cargo_exit 101 faults [{"type": "UdpError", "role": "ReplySocket", "stage": "ReserveReplyTuple", "cause": "Io", "kind": "AddrInUse", "errno": 98}] success_records 0
+intercept-udp6-local-self-unconnected cargo_exit 101 faults [{"type": "UdpError", "role": "ReplySocket", "stage": "ReserveReplyTuple", "cause": "Io", "kind": "AddrInUse", "errno": 98}] success_records 0
+intercept-udp6-local-connected cargo_exit 0 faults [] success_records 1

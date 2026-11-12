@@ -177,6 +177,66 @@ fn release_neighbor(fixture: &Fixture, inputs: &Inputs, until: Instant) {
     inputs.write("release.json", &json!({"state":"OwnerReleasedNeighborAfterGateEof","guest_port":inputs.port,"release_bytes":[1],"gate_peer_eof":true}));
 }
 
+/// What `top -o pid,ppid,uid,nlwp,stat,comm` shows of the ended member (uid `ended`) beside
+/// its continuing neighbor (uid `neighbor`). The neighbor's live row is the control that the
+/// snapshot lists member processes at all; an ended member's row left is named unreaped
+/// (zombie) or live.
+fn ended_member_rows(table: &str, ended: &str, neighbor: &str) -> Result<(), String> {
+    let mut lines = table.lines();
+    let header: Vec<_> = lines.next().unwrap_or_default().split_whitespace().collect();
+    if header != ["PID", "PPID", "UID", "NLWP", "STAT", "COMMAND"] {
+        return Err(format!("unexpected process table columns {header:?}"));
+    }
+    let rows: Vec<Vec<&str>> = lines.map(|line| line.split_whitespace().collect()).collect();
+    let of = |uid: &str| -> Vec<&Vec<&str>> { rows.iter().filter(|row| row.get(2) == Some(&uid)).collect() };
+    let zombie = |row: &&Vec<&str>| row.get(4).is_some_and(|stat| stat.starts_with('Z'));
+    if !of(neighbor).iter().any(|row| !zombie(row)) {
+        return Err(
+            "no live row of the continuing neighbor: the snapshot cannot show the ended member's absence"
+                .into(),
+        );
+    }
+    let ended = of(ended);
+    if let Some(row) = ended.iter().find(|row| zombie(row)) {
+        return Err(format!("the ended member left an unreaped zombie: {row:?}"));
+    }
+    if let Some(row) = ended.first() {
+        return Err(format!("the ended member still has a live process: {row:?}"));
+    }
+    Ok(())
+}
+
+#[test]
+fn ended_member_absence_needs_a_live_neighbor_and_names_zombies() {
+    let (ended, neighbor) = ("200001", "200002");
+    let header = "PID PPID UID NLWP STAT COMMAND\n";
+    let live = format!("{header}924 921 {neighbor} 1 S member\n");
+    assert_eq!(ended_member_rows(&live, ended, neighbor), Ok(()));
+    for vacuous in [
+        String::new(),
+        header.to_string(),
+        format!("PID UID STAT COMMAND\n924 {neighbor} S member\n"),
+        format!("{header}924 921 {neighbor} 1 Z member <defunct>\n"),
+    ] {
+        assert!(
+            ended_member_rows(&vacuous, ended, neighbor).is_err(),
+            "{vacuous:?}"
+        );
+    }
+    let zombie = format!("{live}930 921 {ended} 1 Z member <defunct>\n");
+    assert!(
+        ended_member_rows(&zombie, ended, neighbor)
+            .unwrap_err()
+            .contains("zombie")
+    );
+    let running = format!("{live}930 921 {ended} 1 S member\n");
+    assert!(
+        ended_member_rows(&running, ended, neighbor)
+            .unwrap_err()
+            .contains("live process")
+    );
+}
+
 fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Vec<(u32, Channel, Capture)> {
     let port = inputs.port.to_string();
     let deadline = inputs.patience.as_millis().to_string();
@@ -251,15 +311,15 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Vec<(u32, Chan
         &["top", "owner-output", "-o", "pid,ppid,uid,nlwp,stat,comm"],
         until,
     );
-    let ended_uid = shards_abi::DOMAIN_FIRST_ID.checked_add(1).unwrap().to_string();
-    assert!(
-        before
-            .stdout
-            .lines()
-            .skip(1)
-            .all(|line| line.split_whitespace().nth(2) != Some(ended_uid.as_str())),
-        "ended member has no visible actor rows: {before}"
-    );
+    let uid = |member: u32| {
+        shards_abi::DOMAIN_FIRST_ID
+            .checked_add(member)
+            .unwrap()
+            .to_string()
+    };
+    if let Err(why) = ended_member_rows(&before.stdout, &uid(1), &uid(2)) {
+        panic!("{why}: {before}");
+    }
     fixture.main_progress(until.saturating_duration_since(Instant::now()));
     release_neighbor(fixture, inputs, until);
     for (member, channel, index, capture) in &mut channels {
@@ -379,7 +439,7 @@ fn member_normal_exit_preserves_sibling_and_main_progress() {
         }))
     });
     let stopped = fixture.shutdown(cleanup_until);
-    inputs.write("teardown.json",&json!({"owner_stop_and_observer_join":{"completed":stopped.is_ok(),"error":stopped.as_ref().err()},"protocol_completed":result.is_ok(),"private_run_cleanup_completed":matches!(&removed,Some(Ok(_))),"observer_fd_baseline":fixture.initial_fds,"host_exit_reaping_kernel_return":"Unverified; coordinator held-watches/independent cleanup campaign owed"}));
+    inputs.write("teardown.json",&json!({"owner_stop_and_observer_join":{"completed":stopped.is_ok(),"error":stopped.as_ref().err()},"protocol_completed":result.is_ok(),"private_run_cleanup_completed":matches!(&removed,Some(Ok(_))),"observer_sockets":fixture.observer_sockets.iter().map(|socket|json!({"fd":socket.fd,"inode":socket.inode})).collect::<Vec<_>>(),"host_exit_reaping_kernel_return":"Unverified; coordinator held-watches/independent cleanup campaign owed"}));
     if let Err(error) = result {
         std::panic::resume_unwind(error);
     }

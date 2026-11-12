@@ -315,5 +315,5 @@ fn cancellation_case(case: CancellationCase) {
         r["type"].as_str(),
         Some("Error" | "HookError" | "ForwardError" | "UdpError" | "PayloadRefusal")
     )));
-    assert_eq!(run.status, Some(0), "{run}");
+    assert_guest_passed(&run, &name);
 }

@@ -1,0 +1,23 @@
+{
+  "POLICY_READ": {
+    "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+    "files_read_in_full_from_origin_main": [
+      "AGENTS.md",
+      "docs/development-rules.md",
+      "docs/development-evidence.md",
+      "CLAUDE.md"
+    ],
+    "development_rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "role": "implementer",
+    "coordinator": "ROOT (Shards main coordinator)",
+    "task": "Fix audited defects in test infrastructure (false passes, flakiness, leaks), findings 1-13 of the source audit at bff3015: process-wide fd count leak check (managed_output.rs), silent pass without VMs (managed_limits.rs), exit 0 accepted as guest verdict (managed_network*), single top snapshot race (build.rs code mode), records dir reuse (managed_network.rs), late-write probe accepting every outcome (testguest intercept/tcp_forward.rs + host), missing teardown guard (managed_network/tcp_forward.rs), hidden driver error (common/managed_capture.rs), vacuous tenant_exit check, UDP local origins (testguest intercept/udp.rs + host matrix), PID reuse after reap (managed_cleanup.rs), broker-effects gate exposure (managed_output/broker_effects.rs), unconfirmed TCP accept stop (testguest intercept.rs). R09: demonstrate each defect before fixing, or state plainly why it was not reproduced and why the mechanism is certain. Light checks only: cargo test --no-run, cargo fmt --check, clippy -D warnings; no VM tests, campaigns, benchmarks or profiling.",
+    "owned_paths": [
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-tests-v1/crates/shards/tests/** (except crates/shards/tests/managed_output/metrics.rs)",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-tests-v1/crates/testguest/**",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-tests-v1/docs/research/measurements/audit-fix-tests-v1/"
+    ],
+    "branch": "p/audit-fix-tests-v1",
+    "limits": "No production crates, no other worktrees, no main, no policy files, no agents spawned or messaged, no push/merge/rebase; Mac cargo via lockf /tmp/g121-mac.lock with -j2 and >=30 GiB free; Linux via kiln run on 451397fcc585f7f7cb9aaf00e42064bb (cpus=2,mem=2g,disk=4g), timeout_s<=600, -j2, no background; commits only via /Users/adalundhe/.kiln-run/bin/gits --only with named paths",
+    "recorded_at": "2026-11-11"
+  }
+}
