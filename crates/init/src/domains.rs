@@ -654,6 +654,30 @@ fn executable(d: &Domain, env: &[CString]) -> Result<CString, String> {
         })
 }
 
+/// Where `home`, a member's `HOME`, lies among the mounts it may write as it starts, each by
+/// its mount point in its view (`points`: its scratch's `/tmp`, a writable volume's as
+/// declared and as it lies in the image): the deepest that is `home` or holds it, by its
+/// place in `points`, and `home`'s components beneath it. None where none does, or where
+/// `home` is no absolute path that stays where it says (`..`).
+fn home_in<'h>(home: &'h str, points: &[&str]) -> Option<(usize, Vec<&'h str>)> {
+    let comps: Vec<&str> = home
+        .strip_prefix('/')?
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect();
+    if comps.contains(&"..") {
+        return None;
+    }
+    let plain = format!("/{}", comps.join("/"));
+    let (at, point) = points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| within(&plain, p))
+        .max_by_key(|(_, p)| p.len())?;
+    let depth = point.split('/').filter(|c| !c.is_empty()).count();
+    Some((at, comps.get(depth..).unwrap_or_default().to_vec()))
+}
+
 /// Whether `p` is relative and stays inside the directory it is relative to: the twin of
 /// the build's (shards_image osi.rs `inside`), as init links no host crate.
 fn inside(p: &str) -> bool {
@@ -1978,11 +2002,9 @@ pub fn start(
             .collect();
         // Its scratch, which its instance holds too, to read the files it hands across.
         let scratch = scratch(lower, d.id).map_err(|e| format!("{}: its /tmp: {e}", d.label))?;
-        // What its orchestrator staged for it (D231): its files in its home before anything
-        // of it runs, its variables over its own and its image's; its program found on the
-        // PATH it runs with.
-        crate::staged::files(scratch.as_ref().map(AsFd::as_fd), (d.id, d.id), member, setup)
-            .map_err(|e| format!("{}: {e}", d.label))?;
+        // What its orchestrator staged for it (D231): its variables over its own and its
+        // image's, its program found on the PATH it runs with, its working directory, and
+        // its files in its home, where its HOME lies, before anything of it runs.
         let its_dir =
             std::str::from_utf8(&d.dir).map_err(|_| format!("{}: a directory that is not UTF-8", d.label))?;
         let own = harness_env(its_dir, &d.label, &image_env, &d.run_env)?
@@ -1994,6 +2016,40 @@ pub fn start(
         let workdir = crate::staged::workdir(member, setup)
             .map_err(|e| format!("{}: {e}", d.label))?
             .unwrap_or_else(|| d.workdir.clone());
+        let home = env
+            .iter()
+            .rev()
+            .find_map(|e| e.to_bytes().strip_prefix(b"HOME="))
+            .map(String::from_utf8_lossy)
+            .unwrap_or_default();
+        // What it may write as it starts, each where it sees it: its scratch, at /tmp, and
+        // each writable volume given it, at its mount point as declared and as it lies in
+        // the image, with init's own mount of it.
+        let mut writable: Vec<(&str, crate::staged::Mount<'_>)> = Vec::new();
+        if let Some(s) = &scratch {
+            writable.push(("/tmp", crate::staged::Mount::Held(s.as_fd())));
+        }
+        for (sh, at, real) in staged
+            .iter()
+            .filter(|(sh, _, _)| !sh.ro && given_volume(d, &sh.dest))
+        {
+            writable.extend([
+                (real.as_str(), crate::staged::Mount::At(at.as_str())),
+                (sh.dest.as_str(), crate::staged::Mount::At(at.as_str())),
+            ]);
+        }
+        let points: Vec<&str> = writable.iter().map(|(p, _)| *p).collect();
+        let place = home_in(&home, &points)
+            .and_then(|(i, beneath)| {
+                Some(crate::staged::Home {
+                    mount: writable.get(i)?.1,
+                    beneath,
+                })
+            })
+            .ok_or_else(|| {
+                format!("HOME, {home:?}, lies in neither its scratch nor a writable volume given it")
+            });
+        crate::staged::files(place, (d.id, d.id), member, setup).map_err(|e| format!("{}: {e}", d.label))?;
         let dir = server.start(
             i,
             d,
@@ -3155,6 +3211,32 @@ mod tests {
             "{e}"
         );
         assert!(d("/etc").is_err());
+    }
+
+    /// A member's HOME lies in the deepest of its writable mounts that holds it, however it
+    /// is written but for `..`; what is staged for it goes there (staged.rs), never to a
+    /// mount beside it.
+    #[test]
+    fn a_members_home_lies_in_the_deepest_mount_that_holds_it() {
+        let points = ["/tmp", "/var/home/claude", "/home/claude", "/home/claude/.cache"];
+        assert_eq!(home_in("/tmp", &points), Some((0, vec![])));
+        assert_eq!(home_in("/tmp/h/i", &points), Some((0, vec!["h", "i"])));
+        assert_eq!(home_in("/home/claude", &points), Some((2, vec![])));
+        assert_eq!(home_in("//home/claude/./", &points), Some((2, vec![])));
+        assert_eq!(home_in("/home/claude/.cache/x", &points), Some((3, vec!["x"])));
+        assert_eq!(home_in("/var/home/claude/w", &points), Some((1, vec!["w"])));
+        for nowhere in [
+            "/root",
+            "/home",
+            "/home/claudette",
+            "tmp",
+            "",
+            "/tmp/../etc",
+            "/home/claude/../x",
+        ] {
+            assert_eq!(home_in(nowhere, &points), None, "{nowhere}");
+        }
+        assert_eq!(home_in("/tmp", &[]), None);
     }
 
     /// A domain of `argv` whose directory is `dir`.

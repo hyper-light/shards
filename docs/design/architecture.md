@@ -22202,9 +22202,19 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   refused `Unsupported` on every host.
 - *Staging.* `member-env=` and `member-file=` setup entries, by the member's declared
   index: variables over its image's (`SHARDS_DOMAIN` refused), regular files under its home
-  tmpfs at relative paths, owned by its uid, permission bits alone, applied before its
-  program runs, within `run::MAX_PAYLOAD`. Native-sign-in delegation, not opacity (G18): the
-  member reads what it is given.
+  at relative paths, owned by its uid, permission bits alone, applied before its program
+  runs, within `run::MAX_PAYLOAD`. Native-sign-in delegation, not opacity (G18): the member
+  reads what it is given. Its home is where its `HOME` lies, as its variables end
+  (2026-11-12, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 7): its scratch at `/tmp`
+  (`HOME=/tmp`, init's), or a writable volume given it, the deepest that holds it, by its
+  mount point as declared or as it lies in the image (a harness's per-user volume at
+  `/home/claude`, `HOME` its `run.env`'s). The home's directories are made where missing,
+  0700 and the member's. A file an earlier run left there (a volume outlives its run) is
+  replaced, as nothing of the member runs yet to read it; one path staged twice is refused;
+  nothing is followed that a link could redirect; files staged for a member whose `HOME` is
+  in neither are refused, as it would never read them. Before, the files went to the
+  scratch whatever `HOME` said, and a harness whose `HOME` was a volume never read them
+  (reproduced, docs/research/measurements/s7-home-workdir).
 - *A member's working directory* (2026-11-12, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
   step 7): `MemberSpec::workdir`, the project path it works in, carried in the request's
   version 4 and staged as `member-workdir=<index>\0<path>`, one for a member. It is absolute

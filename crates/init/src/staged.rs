@@ -1,11 +1,12 @@
 //! What an orchestrator stages into a member before its program runs (D231): variables
-//! over its image's, and regular files under its home, the scratch tmpfs init makes for it
-//! (`HOME=/tmp`, domains.rs). The host checked each entry as it made it; each is read and
+//! over its image's, its working directory, and regular files under its home, where its
+//! `HOME` lies (domains.rs): the scratch tmpfs init makes for it (`HOME=/tmp`), or a
+//! writable volume given it. The host checked each entry as it made it; each is read and
 //! checked again here, from the guest's own copy (D109: every check at both ends).
 
 use std::ffi::CString;
 use std::io::{self, Write as _};
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd as _, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 use shards_abi::run::members;
 
@@ -48,13 +49,33 @@ pub fn workdir(member: u32, setup: &[Vec<u8>]) -> Result<Option<CString>, String
         .transpose()
 }
 
-/// Writes the files staged for `member` beneath `home`, a directory descriptor of its
-/// scratch tmpfs, each owned by `owner` (uid, gid), its directories made 0700 and owned
-/// so, nothing followed that a link could redirect, and nothing written twice. `home` is
-/// `None` where the image has no `/tmp` for a scratch (D139): a member given files then is
-/// refused, as it would have nowhere to read them.
+/// A mount a member may write as it starts, as init holds it: its scratch's descriptor, or
+/// the directory of init's own mount of a volume given it, opened only where files are
+/// staged.
+#[derive(Debug, Clone, Copy)]
+pub enum Mount<'a> {
+    Held(BorrowedFd<'a>),
+    At(&'a str),
+}
+
+/// Where a member's home lies as it starts (domains.rs `home_in`): a mount init holds for
+/// it, its scratch or a writable volume given it, and the home's components beneath that,
+/// which may not be there yet.
+#[derive(Debug)]
+pub struct Home<'a> {
+    pub mount: Mount<'a>,
+    pub beneath: Vec<&'a str>,
+}
+
+/// Writes the files staged for `member` beneath its home, `home`, each owned by `owner`
+/// (uid, gid) with its mode: the directories on the way, its home's own among them, made
+/// 0700 and owned so where they are missing; nothing followed that a link could redirect;
+/// a file there before (a run's, on a volume that outlives it) replaced, as nothing of the
+/// member runs yet to read it; a path staged twice refused. `home` says why there is none
+/// where the member has no home it may write: a member given files then is refused, as it
+/// would never read them.
 pub fn files(
-    home: Option<BorrowedFd<'_>>,
+    home: Result<Home<'_>, String>,
     owner: (u32, u32),
     member: u32,
     setup: &[Vec<u8>],
@@ -63,9 +84,24 @@ pub fn files(
     if staged.is_empty() {
         return Ok(());
     }
-    let home = home.ok_or("files are staged for a member whose image has no /tmp, its home")?;
+    let home = home.map_err(|why| format!("files are staged for member {member}, whose {why}"))?;
+    let mut paths = std::collections::BTreeSet::new();
+    if let Some(f) = staged.iter().find(|f| !paths.insert(f.path)) {
+        return Err(format!(
+            "{} is staged twice into member {member}",
+            String::from_utf8_lossy(f.path)
+        ));
+    }
+    let held;
+    let mount = match home.mount {
+        Mount::Held(fd) => fd,
+        Mount::At(at) => {
+            held = std::fs::File::open(at).map_err(|e| format!("its volume at {at}: {e}"))?;
+            held.as_fd()
+        }
+    };
     for f in staged {
-        write(home, owner, &f).map_err(|e| {
+        write(mount, &home.beneath, owner, &f).map_err(|e| {
             format!(
                 "staging {} into member {member}: {e}",
                 String::from_utf8_lossy(f.path)
@@ -75,78 +111,100 @@ pub fn files(
     Ok(())
 }
 
-fn write(home: BorrowedFd<'_>, (uid, gid): (u32, u32), f: &members::File<'_>) -> io::Result<()> {
-    let mut parts = f.path.split(|&b| b == b'/').peekable();
+fn write(
+    mount: BorrowedFd<'_>,
+    beneath: &[&str],
+    (uid, gid): (u32, u32),
+    f: &members::File<'_>,
+) -> io::Result<()> {
+    let mut parts = f.path.rsplitn(2, |&b| b == b'/');
+    let name = CString::new(parts.next().unwrap_or_default()).map_err(io::Error::other)?;
+    let dirs = parts.next().map(|d| d.split(|&b| b == b'/'));
     let mut dir: Option<OwnedFd> = None;
-    while let Some(part) = parts.next() {
-        let name = CString::new(part).map_err(io::Error::other)?;
-        let at = dir.as_ref().map_or(home.as_raw_fd(), AsRawFd::as_raw_fd);
-        if parts.peek().is_none() {
-            // SAFETY: openat(2) of a NUL-terminated name beneath a directory descriptor of
-            // ours; O_EXCL and O_NOFOLLOW refuse a file there already and a link.
-            let fd = unsafe {
-                libc::openat(
-                    at,
-                    name.as_ptr(),
-                    libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                    f.mode as libc::c_uint,
-                )
-            };
-            if fd < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: the descriptor openat just made, owned from here on.
-            let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
-            file.write_all(f.bytes)?;
-            // Owner first, then the mode: a chown clears set-ID bits (chown(2)), and the
-            // mode is set whole, past the umask the creation took.
-            // SAFETY: fchown(2) of the descriptor held.
-            if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            // SAFETY: fchmod(2) of the descriptor held.
-            if unsafe { libc::fchmod(file.as_raw_fd(), f.mode as libc::mode_t) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            return Ok(());
-        }
-        // SAFETY: mkdirat(2) of a NUL-terminated name beneath a directory descriptor of ours.
-        let made = unsafe { libc::mkdirat(at, name.as_ptr(), 0o700) } == 0;
-        if !made {
-            let e = io::Error::last_os_error();
-            if e.raw_os_error() != Some(libc::EEXIST) {
-                return Err(e);
-            }
-        }
-        // SAFETY: openat(2) of a NUL-terminated name beneath a directory descriptor of
-        // ours, refusing a link and anything but a directory.
-        let fd = unsafe {
-            libc::openat(
-                at,
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: the descriptor openat just made, owned from here on.
-        let next = unsafe { OwnedFd::from_raw_fd(fd) };
-        // One it made is the member's; one there before was made so by an earlier entry.
-        // SAFETY: fchown(2) of the descriptor held.
-        if made && unsafe { libc::fchown(next.as_raw_fd(), uid, gid) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        dir = Some(next);
+    for part in beneath
+        .iter()
+        .map(|c| c.as_bytes())
+        .chain(dirs.into_iter().flatten())
+    {
+        let at = dir.as_ref().map_or(mount.as_raw_fd(), AsRawFd::as_raw_fd);
+        dir = Some(directory(at, part, (uid, gid))?);
     }
-    Err(io::Error::other("an empty path"))
+    let at = dir.as_ref().map_or(mount.as_raw_fd(), AsRawFd::as_raw_fd);
+    // What is there before goes: a link itself, never what it names; a directory stays, and
+    // refuses the entry.
+    // SAFETY: unlinkat(2) of a NUL-terminated name beneath a directory descriptor of ours.
+    if unsafe { libc::unlinkat(at, name.as_ptr(), 0) } != 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::ENOENT) {
+            return Err(e);
+        }
+    }
+    // SAFETY: openat(2) of a NUL-terminated name beneath a directory descriptor of ours;
+    // O_EXCL and O_NOFOLLOW refuse anything made there since, and a link.
+    let fd = unsafe {
+        libc::openat(
+            at,
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            f.mode as libc::c_uint,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor openat just made, owned from here on.
+    let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    file.write_all(f.bytes)?;
+    // Owner first, then the mode: a chown clears set-ID bits (chown(2)), and the mode is set
+    // whole, past the umask the creation took.
+    // SAFETY: fchown(2) of the descriptor held.
+    if unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fchmod(2) of the descriptor held.
+    if unsafe { libc::fchmod(file.as_raw_fd(), f.mode as libc::mode_t) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// The directory `name` beneath `at`, made 0700 and `owner`'s where it is missing, opened
+/// refusing a link and anything but a directory. One there before keeps its owner.
+fn directory(at: RawFd, name: &[u8], (uid, gid): (u32, u32)) -> io::Result<OwnedFd> {
+    let name = CString::new(name).map_err(io::Error::other)?;
+    // SAFETY: mkdirat(2) of a NUL-terminated name beneath a directory descriptor of ours.
+    let made = unsafe { libc::mkdirat(at, name.as_ptr(), 0o700) } == 0;
+    if !made {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::EEXIST) {
+            return Err(e);
+        }
+    }
+    // SAFETY: openat(2) of a NUL-terminated name beneath a directory descriptor of ours,
+    // refusing a link and anything but a directory.
+    let fd = unsafe {
+        libc::openat(
+            at,
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor openat just made, owned from here on.
+    let dir = unsafe { OwnedFd::from_raw_fd(fd) };
+    // SAFETY: fchown(2) of the descriptor held.
+    if made && unsafe { libc::fchown(dir.as_raw_fd(), uid, gid) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(dir)
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use std::os::fd::AsFd as _;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     fn own() -> (u32, u32) {
@@ -224,8 +282,20 @@ mod tests {
         assert!(check(&[], |_| false).is_ok());
     }
 
+    /// The home as a test holds it: the directory `at`, the components `beneath` it.
+    fn home_at<'a>(at: &'a std::fs::File, beneath: &[&'a str]) -> Result<Home<'a>, String> {
+        Ok(Home {
+            mount: Mount::Held(at.as_fd()),
+            beneath: beneath.to_vec(),
+        })
+    }
+
+    fn mode(p: &std::path::Path) -> u32 {
+        std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777
+    }
+
     /// Files land beneath the home at their paths, with exactly their bytes and modes, their
-    /// new directories 0700; a second entry for one path is refused, never written over.
+    /// new directories 0700; another member's are not its own.
     #[test]
     fn files_are_written_beneath_the_home() {
         let dir = shards_testdir::TempDir::new("staged").unwrap();
@@ -235,37 +305,73 @@ mod tests {
             members::file(0, 0o755, b"bin/run", b"#!/bin/sh\n").unwrap(),
             members::file(1, 0o600, b"other", b"x").unwrap(),
         ];
-        files(Some(home.as_fd()), own(), 0, &setup).unwrap();
+        files(home_at(&home, &[]), own(), 0, &setup).unwrap();
         let auth = dir.path().join(".codex/auth.json");
         assert_eq!(std::fs::read(&auth).unwrap(), b"{\"k\":\"v\"}");
-        assert_eq!(
-            std::fs::metadata(&auth).unwrap().permissions().mode() & 0o7777,
-            0o600
-        );
-        assert_eq!(
-            std::fs::metadata(dir.path().join(".codex"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o7777,
-            0o700
-        );
-        assert_eq!(
-            std::fs::metadata(dir.path().join("bin/run"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o7777,
-            0o755
-        );
+        assert_eq!(mode(&auth), 0o600);
+        assert_eq!(mode(&dir.path().join(".codex")), 0o700);
+        assert_eq!(mode(&dir.path().join("bin/run")), 0o755);
         assert_eq!(std::fs::metadata(&auth).unwrap().uid(), own().0);
         assert!(!dir.path().join("other").exists());
-        let twice = vec![members::file(0, 0o600, b".codex/auth.json", b"again").unwrap()];
-        assert!(files(Some(home.as_fd()), own(), 0, &twice).is_err());
-        assert_eq!(std::fs::read(&auth).unwrap(), b"{\"k\":\"v\"}");
     }
 
-    /// A link where a staged path goes is never followed, as a directory or as the file.
+    /// A home beneath its mount (`HOME=/tmp/h`, or a directory of a volume) is made where it
+    /// is missing, 0700 and the member's, and its files land in it, not beside it.
+    #[test]
+    fn a_home_beneath_its_mount_is_made_and_holds_its_files() {
+        let dir = shards_testdir::TempDir::new("staged-beneath").unwrap();
+        let mount = std::fs::File::open(dir.path()).unwrap();
+        let setup = vec![members::file(2, 0o600, b".claude/.credentials.json", b"{}").unwrap()];
+        files(home_at(&mount, &["home", "claude"]), own(), 2, &setup).unwrap();
+        let home = dir.path().join("home/claude");
+        assert_eq!(
+            std::fs::read(home.join(".claude/.credentials.json")).unwrap(),
+            b"{}"
+        );
+        for d in ["home", "home/claude", "home/claude/.claude"] {
+            assert_eq!(mode(&dir.path().join(d)), 0o700, "{d}");
+        }
+        assert!(!dir.path().join(".claude").exists());
+    }
+
+    /// A file an earlier run left on a home that outlives it (a volume) is replaced whole, its
+    /// directory kept as it was; a path staged twice in one run is refused, nothing of it
+    /// written over.
+    #[test]
+    fn a_file_from_before_is_replaced_and_one_staged_twice_refused() {
+        let dir = shards_testdir::TempDir::new("staged-again").unwrap();
+        let home = std::fs::File::open(dir.path()).unwrap();
+        std::fs::create_dir(dir.path().join(".codex")).unwrap();
+        std::fs::set_permissions(dir.path().join(".codex"), std::fs::Permissions::from_mode(0o750)).unwrap();
+        std::fs::write(
+            dir.path().join(".codex/auth.json"),
+            b"an earlier run's, longer than the new",
+        )
+        .unwrap();
+        let setup = vec![members::file(0, 0o600, b".codex/auth.json", b"new").unwrap()];
+        files(home_at(&home, &[]), own(), 0, &setup).unwrap();
+        assert_eq!(
+            std::fs::read(dir.path().join(".codex/auth.json")).unwrap(),
+            b"new"
+        );
+        assert_eq!(mode(&dir.path().join(".codex/auth.json")), 0o600);
+        assert_eq!(mode(&dir.path().join(".codex")), 0o750);
+        let twice = vec![
+            members::file(0, 0o600, b"one", b"first").unwrap(),
+            members::file(0, 0o600, b".codex/auth.json", b"again").unwrap(),
+            members::file(0, 0o600, b".codex/auth.json", b"and again").unwrap(),
+        ];
+        let e = files(home_at(&home, &[]), own(), 0, &twice).unwrap_err();
+        assert!(e.contains("staged twice"), "{e}");
+        assert_eq!(
+            std::fs::read(dir.path().join(".codex/auth.json")).unwrap(),
+            b"new"
+        );
+        assert!(!dir.path().join("one").exists());
+    }
+
+    /// A link where a staged path's directory goes, or on the way to the home, is never
+    /// followed; one where the file goes is replaced itself, what it names untouched.
     #[test]
     fn links_in_the_way_are_not_followed() {
         let dir = shards_testdir::TempDir::new("staged-links").unwrap();
@@ -273,18 +379,52 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), dir.path().join("d")).unwrap();
         std::os::unix::fs::symlink(outside.path().join("f"), dir.path().join("f")).unwrap();
         let home = std::fs::File::open(dir.path()).unwrap();
-        for path in [&b"d/x"[..], b"f"] {
-            let setup = vec![members::file(0, 0o600, path, b"x").unwrap()];
-            assert!(files(Some(home.as_fd()), own(), 0, &setup).is_err(), "{path:?}");
-        }
+        let through = vec![members::file(0, 0o600, b"d/x", b"x").unwrap()];
+        assert!(files(home_at(&home, &[]), own(), 0, &through).is_err());
+        let beneath = vec![members::file(0, 0o600, b"x", b"x").unwrap()];
+        assert!(files(home_at(&home, &["d"]), own(), 0, &beneath).is_err());
+        let over = vec![members::file(0, 0o600, b"f", b"x").unwrap()];
+        files(home_at(&home, &[]), own(), 0, &over).unwrap();
+        assert!(std::fs::symlink_metadata(dir.path().join("f")).unwrap().is_file());
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     }
 
-    /// Files with no home to go to are refused; none staged needs none.
+    /// A home on a volume is init's mount of it, by its path, opened only where files are
+    /// staged: one that cannot be opened refuses the files, and nothing else.
+    #[test]
+    fn a_volume_home_is_opened_where_files_are_staged() {
+        let dir = shards_testdir::TempDir::new("staged-volume").unwrap();
+        let at = dir.path().to_str().unwrap();
+        let setup = vec![members::file(0, 0o600, b".x", b"x").unwrap()];
+        let home = |at| {
+            Ok(Home {
+                mount: Mount::At(at),
+                beneath: vec!["h"],
+            })
+        };
+        files(home(at), own(), 0, &setup).unwrap();
+        assert_eq!(std::fs::read(dir.path().join("h/.x")).unwrap(), b"x");
+        let gone = dir.path().join("gone");
+        let gone = gone.to_str().unwrap();
+        assert!(
+            files(home(gone), own(), 0, &setup)
+                .unwrap_err()
+                .contains("its volume at")
+        );
+        assert!(files(home(gone), own(), 1, &setup).is_ok());
+    }
+
+    /// Files with no home the member may write are refused, saying why; none staged needs
+    /// none.
     #[test]
     fn files_need_a_home() {
         let setup = vec![members::file(0, 0o600, b"a", b"x").unwrap()];
-        assert!(files(None, own(), 0, &setup).is_err());
-        assert!(files(None, own(), 1, &setup).is_ok());
+        let none = || Err("HOME is no place it may write".to_string());
+        let e = files(none(), own(), 0, &setup).unwrap_err();
+        assert!(
+            e.contains("files are staged for member 0, whose HOME is no place it may write"),
+            "{e}"
+        );
+        assert!(files(none(), own(), 1, &setup).is_ok());
     }
 }
