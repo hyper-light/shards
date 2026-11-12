@@ -1485,11 +1485,14 @@ fn carried(net: &[u8], what: &[u8], p: &[u8], protocol: &[u8]) -> Vec<u8> {
     .concat()
 }
 
+/// A destination a grant names (D235): its host, lowered, and its TCP port.
+pub type Destination = (Vec<u8>, u16);
+
 /// A destination a network's `--egress` names (D235), `HOST:PORT` of TCP, as D192's
 /// network option names one (`shards_dns::destination`): a host's name or an IPv4 address,
 /// or the host itself ([`shards_dns::HOST`]); its host, lowered, and port. None for what
 /// is a port, a range of ports or a Unix socket (`unix:<name>`), each read as before.
-pub fn destination_of(p: &[u8]) -> Option<Result<(Vec<u8>, u16), Vec<u8>>> {
+pub fn destination_of(p: &[u8]) -> Option<Result<Destination, Vec<u8>>> {
     if port_range(p).is_some() || p.starts_with(b"unix:") || !p.contains(&b':') {
         return None;
     }
@@ -2016,7 +2019,7 @@ pub fn destinations_on(
     directives: &[Directive],
     net: &[u8],
     member: Option<(TargetKind, &[u8])>,
-) -> Vec<(Vec<u8>, u16)> {
+) -> Vec<Destination> {
     let networks: Vec<&Network> = directives
         .iter()
         .filter_map(|d| match d {
@@ -2028,7 +2031,7 @@ pub fn destinations_on(
         return Vec::new();
     }
     let open = opened_outward(directives, net, member);
-    let mut out: Vec<(Vec<u8>, u16)> = Vec::new();
+    let mut out: Vec<Destination> = Vec::new();
     for (p, direction) in networks.iter().flat_map(|n| &n.ports) {
         if *direction != Direction::Egress {
             continue;
@@ -2067,10 +2070,17 @@ pub fn destinations(directives: &[Directive]) -> Vec<Vec<u8>> {
     out
 }
 
-/// What each member may reach past the microVM by TCP: the port ranges its networks open
-/// it to any address, and the destinations it reaches by name, its networks' (D235) and
-/// its remote MCP servers' (§4.4), as its init gives them it (crates/init netplan).
-fn tcp_reach(directives: &[Directive]) -> Vec<(Member<'_>, Vec<(u16, u16)>, Vec<(Vec<u8>, u16)>)> {
+/// What a member may reach past the microVM by TCP: the port ranges its networks open it to
+/// any address, and the destinations it reaches by name, its networks' (D235) and its
+/// remote MCP servers' (§4.4), as its init gives them it (crates/init netplan).
+struct TcpReach<'a> {
+    member: Member<'a>,
+    wide: Vec<(u16, u16)>,
+    named: Vec<Destination>,
+}
+
+/// Each member's [`TcpReach`], in the order the Agentfile declares them.
+fn tcp_reach(directives: &[Directive]) -> Vec<TcpReach<'_>> {
     let declared = |name: &[u8], kind: TargetKind| {
         directives.iter().any(|d| match (d, kind) {
             (Directive::Agent(a), TargetKind::Agent) => a.name == name,
@@ -2086,15 +2096,20 @@ fn tcp_reach(directives: &[Directive]) -> Vec<(Member<'_>, Vec<(u16, u16)>, Vec<
             TargetKind::Harness
         })
     };
-    let mut members: Vec<(Member<'_>, Vec<(u16, u16)>, Vec<(Vec<u8>, u16)>)> = directives
+    let mut members: Vec<TcpReach<'_>> = directives
         .iter()
         .filter_map(|d| match d {
-            Directive::Agent(a) => Some(((TargetKind::Agent, a.name.as_slice()), Vec::new(), Vec::new())),
-            Directive::Harness(h) => Some(((TargetKind::Harness, h.name.as_slice()), Vec::new(), Vec::new())),
+            Directive::Agent(a) => Some((TargetKind::Agent, a.name.as_slice())),
+            Directive::Harness(h) => Some((TargetKind::Harness, h.name.as_slice())),
             _ => None,
         })
+        .map(|member| TcpReach {
+            member,
+            wide: Vec::new(),
+            named: Vec::new(),
+        })
         .collect();
-    for (member, wide, named) in &mut members {
+    for TcpReach { member, wide, named } in &mut members {
         let mut on: Vec<&[u8]> = Vec::new();
         for d in directives {
             let Directive::Connect(c) = d else { continue };
@@ -2186,7 +2201,7 @@ pub fn held(directives: &[Directive]) -> Result<(), Vec<u8>> {
     };
     let mut ports: Vec<u16> = members
         .iter()
-        .flat_map(|(_, _, named)| named.iter().map(|(_, p)| *p))
+        .flat_map(|r| r.named.iter().map(|(_, p)| *p))
         .collect();
     ports.sort_unstable();
     ports.dedup();
@@ -2194,17 +2209,18 @@ pub fn held(directives: &[Directive]) -> Result<(), Vec<u8>> {
         // What each member granted the port reaches there: any address, or these names.
         let at: Vec<(Member<'_>, Option<Vec<&[u8]>>)> = members
             .iter()
-            .filter_map(|(member, wide, named)| {
-                if wide.iter().any(|&(lo, hi)| lo <= port && port <= hi) {
-                    return Some((*member, None));
+            .filter_map(|r| {
+                if r.wide.iter().any(|&(lo, hi)| lo <= port && port <= hi) {
+                    return Some((r.member, None));
                 }
-                let mut names: Vec<&[u8]> = named
+                let mut names: Vec<&[u8]> = r
+                    .named
                     .iter()
                     .filter(|(_, p)| *p == port)
                     .map(|(h, _)| h.as_slice())
                     .collect();
                 names.sort_unstable();
-                (!names.is_empty()).then_some((*member, Some(names)))
+                (!names.is_empty()).then_some((r.member, Some(names)))
             })
             .collect();
         let Some((by_name, names)) = at.iter().find_map(|(m, r)| r.as_ref().map(|n| (*m, n))) else {
