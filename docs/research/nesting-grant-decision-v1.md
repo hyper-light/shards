@@ -4,7 +4,7 @@ The record behind D232 (docs/design/architecture.md). Step 38 of kiln plan
 01a1cd8e862e7169a074db3d5fa33f3d; its planning research is kiln research
 01a1cda5426f73cc86b87e7749163666, reproduced below as kiln graded it (each finding's
 grade and score are kiln's, from its sources' kinds, how many agree and whether each quote
-was found where cited; `f1` to `f34` are its findings in order).
+was found where cited; `f1` to `f38` are its findings in order).
 
 - **Question.** What does Hex's node, now its own Shards guest's PID 1 (D215), need of
   shards-init to run as one designated workload's command instead, and how is each grant
@@ -13,7 +13,9 @@ was found where cited; `f1` to `f34` are its findings in order).
   repo-relative there); D231: p/runtime-image-boot-v1 75c36864f; Hex: main 24c100f8 (its
   guest.rs, node.rs, bundle.rs and gpu.rs unchanged since cd78e56a); Linux: torvalds/linux
   79eb6679; man-pages: man7.org as fetched 2026-11-11; moby/profiles seccomp v0.2.3; moby
-  1e9198df; systemd b4259f37; runc c0512b4f; opencontainers/cgroups b62147e9; BuildKit
+  1e9198df (its daemon/oci_linux.go and hack/dind); systemd b4259f37 (its
+  constants.h, notify-recv.c and CGROUP_DELEGATION.md; systemd.service(5) and sd_notify(3)
+  as fetched 2026-11-11); runc c0512b4f; opencontainers/cgroups b62147e9; BuildKit
   8cd4dbe1; Incus 3dcffe4b; Podman 32654652; CDI 9e21b8bb.
 - **Method.** Each internal claim read in the code at those revisions; each external one in
   its primary source, fetched and quoted; one measurement (s20): shards' vendored seccomp
@@ -25,7 +27,7 @@ was found where cited; `f1` to `f34` are its findings in order).
 
 **Research:** Plan step 38 [Shards]: shards-init grants one designated workload what Hex's node needs, each grant checked at build and at run: Hex ROOT's 8-item list in the step (mounts and /run, a writable delegated cgroup v2 subtree, descriptor limits, ready-by time, GPU words and DRM render nodes, subreaper, exit policy). Rules as plan step 5's goal. Full step: kiln plan 01a1cd8e862e7169a074db3d5fa33f3d.
 
-34 findings (A 26, B 6, C 2) from 43 sources (28 internal, 15 external)
+38 findings (A 30, B 6, C 2) from 48 sources (32 internal, 16 external)
 
 - **C · 65 (moderate)** Step 38 grants one designated workload, by name and checked at build and at run, exactly: a writable delegated cgroup v2 subtree for its boxes, CAP_SYS_ADMIN for its boxes' namespaces (never a blanket --privileged), DRM render nodes through D44's device rules, and Hex ROOT's eight items (mounts and /run, descriptors, ready-by time, GPU words, channel, readiness, reaping, end); default deny holds and nothing else in the microVM gains from it. [1]
   _1 independent source (kiln's records); 4 of 4 quotes found where cited_
@@ -221,6 +223,25 @@ was found where cited; `f1` to `f34` are its findings in order).
   - [14] "### D231. An image booted for an orchestrator: a run of its own, hosted by one `shards` process (decided; building)" (line 21454) · quote found
   - [14] "The run host prepares the run with the daemon's own" (line 21467) · quote found
   - [14] "- *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds," (line 21495) · quote found
+- **A · 90 (high)** A nested runtime moves its own processes into a leaf named init before enabling controllers, as Docker in Docker's own entrypoint does, because writing subtree_control otherwise fails EBUSY; it loops because docker exec's new processes race the move. [44]
+  _1 independent source (code); 3 of 3 quotes found where cited_
+  - [44] "otherwise writing subtree_control fails with EBUSY." (line 64) · quote found
+  - [44] "# move the processes from the root group to the /init group," (line 63) · quote found
+  - [44] "# this happens in a loop because things like "docker exec" on our dind" (line 67) · quote found
+- **A · 90 (high)** systemd reads sd_notify datagrams into a buffer of PIPE_BUF (NOTIFY_BUFFER_MAX), ignores a truncated or invalid one as if none came, accepts with NotifyAccess=all only members of the service's control group, and ignores assignments it does not know. [45][46][47][32]
+  _1 independent source (code, official docs); 4 of 4 quotes found where cited_
+  - [45] "#define NOTIFY_BUFFER_MAX PIPE_BUF" (line 35) · quote found
+  - [46] "the logic that an invalid message shall be ignored, and treated like no message at all" (line 119) · quote found
+  - [47] "all services updates from all members of the service's control group are accepted" (NotifyAccess=) · quote found
+  - [32] "Unknown assignments are ignored." (Well-known assignments) · quote found
+- **A · 90 (high)** The kernel's fs.nr_open defaults to 1024*1024 and is capped by its own ceiling, sysctl_nr_open_max: the least of INT_MAX and SIZE_MAX divided by a pointer's size, rounded down to a multiple of BITS_PER_LONG. [48]
+  _1 independent source (code); 2 of 2 quotes found where cited_
+  - [48] "unsigned int sysctl_nr_open __read_mostly = 1024*1024;" (line 96) · quote found
+  - [48] "__const_min(INT_MAX, ~(size_t)0/sizeof(void *)) & -BITS_PER_LONG;" (line 101) · quote found
+- **A · 90 (high)** The control page's HOST_TIME is the host's wall-clock time when read, in nanoseconds since the Unix epoch, in one 64-bit access; shards-init sets the guest's CLOCK_REALTIME from it, a restored guest's clock otherwise being its snapshot's. [10]
+  _1 independent source (code); 2 of 2 quotes found where cited_
+  - [10] "/// Read, 64 bits in one access: the host's wall-clock time when read, in nanoseconds" (line 101) · quote found
+  - [10] "a restored guest's is its snapshot's; shards-init sets CLOCK_REALTIME from this." (line 103) · quote found
 
 **Sources**
 
@@ -267,3 +288,8 @@ was found where cited; `f1` to `f34` are its findings in order).
 41. Podman --sdnotify option (NOTIFY_SOCKET proxied into a container) (official docs, external) — https://raw.githubusercontent.com/containers/podman/326546529da0f02947212532e21b2e0e64222d85/docs/source/markdown/options/sdnotify.md
 42. Hex main 24c100f8: crates/hex-runtime/src/linux/oci/init.rs, a box's root switch (code, internal) — Hex main (24c100f8): crates/hex-runtime/src/linux/oci/init.rs
 43. shards CLAUDE.md at 032b63b1c: one binary, separate VM and network processes (a document, internal) — CLAUDE.md
+44. moby hack/dind: Docker in Docker's own entrypoint (cgroup v2 nesting) (code, internal) — https://raw.githubusercontent.com/moby/moby/1e9198df7debc4af8c1e7c1c2e668d33c6fc5170/hack/dind
+45. systemd src/basic/constants.h (NOTIFY_BUFFER_MAX) (code, internal) — https://raw.githubusercontent.com/systemd/systemd/b4259f378b0cf2f7836529e549efe7c165b28e96/src/basic/constants.h
+46. systemd src/shared/notify-recv.c (receiving sd_notify messages) (code, internal) — https://raw.githubusercontent.com/systemd/systemd/b4259f378b0cf2f7836529e549efe7c165b28e96/src/shared/notify-recv.c
+47. systemd.service(5): NotifyAccess= (official docs, external) — https://man7.org/linux/man-pages/man5/systemd.service.5.html
+48. Linux kernel: fs/file.c (nr_open's default and ceiling) (code, internal) — https://raw.githubusercontent.com/torvalds/linux/79eb6679ef6a0d5ea68da53a8321fb1dc72299b9/fs/file.c
