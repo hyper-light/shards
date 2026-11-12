@@ -224,8 +224,9 @@ nothing was rebuilt. Each variant now has its own target directory, and variant.
 its binaries carry.
 
 Portability (R11): Linux KVM x86_64 and macOS HVF arm64 above. WHP x86_64: CI's Windows jobs
-(windows-2022 and windows-2025, `SHARDS_REQUIRE_VMS=1`) on main once landed, in the run of the
-push that lands it; CI's x86_64 Linux job too. Not run: Linux arm64 KVM (no host here but L1 on an M3 Mac), WHP
+(windows-2022 and windows-2025, `SHARDS_REQUIRE_VMS=1`) on main: run
+[43328666195](https://github.com/hyper-light/shards/actions/runs/43328666195), of the push that
+landed it (`220fb2be6`), queued then; CI's x86_64 Linux job too. Not run: Linux arm64 KVM (no host here but L1 on an M3 Mac), WHP
 arm64 (no host). `scripts/lint`, all seven targets, of `34329a8ab` on the Mac Studio: clean, [e2e-lint](logs/e2e-lint.log).
 
 | Rule | E2E lane: evidence / gap |
@@ -242,7 +243,7 @@ arm64 (no host). `scripts/lint`, all seven targets, of `34329a8ab` on the Mac St
 
 ## Owed to ROOT
 
-- WHP's E2E result: CI's Windows jobs on main (above), pending at landing.
+- WHP's E2E result: CI run 43328666195's Windows jobs on main (above), queued at landing.
 - The relay's `exec_failures` flush and its cut and restore paths run only in a real guest.
 - Found, not changed: the host's `to_guest` returns true when its send on the signal
   connection fails, and frames queue for ever once that connection is gone while the
