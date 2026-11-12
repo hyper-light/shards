@@ -10,7 +10,8 @@ Shards runs microVMs only where the host hands it hardware virtualization: `/dev
 Linux, Hypervisor.framework on macOS, the Windows Hypervisor Platform on Windows
 (`crates/vmm/src/hv/mod.rs`, one backend a target). Many hosts hand it none: cloud VMs
 without nested virtualization (EC2's AMD and Graviton instances, most of its Intel ones;
-GitHub's arm64 runners), containers and pods without `/dev/kvm`, Windows without Hyper-V,
+GitHub's arm64 runners, where its x86_64 ones offer `/dev/kvm`: PM M516), containers and
+pods without `/dev/kvm`, Windows without Hyper-V,
 macOS VMs on an M1 or M2 or before macOS 15. There shards starts no microVM at all.
 
 Ada's goal (2026-11-11): shards supplies the isolation itself there, on all seven targets,
@@ -36,10 +37,10 @@ whitepaper "The Security Design of the AWS Nitro System" (2024-02-15).
 | Nitro | In software here | How, or the limit |
 |---|---|---|
 | A sandbox cannot reach the parent's memory or another sandbox's | yes | The guest runs deprivileged; every trap and every mapping of guest memory goes through shards; the processes holding guest code are confined (seccomp + Landlock on Linux, App Sandbox on macOS, AppContainer on Windows). What must be trusted: shards' isolation core and the host kernel, where Nitro's confidential mode trusts neither the parent nor its kernel. |
-| Confidential mode: the parent cannot read the sandbox's memory | no, by decision 1 | The most privileged software of a machine reads all of its memory. Linux's `memfd_secret` takes pages out of the kernel's direct map, but it counts against `RLIMIT_MEMLOCK` (`mm/secretmem.c`, `mlock_future_ok`): 8 MiB for a user on Fedora 44, so it can hold keys, not guest memory (PM M516's probe). |
+| Confidential mode: the parent cannot read the sandbox's memory | no, by decision 1 | The most privileged software of a machine reads all of its memory. Linux's `memfd_secret` takes pages out of the kernel's direct map, but it counts against `RLIMIT_MEMLOCK` (`mm/secretmem.c`, `mlock_future_ok`): 8 MiB for a user on Fedora 44 and on GitHub's Ubuntu 24.04 runners, so it can hold keys, not guest memory (PM M516's probes). |
 | Attestation: the NSM measures the image into PCRs and signs documents | yes, rooted elsewhere | Per-sandbox measurement registers and signed documents, through a guest device modelled on the NSM; the signing key bound to the host's TPM measured boot (NitroTPM, Azure and GCP vTPMs, a PC's TPM) or a SEV-SNP or TDX report. Open: rootless TPM access (Linux's `/dev/tpmrm0` belongs to group `tss`), and what macOS lets a third party verify. |
 | Memory donated whole, zeroed, never shared between instances | yes, and more | Guest pages zeroed before use, never shared between tenants, kept out of core dumps; snapshots, copy-on-write within one tenant's template, save, move and elastic memory all stay, since every guest page is in shards' processes. Nitro Sandboxes have none of those (no snapshots, pause, migration, balloon or virtio-mem). |
-| A core runs one sandbox or the parent, never both hyperthreads; state flushed between | Linux only | Core scheduling (`PR_SCHED_CORE`, commit 7ac592aa35a6, 2021) needs only ptrace access to one's own processes and worked unprivileged on Fedora 44 (PM M516). macOS and Windows give a user process nothing like it that we know of: to confirm, then to record as a parity gap. |
+| A core runs one sandbox or the parent, never both hyperthreads; state flushed between | Linux only | Core scheduling (`PR_SCHED_CORE`, commit 7ac592aa35a6, 2021) needs only ptrace access to one's own processes and worked unprivileged on Fedora 44 and GitHub's x86_64 runner; its arm64 runner refuses it (`ENODEV`), its vCPUs having no SMT siblings to share a core with (PM M516). macOS and Windows give a user process nothing like it that we know of: to confirm, then to record as a parity gap. |
 | Vetted isolation core: the Nitro Isolation Engine, proven in Isabelle/HOL | possible | The part that enforces isolation (trap dispatch, the map of guest memory, the code checker) kept small enough to prove: RockSalt (PLDI 2012) proved an x86 code checker, VeriWasm (NDSS 2021) checks compiled Wasm's isolation; Firecracker proves parts of its virtqueue code with Kani (`docs/formal-verification.md`). |
 
 ## What a host gives a process without hardware virtualization
@@ -55,6 +56,9 @@ is how the host lets an unprivileged program catch another's system calls and fa
   Faults arrive as signals, or for user-mode faults through userfaultfd's
   `UFFD_USER_MODE_ONLY`, which Fedora 44 allows a user where it refuses the rest (PM M516).
   Guest memory is a memfd mapped into each guest address space at the guest's offsets.
+  Each mapping counts against `vm.max_map_count` (the kernel's default 65,530; 262,144 on
+  GitHub's Ubuntu runners; 1,048,576 on Fedora 44), and a process that reaches it can map
+  nothing more, its own `malloc` included (M516).
   - gVisor's systrap platform runs its users' code so, with a reimplemented kernel
     (gvisor.dev's platform guide; default since its 2023-04-28 release post). The guide
     reports it often faster than KVM inside a nested VM.
@@ -73,11 +77,17 @@ is how the host lets an unprivileged program catch another's system calls and fa
   0.5 us (M517; untested under App Sandbox). Translated code needs `MAP_JIT`
   (`com.apple.security.cs.allow-jit` under the hardened runtime), whose per-thread write
   protection flips in 83 ns.
-- **Windows** has no syscall filter for user processes either, and x86_64's variable-length
-  instructions defeat checking a code page for `syscall`: guest code must be translated
-  there; arm64 Windows could check pages as macOS can. To measure: vectored exception
-  handlers in-process, debug events across processes, placeholder views mapped into
-  another process (`VirtualAlloc2`, `MapViewOfFile3`), AppContainer.
+- **Windows** filters no system calls for user processes either: its one system-call
+  mitigation, `PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY`, disallows only win32k and
+  fsctl calls. x86_64's variable-length instructions defeat checking a code page for
+  `syscall`, so guest code must be translated there; arm64 Windows could check pages as
+  macOS can. A breakpoint or fault reaches a vectored exception handler in its own process
+  in 0.7 to 1.6 us, and a debugger in another process in 27 to 97 us; the debugger finds
+  the PC already past the break instruction (PM M518). Guest memory reaches another
+  process without its help: a section's 64 KiB view maps into a child in 0.8 to 1.6 us,
+  and placeholders split to 4 KiB (`VirtualAlloc2`, `MapViewOfFile3`) take 4 KiB views
+  at any offset. Publishing code costs 0.7 to 1.1 us a `VirtualProtect` pair. Still to
+  measure: AppContainer.
 
 ## The approaches
 
@@ -111,15 +121,21 @@ A KVM guest runs a guest's system calls, faults, processes and own code at nativ
 | native, and KVM | 67-81 ns | 0.54-0.61 us | 58-75 us | 1.0x | M519, M521 |
 | Linux: seccomp trap to a handler in the guest's process | 0.70 us | 1.7-1.8 us (mapped by the handler) | not measured | 1.0x | M516 |
 | Linux: the same, handed to another process | 2.6-3.9 us (0.82-0.88 spinning a core) | | | 1.0x | M516 |
+| Linux on cloud VMs (GitHub's 4-vCPU Azure VMs): the trap in-process; handed to another process | 1.08-1.80 us; 11.6-25.4 us to another vCPU (1.36-2.06 spinning), 2.3-9.8 us on one | 3.0-5.2 us (mapped by the handler) | not measured | 1.0x | M516 |
 | macOS: `brk` to a signal handler; a Mach exception to another process | 3.4 us; 5.3-5.7 us | 4.3 us (signal, `mprotect`); 5.4-5.7 us | not measured | 1.0x | M517 |
+| Windows (GitHub's VMs): a breakpoint to a vectored handler; a debug event to another process | 0.7-1.6 us; 27-97 us | 1.7-3.5 us (handler, `VirtualProtect`) | not measured | 1.0x | M518 |
 | gVisor systrap (a reimplemented kernel) | 4.1-4.3 us | 0.94-0.97 us | 500-512 us | 1.0x | M519 |
 | User-mode Linux, seccomp (Linux as a process) | 8.7 us | 8.4-8.7 us | 432-450 us | not measured | M519 |
 | QEMU TCG, full system (translated guest and kernel) | 0.44-0.48 us | 9.1-9.4 us | 1,512-1,626 us | 1.1-1.3x | M521 |
 | a translation engine's own mechanisms, modelled in C (floors, not a translator) | 9 ns of the engine's, plus the guest kernel's work | 0.10-0.37 us (16 in 1.6-5.9 us) | not modelled | loads 2-2.6x native when cached | M523 |
 
-- **Traps cost more than the hardware's nothing, and the Mac's most.** Any route that
-  traps each guest system call to the host pays at least 0.70 us on Linux and 3.4 us on
-  a Mac. Windows' costs wait on M518.
+- **Traps cost more than the hardware's nothing.** In the guest's own process a trap
+  costs at least 0.70 us on Linux (1.08 us on cloud VMs), 0.7 us on Windows and 3.4 us on
+  a Mac. Handed to another process it costs 2.6 to 3.9 us on bare-metal Linux, 5.3 to 5.7
+  us on a Mac, 11.6 to 25.4 us on Linux cloud VMs and 27 to 97 us on Windows (M516-M518).
+- **Many hosts this serves are cloud VMs, and there handoffs cost most.** On GitHub's
+  Azure VMs waking a process on another vCPU costs 3.8 to 8.4 times bare metal's (M516). The cost is the wake-up, not the path: a spinning server takes the handoff in
+  1.4 to 2.1 us, at a core's price.
 - **Translation removes the trap.** QEMU's untuned translator serves a guest system call,
   the guest kernel's own path translated, in 0.44 to 0.48 us. That is under every trap,
   and 9 times under gVisor's. Its compute costs 1.1 to 1.3 times native. It loses on
@@ -139,6 +155,11 @@ A KVM guest runs a guest's system calls, faults, processes and own code at nativ
   host process a guest process would hit the kernel's default `vm.max_map_count`
   (65,530) at 560 to 690 MiB resident. Every folio size always gives 24.5 pages a run,
   about 6 GiB a process, for 6% more memory (M520).
+- **A process at the map limit can map nothing at all.** GitHub's runners allow 262,144
+  mappings, 1 GiB of 4 KiB pages; there `mmap` and `malloc` fail alike, which crashed
+  M516's own first harness. A mapper must keep its own headroom. Windows maps guest memory
+  into a child from outside it, at 4 KiB granularity (M518), as macOS does through a task
+  port (M517).
 - **macOS lets a parent drive its child without root, in App Sandbox too.** The child
   hands over its own task port, through the exception port its parent set (the bootstrap
   port breaks a sandboxed child's start). Mapping a page into it costs 0.5 us, sandboxed
@@ -150,13 +171,16 @@ Three engines fit the decisions above (rootless, one binary, a real guest kernel
 
 | engine | hosts | a guest system call | a guest's own code | what it must trust to isolate | what fails R08 or R12 |
 |---|---|---|---|---|---|
-| **Trap engine**: guest programs run natively in confined host processes; a paravirtualized guest kernel (User-mode Linux's design) serves their seccomp traps from a process of its own | Linux only | 2.6 to 3.9 us, 0.82 to 0.88 spinning a core (M516's floor; UML today 8.7 us, M519) | 1.0x | the host kernel's process isolation and seccomp; the stub, the guest kernel's confinement, the guest-memory mapper | system calls about 1.6 times better than gVisor, not 4 to 5; Linux alone (a second engine for macOS and Windows); host mappings bounded by `vm.max_map_count` unless the guest kernel keeps every folio size (M520) |
+| **Trap engine**: guest programs run natively in confined host processes; a paravirtualized guest kernel (User-mode Linux's design) serves their seccomp traps from a process of its own | Linux only | 2.6 to 3.9 us on bare metal, 11.6 to 25.4 us on cloud VMs; 0.82 to 2.06 spinning a core (M516's floors; UML today 8.7 us, M519) | 1.0x | the host kernel's process isolation and seccomp; the stub, the guest kernel's confinement, the guest-memory mapper | system calls about 1.6 times better than gVisor, not 4 to 5; Linux alone (a second engine for macOS and Windows); host mappings bounded by `vm.max_map_count` unless the guest kernel keeps every folio size (M520) |
 | **Translation engine**: one confined host process a microVM translates the guest, its kernel too, through a software MMU; a guest system call is a call | Linux, macOS (`MAP_JIT`, allow-jit in App Sandbox), Windows: every target | 0.44 to 0.48 us in QEMU's untuned TCG (M521) | 1.1 to 1.3x in QEMU (M521) | the code generator's isolation of generated code (its memory accesses and control flow), the MMU and trap mediation; the confined process as a second wall | QEMU's faults (17x), processes (21 to 28x) and context switches (6 to 7x): its design, to beat |
-| **Hybrid**: native guest programs in child processes whose memory the parent maps (Mach task ports, M517 and M522), translation or rewriting only of what traps | arm64 hosts | a trap each: 5.4 to 6.8 us on a Mac (M522) | 1.0x | as the trap engine, with each code page checked before it runs | the Mac's traps cost 7 to 15 times the translator's call |
+| **Hybrid**: native guest programs in child processes whose memory the parent maps (Mach task ports, M517 and M522; a section's views on Windows, M518), translation or rewriting only of what traps | arm64 hosts | a trap each: 5.4 to 6.8 us on a Mac (M522), 27 to 33 us on Windows arm64 (a debug event, M518) | 1.0x | as the trap engine, with each code page checked before it runs | the Mac's traps cost 7 to 15 times the translator's call, Windows' 57 to 75 |
 
 The translation engine is the one to prototype:
 - It is the only one under R08's system-call bar.
 - It is the only one that is one implementation for every target (R12).
+- It traps nothing to serve a guest system call (M521), where the trap engine's handoff
+  costs most on the cloud VMs this goal serves (11.6 to 25.4 us, M516) and Windows'
+  across processes 27 to 97 us (M518).
 - Its losses are where QEMU's design, not translation, pays:
   - a TLB flushed at each address-space switch;
   - a guest fault taken as a full guest exception;
@@ -260,9 +284,10 @@ Sources:
 
 ## Questions, each with what settles it
 
-1. Windows' costs: M518 (GitHub's windows-2025 and windows-11-arm runners, queued).
-2. Linux on arm64 and in cloud VMs: M516's GitHub rows (ubuntu-24.04, ubuntu-24.04-arm,
-   queued).
+1. Windows: answered (M518). In-process traps cost 0.7 to 1.6 us, debug events 27 to
+   97 us; views map guest memory into a child at 4 KiB granularity.
+2. Linux on arm64 and in cloud VMs: answered (M516's GitHub rows). Handoffs to another
+   vCPU cost 3.8 to 8.4 times bare metal's; the map limit there is 262,144.
 3. Guest JITs (V8, the JVM) under checked or translated code: how often real agent
    workloads make code writable and executable again.
 4. macOS: answered (M522). The handoff holds in App Sandbox at the same cost.
@@ -271,3 +296,6 @@ Sources:
 7. A translator of shards' own: what faults, process creation and context switches cost
    when the translation and its TLB are kept per address space.
 8. Nitro Sandboxes under Firecracker v1.18 as one more baseline (needs EC2 access).
+9. Windows' debug path, should an engine trap across processes there: why one x64
+   runner took 97 us a round trip against another's 38, and what held one for 12.0 s
+   (M518). The translation engine does not need it.
