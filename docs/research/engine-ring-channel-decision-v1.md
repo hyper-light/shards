@@ -253,15 +253,19 @@ on it; a client that reads nothing leaves the to-guest ring full and the device'
 the host socket off (its interest dropped, as a full guest credit drops it today).
 
 **Half-close and EOF.** The relay that reads its client's EOF publishes its last position,
-then shuts its vsock socket's write side (`SHUTDOWN(SEND)`); the device, told, drains the
-to-host ring to the host socket and only then shuts that socket's write side, as it
-finishes buffered data before a shutdown today (`Conn::flush`). The host socket's EOF has
+then sends one `END` byte on the connection; the device, told, drains the to-host ring to
+the host socket and only then shuts that socket's write side, as it finishes buffered data
+before a shutdown today (`Conn::flush`). Not a vsock `SHUTDOWN(SEND)`: that would end the
+relay's doorbells with it, and a client that has ended its writes may still be reading a
+long answer, whose ring the device may fill and wait on until the relay rings that it made
+room (found as the relay's pump was written; the device's test
+`a_clients_end_reaches_the_host_after_its_last_bytes_and_doorbells_go_on`). The host socket's EOF has
 the device publish what it read last, then send `SHUTDOWN(SEND)`; the relay, reading EOF,
 drains the to-guest ring to its client before it ends the client both ways (D181's engine
 end policy, `EndPolicy::EnginePeerEnd`). Order holds because each side's last position is
 published before the shutdown that announces it and read after it.
 
-**Errors.** A doorbell byte other than the one the protocol names, a position the peer
+**Errors.** A byte other than the doorbell and the end the protocol names, a position the peer
 could not have reached, or a host socket error ends the connection with an RST, as a
 broken connection ends today; the relay ends its client the same way.
 
@@ -276,7 +280,7 @@ The worker turns between connections as now.
 | control block | one 4 KiB page | The smallest page of every supported guest; 8 fields at 128-byte strides (section 5) fill 1 KiB of it. |
 | field stride | 128 bytes | Apple silicon's cache line; x86's adjacent-line prefetch. |
 | slots a relay pins at most, C | max(1, floor(online CPUs / 2)) | A stream through a ring keeps two of the guest's threads busy (its client's and the relay's thread for it), so no more streams than half the guest's CPUs can move bytes at once; a ring past them would sit idle. Slots are made as connections need them and kept for reuse, never more than C; a connection that finds none takes plain vsock. Worst case C x (2 S + 4 KiB) pinned. |
-| doorbell byte | 0x01 | Protocol constant; any other byte is a protocol error. |
+| doorbell byte, end byte | 0x01, 0x02 | Protocol constants; any other byte is a protocol error. |
 | offer extents at most | (4 KiB + 2 S) / 4 KiB | A slot's pages, none merged: the most a relay can name. Bounds the hello the host reads. |
 | offer and reply framing | 16-byte offer header, 16-byte extents, 8-byte reply | Protocol constants (section 8). |
 
@@ -316,8 +320,13 @@ followed by the offer, its length `TOKEN + 16 + 16n`. All integers little-endian
   pins them, and answers in band before any of the daemon's bytes: an 8-byte reply,
   `b"RNG"`, a status byte (0 attached; 1 refused, malformed; 2 refused, not guest RAM;
   3 refused, in use), four zero bytes. Attached, every later byte the guest sends is a
-  doorbell, every later byte the host's socket sends goes into the to-guest ring, and the
-  device sends the guest only doorbells. Refused, the connection is plain vsock.
+  doorbell (0x01) or, once, its client's end (0x02); every later byte the host's socket
+  sends goes into the to-guest ring; and the device sends the guest only doorbells, then
+  `SHUTDOWN(SEND)` after the host socket's end. Refused, the connection is plain vsock.
+- **Owner's cue (host side only):** the owner offers the parsed slot to the device through
+  the connection's handle (or a refusal where the offer's bytes are malformed), then
+  writes one byte, `CUE`, into the connection before the daemon has it; the device takes
+  that byte as its cue to attach and answer.
 - **Control page:** at 0, 128, 256 and 384 the to-host head (relay), to-host tail (device),
   to-guest head (device), to-guest tail (relay), each a u64; at 512, 640, 768 and 896 the
   waiting flags, each a u32: device waits for to-host data, relay waits for to-host room,

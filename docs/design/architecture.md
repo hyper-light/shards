@@ -6373,7 +6373,10 @@ throughput both ways, small requests no slower, on every host.
   protocol, PM M83). A message costs the wakeups it costs today; a bulk transfer rings
   only where a side ran dry or full. No spinning in this decision: adaptive spinning waits
   on measurement.
-- **vsock stays** for setup, the token, doorbells, half-close and EOF, and the whole path
+- **A client's end is a byte, not a vsock shutdown** (`END`): the relay must still ring the
+  device about room in the ring for the guest while its client, writes ended, reads a long
+  answer; the device ends the host socket's writes once the ring for the host is drained.
+- **vsock stays** for setup, the token, doorbells, the end, and the whole path
   wherever no ring is made: a host or guest of a build without rings, a guest kernel
   without io_uring's sparse buffer table (Linux 5.19) or pagemap's frame numbers, a relay
   out of slots, an offer the device refuses.
@@ -6392,7 +6395,7 @@ throughput both ways, small requests no slower, on every host.
 | Ring per direction, 2 MiB | Bandwidth-delay product: 10x the faster relayed baseline (256 MiB / 12.36 ms = 21.7 GB/s, r429) times one way of the relayed 64 B round trip at p99 (129 / 2 µs, r378), 1.40 MB, up to a power of two. A sweep from 256 KiB to 4 MiB is owed. |
 | Control page, 4 KiB; fields 128 bytes apart | The smallest page of every supported guest; Apple silicon's 128-byte line (hw.cachelinesize), x86's paired-line prefetch. |
 | Slots a relay pins, max(1, floor(CPUs / 2)) | A ringed stream keeps two guest threads busy (its client's and the relay's), so no more than half the CPUs' streams move at once. |
-| Doorbell 0x01; offer header 16 bytes, extents 16 bytes, reply 8 bytes | Protocol constants of version 1. |
+| Doorbell 0x01, end 0x02; offer header 16 bytes, extents 16 bytes, reply 8 bytes | Protocol constants of version 1. |
 | Offer extents at most (4 KiB + 2 S) / 4 KiB | A slot's pages, none merged. |
 
 Owed to ROOT, none run by its implementer: correctness and hostile-offer E2E, and
