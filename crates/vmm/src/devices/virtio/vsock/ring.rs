@@ -263,7 +263,7 @@ impl Ring {
         // waits for the relay's first bytes: the relay rings only a side that says it waits
         // (Dekker's handshake), and nothing else has the device look at the ring for the
         // host before a doorbell, so a device that said nothing never heard the first
-        // request (logs/r1-red-first-request.txt of docs/research/measurements/ring-pins-v1).
+        // request (docs/research/measurements/ring-pins-v1/logs/r1-red-first-request.txt).
         ring.store_u64(field::TO_HOST_TAIL, 0);
         ring.store_u64(field::TO_GUEST_HEAD, 0);
         ring.memory

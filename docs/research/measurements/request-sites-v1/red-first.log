@@ -1,0 +1,78 @@
+# r557: the first red run, on 8fadc1ec213332e16cb0d915a3fb913f. Source: 032b63b1c + an
+# earlier red-source.diff (daemon.rs c17b4f95...), whose update-site test asserted the un-cut
+# update before its cut findings: it failed there, the cut findings unprinted (kept here for
+# what that assertion shows, see README "An update after a cut one"). The test was reordered
+# and red run again (red.log). Output as kiln returned it; aws-lc-sys warnings dropped by the
+# command, which kept cargo's last 150 lines; of the 105 "Compiling" lines those held, only the
+# first and the last are kept here.
+== probe
+Linux 6.19.10-300.fc44.x86_64 x86_64
+32
+/dev/nvme1n1p3  7.3T  5.7T  1.7T  78% /home
+/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/request-sites-v1-1548cdb1b8
+ldd (GNU libc) 2.43
+0.16.0
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+host: x86_64-unknown-linux-gnu
+release: 1.98.1
+032b63b1c9b642d0e2c8af71d6f9643909416f99
+ M crates/shards/src/daemon.rs
+?? docs/research/measurements/request-sites-v1/
+c17b4f956ff07310ee9cbad06cb64d127e4f1b6b31c69d3d14828f729c48abef  crates/shards/src/daemon.rs
+2026-11-12T02:39:27Z
+== red: cargo test -p shards --bin shards -j4 (the three tests)
+   Compiling generic-array v0.14.7
+   [... 103 more "Compiling" lines ...]
+   Compiling shards-remote v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/request-sites-v1-1548cdb1b8/crates/remote)
+    Finished `test` profile [unoptimized] target(s) in 1m 04s
+     Running unittests src/main.rs (target/debug/deps/shards-18bc4ad81ca6886a)
+
+running 3 tests
+
+thread 'daemon::tests::an_update_written_partway_keeps_the_request_it_had' (234202) panicked at crates/shards/src/daemon.rs:14216:9:
+assertion `left == right` failed: the update kept another request
+  left: [0, 0, 0, 6, 97, 108, 112, 105, 110, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 5, 115, 108, 101, 101, 112, 0, 0, 0, 2, 54, 48, 0, 0, 0, 0, 1, 0, 0, 0, 3, 99, 117, 116, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 9, 114, 101, 115, 111, 117, 114, 99, 101, 115, 0, 0, 0, 1, 0, 0, 0, 14, 99, 112, 117, 45, 115, 104, 97, 114, 101, 115, 61, 53, 49, 50]
+ right: [0, 0, 0, 6, 97, 108, 112, 105, 110, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 5, 115, 108, 101, 101, 112, 0, 0, 0, 2, 54, 48, 0, 0, 0, 0, 1, 0, 0, 0, 3, 99, 117, 116, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 9, 114, 101, 115, 111, 117, 114, 99, 101, 115, 0, 0, 0, 1, 0, 0, 0, 14, 99, 112, 117, 45, 115, 104, 97, 114, 101, 115, 61, 53, 49, 50, 0, 0, 0, 9, 114, 101, 97, 100, 45, 111, 110, 108, 121, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 8, 99, 97, 112, 45, 100, 114, 111, 112, 0, 0, 0, 1, 0, 0, 0, 3, 65, 76, 76]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test daemon::tests::an_update_written_partway_keeps_the_request_it_had ... FAILED
+
+thread 'daemon::tests::a_request_kept_at_once_is_whole' (234201) panicked at crates/shards/src/daemon.rs:14287:9:
+0 of 2000 writes failed, the first None; 4799 reads found no request whole, the first Some("0 bytes"); left []
+
+thread 'daemon::tests::a_record_written_partway_is_not_kept' (234200) panicked at crates/shards/src/daemon.rs:14132:9:
+[
+    "request cut at 81 of 163: kept, 81 bytes, read as none",
+    "request cut at 115 of 163: kept, 115 bytes, read as another: \"cap_drop [], read_only false, cpu_shares 0\"",
+    "request cut at 99 of 198: kept, 99 bytes, read as none",
+    "request cut at 115 of 198: kept, 115 bytes, read as another: \"cap_drop [], read_only false, cpu_shares 0\"",
+    "cpu-baseline cut at 32 of 65: kept, 32 bytes, read as another: \"[(c020, 11010011), (c030, 0)]\"",
+    "cpu-baseline cut at 64 of 65: kept, 64 bytes, read as another: \"[(c020, 11010011), (c030, 2211120), (c038, 10112)]\"",
+    "daemon.pid cut at 6 of 13: kept, 6 bytes, read as another: \"Named { pid: 4242, start: Some(1) }\"",
+    "daemon.pid cut at 11 of 13: kept, 11 bytes, read as another: \"Named { pid: 4242, start: Some(123456) }\"",
+    "daemon.stopping cut at 6 of 13: kept, 6 bytes, read as another: \"Named { pid: 4242, start: Some(1) }\"",
+    "daemon.stopping cut at 11 of 13: kept, 11 bytes, read as another: \"Named { pid: 4242, start: Some(123456) }\"",
+    "listening cut at 8 of 16: kept, 8 bytes, read as none",
+    "listening cut at 14 of 16: kept, 14 bytes, read as another: \"192.0.2.10:443\"",
+    "engine-id cut at 32 of 64: kept, 32 bytes, read as another: \"77777777777777777777777777777777\"",
+    "engine-id cut at 63 of 64: kept, 63 bytes, read as another: \"777777777777777777777777777777777777777777777777777777777777777\"",
+]
+test daemon::tests::a_record_written_partway_is_not_kept ... FAILED
+test daemon::tests::a_request_kept_at_once_is_whole ... FAILED
+
+failures:
+
+failures:
+    daemon::tests::a_record_written_partway_is_not_kept
+    daemon::tests::a_request_kept_at_once_is_whole
+    daemon::tests::an_update_written_partway_keeps_the_request_it_had
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 715 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p shards --bin shards`
+exit: 101
+
+real	1m4.492s
+user	2m17.330s
+sys	0m18.710s
+2026-11-12T02:40:32Z
+--- kiln: runner 8fadc1ec213332e16cb0d915a3fb913f (kiln-a094a12d.attlocal.net), exit_code 0 (the pipeline's; cargo's is the "exit:" line)

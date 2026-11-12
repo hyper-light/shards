@@ -1,0 +1,41 @@
+# The first gate run, r610, on 8fadc1ec213332e16cb0d915a3fb913f: 032b63b1c + the green source
+# then (daemon.rs 6012c32b..., the cases' type spelled out). fmt and the daemon:: suite passed;
+# clippy in the test profile refused the cases' type (type_complexity), named since by a local
+# alias (gates.log). Only its summary is kept here: the daemon:: run's log lines from other
+# tests' daemons (kept by kiln, cut here) and its result.
+6012c32bef1385b28d48b0ff86402343049d959da5e481ec904062f47602607a  crates/shards/src/daemon.rs
+2026-11-12T03:00:35Z
+$ cargo fmt --all --check
+fmt exit: 0
+$ cargo test -p shards --bin shards -j4 -- daemon::
+[... other tests' daemons' log lines ...]
+test daemon::logs::tests::logs_read_as_the_plain_way_reads_them has been running for over 60 seconds
+
+test result: ok. 331 passed; 0 failed; 7 ignored; 0 measured; 380 filtered out; finished in 86.46s
+
+real	1m32.433s
+user	2m51.025s
+sys	0m14.513s
+test exit: 0
+2026-11-12T03:02:14Z
+$ cargo clippy -p shards --bin shards -j4 -- -D warnings
+    Finished `dev` profile [unoptimized] target(s) in 28.11s
+clippy exit: 0
+2026-11-12T03:02:42Z
+$ cargo clippy -p shards --bin shards --profile test -j4 -- -D warnings
+error: very complex type used. Consider factoring parts into `type` definitions
+     --> crates/shards/src/daemon.rs:14093:20
+      |
+14093 |         let cases: [(&str, Option<Vec<u8>>, Vec<u8>, fn(&[u8]) -> Option<String>); 7] = [
+      |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#type_complexity
+      = note: `-D clippy::type-complexity` implied by `-D warnings`
+      = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: could not compile `shards` (bin "shards" test) due to 1 previous error
+clippy (test profile) exit: 101
+2026-11-12T03:03:12Z
+3.3G	target
+/dev/nvme1n1p3  7.3T  5.7T  1.6T  79% /home
+--- kiln: runner 8fadc1ec213332e16cb0d915a3fb913f (kiln-a094a12d.attlocal.net), exit_code 0

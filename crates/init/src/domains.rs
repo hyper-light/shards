@@ -26,7 +26,7 @@
 
 use std::ffi::{CStr, CString};
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use crate::json::{self, Value};
 
@@ -551,6 +551,8 @@ pub struct Started {
     pub lifecycle: crate::managed::Owned,
     pub stdout: crate::capture::Pipe,
     pub stderr: crate::capture::Pipe,
+    /// Its end has been told its owner (`MEMBER_ENDED`, D231).
+    pub end_told: bool,
 }
 
 impl Started {
@@ -1349,8 +1351,13 @@ pub fn start(
     setup: &[Vec<u8>],
 ) -> Result<Vec<Started>, String> {
     if domains.is_empty() {
+        crate::staged::check(setup, |_| false)?;
         return Ok(Vec::new());
     }
+    // What an orchestrator stages goes into a member this run starts, or nowhere (D231).
+    crate::staged::check(setup, |m| {
+        domains.iter().any(|d| d.id.checked_sub(FIRST_ID) == Some(m))
+    })?;
     let shm = shm_of(setup)?;
     // The kernel's log holds what it says of the domains' processes (a fault, an OOM kill
     // naming each process of their cgroup): only for CAP_SYSLOG, which no run of an
@@ -1668,6 +1675,11 @@ pub fn start(
             .collect();
         // Its scratch, which its instance holds too, to read the files it hands across.
         let scratch = scratch(lower, d.id).map_err(|e| format!("{}: its /tmp: {e}", d.label))?;
+        // What its orchestrator staged for it (D231): its files in its home before anything
+        // of it runs, its variables over its image's.
+        crate::staged::files(scratch.as_ref().map(AsFd::as_fd), (d.id, d.id), member, setup)
+            .map_err(|e| format!("{}: {e}", d.label))?;
+        let env = crate::staged::env(&d.env, member, setup).map_err(|e| format!("{}: {e}", d.label))?;
         let dir = server.start(
             i,
             d,
@@ -1723,12 +1735,7 @@ pub fn start(
                 .map(|a| a.as_ptr())
                 .chain([std::ptr::null()])
                 .collect(),
-            envp: d
-                .env
-                .iter()
-                .map(|a| a.as_ptr())
-                .chain([std::ptr::null()])
-                .collect(),
+            envp: env.iter().map(|a| a.as_ptr()).chain([std::ptr::null()]).collect(),
             last_cap,
             net_handled: match &d.link {
                 Some(l) => {
@@ -1867,6 +1874,7 @@ pub fn start(
             lifecycle,
             stdout,
             stderr,
+            end_told: false,
         });
     }
     drop(joined);

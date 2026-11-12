@@ -1,0 +1,7 @@
+status Some(0) after 4.439659ms
+--- stdout
+PORT             PUBLISHED        REACHES
+managed-0-1/udp  127.0.0.1:52009  authenticated owner output
+managed-0-2/udp  127.0.0.1:42738  authenticated owner output
+
+--- stderr

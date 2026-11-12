@@ -1,0 +1,34 @@
+{
+  "codex": {
+    "tag": "rust-v0.167.2",
+    "url": "https://github.com/openai/codex/releases/download/rust-v0.167.2/codex-x86_64-unknown-linux-musl.tar.gz",
+    "archive_sha256": "8246e846c550ea21197fcc4067bc270dca895e94ea42ed6a282e6f4e0125b15f",
+    "bundle_url": "https://github.com/openai/codex/releases/download/rust-v0.167.2/codex-x86_64-unknown-linux-musl.sigstore",
+    "bundle_sha256": "eb5bd5e042a0c57b405340720b67a728e5d3ce43b1e5033819facfabd7131c3f",
+    "signer_identity": "https://github.com/openai/codex/.github/workflows/rust-release.yml@refs/tags/rust-v0.167.2",
+    "signer_issuer": "https://token.actions.githubusercontent.com",
+    "binary_sha256": "a9672d0fa0dd8fcf8cad136fa0d056b914bc046f5ac3d78f4a5cf390655af56b",
+    "binary_size": 320248296,
+    "code_mode_host": {
+      "url": "https://github.com/openai/codex/releases/download/rust-v0.167.2/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz",
+      "archive_sha256": "189475a654d82ca776e08dfef22734106d3e5b2cf21da6e84ec3d974d02c39a6",
+      "bundle_sha256": "81100cd9c570b5e35503429a2b33e97c5f5b8658cdae03a8b3f06ee865a7c322",
+      "binary_sha256": "007c62795a7215c27ee85486ecb95e714b33118a2d18c6d7b09b0d9793c72ff4",
+      "binary_size": 79213840
+    },
+    "verified_with": {
+      "cosign": "https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64",
+      "sha256": "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa"
+    }
+  },
+  "claude": {
+    "version": "2.1.322",
+    "platform": "linux-x64-musl",
+    "url": "https://downloads.claude.ai/claude-code-releases/2.1.322/linux-x64-musl/claude",
+    "manifest_sha256": "05d2eff648bb528c1479c719bb8eca9a759657631e285d03aaf37fe779173f1c",
+    "manifest_sig_sha256": "c66b0b463899b33dd9ef3c086cd9451aac3b2494a2f4f3134683d10cab0309c3",
+    "signing_key_fingerprint": "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE",
+    "binary_sha256": "9bed6cfc5d2420b673a0b9fe41c71533a02904935cbc3b4cd110302d475fee6f",
+    "binary_size": 328374856
+  }
+}

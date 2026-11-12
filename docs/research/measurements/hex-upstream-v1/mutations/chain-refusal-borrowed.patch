@@ -1,0 +1,11 @@
+--- a/crates/api/src/lib.rs
++++ b/crates/api/src/lib.rs
+@@ -421,7 +421,7 @@
+         match self {
+             // Each Display already ends with its failure: the cause after it is the failure's.
+             Self::Process { failure, .. } => std::error::Error::source(failure),
+-            Self::Borrowed { failure, .. } => std::error::Error::source(failure),
++            Self::Borrowed { failure, .. } => Some(failure),
+             _ => None,
+         }
+     }

@@ -48,6 +48,8 @@ fn spec(cmdline: &str) -> GuestSpec {
         cmdline: cmdline.into(),
         vcpus: 1,
         memory_mib: min_memory_mib(std::env::consts::ARCH),
+        gpu: false,
+        gpu_devices: Vec::new(),
         disks: vec![],
         shares: vec![],
         ports: vec![ECHO, UNSERVED],
@@ -95,6 +97,27 @@ fn the_simulator_conforms() {
         patience: patience(),
     })
     .unwrap();
+}
+
+/// The simulator's PID 1 sees the spec it was booted with, a GPU or none (D215).
+#[test]
+fn the_simulator_retains_shared_gpu_enable() {
+    for gpu in [false, true] {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let observed = seen.clone();
+        let guests = SimGuests::new(move |host| {
+            *observed.lock().unwrap() = Some(host.spec().clone());
+            End::PowerOff
+        });
+        let expected = GuestSpec { gpu, ..spec("") };
+        let guest = guests.boot(&expected).unwrap();
+        let ended = guest.wait_for(patience());
+        let stopped = guest.stop();
+        drop(guest);
+        assert_eq!(ended.unwrap(), Some(End::PowerOff));
+        stopped.unwrap();
+        assert_eq!(*seen.lock().unwrap(), Some(expected));
+    }
 }
 
 /// A connect waits for a guest that listens late, and is answered as it does (D215).

@@ -1,0 +1,140 @@
+{
+  "task": "Ada's directive, 2026-11-11, verbatim: \"all such communications should be AESGCM256 bidirectional encrypted.\" Every Shards QUIC/TLS link that carries agent or Shards control negotiates TLS13_AES_256_GCM_SHA384 only, both directions, from one narrowed provider; tests red first; the record in architecture.md D180 and D60.",
+  "identity": {
+    "policy_read": "POLICY_READ.json (origin/main bff3015182ad754274f1048ce393ac12cb6cd91f, docs/development-rules.md sha256 df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3)",
+    "role": "implementer (coordinator: kiln agent 01a148884a4770fdaf0111f3f792a248, session g121-7b; plan 01a1cd8e862e7169a074db3d5fa33f3d step 3)",
+    "branch": "p/aes256-only-v1, based on origin/p/integrate-engine-20261111 032b63b1c9b642d0e2c8af71d6f9643909416f99",
+    "owned_paths": [
+      "crates/remote/src/tls.rs, crates/remote/src/lib.rs (its handshake test harness)",
+      "crates/server/src/server.rs (prepare's provider and its tests)",
+      "docs/design/architecture.md (D180, its managed owner-output section, D60)",
+      "docs/research/measurements/aes256-only-v1/"
+    ],
+    "runners": {
+      "linux": "kiln 8fadc1ec213332e16cb0d915a3fb913f (kiln-a094a12d.attlocal.net): Fedora 44, Linux 6.19.10-300.fc44.x86_64, 32 cores; every run checked pgrep -x amphora-bench first and ran under systemd-run --user --scope -q -p MemoryMax=24G with CARGO_BUILD_JOBS=4, TMPDIR=$HOME/g121-tmp",
+      "macos": "kiln d1323898b255a3ed435eb83fa0f7b0cf (adas-mac-studio.local-2): macOS 26.4 arm64"
+    },
+    "toolchain": "rustc/cargo 1.98.1 (rust-toolchain.toml), rustfmt 1.9.0-stable, zig 0.16.0 (the pinned one) for the musl C",
+    "commit": "e12d5b96eb7f097514122a23662dd1ddb67f1087 (signed by kiln's signer; parent 032b63b1c9b642d0e2c8af71d6f9643909416f99)",
+    "committed_blobs": {
+      "crates/remote/src/lib.rs": "e7d124f83cb981bf1db5dfae52cf78e43999b0ec",
+      "crates/remote/src/tls.rs": "7f8c4dcfbb3dfee960c7867cea5de070c7f8f212",
+      "crates/server/src/server.rs": "49a0b707a7cfb349d55be2438a4de4edd13b53be"
+    }
+  },
+  "decision": {
+    "sources": {
+      "RFC 9001 (rfc-editor.org text, sha256 3bbaecdf5afd278052a2c48348ce118c4ff8d0cf6b9915549858171b3f98a591)": "section 5: Retry packets use AEAD_AES_128_GCM; Initial packets use AEAD_AES_128_GCM with keys derived from the Destination Connection ID of the client's first Initial; all other packets use keys and algorithms negotiated by TLS. 5.1: separate secrets for each direction at every encryption level. 5.4.3: AEAD_AES_256_GCM's header protection is AES-256. 4.8: a TLS alert becomes CRYPTO_ERROR 0x0100 + AlertDescription. 4.6: 0-RTT. 7: Initial packets are not protected with a secret key.",
+      "RFC 8446 (rfc-editor.org text, sha256 47871bc8820a2c3b6ea89f061055577058862cf543686b82d10131239702b3bd)": "4.1.3: the single cipher suite the server selects; 7.3: [sender]_write_key, a key per sending side; 4.1.1: no overlap aborts with handshake_failure or insufficient_security; 9.1: MUST implement TLS_AES_128_GCM_SHA256, SHOULD implement TLS_AES_256_GCM_SHA384 and TLS_CHACHA20_POLY1305_SHA256; 2: ClientHello and ServerHello precede every protected message.",
+      "hyper-raft 233b7fcef7a363327c5439b191724a38065062cd (shards' pin; the brief's f116ac27 has the same provider section, diffed)": "crates/hyper-quic/src/crypto/rustls.rs: NODE_CIPHER_SUITES = [TLS13_AES_256_GCM_SHA384, TLS13_CHACHA20_POLY1305_SHA256], NODE_KX_GROUPS = [SECP384R1MLKEM1024, X25519MLKEM768, SECP256R1MLKEM768]; initial_suite() takes AES-128-GCM from aws-lc-rs's table whatever a configuration offers; a TLS error becomes TransportError { code: crypto(alert), reason: the rustls error's text }. crates/hyper-tls/src/server/hs.rs choose_suite_and_kx_group: the client's order unless ignore_client_order; no suite in common is PeerIncompatible::NoCipherSuitesInCommon sent as a HandshakeFailure alert.",
+      "rustls 0.23.45 src/crypto/aws_lc_rs/mod.rs": "DEFAULT_CIPHER_SUITES' TLS 1.3 part: AES-256-GCM, AES-128-GCM, ChaCha20-Poly1305 (the in-VM server's provider before)",
+      "kiln d4990d3bf8024173566ed6b0f2d4e7a7d4a16860 crates/kiln/src/reach/e2e.rs": "PROVIDER: node_provider() with cipher_suites [TLS13_AES_256_GCM_SHA384] (and two of its groups); a_link_is_post_quantum_aes_gcm_both_ways asserts the negotiated suite: the same narrowing, established beside shards",
+      "go1.26.1 src/crypto/tls/defaults.go, handshake_client.go": "a client's TLS 1.3 order: AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305 with AES-GCM hardware; ChaCha20-Poly1305, AES-128-GCM, AES-256-GCM without; all three always offered",
+      "measured on this Mac": "openssl ciphers -s -tls1_3: OpenSSL 4.1.0 and 3.6.4 (Homebrew) TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256; node -p tls.DEFAULT_CIPHERS: Node.js 24.14.1 on OpenSSL 3.5.5, the same three, AES-256-GCM first"
+    },
+    "alternatives": {
+      "keep the node provider": "refused by the directive: ChaCha20-Poly1305 negotiated with a peer that offers it alone or first (01-red-base-providers.log)",
+      "narrow the daemon's side only": "a shards client would still offer ChaCha20-Poly1305 to a server that prefers it; the tests hold both directions (either_way)",
+      "one provider object for the QUIC links and the in-VM server": "not possible without changing a TLS stack: crates/remote builds on hyper-tls (hyper_quic::rustls), crates/server on crates.io rustls 0.23, distinct CryptoProvider types; sharing would put hyper-tls into the guest server binary, which every microVM's server device carries (TLS's guest cost measured in PM M122). So: one provider for every QUIC link (tls::provider, used by server, owner_server, client, client_with) and one for the in-VM server (prepare, used by its ServerConfig and client verifier)",
+      "a suite constant in shards-abi that each stack filters its table by": "not taken: an indirection for one constant whose effect each side's tests pin by the negotiated suite (R05, R13)",
+      "also narrow the key exchange groups, as kiln's PROVIDER drops SecP256r1MLKEM768": "not taken: the directive is the AEAD; the node groups are hybrid post-quantum only and unchanged"
+    },
+    "compatibility": "Between shards builds nothing changes: an earlier shards offered AES-256-GCM first and daemons follow the client's order, so every pair of builds negotiates AES-256-GCM (an_earlier_shards_still_connects_on_aes_256_gcm; every_link_is_aes_256_gcm_at_both_ends is green on the base too). Refused now: a peer offering no AES-256-GCM, e.g. one implementing only RFC 8446 section 9.1's mandatory AES-128-GCM. A peer preferring another suite but offering AES-256-GCM (Go's crypto/tls either way) gets AES-256-GCM.",
+    "literals": "none new in production beyond the suite the directive names; test fixtures: 16 delivery rounds in each in-memory exchange, as the existing handshake harness had"
+  },
+  "tls_configs": [
+    {
+      "site": "crates/remote/src/tls.rs server() and client(): D180 contexts, ALPN shards/1",
+      "changed": "yes: tls::provider is the node provider narrowed to TLS13_AES_256_GCM_SHA384 (a LazyLock static)"
+    },
+    {
+      "site": "crates/remote/src/tls.rs owner_server() and client_with(): the managed owner-output endpoint and its subscriber, ALPN shards-managed-output/1 (crates/remote/src/managed.rs Endpoint::bind and client_config; crates/shards/src/daemon/managed.rs binds it)",
+      "changed": "yes, the same provider"
+    },
+    {
+      "site": "crates/server/src/server.rs prepare(): the in-VM server's mutual TLS 1.3 over its Unix socket, which carries an agent's MCP requests, code mode's programs, its messages to granted peers and files handed across (D60)",
+      "changed": "yes: aws-lc-rs's provider narrowed to TLS13_AES_256_GCM_SHA384, shared by its ServerConfig and client verifier"
+    },
+    {
+      "site": "crates/registry/src/tls.rs client_config: registries, and through it every outbound HTTPS client of shards (pull.rs, guest.rs, keyless.rs, google.rs, the log drivers fluentd/splunk/syslog/gcplogs/awslogs, aws S3 and ECR, the build fetchers azblob/gha/git/http/s3, the build proxy's upstream, policy signatures)",
+      "changed": "no",
+      "why": "outside servers a user names choose their suites (TLS 1.2 ones among them); forcing AES-256-GCM risks pulls and deliveries; no agent or shards control crosses them (the brief's scope)"
+    },
+    {
+      "site": "crates/registry/src/apple.rs",
+      "changed": "no",
+      "why": "the macOS platform verifier for those clients: certificate checks, no suites of its own"
+    },
+    {
+      "site": "crates/shards/src/aws/mod.rs (a client of a configured CA bundle)",
+      "changed": "no",
+      "why": "outbound to AWS endpoints"
+    },
+    {
+      "site": "crates/shards/src/build/proxy/ca.rs (the build proxy's per-host server configurations, TLS 1.3 and 1.2)",
+      "changed": "no",
+      "why": "terminates the HTTPS of build steps' own tools in images (curl, apt, pip), whose suites the images choose; not agent or shards control"
+    },
+    {
+      "site": "tests: crates/registry/src/testing.rs, crates/shards/src/daemon/ship/stream.rs tests, crates/shards/src/build/proxy/tests.rs, crates/shards/tests/{containers,build}.rs, crates/testguest/src/workload.rs, crates/server/src/server.rs tests' clients",
+      "changed": "no",
+      "why": "test peers; the in-VM server's test clients (server.rs tests, testguest workload.rs connect) use aws-lc-rs's defaults over TLS 1.3, which offer AES-256-GCM first"
+    },
+    {
+      "site": "non-TLS control channels (CLI to daemon request FIFOs, the Engine API's engine.sock, host to guest vsock)",
+      "changed": "no",
+      "why": "no TLS configuration to narrow; whether the directive reaches them is for Ada and ROOT (not in the brief's scope)"
+    }
+  ],
+  "tests": {
+    "crates/remote (tls::tests over lib.rs's in-process handshake exchange, endpoints at 127.0.0.1:7001/7002)": {
+      "every_link_is_aes_256_gcm_at_both_ends": "a context's and the managed output's configurations; both ends report TLS13_AES_256_GCM_SHA384 (green on the base too: shards chose AES-256-GCM first)",
+      "a_peer_preferring_other_suites_gets_aes_256_gcm_either_way": "a peer in Go's no-AES order, either side; red on the base (the daemon chose ChaCha20-Poly1305)",
+      "a_peer_limited_to_chacha20_poly1305_is_refused_either_way": "refusing side ConnectionError::TransportError, code CRYPTO_ERROR 0x128, reason PeerIncompatible::NoCipherSuitesInCommon's; the other side ConnectionClosed with 0x128; red on the base (connected under ChaCha20-Poly1305)",
+      "a_peer_limited_to_aes_128_gcm_is_refused_either_way": "the same refusal; green on the base too (the node provider had no AES-128-GCM)",
+      "an_earlier_shards_still_connects_on_aes_256_gcm": "the node provider either side connects on AES-256-GCM",
+      "harness change": "lib.rs: Side keeps the typed ConnectionError, reports the negotiated suite, and carries back the close of a connection refused at its first packet (accept's AcceptError response)"
+    },
+    "crates/server (handshake in memory against prepare's own ServerConfig)": {
+      "an_instance_and_its_caller_are_aes_256_gcm_at_both_ends": "clients in aws-lc-rs's order and in both of Go's; red on the base (Go's order with AES-GCM given AES-128-GCM)",
+      "a_client_limited_to_chacha20_poly1305_is_refused": "instance Error::PeerIncompatible(NoCipherSuitesInCommon), client Error::AlertReceived(HandshakeFailure); red on the base (answered)",
+      "a_client_limited_to_aes_128_gcm_is_refused": "the same; red on the base (answered)"
+    },
+    "logs": {
+      "01-red-base-providers.log": "red: shards-remote 2 of 8 failed, shards-server 3 of 3 failed, on the base's providers",
+      "02-INVALID-green-stale-mutant.log": "invalid: cargo reused the red run's mutant builds (kiln's sync gave the sources the Mac's older mtimes); kept as a record, superseded by 03",
+      "03-green.log": "green: shards-remote 33 unit + 17 tests/loopback.rs (real UDP on 127.0.0.1) passed; shards-server 47 passed",
+      "04-mutations.log": "chacha-remote, aes128-remote, chacha-server, aes128-server: each killed by two tests",
+      "05-final-green-gates.log": "on e12d5b96e's Rust and harness (blob ids printed on the runner, equal to the commit's): shards-remote 33 + 17 passed, shards-server 47 passed; scripts/check-development-policy 0; cargo fmt --all --check 0; clippy -D warnings 0 for shards-remote (x86_64 gnu) and shards-server (x86_64 gnu, x86_64 musl, aarch64 musl). Run without a sync: kiln's sync after the commit timed out three times"
+    }
+  },
+  "observations_not_changed": [
+    "net::Handler::lost receives a connection's loss as its text and an application close's code only, so a handshake refused for its cipher reaches the D180 client as words; client.rs then says 'no shards daemon answered at ADDR within 10s (WHY): is it listening there' for any handshake that never ended. A typed loss through the driver would change every handler and the client's words: not reproduced live as a user-facing defect, not changed (R09); ROOT's call."
+  ],
+  "rules": {
+    "R01": "Production adds a LazyLock static built by cloning the node provider with a one-element Vec, and in prepare a struct-update literal with a one-element Vec: no unwrap, expect, indexing or arithmetic; allocation failure aborts as for the providers' own to_vec. clippy -D warnings clean.",
+    "R02": "Sources and alternatives above, each with its revision; live red data in 01.",
+    "R03": "No new tuned literal; the suite is the directive's.",
+    "R04": "Refusals stay typed: hyper-quic ConnectionError variants with CRYPTO_ERROR 0x128 and rustls Error variants, matched by the tests. The driver's text-only loss is recorded above.",
+    "R05": "No new abstraction or cache: the two private builders take the provider they build under, every production entry passing tls::provider; tests build a peer that differs in its suites alone.",
+    "R06/R07/R13": "Focused diffs at the existing seams; comments carry the directive, RFC sections and sources.",
+    "R08/R14": "No benchmark or profile (implementer). Between shards builds the negotiated suite is unchanged; the in-VM server's clients that negotiated AES-128-GCM or ChaCha20-Poly1305 now negotiate AES-256-GCM, a cost unmeasured here.",
+    "R09/R10": "Red on the base's providers, green, four mutants killed, the invalid run kept, harness committed (run.sh, mutate.py, mutations.sh).",
+    "R11": "Linux x86_64 gnu: both crates tested (05). shards-server linted for x86_64 and aarch64 musl with the pinned zig 0.16.0 (05). macOS arm64: not run, three attempts on d1323898b255a3ed435eb83fa0f7b0cf failed before running ('did not answer the sync in 60s', then 'not connected to the kiln server'). Windows, macOS and aarch64 Linux builds of crates/remote: unverified here. The change has no cfg and no platform code.",
+    "R12": "No platform-specific code.",
+    "R15": "Implementer, light tests only; no VMs, E2E, benchmarks or profiling.",
+    "R16": "No builds on this Mac (22 GiB free, under its 30 GiB floor): only rustfmt of three files. On kiln-a094a12d: the synced copy's target directories (regenerable) and the stage logs in $HOME/g121-tmp/aes256-only-v1."
+  },
+  "not_run": [
+    "macOS arm64 clippy and tests of shards-remote and shards-server (kiln's sync to the Mac Studio runner failed three times)",
+    "real-VM E2E, owed to ROOT: D180 contexts (crates/shards/tests/context.rs), the managed output's (crates/shards/tests/managed_output/, common/managed_capture.rs), the in-VM server's (the_in_vm_server_knows_each_agent, tests/mcp.rs, agents_message_one_another_as_granted)",
+    "scripts/lint over the seven targets and the whole workspace's build and tests (crates/shards uses shards_remote's unchanged API)",
+    "Windows and aarch64 Linux builds of crates/remote; aarch64 Linux tests of either crate",
+    "the cost, if any, of AES-256-GCM for in-VM server clients that negotiated AES-128-GCM or ChaCha20-Poly1305"
+  ],
+  "lessons": [
+    "kiln's sync gives synced files the source machine's mtimes; a mutant built on the runner after them is then newer than the restored source, and cargo keeps it. Touch the sources before each stage (run.sh)",
+    "systemd-run expands ${...} in its arguments: give it a script, not a command line with shell variables",
+    "a single-space context line of a diff becomes an empty line when a log is retyped; verify every retyped log against the runner's SHA-256"
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "type": "POLICY_READ",
+  "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "source": "origin/main, read with git show after git fetch origin",
+  "role": "implementer",
+  "coordinator": "kiln agent 01a148884a4770fdaf0111f3f792a248 (session g121-7b), plan 01a1cd8e862e7169a074db3d5fa33f3d step 3",
+  "documents": {
+    "AGENTS.md": {
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+      "read": "full"
+    },
+    "docs/development-rules.md": {
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "read": "full"
+    },
+    "docs/development-evidence.md": {
+      "bytes": 3325,
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+      "read": "full"
+    },
+    "CLAUDE.md": {
+      "bytes": 17012,
+      "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f",
+      "read": "full (identical on origin/main and the base)"
+    }
+  },
+  "rules_acknowledged": "R01-R16 read in full; the development-evidence.md checklist read in full",
+  "base": "origin/p/integrate-engine-20261111 032b63b1c9b642d0e2c8af71d6f9643909416f99",
+  "branch": "p/aes256-only-v1",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/aes256-only-v1",
+  "task": "Ada's directive (2026-11-11, verbatim): \"all such communications should be AESGCM256 bidirectional encrypted.\" Every Shards QUIC/TLS link that carries agent or Shards control negotiates TLS13_AES_256_GCM_SHA384 only, both directions, from one narrowed provider all of them share; loopback handshake test, ChaCha20-only and AES-128-only peers refused with a typed error, a mutation re-allowing ChaCha20 fails a test; record in architecture.md D180 (and the in-VM server's decision if touched), with RFC 9001 section 5's Initial floor.",
+  "owned_paths": [
+    "the rustls configurations Shards builds for agent/Shards control links (crates/remote, crates/shards daemon managed owner endpoint, crates/server if it carries agent control) and their tests",
+    "docs/design/architecture.md (D180 and, if touched, the in-VM server's decision)",
+    "docs/research/measurements/aes256-only-v1/**"
+  ],
+  "constraints": "no subagents; no builds on this Mac (low disk); Linux cargo through kiln run on kiln-a094a12d (8fadc1ec213332e16cb0d915a3fb913f) after pgrep -x amphora-bench finds nothing, systemd-run --user --scope -q -p MemoryMax=24G, -j4, TMPDIR=$HOME/g121-tmp, zig 0.16.0 on PATH, or adacachy (451397fcc585f7f7cb9aaf00e42064bb) at cpus=4,mem=16g; macOS check/clippy/unit only on adas-mac-studio.local-2 (d1323898b255a3ed435eb83fa0f7b0cf); light tests only, real-VM suites and measurements owed to ROOT; signed gits, named paths, no push, no force, final line Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+  "read_at": "2026-11-11"
+}

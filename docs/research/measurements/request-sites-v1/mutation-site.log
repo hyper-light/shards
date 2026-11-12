@@ -1,0 +1,35 @@
+# Mutation 2, one site's guard removed: green + mutation-site.diff (update.rs 05990b65...):
+# update.rs's write back to std::fs::write in place, keep_whole as committed. On
+# 8fadc1ec213332e16cb0d915a3fb913f (sync files_sent 215, 906 MB, 211 s). Output as kiln
+# returned it; the command dropped aws-lc-sys warnings and cargo's Compiling and
+# backtrace-note lines.
+032b63b1c9b642d0e2c8af71d6f9643909416f99
+84c850da9b498d8614569c943eb94492f8d1f071153b71245c607aa76a9f0220  crates/shards/src/daemon.rs
+05990b65405e52d76963ad9d9120aaf403b58d72e94c1032733bce7d00a5c4ae  crates/shards/src/daemon/update.rs
+2026-11-12T02:56:18Z
+$ cargo test -p shards --bin shards -j4 -- --exact (the three tests) --nocapture
+    Finished `test` profile [unoptimized] target(s) in 8.24s
+     Running unittests src/main.rs (target/debug/deps/shards-18bc4ad81ca6886a)
+
+running 3 tests
+
+thread 'daemon::tests::an_update_written_partway_keeps_the_request_it_had' (2507563) panicked at crates/shards/src/daemon.rs:14217:9:
+[
+    "request cut at 102 of 205: kept, 102 bytes, read as none",
+    "request cut at 122 of 205: kept, 122 bytes, read as another: ([], false, 0)",
+]
+test daemon::tests::an_update_written_partway_keeps_the_request_it_had ... FAILED
+test daemon::tests::a_record_written_partway_is_not_kept ... ok
+test daemon::tests::a_request_kept_at_once_is_whole ... ok
+
+failures:
+
+failures:
+    daemon::tests::an_update_written_partway_keeps_the_request_it_had
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 715 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `-p shards --bin shards`
+exit: 101
+2026-11-12T02:56:27Z
+--- kiln: runner 8fadc1ec213332e16cb0d915a3fb913f (kiln-a094a12d.attlocal.net), exit_code 0

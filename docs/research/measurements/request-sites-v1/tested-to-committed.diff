@@ -1,0 +1,31 @@
+--- a/crates/shards/src/daemon.rs
++++ b/crates/shards/src/daemon.rs
+@@ -14090,7 +14090,14 @@
+             (0xc038, 0x0010_1125),
+         );
+         let (other, this) = (b"4040 17\n".to_vec(), b"4242 1234567\n".to_vec());
+-        let cases: [(&str, Option<Vec<u8>>, Vec<u8>, fn(&[u8]) -> Option<String>); 7] = [
++        /// A record's file, what it held (none: no file), what is written, and its reader.
++        type Case = (
++            &'static str,
++            Option<Vec<u8>>,
++            Vec<u8>,
++            fn(&[u8]) -> Option<String>,
++        );
++        let cases: [Case; 7] = [
+             (REQUEST, None, made.encode(), request),
+             (REQUEST, Some(made.encode()), updated.encode(), request),
+             (
+@@ -14231,9 +14238,9 @@
+     #[cfg(unix)]
+     #[test]
+     fn a_request_kept_at_once_is_whole() {
+-        /// Each writer's writes: enough that a write in place, or under one name beside the
+-        /// request for both writers, was found torn or failed in each red run (PM, the
+-        /// request-sites-v1 record).
++        /// Each writer's writes: enough that every run of this test against a write in place
++        /// (3 runs, at least 4,710 reads torn) or under one name for both writers (3 runs, at
++        /// least 660 writes failed) failed (docs/research/measurements/request-sites-v1).
+         const WRITES: usize = 1000;
+         let dir = shards_testdir::TempDir::new("request-race").unwrap();
+         let path = dir.join(REQUEST);

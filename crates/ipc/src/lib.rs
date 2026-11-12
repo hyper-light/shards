@@ -547,6 +547,9 @@ pub mod kind {
     pub const PRECOPYING: u8 = 85;
     /// VM to daemon: trusted tenant abort on the independent control path (managed::Abort).
     pub const MANAGED_ABORT: u8 = 86;
+    /// VM to its owner: a member's population has ended, its index and status
+    /// (`shards_abi::run::members::Ended`), where the run asked to hear it (D231).
+    pub const MEMBER_ENDED: u8 = 87;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the

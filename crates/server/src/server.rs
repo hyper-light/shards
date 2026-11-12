@@ -790,7 +790,14 @@ fn err(what: &str) -> impl Fn(rcgen::Error) -> String + '_ {
 /// (`ca.pem`, `cert.pem`, `key.pem`, readable by group `gid`, its caller's, alone for the
 /// key), and listens on `dir/server.sock`, which that group may connect to.
 pub fn prepare(dir: &str, label: &str, gid: u32) -> Result<Prepared, String> {
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    // TLS13_AES_256_GCM_SHA384 alone, as Ada directed for every link an agent's control
+    // crosses (2026-11-11; D60). TLS 1.3 negotiates one suite for both directions, each keyed
+    // apart (RFC 8446 §4.1.3, §7.3): a client offering no AES-256-GCM is refused at its
+    // handshake.
+    let provider = Arc::new(rustls::crypto::CryptoProvider {
+        cipher_suites: vec![rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384],
+        ..rustls::crypto::aws_lc_rs::default_provider()
+    });
     let new_key = || KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(err("a key"));
     let mut ca = CertificateParams::new(Vec::<String>::new()).map_err(err("its CA"))?;
     ca.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
@@ -1975,6 +1982,9 @@ fn status(code: u16, why: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustls::crypto::aws_lc_rs::cipher_suite::{
+        TLS13_AES_128_GCM_SHA256, TLS13_AES_256_GCM_SHA384, TLS13_CHACHA20_POLY1305_SHA256,
+    };
 
     /// An instance answers only the certificate it issued its caller: another instance's
     /// is refused, and so is none.
@@ -3183,5 +3193,143 @@ mod tests {
         );
         assert!(let_go);
         assert_eq!(stops, [id], "the gone client's worker has no STOP: it runs on");
+    }
+
+    /// aws-lc-rs's provider offering `suites`, in that order: an agent's client.
+    fn offering(suites: &[rustls::SupportedCipherSuite]) -> rustls::crypto::CryptoProvider {
+        rustls::crypto::CryptoProvider {
+            cipher_suites: suites.to_vec(),
+            ..rustls::crypto::aws_lc_rs::default_provider()
+        }
+    }
+
+    /// A handshake between `p`'s TLS and a client under `provider` presenting the certificate
+    /// the instance in `dir` issued its caller, their records handed across in memory until
+    /// neither has more to send: each side's connection, or the error that ended it.
+    fn handshake(
+        p: &Prepared,
+        dir: &str,
+        provider: rustls::crypto::CryptoProvider,
+    ) -> (
+        Result<rustls::Connection, rustls::Error>,
+        Result<rustls::Connection, rustls::Error>,
+    ) {
+        use rustls::pki_types::ServerName;
+        use rustls::pki_types::pem::PemObject as _;
+        let ca = CertificateDer::from_pem_file(format!("{dir}/ca.pem")).unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(ca).unwrap();
+        let cert = CertificateDer::from_pem_file(format!("{dir}/cert.pem")).unwrap();
+        let key = PrivateKeyDer::from_pem_file(format!("{dir}/key.pem")).unwrap();
+        let config = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_client_auth_cert(vec![cert], key)
+            .unwrap();
+        let name = ServerName::try_from(NAME).unwrap();
+        let client = rustls::ClientConnection::new(Arc::new(config), name).unwrap();
+        let mut client = rustls::Connection::Client(client);
+        let server = rustls::ServerConnection::new(p.config.clone()).unwrap();
+        let mut server = rustls::Connection::Server(server);
+        let (mut server_ended, mut client_ended) = (None, None);
+        for _ in 0..16 {
+            let sent = pass(&mut client, &mut server, &mut server_ended);
+            let answered = pass(&mut server, &mut client, &mut client_ended);
+            if !sent && !answered {
+                break;
+            }
+        }
+        (
+            server_ended.map_or(Ok(server), Err),
+            client_ended.map_or(Ok(client), Err),
+        )
+    }
+
+    /// Hands what `from` has to send to `to`; whether there was any. What ends `to` as it
+    /// reads is kept in `ended`.
+    fn pass(
+        from: &mut rustls::Connection,
+        to: &mut rustls::Connection,
+        ended: &mut Option<rustls::Error>,
+    ) -> bool {
+        let mut bytes = Vec::new();
+        while from.wants_write() {
+            from.write_tls(&mut bytes).unwrap();
+        }
+        let mut rest = bytes.as_slice();
+        while !rest.is_empty() && ended.is_none() {
+            to.read_tls(&mut rest).unwrap();
+            if let Err(e) = to.process_new_packets() {
+                *ended = Some(e);
+            }
+        }
+        !bytes.is_empty()
+    }
+
+    fn suite(side: &rustls::Connection) -> Option<rustls::CipherSuite> {
+        side.negotiated_cipher_suite().map(|s| s.suite())
+    }
+
+    /// The instance refused a client offering `only` for want of a suite in common, and the
+    /// client was told so by TLS's handshake_failure (RFC 8446 §4.1.1).
+    fn assert_refused_for_its_cipher(only: rustls::SupportedCipherSuite) {
+        let tmp = shards_testdir::TempDir::new("cipher").unwrap();
+        let dir = tmp.to_str().unwrap();
+        // SAFETY: getgid(2).
+        let p = prepare(dir, "agent t", unsafe { libc::getgid() }).unwrap();
+        match handshake(&p, dir, offering(&[only])) {
+            (
+                Err(rustls::Error::PeerIncompatible(rustls::PeerIncompatible::NoCipherSuitesInCommon)),
+                Err(rustls::Error::AlertReceived(rustls::AlertDescription::HandshakeFailure)),
+            ) => {}
+            (server, client) => panic!(
+                "the instance: {:?}, its client: {:?}",
+                server.as_ref().map(suite),
+                client.as_ref().map(suite)
+            ),
+        }
+    }
+
+    /// An instance and its caller are TLS13_AES_256_GCM_SHA384 at both ends, whatever order
+    /// the caller's client prefers: aws-lc-rs's, AES-256-GCM first, and Go's crypto/tls with
+    /// AES-GCM hardware, AES-128-GCM first, and without, ChaCha20-Poly1305 first (go1.26.1
+    /// src/crypto/tls/defaults.go), whose first an instance chose before.
+    #[test]
+    fn an_instance_and_its_caller_are_aes_256_gcm_at_both_ends() {
+        let tmp = shards_testdir::TempDir::new("cipher").unwrap();
+        let dir = tmp.to_str().unwrap();
+        // SAFETY: getgid(2).
+        let p = prepare(dir, "agent t", unsafe { libc::getgid() }).unwrap();
+        let (aes_256, aes_128, chacha20) = (
+            TLS13_AES_256_GCM_SHA384,
+            TLS13_AES_128_GCM_SHA256,
+            TLS13_CHACHA20_POLY1305_SHA256,
+        );
+        for order in [
+            [aes_256, aes_128, chacha20],
+            [aes_128, aes_256, chacha20],
+            [chacha20, aes_128, aes_256],
+        ] {
+            let (server, client) = handshake(&p, dir, offering(&order));
+            let (server, client) = (server.unwrap(), client.unwrap());
+            assert!(!server.is_handshaking() && !client.is_handshaking());
+            let aes_256 = Some(rustls::CipherSuite::TLS13_AES_256_GCM_SHA384);
+            assert_eq!(suite(&server), aes_256, "{order:?}");
+            assert_eq!(suite(&client), aes_256, "{order:?}");
+        }
+    }
+
+    /// A client limited to ChaCha20-Poly1305, which an instance answered before, is refused.
+    #[test]
+    fn a_client_limited_to_chacha20_poly1305_is_refused() {
+        assert_refused_for_its_cipher(TLS13_CHACHA20_POLY1305_SHA256);
+    }
+
+    /// A client limited to AES-128-GCM, the one suite every TLS 1.3 peer must implement (RFC
+    /// 8446 §9.1), which an instance answered before, is refused.
+    #[test]
+    fn a_client_limited_to_aes_128_gcm_is_refused() {
+        assert_refused_for_its_cipher(TLS13_AES_128_GCM_SHA256);
     }
 }
