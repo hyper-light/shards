@@ -100,7 +100,12 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     file, the rest zeros (D151).
 /// 28: and its PCI bus's slots for devices plugged in as it runs, 0 for none (D214): a
 ///     template's machine has them empty, its restored runs' to plug into.
-const VERSION: u32 = 28;
+/// 29: and its immutable native GPU selection, rejoined before a restored guest runs.
+const VERSION: u32 = 29;
+const VERSION_WITH_GPU_SELECTION: u32 = 29;
+/// Layout accepted by the previous pinned reader. Adding native selectors does
+/// not change the mapping of an existing format28 DAX window.
+const VERSION_WITH_CURRENT_WINDOWS: u32 = 28;
 /// The oldest format this build reads too where the machine has no DAX windows: for such
 /// a machine each since says what this one says, but for 27's runs of data, which a state
 /// before it holds none of (its restore maps its RAM from the file whole), so that a
@@ -211,6 +216,8 @@ pub struct MachineConfig {
     /// A virtio-gpu device (D144), by the length of the window its blobs are mapped into,
     /// as the guest saw it: a restore's renderer must offer at least as much (D150).
     pub gpu: Option<u64>,
+    /// Immutable native physical selection, rejoined to live Vulkan UUIDs on restore.
+    pub gpu_devices: Vec<crate::vm::gpu_selection::PhysicalGpu>,
     /// The length of the guest's swap window in MiB (D159), 0 for none: a virtio-pmem
     /// device a run's swap file is mapped into, last of its devices. A snapshot keeps it
     /// with no run's file.
@@ -498,6 +505,10 @@ fn encode_as(
     identities: &[Identity],
     version: u32,
 ) -> Result<Vec<u8>, String> {
+    crate::vm::gpu_selection::check_selection(&s.config.gpu_devices).map_err(|error| error.to_string())?;
+    if s.config.gpu.is_none() && !s.config.gpu_devices.is_empty() {
+        return Err("native GPU selection requires the snapshot's GPU device".into());
+    }
     if s.config.nested {
         return Err(
             "a snapshot of a VM with virtualization of its own is refused: its EL2 state is not saved".into(),
@@ -538,6 +549,35 @@ fn encode_as(
     w.bool(s.config.reporting);
     w.bool(s.config.gpu.is_some());
     w.u64(s.config.gpu.unwrap_or(0));
+    if version >= VERSION_WITH_GPU_SELECTION {
+        w.seq(&s.config.gpu_devices, |w, device| {
+            use crate::vm::gpu_selection::PhysicalGpu;
+            match device {
+                PhysicalGpu::Pci {
+                    domain,
+                    bus,
+                    device,
+                    function,
+                } => {
+                    w.u8(0);
+                    w.u32(*domain);
+                    w.u8(*bus);
+                    w.u8(*device);
+                    w.u8(*function);
+                }
+                PhysicalGpu::MetalRegistry(id) => {
+                    w.u8(1);
+                    w.u64(*id);
+                }
+                PhysicalGpu::Luid(id) => {
+                    w.u8(2);
+                    w.u64(*id);
+                }
+            }
+        });
+    } else if !s.config.gpu_devices.is_empty() {
+        return Err("an older snapshot format cannot retain exact GPU selection".into());
+    }
     w.u64(s.config.swap_mib);
     w.u64(s.config.share_window_mib);
     w.u64(s.config.layer_mib);
@@ -660,10 +700,33 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let reporting = r.bool()?;
     let has_gpu = r.bool()?;
     let gpu_window = r.u64()?;
+    let gpu_devices = if version >= VERSION_WITH_GPU_SELECTION {
+        use crate::vm::gpu_selection::{self, PhysicalGpu};
+        let devices = r.seq(gpu_selection::MAX_PHYSICAL_GPUS, 8, |r| {
+            Ok(match r.u8()? {
+                0 => PhysicalGpu::Pci {
+                    domain: r.u32()?,
+                    bus: r.u8()?,
+                    device: r.u8()?,
+                    function: r.u8()?,
+                },
+                1 => PhysicalGpu::MetalRegistry(r.u64()?),
+                2 => PhysicalGpu::Luid(r.u64()?),
+                _ => return Err(DecodeError("unknown native GPU selector tag".into())),
+            })
+        })?;
+        gpu_selection::check_selection(&devices).map_err(|error| DecodeError(error.to_string()))?;
+        if !has_gpu && !devices.is_empty() {
+            return Err(DecodeError("GPU selectors without a GPU device".into()));
+        }
+        devices
+    } else {
+        Vec::new()
+    };
     let swap_mib = r.u64()?;
     let share_window_mib = r.u64()?;
     // Whose windows were laid out otherwise (D189).
-    if version != VERSION && share_window_mib > 0 && (shares > 0 || join_share) {
+    if version < VERSION_WITH_CURRENT_WINDOWS && share_window_mib > 0 && (shares > 0 || join_share) {
         return Err(DecodeError(format!(
             "snapshot format {version} of a machine with DAX windows; this shards reads {VERSION}"
         )));
@@ -700,6 +763,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 hotplug_mib,
                 reporting,
                 gpu: has_gpu.then_some(gpu_window),
+                gpu_devices,
                 swap_mib,
                 share_window_mib,
                 layer_mib,
@@ -1652,6 +1716,7 @@ mod tests {
                 hotplug_mib: 0,
                 reporting: false,
                 gpu: None,
+                gpu_devices: Vec::new(),
                 swap_mib: 0,
                 share_window_mib: 0,
                 layer_mib: 0,
@@ -1692,6 +1757,43 @@ mod tests {
         plugging.config.hotplug_mib = 2048;
         let decoded = decode(&encode(&plugging, "g-1", &ids).unwrap()).unwrap();
         assert_eq!(decoded.snapshot.config.hotplug_mib, 2048);
+    }
+
+    /// Physical selectors are immutable snapshot state; old formats cannot
+    /// silently serialize a selected guest as the legacy all-device renderer.
+    #[test]
+    fn physical_gpu_selection_survives_snapshot_and_refuses_old_encoding() {
+        use crate::vm::gpu_selection::PhysicalGpu;
+        let ids = vec![Identity::default(); 3];
+        let mut snap = sample(&nowhere(), 1);
+        snap.config.gpu = Some(1 << 20);
+        snap.config.gpu_devices = vec![
+            PhysicalGpu::Pci {
+                domain: u32::MAX,
+                bus: 196,
+                device: 0,
+                function: 0,
+            },
+            PhysicalGpu::MetalRegistry(u64::MAX),
+        ];
+        let bytes = encode(&snap, "g-1", &ids).unwrap();
+        assert_eq!(
+            decode(&bytes).unwrap().snapshot.config.gpu_devices,
+            snap.config.gpu_devices
+        );
+        assert!(encode_as(&snap, "g-1", &ids, VERSION_WITH_CURRENT_WINDOWS).is_err());
+        for cut in 0..bytes.len() {
+            assert!(decode(&bytes[..cut]).is_err());
+        }
+        snap.config.gpu_devices.clear();
+        snap.config.share_window_mib = 1;
+        let old = encode_as(&snap, "g-1", &ids, VERSION_WITH_CURRENT_WINDOWS).unwrap();
+        let restored = decode(&old).unwrap();
+        assert!(restored.snapshot.config.gpu_devices.is_empty());
+        assert_eq!(
+            restored.snapshot.config.share_window_mib,
+            snap.config.share_window_mib
+        );
     }
 
     #[test]

@@ -721,7 +721,7 @@ impl<D: Disk> Daemon<D> {
             .and_then(|b| shards_ipc::Run::decode(&b))
             .ok_or_else(|| (500, format!("container {id}: its request is not kept")))?;
         change(&mut run)?;
-        std::fs::write(&path, run.encode()).map_err(|e| (500, format!("container {id}: {e}")))
+        crate::daemon::keep_whole(&path, &run.encode()).map_err(|e| (500, format!("container {id}: {e}")))
     }
 }
 

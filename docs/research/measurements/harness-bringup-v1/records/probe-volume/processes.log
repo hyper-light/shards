@@ -1,0 +1,23 @@
+TIME                            MEMBER         PID  EVENT  WHAT
+2026-11-12T03:13:08.993742915Z  command        913  exec   sleep 600
+2026-11-12T03:13:08.995941816Z  harness probe  917  fork   from 1
+2026-11-12T03:13:08.996774200Z  harness probe  917  exec   shards-server "harness probe" /proc/self/fd/6 200000 3 4 "" [] 7
+2026-11-12T03:13:09.002039213Z  harness probe  922  fork   from 917
+2026-11-12T03:13:09.002430669Z  harness probe  922  exec   shards-server sandbox
+2026-11-12T03:13:09.002544873Z  harness probe  926  fork   from 1
+2026-11-12T03:13:09.002607521Z  harness probe  927  fork   from 926
+2026-11-12T03:13:09.002685517Z  harness probe  926  exec   shards-init managed-reaper
+2026-11-12T03:13:09.003855997Z  harness probe  927  exec   /bin/sh -c "id; ls -lan /run/probe; if cat /run/probe/secret >/dev/null; then echo read; else echo unread; fi"
+2026-11-12T03:13:09.007043286Z  harness probe  928  fork   from 927
+2026-11-12T03:13:09.007556430Z  harness probe  928  exec   id
+2026-11-12T03:13:09.009496775Z  harness probe  928  exit   code 0
+2026-11-12T03:13:09.009615809Z  harness probe  929  fork   from 927
+2026-11-12T03:13:09.010067929Z  harness probe  929  exec   ls -lan /run/probe
+2026-11-12T03:13:09.012139170Z  harness probe  929  exit   code 0
+2026-11-12T03:13:09.012263033Z  harness probe  930  fork   from 927
+2026-11-12T03:13:09.013027780Z  harness probe  930  exec   cat /run/probe/secret
+2026-11-12T03:13:09.015527246Z  harness probe  930  exit   code 0
+2026-11-12T03:13:09.016103038Z  harness probe  927  exit   code 0
+2026-11-12T03:13:09.016302864Z  harness probe  926  exit   code 0
+2026-11-12T03:13:09.016430063Z  harness probe  922  exit   signal 9 (SIGKILL)
+2026-11-12T03:13:09.016491929Z  harness probe  917  exit   signal 9 (SIGKILL)

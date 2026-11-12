@@ -1,0 +1,67 @@
+# One name: green + one-name.diff (daemon.rs ac63a8de...): every write of a record under the
+# one name `<record>.new` beside it, as 2097de41 named the new microVM's. Three runs of the
+# three tests, on 8fadc1ec213332e16cb0d915a3fb913f (sync files_sent 107, 907 MB, 229 s: the
+# worktrees' shared .git had changed). Output as kiln returned it; the command dropped
+# aws-lc-sys warnings and cargo's Compiling, Finished, Running and backtrace-note lines.
+032b63b1c9b642d0e2c8af71d6f9643909416f99
+ac63a8dec78291985924331d35eadab9bf88659ab2476753280a0295ad6a97b6  crates/shards/src/daemon.rs
+2026-11-12T02:47:41Z
+== one name, run 1: cargo test -p shards --bin shards -j4 -- --exact (the three tests) --nocapture
+
+running 3 tests
+test daemon::tests::an_update_written_partway_keeps_the_request_it_had ... ok
+test daemon::tests::a_record_written_partway_is_not_kept ... ok
+
+thread 'daemon::tests::a_request_kept_at_once_is_whole' (1271377) panicked at crates/shards/src/daemon.rs:14290:9:
+789 of 2000 writes failed, the first Some("No such file or directory (os error 2)"); 2080 of 27629 reads found no request whole, the first Some("0 bytes"); left []
+test daemon::tests::a_request_kept_at_once_is_whole ... FAILED
+
+failures:
+
+failures:
+    daemon::tests::a_request_kept_at_once_is_whole
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 715 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `-p shards --bin shards`
+exit: 101
+== one name, run 2: cargo test -p shards --bin shards -j4 -- --exact (the three tests) --nocapture
+
+running 3 tests
+test daemon::tests::an_update_written_partway_keeps_the_request_it_had ... ok
+test daemon::tests::a_record_written_partway_is_not_kept ... ok
+
+thread 'daemon::tests::a_request_kept_at_once_is_whole' (1271953) panicked at crates/shards/src/daemon.rs:14290:9:
+840 of 2000 writes failed, the first Some("No such file or directory (os error 2)"); 4175 of 31846 reads found no request whole, the first Some("0 bytes"); left []
+test daemon::tests::a_request_kept_at_once_is_whole ... FAILED
+
+failures:
+
+failures:
+    daemon::tests::a_request_kept_at_once_is_whole
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 715 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `-p shards --bin shards`
+exit: 101
+== one name, run 3: cargo test -p shards --bin shards -j4 -- --exact (the three tests) --nocapture
+
+running 3 tests
+test daemon::tests::an_update_written_partway_keeps_the_request_it_had ... ok
+test daemon::tests::a_record_written_partway_is_not_kept ... ok
+
+thread 'daemon::tests::a_request_kept_at_once_is_whole' (1272530) panicked at crates/shards/src/daemon.rs:14290:9:
+660 of 2000 writes failed, the first Some("No such file or directory (os error 2)"); 1572 of 18867 reads found no request whole, the first Some("0 bytes"); left []
+test daemon::tests::a_request_kept_at_once_is_whole ... FAILED
+
+failures:
+
+failures:
+    daemon::tests::a_request_kept_at_once_is_whole
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 715 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `-p shards --bin shards`
+exit: 101
+2026-11-12T02:47:50Z
+--- kiln: runner 8fadc1ec213332e16cb0d915a3fb913f (kiln-a094a12d.attlocal.net), exit_code 0

@@ -156,7 +156,6 @@ const HANDOFF_TRIES: usize = 3;
 pub(super) const LAYER: &str = "layer.tar";
 /// The request a microVM was made by, in its directory, for `shards start vm`.
 pub(super) const REQUEST: &str = "request";
-const REQUEST_NEW: &str = "request.new";
 const LAYER_NEW: &str = "layer.new";
 /// A running microVM's swap (D159), in its directory until its VM holds it.
 const SWAP: &str = "swap";
@@ -1750,7 +1749,7 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     // (shards_ipc::Named): a client waits for a slot while this daemon lives.
     let pid_file = home.join(shards_ipc::PID);
     shards_ipc::this_process()
-        .and_then(|named| std::fs::write(&pid_file, named))
+        .and_then(|named| keep_whole(&pid_file, named.as_bytes()))
         .map_err(|e| format!("{}: {e}", pid_file.display()))?;
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     // Every child the daemon makes, its spawner makes, made now, before the daemon holds a
@@ -3536,7 +3535,7 @@ impl<D: Disk> Daemon<D> {
             };
             // As it was made: a create's a create, whose Config says the streams its command
             // line gave (AttachStdout); a start says how it attaches then (`again_as`).
-            if let Err(e) = keep_request(&dir.join(REQUEST), &dir.join(REQUEST_NEW), &kept.encode()) {
+            if let Err(e) = keep_whole(&dir.join(REQUEST), &kept.encode()) {
                 log(format!(
                     "container {id}: keeping its request: {e}; it cannot be started again"
                 ));
@@ -4188,7 +4187,7 @@ impl<D: Disk> Daemon<D> {
                     _ => Err(e),
                 })
             } else {
-                std::fs::write(&at, shards_vmm::arch::aarch64::cpu::encode(&baseline))
+                keep_whole(&at, shards_vmm::arch::aarch64::cpu::encode(&baseline).as_bytes())
             };
             if let Err(e) = kept {
                 log(format!("{}: {e}", at.display()));
@@ -6659,7 +6658,7 @@ impl<D: Disk> Daemon<D> {
         // Before its slots go: whoever then finds no daemon serving waits for this one
         // while it ends its runs, however long their stop timeouts.
         let stopping = self.home.join(shards_ipc::STOPPING);
-        if let Err(e) = shards_ipc::this_process().and_then(|named| std::fs::write(&stopping, named)) {
+        if let Err(e) = shards_ipc::this_process().and_then(|named| keep_whole(&stopping, named.as_bytes())) {
             log(format!("{}: {e}", stopping.display()));
         }
         self.close();
@@ -8786,17 +8785,26 @@ fn newest_log(dir: &Path) -> io::Result<Log> {
     })
 }
 
-/// Keeps `request`, the run a new microVM was made by (D37), at `path` whole or not at all:
-/// written to `new` beside it, then renamed there, so that a write that fails leaves
-/// neither and no reader finds part of one, which `Run::decode` can take for another
-/// request (cut where its later options begin, it reads as one without them). Not synced,
-/// as no microVM's record is (D27, "Durability"): std's sync_all is F_FULLFSYNC on macOS,
-/// which with the rename costs 4.3 ms at the median (PM M46), on the path each new
-/// microVM takes to start. So a power loss may still leave it cut, as it may the record.
-fn keep_request(path: &Path, new: &Path, request: &[u8]) -> io::Result<()> {
-    let kept = std::fs::write(new, request).and_then(|()| std::fs::rename(new, path));
+/// Keeps `bytes` at `path` whole or not at all: written beside it, under a name of this
+/// write's alone, then renamed over it. So a write that fails leaves what was there and
+/// nothing beside it, and no reader finds part of one, which each record's reader can take
+/// for another: a request (D37) cut where its later options begin reads as one without them
+/// (`Run::decode`), a CPU baseline (D176 part 6) as one of fewer registers, a daemon's
+/// process line (`shards_ipc::Named`) as another process's. A name of each write's own (a
+/// count of this process's, the one daemon that holds the home): two clients may change one
+/// microVM's request at once, each on a thread of its own, and under one name a write's
+/// rename can make the record what another has begun to write. Not synced, as no
+/// microVM's record is (D27, "Durability"): std's sync_all is F_FULLFSYNC on macOS, which
+/// with the rename costs 4.3 ms at the median (PM M46), on the path each new microVM takes
+/// to start. So a power loss may still leave one cut, as it may the record.
+fn keep_whole(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let mut new = path.as_os_str().to_owned();
+    new.push(format!(".new.{}", WRITES.fetch_add(1, Ordering::Relaxed)));
+    let new = PathBuf::from(new);
+    let kept = std::fs::write(&new, bytes).and_then(|()| std::fs::rename(&new, path));
     if kept.is_err() {
-        let _ = std::fs::remove_file(new);
+        let _ = std::fs::remove_file(&new);
     }
     kept
 }
@@ -10131,19 +10139,7 @@ mod tests {
     fn ask<D: Disk>(daemon: &Daemon<D>, args: &[&str]) -> (u8, String, String) {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
-        let asker = commands::Asker {
-            client: 0,
-            registry_env: Vec::new(),
-            east_asian: false,
-            now: 0,
-            utc_offset: 0,
-            terminal: false,
-            width: 0,
-            color: false,
-            files: Vec::new(),
-            whose: String::new(),
-        };
-        let status = daemon.command(&argv, &asker, &commands::Reply(&ours));
+        let status = daemon.command(&argv, &asker(), &commands::Reply(&ours));
         drop(ours);
         let (mut out, mut err) = (Vec::new(), Vec::new());
         // A listing's rows, laid out as the client lays them out.
@@ -13930,25 +13926,26 @@ mod tests {
         });
     }
 
-    /// `keep_request(path, new, request)` in a child of this process (fork(2)) whose file
-    /// size limit is `limit` bytes (setrlimit(2), RLIMIT_FSIZE) and which ignores the SIGXFSZ
-    /// a write past it raises, so that the write stops there with EFBIG. How the child ended:
-    /// the errno of the error it returned, 0 where it kept the request, 255 where the child
-    /// could not be limited or the error has no errno; None where a signal ended it.
+    /// Runs `work` in a child of this process (fork(2)) whose file size limit is `limit`
+    /// bytes (setrlimit(2), RLIMIT_FSIZE) and which ignores the SIGXFSZ a write past it
+    /// raises, so that the write stops there with EFBIG. How the child ended: `work`'s value,
+    /// 255 where it could not be limited; None where a signal ended it. A child that has not
+    /// ended within [`PATIENCE`] is killed, and the test fails rather than hangs.
     #[cfg(unix)]
-    fn kept_under_limit(path: &Path, new: &Path, request: &[u8], limit: usize) -> Option<i32> {
+    fn under_limit(limit: usize, work: impl FnOnce() -> i32) -> Option<i32> {
         let limit = libc::rlim_t::try_from(limit).unwrap();
         let limit = libc::rlimit {
             rlim_cur: limit,
             rlim_max: limit,
         };
         // SAFETY: fork(2). This process has other threads, whose locks its child may find
-        // held, so until it exits the child takes no lock and allocates nothing: signal(2),
-        // setrlimit(2) (a system call's wrapper in glibc, musl and libSystem), and
-        // keep_request's open(2), write(2), rename(2), unlink(2) and close(2) over bytes and
-        // paths made before the fork, whose C strings std makes on its stack (paths under
-        // 384 bytes: library/std/src/sys/helpers/small_c_string.rs); then _exit(2), which
-        // runs none of this process's destructors or exit handlers.
+        // held, so until it exits the child takes no lock another thread may hold: `work`
+        // takes those of a daemon no thread runs in (its test's have ended) and the
+        // allocator's, which glibc, musl and libSystem take before a fork and release in its
+        // child (glibc posix/fork.c, `__malloc_fork_lock_parent` and
+        // `__malloc_fork_unlock_child`; musl src/process/fork.c, `__malloc_atfork`; Libsystem
+        // init.c, `_malloc_fork_prepare` and `_malloc_fork_child`). Then _exit(2), which runs
+        // none of this process's destructors or exit handlers.
         let pid = unsafe { libc::fork() };
         if pid == 0 {
             // SAFETY: as above, in the child; `limit` is a valid rlimit.
@@ -13956,88 +13953,358 @@ mod tests {
                 libc::signal(libc::SIGXFSZ, libc::SIG_IGN) != libc::SIG_ERR
                     && libc::setrlimit(libc::RLIMIT_FSIZE, &limit) == 0
             };
-            let code = match limited.then(|| keep_request(path, new, request)) {
-                Some(Ok(())) => 0,
-                Some(Err(e)) => e.raw_os_error().unwrap_or(255),
-                None => 255,
-            };
+            let code = if limited { work() } else { 255 };
             // SAFETY: as above, in the child.
             unsafe { libc::_exit(code) };
         }
         assert!(pid > 0, "fork: {}", io::Error::last_os_error());
+        let deadline = Instant::now() + PATIENCE;
         let mut status = 0;
-        // SAFETY: waitpid(2) for the child just made, its status written to a local.
-        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
-        libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status))
+        loop {
+            // SAFETY: waitpid(2) of the child just made, its status written to a local.
+            match unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) } {
+                0 if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
+                0 => {
+                    // SAFETY: kill(2), then waitpid(2), of the child just made, which has not
+                    // been waited for.
+                    unsafe {
+                        libc::kill(pid, libc::SIGKILL);
+                        libc::waitpid(pid, &mut status, 0);
+                    }
+                    panic!("its child did not end within {PATIENCE:?}");
+                }
+                ended => {
+                    assert_eq!(ended, pid, "waitpid: {}", io::Error::last_os_error());
+                    return libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status));
+                }
+            }
+        }
     }
 
-    /// A microVM's request (D37) is kept whole or not at all: its write, stopped partway with
-    /// EFBIG ([`kept_under_limit`]), leaves no `request` and nothing beside it. Not one cut
-    /// halfway, which no reader can read, nor one cut where what was written reads as a
-    /// request itself (`Run::decode` takes one without the options after it, which a build
-    /// added later), which `start` would run without them: here `--cap-drop ALL` and
-    /// `--read-only`.
+    /// Where to stop a write of `record` ([`under_limit`]): halfway, and where the longest
+    /// part of it that `read` takes for another record ends.
+    #[cfg(unix)]
+    fn cuts<T: PartialEq>(record: &[u8], read: impl Fn(&[u8]) -> Option<T>) -> [usize; 2] {
+        let whole = read(record);
+        let misread = (1..record.len())
+            .rev()
+            .find(|&n| read(&record[..n]).is_some_and(|r| Some(&r) != whole.as_ref()))
+            .expect("no part of the record reads as another");
+        [record.len() / 2, misread]
+    }
+
+    /// What a write of `new` over `old` (None: no file) at `path`, stopped at `cut`, left
+    /// there that is neither whole, as `read` takes it; and what it left beside it, under a
+    /// name that begins with the record's.
+    #[cfg(unix)]
+    fn not_whole<T: std::fmt::Debug>(
+        path: &Path,
+        old: Option<&[u8]>,
+        new: &[u8],
+        cut: usize,
+        read: impl Fn(&[u8]) -> Option<T>,
+    ) -> Vec<String> {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let at = format!("{name} cut at {cut} of {}", new.len());
+        let mut found = Vec::new();
+        match std::fs::read(path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound && old.is_none() => {}
+            Ok(kept) if kept == new || Some(kept.as_slice()) == old => {}
+            Ok(kept) => found.push(match read(&kept) {
+                None => format!("{at}: kept, {} bytes, read as none", kept.len()),
+                Some(r) => format!("{at}: kept, {} bytes, read as another: {r:?}", kept.len()),
+            }),
+            Err(e) => found.push(format!("{at}: {e}")),
+        }
+        let left: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(&name) && *n != name)
+            .collect();
+        if !left.is_empty() {
+            found.push(format!("{at}: left {left:?}"));
+        }
+        found
+    }
+
+    /// Each record [`keep_whole`] keeps, its write stopped partway ([`under_limit`]): what it
+    /// replaces is left whole, or none where there was none, and nothing beside it. Not one
+    /// cut, which its reader takes for another record: a request (D37), as made and as
+    /// changed, one without the options after the cut (`--cap-drop ALL`, `--read-only`); a
+    /// CPU baseline (D176 part 6) one of fewer registers, or lower; the daemon's process
+    /// lines another process, or one by its ID alone; the remote listener's address another
+    /// port; the engine's ID another, whose hash is the home's IPv6 pool.
     #[cfg(unix)]
     #[test]
-    fn a_request_written_partway_is_not_kept() {
-        let dir = shards_testdir::TempDir::new("request-cut").unwrap();
-        let (path, new) = (dir.join(REQUEST), dir.join(REQUEST_NEW));
-        let request = Run {
+    fn a_record_written_partway_is_not_kept() {
+        fn request(b: &[u8]) -> Option<String> {
+            Run::decode(b).map(|r| {
+                format!(
+                    "cap_drop {:?}, read_only {}, cpu_shares {}",
+                    r.cap_drop, r.read_only, r.resources.cpu_shares
+                )
+            })
+        }
+        // As moves.rs's read_baseline reads one: its first line's registers, none where it
+        // has none it can read.
+        fn baseline(b: &[u8]) -> Option<String> {
+            let regs = std::str::from_utf8(b)
+                .ok()
+                .and_then(|t| shards_vmm::arch::aarch64::cpu::decode(t.lines().next()?).ok())
+                .unwrap_or_default();
+            Some(format!("{regs:x?}"))
+        }
+        fn process(b: &[u8]) -> Option<String> {
+            shards_ipc::Named::parse(std::str::from_utf8(b).ok()?).map(|n| format!("{n:?}"))
+        }
+        // As context.rs reads it for an invitation.
+        fn address(b: &[u8]) -> Option<String> {
+            let text = std::str::from_utf8(b).ok()?;
+            text.trim()
+                .parse::<std::net::SocketAddr>()
+                .ok()
+                .map(|a| a.to_string())
+        }
+        // As networks.rs's engine_id reads it.
+        fn id(b: &[u8]) -> Option<String> {
+            std::str::from_utf8(b).ok().map(|id| id.trim().to_string())
+        }
+        let made = Run {
             image: "alpine".to_string(),
             cmd: vec!["sleep".to_string(), "60".to_string()],
             cap_drop: vec!["ALL".to_string()],
             read_only: true,
             ..Run::default()
-        }
-        .encode();
-        let half = request.len() / 2;
-        assert!(
-            Run::decode(&request[..half]).is_none(),
-            "half the request reads as one"
+        };
+        let updated = Run {
+            resources: shards_ipc::Resources {
+                cpu_shares: 512,
+                ..made.resources.clone()
+            },
+            ..made.clone()
+        };
+        // ID_AA64PFR0_EL1, ID_AA64ISAR0_EL1 and ID_AA64MMFR0_EL1, by encoding.
+        let regs = |regs: &[(u16, u64)]| shards_vmm::arch::aarch64::cpu::encode(regs).into_bytes();
+        let (pfr0, isar0, mmfr0) = (
+            (0xc020, 0x1101_0011),
+            (0xc030, 0x0221_1120),
+            (0xc038, 0x0010_1125),
         );
-        let read_as_one = (1..request.len())
-            .rev()
-            .find(|&n| Run::decode(&request[..n]).is_some())
-            .expect("no prefix of the request reads as one");
+        let (other, this) = (b"4040 17\n".to_vec(), b"4242 1234567\n".to_vec());
+        /// A record's file, what it held (none: no file), what is written, and its reader.
+        type Case = (
+            &'static str,
+            Option<Vec<u8>>,
+            Vec<u8>,
+            fn(&[u8]) -> Option<String>,
+        );
+        let cases: [Case; 7] = [
+            (REQUEST, None, made.encode(), request),
+            (REQUEST, Some(made.encode()), updated.encode(), request),
+            (
+                moves::RUN_BASELINE,
+                Some(regs(&[pfr0, isar0])),
+                regs(&[pfr0, isar0, mmfr0]),
+                baseline,
+            ),
+            (shards_ipc::PID, Some(other.clone()), this.clone(), process),
+            (shards_ipc::STOPPING, Some(other), this, process),
+            (
+                crate::context::LISTENING,
+                None,
+                b"192.0.2.10:4433\n".to_vec(),
+                address,
+            ),
+            ("engine-id", None, [b'7'; 64].to_vec(), id),
+        ];
+        let dir = shards_testdir::TempDir::new("record-cut").unwrap();
         let mut found = Vec::new();
-        for cut in [half, read_as_one] {
-            let ended = kept_under_limit(&path, &new, &request, cut);
-            if ended != Some(libc::EFBIG) {
-                found.push(format!("cut at {cut}: the write ended {ended:?}, not with EFBIG"));
-            }
-            match std::fs::read(&path) {
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Ok(kept) if kept == request => {}
-                Ok(kept) => found.push(match Run::decode(&kept) {
-                    None => format!(
-                        "cut at {cut} of {}: `request` kept, {} bytes, not a request",
-                        request.len(),
-                        kept.len()
-                    ),
-                    Some(r) => format!(
-                        "cut at {cut} of {}: `request` kept, {} bytes, read as another: \
-                         cap_drop {:?}, read_only {}",
-                        request.len(),
-                        kept.len(),
-                        r.cap_drop,
-                        r.read_only
-                    ),
-                }),
-                Err(e) => found.push(format!("cut at {cut}: {e}")),
-            }
-            let mut left: Vec<String> = std::fs::read_dir(&dir)
-                .unwrap()
-                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-                .collect();
-            for name in &left {
-                std::fs::remove_file(dir.join(name)).unwrap();
-            }
-            left.retain(|n| n != REQUEST);
-            if !left.is_empty() {
-                found.push(format!("cut at {cut}: left {left:?}"));
+        for (name, old, new, read) in &cases {
+            let path = dir.join(name);
+            for cut in cuts(new, read) {
+                for entry in std::fs::read_dir(&dir).unwrap() {
+                    std::fs::remove_file(entry.unwrap().path()).unwrap();
+                }
+                if let Some(old) = old {
+                    std::fs::write(&path, old).unwrap();
+                }
+                let ended = under_limit(cut, || match keep_whole(&path, new) {
+                    Ok(()) => 0,
+                    Err(e) => e.raw_os_error().unwrap_or(255),
+                });
+                if ended != Some(libc::EFBIG) {
+                    found.push(format!(
+                        "{name} cut at {cut}: the write ended {ended:?}, not with EFBIG"
+                    ));
+                }
+                found.extend(not_whole(&path, old.as_deref(), new, cut, read));
             }
         }
         assert!(found.is_empty(), "{found:#?}");
+    }
+
+    /// What [`ask`] says of its client: none of a terminal's.
+    fn asker() -> commands::Asker {
+        commands::Asker {
+            client: 0,
+            registry_env: Vec::new(),
+            east_asian: false,
+            now: 0,
+            utc_offset: 0,
+            terminal: false,
+            width: 0,
+            color: false,
+            files: Vec::new(),
+            whose: String::new(),
+        }
+    }
+
+    /// `shards ARGS` asked of `daemon` ([`ask`]) in a child whose writes stop at `limit`
+    /// bytes ([`under_limit`]): how the child ended, its command's status, and what it said
+    /// on stderr.
+    #[cfg(unix)]
+    fn asked_under_limit<D: Disk>(daemon: &Daemon<D>, args: &[&str], limit: usize) -> (Option<i32>, String) {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let argv: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+        let asker = asker();
+        let ended = under_limit(limit, || {
+            i32::from(daemon.command(&argv, &asker, &commands::Reply(&ours)))
+        });
+        drop(ours);
+        let mut said = Vec::new();
+        while let Some(m) = shards_ipc::recv(&theirs).unwrap() {
+            if m.kind == kind::ERR {
+                said.extend(m.payload);
+            }
+        }
+        (ended, String::from_utf8(said).unwrap())
+    }
+
+    /// `update` of a microVM (update.rs) whose request (D37) it cannot write whole, the
+    /// write stopped partway ([`under_limit`]): its client is told why, and the microVM keeps
+    /// the request it had, whole, and nothing beside it. Not one cut, which its next start
+    /// reads as none, or as one without the options after the cut (`--cap-drop ALL`,
+    /// `--read-only`). Not cut, the update keeps the request the cuts were taken from.
+    #[cfg(unix)]
+    #[test]
+    fn an_update_written_partway_keeps_the_request_it_had() {
+        let t = Test::new("update-cut");
+        let id = t.run(|t| t.create("cut"));
+        let path = lock(&t.daemon.containers).dir(&id).join(REQUEST);
+        let had = Run {
+            image: "alpine".to_string(),
+            name: Some("cut".to_string()),
+            cmd: vec!["sleep".to_string(), "60".to_string()],
+            cap_drop: vec!["ALL".to_string()],
+            read_only: true,
+            ..Run::default()
+        };
+        let updated = Run {
+            resources: shards_ipc::Resources {
+                cpu_shares: 512,
+                ..had.resources.clone()
+            },
+            ..had.clone()
+        }
+        .encode();
+        let had = had.encode();
+        let read = |b: &[u8]| Run::decode(b).map(|r| (r.cap_drop, r.read_only, r.resources.cpu_shares));
+        let update = ["update", "--cpu-shares", "512", "cut"];
+        let too_large = io::Error::from_raw_os_error(libc::EFBIG).to_string();
+        let mut found = Vec::new();
+        for cut in cuts(&updated, read) {
+            std::fs::write(&path, &had).unwrap();
+            let (ended, said) = asked_under_limit(&t.daemon, &update, cut);
+            if ended != Some(1) || !said.contains(&too_large) {
+                found.push(format!(
+                    "cut at {cut}: the update ended {ended:?}, saying {said:?}"
+                ));
+            }
+            found.extend(not_whole(&path, Some(had.as_slice()), &updated, cut, read));
+        }
+        assert!(found.is_empty(), "{found:#?}");
+        let (status, _, said) = t.ask(&update);
+        assert_eq!((status, said.as_str()), (0, ""));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            updated,
+            "the update kept another request"
+        );
+    }
+
+    /// One microVM's request (D37) kept by two writers at once ([`keep_whole`]), as two
+    /// clients change it at once, each served on a thread of its own (an `update` and a
+    /// `network disconnect`): every write is kept, a reader finds a request whole at every
+    /// read, and nothing is left beside it.
+    #[cfg(unix)]
+    #[test]
+    fn a_request_kept_at_once_is_whole() {
+        /// Each writer's writes: enough that every run of this test against a write in place
+        /// (3 runs, at least 4,710 reads torn) or under one name for both writers (3 runs, at
+        /// least 660 writes failed) failed (docs/research/measurements/request-sites-v1).
+        const WRITES: usize = 1000;
+        let dir = shards_testdir::TempDir::new("request-race").unwrap();
+        let path = dir.join(REQUEST);
+        let made = Run {
+            image: "alpine".to_string(),
+            cap_drop: vec!["ALL".to_string()],
+            read_only: true,
+            ..Run::default()
+        };
+        let updated = Run {
+            resources: shards_ipc::Resources {
+                cpu_shares: 512,
+                ..made.resources.clone()
+            },
+            ..made.clone()
+        }
+        .encode();
+        let disconnected = Run {
+            network: "none".to_string(),
+            ..made.clone()
+        }
+        .encode();
+        let made = made.encode();
+        std::fs::write(&path, &made).unwrap();
+        let wholes = [&made, &updated, &disconnected];
+        let writing = AtomicUsize::new(2);
+        let (path, writing) = (&path, &writing);
+        let (failed, reads, torn) = std::thread::scope(|s| {
+            let writers = [&updated, &disconnected].map(|request| {
+                s.spawn(move || {
+                    let failed: Vec<String> = (0..WRITES)
+                        .filter_map(|_| keep_whole(path, request).err().map(|e| e.to_string()))
+                        .collect();
+                    writing.fetch_sub(1, Ordering::SeqCst);
+                    failed
+                })
+            });
+            let (mut reads, mut torn) = (0usize, Vec::new());
+            while writing.load(Ordering::SeqCst) > 0 {
+                reads += 1;
+                match std::fs::read(path) {
+                    Ok(kept) if wholes.contains(&&kept) => {}
+                    Ok(kept) => torn.push(format!("{} bytes", kept.len())),
+                    Err(e) => torn.push(e.to_string()),
+                }
+            }
+            let failed: Vec<String> = writers.into_iter().flat_map(|w| w.join().unwrap()).collect();
+            (failed, reads, torn)
+        });
+        let left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n != REQUEST)
+            .collect();
+        assert!(
+            failed.is_empty() && torn.is_empty() && left.is_empty(),
+            "{} of {} writes failed, the first {:?}; {} of {reads} reads found no request whole, the first {:?}; left {left:?}",
+            failed.len(),
+            2 * WRITES,
+            failed.first(),
+            torn.len(),
+            torn.first()
+        );
     }
 
     /// Starts microVM `name`'s run as a joiner of `provider`'s microVM (D119), on a

@@ -4,6 +4,8 @@
 #[cfg(hv)]
 use std::path::Path;
 use std::path::PathBuf;
+#[path = "../devices/virtio/gpu/selection.rs"]
+pub mod gpu_selection;
 #[cfg(hv)]
 use std::sync::Arc;
 #[cfg(hv)]
@@ -921,18 +923,29 @@ type Devices = (
     Vec<crate::devices::virtio::block::DiskSize>,
 );
 
+/// Query the carried GPU process's actual selection path without booting a VM.
+#[cfg(feature = "gpu")]
+pub fn probe_gpu(selected: &[gpu_selection::PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, String> {
+    gpu::virgl::Venus::probe_gpu(selected)
+}
+
+#[cfg(not(feature = "gpu"))]
+pub fn probe_gpu(_selected: &[gpu_selection::PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, String> {
+    Err("GPU probing requires the carried GPU renderer process".into())
+}
+
 /// A GPU's renderer, and the length of the window its blobs are mapped into: what the
 /// host's GPUs say they have of memory the host can map, which Venus tells the guest, the
 /// most a guest can have mapped at once (D144, D201).
 #[cfg(all(hv, feature = "gpu"))]
-fn gpu_renderer() -> Result<(Box<dyn gpu::Renderer>, u64), String> {
-    let venus = gpu::virgl::Venus::new()?;
+fn gpu_renderer(selected: &[gpu_selection::PhysicalGpu]) -> Result<(Box<dyn gpu::Renderer>, u64), String> {
+    let venus = gpu::virgl::Venus::new_selected(selected)?;
     let len = venus.host_visible();
     Ok((Box::new(venus), len))
 }
 
 #[cfg(all(hv, not(feature = "gpu")))]
-fn gpu_renderer() -> Result<(Box<dyn gpu::Renderer>, u64), String> {
+fn gpu_renderer(_selected: &[gpu_selection::PhysicalGpu]) -> Result<(Box<dyn gpu::Renderer>, u64), String> {
     Err("this VM process renders no GPU: shards' GPU VM process does, on macOS, Linux and Windows (D144, D201, D202)".into())
 }
 
@@ -943,9 +956,10 @@ fn gpu_renderer() -> Result<(Box<dyn gpu::Renderer>, u64), String> {
 fn gpu_layout(
     saw: u64,
     top: u64,
+    selected: &[gpu_selection::PhysicalGpu],
 ) -> Result<(Box<dyn gpu::Renderer>, crate::devices::virtio::ShmRegion), String> {
     const GIB: u64 = 1 << 30;
-    let (renderer, offers) = gpu_renderer()?;
+    let (renderer, offers) = gpu_renderer(selected)?;
     let page = crate::platform::page_size().map_err(|e| format!("the host's page size: {e}"))? as u64;
     let offers = offers
         .checked_next_multiple_of(page)
@@ -1112,6 +1126,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         reporting: cfg.reporting,
         // Its window's length, once the machine has its renderer (aarch64.rs `build`).
         gpu: None,
+        gpu_devices: gpu_selection::copy_selection(&cfg.gpu_devices).map_err(|e| e.to_string())?,
         swap_mib: cfg.swap_mib,
         share_window_mib: cfg.share_window_mib,
         // Its file system's length, once its layer is open (`boot_layer`).
@@ -1201,6 +1216,9 @@ pub struct Config {
     /// once the guest has made a context or a resource, which are its host driver's and no
     /// snapshot holds; a template is saved before any (D150).
     pub gpu: bool,
+    /// Exact immutable native GPU identities, resolved to live Vulkan UUIDs before
+    /// any guest context or host-visible window is exposed.
+    pub gpu_devices: Vec<gpu_selection::PhysicalGpu>,
     /// A swap window of this many MiB (D159): a virtio-pmem device, last of its devices, a
     /// run's swap file mapped into it as it is given one; 0 for none. Hidden from the guest
     /// until its init shows it (`control::SHOW_SWAP`).
@@ -2383,6 +2401,7 @@ impl Config {
             hotplug_mib: 0,
             reporting: false,
             gpu: false,
+            gpu_devices: Vec::new(),
             swap_mib: 0,
             share_window_mib: 0,
             layer: None,
@@ -2867,6 +2886,7 @@ mod tests {
             hotplug_mib: 0,
             reporting: false,
             gpu: None,
+            gpu_devices: Vec::new(),
             swap_mib: 0,
             share_window_mib: 0,
             layer_mib: 0,

@@ -1,0 +1,29 @@
+TIME                            MEMBER           PID  EVENT  WHAT
+2026-11-12T03:00:06.151367914Z  command          908  exec   sleep 600
+2026-11-12T03:00:06.156854273Z  harness claude   911  fork   from 1
+2026-11-12T03:00:06.161037623Z  harness claude   911  exec   shards-server "harness claude" /proc/self/fd/6 200000 3 4 "" [] 7
+2026-11-12T03:00:06.172288904Z  harness claude   917  fork   from 911
+2026-11-12T03:00:06.174134181Z  harness claude   921  fork   from 1
+2026-11-12T03:00:06.174169908Z  harness claude   917  exec   shards-server sandbox
+2026-11-12T03:00:06.174255699Z  harness claude   923  fork   from 921
+2026-11-12T03:00:06.174492154Z  harness claude   921  exec   shards-init managed-reaper
+2026-11-12T03:00:06.215769572Z  harness claude   923  exec   /harness/claude/bin/claude -p --output-format stream-json --verbose "Reply with the single word: ready"
+2026-11-12T03:00:07.027584802Z  harness claude  1731  fork   from 923
+2026-11-12T03:00:07.028786520Z  harness claude  1731  exec   rg --no-config --files --hidden /harness/claude
+2026-11-12T03:00:07.053963537Z  harness claude  1746  fork   from 923
+2026-11-12T03:00:07.055051521Z  harness claude  1746  exec   sh -c "uname -s\nuname -r\nuname -m\nfor c in npm yarn pnpm; do command -v \"$c\" >/dev/null 2>&1 && printf \"%s,\" \"$c\"; done; echo\nfor c in bun deno node; do command -v \"$c\" >/dev/null 2>&1 && printf \"%s,\" \"$c\"; done; echo"
+2026-11-12T03:00:07.055245505Z  harness claude  1731  exit   code 0
+2026-11-12T03:00:07.058506202Z  harness claude  1747  fork   from 1746
+2026-11-12T03:00:07.059314020Z  harness claude  1747  exec   uname -s
+2026-11-12T03:00:07.062466263Z  harness claude  1747  exit   code 0
+2026-11-12T03:00:07.062559198Z  harness claude  1748  fork   from 1746
+2026-11-12T03:00:07.063682378Z  harness claude  1748  exec   uname -r
+2026-11-12T03:00:07.065905615Z  harness claude  1748  exit   code 0
+2026-11-12T03:00:07.066043274Z  harness claude  1749  fork   from 1746
+2026-11-12T03:00:07.067104809Z  harness claude  1749  exec   uname -m
+2026-11-12T03:00:07.069206798Z  harness claude  1749  exit   code 0
+2026-11-12T03:00:07.069673565Z  harness claude  1746  exit   code 0
+2026-11-12T03:00:07.482042766Z  harness claude   923  exit   code 1
+2026-11-12T03:00:07.510758983Z  harness claude   921  exit   code 1
+2026-11-12T03:00:07.510999615Z  harness claude   917  exit   signal 9 (SIGKILL)
+2026-11-12T03:00:07.511116835Z  harness claude   911  exit   signal 9 (SIGKILL)

@@ -1,0 +1,24 @@
+# Anthropic's Claude Code as a harness, started by its own harness.json (architecture.md
+# D54): no RUN or VOLUME installs it, and no credential is in the image.
+#
+# Put Anthropic's musl build for the host's architecture at claude/bin/claude first:
+# docs/research/measurements/harness-bringup-v1/fetch.sh fetches and verifies x86_64's.
+#   shards build image -t harness-claude:1 docs/examples/harness-claude
+#   shards run vm -d --name claude harness-claude:1 sleep 600
+#   shards read processes claude
+FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+
+# The system libraries Claude Code's musl build links (code.claude.com/docs/en/setup,
+# "Alpine Linux and musl-based distributions"): Alpine's own, not the harness.
+RUN apk add --no-cache libgcc libstdc++
+
+HARNESS claude FROM ./claude
+
+# Its network reach, every part named (default deny, AGENTFILE_ARCH.md §4.6, §4.7, §9.7):
+# a network for this harness alone, which it joins with no flow to any member; names past
+# the microVM through the microVM's resolver (--dns); and TCP 443 out, opened both at the
+# network's boundary (--egress) and at the microVM's (EXPOSE ... AS egress). Nothing comes
+# in, and no other port or protocol goes out.
+NETWORK --dns --egress=443/tcp provider FOR claude
+EXPOSE --harnesses=claude 443/tcp AS egress FOR provider
+CONNECT claude WITH claude ON provider

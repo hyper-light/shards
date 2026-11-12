@@ -444,7 +444,7 @@ impl<D: Disk> Daemon<D> {
         }
         let id = new_id().unwrap_or_default();
         let _ = crate::networks::make_dir(&self.home.join("networks"));
-        let _ = std::fs::write(&path, &id);
+        let _ = super::keep_whole(&path, id.as_bytes());
         id
     }
 
@@ -528,7 +528,7 @@ impl<D: Disk> Daemon<D> {
 
     fn keep_request(&self, id: &str, run: &shards_ipc::Run) -> Result<(), String> {
         let dir = lock(&self.containers).dir(id);
-        std::fs::write(dir.join(super::REQUEST), run.encode()).map_err(|e| e.to_string())
+        super::keep_whole(&dir.join(super::REQUEST), &run.encode()).map_err(|e| e.to_string())
     }
 
     /// `shards network connect NETWORK CONTAINER` (NetworkConnect, ConnectToNetwork): a

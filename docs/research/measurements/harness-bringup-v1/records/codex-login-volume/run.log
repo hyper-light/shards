@@ -1,0 +1,7 @@
+shards run vm -d -v /tmp/shards-tests/666590/harness-given-8/share:/run/codex-home --name codex harness-codex:1 sleep 600
+status Some(0) after 336.307668ms
+--- stdout
+b51f35521fa9e21f92f8f35df97cace77e48dcbe0e986f0486a683cf712c6bc4
+
+--- stderr
+WARNING: CAP_NET_RAW withheld from the command: the image's Agentfile runs agents and harnesses beside the command, and CAP_NET_RAW reads and writes the packets of their flows past the microVM, which cross the command's network namespace

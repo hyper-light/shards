@@ -31,6 +31,7 @@ use std::time::Duration;
 mod client;
 pub mod conformance;
 pub mod image;
+pub mod physical;
 mod said;
 pub mod sim;
 mod stream;
@@ -43,7 +44,11 @@ mod while_runs;
 #[path = "../../../docs/research/measurements/managed-proc-main/allocation.rs"]
 mod proc_allocation;
 
-pub use client::{Shards, connect_borrowed};
+pub use client::{
+    ConfiguredShards, ManagedGuest, Shards, attach_managed, boot_managed, connect_borrowed, connect_prepared,
+    prepare_boot, recorded_console_bytes,
+};
+pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +62,13 @@ pub struct GuestSpec {
     pub vcpus: u32,
     /// Its memory, in MiB: even, at least [`min_memory_mib`].
     pub memory_mib: u64,
+    /// A GPU (`--gpu`): Venus over the host's own Vulkan driver, rendered by the GPU's VM
+    /// process (D144, D201, D202, D208); a selection below implies it.
+    pub gpu: bool,
+    /// The host GPUs its Venus contexts render on, each named by its exact native identity
+    /// (`--gpu-device`, D231), never a model name or an ordinal; none, those the renderer
+    /// finds, as `gpu` alone gives.
+    pub gpu_devices: Vec<PhysicalGpu>,
     /// Its disks, `/dev/vda` on, in order.
     pub disks: Vec<Disk>,
     /// Host directories it sees as virtio-fs `shards0`, `shards1`, ..., in order, fixed at
@@ -69,6 +81,146 @@ pub struct GuestSpec {
     /// macOS a signed shards as installed, run where it is: its VM process holds the
     /// hypervisor entitlement under shards' signature.
     pub binary: Option<PathBuf>,
+}
+
+/// A pure checked boot plan. Its caller owns the private socket directory,
+/// native process/envelope, output drain and terminal receipt. Preparing never
+/// spawns, watches, creates files or assumes a native resource grant.
+#[derive(Debug)]
+pub struct PreparedBoot {
+    binary: PathBuf,
+    arguments: Vec<std::ffi::OsString>,
+    vsock: PathBuf,
+    ports: Vec<u32>,
+    output_bytes: usize,
+    runtime_paths: Option<RuntimePaths>,
+}
+impl PreparedBoot {
+    pub fn binary(&self) -> &std::path::Path {
+        &self.binary
+    }
+    pub fn arguments(&self) -> &[std::ffi::OsString] {
+        &self.arguments
+    }
+    pub fn vsock(&self) -> &std::path::Path {
+        &self.vsock
+    }
+    pub fn ports(&self) -> &[u32] {
+        &self.ports
+    }
+    pub fn output_bytes(&self) -> usize {
+        self.output_bytes
+    }
+    pub fn runtime_paths(&self) -> Option<&RuntimePaths> {
+        self.runtime_paths.as_ref()
+    }
+    /// Copies only its client's explicit pair, before native effects.
+    pub fn with_runtime_paths(mut self, paths: &RuntimePaths) -> Result<Self, Refusal> {
+        self.runtime_paths = Some(paths.try_clone()?);
+        Ok(self)
+    }
+}
+
+/// A configured client's two runtime directories, shared as values by its probe
+/// provider and prepared native launch. No ambient or workload environment input.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RuntimePaths {
+    cache: PathBuf,
+    home: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchError {
+    Binary,
+    Socket,
+    Port,
+    Count,
+    Allocation,
+    Observer,
+    NativeRefused,
+}
+impl std::fmt::Display for LaunchError {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str(match self {
+            Self::Binary => "managed boot requires an explicit absolute native binary path",
+            Self::Socket => {
+                "managed boot socket is not an absolute bounded native path or disagrees with identity"
+            }
+            Self::Port => "managed boot connection port is outside the exact prepared set",
+            Self::Count => "managed boot argument/output count exceeds its native representation",
+            Self::Allocation => "managed boot preparation storage is unavailable",
+            Self::Observer => "native observation has no positive terminal receipt",
+            Self::NativeRefused => "the canonical native owner refused the managed operation",
+        })
+    }
+}
+impl std::error::Error for LaunchError {}
+
+/// Stdio created by the API's existing bounded drain path. The native owner
+/// consumes only these output handles; stdin is its native null device. No extra
+/// inherited handles, output socket export or post-spawn placement is permitted.
+#[derive(Debug)]
+pub struct LaunchIo {
+    pub stdout: std::io::PipeWriter,
+    pub stderr: std::io::PipeWriter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedStatus {
+    Code(i32),
+    Signal(i32),
+    Unknown,
+}
+
+/// A positive native fact, independent of the presentation of an End. Released
+/// requires the complete owned VM envelope, including selected GPU/helper lifetime;
+/// process exit alone is only Process. An observation failure returns Err.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalScope {
+    Process,
+    Released,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManagedEnd {
+    pub status: ManagedStatus,
+    pub scope: TerminalScope,
+}
+
+/// An existing native receipt, not another PID opener/reaper or holder ledger.
+/// Its immutable identity is established under the canonical Creating turn before
+/// launch returns. wait_for subscribes to that receipt's sole terminal authority;
+/// stop can run concurrently without waiting behind its observation lock.
+pub trait ManagedProcess: Send + Sync {
+    /// A scope can exist before controller publication. Missing observation is
+    /// Observer, never pid/start zero; stop/wait/terminal still own cleanup.
+    fn identity(&self) -> Result<&Identity, Refusal>;
+    /// Wait for the complete native scope. Some must carry Released; a controller
+    /// exit with live helpers remains None until the deadline (terminal exposes
+    /// that partial Process fact). Duration::MAX subscribes until an event/error.
+    fn wait_for(&self, patience: Duration) -> Result<Option<ManagedEnd>, Refusal>;
+    fn stop(&self) -> Result<(), Refusal>;
+    fn terminal(&self) -> Result<Option<ManagedEnd>, Refusal>;
+}
+
+/// The SAME fallibly allocated native scope owner retained by its canonical slot.
+/// Unsizing below transfers a reference; it allocates no wrapper or owner.
+pub type ManagedReceipt = triomphe::Arc<dyn ManagedProcess>;
+
+pub fn managed_receipt<T: ManagedProcess + 'static>(owner: triomphe::Arc<T>) -> ManagedReceipt {
+    use unsize::CoerceUnsize;
+    owner.unsize(unsize::Coercion!(to dyn ManagedProcess))
+}
+
+/// Borrowed synchronous launch/attach callbacks, usually over the caller's stack
+/// transaction. The returned owner comes from the native slot, never a second
+/// process-box record/manager. The API owns draining/presentation, while that same
+/// native receipt alone owns observation/reaping.
+pub trait ManagedLauncher {
+    fn launch(&mut self, plan: &PreparedBoot, io: LaunchIo) -> Result<ManagedReceipt, Refusal>;
+    /// Reopen only this recorded identity/envelope, without creating a process or
+    /// replacing old stdio. Recovery has no historical output to manufacture.
+    fn attach(&mut self, identity: &Identity) -> Result<ManagedReceipt, Refusal>;
 }
 
 /// What a guest's kernel runs first.
@@ -196,6 +348,9 @@ pub enum ProcessOperation {
     OpenProcess,
     GetProcessTimes,
     WaitForExit,
+    GetExitCode,
+    QueryScope,
+    StopScope,
 }
 
 /// A failure of the concrete process-identity producers. Observation failure is
@@ -232,6 +387,12 @@ pub enum ProcessFailure {
         operation: ProcessOperation,
         kind: io::ErrorKind,
     },
+    Poisoned {
+        what: &'static str,
+    },
+    /// Positive exact PID/birth observation found the controller outside the
+    /// committed native scope. This supplies no scope-empty/terminal proof.
+    DifferentScope,
 }
 
 impl std::fmt::Display for ProcessFailure {
@@ -255,6 +416,8 @@ impl std::fmt::Display for ProcessFailure {
             Self::UnrepresentedIo { operation, kind } => {
                 write!(f, "{operation:?}: unrepresented I/O cause ({kind:?})")
             }
+            Self::Poisoned { what } => write!(f, "{what}: poisoned native scope state"),
+            Self::DifferentScope => f.write_str("the held process is outside its committed native scope"),
         }
     }
 }
@@ -331,7 +494,8 @@ impl std::fmt::Display for BorrowFailure {
 impl std::error::Error for BorrowFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Channel(error) => Some(error),
+            // Its Display is the handshake error's own: the cause after it is that error's.
+            Self::Channel(error) => std::error::Error::source(error),
             _ => None,
         }
     }
@@ -372,6 +536,21 @@ pub enum Refusal {
     Borrowed { port: u32, failure: BorrowFailure },
     /// A post-boot connection resource could not be allocated.
     Allocation { what: &'static str },
+    /// The exact native GPU request is malformed or exceeds its protocol bound.
+    Gpu(PhysicalGpuError),
+    /// The carried renderer has no completed exact native selection receipt.
+    GpuProbe(GpuProbeError),
+    /// Preparation failed before any native owner launches a process.
+    Launch(LaunchError),
+    /// Managed output/observer setup failed without allocating diagnostic text.
+    ManagedIo {
+        operation: &'static str,
+        kind: io::ErrorKind,
+        code: Option<i32>,
+    },
+    /// Native scope observation or cleanup failed before a controller identity
+    /// was published. This never fabricates a process identity.
+    Scope(ProcessFailure),
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -392,6 +571,15 @@ pub struct Identity {
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Refusal::Scope(failure) => write!(f, "managed scope: {failure}"),
+            Refusal::ManagedIo {
+                operation,
+                kind,
+                code,
+            } => write!(f, "managed {operation}: {kind:?} (OS {code:?})"),
+            Refusal::Launch(why) => write!(f, "managed boot: {why}"),
+            Refusal::GpuProbe(why) => write!(f, "GPU probe: {why}"),
+            Refusal::Gpu(why) => write!(f, "physical GPU: {why}"),
             Refusal::NoBackend { os, arch } => {
                 write!(f, "shards boots no guest on {os} {arch}: it has no backend there")
             }
@@ -416,8 +604,9 @@ impl std::fmt::Display for Refusal {
 impl std::error::Error for Refusal {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Process { failure, .. } => std::error::Error::source(failure),
-            Self::Borrowed { failure, .. } => Some(failure),
+            // Each Display already ends with its failure: the cause after it is the failure's.
+            Self::Process { failure, .. } | Self::Scope(failure) => std::error::Error::source(failure),
+            Self::Borrowed { failure, .. } => std::error::Error::source(failure),
             _ => None,
         }
     }
@@ -471,6 +660,10 @@ pub type Handle<'a> = std::os::windows::io::BorrowedSocket<'a>;
 
 /// What boots guests.
 pub trait Guests: Send + Sync {
+    /// Query exact native identities and selected host-visible memory through the
+    /// carried renderer's positive context filter ACK. No VM/workload is booted.
+    /// Patience is the caller's original finite deadline, never a retry budget.
+    fn probe_gpu(&self, spec: &GuestSpec, patience: Duration) -> Result<GpuProbe, Refusal>;
     /// What this host boots with, or the refusal naming the backend it lacks.
     fn backend(&self) -> Result<Backend, Refusal>;
     /// Boots a guest; refused before boot past this host's bounds. It is the caller's
@@ -492,6 +685,16 @@ pub trait Guests: Send + Sync {
 
 /// A booted guest. Dropping it ends it.
 pub trait Guest: Send + Sync {
+    /// Positive native process-exit observation, separate from wait_for's End.
+    /// False includes a failed observation. This alone does not certify external
+    /// renderer/helper resource reclamation.
+    fn process_exited(&self) -> Result<bool, Refusal>;
+    /// Only a managed native owner can strengthen process exit into Released.
+    /// Legacy standalone observation remains Process even after successful wait.
+    fn terminal_scope(&self) -> Result<Option<TerminalScope>, Refusal> {
+        Ok(self.process_exited()?.then_some(TerminalScope::Process))
+    }
+
     /// A stream to its vsock `port` (`CONNECT <port>`), within `patience`: until the guest
     /// listens there it is refused, and asked again, so the first that connects says the
     /// guest is ready. One dial is always made, so a patience of zero is that one alone;
@@ -515,13 +718,14 @@ pub trait Guest: Send + Sync {
 }
 
 /// The backend shards boots Linux guests with on `os` and `arch` (`std::env::consts`'):
-/// KVM on Linux, Hypervisor.framework on arm64 macOS, WHP on x86_64 Windows. macOS on x86_64
-/// is out of shards' scope, and Windows on arm64 not yet done (shards' plan step 10).
+/// KVM on Linux, Hypervisor.framework on arm64 macOS, WHP on Windows (arm64's `hv::whp_arm64`,
+/// D209), each the VMM's `hv::BACKEND` there; whether a host's hypervisor runs guests is its
+/// VM process's `check_host`, as the guest boots. macOS on x86_64 is out of shards' scope.
 pub fn backend_of(os: &'static str, arch: &'static str) -> Result<Backend, Refusal> {
     match (os, arch) {
         ("linux", "x86_64" | "aarch64") => Ok(Backend::Kvm),
         ("macos", "aarch64") => Ok(Backend::HypervisorFramework),
-        ("windows", "x86_64") => Ok(Backend::WindowsHypervisorPlatform),
+        ("windows", "x86_64" | "aarch64") => Ok(Backend::WindowsHypervisorPlatform),
         _ => Err(Refusal::NoBackend { os, arch }),
     }
 }
@@ -543,6 +747,7 @@ pub fn min_memory_mib(arch: &str) -> u64 {
 /// host takes is its hypervisor's own limit, which shards reads as it starts the VM
 /// (`vm/runtime.rs:1059` `check_vcpus`); its refusal comes back as [`Refusal::Bounds`].
 pub fn check(spec: &GuestSpec) -> Result<(), Refusal> {
+    physical::check_selection(&spec.gpu_devices).map_err(Refusal::Gpu)?;
     if spec.vcpus == 0 {
         return Err(Refusal::Bounds {
             what: "vcpus",
@@ -587,6 +792,8 @@ mod tests {
             cmdline: String::new(),
             vcpus: 1,
             memory_mib: 256,
+            gpu: false,
+            gpu_devices: Vec::new(),
             disks: vec![],
             shares: vec![],
             ports: vec![1],
@@ -598,34 +805,43 @@ mod tests {
     /// vCPU, odd memory, too little (D215).
     #[test]
     fn bounds_are_refused_by_name() {
-        assert!(check(&spec()).is_ok());
         let refused = |s: GuestSpec| match check(&s) {
             Err(Refusal::Bounds { what, .. }) => what,
             other => panic!("{other:?}"),
         };
-        assert_eq!(refused(GuestSpec { vcpus: 0, ..spec() }), "vcpus");
-        assert_eq!(
-            refused(GuestSpec {
-                memory_mib: 257,
-                ..spec()
-            }),
-            "memory_mib"
-        );
-        let least = min_memory_mib(std::env::consts::ARCH);
-        assert_eq!(
-            refused(GuestSpec {
-                memory_mib: least - 2,
-                ..spec()
-            }),
-            "memory_mib"
-        );
-        assert!(
-            check(&GuestSpec {
-                memory_mib: least,
-                ..spec()
-            })
-            .is_ok()
-        );
+        for gpu in [false, true] {
+            let base = GuestSpec { gpu, ..spec() };
+            assert!(check(&base).is_ok());
+            assert_eq!(
+                refused(GuestSpec {
+                    vcpus: 0,
+                    ..base.clone()
+                }),
+                "vcpus"
+            );
+            assert_eq!(
+                refused(GuestSpec {
+                    memory_mib: 257,
+                    ..base.clone()
+                }),
+                "memory_mib"
+            );
+            let least = min_memory_mib(std::env::consts::ARCH);
+            assert_eq!(
+                refused(GuestSpec {
+                    memory_mib: least - 2,
+                    ..base.clone()
+                }),
+                "memory_mib"
+            );
+            assert!(
+                check(&GuestSpec {
+                    memory_mib: least,
+                    ..base
+                })
+                .is_ok()
+            );
+        }
     }
 
     /// More vCPUs than this process may run on, and more ports than the muxer's
@@ -669,8 +885,62 @@ mod tests {
         assert_eq!(UNRECORDED.get(), ms(80));
     }
 
-    /// The backend each host boots with, and the two hosts without one refused naming
-    /// them (D215).
+    /// A refusal printed with its chain of causes (each `source()` after its Display, as error
+    /// reporters print them) says each cause once: a refusal or failure whose Display already
+    /// says its failure gives that failure's own source, not the failure again (D215).
+    #[test]
+    fn a_refusals_chain_says_each_cause_once() {
+        let handshake = HandshakeError::Io {
+            phase: HandshakePhase::Read,
+            kind: io::ErrorKind::WouldBlock,
+            code: Some(11),
+        };
+        let said = handshake.to_string();
+        let refusals = [
+            (
+                Refusal::Borrowed {
+                    port: 7,
+                    failure: BorrowFailure::Channel(handshake),
+                },
+                said,
+            ),
+            (
+                Refusal::Borrowed {
+                    port: 7,
+                    failure: BorrowFailure::Expired,
+                },
+                BorrowFailure::Expired.to_string(),
+            ),
+            (
+                Refusal::Process {
+                    pid: 1,
+                    expected_started: 2,
+                    failure: ProcessFailure::Exited,
+                },
+                ProcessFailure::Exited.to_string(),
+            ),
+            (
+                Refusal::Scope(ProcessFailure::Exited),
+                ProcessFailure::Exited.to_string(),
+            ),
+        ];
+        for (refusal, failure) in refusals {
+            let mut printed = refusal.to_string();
+            let mut cause = std::error::Error::source(&refusal);
+            while let Some(c) = cause {
+                printed = format!("{printed}: {c}");
+                cause = c.source();
+            }
+            assert_eq!(
+                printed.matches(failure.as_str()).count(),
+                1,
+                "{refusal:?}: {printed}"
+            );
+        }
+    }
+
+    /// The backend each host boots with, the VMM's on each (WHP's arm64 one too, D209), and
+    /// the host without one refused naming it (D215).
     #[test]
     fn backends_are_named_per_host() {
         assert_eq!(backend_of("linux", "x86_64"), Ok(Backend::Kvm));
@@ -689,10 +959,7 @@ mod tests {
         );
         assert_eq!(
             backend_of("windows", "aarch64"),
-            Err(Refusal::NoBackend {
-                os: "windows",
-                arch: "aarch64"
-            })
+            Ok(Backend::WindowsHypervisorPlatform)
         );
         assert_eq!(min_memory_mib("x86_64"), 128);
         assert_eq!(min_memory_mib("aarch64"), 64);

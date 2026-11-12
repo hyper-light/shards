@@ -1,0 +1,503 @@
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -636,6 +636,7 @@
+ 
+    vkr_library_unload(&ctx->vulkan_library);
+ 
++   vkr_physical_device_filter_finish(&ctx->physical_device_filter);
+    free(ctx->debug_name);
+    free(ctx);
+ }
+diff --git a/src/venus/vkr_context.h b/src/venus/vkr_context.h
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -7,6 +7,7 @@
+ #define VKR_CONTEXT_H
+ 
+ #include "vkr_common.h"
++#include "vkr_physical_device_filter.h"
+ #include "vkr_library.h"
+ 
+ #include "venus-protocol/vn_protocol_renderer_defines.h"
+@@ -98,6 +99,8 @@
+ 
+    struct vkr_queue *sync_queues[64];
+ 
++   struct vkr_physical_device_filter physical_device_filter;
++
+    struct vkr_instance *instance;
+    char *instance_name;
+ 
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -99,8 +99,12 @@
+ }
+ 
+ static VkResult
+-vkr_instance_enumerate_physical_devices(struct vkr_instance *instance)
+-{
++vkr_instance_enumerate_physical_devices(struct vkr_context *ctx,
++                                        struct vkr_instance *instance)
++{
++   const struct vkr_physical_device_filter *filter = &ctx->physical_device_filter;
++   if (filter->state == VKR_PHYSICAL_DEVICE_FILTER_INVALID)
++      return VK_ERROR_INITIALIZATION_FAILED;
+    if (instance->physical_device_count)
+       return VK_SUCCESS;
+ 
+@@ -110,6 +114,9 @@
+       vk->EnumeratePhysicalDevices(instance->base.handle.instance, &count, NULL);
+    if (result != VK_SUCCESS)
+       return result;
++   if (filter->state == VKR_PHYSICAL_DEVICE_FILTER_SELECTED &&
++       (!count || count > VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT))
++      return VK_ERROR_INITIALIZATION_FAILED;
+ 
+    VkPhysicalDevice *handles = calloc(count, sizeof(*handles));
+    struct vkr_physical_device **physical_devs = calloc(count, sizeof(*physical_devs));
+@@ -119,7 +126,17 @@
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+ 
++   const uint32_t capacity = count;
+    result = vk->EnumeratePhysicalDevices(instance->base.handle.instance, &count, handles);
++   if (result == VK_SUCCESS && filter->state == VKR_PHYSICAL_DEVICE_FILTER_SELECTED &&
++       count > capacity)
++      result = VK_ERROR_INITIALIZATION_FAILED;
++   if (result == VK_SUCCESS && filter->state == VKR_PHYSICAL_DEVICE_FILTER_SELECTED) {
++      PFN_vkGetPhysicalDeviceProperties2 get_properties = instance->get_proc_addr ?
++         (PFN_vkGetPhysicalDeviceProperties2)instance->get_proc_addr(
++            instance->base.handle.instance, "vkGetPhysicalDeviceProperties2") : NULL;
++      result = vkr_physical_device_filter_devices(filter, get_properties, handles, &count);
++   }
+    if (result != VK_SUCCESS) {
+       free(physical_devs);
+       free(handles);
+@@ -355,9 +372,12 @@
+       return;
+    }
+ 
+-   args->ret = vkr_instance_enumerate_physical_devices(instance);
+-   if (args->ret != VK_SUCCESS)
+-      return;
++   args->ret = vkr_instance_enumerate_physical_devices(ctx, instance);
++   if (args->ret != VK_SUCCESS) {
++      if (ctx->physical_device_filter.state != VKR_PHYSICAL_DEVICE_FILTER_UNSET)
++         *args->pPhysicalDeviceCount = 0;
++      return;
++   }
+ 
+    uint32_t count = instance->physical_device_count;
+    if (!args->pPhysicalDevices) {
+@@ -429,6 +449,90 @@
+    }
+ }
+ 
++/* The selected path stages and validates the complete driver answer before any
++ * guest count or output write. A mixed group cannot be split into a fake group.
++ */
++static VkResult
++vkr_instance_enumerate_selected_groups(
++   struct vkr_instance *instance,
++   struct vn_command_vkEnumeratePhysicalDeviceGroups *args)
++{
++   VkPhysicalDeviceGroupProperties *groups = NULL;
++   struct vkr_physical_device_filter_handle *map = NULL;
++   const uint32_t capacity = *args->pPhysicalDeviceGroupCount;
++   *args->pPhysicalDeviceGroupCount = 0;
++   struct vn_instance_proc_table *vk = &instance->proc_table;
++   uint32_t count = 0;
++   VkResult result = vk->EnumeratePhysicalDeviceGroups(instance->base.handle.instance, &count, NULL);
++   if (result != VK_SUCCESS)
++      return result;
++   if (!count || count > VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT)
++      return VK_ERROR_INITIALIZATION_FAILED;
++   if (sizeof(*groups) > SIZE_MAX / (size_t)count)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   groups = calloc(count, sizeof(*groups));
++   if (!groups)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   for (uint32_t i = 0; i < count; i++)
++      groups[i].sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GROUP_PROPERTIES;
++
++   const uint32_t host_capacity = count;
++   result = vk->EnumeratePhysicalDeviceGroups(instance->base.handle.instance, &count, groups);
++   if (result != VK_SUCCESS)
++      goto out;
++   if (count > host_capacity) {
++      result = VK_ERROR_INITIALIZATION_FAILED;
++      goto out;
++   }
++   result = vkr_physical_device_filter_map(instance->physical_device_handles,
++                                            instance->physical_device_count, &map);
++   if (result != VK_SUCCESS)
++      goto out;
++   result = vkr_physical_device_filter_groups(map, instance->physical_device_count,
++                                               groups, &count);
++   if (result != VK_SUCCESS)
++      goto out;
++
++   if (!args->pPhysicalDeviceGroupProperties) {
++      *args->pPhysicalDeviceGroupCount = count;
++      goto out;
++   }
++
++   const uint32_t written = MIN2(capacity, count);
++   /* Existing Venus requires object ids from EnumeratePhysicalDevices first.
++    * Resolve every output member before modifying any guest output.
++    */
++   for (uint32_t i = 0; i < written; i++) {
++      for (uint32_t j = 0; j < groups[i].physicalDeviceCount; j++) {
++         const struct vkr_physical_device_filter_handle *entry =
++            vkr_physical_device_filter_find(map, instance->physical_device_count,
++                                             groups[i].physicalDevices[j]);
++         if (!entry || !instance->physical_devices[entry->index]) {
++            result = VK_ERROR_INITIALIZATION_FAILED;
++            goto out;
++         }
++         const struct vkr_physical_device *physical_dev =
++            instance->physical_devices[entry->index];
++         vkr_cs_handle_store_id((void **)&groups[i].physicalDevices[j], physical_dev->base.id,
++                                VK_OBJECT_TYPE_PHYSICAL_DEVICE);
++      }
++   }
++   for (uint32_t i = 0; i < written; i++) {
++      VkPhysicalDeviceGroupProperties *output = &args->pPhysicalDeviceGroupProperties[i];
++      output->physicalDeviceCount = groups[i].physicalDeviceCount;
++      output->subsetAllocation = groups[i].subsetAllocation;
++      memcpy(output->physicalDevices, groups[i].physicalDevices,
++             groups[i].physicalDeviceCount * sizeof(*output->physicalDevices));
++   }
++   *args->pPhysicalDeviceGroupCount = written;
++   result = written < count ? VK_INCOMPLETE : VK_SUCCESS;
++
++out:
++   free(map);
++   free(groups);
++   return result;
++}
++
+ static void
+ vkr_dispatch_vkEnumeratePhysicalDeviceGroups(
+    struct vn_dispatch_context *dispatch,
+@@ -442,9 +546,17 @@
+       return;
+    }
+ 
+-   args->ret = vkr_instance_enumerate_physical_devices(instance);
+-   if (args->ret != VK_SUCCESS)
+-      return;
++   args->ret = vkr_instance_enumerate_physical_devices(ctx, instance);
++   if (args->ret != VK_SUCCESS) {
++      if (ctx->physical_device_filter.state != VKR_PHYSICAL_DEVICE_FILTER_UNSET)
++         *args->pPhysicalDeviceGroupCount = 0;
++      return;
++   }
++
++   if (ctx->physical_device_filter.state == VKR_PHYSICAL_DEVICE_FILTER_SELECTED) {
++      args->ret = vkr_instance_enumerate_selected_groups(instance, args);
++      return;
++   }
+ 
+    VkPhysicalDeviceGroupProperties *orig_props = args->pPhysicalDeviceGroupProperties;
+    if (orig_props) {
+diff --git a/src/venus/vkr_physical_device_filter.h b/src/venus/vkr_physical_device_filter.h
+new file mode 100644
+--- /dev/null
++++ b/src/venus/vkr_physical_device_filter.h
+@@ -0,0 +1,247 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef VKR_PHYSICAL_DEVICE_FILTER_H
++#define VKR_PHYSICAL_DEVICE_FILTER_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++/* Vulkan deviceUUID is VK_UUID_SIZE (16) opaque bytes. The host selector uses
++ * two hex digits per byte; its list fits the caller's u16 device-index space.
++ */
++#define VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT (UINT32_C(1) + UINT16_MAX)
++
++enum vkr_physical_device_filter_state {
++   VKR_PHYSICAL_DEVICE_FILTER_UNSET,
++   VKR_PHYSICAL_DEVICE_FILTER_INVALID,
++   VKR_PHYSICAL_DEVICE_FILTER_SELECTED,
++};
++
++struct vkr_physical_device_uuid {
++   uint8_t bytes[VK_UUID_SIZE];
++};
++
++struct vkr_physical_device_filter {
++   enum vkr_physical_device_filter_state state;
++   uint32_t count;
++   struct vkr_physical_device_uuid *uuids;
++};
++
++static inline void
++vkr_physical_device_filter_finish(struct vkr_physical_device_filter *filter)
++{
++   free(filter->uuids);
++   filter->uuids = NULL;
++   filter->count = 0;
++   filter->state = VKR_PHYSICAL_DEVICE_FILTER_INVALID;
++}
++
++static inline int
++vkr_physical_device_uuid_compare(const void *a, const void *b)
++{
++   return memcmp(a, b, sizeof(struct vkr_physical_device_uuid));
++}
++
++static inline int
++vkr_physical_device_hex_digit(char digit)
++{
++   if (digit >= '0' && digit <= '9')
++      return digit - '0';
++   if (digit >= 'a' && digit <= 'f')
++      return digit - 'a' + 10;
++   if (digit >= 'A' && digit <= 'F')
++      return digit - 'A' + 10;
++   return -1;
++}
++
++static inline VkResult
++vkr_physical_device_filter_set(struct vkr_physical_device_filter *filter,
++                              const char *const *hex32,
++                              uint32_t count)
++{
++   const bool unset = filter->state == VKR_PHYSICAL_DEVICE_FILTER_UNSET;
++   /* A failed or repeated configuration can never fall back to all devices. */
++   vkr_physical_device_filter_finish(filter);
++   if (!unset || !hex32 || !count || count > VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT)
++      return VK_ERROR_INITIALIZATION_FAILED;
++   if (sizeof(*filter->uuids) > SIZE_MAX / (size_t)count)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++   struct vkr_physical_device_uuid *uuids = calloc(count, sizeof(*uuids));
++   if (!uuids)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++   for (uint32_t i = 0; i < count; i++) {
++      const char *text = hex32[i];
++      if (!text)
++         goto invalid;
++      for (uint32_t j = 0; j < VK_UUID_SIZE; j++) {
++         const int high = vkr_physical_device_hex_digit(*text);
++         if (high < 0)
++            goto invalid;
++         text++;
++         const int low = vkr_physical_device_hex_digit(*text);
++         if (low < 0)
++            goto invalid;
++         text++;
++         uuids[i].bytes[j] = (uint8_t)((high << 4) | low);
++      }
++      if (*text)
++         goto invalid;
++   }
++
++   qsort(uuids, count, sizeof(*uuids), vkr_physical_device_uuid_compare);
++   for (uint32_t i = 1; i < count; i++) {
++      if (!vkr_physical_device_uuid_compare(&uuids[i - 1], &uuids[i]))
++         goto invalid;
++   }
++   filter->uuids = uuids;
++   filter->count = count;
++   filter->state = VKR_PHYSICAL_DEVICE_FILTER_SELECTED;
++   return VK_SUCCESS;
++
++invalid:
++   free(uuids);
++   return VK_ERROR_INITIALIZATION_FAILED;
++}
++
++static inline VkResult
++vkr_physical_device_filter_devices(const struct vkr_physical_device_filter *filter,
++                                  PFN_vkGetPhysicalDeviceProperties2 get_properties,
++                                  VkPhysicalDevice *handles,
++                                  uint32_t *count)
++{
++   if (filter->state != VKR_PHYSICAL_DEVICE_FILTER_SELECTED || !get_properties ||
++       *count > VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT)
++      return VK_ERROR_INITIALIZATION_FAILED;
++
++   bool *found = calloc(filter->count, sizeof(*found));
++   if (!found)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++   uint32_t kept = 0;
++   for (uint32_t i = 0; i < *count; i++) {
++      VkPhysicalDeviceIDProperties id = {
++         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES,
++      };
++      VkPhysicalDeviceProperties2 props = {
++         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
++         .pNext = &id,
++      };
++      get_properties(handles[i], &props);
++      struct vkr_physical_device_uuid uuid;
++      memcpy(uuid.bytes, id.deviceUUID, sizeof(uuid.bytes));
++      const struct vkr_physical_device_uuid *selected =
++         bsearch(&uuid, filter->uuids, filter->count, sizeof(*filter->uuids),
++                 vkr_physical_device_uuid_compare);
++      if (!selected)
++         continue;
++      const size_t index = (size_t)(selected - filter->uuids);
++      /* One requested identity must resolve to exactly one host handle. */
++      if (found[index]) {
++         free(found);
++         return VK_ERROR_INITIALIZATION_FAILED;
++      }
++      found[index] = true;
++      handles[kept++] = handles[i];
++   }
++
++   free(found);
++   if (kept != filter->count)
++      return VK_ERROR_INITIALIZATION_FAILED;
++   *count = kept;
++   return VK_SUCCESS;
++}
++
++struct vkr_physical_device_filter_handle {
++   uintptr_t value;
++   uint32_t index;
++   bool seen;
++};
++
++static inline int
++vkr_physical_device_filter_handle_compare(const void *a, const void *b)
++{
++   const struct vkr_physical_device_filter_handle *left = a, *right = b;
++   return (left->value > right->value) - (left->value < right->value);
++}
++
++static inline struct vkr_physical_device_filter_handle *
++vkr_physical_device_filter_find(struct vkr_physical_device_filter_handle *map,
++                              uint32_t count,
++                              VkPhysicalDevice handle)
++{
++   const struct vkr_physical_device_filter_handle key = { .value = (uintptr_t)handle };
++   return bsearch(&key, map, count, sizeof(*map),
++                  vkr_physical_device_filter_handle_compare);
++}
++
++static inline VkResult
++vkr_physical_device_filter_map(VkPhysicalDevice *handles,
++                              uint32_t count,
++                              struct vkr_physical_device_filter_handle **out)
++{
++   *out = NULL;
++   if (!count || count > VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT)
++      return VK_ERROR_INITIALIZATION_FAILED;
++   if (sizeof(**out) > SIZE_MAX / (size_t)count)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   struct vkr_physical_device_filter_handle *map = calloc(count, sizeof(*map));
++   if (!map)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   for (uint32_t i = 0; i < count; i++) {
++      map[i].value = (uintptr_t)handles[i];
++      map[i].index = i;
++   }
++   qsort(map, count, sizeof(*map), vkr_physical_device_filter_handle_compare);
++   for (uint32_t i = 0; i < count; i++) {
++      if (!map[i].value || (i && map[i - 1].value == map[i].value)) {
++         free(map);
++         return VK_ERROR_INITIALIZATION_FAILED;
++      }
++   }
++   *out = map;
++   return VK_SUCCESS;
++}
++
++static inline VkResult
++vkr_physical_device_filter_groups(struct vkr_physical_device_filter_handle *map,
++                                 uint32_t device_count,
++                                 VkPhysicalDeviceGroupProperties *groups,
++                                 uint32_t *group_count)
++{
++   uint32_t kept = 0;
++   for (uint32_t i = 0; i < *group_count; i++) {
++      VkPhysicalDeviceGroupProperties *group = &groups[i];
++      if (!group->physicalDeviceCount || group->physicalDeviceCount > VK_MAX_DEVICE_GROUP_SIZE)
++         return VK_ERROR_INITIALIZATION_FAILED;
++      uint32_t selected = 0;
++      for (uint32_t j = 0; j < group->physicalDeviceCount; j++) {
++         struct vkr_physical_device_filter_handle *entry =
++            vkr_physical_device_filter_find(map, device_count, group->physicalDevices[j]);
++         if (!entry)
++            continue;
++         /* Vulkan groups partition the enumerated devices. Refuse an ambiguous
++          * driver response instead of fabricating a group or leaking an alias.
++          */
++         if (entry->seen)
++            return VK_ERROR_INITIALIZATION_FAILED;
++         entry->seen = true;
++         selected++;
++      }
++      if (!selected)
++         continue;
++      if (selected != group->physicalDeviceCount)
++         return VK_ERROR_INITIALIZATION_FAILED;
++      groups[kept++] = *group;
++   }
++   for (uint32_t i = 0; i < device_count; i++) {
++      if (!map[i].seen)
++         return VK_ERROR_INITIALIZATION_FAILED;
++   }
++   *group_count = kept;
++   return VK_SUCCESS;
++}
++
++#endif
+diff --git a/src/venus/vkr_renderer.c b/src/venus/vkr_renderer.c
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -128,6 +128,22 @@
+    return true;
+ }
+ 
++int32_t
++vkr_renderer_set_physical_device_uuids(uint32_t ctx_id,
++                                      const char *const *hex32,
++                                      uint32_t count)
++{
++   struct vkr_context *ctx = vkr_renderer_lookup_context(ctx_id);
++   if (!ctx)
++      return VK_ERROR_INITIALIZATION_FAILED;
++   if (ctx->instance) {
++      vkr_physical_device_filter_finish(&ctx->physical_device_filter);
++      vkr_context_set_fatal(ctx);
++      return VK_ERROR_INITIALIZATION_FAILED;
++   }
++   return vkr_physical_device_filter_set(&ctx->physical_device_filter, hex32, count);
++}
++
+ void
+ vkr_renderer_destroy_context(uint32_t ctx_id)
+ {
+diff --git a/src/venus/vkr_renderer.h b/src/venus/vkr_renderer.h
+--- a/src/venus/vkr_renderer.h
++++ b/src/venus/vkr_renderer.h
+@@ -41,6 +41,16 @@
+                             uint32_t nlen,
+                             const char *name);
+ 
++/* Host-only, once before the context creates an instance. Each string is
++ * exactly 32 hex digits encoding VkPhysicalDeviceIDProperties::deviceUUID.
++ * Returns VkResult as int32_t; failure poisons this context's selection.
++ * No call preserves the original all-device behavior.
++ */
++int32_t
++vkr_renderer_set_physical_device_uuids(uint32_t ctx_id,
++                                      const char *const *hex32,
++                                      uint32_t count);
++
+ void
+ vkr_renderer_destroy_context(uint32_t ctx_id);
+ 

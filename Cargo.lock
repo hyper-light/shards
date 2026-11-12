@@ -1234,6 +1234,7 @@ dependencies = [
  "shards-afunix",
  "shards-testdir",
  "triomphe",
+ "unsize",
  "windows-sys 0.61.2",
 ]
 
@@ -1767,6 +1768,9 @@ name = "triomphe"
 version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d15f4f5898bcfc5d8a8e45ed30b2f108d710c1a2e5489dbf80e078f707181bc"
+dependencies = [
+ "unsize",
+]
 
 [[package]]
 name = "twox-hash"
@@ -1793,6 +1797,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
 dependencies = [
  "tinyvec",
+]
+
+[[package]]
+name = "unsize"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fa7a7a734c1a5664a662ddcea0b6c9472a21da8888c957c7f1eaa09dba7a939"
+dependencies = [
+ "autocfg",
 ]
 
 [[package]]

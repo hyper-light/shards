@@ -44,7 +44,7 @@ fn link_gpu_linux() {
         return;
     };
     let dir = std::path::PathBuf::from(dir);
-    let libs = ["render_server", "virglrenderer", "epoxy"];
+    let libs = ["render_server", "virglrenderer", "epoxy", "shards_gpu_selection"];
     for lib in libs {
         println!(
             "cargo::rerun-if-changed={}",
@@ -95,7 +95,7 @@ fn link_gpu_windows() {
         return;
     };
     let dir = std::path::PathBuf::from(dir);
-    let libs = ["virglrenderer", "epoxy"];
+    let libs = ["virglrenderer", "epoxy", "shards_gpu_selection"];
     for lib in libs {
         println!(
             "cargo::rerun-if-changed={}",
@@ -119,14 +119,14 @@ fn link_gpu() {
         return;
     };
     let dir = std::path::PathBuf::from(dir);
-    for lib in ["virglrenderer", "epoxy", "MoltenVK"] {
+    for lib in ["virglrenderer", "epoxy", "MoltenVK", "shards_gpu_selection"] {
         println!(
             "cargo::rerun-if-changed={}",
             dir.join(format!("lib{lib}.a")).display()
         );
     }
     println!("cargo::rustc-link-search=native={}", dir.display());
-    for lib in ["virglrenderer", "epoxy", "MoltenVK"] {
+    for lib in ["virglrenderer", "epoxy", "MoltenVK", "shards_gpu_selection"] {
         println!("cargo::rustc-link-lib=static={lib}");
     }
     for framework in [

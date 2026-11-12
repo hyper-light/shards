@@ -1,0 +1,4 @@
+Downloading the guest kernel vmlinux-6.18.48-x86_64-17c3ba205400 from https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-17c3ba205400/vmlinux-6.18.48-x86_64
+Guest kernel: sha256:48a3824b7467dee7d82f36401fed99626e91c5dc5fefc432bc354a69ec616aa7
+WARNING: CAP_NET_RAW withheld from the command: the image's Agentfile runs agents and harnesses beside the command, and CAP_NET_RAW reads and writes the packets of their flows past the microVM, which cross the command's network namespace
+f50654285596d924fcd5f3b3d614439358c37898836a8f5f17cc985d7635741c

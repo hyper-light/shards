@@ -1,0 +1,6 @@
+shards run vm -d -v /tmp/shards-tests/666590/harness-given-15/share:/run/probe:ro --name probe harness-probe:1 sleep 600
+status Some(0) after 287.728534ms
+--- stdout
+fa7bce1991b43a058b654e57bc7a9e985d769c6ccb10df46669c537fff990b24
+
+--- stderr
