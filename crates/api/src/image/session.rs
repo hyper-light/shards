@@ -216,7 +216,11 @@ pub(super) struct Session {
 }
 
 impl Session {
-    pub(super) fn start(spec: &ImageSpec, request: &wire::Request) -> Result<Session, ImageRefusal> {
+    pub(super) fn start(
+        spec: &ImageSpec,
+        request: &wire::Request,
+        patience: Duration,
+    ) -> Result<Session, ImageRefusal> {
         let binary = spec
             .binary
             .clone()
@@ -280,8 +284,8 @@ impl Session {
             end_it(&shared);
             return Err(e);
         }
-        // Started, refused, or gone: whichever comes first.
-        let outcome = shared.wait(Duration::MAX, |s| {
+        // Started, refused, or gone: whichever comes first, within the caller's patience.
+        let outcome = shared.wait(patience, |s| {
             if let Some(r) = s.refused.take() {
                 return Some(Err(r));
             }
@@ -309,7 +313,10 @@ impl Session {
             }
             None => {
                 end_it(&shared);
-                return Err(ImageRefusal::Host("no answer to its request".into()));
+                let said = quoted(&lock(&shared.state).said);
+                return Err(ImageRefusal::Boot(format!(
+                    "the run did not start within {patience:?}{said}"
+                )));
             }
         };
         let session = Session {
@@ -604,8 +611,11 @@ impl ImageGuest for Session {
         if !ended && self.shared.send(wire::to_host::STOP, &[]).is_err() {
             self.host.kill(&lock(&self.shared.state));
         }
+        // The run's end comes as its VM goes, which the host kills at once; or the host is
+        // gone. The host's own exit after (its cleanup) is the watcher's to reap.
+        self.shared
+            .wait(Duration::MAX, |s| (s.end.is_some() || s.gone()).then_some(()));
         lock(&self.shared.to_host).take();
-        self.shared.wait(Duration::MAX, |s| s.gone().then_some(()));
         let mut state = lock(&self.shared.state);
         state.end.get_or_insert(RunEnd::Stopped);
         self.shared.changed.notify_all();
@@ -627,10 +637,17 @@ impl ImageGuest for Session {
     }
 }
 
+/// Its run ends with it: one still running is stopped; one ended has its host's stdin
+/// closed, its cue to finish and exit, which the watcher then reaps.
 impl Drop for Session {
     fn drop(&mut self) {
-        if !lock(&self.shared.state).gone() {
+        let running = {
+            let state = lock(&self.shared.state);
+            state.end.is_none() && !state.gone()
+        };
+        if running {
             let _ = self.stop();
         }
+        lock(&self.shared.to_host).take();
     }
 }

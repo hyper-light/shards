@@ -161,9 +161,11 @@ impl std::error::Error for ImageRefusal {}
 /// What boots images.
 pub trait Images: Send + Sync {
     fn backend(&self) -> Result<crate::Backend, ImageRefusal>;
-    /// Boots `spec`'s image, returning once its members have started, or why not. It is the
-    /// caller's until it drops, which ends it.
-    fn boot(&self, spec: &ImageSpec) -> Result<Box<dyn ImageGuest>, ImageRefusal>;
+    /// Boots `spec`'s image, returning once its members have started, or why not, waiting
+    /// at most `patience` for it (`Duration::MAX`: until the run starts or its host ends):
+    /// past it, the run's host is killed and its run refused with what it last said. It is
+    /// the caller's until it drops, which ends it.
+    fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal>;
 }
 
 /// A booted image. Dropping it ends it.
@@ -186,7 +188,9 @@ pub trait ImageGuest: Send + Sync {
     /// waiting at most `patience` (`Duration::MAX`: until it answers or the run ends).
     fn stats(&self, scope: StatsScope, patience: Duration) -> Result<Stats, ImageRefusal>;
     /// Ends it at once: its VM's process is killed, and [`wait_for`](Self::wait_for) then
-    /// returns [`RunEnd::Stopped`]. Never refused, as a VM left running is a leak.
+    /// returns [`RunEnd::Stopped`]. Never refused, as a VM left running is a leak. Returns
+    /// once the run's end is told, its VM gone; its host then reaps what it started and
+    /// exits on its own.
     fn stop(&self) -> Result<(), ImageRefusal>;
     /// Its end, once it has come, waiting at most `timeout` (`Duration::MAX`: until it
     /// comes).
@@ -208,10 +212,10 @@ impl Images for ImageShards {
         crate::backend().map_err(no_backend)
     }
 
-    fn boot(&self, spec: &ImageSpec) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+    fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
         crate::backend().map_err(no_backend)?;
         let request = request(spec)?;
-        Ok(Box::new(session::Session::start(spec, &request)?))
+        Ok(Box::new(session::Session::start(spec, &request, patience)?))
     }
 }
 

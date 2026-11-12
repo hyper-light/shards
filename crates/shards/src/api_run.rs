@@ -47,6 +47,12 @@ impl Answers {
     }
 }
 
+/// One line of the run's progress on this process's stderr, its diagnostics, which a
+/// refusal quotes the last of.
+fn say(what: std::fmt::Arguments<'_>) {
+    let _ = writeln!(io::stderr(), "shards api-run: {what}");
+}
+
 /// `shards api-run`: not for people to run. The run's end is said as its VM ends, before
 /// its owner closes the channel; a run that never started is refused instead.
 pub fn command() -> ExitCode {
@@ -856,7 +862,7 @@ mod hosted {
         capture: Option<&UnixStream>,
     ) -> Result<(), String> {
         match shards_ipc::recv(link) {
-            Ok(Some(m)) if m.kind == kind::READY => {}
+            Ok(Some(m)) if m.kind == kind::READY => super::say(format_args!("its guest is ready")),
             Ok(Some(m)) => return Err(format!("the VM said message kind {} before it was ready", m.kind)),
             Ok(None) => return Err("the VM ended before it was ready".into()),
             Err(e) => return Err(format!("the VM was not ready: {e}")),
@@ -882,7 +888,7 @@ mod hosted {
         shards_ipc::send(link, kind::RUN, &payload, &fds)
             .map_err(|e| format!("handing the VM its run: {e}"))?;
         match shards_ipc::recv(link) {
-            Ok(Some(m)) if m.kind == kind::TAKEN => {}
+            Ok(Some(m)) if m.kind == kind::TAKEN => super::say(format_args!("its VM took the run")),
             Ok(Some(m)) => return Err(format!("the VM said message kind {} for its run", m.kind)),
             Ok(None) => return Err("the VM ended before it took its run".into()),
             Err(e) => return Err(format!("the VM did not take its run: {e}")),
@@ -895,7 +901,12 @@ mod hosted {
 
     fn launch_and_serve(answers: &Answers, input: io::Stdin, home: &Path, plan: Plan) -> Result<(), No> {
         let boot = |e: String| No(Cause::Boot, e);
+        super::say(format_args!(
+            "prepared {}, {} vCPUs, {} MiB; starting its VM",
+            plan.prepared.image_id, plan.prepared.size.0, plan.prepared.size.1
+        ));
         let launched = launch(home, &plan)?;
+        super::say(format_args!("its VM process {} started; waiting for its guest", launched.vm.id()));
         let served = (|| -> Result<(), No> {
             if let Some((_, control)) = &launched.net {
                 tell_net(control, &plan.listeners, plan.egress.as_deref()).map_err(boot)?;
@@ -956,13 +967,26 @@ mod hosted {
             Ok(())
         })();
         // Its processes gone, whatever ended it: the VM killed where it runs on, then each
-        // reaped; its anonymous volumes removed, as `--rm`'s are.
-        let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
-        let _ = launched.vm.wait();
-        if let Some((child, _)) = &launched.net {
-            crate::netproc::reap(child);
+        // reaped once nothing of this process's holds it up; its anonymous volumes removed,
+        // as `--rm`'s are. The share process goes as its connections to the VM close, its
+        // door the last of them where the VM never took it (a run refused before `TAKEN`):
+        // waited for with that door still held here, it never went (CI run 43230466376,
+        // `a_share_at_a_granted_volume_reaches_the_harness`, this process in `do_wait`).
+        let Launched {
+            vm,
+            link,
+            net,
+            shares,
+        } = launched;
+        let _ = vm.kill(shards_ipc::signal::SIGKILL);
+        let _ = vm.wait();
+        drop(link);
+        if let Some((child, control)) = net {
+            drop(control);
+            crate::netproc::reap(&child);
         }
-        if let Some((child, _)) = &launched.shares {
+        if let Some((child, door)) = shares {
+            drop(door);
             let _ = child.wait();
         }
         if !plan.made.is_empty() {
