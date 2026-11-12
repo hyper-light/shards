@@ -22604,6 +22604,66 @@ destinations once run so.
 answer (then address ranges as grants); a member that must reach one port by name beside
 another member's other names (then the per-member hold above, which lifts the refusal).
 
+### D237. A program that carries shards writes its VM and network processes out beside its own `shards`, signed as it signs its own (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 16: kiln is one binary, as shards is
+(D36), and it runs every harness in a microVM of its own through Hex, whose node boots it
+through shards-api, a client of the `shards` binary (D215, D231). So kiln carries a `shards`,
+and the VM and network processes that `shards` starts. On macOS each of those runs in App
+Sandbox under entitlements that are its binary's signature (D30, D31), and kiln signs every
+binary it installs or starts on a Mac with an identity of its own (kiln's `kiln signing
+setup`, `crates/kiln/src/os/macsign.rs`): macOS's local network privacy knows a program by its
+signature, and on 2026-10-18 kiln measured an ad hoc signed upgrade cut off from the local
+network until someone allowed it again. A `shards` that writes its own helpers out (D36) writes
+the bytes its build signed, ad hoc, and only a build on a Mac signs them at all (kiln's
+releases are cross-built on Linux, where codesign is not); no carrier can sign them again in
+place, as a file signed again is another size, which `helpers::complete` takes for a copy cut
+short and writes over.
+
+**Alternatives.**
+- *Each helper written out by `shards` itself, as D36 has it:* the carrier gives its own
+  `shards` and nothing else. Its helpers are signed only where the carrier is built on a Mac,
+  ad hoc, never with the carrier's identity, and are new programs to macOS with each build.
+  Not taken.
+- *The carrier links shards' command as a library and serves `api-run` itself:* `crates/shards`
+  is one binary's crate (D36); as a library it would link all of shards' daemon, builder and
+  registry into the carrier, and shards' command line into the carrier's (kiln's own `run` is
+  another command). Not taken.
+- *`SHARDS_VM_BINARY` for the VM process:* it names a VM process for VMM work and tests, not
+  the network process, and shards-api's configured client clears every variable it does not
+  name (D233). Not taken.
+- *A `shards` built to be carried (taken):* `SHARDS_HELPERS=beside` builds one that carries no
+  helpers, as `skip` does, and starts the VM and network processes (and a GPU's, where one is
+  there) from the directory it was started from (`helpers::beside`): the carrier writes the
+  three out together, signed as it signs its own, and owns that directory's life. Nothing in
+  shards writes, holds or collects it. kiln writes it whole (beside its place, signed, marked
+  ready, renamed into it), names it by what it carries and by who signed it, holds it from
+  each process that uses it, and collects the others no process holds, as D182 does
+  (`crates/kiln/src/shards.rs`).
+
+**D36 kept.** To kiln's users kiln is the one file to install and run: its `shards`,
+`shards-vm` and `shards-net` are carried inside it and written out by it the first time a build
+of it needs them, as shards writes its own helpers, and none is shipped, installed or
+documented beside it. The VM and network processes stay processes of their own binaries for
+D36's two measured reasons (each VM maps only its own; App Sandbox's entitlements are the VM
+process's signature alone). shards' own builds are unchanged: by default a `shards` carries
+its helpers and writes them out itself.
+
+**Literals.** None.
+
+**Tested.** `helpers::tests::a_carried_shards_starts_the_helpers_beside_it`: both helpers there,
+the directory found; one missing, refused naming it; nothing written. kiln's own: its carried
+Shards written whole once, found after, a folder not ready written again, and other builds'
+folders collected once no process holds them (`crate::shards`'s tests).
+
+**Evidence owed** (ROOT). Real VMs started by kiln's carried `shards` from its kiln-signed
+helpers on HVF, and from its helpers on KVM and WHP; kiln's build time and binary size with
+Shards carried and without (kiln's `docs/research/s16-vendor/`).
+
+**What would falsify it.** A carrier that cannot keep its helpers in the directory its
+`shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
+hoc (then ad hoc, as shards signs them).
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
