@@ -249,6 +249,57 @@ fn a_project_is_plugged_into_a_running_agent_at_its_host_path() {
     shards(&["rm", "-f", "plugm"]);
 }
 
+/// Names that differ in case alone, through a share, are what its host makes of them
+/// (D235): the steps of `shards_testguest::case` taken in the guest's view of a share give
+/// what they give on the host itself, in a directory beside it, whether the host's
+/// filesystem tells case (Linux's) or not (macOS's APFS, Windows' NTFS). A case-only rename
+/// is no step: Linux's VFS takes a rename onto the same inode as done (fs/namei.c
+/// `vfs_rename`), so no guest asks one of its host.
+#[test]
+fn a_shares_names_are_its_hosts_case_and_all() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("plugc");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let files = TempDir::new("plugc-files");
+    for dir in ["host", "shared"] {
+        std::fs::create_dir(files.join(dir)).unwrap();
+    }
+    let host: Vec<String> = shards_testguest::case::steps(&files.join("host"))
+        .into_iter()
+        .map(|l| format!("case {l}"))
+        .collect();
+    let bind = format!("{}:/case", files.join("shared").display());
+    let ran = run_shards_env(
+        &["run"],
+        &["--rm", "-u", "0", "-v", &bind, &image, "case", "/case"],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(ran.status, Some(0), "{}\n{}", ran.stderr, ran.stdout);
+    let guest: Vec<&str> = ran.stdout.lines().filter(|l| l.starts_with("case ")).collect();
+    let differing: Vec<String> = host
+        .iter()
+        .zip(&guest)
+        .filter(|(h, g)| h.as_str() != **g)
+        .map(|(h, g)| format!("host {h:?}, guest {g:?}"))
+        .collect();
+    assert!(
+        differing.is_empty() && host.len() == guest.len(),
+        "{} steps; the guest's differ from the host's:\n{}\nhost:\n{}\nguest:\n{}",
+        host.len(),
+        differing.join("\n"),
+        host.join("\n"),
+        guest.join("\n")
+    );
+}
+
 /// The host's QEMU edu function (1234:11e8), where it has one: a test function its own
 /// host gave it (`--pci-tests`), as a nested guest of the L1 tests has with
 /// SHARDS_L1_PCI_TESTS (boot.rs).

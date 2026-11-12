@@ -46,6 +46,13 @@ pub fn main() -> ! {
         "managed-reap-child" => crate::managed_reap::child(arg(1), arg(2)),
         "cat" => cat(),
         "plugged" => crate::plugged::main(args.get(1..).unwrap_or_default()),
+        // The steps of names differing in case alone in DIR, each its result (D235).
+        "case" => {
+            for line in shards_testguest::case::steps(std::path::Path::new(arg(1))) {
+                let _ = writeln!(io::stdout(), "case {line}");
+            }
+            0
+        }
         // DMA through each PCI function at ADDRESS..., one group's, by its VFIO (D154):
         // its group's, or its own device node's and iommufd.
         "vfio-dma" | "vfio-dma-cdev" => {
