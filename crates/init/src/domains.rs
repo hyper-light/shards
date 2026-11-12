@@ -516,6 +516,37 @@ fn quote(s: &str) -> String {
     out
 }
 
+/// A supplied domain's environment: init's `PATH` (its own directory first), `HOME=/tmp` and
+/// `SHARDS_DOMAIN`, then its config's `run.env`, each name once and the last given winning, so a
+/// harness.json sets its harness's `HOME` or `PATH` (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
+/// master step 7: run.env was appended after init's before, and a program reads the first).
+/// `SHARDS_DOMAIN` is init's alone: a domain's own name, never its image's word.
+fn harness_env(path: &str, label: &str, given: &[String]) -> Result<Vec<String>, String> {
+    let mut env = vec![
+        format!("PATH={path}"),
+        "HOME=/tmp".to_string(),
+        format!("SHARDS_DOMAIN={label}"),
+    ];
+    for e in given {
+        let Some((name, _)) = e.split_once('=').filter(|(name, _)| !name.is_empty()) else {
+            return Err(format!("{label}: run.env entry {e:?} is no NAME=value"));
+        };
+        if name == "SHARDS_DOMAIN" {
+            return Err(format!(
+                "{label}: run.env sets SHARDS_DOMAIN, which is init's: a domain's own name"
+            ));
+        }
+        let at = env
+            .iter()
+            .position(|kept| kept.split_once('=').is_some_and(|(n, _)| n == name));
+        match at.and_then(|i| env.get_mut(i)) {
+            Some(kept) => kept.clone_from(e),
+            None => env.push(e.clone()),
+        }
+    }
+    Ok(env)
+}
+
 fn domain(
     kind: &str,
     name: &str,
@@ -554,14 +585,15 @@ fn domain(
     // A supplied bare command lives in its own artifact before the system tools.
     // The inherited PATH also lets an explicit launcher such as nohup find its child.
     let path = format!("{dir}:{dir}/bin:{PATH}");
-    let mut env = vec![
-        cstr(&format!("PATH={path}"))?,
-        cstr("HOME=/tmp")?,
-        cstr(&format!("SHARDS_DOMAIN={label}"))?,
-    ];
-    for e in run.get("env").and_then(Value::strings).unwrap_or_default() {
-        env.push(cstr(&e)?);
-    }
+    let given = run.get("env").and_then(Value::strings).unwrap_or_default();
+    let env = harness_env(&path, &label, &given)?;
+    // Its program is found on the PATH it runs with: init's, unless run.env gave its own.
+    let path = env
+        .iter()
+        .find_map(|e| e.strip_prefix("PATH="))
+        .unwrap_or(&path)
+        .to_string();
+    let env = env.iter().map(|e| cstr(e)).collect::<Result<Vec<_>, _>>()?;
     let first = command.first().map(String::as_str).unwrap_or_default();
     let program = if first.starts_with('/') {
         first.to_string()
@@ -2782,6 +2814,49 @@ mod tests {
             .to_string(),
             shards_abi::run::beside::nesting("harness", "h")
         );
+    }
+
+    /// A harness.json's run.env sets its harness's HOME and PATH, the last given winning, and never
+    /// its domain's name (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, master step 7).
+    #[test]
+    fn run_env_replaces_inits_defaults_and_never_the_domains_name() {
+        let given = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            harness_env("/d:/d/bin:/usr/bin", "harness agy", &[]).unwrap(),
+            [
+                "PATH=/d:/d/bin:/usr/bin",
+                "HOME=/tmp",
+                "SHARDS_DOMAIN=harness agy"
+            ]
+        );
+        let env = harness_env(
+            "/d:/d/bin:/usr/bin",
+            "harness agy",
+            &given(&[
+                "HOME=/home/agy",
+                "LANG=C.UTF-8",
+                "HOME=/home/two",
+                "PATH=/opt/agy/bin",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            env,
+            [
+                "PATH=/opt/agy/bin",
+                "HOME=/home/two",
+                "SHARDS_DOMAIN=harness agy",
+                "LANG=C.UTF-8"
+            ]
+        );
+        for (bad, why) in [
+            ("SHARDS_DOMAIN=agent x", "SHARDS_DOMAIN"),
+            ("NOEQUALS", "NAME=value"),
+            ("=x", "NAME=value"),
+        ] {
+            let e = harness_env("/d", "harness agy", &given(&[bad])).unwrap_err();
+            assert!(e.contains(why), "{bad}: {e}");
+        }
     }
 
     /// The host's entries (volumes.rs, `open`): those for the domains, with their tag,

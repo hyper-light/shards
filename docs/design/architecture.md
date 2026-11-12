@@ -17375,6 +17375,13 @@ The research, every finding graded with its sources:
 
   Egress past the microVM stays its network process's, on the host, and nothing in the
   guest changes it (f29).
+- *Refused with it*, by the daemon and again by init, since each undoes what the grant rests
+  on:
+  - `--cgroupns host`: the microVM's cgroup namespace (D156) in place of the subtree rooted
+    at `run/workload`, whose own limits the writable hierarchy would then reach;
+  - `--pid host`: init's PID namespace in place of the workload's own, so its boxes would
+    no longer end with it (f12, f13), and CAP_SYS_ADMIN would face init's processes and
+    their namespaces.
 - *Already the workload's, unchanged*:
   - `/proc`, `/sys`, `/dev`, and tmpfs mounts as a run asks (`--tmpfs /run`; D115's table
     gives them);
@@ -17394,7 +17401,8 @@ the image as built:
   `shards_abi::gpu`'s grammar.
 - The capabilities and the filter travel as every run's do. No `seccomp-mounts=` is sent.
 
-From the guest to the host: a run message of a new kind, READY, carrying the readiness
+From the guest to the host: a run message of a new kind, READY (`run::kind` 49, relayed to
+the daemon as ipc kind 90), carrying the readiness
 state and, for a late or missed deadline, how far past it. It is relayed as a run event and
 to D231's run host.
 
@@ -17428,7 +17436,11 @@ caller's decision.
   (f37).
 - The GPUs' identities: as many as the run names, at most D232's `MAX_PHYSICAL_GPUS`,
   in its grammar.
-- WORKLOAD_READY (marker 7) and the READY kind: the next free numbers of their tables.
+- `WORKLOAD_READY` = 7 in `shards_abi::marker`, which holds 1 to 6 on main at 43114652a.
+  The guest's READY message is `shards_abi::run::kind` 49 (0 to 3 and 16 to 48 are taken), and
+  its relay to the daemon is `shards_ipc` kind 90 (kinds run to 89; 128 and 148 stand apart).
+  These are identifiers, not quantities: each is its table's next free value, checked again
+  when its step merges, as D numbers are.
 - `/run/shards/notify` and `/run/shards/gpus`: beside `/run/shards/engine.sock` (D181).
 - The identities file's mode, 0444: readable by every user of the run, as the GPUs are
   the run's own; init alone writes the file, before the command starts.
