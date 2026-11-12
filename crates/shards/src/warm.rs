@@ -1627,20 +1627,33 @@ pub fn engine_token(spec: &Spec) -> Option<[u8; shards_abi::run::TOKEN]> {
 /// this VM's link (`ENGINE_CONN`), held here until the daemon says it has it; any other is
 /// closed. The daemon serves it with its Engine API, scoped to this microVM. On Windows,
 /// where a VM gives its daemon no handle, the daemon gives a pipe for it instead, which
-/// the connection is relayed onto ([`relay_engine`]).
+/// the connection is relayed onto ([`relay_engine`]). A ring its relay offered after the
+/// token (D230) goes to the vsock device first, then the device's cue, so that its answer
+/// comes before anything of the daemon's.
 pub fn serve_engine(
     link: &Link,
     token: [u8; shards_abi::run::TOKEN],
-    port: workload::Port,
+    port: workload::EnginePort,
 ) -> Result<(), String> {
+    use shards_abi::ring::Refusal;
+    use shards_vmm::devices::virtio::vsock::ring::{CUE, RingHandle};
     let daemon = link
         .daemon
         .try_clone()
         .map_err(|e| format!("the daemon's connection: {e}"))?;
     let next = std::sync::atomic::AtomicU64::new(0);
-    let heard = move |conn: GuestConn, said: &[u8; shards_abi::run::TOKEN]| {
-        if !workload::same_token(&token, said) || conn.set_nonblocking(false).is_err() {
+    let heard = move |conn: GuestConn, ring: RingHandle, hello: workload::Hello| {
+        if conn.set_nonblocking(false).is_err() {
             return;
+        }
+        if let workload::Hello::Offered(offered) = hello {
+            match offered {
+                Ok(offer) => ring.offer(offer),
+                Err(_) => ring.refuse(Refusal::Malformed),
+            }
+            if (&conn).write_all(&[CUE]).is_err() {
+                return;
+            }
         }
         let number = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Held before it goes, as the daemon's answer may come before the send returns.
@@ -1657,7 +1670,7 @@ pub fn serve_engine(
     };
     std::thread::Builder::new()
         .name("engine".into())
-        .spawn(move || workload::accept_hellos(port, "engine-hellos", heard))
+        .spawn(move || workload::accept_hellos(port, "engine-hellos", token, heard))
         .map(drop)
         .map_err(|e| format!("its engine's thread: {e}"))
 }

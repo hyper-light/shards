@@ -12,6 +12,8 @@ use shards_abi::run::{self, Size, Spec, kind};
 // A connection the guest dialed on the vsock device, as the VMM hands it over: a Unix
 // socket, Winsock's AF_UNIX on Windows (D195). A client's and the daemon's are
 // `shards_ipc::Stream`s, which are Unix sockets too on Unix.
+use shards_abi::ring;
+use shards_vmm::devices::virtio::vsock::ring::RingHandle;
 use shards_vmm::platform::UnixStream;
 
 #[path = "workload/capture.rs"]
@@ -27,6 +29,10 @@ use crate::spec::{
 /// Where the guest's connections to a host port this process serves arrive
 /// ([`shards_vmm::vm::VsockHost::ports`]).
 pub type Port = std::sync::mpsc::Receiver<UnixStream>;
+
+/// The engine's port (D181): each guest connection, with the handle a ring its relay
+/// offers is attached through (D230).
+pub type EnginePort = std::sync::mpsc::Receiver<(UnixStream, RingHandle)>;
 
 /// Signals and terminal sizes on their way to the workload, as frames: sent once the guest
 /// has dialed the signal port, queued before then while the workload runs or is sure to,
@@ -1273,23 +1279,26 @@ fn exec_failed(payload: &[u8]) {
 }
 
 /// Takes every guest connection to `port`, each of which says a [`kind::HELLO`] first:
-/// one whose hello has come whole goes to `heard` with its token, which keeps it or not;
-/// any other is closed. Connections not yet heard from are read by one thread, polling
-/// them all (review 8.8): one that says nothing costs a descriptor, not a thread, and
-/// holds up no other; the muxer bounds how many there are. They go when the workload's
-/// process does.
+/// one whose hello has come whole, saying `token` (checked in constant time), goes to
+/// `heard` with the ring its relay offered after the token, if it offered one (D230); any
+/// other is closed. An offer is read only past a token that holds, so that a process of the
+/// microVM's that dials the port itself has the VM hold no more of its hello than its
+/// header and token. Connections not yet heard from are read by one thread, polling them
+/// all (review 8.8): one that says nothing costs a descriptor, not a thread, and holds up no
+/// other; the muxer bounds how many there are. They go when the workload's process does.
 pub fn accept_hellos(
-    port: Port,
+    port: EnginePort,
     name: &'static str,
-    heard: impl Fn(UnixStream, &[u8; run::TOKEN]) + Send + 'static,
+    token: [u8; run::TOKEN],
+    heard: impl Fn(UnixStream, RingHandle, Hello) + Send + 'static,
 ) {
     let Ok((wake, woken)) = UnixStream::pair() else {
         return;
     };
-    let (arrived, arrivals) = std::sync::mpsc::channel::<UnixStream>();
+    let (arrived, arrivals) = std::sync::mpsc::channel::<(UnixStream, RingHandle)>();
     if std::thread::Builder::new()
         .name(name.into())
-        .spawn(move || hellos(&arrivals, &woken, &heard))
+        .spawn(move || hellos(&arrivals, &woken, &token, &heard))
         .is_err()
     {
         return;
@@ -1302,19 +1311,97 @@ pub fn accept_hellos(
     }
 }
 
-/// A connection to the exec port, and as much of its hello as has come.
+/// What a connection's hello came to, its token the run's.
+#[derive(Debug)]
+pub enum Hello {
+    /// No ring offered.
+    Plain,
+    /// A ring offered: the slot its bytes say, or why they say none.
+    Offered(Result<ring::Offer, ring::Malformed>),
+}
+
+/// A connection to the engine's port, and as much of its hello as has come: its header and
+/// token at first, then, where its header says an offer follows and its token holds, the
+/// offer.
 struct Unheard {
     conn: UnixStream,
-    hello: [u8; run::HEADER + run::TOKEN],
+    ring: RingHandle,
+    hello: Vec<u8>,
     got: usize,
+}
+
+/// What a read of a hello came to.
+enum Heard {
+    /// Not whole yet.
+    More,
+    Whole(Hello),
+    /// Ended, failed, not a hello, or not the run's token: closed.
+    Refused,
+}
+
+impl Unheard {
+    fn new(conn: UnixStream, ring: RingHandle) -> Unheard {
+        Unheard {
+            conn,
+            ring,
+            hello: vec![0; run::HEADER + run::TOKEN],
+            got: 0,
+        }
+    }
+
+    fn read(&mut self, token: &[u8; run::TOKEN]) -> Heard {
+        let Some(room) = self.hello.get_mut(self.got..) else {
+            return Heard::Refused;
+        };
+        match (&self.conn).read(room) {
+            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {
+                return Heard::More;
+            }
+            Ok(n @ 1..) => self.got += n,
+            _ => return Heard::Refused,
+        }
+        if self.got < run::HEADER {
+            return Heard::More;
+        }
+        // A header that is no hello's, or says more than a token and an offer, is closed
+        // as soon as it has come.
+        let len = match self.hello.first_chunk::<{ run::HEADER }>().copied().and_then(run::parse_header) {
+            Some((kind::HELLO, len)) => len as usize,
+            _ => return Heard::Refused,
+        };
+        if !(run::TOKEN..=run::TOKEN + ring::MAX_OFFER).contains(&len) {
+            return Heard::Refused;
+        }
+        if self.got < self.hello.len() {
+            return Heard::More;
+        }
+        if self.hello.len() == run::HEADER + run::TOKEN {
+            let said = self.hello.last_chunk::<{ run::TOKEN }>();
+            if !said.is_some_and(|said| same_token(token, said)) {
+                return Heard::Refused;
+            }
+            if len == run::TOKEN {
+                return Heard::Whole(Hello::Plain);
+            }
+            // The token holds: room for the offer that follows it.
+            if self.hello.try_reserve_exact(len - run::TOKEN).is_err() {
+                return Heard::Refused;
+            }
+            self.hello.resize(run::HEADER + len, 0);
+            return Heard::More;
+        }
+        let offer = self.hello.get(run::HEADER + run::TOKEN..).unwrap_or_default();
+        Heard::Whole(Hello::Offered(ring::Offer::parse(offer)))
+    }
 }
 
 /// Reads the hellos of the connections that `arrivals` brings, each told of on `woken`,
 /// until the acceptor goes: whole, each goes to `heard`, or is closed.
 fn hellos(
-    arrivals: &std::sync::mpsc::Receiver<UnixStream>,
+    arrivals: &std::sync::mpsc::Receiver<(UnixStream, RingHandle)>,
     woken: &UnixStream,
-    heard: &dyn Fn(UnixStream, &[u8; run::TOKEN]),
+    token: &[u8; run::TOKEN],
+    heard: &dyn Fn(UnixStream, RingHandle, Hello),
 ) {
     let mut unheard: Vec<Unheard> = Vec::new();
     let mut byte = [0u8; 64];
@@ -1333,13 +1420,9 @@ fn hellos(
                 Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {}
                 Err(_) => return,
             }
-            while let Ok(conn) = arrivals.try_recv() {
+            while let Ok((conn, ring)) = arrivals.try_recv() {
                 if conn.set_nonblocking(true).is_ok() {
-                    unheard.push(Unheard {
-                        conn,
-                        hello: [0; run::HEADER + run::TOKEN],
-                        got: 0,
-                    });
+                    unheard.push(Unheard::new(conn, ring));
                 }
             }
         }
@@ -1352,29 +1435,14 @@ fn hellos(
             .collect();
         for i in ready.into_iter().rev() {
             let Some(u) = unheard.get_mut(i) else { continue };
-            let Some(room) = u.hello.get_mut(u.got..) else {
-                continue;
-            };
-            match (&u.conn).read(room) {
-                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {
-                    continue;
-                }
-                Ok(n @ 1..) => u.got += n,
-                // Ended, or failed, before its hello: closed.
-                _ => {
+            match u.read(token) {
+                Heard::More => {}
+                Heard::Refused => {
                     unheard.swap_remove(i);
-                    continue;
                 }
-            }
-            // A header that is no hello's is closed as soon as it has come.
-            let head = u.hello.first_chunk::<{ run::HEADER }>().copied();
-            let hello = head.and_then(run::parse_header) == Some((kind::HELLO, run::TOKEN as u32));
-            if u.got >= run::HEADER && !hello {
-                unheard.swap_remove(i);
-            } else if u.got == u.hello.len() {
-                let u = unheard.swap_remove(i);
-                if let Some(token) = u.hello.last_chunk::<{ run::TOKEN }>() {
-                    heard(u.conn, token);
+                Heard::Whole(hello) => {
+                    let u = unheard.swap_remove(i);
+                    heard(u.conn, u.ring, hello);
                 }
             }
         }
@@ -2730,5 +2798,96 @@ mod tests {
         };
         write_parts(&mut w, &mut [io::IoSlice::new(&head), io::IoSlice::new(bytes)]).unwrap();
         assert_eq!(w.got, [&head[..], bytes].concat());
+    }
+
+    /// A connection's hello as the engine's reader takes it (D181, D230): the token checked
+    /// before an offer is read, nothing read past the hello.
+    #[cfg(unix)]
+    mod engine_hellos {
+        use super::*;
+        use shards_abi::ring::{Extent, MAX_OFFER, Offer, slot_len};
+        use std::sync::Arc;
+
+        const TOKEN: [u8; run::TOKEN] = [7; run::TOKEN];
+
+        fn unheard() -> (Unheard, UnixStream) {
+            let (ours, guest) = UnixStream::pair().unwrap();
+            ours.set_nonblocking(true).unwrap();
+            let memory = Arc::new(shards_vmm::memory::GuestMemory::anonymous(&[(0, 1 << 20)]).unwrap());
+            (Unheard::new(ours, RingHandle::new(memory)), guest)
+        }
+
+        fn hello(token: &[u8; run::TOKEN], offer: &[u8]) -> Vec<u8> {
+            let len = (run::TOKEN + offer.len()) as u32;
+            [&run::header(kind::HELLO, len)[..], token, offer].concat()
+        }
+
+        fn read_all(u: &mut Unheard) -> Heard {
+            loop {
+                match u.read(&TOKEN) {
+                    Heard::More => {}
+                    other => return other,
+                }
+            }
+        }
+
+        fn offer() -> Offer {
+            Offer {
+                ring: 1 << 16,
+                extents: vec![Extent {
+                    gpa: 1 << 20,
+                    len: slot_len(1 << 16),
+                }],
+            }
+        }
+
+        #[test]
+        fn a_plain_hello_is_heard_and_what_follows_it_left_unread() {
+            let (mut u, mut guest) = unheard();
+            guest.write_all(&[hello(&TOKEN, &[]), b"GET /_ping".to_vec()].concat()).unwrap();
+            assert!(matches!(read_all(&mut u), Heard::Whole(Hello::Plain)));
+            let mut rest = [0u8; 10];
+            (&u.conn).read_exact(&mut rest).unwrap();
+            assert_eq!(&rest, b"GET /_ping");
+        }
+
+        #[test]
+        fn an_offer_after_the_token_is_read_whole() {
+            let (mut u, mut guest) = unheard();
+            let o = offer();
+            guest.write_all(&[hello(&TOKEN, &o.encode()), b"after".to_vec()].concat()).unwrap();
+            match read_all(&mut u) {
+                Heard::Whole(Hello::Offered(Ok(got))) => assert_eq!(got, o),
+                _ => panic!("no offer heard"),
+            }
+            let mut rest = [0u8; 5];
+            (&u.conn).read_exact(&mut rest).unwrap();
+            assert_eq!(&rest, b"after");
+        }
+
+        #[test]
+        fn a_wrong_token_is_refused_before_its_offer_is_read() {
+            let (mut u, mut guest) = unheard();
+            let offer = offer().encode();
+            guest.write_all(&hello(&[8; run::TOKEN], &offer)).unwrap();
+            assert!(matches!(read_all(&mut u), Heard::Refused));
+            // Its buffer never grew past a header and a token.
+            assert_eq!(u.hello.len(), run::HEADER + run::TOKEN);
+        }
+
+        #[test]
+        fn a_hello_longer_than_a_token_and_an_offer_is_refused() {
+            let (mut u, mut guest) = unheard();
+            let len = (run::TOKEN + MAX_OFFER + 1) as u32;
+            guest.write_all(&run::header(kind::HELLO, len)).unwrap();
+            assert!(matches!(read_all(&mut u), Heard::Refused));
+        }
+
+        #[test]
+        fn an_offer_whose_bytes_say_no_slot_is_heard_as_malformed() {
+            let (mut u, mut guest) = unheard();
+            guest.write_all(&hello(&TOKEN, b"not an offer, 32 bytes long.....")).unwrap();
+            assert!(matches!(read_all(&mut u), Heard::Whole(Hello::Offered(Err(_)))));
+        }
     }
 }
