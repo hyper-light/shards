@@ -60,7 +60,8 @@ pub fn bind_quic(
 }
 
 /// One stream of arm h's guest, past its header: its operation answered on `stream`. Its
-/// caller ends the stream's writing side after.
+/// caller ends the stream's writing side after. Linux's alone, but for the loopback tests.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn answer<S: std::io::Read + std::io::Write>(stream: &mut S, extra: &str) -> Result<(), String> {
     let mut head = [0u8; proto::HEADER];
     stream.read_exact(&mut head).map_err(|e| e.to_string())?;

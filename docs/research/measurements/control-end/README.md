@@ -189,9 +189,10 @@ export CARGO_TARGET_DIR=~/s10-cargo
 cargo build --release
 env CC_x86_64_unknown_linux_musl="sh $root/scripts/zig-cc" AR_x86_64_unknown_linux_musl="sh $root/scripts/zig-ar" \
   ZIG_TARGET=x86_64-linux-musl cargo build --profile guest --target x86_64-unknown-linux-musl
-out=$(cygpath -w ~)/s10-run-$(date +%s)
-$CARGO_TARGET_DIR/release/control-end.exe run --shards SHARDS_EXE \
-  --guest $CARGO_TARGET_DIR/x86_64-unknown-linux-musl/guest/control-end --out "$out" \
+w() { cygpath -w "$1"; }    # the harness takes Windows paths there
+out=$(w ~)\\s10-run-$(date +%s)
+"$CARGO_TARGET_DIR/release/control-end.exe" run --shards "$(w SHARDS_EXE)" \
+  --guest "$(w $CARGO_TARGET_DIR/x86_64-unknown-linux-musl/guest/control-end)" --out "$out" \
   --vms 32 --rounds 5 --harness-rev REV
 ```
 
@@ -217,10 +218,12 @@ Windows through cargo-xwin, then `cargo test`.
 ## Record
 
 - Functional smoke, not a measurement (no numbers are recorded from it): adacachy (Linux
-  7.2.9-2-cachyos, AMD Ryzen 9 9950X3D2, KVM), `shards` test-release at 87bf86b31, `--vms 2
-  --rounds 1 --idle-s 2 --pings 20 --bulk-bytes 4194304 --bulk-rounds 1`, at load average 56-65.
-  Every phase of every arm ran: 4 first and 4 reconnect handshakes, every round trip,
-  transfer and guest count; 0 failures. Every process ended with the run.
+  7.2.9-2-cachyos, AMD Ryzen 9 9950X3D2, KVM). The harness was built from 1e1d306's clean
+  tree; later commits change only this file and scripts/. It ran `shards` test-release at
+  87bf86b31 with `--vms 2 --rounds 1 --idle-s 2 --pings 20 --bulk-bytes 4194304
+  --bulk-rounds 1`. Every phase of every arm ran: 4 first and 4 reconnect handshakes, every
+  round trip, transfer and guest count. There were 0 failures and 0 unreadable processes, and
+  every process ended with the run.
 - What the smoke found and fixed: quinn-proto reports a peer-opened stream's first bytes only
   through `Opened`, so both endpoints read in `opened`, as Shards' own server does; a daemon
   run's command is PID 1 of its own PID namespace, so the guest program takes PID 1's role only

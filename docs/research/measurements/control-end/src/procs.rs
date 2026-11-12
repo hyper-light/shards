@@ -391,11 +391,19 @@ pub fn usage(pid: u32) -> Option<Usage> {
         return None;
     }
     // Its times are Mach absolute time on Apple silicon: converted by the timebase
-    // (mach_timebase_info(3)).
-    // SAFETY: an all-zero mach_timebase_info is a valid value to fill.
-    let mut base: libc::mach_timebase_info = unsafe { std::mem::zeroed() };
-    // SAFETY: a writable mach_timebase_info.
-    if unsafe { libc::mach_timebase_info(&raw mut base) } != 0 || base.denom == 0 {
+    // (mach_timebase_info(3)), bound here as Shards' VMM binds it (platform/unix.rs
+    // `mach_ns`): libc's binding is deprecated in favour of a crate, the call itself is not.
+    #[repr(C)]
+    struct Timebase {
+        numer: u32,
+        denom: u32,
+    }
+    unsafe extern "C" {
+        fn mach_timebase_info(info: *mut Timebase) -> libc::c_int;
+    }
+    let mut base = Timebase { numer: 0, denom: 0 };
+    // SAFETY: mach_timebase_info(3) fills `base`.
+    if unsafe { mach_timebase_info(&raw mut base) } != 0 || base.denom == 0 {
         return None;
     }
     let ticks = u128::from(info.ri_user_time.saturating_add(info.ri_system_time));
