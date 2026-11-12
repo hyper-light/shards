@@ -16,6 +16,8 @@
 //!   its PID namespace; a `/dev` of six nodes, the `fd` and stdio links, a `shm` of its
 //!   own and an `mqueue` of its IPC namespace's; and a scratch tmpfs of its own at
 //!   `/tmp`, lost when it ends;
+//! - beneath each of the host's path roots its run names (D235, `/Users`), what is plugged
+//!   into it as it runs, at its host path, and nothing before;
 //! - has only its own loopback, brought up;
 //! - runs as uid and gid `200000 + n`, the n-th domain's, with no supplementary groups and
 //!   no capability left, bounding set included, and `no_new_privs` set;
@@ -742,6 +744,8 @@ struct Prepared {
     chooser: Option<(RawFd, *const libc::sock_fprog)>,
     /// Its root: the image as built, a mount not yet attached.
     root: RawFd,
+    /// The run's plug roots (D235), `/Users`, beneath which Landlock grants it every right.
+    plug_roots: Vec<CString>,
     /// Its Unix sockets' directories, each a mount not yet attached and where it goes,
     /// `/run/networks/<network>/<name>`; read-only where it only connects.
     sockets: Vec<(RawFd, CString)>,
@@ -899,8 +903,13 @@ fn scratch(lower: std::os::fd::BorrowedFd<'_>, id: u32) -> io::Result<Option<Own
 }
 
 /// What a domain mounts over and the image may lack, made where it does: the run makes
-/// them in its writable layer, which a domain does not see.
-fn skeleton(lower: std::os::fd::BorrowedFd<'_>, sockets: &[CString]) -> io::Result<OwnedFd> {
+/// them in its writable layer, which a domain does not see. The run's plug roots (D235,
+/// `roots`) too, where the image lacks them.
+fn skeleton(
+    lower: std::os::fd::BorrowedFd<'_>,
+    sockets: &[CString],
+    roots: &[CString],
+) -> io::Result<OwnedFd> {
     let skel = detached(c"tmpfs", &[(c"mode", c"0755")])?;
     let lacks = |path: &CStr| {
         // SAFETY: fstatat(2) of a NUL-terminated path into a zeroed stat it owns, a type of
@@ -915,7 +924,10 @@ fn skeleton(lower: std::os::fd::BorrowedFd<'_>, sockets: &[CString]) -> io::Resu
             ) != 0
         }
     };
-    for dir in [c"proc", c"dev", c"sys", c"tmp", c"etc"] {
+    for dir in [c"proc", c"dev", c"sys", c"tmp", c"etc"]
+        .into_iter()
+        .chain(roots.iter().map(CString::as_c_str))
+    {
         if !(lacks(dir) || dir == c"etc") {
             continue;
         }
@@ -967,17 +979,41 @@ fn skeleton(lower: std::os::fd::BorrowedFd<'_>, sockets: &[CString]) -> io::Resu
     Ok(skel)
 }
 
-/// A domain's root: the image as built, under what [`skeleton`] adds, an overlay with no
-/// writable layer, attached nowhere.
-fn image_root(skel: &OwnedFd, lower: std::os::fd::BorrowedFd<'_>) -> io::Result<OwnedFd> {
+/// A domain's root: the image as built, under what [`skeleton`] adds, an overlay attached
+/// nowhere. With plug roots (D235, `pluggable`) it has a writable layer of its own, a tmpfs
+/// that init alone writes, through a mount of its own (hotplug.rs), to make the mount
+/// points of what is plugged into the domain as it runs; without, none. The domain's own
+/// mount of its root is read-only either way ([`child`]).
+fn image_root(skel: &OwnedFd, lower: std::os::fd::BorrowedFd<'_>, pluggable: bool) -> io::Result<OwnedFd> {
     let layers = CString::new(format!(
         "/proc/self/fd/{}:/proc/self/fd/{}",
         skel.as_raw_fd(),
         lower.as_raw_fd()
     ))
     .map_err(io::Error::other)?;
-    // One space of inode numbers for its layers (run::XINO).
-    detached(c"overlay", &[(c"lowerdir", layers.as_c_str()), (c"xino", c"on")])
+    if !pluggable {
+        // One space of inode numbers for its layers (run::XINO).
+        return detached(c"overlay", &[(c"lowerdir", layers.as_c_str()), (c"xino", c"on")]);
+    }
+    let rw = detached(c"tmpfs", &[(c"mode", c"0755")])?;
+    for dir in [c"upper", c"work"] {
+        // SAFETY: mkdirat(2) of a NUL-terminated name in the tmpfs just made.
+        if unsafe { libc::mkdirat(rw.as_raw_fd(), dir.as_ptr(), 0o755) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    let of =
+        |dir: &str| CString::new(format!("/proc/self/fd/{}/{dir}", rw.as_raw_fd())).map_err(io::Error::other);
+    let (upper, work) = (of("upper")?, of("work")?);
+    detached(
+        c"overlay",
+        &[
+            (c"lowerdir", layers.as_c_str()),
+            (c"upperdir", upper.as_c_str()),
+            (c"workdir", work.as_c_str()),
+            (c"xino", c"on"),
+        ],
+    )
 }
 
 /// The domains' memory, watched: past their share (`memory.high`), the domain holding the
@@ -1487,7 +1523,14 @@ pub fn start(
     landlock_abi()?;
     let lower =
         crate::changes::lower().ok_or("the image's layers were not kept, which a domain's root is")?;
-    let skel = skeleton(lower, &[]).map_err(|e| format!("a domain's root: {e}"))?;
+    // The host's path roots (D235), beneath which paths are plugged into a domain as it runs.
+    let roots = crate::hotplug::plug_roots(setup)?;
+    let plug_roots: Vec<CString> = roots
+        .iter()
+        .map(|r| CString::new([&b"/"[..], r.to_bytes()].concat()))
+        .collect::<Result<_, _>>()
+        .map_err(|_| "a plug root with a NUL")?;
+    let skel = skeleton(lower, &[], &roots).map_err(|e| format!("a domain's root: {e}"))?;
     // The Unix sockets granted (`CONNECT --port=unix:<name>`): a directory each, of the
     // tmpfs the run's writable layer lies in, which no path from the run's root reaches and
     // no mount of the run's shares; sticky, so that none removes another's.
@@ -1808,13 +1851,15 @@ pub fn start(
             &skel
         } else {
             let dirs: Vec<CString> = copies.iter().map(|(_, t)| t.clone()).collect();
-            own_skel = skeleton(lower, &dirs).map_err(|e| format!("{}: its root: {e}", d.label))?;
+            own_skel = skeleton(lower, &dirs, &roots).map_err(|e| format!("{}: its root: {e}", d.label))?;
             &own_skel
         };
-        let root = image_root(skel_of, lower).map_err(|e| format!("{}: its root: {e}", d.label))?;
+        let root = image_root(skel_of, lower, !roots.is_empty())
+            .map_err(|e| format!("{}: its root: {e}", d.label))?;
         let prepared = Prepared {
             shm: shm.clone(),
             root: root.as_raw_fd(),
+            plug_roots: plug_roots.clone(),
             sockets,
             volumes,
             scratch: scratch.as_ref().map(AsRawFd::as_raw_fd),
@@ -2702,6 +2747,31 @@ fn exec_child(d: &Domain, p: &Prepared, flags: u32, program: &libc::sock_fprog) 
             libc::close(fd);
             if added != 0 {
                 fail(out, c"adding its volume's Landlock rule");
+            }
+        }
+        // The run's plug roots (D235): what is plugged into it as it runs, beneath one,
+        // written as it pleases where it is not read-only. A root grants nothing before: it
+        // lies on its root's mount, read-only. One that is no directory in its view is
+        // skipped, as the base paths above are.
+        for at in &p.plug_roots {
+            let fd = libc::open(at.as_ptr(), libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC);
+            if fd < 0 {
+                continue;
+            }
+            let rule = landlock::PathBeneathAttr {
+                allowed_access: landlock::FS_ALL,
+                parent_fd: fd,
+            };
+            let added = libc::syscall(
+                libc::SYS_landlock_add_rule,
+                ruleset,
+                landlock::RULE_PATH_BENEATH,
+                &raw const rule,
+                0u32,
+            );
+            libc::close(fd);
+            if added != 0 {
+                fail(out, c"adding a plug root's Landlock rule");
             }
         }
         for at in &p.receives {
