@@ -225,6 +225,72 @@ fn owner(
     Ok((u.uid, u.gid))
 }
 
+/// Why init refuses a run its nesting grant, of what the image as built declares (D234).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Nesting {
+    /// Its normalized Agentfile declares no `NESTING`, or it has none.
+    Undeclared,
+    /// It declares the grant beside an agent or harness, `kind` and `name`: the grant
+    /// makes the command its microVM's only principal.
+    Beside { kind: &'static str, name: String },
+    /// Its normalized Agentfile, as built, could not be read.
+    Unread(String),
+}
+
+impl std::fmt::Display for Nesting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Nesting::Undeclared => f.write_str(&shards_abi::run::nesting::undeclared()),
+            Nesting::Beside { kind, name } => f.write_str(&shards_abi::run::beside::nesting(kind, name)),
+            Nesting::Unread(why) => write!(
+                f,
+                "cannot give the command the nesting grant: its image's Agentfile, as built: {why}"
+            ),
+        }
+    }
+}
+
+/// Init's own check of a run carrying the nesting grant (D234), against the image as
+/// built, never the run's root, which the run and `cp` write (D109): its normalized
+/// Agentfile must declare `NESTING`, and no agent or harness beside it.
+pub fn nesting() -> Result<(), Nesting> {
+    let Some(root) = as_built().map_err(Nesting::Unread)? else {
+        return Err(match std::fs::symlink_metadata("/.agentfile.json") {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Nesting::Undeclared,
+            _ => Nesting::Unread("its layers were not kept".into()),
+        });
+    };
+    let Some(text) = built_file(&root, "/.agentfile.json").map_err(Nesting::Unread)? else {
+        return Err(Nesting::Undeclared);
+    };
+    nesting_of(&text)
+}
+
+/// What `text`, an image's normalized Agentfile, declares of the grant: `NESTING`, a
+/// top-level `"nesting": true` (written only where declared, so that every Agentfile
+/// without it reads as before), and no agent or harness beside it.
+fn nesting_of(text: &[u8]) -> Result<(), Nesting> {
+    let spec = json::parse(text).map_err(|e| Nesting::Unread(format!("/.agentfile.json: {e}")))?;
+    if spec.get("schemaVersion").and_then(Value::u64) != Some(1) {
+        return Err(Nesting::Unread(
+            "/.agentfile.json: a schema version this init does not know".into(),
+        ));
+    }
+    if spec.get("nesting") != Some(&Value::Bool(true)) {
+        return Err(Nesting::Undeclared);
+    }
+    for (kind, list) in [("agent", "agents"), ("harness", "harnesses")] {
+        if let Some(d) = spec.get(list).map(Value::array).and_then(<[Value]>::first) {
+            let name = d.get("name").and_then(Value::str).unwrap_or_default();
+            return Err(Nesting::Beside {
+                kind,
+                name: name.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// What the image's normalized Agentfile says to start: every domain's directory, the
 /// domains that run, and the pairs of them that may open connections, by index.
 pub type Read = (
@@ -2658,6 +2724,65 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
     use super::*;
+
+    /// Init's own check of the nesting grant against the image as built (D234): granted
+    /// only where the normalized Agentfile declares `NESTING` (`"nesting": true`) and no
+    /// agent or harness; each refusal in the words the build and the daemon share.
+    #[test]
+    fn init_refuses_the_grant_unless_the_image_as_built_declares_it_alone() {
+        let lists = r#""skills":[],"mcp":[],"networks":[],"connections":[],"attachments":[],"exposures":[],"volumes":[]"#;
+        let spec = |agents: &str, harnesses: &str, nesting: &str| {
+            format!(r#"{{"schemaVersion":1,"agents":[{agents}],"harnesses":[{harnesses}],{lists}{nesting}}}"#)
+        };
+        let agent = r#"{"name":"a","source":"./a","to":"/agents/a","processes":null}"#;
+        let harness = r#"{"name":"h","source":"./h","to":"/harness/h","processes":null}"#;
+        assert_eq!(nesting_of(spec("", "", r#","nesting":true"#).as_bytes()), Ok(()));
+        for undeclared in [
+            spec("", "", ""),
+            spec("", "", r#","nesting":false"#),
+            spec("", "", r#","nesting":"true""#),
+            spec("", "", r#","nesting":1"#),
+            spec("", "", r#","nesting":null"#),
+            spec(agent, "", ""),
+        ] {
+            assert_eq!(
+                nesting_of(undeclared.as_bytes()),
+                Err(Nesting::Undeclared),
+                "{undeclared}"
+            );
+        }
+        assert_eq!(
+            nesting_of(spec(agent, harness, r#","nesting":true"#).as_bytes()),
+            Err(Nesting::Beside {
+                kind: "agent",
+                name: "a".into()
+            })
+        );
+        assert_eq!(
+            nesting_of(spec("", harness, r#","nesting":true"#).as_bytes()),
+            Err(Nesting::Beside {
+                kind: "harness",
+                name: "h".into()
+            })
+        );
+        assert!(matches!(
+            nesting_of(br#"{"schemaVersion":2,"nesting":true}"#),
+            Err(Nesting::Unread(_))
+        ));
+        assert!(matches!(nesting_of(b"{"), Err(Nesting::Unread(_))));
+        assert_eq!(
+            Nesting::Undeclared.to_string(),
+            "cannot give the command the nesting grant: the image's Agentfile declares no NESTING"
+        );
+        assert_eq!(
+            Nesting::Beside {
+                kind: "harness",
+                name: "h".into()
+            }
+            .to_string(),
+            shards_abi::run::beside::nesting("harness", "h")
+        );
+    }
 
     /// The host's entries (volumes.rs, `open`): those for the domains, with their tag,
     /// cleaned mount point and flags; a file bound alone, and the run's own, left out.

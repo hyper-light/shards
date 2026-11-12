@@ -158,4 +158,7 @@ pub mod marker {
     pub const WORKLOAD_EXITED: u32 = 5;
     /// shards-init is powering the VM off.
     pub const POWERING_OFF: u32 = 6;
+    /// The workload of a run given the nesting grant is ready: `READY=1` reached init from a
+    /// process of its cgroup (D234).
+    pub const WORKLOAD_READY: u32 = 7;
 }
