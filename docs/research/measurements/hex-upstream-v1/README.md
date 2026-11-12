@@ -63,3 +63,24 @@ Vulkan context in an NVIDIA GPU VM before and after GPU 0008; Windows (the repor
 zero-patience contract flake (managed-borrowed-nowait/contract.rs:40, 4 times in about 550
 whole-lib runs here),
 no Hex patch's.
+
+## R01–R16
+
+| Rule | This port's proof, and its gap |
+|---|---|
+| R01 | Ported production code allocates fallibly (try_reserve, triomphe try_new) and checks its arithmetic; the workspace's panic lints pass with clippy -D warnings on the touched crates (x86_64 glibc; shards-abi and shards-init on musl). Tests assert. Implicit panic paths beyond the lints were not audited line by line. |
+| R02 | D232 and D233 cite Hex's research and the managed-virtio-gpu lane's check of the renderer patches; unsize's alternatives are Hex's managed-native-receipts.md. Unresearched spans were left out (Windows arm64 GPU packaging, gpu-libs' scratch move). |
+| R03 | D232 lists each new literal's source; MAX_PHYSICAL_GPUS's derivation is Hex's scheduler's, owed shards' own. |
+| R04 | Every new refusal is typed (Gpu, GpuProbe, Launch, ManagedIo, Scope, Connect; StartError::GpuProbe); a receipt's end is TerminalScope's; a printed chain says each cause once (source-chain.md). |
+| R05 | No cache added; every new wait is the caller's deadline or an event; ManagedLauncher's real caller is Hex. |
+| R06 | client.rs grows by about 2,000 lines of Hex's design, reviewed for this port's adaptations, not re-designed. |
+| R07 | Hex's acceptance IDs, ROOT and "node" wording replaced by shards' records; Hex's claim that glibc never gives static TLS back corrected. |
+| R08 | No performance claim. |
+| R09 | Reproduced live before fixing: 0030 (30/30 red), 0031 (OpenStat ENOENT and ESRCH), the refusal chain, GPU 0007 (thin archive, link failure), GPU 0008 (driver reloads on NVIDIA). The other patches port features whose defects Hex reproduced (cited in their commits); not re-reproduced here. |
+| R10 | Records and harnesses here; guard removals for 0030, the chain, GPU 0006 and 0028; GPU 0008's and 0007's reds are their guards removed. |
+| R11 | Verified on x86_64 Linux (glibc; musl for the guest crates). macOS, Windows (0019's and 0026's pipe code, the krunkit renderer patches) and arm64 are unverified. |
+| R12 | One identity type in shards-abi for the API and the VM process; no OS-specific duplicate added. |
+| R13 | f7f8b03b's unused helpers.rs half and Hex's own test campaign not ported. |
+| R14 | No profiling or benchmark (ROOT's). |
+| R15 | Implementer's light tests only; real-VM and GPU-VM validation listed as owed. |
+| R16 | Nothing deleted. The Mac's disk filled during the work (not from this port; ROOT reclaimed); runner scratch is ~/g121-tmp/hex-upstream-v1 on each runner. |
