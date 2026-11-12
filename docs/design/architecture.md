@@ -7095,6 +7095,22 @@ descriptors.
   write, one reading 16 KiB at a time, 60 ms apart, was let go of a request's time in, 3 s
   in the test, still reading). A stop's slot is not counted: the daemon holds that session
   until its exit, which is how `daemon stop` learns of it.
+- **Whose end a run's client heard** (PM M530). A run's, an exec's and an attach's slot
+  passes on what its VM says, so the slot ends both where the VM's connection closes with no
+  last word and where the daemon itself ends: a killed daemon closes every slot it served.
+  The client said the same of both, "the command's microVM stopped before the command
+  ended", and blamed the microVM for kiln's between-turns sweep, which ended the WHP E2E's
+  daemons with `taskkill /F` (jupiter's kiln.log, 2026-11-12): a hunt through WHP, the VMM
+  and the guest. M188's and M331's daemons that exited under their clients were taken so too.
+  Now the slot says `UNANSWERED`, last, where the run's side ended without its last word
+  (`EXIT`, `END`, `RESTART`), and the client says so as the microVM's stop; a slot that ends
+  with no last word at all is its daemon's end, and the client says "the daemon ended before
+  the command did". A command's client (`END`) reads any early end as its daemon's already;
+  a socket's peer (a daemon of a build from before slots) is the run's VM. Held by
+  `a_side_that_ends_without_its_last_word_says_so` and
+  `a_runs_client_tells_its_daemons_end_from_its_microvms`, each red with its guard removed
+  (M530 says on which hosts); live on WHP, a daemon ended mid-run said so and a VM ended
+  said the microVM's words.
 - **Many clients on one list** (PM M262). On macOS a client waiting in select(2) for its
   slot could stop waking at all while the others took theirs: 12 of 16 clients slept
   through 20 s of records others took, and one of an E2E test's 16 waited 60 s while its
@@ -15251,10 +15267,15 @@ It is shards' own MCP's, and its runtime shards' to choose (AGENTFILE_ARCH §11 
   by pidfd. For each program it forks a worker, which holds the program's socket alone
   and loads a filter of its own before it reads the program: reading and writing, its
   memory, futexes, the clock, the kernel's randomness and exiting; any other call, or one
-  of another ABI (x32), kills it (`SECCOMP_RET_KILL_PROCESS`). A worker opens nothing: no
-  file, socket, process or descriptor. Each tool it calls is a frame to the instance over
-  its socket, which the instance answers as it answers its caller's MCP call of that tool,
-  under the same grants, with the same refusals. Helper and workers are the instance's
+  of another ABI (x32), kills it (`SECCOMP_RET_KILL_PROCESS`). Both filters allow
+  `restart_syscall`, by which the kernel resumes a wait a stop broke into where no handler
+  ran (a cgroup's freeze for init's pause and commit, a job-control stop, a debugger): a
+  timed futex wait's on every architecture, and the helper's poll on x86_64 (PM M525,
+  M531). It calls only the restart the interrupted call left, else fails with EINTR, so it
+  allows no other call. A worker opens nothing: no file, socket, process or descriptor.
+  Each tool it calls is a frame to the instance over its socket, which the instance
+  answers as it answers its caller's MCP call of that tool, under the same grants, with
+  the same refusals. Helper and workers are the instance's
   uid, gid and cgroup, its agent's (D60): a program's memory and CPU are its caller's,
   under the domains' memory policy, and need no limits of their own. `shards top` shows
   them as `shards-sandbox` and `shards-program`.
@@ -15290,6 +15311,9 @@ Tested: in crates/server, on Linux, `a_program_calls_its_tools_over_its_socket`,
 cannot hold, a throw, an error's positions, a syntax error's, a promise nothing settles),
 `frames_are_read_whole_and_within_their_bound`,
 `a_worker_is_ended_for_a_call_its_filter_refuses` (`openat`, and x32 on x86_64, SIGSYS),
+`a_worker_stopped_in_a_timed_wait_lives_on` and `the_helper_stopped_in_its_poll_lives_on`
+(each stopped and continued in its wait under its own filter; without `restart_syscall`
+the worker dies on x86_64 and arm64, the helper on x86_64: PM M531),
 `initialize_begins_a_session`, `a_cancellation_names_a_request_in_its_own_session`,
 `a_programs_call_is_its_callers`; on real microVMs,
 `code_mode_runs_a_program_with_the_callers_grants`: a's program finds itself, its peers,
@@ -21475,6 +21499,31 @@ The run's stdout stays empty, and the agent of files alone runs nothing. Each of
 mutations fails the test: hiding no other domain, keeping the bounding set, leaving the
 system writable.
 
+**A member's root shows the image's directories as the image made them** (2026-11-12,
+kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 7). A domain's root is an overlay of the
+image under a skeleton tmpfs. The skeleton holds what init mounts over and the image may
+lack: `/etc` always, and every mount point of its sockets, its server and its volumes, each
+with its parents. overlayfs shows a directory both layers hold with the upper one's owner
+and mode (Documentation/filesystems/overlayfs.rst, "Directories"), and the skeleton made
+every directory root's, 0755. So a volume at `/home/node/.cache` showed the image's
+`/home/node` (1000:1000 0750) as 0:0 0755, and `/etc` and the root as the skeleton's too.
+Reproduced live with init's system calls in its order, in a user and mount namespace with
+subordinate IDs on Linux 7.2.9 x86_64 (`docs/research/measurements/s7-home-workdir`,
+`repro.py`, `repro-adacachy.log`).
+
+Now each directory the skeleton makes that the image has takes the image's owner and mode
+(fchownat, then fchmodat: a chown clears set-ID bits), and the skeleton's tmpfs root takes
+the image root's (its `mode`, `uid` and `gid` options). A directory the image lacks stays
+root's, 0755, as a mount point's. `a_skeletons_directories_are_the_images_own` runs the
+real `skeleton` and `image_root` in a user and mount namespace and compares the root,
+`/home`, `/home/node`, `/etc` and `/tmp` with the image's, and their owners too where it
+runs as root of IDs past its own (`unshare --map-auto --map-root-user`). It fails at the
+base revision, and with either guard removed: the owner and mode copied, the root's options
+(`mutate4.sh`, `mutate4-adacachy.log`). Where a domain has plug roots (D235), its root's
+own writable layer is the uppermost for `/`, and D235's `image_root` gives that layer the
+image root's owner and mode. **Owed (ROOT):** the same in a real microVM on KVM,
+Hypervisor.framework and WHP.
+
 Part two, after `no_new_privs`, before its command:
 
 - **Landlock** (Documentation/userspace-api/landlock.rst; ABI 6 at least, which Linux 6.12
@@ -22268,7 +22317,7 @@ says; the report pipe on a Windows host; the seven-target lint.
 **What would falsify it.** A client that needs shards to own its VM processes after all (then
 D215's spawn alone).
 
-### D235. A project plugged into a running member at its host path (built: the daemon's plugs; the orchestrator's, case handling and host edits' notices next; real-VM validation owed)
+### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's; case handling and host edits' notices owed; real-VM validation owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 8: kiln reads a session's diffs,
 HEAD and checkpoints on the host at the session's own path, so a member (an agent or
@@ -22325,14 +22374,30 @@ image lacks could never become a writable mount point in a running member.
 - *The daemon's:* `shards plug volume --for NAME MICROVM SOURCE:PATH[:ro]`, NAME an agent or
   harness as an Agentfile's `FOR` names one, which runs a command; `unplug volume` by its
   path, as D214's.
+- *The orchestrator's* (D231's run host; shards-api's image channel, version 4):
+  `ImageGuest::plug(member, host, at, read_only, patience)` and `unplug(at, patience)`. On
+  the wire, `PLUG` carries a `PlugAsk` (its id, the member's index, the host's directory,
+  the path, read-only), `UNPLUG` an `UnplugAsk` (its id, the path), and `PLUGGED` answers
+  each by id, done or refused by kind (`PlugRefusal`: `Request`, `Member`, `Outside`,
+  `Taken`, `Host`, `Device`, `Unknown`, `Busy`; `ImageRefusal::Plug` for the caller). The
+  version moves to 4, as a host of version 3 ends a run on a kind it does not know: a
+  mismatch is refused as the run is asked instead. `shards api-run` checks an ask as init
+  does (`plug::beneath`, against the roots it named), serves the directory by a share
+  process of its own, plugs it into its VM's bus (`DEVICE`, answered `DEVICED` on the VM's
+  link) and has init mount it in the member; init's `DEVICE` built-in says a mount in use by
+  its exit status (`DEVICE_BUSY`, EBUSY's number), so that an unplug's `Busy` is typed. Its
+  VM has D214's slots, as a daemon run's.
 
 **Verified** (adacachy, KVM x86_64, Linux 7.2.9): `a_project_is_plugged_into_a_running_agent_at_its_host_path`
 (tests/plug.rs): the agent, given its roots, makes nothing beneath any (EROFS, 30, for a
 directory and a file); a project plugged outside every root is refused naming them; plugged
 beneath one, the agent reads the host's file and writes its own, which the host reads; it is
 unplugged, plugged again and unplugged as the agent runs. Mutation: with no Landlock rule
-beneath the roots, the agent writes nothing there and the test fails. HVF, WHP and arm64
-KVM are owed (ROOT's).
+beneath the roots, the agent writes nothing there and the test fails.
+`a_project_is_plugged_into_the_running_harness` (tests/api_image.rs) holds the
+orchestrator's: refused outside the roots (`Outside`) and for a member of files alone
+(`Member`); plugged at its host path, read and written by the harness; unplugged, and a
+second unplug `Unknown`. HVF, WHP and arm64 KVM are owed (ROOT's).
 
 **Known limits.** A project in `/tmp` (macOS's `/private/tmp` as `/tmp`, a Linux host's
 `/tmp`) is no root's: the domain's own scratch is there. A path beneath a root through a

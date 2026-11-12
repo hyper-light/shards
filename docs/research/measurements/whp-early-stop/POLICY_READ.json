@@ -1,0 +1,56 @@
+{
+  "type": "POLICY_READ",
+  "revision": "a7dbf14461010b150cfc9c6d063b2ae0e110d318",
+  "ref": "origin/main",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "assigned adversarial (debugging) agent, R15",
+  "coordinator": "ROOT 01a148884a4770fdaf0111f3f792a248 (session g121-46)",
+  "date": "2026-11-12",
+  "documents": {
+    "AGENTS.md": {
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+      "read": "full",
+      "source": "origin/main"
+    },
+    "docs/development-rules.md": {
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "read": "full (R01-R16)",
+      "source": "origin/main"
+    },
+    "docs/development-evidence.md": {
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+      "read": "full",
+      "source": "origin/main"
+    }
+  },
+  "task": "whp-early-stop: root-cause WHP microVMs that stop early with exit 125 ('the command's microVM stopped before the command ended'), reproduced live first (R09) on jupiter; fix with red/green where the cause allows, else record it with evidence and the workaround",
+  "branch": "p/whp-early-stop-v1",
+  "base": "origin/main a7dbf1446, fast-forwarded to 3103d2eab and c2c4547c1 before any change",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/whp-early-stop",
+  "owned_paths": [
+    "crates/shards/src/daemon/slots.rs (pass_on)",
+    "crates/shards/src/cli/client.rs (ran_on and its test)",
+    "crates/shards/src/daemon.rs (the slot relay's tests)",
+    "crates/ipc/src/lib.rs (kind::UNANSWERED)",
+    "docs/design/architecture.md D185 (one bullet)",
+    "docs/research/platform-measurements.md M528",
+    "docs/research/measurements/whp-early-stop/**"
+  ],
+  "campaign": "bounded live campaign on jupiter (Windows 11 Pro x86_64, WHP): own dirs ~/g121-whp-stop-*, CARGO_TARGET_DIR outside any synced copy, removed when done; no builds on this Mac (its load); unit red/green and scripts/lint on adacachy (Linux), adas-mac-studio.local-2 (macOS) and jupiter (Windows)",
+  "rechecked": [
+    {
+      "date": "2026-11-12",
+      "why": "ROOT's session restarted and stopped this one mid-work; policy unchanged on origin/main c2c4547c1",
+      "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "instructions": [
+        "ROOT: resume the misattribution fix as approved: typed UNANSWERED from the daemon's relay, 'the daemon ended before the command did' for a wordless end, red/green on all three OSes, the PM entry and harness",
+        "ROOT: merge origin/main in, land signed with gits, then report and end"
+      ]
+    }
+  ],
+  "superseding_instruction": {
+    "from": "the person, through ROOT's brief, 2026-11-12",
+    "text": "subagents test their change, merge their own work to main (fast-forward, never force) and end",
+    "effect": "supersedes R15's 'subagents do not merge themselves to main' as a current explicit user instruction (development-rules.md preamble); ROOT's real-VM suites recorded as owed"
+  }
+}

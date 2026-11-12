@@ -17,8 +17,10 @@ pub use shards_abi::run::nesting::Ready;
 /// The channel's version, the first byte of [`Request`]: changed only by appending. 2
 /// appends the nesting grant's consent and deadline (D234); 3, the destinations kept
 /// ([`Narrowing::destinations`], D236), and to each published port in [`Started`], the
-/// members it reaches.
-pub const VERSION: u8 = 3;
+/// members it reaches; 4, a host directory plugged into a running member and let go of
+/// (`PLUG`, `UNPLUG`, answered `PLUGGED`; D235), so that a side that has no plugs refuses
+/// the run as it is asked, before any plug is.
+pub const VERSION: u8 = 4;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -30,6 +32,11 @@ pub mod to_host {
     pub const STATS: u8 = 4;
     /// Ends the run at once, its VM killed.
     pub const STOP: u8 = 5;
+    /// A [`PlugAsk`](super::PlugAsk): a host directory plugged into a running member
+    /// (D235).
+    pub const PLUG: u8 = 6;
+    /// An [`UnplugAsk`](super::UnplugAsk).
+    pub const UNPLUG: u8 = 7;
 }
 
 /// What the run host sends.
@@ -51,6 +58,8 @@ pub mod to_client {
     /// [`Ready`](super::Ready): the run's own command moved its readiness under the nesting
     /// grant (D234), as its init said it ([`ready`](super::ready) reads it).
     pub const READY: u8 = 23;
+    /// [`PlugAnswer`](super::PlugAnswer): a plug's or an unplug's outcome, by its ask's id.
+    pub const PLUGGED: u8 = 24;
 }
 
 /// Why a payload could not be read or written.
@@ -392,6 +401,77 @@ pub struct StatsAnswer {
     pub id: u32,
     /// Init's lines, or why none came.
     pub result: Result<Stats, String>,
+}
+
+/// A host directory plugged into running member `member` as the run goes (D235), as
+/// `shards plug volume --for` plugs one: at `at`, absolute and strictly beneath one of the
+/// run's plug roots, which its host names as the run starts (its OS's own, and the
+/// top-level directory of each of its [`ShareAt`]s), so that a project can be plugged at
+/// its host path; the host's files there its member's, read-only where asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlugAsk {
+    pub id: u32,
+    pub member: u32,
+    /// Absolute, UTF-8: the host's directory.
+    pub host: String,
+    /// Absolute: where its member sees it.
+    pub at: String,
+    pub read_only: bool,
+}
+
+/// What is plugged in at `at` let go of: unmounted in its member, refused while anything
+/// there uses it, then taken off the microVM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnplugAsk {
+    pub id: u32,
+    pub at: String,
+}
+
+/// Why a plug or an unplug was refused, by what refused it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlugRefusal {
+    /// The ask itself: a path that is not absolute, a member the image does not declare.
+    Request = 0,
+    /// The member runs nothing: files alone, or ended.
+    Member = 1,
+    /// `at` lies beneath none of the run's plug roots, which its words name.
+    Outside = 2,
+    /// Something is plugged in at `at` already.
+    Taken = 3,
+    /// The host's directory could not be opened, or served.
+    Host = 4,
+    /// The microVM could not take it: no slot free, or its guest refused it.
+    Device = 5,
+    /// An unplug's: nothing is plugged in at `at`.
+    Unknown = 6,
+    /// An unplug's: something in the member uses it.
+    Busy = 7,
+}
+
+fn plug_refusal(tag: u8) -> Result<PlugRefusal, WireError> {
+    Ok(match tag {
+        0 => PlugRefusal::Request,
+        1 => PlugRefusal::Member,
+        2 => PlugRefusal::Outside,
+        3 => PlugRefusal::Taken,
+        4 => PlugRefusal::Host,
+        5 => PlugRefusal::Device,
+        6 => PlugRefusal::Unknown,
+        7 => PlugRefusal::Busy,
+        tag => {
+            return Err(WireError::Tag {
+                what: "a plug's refusal",
+                tag,
+            });
+        }
+    })
+}
+
+/// A plug's or an unplug's outcome, by its ask's id: done, or refused and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlugAnswer {
+    pub id: u32,
+    pub result: Result<(), (PlugRefusal, String)>,
 }
 
 /// How the run ended.
@@ -806,6 +886,84 @@ impl Credit {
     }
 }
 
+impl PlugAsk {
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.u32(self.member);
+        w.text(&self.host)?;
+        w.text(&self.at)?;
+        w.u8(u8::from(self.read_only));
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<PlugAsk, WireError> {
+        let mut r = Reader(payload);
+        let ask = PlugAsk {
+            id: r.u32()?,
+            member: r.u32()?,
+            host: r.text()?,
+            at: r.text()?,
+            read_only: r.flag()?,
+        };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl UnplugAsk {
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.text(&self.at)?;
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<UnplugAsk, WireError> {
+        let mut r = Reader(payload);
+        let ask = UnplugAsk {
+            id: r.u32()?,
+            at: r.text()?,
+        };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl PlugAnswer {
+    /// Its id, then 0, or 1, its refusal's tag and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(()) => w.u8(0),
+            Err((cause, why)) => {
+                w.u8(1);
+                w.u8(*cause as u8);
+                w.text(why)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<PlugAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(()),
+            1 => Err((plug_refusal(r.u8()?)?, r.text()?)),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a plug's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(PlugAnswer { id, result })
+    }
+}
+
 impl StatsAsk {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
@@ -1096,6 +1254,56 @@ pub fn ready(payload: &[u8]) -> Result<Ready, WireError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plug's ask, an unplug's and their answer come back as they went, each refusal by
+    /// its tag; a truncated, trailing or unknown-tagged one is refused, never a default.
+    #[test]
+    fn plugs_round_trip_and_bad_ones_are_refused() {
+        let ask = PlugAsk {
+            id: 7,
+            member: 2,
+            host: "/Users/u/proj".into(),
+            at: "/Users/u/proj".into(),
+            read_only: true,
+        };
+        let bytes = ask.encode().unwrap();
+        assert_eq!(PlugAsk::decode(&bytes).unwrap(), ask);
+        assert_eq!(PlugAsk::decode(&bytes[..bytes.len() - 1]), Err(WireError::Short));
+        assert_eq!(
+            PlugAsk::decode(&[bytes.as_slice(), &[0]].concat()),
+            Err(WireError::Trailing)
+        );
+        let mut flag = bytes.clone();
+        *flag.last_mut().unwrap() = 2;
+        assert!(matches!(PlugAsk::decode(&flag), Err(WireError::Tag { .. })));
+        let un = UnplugAsk {
+            id: 8,
+            at: "/Users/u/proj".into(),
+        };
+        assert_eq!(UnplugAsk::decode(&un.encode().unwrap()).unwrap(), un);
+        for result in [
+            Ok(()),
+            Err((PlugRefusal::Request, "a path".to_string())),
+            Err((PlugRefusal::Member, String::new())),
+            Err((PlugRefusal::Outside, "the run's plug roots are /Users".into())),
+            Err((PlugRefusal::Taken, String::new())),
+            Err((PlugRefusal::Host, String::new())),
+            Err((PlugRefusal::Device, String::new())),
+            Err((PlugRefusal::Unknown, String::new())),
+            Err((PlugRefusal::Busy, String::new())),
+        ] {
+            let answer = PlugAnswer { id: 9, result };
+            assert_eq!(PlugAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
+        }
+        assert!(matches!(
+            PlugAnswer::decode(&[0, 0, 0, 9, 1, 8, 0, 0, 0, 0]),
+            Err(WireError::Tag { .. })
+        ));
+        assert!(matches!(
+            PlugAnswer::decode(&[0, 0, 0, 9, 2]),
+            Err(WireError::Tag { .. })
+        ));
+    }
 
     fn request() -> Request {
         Request {

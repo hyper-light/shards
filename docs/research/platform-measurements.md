@@ -21555,3 +21555,124 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
 - **Unverified.** The pins test's 32 streams at once past the old bound on WHP (ROOT's); a
   Windows on arm64 (no host); a job nested under one holding it to less, whose limit its
   processes cannot read; the kernel's share on a quiet host.
+
+### M530. WHP microVMs that "stopped before the command ended": kiln's sweep had ended their daemon, and the client blamed the microVM (D185)
+
+- **Question.** On jupiter (WHP), ROOT's run-only tester of engine_ring saw two runs end with
+  status 125, "the command's microVM stopped before the command ended": the bulk test's
+  `run -d --name prov --use-api-socket` after 1.30 s, and the pins test's plain `run -d
+  --name bare --cpus 1 ... sleep` after 4.86 s, neither daemon's log saying a word of it
+  (ring-pins-v1's r16). What stopped them: WHP's exits, the VM process's job (D141), the
+  guest, vsock, the run's connection, or the daemon?
+- **Method.** jupiter (Windows 11 Pro 10.0.26200, AMD64, 32 CPUs), 2026-11-12, main
+  3103d2eab and the fix 037fe95d4, test-release; harnesses and every log in
+  [the record](measurements/whp-early-stop/README.md).
+  - The failure's own records: the tester's transcript, which kept its test output (r2), and
+    jupiter's kiln agent log over the run (r1); kiln's source at origin/main ed0c9d3bd for
+    what that log said, and sysinfo 0.39.6's process ending on Windows.
+  - The symptom looked for without kiln's sweep: 628 runs of plain, detached and fresh-home
+    first runs, 4 or 8 at a time and alone, and engine_ring three times, each a `kiln run`
+    (r3).
+  - Reproduced (R09, `harness/kill.sh`): a run's daemon ended mid-run with `taskkill /F`, as
+    the sweep ends one, in a fresh home's first `run -d` (1.5 s in, its template booting) and
+    in an attached `run --rm ... sleep 30` (2.2 s in); and, the case the words were written
+    for, the run's VM process ended instead, its daemon alive. A diagnostic build
+    (`harness/diag.patch`, not merged) said how each side of the slot ended.
+  - The fix: its unit tests, then each guard removed (`harness/unit.sh`), on Linux, macOS
+    and Windows, and the shards binary's whole unit suite; `kill.sh` again with the fix.
+- **Found.**
+  - kiln ended them. At 16:00:49.831Z its agent "stopping what agents' commands left running,
+    now that they're between turns" ended 48108 (the eng-ring-2 daemon, whose log's lines are
+    "shards daemon 48108"), its template VM and its network process; at 16:01:00.376Z 50456
+    (eng-pins-1-4's daemon) and 36004, its VM, whose debug lines end that test's log (r1).
+    kiln holds each agent session's processes in a job of its own and, every 10 s while the
+    agent is between turns, ends those not under its harness by their parents (harness/
+    host.rs `watch`, survivors.rs `scan`): a shards daemon outlives the client that started
+    it (D26), so it is one, and its VMs go with it. On Windows the end is `taskkill /F` at once
+    (sysinfo takes only Kill there); on Linux and macOS SIGTERM, then a kill 3 s on.
+  - Both clients had printed their microVM's ID, which the daemon says once it has made the
+    run, before its VM boots: each daemon was booting its run's template when it was ended
+    (r2).
+  - Outside an agent session, nothing stopped early: 0 of 628 runs, and in 3 engine_ring
+    rounds only the pins test's 503, the admission gap ring-pins-v1's r16 names (r3).
+  - The daemon ended mid-run reproduced the symptom exactly, 6 of 6 (3 fresh-home `run -d`,
+    3 attached): status 125, "the command's microVM stopped before the command ended", the
+    ID printed first by `run -d`, a daemon.log of its start alone. The run's VM ended instead
+    said the same words, 4 of 4 (a first pick of the newest VM ended the pool's spare, and
+    its 2 runs passed), while its daemon's log said "VM N ended before its command did".
+    The client could not tell the two apart: its slot ended with no word either way (the
+    diagnostic build: an end, not an error, read by the client) (r4).
+  - With the fix the daemon ended mid-run said "the daemon ended before the command did",
+    6 of 6 (3 and 3), and the VM ended "the command's microVM stopped before the command
+    ended", 3 of 3 (r4).
+  - The unit tests, on Linux: green; with the relay's `UNANSWERED` a no-op, the relay's test
+    failed ("left: Some([12]) right: Some([12, 91])"); with the client's line for a wordless
+    end put back, the client's test failed (its words against "the daemon ended before the
+    command did"); the shards binary's unit suite passed in test-release, 730 of 730, 14
+    ignored (r5). On Windows, green, and the relay's test red without its guard, as on
+    Linux; the rest of Windows' and macOS' as the record's Owed says. In the dev profile
+    the suite ended at a stack overflow of a test's `policy` thread (Rego) on Linux and
+    Windows alike, code this change leaves alone.
+- **Consequence (D185).** The cause is outside shards: kiln's between-turns sweep ends a
+  shards daemon, and every microVM it holds, once the agent whose command started it is
+  between turns, whatever still uses it. For agents in kiln sessions: wait for a run that
+  needs its daemon within the turn, or run it through `kiln run` (background), whose
+  processes live until the run ends. shards' part was to name the wrong end: a slot whose
+  daemon ended read as its microVM's stop, as M188's and M331's daemons that exited under
+  their clients did. Now the slot's daemon says `UNANSWERED` where a run's, an exec's or an
+  attach's side ended without its last word (`EXIT`, `END`, `RESTART`), and a slot that ends
+  with no last word is said to be its daemon's end.
+- **Unverified.** The real-VM suites with the fix (ROOT's); the sweep's own end of a daemon
+  on Linux and macOS, by SIGTERM, for which the daemon installs no handler, so that its
+  default ends it as a kill does: held there by the unit tests alone; GitHub's windows-2025
+  failures of the same day are not this (no kiln there; M528).
+
+### M531. init's path descriptors on musl, and code mode's workers stopped in a timed wait (PM M525's two latent defects)
+
+- **Question.** M525 found init's four production opens of a path descriptor made through
+  std's `OpenOptions::custom_flags(O_PATH)`, which musl's `O_ACCMODE` (`03|O_SEARCH`, its
+  `O_SEARCH` being `O_PATH`) loses to std's mask, and a code-mode worker's filter that
+  allows futex but not `restart_syscall`. Are both real, on which architectures and libcs,
+  and does any other filter of shards' own share the second?
+- **Method.** On x86_64 (adacachy, kernel 7.2.9) natively (glibc) and in CI's pinned musl
+  image under Docker's default seccomp profile, and on arm64 (Docker Desktop's VM, kernel
+  6.12.76-linuxkit) in the same musl image and in Debian's `rust:1.98.1`, each as uid 1000:
+  init's and the code-mode server's unit tests; probes, test modules appended for one run
+  (`changes::keep`'s descriptors read back by F_GETFL and a mode-0 layer kept, fixed and as
+  main had it; the managed reaper's own loop and the network process's poller, each under
+  its filter, stopped and continued in its wait; a program's `Atomics.wait` in a worker's
+  runtime); and mutants of each guard. Harnesses, logs and sources:
+  [the record](measurements/musl-opath-v1/README.md). Revisions 883796ec1 and fc71859bc
+  (main), 2026-11-12.
+- **Found.**
+
+  | Defect | Before (main's code) | After |
+  |---|---|---|
+  | init's kept layers (`changes::keep`), musl | not `O_PATH`: `O_RDONLY \| O_DIRECTORY \| O_LARGEFILE` (x86_64 `0o300000`, arm64 `0o440000`); a mode-0 layer refused EACCES | `O_PATH \| O_DIRECTORY` (`0o10200000`, `0o10040000`); kept |
+  | the same, glibc | `O_PATH` already (glibc's `O_ACCMODE` is 3) | unchanged |
+  | a worker stopped and continued in a timed futex wait | SIGSYS on x86_64 and arm64, glibc and musl (`restart_syscall` refused) | exits 0 on each |
+  | the helper stopped in its poll (M525's fix kept) | lives; with `restart_syscall` in neither filter, SIGSYS on x86_64, lives on arm64 (ppoll restarts as itself) | lives on each |
+  | the managed reaper, the network process (x86_64) | live through the stop: no call they allow resumes through `restart_syscall` (ppoll and wait4 restart as themselves; epoll_wait returns EINTR, which the poller takes as no events) | unchanged |
+  | a program's timed `Atomics.wait` in a worker | throws "cannot block in this thread" (QuickJS-NG blocks only where `JS_SetCanBlock` allows; rquickjs never sets it) | unchanged |
+
+- **Mutants**, on each of the four: a call site put back on std's `OpenOptions` (killed by
+  the test that no source of init's asks std for `O_PATH`, on glibc too); the helper given
+  std's flags (killed on musl, "not O_PATH: 0o300000"; survives on glibc, which keeps
+  `O_PATH`: the source test is the guard there); the filters as main had them (the worker's
+  test killed, SIGSYS); `restart_syscall` in neither (the helper's test killed on x86_64
+  alone).
+- **Reading.** Both defects were real and latent. init, musl alone, made read-only opens
+  where it meant path descriptors: each its directory's file system's open and release,
+  fsnotify's events, a read permission asked, and a descriptor able to read the directory;
+  init runs them as root, so none failed in a guest. The worker's filter allowed a timed
+  futex wait and killed its resumption after a stop, a cgroup's freeze (init's pause and
+  commit) or a debugger, on both architectures; no worker path is known to make one today.
+  The fix: `opath::open` (open(2) itself, `O_PATH | O_CLOEXEC`) for init's five opens, and
+  `restart_syscall` in the worker's list, which the helper's extends (D136). What would
+  falsify it: a path descriptor of init's whose F_GETFL lacks `O_PATH` on musl, or a
+  filtered worker or helper ended by SIGSYS after a stop.
+- **Unverified.** The guest paths that hold these descriptors on real microVMs (diff,
+  commit, export and size of runs and joiners, D190's go-over) and code mode under init's
+  pause and commit (ROOT's); scripts/lint's whole workspace and its macOS and Windows
+  targets, which compile none of this change (clippy of init, server and net ran clean on
+  the four Linux targets, and `cargo fmt --all --check`, at 1464cdb88).

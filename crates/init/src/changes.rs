@@ -45,14 +45,7 @@ const MADE: [&str; 7] = [
 /// Keeps the layers at `lower` and `upper` for [`write`]: called once they are mounted,
 /// before the root moves over them.
 pub fn keep(lower: &str, upper: &str) -> io::Result<()> {
-    let open = |path: &str| -> io::Result<OwnedFd> {
-        use std::os::unix::fs::OpenOptionsExt;
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
-            .open(path)?;
-        Ok(file.into())
-    };
+    let open = |path: &str| crate::opath::open(path, libc::O_DIRECTORY);
     let _ = LAYERS.set((open(lower)?, open(upper)?));
     Ok(())
 }
