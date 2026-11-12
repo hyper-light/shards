@@ -26,7 +26,7 @@ pin() {
 
 host() {
     echo "- host: $(uname -srm); $(grep -m1 -E 'model name|CPU part' /proc/cpuinfo | cut -d: -f2 | sed 's/^ //')"
-    echo "- load: $(cut -d' ' -f1-3 /proc/loadavg); cpus $(nproc); pinned to ${cpus:-none}; revision $(git -C "$here" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    echo "- load: $(cut -d' ' -f1-3 /proc/loadavg); cpus $(nproc); pinned to ${cpus:-none}; revision ${REVISION:-$(git -C "$here" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 }
 
 # --- what each variant needs, built or fetched once ---------------------------------
