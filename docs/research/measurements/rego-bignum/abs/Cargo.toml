@@ -1,0 +1,25 @@
+# PM M524: `abs` of the fuzzer's number (fuzz/fuzz_targets/rego-builtins.rs's
+# oom-4b431d4a...) as a policy calls it, built as shards' release is (fat LTO, one
+# codegen unit), timed, its peak resident memory read. A workspace of its own:
+#
+#   cargo +1.98.1 run --release --manifest-path docs/research/measurements/rego-bignum/abs/Cargo.toml
+#
+# For a before and after, a copy at this path in another checkout builds that checkout's
+# crates/rego.
+[package]
+name = "rego-bignum-abs"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[dependencies]
+shards-rego = { path = "../../../../../crates/rego" }
+libc = "0.2"
+
+[workspace]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
