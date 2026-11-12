@@ -286,7 +286,7 @@ fn arguments(spec: &GuestSpec, vsock: &Path, said: usize) -> Result<Vec<OsString
     }
     for device in &spec.gpu_devices {
         args.push(flag("--gpu-device")?);
-        args.push(device.argument().map_err(Refusal::Gpu)?);
+        args.push(crate::physical::argument(*device).map_err(Refusal::Gpu)?);
     }
     Ok(args)
 }
