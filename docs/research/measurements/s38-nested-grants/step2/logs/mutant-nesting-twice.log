@@ -1,0 +1,57 @@
+   Compiling shards-agentfile v0.1.0 (/home/adalundhe/.cache/s38-step2/src/crates/agentfile)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.23s
+     Running tests/agentfile.rs (target/debug/deps/agentfile-bc1146fc106af5af)
+
+running 32 tests
+test a_dockerfile_reads_no_agentfile_directive ... ok
+test a_remote_mcp_servers_endpoint_is_its_urls ... ok
+test a_normalized_agentfile_records_nesting ... FAILED
+test a_stage_sees_its_lineages_names_alone ... ok
+test a_volumes_name_is_one_the_engine_takes ... ok
+test agents_have_ipv6_where_a_joined_network_says_so ... ok
+test agents_and_harnesses_take_a_name_a_source_and_where_they_go ... ok
+test a_normalized_agentfile_reads_back_as_its_grants ... ok
+test an_agentfile_whose_names_hold_is_checked_whole ... ok
+test connections_go_with_or_to_agents_on_networks ... ok
+test connections_grant_only_what_their_networks_let_in ... ok
+test connections_join_one_kind_on_networks_that_allow_them ... ok
+test egress_declared_ports_are_named_for_the_run ... ok
+test egress_is_what_joined_networks_open ... ok
+test expose_takes_a_direction_and_networks_and_stays_plain_without_them ... ok
+test harnesses_are_attached_to_agents_by_name ... ok
+test mcp_servers_are_named_and_offered_to_every_agent_or_those_named ... ok
+test every_name_a_grant_uses_is_declared_of_its_kind ... ok
+test nesting_is_declared_once ... ok
+test nesting_is_refused_beside_an_agent_or_harness ... ok
+test nesting_takes_no_arguments ... ok
+test networks_take_composes_options_and_their_ports ... ok
+test no_agentfile_directive_is_an_onbuild_trigger ... ok
+test ingress_reaches_a_networks_one_member ... ok
+test skills_are_taken_as_add_takes_a_source_for_every_agent_or_those_named ... ok
+test stages_agents_and_harnesses_share_one_namespace ... ok
+test the_normalized_agentfile_holds_what_was_declared ... ok
+test networks_carry_only_their_protocols ... ok
+test two_volumes_never_share_a_mount_point ... ok
+test volumes_take_a_name_options_and_whom_they_are_for ... ok
+test reach_through_any_declared_edge_is_reach ... ok
+test an_agentfile_declaring_nesting_builds ... ok
+
+failures:
+
+---- a_normalized_agentfile_records_nesting stdout ----
+
+thread 'a_normalized_agentfile_records_nesting' (328782) panicked at crates/agentfile/tests/agentfile.rs:909:9:
+assertion `left == right` failed: [Nesting, Nesting]
+  left: Ok(true)
+ right: Err(Twice)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_normalized_agentfile_records_nesting
+
+test result: FAILED. 31 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p shards-agentfile --test agentfile`
+error: 1 target failed:
+    `-p shards-agentfile --test agentfile`

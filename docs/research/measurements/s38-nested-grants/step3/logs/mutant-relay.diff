@@ -1,0 +1,12 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:20:40.440027065 -0800
++++ crates/shards/src/workload.rs	2026-11-12 02:20:40.448155223 -0800
+@@ -984,9 +984,6 @@
+             // well formed, or the guest's protocol broken.
+             kind::READY => {
+                 run::nesting::Ready::decode(payload).ok_or("the guest sent a malformed readiness")?;
+-                if let Some(readiness) = records.readiness {
+-                    readiness(payload);
+-                }
+             }
+             kind::BIND | kind::LISTEN | kind::UNBIND => {
+                 if let Some(host_net) = records.host_net {

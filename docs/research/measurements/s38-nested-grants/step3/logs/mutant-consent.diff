@@ -1,0 +1,11 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:15:53.575491046 -0800
++++ crates/shards/src/setup.rs	2026-11-12 02:15:53.613676753 -0800
+@@ -174,7 +174,7 @@
+             "writable-cgroups" => {
+                 out.writable_cgroups = Some(shards_cmdline::go::parse_bool(v).map_err(|_| two())?)
+             }
+-            "nesting" => out.nesting = shards_cmdline::go::parse_bool(v).map_err(|_| two())?,
++            "nesting" => {}
+             _ => return Err(two()),
+         }
+     }

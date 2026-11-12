@@ -39,15 +39,24 @@ PLANNED = [
     ("0444", "The identities file's mode, 0444"),
     ("NESTING", "The names: `NESTING`"),
     ("nesting=true", "`nesting=true`"),
-    ("nesting", "the setup words `nesting`"),
+    ("nesting", "`nesting` the grant"),
     ("ready-by=", "`ready-by=`"),
-    ("gpus=", "`gpus=` are shards' own"),
+    ("gpus=", "`gpus=` the GPUs"),
     ("NOTIFY_SOCKET", "`NOTIFY_SOCKET`"),
     ("READY=1", "`READY=1` are sd_notify's"),
     ("SHARDS_READY_BY", "`SHARDS_READY_BY` takes the place of"),
     ("CAP_SYS_ADMIN (21)", "CAP_SYS_ADMIN (21)"),
     ("CAP_NET_ADMIN (12)", "CAP_NET_ADMIN (12)"),
     ("the controllers", "The controllers the workload may enable"),
+    ("notify socket mode 0666", "The notify socket's mode, 0666"),
+    ("READY's 9-byte payload", "READY's payload, 9 bytes"),
+    ("init's `notify` entry and tag `N`", "Init's own names"),
+    ("NR_OPEN_MAX 2147483584", "`NR_OPEN_MAX`, 2147483584"),
+    ("ready_by", "`ready_by` is shards-api's field"),
+    ("the run's events", "The run's events `ready` and"),
+    ("/run/shards 0755", "`/run/shards`'s mode, 0755"),
+    ("credentials buffer 32", "The credentials buffer, 32 bytes"),
+    ("notify queue", "The notify queue"),
 ]
 
 # Backticked names in D234 that are no literal of its own: each is another entry's.
@@ -101,6 +110,12 @@ EXISTING = {
     "socket": "Docker's profile's rule name (moby/profiles v0.2.3)",
     "--cgroupns host": "D156's flag, refused with the grant",
     "--pid host": "D115's flag, refused with the grant",
+    "ready_by": "planned",
+    "SHARDS_READY_BY=0": "planned (cold start, with SHARDS_READY_BY)",
+    "WORKLOAD_READY": "planned (marker 7; ipc kind 90's name)",
+    "ready": "planned (the run's event)",
+    "ready-by-passed": "planned (the run's event)",
+    "writable-cgroups=true": "D42's security option, the key's form",
 }
 
 
@@ -148,9 +163,9 @@ def main():
     def holders(text, ty, value):
         return re.findall(rf"pub const (\w+): {ty} = {value};", text)
     checks = [
-        ("marker 7", 7, markers, "u32", taken, r"WORKLOAD_READY"),
-        ("run kind 49", 49, kinds, "u8", run_kinds, r"READY"),
-        ("ipc kind 90", 90, ipc, "u8", ipc_kinds, r"READY"),
+        ("marker 7", 7, markers, "u32", taken, r"^WORKLOAD_READY$"),
+        ("run kind 49", 49, kinds, "u8", run_kinds, r"^READY$"),
+        ("ipc kind 90", 90, ipc, "u8", ipc_kinds, r"^WORKLOAD_READY$"),
     ]
     for name, value, text, ty, used, own in checks:
         held = holders(text, ty, value)

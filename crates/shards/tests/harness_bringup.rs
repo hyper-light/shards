@@ -775,3 +775,138 @@ fn an_owners_subscription_outlives_a_silence_within_its_idle_bound() {
     whole(&seen, &all);
     assert_eq!(seen.text(), "after-quiet\n", "{all}");
 }
+
+/// The path of a private copy of a signed-in harness's home or config directory, which the
+/// caller made of this machine's user's own login
+/// (docs/research/measurements/harness-bringup-v2/signed-in.sh). Never read here: only
+/// given to the harness.
+fn signed_in(variable: &str) -> String {
+    let path = PathBuf::from(std::env::var_os(variable).unwrap_or_else(|| {
+        panic!("supply {variable}: a private copy of a signed-in login (harness-bringup-v2/signed-in.sh)")
+    }));
+    assert!(
+        path.is_absolute() && path.is_dir(),
+        "{variable} is an absolute directory"
+    );
+    path.display().to_string()
+}
+
+/// The files of the project a signed-in harness works on: names it can only learn by
+/// running a tool.
+const PROJECT: [&str; 2] = ["shards-turn-alpha.txt", "shards-turn-beta.md"];
+
+fn project() -> TempDir {
+    let dir = TempDir::new("harness-project");
+    for name in PROJECT {
+        std::fs::write(dir.join(name), format!("{name}\n")).unwrap();
+    }
+    dir
+}
+
+/// Whether the kernel saw the harness `name` exec `program` itself (its command line's
+/// first word, bare or a path), whatever shell started it.
+fn ran_in_domain(seen: &Seen, name: &str, program: &str) -> bool {
+    seen.processes.lines().any(|line| {
+        line.split_once("  exec   ").is_some_and(|(head, what)| {
+            let first = what.split_whitespace().next().unwrap_or_default();
+            head.contains(&format!("harness {name} "))
+                && (first == program || first.ends_with(&format!("/{program}")))
+        })
+    })
+}
+
+/// Codex signed in with this machine's user's own login, given at run time as a private
+/// copy of its home (CODEX_HOME, from the full OSI form of harness.json) on a volume for
+/// the harness alone: one real turn, in which it runs `ls` in the project volume and
+/// answers with what it found. Its JSONL holds the command, its output and the answer;
+/// the kernel saw the command exec in the harness's domain.
+#[test]
+#[ignore = "needs SHARDS_HARNESS_CODEX, a signed-in SHARDS_HARNESS_CODEX_HOME copy, and OpenAI"]
+fn a_real_codex_signed_in_runs_a_tool_and_answers() {
+    let home = signed_in("SHARDS_HARNESS_CODEX_HOME");
+    let project = project();
+    let Some(seen) = bring_up(&Case {
+        name: "codex",
+        variable: Some("SHARDS_HARNESS_CODEX"),
+        record: "codex-signed-in",
+        agentfile: Some(example("codex-signed-in", "Agentfile")),
+        descriptor: Some(example("codex-signed-in", "codex/harness.json")),
+        run: vec![
+            "-v".into(),
+            format!("{home}:/run/codex-home"),
+            "-v".into(),
+            format!("{}:/work:ro", project.display()),
+        ],
+        ..Case::default()
+    }) else {
+        return;
+    };
+    let all = shown(&seen);
+    whole(&seen, &all);
+    let events = json_lines(&seen, &all);
+    assert_eq!(events.last().unwrap()["type"], "turn.completed", "{all}");
+    let items: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|e| e["type"] == "item.completed")
+        .map(|e| &e["item"])
+        .collect();
+    let ran = items
+        .iter()
+        .find(|i| i["type"] == "command_execution" && i["command"].as_str().is_some_and(|c| c.contains("ls")))
+        .unwrap_or_else(|| panic!("no ls ran\n{all}"));
+    assert_eq!(ran["exit_code"], 0, "{all}");
+    let answer = items
+        .iter()
+        .rev()
+        .find(|i| i["type"] == "agent_message")
+        .unwrap_or_else(|| panic!("no answer\n{all}"));
+    for file in PROJECT {
+        assert!(ran["aggregated_output"].as_str().unwrap().contains(file), "{all}");
+        assert!(answer["text"].as_str().unwrap().contains(file), "{all}");
+    }
+    assert!(ran_in_domain(&seen, "codex", "ls"), "{all}");
+}
+
+/// Claude Code signed in with this machine's user's own login, given at run time as a
+/// private copy of its config directory (CLAUDE_CONFIG_DIR, from the full OSI form of
+/// harness.json) on a volume for the harness alone: one real turn, in which it runs `ls`
+/// in the project volume through its Bash tool and answers with what it found.
+#[test]
+#[ignore = "needs SHARDS_HARNESS_CLAUDE, a signed-in SHARDS_HARNESS_CLAUDE_HOME copy, and Anthropic"]
+fn a_real_claude_code_signed_in_answers() {
+    let home = signed_in("SHARDS_HARNESS_CLAUDE_HOME");
+    let project = project();
+    let Some(seen) = bring_up(&Case {
+        name: "claude",
+        variable: Some("SHARDS_HARNESS_CLAUDE"),
+        record: "claude-signed-in",
+        agentfile: Some(example("claude-signed-in", "Agentfile")),
+        descriptor: Some(example("claude-signed-in", "claude/harness.json")),
+        run: vec![
+            "-v".into(),
+            format!("{home}:/run/claude-home"),
+            "-v".into(),
+            format!("{}:/work:ro", project.display()),
+        ],
+        ..Case::default()
+    }) else {
+        return;
+    };
+    let all = shown(&seen);
+    whole(&seen, &all);
+    let events = claude_events(&seen, &all);
+    let result = events.last().unwrap();
+    assert_eq!(result["is_error"], false, "{all}");
+    assert!(
+        events.iter().any(|e| e["type"] == "assistant"
+            && e["message"]["content"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|p| p["type"] == "tool_use" && p["name"] == "Bash"))),
+        "{all}"
+    );
+    let answer = result["result"].as_str().unwrap();
+    for file in PROJECT {
+        assert!(answer.contains(file), "{all}");
+    }
+    assert!(ran_in_domain(&seen, "claude", "ls"), "{all}");
+}

@@ -1,0 +1,10 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:16:26.372082692 -0800
++++ crates/shards/src/agentfile.rs	2026-11-12 02:16:26.377537837 -0800
+@@ -310,7 +310,6 @@
+     let receivers = af::ingress(&directives).map_err(said)?;
+     af::reach(&directives).map_err(said)?;
+     // `NESTING` as its build checks it (D234): once, and beside no agent or harness.
+-    af::nesting(&directives).map_err(|e| fail(e.to_string()))?;
+     let text = |b: &[u8]| {
+         String::from_utf8(b.to_vec()).map_err(|_| fail("a volume's name or path that is not UTF-8".into()))
+     };

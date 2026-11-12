@@ -1,0 +1,12 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:19:00.039214406 -0800
++++ crates/shards/src/setup.rs	2026-11-12 02:19:00.041214382 -0800
+@@ -274,8 +274,7 @@
+         .map_err(|e| format!("the default seccomp profile: {e}"))?;
+     p.get_mut("syscalls")
+         .and_then(serde_json::Value::as_array_mut)
+-        .ok_or("the default seccomp profile has no syscalls")?
+-        .push(serde_json::json!({"names": ["pivot_root"], "action": "SCMP_ACT_ALLOW"}));
++        .ok_or("the default seccomp profile has no syscalls")?;
+     serde_json::to_vec(&p).map_err(|e| e.to_string())
+ }
+ 

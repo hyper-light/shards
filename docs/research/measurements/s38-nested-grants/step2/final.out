@@ -1,0 +1,43 @@
+== final rev=bbd908197a8e91bc3239b470fdff53f912413499 patch=417d28e25ca568e3 host=adacachy load=69.33 91.52 82.67 rustc 1.98.1 (48a229cea 2026-09-01)
+ 7 files changed, 429 insertions(+), 11 deletions(-)
+== cargo test -p shards-agentfile -j4 --no-fail-fast: exit=0
+     Running unittests src/lib.rs (target/debug/deps/shards_agentfile-539aa959329a6e50)
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+     Running tests/agentfile.rs (target/debug/deps/agentfile-bc1146fc106af5af)
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/commit.rs (target/debug/deps/commit-d77aa9a5b29775c1)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running tests/gateway.rs (target/debug/deps/gateway-20f63673cd80e22e)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/oracle.rs (target/debug/deps/oracle-d854a6ef0a0cbf05)
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 26.16s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== cargo check -p shards --tests -j4 (SHARDS_HELPERS=skip): exit=0
+      1 warning: aws-lc-sys@0.45.0: Building with: CC
+      1 warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/.cache/s38-step2/src/target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+      1 warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/.cache/s38-step2/src/target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+      1 warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/.cache/s38-step2/src/target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+      1 warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/.cache/s38-step2/src/target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+      1 warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+      1 warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+      1 warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+      1 warning: aws-lc-sys@0.45.0: /home/adalundhe/.cache/s38-step2/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+      1 warning: aws-lc-sys@0.45.0: /home/adalundhe/.cache/s38-step2/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+      1 warning: aws-lc-sys@0.45.0: /home/adalundhe/.cache/s38-step2/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+      1 warning: aws-lc-sys@0.45.0: /home/adalundhe/.cache/s38-step2/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+      2 warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+      1 warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+      1 warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+      1 warning: aws-lc-sys@0.45.0: /tmp/ccPQ5iEI.s: Assembler messages:
+      1 warning: aws-lc-sys@0.45.0: /tmp/ccWvO2HJ.s: Assembler messages:
+      1 warning: aws-lc-sys@0.45.0: Value: 0 is false.
+      1 warning: aws-lc-sys@0.45.0: Value: 1 is true.
+    Checking shards-remote v0.1.0 (/home/adalundhe/.cache/s38-step2/src/crates/remote)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 56.91s
+== cargo clippy -p shards-agentfile --all-targets -- -D warnings: exit=0
+== cargo fmt --all --check: exit=0
+== literal-audit.py: exit=0
+own      run kind 49: held by the grant's READY
+free     ipc kind 90: the next free value
+planned 31, underived or unplanned 0
+ssh-exit=0

@@ -1,0 +1,369 @@
+#### stage tests at 5ba5f377a0545d2d95c5bb385d8b46e8eba67861 (2026-11-12T10:08:08Z)
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+== test-ipc: cargo test -p shards-ipc -j4
+== test-ipc exit 0
+test result: ok. 54 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 12.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== test-shards: cargo test -p shards --bin shards -j4 -- --test-threads 8 --skip build::policy
+== test-shards exit 0
+test result: ok. 697 passed; 0 failed; 13 ignored; 0 measured; 24 filtered out; finished in 164.47s
+== test-vm: cargo test -p shards-vm-process --bin shards-vm -j4
+== test-vm exit 0
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+#### stage tests exit 0
+#### stage clippy at 5ba5f377a0545d2d95c5bb385d8b46e8eba67861 (2026-11-12T10:12:55Z)
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+== clippy: cargo clippy -p shards -p shards-ipc -p shards-vm-process --all-targets -j4 -- -D warnings
+== clippy exit 0
+      1 warning: aws-lc-sys@0.45.0: Building with: CC
+      1 warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+      1 warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+      1 warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+      1 warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+      1 warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+      1 warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+      1 warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+      1 warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+      1 warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+      1 warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+      1 warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+      2 warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+      1 warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+      1 warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+      1 warning: aws-lc-sys@0.45.0: /tmp/ccx1V6m1.s: Assembler messages:
+      1 warning: aws-lc-sys@0.45.0: /tmp/ccYO9qNZ.s: Assembler messages:
+      1 warning: aws-lc-sys@0.45.0: Value: 0 is false.
+      1 warning: aws-lc-sys@0.45.0: Value: 1 is true.
+   Compiling shards v0.7.0 (/home/adalundhe/s38-daemon-test/src/crates/shards)
+    Checking shards-vm-process v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/vm-process)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 30.83s
+#### stage clippy exit 0
+#### stage fmt at 5ba5f377a0545d2d95c5bb385d8b46e8eba67861 (2026-11-12T10:14:00Z)
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+== fmt: cargo fmt --all -- --check
+== fmt exit 0
+#### stage fmt exit 0
+#### stage audit at 5ba5f377a0545d2d95c5bb385d8b46e8eba67861 (2026-11-12T10:14:45Z)
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+audit exit 0
+derived   notify queue
+own      marker 7: held by the grant's WORKLOAD_READY
+own      run kind 49: held by the grant's READY
+own      ipc kind 90: held by the grant's WORKLOAD_READY
+planned 31, underived or unplanned 0
+#### stage audit exit 0
+#### stage mutants at 5ba5f377a0545d2d95c5bb385d8b46e8eba67861 (2026-11-12T10:15:14Z)
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+== mutant-consent: cargo test -p shards --bin shards -j4 setup::tests::a_run_asks_for_the_nesting_grant_by_its_own_key
+== mutant-consent exit 101
+MUTANT consent: its test's exit 101
+test setup::tests::a_run_asks_for_the_nesting_grant_by_its_own_key ... FAILED
+thread 'setup::tests::a_run_asks_for_the_nesting_grant_by_its_own_key' (2285208) panicked at crates/shards/src/setup.rs:1104:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-declared: cargo test -p shards --bin shards -j4 agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks
+== mutant-declared exit 101
+MUTANT declared: its test's exit 101
+test agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks ... FAILED
+thread 'agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks' (2326488) panicked at crates/shards/src/agentfile.rs:1010:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-beside: cargo test -p shards --bin shards -j4 agentfile::tests::an_images_agentfile_is_read_from_its_root_and_checked
+== mutant-beside exit 101
+MUTANT beside: its test's exit 101
+test agentfile::tests::an_images_agentfile_is_read_from_its_root_and_checked ... FAILED
+thread 'agentfile::tests::an_images_agentfile_is_read_from_its_root_and_checked' (2380748) panicked at crates/shards/src/agentfile.rs:928:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-joiner: cargo test -p shards --bin shards -j4 agentfile::tests::no_joiner_takes_or_joins_the_nesting_grant
+== mutant-joiner exit 101
+MUTANT joiner: its test's exit 101
+test agentfile::tests::no_joiner_takes_or_joins_the_nesting_grant ... FAILED
+thread 'agentfile::tests::no_joiner_takes_or_joins_the_nesting_grant' (2437500) panicked at crates/shards/src/agentfile.rs:1076:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-joined: cargo test -p shards --bin shards -j4 agentfile::tests::no_joiner_takes_or_joins_the_nesting_grant
+== mutant-joined exit 101
+MUTANT joined: its test's exit 101
+test agentfile::tests::no_joiner_takes_or_joins_the_nesting_grant ... FAILED
+thread 'agentfile::tests::no_joiner_takes_or_joins_the_nesting_grant' (2462615) panicked at crates/shards/src/agentfile.rs:1077:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-tracked: cargo test -p shards --bin shards -j4 daemon::tests::a_microvms_nesting_grant_is_known_while_its_run_goes_on
+== mutant-tracked exit 101
+MUTANT tracked: its test's exit 101
+test daemon::tests::a_microvms_nesting_grant_is_known_while_its_run_goes_on ... FAILED
+thread 'daemon::tests::a_microvms_nesting_grant_is_known_while_its_run_goes_on' (2507987) panicked at crates/shards/src/daemon.rs:14688:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.01s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-cgroupns-host: cargo test -p shards --bin shards -j4 agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks
+== mutant-cgroupns-host exit 101
+MUTANT cgroupns-host: its test's exit 101
+test agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks ... FAILED
+thread 'agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks' (2556982) panicked at crates/shards/src/agentfile.rs:1041:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-pid-host: cargo test -p shards --bin shards -j4 agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks
+== mutant-pid-host exit 101
+MUTANT pid-host: its test's exit 101
+test agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks ... FAILED
+thread 'agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks' (2582616) panicked at crates/shards/src/agentfile.rs:1041:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-ready-by-ungranted: cargo test -p shards --bin shards -j4 agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks
+== mutant-ready-by-ungranted exit 101
+MUTANT ready-by-ungranted: its test's exit 101
+test agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks ... FAILED
+thread 'agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks' (2623883) panicked at crates/shards/src/agentfile.rs:1044:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-pivot-root: cargo test -p shards --bin shards -j4 setup::tests::a_granted_run_is_composed_with_the_grant
+== mutant-pivot-root exit 101
+MUTANT pivot-root: its test's exit 101
+test setup::tests::a_granted_run_is_composed_with_the_grant ... FAILED
+thread 'setup::tests::a_granted_run_is_composed_with_the_grant' (2659152) panicked at crates/shards/src/setup.rs:1437:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.03s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-mount-filter: cargo test -p shards --bin shards -j4 setup::tests::a_granted_run_is_composed_with_the_grant
+== mutant-mount-filter exit 101
+MUTANT mount-filter: its test's exit 101
+test setup::tests::a_granted_run_is_composed_with_the_grant ... FAILED
+thread 'setup::tests::a_granted_run_is_composed_with_the_grant' (2692292) panicked at crates/shards/src/setup.rs:1417:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.02s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-caps-replaced: cargo test -p shards --bin shards -j4 setup::tests::a_granted_run_is_composed_with_the_grant
+== mutant-caps-replaced exit 101
+MUTANT caps-replaced: its test's exit 101
+test setup::tests::a_granted_run_is_composed_with_the_grant ... FAILED
+thread 'setup::tests::a_granted_run_is_composed_with_the_grant' (2729995) panicked at crates/shards/src/setup.rs:1414:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.02s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-grant-caps: cargo test -p shards --bin shards -j4 setup::tests::a_granted_run_is_composed_with_the_grant
+== mutant-grant-caps exit 101
+MUTANT grant-caps: its test's exit 101
+test setup::tests::a_granted_run_is_composed_with_the_grant ... FAILED
+thread 'setup::tests::a_granted_run_is_composed_with_the_grant' (2763570) panicked at crates/shards/src/setup.rs:1415:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.02s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-grant-filter: cargo test -p shards --bin shards -j4 setup::tests::a_granted_run_is_composed_with_the_grant
+== mutant-grant-filter exit 101
+MUTANT grant-filter: its test's exit 101
+test setup::tests::a_granted_run_is_composed_with_the_grant ... FAILED
+thread 'setup::tests::a_granted_run_is_composed_with_the_grant' (2790479) panicked at crates/shards/src/setup.rs:1438:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.02s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-ungranted-golden: cargo test -p shards --bin shards -j4 setup::tests::a_run_without_the_nesting_grant_is_composed_as_before
+== mutant-ungranted-golden exit 101
+MUTANT ungranted-golden: its test's exit 101
+test setup::tests::a_run_without_the_nesting_grant_is_composed_as_before ... FAILED
+thread 'setup::tests::a_run_without_the_nesting_grant_is_composed_as_before' (2812909) panicked at crates/shards/src/setup.rs:1296:17:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.04s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-events: cargo test -p shards --bin shards -j4 daemon::tests::a_runs_readiness_is_said_as_its_events
+== mutant-events exit 101
+MUTANT events: its test's exit 101
+test daemon::tests::a_runs_readiness_is_said_as_its_events ... FAILED
+thread 'daemon::tests::a_runs_readiness_is_said_as_its_events' (2842253) panicked at crates/shards/src/daemon.rs:14669:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.01s
+error: test failed, to rerun pass `-p shards --bin shards`
+== mutant-relay: cargo test -p shards-vm-process --bin shards-vm -j4 workload::tests::a_runs_readiness_is_handed_on_as_it_comes
+== mutant-relay exit 101
+MUTANT relay: its test's exit 101
+test workload::tests::a_runs_readiness_is_handed_on_as_it_comes ... FAILED
+thread 'workload::tests::a_runs_readiness_is_handed_on_as_it_comes' (2845052) panicked at crates/vm-process/src/../../shards/src/workload.rs:2975:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-vm-process --bin shards-vm`
+#### stage mutants exit 0
+#### stage only cargo test -p shards --bin shards -j4 nesting at 5ba5f377a0545d2d95c5bb385d8b46e8eba67861 (2026-11-12T10:20:41Z)
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+== only: cargo test -p shards --bin shards -j4 nesting
+== only exit 0
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/cc9admQq.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/ccKupyMZ.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+   Compiling shards v0.7.0 (/home/adalundhe/s38-daemon-test/src/crates/shards)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.78s
+     Running unittests src/main.rs (/home/adalundhe/s38-daemon-test/target/debug/deps/shards-56fa3109d4065a35)
+
+running 6 tests
+test agentfile::tests::no_joiner_takes_or_joins_the_nesting_grant ... ok
+test agentfile::tests::the_nesting_grant_beside_a_domain_is_refused_in_one_set_of_words ... ok
+test agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks ... ok
+test setup::tests::a_run_asks_for_the_nesting_grant_by_its_own_key ... ok
+test daemon::tests::a_microvms_nesting_grant_is_known_while_its_run_goes_on ... ok
+test setup::tests::a_run_without_the_nesting_grant_is_composed_as_before ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 728 filtered out; finished in 0.35s
+
+#### stage only exit 0
+#### stage only cargo test -p shards --bin shards -j4 readiness at 5ba5f377a0545d2d95c5bb385d8b46e8eba67861 (2026-11-12T10:21:45Z)
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+== only: cargo test -p shards --bin shards -j4 readiness
+== only exit 0
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/cc9admQq.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/ccKupyMZ.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/main.rs (/home/adalundhe/s38-daemon-test/target/debug/deps/shards-56fa3109d4065a35)
+
+running 2 tests
+test daemon::managed::terminal_tests::readiness_is_derived_and_a_spurious_wake_does_not_issue_credit ... ok
+shards daemon 3034332: container 6282dfb7d8f32723cd7ffd2da036c875e785c3ed8d6b596a2bb7c5ab44e6c91a: its ready-by passed before it was ready (seen 3 ns past it)
+shards daemon 3034332: container 6282dfb7d8f32723cd7ffd2da036c875e785c3ed8d6b596a2bb7c5ab44e6c91a: ready, 5 ns past its ready-by
+shards daemon 3034332: container 6282dfb7d8f32723cd7ffd2da036c875e785c3ed8d6b596a2bb7c5ab44e6c91a: ready
+shards daemon 3034332: container 6282dfb7d8f32723cd7ffd2da036c875e785c3ed8d6b596a2bb7c5ab44e6c91a: a readiness its guest said malformed: [0, 0, 0, 0, 0, 0, 0, 0, 0]
+test daemon::tests::a_runs_readiness_is_said_as_its_events ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 732 filtered out; finished in 0.03s
+
+#### stage only exit 0
+#### stage only cargo test -p shards --bin shards -j4 agentfile::tests at 5ba5f377a0545d2d95c5bb385d8b46e8eba67861 (2026-11-12T10:22:26Z)
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+== only: cargo test -p shards --bin shards -j4 agentfile::tests
+== only exit 0
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/cc9admQq.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/ccKupyMZ.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
+     Running unittests src/main.rs (/home/adalundhe/s38-daemon-test/target/debug/deps/shards-56fa3109d4065a35)
+
+running 7 tests
+test agentfile::tests::no_joiner_takes_or_joins_the_nesting_grant ... ok
+test agentfile::tests::a_run_gives_its_command_nothing_that_reaches_its_domains ... ok
+test agentfile::tests::runnable_members_keep_declared_ids_and_resolve_config_links_inside_the_image ... ok
+test agentfile::tests::runnable_members_are_read_again_when_the_image_at_a_path_changes ... ok
+test agentfile::tests::the_nesting_grant_beside_a_domain_is_refused_in_one_set_of_words ... ok
+test agentfile::tests::the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks ... ok
+test agentfile::tests::an_images_agentfile_is_read_from_its_root_and_checked ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 727 filtered out; finished in 0.05s
+
+#### stage only exit 0
+#### stage only cargo test -p shards --bin shards -j4 setup::tests at 5ba5f377a0545d2d95c5bb385d8b46e8eba67861 (2026-11-12T10:22:58Z)
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+== only: cargo test -p shards --bin shards -j4 setup::tests
+== only exit 0
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/cc9admQq.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/ccKupyMZ.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+     Running unittests src/main.rs (/home/adalundhe/s38-daemon-test/target/debug/deps/shards-56fa3109d4065a35)
+
+running 6 tests
+test setup::tests::a_run_asks_for_the_nesting_grant_by_its_own_key ... ok
+test setup::tests::capabilities_are_added_and_dropped ... ok
+test setup::tests::namespaces_are_set_up ... ok
+test setup::tests::a_granted_run_is_composed_with_the_grant ... ok
+test setup::tests::a_container_given_sys_admin_has_apparmors_mount_rule ... ok
+test setup::tests::a_run_without_the_nesting_grant_is_composed_as_before ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 728 filtered out; finished in 0.22s
+
+#### stage only exit 0
+#### stage only cargo test -p shards-vm-process --bin shards-vm -j4 readiness at 5ba5f377a0545d2d95c5bb385d8b46e8eba67861 (2026-11-12T10:23:29Z)
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+== only: cargo test -p shards-vm-process --bin shards-vm -j4 readiness
+== only exit 0
+   Compiling shards-vm-process v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/vm-process)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.63s
+     Running unittests src/main.rs (/home/adalundhe/s38-daemon-test/target/debug/deps/shards_vm-014f169038c5b01a)
+
+running 1 test
+test workload::tests::a_runs_readiness_is_handed_on_as_it_comes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+
+#### stage only exit 0
+#### stage release-tests at 5ba5f377a0545d2d95c5bb385d8b46e8eba67861 (2026-11-12T10:24:07Z)
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+== rtest-ipc: cargo test -p shards-ipc --profile test-release -j4
+== rtest-ipc exit 0
+test result: ok. 54 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 5.79s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== rtest-shards: cargo test -p shards --bin shards --profile test-release -j4 -- --test-threads 8
+== rtest-shards exit 0
+test result: ok. 720 passed; 0 failed; 14 ignored; 0 measured; 0 filtered out; finished in 30.75s
+== rtest-vm: cargo test -p shards-vm-process --bin shards-vm --profile test-release -j4
+== rtest-vm exit 0
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+#### stage release-tests exit 0
+round3 exit 0

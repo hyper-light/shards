@@ -1,0 +1,12 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:17:14.663487986 -0800
++++ crates/shards/src/agentfile.rs	2026-11-12 02:17:14.668189030 -0800
+@@ -147,9 +147,6 @@
+     if joins_granted {
+         return Err(NestingRefused::Joiner);
+     }
+-    if asks_nesting(run) {
+-        return Err(NestingRefused::Joined);
+-    }
+     Ok(())
+ }
+ 

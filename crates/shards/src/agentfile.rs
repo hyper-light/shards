@@ -44,6 +44,115 @@ pub struct Agentfile {
     pub receivers: Vec<shards_agentfile::agentfile::Receiver>,
 }
 
+/// What a run's command is given of the nesting grant (D234), of what its image declares and
+/// what the run asks (`--security-opt nesting=true`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Nesting {
+    /// The run does not ask for it, and its image does not declare it.
+    Neither,
+    /// Its image declares it, and the run does not ask for it: the run goes on without it,
+    /// and says so ([`NESTING_UNASKED`]), as D109 drops nothing unsaid.
+    Unasked,
+    /// The run asks for it, and its image declares it beside no agent or harness: its
+    /// command has it, with the run's deadline and GPUs.
+    Granted(shards_abi::run::nesting::Grant),
+}
+
+impl Nesting {
+    /// The grant, where the command has it.
+    pub fn grant(&self) -> Option<&shards_abi::run::nesting::Grant> {
+        match self {
+            Nesting::Granted(grant) => Some(grant),
+            Nesting::Neither | Nesting::Unasked => None,
+        }
+    }
+}
+
+/// What a run of an image declaring `NESTING` that does not ask for it is told as it is made.
+pub const NESTING_UNASKED: &str = "the nesting grant withheld from the command: the image's Agentfile declares NESTING, and the run does not ask for it (--security-opt nesting=true)";
+
+/// Why the daemon refuses a run the nesting grant (D234), in the words shards-init refuses it
+/// with again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NestingRefused {
+    /// The run asks for it, and its image's Agentfile, or its lack of one, declares no
+    /// `NESTING`.
+    Undeclared,
+    /// With `--cgroupns host` (D156).
+    CgroupnsHost,
+    /// With `--pid host` (D115).
+    PidHost,
+    /// A run joining the network of one given it (D119).
+    Joiner,
+    /// A run joining another's network that asks for it.
+    Joined,
+    /// A deadline (`ready_by`) in a run that does not ask for it, whose deadline it is.
+    Ungranted,
+}
+
+impl std::fmt::Display for NestingRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use shards_abi::run::nesting;
+        match self {
+            NestingRefused::Undeclared => f.write_str(&nesting::undeclared()),
+            NestingRefused::CgroupnsHost => f.write_str(&nesting::cgroupns_host()),
+            NestingRefused::PidHost => f.write_str(&nesting::pid_host()),
+            NestingRefused::Joiner => f.write_str(&nesting::joiner()),
+            NestingRefused::Joined => f.write_str(&nesting::joined()),
+            NestingRefused::Ungranted => write!(f, "{}", nesting::Error::Ungranted("ready-by=")),
+        }
+    }
+}
+
+/// Whether `run` asks for the nesting grant, as [`crate::setup::security`] reads its
+/// `--security-opt`: one it cannot read, which refuses the run, asks for nothing.
+fn asks_nesting(run: &shards_ipc::Run) -> bool {
+    crate::setup::security(run).is_ok_and(|s| s.nesting)
+}
+
+/// What the command of `run` is given of the nesting grant (D234), of an image whose
+/// Agentfile, as the daemon read it, is `agentfile` (none for an image without one); or why
+/// not, as shards-init refuses it again: its image must declare it, and `--cgroupns host`
+/// and `--pid host` undo it. A deadline is the grant's alone.
+pub fn nesting(agentfile: Option<&Agentfile>, run: &shards_ipc::Run) -> Result<Nesting, NestingRefused> {
+    let declared = agentfile.is_some_and(|a| a.grants.nesting);
+    if !asks_nesting(run) {
+        return match (run.ready_by, declared) {
+            (Some(_), _) => Err(NestingRefused::Ungranted),
+            (None, true) => Ok(Nesting::Unasked),
+            (None, false) => Ok(Nesting::Neither),
+        };
+    }
+    if !declared {
+        return Err(NestingRefused::Undeclared);
+    }
+    if run.cgroupns == "host" {
+        return Err(NestingRefused::CgroupnsHost);
+    }
+    if run.pid == "host" {
+        return Err(NestingRefused::PidHost);
+    }
+    Ok(Nesting::Granted(shards_abi::run::nesting::Grant {
+        ready_by: run.ready_by,
+        // A run names no GPUs by their identities (D232) yet: `--gpus` asks for its
+        // microVM's one, which names none.
+        gpus: Vec::new(),
+    }))
+}
+
+/// A run joining another's microVM (D119), and the nesting grant (D234): refused where that
+/// microVM has it (`joins_granted`), whose command is its only principal, and where the run
+/// asks for it, never a joiner's; in that order, as shards-init refuses each again.
+pub fn joining(run: &shards_ipc::Run, joins_granted: bool) -> Result<(), NestingRefused> {
+    if joins_granted {
+        return Err(NestingRefused::Joiner);
+    }
+    if asks_nesting(run) {
+        return Err(NestingRefused::Joined);
+    }
+    Ok(())
+}
+
 impl Agentfile {
     /// Whether its agents' flows past the microVM go by IPv6 too (D99): they have IPv6, and
     /// are granted ports or remote MCP servers past it. Their run's eth0 then needs an IPv6
@@ -200,6 +309,8 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
     af::connections(&directives).map_err(said)?;
     let receivers = af::ingress(&directives).map_err(said)?;
     af::reach(&directives).map_err(said)?;
+    // `NESTING` as its build checks it (D234): once, and beside no agent or harness.
+    af::nesting(&directives).map_err(|e| fail(e.to_string()))?;
     let text = |b: &[u8]| {
         String::from_utf8(b.to_vec()).map_err(|_| fail("a volume's name or path that is not UTF-8".into()))
     };
@@ -726,11 +837,13 @@ mod tests {
                 mcp: Vec::new(),
                 dns: true,
                 egress_declared: Vec::new(),
+                nesting: false,
             }
         );
         let e = agentfile(&root_with("good-again", file(&good)), "sha256:00").unwrap_err();
         assert!(e.contains("its content hashes to"), "{e}");
         // What a crafted image holds and no build makes: refused as the build refuses it.
+        let nesting_beside = shards_abi::run::beside::nesting("agent", "a");
         for (name, directives, said) in [
             (
                 "dev",
@@ -804,6 +917,12 @@ mod tests {
                 ],
                 "an internal network has no resolver past the microVM to ask",
             ),
+            // The nesting grant beside an agent (D234), in the build's words and init's.
+            (
+                "nesting-beside",
+                vec![agent("a"), Directive::Nesting],
+                nesting_beside.as_str(),
+            ),
         ] {
             let json = spec(&directives);
             let got = agentfile(&root_with(name, file(&json)), &digest(&json));
@@ -843,11 +962,137 @@ mod tests {
             .map(|r| r.name.as_slice())
             .collect();
         assert_eq!(names, [b"a".as_slice(), b"b".as_slice()], "{got:?}");
+        // An image declaring the nesting grant alone (D234): declared, its grant the run's
+        // to ask for.
+        let json = spec(&[Directive::Nesting]);
+        let got = agentfile(&root_with("nesting", file(&json)), &digest(&json)).unwrap();
+        assert!(got.grants.nesting, "{got:?}");
+        assert_eq!(got.domains, 0);
         let e = agentfile(&root_with("none", None), "sha256:01").unwrap_err();
         assert!(e.contains("the image's root holds none"), "{e}");
         let link = Kind::Symlink(b"/etc/x".to_vec().into_boxed_slice());
         let e = agentfile(&root_with("link", Some((link, Vec::new()))), "sha256:02").unwrap_err();
         assert!(e.contains("not a regular file"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The nesting grant (D234) is given only where the run asks for it and its image's
+    /// Agentfile declares it: refused where the run asks and the image does not, or has no
+    /// Agentfile; with the microVM's cgroup or PID namespace; and for a deadline without it.
+    /// An image's grant the run does not ask for is withheld, to be said. Each refusal is in
+    /// init's words.
+    #[test]
+    fn the_nesting_grant_is_given_only_as_its_image_declares_and_its_run_asks() {
+        use shards_abi::run::nesting::{self, Grant};
+        use shards_ipc::Run;
+        let declaring = Agentfile {
+            grants: shards_agentfile::agentfile::Grants {
+                nesting: true,
+                ..Default::default()
+            },
+            ..Agentfile::default()
+        };
+        let silent = Agentfile::default();
+        let asking = |f: &dyn Fn(&mut Run)| {
+            let mut r = Run {
+                security_opt: vec!["nesting=true".into()],
+                ..Run::default()
+            };
+            f(&mut r);
+            r
+        };
+        let plain = Run::default();
+        let declined = Run {
+            security_opt: vec!["nesting=false".into()],
+            ..Run::default()
+        };
+        assert_eq!(nesting(None, &plain), Ok(Nesting::Neither));
+        assert_eq!(nesting(Some(&silent), &plain), Ok(Nesting::Neither));
+        assert_eq!(nesting(Some(&declaring), &plain), Ok(Nesting::Unasked));
+        assert_eq!(nesting(Some(&declaring), &declined), Ok(Nesting::Unasked));
+        assert_eq!(
+            nesting(Some(&declaring), &asking(&|_| {})),
+            Ok(Nesting::Granted(Grant::default()))
+        );
+        assert_eq!(
+            nesting(Some(&declaring), &asking(&|r| r.ready_by = Some(7))),
+            Ok(Nesting::Granted(Grant {
+                ready_by: Some(7),
+                gpus: Vec::new()
+            }))
+        );
+        let late = Run {
+            ready_by: Some(7),
+            ..Run::default()
+        };
+        for (agentfile, run, refused) in [
+            (None, asking(&|_| {}), NestingRefused::Undeclared),
+            (Some(&silent), asking(&|_| {}), NestingRefused::Undeclared),
+            (
+                Some(&declaring),
+                asking(&|r| r.cgroupns = "host".into()),
+                NestingRefused::CgroupnsHost,
+            ),
+            (
+                Some(&declaring),
+                asking(&|r| r.pid = "host".into()),
+                NestingRefused::PidHost,
+            ),
+            (Some(&declaring), late.clone(), NestingRefused::Ungranted),
+            (None, late.clone(), NestingRefused::Ungranted),
+        ] {
+            assert_eq!(nesting(agentfile, &run), Err(refused), "{refused:?}");
+        }
+        for (refused, said) in [
+            (NestingRefused::Undeclared, nesting::undeclared()),
+            (NestingRefused::CgroupnsHost, nesting::cgroupns_host()),
+            (NestingRefused::PidHost, nesting::pid_host()),
+            (NestingRefused::Joiner, nesting::joiner()),
+            (NestingRefused::Joined, nesting::joined()),
+            (
+                NestingRefused::Ungranted,
+                nesting::Error::Ungranted("ready-by=").to_string(),
+            ),
+        ] {
+            assert_eq!(refused.to_string(), said);
+        }
+        assert_eq!(
+            Nesting::Granted(Grant::default()).grant(),
+            Some(&Grant::default())
+        );
+        assert_eq!(Nesting::Unasked.grant(), None);
+        assert_eq!(Nesting::Neither.grant(), None);
+    }
+
+    /// No run joining another's microVM (D119) takes the nesting grant, nor joins a microVM
+    /// whose command has it (D234): refused for the microVM it joins first, as init refuses
+    /// it; a joiner that asks for nothing, of a microVM without it, goes on.
+    #[test]
+    fn no_joiner_takes_or_joins_the_nesting_grant() {
+        use shards_ipc::Run;
+        let asks = Run {
+            security_opt: vec!["nesting=true".into()],
+            ..Run::default()
+        };
+        let plain = Run::default();
+        assert_eq!(joining(&plain, false), Ok(()));
+        assert_eq!(joining(&plain, true), Err(NestingRefused::Joiner));
+        assert_eq!(joining(&asks, false), Err(NestingRefused::Joined));
+        assert_eq!(joining(&asks, true), Err(NestingRefused::Joiner));
+    }
+
+    /// The words refusing the nesting grant beside an image's agent or harness are one set
+    /// (D234): the build's (shards_agentfile), the daemon's read of the image, and init's.
+    #[test]
+    fn the_nesting_grant_beside_a_domain_is_refused_in_one_set_of_words() {
+        use shards_agentfile::agentfile::{TargetKind, nesting_beside};
+        assert_eq!(
+            nesting_beside(TargetKind::Agent, b"a"),
+            shards_abi::run::beside::nesting("agent", "a")
+        );
+        assert_eq!(
+            nesting_beside(TargetKind::Harness, b"h"),
+            shards_abi::run::beside::nesting("harness", "h")
+        );
     }
 }

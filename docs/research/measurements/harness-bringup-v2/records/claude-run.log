@@ -1,0 +1,7 @@
+private copy on tmpfs at /run/user/1000/shards-signed-in.4mBwzu
+claude-home: copied to a 0600 file in a 0700 directory; its access token is valid for 275 more minutes
+test a_real_claude_code_signed_in_answers: exit 0 after 31 s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 29.98s
+leak check: 2 secret values of 1 credentials, 12 files (147674 bytes) scanned: not found
+claude-home: the copy changed in the microVM but its tokens did not: not written back
+scrubbed: 240 files overwritten and removed, /run/user/1000/shards-signed-in.4mBwzu removed

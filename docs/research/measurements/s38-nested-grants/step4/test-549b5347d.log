@@ -1,0 +1,277 @@
+   Compiling shards-abi v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/abi)
+   Compiling shards-init v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.15s
+     Running unittests src/lib.rs (/home/adalundhe/s38-init-step4/target/x86_64-unknown-linux-musl/debug/deps/shards_abi-98e99efac1ccd374)
+
+running 49 tests
+test bounds::tests::connections_are_what_the_limit_leaves ... ok
+test bounds::tests::a_consoles_kept_bytes_are_what_its_records_need ... ok
+test bounds::tests::console_records_are_whole_lines ... ok
+test changes::tests::a_stream_cut_short_is_not_taken_for_whole ... ok
+test build::tests::what_a_cache_kept_reads_back_as_written ... ok
+test changes::tests::a_stream_reads_back_whatever_pieces_it_arrives_in ... ok
+test changes::tests::a_stream_that_says_too_much_is_refused ... ok
+test emulate::tests::a_register_line_is_the_binfmt_tools_byte_for_byte ... ok
+test gpu::probe::tests::completed_receipt_preserves_exact_identity_and_refuses_forgery_or_torn_output ... ok
+test gpu::probe::tests::managed_report_binds_native_scope_and_exact_set_without_console_authority ... ok
+test gpu::probe::tests::managed_report_refuses_torn_hostile_or_appended_scope_frames ... ok
+test gpu::probe::tests::renderer_name_and_heap_receipt_reject_overflow_noncanonical_and_hostile_text ... ok
+test gpu::probe::tests::renderer_properties_keep_known_zero_and_unknown_distinct_and_legacy_unknown ... ok
+test gpu::tests::duplicate_and_excessive_selections_are_refused ... ok
+test gpu::tests::native_identity_roundtrips_without_narrowing ... ok
+test ring::tests::an_offer_is_refused_for_each_way_it_can_be_wrong ... ok
+test ring::tests::an_offer_reads_back_as_it_was_written ... ok
+test ring::tests::an_offers_length_is_read_from_its_fixed_part_alone ... ok
+test ring::tests::frames_that_follow_each_other_are_one_extent ... ok
+test ring::tests::replies_read_back_and_nothing_else_reads_as_one ... ok
+test ring::tests::the_control_bytes_are_four_and_distinct ... ok
+test build::tests::a_step_reads_back_as_written_and_nothing_else_does ... ok
+test ring::tests::the_largest_ring_is_the_largest_whose_every_turn_is_one_call ... ok
+test ring::tests::the_control_pages_fields_fit_it_each_on_a_line_of_its_own ... ok
+test run::managed::tests::admission_is_unique_finite_and_checked ... ok
+test run::managed::tests::canonical_records_round_trip_binary_channels_and_terminals ... ok
+test run::managed::tests::credits_and_aborts_have_checked_scoped_routes ... ok
+test ring::tests::the_longest_offer_is_a_slot_of_single_pages ... ok
+test run::managed::tests::malformed_tags_lengths_offsets_and_transitions_are_refused ... ok
+test run::members::tests::a_members_entries_are_its_own ... ok
+test run::members::tests::ends_round_trip ... ok
+test run::members::tests::entries_round_trip ... ok
+test run::members::tests::a_files_bytes_are_not_printed ... ok
+test run::members::tests::modes_are_permission_bits_alone ... ok
+test run::members::tests::indexes_have_one_spelling ... ok
+test run::members::tests::short_entries_are_refused ... ok
+test run::members::tests::paths_beneath_the_home_alone ... ok
+test run::members::tests::variables_are_checked ... ok
+test run::nesting::tests::ready_reads_as_written ... ok
+test run::quiesce::tests::a_lifecycle_reason_cannot_disguise_an_invalid_error ... ok
+test run::quiesce::tests::a_refusal_is_fixed_typed_and_bound_to_its_request ... ok
+test run::tests::a_command_beside_domains_holds_nothing_that_reaches_them ... ok
+test run::tests::headers_are_stdcopy_headers ... ok
+test run::tests::host_binds_are_read_as_written ... ok
+test run::tests::sizes_are_rows_then_columns ... ok
+test run::nesting::tests::the_grants_entries_are_read_as_d234_writes_them ... ok
+test run::tests::specs_round_trip_and_bad_ones_are_refused ... ok
+test changes::tests::a_header_of_many_xattrs_reads_back_in_any_pieces ... ok
+test changes::tests::any_bytes_are_answered_within_bounds ... ok
+
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/allocations.rs (/home/adalundhe/s38-init-step4/target/x86_64-unknown-linux-musl/debug/deps/allocations-c1396edf9f55892c)
+
+running 2 tests
+test a_spec_decodes_with_one_allocation_per_list_and_string ... ok
+test a_spec_is_measured_without_encoding_and_encoded_in_one_allocation ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/home/adalundhe/s38-init-step4/target/x86_64-unknown-linux-musl/debug/deps/shards_init-451fb1ae2b80b18c)
+
+running 195 tests
+test agentdns::tests::a_refused_query_keeps_its_id_and_question ... ok
+test build::tests::a_bundle_that_is_no_file_is_refused ... ok
+test build::tests::the_proxy_ca_goes_into_the_first_bundle_and_out_again ... ok
+
+running 1 test
+test capture::tests::allocation_refusal_keeps_its_resource_cause ... ok
+test capture::tests::missing_credit_capacity_is_a_protocol_refusal_not_physical_oom ... ok
+test capture::tests::native_pipes_preserve_binary_channels_offsets_and_actual_eof ... ok
+test capture::tests::native_read_preparation_failure_names_only_its_member_and_channel ... ok
+test capture::tests::reserved_control_orders_abort_then_explicit_end_without_output_credit ... ok
+test capture::tests::sparse_sibling_and_stderr_credit_do_not_depend_on_noisy_stdout_ack ... ok
+test chooser::tests::a_socket_takes_what_comes_to_its_address_and_port ... ok
+test build::tests::a_root_without_a_bundle_or_with_a_huge_one ... ok
+test chooser::tests::ports_several_domains_are_given_are_contested ... ok
+test chooser::tests::the_filter_notifies_of_bind_and_listen_alone ... ok
+test devices::tests::a_function_is_named_as_sysfs_names_it ... ok
+test devices::tests::cgroup_rules_are_read_and_refused ... ok
+test devices::tests::a_plugged_functions_node_alone_widens_the_filter ... ok
+test devices::tests::devices_are_found_in_the_microvm ... ok
+test devices::tests::entries_are_read_as_setup_writes_them ... ok
+test domains::admission::tests::controller_words_are_exact_and_io_failure_is_not_availability ... ok
+test domains::admission::tests::diagnostic_fragments_never_grow_the_reserved_string ... ok
+test domains::admission::tests::memory_readback_uses_kernel_page_rounding_and_max_sentinel ... ok
+test domains::admission::tests::missing_malformed_and_mismatched_controls_are_refusals ... ok
+test domains::admission::tests::names_never_resolve_outside_the_held_parent ... ok
+test domains::admission::tests::prepared_commit_holds_objects_and_transfer_preserves_ownership ... ok
+test domains::admission::tests::pressure_arithmetic_does_not_invent_a_reservation ... ok
+test domains::admission::tests::scalar_values_preserve_zero_max_and_overflow ... ok
+test domains::admission::tests::unused_new_groups_roll_back_without_removing_existing_or_nonempty_objects ... ok
+test domains::tests::a_volume_is_given_as_its_volume_says ... ok
+test domains::tests::init_refuses_the_grant_unless_the_image_as_built_declares_it_alone ... ok
+test domains::tests::the_runs_shares_for_its_domains_are_read_from_its_entries ... ok
+test domains::tests::two_volumes_never_share_a_mount_point ... ok
+test domains::tests::within_is_a_directory_and_what_lies_beneath ... ok
+test engine::tests::a_client_gone_before_the_next_line_is_not_a_fault ... ok
+test engine::tests::a_client_that_leaves_a_line_unread_is_not_a_fault ... ok
+test engine::tests::an_engine_reset_is_still_said ... ok
+test engine::tests::departure_is_only_the_clients_reset_read_or_broken_write ... ok
+test engine::tests::the_relays_socket_asks_for_the_hosts_window ... ok
+test devices::tests::devices_are_found_in_dev_by_name ... ok
+test frames::tests::an_outbox_writes_in_order_from_where_it_stopped ... ok
+test frames::tests::frames_arrive_whole_however_the_stream_is_split ... ok
+test frames::tests::frames_cost ... ignored, a measurement
+test hostbind::tests::a_bind_goes_where_its_address_says ... ok
+test frames::tests::batches_keep_their_partial_tail_and_malformed_streams_end ... ok
+test hostbind::tests::a_calls_arguments_are_read_as_the_kernel_takes_them ... ok
+test hotplug::tests::iommu_is_given_back_as_it_was ... ok
+test hostbind::tests::a_gone_sockets_cookie_is_read_from_its_message ... ok
+test hotplug::tests::the_workloads_user_is_its_effective_ids ... ok
+test inroot::tests::paths_split_into_their_directory_and_name ... ok
+test jit::tests::the_program_loads_the_call_and_allows_it ... ok
+test join::tests::a_join_entry_names_its_range ... ok
+test join::tests::a_report_says_the_users_and_layers_or_why ... ok
+test join::tests::no_joiner_joins_or_takes_the_nesting_grant ... ok
+test json::tests::reads_what_rfc_8259_writes_and_no_more ... ok
+test links::tests::a_kept_socket_holds_no_answer_of_an_exchange_before ... ok
+test links::tests::a_runs_start_commits_on_one_kept_socket ... ok
+test linux::tests::cpu_lists_read_as_sysfs_writes_them ... ok
+test jit::tests::a_child_loads_the_program_and_ends ... ok
+test managed::tests::a_lost_leader_identity_is_a_shared_boundary_failure ... ok
+test managed::tests::a_lost_population_control_is_a_shared_boundary_failure ... ok
+test managed::tests::a_capture_failure_uses_the_same_owned_containment_and_keeps_its_cause ... ok
+test managed::tests::a_second_completion_cannot_replace_the_owned_status ... ok
+test managed::tests::a_real_observation_error_quarantines_only_the_owned_tenant ... ok
+test managed::tests::an_empty_population_cannot_supply_an_unobserved_exit_status ... ok
+test managed::tests::eof_or_an_unexpected_gate_word_never_releases_the_actor ... ok
+test managed::tests::exec_closes_its_status_but_setup_and_exec_failures_stay_typed ... ok
+test managed::tests::malformed_status_never_becomes_a_successful_launch ... ok
+test managed::tests::only_running_and_proven_ended_populations_are_checkpoint_ready ... ok
+test managed::tests::quarantine_preserves_ended_proof_and_a_prior_boundary_failure ... ok
+test members::tests::a_members_networks_ports_and_publishes_are_read_as_the_daemon_writes_them ... ok
+test members::tests::a_network_removed_again_is_done ... ok
+test members::tests::grants_are_what_each_member_declares_to_its_peers ... ok
+test members::tests::subnets_and_addresses_are_the_lowest_free ... ok
+test members::tests::what_listens_past_the_loopback_is_found ... ok
+test managed::tests::only_a_complete_fresh_helper_ready_record_releases_startup ... ok
+test metrics::otlp::tests::an_invalid_timestamp_is_rejected_before_any_output ... ok
+test metrics::otlp::tests::empty_collection_is_one_empty_request ... ok
+test metrics::otlp::tests::counts_units_temporality_and_directions_match_the_contract ... ok
+test metrics::otlp::tests::event_sums_keep_fixed_keys_true_zero_and_distinct_failure_series ... ok
+test metrics::otlp::tests::every_collection_has_a_current_error_count_even_after_recovery ... ok
+test metrics::otlp::tests::int64_boundary_is_preserved_and_overflow_is_not_a_measurement ... ok
+test metrics::otlp::tests::event_signed_overflow_omits_only_that_series_and_never_fabricates_a_reset ... ok
+test metrics::otlp::tests::io_not_delegated_is_omitted_without_a_diagnostic ... ok
+test metrics::otlp::tests::microseconds_become_decimal_seconds_without_integer_clamping ... ok
+test metrics::otlp::tests::limit_gauges_keep_zero_range_and_all_states_distinct_without_identity_churn ... ok
+test metrics::otlp::tests::scopes_and_exact_identities_stay_distinct ... ok
+test metrics::otlp::tests::partial_writes_and_sink_failure_are_returned ... ok
+test metrics::otlp::tests::utf8_is_preserved_and_json_controls_cannot_escape_strings ... ok
+test metrics::otlp::tests::unavailable_values_are_omitted_with_separate_typed_diagnostics ... ok
+test metrics::tests::a_device_line_with_one_byte_field_is_missing ... ok
+test metrics::tests::a_member_without_the_io_controller_reports_no_collection_error ... ok
+test metrics::tests::cpu_key_and_number_survive_an_actual_page_boundary ... ok
+test metrics::tests::duplicate_selected_io_fields_on_one_device_are_invalid ... ok
+test metrics::tests::device_lines_without_byte_fields_add_zero ... ok
+test metrics::tests::event_file_failures_keep_exact_errno_and_the_other_file_independent ... ok
+test metrics::tests::event_keys_are_order_independent_and_unknown_fields_are_not_labels ... ok
+test metrics::tests::empty_io_is_zero_and_missing_io_fails_unless_io_is_not_delegated ... ok
+test metrics::tests::event_parse_failures_do_not_erase_independent_selected_fields ... ok
+test agentdns::tests::no_asker_takes_anothers_share_of_the_ids ... ok
+test metrics::tests::event_reader_keeps_u64_range_before_codec_checks_signed_bounds ... ok
+test metrics::tests::event_snapshots_reuse_one_page_and_keep_held_groups_independent_after_errors ... ok
+test metrics::tests::io_numbers_and_cross_device_sums_are_checked ... ok
+test metrics::tests::event_tokens_cross_pages_and_long_unknown_lines_cannot_hide_later_known_keys ... ok
+test metrics::tests::full_u64_values_are_not_narrowed_and_larger_numbers_overflow ... ok
+test metrics::tests::kernel_fields_are_selected_by_key_and_scope_is_preserved ... ok
+test metrics::tests::limits_cross_pages_and_reuse_the_snapshot_buffer_after_errors ... ok
+test metrics::tests::limits_distinguish_finite_zero_full_u64_and_symbolic_max ... ok
+test metrics::tests::limits_fixed_name_open_preserves_missing_and_symlink_errno ... ok
+test metrics::tests::limits_keep_fixed_names_and_held_groups_independent_after_errors ... ok
+test metrics::tests::limits_missing_malformed_duplicate_and_overflow_values_stay_errors ... ok
+test metrics::tests::scalar_extra_tokens_are_invalid_across_whitespace_and_lines ... ok
+test metrics::tests::missing_cpu_usage_does_not_erase_independent_metrics ... ok
+test metrics::tests::selected_io_tokens_survive_an_actual_page_boundary ... ok
+test metrics::tests::snapshots_keep_actual_limit_results_and_reuse_the_one_page ... ok
+test netplan::tests::a_domain_reaches_past_the_microvm_what_its_networks_grant ... ok
+test netplan::tests::flows_are_what_connect_names_on_its_ports_and_no_more ... ok
+test metrics::tests::unknown_fields_longer_than_a_page_do_not_hide_selected_fields ... ok
+test netplan::tests::a_declared_subnet_and_gateway_are_kept ... ok
+test netplan::tests::networks_with_ipv6_give_their_members_ipv6_addresses ... ok
+test netplan::tests::ingress_goes_to_the_member_its_expose_names ... ok
+test netplan::tests::remote_mcp_servers_reach_whom_they_are_for ... ok
+test orders::tests::orders_encode_once_and_round_trip ... ok
+test plug::tests::a_cgroups_kill_says_its_memory_and_swap ... ok
+test plug::tests::a_build_reaches_its_hold_with_memory_free_whatever_its_cpus_keep ... ok
+test orders::tests::exec_strings_are_the_decoded_buffers ... ok
+test plug::tests::a_give_back_frame_past_its_most_ends_the_connection ... ok
+test plug::tests::a_hold_counts_out_what_goes_as_it_is_unplugged ... ok
+test plug::tests::a_hold_reports_free_only_what_it_took_back ... ok
+test plug::tests::a_give_back_is_answered_with_what_was_given_back ... ok
+test plug::tests::a_kill_is_said_in_the_kernels_words ... ok
+test plug::tests::a_run_grown_lately_is_taken_for_growing_for_the_window ... ok
+test plug::tests::a_run_held_short_keeps_the_room_its_reads_need ... ok
+test plug::tests::a_room_is_answered_with_what_the_build_is_held_within ... ok
+test plug::tests::a_run_is_held_within_its_budgets_room ... ok
+test plug::tests::memory_asked_for_comes ... ok
+test plug::tests::a_microvm_held_to_a_budget_plugs_no_more_than_its_cap_needs ... ok
+test plug::tests::a_run_keeps_its_peak_and_what_it_asked_for ... ok
+test plug::tests::memory_is_read_without_the_kernels_report ... ok
+test plug::tests::memory_that_stops_coming_is_asked_for_again ... ok
+test plug::tests::memory_that_never_comes_is_given_up ... ok
+test plug::tests::what_a_build_needed_is_the_least_memory_that_holds_its_peak ... ok
+test procevents::tests::a_members_processes_are_recorded_from_their_events ... ok
+test procevents::tests::command_lines_are_quoted_where_they_must_be ... ok
+test plug::tests::memory_that_comes_slowly_is_waited_for ... ok
+test proxyca::tests::base64_is_read_as_go_reads_it ... ok
+test proxyca::tests::blocks_are_found_as_pem_finds_them ... ok
+test procevents::tests::an_event_is_as_long_as_its_message_says ... ok
+test procevents::tests::members_are_their_cgroups ... ok
+test readiness::tests::a_granted_runs_readiness_moves_by_its_socket_and_timer ... ok
+test proxyca::tests::the_proxy_ca_goes_in_and_comes_out ... ok
+test readiness::tests::datagrams_past_pipe_buf_are_cut_and_senders_named ... ok
+test proxyca::tests::proxy_ca_bundles_are_injected ... ok
+test readiness::tests::every_readiness_transition_is_d234s ... ok
+test readiness::tests::the_ready_by_is_the_callers_on_the_guests_clock ... ok
+test readiness::tests::ready_from_outside_the_workloads_cgroup_is_ignored ... ok
+test readiness::tests::notify_datagrams_say_ready_as_sd_notify_writes_it ... ok
+test ring::tests::a_host_byte_no_device_says_is_no_word_of_the_slot ... ok
+test ring::tests::a_fresh_slot_is_reset_before_its_offer ... ok
+shards-init: engine ring: no word of its device; its 12288 bytes stay pinned
+test ring::tests::a_slot_with_no_word_of_its_device_stays_pinned ... ok
+shards-init: engine ring refused: InUse
+test ring::tests::a_slots_pins_count_to_the_instances_maker_and_go_with_its_entry ... ok
+test ring::tests::a_stream_learns_the_rings_it_needs ... ok
+test ring::tests::a_stream_past_the_room_goes_over_plain_vsock ... ok
+test ring::tests::a_refused_slot_is_freed_and_the_connection_goes_on_plain ... ok
+test ring::tests::a_word_wakes_the_idle_streams ... ok
+test ring::tests::a_told_room_owes_what_it_is_short_of_the_working_room ... ok
+test ring::tests::concurrent_streams_each_have_a_slot_and_free_it ... ok
+test ring::tests::init_says_nothing_to_a_relay_that_made_no_slot ... ok
+test ring::tests::the_devices_detach_is_read_and_nothing_past_it ... ok
+test ring::tests::bytes_cross_whole_and_every_slot_is_freed_after_its_detach ... ok
+test ring::tests::the_relay_joins_a_leaf_of_the_runs_cgroup ... ok
+test ring::tests::the_room_asks_idle_streams_alone_and_a_give_back_asks_them_all ... ok
+test ring::tests::the_supply_leaves_pins_what_the_run_does_not_need ... ok
+test ring::tests::the_table_holds_as_many_slots_as_the_descriptors_let_streams_hold ... ok
+test ring::tests::the_relay_frees_a_slot_only_after_the_devices_detach ... ok
+test run::cut_tests::a_blocked_success_is_rechecked_before_any_byte_commits ... ok
+test run::cut_tests::a_partial_success_header_cannot_become_a_refusal ... ok
+test run::cut_tests::a_refused_cut_drains_earlier_bytes_and_returns_open_without_tokens ... ok
+test run::cut_tests::a_success_commits_tokens_only_with_its_first_byte ... ok
+test run::nesting_tests::a_granted_runs_execs_join_its_leaf_never_its_root ... ok
+test run::nesting_tests::the_grants_part_is_the_standbys_after_the_runs_mounts ... ok
+test run::stats_scope_tests::stats_read_the_scope_asked_for ... ok
+test setup::tests::a_granted_command_starts_in_its_leaf ... ok
+test setup::tests::a_volume_is_told_its_runs_owner ... ok
+test setup::tests::managed_capture_metadata_is_not_a_workload_mount ... ok
+test setup::tests::nr_open_is_raised_to_the_runs_own_ask_within_the_kernels_ceiling ... ok
+test setup::tests::the_runs_gpus_are_written_read_only_one_a_line ... ok
+test staged::tests::files_are_written_beneath_the_home ... ok
+test staged::tests::files_need_a_home ... ok
+test staged::tests::links_in_the_way_are_not_followed ... ok
+test staged::tests::staged_variables_replace_by_key ... ok
+test staged::tests::staging_into_no_running_member_is_refused ... ok
+test staged::tests::the_domains_label_is_never_staged ... ok
+test terms::tests::the_first_type_the_root_describes_is_the_commands ... ok
+test build::tests::a_bundle_of_ten_mib_takes_the_ca ... ok
+test ring::tests::with_no_budget_pins_are_bounded_by_the_available_memory ... ok
+test ring::tests::a_stream_starts_where_the_last_one_ended ... ok
+
+test result: ok. 194 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.10s
+
+   Doc-tests shards_abi
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

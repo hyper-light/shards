@@ -1,0 +1,45 @@
+TIME                            MEMBER           PID  EVENT  WHAT
+2026-11-12T07:08:39.761414363Z  command          938  exec   sleep 600
+2026-11-12T07:08:39.769974257Z  harness claude   942  fork   from 1
+2026-11-12T07:08:39.775168617Z  harness claude   942  exec   shards-server "harness claude" /proc/self/fd/6 200000 3 4 "" [] 7
+2026-11-12T07:08:39.788856125Z  harness claude   947  fork   from 942
+2026-11-12T07:08:39.789932277Z  harness claude   947  exec   shards-server sandbox
+2026-11-12T07:08:39.792780799Z  harness claude   950  fork   from 1
+2026-11-12T07:08:39.793455427Z  harness claude   953  fork   from 950
+2026-11-12T07:08:39.898645805Z  harness claude   950  exec   shards-init managed-reaper
+2026-11-12T07:08:39.987064218Z  harness claude   953  exec   /harness/claude/bin/claude -p "Use the Bash tool to run `ls -1 /work` once, then reply with exactly the file names it printed, one per line, and nothing else." --output-format stream-json --verbose --add-dir /work --allowedTools Bash(ls:*)
+2026-11-12T07:08:42.551665086Z  harness claude  1762  fork   from 953
+2026-11-12T07:08:42.552142744Z  harness claude  1762  exec   rg --no-config --files --hidden /harness/claude
+2026-11-12T07:08:42.581934210Z  harness claude  1762  exit   code 0
+2026-11-12T07:08:42.698818620Z  harness claude  1777  fork   from 953
+2026-11-12T07:08:42.702198271Z  harness claude  1777  exec   sh -c "uname -s\nuname -r\nuname -m\nfor c in npm yarn pnpm; do command -v \"$c\" >/dev/null 2>&1 && printf \"%s,\" \"$c\"; done; echo\nfor c in bun deno node; do command -v \"$c\" >/dev/null 2>&1 && printf \"%s,\" \"$c\"; done; echo"
+2026-11-12T07:08:42.713664034Z  harness claude  1778  fork   from 1777
+2026-11-12T07:08:42.726476198Z  harness claude  1778  exec   uname -s
+2026-11-12T07:08:42.734329754Z  harness claude  1778  exit   code 0
+2026-11-12T07:08:42.734462574Z  harness claude  1779  fork   from 1777
+2026-11-12T07:08:42.738082585Z  harness claude  1779  exec   uname -r
+2026-11-12T07:08:42.745931112Z  harness claude  1779  exit   code 0
+2026-11-12T07:08:42.746815324Z  harness claude  1780  fork   from 1777
+2026-11-12T07:08:42.748214954Z  harness claude  1780  exec   uname -m
+2026-11-12T07:08:42.751724137Z  harness claude  1780  exit   code 0
+2026-11-12T07:08:42.753589793Z  harness claude  1777  exit   code 0
+2026-11-12T07:08:46.663720625Z  harness claude  1794  fork   from 953
+2026-11-12T07:08:46.664453011Z  harness claude  1794  exec   /bin/bash -c env
+2026-11-12T07:08:46.683609755Z  harness claude  1795  fork   from 953
+2026-11-12T07:08:46.686277598Z  harness claude  1795  exec   /bin/bash -c -l "SNAPSHOT_FILE=/run/claude-home/shell-snapshots/snapshot-bash-1794467326678-1g8ntd.sh\n      # No user config file to source\n      \n\n      # First, create/clear the snapshot file\n      echo \"# Snapshot file\" >| \"$SNAPSHOT_FILE\"\n\n      # When this file is sourced, we first unalias to avoid conflicts\n      # This is necessary because aliases get \"frozen\" inside function definitions at definition time,\n      # which can cause unexpected behavior when functions use commands that conflict with aliases\n      echo \"# Unset all aliases to avoid conflicts with functions\" >> \"$SNAPSHOT_FILE\"\n      echo \"unalias -a 2>/dev/null || true\" >> \"$SNAPSHOT_FILE\"\n\n      echo \"shopt -s expand_aliases\" >> \"$SNAPSHOT_FILE\"\n\n      \n      cat >> \"$SNAPSHOT_FILE\" << 'CLAUDE_CODE_END_pow1jc0bwtf'\n# Check for rg availability\nif ! hash rg 2>/dev/null && ! typeset -f rg >/dev/null 2>&1; then\n  function rg {\n  local _cc_bin=\"${CLAUDE_CODE_EXECPATH:-}\"\n  [[ -x $_cc_bin ]] || _cc_bin=/tmp/.local/bin/claude\n  if [[ ! -x $_cc_bin ]]; then command rg ${1+\"$@\"}; return; fi\n  if [[ -n ${ZSH_VERSION:-} ]]; then\n    ARGV0=rg \"$_cc_bin\" ${1+\"$@\"}\n  elif [[ \"$OSTYPE\" == \"msys\" ]] || [[ \"$OSTYPE\" == \"cygwin\" ]] || [[ \"$OSTYPE\" == \"win32\" ]]; then\n    ARGV0=rg \"$_cc_bin\" ${1+\"$@\"}\n  else\n    (exec -a rg \"$_cc_bin\" ${1+\"$@\"})\n  fi\n}\nfi\n# Shadow find/grep with embedded bfs/ugrep\nunalias find 2>/dev/null || true\nunalias grep 2>/dev/null || true\nfunction find {\n  local _cc_bin=\"${CLAUDE_CODE_EXECPATH:-}\"\n  [[ -x $_cc_bin ]] || _cc_bin=/tmp/.local/bin/claude\n  if [[ ! -x $_cc_bin ]]; then command find ${1+\"$@\"}; return; fi\n  if [[ -n ${ZSH_VERSION:-} ]]; then\n    ARGV0=bfs \"$_cc_bin\" -S dfs -regextype findutils-default ${1+\"$@\"}\n  elif [[ \"$OSTYPE\" == \"msys\" ]] || [[ \"$OSTYPE\" == \"cygwin\" ]] || [[ \"$OSTYPE\" == \"win32\" ]]; then\n    ARGV0=bfs \"$_cc_bin\" -S dfs -regextype findutils-default ${1+\"$@\"}\n  else\n    (exec -a bfs \"$_cc_bin\" -S dfs -regextype findutils-default ${1+\"$@\"})\n  fi\n}\nfunction grep {\n  local _cc_a\n  for _cc_a in ${1+\"$@\"}; do\n    case \"$_cc_a\" in -*-filter*|-*-pager*|-*-view*|-*-format-open*|-*-config*|---*|-@*|-*-save-config*|-[Zz]*|-[!-]*[Zz]*|--null|--null-data) command grep ${1+\"$@\"}; return ;; esac\n  done\n  local _cc_bin=\"${CLAUDE_CODE_EXECPATH:-}\"\n  [[ -x $_cc_bin ]] || _cc_bin=/tmp/.local/bin/claude\n  if [[ ! -x $_cc_bin ]]; then command grep ${1+\"$@\"}; return; fi\n  if [[ -n ${ZSH_VERSION:-} ]]; then\n    ARGV0=ugrep \"$_cc_bin\" -G --ignore-files --hidden -I --exclude-dir=.git --exclude-dir=.svn --exclude-dir=.hg --exclude-dir=.bzr --exclude-dir=.jj --exclude-dir=.sl ${1+\"$@\"}\n  elif [[ \"$OSTYPE\" == \"msys\" ]] || [[ \"$OSTYPE\" == \"cygwin\" ]] || [[ \"$OSTYPE\" == \"win32\" ]]; then\n    ARGV0=ugrep \"$_cc_bin\" -G --ignore-files --hidden -I --exclude-dir=.git --exclude-dir=.svn --exclude-dir=.hg --exclude-dir=.bzr --exclude-dir=.jj --exclude-dir=.sl ${1+\"$@\"}\n  else\n    (exec -a ugrep \"$_cc_bin\" -G --ignore-files --hidden -I --exclude-dir=.git --exclude-dir=.svn --exclude-dir=.hg --exclude-dir=.bzr --exclude-dir=.jj --exclude-dir=.sl ${1+\"$@\"})\n  fi\n}\n# Shadow pkill to refuse patterns matching the CLI process\nunalias pkill 2>/dev/null || true\nfunction pkill {\n  if [ -n \"${CLAUDE_PID:-}\" ] && [ -r \"/proc/${CLAUDE_PID}/comm\" ]; then\n    local _cc_skip=\"\" _cc_a\n    local -a _cc_probe=()\n    for _cc_a in ${1+\"$@\"}; do\n      if [ -n \"$_cc_skip\" ]; then _cc_skip=\"\"; continue; fi\n      case \"$_cc_a\" in\n        --signal) _cc_skip=1 ;;\n        --signal=*|-e|--echo) ;;\n        -[0-9]*) ;;\n        -[PUGOF]?*) _cc_probe+=(\"$_cc_a\") ;;\n        -[ABCDEFGHIJKLMNOPQRSTUVWXYZ][ABCDEFGHIJKLMNOPQRSTUVWXYZ0-9]*) ;;\n        *) _cc_probe+=(\"$_cc_a\") ;;\n      esac\n    done\n    if command pgrep ${_cc_probe[@]+\"${_cc_probe[@]}\"} 2>/dev/null | command grep -qx \"${CLAUDE_PID}\"; then\n      printf 'pkill: refusing to run — this pattern matches the Claude CLI process (PID %s). Narrow the pattern, or target your own children with `pkill -P $$ ...`.\\n' \"${CLAUDE_PID}\" >&2\n      return 1\n    fi\n  fi\n  command pkill ${1+\"$@\"}\n}\nexport PATH=/harness/claude:/harness/claude/bin" (and 291 bytes more)
+2026-11-12T07:08:46.688957353Z  harness claude  1794  exec   env
+2026-11-12T07:08:46.690525069Z  harness claude  1794  exit   code 0
+2026-11-12T07:08:46.707890778Z  harness claude  1797  fork   from 1795
+2026-11-12T07:08:46.709632501Z  harness claude  1797  exec   cat
+2026-11-12T07:08:46.713757231Z  harness claude  1797  exit   code 0
+2026-11-12T07:08:46.717569815Z  harness claude  1795  exit   code 0
+2026-11-12T07:08:46.734797895Z  harness claude  1798  fork   from 953
+2026-11-12T07:08:46.737103528Z  harness claude  1798  exec   /bin/bash -c "source /run/claude-home/shell-snapshots/snapshot-bash-1794467326678-1g8ntd.sh 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && { \\builtin unalias -- 'which'; \\builtin unset -f -- 'which'; } >/dev/null 2>&1 || true && { \\builtin unalias -- 'unsetenv'; \\builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'ls -1 /work' < /dev/null && pwd -P >| /tmp/claude-2b9e-cwd"
+2026-11-12T07:08:46.774332709Z  harness claude  1799  fork   from 1798
+2026-11-12T07:08:46.777097805Z  harness claude  1799  exec   ls -1 /work
+2026-11-12T07:08:46.783532014Z  harness claude  1799  exit   code 0
+2026-11-12T07:08:46.784800588Z  harness claude  1798  exit   code 0
+2026-11-12T07:08:50.976508349Z  harness claude   953  exit   code 0
+2026-11-12T07:08:50.994795810Z  harness claude   950  exit   code 0
+2026-11-12T07:08:50.995071548Z  harness claude   947  exit   signal 9 (SIGKILL)
+2026-11-12T07:08:50.995968854Z  harness claude   942  exit   signal 9 (SIGKILL)

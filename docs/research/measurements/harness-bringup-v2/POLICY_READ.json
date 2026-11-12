@@ -1,0 +1,45 @@
+{
+  "POLICY_READ": true,
+  "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "source": "origin/main, re-read in full with git show after context compaction and before any v2 edit, build or run",
+  "files": {
+    "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "AGENTS.md": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+    "docs/development-evidence.md": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+    "CLAUDE.md": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f",
+    "docs/design/managed-runtime-plan.md (sections 1, 8, 9; G18, G24, P10)": "2bf13d754e4912018ebe09bad4243260f9349a66e4aadd1e662d507ae5037241",
+    "docs/architecture/AGENTFILE_ARCH.md (sections 3, 4, 9)": "51952a9fab120d4c06390ccdabfdc855afff6f0b745262603b148164381fda5b"
+  },
+  "development_rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "coordinator": "ROOT (agent 01a148884a4770fdaf0111f3f792a248)",
+  "task": "Harness bring-up v2: a real turn of each harness (Codex runs a tool and answers; Claude Code answers, with a tool if it uses one) in a Shards microVM started from HARNESS and harness.json alone, signed in with the person's own Codex and Claude Code credentials, which ROOT relays the person has asked for this test only (it replaces v1's rule against using them). The credentials are found by key names only, copied on the machine that holds them into a fresh private 0700 directory (files 0600) outside any synced repository, given to that one harness through a VOLUME FOR it and shards run -v, compared by hash after each run (written back atomically if the harness refreshed them), scrubbed afterwards, and checked for leaks by an in-process check that prints only found or not found. The earlier local-model task (Ollama) was dropped before anything of it was started.",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/harness-bringup-v2",
+  "branch": "p/harness-bringup-v2",
+  "base": "origin/p/integrate-engine-20261111 5b3e8f784 (contains the v1 merge 1da9132b7)",
+  "owned_paths": [
+    "docs/research/measurements/harness-bringup-v2/**",
+    "docs/examples/harness-codex-signed-in/** and docs/examples/harness-claude-signed-in/** (new)",
+    "crates/shards/tests/harness_bringup.rs (new ignored cases)"
+  ],
+  "limits": [
+    "VMs on the machine that holds the credentials: adacachy (451397fcc585f7f7cb9aaf00e42064bb, KVM, x86_64); the credentials never cross machines",
+    "no credential value in a command line, an environment variable kiln records, a log, a commit or a synced folder; records say the credential type only",
+    "no builds on this Mac (1.1 GiB free at start, below its 30 GiB floor)",
+    "single-VM bring-up runs only; suites, benchmarks and multi-platform validation are ROOT's",
+    "no subagents; no push, merge or rebase; commits via /Users/adalundhe/.kiln-run/bin/gits with named paths, final line Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+  ],
+  "rules_acknowledged": "R01-R16 read in full; docs/development-evidence.md checklist and AGENTS.md read in full",
+  "read_at": "2026-11-11",
+  "re_read": [
+    {
+      "when": "2026-11-12T06:30Z, after the session restart of about 04:44Z (context lost)",
+      "revision": "c4ae59ee0 (origin/main)",
+      "files": "AGENTS.md, docs/development-rules.md, docs/development-evidence.md and CLAUDE.md read in full again; each SHA-256 unchanged from the entries above"
+    }
+  ],
+  "superseded_limits": {
+    "no push, merge or rebase": "replaced by the person's rule of 2026-11-12, relayed verbatim by ROOT: \"all subagents are only required to verify unit tests relevant to their changes and any light integration tests relevant. Once complete, they should merge their work to main and end.\" Done as ROOT directs: git fetch origin, gits merge origin/main, git push origin HEAD:main as a fast-forward, never forced; the checks this leaves owed are recorded in README.md",
+    "no builds on this Mac": "kept: every build and run of this task is on adacachy, where the credentials are"
+  }
+}

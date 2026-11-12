@@ -1,0 +1,44 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/s38-daemon-test/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/cc9admQq.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/ccKupyMZ.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/s38-daemon-test/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+   Compiling shards v0.7.0 (/home/adalundhe/s38-daemon-test/src/crates/shards)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.95s
+     Running unittests src/main.rs (/home/adalundhe/s38-daemon-test/target/debug/deps/shards-56fa3109d4065a35)
+
+running 1 test
+test setup::tests::a_granted_run_is_composed_with_the_grant ... FAILED
+
+failures:
+
+---- setup::tests::a_granted_run_is_composed_with_the_grant stdout ----
+
+thread 'setup::tests::a_granted_run_is_composed_with_the_grant' (2790479) panicked at crates/shards/src/setup.rs:1438:13:
+assertion `left == right` failed: pivot_root(0)
+  left: 327681
+ right: 2147418112
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    setup::tests::a_granted_run_is_composed_with_the_grant
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 733 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p shards --bin shards`

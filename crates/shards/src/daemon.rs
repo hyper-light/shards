@@ -827,6 +827,8 @@ struct Base {
     health: Option<(shards_ipc::Health, Vec<String>)>,
     /// Its image's Agentfile (D109), which its execs are held to as its run was (D115).
     agentfile: Option<crate::agentfile::Agentfile>,
+    /// Its command has the nesting grant (D234): no run joins its microVM.
+    nested: bool,
 }
 
 /// A run's own engine (D181): the token its init says first on each connection its
@@ -880,6 +882,8 @@ struct Keep<'a> {
     egress: Option<Vec<u8>>,
     /// Its image's Agentfile (D109), for its execs (D115).
     agentfile: Option<crate::agentfile::Agentfile>,
+    /// Its command has the nesting grant (D234), which a run joining it is refused for.
+    nested: bool,
     /// Its own MAC (D46, PM M173), for its VM's network process (`NET_MAC`): none where it
     /// has no interface of its own.
     mac: Option<[u8; 6]>,
@@ -3211,6 +3215,15 @@ impl<D: Disk> Daemon<D> {
         // libnetwork/resolvconf's legacy transform, neither with IPv6), read as the run
         // starts; with them the command still within a frame (review 1.y), as spec.rs
         // measured it without.
+        // The nesting grant (D234): never a joiner's, and no run joins a microVM whose
+        // command has it; init refuses each again.
+        if let network::Start::Join(name) = &start
+            && let Err(e) = crate::agentfile::joining(&run, self.microvm_nested(name))
+        {
+            refuse(&e.to_string());
+            abandon(&id);
+            return None;
+        }
         // A joiner's: an Agentfile's agents are not yet taken by a run joining
         // another's network (D119), as the guest refuses them.
         if let network::Start::Join(_) = &start
@@ -3235,6 +3248,10 @@ impl<D: Disk> Daemon<D> {
             abandon(&id);
             return None;
         }
+        // What its command is given of the nesting grant (D234): a new run is refused it as
+        // it is made (`create`), with what else its image refuses; a run started again whose
+        // grant no longer holds fails to start.
+        let nesting = crate::agentfile::nesting(prepared.agentfile.as_ref(), &run);
         // A joiner's files that name it are its provider's (D119): none of its own.
         if !matches!(start, network::Start::Join(_))
             && let Err(e) = self.name_guest(&run, &mut prepared.spec)
@@ -3498,6 +3515,10 @@ impl<D: Disk> Daemon<D> {
                         "WARNING: {}",
                         shards_abi::run::beside::withheld(name, what)
                     ));
+                }
+                // The nesting grant its image declares and the run does not ask for (D234).
+                if nesting == Ok(crate::agentfile::Nesting::Unasked) {
+                    say(&format!("WARNING: {}", crate::agentfile::NESTING_UNASKED));
                 }
                 name
             }
@@ -3795,12 +3816,15 @@ impl<D: Disk> Daemon<D> {
                     .or(prepared.gpu.as_deref())
                     .unwrap_or_else(|| crate::run::kernel_of(&prepared.boot));
                 let kernel = crate::guest::version_of(booted)?;
-                prepared.spec.setup.extend(crate::setup::security_setup(
+                let granted = nesting.as_ref().map_err(ToString::to_string)?;
+                crate::setup::security_setup(
+                    &mut prepared.spec.setup,
                     &run,
                     kernel,
                     prepared.cdi.as_ref().ok().and_then(Option::as_ref),
                     prepared.vfio.as_deref().unwrap_or_default(),
-                )?);
+                    granted.grant(),
+                )?;
                 // A joiner of a microVM on the host's network: its binds the host's too,
                 // by its provider's process for them (D124).
                 if joins_host {
@@ -4135,6 +4159,7 @@ impl<D: Disk> Daemon<D> {
                 visit: false,
                 egress,
                 agentfile: prepared.agentfile.clone(),
+                nested: matches!(nesting, Ok(crate::agentfile::Nesting::Granted(_))),
                 mac: run_mac.as_deref().and_then(|m| m.first_chunk::<6>().copied()),
                 link_local: link_local.clone(),
                 engine: engine.map(|token| OwnEngine {
@@ -4837,10 +4862,12 @@ impl<D: Disk> Daemon<D> {
             }
         }
         // Then shards' own: beside its image's agents and harnesses, nothing that reaches
-        // them (D115); its init refuses each again as it starts the command.
+        // them (D115); and the nesting grant only as its image declares it (D234). Its init
+        // refuses each again as it starts the command.
         if let Some(a) = &prepared.agentfile {
             a.refuse(run)?;
         }
+        crate::agentfile::nesting(prepared.agentfile.as_ref(), run).map_err(|e| e.to_string())?;
         // A name held by a microVM that ended with `--rm`, its end not yet taken or its
         // removal not yet durable, is free once that is done, so that a script's next
         // `run --rm --name` finds it free: its end is taken, and its removal waited for.
@@ -5495,6 +5522,7 @@ impl<D: Disk> Daemon<D> {
             visit,
             egress,
             agentfile,
+            nested,
             mac: _,
             link_local: _,
             engine,
@@ -5594,6 +5622,7 @@ impl<D: Disk> Daemon<D> {
                 options,
                 health,
                 agentfile,
+                nested,
             }),
             socket,
             vm: ready.vm,
@@ -5708,6 +5737,7 @@ impl<D: Disk> Daemon<D> {
                 kind::LOST => self.log_lost(id, &m.payload),
                 kind::OOM => self.oom_killed(id, &m.payload),
                 kind::PIDS => self.pids_refused(id, &m.payload),
+                kind::WORKLOAD_READY => self.workload_ready(id, &m.payload),
                 kind::PROCESS => self.keep_processes(id, &m.payload),
                 kind::MANAGED_ABORT => {
                     if let Err(e) = self.managed.abort_member(id, &m.payload) {
@@ -6228,6 +6258,41 @@ impl<D: Disk> Daemon<D> {
                 "pids-limit",
                 &[("pids.max", after("pids.max")), ("refused", after("refused"))],
             );
+        }
+    }
+
+    /// Run `id`'s command, given the nesting grant, moved its readiness, as its init said it
+    /// (D234): an event of shards' own named for the state it moved to, `ready` (on time or
+    /// late) or `ready-by-passed`; and in the daemon's log, how far past its deadline.
+    fn workload_ready(&self, id: &str, payload: &[u8]) {
+        use shards_abi::run::nesting::Ready;
+        let Some(ready) = Ready::decode(payload) else {
+            log(format!(
+                "container {id}: a readiness its guest said malformed: {payload:?}"
+            ));
+            return;
+        };
+        let action = match ready {
+            Ready::OnTime => {
+                log(format!("container {id}: ready"));
+                "ready"
+            }
+            Ready::Late(past) => {
+                log(format!("container {id}: ready, {past} ns past its ready-by"));
+                "ready"
+            }
+            Ready::Passed(past) => {
+                log(format!(
+                    "container {id}: its ready-by passed before it was ready (seen {past} ns past it)"
+                ));
+                "ready-by-passed"
+            }
+        };
+        let named = lock(&self.containers)
+            .made(id)
+            .map(|c| (c.name.clone(), c.image.clone(), c.labels.clone()));
+        if let Some((name, image, labels)) = named {
+            self.event_for(id, &name, &image, &labels, action, &[]);
         }
     }
 
@@ -6933,9 +6998,9 @@ impl<D: Disk> Daemon<D> {
         ))
     }
 
-    /// The Agentfile of the microVM the run `name` names runs in, its own run's image's
-    /// (D109): what a run joining it runs beside (D115).
-    fn microvm_agentfile(&self, name: &str) -> Option<crate::agentfile::Agentfile> {
+    /// What the own run of the microVM the run `name` names runs in was composed of, while
+    /// it runs.
+    fn microvm_base(&self, name: &str) -> Option<Arc<Base>> {
         let id = self.resolve(name).ok()?;
         let runs = lock(&self.runs);
         let owner = match runs.get(&id) {
@@ -6943,9 +7008,21 @@ impl<D: Disk> Daemon<D> {
             _ => id,
         };
         match runs.get(&owner) {
-            Some(RunState::Tracked(t)) => t.base.agentfile.clone(),
+            Some(RunState::Tracked(t)) => Some(t.base.clone()),
             _ => None,
         }
+    }
+
+    /// The Agentfile of the microVM the run `name` names runs in, its own run's image's
+    /// (D109): what a run joining it runs beside (D115).
+    fn microvm_agentfile(&self, name: &str) -> Option<crate::agentfile::Agentfile> {
+        self.microvm_base(name).and_then(|base| base.agentfile.clone())
+    }
+
+    /// Whether the command of the microVM the run `name` names runs in has the nesting grant
+    /// (D234), whose microVM no run joins.
+    fn microvm_nested(&self, name: &str) -> bool {
+        self.microvm_base(name).is_some_and(|base| base.nested)
     }
 
     /// Whether the run `id` names is in the microVM `run` joins (D119): the one whose
@@ -8852,6 +8929,8 @@ fn again_as(stored: Run, client: &Run, id: &str) -> Run {
         silent: client.silent,
         create: false,
         restart: false,
+        // A nesting grant's deadline is its caller's, for the start it asked (D234).
+        ready_by: client.ready_by,
         ..stored
     }
 }
@@ -9996,6 +10075,12 @@ mod tests {
         /// [`start`](Self::start), detached: `client` is the client's connection, told
         /// whether the command started.
         fn start_with(&self, id: &str, client: Option<UnixStream>) -> Starting<'s> {
+            self.start_as(id, client, false)
+        }
+
+        /// [`start_with`](Self::start_with), its command composed with the nesting grant
+        /// where `nested` (D234).
+        fn start_as(&self, id: &str, client: Option<UnixStream>, nested: bool) -> Starting<'s> {
             let (warm, offered) = mpsc::channel::<Ready>();
             let (ask, asks) = mpsc::channel::<()>();
             let (daemon, threads, id) = (&self.t.daemon, self.threads, id.to_string());
@@ -10029,6 +10114,7 @@ mod tests {
                         visit: false,
                         egress: None,
                         agentfile: None,
+                        nested,
                         mac: None,
                         link_local: Vec::new(),
                         engine: None,
@@ -10346,6 +10432,7 @@ mod tests {
                             visit: false,
                             egress: None,
                             agentfile: None,
+                            nested: false,
                             mac: None,
                             link_local: Vec::new(),
                             engine: None,
@@ -12603,6 +12690,7 @@ mod tests {
                 visit: false,
                 egress: None,
                 agentfile: None,
+                nested: false,
                 mac: None,
                 link_local: Vec::new(),
                 engine: None,
@@ -12654,6 +12742,7 @@ mod tests {
                 visit: false,
                 egress: None,
                 agentfile: None,
+                nested: false,
                 mac: None,
                 link_local: Vec::new(),
                 engine: None,
@@ -13247,6 +13336,7 @@ mod tests {
                     visit: false,
                     egress: None,
                     agentfile: None,
+                    nested: false,
                     mac: None,
                     link_local: Vec::new(),
                     engine: engine.clone(),
@@ -14546,6 +14636,69 @@ mod tests {
             say(&vm, kind::DONE, &[0]);
             drop(vm);
             let _ = starting.run.join();
+        });
+    }
+
+    /// A run given the nesting grant says its command's readiness as its init moves it
+    /// (D234): each move an event of shards' own, named for the state it moved to, `ready`
+    /// on time and late alike, and `ready-by-passed`; what reads as no readiness, none.
+    #[test]
+    fn a_runs_readiness_is_said_as_its_events() {
+        use shards_abi::run::nesting::Ready;
+        let t = Test::new("readiness");
+        t.run(|t| {
+            let (id, starting, vm) = running(t, "nester");
+            for ready in [Ready::Passed(3), Ready::Late(5), Ready::OnTime] {
+                say(&vm, kind::WORKLOAD_READY, &ready.encode());
+            }
+            say(&vm, kind::WORKLOAD_READY, &[0; 9]);
+            say(&vm, kind::DONE, &[0]);
+            drop(vm);
+            joined(starting.run).unwrap();
+            let journal: String = std::fs::read_dir(t.home.join("events"))
+                .unwrap()
+                .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+                .collect();
+            let actions: Vec<String> = journal
+                .lines()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .filter(|e| e["Actor"]["ID"] == id.as_str())
+                .filter_map(|e| e["Action"].as_str().map(String::from))
+                .filter(|a| a.starts_with("ready"))
+                .collect();
+            assert_eq!(actions, ["ready-by-passed", "ready", "ready"], "{journal}");
+        });
+    }
+
+    /// The nesting grant of a run's command is its microVM's while the run goes on (D234),
+    /// told apart from a run's without it, as a run joining either is held to it
+    /// (`agentfile::joining`); it goes with its run.
+    #[test]
+    fn a_microvms_nesting_grant_is_known_while_its_run_goes_on() {
+        let t = Test::new("nested");
+        t.run(|t| {
+            let (_, plain, plain_vm) = running(t, "plain");
+            let id = t.create("nester");
+            let starting = t.start_as(&id, None, true);
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            t.until("its run is followed", |d| d.microvm_base("nester").is_some());
+            assert!(t.daemon.microvm_nested("nester"));
+            assert!(!t.daemon.microvm_nested("plain"));
+            assert_eq!(
+                crate::agentfile::joining(&Run::default(), t.daemon.microvm_nested("nester")),
+                Err(crate::agentfile::NestingRefused::Joiner)
+            );
+            say(&vm, kind::STARTED, &[]);
+            say(&vm, kind::DONE, &[0]);
+            drop(vm);
+            joined(starting.run).unwrap();
+            assert!(!t.daemon.microvm_nested("nester"), "its grant outlived its run");
+            say(&plain_vm, kind::DONE, &[0]);
+            drop(plain_vm);
+            joined(plain.run).unwrap();
         });
     }
 }

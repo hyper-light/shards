@@ -1,0 +1,52 @@
+   Compiling shards-vm-process v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/vm-process)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.23s
+     Running unittests src/main.rs (/home/adalundhe/s38-daemon-test/target/debug/deps/shards_vm-014f169038c5b01a)
+
+running 44 tests
+test confine::tests::dma_buf_sync_file_requests_are_the_kernels ... ok
+test confine::tests::a_manifest_names_its_libraries ... ok
+test confine::tests::udmabuf_create_is_the_request_venus_makes ... ok
+test confine::tests::landlock_confines_the_process_to_its_paths ... ok
+test confine::tests::a_confined_vm_asks_its_terminal_as_its_c_library_does ... ok
+test confine::tests::a_second_layer_seals_a_directory_and_keeps_the_rest ... ok
+test spec::tests::a_spec_its_resolvers_push_past_a_frame_is_refused ... ok
+test spec::tests::a_terminal_brings_term ... ok
+test spec::tests::a_terminal_of_the_clients_types_is_chosen_where_none_is_given ... ok
+test spec::tests::an_execs_environment_is_laid_over_its_containers ... ok
+test spec::tests::default_hostnames_are_twelve_hex_digits ... ok
+test spec::tests::environments_compose ... ok
+test vm_run::lifeline_tests::managed_lifeline_early_eof_refuses_before_initialization ... ok
+test vm_run::lifeline_tests::managed_lifeline_preserves_normal_input_and_requires_explicit_reader ... ok
+test vm_run::managed_report_tests::managed_report_names_in_values_and_guest_argv_are_never_host_flags ... ok
+test vm_run::said::a_guests_last_words_move_no_terminal ... ok
+test vm_run::tests::a_boot_into_an_image_keeps_its_options_the_kernels ... ok
+test vm_run::managed_report_tests::managed_report_requires_one_scope_and_complete_fresh_boot_selection ... ok
+test vm_run::tests::memory_max_is_what_the_guest_may_have_in_all ... ok
+test vm_run::tests::test_functions_are_placed_as_asked ... ok
+test vm_run::tests::a_served_share_takes_its_socket_once ... ok
+test vm_run::tests::paths_are_taken_in_any_bytes ... ok
+test vm_run::tests::valued_flags_need_their_values ... ok
+test workload::capture::tests::explicit_control_end_preserves_layer_connection_but_unannounced_eof_ends_it ... ok
+test workload::capture::tests::duplex_credit_services_quiet_sibling_stderr_while_stdout_is_idle ... ok
+test workload::capture::tests::trusted_abort_preserves_tenant_errno_and_coalesces_duplicate ... ok
+test warm::tests::a_request_with_the_wrong_descriptors_is_refused ... ok
+test workload::tests::a_logger_keeps_records_whole_or_counts_them_lost ... ok
+test workload::tests::a_log_rotates_and_keeps_its_newest_segments ... ok
+test workload::tests::a_runs_readiness_is_handed_on_as_it_comes ... ok
+test workload::tests::an_exec_the_guest_cannot_connect_fails_with_why ... ok
+test workload::tests::engine_hellos::a_hello_longer_than_a_token_and_an_offer_is_refused ... ok
+test workload::tests::engine_hellos::a_plain_hello_is_heard_and_what_follows_it_left_unread ... ok
+test workload::tests::engine_hellos::a_wrong_token_is_refused_before_its_offer_is_read ... ok
+test workload::tests::engine_hellos::an_offer_after_the_token_is_read_whole ... ok
+test workload::tests::engine_hellos::an_offer_whose_bytes_say_no_slot_is_heard_as_malformed ... ok
+test workload::tests::exec_connections_go_only_to_the_exec_they_name ... ok
+test workload::tests::quiesce_bad_response_keeps_its_typed_error_when_the_relay_ends ... ok
+test workload::tests::quiesce_replies_resolve_only_the_waiting_request ... ok
+test workload::tests::quiesce_send_failure_and_command_end_keep_their_ownership ... ok
+test workload::tests::records_are_written_whole_through_short_writes ... ok
+test workload::tests::a_non_blocking_log_drops_only_what_comes_while_its_queue_is_full ... ok
+test workload::tests::an_exec_frame_stays_within_what_a_frame_carries ... ok
+test warm::tests::what_the_vms_threads_send_the_daemon_arrives_whole ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

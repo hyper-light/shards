@@ -1,0 +1,12 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:17:56.956973082 -0800
++++ crates/shards/src/agentfile.rs	2026-11-12 02:17:56.960230944 -0800
+@@ -126,9 +126,6 @@
+     if !declared {
+         return Err(NestingRefused::Undeclared);
+     }
+-    if run.cgroupns == "host" {
+-        return Err(NestingRefused::CgroupnsHost);
+-    }
+     if run.pid == "host" {
+         return Err(NestingRefused::PidHost);
+     }

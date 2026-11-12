@@ -1,0 +1,11 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:20:18.621283176 -0800
++++ crates/shards/src/setup.rs	2026-11-12 02:20:18.628464176 -0800
+@@ -765,7 +765,7 @@
+     {
+         setup.push(filter);
+     }
+-    if let Some(filter) = seccomp(run, &security, kernel, nesting.is_some())? {
++    if let Some(filter) = seccomp(run, &security, kernel, true)? {
+         setup.push(filter);
+     }
+     // On the host's network (D124): init told so, and its binds' filter, last.

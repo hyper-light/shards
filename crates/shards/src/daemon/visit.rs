@@ -241,6 +241,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 visit: true,
                 egress: None,
                 agentfile: None,
+                nested: false,
                 mac: None,
                 link_local: Vec::new(),
                 engine: None,

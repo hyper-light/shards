@@ -1,0 +1,129 @@
+diff --git a/crates/shards/src/setup.rs b/crates/shards/src/setup.rs
+index 44b19fa5d..52d0d1928 100644
+--- a/crates/shards/src/setup.rs
++++ b/crates/shards/src/setup.rs
+@@ -985,4 +985,124 @@ mod tests {
+             assert_eq!(entries(&run), want, "{opt}");
+         }
+     }
++
++    /// The runs whose setup the golden comparison holds to bbd908197's (D234, step 3).
++    fn golden_runs() -> Vec<(&'static str, Run)> {
++        let opts = |o: &[&str]| o.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
++        vec![
++            ("default", Run::default()),
++            (
++                "sys-admin",
++                Run {
++                    cap_add: opts(&["CAP_SYS_ADMIN"]),
++                    ..Run::default()
++                },
++            ),
++            (
++                "all-but-chown",
++                Run {
++                    cap_add: opts(&["ALL"]),
++                    cap_drop: opts(&["CAP_CHOWN"]),
++                    ..Run::default()
++                },
++            ),
++            (
++                "net-admin-alone",
++                Run {
++                    cap_add: opts(&["CAP_NET_ADMIN"]),
++                    cap_drop: opts(&["ALL"]),
++                    ..Run::default()
++                },
++            ),
++            (
++                "privileged",
++                Run {
++                    privileged: true,
++                    ..Run::default()
++                },
++            ),
++            (
++                "apparmor-unconfined",
++                Run {
++                    cap_add: opts(&["CAP_SYS_ADMIN"]),
++                    security_opt: opts(&["apparmor=unconfined"]),
++                    ..Run::default()
++                },
++            ),
++            (
++                "seccomp-unconfined",
++                Run {
++                    security_opt: opts(&["seccomp=unconfined"]),
++                    ..Run::default()
++                },
++            ),
++            (
++                "own-profile",
++                Run {
++                    security_opt: opts(&[r#"seccomp={"defaultAction":"SCMP_ACT_ALLOW"}"#]),
++                    ..Run::default()
++                },
++            ),
++            (
++                "cgroups-nnp",
++                Run {
++                    security_opt: opts(&["writable-cgroups=true", "no-new-privileges"]),
++                    ..Run::default()
++                },
++            ),
++            (
++                "host-network",
++                Run {
++                    network: "host".into(),
++                    ..Run::default()
++                },
++            ),
++            (
++                "cgroupns-pid-host",
++                Run {
++                    cgroupns: "host".into(),
++                    pid: "host".into(),
++                    ..Run::default()
++                },
++            ),
++        ]
++    }
++
++    /// An entry as the golden comparison shows it: a filter by its name alone, whose
++    /// program is the architecture's.
++    fn shown(e: &[u8]) -> String {
++        for name in ["seccomp-mounts=", "seccomp-binds=", "seccomp="] {
++            if e.starts_with(name.as_bytes()) {
++                return name.trim_end_matches('=').to_string();
++            }
++        }
++        String::from_utf8_lossy(e).into_owned()
++    }
++
++    /// The SHA-256 of `entries`, each after its length (a big-endian u32).
++    fn digest(entries: &[Vec<u8>]) -> String {
++        use sha2::Digest as _;
++        let mut h = sha2::Sha256::new();
++        for e in entries {
++            h.update(u32::try_from(e.len()).unwrap().to_be_bytes());
++            h.update(e);
++        }
++        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
++    }
++
++    /// Not kept: prints each golden run's entries at the base, before the grant.
++    #[test]
++    fn golden_capture() {
++        let kernel = shards_seccomp::Kernel(6, 1);
++        for (name, run) in golden_runs() {
++            let mut entries = setup(&run, &[], None, None).unwrap();
++            entries.extend(security_setup(&run, kernel, None, &[]).unwrap());
++            let shown: Vec<String> = entries.iter().map(|e| shown(e)).collect();
++            println!(
++                "GOLDEN {name} {} {} {shown:?}",
++                std::env::consts::ARCH,
++                digest(&entries)
++            );
++        }
++    }
+ }

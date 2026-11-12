@@ -6,7 +6,12 @@
 // Only Unix has the daemon, so far.
 #![cfg_attr(not(unix), allow(dead_code))]
 
+use shards_abi::run::nesting::Grant;
 use shards_ipc::Run;
+
+/// CAP_SYS_ADMIN and CAP_NET_ADMIN, by the kernel's numbers (include/uapi/linux/capability.h).
+const CAP_SYS_ADMIN: u32 = 21;
+const CAP_NET_ADMIN: u32 = 12;
 
 /// Go's path.Clean, for absolute and relative slash-separated paths.
 fn clean(p: &str) -> String {
@@ -118,6 +123,7 @@ pub fn capabilities(run: &Run) -> u64 {
 /// calls deprecated), but `no-new-privileges`, `writable-cgroups` and `disable` alone.
 /// Labels are kept, as on a host without SELinux, which the guest kernel has none of; an
 /// AppArmor profile's name says only whether docker-default's mount rule holds (`MOUNTS`).
+/// `nesting` is shards' own key (D234), where dockerd refuses every key it does not know.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Security {
     pub no_new_privileges: bool,
@@ -126,6 +132,9 @@ pub struct Security {
     pub seccomp: Option<String>,
     /// `apparmor=`'s value: `unconfined`, a profile's name, or none.
     pub apparmor: Option<String>,
+    /// `nesting=true`: the run asks for the nesting grant (D234), which its image must
+    /// declare too (crate::agentfile::nesting).
+    pub nesting: bool,
 }
 
 pub fn security(run: &Run) -> Result<Security, String> {
@@ -165,15 +174,22 @@ pub fn security(run: &Run) -> Result<Security, String> {
             "writable-cgroups" => {
                 out.writable_cgroups = Some(shards_cmdline::go::parse_bool(v).map_err(|_| two())?)
             }
+            "nesting" => out.nesting = shards_cmdline::go::parse_bool(v).map_err(|_| two())?,
             _ => return Err(two()),
         }
     }
     Ok(out)
 }
 
-/// The capabilities of a microVM's bounding set, by name.
-pub fn capability_names(run: &Run) -> Vec<String> {
-    let mask = capabilities(run);
+/// The capabilities of the command of `run` given the nesting grant (D234): its own
+/// ([`capabilities`]), Docker's default set where it adds and drops none, with
+/// CAP_SYS_ADMIN and CAP_NET_ADMIN, which the grant always holds.
+fn nesting_capabilities(run: &Run) -> u64 {
+    capabilities(run) | 1 << CAP_SYS_ADMIN | 1 << CAP_NET_ADMIN
+}
+
+/// The capabilities of `mask`, a set of capability numbers, by name.
+fn capability_names(mask: u64) -> Vec<String> {
     shards_abi::run::CAP_NAMES
         .iter()
         .enumerate()
@@ -219,18 +235,48 @@ pub fn step_seccomp(kernel: shards_seccomp::Kernel) -> Result<Vec<u8>, String> {
 ///
 /// moby reads `builtin` named for a privileged container as a profile's JSON, and fails
 /// ("invalid character 'b'"): here it is the default profile, as it is for any other.
+///
+/// With the nesting grant (D234), compiled for the grant's capabilities, and the default
+/// profile its own ([`nesting_profile`]).
 pub fn seccomp(
     run: &Run,
     security: &Security,
     kernel: shards_seccomp::Kernel,
+    nesting: bool,
 ) -> Result<Option<Vec<u8>>, String> {
+    let nested;
     let profile: &[u8] = match security.seccomp.as_deref() {
         Some("unconfined") => return Ok(None),
         None | Some("") if run.privileged => return Ok(None),
+        None | Some("" | "builtin") if nesting => {
+            nested = nesting_profile()?;
+            &nested
+        }
         None | Some("" | "builtin") => shards_seccomp::DEFAULT,
         Some(json) => json.as_bytes(),
     };
-    compiled(profile, run, kernel, b"seccomp=", false)
+    let caps = if nesting {
+        nesting_capabilities(run)
+    } else {
+        capabilities(run)
+    };
+    compiled(profile, caps, kernel, b"seccomp=", false)
+}
+
+/// The profile a command given the nesting grant runs under (D234): Docker's default, with
+/// a rule allowing `pivot_root`, which it has none for, so that the boxes the command makes
+/// take their roots (moby/profiles seccomp v0.2.3, f16). The rest is the default's: what it
+/// opens only for a capability, it opens for the grant's; what it refuses whatever the
+/// capabilities (AF_ALG and AF_VSOCK sockets, io_uring, userfaultfd, keyctl, kexec), it
+/// refuses.
+fn nesting_profile() -> Result<Vec<u8>, String> {
+    let mut p: serde_json::Value = serde_json::from_slice(shards_seccomp::DEFAULT)
+        .map_err(|e| format!("the default seccomp profile: {e}"))?;
+    p.get_mut("syscalls")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or("the default seccomp profile has no syscalls")?
+        .push(serde_json::json!({"names": ["pivot_root"], "action": "SCMP_ACT_ALLOW"}));
+    serde_json::to_vec(&p).map_err(|e| e.to_string())
 }
 
 /// What docker-default, Docker's AppArmor profile, refuses a container with CAP_SYS_ADMIN
@@ -247,37 +293,48 @@ pub fn mounts(
     security: &Security,
     kernel: shards_seccomp::Kernel,
 ) -> Result<Option<Vec<u8>>, String> {
-    const CAP_SYS_ADMIN: u32 = 21;
     if run.privileged
         || security.apparmor.as_deref() == Some("unconfined")
         || capabilities(run) & (1 << CAP_SYS_ADMIN) == 0
     {
         return Ok(None);
     }
-    compiled(shards_seccomp::MOUNTS, run, kernel, b"seccomp-mounts=", false)
+    compiled(
+        shards_seccomp::MOUNTS,
+        capabilities(run),
+        kernel,
+        b"seccomp-mounts=",
+        false,
+    )
 }
 
 /// On the host's network (`--network host`, D124), or joining a microVM there: the
 /// filter by which init makes each bind(2) and listen(2) of the run's processes the host's
 /// (`seccomp-binds=`, shards_seccomp::BINDS), loaded first and for a listener.
 pub fn binds(run: &Run, kernel: shards_seccomp::Kernel) -> Result<Option<Vec<u8>>, String> {
-    compiled(shards_seccomp::BINDS, run, kernel, b"seccomp-binds=", true)
+    compiled(
+        shards_seccomp::BINDS,
+        capabilities(run),
+        kernel,
+        b"seccomp-binds=",
+        true,
+    )
 }
 
-/// `profile` compiled for `run`'s capabilities on `kernel`, as the setup entry `name`
-/// names: its seccomp(2) flags, then its instructions; shards' own whose notifications
-/// init answers where `agent`. Each profile, set of capabilities and kernel is compiled
-/// once.
+/// `profile` compiled for the capabilities `caps` (a set of numbers) on `kernel`, as the
+/// setup entry `name` names: its seccomp(2) flags, then its instructions; shards' own whose
+/// notifications init answers where `agent`. Each profile, set of capabilities and kernel
+/// is compiled once.
 fn compiled(
     profile: &[u8],
-    run: &Run,
+    caps: u64,
     kernel: shards_seccomp::Kernel,
     name: &[u8],
     agent: bool,
 ) -> Result<Option<Vec<u8>>, String> {
     let arch = shards_seccomp::Arch::host().ok_or("seccomp needs an amd64 or arm64 guest")?;
     let version = kernel;
-    let caps = capability_names(run);
+    let caps = capability_names(caps);
     type Key = (Vec<u8>, Vec<u8>, Vec<String>, shards_seccomp::Kernel);
     static COMPILED: std::sync::Mutex<std::collections::BTreeMap<Key, Option<Vec<u8>>>> =
         std::sync::Mutex::new(std::collections::BTreeMap::new());
@@ -665,46 +722,75 @@ pub(crate) fn storage_size(run: &Run) -> Result<Option<u64>, String> {
     Ok(size)
 }
 
-/// `--security-opt`'s setup entries, after the rest: the paths left unmasked, the cgroup
-/// writable, no new privileges and the seccomp filter, which its execs take too (init
-/// installs the filter last, so that none of its own setup is filtered). Made as the
-/// microVM starts: a profile it cannot load fails its start, not its making (D41).
+/// `--security-opt`'s setup entries, after the rest (`setup`, the run's composed so far):
+/// the paths left unmasked, the cgroup writable, no new privileges and the seccomp filter,
+/// which its execs take too (init installs the filter last, so that none of its own setup
+/// is filtered). Made as the microVM starts: a profile it cannot load fails its start, not
+/// its making (D41).
+///
+/// With the nesting grant (`nesting`, D234): the command's capabilities the grant's, in
+/// place of what `setup` gave it; the grant's own entries, as init reads them again
+/// (shards_abi::run::nesting::read); its filter ([`seccomp`]); and no mount filter, whose
+/// mounts and pivot_root the grant is for.
 pub fn security_setup(
+    setup: &mut Vec<Vec<u8>>,
     run: &Run,
     kernel: shards_seccomp::Kernel,
     cdi: Option<&crate::build::cdi::Edits>,
     vfio: &[crate::run::VfioGroup],
-) -> Result<Vec<Vec<u8>>, String> {
-    let mut out = Vec::new();
+    nesting: Option<&Grant>,
+) -> Result<(), String> {
     let security = security(run)?;
+    if let Some(grant) = nesting {
+        setup.retain(|e| !e.starts_with(b"caps="));
+        setup.push(format!("caps={}", nesting_capabilities(run)).into_bytes());
+        setup.extend(grant_entries(grant));
+    }
     if run.system_paths && !run.privileged {
-        out.push(b"unmasked".to_vec());
+        setup.push(b"unmasked".to_vec());
     }
     if security.writable_cgroups == Some(true) && !run.privileged {
-        out.push(b"cgroups-rw".to_vec());
+        setup.push(b"cgroups-rw".to_vec());
     }
     if let Some(devices) = devices(run, cdi, vfio) {
-        out.push(devices);
+        setup.push(devices);
     }
     if security.no_new_privileges {
-        out.push(b"nnp".to_vec());
+        setup.push(b"nnp".to_vec());
     }
     // Docker's AppArmor's mount rule first, so that its profile's errno is the one a
     // syscall both refuse returns (the most recent filter's).
-    if let Some(filter) = mounts(run, &security, kernel)? {
-        out.push(filter);
+    if nesting.is_none()
+        && let Some(filter) = mounts(run, &security, kernel)?
+    {
+        setup.push(filter);
     }
-    if let Some(filter) = seccomp(run, &security, kernel)? {
-        out.push(filter);
+    if let Some(filter) = seccomp(run, &security, kernel, nesting.is_some())? {
+        setup.push(filter);
     }
     // On the host's network (D124): init told so, and its binds' filter, last.
     if run.network == "host" {
-        out.push(b"network=host".to_vec());
+        setup.push(b"network=host".to_vec());
         if let Some(filter) = binds(run, kernel)? {
-            out.push(filter);
+            setup.push(filter);
         }
     }
-    Ok(out)
+    Ok(())
+}
+
+/// The nesting grant's own setup entries (D234): the grant, its deadline where the run
+/// gives one, and its GPUs where it names them, in D232's grammar.
+fn grant_entries(grant: &Grant) -> Vec<Vec<u8>> {
+    use shards_abi::run::nesting::{GPUS, GRANT, READY_BY};
+    let mut out = vec![GRANT.to_vec()];
+    if let Some(at) = grant.ready_by {
+        out.push([READY_BY, at.to_string().as_bytes()].concat());
+    }
+    if !grant.gpus.is_empty() {
+        let gpus: Vec<String> = grant.gpus.iter().map(ToString::to_string).collect();
+        out.push([GPUS, gpus.join(",").as_bytes()].concat());
+    }
+    out
 }
 
 /// The setup entry by which init gives the container its devices and confines it to
@@ -934,8 +1020,9 @@ mod tests {
     fn a_container_given_sys_admin_has_apparmors_mount_rule() {
         let kernel = shards_seccomp::Kernel(6, 1);
         let entries = |run: &Run| {
-            security_setup(run, kernel, None, &[])
-                .unwrap()
+            let mut setup = Vec::new();
+            security_setup(&mut setup, run, kernel, None, &[], None).unwrap();
+            setup
                 .into_iter()
                 .filter_map(|e| {
                     let name = e.split(|&b| b == b'=').next().unwrap_or_default().to_vec();
@@ -983,6 +1070,406 @@ mod tests {
                 ..Run::default()
             };
             assert_eq!(entries(&run), want, "{opt}");
+        }
+    }
+
+    /// `--security-opt nesting=true` asks for the nesting grant (D234): shards' own key, a
+    /// bool as Go reads one, after `:` too, the last given standing; alone, or with no
+    /// bool, refused as dockerd refuses a malformed option.
+    #[test]
+    fn a_run_asks_for_the_nesting_grant_by_its_own_key() {
+        let asks = |opts: &[&str]| {
+            security(&Run {
+                security_opt: opts.iter().map(|s| (*s).to_string()).collect(),
+                ..Run::default()
+            })
+            .map(|s| s.nesting)
+        };
+        for (opts, want) in [
+            (&["nesting=true"][..], Ok(true)),
+            (&["nesting=1"][..], Ok(true)),
+            (&["nesting:true"][..], Ok(true)),
+            (&["nesting=false"][..], Ok(false)),
+            (&["nesting=true", "nesting=false"][..], Ok(false)),
+            (&[][..], Ok(false)),
+            (
+                &["nesting"][..],
+                Err("invalid --security-opt 1: \"nesting\"".to_string()),
+            ),
+            (
+                &["nesting=yes"][..],
+                Err("invalid --security-opt 2: \"nesting=yes\"".to_string()),
+            ),
+        ] {
+            assert_eq!(asks(opts), want, "{opts:?}");
+        }
+    }
+
+    /// The runs `a_run_without_the_nesting_grant_is_composed_as_before` holds: each what
+    /// shards composed of it at bbd908197, before the nesting grant (a filter shown by its
+    /// name alone, whose program is its architecture's), and the SHA-256 of its entries
+    /// there on x86_64, each after its length, a big-endian u32 (recorded on Linux x86_64
+    /// by the same composition at that revision).
+    fn before_the_grant() -> Vec<(&'static str, Run, Vec<&'static str>, &'static str)> {
+        let opts = |o: &[&str]| o.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        let default = "5b2b34f20829bb1fb022ad62070dced0a6bdd9c84c10b11a28042cd7b03c227d";
+        vec![
+            ("default", Run::default(), vec!["seccomp"], default),
+            (
+                "nesting-false",
+                Run {
+                    security_opt: opts(&["nesting=false"]),
+                    ..Run::default()
+                },
+                vec!["seccomp"],
+                default,
+            ),
+            (
+                "sys-admin",
+                Run {
+                    cap_add: opts(&["CAP_SYS_ADMIN"]),
+                    ..Run::default()
+                },
+                vec!["caps=2820941307", "seccomp-mounts", "seccomp"],
+                "c48f56d50a73cb36af895f0c42546ac10fae507349d3316806935c3bfe383dbf",
+            ),
+            (
+                "all-but-chown",
+                Run {
+                    cap_add: opts(&["ALL"]),
+                    cap_drop: opts(&["CAP_CHOWN"]),
+                    ..Run::default()
+                },
+                vec!["caps=2199023255550", "seccomp-mounts", "seccomp"],
+                "26a009d82c18913c6111f98ac78365e386b6d9007d3ba0fcea606f3dcd5a5133",
+            ),
+            (
+                "net-admin-alone",
+                Run {
+                    cap_add: opts(&["CAP_NET_ADMIN"]),
+                    cap_drop: opts(&["ALL"]),
+                    ..Run::default()
+                },
+                vec!["caps=4096", "seccomp"],
+                "78b8bedfb4b374af629c4d94a36e5359a238792055e8ae5929015e8a4b75e089",
+            ),
+            (
+                "privileged",
+                Run {
+                    privileged: true,
+                    ..Run::default()
+                },
+                vec!["caps=2199023255551", "privileged", "devices=p\0"],
+                "fcf57dca954aa4e69be29a5abec2fa2cd234cde51e7a8ecd9e243636958604da",
+            ),
+            (
+                "apparmor-unconfined",
+                Run {
+                    cap_add: opts(&["CAP_SYS_ADMIN"]),
+                    security_opt: opts(&["apparmor=unconfined"]),
+                    ..Run::default()
+                },
+                vec!["caps=2820941307", "seccomp"],
+                "7f3bc88392aeee1b9c7803ebb401c478ed0eb750c02fa977467707faa21f2fc7",
+            ),
+            (
+                "seccomp-unconfined",
+                Run {
+                    security_opt: opts(&["seccomp=unconfined"]),
+                    ..Run::default()
+                },
+                vec![],
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                "own-profile",
+                Run {
+                    security_opt: opts(&[r#"seccomp={"defaultAction":"SCMP_ACT_ALLOW"}"#]),
+                    ..Run::default()
+                },
+                vec!["seccomp"],
+                "a3ad1399e10b9a1e669bc84ae575a7f1ed91801e70df220c8b8e78cea20451e2",
+            ),
+            (
+                "cgroups-nnp",
+                Run {
+                    security_opt: opts(&["writable-cgroups=true", "no-new-privileges"]),
+                    ..Run::default()
+                },
+                vec!["cgroups-rw", "nnp", "seccomp"],
+                "7533876735aeb2218d3635951243e91b17994b120ef4c4f84cd5cd15382dce7d",
+            ),
+            (
+                "host-network",
+                Run {
+                    network: "host".into(),
+                    ..Run::default()
+                },
+                vec!["seccomp", "network=host", "seccomp-binds"],
+                "e7cd4df00bed84d6e66f332c9d2868fa018a0ddd5a99b85c32c3940964988708",
+            ),
+            (
+                "cgroupns-pid-host",
+                Run {
+                    cgroupns: "host".into(),
+                    pid: "host".into(),
+                    ..Run::default()
+                },
+                vec!["cgroupns=host", "pid=host", "seccomp"],
+                "d8618bbda440c020da75ba3a0f906af23461bb5bcd1f2cc08da4cf72093a28ec",
+            ),
+        ]
+    }
+
+    /// An entry as `before_the_grant` shows it: a filter by its name alone.
+    fn shown(e: &[u8]) -> String {
+        for name in ["seccomp-mounts=", "seccomp-binds=", "seccomp="] {
+            if e.starts_with(name.as_bytes()) {
+                return name.trim_end_matches('=').to_string();
+            }
+        }
+        String::from_utf8_lossy(e).into_owned()
+    }
+
+    /// `profile` compiled for `run`'s own capabilities on `kernel`, as a filter's entry
+    /// `name` was made before the nesting grant: its name, its flags, its instructions.
+    fn filter_before(
+        name: &[u8],
+        profile: &[u8],
+        run: &Run,
+        agent: bool,
+        kernel: shards_seccomp::Kernel,
+    ) -> Vec<u8> {
+        let mask = capabilities(run);
+        let caps: Vec<String> = shards_abi::run::CAP_NAMES
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| mask & (1u64 << i) != 0)
+            .map(|(_, n)| (*n).to_string())
+            .collect();
+        let c = shards_seccomp::Container {
+            arch: shards_seccomp::Arch::host().unwrap(),
+            caps: &caps,
+            kernel,
+        };
+        let program = if agent {
+            shards_seccomp::compile_agent(profile, &c)
+        } else {
+            shards_seccomp::compile(profile, &c)
+        };
+        let program = program.unwrap().unwrap();
+        let mut e = name.to_vec();
+        e.extend_from_slice(&program.flags.to_le_bytes());
+        for i in &program.insns {
+            e.extend_from_slice(&i.to_ne_bytes());
+        }
+        e
+    }
+
+    /// A run without the nesting grant is composed byte for byte as before it (D234): each
+    /// entry as bbd908197 made it; each filter what its profile, Docker's or the run's own,
+    /// compiles to for the run's own capabilities, on every architecture; and on x86_64 the
+    /// whole as recorded at bbd908197.
+    #[test]
+    fn a_run_without_the_nesting_grant_is_composed_as_before() {
+        use sha2::Digest as _;
+        let kernel = shards_seccomp::Kernel(6, 1);
+        for (name, run, then, x86_64) in before_the_grant() {
+            let mut entries = setup(&run, &[], None, None).unwrap();
+            security_setup(&mut entries, &run, kernel, None, &[], None).unwrap();
+            let now: Vec<String> = entries.iter().map(|e| shown(e)).collect();
+            assert_eq!(now, then, "{name}");
+            let own = security(&run).unwrap().seccomp.filter(|p| p.starts_with('{'));
+            for e in &entries {
+                let made =
+                    |entry: &[u8], profile: &[u8], agent| filter_before(entry, profile, &run, agent, kernel);
+                let want = if e.starts_with(b"seccomp-mounts=") {
+                    made(b"seccomp-mounts=", shards_seccomp::MOUNTS, false)
+                } else if e.starts_with(b"seccomp-binds=") {
+                    made(b"seccomp-binds=", shards_seccomp::BINDS, true)
+                } else if e.starts_with(b"seccomp=") {
+                    let profile = own.as_deref().map_or(shards_seccomp::DEFAULT, str::as_bytes);
+                    made(b"seccomp=", profile, false)
+                } else {
+                    continue;
+                };
+                assert!(*e == want, "{name}: {} differs", shown(e));
+            }
+            let mut digest = sha2::Sha256::new();
+            for e in &entries {
+                digest.update(u32::try_from(e.len()).unwrap().to_be_bytes());
+                digest.update(e);
+            }
+            let digest: String = digest.finalize().iter().map(|b| format!("{b:02x}")).collect();
+            if cfg!(target_arch = "x86_64") {
+                assert_eq!(digest, x86_64, "{name}");
+            }
+        }
+    }
+
+    /// This architecture's audit number (include/uapi/linux/audit.h) and the calls a filter
+    /// is read for, by their numbers (arch/x86/entry/syscalls/syscall_64.tbl;
+    /// include/uapi/asm-generic/unistd.h).
+    #[cfg(target_arch = "x86_64")]
+    const CALLS: (u32, [(&str, u32); 10]) = (
+        0xc000_003e,
+        [
+            ("socket", 41),
+            ("pivot_root", 155),
+            ("mount", 165),
+            ("unshare", 272),
+            ("bpf", 321),
+            ("io_uring_setup", 425),
+            ("userfaultfd", 323),
+            ("keyctl", 250),
+            ("kexec_load", 246),
+            ("init_module", 175),
+        ],
+    );
+    #[cfg(target_arch = "aarch64")]
+    const CALLS: (u32, [(&str, u32); 10]) = (
+        0xc000_00b7,
+        [
+            ("socket", 198),
+            ("pivot_root", 41),
+            ("mount", 40),
+            ("unshare", 97),
+            ("bpf", 280),
+            ("io_uring_setup", 425),
+            ("userfaultfd", 282),
+            ("keyctl", 219),
+            ("kexec_load", 104),
+            ("init_module", 105),
+        ],
+    );
+
+    /// What the filter entry `entry` (`seccomp=` and the program init loads) returns for
+    /// call `name` with first argument `arg0`.
+    fn decides(entry: &[u8], name: &str, arg0: u64) -> u32 {
+        use shards_seccomp::bpf::{self, Data, Insn};
+        let (_flags, insns) = entry.strip_prefix(b"seccomp=").unwrap().split_at(4);
+        let (insns, []) = insns.as_chunks::<8>() else {
+            panic!("a program of whole instructions")
+        };
+        let program: Vec<Insn> = insns
+            .iter()
+            .map(|&[c0, c1, jt, jf, k0, k1, k2, k3]| Insn {
+                code: u16::from_ne_bytes([c0, c1]),
+                jt,
+                jf,
+                k: u32::from_ne_bytes([k0, k1, k2, k3]),
+            })
+            .collect();
+        let (arch, calls) = CALLS;
+        let nr = calls.iter().find(|(n, _)| *n == name).unwrap().1;
+        let data = Data {
+            nr,
+            arch,
+            args: [arg0, 0, 0, 0, 0, 0],
+            ..Data::default()
+        };
+        bpf::run(&program, &data).unwrap()
+    }
+
+    /// A run given the nesting grant is composed with it (D234): its capabilities Docker's
+    /// default set's with CAP_SYS_ADMIN and CAP_NET_ADMIN and its own, in one entry in place
+    /// of the one its flags gave; the grant's entries, which init reads back as the grant;
+    /// no mount filter, its own CAP_SYS_ADMIN notwithstanding; and Docker's default filter
+    /// for those capabilities with `pivot_root` allowed, which still refuses AF_ALG and
+    /// AF_VSOCK sockets, io_uring, userfaultfd, keyctl, kexec and modules. A run that asks
+    /// for no filter, or is privileged, has none.
+    #[test]
+    fn a_granted_run_is_composed_with_the_grant() {
+        use shards_abi::gpu::PhysicalGpu;
+        use shards_abi::run::nesting::{self, Grant};
+        use shards_seccomp::{ACT_ALLOW, act_errno};
+        let kernel = shards_seccomp::Kernel(6, 1);
+        let compose = |run: &Run, grant: &Grant| {
+            let mut entries = setup(run, &[], None, None).unwrap();
+            security_setup(&mut entries, run, kernel, None, &[], Some(grant)).unwrap();
+            entries
+        };
+        assert_eq!(shards_abi::run::CAP_NAMES[21], "CAP_SYS_ADMIN");
+        assert_eq!(shards_abi::run::CAP_NAMES[12], "CAP_NET_ADMIN");
+        let grant = Grant {
+            ready_by: Some(1_794_466_320_362_000_000),
+            gpus: vec![
+                PhysicalGpu::Pci {
+                    domain: 0,
+                    bus: 1,
+                    device: 0,
+                    function: 0,
+                },
+                PhysicalGpu::MetalRegistry(0x1_0000_02a1),
+            ],
+        };
+        let run = Run {
+            cap_add: vec!["CAP_SYS_ADMIN".into(), "CAP_SYS_PTRACE".into()],
+            security_opt: vec!["nesting=true".into()],
+            ..Run::default()
+        };
+        let entries = compose(&run, &grant);
+        let caps: Vec<&[u8]> = entries.iter().filter_map(|e| e.strip_prefix(b"caps=")).collect();
+        let defaults = capabilities(&Run::default());
+        let want = defaults | 1 << 21 | 1 << 12 | 1 << 19;
+        assert_eq!(caps, [want.to_string().as_bytes()]);
+        assert_eq!(nesting::read(&entries), Ok(Some(grant)));
+        assert_eq!(entries.iter().filter(|e| e.as_slice() == b"nesting").count(), 1);
+        assert!(!entries.iter().any(|e| e.starts_with(b"seccomp-mounts=")));
+        let filters: Vec<&Vec<u8>> = entries.iter().filter(|e| e.starts_with(b"seccomp=")).collect();
+        let [filter] = filters.as_slice() else {
+            panic!("one filter: {}", filters.len())
+        };
+        let eperm = act_errno(1);
+        for (call, arg0, want) in [
+            ("pivot_root", 0, ACT_ALLOW),
+            ("mount", 0, ACT_ALLOW),
+            ("unshare", 0, ACT_ALLOW),
+            ("bpf", 0, ACT_ALLOW),
+            ("socket", 2, ACT_ALLOW),
+            ("socket", 38, eperm),
+            ("socket", 40, eperm),
+            ("io_uring_setup", 0, eperm),
+            ("userfaultfd", 0, eperm),
+            ("keyctl", 0, eperm),
+            ("kexec_load", 0, eperm),
+            ("init_module", 0, eperm),
+        ] {
+            assert_eq!(decides(filter, call, arg0), want, "{call}({arg0})");
+        }
+        // Docker's own filter, a run's without the grant, refuses what the grant's allows.
+        let plain = compose(&Run::default(), &Grant::default());
+        let mut ungranted = Vec::new();
+        security_setup(&mut ungranted, &Run::default(), kernel, None, &[], None).unwrap();
+        let [default] = ungranted.as_slice() else {
+            panic!("one filter")
+        };
+        for call in ["pivot_root", "mount", "unshare"] {
+            assert_eq!(decides(default, call, 0), eperm, "{call}");
+        }
+        // A grant without a deadline or GPUs is the word alone; the run's default
+        // capabilities with the grant's.
+        assert_eq!(nesting::read(&plain), Ok(Some(Grant::default())));
+        let caps = (defaults | 1 << 21 | 1 << 12).to_string();
+        let words: Vec<&[u8]> = plain
+            .iter()
+            .filter(|e| !e.starts_with(b"seccomp="))
+            .map(Vec::as_slice)
+            .collect();
+        assert_eq!(words, [format!("caps={caps}").as_bytes(), &b"nesting"[..]]);
+        // A run that asks for no filter has none, granted or not; a privileged one every
+        // capability and no filter.
+        for (opts, privileged) in [(&["seccomp=unconfined"][..], false), (&[][..], true)] {
+            let run = Run {
+                security_opt: opts.iter().map(|s| (*s).to_string()).collect(),
+                privileged,
+                ..Run::default()
+            };
+            let entries = compose(&run, &Grant::default());
+            assert!(
+                !entries.iter().any(|e| e.starts_with(b"seccomp")),
+                "{opts:?} {privileged}"
+            );
         }
     }
 }

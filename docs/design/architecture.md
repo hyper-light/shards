@@ -17310,10 +17310,14 @@ The research, every finding graded with its sources:
 **Decided.**
 - *The grant, nesting.* It is one fixed bundle, given to a run's own command (the
   workload) only where all three of these hold:
-  - the image's Agentfile declares it: `NESTING`, a directive with no arguments (f31);
-  - the run asks for it: `--security-opt nesting=true` on `run` and `create`, and `nesting`
-    in shards-api's image spec (D231, f34). The key is shards' own: dockerd refuses keys it
-    does not know, and the difference is recorded as ours;
+  - the image's Agentfile declares it: `NESTING`, a directive with no arguments, a noun
+    naming what it declares as AGENT and NETWORK do (f31), and the word Incus names its own
+    nesting grant by (`security.nesting`, f32);
+  - the run asks for it: `--security-opt nesting=true` on `run` and `create`, a key=value
+    pair as `writable-cgroups=true` is (D42), with the grant's name for its key; and
+    shards-api's image spec field `nesting`, a bool of the same name (D231, f34). The key is
+    shards' own: dockerd refuses keys it does not know, and the difference is recorded as
+    ours;
   - the image declares no `AGENT` and no `HARNESS`, because the grant makes its command its
     microVM's only principal (f18, f19).
 
@@ -17348,11 +17352,14 @@ The research, every finding graded with its sources:
     Above the kernel's own ceiling (`sysctl_nr_open_max`, fs/file.c), the start fails,
     naming both numbers.
   - **Its deadline**, where the run gives one: `SHARDS_READY_BY`, an instant on the guest's
-    CLOCK_BOOTTIME in nanoseconds, the clock Hex's HEX_BOOT_READY_BY uses (f24). The run
-    carries its caller's deadline as the host's wall-clock time. Init converts it when the
-    run reaches it, from `HOST_TIME` (the host's wall clock in nanoseconds, read in one
-    access; crates/abi/src/lib.rs, f38) and its own CLOCK_BOOTTIME, so neither a template's
-    restore nor a pool's wait counts against it (f23, f25).
+    CLOCK_BOOTTIME in decimal nanoseconds, the clock, unit and form Hex's HEX_BOOT_READY_BY
+    has (f24). Its caller gives it as shards-api's image spec field `ready_by`, a budget,
+    which D231's run host turns into the host's wall-clock instant as the request reaches
+    it. A run from the CLI gives none. Init converts that instant when the run reaches it,
+    from `HOST_TIME` (the host's wall clock in nanoseconds, read in one access;
+    crates/abi/src/lib.rs, f38) and its own CLOCK_BOOTTIME, so neither a template's restore
+    nor a pool's wait counts against it (f23, f25). A deadline already past when the run
+    arrives is `SHARDS_READY_BY=0`, and its readiness is ready-by passed at once.
   - **Its GPUs' identities**, where the run names its GPUs (`--gpu-device`, shards-api's
     `gpu_devices`; D232). Init writes them before the command starts to `/run/shards/gpus`
     (mode 0444), one a line in `shards_abi::gpu`'s grammar. They are the GPUs the VM
@@ -17401,10 +17408,10 @@ the image as built:
   `shards_abi::gpu`'s grammar.
 - The capabilities and the filter travel as every run's do. No `seccomp-mounts=` is sent.
 
-From the guest to the host: a run message of a new kind, READY (`run::kind` 49, relayed to
-the daemon as ipc kind 90), carrying the readiness
-state and, for a late or missed deadline, how far past it. It is relayed as a run event and
-to D231's run host.
+From the guest to the host: a run message of a new kind, READY (`run::kind` 49), carrying the
+readiness state and, for a late or missed deadline, how far past it. The VM process relays it
+to the daemon as ipc kind 90, `WORKLOAD_READY` (ipc's kind 1 is already its own READY). The
+daemon gives it as the run's events `ready` and `ready-by-passed`, and to D231's run host.
 
 **Readiness** (init is its one owner; R04):
 
@@ -17422,34 +17429,68 @@ assignments are ignored", f36). Two kinds of datagram are ignored outright:
 - one from a process outside the workload's cgroup, as systemd's `NotifyAccess=all` accepts
   only "all members of the service's control group" (systemd.service(5)).
 
-A missed deadline is reported, not enforced: the caller set it, and stopping the run is the
-caller's decision.
+On time means READY=1 at or before the deadline: the deadline's own nanosecond is on time,
+and late is after it, by how much. A missed deadline is reported, not enforced: the caller set
+it, and stopping the run is the caller's decision.
 
 **Literals.** None is chosen:
 - The leaf's name, `init`: the name moby's hack/dind gives the leaf a nested runtime moves
   itself into (f35).
 - The notify datagram's bound, PIPE_BUF: systemd's NOTIFY_BUFFER_MAX
   (src/basic/constants.h:35, f36).
-- The deadline: the caller's, and none where it gives none. A host wall-clock step between
-  the daemon's conversion and init's read shifts it by that step.
+- The deadline: the caller's (`ready_by`), and none where it gives none. A host wall-clock
+  step between the run host's conversion and init's read shifts it by that step. Cold
+  start: a deadline already past is `SHARDS_READY_BY=0`, ready-by passed at once.
 - `fs.nr_open`: the run's own ask. The kernel's own ceiling refuses anything above it
   (f37).
-- The GPUs' identities: as many as the run names, at most D232's `MAX_PHYSICAL_GPUS`,
-  in its grammar.
+- The GPUs' identities: as many as the run names, at most D232's `MAX_PHYSICAL_GPUS`
+  (whose own derivation D232 still owes), in its grammar. They travel in the spec, which
+  `run::MAX_PAYLOAD` bounds whole. A selection at that bound takes 1,507,332 bytes (5 bytes
+  for the word, 65,536 identities of at most 22 bytes, and 65,535 commas) of the spec's
+  6,291,456, leaving argv and env the rest. A spec past the bound is refused, as any is,
+  never cut.
 - `WORKLOAD_READY` = 7 in `shards_abi::marker`, which holds 1 to 6 on main at 43114652a.
-  The guest's READY message is `shards_abi::run::kind` 49 (0 to 3 and 16 to 48 are taken), and
-  its relay to the daemon is `shards_ipc` kind 90 (kinds run to 89; 128 and 148 stand apart).
-  These are identifiers, not quantities: each is its table's next free value, checked again
-  when its step merges, as D numbers are.
-- `/run/shards/notify` and `/run/shards/gpus`: beside `/run/shards/engine.sock` (D181).
+  The guest's READY message is `shards_abi::run::kind` 49, the next above the highest (16 to
+  48 grew in order; 4 to 15, never used, are left as the table left them). Its relay to the
+  daemon is `shards_ipc` kind 90, `WORKLOAD_READY`, the next after ipc's kinds 1 to 89 (its
+  128 and 148 are a RUN flag bit and an exit status, not kinds). These are identifiers, not
+  quantities: each is its table's next value, checked again when its step merges, as D
+  numbers are. The unmerged branch p/managed-credentials-input-kiln-v1 takes run kind 49 for
+  INPUT_BYTES, and must renumber, as it already collides with main's 48.
+- `/run/shards/notify` and `/run/shards/gpus`: beside `/run/shards/engine.sock` (D181), each
+  named for what it holds: the sd_notify socket, and the run's GPUs.
+- `/run/shards`'s mode, 0755: as init makes it for engine.sock (crates/init/src/engine.rs),
+  searchable by every user of the run and written by init alone.
 - The identities file's mode, 0444: readable by every user of the run, as the GPUs are
   the run's own; init alone writes the file, before the command starts.
-- The names: `NESTING`, `nesting=true`, and the setup words `nesting`, `ready-by=` and
-  `gpus=` are shards' own. `NOTIFY_SOCKET` and `READY=1` are sd_notify's.
-  `SHARDS_READY_BY` takes the place of Hex's HEX_BOOT_READY_BY.
+- The names: `NESTING`, `nesting=true` and shards-api's `nesting` are the grant's name
+  (Incus's word, f32). The setup words name what they carry: `nesting` the grant,
+  `ready-by=` the deadline, `gpus=` the GPUs; no other setup word of init's is any of them.
+  `ready_by` is shards-api's field for the deadline, in its snake case. `NOTIFY_SOCKET` and
+  `READY=1` are sd_notify's. `SHARDS_READY_BY` takes the place of Hex's HEX_BOOT_READY_BY,
+  as `SHARDS_DOMAIN` names init's word to a domain. The run's events `ready` and
+  `ready-by-passed` are the readiness states' names.
 - CAP_SYS_ADMIN (21) and CAP_NET_ADMIN (12): the kernel's numbers
   (include/uapi/linux/capability.h).
 - The controllers the workload may enable: those init already enables for `run`.
+- The notify socket's mode, 0666, as engine.sock's (crates/init/src/engine.rs): every user of
+  the run reaches it. Only the run's own processes see its path, and the sender check bounds
+  whose READY=1 counts.
+- READY's payload, 9 bytes: its state, numbered by how far past the deadline the moment
+  is (1 on time, none; 2 late, READY=1 after it; 3 passed, the deadline gone by without
+  it), with 0 unused so that a zeroed payload names no state; then the nanoseconds past the
+  deadline as a big-endian u64, the width of the guest clock's nanoseconds. Integers are
+  big-endian, as the run protocol's other frames are.
+- Init's own names: the standby's `notify` entry, and its listener's tag `N`, as engine's
+  listener is `E` (crates/init/src/engine.rs).
+- `NR_OPEN_MAX`, 2147483584 on a 64-bit guest: computed in init from fs/file.c's own formula
+  for `sysctl_nr_open_max` (f37), never chosen.
+- The credentials buffer, 32 bytes: `CMSG_SPACE(sizeof(struct ucred))` on Linux (a 16-byte
+  `cmsghdr` and a 12-byte `ucred`, aligned to 8), so a datagram's passed descriptors find no
+  room and are never installed.
+- The notify queue: the kernel's own (`net.unix.max_dgram_qlen`), not raised as systemd
+  raises its own to 512 (src/basic/constants.h): init reads each datagram as it comes, and
+  readiness needs only one.
 
 **Alternatives, and why not.** Their sources are in the record.
 - `--privileged`: every device, `/proc` and `/sys` unmasked and writable, every capability,

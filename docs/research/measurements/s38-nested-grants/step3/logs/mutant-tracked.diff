@@ -1,0 +1,11 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:17:34.203249439 -0800
++++ crates/shards/src/daemon.rs	2026-11-12 02:17:34.209249366 -0800
+@@ -7022,7 +7022,7 @@
+     /// Whether the command of the microVM the run `name` names runs in has the nesting grant
+     /// (D234), whose microVM no run joins.
+     fn microvm_nested(&self, name: &str) -> bool {
+-        self.microvm_base(name).is_some_and(|base| base.nested)
++        false
+     }
+ 
+     /// Whether the run `id` names is in the microVM `run` joins (D119): the one whose

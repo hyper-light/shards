@@ -1,0 +1,37 @@
+   Compiling shards-vm-process v0.1.0 (/home/adalundhe/s38-daemon-test/src/crates/vm-process)
+warning: field `readiness` is never read
+   --> crates/vm-process/src/../../shards/src/workload.rs:893:5
+    |
+890 | struct RunRecords<'a> {
+    |        ---------- field in this struct
+...
+893 |     readiness: Option<&'a Records<'a>>,
+    |     ^^^^^^^^^
+    |
+    = note: `RunRecords` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards-vm-process` (bin "shards-vm" test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.97s
+     Running unittests src/main.rs (/home/adalundhe/s38-daemon-test/target/debug/deps/shards_vm-014f169038c5b01a)
+
+running 1 test
+test workload::tests::a_runs_readiness_is_handed_on_as_it_comes ... FAILED
+
+failures:
+
+---- workload::tests::a_runs_readiness_is_handed_on_as_it_comes stdout ----
+
+thread 'workload::tests::a_runs_readiness_is_handed_on_as_it_comes' (2845052) panicked at crates/vm-process/src/../../shards/src/workload.rs:2975:9:
+assertion `left == right` failed
+  left: []
+ right: [[3, 0, 0, 0, 0, 0, 0, 0, 3], [2, 0, 0, 0, 0, 0, 0, 0, 5]]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    workload::tests::a_runs_readiness_is_handed_on_as_it_comes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-vm-process --bin shards-vm`

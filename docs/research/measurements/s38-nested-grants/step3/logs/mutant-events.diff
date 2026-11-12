@@ -1,0 +1,11 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:20:28.150171201 -0800
++++ crates/shards/src/daemon.rs	2026-11-12 02:20:28.153171166 -0800
+@@ -6279,7 +6279,7 @@
+             }
+             Ready::Late(past) => {
+                 log(format!("container {id}: ready, {past} ns past its ready-by"));
+-                "ready"
++                "ready-by-passed"
+             }
+             Ready::Passed(past) => {
+                 log(format!(

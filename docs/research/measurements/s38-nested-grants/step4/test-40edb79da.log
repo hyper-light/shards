@@ -1,0 +1,24 @@
+# Step 4's lane: the gate of 40edb79da (init's re-check takes NESTING as spec() writes it),
+# copied by the coordinator from the lane's own Claude transcript
+# (session 01a1ce86-ce6b-7674-b758-ae6c1bd3314f; command sent 2026-11-12T08:35:35.922Z).
+# The lane removed its adacachy copy after the run, and kept no log file of it.
+# The command, as the lane ran it:
+#   W=/Users/adalundhe/Projects/shards/.claude/worktrees/s38-init; cd $W && cargo fmt -p shards-init && (git -C $W archive HEAD | ssh -o BatchMode=yes adalundhe@192.168.1.77 'bash -c "set -e; rm -rf ~/s38-init-step4; mkdir -p ~/s38-init-step4/src; tar -x -m -C ~/s38-init-step4/src"') && COPYFILE_DISABLE=1 tar --no-xattrs -c -C $W crates/init/src | ssh -o BatchMode=yes adalundhe@192.168.1.77 'bash -c "tar -x -m -C ~/s38-init-step4/src 2>/dev/null; echo synced"' && ssh -o BatchMode=yes adalundhe@192.168.1.77 'bash -s' <<'EOF' 2>&1 | tail -20
+#   D=$HOME/s38-init-step4; cd $D/src; export CARGO_TARGET_DIR=$D/target CARGO_BUILD_JOBS=4
+#   scope="systemd-run --user --scope -p MemoryMax=16G -p CPUQuota=400% --quiet"
+#   $scope cargo test -p shards-init -p shards-abi --target x86_64-unknown-linux-musl -j4 > $D/test.log 2>&1; echo "full_test_exit=$?"; grep -E "^test result|panicked|FAILED|init_refuses_the_grant" $D/test.log
+#   for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do $scope cargo clippy -p shards-init -p shards-abi --all-targets --target $t -j4 -- -D warnings > $D/clippy-$t.log 2>&1; echo "clippy_${t}_exit=$?"; done
+#   cargo fmt -p shards-init -p shards-abi -- --check > $D/fmt.log 2>&1; echo "fmt_exit=$?"
+#   EOF
+# Its output:
+synced
+full_test_exit=0
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test domains::tests::init_refuses_the_grant_unless_the_image_as_built_declares_it_alone ... ok
+test result: ok. 197 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.26s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+clippy_x86_64-unknown-linux-musl_exit=0
+clippy_aarch64-unknown-linux-musl_exit=0
+fmt_exit=0
+Shell cwd was reset to /Users/adalundhe/Projects/shards/.claude/worktrees/g121

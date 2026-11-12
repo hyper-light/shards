@@ -1,0 +1,11 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:19:52.329593158 -0800
++++ crates/shards/src/setup.rs	2026-11-12 02:19:52.332122745 -0800
+@@ -185,7 +185,7 @@
+ /// ([`capabilities`]), Docker's default set where it adds and drops none, with
+ /// CAP_SYS_ADMIN and CAP_NET_ADMIN, which the grant always holds.
+ fn nesting_capabilities(run: &Run) -> u64 {
+-    capabilities(run) | 1 << CAP_SYS_ADMIN | 1 << CAP_NET_ADMIN
++    capabilities(run) | 1 << CAP_SYS_ADMIN
+ }
+ 
+ /// The capabilities of `mask`, a set of capability numbers, by name.

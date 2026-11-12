@@ -1,0 +1,7 @@
+private copy on tmpfs at /run/user/1000/shards-signed-in.LrnUt5
+codex-home: copied to a 0600 file in a 0700 directory; its access token is valid for 1060 more minutes; its tokens were last refreshed 9 days ago
+test a_real_codex_signed_in_runs_a_tool_and_answers: exit 0 after 38 s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 35.64s
+leak check: 4 secret values of 1 credentials, 12 files (50197 bytes) scanned: not found
+codex-home: the copy is unchanged: no refresh, nothing to write back
+scrubbed: 438 files overwritten and removed, /run/user/1000/shards-signed-in.LrnUt5 removed

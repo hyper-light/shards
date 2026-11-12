@@ -557,6 +557,10 @@ pub mod kind {
     /// A VM → its daemon: [`GUEST_TIME`]'s answer, by its number (8, big-endian), then 0 and
     /// the times as `shards_vmm::vm::GuestTimes::encode` writes them, or 1 and why not.
     pub const GUEST_TIMED: u8 = 89;
+    /// Warm VM → its owner, as it comes: the workload of a run given the nesting grant
+    /// moved its readiness (D234), `shards_abi::run::kind::READY`'s payload as its guest
+    /// sent it (`shards_abi::run::nesting::Ready`). [`READY`] is the VM's own.
+    pub const WORKLOAD_READY: u8 = 90;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
@@ -1028,6 +1032,10 @@ pub struct Run {
     /// through its context (D228): what it may reach of this machine is what its owner
     /// granted it. Empty for this machine's own user's runs.
     pub client: String,
+    /// The nesting grant's deadline (D234), in nanoseconds since the Unix epoch on this
+    /// host's clock: shards-api's `ready_by`, which D231's run host makes an instant as the
+    /// request reaches it. None from a command line.
+    pub ready_by: Option<u64>,
 }
 
 /// The streams a create says its client attaches (Config.AttachStdin, AttachStdout and
@@ -1637,6 +1645,10 @@ impl Run {
             ("cgroup-parent", one(&self.cgroup_parent)),
             ("terms", self.terms.clone()),
             ("client", one(&self.client)),
+            (
+                "ready-by",
+                self.ready_by.map(|at| vec![at.to_string()]).unwrap_or_default(),
+            ),
             ("device-requests", {
                 let mut values = Vec::new();
                 for r in &self.device_requests {
@@ -1822,6 +1834,7 @@ impl Run {
                     "cgroup-parent" => run.cgroup_parent = values.into_iter().next().unwrap_or_default(),
                     "terms" => run.terms = values,
                     "client" => run.client = values.into_iter().next().unwrap_or_default(),
+                    "ready-by" => run.ready_by = Some(values.first()?.parse().ok()?),
                     "device-requests" => {
                         let mut rest = values.iter();
                         while rest.len() > 0 {
@@ -2902,6 +2915,7 @@ mod tests {
             cgroup_parent: "agents-ci.slice".into(),
             terms: vec!["xterm-ghostty".into(), "xterm-256color".into()],
             client: "laptop".into(),
+            ready_by: Some(u64::MAX),
         };
         let bytes = run.encode();
         let identity = run.daemon;
@@ -2975,6 +2989,7 @@ mod tests {
             cgroup_parent: String::new(),
             terms: Vec::new(),
             client: String::new(),
+            ready_by: None,
             ..run.clone()
         };
         let boundary = earlier.encode().len() - 4;

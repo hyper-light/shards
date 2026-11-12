@@ -1,0 +1,10 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:19:35.546791843 -0800
++++ crates/shards/src/setup.rs	2026-11-12 02:19:35.551213809 -0800
+@@ -742,7 +742,6 @@
+ ) -> Result<(), String> {
+     let security = security(run)?;
+     if let Some(grant) = nesting {
+-        setup.retain(|e| !e.starts_with(b"caps="));
+         setup.push(format!("caps={}", nesting_capabilities(run)).into_bytes());
+         setup.extend(grant_entries(grant));
+     }

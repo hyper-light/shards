@@ -1,0 +1,11 @@
+--- crates/init/src/readiness.rs.orig	2026-11-12 00:09:53.341426727 -0800
++++ crates/init/src/readiness.rs	2026-11-12 00:09:53.343685227 -0800
+@@ -357,7 +357,7 @@
+             }
+         };
+         // Past PIPE_BUF it was cut short: ignored whole.
+-        let text = self.buf.get(..len)?;
++        let text = self.buf.get(..len.min(self.buf.len()))?;
+         if !matches!(self.state, State::Starting | State::ReadyByPassed) || !says_ready(text) {
+             return None;
+         }

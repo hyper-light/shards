@@ -1,0 +1,12 @@
+--- /home/adalundhe/s38-daemon-test/orig	2026-11-12 02:18:27.023610150 -0800
++++ crates/shards/src/agentfile.rs	2026-11-12 02:18:27.025980874 -0800
+@@ -129,9 +129,6 @@
+     if run.cgroupns == "host" {
+         return Err(NestingRefused::CgroupnsHost);
+     }
+-    if run.pid == "host" {
+-        return Err(NestingRefused::PidHost);
+-    }
+     Ok(Nesting::Granted(shards_abi::run::nesting::Grant {
+         ready_by: run.ready_by,
+         // A run names no GPUs by their identities (D232) yet: `--gpus` asks for its

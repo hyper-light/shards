@@ -405,6 +405,12 @@ mod hosted {
         if let Some(a) = &agentfile {
             a.refuse(&run).map_err(no(Cause::Request))?;
         }
+        // The nesting grant (D234), as the daemon decides it for a run of its own.
+        let nesting = crate::agentfile::nesting(agentfile.as_ref(), &run)
+            .map_err(|e| No(Cause::Request, e.to_string()))?;
+        if nesting == crate::agentfile::Nesting::Unasked {
+            say(&format!("WARNING: {}", crate::agentfile::NESTING_UNASKED));
+        }
         let bridge = if run.network == "bridge" {
             Some(
                 shards_net::bridge::elected_here(&mut |note| say(&note))
@@ -465,7 +471,8 @@ mod hosted {
             boot.1.ok_or_else(|| No(Cause::Boot, "no init to boot".into()))?,
         );
         let version = crate::guest::version_of(&kernel).map_err(no(Cause::Boot))?;
-        setup.extend(crate::setup::security_setup(&run, version, None, &[]).map_err(no(Cause::Request))?);
+        crate::setup::security_setup(&mut setup, &run, version, None, &[], nesting.grant())
+            .map_err(no(Cause::Request))?;
         let server = match &agentfile {
             Some(_) => {
                 setup.extend(crate::setup::domain_seccomp(version).map_err(no(Cause::Boot))?);
@@ -1298,6 +1305,7 @@ mod tests {
             mcp: vec![b"mcp.example:443".to_vec()],
             dns: true,
             egress_declared: Vec::new(),
+            nesting: false,
         };
         let all = egress(Some(&grants), &wire::Narrowing::default()).ok().unwrap();
         assert!(all.is_some());
