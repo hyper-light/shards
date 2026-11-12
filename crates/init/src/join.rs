@@ -909,13 +909,7 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
     );
     // Its layers, kept before its root moves over them.
     let open_path = |path: &str| -> Result<OwnedFd, String> {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
-            .open(path)
-            .map(OwnedFd::from)
-            .map_err(|e| format!("{path}: {e}"))
+        crate::opath::open(path, libc::O_DIRECTORY).map_err(|e| format!("{path}: {e}"))
     };
     let kept = Kept {
         lower: open_path(LOWER)?,
@@ -1026,13 +1020,8 @@ pub fn build(join: Join, cgroup: &str) -> Result<Built, String> {
 /// taken back after, from a descriptor of it held meanwhile. What it reads of the disk is
 /// let go of from the page cache as it goes: read once, it is the joiner's files after.
 fn put_back(disk: &str, offset: u64, len: u64) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
     let disk = File::open(disk).map_err(|e| format!("the join disk: {e}"))?;
-    let own = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
-        .open("/")
-        .map_err(|e| format!("its root: {e}"))?;
+    let own = crate::opath::open("/", libc::O_DIRECTORY).map_err(|e| format!("its root: {e}"))?;
     let root = c(ROOT)?;
     // SAFETY: chroot(2) and chdir(2) of NUL-terminated paths, in a single-threaded fork
     // of init's.
@@ -1391,14 +1380,8 @@ mod tests {
     #[test]
     fn a_report_says_the_users_and_layers_or_why() {
         let dir = |name: &str| {
-            use std::os::unix::fs::OpenOptionsExt;
             let path = shards_testdir::TempDir::new(&format!("join-{name}")).unwrap();
-            let fd: OwnedFd = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
-                .open(&path)
-                .unwrap()
-                .into();
+            let fd = crate::opath::open(&path, libc::O_DIRECTORY).unwrap();
             (path, fd)
         };
         for users in [

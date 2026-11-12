@@ -72,35 +72,33 @@ pub fn plug_roots(setup: &[Vec<u8>]) -> Result<Vec<CString>, String> {
     Ok(roots)
 }
 
-/// The components of `dst`, where it lies strictly beneath one of `roots` (D235): absolute,
-/// each component plain, and its first a root. A mount at a root itself would hide the
-/// directory Landlock's rule for it is tied to, which a path walk then skips
-/// (security/landlock/fs.c), so a plug lies beneath one. Refused naming the roots there are.
+/// The components of `dst` where it lies strictly beneath one of `roots` (D235,
+/// `plug::beneath`); refused naming the roots there are.
 fn beneath_root<'a>(dst: &'a str, roots: &[CString]) -> Result<Vec<&'a str>, String> {
-    let named = || {
-        let all: Vec<String> = roots
-            .iter()
-            .map(|r| format!("/{}", r.to_string_lossy()))
-            .collect();
-        if all.is_empty() {
-            "the run has no plug roots".to_string()
-        } else {
-            format!("the run's plug roots are {}", all.join(", "))
+    let names: Vec<&[u8]> = roots.iter().map(|r| r.as_bytes()).collect();
+    match plug::beneath(dst.as_bytes(), &names) {
+        // Its components are of a `str`'s split at `/`, each a `str` too.
+        Ok(parts) => Ok(parts
+            .into_iter()
+            .filter_map(|p| std::str::from_utf8(p).ok())
+            .collect()),
+        Err(plug::Outside::Relative) => Err(format!("{dst}: not an absolute path")),
+        Err(plug::Outside::Unplain) => Err(format!("{dst}: not a plain absolute path")),
+        Err(plug::Outside::Rootless) => {
+            let all: Vec<String> = roots
+                .iter()
+                .map(|r| format!("/{}", r.to_string_lossy()))
+                .collect();
+            Err(if all.is_empty() {
+                format!("{dst}: not beneath a plug root: the run has no plug roots")
+            } else {
+                format!(
+                    "{dst}: not beneath a plug root: the run's plug roots are {}",
+                    all.join(", ")
+                )
+            })
         }
-    };
-    let parts: Vec<&str> = dst
-        .strip_prefix('/')
-        .ok_or_else(|| format!("{dst}: not an absolute path"))?
-        .split('/')
-        .collect();
-    if parts.iter().any(|p| matches!(*p, "" | "." | "..")) {
-        return Err(format!("{dst}: not a plain absolute path"));
     }
-    let root = parts.first().copied().unwrap_or_default();
-    if parts.len() < 2 || !roots.iter().any(|r| r.as_bytes() == root.as_bytes()) {
-        return Err(format!("{dst}: not beneath a plug root: {}", named()));
-    }
-    Ok(parts)
 }
 
 /// The file systems a plugged disk is tried as, in order.

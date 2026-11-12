@@ -1,0 +1,68 @@
+# r4. The symptom reproduced by ending a run's daemon mid-run, as kiln's sweep does (red, main
+# 3103d2eab), and the fix's words for each end (green, 037fe95d4). harness/kill.sh on jupiter
+# (Windows 11 Pro 10.0.26200, AMD64, WHP), each a `kiln run`, 2026-11-12 ~21:05Z-21:56Z;
+# test-release builds (sha256 of each binary's first 16 hex given). Each trial a fresh home
+# given the guest's files and busybox:1.37 (`load`); `ended=` the process taskkill /F ended,
+# `at_ms` when, from the client's start; `after_ms` how long its client took to end after.
+#   cold: the home's first `run -d --name tI busybox:1.37 sleep 30` (its prepare done, the
+#         template booting), its daemon ended 1.5 s in
+#   warm: an attached `run --rm busybox:1.37 sleep 30` restoring the pool's VM, its daemon
+#         ended 2.2 s in
+#   vm:   as warm, its daemon alive, the run's VM process ended (the oldest shards-vm child of
+#         the daemon; the first batch picked the newest, the pool's spare, and both its runs
+#         passed: kept below, not counted)
+# The homes' daemon.log paths are shown as <home>daemon.log.
+
+== red: main 3103d2eab
+== kill-base-cold-20261112-130458
+bin /c/Users/corph/g121-whp-stop-bin/3103d2eab/shards.exe (2b0a1648485c09a4) mode cold n 3 delay 1300ms
+trial 1 mode=cold rc=125 client_ms=1899 ended=148080 (daemon 148080) at_ms=1518 after_ms=380: shards: the command's microVM stopped before the command ended; see <home>daemon.log
+trial 2 mode=cold rc=125 client_ms=1794 ended=134588 (daemon 134588) at_ms=1506 after_ms=288: shards: the command's microVM stopped before the command ended; see <home>daemon.log
+trial 3 mode=cold rc=125 client_ms=2477 ended=143756 (daemon 143756) at_ms=2021 after_ms=455: shards: the command's microVM stopped before the command ended; see <home>daemon.log
+   (trial 1: stdout a8b63c3e9d92f4b993e3eda7ead38e7ade2cd835c7d4792d828c1715117be9f3, the ID;
+    daemon.log: its start's three lines and the load's collection, nothing else)
+== kill-base-warm-20261112-130514
+bin /c/Users/corph/g121-whp-stop-bin/3103d2eab/shards.exe (2b0a1648485c09a4) mode warm n 3 delay 2000ms
+trial 1 mode=warm rc=125 client_ms=2531 ended=138692 (daemon 138692) at_ms=2226 after_ms=305: shards: the command's microVM stopped before the command ended; see <home>daemon.log
+trial 2 mode=warm rc=125 client_ms=2491 ended=135712 (daemon 135712) at_ms=2198 after_ms=293: shards: the command's microVM stopped before the command ended; see <home>daemon.log
+trial 3 mode=warm rc=125 client_ms=2512 ended=75300 (daemon 75300) at_ms=2213 after_ms=299: shards: the command's microVM stopped before the command ended; see <home>daemon.log
+== kill-base-vm-20261112-130538 (the newest VM picked: the pool's spare; not counted)
+trial 1 mode=vm rc=0 client_ms=30617 ended=131380 (daemon 134592) at_ms=2928 after_ms=27689:
+trial 2 mode=vm rc=0 client_ms=30540 ended=92152 (daemon 113520) at_ms=2698 after_ms=27842:
+== kill-base-vm-20261112-130746
+trial 1 mode=vm rc=125 client_ms=3502 ended=129616 (daemon 143860) at_ms=2898 after_ms=603: shards: the command's microVM stopped before the command ended; see <home>daemon.log
+trial 2 mode=vm rc=125 client_ms=3337 ended=133424 (daemon 77112) at_ms=2797 after_ms=539: shards: the command's microVM stopped before the command ended; see <home>daemon.log
+   daemon.logs: "shards daemon 143860: VM 129616 ended before its command did",
+   "shards daemon 143860: VM 129616 ended with Ok(1)", "shards daemon 77112: VM 133424 ended before its command did"
+
+== the diagnostic build (harness/diag.patch on 3103d2eab, not merged): who ended
+== kill-diag-cold-20261112-130803
+trial 1 mode=cold rc=125 client_ms=1841 ended=146728 (daemon 146728) at_ms=1518 after_ms=323: shards: the command's microVM stopped before the command ended; see <home>daemon.log (DIAG@1794517686653 client 160508: its end)
+trial 2 mode=cold rc=125 client_ms=1818 ended=150684 (daemon 150684) at_ms=1509 after_ms=308: shards: the command's microVM stopped before the command ended; see <home>daemon.log (DIAG@1794517691449 client 90480: its end)
+   daemon.log: no DIAG line: its relay died with it
+== kill-diag-warm-20261112-130814
+trial 1 mode=warm rc=125 client_ms=2619 ended=75720 (daemon 75720) at_ms=2240 after_ms=379: shards: the command's microVM stopped before the command ended; see <home>daemon.log (DIAG@1794517699974 client 103328: its end)
+trial 2 mode=warm rc=125 client_ms=2495 ended=120480 (daemon 120480) at_ms=2210 after_ms=284: shards: the command's microVM stopped before the command ended; see <home>daemon.log (DIAG@1794517708695 client 104932: its end)
+   daemon.log: one DIAG line, the earlier `run --rm true`'s slot (its client went once it had its EXIT)
+== kill-diag-vm-20261112-130831
+trial 1 mode=vm rc=125 client_ms=3361 ended=104264 (daemon 128280) at_ms=2796 after_ms=565: shards: the command's microVM stopped before the command ended; see <home>daemon.log (DIAG@1794517717933 client 96148: its end)
+trial 2 mode=vm rc=125 client_ms=3512 ended=124072 (daemon 106000) at_ms=2918 after_ms=593: shards: the command's microVM stopped before the command ended; see <home>daemon.log (DIAG@1794517726825 client 143916: its end)
+   daemon.log (trial 1): "VM 104264 ended before its command did" (DIAG@1794517717659), then
+   "DIAG request slot 4: its session ends before its last word: DIAG the daemon's side ended;
+   2 relayed, the last kind Some(28), sent Ok(())" (DIAG@1794517717932): the relay alive,
+   having passed on two messages, the last CREATED (28), and nothing more.
+
+== green: the fix 037fe95d4
+== kill-fix-cold-20261112-135532
+bin /c/Users/corph/g121-whp-stop-bin/037fe95d4/shards.exe (46208d5a202e9a05) mode cold n 3 delay 1300ms
+trial 1 mode=cold rc=125 client_ms=1964 ended=24232 (daemon 24232) at_ms=1566 after_ms=397: shards: the daemon ended before the command did; see <home>daemon.log
+trial 2 mode=cold rc=125 client_ms=1902 ended=135476 (daemon 135476) at_ms=1551 after_ms=351: shards: the daemon ended before the command did; see <home>daemon.log
+trial 3 mode=cold rc=125 client_ms=1791 ended=44904 (daemon 44904) at_ms=1536 after_ms=254: shards: the daemon ended before the command did; see <home>daemon.log
+== kill-fix-warm-20261112-135552
+trial 1 mode=warm rc=125 client_ms=2314 ended=19704 (daemon 19704) at_ms=2150 after_ms=163: shards: the daemon ended before the command did; see <home>daemon.log
+trial 2 mode=warm rc=125 client_ms=2373 ended=60108 (daemon 60108) at_ms=2164 after_ms=208: shards: the daemon ended before the command did; see <home>daemon.log
+trial 3 mode=warm rc=125 client_ms=2570 ended=31120 (daemon 31120) at_ms=2301 after_ms=268: shards: the daemon ended before the command did; see <home>daemon.log
+== kill-fix-vm-20261112-135619
+trial 1 mode=vm rc=125 client_ms=3805 ended=94144 (daemon 59400) at_ms=3232 after_ms=572: shards: the command's microVM stopped before the command ended; see <home>daemon.log
+trial 2 mode=vm rc=125 client_ms=4131 ended=107084 (daemon 97372) at_ms=3550 after_ms=580: shards: the command's microVM stopped before the command ended; see <home>daemon.log
+trial 3 mode=vm rc=125 client_ms=3354 ended=78380 (daemon 147388) at_ms=2885 after_ms=469: shards: the command's microVM stopped before the command ended; see <home>daemon.log

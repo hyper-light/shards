@@ -1,0 +1,67 @@
+{
+  "type": "POLICY_READ",
+  "revision": "a7dbf14461010b150cfc9c6d063b2ae0e110d318",
+  "ref": "origin/main",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "coordinator": "ROOT 01a148884a4770fdaf0111f3f792a248 (session g121-46)",
+  "date": "2026-11-12",
+  "documents": {
+    "AGENTS.md": {
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+      "read": "full",
+      "source": "origin/main"
+    },
+    "docs/development-rules.md": {
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "read": "full (R01-R16)",
+      "source": "origin/main"
+    },
+    "docs/development-evidence.md": {
+      "bytes": 3325,
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+      "read": "full",
+      "source": "origin/main"
+    },
+    "CLAUDE.md": {
+      "bytes": 17012,
+      "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f",
+      "read": "full",
+      "source": "the worktree (origin/main)"
+    }
+  },
+  "task": "win-admission: derive Windows' thread limit (platform::thread_limit) from what limits a Windows process's threads and the handles they hold, behind the platform seam, so that the daemon's admission (daemon.rs most_clients, daemon/engine.rs share) stops falling back to POSIX's 64 threads; red/green unit tests on Windows; D181 updated beside its evidence",
+  "branch": "p/win-admission-v1",
+  "base": "origin/main a7dbf1446, then fast-forwarded to 3103d2eab and 5333c2747",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/win-admission",
+  "owned_paths": [
+    "crates/vmm/src/platform/windows_process.rs",
+    "crates/vmm/Cargo.toml (windows-sys features)",
+    "the D181 record and the daemon's admission paragraph (docs/design/architecture.md)",
+    "PM M529 (docs/research/platform-measurements.md)",
+    "docs/research/measurements/win-thread-limits/**"
+  ],
+  "light_test_scope": "crates/vmm platform tests natively on Windows (jupiter, through kiln, a carrier of the crates shards-vmm needs), green and under mutants; the win-thread-limits harness; fmt; scripts/lint of the seven supported targets on runners other than this Mac; no builds on this Mac; real-VM tests, E2E and benchmarks are ROOT's",
+  "rechecked": [
+    {
+      "date": "2026-11-12",
+      "why": "origin/main moved twice under the work; policy files compared",
+      "revision": "5333c27478f19d160b3bd99c89d0637a82143e9d",
+      "ref": "origin/main",
+      "same_as_receipt": [
+        "AGENTS.md",
+        "docs/development-rules.md",
+        "docs/development-evidence.md",
+        "CLAUDE.md"
+      ],
+      "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+    }
+  ],
+  "superseding_instruction": {
+    "from": "the person, verbatim through ROOT's brief and the session's memory, 2026-11-12",
+    "text": "To speed up work and not leave numerous subagents running for extended periods, all subagents are only required to verify unit tests relevant to their changes and any light integration tests relevant. Once complete, they should merge their work to main and end.",
+    "effect": "merge origin/main into p/win-admission-v1, re-run the relevant light tests where the merge touched them, push HEAD to main fast-forward only (never force, signed); this supersedes R15's 'subagents do not merge themselves to main' as a current explicit user instruction (development-rules.md preamble); real-VM checks recorded as owed"
+  }
+}

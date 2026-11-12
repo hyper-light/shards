@@ -4962,3 +4962,38 @@ impl Told {
         self.server.write_all(b"\n").unwrap();
     }
 }
+
+/// Where a host directory is plugged into a member at its host path (D235): its own path
+/// where its top-level directory may be a plug root; a Windows drive's beneath `/mnt` as
+/// WSL has it (`C:\x` at `/mnt/c/x`); and beneath `/srv`, a Linux host's root, where its
+/// top is `/tmp`, which no root is and in which a Linux host's test directories lie.
+pub fn at_host_path(host: &Path) -> String {
+    let text = host.to_string_lossy().replace('\\', "/");
+    let text = text.strip_prefix("//?/").unwrap_or(&text).to_string();
+    match text.split_once(":/") {
+        Some((drive, rest)) if drive.len() == 1 => format!("/mnt/{}/{rest}", drive.to_ascii_lowercase()),
+        _ if text.starts_with("/tmp/") => format!("/srv/plugm{text}"),
+        _ => text,
+    }
+}
+
+/// The plug roots a run given host directory `bound` as it starts has (D235), as `shards`
+/// names them (setup.rs `plug_roots`): its host OS's own, and on Unix `bound`'s top-level
+/// directory, where that may be one.
+pub fn plug_roots(bound: &Path) -> Vec<String> {
+    let mut roots: Vec<String> = if cfg!(target_os = "macos") {
+        vec!["/Users".into(), "/Volumes".into()]
+    } else if cfg!(windows) {
+        vec!["/mnt".into()]
+    } else {
+        vec!["/home".into(), "/media".into(), "/mnt".into(), "/srv".into()]
+    };
+    let top = bound
+        .to_string_lossy()
+        .strip_prefix('/')
+        .and_then(|rest| rest.split('/').next().map(|t| format!("/{t}")));
+    if let Some(top) = top.filter(|t| cfg!(unix) && t != "/tmp" && !roots.contains(t)) {
+        roots.push(top);
+    }
+    roots
+}

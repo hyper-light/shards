@@ -38,6 +38,11 @@ windows-sys = { workspace = true, features = [
   "Win32_Security",
   "Win32_System_Hypervisor",
   "Win32_System_Ioctl",
+  # A job's commit limits, a thread's TEB and the image's stack commit, for how many threads
+  # a process may have (platform::thread_limit).
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_JobObjects",
+  "Win32_System_Kernel",
   "Win32_System_LibraryLoader",
   "Win32_System_Performance",
   "Win32_System_Pipes",
