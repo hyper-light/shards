@@ -803,11 +803,15 @@ fn project() -> TempDir {
     dir
 }
 
-/// Whether the kernel saw the harness `name` exec a command line holding `command`.
-fn ran_in_domain(seen: &Seen, name: &str, command: &str) -> bool {
+/// Whether the kernel saw the harness `name` exec `program` itself (its command line's
+/// first word, bare or a path), whatever shell started it.
+fn ran_in_domain(seen: &Seen, name: &str, program: &str) -> bool {
     seen.processes.lines().any(|line| {
-        line.split_once("  exec   ")
-            .is_some_and(|(head, what)| head.contains(&format!("harness {name} ")) && what.contains(command))
+        line.split_once("  exec   ").is_some_and(|(head, what)| {
+            let first = what.split_whitespace().next().unwrap_or_default();
+            head.contains(&format!("harness {name} "))
+                && (first == program || first.ends_with(&format!("/{program}")))
+        })
     })
 }
 
@@ -861,7 +865,7 @@ fn a_real_codex_signed_in_runs_a_tool_and_answers() {
         assert!(ran["aggregated_output"].as_str().unwrap().contains(file), "{all}");
         assert!(answer["text"].as_str().unwrap().contains(file), "{all}");
     }
-    assert!(ran_in_domain(&seen, "codex", "ls -1"), "{all}");
+    assert!(ran_in_domain(&seen, "codex", "ls"), "{all}");
 }
 
 /// Claude Code signed in with this machine's user's own login, given at run time as a
@@ -905,5 +909,5 @@ fn a_real_claude_code_signed_in_answers() {
     for file in PROJECT {
         assert!(answer.contains(file), "{all}");
     }
-    assert!(ran_in_domain(&seen, "claude", "ls -1 /work"), "{all}");
+    assert!(ran_in_domain(&seen, "claude", "ls"), "{all}");
 }
