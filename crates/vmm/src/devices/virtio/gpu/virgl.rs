@@ -490,12 +490,34 @@ impl Drop for Vulkan {
     }
 }
 
+/// The host's Vulkan driver, held loaded while the renderer lives (D201): its loader and one
+/// instance of it, which keeps open every driver (ICD) the loader opened for it. The render
+/// server serves each context as a thread of this process, and each context opens the loader
+/// and makes an instance of it, closing both as it goes; with nothing holding the driver, the
+/// loader loads it anew for every context, and a driver with initial-exec TLS (NVIDIA's
+/// libnvidia-tls, DF_STATIC_TLS) takes static TLS each time it loads, which glibc gives back
+/// on unload only where it ends the used area. On an RTX 5060 Ti (driver 620.70.06) the 19th
+/// context's driver failed to load ("cannot allocate memory in static TLS block"), so its
+/// vkEnumeratePhysicalDevices found no GPU, every time (docs/research/measurements/
+/// hex-upstream-v1/G0008-held-driver.md).
+struct HeldDriver {
+    vk: Vulkan,
+    instance: *mut c_void,
+}
+
+impl Drop for HeldDriver {
+    fn drop(&mut self) {
+        // SAFETY: the instance made with this loader, used no more; the loader closes after.
+        unsafe { (self.vk.destroy_instance)(self.instance, std::ptr::null()) };
+    }
+}
+
 /// The bytes of the host GPUs' heaps that host-visible memory comes from, as Vulkan says
 /// them, which Venus tells the guest, every GPU's counted: the most memory a guest can
 /// have mapped into its window at once. On Windows those of the memory the renderer shows
 /// its guest as host-visible: a device's that imports host memory, its types not
-/// device-local (D202).
-fn host_visible() -> Result<u64, String> {
+/// device-local (D202). With them the instance that read them, kept to hold the driver.
+fn host_visible() -> Result<(u64, HeldDriver), String> {
     let vk = Vulkan::open()?;
     let info = InstanceCreateInfo {
         s_type: STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -508,11 +530,14 @@ fn host_visible() -> Result<u64, String> {
         extension_names: std::ptr::null(),
     };
     let mut instance = std::ptr::null_mut();
-    // SAFETY: an instance of no layers and no extensions, destroyed below.
+    // SAFETY: an instance of no layers and no extensions, held as the driver below.
     let r = unsafe { (vk.create_instance)(&raw const info, std::ptr::null(), &raw mut instance) };
     if r != 0 || instance.is_null() {
         return Err(format!("Vulkan made no instance ({r})"));
     }
+    // Destroyed as it drops, on every path: kept, it holds the driver for the renderer.
+    let held = HeldDriver { vk, instance };
+    let vk = &held.vk;
     // Every device Vulkan has: asked for their count first, then for as many (the Vulkan
     // specification's two calls, "Physical Devices", vkEnumeratePhysicalDevices).
     let mut count = 0u32;
@@ -520,8 +545,6 @@ fn host_visible() -> Result<u64, String> {
     let r = unsafe { (vk.enumerate_physical_devices)(instance, &raw mut count, std::ptr::null_mut()) };
     let mut devices = Vec::new();
     if devices.try_reserve_exact(count as usize).is_err() {
-        // SAFETY: the instance made above.
-        unsafe { (vk.destroy_instance)(instance, std::ptr::null()) };
         return Err(format!(
             "Vulkan has {count} GPUs, more than this process has room for"
         ));
@@ -569,9 +592,8 @@ fn host_visible() -> Result<u64, String> {
     } else {
         Err(format!("Vulkan has no GPU ({r})"))
     };
-    // SAFETY: the instance made above.
-    unsafe { (vk.destroy_instance)(instance, std::ptr::null()) };
-    bytes
+    // No device of it is kept past this call; the instance is, as the driver's holder.
+    bytes.map(|total| (total, held))
 }
 
 /// What the renderer's threads tell the device: the fences signalled, and the worker to
@@ -669,6 +691,9 @@ pub struct Venus {
     /// The render server's thread, which ends as the renderer lets its connection go.
     #[cfg(target_os = "linux")]
     server: Option<std::thread::JoinHandle<()>>,
+    /// The host's driver, held loaded for every context and never read: dropped last, after
+    /// the renderer.
+    _driver: HeldDriver,
 }
 
 // SAFETY: the renderer's state is process-global and every call is made on the device's
@@ -693,9 +718,9 @@ impl Venus {
             return Err("the GPU renderer runs once a process".into());
         }
         let page = crate::platform::page_size().map_err(|e| format!("the host's page size: {e}"))? as u64;
-        let host_visible = host_visible()
+        let (host_visible, driver) = host_visible()
             .and_then(|b| match b {
-                0 => Err("the host's GPU has no memory the host can map, which Venus needs".into()),
+                (0, _) => Err("the host's GPU has no memory the host can map, which Venus needs".into()),
                 b => Ok(b),
             })
             .inspect_err(|_| STARTED.store(false, std::sync::atomic::Ordering::Release))?;
@@ -766,6 +791,7 @@ impl Venus {
             host_visible,
             #[cfg(target_os = "linux")]
             server,
+            _driver: driver,
         };
         if size == 0 {
             return Err("the GPU renderer offers no Venus capability set: no Vulkan device".into());
@@ -1190,6 +1216,9 @@ impl Drop for Venus {
 mod tests {
     use super::*;
 
+    /// The host's Vulkan, one test at a time: what one loads, another's snapshot would see.
+    static VULKAN: Mutex<()> = Mutex::new(());
+
     #[cfg(target_os = "macos")]
     unsafe extern "C" {
         /// Metal's GPU, retained, or null where the Mac has none (a virtual one, as CI's).
@@ -1215,7 +1244,7 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     fn has_gpu() -> Result<(), String> {
         match host_visible()? {
-            0 => Err("this host's Vulkan devices have no memory the host can map".into()),
+            (0, _) => Err("this host's Vulkan devices have no memory the host can map".into()),
             _ => Ok(()),
         }
     }
@@ -1285,6 +1314,7 @@ mod tests {
     /// and refused where the guest says it is larger than its memory.
     #[test]
     fn the_renderer_offers_venus_and_holds_its_blobs() {
+        let _host = VULKAN.lock().unwrap_or_else(PoisonError::into_inner);
         if let Err(why) = has_gpu() {
             println!("SKIP: {why}");
             return;
@@ -1322,5 +1352,98 @@ mod tests {
         venus.unref(7);
         assert!(venus.map(7).is_err());
         venus.destroy_context(1);
+    }
+
+    /// The objects loaded into this process that take static TLS, by name: whose DT_FLAGS has
+    /// DF_STATIC_TLS (elf.h: 30 and 0x10), the initial-exec TLS whose space glibc gives back on
+    /// unload only where it ends the used area, so that a load of such an object anew can take
+    /// more.
+    #[cfg(target_os = "linux")]
+    fn static_tls() -> std::collections::BTreeSet<String> {
+        #[repr(C)]
+        struct Dyn {
+            tag: i64,
+            val: u64,
+        }
+        unsafe extern "C" fn each(info: *mut libc::dl_phdr_info, _: usize, data: *mut c_void) -> c_int {
+            // SAFETY: the set passed below, alive through the walk; the linker's own entry.
+            let (names, info) = unsafe { (&mut *data.cast::<std::collections::BTreeSet<String>>(), &*info) };
+            if info.dlpi_name.is_null() || info.dlpi_phdr.is_null() {
+                return 0;
+            }
+            // SAFETY: a NUL-terminated name of the dynamic linker's.
+            let name = unsafe { std::ffi::CStr::from_ptr(info.dlpi_name) }
+                .to_string_lossy()
+                .into_owned();
+            // SAFETY: the object's program headers, as many as the linker says.
+            let headers = unsafe { std::slice::from_raw_parts(info.dlpi_phdr, usize::from(info.dlpi_phnum)) };
+            for header in headers.iter().filter(|header| header.p_type == libc::PT_DYNAMIC) {
+                let mut at = std::ptr::with_exposed_provenance::<Dyn>(
+                    usize::try_from(info.dlpi_addr.wrapping_add(header.p_vaddr)).unwrap(),
+                );
+                loop {
+                    // SAFETY: the object's loaded dynamic section, read up to its DT_NULL.
+                    let entry = unsafe { at.read() };
+                    if entry.tag == 0 {
+                        break;
+                    }
+                    if entry.tag == 30 && entry.val & 0x10 != 0 && !name.is_empty() {
+                        names.insert(name.clone());
+                    }
+                    // SAFETY: the next entry of the same section, which ends at its DT_NULL.
+                    at = unsafe { at.add(1) };
+                }
+            }
+            0
+        }
+        let mut names = std::collections::BTreeSet::new();
+        // SAFETY: the callback above, given the set it fills.
+        unsafe { libc::dl_iterate_phdr(Some(each), std::ptr::from_mut(&mut names).cast()) };
+        names
+    }
+
+    /// On this host's GPU, with what `host_visible` gives the renderer kept: a context's own
+    /// opening of the loader and an instance of it, as each render-server context makes them,
+    /// loads no static-TLS object anew while it lives and unloads none after: the host's driver
+    /// stays loaded between contexts. Unheld, every context loaded NVIDIA's driver anew, its
+    /// libnvidia-tls taking static TLS each time, until the 19th context could not load it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_contexts_instance_loads_no_static_tls_driver_anew_while_the_renderer_holds_it() {
+        let _host = VULKAN.lock().unwrap_or_else(PoisonError::into_inner);
+        let kept = match host_visible() {
+            Ok(kept) => kept,
+            Err(why) => {
+                println!("SKIP: {why}");
+                return;
+            }
+        };
+        let before = static_tls();
+        let vk = Vulkan::open().unwrap();
+        let info = InstanceCreateInfo {
+            s_type: STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            next: std::ptr::null(),
+            flags: 0,
+            application: std::ptr::null(),
+            layers: 0,
+            layer_names: std::ptr::null(),
+            extensions: 0,
+            extension_names: std::ptr::null(),
+        };
+        let mut instance = std::ptr::null_mut();
+        // SAFETY: complete ABI structures and a live output, destroyed below.
+        assert_eq!(
+            unsafe { (vk.create_instance)(&raw const info, std::ptr::null(), &raw mut instance) },
+            0
+        );
+        let during = static_tls();
+        // SAFETY: the instance made above, used no more.
+        unsafe { (vk.destroy_instance)(instance, std::ptr::null()) };
+        drop(vk);
+        let after = static_tls();
+        drop(kept);
+        let anew: Vec<&String> = during.difference(&before).collect();
+        assert!(anew.is_empty(), "a context's instance loaded {anew:?} anew");
+        assert_eq!(after, before, "a context's instance unloaded a static-TLS object");
     }
 }
