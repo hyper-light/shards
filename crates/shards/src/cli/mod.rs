@@ -2018,10 +2018,9 @@ mod served_pipes_tests {
         let (mut reader, writer) = std::io::pipe().unwrap();
         // SAFETY: changes only the flag of this test's owned writer before its
         // sole ownership is handed to gpu_reported, as a native launcher does.
-        assert_ne!(
-            unsafe { SetHandleInformation(writer.as_raw_handle(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) },
-            0
-        );
+        let set =
+            unsafe { SetHandleInformation(writer.as_raw_handle(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+        assert_ne!(set, 0);
         let value = (writer.into_raw_handle() as usize).to_string();
         let (kept, writer) = gpu_reported(&args(&["run", "--gpu-report", &value]))
             .unwrap()
