@@ -396,11 +396,25 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     answers on its network (D124) travel on it too.
   - **That connection's state is explicit** (`workload::Link`): idle (no workload, or its
     run over), awaiting the guest's dial, connected, or lost. Each frame meets it at once:
-    it goes, it waits for the dial, or it is refused with why (`Unsent`). Before
-    (d35c4cf79), a send that failed was taken as sent and every frame after it waited for
-    a dial that never came, so that an exec asked for then waited for the workload's end;
-    so did one whose frame the guest closed the connection on unread. Reproduced and held
-    by unit tests, mutation-checked (docs/research/measurements/signal-link).
+    it is held for the dial or for the connection's sender, or it is refused with why
+    (`Unsent`). Before (d35c4cf79), a send that failed was taken as sent and every frame
+    after it waited for a dial that never came, so that an exec asked for then waited for
+    the workload's end; so did one whose frame the guest closed the connection on unread.
+    Reproduced and held by unit tests, mutation-checked (docs/research/measurements/signal-link).
+  - **No send waits under the link's lock.** One thread, the connection's sender
+    (`send_frames`), owns its sending: it takes what waits under the lock and sends it with
+    the lock let go, so that a guest that reads slowly or not at all holds that thread
+    alone. Before (e8d19fc68), each frame's caller sent it holding the lock: an exec's frame
+    larger than the connection's host sockets and its guest's window hold (Linux's
+    default AF_UNIX buffer and vsock's 256 KiB) waited there while a pause held its guest's
+    vCPUs, the daemon's relay waited for the lock with the next signal, and the unpause
+    behind that signal was never read: the microVM stayed paused, `unpause` and every exec
+    waited for ever. The daemon refuses an exec into a microVM paused already, so it took a
+    pause as such a frame was on its way: 1 in 60 single execs at once with a pause, every
+    round with 16 execs streaming such frames (KVM, live, the stuck threads' stacks kept).
+    Held by `a_paused_microvms_unpause_waits_for_no_exec_on_its_way` (8 execs streaming,
+    pause, signal, unpause, 5 rounds: red at e8d19fc68, green since) and a unit test,
+    mutation-checked (the sender sending with the lock held).
   - What is asked for before the dial waits for it, as for a restored guest's dial again
     (D176), one frame for each thing pending and no time bound: a signal once, as Linux
     holds a standard signal pending once (6.18 kernel/signal.c `legacy_queue`); the
@@ -434,7 +448,33 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     whose daemon had gone found no end at all; a stop signal refused as the daemon goes
     waits out no grace (moby docker-v29.8.1 daemon/stop.go waits 2 s on a stop signal it
     could not send). `run --kernel` ends as a signal it cannot forward would end it. A
-    joiner's SIGKILL refused so leaves its provider's microVM running (D119).
+    joiner's SIGKILL refused so leaves its provider's microVM running (D119). Held on real
+    microVMs by `a_lost_signal_connection_fails_execs_and_kills_at_once` (an init built to
+    take a signal's frame for a malformed one, as one loses the connection:
+    `common::lossy_init`; the exec, the kill and the daemon's end each at once),
+    `a_runs_end_says_no_lost_signal_connection` (no loss said at a run's end, a joiner's
+    included) and `what_a_restoring_microvm_is_sent_goes_on_its_guests_dial` (D176: execs
+    sent as the restore begins each run).
+  - **Not built yet: a guest that never dials.** Where init cannot make its signal
+    connection (its socket refused it, or the host's muxer refused the dial for want of a
+    socket pair, `serve` in vsock/muxer.rs), it says nothing, and the host's link waits for
+    the dial: frames are held, bounded as above, and an exec waits for a connection its
+    held frame never asked for, until its run ends (measured: an exec asked of a run whose
+    guest never dialed still waited after 20 s, and failed only as the run's end closed the
+    exec port, "the container's process ended before the command started",
+    docs/research/measurements/signal-link). A SIGKILL is held too: `kill` ends the run
+    by the daemon's fallback, its VM killed after a teardown slice, and a VM whose daemon
+    has gone keeps its command until it ends. The design: init says so on the run
+    connection, a frame of its own (`SIGNALS_UNDIALED`, guest to host, why in words), as
+    soon as its dial or its connect's result fails, and the host's relay of that
+    connection, during the command and past its end (`beyond`, for joiners), loses the link
+    with it (`lose`): frames refused, execs failed, kills ending the microVM, as for any
+    loss. The frame is held while a cut is not open, and dropped as a restore is found, as
+    `exec_failures` are: a save would carry it into a copy whose host never waited for that
+    dial, and whose guest dials again by the save's token (D176). Alternatives: a deadline
+    on the host's wait for the dial (none is set by time: a slow guest's dial is no loss);
+    the muxer telling the signal port of a dial it refused (it sees one cause, and init's
+    own failure to make the socket sends it nothing). Its restore path wants a real guest.
   - Through the daemon, a signal that arrives once the run's record is made, before the
     command runs, waits for it (D26). `run --kernel`, whose process is the VM, ends as that
     signal would end it. dockerd instead drops a signal sent before its container starts

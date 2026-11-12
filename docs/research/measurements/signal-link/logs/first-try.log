@@ -1,0 +1,22 @@
+# a_paused_microvms_unpause_waits_for_no_exec_on_its_way: e8d19fc683cc 1 changed; 2026-11-12T23:04:57Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 142.35 125.95 109.31
+## test exit 101 23:06:27
+# its VM process 1836916, 23:06:28
+## its threads, 23:06:38: tid, name, state, wait channel
+cat: '/proc/1836916/task/*/comm': No such file or directory
+awk: fatal: cannot open file `/proc/1836916/task/*/stat' for reading: No such file or directory
+cat: '/proc/1836916/task/*/wchan': No such file or directory
+*   
+## eu-stack -p 1836916
+eu-stack: dwfl_linux_proc_report pid 1836916: No such file or directory
+## kernel stacks
+cat: '/proc/1836916/task/*/comm': No such file or directory
+test a_paused_microvms_unpause_waits_for_no_exec_on_its_way ...    Compiling libc v0.2.189
+thread 'a_paused_microvms_unpause_waits_for_no_exec_on_its_way' (1780711) panicked at crates/shards/tests/containers.rs:4158:5:
+  left: (Some(1), "")
+ right: (Some(0), "slow\n")
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 87.90s
+# done 23:06:38
+the paused microVM's VM process: 1836916
+shards: slow is not paused
+shards: cannot start the command: exec /bin/testguest: argument list too long
+shards: cannot start the command: exec /bin/testguest: argument list too long

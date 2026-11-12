@@ -152,22 +152,112 @@ the same run, on `f5bfab285`: all red for their reason, [logs/mutations.log](log
 
 ## Waits (R05)
 
-- The link's lock is held across a send, as before: a guest that stops reading its signal
-  connection (its vCPUs parked for a save, D176, or a pause) blocks every frame's caller
-  until it reads again. Found, not changed: with a microVM paused (`shards pause`), an exec
-  frame larger than the socket buffers and the vsock window blocks its exec's thread under
-  the lock; the warm VM's daemon relay, which takes the lock for a SIGNAL (the daemon thaws
-  a paused microVM as it sends SIGKILL), would then wait, unable to read the thaw behind it.
-  Not reproduced (R09): owed, with a writer of its own or sends outside the lock its fix.
+- The link's lock was held across a send, as before: a guest that stops reading its signal
+  connection blocked every frame's caller until it read again. Reproduced live and fixed in
+  the next slice, below: no send waits under the lock.
 - The watch waits on the connection's end, a read, no deadline; execs wait on their
   connection, the guest's EXEC_FAILED, the watch's verdict, or the port's close; no new
   timer. `Pending` is no cache: frames waiting for one dial, each standing for one pending
   thing, gone as the dial takes them.
-- Not covered: a guest that never dials (the host's muxer refusing it for want of a socket
-  pair, `UnixStream::pair` in `serve`, or init unable to make its socket) says nothing, and
-  what waits for the dial waits for the run's end, bounded as above. Telling the host needs a
-  frame of init's on the run connection, held across a restore's cut as `exec_failures` are:
-  owed, with its restore path in a real guest.
+- Not covered: a guest that never dials. Measured and designed in the next slice, below
+  (D16's note); not built.
+
+## Next slice: no send under the link's lock (ROOT's items 1 to 3)
+
+From origin/main `e8d19fc68` (the first slice and ROOT's Windows lint fix `13681de5d` in),
+same policy SHA-256, implementer; ROOT assigned the live reproduction and one run of each new
+E2E test on one host.
+
+### The deadlock, reproduced live (R09)
+
+ROOT's recipe as written cannot happen: the daemon refuses an exec into a paused microVM
+("is paused: unpause it to run a command in it", daemon/commands.rs), and a join and a health
+check alike. It happens where a pause holds the guest's vCPUs as an exec's frame, more than the
+signal connection's host sockets (Linux's default AF_UNIX buffer) and its guest's window
+(vsock's 256 KiB) hold, is on its way; then the daemon's relay takes the link's lock for a
+signal, and never reads the unpause behind it. `--cpus` cannot slow the guest's reading: the
+VM holds its vCPUs in whole CPUs (`vm_run::hold_cpus`), the workload's cgroup alone to the
+fraction. The experiments (`stuck-experiments.patch`, run by `e2e-race.sh` on adacachy's KVM at
+`e8d19fc68`, the stuck VM's threads taken by its watcher once its output stopped):
+
+- One 5.6 MiB exec and a pause asked 0 to 11 ms after it, then SIGWINCH and an unpause, 60
+  times ([logs/race-1.log](logs/race-1.log)): 19 execs refused as paused, 40 run whole,
+  and attempt 59 stuck: `shards unpause race did not exit within 30s`.
+- 16 exec loops streaming 1.5 MiB frames, pause, SIGWINCH, unpause
+  ([logs/stream-1.log](logs/stream-1.log)): stuck in round 0, `unpause` and every exec
+  stuck past 120 s.
+- The stuck VM process, each time: its `exec` thread in `to_guest` ← `exec_session`,
+  holding the link's lock, blocked in `UnixStream::write_all` (kernel: `unix_stream_sendmsg`
+  → `sock_alloc_send_pskb`); its `daemon-signals` thread in `Mutex::lock_contended` ←
+  `to_guest` ← `warm::relay_signals` (kernel: `futex_wait`); its `pauses` thread waiting on
+  its channel for the unpause the relay never passes on; every vCPU held; 14 more `exec`
+  threads waiting on the lock.
+- At the unit level, with real sockets and threads: `a_send_its_guest_has_yet_to_read_holds_no_other_frames_caller`
+  ([lock-red-test.patch](lock-red-test.patch) on `e8d19fc68`, [logs/lock-red.log](logs/lock-red.log)):
+  a signal's caller waited on another frame's send, `Err(Timeout)` after 5 s.
+
+Two more facts found on the way, in the first try ([e2e-stuck.sh](e2e-stuck.sh),
+[logs/first-try.log](logs/first-try.log)): a signal to a paused microVM whose run names no stop signal
+thaws it, as moby's does (docker-v29.8.1 daemon/kill.go l. 80-93), so the tests name one;
+and a guest's exec takes no more than a quarter of its 8 MiB stack, 2 MiB, of command line
+and environment (`argument list too long` past it), well under a frame's 6 MiB.
+
+### Decision (R02, R04, R05, R12, R13)
+
+One thread, the connection's sender (`send_frames`), owns its sending: frames for it wait in
+`Link::Connected(Pending)`, one for each thing pending as before the dial, and it takes each
+batch under the lock and sends it with the lock let go. The watch keeps the connection's
+reading. A send that fails refuses every later frame at once; where its error says the
+guest's end has gone, the watch reads that end and says whether it was said (`SIGNALS_END`)
+or lost, and any other error loses the connection there (`lose`), as an end the watch may never
+read would leave an exec waiting. Alternatives: one thread owning both directions by poll(2)
+(the `platform` seam waits only for reading, `wait_readable`, and dup'd sockets share
+`O_NONBLOCK`, so it needs a writable wait on every OS); non-blocking tries under the lock
+(the same flag, and a frame left half sent still needs a thread to finish it); a deadline on
+a send (none by time). Cost: one thread more per VM process while its guest is connected, its
+memory unmeasured (R14, ROOT's).
+
+### Red and green (R09, R10)
+
+| Check | Red at `e8d19fc68` | Green |
+| --- | --- | --- |
+| unit `a_send_its_guest_has_yet_to_read_holds_no_other_frames_caller` | `Err(Timeout)`, [logs/lock-red.log](logs/lock-red.log) | ok, [logs/unit-green.log](logs/unit-green.log) |
+| E2E `a_paused_microvms_unpause_waits_for_no_exec_on_its_way` (8 execs streaming, 5 rounds) | `shards unpause busy did not exit within 60s`, every exec stuck, [logs/pause-red-1.log](logs/pause-red-1.log) | ok in 8.7 s, [logs/pause-green-1.log](logs/pause-green-1.log) |
+| shards-vm, shards-init (all) | | 59 of 59; 217, 1 ignored as on main ([logs/unit-green.log](logs/unit-green.log)) |
+
+The guard's mutation, the sender sending with the lock held: the unit test red,
+`Err(Timeout)`, and green again once restored ([logs/lock-mutation.log](logs/lock-mutation.log)).
+The first slice's link tests now take the sender's thread (`taken`, `send_frames`); a failed
+send no longer fails its own frame's caller, which it has answered already (held), but every
+frame after it, and any exec waiting, as the watch reads the end.
+
+### Item 2: E2E tests of the owed cases, each run once on KVM (adacachy)
+
+- `a_lost_signal_connection_fails_execs_and_kills_at_once` (containers.rs): an init built
+  to take a frame of signal 64 for a malformed one, as init's own malformed-frame path loses
+  the connection (`SHARDS_TEST_LOSE_SIGNALS_ON`, `common::lossy_init`, as `foreign_init` is
+  built: none in any other build, held by init's `an_init_built_for_runs_takes_no_signal_for_a_malformed_frame`).
+  The loss said in daemon.log, an exec fails at once with it, a `kill` ends the microVM at
+  once by its VM's stop, and with its daemon killed outright a second run's VM ends at once:
+  ok in 51 s, the lossy init's build included ([logs/lost-green-1.log](logs/lost-green-1.log)).
+- `what_a_restoring_microvm_is_sent_goes_on_its_guests_dial` (saved.rs, D176): execs sent as
+  the restore begins (an exec waits for a run's start, and the VM takes the run before its
+  guest dials again, so these are held for that dial when they come first) each run; then
+  SIGUSR1 ends the command, 138: ok in 3.1 s ([logs/restore-green-1.log](logs/restore-green-1.log)).
+  That a given exec came before the redial is not observable from outside the VM; the held
+  path itself is the unit test's (`frames_wait_for_the_dial_one_for_each_thing_pending`).
+- `a_runs_end_says_no_lost_signal_connection` (containers.rs): an exec, a signal, a joiner's
+  run and the command's end, then a `--rm` run: no loss said: ok in 4.6 s
+  ([logs/end-green-1.log](logs/end-green-1.log)).
+
+### Item 3: a guest that never dials
+
+The design is D16's note: init says so on the run connection (`SIGNALS_UNDIALED`), held while
+a cut is not open and dropped as a restore is found, as `exec_failures` are; the host loses the
+link with it. Today, measured with real threads at the unit level
+([never-dialed-experiment.rs](never-dialed-experiment.rs), [logs/never-dialed.log](logs/never-dialed.log)):
+an exec asked of a run whose guest never dialed is held (`Awaiting`), still waits after 20 s,
+and fails only as the run's end closes the exec port. Not built.
 
 ## Rules
 
@@ -177,20 +267,19 @@ the same run, on `f5bfab285`: all red for their reason, [logs/mutations.log](log
 | R02 | containerd v2.4.2, moby docker-v29.8.1, Linux 6.18 sources cited above; alternatives (redial, end the run) weighed above. |
 | R03 | `NSIG` is Linux's `_NSIG`; the 4-byte ids are the frames' u32s; tests: 5 s bounds an event that comes at once or never. No other literal. |
 | R04 | `Link`, `Unsent`, `Lost` typed through callers; transitions above, each exercised. |
-| R05 | Waits above; one owner of the link's state; the found lock wait owed. |
-| R06, R07, R13 | Small functions (`hold`, `dialed`, `take_signals`, `watch`, `ended`, `lose`); comments state invariants and sources. |
-| R08, R14 | No performance claim; the watch is one blocked thread per VM process, its cost unmeasured (ROOT's). |
+| R05 | Waits above; one owner of the link's state; no send under its lock (the sender), the lock wait reproduced live, fixed, mutation-checked. |
+| R06, R07, R13 | Small functions (`hold`, `dialed`, `take_signals`, `send_frames`, `watch`, `ended`, `lose`); comments state invariants and sources. The tests' loss hook is one branch, compiled in only where its build names it. |
+| R08, R14 | No performance claim; the watch and the sender are two threads per VM process while its guest is connected, their cost unmeasured (ROOT's). |
 | R09, R10 | Red, green, mutations above, logs kept. |
 | R11, R12 | Above. |
 | R15 | Implementer; merged to main by the person's 2026-11-12 rule; real VMs ROOT's. |
-| R16 | Work dirs `~/g121-tmp/to-guest` on adacachy, `~/to-guest` and `~/to-guest-target` on the Mac Studio: build output, copies and zig, removed after. |
+| R16 | Work dirs `~/g121-tmp/to-guest` and `~/g121-tmp/to-guest2` on adacachy, `~/to-guest` and `~/to-guest-target` on the Mac Studio: build output, copies and zig, removed after; the stuck experiments' microVMs and daemons, this slice's own, ended by hand. |
 
 ## Owed to ROOT
 
-- Real runs on KVM, HVF and WHP: a run's normal end (the guest's said end; no "lost" line in
-  `daemon.log`), a restore's redial (D176: frames held, then sent), execs at once, joiners'
-  ends, a managed run's boundary; and a lost link provoked in a real guest (a malformed frame
-  or a reset vsock stream), with `shards exec`, `kill` and a daemon's end seen to end at once.
-- The paused-microVM lock wait above, and a guest that never dials.
+- The four new E2E tests on HVF and WHP (each ran once on KVM), and their whole suites.
+- The first slice's real-VM checks not covered by them: a managed run's boundary, joiners'
+  execs past a loss.
+- Item 3's build (D16's note), with its restore path in a real guest.
 - aarch64 Linux and Windows tests.
-- Main's Windows clippy error above (cacbd8883's lane, or ROOT's).
+- The sender thread's memory per VM process (R14).
