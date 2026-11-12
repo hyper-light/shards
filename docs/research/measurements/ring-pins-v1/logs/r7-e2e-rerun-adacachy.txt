@@ -1,0 +1,24 @@
+# The engine ring E2E again, adacachy (Linux KVM), the implementer's first fix
+# source: 3d49939ca + bulk-sum's Cmd (its mode alone), held_open on a joiner's wait (not GET /events),
+#         the pins test's exec baseline in the run without the engine; a clone of ROOT's tree, its target reflinked
+# command (~/g121-tmp/ringe2e.sh: systemd-run --user -p MemoryMax=24G -p Nice=10, CARGO_BUILD_JOBS=6, SHARDS_REQUIRE_VMS=1):
+#   cargo test --locked --profile test-release -p shards --test engine_ring -- --test-threads 1 --nocapture
+# 2026-11-12T09:19:54Z..09:35:28Z, load 96 at its start. Its lines, as they were read from ring.log during the
+# run (the log itself was overwritten by the diagnostic runs after it):
+test a_give_back_lets_an_idle_slot_go ... ok
+test a_microvms_engine_carries_bulk_whole_both_ways ...
+thread 'a_microvms_engine_carries_bulk_whole_both_ways' (349319) panicked at crates/shards/tests/common/mod.rs:2295:78:
+shards exec prov /bin/testguest api-bulk stdin 127.0.0.1:45699/test/image:v1 67108864 did not exit within 600s
+--- ps -a in its home
+9272b423d301...   127.0.0.1:45699/test/image:v1   "/bin/testguest bulk-sum"             10 minutes ago   Up 9 minutes                          loyal_sagan
+a513115231c9...   127.0.0.1:45699/test/image:v1   "/bin/testguest bulk-emit 67108864"   10 minutes ago   Exited (0) 10 minutes ago             prov.emitter
+98d7a051ed24...   127.0.0.1:45699/test/image:v1   "/bin/testguest sleep"                10 minutes ago   Up 10 minutes                         prov
+FAILED
+test a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain ... ok
+test an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends ... 1 vCPUs: Shmem idle 2432 kB with the engine's socket, 2428 kB without
+1 vCPUs: Shmem 2432 kB before the streams, 2512 kB after; the same execs in bare: 2428 kB, then 2428 kB
+thread 'an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends' (1290200) panicked at crates/shards/tests/engine_ring.rs:420:9:
+1 vCPUs: 2512 kB of shared memory after the streams, 2432 kB before, where the same execs left 0 kB without the engine
+FAILED
+test result: FAILED. 2 passed; 2 failed; 2 ignored; 0 measured; 0 filtered out; finished in 669.25s
+# bulk-sum now ran (the Cmd fix held) but the stdin arm hung: r9. The Shmem rise was not the execs' (0 kB in bare): r8.

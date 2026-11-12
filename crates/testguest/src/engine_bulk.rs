@@ -7,10 +7,14 @@
 //!   bytes of the pattern (engine to command): `bulk logs N NANOS`.
 //! - `api-bulk stdin IMAGE N`: a container of IMAGE running `bulk-sum`, attached with its
 //!   stdin, given N bytes of the pattern and its stdin's end, its sum checked (command to
-//!   engine): `bulk stdin N NANOS`.
+//!   engine): `bulk stdin N NANOS`. One that ends otherwise ends it at once, with its
+//!   `wait`'s answer and what it said.
 //! - `api-bulk ping M [GAP_US]`: M pings on one kept connection, back to back or GAP_US
 //!   microseconds apart (each side asleep between them), `ping M P50 P90 P99 MAX` in
 //!   nanoseconds.
+//! - `api-bulk streams CONTAINER N S`: S engine streams at once, each a connection of its own
+//!   on a thread of its own, the even ones `logs CONTAINER N`, the odd ones 50 pings:
+//!   `streams S N` once all came back whole.
 
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -88,6 +92,7 @@ pub fn api_bulk(args: &[String]) -> i32 {
         "logs" => logs(arg(1), arg(2).parse().unwrap_or(0)).map(|ns| format!("bulk logs {} {ns}", arg(2))),
         "stdin" => stdin(arg(1), arg(2).parse().unwrap_or(0)).map(|ns| format!("bulk stdin {} {ns}", arg(2))),
         "ping" => ping(arg(1).parse().unwrap_or(1), arg(2).parse().unwrap_or(0)),
+        "streams" => streams(arg(1), arg(2).parse().unwrap_or(0), arg(3).parse().unwrap_or(0)),
         other => Err(format!("no api-bulk {other:?}")),
     };
     match said {
@@ -100,6 +105,35 @@ pub fn api_bulk(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// `s` engine streams at once, each a connection of its own on a thread of its own: the even
+/// ones `bytes` of `container`'s log, byte-checked, the odd ones 50 pings. The first that
+/// failed, else `streams S N`.
+fn streams(container: &str, bytes: u64, s: usize) -> Result<String, String> {
+    std::thread::scope(|scope| {
+        let mut started = Vec::with_capacity(s);
+        for i in 0..s {
+            let stream = std::thread::Builder::new()
+                .name("bulk-stream".into())
+                .spawn_scoped(scope, move || {
+                    if i % 2 == 0 {
+                        logs(container, bytes).map(|_| ())
+                    } else {
+                        ping(50, 0).map(|_| ())
+                    }
+                })
+                .map_err(|e| format!("stream {i}'s thread: {e}"))?;
+            started.push(stream);
+        }
+        for (i, stream) in started.into_iter().enumerate() {
+            stream
+                .join()
+                .map_err(|_| format!("stream {i}'s thread ended unanswered"))?
+                .map_err(|e| format!("stream {i}: {e}"))?;
+        }
+        Ok(format!("streams {s} {bytes}"))
+    })
 }
 
 fn connect() -> Result<UnixStream, String> {
@@ -147,9 +181,19 @@ fn field<'a>(fields: &'a [(String, String)], name: &str) -> Option<&'a str> {
 /// A body read as it comes, chunked or not, to its end, each piece to `take`.
 fn body(
     conn: &mut UnixStream,
+    status: &str,
     fields: &[(String, String)],
     take: &mut dyn FnMut(&[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
+    // 1xx, 204 and 304 answers have no content whatever their fields say (RFC 9110 §6.4.1):
+    // read as one delimited by its connection's end, a kept connection's never comes.
+    let code = status
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse::<u16>().ok());
+    if code.is_some_and(|c| (100..200).contains(&c) || c == 204 || c == 304) {
+        return Ok(());
+    }
     let mut buf = vec![0u8; 256 << 10];
     if field(fields, "transfer-encoding").is_some_and(|v| v.contains("chunked")) {
         loop {
@@ -270,7 +314,7 @@ fn logs(container: &str, n: u64) -> Result<u128, String> {
         Ok(())
     };
     let multiplexed = !field(&fields, "content-type").is_some_and(|v| v.contains("raw-stream"));
-    body(&mut conn, &fields, &mut |piece| {
+    body(&mut conn, &status, &fields, &mut |piece| {
         if multiplexed {
             frames.feed(piece, &mut check)
         } else {
@@ -284,15 +328,25 @@ fn logs(container: &str, n: u64) -> Result<u128, String> {
     Ok(took)
 }
 
+/// `POST /containers/{id}/start` on `calls`: its answer's status line.
+fn start(calls: &mut UnixStream, id: &str) -> Result<String, String> {
+    ask(calls, "POST", &format!("/containers/{id}/start"), "", "")?;
+    let (status, fields) = head(calls)?;
+    body(calls, &status, &fields, &mut |_| Ok(()))?;
+    Ok(status)
+}
+
 fn stdin(image: &str, n: u64) -> Result<u128, String> {
     let mut calls = connect()?;
+    // The test image's entrypoint is /bin/testguest (the shards tests' common::test_image):
+    // its command is the mode.
     let create = format!(
-        r#"{{"Image":"{image}","Cmd":["/bin/testguest","bulk-sum"],"OpenStdin":true,"StdinOnce":true,"AttachStdin":true,"AttachStdout":true,"AttachStderr":true}}"#
+        r#"{{"Image":"{image}","Cmd":["bulk-sum"],"OpenStdin":true,"StdinOnce":true,"AttachStdin":true,"AttachStdout":true,"AttachStderr":true}}"#
     );
     ask(&mut calls, "POST", "/containers/create", &create, "")?;
     let (status, fields) = head(&mut calls)?;
     let mut said = Vec::new();
-    body(&mut calls, &fields, &mut |p| {
+    body(&mut calls, &status, &fields, &mut |p| {
         said.extend_from_slice(p);
         Ok(())
     })?;
@@ -315,48 +369,83 @@ fn stdin(image: &str, n: u64) -> Result<u128, String> {
     if !status.contains(" 101 ") && !status.contains(" 200 ") {
         return Err(format!("attach: {status}"));
     }
-    ask(&mut calls, "POST", &format!("/containers/{id}/start"), "", "")?;
-    let (status, fields) = head(&mut calls)?;
-    body(&mut calls, &fields, &mut |_| Ok(()))?;
-    if !status.contains(" 204 ") {
-        return Err(format!("start: {status}"));
-    }
-    let reader = attached.try_clone().map_err(|e| format!("the attach: {e}"))?;
     let started = Instant::now();
-    let output = std::thread::Builder::new()
-        .name("bulk-out".into())
-        .spawn(move || {
-            let mut reader = reader;
-            let mut streamed = Vec::new();
-            let _ = reader.read_to_end(&mut streamed);
-            let mut out = Vec::new();
-            let mut frames = Frames::new();
-            let _ = frames.feed(&streamed, &mut |p| {
-                out.extend_from_slice(p);
-                Ok(())
-            });
-            out
-        })
-        .map_err(|e| format!("a thread: {e}"))?;
-    let mut buf = vec![0u8; 256 << 10];
-    let mut at = 0u64;
-    while at < n {
-        let len = (n - at).min(buf.len() as u64) as usize;
-        for (i, b) in buf.iter_mut().take(len).enumerate() {
-            *b = pattern(at + i as u64);
+    let (out, wrote) = std::thread::scope(|s| -> Result<_, String> {
+        // Its output, to the attach's end, which comes as the container ends.
+        let mut reader = attached.try_clone().map_err(|e| format!("the attach: {e}"))?;
+        let output = std::thread::Builder::new()
+            .name("bulk-out".into())
+            .spawn_scoped(s, move || {
+                let mut streamed = Vec::new();
+                let _ = reader.read_to_end(&mut streamed);
+                let mut out = Vec::new();
+                let _ = Frames::new().feed(&streamed, &mut |p| {
+                    out.extend_from_slice(p);
+                    Ok(())
+                });
+                out
+            })
+            .map_err(|e| format!("a thread: {e}"))?;
+        // Its stdin, as the docker CLI streams it, beside the start: n bytes of the pattern,
+        // then its end, the client's half-close (the CLI's CloseWrite). A container that ends
+        // first reads no more of it.
+        let mut writer = attached.try_clone().map_err(|e| format!("the attach: {e}"))?;
+        let input = std::thread::Builder::new()
+            .name("bulk-in".into())
+            .spawn_scoped(s, move || -> Result<(), String> {
+                let mut buf = vec![0u8; 256 << 10];
+                let mut at = 0u64;
+                while at < n {
+                    let len = (n - at).min(buf.len() as u64) as usize;
+                    for (i, b) in buf.iter_mut().take(len).enumerate() {
+                        *b = pattern(at + i as u64);
+                    }
+                    writer
+                        .write_all(buf.get(..len).unwrap_or_default())
+                        .map_err(|e| format!("stdin at {at}: {e}"))?;
+                    at += len as u64;
+                }
+                writer
+                    .shutdown(std::net::Shutdown::Write)
+                    .map_err(|e| format!("stdin's end: {e}"))
+            })
+            .map_err(|e| format!("a thread: {e}"))?;
+        let start = start(&mut calls, &id);
+        // Not started, its attach is ended here, so that its threads end with it; started,
+        // its attach ends as the container does.
+        if !start.as_ref().is_ok_and(|status| status.contains(" 204 ")) {
+            let _ = attached.shutdown(std::net::Shutdown::Both);
         }
-        attached
-            .write_all(buf.get(..len).unwrap_or_default())
-            .map_err(|e| format!("stdin at {at}: {e}"))?;
-        at += len as u64;
-    }
-    // Its stdin's end: the client's half-close, as the docker CLI's CloseWrite.
-    attached
-        .shutdown(std::net::Shutdown::Write)
-        .map_err(|e| format!("stdin's end: {e}"))?;
-    let out = output.join().map_err(|_| "the reader failed".to_string())?;
+        let out = output.join().map_err(|_| "the reader failed".to_string());
+        // The container has ended: a writer it left with stdin still to give is let go.
+        let _ = attached.shutdown(std::net::Shutdown::Both);
+        let wrote = input.join().map_err(|_| "the writer failed".to_string());
+        let status = start?;
+        if !status.contains(" 204 ") {
+            return Err(format!("start: {status}"));
+        }
+        Ok((out?, wrote?))
+    })?;
     let took = started.elapsed().as_nanos();
     let out = String::from_utf8_lossy(&out).into_owned();
+    // How it ended, which a container that ends early (an unknown mode, a broken guest) says
+    // here rather than in a stream that waits for it.
+    ask(&mut calls, "POST", &format!("/containers/{id}/wait"), "", "")?;
+    let (status, fields) = head(&mut calls)?;
+    let mut waited = Vec::new();
+    body(&mut calls, &status, &fields, &mut |p| {
+        waited.extend_from_slice(p);
+        Ok(())
+    })?;
+    let waited = String::from_utf8_lossy(&waited).into_owned();
+    if !waited.contains("\"StatusCode\":0") {
+        return Err(format!(
+            "the sum container ended {}: it said {:?}",
+            waited.trim(),
+            out.trim()
+        ));
+    }
+    wrote?;
     let want = format!("sum {n} {:016x}", pattern_hash(n));
     if out.trim() != want {
         return Err(format!("the container said {:?}, not {want:?}", out.trim()));
@@ -372,7 +461,7 @@ fn ping(m: usize, gap_us: u64) -> Result<String, String> {
         let t = Instant::now();
         ask(&mut conn, "GET", "/_ping", "", "")?;
         let (status, fields) = head(&mut conn)?;
-        body(&mut conn, &fields, &mut |_| Ok(()))?;
+        body(&mut conn, &status, &fields, &mut |_| Ok(()))?;
         if !status.contains(" 200 ") {
             return Err(format!("ping: {status}"));
         }
