@@ -219,14 +219,18 @@ def settle(private):
             continue
         with open(entry["src"], "rb") as f:
             original = f.read()
-        refreshed = tokens_of(changed) != tokens_of(json.loads(original))
+        # Only a refresh goes back: any other change is the harness's own to its copy (a
+        # newer format, its state), and the original's tokens are still the current ones.
+        if tokens_of(changed) == tokens_of(json.loads(original)):
+            print(f"{name}: the copy changed in the microVM but its tokens did not: not written back")
+            continue
         if hashlib.sha256(original).hexdigest() != entry["sha256"]:
-            print(f"{name}: CONFLICT: the original changed on the host during the run, and the "
-                  f"copy too (its tokens {'changed' if refreshed else 'did not change'}): not written back")
+            print(f"{name}: CONFLICT: the harness refreshed its tokens, and the original changed on "
+                  "the host during the run: not written back")
             continue
         write_back(entry["src"], data, entry["mode"])
-        print(f"{name}: the copy changed in the microVM (its tokens {'changed: a refresh' if refreshed else 'did not change'}): "
-              "written back over the original atomically, its mode kept")
+        print(f"{name}: the harness refreshed its tokens in the microVM: written back over the "
+              "original atomically, its mode kept")
 
 
 def scrub(private):
