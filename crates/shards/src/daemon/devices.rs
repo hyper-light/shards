@@ -48,6 +48,9 @@ pub(super) struct Plugged {
     pub file: Option<PathBuf>,
     /// A host's function's node in the workload and what it was had by.
     pub function: Option<Function>,
+    /// The agent or harness a volume is plugged into (D235), by its member index; none for
+    /// the microVM's command.
+    pub member: Option<u32>,
 }
 
 /// A host's function plugged into a run (D214): what its user named it by (its host's
@@ -109,6 +112,24 @@ fn split_spec(spec: &str) -> Result<(String, String, bool), String> {
         return Err(format!("{spec:?}: no source"));
     }
     Ok((source.to_string(), format!("/{path}"), read_only))
+}
+
+/// The member index of `name` among an image's agents and harnesses (`labels`, `agent
+/// NAME` and `harness NAME` by index, agentfile.rs `managed_plan`), as an Agentfile's
+/// `VOLUME … FOR` names one, where it is one of those that run (`active`).
+fn member_named(labels: &[String], active: &[u32], name: &str) -> Result<u32, String> {
+    let index = labels
+        .iter()
+        .position(|l| {
+            l.split_once(' ')
+                .is_some_and(|(kind, n)| matches!(kind, "agent" | "harness") && n == name)
+        })
+        .ok_or_else(|| format!("--for {name}: no agent or harness of its image is named so"))?;
+    let index = u32::try_from(index).map_err(|_| format!("--for {name}: past the members' indices"))?;
+    if !active.contains(&index) {
+        return Err(format!("--for {name}: it runs no command of its own"));
+    }
+    Ok(index)
 }
 
 /// A size as `--size` and `grow disk` take one: bytes, or with a unit of 1024's powers
@@ -294,6 +315,18 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
+    /// The member index of `name`, an agent or harness of running microVM `id`'s image that
+    /// runs (D235).
+    fn running_member(&self, id: &str, name: &str) -> Result<u32, String> {
+        let runs = lock(&self.runs);
+        let agentfile = match runs.get(id) {
+            Some(RunState::Tracked(run)) => run.base.agentfile.as_ref(),
+            _ => None,
+        };
+        let a = agentfile.ok_or_else(|| format!("--for {name}: its image has no agents or harnesses"))?;
+        member_named(&a.managed_labels, &a.active_members, name)
+    }
+
     /// Container `given`, running, with its microVM's own run: its ID.
     fn running_own(&self, given: &str) -> Result<String, String> {
         let id = self
@@ -336,7 +369,14 @@ impl<D: Disk> Daemon<D> {
                     }
                     self.plug_function(&id, spec)
                 }
-                _ => self.plug_one(threads, &id, what, spec, parsed.string("size"), whom),
+                _ => self.plug_one(
+                    threads,
+                    &id,
+                    what,
+                    spec,
+                    (parsed.string("size"), parsed.string("for")),
+                    whom,
+                ),
             }
             .map(|said| (id, said))
         });
@@ -359,13 +399,18 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         what: What,
         spec: &str,
-        size: &str,
+        (size, member): (&str, &str),
         whom: Whom<'_>,
     ) -> Result<String, String> {
         let (source, path, read_only) = split_spec(spec)?;
         if lock(&self.plugged).get(id).is_some_and(|p| p.contains_key(&path)) {
             return Err(format!("{path} has a device plugged in already"));
         }
+        // An agent or harness of its image (D235), named before anything is plugged in.
+        let member = match member {
+            "" => None,
+            name => Some(self.running_member(id, name)?),
+        };
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let name = format!(
             "shards-plug{}",
@@ -410,15 +455,20 @@ impl<D: Disk> Daemon<D> {
             .split_once(' ')
             .and_then(|(d, a)| Some((d.parse::<u8>().ok()?, a.to_string())))
             .ok_or_else(|| format!("its microVM answered {answer:?}"))?;
+        let index = member.map(|m| m.to_string());
+        let into: Vec<&str> = index.iter().flat_map(|m| ["member", m.as_str()]).collect();
         let mounted = match what {
-            What::Volume => self.guest_device(id, &["share", &address, &name, &path, flag]),
+            What::Volume => self.guest_device(
+                id,
+                &[&["share", &address, &name, &path, flag][..], &into].concat(),
+            ),
             _ => self.guest_device(id, &["disk", &address, &path, flag]),
         };
         let device = match mounted {
             Ok(device) => device,
             Err(e) => {
                 // Taken off again, its guest having found it or not.
-                let _ = self.guest_device(id, &["unmount", &address, &path]);
+                let _ = self.guest_device(id, &[&["unmount", &address, &path][..], &into].concat());
                 let _ = self.ask_device(id, &[device::UNPLUG, devfn], &[]);
                 return Err(e);
             }
@@ -431,6 +481,7 @@ impl<D: Disk> Daemon<D> {
                 address: address.clone(),
                 file,
                 function: None,
+                member,
             },
         );
         Ok(if device.is_empty() {
@@ -558,7 +609,12 @@ impl<D: Disk> Daemon<D> {
                 .filter(|p| p.what == what)
                 .cloned()
                 .ok_or_else(|| format!("no {} is plugged in at {path}", noun(what)))?;
-            self.guest_device(&id, &["unmount", &plugged.address, path])?;
+            let index = plugged.member.map(|m| m.to_string());
+            let from: Vec<&str> = index.iter().flat_map(|m| ["member", m.as_str()]).collect();
+            self.guest_device(
+                &id,
+                &[&["unmount", plugged.address.as_str(), path][..], &from].concat(),
+            )?;
             self.ask_device(&id, &[device::UNPLUG, plugged.devfn], &[])?;
             if let Some(p) = lock(&self.plugged).get_mut(&id) {
                 p.remove(path.as_str());
@@ -869,6 +925,7 @@ impl<D: Disk> Daemon<D> {
                     rule,
                     iommu,
                 }),
+                member: None,
             },
         );
         Ok(format!("{given} {workload_node} {address}"))
@@ -928,6 +985,31 @@ impl<D: Disk> Daemon<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--for` names an agent or harness as an Agentfile's `FOR` does, by its name alone,
+    /// and finds its member index, agents first; one of no such name, or one that runs no
+    /// command, is refused.
+    #[test]
+    fn a_member_is_found_by_its_name() {
+        let labels: Vec<String> = ["agent main", "agent tools", "harness claude"]
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        let active = [0, 2];
+        assert_eq!(member_named(&labels, &active, "main"), Ok(0));
+        assert_eq!(member_named(&labels, &active, "claude"), Ok(2));
+        assert!(
+            member_named(&labels, &active, "tools")
+                .unwrap_err()
+                .contains("runs no command")
+        );
+        assert!(
+            member_named(&labels, &active, "codex")
+                .unwrap_err()
+                .contains("no agent or harness")
+        );
+        assert!(member_named(&labels, &active, "agent main").is_err());
+    }
 
     /// A spec's source is all before its absolute path, a drive's colon among it; its mode
     /// last.
@@ -1009,6 +1091,7 @@ mod tests {
                         rule: rule.into(),
                         iommu: Some(iommu("c 10:123 rwm", before)),
                     }),
+                    member: None,
                 },
             )
         };
@@ -1064,6 +1147,7 @@ mod tests {
                         rule: rule.into(),
                         iommu: None,
                     }),
+                    member: None,
                 },
             )
         };
@@ -1081,6 +1165,7 @@ mod tests {
                 address: String::new(),
                 file: None,
                 function: None,
+                member: None,
             },
         );
         assert_eq!(function_rules(Some(&plugged), ""), ["c 241:0 rwm", "c 241:1 rwm"]);

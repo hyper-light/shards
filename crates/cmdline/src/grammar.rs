@@ -689,8 +689,8 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
     (
         "manage",
         "plug",
-        "volume NAME SOURCE:PATH[:ro]",
-        "Plug a host directory or a volume into a running microVM, mounted at PATH",
+        "volume NAME SOURCE:PATH[:ro] [--for MEMBER]",
+        "Plug a host directory or a volume into a running microVM, mounted at PATH; with --for, into its agent or harness MEMBER, PATH beneath one of its host's path roots",
     ),
     (
         "manage",

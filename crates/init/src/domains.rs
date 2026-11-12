@@ -767,6 +767,11 @@ mod landlock {
     }
 }
 
+/// The attributes of the microVM's system as a domain sees it, its root's first (D59):
+/// read-only, `nosuid` and `nodev`. Read-only is what keeps a plug root (D235) granting
+/// nothing until something is plugged there, as Landlock grants every right beneath one.
+const SYSTEM: u64 = libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV;
+
 /// Everything a domain's first process uses, made before it is: after `clone3` it calls
 /// the kernel alone.
 struct Prepared {
@@ -1046,6 +1051,19 @@ fn image_root(skel: &OwnedFd, lower: std::os::fd::BorrowedFd<'_>, pluggable: boo
         if unsafe { libc::mkdirat(rw.as_raw_fd(), dir.as_ptr(), 0o755) } != 0 {
             return Err(io::Error::last_os_error());
         }
+    }
+    // The root's owner and mode are its upper layer's, as overlayfs shows a directory both
+    // layers hold: so `upper` is given the image's own, as the domain's root is the image's.
+    // SAFETY: an all-zero stat is a valid out-parameter, which fstat(2) fills.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstat(2) of the image's root, a descriptor init holds, and fchownat(2) and
+    // fchmodat(2) of a NUL-terminated name in the tmpfs just made.
+    if unsafe {
+        libc::fstat(lower.as_raw_fd(), &raw mut st) != 0
+            || libc::fchownat(rw.as_raw_fd(), c"upper".as_ptr(), st.st_uid, st.st_gid, 0) != 0
+            || libc::fchmodat(rw.as_raw_fd(), c"upper".as_ptr(), st.st_mode & 0o7777, 0) != 0
+    } {
+        return Err(io::Error::last_os_error());
     }
     let of =
         |dir: &str| CString::new(format!("/proc/self/fd/{}/{dir}", rw.as_raw_fd())).map_err(io::Error::other);
@@ -2435,12 +2453,7 @@ fn child(
             fail(out, c"entering the image as built");
         }
         // The microVM's system, read-only, nosuid and nodev (struct mount_attr).
-        let attr: [u64; 4] = [
-            libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV,
-            0,
-            0,
-            0,
-        ];
+        let attr: [u64; 4] = [SYSTEM, 0, 0, 0];
         if libc::syscall(
             libc::SYS_mount_setattr,
             libc::AT_FDCWD,
@@ -3054,6 +3067,14 @@ mod tests {
         ] {
             assert!(once_each(s(paths)).is_err(), "{paths:?}");
         }
+    }
+
+    /// A plug root (D235) grants nothing until something is plugged there: Landlock grants
+    /// every right beneath it, and it lies on its domain's root, which the domain's mount of
+    /// the microVM's system keeps read-only, so the domain can make nothing beneath it.
+    #[test]
+    fn a_plug_root_lies_on_a_read_only_root() {
+        assert_ne!(SYSTEM & libc::MOUNT_ATTR_RDONLY, 0);
     }
 
     #[test]
