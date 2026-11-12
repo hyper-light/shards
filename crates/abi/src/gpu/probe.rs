@@ -99,6 +99,91 @@ pub enum GpuProbeError {
     Unavailable,
     Pending,
     Properties,
+    Scope,
+    ReportTaken,
+}
+
+/// The envelope for a VMM-private pipe report, bound to the native scope prepared
+/// before effects. The consumer must also verify the private native writer; this
+/// scope value alone confers no observation or physical attachment authority.
+#[derive(Debug, PartialEq, Eq)]
+pub struct GpuReport {
+    pub scope: [u8; 16],
+    pub probe: GpuProbe,
+}
+
+const REPORT_PREFIX: &str = "shards-vmm-gpu 1 ";
+
+pub fn report_bytes(count: usize) -> Result<usize, GpuProbeError> {
+    probe_bytes(count)?
+        .checked_add(REPORT_PREFIX.len())
+        .and_then(|bytes| bytes.checked_add(core::mem::size_of::<[u8; 16]>().checked_mul(2)?))
+        .and_then(|bytes| bytes.checked_add("\n".len()))
+        .ok_or(GpuProbeError::Count)
+}
+
+impl GpuReport {
+    pub fn check(&self, scope: [u8; 16], selected: &[PhysicalGpu]) -> Result<(), GpuProbeError> {
+        if scope == [0; 16] || self.scope != scope {
+            return Err(GpuProbeError::Scope);
+        }
+        self.probe.check(selected)
+    }
+
+    fn render(&self, out: &mut impl Write) -> fmt::Result {
+        out.write_str(REPORT_PREFIX)?;
+        for byte in self.scope {
+            write!(out, "{byte:02x}")?;
+        }
+        out.write_char('\n')?;
+        self.probe.render(out)
+    }
+
+    pub fn encode(&self) -> Result<String, GpuProbeError> {
+        self.check(self.scope, &self.probe.selectors()?)?;
+        struct Count {
+            bytes: usize,
+            bound: usize,
+        }
+        impl Write for Count {
+            fn write_str(&mut self, text: &str) -> fmt::Result {
+                self.bytes = self
+                    .bytes
+                    .checked_add(text.len())
+                    .filter(|bytes| *bytes <= self.bound)
+                    .ok_or(fmt::Error)?;
+                Ok(())
+            }
+        }
+        let mut count = Count {
+            bytes: 0,
+            bound: report_bytes(self.probe.devices.len())?,
+        };
+        self.render(&mut count).map_err(|_| GpuProbeError::Count)?;
+        let mut text = String::new();
+        text.try_reserve_exact(count.bytes)
+            .map_err(|_| GpuProbeError::Allocation)?;
+        self.render(&mut text).map_err(|_| GpuProbeError::Count)?;
+        Ok(text)
+    }
+
+    pub fn parse(text: &str, scope: [u8; 16], selected: &[PhysicalGpu]) -> Result<Self, GpuProbeError> {
+        if text.len() > report_bytes(selected.len())? {
+            return Err(GpuProbeError::Count);
+        }
+        let (header, probe) = text.split_once('\n').ok_or(GpuProbeError::Syntax)?;
+        let reported = header.strip_prefix(REPORT_PREFIX).ok_or(GpuProbeError::Syntax)?;
+        let reported = fixed_hex(reported)?;
+        if scope == [0; 16] || reported != scope {
+            return Err(GpuProbeError::Scope);
+        }
+        let report = Self {
+            scope: reported,
+            probe: GpuProbe::parse_count(probe, Some(selected.len()))?,
+        };
+        report.check(scope, selected)?;
+        Ok(report)
+    }
 }
 
 pub fn probe_bytes(count: usize) -> Result<usize, GpuProbeError> {
@@ -288,7 +373,11 @@ impl GpuProbe {
     }
 
     pub fn parse(text: &str) -> Result<Self, GpuProbeError> {
-        if text.len() > probe_bytes(MAX_PHYSICAL_GPUS)? || !text.ends_with('\n') {
+        Self::parse_count(text, None)
+    }
+
+    fn parse_count(text: &str, expected: Option<usize>) -> Result<Self, GpuProbeError> {
+        if text.len() > probe_bytes(expected.unwrap_or(MAX_PHYSICAL_GPUS))? || !text.ends_with('\n') {
             return Err(GpuProbeError::Syntax);
         }
         let mut lines = text.lines();
@@ -311,6 +400,9 @@ impl GpuProbe {
         let count =
             usize::try_from(number(field(lines.next(), "devices ")?)?).map_err(|_| GpuProbeError::Count)?;
         probe_bytes(count)?;
+        if expected.is_some_and(|expected| count != expected) {
+            return Err(GpuProbeError::Count);
+        }
         let mut devices = Vec::new();
         devices
             .try_reserve_exact(count)
@@ -386,6 +478,8 @@ impl fmt::Display for GpuProbeError {
                 out.write_str("GPU probe has no completed native result within the caller deadline")
             }
             Self::Properties => out.write_str("renderer GPU properties are malformed or unavailable"),
+            Self::Scope => out.write_str("VMM GPU report differs from its prepared native scope"),
+            Self::ReportTaken => out.write_str("VMM GPU report has already been transferred"),
         }
     }
 }
@@ -400,7 +494,76 @@ impl core::error::Error for GpuProbeError {}
 )]
 mod tests {
     use super::*;
-    use alloc::vec;
+    use alloc::{format, vec};
+
+    #[test]
+    fn managed_report_binds_native_scope_and_exact_set_without_console_authority() {
+        let physical = PhysicalGpu::MetalRegistry(7);
+        let report = GpuReport {
+            scope: [3; 16],
+            probe: GpuProbe {
+                devices: vec![ResolvedGpu {
+                    physical,
+                    uuid: [1; 16],
+                    pci: None,
+                    luid: Some(7u64.to_be_bytes()),
+                    name: Some(GpuName::new("native renderer").unwrap()),
+                    device_local_bytes: None,
+                }],
+                host_visible_bytes: 4096,
+            },
+        };
+        let text = report.encode().unwrap();
+        assert_eq!(GpuReport::parse(&text, [3; 16], &[physical]).unwrap(), report);
+        assert_eq!(
+            GpuReport::parse(&text, [4; 16], &[physical]),
+            Err(GpuProbeError::Scope)
+        );
+        assert!(GpuReport::parse(&text, [0; 16], &[physical]).is_err());
+        assert!(GpuReport::parse(&text, [3; 16], &[PhysicalGpu::MetalRegistry(8)]).is_err());
+        assert!(GpuReport::parse(&report.probe.encode().unwrap(), [3; 16], &[physical]).is_err());
+        assert!(text.len() <= report_bytes(1).unwrap());
+    }
+
+    #[test]
+    fn managed_report_refuses_torn_hostile_or_appended_scope_frames() {
+        let physical = PhysicalGpu::Pci {
+            domain: 7,
+            bus: 2,
+            device: 1,
+            function: 0,
+        };
+        let report = GpuReport {
+            scope: [3; 16],
+            probe: GpuProbe {
+                devices: vec![ResolvedGpu {
+                    physical,
+                    uuid: [1; 16],
+                    pci: Some(physical),
+                    luid: None,
+                    name: None,
+                    device_local_bytes: Some(0),
+                }],
+                host_visible_bytes: 4096,
+            },
+        };
+        let text = report.encode().unwrap();
+        for end in 0..text.len() {
+            assert!(GpuReport::parse(text.get(..end).unwrap(), [3; 16], &[physical]).is_err());
+        }
+        for bad in [
+            text.replace("shards-vmm-gpu 1", "shards-vmm-gpu 2"),
+            text.replace(&"03".repeat(16), &format!("+{}", "3".repeat(31))),
+            text.replace(&"03".repeat(16), &"00".repeat(16)),
+            text.replace("devices 1", "devices 65536"),
+            format!("{text}{text}"),
+            format!("{text}trailing\n"),
+        ] {
+            assert!(GpuReport::parse(&bad, [3; 16], &[physical]).is_err());
+        }
+        assert!(report_bytes(0).is_err());
+        assert!(report_bytes(MAX_PHYSICAL_GPUS + 1).is_err());
+    }
 
     #[test]
     fn completed_receipt_preserves_exact_identity_and_refuses_forgery_or_torn_output() {

@@ -4,8 +4,8 @@
 use std::fmt;
 
 pub use shards_abi::gpu::{
-    GPU_NAME_BYTES, GpuName, GpuProbe, GpuProbeError, MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError,
-    ResolvedGpu, check_selection, probe_bytes,
+    GPU_NAME_BYTES, GpuName, GpuProbe, GpuProbeError, GpuReport, MAX_PHYSICAL_GPUS, PhysicalGpu,
+    PhysicalGpuError, ResolvedGpu, check_selection, probe_bytes, report_bytes,
 };
 
 /// Canonical ASCII grammar has a fixed maximum encoded length for each
@@ -29,6 +29,94 @@ pub fn argument(device: PhysicalGpu) -> Result<std::ffi::OsString, PhysicalGpuEr
     Ok(argument)
 }
 
+/// Render only the four GPU-report option words from the writer owned by the
+/// FINAL native launcher, after any SCM_RIGHTS/handle transfer or duplication.
+/// It reserves/appends these to its prepared base before foreign execution.
+#[cfg(unix)]
+pub fn report_arguments(
+    scope: [u8; 16],
+    writer: impl std::os::fd::AsFd,
+) -> Result<[std::ffi::OsString; 4], crate::Refusal> {
+    use std::os::fd::AsRawFd as _;
+    let fd = writer.as_fd().as_raw_fd();
+    if fd < 3 {
+        return Err(crate::Refusal::Launch(crate::LaunchError::Observer));
+    }
+    report_words(
+        scope,
+        usize::try_from(fd).map_err(|_| crate::Refusal::Launch(crate::LaunchError::Count))?,
+    )
+}
+
+#[cfg(windows)]
+pub fn report_arguments(
+    scope: [u8; 16],
+    writer: impl std::os::windows::io::AsHandle,
+) -> Result<[std::ffi::OsString; 4], crate::Refusal> {
+    use std::os::windows::io::AsRawHandle as _;
+    let handle = writer.as_handle().as_raw_handle().addr();
+    if handle == 0 || handle == usize::MAX {
+        return Err(crate::Refusal::Launch(crate::LaunchError::Observer));
+    }
+    report_words(scope, handle)
+}
+
+/// Only the final native launcher's owned, transferred read end is encoded.
+/// The helper retains the sole write end; this is a lifecycle fence, not physical
+/// selection authority or a whole-scope termination receipt.
+#[cfg(unix)]
+pub fn lifeline_arguments(reader: impl std::os::fd::AsFd) -> Result<[std::ffi::OsString; 2], crate::Refusal> {
+    use std::os::fd::AsRawFd as _;
+    let fd = reader.as_fd().as_raw_fd();
+    if fd < 3 {
+        return Err(crate::Refusal::Launch(crate::LaunchError::Observer));
+    }
+    let mut native = alloc_text("2147483647".len())?; // The positive i32 descriptor width.
+    fmt::write(&mut native, format_args!("{fd}"))
+        .map_err(|_| crate::Refusal::Launch(crate::LaunchError::Allocation))?;
+    Ok([os_text("--host-lifeline")?, os_text(&native)?])
+}
+
+fn report_words(scope: [u8; 16], writer: usize) -> Result<[std::ffi::OsString; 4], crate::Refusal> {
+    use core::fmt::Write as _;
+    if scope == [0; 16] {
+        return Err(crate::Refusal::GpuProbe(GpuProbeError::Scope));
+    }
+    let allocation = || crate::Refusal::Launch(crate::LaunchError::Allocation);
+    let mut native = alloc_text("18446744073709551615".len())?;
+    write!(&mut native, "{writer}").map_err(|_| allocation())?;
+    let mut scope_text = alloc_text(
+        scope
+            .len()
+            .checked_mul(2)
+            .ok_or(crate::Refusal::Launch(crate::LaunchError::Count))?,
+    )?;
+    for byte in scope {
+        write!(&mut scope_text, "{byte:02x}").map_err(|_| allocation())?;
+    }
+    Ok([
+        os_text("--gpu-report")?,
+        os_text(&native)?,
+        os_text("--gpu-report-scope")?,
+        os_text(&scope_text)?,
+    ])
+}
+
+fn alloc_text(bytes: usize) -> Result<String, crate::Refusal> {
+    let mut text = String::new();
+    text.try_reserve_exact(bytes)
+        .map_err(|_| crate::Refusal::Launch(crate::LaunchError::Allocation))?;
+    Ok(text)
+}
+
+fn os_text(text: &str) -> Result<std::ffi::OsString, crate::Refusal> {
+    let mut word = std::ffi::OsString::new();
+    word.try_reserve_exact(text.len())
+        .map_err(|_| crate::Refusal::Launch(crate::LaunchError::Allocation))?;
+    word.push(text);
+    Ok(word)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,5 +138,33 @@ mod tests {
         ] {
             assert_eq!(argument(id).unwrap(), expected);
         }
+    }
+
+    /// D231: a transferred/duplicated writer can have a different raw value;
+    /// the final-launch suffix must follow the actual owned writer, not its sender.
+    #[test]
+    fn managed_report_argument_follows_the_final_owned_writer() {
+        let (reader, writer) = std::io::pipe().unwrap();
+        let transferred = writer.try_clone().unwrap();
+        let original = report_arguments([3; 16], &writer).unwrap();
+        let final_words = report_arguments([3; 16], &transferred).unwrap();
+        assert_eq!(final_words[0], "--gpu-report");
+        assert_eq!(final_words[2], "--gpu-report-scope");
+        assert_eq!(final_words[3], std::ffi::OsString::from("03".repeat(16)));
+        assert_ne!(original[1], final_words[1]);
+        assert!(report_arguments([0; 16], &transferred).is_err());
+        drop((reader, writer, transferred));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_lifeline_argument_follows_the_final_transferred_reader() {
+        let (reader, writer) = std::io::pipe().unwrap();
+        let final_reader = reader.try_clone().unwrap();
+        let original = lifeline_arguments(&reader).unwrap();
+        let final_words = lifeline_arguments(&final_reader).unwrap();
+        assert_eq!(final_words[0], "--host-lifeline");
+        assert_ne!(original[1], final_words[1]);
+        drop((reader, writer, final_reader));
     }
 }
