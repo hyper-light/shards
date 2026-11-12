@@ -15,8 +15,9 @@ use shards_abi::run;
 pub use shards_abi::run::nesting::Ready;
 
 /// The channel's version, the first byte of [`Request`]: changed only by appending. 2
-/// appends the nesting grant's consent and deadline (D234); 3, to each published port in
-/// [`Started`], the members it reaches.
+/// appends the nesting grant's consent and deadline (D234); 3, the destinations kept
+/// ([`Narrowing::destinations`], D235), and to each published port in [`Started`], the
+/// members it reaches.
 pub const VERSION: u8 = 3;
 
 /// What the orchestrator's side sends.
@@ -169,6 +170,9 @@ pub struct Narrowing {
     pub egress: Keep,
     /// Remote MCP servers, `host:port`.
     pub mcp: Keep,
+    /// Destinations, `host:port` as a network's `--egress=HOST:PORT` names one (D235): a
+    /// host's name, an IPv4 address, or `host.docker.internal`, the host itself.
+    pub destinations: Keep,
     /// Names past the microVM, where the image grants them.
     pub dns: bool,
 }
@@ -178,6 +182,7 @@ impl Default for Narrowing {
         Narrowing {
             egress: Keep::All,
             mcp: Keep::All,
+            destinations: Keep::All,
             dns: true,
         }
     }
@@ -684,6 +689,7 @@ impl Request {
                 w.u64(budget);
             }
         }
+        w.keep(&self.egress.destinations)?;
         w.done()
     }
 
@@ -745,11 +751,8 @@ impl Request {
                 host_port,
             });
         }
-        let egress = Narrowing {
-            egress: r.keep()?,
-            mcp: r.keep()?,
-            dns: r.flag()?,
-        };
+        // Its destinations come last, appended in version 3.
+        let (egress, mcp, dns) = (r.keep()?, r.keep()?, r.flag()?);
         let n = r.count(4 + 4 + 1)?;
         let mut shares = Vec::with_capacity(n);
         for _ in 0..n {
@@ -760,6 +763,12 @@ impl Request {
         }
         let nesting = r.flag()?;
         let ready_by = if r.flag()? { Some(r.u64()?) } else { None };
+        let egress = Narrowing {
+            egress,
+            mcp,
+            destinations: r.keep()?,
+            dns,
+        };
         r.end()?;
         Ok(Request {
             image,
@@ -1121,6 +1130,7 @@ mod tests {
             egress: Narrowing {
                 egress: Keep::Only(vec!["443/tcp".into()]),
                 mcp: Keep::All,
+                destinations: Keep::All,
                 dns: false,
             },
             shares: vec![ShareAt {
@@ -1169,10 +1179,27 @@ mod tests {
         .encode()
         .unwrap();
         assert_eq!(
-            asked.get(asked.len() - 10..).unwrap(),
-            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8],
-            "appended last: the grant's flag, then the deadline's"
+            asked.get(asked.len() - 11..).unwrap(),
+            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0],
+            "appended: the grant's flag, the deadline's, then the destinations kept (all)"
         );
+        // Destinations kept by name, the host itself among them (D235), and none.
+        for destinations in [
+            Keep::Only(vec![
+                "api.openai.com:443".into(),
+                "host.docker.internal:7070".into(),
+            ]),
+            Keep::Only(Vec::new()),
+        ] {
+            let narrowed = Request {
+                egress: Narrowing {
+                    destinations,
+                    ..request().egress
+                },
+                ..request()
+            };
+            assert_eq!(Request::decode(&narrowed.encode().unwrap()).unwrap(), narrowed);
+        }
         for c in [
             Credit {
                 member: 0,
@@ -1309,13 +1336,26 @@ mod tests {
         v1.truncate(v1.len() - 2);
         v1[0] = 1;
         assert_eq!(Request::decode(&v1), Err(WireError::Version(1)));
+        // The nesting flag, before the deadline's tag and the destinations': no flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 2;
+        let at = flag.len() - 3;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
             Err(WireError::Tag {
                 what: "a flag",
+                tag: 2
+            })
+        );
+        // The destinations' list, last: no list of version 3's.
+        let mut list = request().encode().unwrap();
+        if let Some(last) = list.last_mut() {
+            *last = 2;
+        }
+        assert_eq!(
+            Request::decode(&list),
+            Err(WireError::Tag {
+                what: "a grant list",
                 tag: 2
             })
         );

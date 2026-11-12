@@ -348,9 +348,9 @@ pub fn read() -> Result<Read, String> {
     }
     // Their links, clear of the microVM's own network.
     let names: Vec<crate::netplan::Name> = out.iter().map(|d| d.name.clone()).collect();
-    let own = crate::net::current().map(|(addr, prefix, _)| {
+    let own = crate::net::current().map(|(addr, prefix, gateway)| {
         let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
-        (std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix)
+        (std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix, gateway)
     });
     let own6 = crate::net::current6().map(|(addr, prefix, _)| {
         let mask = u128::MAX.checked_shl(128 - u32::from(prefix)).unwrap_or(0);
@@ -412,7 +412,7 @@ pub fn read() -> Result<Read, String> {
         // agents' resolver, at the switch's end of its gate's link (D61), which holds it to
         // what it may ask.
         if let Some(l) = &link
-            && (l.dns || !l.mcp.is_empty())
+            && (l.dns || !l.named.is_empty())
             && !l.addresses.is_empty()
         {
             d.resolv =
@@ -1220,7 +1220,7 @@ fn gate_of(
         egress: link.egress.clone(),
         // Past the uplink's translation, at the domain's own ports (D122).
         ingress: link.ingress.iter().map(|&(_, at)| at).collect(),
-        dns: link.dns || !link.mcp.is_empty(),
+        dns: link.dns || !link.named.is_empty(),
         own6: link.addresses6.iter().map(|a| a.addr).collect(),
         opens6: pairs
             .iter()
@@ -1264,7 +1264,7 @@ fn gate_of(
 pub fn uplinked(d: &Domain) -> bool {
     d.link
         .as_ref()
-        .is_some_and(|l| !l.egress.is_empty() || !l.ingress.is_empty() || l.dns || !l.mcp.is_empty())
+        .is_some_and(|l| !l.egress.is_empty() || !l.ingress.is_empty() || l.dns || !l.named.is_empty())
 }
 
 /// The switch `domains` link to: `pairs` of them allowed to open connections to each
@@ -1302,13 +1302,13 @@ fn switch(
     let dns: Vec<usize> = domains
         .iter()
         .enumerate()
-        .filter(|(_, d)| d.link.as_ref().is_some_and(|l| l.dns || !l.mcp.is_empty()))
+        .filter(|(_, d)| d.link.as_ref().is_some_and(|l| l.dns || !l.named.is_empty()))
         .map(|(i, _)| i)
         .collect();
     let uplink = match egress.is_empty() && ingress.is_empty() && dns.is_empty() {
         true => None,
         false => {
-            let (addr, prefix, _) = crate::net::current()
+            let (addr, prefix, gateway) = crate::net::current()
                 .ok_or_else(|| io::Error::other("the microVM has no address for its agents' egress"))?;
             let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
             let mut subnets: Vec<(std::net::Ipv4Addr, u8)> = Vec::new();
@@ -1384,6 +1384,7 @@ fn switch(
                 resolver: !dns.is_empty(),
                 subnets,
                 eth0: (addr, std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix),
+                gateway,
                 ipv6,
             })
         }
@@ -1425,7 +1426,14 @@ fn switch(
         askers.push(crate::agentdns::Asker {
             link: crate::links::link_index(i)?,
             any: l.dns,
-            names: l.mcp.iter().map(|(h, _)| h.clone()).collect(),
+            // Its destinations' names, but the host itself's, which its hosts file holds
+            // and no resolver is asked (D235).
+            names: l
+                .named
+                .iter()
+                .map(|(h, _)| h.clone())
+                .filter(|h| h != shards_dns::HOST)
+                .collect(),
             addrs: l.addresses.iter().map(|a| a.addr).collect(),
             local: Vec::new(),
         });

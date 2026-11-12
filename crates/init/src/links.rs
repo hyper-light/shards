@@ -100,6 +100,9 @@ const MARK_AGENTS: u32 = 0x5a59_0001;
 pub struct Uplink {
     pub subnets: Vec<(Ipv4Addr, u8)>,
     pub eth0: (Ipv4Addr, Ipv4Addr, u8),
+    /// eth0's gateway: the host itself at each port a member is granted the host at
+    /// (D235), which no member its engine makes reaches ([`not_the_host`]).
+    pub gateway: Ipv4Addr,
     /// The ports let in, each to the address of the domain they are for: the microVM's,
     /// translated to the domain's where an `EXPOSE` maps them (D122).
     pub ingress: Vec<(Ipv4Addr, Vec<crate::netplan::Ingress>)>,
@@ -664,13 +667,14 @@ impl Switch {
         if self.has_uplink() {
             return Ok(());
         }
-        let (addr, prefix, _) = crate::net::current()
+        let (addr, prefix, gateway) = crate::net::current()
             .ok_or_else(|| io::Error::other("the microVM has no address for its engine's containers"))?;
         let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
         let subnets = self.subnets();
         self.up(Uplink {
             subnets,
             eth0: (addr, Ipv4Addr::from(u32::from(addr) & mask), prefix),
+            gateway,
             ingress: Vec::new(),
             egress: Vec::new(),
             resolver: false,
@@ -851,6 +855,7 @@ impl Switch {
             c.uplink = Some(Uplink {
                 subnets: u.subnets.clone(),
                 eth0: u.eth0,
+                gateway: u.gateway,
                 ingress: u.ingress.clone(),
                 egress: u.egress.clone(),
                 resolver: u.resolver,
@@ -1776,6 +1781,19 @@ pub(crate) fn address(list: &mut Vec<u8>, offset: u32, addr: Ipv4Addr) {
 pub(crate) const SOURCE: u32 = 12;
 pub(crate) const DESTINATION: u32 = 16;
 
+/// TCP to `gateway`, eth0's, dropped but at its resolver's port, 53 (D235): the gateway is
+/// the host itself at each port a member is granted the host at, which the run's own
+/// processes and the members its engine makes are granted at none. Under a run's grants
+/// the gateway serves them nothing else by TCP (its network process's resolver alone).
+fn not_the_host(list: &mut Vec<u8>, gateway: Ipv4Addr) {
+    address(list, DESTINATION, gateway);
+    meta(list, nft::NFT_META_L4PROTO);
+    compare(list, nft::NFT_CMP_EQ, &[6]);
+    payload(list, nft::NFT_PAYLOAD_TRANSPORT_HEADER, 2, 2);
+    compare(list, nft::NFT_CMP_NEQ, &53u16.to_be_bytes());
+    drop_verdict(list);
+}
+
 /// The packet's address at `offset` (its source's or destination's) outside `subnet`.
 fn not_within(list: &mut Vec<u8>, offset: u32, (net, prefix): (Ipv4Addr, u8)) {
     let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
@@ -2371,6 +2389,15 @@ fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink, members: &[Member]) -> io::Res
             }
         }
     }
+    // Past the domains' own grants, the host itself is no member's its engine made: within
+    // eth0's subnet, they would reach its gateway (D235).
+    if !members.is_empty() {
+        let mut e = Vec::new();
+        on(&mut e, nft::NFT_META_IIF, UPLINK_IFINDEX as u32);
+        on(&mut e, nft::NFT_META_OIF, eth0);
+        not_the_host(&mut e, u.gateway);
+        b.rule(b"forward\0", e);
+    }
     for m in members {
         let within = match m.reach {
             Reach::Nowhere => continue,
@@ -2411,7 +2438,9 @@ fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink, members: &[Member]) -> io::Res
 /// Keeps the run's own processes, of both IP versions, to what they reached before a run
 /// whose image grants its agents anything past the microVM (D59, D99): the host's network
 /// process holds the agents' grants for the whole microVM, from before the run, so no new
-/// flow leaves eth0 but to eth0's own subnet (its network's members, D46). Chain `out` of
+/// flow leaves eth0 but to eth0's own subnet (its network's members, D46), and none by TCP
+/// to its gateway but its resolver's, the gateway being the host itself where a member is
+/// granted the host (D235). Chain `out` of
 /// family ip, and of ip6 where eth0 has IPv6, each dropping the rest. Made before the
 /// run's command starts, and fails the run where the kernel has no ip6 family for it.
 pub fn confine_eth0() -> io::Result<()> {
@@ -2420,8 +2449,15 @@ pub fn confine_eth0() -> io::Result<()> {
     if eth0 == 0 {
         return Err(io::Error::other("no eth0 to confine"));
     }
-    // Answers, then the subnet's own, then nothing else out eth0.
-    let out = |sock: &OwnedFd, family: u8, at: u32, subnet: &[u8], mask: &[u8]| -> io::Result<()> {
+    // Answers, then the subnet's own, but the host itself at its gateway, then nothing else
+    // out eth0.
+    let out = |sock: &OwnedFd,
+               family: u8,
+               at: u32,
+               subnet: &[u8],
+               mask: &[u8],
+               gateway: Option<Ipv4Addr>|
+     -> io::Result<()> {
         let mut b = Batch::of(family);
         b.chain(b"out\0", b"filter\0", nft::NF_INET_LOCAL_OUT, 0, nft::NF_ACCEPT);
         b.rule(b"out\0", answers());
@@ -2429,6 +2465,15 @@ pub fn confine_eth0() -> io::Result<()> {
         // reaching the gateway at all takes, as ARP does for IPv4 below IP.
         if family == nft::NFPROTO_IPV6 {
             b.rule(b"out\0", neighbor_discovery());
+        }
+        // The gateway, of the subnet, is the host itself at a port a member is granted the
+        // host at (D235), which the run's own processes are not.
+        if let Some(gateway) = gateway {
+            let mut e = Vec::new();
+            meta(&mut e, nft::NFT_META_OIF);
+            compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
+            not_the_host(&mut e, gateway);
+            b.rule(b"out\0", e);
         }
         let mut e = Vec::new();
         meta(&mut e, nft::NFT_META_OIF);
@@ -2450,7 +2495,8 @@ pub fn confine_eth0() -> io::Result<()> {
         b.rule(b"out\0", e);
         b.commit(sock)
     };
-    let (addr, prefix, _) = crate::net::current().ok_or_else(|| io::Error::other("eth0 has no address"))?;
+    let (addr, prefix, gateway) =
+        crate::net::current().ok_or_else(|| io::Error::other("eth0 has no address"))?;
     let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
     on_init_nft(|sock| {
         // The destination address: at offset 16 of IPv4's header, 24 of IPv6's.
@@ -2460,6 +2506,7 @@ pub fn confine_eth0() -> io::Result<()> {
             DESTINATION,
             &Ipv4Addr::from(u32::from(addr) & mask).octets(),
             &mask.to_be_bytes(),
+            Some(gateway),
         )?;
         if let Some((addr6, prefix6, _)) = crate::net::current6() {
             let mask6 = u128::MAX.checked_shl(128 - u32::from(prefix6)).unwrap_or(0);
@@ -2469,6 +2516,7 @@ pub fn confine_eth0() -> io::Result<()> {
                 24,
                 &std::net::Ipv6Addr::from(u128::from(addr6) & mask6).octets(),
                 &mask6.to_be_bytes(),
+                None,
             )?;
         }
         Ok(())

@@ -1436,3 +1436,244 @@ fn networks_carry_only_their_protocols() {
         "{e}"
     );
 }
+
+/// The last stage's directives of `text`, as the build reads them.
+fn stage_directives(text: &str) -> Vec<Directive> {
+    let parsed = parser::parse_as(text.as_bytes(), Dialect::Agentfile).unwrap();
+    let ins = instructions::parse(&parsed, &Linter::default()).unwrap();
+    ins.stages
+        .last()
+        .unwrap()
+        .commands
+        .iter()
+        .filter_map(|c| match &c.kind {
+            Kind::Agentfile(d) => Some(d.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A network's destinations (D235): `--egress=HOST:PORT` of TCP, a host's name, an IPv4
+/// address or the host itself, reaching the members a joined network's `EXPOSE` opens
+/// their port out for, two boundaries as a port's are, each once; none of an internal or
+/// unjoined network's, nor where the microVM's boundary opens no such port. The normalized
+/// Agentfile records them as written, read back to the same grants, as the daemon reads
+/// them.
+#[test]
+fn destinations_are_what_joined_networks_name_and_open() {
+    use shards_agentfile::agentfile as af;
+    let grants = |text: &str| af::grants(&af::resolve_targets(&stage_directives(text)).unwrap());
+    let base = "FROM alpine\nHARNESS codex FROM ./codex\nAGENT helper FROM ./helper\n";
+    let text = format!(
+        "{base}NETWORK --egress=API.OpenAI.com:443 --egress=chatgpt.com:443 --egress=host.docker.internal:7070 \
+         --egress=192.0.2.7:8443 --egress=unopened.example:9000 provider FOR codex\n\
+         NETWORK --internal --egress=api.anthropic.com:443 shut\nNETWORK --egress=unjoined.example:443 unjoined\n\
+         EXPOSE --harnesses=codex 443 7070 8443 AS egress FOR provider\nEXPOSE 443 FOR shut unjoined\n\
+         CONNECT codex WITH codex ON provider\nCONNECT helper WITH helper ON shut\n"
+    );
+    let g = grants(&text);
+    let listed: Vec<String> = g
+        .destinations
+        .iter()
+        .map(|d| String::from_utf8(d.clone()).unwrap())
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            "api.openai.com:443",
+            "chatgpt.com:443",
+            "host.docker.internal:7070",
+            "192.0.2.7:8443"
+        ]
+    );
+    assert!(g.egress.is_empty() && g.mcp.is_empty() && !g.dns, "{g:?}");
+    assert!(g.past());
+    // Per member: codex alone, helper (on an internal network) nothing.
+    let directives = af::resolve_targets(&stage_directives(&text)).unwrap();
+    assert_eq!(
+        af::destinations_on(
+            &directives,
+            b"provider",
+            Some((TargetKind::Harness, &b"codex"[..]))
+        )
+        .len(),
+        4
+    );
+    assert!(
+        af::destinations_on(
+            &directives,
+            b"provider",
+            Some((TargetKind::Agent, &b"helper"[..]))
+        )
+        .is_empty()
+    );
+    assert!(af::destinations_on(&directives, b"shut", None).is_empty());
+    af::connections(&directives).unwrap();
+    af::held(&directives).unwrap();
+    // As the daemon reads the normalized Agentfile back.
+    let read = af::from_spec(&af::spec(&directives)).unwrap();
+    assert_eq!(af::grants(&read), g);
+    assert_eq!(af::spec(&read), af::spec(&directives));
+}
+
+/// What no destination of a network's is, refused by name and why: one let in rather than
+/// reached, of a network carrying no TCP, an all-digit or patterned host, an IPv6 address,
+/// UDP, and the member's own loopback; a port, a range and a Unix socket read as before.
+#[test]
+fn a_destination_is_a_tcp_host_reached_out() {
+    use shards_agentfile::agentfile as af;
+    let check = |line: &str| {
+        let text = format!("FROM alpine\nAGENT a FROM ./a\n{line}\nCONNECT a WITH a ON n\n");
+        af::connections(&stage_directives(&text)).map_err(|e| String::from_utf8_lossy(&e).into_owned())
+    };
+    for (line, said) in [
+        (
+            "NETWORK --expose=api.example:443 n",
+            "NETWORK --expose=api.example:443 on network n: a destination is reached, never let in",
+        ),
+        (
+            "NETWORK --ingress=api.example:443 n",
+            "NETWORK --ingress=api.example:443 on network n: a destination is reached, never let in",
+        ),
+        (
+            "NETWORK --protocol=udp --egress=api.example:443 n",
+            "--egress=api.example:443 on network n: the network does not carry tcp",
+        ),
+        (
+            "NETWORK --egress=8081:80 n",
+            "NETWORK --egress=8081:80 on network n: 8081:80: 8081 is neither a host's name nor an IPv4 address",
+        ),
+        (
+            "NETWORK --egress=*.example:443 n",
+            "*.example is neither a host's name nor an IPv4 address",
+        ),
+        (
+            "NETWORK --egress=[::1]:443 n",
+            "[::1] is neither a host's name nor an IPv4 address",
+        ),
+        ("NETWORK --egress=api.example:443/udp n", "443/udp is no TCP port"),
+        (
+            "NETWORK --egress=localhost:7070 n",
+            "localhost is the asker's own loopback (RFC 6761), never past its microVM; the host is host.docker.internal",
+        ),
+        (
+            "NETWORK --egress=http n",
+            "no port, range of ports or Unix socket (8080, 53/udp, 8000-8010/tcp, unix:<name>), nor a destination (HOST:PORT)",
+        ),
+    ] {
+        let e = check(line).unwrap_err();
+        assert!(e.contains(said), "{line}: {e}");
+    }
+    for line in [
+        "NETWORK --egress=443 --egress=8000-8010/udp --egress=api.example:443 n",
+        "NETWORK --protocol=tcp --egress=host.docker.internal:7070 n",
+    ] {
+        assert_eq!(check(line), Ok(()), "{line}");
+    }
+}
+
+/// Members granted one TCP port past the microVM unalike, where any reaches it by name,
+/// are refused at build and at run alike (D235), naming both: the network process holds
+/// the microVM to the union of its members' names on a port. One member's names beside
+/// its own port grant, members granted the same names, and members granted ports alone
+/// are held, and pass.
+#[test]
+fn members_reaching_one_port_by_name_reach_it_alike() {
+    use shards_agentfile::agentfile as af;
+    let held = |text: &str| {
+        let directives = af::resolve_targets(&stage_directives(text)).unwrap();
+        af::connections(&directives).unwrap();
+        af::held(&directives).map_err(|e| String::from_utf8_lossy(&e).into_owned())
+    };
+    let base = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\n";
+    let named =
+        "NETWORK --egress=api.example:443 named\nEXPOSE 443 AS egress FOR named\nCONNECT a WITH a ON named\n";
+    for (directives, said) in [
+        (
+            format!(
+                "{base}{named}NETWORK --egress=443 wide\nEXPOSE 443 AS egress FOR wide\nCONNECT b WITH b ON wide\n"
+            ),
+            "TCP port 443 past the microVM: agent a reaches api.example and agent b any address there, by a port grant",
+        ),
+        (
+            format!(
+                "{base}{named}NETWORK --egress=other.example:443 other\nEXPOSE 443 AS egress FOR other\nCONNECT b WITH b ON other\n"
+            ),
+            "TCP port 443 past the microVM: agent a reaches api.example and agent b other.example",
+        ),
+        // A port range covering it is a port grant of it.
+        (
+            format!(
+                "{base}{named}NETWORK --egress=400-500 wide\nEXPOSE 400-500 AS egress FOR wide\nCONNECT b WITH b ON wide\n"
+            ),
+            "agent b any address there, by a port grant",
+        ),
+        // A remote MCP server's on the port is a name of it too, as the host itself is.
+        (
+            format!("{base}{named}MCP web FROM https://mcp.example/sse FOR b\n"),
+            "agent a reaches api.example and agent b mcp.example",
+        ),
+        (
+            format!(
+                "{base}NETWORK --egress=host.docker.internal:7070 kiln\nEXPOSE 7070 AS egress FOR kiln\nCONNECT a WITH a ON kiln\n\
+                 NETWORK --egress=7070 wide\nEXPOSE 7070 AS egress FOR wide\nCONNECT b WITH b ON wide\n"
+            ),
+            "TCP port 7070 past the microVM: agent a reaches host.docker.internal and agent b any address there",
+        ),
+    ] {
+        let e = held(&directives).unwrap_err();
+        assert!(e.contains(said), "{directives}: {e}");
+    }
+    for directives in [
+        // One member, its names beside its own port grant.
+        format!(
+            "{base}{named}NETWORK --egress=443 wide\nEXPOSE 443 AS egress FOR wide\nCONNECT a WITH a ON wide\n"
+        ),
+        // Two members, the same names on the one port.
+        format!(
+            "{base}NETWORK --egress=api.example:443 named\nEXPOSE 443 AS egress FOR named\nCONNECT a WITH a ON named\nCONNECT b WITH b ON named\n"
+        ),
+        // Names on one port, a port grant of another.
+        format!(
+            "{base}{named}NETWORK --egress=8443 wide\nEXPOSE 8443 AS egress FOR wide\nCONNECT b WITH b ON wide\n"
+        ),
+        // Ports alone, unalike: each member held to its own by its init.
+        format!(
+            "{base}NETWORK --egress=443 one\nNETWORK --egress=443-445 two\nEXPOSE 443-445 AS egress FOR one two\nCONNECT a WITH a ON one\nCONNECT b WITH b ON two\n"
+        ),
+        // A remote MCP server for every agent: the same name for each.
+        format!("{base}MCP web FROM https://mcp.example/sse\n"),
+        // The EXPOSE naming one member: the network's other member is granted nothing.
+        format!(
+            "{base}NETWORK --egress=api.example:443 --egress=443 named\nEXPOSE --agents=a 443 AS egress FOR named\nCONNECT a WITH a ON named\nCONNECT b WITH b ON named\n"
+        ),
+    ] {
+        assert_eq!(held(&directives), Ok(()), "{directives}");
+    }
+}
+
+/// A destination is a reach past the microVM (§9.5, D235): an internal-only agent with a
+/// path to one granted a destination reaches the world through it, refused, the path named.
+#[test]
+fn a_destination_reaches_the_world() {
+    let path = reached(
+        "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\n\
+         NETWORK --internal --ingress=8080 back\nNETWORK --egress=api.example:443 provider\n\
+         EXPOSE 443 AS egress FOR provider\n\
+         CONNECT --port=8080 b WITH a ON back\nCONNECT a WITH a ON provider\n",
+    )
+    .unwrap_err();
+    assert!(
+        path.contains("agent b -> network back -> agent a -> network provider"),
+        "{path}"
+    );
+    // Not where no EXPOSE opens its port: no flow crosses the microVM's boundary.
+    assert_eq!(
+        reached(
+            "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\n\
+             NETWORK --internal --ingress=8080 back\nNETWORK --egress=api.example:443 provider\n\
+             CONNECT --port=8080 b WITH a ON back\nCONNECT a WITH a ON provider\n",
+        ),
+        Ok(())
+    );
+}

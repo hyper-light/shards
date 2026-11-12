@@ -213,6 +213,13 @@ fn what_the_image_does_not_grant_is_refused_before_boot() {
         ..Narrowing::default()
     };
     assert!(matches!(refused(s), ImageRefusal::Widening(_)));
+    // A destination the image grants none of (D235).
+    let mut s = spec(&home, "api-refused:1");
+    s.egress = Narrowing {
+        destinations: Keep::Only(vec!["host.docker.internal:7070".into()]),
+        ..Narrowing::default()
+    };
+    assert!(matches!(refused(s), ImageRefusal::Widening(_)));
     let mut s = spec(&home, "api-refused:1");
     s.publish = vec![Publish {
         guest_port: 9000,

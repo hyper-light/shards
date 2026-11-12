@@ -1471,9 +1471,6 @@ pub fn egress_declared(directives: &[Directive]) -> Vec<Vec<u8>> {
     out
 }
 
-/// Each `CONNECT`'s flows held to its networks (default deny): every port it grants must be
-/// one each network it is on lets in to its members (`NETWORK --ingress` or `--expose`),
-/// a network it is on must be declared, and `--dns` names a resolver past the microVM,
 /// A port of a protocol network `net` does not carry, refused.
 fn carried(net: &[u8], what: &[u8], p: &[u8], protocol: &[u8]) -> Vec<u8> {
     [
@@ -1488,7 +1485,27 @@ fn carried(net: &[u8], what: &[u8], p: &[u8], protocol: &[u8]) -> Vec<u8> {
     .concat()
 }
 
-/// which an internal network has none of.
+/// A destination a network's `--egress` names (D235), `HOST:PORT` of TCP, as D192's
+/// network option names one (`shards_dns::destination`): a host's name or an IPv4 address,
+/// or the host itself ([`shards_dns::HOST`]); its host, lowered, and port. None for what
+/// is a port, a range of ports or a Unix socket (`unix:<name>`), each read as before.
+pub fn destination_of(p: &[u8]) -> Option<Result<(Vec<u8>, u16), Vec<u8>>> {
+    if port_range(p).is_some() || p.starts_with(b"unix:") || !p.contains(&b':') {
+        return None;
+    }
+    Some(match std::str::from_utf8(p) {
+        Ok(text) => shards_dns::destination(text)
+            .map(|(host, port)| (host.into_bytes(), port))
+            .map_err(String::into_bytes),
+        Err(_) => Err([p, b": a destination is HOST:PORT"].concat()),
+    })
+}
+
+/// Each `CONNECT`'s flows held to its networks (default deny): every port it grants must be
+/// one each network it is on lets in to its members (`NETWORK --ingress` or `--expose`),
+/// a network it is on must be declared, and `--dns` names a resolver past the microVM,
+/// which an internal network has none of. A network's destinations (D235) are its egress's
+/// alone, of TCP, which it must carry.
 pub fn connections(directives: &[Directive]) -> Result<(), Vec<u8>> {
     // Each port a network opens is of a protocol it carries, and a Unix socket never
     // leaves the microVM.
@@ -1500,16 +1517,43 @@ pub fn connections(directives: &[Directive]) -> Result<(), Vec<u8>> {
                 Direction::Ingress => b"--ingress=",
                 Direction::Egress => b"--egress=",
             };
-            let Some(protocol) = protocol_of(p) else {
-                return Err([
+            let said = |why: &[u8]| {
+                [
                     b"NETWORK ".as_slice(),
                     flag,
                     p,
                     b" on network ",
                     &n.name,
-                    b": no port, range of ports or Unix socket (8080, 53/udp, 8000-8010/tcp, unix:<name>)",
+                    b": ",
+                    why,
                 ]
-                .concat());
+                .concat()
+            };
+            if let Some(found) = destination_of(p) {
+                found.map_err(|e| said(&e))?;
+                if *direction != Direction::Egress {
+                    return Err(said(
+                        b"a destination is reached, never let in: name it with --egress (networks are default deny)",
+                    ));
+                }
+                if !carries(n, b"tcp") {
+                    return Err(carried(&n.name, flag, p, b"tcp"));
+                }
+                continue;
+            }
+            let Some(protocol) = protocol_of(p) else {
+                let nor: &[u8] = match direction {
+                    Direction::Egress => b", nor a destination (HOST:PORT)",
+                    _ => b"",
+                };
+                return Err(said(
+                    &[
+                        b"no port, range of ports or Unix socket (8080, 53/udp, 8000-8010/tcp, unix:<name>)"
+                            .as_slice(),
+                        nor,
+                    ]
+                    .concat(),
+                ));
             };
             if protocol == b"unix" && *direction == Direction::Egress {
                 return Err([
@@ -1895,10 +1939,8 @@ pub fn ingress(directives: &[Directive]) -> Result<Vec<Receiver>, Vec<u8>> {
     Ok(out)
 }
 
-/// The ports an Agentfile lets some domain open flows to past its microVM: of each network
-/// a `CONNECT` joins, those it lets cross both boundaries outward ([`boundary`]), each
-/// once, as an `EXPOSE` writes them.
-pub fn egress(directives: &[Directive]) -> Vec<Vec<u8>> {
+/// The networks a `CONNECT` joins, each once, in the order joined.
+fn joined(directives: &[Directive]) -> Vec<&[u8]> {
     let mut nets: Vec<&[u8]> = Vec::new();
     for d in directives {
         if let Directive::Connect(c) = d {
@@ -1909,8 +1951,15 @@ pub fn egress(directives: &[Directive]) -> Vec<Vec<u8>> {
             }
         }
     }
+    nets
+}
+
+/// The ports an Agentfile lets some domain open flows to past its microVM: of each network
+/// a `CONNECT` joins, those it lets cross both boundaries outward ([`boundary`]), each
+/// once, as an `EXPOSE` writes them.
+pub fn egress(directives: &[Directive]) -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::new();
-    for net in nets {
+    for net in joined(directives) {
         for (proto, lo, hi) in boundary(directives, net, true) {
             let range = if lo == hi {
                 lo.to_string()
@@ -1931,10 +1980,266 @@ pub fn egress(directives: &[Directive]) -> Vec<Vec<u8>> {
     out
 }
 
+/// A member, by its kind and name, as a grant is for one.
+type Member<'a> = (TargetKind, &'a [u8]);
+
+/// The port ranges the microVM's boundary opens outward on network `net` (§12 answer 6):
+/// each `EXPOSE ... FOR` it, both ways or `AS egress`, for `member` where one is given (an
+/// `EXPOSE` naming no member being every member's, D122), else for any.
+fn opened_outward(directives: &[Directive], net: &[u8], member: Option<Member<'_>>) -> Vec<(u8, u16, u16)> {
+    let mut out = Vec::new();
+    for d in directives {
+        let Directive::Expose(e) = d else { continue };
+        if e.direction == Direction::Ingress || !e.networks.iter().any(|n| n == net) {
+            continue;
+        }
+        let named = |(kind, name): Member<'_>| {
+            match kind {
+                TargetKind::Agent => &e.agents,
+                TargetKind::Harness => &e.harnesses,
+            }
+            .iter()
+            .any(|m| m == name)
+        };
+        if member.is_none_or(|m| (e.agents.is_empty() && e.harnesses.is_empty()) || named(m)) {
+            out.extend(e.ports.iter().filter_map(|p| port_range(p)));
+        }
+    }
+    out
+}
+
+/// The destinations network `net` lets `member` reach past the microVM (D235), where one is
+/// given, else any of its members: each `--egress=HOST:PORT` whose port the microVM's
+/// boundary opens outward for it too, two boundaries as a port's are; none of an internal
+/// network, as [`boundary`] has none.
+pub fn destinations_on(
+    directives: &[Directive],
+    net: &[u8],
+    member: Option<(TargetKind, &[u8])>,
+) -> Vec<(Vec<u8>, u16)> {
+    let networks: Vec<&Network> = directives
+        .iter()
+        .filter_map(|d| match d {
+            Directive::Network(n) if n.name == net => Some(n),
+            _ => None,
+        })
+        .collect();
+    if networks.iter().any(|n| n.internal) {
+        return Vec::new();
+    }
+    let open = opened_outward(directives, net, member);
+    let mut out: Vec<(Vec<u8>, u16)> = Vec::new();
+    for (p, direction) in networks.iter().flat_map(|n| &n.ports) {
+        if *direction != Direction::Egress {
+            continue;
+        }
+        let Some(Ok((host, port))) = destination_of(p) else {
+            continue;
+        };
+        let opened = open
+            .iter()
+            .any(|&(proto, lo, hi)| proto == 6 && lo <= port && port <= hi);
+        if opened && !out.iter().any(|(h, q)| *h == host && *q == port) {
+            out.push((host, port));
+        }
+    }
+    out
+}
+
+/// The label of an Agentfile's destinations (D235), each `host:port`, comma-separated: its
+/// microVM's network process lets a flow to that port reach only the addresses the host
+/// resolves to through it (or the address it is, or for the host itself its loopback), for
+/// the members granted it.
+pub const DESTINATIONS_LABEL: &[u8] = b"vnd.osi.agentfile.destinations";
+
+/// The destinations an Agentfile lets some member reach past its microVM (D235): of each
+/// network a `CONNECT` joins, those [`destinations_on`] it, each once, `host:port`.
+pub fn destinations(directives: &[Directive]) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    for net in joined(directives) {
+        for (host, port) in destinations_on(directives, net, None) {
+            let e = [host.as_slice(), b":", port.to_string().as_bytes()].concat();
+            if !out.contains(&e) {
+                out.push(e);
+            }
+        }
+    }
+    out
+}
+
+/// What each member may reach past the microVM by TCP: the port ranges its networks open
+/// it to any address, and the destinations it reaches by name, its networks' (D235) and
+/// its remote MCP servers' (§4.4), as its init gives them it (crates/init netplan).
+fn tcp_reach(directives: &[Directive]) -> Vec<(Member<'_>, Vec<(u16, u16)>, Vec<(Vec<u8>, u16)>)> {
+    let declared = |name: &[u8], kind: TargetKind| {
+        directives.iter().any(|d| match (d, kind) {
+            (Directive::Agent(a), TargetKind::Agent) => a.name == name,
+            (Directive::Harness(h), TargetKind::Harness) => h.name == name,
+            _ => false,
+        })
+    };
+    // A name of either kind is the agent's, as init reads one.
+    let kind_of = |name: &[u8], said: Option<TargetKind>| {
+        said.unwrap_or(if declared(name, TargetKind::Agent) {
+            TargetKind::Agent
+        } else {
+            TargetKind::Harness
+        })
+    };
+    let mut members: Vec<(Member<'_>, Vec<(u16, u16)>, Vec<(Vec<u8>, u16)>)> = directives
+        .iter()
+        .filter_map(|d| match d {
+            Directive::Agent(a) => Some(((TargetKind::Agent, a.name.as_slice()), Vec::new(), Vec::new())),
+            Directive::Harness(h) => Some(((TargetKind::Harness, h.name.as_slice()), Vec::new(), Vec::new())),
+            _ => None,
+        })
+        .collect();
+    for (member, wide, named) in &mut members {
+        let mut on: Vec<&[u8]> = Vec::new();
+        for d in directives {
+            let Directive::Connect(c) = d else { continue };
+            let joins = c
+                .from
+                .iter()
+                .chain(&c.to)
+                .any(|n| n.as_slice() == member.1 && kind_of(n, c.kind) == member.0);
+            if joins {
+                for n in &c.on {
+                    if !on.contains(&n.as_slice()) {
+                        on.push(n);
+                    }
+                }
+            }
+        }
+        for net in on {
+            for (host, port) in destinations_on(directives, net, Some(*member)) {
+                if !named.iter().any(|(h, p)| *h == host && *p == port) {
+                    named.push((host, port));
+                }
+            }
+            // The network's own ports out, where the microVM's for the member meet them.
+            let internal = directives
+                .iter()
+                .any(|d| matches!(d, Directive::Network(n) if n.name == net && n.internal));
+            if internal {
+                continue;
+            }
+            let ours: Vec<(u8, u16, u16)> = directives
+                .iter()
+                .filter_map(|d| match d {
+                    Directive::Network(n) if n.name == net => Some(&n.ports),
+                    _ => None,
+                })
+                .flatten()
+                .filter(|(_, d)| *d != Direction::Ingress)
+                .filter_map(|(p, _)| port_range(p))
+                .collect();
+            for (p, lo, hi) in ours.into_iter().filter(|r| r.0 == 6) {
+                for (q, a, b) in opened_outward(directives, net, Some(*member)) {
+                    let (lo, hi) = (lo.max(a), hi.min(b));
+                    if p == q && lo <= hi {
+                        wide.push((lo, hi));
+                    }
+                }
+            }
+        }
+        for d in directives {
+            let Directive::Mcp(m) = d else { continue };
+            let Some((host, port)) = mcp_endpoint(&m.source) else {
+                continue;
+            };
+            let ours = if m.scope.names.is_empty() {
+                member.0 == TargetKind::Agent
+            } else {
+                m.scope
+                    .names
+                    .iter()
+                    .any(|n| n.as_slice() == member.1 && kind_of(n, m.scope.kind) == member.0)
+            };
+            if ours && !named.iter().any(|(h, p)| *h == host && *p == port) {
+                named.push((host, port));
+            }
+        }
+    }
+    members
+}
+
+/// Members granted one TCP port past the microVM unalike, where any reaches it by name (a
+/// destination, D235, or a remote MCP server, §4.4), refused, naming both: its network
+/// process holds the whole microVM to the union of its members' grants on a port, and each
+/// member's init lets it out on that port to any address, so one would reach what only
+/// another is granted. A port one member reaches by name is reached by no other, or by
+/// every member granted it with the same names and none by a port grant beside them.
+/// Default deny: what cannot be held is refused, as D192 refuses a network's destinations
+/// beside an image's grants.
+pub fn held(directives: &[Directive]) -> Result<(), Vec<u8>> {
+    let members = tcp_reach(directives);
+    let shown = |(kind, name): Member<'_>| {
+        format!(
+            "{} {}",
+            match kind {
+                TargetKind::Agent => "agent",
+                TargetKind::Harness => "harness",
+            },
+            String::from_utf8_lossy(name)
+        )
+    };
+    let mut ports: Vec<u16> = members
+        .iter()
+        .flat_map(|(_, _, named)| named.iter().map(|(_, p)| *p))
+        .collect();
+    ports.sort_unstable();
+    ports.dedup();
+    for port in ports {
+        // What each member granted the port reaches there: any address, or these names.
+        let at: Vec<(Member<'_>, Option<Vec<&[u8]>>)> = members
+            .iter()
+            .filter_map(|(member, wide, named)| {
+                if wide.iter().any(|&(lo, hi)| lo <= port && port <= hi) {
+                    return Some((*member, None));
+                }
+                let mut names: Vec<&[u8]> = named
+                    .iter()
+                    .filter(|(_, p)| *p == port)
+                    .map(|(h, _)| h.as_slice())
+                    .collect();
+                names.sort_unstable();
+                (!names.is_empty()).then_some((*member, Some(names)))
+            })
+            .collect();
+        let Some((by_name, names)) = at.iter().find_map(|(m, r)| r.as_ref().map(|n| (*m, n))) else {
+            continue;
+        };
+        let what = |reach: Option<&Vec<&[u8]>>| match reach {
+            None => "any address there, by a port grant".to_string(),
+            Some(names) => names
+                .iter()
+                .map(|n| String::from_utf8_lossy(n).into_owned())
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
+        if let Some((other, theirs)) = at
+            .iter()
+            .find(|(m, theirs)| *m != by_name && theirs.as_ref() != Some(names))
+        {
+            return Err(format!(
+                "TCP port {port} past the microVM: {} reaches {} and {} {}, which the microVM's network process cannot hold apart on one port, so each would reach what the other is granted; grant every member the port alike, or one alone (architecture.md D235)",
+                shown(by_name),
+                what(Some(names)),
+                shown(*other),
+                what(theirs.as_ref()),
+            )
+            .into_bytes());
+        }
+    }
+    Ok(())
+}
+
 /// What a domain reaches, through every edge an Agentfile declares (§9.5, §9.8, D58): a
 /// network both join (by `CONNECT ... ON`), a named volume granted to both, `ATTACH`.
 /// A domain reaches the world when it joins a network that is not internal and lets a port
-/// cross both its boundary and the microVM's ([`boundary`]), either way: an ingress-only
+/// cross both its boundary and the microVM's ([`boundary`]), either way, or a destination
+/// ([`destinations_on`]): an ingress-only
 /// port answers what reaches it, so its replies carry data out too; or an external one,
 /// whose reach the build cannot see; or when a remote MCP
 /// server is granted to it, or to every agent. An internal-only domain, one that joins an
@@ -1979,8 +2284,10 @@ pub fn reach(directives: &[Directive]) -> Result<(), Vec<u8>> {
     let mut networks: BTreeMap<Vec<u8>, (bool, bool)> = BTreeMap::new();
     for d in directives {
         if let Directive::Network(n) = d {
+            // A destination it lets out (D235) is a reach past the microVM as a port is.
             let open = !boundary(directives, &n.name, true).is_empty()
-                || !boundary(directives, &n.name, false).is_empty();
+                || !boundary(directives, &n.name, false).is_empty()
+                || !destinations_on(directives, &n.name, None).is_empty();
             let e = networks.entry(n.name.clone()).or_default();
             e.0 = n.internal;
             // An external network is the host's: what it reaches, the build cannot see. A
@@ -2374,6 +2681,8 @@ pub struct Grants {
     pub egress: Vec<Vec<u8>>,
     /// [`remote_mcp`]: each remote MCP server's `host:port`.
     pub mcp: Vec<Vec<u8>>,
+    /// [`destinations`]: each destination's `host:port` (D235).
+    pub destinations: Vec<Vec<u8>>,
     /// [`dns`]: any name past the microVM.
     pub dns: bool,
     /// [`egress_declared`]: the ports a run may not publish.
@@ -2383,11 +2692,20 @@ pub struct Grants {
     pub nesting: bool,
 }
 
+impl Grants {
+    /// Whether it grants anything past the microVM: ports, remote MCP servers,
+    /// destinations or names.
+    pub fn past(&self) -> bool {
+        !self.egress.is_empty() || !self.mcp.is_empty() || !self.destinations.is_empty() || self.dns
+    }
+}
+
 /// An Agentfile's [`Grants`].
 pub fn grants(directives: &[Directive]) -> Grants {
     Grants {
         egress: egress(directives),
         mcp: remote_mcp(directives),
+        destinations: destinations(directives),
         dns: dns(directives),
         egress_declared: egress_declared(directives),
         nesting: nesting(directives) == Ok(true),

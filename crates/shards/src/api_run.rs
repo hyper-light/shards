@@ -272,8 +272,9 @@ fn egress(
     let g = grants.unwrap_or(&none);
     let ports = kept("egress", &g.egress, &narrowing.egress)?;
     let mcp = kept("remote MCP server", &g.mcp, &narrowing.mcp)?;
+    let destinations = kept("destination", &g.destinations, &narrowing.destinations)?;
     let dns = g.dns && narrowing.dns;
-    if ports.is_empty() && mcp.is_empty() && !dns {
+    if ports.is_empty() && mcp.is_empty() && destinations.is_empty() && !dns {
         return Ok(None);
     }
     let text: Vec<String> = ports
@@ -286,13 +287,12 @@ fn egress(
         shards_net::Ports::parse(&text.join(","))
             .map_err(|e| No(Cause::Image, format!("the image's egress grants: {e}")))?
     };
-    let named: Vec<(String, u16)> = mcp
-        .iter()
-        .filter_map(|e| {
-            let (host, port) = std::str::from_utf8(e).ok()?.rsplit_once(':')?;
-            Some((host.to_string(), port.parse().ok()?))
-        })
-        .collect();
+    let mut named = crate::agentfile::named(&mcp);
+    for d in crate::agentfile::named(&destinations) {
+        if !named.contains(&d) {
+            named.push(d);
+        }
+    }
     Ok(Some(shards_net::encode_policy(&ports, &named, dns)))
 }
 
@@ -631,10 +631,7 @@ mod hosted {
             None => None,
         };
         // Grants past the microVM: the run's own processes kept to eth0's subnet (D59).
-        if agentfile
-            .as_ref()
-            .is_some_and(|a| !a.grants.egress.is_empty() || !a.grants.mcp.is_empty() || a.grants.dns)
-        {
+        if agentfile.as_ref().is_some_and(|a| a.grants.past()) {
             setup.push(b"confine-eth0".to_vec());
         }
         let capture = if active.is_empty() {
@@ -1443,25 +1440,54 @@ mod tests {
         let grants = shards_agentfile::agentfile::Grants {
             egress: vec![b"443/tcp".to_vec(), b"53/udp".to_vec()],
             mcp: vec![b"mcp.example:443".to_vec()],
+            destinations: vec![
+                b"api.openai.com:443".to_vec(),
+                b"host.docker.internal:7070".to_vec(),
+            ],
             dns: true,
             egress_declared: Vec::new(),
             nesting: false,
         };
         let all = egress(Some(&grants), &wire::Narrowing::default()).ok().unwrap();
-        assert!(all.is_some());
+        assert_eq!(
+            shards_net::decode_policy(all.as_deref().unwrap()).unwrap().1,
+            [
+                ("mcp.example".to_string(), 443),
+                ("api.openai.com".to_string(), 443),
+                ("host.docker.internal".to_string(), 7070)
+            ],
+            "each server and destination by name"
+        );
         let narrowed = wire::Narrowing {
             egress: wire::Keep::Only(vec!["443/tcp".into()]),
             mcp: wire::Keep::Only(Vec::new()),
+            destinations: wire::Keep::Only(vec!["host.docker.internal:7070".into()]),
             dns: false,
         };
         let one = egress(Some(&grants), &narrowed).ok().unwrap().unwrap();
         assert_ne!(Some(one.clone()), all);
+        assert_eq!(
+            shards_net::decode_policy(&one).unwrap().1,
+            [("host.docker.internal".to_string(), 7070)]
+        );
         let none = wire::Narrowing {
             egress: wire::Keep::Only(Vec::new()),
             mcp: wire::Keep::Only(Vec::new()),
+            destinations: wire::Keep::Only(Vec::new()),
             dns: false,
         };
         assert_eq!(egress(Some(&grants), &none).ok().unwrap(), None);
+        // A destination the image does not grant, of another port or host: a widening.
+        for asked in ["api.openai.com:80", "chatgpt.com:443"] {
+            let wider = wire::Narrowing {
+                destinations: wire::Keep::Only(vec![asked.into()]),
+                ..wire::Narrowing::default()
+            };
+            assert!(
+                matches!(egress(Some(&grants), &wider), Err(No(Cause::Widening, _))),
+                "{asked}"
+            );
+        }
         let wider = wire::Narrowing {
             egress: wire::Keep::Only(vec!["22/tcp".into()]),
             ..wire::Narrowing::default()
