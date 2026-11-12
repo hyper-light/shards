@@ -417,6 +417,8 @@ impl<D: Disk> Daemon<D> {
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         let flag = if read_only { "ro" } else { "rw" };
+        // A share's notices of what its host changes (D235), told its guest once mounted.
+        let mut notices = None;
         let (answer, file) = match what {
             What::Disk => {
                 let file = PathBuf::from(&source);
@@ -445,10 +447,11 @@ impl<D: Disk> Daemon<D> {
                 use shards_ipc::fd::AsFd as _;
                 (self.ask_device(id, &step, &[opened.as_fd()])?, Some(file))
             }
-            What::Volume => (
-                self.plug_share(threads, id, &source, read_only, &name, whom)?,
-                None,
-            ),
+            What::Volume => {
+                let (answer, told) = self.plug_share(threads, id, &source, read_only, &name, whom)?;
+                notices = told;
+                (answer, None)
+            }
             What::Function => return Err("a function is plugged in by plug function".into()),
         };
         let (devfn, address) = answer
@@ -473,6 +476,13 @@ impl<D: Disk> Daemon<D> {
                 return Err(e);
             }
         };
+        if let Some(pipe) = notices
+            && let Err(e) = self.notice_into(id, pipe)
+        {
+            super::log(format!(
+                "container {id}: its guest is told none of {path}'s changes: {e}"
+            ));
+        }
         lock(&self.plugged).entry(id.to_string()).or_default().insert(
             path.clone(),
             Plugged {
@@ -493,8 +503,9 @@ impl<D: Disk> Daemon<D> {
 
     /// A share of `source`, a host's absolute directory or a named volume, served by a
     /// share process of its own (share.rs), its stream given the VM of running microVM
-    /// `id` as a device of `tag`, as a run's are (D207): the VM's answer. On Unix its
-    /// connection, which the share process sends and waits to be taken; on Windows the
+    /// `id` as a device of `tag`, as a run's are (D207): the VM's answer, and the pipe its
+    /// share process tells what its host changes on (D235), none for a client's. On Unix
+    /// its connection, which the share process sends and waits to be taken; on Windows the
     /// stream itself, a duplex pipe made here whose server end the share process was given
     /// as it started (D197).
     fn plug_share<'s, 'e>(
@@ -505,7 +516,7 @@ impl<D: Disk> Daemon<D> {
         read_only: bool,
         tag: &str,
         whom: Whom<'_>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<shards_ipc::fd::OwnedFd>), String> {
         use shards_ipc::fd::AsFd as _;
         // A client's directory is its own, served from it (D228): the VM is given the stream
         // its client serves it on, as a run's share of it is, and no share process serves it
@@ -523,7 +534,7 @@ impl<D: Disk> Daemon<D> {
             // Its share is the client's to make read-only, its server told so; the guest
             // mounts it as asked too.
             let _ = read_only;
-            return self.ask_device(id, &step, &[end.as_fd()]);
+            return Ok((self.ask_device(id, &step, &[end.as_fd()])?, None));
         }
         let dir = if Path::new(source).is_absolute() {
             PathBuf::from(source)
@@ -558,7 +569,8 @@ impl<D: Disk> Daemon<D> {
             std::ffi::OsString::new(),
         )];
         let parent = self.parent_of(id).unwrap_or_default();
-        let (ends, child) = self.started_shares(threads, &dirs, &parent, false)?;
+        let tags = [tag.to_string()];
+        let (ends, child, notices) = self.started_shares(threads, &dirs, &parent, false, Some(&tags))?;
         // On Windows none where the share is a client's; this one is the machine's.
         #[cfg(unix)]
         let child = Some(child);
@@ -577,12 +589,12 @@ impl<D: Disk> Daemon<D> {
             let conn = ends.fds.first().ok_or("its share process sent no connection")?;
             let answer = self.ask_device(id, &step, &[conn.as_fd()]);
             let _ = shards_ipc::send(&link, kind::TAKEN, &[], &[]);
-            answer
+            Ok((answer?, notices))
         }
         #[cfg(windows)]
         {
             let stream = ends.first().ok_or("no stream was made for its share")?;
-            self.ask_device(id, &step, &[stream.as_fd()])
+            Ok((self.ask_device(id, &step, &[stream.as_fd()])?, notices))
         }
     }
 

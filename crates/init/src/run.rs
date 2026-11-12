@@ -3682,8 +3682,8 @@ fn builtin(
         (kind == run::builtin::DEVICE && joiner.is_none() && args.first().is_some_and(|a| a == b"allow"))
             .then(|| crate::devices::allow(args.get(1..).unwrap_or_default(), WORKLOAD_CGROUP))
     });
-    // What reads the host's stdin: unpacking an archive.
-    let input = if kind == run::builtin::EXTRACT {
+    // What reads the host's stdin: unpacking an archive, and the host's notices (D235).
+    let input = if matches!(kind, run::builtin::EXTRACT | run::builtin::NOTICE) {
         Some(pipe()?)
     } else {
         None
@@ -3751,6 +3751,26 @@ fn builtin(
                 // SAFETY: _exit(2) ends the child without running init's exit paths.
                 unsafe { libc::_exit(1) }
             }
+        }
+        // The host's notices, told until it closes their stream (D235): in init's own
+        // namespaces, each share reached through a mount of the notice's own.
+        if kind == run::builtin::NOTICE {
+            let code = match input {
+                Some((r, w)) => {
+                    drop(w);
+                    let told = crate::notice::serve(&mut File::from(r), &mut File::from(stdout_w));
+                    match told {
+                        Ok(()) => 0,
+                        Err(e) => {
+                            let _ = writeln!(File::from(stderr_w), "{e}");
+                            1
+                        }
+                    }
+                }
+                None => 1,
+            };
+            // SAFETY: _exit(2) ends the child without running init's exit paths.
+            unsafe { libc::_exit(code) }
         }
         let mut out = io::BufWriter::new(File::from(stdout_w));
         // `cp`'s work, which says how it failed by its status (copy.rs).

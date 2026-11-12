@@ -249,7 +249,39 @@ struct State {
     /// Its guest is on another machine, its requests relayed (D228): no file is mapped
     /// into a DAX window, whose memory is of that machine's, not this one's.
     windowless: bool,
+    /// The host's watch of each directory the guest holds, whose events become the notices
+    /// its share process tells (D235): none where it tells none.
+    #[cfg(target_os = "linux")]
+    watching: Option<Watching>,
 }
+
+/// On Linux, the inotify watch of each directory node the guest holds, made as the guest
+/// looks it up and let go of as it forgets it, so that what the host watches is what the
+/// guest can see, never the whole tree: each watch one of its user's (`max_user_watches`),
+/// all of one instance, the process's (PM M257).
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct Watching {
+    /// The sink the events are sent on, and its number among the process's.
+    number: u64,
+    sink: std::sync::mpsc::Sender<crate::platform::Named>,
+    /// Each directory node's watch, and each watch's nodes.
+    of_node: HashMap<u64, libc::c_int>,
+    nodes_of: HashMap<libc::c_int, Vec<u64>>,
+}
+
+/// What the host tells of each directory it watches for the guest: what is made, written,
+/// changed, moved and removed in it, and its own removal and move.
+#[cfg(target_os = "linux")]
+const WATCHED: u32 = libc::IN_MODIFY
+    | libc::IN_ATTRIB
+    | libc::IN_CREATE
+    | libc::IN_DELETE
+    | libc::IN_MOVED_FROM
+    | libc::IN_MOVED_TO
+    | libc::IN_DELETE_SELF
+    | libc::IN_MOVE_SELF
+    | libc::IN_ONLYDIR;
 
 /// The descriptors of the directories the guest named and of the files and directories it
 /// opened, as many as there is room for, the least recently used let go first. They are let
@@ -603,9 +635,13 @@ impl Reply {
     }
     /// struct fuse_entry_out.
     fn entry(&mut self, nodeid: u64, st: &Stat, owner: Owner, dax: bool) -> &mut Self {
+        self.entry_for(nodeid, st, owner, dax, VALID_S)
+    }
+    /// [`entry`](Self::entry), its name trusted by the guest's kernel for `secs` seconds.
+    fn entry_for(&mut self, nodeid: u64, st: &Stat, owner: Owner, dax: bool, secs: u64) -> &mut Self {
         self.u64(nodeid)
             .u64(0)
-            .u64(VALID_S)
+            .u64(secs)
             .u64(VALID_S)
             .u32(0)
             .u32(0)
@@ -729,6 +765,8 @@ impl Server {
                 headroom: None,
                 moved: false,
                 windowless: false,
+                #[cfg(target_os = "linux")]
+                watching: None,
             }),
         })
     }
@@ -935,6 +973,127 @@ impl Server {
     /// what it read in its own page cache.
     pub fn drop_reads_past(&self, headroom: super::headroom::Headroom) {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).headroom = Some(headroom);
+    }
+
+    /// Watches each directory the guest holds, from its root, as it looks each up, and lets
+    /// each go as it forgets it, every event sent on `sink`, which `number` names among the
+    /// process's sinks, for [`noticed`](Self::noticed) to say which paths it is of (D235).
+    /// Asked before the guest asks anything: a directory it looked up before is not watched.
+    #[cfg(target_os = "linux")]
+    pub fn watch_dirs(
+        &self,
+        number: u64,
+        sink: std::sync::mpsc::Sender<crate::platform::Named>,
+    ) -> std::io::Result<()> {
+        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        // Its descriptor's link, and `.` in it: a watch never follows its last name, and
+        // the link itself is one (proc(5)).
+        let root =
+            CString::new(format!("/proc/self/fd/{}/.", s.root.raw())).map_err(std::io::Error::other)?;
+        let watched = crate::platform::watch_named(&root, WATCHED, number, &sink)?;
+        s.watching = Some(Watching {
+            number,
+            sink,
+            of_node: HashMap::from([(ROOT, watched)]),
+            nodes_of: HashMap::from([(watched, vec![ROOT])]),
+        });
+        Ok(())
+    }
+
+    /// The shared directory's path on its host now, which its host's watcher names what
+    /// changes beneath it by (D235, macOS's FSEvents).
+    #[cfg(target_os = "macos")]
+    pub fn root_path(&self) -> Option<Vec<u8>> {
+        let s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        path_of_fd(s.root.raw())
+    }
+
+    /// The shared directory opened again, to be told what changes beneath it (D235,
+    /// Windows' ReadDirectoryChangesW): its I/O synchronous, its listing readable.
+    #[cfg(windows)]
+    pub fn changes_root(&self) -> Result<host::Owned, Errno> {
+        let s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        reopen_for_changes(s.root.raw())
+    }
+
+    /// The paths within the share an event of its watches is of (D235): a name made,
+    /// written, changed, moved or removed in a directory the guest holds, or that directory
+    /// itself; every directory it holds where events were lost (`IN_Q_OVERFLOW`); none for
+    /// another's watch.
+    #[cfg(target_os = "linux")]
+    pub fn noticed(&self, event: &crate::platform::Named) -> Vec<Vec<u8>> {
+        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(w) = s.watching.as_mut() else {
+            return Vec::new();
+        };
+        let nodes: Vec<u64> = if event.watched < 0 {
+            w.of_node.keys().copied().collect()
+        } else {
+            w.nodes_of.get(&event.watched).cloned().unwrap_or_default()
+        };
+        if event.mask & libc::IN_IGNORED != 0
+            && let Some(gone) = w.nodes_of.remove(&event.watched)
+        {
+            for node in gone {
+                w.of_node.remove(&node);
+            }
+        }
+        let mut paths = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let Some(mut path) = path_of(&s, node) else {
+                continue;
+            };
+            if event.watched >= 0 && !event.name.is_empty() {
+                if !path.is_empty() {
+                    path.push(b'/');
+                }
+                path.extend_from_slice(&event.name);
+            }
+            paths.push(path);
+        }
+        paths
+    }
+
+    /// Whether the directory at `path` within the share, its names joined by `/`, is one
+    /// the guest holds, as a host's watcher of the whole share asks of each event's
+    /// directory, so that the guest is told of what it can see alone (D235). Looked at
+    /// never following a symlink, never above the share; a path that is not plain is none.
+    pub fn holds_dir(&self, path: &[u8]) -> bool {
+        if !shards_abi::run::notice::plain(path) {
+            return false;
+        }
+        let names: Option<Vec<CString>> = path
+            .split(|&b| b == b'/')
+            .filter(|n| !n.is_empty())
+            .map(|n| CString::new(n).ok())
+            .collect();
+        let Some(names) = names else {
+            return false;
+        };
+        // The root's descriptor, the server's for as long as it is: looked from outside
+        // the lock, which the guest's requests wait on.
+        let root = {
+            let s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if s.joined {
+                return false;
+            }
+            s.root.raw()
+        };
+        let st = if names.is_empty() {
+            stat_fd(root)
+        } else {
+            open_beneath(root, &names).and_then(|fd| stat_fd(fd.raw()))
+        };
+        let Ok(st) = st else {
+            return false;
+        };
+        let s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let (dev, ino) = key(&st);
+        is_dir(&st)
+            && s.by_key
+                .get(&(NO_VOLUME, dev, ino))
+                .and_then(|id| s.nodes.get(id))
+                .is_some_and(|n| n.dir && n.lookups > 0)
     }
 
     /// Takes the share as a snapshot kept it ([`save`](Self::save)), into a server no guest
@@ -1214,6 +1373,11 @@ impl Server {
             op::SETXATTR if owner_control(body).is_some() => {
                 set_default_owner(&mut state, nodeid, caller, body)
             }
+            // A notice of its host's (D235): the file as it is, nothing changed.
+            _ if noticing(caller) => match self.confined(&state, opcode, nodeid, body) {
+                Ok(()) => self.notice(&mut state, opcode, nodeid, caller, body, &mut r),
+                Err(e) => Err(e),
+            },
             _ => match self.confined(&state, opcode, nodeid, body) {
                 Ok(()) => self.dispatch(&mut state, opcode, nodeid, caller, body, &mut r),
                 Err(e) => Err(e),
@@ -1254,6 +1418,34 @@ impl Server {
         match &self.only {
             Some(only) => only_confined(only, ROOT, opcode, nodeid, body),
             None => Ok(()),
+        }
+    }
+
+    /// A request of a notice of its host's (D235, [`noticing`]): a SETATTR answered with the
+    /// node's attributes as they are, nothing set, in a read-only share too; what only looks
+    /// answered as any is; anything else refused (EACCES), so that a notice changes nothing
+    /// on the host. The guest's kernel tells its own inotify of the SETATTR it sent as of
+    /// the times it asked set (include/linux/fsnotify.h, `fsnotify_change`).
+    fn notice(
+        &self,
+        s: &mut State,
+        opcode: u32,
+        nodeid: u64,
+        caller: (u32, u32),
+        body: &[u8],
+        r: &mut Reply,
+    ) -> Result<(), Errno> {
+        match opcode {
+            op::SETATTR => {
+                let st = node_stat(s, nodeid)?;
+                let owner = node_owner(s, nodeid, Some(&st))?;
+                let dax = self.dax_of(s, nodeid, &st);
+                r.u64(VALID_S).u32(0).u32(0).attr(&st, owner, dax);
+                Ok(())
+            }
+            op::LOOKUP | op::READLINK => self.dispatch(s, opcode, nodeid, caller, body, r),
+            _ if reads(opcode) => self.dispatch(s, opcode, nodeid, caller, body, r),
+            _ => Err(EACCES),
         }
     }
 
@@ -1346,7 +1538,7 @@ impl Server {
                 let name = a.name()?;
                 let (id, st, owner) = lookup(s, nodeid, &name)?;
                 let dax = self.dax_of(s, id, &st);
-                r.entry(id, &st, owner, dax);
+                r.entry_for(id, &st, owner, dax, name_valid(s, nodeid, &name)?);
             }
             op::GETATTR => {
                 let flags = a.u32()?;
@@ -1556,7 +1748,7 @@ impl Server {
                 } else {
                     let (id, found, owner) = lookup(s, nodeid, &name)?;
                     let dax = self.dax_of(s, id, &found);
-                    r.entry(id, &found, owner, dax);
+                    r.entry_for(id, &found, owner, dax, name_valid(s, nodeid, &name)?);
                     id
                 };
                 // Made with a mode that refuses its own handle (a read-only file opened to be
@@ -2120,6 +2312,13 @@ fn set_default_owner(s: &mut State, nodeid: u64, caller: (u32, u32), body: &[u8]
     Ok(())
 }
 
+/// Whether a request is a notice of its host's (D235): its caller the guest's root, its
+/// group [`shards_abi::NOTICE_ID`], as init's notice built-in asks; any other process the
+/// group's would have its own requests refused, and never another's.
+fn noticing(caller: (u32, u32)) -> bool {
+    caller == (0, shards_abi::NOTICE_ID)
+}
+
 /// The owner set for the files of node `nodeid`'s share, or its volume in a join share,
 /// that hold none of the guest's ([`State::owner`]): none where none was set, root's.
 fn set_owner_of(s: &State, nodeid: u64) -> Option<(u32, u32)> {
@@ -2335,8 +2534,92 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner),
             id
         }
     };
+    #[cfg(target_os = "linux")]
+    if is_dir(&st) {
+        watch_dir(s, id, dir, name);
+    }
     let owner = node_owner(s, id, Some(&st))?;
     Ok((id, st, owner))
+}
+
+/// Node `node`'s path within its share, its names from the root down joined by `/`, as the
+/// guest last named them: none where its chain is broken, or longer than the tables, which
+/// is a loop no directory has.
+#[cfg(target_os = "linux")]
+fn path_of(s: &State, node: u64) -> Option<Vec<u8>> {
+    let mut names: Vec<&[u8]> = Vec::new();
+    let mut at = node;
+    while at != ROOT {
+        let n = s.nodes.get(&at)?;
+        names.push(n.name.as_bytes());
+        at = n.parent;
+        if names.len() > s.nodes.len() {
+            return None;
+        }
+    }
+    names.reverse();
+    Some(names.join(&b'/'))
+}
+
+/// Watches directory node `id`, `name` in the directory `dir` holds, where its share's
+/// notices are told and it is not watched already (D235); one that cannot be watched (the
+/// user's watches all taken) is not, and the guest is told nothing of it.
+#[cfg(target_os = "linux")]
+fn watch_dir(s: &mut State, id: u64, dir: host::Raw, name: &CStr) {
+    let Some(w) = s.watching.as_mut() else {
+        return;
+    };
+    if w.of_node.contains_key(&id) {
+        return;
+    }
+    let mut path = format!("/proc/self/fd/{dir}/").into_bytes();
+    path.extend_from_slice(name.to_bytes());
+    let Ok(path) = CString::new(path) else {
+        return;
+    };
+    if let Ok(watched) = crate::platform::watch_named(&path, WATCHED, w.number, &w.sink) {
+        w.of_node.insert(id, watched);
+        w.nodes_of.entry(watched).or_default().push(id);
+    }
+}
+
+/// Directory node `id`'s watch let go of, the guest having forgotten it (D235).
+#[cfg(target_os = "linux")]
+fn unwatch_dir(s: &mut State, id: u64) {
+    let Some(w) = s.watching.as_mut() else {
+        return;
+    };
+    let Some(watched) = w.of_node.remove(&id) else {
+        return;
+    };
+    let last = match w.nodes_of.get_mut(&watched) {
+        Some(nodes) => {
+            nodes.retain(|n| *n != id);
+            nodes.is_empty()
+        }
+        None => true,
+    };
+    if last {
+        w.nodes_of.remove(&watched);
+        crate::platform::unwatch_named(watched, w.number);
+    }
+}
+
+/// How long the guest may trust that `name`, just found in directory node `parent`, names
+/// what it found: [`VALID_S`] where the host stores the name as the guest gave it; none
+/// where it found the file by another case or Unicode form of the name (a case-insensitive
+/// APFS volume's, an NTFS directory's), so that a rename or removal through any other of
+/// its names is seen at once (D235). The guest's kernel keeps a name for each it looked
+/// the file up by, and a rename or removal of one leaves the others it trusts naming a
+/// file the host no longer has by them (measured: tests/plug.rs
+/// `a_shares_names_are_its_hosts_case_and_all` on macOS APFS, `stat foo` ok in the guest
+/// after `rename Foo Bar`, as the host says none).
+fn name_valid(s: &mut State, parent: u64, name: &CStr) -> Result<u64, Errno> {
+    if s.joined && parent == ROOT {
+        return Ok(VALID_S);
+    }
+    let dir = dir_fd(s, parent)?;
+    Ok(if stored_as(dir, name) { VALID_S } else { 0 })
 }
 
 /// A node ID no node has, nor the root's or [`NO_VOLUME`]: the next of the share's keyed
@@ -2359,6 +2642,18 @@ fn fresh_node(s: &mut State) -> u64 {
 /// looked up; every other node, handle and descriptor goes. A join share's lives as long as
 /// its microVM, mounted again by each joiner that brings volumes after the last has ended.
 fn reset(s: &mut State) {
+    #[cfg(target_os = "linux")]
+    {
+        let gone: Vec<u64> = s
+            .nodes
+            .keys()
+            .copied()
+            .filter(|id| *id != ROOT && !s.volumes.contains_key(id))
+            .collect();
+        for id in gone {
+            unwatch_dir(s, id);
+        }
+    }
     let volumes = &s.volumes;
     s.nodes.retain(|id, n| {
         n.lookups = u64::from(*id == ROOT);
@@ -2387,6 +2682,8 @@ fn forget(s: &mut State, nodeid: u64, n: u64) {
         None => false,
     };
     if gone && let Some(node) = s.nodes.remove(&nodeid) {
+        #[cfg(target_os = "linux")]
+        unwatch_dir(s, nodeid);
         s.fds.remove(Slot::Node(nodeid));
         let at = (node.volume, node.key.0, node.key.1);
         if s.by_key.get(&at) == Some(&nodeid) {
@@ -3693,6 +3990,168 @@ mod tests {
         assert_eq!(host_mode(&path.join("file")) & 0o7777, 0o640);
         let _ = std::fs::remove_dir_all(&path);
         let _ = std::fs::remove_file(&outside);
+    }
+
+    /// A request of init's notice built-in (D235): the guest's root, as `NOTICE_ID`.
+    fn notice_req(opcode: u32, nodeid: u64, body: &[u8]) -> Vec<u8> {
+        let mut r = req(opcode, nodeid, 0, body);
+        r[28..32].copy_from_slice(&shards_abi::NOTICE_ID.to_le_bytes());
+        r
+    }
+
+    /// A notice of its host's (D235): a SETATTR as `NOTICE_ID`, as init's notice built-in
+    /// touches a file (utimensat's UTIME_OMIT, UTIME_NOW), is answered with the file as the
+    /// host has it now, its times left as they were, in a read-only share too; a lookup is
+    /// answered as any is; whatever would change the host is refused (EACCES) and changes
+    /// nothing; and the guest's root as any other group is not one.
+    #[test]
+    fn a_notice_changes_nothing_on_the_host() {
+        for read_only in [false, true] {
+            let p = shards_testdir::TempDir::new("fs-notice").unwrap();
+            let file = p.join("f");
+            std::fs::write(&file, "one").unwrap();
+            let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1 << 30);
+            let set = |at| {
+                std::fs::File::options()
+                    .write(true)
+                    .open(&file)
+                    .unwrap()
+                    .set_modified(at)
+                    .unwrap()
+            };
+            set(old);
+            let s = Server::new(root_of(&p), read_only, None).unwrap();
+            let (e, entry) = answer(&s, &notice_req(op::LOOKUP, ROOT, &name("f")));
+            assert_eq!(e, 0, "read-only {read_only}");
+            let f = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+            // The host writes it, keeping its old time.
+            std::fs::write(&file, "one two 3").unwrap();
+            set(old);
+            let touch = setattr(fattr::MTIME | fattr::MTIME_NOW, 0);
+            let (e, attr) = answer(&s, &notice_req(op::SETATTR, f, &touch));
+            assert_eq!(e, 0, "read-only {read_only}");
+            // struct fuse_attr_out: its validity, then fuse_attr, whose size follows ino.
+            assert_eq!(u64::from_le_bytes(attr[24..32].try_into().unwrap()), 9);
+            let modified = || std::fs::metadata(&file).unwrap().modified().unwrap();
+            assert_eq!(modified(), old, "read-only {read_only}: its time set");
+            let mut create = Vec::new();
+            for v in [linux::O_CREAT | linux::O_EXCL | 1, 0o100_644, 0, 0] {
+                create.extend_from_slice(&v.to_le_bytes());
+            }
+            create.extend(name("g"));
+            let mut mkdir = 0o755u32.to_le_bytes().to_vec();
+            mkdir.extend([0u8; 4]);
+            mkdir.extend(name("d"));
+            let mut rename = ROOT.to_le_bytes().to_vec();
+            rename.extend(name("f"));
+            rename.extend(name("h"));
+            for (opcode, node, body) in [
+                (op::CREATE, ROOT, create),
+                (op::MKDIR, ROOT, mkdir),
+                (op::UNLINK, ROOT, name("f")),
+                (op::RENAME, ROOT, rename),
+            ] {
+                let (e, _) = answer(&s, &notice_req(opcode, node, &body));
+                assert_eq!(e, -EACCES, "request {opcode}, read-only {read_only}");
+            }
+            let mut names: Vec<_> = std::fs::read_dir(&p)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            names.sort();
+            assert_eq!(names, ["f"], "read-only {read_only}");
+            assert_eq!(std::fs::read(&file).unwrap(), b"one two 3");
+            // The guest's root of any other group sets the time, where it may write.
+            let (e, _) = answer(&s, &req(op::SETATTR, f, 0, &touch));
+            assert_eq!(e, if read_only { -EROFS } else { 0 });
+            assert_eq!(modified() != old, !read_only);
+        }
+    }
+
+    /// A name the host found by another case of it, where its file system finds names so
+    /// (macOS's APFS, an NTFS directory of the host's own), is trusted by the guest for no
+    /// time, so that a rename or removal through another of its names is seen at once; the
+    /// name the host keeps, for its second, as every other is (D235). A host that tells
+    /// case apart finds no other case.
+    #[test]
+    fn a_name_found_by_another_case_is_trusted_for_no_time() {
+        let (p, s) = dir();
+        std::fs::write(p.join("Foo"), "x").unwrap();
+        let valid = |n: &str| {
+            let (e, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name(n)));
+            // struct fuse_entry_out: nodeid, generation, then entry_valid.
+            (e == 0).then(|| u64::from_le_bytes(entry[16..24].try_into().unwrap()))
+        };
+        assert_eq!(valid("Foo"), Some(VALID_S));
+        let folds = std::fs::symlink_metadata(p.join("foo")).is_ok();
+        for other in ["foo", "FOO"] {
+            assert_eq!(
+                valid(other),
+                folds.then_some(0),
+                "{other}, a host that folds case: {folds}"
+            );
+        }
+        assert_eq!(valid("Foo"), Some(VALID_S));
+        let _ = std::fs::remove_dir_all(&p);
+    }
+
+    /// A directory of the share is the guest's, for its host's notices (D235), once the
+    /// guest has looked it up and until it forgets it: the root always; never one reached
+    /// through a symlink or above the share.
+    #[test]
+    fn a_directory_is_held_while_the_guest_knows_it() {
+        let (p, s) = dir();
+        std::fs::create_dir_all(p.join("d").join("e")).unwrap();
+        assert!(s.holds_dir(b""));
+        assert!(!s.holds_dir(b"d"));
+        let (e, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("d")));
+        assert_eq!(e, 0);
+        let d = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        assert!(s.holds_dir(b"d"));
+        assert!(!s.holds_dir(b"d/e"));
+        assert!(!s.holds_dir(b"../d"));
+        assert!(!s.holds_dir(b"d/../d"));
+        link_dir(&p.join("d"), &p.join("link"));
+        assert!(!s.holds_dir(b"link"));
+        assert!(s.handle(&req(op::FORGET, d, 0, &1u64.to_le_bytes())).is_none());
+        assert!(!s.holds_dir(b"d"));
+        let _ = std::fs::remove_dir_all(&p);
+    }
+
+    /// On Linux, its host's changes in the directories the guest holds come as inotify
+    /// events of the process's one instance, each of the path within the share it names
+    /// (D235); a directory the guest forgot is watched no more.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_hosts_changes_where_the_guest_looks_are_noticed() {
+        let (p, s) = dir();
+        std::fs::create_dir(p.join("d")).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.watch_dirs(1, tx).unwrap();
+        let (e, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("d")));
+        assert_eq!(e, 0);
+        let d = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        // Every path the events up to `last` are of.
+        let heard = |last: &[u8]| -> Vec<Vec<u8>> {
+            let mut paths = Vec::new();
+            while !paths.iter().any(|p: &Vec<u8>| p == last) {
+                let event = rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap_or_else(|_| panic!("no event of {last:?}; heard {paths:?}"));
+                paths.extend(s.noticed(&event));
+            }
+            paths
+        };
+        std::fs::write(p.join("d").join("x"), "1").unwrap();
+        heard(b"d/x");
+        std::fs::write(p.join("top"), "1").unwrap();
+        heard(b"top");
+        assert!(s.handle(&req(op::FORGET, d, 0, &1u64.to_le_bytes())).is_none());
+        std::fs::write(p.join("d").join("y"), "1").unwrap();
+        std::fs::write(p.join("after"), "1").unwrap();
+        let paths = heard(b"after");
+        assert!(!paths.iter().any(|p| p == b"d/y"), "{paths:?}");
+        let _ = std::fs::remove_dir_all(&p);
     }
 
     /// `request`'s errno, or none if it is still waiting after ten seconds, when the FIFO

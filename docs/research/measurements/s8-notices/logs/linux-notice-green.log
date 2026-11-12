@@ -1,0 +1,7 @@
+# adacachy (Linux 7.2.9-2-cachyos, x86_64), KVM.
+# ~/g121-tmp/s8p2-test.sh p/s8-part2-v1 plug a_host_edit_wakes_a_watch_in_the_guest
+== 6de3842ac WIP: step 8 part 2 (not for main yet) 2026-11-12T23:20:57Z
+running 1 test
+test a_host_edit_wakes_a_watch_in_the_guest ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 39.04s
+== exit 0 2026-11-12T23:23:41Z

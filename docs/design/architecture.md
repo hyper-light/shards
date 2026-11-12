@@ -22510,7 +22510,7 @@ says; the report pipe on a Windows host; the seven-target lint.
 **What would falsify it.** A client that needs shards to own its VM processes after all (then
 D215's spawn alone).
 
-### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's; case handling and host edits' notices owed; real-VM validation owed)
+### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's, names that differ in case alone on case-insensitive hosts, host edits' notices to the guest's inotify; real-VM validation owed on WHP and arm64 KVM)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 8: kiln reads a session's diffs,
 HEAD and checkpoints on the host at the session's own path, so a member (an agent or
@@ -22596,6 +22596,139 @@ second unplug `Unknown`. HVF, WHP and arm64 KVM are owed (ROOT's).
 `/tmp`) is no root's: the domain's own scratch is there. A path beneath a root through a
 symlink of the image's beneath it is refused. The directories made for a plug's mount point
 stay, empty and root's, once it is unplugged.
+
+**Names that differ in case alone, on a case-insensitive host.** A host's file system that
+folds case (macOS's APFS by default, an NTFS directory of a Windows host's own) finds a file
+by any case of its name, and a share's server asks it by the guest's name (fstatat(2),
+NtCreateFile), so the guest finds `foo` where the host keeps `Foo`, creates nothing over it
+(EEXIST) and reads and writes the one file, as the host does.
+- *Reproduced* (R09; tests/plug.rs `a_shares_names_are_its_hosts_case_and_all`, the same
+  steps on the host and through a share, each result compared): on macOS APFS (HVF, the Mac
+  Studio, `a2096f8ef`), after `rename Foo Bar` the guest's `stat foo` and `stat FOO` said ok
+  where the host said NotFound. The guest's kernel keeps a name for each case it looked the
+  file up by, each trusted for the second the server gives it (`VALID_S`; fs/fuse/dir.c
+  `fuse_dentry_revalidate`), and a rename or removal through one leaves the others. On
+  adacachy's KVM (Linux, which tells case apart) the same steps agree.
+- *Decided:* a name the host found by another case or Unicode form of it is trusted for no
+  time (its entry's validity 0), so that each use of it asks the host again; the name the
+  host keeps, for its second, as before (server.rs `name_valid`). The name kept is asked of
+  the host: macOS's getattrlist(2) `ATTR_CMN_NAME`, as Libc's realpath(3) asks each
+  component's case; Windows' FileNormalizedNameInfo, which also says an 8.3 short name's
+  long one. A Linux host is asked nothing: its names are found as given, and a directory it
+  folds the case of (`chattr +F` on ext4, f2fs or tmpfs) is not handled, its variants
+  trusted for their second. The cost, a call more for each LOOKUP on macOS and Windows, is
+  unmeasured (ROOT's, R14).
+- *Green:* the same test on HVF at `6de3842ac`; its mutation (every name trusted its
+  second again) fails as the reproduction did.
+- *A rename of a name's case alone* (`mv foo Foo`) changes nothing, and says it is done: the
+  Linux VFS takes a rename whose two names are one inode as done without asking any file
+  system (fs/namei.c `vfs_rename`, `if (source == target) return 0;`, torvalds/linux master
+  of 2026-11), and Linux's own case-insensitive file systems do the same (measured on
+  adacachy, Linux 7.2.9, a tmpfs mounted `-o casefold` and a directory `+F`: `rename("foo",
+  "Foo")` returns 0 and `ls` says `foo`; a directory's alike). Alternatives:
+  - *An inode of its own for each case of a name*, as 9p's uncached modes give each lookup
+    one (fs/9p/vfs_inode_dotl.c, `v9fs_get_new_inode_from_fid`), by which WSL2's `/mnt/c`
+    renames a name's case: the rename would reach the host, at the cost of two inodes of
+    one file in the guest whose page caches, locks and inotify watches are each their own.
+    Not taken.
+  - *Another case not found* (ENOENT): the rename's target would be new and reach the host,
+    but `stat FOO`, `open FOO` and every program that names a file by another case would
+    fail where the host finds it. Not taken.
+  - Decided: the guest's rename is Linux's own, as its case-insensitive file systems' are;
+    a name's case is changed by two renames through another name (`mv foo tmp && mv tmp
+    Foo`), as on ext4's casefold. The test holds host and guest alike to Linux's rule
+    (testguest case.rs `renamed`).
+
+**Host edits wake the guest's inotify (notices).** Linux's virtio-fs driver negotiates no
+feature and has no notification queue (fs/fuse/virtio_fs.c, its `feature_table` empty;
+virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server notifies
+(`FUSE_NOTIFY_INVAL_*`) tells fsnotify nothing: a host's edit wakes no watch in the guest.
+- *Alternatives.*
+  - *Lima's `mountInotify`* (Lima 0.21 and later, experimental): its host agent watches,
+    and its guest agent sets each file's times through the mount (pkg/guestagent
+    guestagent_linux.go `HandleInotify`, `os.Chtimes`): a write of the host's files, of
+    writable mounts alone, and nothing for a file the host removed (lima-vm.io/docs/config/
+    mount, "Inotify events are not triggered when files are removed from host").
+  - *Docker Desktop's osxfs*: FSEvents mapped to inotify within its own file system ("Move
+    events trigger IN_DELETE on the source of the rename and IN_MODIFY on the destination
+    ... Some events may be delivered multiple times", docs osxfs.md): its own guest kernel's.
+  - *A notification queue in the guest's driver*: a kernel patch no stock kernel has, never
+    the base of a fix (version-agnostic, the person's rule).
+  - *The guest polling its shares*: a cost each period whatever changed (R05). Not taken.
+- *Decided.* The host is watched by its share process, each host's own way
+  (vmm `fs/notices.rs`):
+  - *Linux:* an inotify watch of each directory the guest holds, made as the guest looks it
+    up and let go of as it forgets it (server.rs `watch_dir`, `unwatch_dir`), all of the
+    process's one instance (`platform::watch_named`; PM M257): what the guest never looked
+    at is watched nothing of, and a watch is one of its user's (`max_user_watches`).
+  - *macOS:* one FSEvents stream of its shares' roots (shards-apple `fsevents`, CoreServices
+    bound when first used), file events, the changes the process itself makes for the guest
+    left out (`IgnoreSelf`), told at once (latency 0, `NoDefer`).
+  - *Windows:* ReadDirectoryChangesW of each root and all beneath it, 64 KiB a read, the
+    most it takes over a network (its documentation's).
+  - Where the whole tree is watched (macOS, Windows), a change is told only where the guest
+    holds its directory (`Server::holds_dir`). Each path waits once however often it
+    changes, at most 16384 (Linux's default `max_queued_events`, past which a guest's own
+    watcher would hear only that it lost events); past them, its nearest waiting directory
+    or its share's root stands for it, once a share.
+  - *Told on a pipe straight to the guest:* records `TAG\0PATH\0` (`shards_abi::run::
+    notice`), TAG the share's virtio-fs tag (`shards share --notices TAGS`), from the share
+    process to the stdin of the guest's `NOTICE` built-in, which the daemon and `shards
+    api-run` start as the run starts (`STARTED`) and for each plug once it is mounted. No
+    thread of theirs reads it.
+  - *The built-in* (init notice.rs) is init's root as filesystem group
+    `shards_abi::NOTICE_ID`, the first ID past every in-VM server's (`SERVER_FIRST_ID` and
+    `PID_MAX_LIMIT`). It mounts each tag a notice names, attached nowhere (fsopen(2),
+    fsmount(2)): the same file system as the guest's own mounts of the tag (virtio_fs.c
+    `virtio_fs_test_super`), whose inodes inotify watches whichever mount set them; let go
+    of after each batch, so that none outlives its device's unplug. For each path it walks
+    the directories, following no symlink, and touches the file: its modification time
+    asked set to now, its access time left (utimensat(2) `UTIME_OMIT`, `UTIME_NOW`), which
+    the kernel tells as `IN_MODIFY` to the file's watchers and its directory's
+    (include/linux/fsnotify.h `fsnotify_change`: the modification time alone is
+    `FS_MODIFY`). A file the host removed: its name looked up again (an exclusive create,
+    which revalidates whatever the kernel trusts, `LOOKUP_EXCL`), then its directory
+    touched (`IN_MODIFY|IN_ISDIR`).
+  - *The server* takes a request of the guest's root as group `NOTICE_ID` for a notice: a
+    SETATTR is answered with the node's attributes as the host has them, nothing set, a
+    read-only share's too; what only looks is answered; anything else is refused (EACCES),
+    so that a notice changes nothing on the host.
+  - *Default deny:* a notice is told through its share's own tag, and only a workload or a
+    member that has that share mounted holds its inodes and hears the touch; init's own
+    mount is attached nowhere. A read-only plug into the workload is read-only by its mount
+    alone, its file system writable as every other share's (setup.rs, domains.rs and a
+    member's plug already were), so that the notice's mount can touch it.
+- *Verified* (light tests, the change's own): unit, server.rs
+  `a_notice_changes_nothing_on_the_host`, `a_name_found_by_another_case_is_trusted_for_no_time`,
+  `a_directory_is_held_while_the_guest_knows_it`, `the_hosts_changes_where_the_guest_looks_are_noticed`
+  (Linux); notices.rs `changes_are_told_once_and_within_bounds`,
+  `the_hosts_changes_are_told_where_the_guest_looks` (each host's watcher, a change made by
+  another process); shards-abi's records; init's `notices_are_told_whole_across_reads`;
+  shards-apple's `a_change_beneath_is_told_by_its_path`; share.rs's flags. Real VMs, tests/plug.rs
+  `a_host_edit_wakes_a_watch_in_the_guest` (a bind, a read-only bind and a plugged volume:
+  the host's new file `IN_MODIFY f`, its removal `IN_MODIFY|IN_ISDIR` of the directory, the
+  host's files as it left them): adacachy's KVM and the Mac Studio's HVF. Mutation: with no
+  request taken for a notice, the removed file's revalidation, an exclusive create no longer
+  refused, made the file again on the host (`/rw: [.../rw/f]`), and the test fails.
+  docs/research/measurements/s8-notices.
+- *Known limits.*
+  - *What a watcher hears:* a host's new, written or changed file is `IN_MODIFY` of its
+    name; a removal, `IN_MODIFY` of its directory; a move, the new name's and the old
+    directory's. Never `IN_CREATE`, `IN_DELETE` or `IN_MOVED_*`, which the guest's kernel
+    tells only of its own changes.
+  - *Echoes:* on Linux and Windows the share process's own writes for the guest are watched
+    too, each told back as one `IN_MODIFY` more (macOS's `IgnoreSelf` leaves them out), as
+    Docker's osxfs delivers "some events multiple times".
+  - *Linux's instances:* one inotify instance a share process (a run that shares any
+    directory, and each plug), of the user's 128 by default, of which a desktop's programs
+    held 101 (PM M257); a share process given none tells nothing, and says so in its log.
+  - *Not told:* a join share's volumes (D119), a direct boot's shares (`run vm --kernel …
+    --share`, whose PID 1 may be no shards-init), a client's relayed directory (D228), a
+    share another server serves (`--slates-fs-fd`).
+  - A guest process of the root user and group `NOTICE_ID` has its own requests of a share
+    refused (EACCES) but SETATTR's, which change nothing.
+  - Its latency, host edit to guest watcher, is ROOT's to measure
+    (docs/research/measurements/s8-notices/run.sh, tests/plug.rs `notices_latency`).
 
 ### D236. A network's destinations: a member reaches the hosts its grants name, the host itself at one port (built; real-VM validation owed)
 
