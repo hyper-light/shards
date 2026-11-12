@@ -18,6 +18,8 @@
 mod common;
 
 use std::ffi::OsStr;
+// The give-back test's host word, written to its pipe: Unix's alone.
+#[cfg(unix)]
 use std::io::Write as _;
 use std::path::Path;
 use std::time::Duration;
@@ -326,7 +328,9 @@ fn vcpus() -> Vec<usize> {
 /// joiner of its, `idle`, that sleeps. A microVM's own engine serves calls on the joiners it
 /// made alone, and neither `GET /events` nor calls on `prov` itself (engine/scope.rs, which
 /// answers them 501 and 404 and closes); a wait writes its head at once and nothing after it
-/// until its joiner ends. The connection ends as `prov.idle` is removed.
+/// until its joiner ends. The connection ends as `prov.idle` is removed. The give-back and
+/// shrinking-room tests', Unix's alone.
+#[cfg(unix)]
 fn held_open(home: &Path, image: &str) -> std::thread::JoinHandle<Run> {
     answering(home);
     joiner(home, image, "idle", r#""sleep""#);
