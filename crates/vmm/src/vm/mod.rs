@@ -2271,6 +2271,14 @@ pub enum Admission {
 pub enum ServedPort {
     Sender(std::sync::mpsc::Sender<crate::platform::UnixStream>),
     Admitted(fn(crate::platform::UnixStream) -> Admission),
+    /// A port each of whose connections may carry an engine ring (D230): each comes with
+    /// the handle its owner offers one through, once it has heard the guest out.
+    Ringed(
+        std::sync::mpsc::Sender<(
+            crate::platform::UnixStream,
+            crate::devices::virtio::vsock::ring::RingHandle,
+        )>,
+    ),
 }
 
 impl std::fmt::Debug for ServedPort {
@@ -2278,6 +2286,7 @@ impl std::fmt::Debug for ServedPort {
         f.write_str(match self {
             Self::Sender(_) => "Sender",
             Self::Admitted(_) => "Admitted",
+            Self::Ringed(_) => "Ringed",
         })
     }
 }
@@ -2289,6 +2298,31 @@ impl From<std::sync::mpsc::Sender<crate::platform::UnixStream>> for ServedPort {
 }
 
 impl ServedPort {
+    /// Whether its connections may carry rings.
+    pub fn ringed(&self) -> bool {
+        matches!(self, Self::Ringed(_))
+    }
+
+    /// Hands its owner `stream`, with `ring` where its connections may carry one: a ring
+    /// port's connection with none goes to no one.
+    pub fn accept_with(
+        &self,
+        stream: crate::platform::UnixStream,
+        ring: Option<crate::devices::virtio::vsock::ring::RingHandle>,
+    ) -> Admission {
+        match (self, ring) {
+            (Self::Ringed(sender), Some(ring)) => {
+                if sender.send((stream, ring)).is_ok() {
+                    Admission::Accepted
+                } else {
+                    Admission::Closed
+                }
+            }
+            (Self::Ringed(_), None) => Admission::Closed,
+            (_, _) => self.accept(stream),
+        }
+    }
+
     pub fn accept(&self, stream: crate::platform::UnixStream) -> Admission {
         match self {
             Self::Sender(sender) => {
@@ -2304,6 +2338,8 @@ impl ServedPort {
                 }
                 accept(stream)
             }
+            // Its owner needs the connection's handle with it (`accept_with`).
+            Self::Ringed(_) => Admission::Closed,
         }
     }
 }

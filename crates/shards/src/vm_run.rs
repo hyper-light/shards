@@ -1541,9 +1541,10 @@ fn serve_workload(
         // connections wait for the run, which takes them or lets the port go.
         let engines = matches!(command, Command::Warm(..)).then(|| {
             let (engine_port, engines) = std::sync::mpsc::channel();
-            vsock
-                .every
-                .push((shards_abi::run::ENGINE_PORT, engine_port.into()));
+            vsock.every.push((
+                shards_abi::run::ENGINE_PORT,
+                shards_vmm::vm::ServedPort::Ringed(engine_port),
+            ));
             engines
         });
         // A warm VM's signals come from its client. The command line's are this process's:
@@ -1713,9 +1714,13 @@ fn serve_workload(
                                 }
                                 None => (None, crate::warm::engine_token(&request.spec)),
                             };
-                            if let (Some(engines), Some(token)) = (engines.take(), engine) {
-                                crate::warm::serve_engine(&link, token, engines).inspect_err(|e| report(e))?;
-                            }
+                            let engine_served = match (engines.take(), engine) {
+                                (Some(engines), Some(token)) => {
+                                    crate::warm::serve_engine(&link, token, engines).inspect_err(|e| report(e))?;
+                                    true
+                                }
+                                _ => false,
+                            };
                             // The run's own most memory to plug, before its guest hears of
                             // it (D148), none included: the template's is the host's. A VM
                             // with none to plug has what it booted with.
@@ -1756,6 +1761,10 @@ fn serve_workload(
                                 layer_in => (layer_in, false),
                             };
                             let mut spec = request.spec;
+                            // Its engine's port takes rings (D230): its guest's relay may offer one.
+                            if engine_served {
+                                spec.setup.push(shards_abi::ring::SPEC.to_vec());
+                            }
                             match request.swap {
                                 Some(file) if resumed => stopper
                                     .restore_swap(file)

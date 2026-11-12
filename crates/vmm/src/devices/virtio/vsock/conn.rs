@@ -17,6 +17,9 @@ use crate::debug;
 use crate::memory::GuestMemory;
 use crate::platform::{AsRawSocket, RawSocket, UnixStream};
 
+mod ringed;
+use ringed::Ringing;
+
 /// The least window a connection is given (`buf_alloc`): what every connection had before
 /// the device lent larger ones (Firecracker's CONN_TX_BUF_SIZE), one packet of the largest
 /// size a driver sends (VIRTIO_VSOCK_MAX_PKT_BUF_SIZE). A connection always has it, so it
@@ -92,6 +95,8 @@ pub struct Conn {
     pub queued: bool,
     /// Whether `local_port` was allocated for a host-initiated connection.
     pub allocated_port: bool,
+    /// Its engine ring, where it may have one (D230; ringed.rs).
+    ringing: Ringing,
 }
 
 impl std::fmt::Debug for Conn {
@@ -141,6 +146,7 @@ impl Conn {
             expiry: None,
             queued: false,
             allocated_port: false,
+            ringing: Ringing::Plain,
         }
     }
 
@@ -174,6 +180,7 @@ impl Conn {
     pub fn has_pending_rx(&self) -> bool {
         let p = self.pending;
         p.rst || p.response || p.request || p.shutdown != 0 || p.rw || p.credit_update || p.credit_answer
+            || self.ring_owes()
     }
 
     pub fn expiry(&self) -> Option<Instant> {
@@ -191,6 +198,8 @@ impl Conn {
     #[cfg(windows)]
     pub fn linger(mut self) -> Option<Conn> {
         self.tx_buf = TxBuf::default();
+        // Its ring goes with the connection; only the host socket lingers.
+        self.ringing = Ringing::Plain;
         if !self.host_write_shut {
             self.host_write_shut = true;
             let _ = self.stream.shutdown(Shutdown::Write);
@@ -216,6 +225,7 @@ impl Conn {
     /// Ends the connection: an RST goes to the guest and buffered data is dropped.
     pub fn kill(&mut self) {
         self.killed = true;
+        self.ringing = Ringing::Plain;
         self.tx_buf = TxBuf::default();
         self.pending = Pending {
             rst: true,
@@ -226,6 +236,9 @@ impl Conn {
 
     /// Which host-socket events the connection waits for: (readable, writable).
     pub fn interest(&self) -> (bool, bool) {
+        if let Some(ringed) = self.ring_interest() {
+            return ringed;
+        }
         let read = !self.killed
             && self.phase == Phase::Established
             && !self.host_eof
@@ -237,6 +250,9 @@ impl Conn {
 
     /// The host socket has data, EOF or an error to report.
     pub fn on_readable(&mut self) {
+        if self.ring_on_readable() {
+            return;
+        }
         if !self.killed && self.phase == Phase::Established && !self.host_eof {
             self.pending.rw = true;
         }
@@ -385,6 +401,9 @@ impl Conn {
             h.flags = flags;
             return Some(h);
         }
+        if let Some(h) = self.ring_next_rx(space) {
+            return Some(h);
+        }
         if self.pending.rw
             && let Some(h) = self.read_host(space, spare)
         {
@@ -453,9 +472,10 @@ impl Conn {
         }
         match (h.op, self.phase) {
             (op::RW, Phase::Established) if !self.guest_send_closed => {
-                if h.len > 0
-                    && let Err(e) = self.send_host(payload, mem)
-                {
+                if h.len == 0 || self.ring_doorbells(h, payload, mem) {
+                    return;
+                }
+                if let Err(e) = self.send_host(payload, mem) {
                     debug!("vsock: guest data for port {}: {e}", self.local_port);
                     self.kill();
                 }
@@ -537,7 +557,7 @@ impl Conn {
         let n = self.tx_buf.flush_to(&mut self.stream)?;
         self.fwd_cnt += n as u32;
         self.tx_buf.fit(self.exposure() as usize);
-        if !self.tx_buf.is_empty() {
+        if !self.tx_buf.is_empty() || !self.ring_drained()? {
             return Ok(());
         }
         if self.guest_send_closed && !self.host_write_shut {

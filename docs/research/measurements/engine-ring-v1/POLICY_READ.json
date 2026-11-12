@@ -1,0 +1,42 @@
+{
+  "type": "POLICY_READ",
+  "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "documents": {
+    "AGENTS.md": {
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+      "read": "full"
+    },
+    "docs/development-rules.md": {
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "read": "full"
+    },
+    "docs/development-evidence.md": {
+      "bytes": 3325,
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+      "read": "full"
+    },
+    "CLAUDE.md": {
+      "bytes": 17012,
+      "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f",
+      "read": "full"
+    }
+  },
+  "base": "origin/p/vsock-credit-v1 1e448c7ec150a9366deb036cca3687d65991d5c7",
+  "branch": "p/engine-ring-v1",
+  "task": "Engine path (--use-api-socket, D181): move the relay's bulk bytes into a shared-memory ring that init's relay and the host end both map; vsock keeps setup, token, wakeups, half-close/EOF and the fallback. Phase A: the decision (docs/research/engine-ring-channel-decision-v1.md + D-entry draft). Phase B: build it in separately committed steps with unit/light tests; write, do not run, the real-VM E2E tests and measurement harness.",
+  "owned_paths": [
+    "docs/research/engine-ring-channel-decision-v1.md",
+    "docs/design/architecture.md (the new D-entry only)",
+    "docs/research/measurements/engine-ring-v1/**",
+    "new modules under crates/init/src/, crates/vmm/src/, crates/shards/src/",
+    "new tests under crates/shards/tests/ and new test-guest modes in crates/testguest/src/",
+    "minimal, listed wiring edits to existing files"
+  ],
+  "constraints": "no subagents; builds/tests only on kiln runner adacachy (451397fcc585f7f7cb9aaf00e42064bb), cpus=4,mem=8g,disk=16g, -j4, <=1800 s per run; no builds on this Mac (below its 30 GiB floor); no VMs, E2E runs, profiling or measurements (owed to the coordinator); signed gits, named paths, no push, no force",
+  "concurrent_overlap": "another implementer owns crates/vmm/src/devices/virtio/vsock/{conn.rs,muxer.rs} and crates/init/src/engine.rs relay(): edits there kept minimal and listed"
+}

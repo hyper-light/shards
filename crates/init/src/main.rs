@@ -71,6 +71,8 @@ mod procs;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod proxyca;
 #[cfg(target_os = "linux")]
+mod ring;
+#[cfg(target_os = "linux")]
 mod run;
 #[cfg(target_os = "linux")]
 mod setup;

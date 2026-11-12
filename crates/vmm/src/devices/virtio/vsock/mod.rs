@@ -10,6 +10,7 @@ mod conn;
 mod muxer;
 pub mod packet;
 mod poll;
+pub mod ring;
 
 use std::io;
 #[cfg(unix)]
@@ -419,6 +420,7 @@ impl VirtioDevice for Vsock {
             return Err(format!("virtio-vsock activated with {} queues", queues.len()));
         }
         let mut muxer = self.muxer.take().ok_or("virtio-vsock activated twice")?;
+        muxer.set_memory(memory.clone());
         if let (Some(rx), Some(tx)) = (queues.get(RX), queues.get(TX)) {
             muxer.set_rings(rx.size(), tx.size());
         }
