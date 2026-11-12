@@ -48,6 +48,10 @@ PLANNED = [
     ("CAP_SYS_ADMIN (21)", "CAP_SYS_ADMIN (21)"),
     ("CAP_NET_ADMIN (12)", "CAP_NET_ADMIN (12)"),
     ("the controllers", "The controllers the workload may enable"),
+    ("notify socket mode 0666", "The notify socket's mode, 0666"),
+    ("READY's 9-byte payload", "READY's payload, 9 bytes"),
+    ("init's `notify` entry and tag `N`", "Init's own names"),
+    ("NR_OPEN_MAX 2147483584", "`NR_OPEN_MAX`, 2147483584"),
 ]
 
 # Backticked names in D234 that are no literal of its own: each is another entry's.
