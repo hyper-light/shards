@@ -101,6 +101,12 @@ fn actual_reader_and_started_return_initial_and_later_oom() {
 
 #[test]
 fn held_find_returns_error_when_start_allocation_is_refused() {
+    alone("held_find_returns_error_when_start_allocation_is_refused_alone");
+}
+
+#[test]
+#[ignore = "run alone by its namesake: /proc/self/fd counts the whole process's descriptors"]
+fn held_find_returns_error_when_start_allocation_is_refused_alone() {
     let pid = std::process::id();
     let start = started(pid).unwrap();
     println!("own_tgid={pid} precomputed_start={start} successful_allocations_before_refusal=0");
@@ -117,6 +123,27 @@ fn held_find_returns_error_when_start_allocation_is_refused() {
 
 fn fd_count() -> usize {
     std::fs::read_dir("/proc/self/fd").unwrap().count()
+}
+
+/// Runs one ignored test of this module by itself in a child process, as its descriptor
+/// counts are the whole process's and tests on other threads open and close their own.
+fn alone(name: &str) {
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("taken::linux::tests::{name}"),
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{name} alone: {stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn process_spec() -> crate::GuestSpec {
@@ -136,6 +163,12 @@ fn process_spec() -> crate::GuestSpec {
 
 #[test]
 fn public_attach_returns_scoped_capacity_failure_before_success_setup() {
+    alone("public_attach_returns_scoped_capacity_failure_before_success_setup_alone");
+}
+
+#[test]
+#[ignore = "run alone by its namesake: /proc/self/fd counts the whole process's descriptors"]
+fn public_attach_returns_scoped_capacity_failure_before_success_setup_alone() {
     use crate::Guests as _;
     let pid = std::process::id();
     let start = started(pid).unwrap();
@@ -166,6 +199,12 @@ fn held_identity_child() {
 
 #[test]
 fn wrong_start_and_unreaped_exit_keep_exact_identity_and_return_fds() {
+    alone("wrong_start_and_unreaped_exit_keep_exact_identity_and_return_fds_alone");
+}
+
+#[test]
+#[ignore = "run alone by its namesake: /proc/self/fd counts the whole process's descriptors"]
+fn wrong_start_and_unreaped_exit_keep_exact_identity_and_return_fds_alone() {
     use crate::Guests as _;
     let initial = fd_count();
     let mut owned = OwnedChild {
