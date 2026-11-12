@@ -22204,6 +22204,22 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   tmpfs at relative paths, owned by its uid, permission bits alone, applied before its
   program runs, within `run::MAX_PAYLOAD`. Native-sign-in delegation, not opacity (G18): the
   member reads what it is given.
+- *A member's working directory* (2026-11-12, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
+  step 7): `MemberSpec::workdir`, the project path it works in, carried in the request's
+  version 4 and staged as `member-workdir=<index>\0<path>`, one for a member. It is absolute
+  and plain, no empty, `.` or `..` component, within `PATH_MAX`
+  (`shards_abi::run::members::workdir_ok`): a relative or escaping one is refused by
+  `shards_api::image` before the run host starts, by the run host, and by init, as are two
+  for one member. Init enters it where it entered the member's own (`run.workdir` in its
+  directory, which init now holds to the build's rule as well: relative, never leaving the
+  directory). It must be there as the member starts, as an exec's working directory must be
+  (D27): a missing one fails the member's start, `entering its working directory`, and none
+  is made. A process's working directory is the directory it entered, under whatever is
+  mounted there later, so a project plugged into a running member (D235) is not the working
+  directory of a member that started before it: the project must be at its path as the
+  member starts. **Owed:** a boot-time path for that (a share given a member at its host
+  path, or a member started once its project is plugged), D235's and the orchestrator's to
+  choose; the real-VM runs on KVM, Hypervisor.framework and WHP (ROOT).
 - *Ports and grants.* Published ports bound by `publish::bind`, only for a port the image
   gives a member for ingress (D122) or for the run's own command; egress, remote MCP hosts,
   destinations (D236) and DNS the image grants, kept or dropped by the orchestrator, never

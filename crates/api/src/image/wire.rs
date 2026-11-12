@@ -19,8 +19,9 @@ pub use shards_abi::run::nesting::Ready;
 /// ([`Narrowing::destinations`], D236), and to each published port in [`Started`], the
 /// members it reaches; 4, a host directory plugged into a running member and let go of
 /// (`PLUG`, `UNPLUG`, answered `PLUGGED`; D235), so that a side that has no plugs refuses
-/// the run as it is asked, before any plug is.
-pub const VERSION: u8 = 4;
+/// the run as it is asked, before any plug is; 5, each member's working directory
+/// ([`MemberStage::workdir`]).
+pub const VERSION: u8 = 5;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -150,6 +151,8 @@ pub struct MemberStage {
     /// `KEY=VALUE` each, over its image's.
     pub env: Vec<Secret>,
     pub files: Vec<StagedFile>,
+    /// Its working directory, absolute and plain; none for its image's.
+    pub workdir: Option<String>,
 }
 
 /// A guest port published on the host.
@@ -770,6 +773,16 @@ impl Request {
             }
         }
         w.keep(&self.egress.destinations)?;
+        // Each member's working directory, in the members' order, appended in version 5.
+        for m in &self.members {
+            match &m.workdir {
+                None => w.u8(0),
+                Some(path) => {
+                    w.u8(1);
+                    w.text(path)?;
+                }
+            }
+        }
         w.done()
     }
 
@@ -815,6 +828,7 @@ impl Request {
                 name,
                 env,
                 files,
+                workdir: None,
             });
         }
         let n = r.count(2 + 1 + 1 + 2)?;
@@ -849,6 +863,9 @@ impl Request {
             destinations: r.keep()?,
             dns,
         };
+        for m in &mut members {
+            m.workdir = if r.flag()? { Some(r.text()?) } else { None };
+        }
         r.end()?;
         Ok(Request {
             image,
@@ -1320,6 +1337,7 @@ mod tests {
                     mode: 0o600,
                     bytes: Secret(b"{\"token\":\"t0p\"}\0".to_vec()),
                 }],
+                workdir: None,
             }],
             publish: vec![
                 Publish {
@@ -1356,6 +1374,21 @@ mod tests {
     fn messages_round_trip() {
         let r = request();
         assert_eq!(Request::decode(&r.encode().unwrap()).unwrap(), r);
+        // Each member's working directory, or none, in the members' order (version 5).
+        let mut worked = request();
+        worked.members[0].workdir = Some("/Users/ada/proj".into());
+        worked.members.push(MemberStage {
+            kind: MemberKind::Agent,
+            name: "helper".into(),
+            env: Vec::new(),
+            files: Vec::new(),
+            workdir: None,
+        });
+        worked.members.push(MemberStage {
+            workdir: Some("/".into()),
+            ..worked.members[1].clone()
+        });
+        assert_eq!(Request::decode(&worked.encode().unwrap()).unwrap(), worked);
         let with_command = Request {
             command: Some(vec!["sh".into(), "-c".into(), String::new()]),
             ..request()
@@ -1387,9 +1420,10 @@ mod tests {
         .encode()
         .unwrap();
         assert_eq!(
-            asked.get(asked.len() - 11..).unwrap(),
-            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0],
-            "appended: the grant's flag, the deadline's, then the destinations kept (all)"
+            asked.get(asked.len() - 12..).unwrap(),
+            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0],
+            "appended: the grant's flag, the deadline's, the destinations kept (all), then the one \
+             member's working directory (none)"
         );
         // Destinations kept by name, the host itself among them (D236), and none.
         for destinations in [
@@ -1538,15 +1572,21 @@ mod tests {
         let mut bytes = request().encode().unwrap();
         bytes[0] = VERSION + 1;
         assert_eq!(Request::decode(&bytes), Err(WireError::Version(VERSION + 1)));
-        // A request of version 1, without the nesting grant's fields, is no request of
-        // this one's: refused by its version, never read with the grant defaulted.
+        // A request of version 1, without the nesting grant's fields, or of version 4,
+        // without its members' working directories, is no request of this one's: refused by
+        // its version, never read with them defaulted.
         let mut v1 = request().encode().unwrap();
-        v1.truncate(v1.len() - 2);
+        v1.truncate(v1.len() - 3);
         v1[0] = 1;
         assert_eq!(Request::decode(&v1), Err(WireError::Version(1)));
-        // The nesting flag, before the deadline's tag and the destinations': no flag.
+        let mut v4 = request().encode().unwrap();
+        v4.truncate(v4.len() - 1);
+        v4[0] = 4;
+        assert_eq!(Request::decode(&v4), Err(WireError::Version(4)));
+        // The nesting flag, before the deadline's tag, the destinations' and the one member's
+        // working directory's: no flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 3;
+        let at = flag.len() - 4;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -1555,11 +1595,11 @@ mod tests {
                 tag: 2
             })
         );
-        // The destinations' list, last: no list of version 3's.
+        // The destinations' list, before the member's working directory: no list of version
+        // 3's and on.
         let mut list = request().encode().unwrap();
-        if let Some(last) = list.last_mut() {
-            *last = 2;
-        }
+        let at = list.len() - 2;
+        list[at] = 2;
         assert_eq!(
             Request::decode(&list),
             Err(WireError::Tag {

@@ -654,6 +654,26 @@ fn executable(d: &Domain, env: &[CString]) -> Result<CString, String> {
         })
 }
 
+/// Whether `p` is relative and stays inside the directory it is relative to: the twin of
+/// the build's (shards_image osi.rs `inside`), as init links no host crate.
+fn inside(p: &str) -> bool {
+    if p.is_empty() || p.starts_with('/') || p.contains('\0') {
+        return false;
+    }
+    let mut depth = 0u32;
+    for part in p.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => match depth.checked_sub(1) {
+                Some(d) => depth = d,
+                None => return false,
+            },
+            _ => depth = depth.saturating_add(1),
+        }
+    }
+    true
+}
+
 fn domain(
     kind: &str,
     name: &str,
@@ -688,7 +708,14 @@ fn domain(
                 .ok_or_else(|| format!("{label}: asks.memory is no count of bytes"))?,
         ),
     };
+    // Its own working directory, in its directory, as its build checks it (shards_image
+    // osi.rs `Config::check`): a run may name another (D231, `start`).
     let workdir = run.get("workdir").and_then(Value::str).unwrap_or(".");
+    if !inside(workdir) {
+        return Err(format!(
+            "{label}: run.workdir {workdir:?} must be relative and stay inside its directory"
+        ));
+    }
     let argv = command.iter().map(|a| cstr(a)).collect::<Result<Vec<_>, _>>()?;
     let workdir = cstr(&format!("{dir}/{workdir}"))?;
     Ok(Domain {
@@ -801,6 +828,8 @@ const SYSTEM: u64 = libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOSUID | libc::MO
 /// Everything a domain's first process uses, made before it is: after `clone3` it calls
 /// the kernel alone.
 struct Prepared {
+    /// Its working directory: the one its run names (D231), else its own.
+    workdir: CString,
     hide: Vec<CString>,
     hostname: CString,
     argv: Vec<*const libc::c_char>,
@@ -1962,6 +1991,9 @@ pub fn start(
             .collect::<Result<Vec<_>, _>>()?;
         let env = crate::staged::env(&own, member, setup).map_err(|e| format!("{}: {e}", d.label))?;
         let argv0 = executable(d, &env)?;
+        let workdir = crate::staged::workdir(member, setup)
+            .map_err(|e| format!("{}: {e}", d.label))?
+            .unwrap_or_else(|| d.workdir.clone());
         let dir = server.start(
             i,
             d,
@@ -1998,6 +2030,7 @@ pub fn start(
         let root = image_root(skel_of, lower, !roots.is_empty())
             .map_err(|e| format!("{}: its root: {e}", d.label))?;
         let prepared = Prepared {
+            workdir,
             shm: shm.clone(),
             root: root.as_raw_fd(),
             plug_roots: plug_roots.clone(),
@@ -2796,7 +2829,7 @@ fn exec_child(d: &Domain, p: &Prepared, flags: u32, program: &libc::sock_fprog) 
     let fail = |out, what| -> ! { fail(out, setup, crate::managed::Step::Setup, what) };
     // SAFETY: the actor's remaining confinement uses prepared buffers and system calls.
     unsafe {
-        if libc::chdir(d.workdir.as_ptr()) != 0 {
+        if libc::chdir(p.workdir.as_ptr()) != 0 {
             fail(out, c"entering its working directory");
         }
         // Its own IDs and no capability: the bounding set first, which needs CAP_SETPCAP;
@@ -3083,6 +3116,45 @@ mod tests {
             let e = harness_env("/d", "harness agy", &given(&[bad]), &[]).unwrap_err();
             assert!(e.contains(why) && e.contains("the image's ENV"), "{bad}: {e}");
         }
+    }
+
+    /// A member's own working directory is its config's `run.workdir` in its directory, held
+    /// to it as its build holds it: relative, never leaving it, however crafted.
+    #[test]
+    fn a_members_own_working_directory_stays_in_its_directory() {
+        for good in [".", "work", "a/../b", "./x/", "a/b/.."] {
+            assert!(inside(good), "{good}");
+        }
+        for bad in ["", "/etc", "..", "../h2", "a/../../etc", "a\0b"] {
+            assert!(!inside(bad), "{bad:?}");
+        }
+        let config = |workdir: &str| {
+            json::parse(format!(r#"{{"run":{{"command":["/bin/true"],"workdir":"{workdir}"}}}}"#).as_bytes())
+                .unwrap()
+        };
+        let declared = json::parse(br#"{"name":"h"}"#).unwrap();
+        let d = |workdir: &str| {
+            let c = config(workdir);
+            domain(
+                "harness",
+                "h",
+                "/harness/h",
+                FIRST_ID,
+                &declared,
+                &c,
+                c.get("run").unwrap(),
+            )
+        };
+        assert_eq!(
+            d("work").unwrap().workdir,
+            CString::new("/harness/h/work").unwrap()
+        );
+        let e = d("../../etc").unwrap_err();
+        assert!(
+            e.contains("must be relative and stay inside its directory"),
+            "{e}"
+        );
+        assert!(d("/etc").is_err());
     }
 
     /// A domain of `argv` whose directory is `dir`.
