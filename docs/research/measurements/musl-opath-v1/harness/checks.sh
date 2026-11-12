@@ -42,10 +42,27 @@ probe() {
   touch "$file"
 }
 
+# changes::keep as main had it: its layers opened through std's OpenOptions.
+keep_std='s#^    let open = |path: &str| crate::opath::open(path, libc::O_DIRECTORY);$#    let open = |path: \&str| -> io::Result<OwnedFd> { use std::os::unix::fs::OpenOptionsExt; Ok(std::fs::OpenOptions::new().read(true).custom_flags(libc::O_PATH | libc::O_DIRECTORY).open(path)?.into()) };#'
+
 echo "== 2. probes"
 init="-p shards-init --bin shards-init"
 probe keep.rs crates/init/src/changes.rs "$init" \
   changes::probe::kept_layers_are_path_descriptors changes::probe::a_layer_none_may_read_is_kept
+# The same probe of changes::keep as main had it (the symptom, before).
+cp crates/init/src/changes.rs /tmp/before-kept.rs
+sed -i "$keep_std" crates/init/src/changes.rs
+if cmp -s crates/init/src/changes.rs /tmp/before-kept.rs; then echo "PROBE before:keep.rs: NOT APPLIED"; fi
+cat "$h/probes/keep.rs" >> crates/init/src/changes.rs
+for test in changes::probe::kept_layers_are_path_descriptors changes::probe::a_layer_none_may_read_is_kept; do
+  # shellcheck disable=SC2086
+  out=$(t $init -- --exact "$test" --nocapture --test-threads 1)
+  echo "$out" | said 12
+  if echo "$out" | grep -aq "^test result: ok. 1 passed"; then r=passed; else r=FAILED; fi
+  echo "PROBE before:keep.rs $test: $r"
+done
+cp /tmp/before-kept.rs crates/init/src/changes.rs
+touch crates/init/src/changes.rs
 probe reaper.rs crates/init/src/managed.rs "$init" managed::probe::the_reaper_stopped_in_its_wait_lives_on
 probe atomics.rs crates/server/src/sandbox.rs "-p shards-server --bin shards-server" \
   sandbox::probe::a_program_cannot_wait_on_atomics
@@ -78,8 +95,7 @@ mutant() {
 
 echo "== 3. mutants"
 # A call site back on std's OpenOptions, as before this lane.
-mutant keep-through-std crates/init/src/changes.rs shards-init \
-  's#^    let open = |path: &str| crate::opath::open(path, libc::O_DIRECTORY);$#    let open = |path: \&str| -> io::Result<OwnedFd> { use std::os::unix::fs::OpenOptionsExt; Ok(std::fs::OpenOptions::new().read(true).custom_flags(libc::O_PATH | libc::O_DIRECTORY).open(path)?.into()) };#' \
+mutant keep-through-std crates/init/src/changes.rs shards-init "$keep_std" \
   opath::tests::no_source_asks_std_for_a_path_descriptor
 # The helper's flags as std's open_c makes them of read(true) and custom_flags(flags | O_PATH).
 mutant helper-as-std crates/init/src/opath.rs shards-init \
