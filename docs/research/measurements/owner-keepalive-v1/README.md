@@ -154,14 +154,35 @@ case's 12.5 s: it vanished before acknowledging the endpoint's post-handshake pa
 were already the endpoint's first ack-eliciting packets since it last heard the owner, so
 its keep-alives restarted nothing (§10.1).
 
-The merged revision (94299b662: this change and origin/main c4ae59ee0, aes256-only-v1's
-`tls.rs` among it) ran every phase again through [run.sh](run.sh), from that tree alone
-(`records/merged/`): red failed the same three tests (`managed.rs` 054bed2c, the fix taken
-back), green passed 23, m1 to m5 each failed its guard's tests and no other, fmt and clippy
-passed, and `cargo test -p shards-remote` passed 38 unit tests (aes256-only-v1's among them)
-and 17 loopback; a vanished owner was let go after 10.01 to 10.08 s. `run.sh TREE LOGS`
+Each merge with origin/main ran every phase again through [run.sh](run.sh), from the merged
+tree alone, as main moved three times meanwhile, each time under shards-remote's own inputs
+(aes256-only-v1's `tls.rs`; `crates/ipc`; `crates/abi`):
+
+| Merged revision | origin/main | Records | Result |
+|---|---|---|---|
+| 94299b662 | c4ae59ee0 | `records/merged/` | as below |
+| b04f76937 | dad5db63a | `records/merged-2/` | as below; a first run, `merged-2-shared-target/`, failed 10 loopback tests: see below |
+| 860d626cc (the code that lands) | 43114652a | `records/merged-3/` | as below |
+
+In each: red failed the same three tests (`managed.rs` 054bed2c, the fix taken back), green
+passed 23, m1 to m5 each failed its guard's tests and no other, fmt and clippy passed, and
+`cargo test -p shards-remote` passed 38 unit tests (aes256-only-v1's among them) and 17
+loopback; a vanished owner was let go after 10.01 to 10.26 s. `run.sh TREE LOGS`
 reproduces every phase from a checkout: its red phase takes the fix back (m1 and m4
-together), which leaves the base's `fn transport` code exactly. The recorded pre-merge runs staged the tree as `git archive 1da9132b7` from an
+together), which leaves the base's `fn transport` code exactly.
+
+The failed first run of b04f76937 shared its target directory with the trees staged before
+it. `git archive` gives unchanged files their commit's older mtime and cargo keeps a path
+package's dep-info relative to it, so cargo reused shards-testdir's build from a tree since
+deleted, whose path its `env!("CARGO_MANIFEST_DIR")` holds (found in the test binary):
+10 loopback tests could not build their helper there ("cargo: No such file or directory").
+`crates/testdir` is unchanged since the base; run again with a target directory of its
+own, as merged-3's was, all 17 passed. A staging fault, not the change's.
+
+kiln's server on adacachy did not answer for the last run (six tries over ten minutes, the
+host's load about 75 on 32 CPUs); it was started over ssh as the same user unit, in the same
+envelope (amphora-bench checked, MemoryMax 16G, CPUWeight 50, `-j4`), adacachy having no
+headroom guard to pass by. The recorded pre-merge runs staged the tree as `git archive 1da9132b7` from an
 adacachy clone plus this change's red diff, as kiln's sync of the new worktree timed out
 (60 s) on kiln-a094a12d and adacachy; each log records the files' hashes.
 
