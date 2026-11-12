@@ -1,0 +1,11 @@
+--- a/crates/api/src/lib.rs
++++ b/crates/api/src/lib.rs
+@@ -334,7 +334,7 @@
+     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+         match self {
+             // Its Display is the handshake error's own: the cause after it is that error's.
+-            Self::Channel(error) => std::error::Error::source(error),
++            Self::Channel(error) => Some(error),
+             _ => None,
+         }
+     }

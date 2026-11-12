@@ -1661,7 +1661,8 @@ pub(super) fn listen(
         .map_err(|_| format!("listening on {at}: the listener ended before it bound"))?
         .map_err(|e| format!("listening on {at}: {e}"))?;
     let path = home.join(crate::context::LISTENING);
-    std::fs::write(&path, format!("{bound}\n")).map_err(|e| format!("{}: {e}", path.display()))?;
+    super::keep_whole(&path, format!("{bound}\n").as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let key = identity::hex(&crate::context::identity(&home)?.fingerprint());
     super::log(format!(
         "serving the machines it enrolled on {bound} (QUIC), its key {}",

@@ -12,6 +12,7 @@ mod agent;
 mod agentfile;
 #[cfg(all(feature = "alloc-count", unix))]
 mod alloc_count;
+mod api_run;
 mod aws;
 mod build;
 mod cli;
@@ -102,6 +103,9 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         Some("build-writer") => build::outside::serve(),
         // a run's share process (D38), which the daemon starts: not for people to run.
         Some("share") => share::share(args),
+        // an image's run for an orchestrator, which shards-api starts (D231): not for
+        // people to run.
+        Some("api-run") => api_run::command(),
         // what serves a client's binds for a run through its context that goes on without
         // its command (D228): not for people to run.
         Some(client_binds::SERVE_APART) => client_binds::serve_apart(args),

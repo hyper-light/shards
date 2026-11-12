@@ -1,0 +1,11 @@
+--- a/crates/vmm/src/devices/virtio/gpu/mod.rs
++++ b/crates/vmm/src/devices/virtio/gpu/mod.rs
+@@ -405,7 +405,7 @@
+                     .filter(|t| matches!(t, Timeline::Ring { ctx: c, .. } if *c == ctx))
+                     .copied()
+                     .collect();
+-                for t in rings {
++                for t in rings.into_iter().take(0) {
+                     for w in self.waiting.remove(&t).unwrap_or_default() {
+                         self.held.remove(&w.head);
+                         self.released.push((w.head, w.len));

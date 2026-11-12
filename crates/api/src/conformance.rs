@@ -77,19 +77,19 @@ pub fn run(s: &Subject<'_>) -> Result<(), Failure> {
     more_vcpus_than_the_hypervisor_runs_are_refused_as_bounds(s)?;
     a_served_port_carries_bytes_and_a_half_close(s)?;
     an_unserved_port_is_refused(s)?;
+    a_single_attempt_is_refused_at_once_where_the_guest_does_not_listen(s)?;
     stop_ends_it_and_later_connects_are_refused(s)?;
     a_guest_that_powers_off_ends_as_power_off(s)?;
     a_guest_its_client_lost_is_taken_back_by_attach(s)
 }
 
-/// `backend()` is this host's, and macOS x86_64 and Windows arm64 have none, by name.
+/// `backend()` is this host's, and macOS x86_64, outside shards' scope, has none, by name.
 pub fn hosts_without_a_backend_are_named(s: &Subject<'_>) -> Result<(), Failure> {
     const CASE: &str = "hosts without a backend are named";
-    for (os, arch) in [("macos", "x86_64"), ("windows", "aarch64")] {
-        match backend_of(os, arch) {
-            Err(Refusal::NoBackend { os: o, arch: a }) if (o, a) == (os, arch) => {}
-            other => return Err(fail(CASE, format!("{os} {arch}: {other:?}"))),
-        }
+    let (os, arch) = ("macos", "x86_64");
+    match backend_of(os, arch) {
+        Err(Refusal::NoBackend { os: o, arch: a }) if (o, a) == (os, arch) => {}
+        other => return Err(fail(CASE, format!("{os} {arch}: {other:?}"))),
     }
     let here: Result<Backend, Refusal> = backend_of(std::env::consts::OS, std::env::consts::ARCH);
     let said = s.guests.backend();
@@ -271,6 +271,41 @@ pub fn an_unserved_port_is_refused(s: &Subject<'_>) -> Result<(), Failure> {
         ));
     }
     OVERSHOOT.saw(took.saturating_sub(patience));
+    let _ = guest.stop();
+    Ok(())
+}
+
+/// A single attempt (`connect_once_before`) to a port the guest serves connects; one to a port it
+/// doesn't serve is refused at once, closed unanswered, never asked again until its deadline.
+pub fn a_single_attempt_is_refused_at_once_where_the_guest_does_not_listen(
+    s: &Subject<'_>,
+) -> Result<(), Failure> {
+    const CASE: &str = "a single attempt is refused at once where the guest does not listen";
+    let guest = boot(CASE, s, &s.serving)?;
+    // Ready first: waiting for a boot is the retrying form's.
+    drop(
+        guest
+            .connect(s.port, s.patience)
+            .map_err(|e| fail(CASE, format!("connect to the served port: {e}")))?,
+    );
+    let at = Instant::now()
+        .checked_add(s.patience)
+        .ok_or_else(|| fail(CASE, "the patience is past a deadline"))?;
+    drop(
+        guest
+            .connect_once_before(s.port, at)
+            .map_err(|e| fail(CASE, format!("a single attempt to the served port: {e}")))?,
+    );
+    match guest.connect_once_before(s.unserved, at) {
+        Err(Refusal::Connect {
+            port,
+            failure: crate::HandshakeError::Closed,
+        }) if port == s.unserved => {}
+        other => return Err(fail(CASE, format!("port {}: {:?}", s.unserved, other.err()))),
+    }
+    if Instant::now() >= at {
+        return Err(fail(CASE, "refused only at its deadline, not at once"));
+    }
     let _ = guest.stop();
     Ok(())
 }

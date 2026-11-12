@@ -23,7 +23,7 @@ use crate::containers::PortRecord;
 /// A published port's host socket: where it is bound, and the guest port and IP protocol
 /// it is for.
 #[derive(Debug)]
-pub(super) struct Listener {
+pub(crate) struct Listener {
     pub fd: Sock,
     pub at: SocketAddr,
     pub guest_port: u16,
@@ -31,12 +31,12 @@ pub(super) struct Listener {
 }
 
 /// IP protocol numbers (IANA), as `kind::PUBLISH` names them.
-pub(super) const TCP: u8 = 6;
-pub(super) const UDP: u8 = 17;
+pub(crate) const TCP: u8 = 6;
+pub(crate) const UDP: u8 = 17;
 
 /// What a run publishes, bound: the host sockets, and the ports its microVM lists.
 #[derive(Debug, Default)]
-pub(super) struct Bound {
+pub(crate) struct Bound {
     pub listeners: Vec<Listener>,
     pub ports: Vec<PortRecord>,
 }
@@ -45,7 +45,7 @@ pub(super) struct Bound {
 /// process of the VM that took them (`vm`) has gone, with the daemon's copies of their
 /// listening sockets once that VM has its run.
 #[derive(Debug)]
-pub(super) struct Held {
+pub(crate) struct Held {
     pub container: String,
     pub vm: Option<u32>,
     pub at: Vec<(SocketAddr, u8)>,
@@ -55,7 +55,7 @@ pub(super) struct Held {
 /// Whether bindings at `a` and `b` would take one another's connections, on every host
 /// alike whatever its kernel lets in (review 2.7): one port, one family, and either address
 /// the family's every one, or both the same.
-pub(super) fn overlaps(a: SocketAddr, b: SocketAddr) -> bool {
+pub(crate) fn overlaps(a: SocketAddr, b: SocketAddr) -> bool {
     a.port() == b.port()
         && a.is_ipv4() == b.is_ipv4()
         && (a.ip().is_unspecified() || b.ip().is_unspecified() || a.ip() == b.ip())
@@ -63,7 +63,7 @@ pub(super) fn overlaps(a: SocketAddr, b: SocketAddr) -> bool {
 
 /// Whose a host address found in use is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum InUse {
+pub(crate) enum InUse {
     /// Another program's.
     Host,
     /// A running microVM's of this daemon.
@@ -88,7 +88,7 @@ fn exposed(key: &str) -> Option<(u16, String)> {
 /// The bindings `run` asks for: `-p`'s, then with `-P` one to a port the host picks for
 /// each port exposed (the image's and `-p`'s) that has none. And the ports exposed alone,
 /// which its microVM lists without a host side.
-pub(super) fn wanted(run: &Run, image_exposed: &[String]) -> (Vec<Publish>, Vec<(u16, String)>) {
+pub(crate) fn wanted(run: &Run, image_exposed: &[String]) -> (Vec<Publish>, Vec<(u16, String)>) {
     let mut ports: Vec<(u16, String)> = image_exposed.iter().filter_map(|k| exposed(k)).collect();
     for p in &run.publish {
         let port = (p.port, p.proto.clone());
@@ -121,7 +121,7 @@ pub(super) fn wanted(run: &Run, image_exposed: &[String]) -> (Vec<Publish>, Vec<
 /// asked, or where none at `default`, its network's for its members' ports, or every IPv4
 /// one; its port the one asked or none until init says the one it was given
 /// (`kind::PORTS`); and those exposed `alone`.
-pub(super) fn engine_ports(
+pub(crate) fn engine_ports(
     bindings: &[Publish],
     alone: &[(u16, String)],
     default: Option<std::net::Ipv4Addr>,
@@ -164,7 +164,7 @@ pub(super) fn engine_ports(
 }
 
 /// What shards cannot publish yet, refused before a microVM is made for it.
-pub(super) fn unsupported(bindings: &[Publish]) -> Option<String> {
+pub(crate) fn unsupported(bindings: &[Publish]) -> Option<String> {
     bindings
         .iter()
         .find(|b| proto(&b.proto).is_none())
@@ -185,7 +185,7 @@ fn proto(name: &str) -> Option<u8> {
 /// IPv4's every one, and IPv6's too where `v6`, IPv6 can listen ([`v6_listenable`]). Whose
 /// an address in use is, `in_use` says, waiting for one a run of this daemon has just let
 /// go of.
-pub(super) fn bind(
+pub(crate) fn bind(
     bindings: &[Publish],
     alone: &[(u16, String)],
     default: Option<IpAddr>,
@@ -365,7 +365,7 @@ fn go_error(e: &std::io::Error) -> String {
 /// daemon/libnetwork/netutils/utils.go IsV6Listenable): a TCP listener at [::1]:0. A
 /// kernel booted with ipv6.disable=1 has none, and a binding with no address is then
 /// IPv4's alone, where binding `::` too would fail every one.
-pub(super) fn v6_listenable() -> bool {
+pub(crate) fn v6_listenable() -> bool {
     static LISTENABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *LISTENABLE.get_or_init(|| std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_ok())
 }

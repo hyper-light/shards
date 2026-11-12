@@ -3,8 +3,10 @@
 //! application protocol [`ALPN`] (RFC 9001 §8.1). A client pins the daemon's key by its
 //! SHA-256; a daemon takes any client's key at the handshake and judges it after, by its
 //! enrollment or by the invitation it joins with ([`crate::invite`]). Early data is off on
-//! both sides: a first request may change what the daemon holds.
+//! both sides: a first request may change what the daemon holds. Every link, both ways, is
+//! TLS13_AES_256_GCM_SHA384 ([`provider`]).
 
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use hyper_quic::crypto::rustls::{QuicClientConfig, QuicServerConfig};
@@ -48,8 +50,21 @@ pub const IDLE: Duration = Duration::from_secs(10);
 /// two (RFC 9000 §10.1): a daemon of an earlier build ends one at [`IDLE`].
 pub const QUIET: Duration = Duration::from_secs(100);
 
+/// The provider of every shards QUIC link, a context's and the managed output's: hyper-quic's
+/// node provider (aws-lc-rs, the hybrid post-quantum groups alone) narrowed to
+/// TLS13_AES_256_GCM_SHA384, as Ada directed on 2026-11-11 ("all such communications should be
+/// AESGCM256 bidirectional encrypted"; D180). TLS 1.3 negotiates one suite for both directions,
+/// each keyed apart (RFC 8446 §4.1.3, §7.3), so a peer offering no AES-256-GCM is refused at
+/// its handshake. Initial packets keep AES-128-GCM under keys any observer derives (RFC 9001
+/// §5), which hyper-quic takes from aws-lc-rs whatever is offered here.
+static PROVIDER: LazyLock<rustls::crypto::CryptoProvider> =
+    LazyLock::new(|| rustls::crypto::CryptoProvider {
+        cipher_suites: vec![rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384],
+        ..hyper_quic::crypto::rustls::node_provider().clone()
+    });
+
 fn provider() -> &'static rustls::crypto::CryptoProvider {
-    hyper_quic::crypto::rustls::node_provider()
+    &PROVIDER
 }
 
 fn certified(identity: &Identity) -> Result<CertifiedKey, Error> {
@@ -116,7 +131,7 @@ fn verify_signature(
 
 /// The server side, which a daemon listening for clients accepts connections under.
 pub fn server(identity: &Identity) -> Result<ServerConfig, Error> {
-    server_with(identity, None, transport(true)?, ALPN)
+    server_under(provider(), identity, None, transport(true)?, ALPN)
 }
 
 pub(crate) fn owner_server(
@@ -125,17 +140,18 @@ pub(crate) fn owner_server(
     transport: TransportConfig,
     alpn: &[u8],
 ) -> Result<ServerConfig, Error> {
-    server_with(identity, Some(owner), transport, alpn)
+    server_under(provider(), identity, Some(owner), transport, alpn)
 }
 
-fn server_with(
+fn server_under(
+    provider: &'static rustls::crypto::CryptoProvider,
     identity: &Identity,
     owner: Option<Fingerprint>,
     transport: TransportConfig,
     alpn: &[u8],
 ) -> Result<ServerConfig, Error> {
     let resolver = AlwaysResolvesServerRawPublicKeys::new(certified(identity)?);
-    let mut tls = rustls::ServerConfig::builder_with_provider(provider())
+    let mut tls = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|e| Error::new(format!("TLS: {e}")))?
         .with_client_cert_verifier(Box::new(AnyClient(owner)))
@@ -150,7 +166,7 @@ fn server_with(
 
 /// The client side, which connects to the daemon whose key's SHA-256 is `daemon`.
 pub fn client(identity: &Identity, daemon: Fingerprint) -> Result<ClientConfig, Error> {
-    client_with(identity, daemon, transport(false)?, ALPN)
+    client_under(provider(), identity, daemon, transport(false)?, ALPN)
 }
 
 pub(crate) fn client_with(
@@ -159,8 +175,18 @@ pub(crate) fn client_with(
     transport: TransportConfig,
     alpn: &[u8],
 ) -> Result<ClientConfig, Error> {
+    client_under(provider(), identity, daemon, transport, alpn)
+}
+
+fn client_under(
+    provider: &'static rustls::crypto::CryptoProvider,
+    identity: &Identity,
+    daemon: Fingerprint,
+    transport: TransportConfig,
+    alpn: &[u8],
+) -> Result<ClientConfig, Error> {
     let resolver = AlwaysResolvesClientRawPublicKeys::new(certified(identity)?);
-    let mut tls = rustls::ClientConfig::builder_with_provider(provider())
+    let mut tls = rustls::ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|e| Error::new(format!("TLS: {e}")))?
         .dangerous()
@@ -290,5 +316,150 @@ impl ClientCertVerifier for AnyClient {
 
     fn requires_raw_public_keys(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use hyper_quic::rustls::crypto::CryptoProvider;
+    use hyper_quic::rustls::crypto::aws_lc_rs::cipher_suite::{
+        TLS13_AES_128_GCM_SHA256, TLS13_AES_256_GCM_SHA384, TLS13_CHACHA20_POLY1305_SHA256,
+    };
+    use hyper_quic::rustls::{AlertDescription, CipherSuite, PeerIncompatible, SupportedCipherSuite};
+    use hyper_quic::{ConnectionError, TransportErrorCode};
+
+    use super::*;
+    use crate::handshake::{Side, connect};
+
+    /// The node provider offering `suites`, in that order: a peer that shares everything with
+    /// shards' links but its ciphers.
+    fn offering(suites: &[SupportedCipherSuite]) -> CryptoProvider {
+        CryptoProvider {
+            cipher_suites: suites.to_vec(),
+            ..hyper_quic::crypto::rustls::node_provider().clone()
+        }
+    }
+
+    static CHACHA20: LazyLock<CryptoProvider> = LazyLock::new(|| offering(&[TLS13_CHACHA20_POLY1305_SHA256]));
+    static AES_128: LazyLock<CryptoProvider> = LazyLock::new(|| offering(&[TLS13_AES_128_GCM_SHA256]));
+    /// Go's crypto/tls order on hardware without AES-GCM (go1.26.1 src/crypto/tls/defaults.go,
+    /// `defaultCipherSuitesTLS13NoAES`).
+    static CHACHA20_FIRST: LazyLock<CryptoProvider> = LazyLock::new(|| {
+        offering(&[
+            TLS13_CHACHA20_POLY1305_SHA256,
+            TLS13_AES_128_GCM_SHA256,
+            TLS13_AES_256_GCM_SHA384,
+        ])
+    });
+
+    /// The daemon's side and the client's of two handshakes: a client under `other` with a
+    /// shards daemon, and a shards client with a daemon under `other`.
+    fn either_way(other: &'static CryptoProvider) -> [(Side, Side); 2] {
+        let daemon = Identity::generate().unwrap();
+        let home = Identity::generate().unwrap();
+        let theirs = client_under(
+            other,
+            &home,
+            daemon.fingerprint(),
+            transport(false).unwrap(),
+            ALPN,
+        );
+        let to_ours = connect(server(&daemon).unwrap(), theirs.unwrap());
+        let theirs = server_under(other, &daemon, None, transport(true).unwrap(), ALPN);
+        let from_ours = connect(theirs.unwrap(), client(&home, daemon.fingerprint()).unwrap());
+        [to_ours, from_ours]
+    }
+
+    /// Both ends connected, each reporting TLS13_AES_256_GCM_SHA384.
+    fn assert_aes_256_gcm((daemon, client): &(Side, Side)) {
+        assert!(
+            daemon.connected && client.connected,
+            "{:?} {:?}",
+            daemon.lost,
+            client.lost
+        );
+        assert_eq!(daemon.suite(), Some(CipherSuite::TLS13_AES_256_GCM_SHA384));
+        assert_eq!(client.suite(), Some(CipherSuite::TLS13_AES_256_GCM_SHA384));
+    }
+
+    /// The daemon refused the handshake for want of a suite in common, TLS's handshake_failure
+    /// (RFC 8446 §4.1.1), and told its client so as QUIC carries the alert (RFC 9001 §4.8).
+    fn assert_refused_for_its_cipher((daemon, client): &(Side, Side)) {
+        let handshake_failure = TransportErrorCode::crypto(AlertDescription::HandshakeFailure.into());
+        assert!(
+            !daemon.connected && !client.connected,
+            "connected under {:?} and {:?}",
+            daemon.suite(),
+            client.suite()
+        );
+        match &daemon.lost {
+            Some(ConnectionError::TransportError(refused)) => {
+                assert_eq!(refused.code, handshake_failure);
+                let cause = rustls::Error::PeerIncompatible(PeerIncompatible::NoCipherSuitesInCommon);
+                assert_eq!(refused.reason, cause.to_string());
+            }
+            other => panic!("the daemon's side: {other:?}"),
+        }
+        match &client.lost {
+            Some(ConnectionError::ConnectionClosed(close)) => assert_eq!(close.error_code, handshake_failure),
+            other => panic!("the client's side: {other:?}"),
+        }
+    }
+
+    /// Every link shards makes, a context's and the managed output's, is
+    /// TLS13_AES_256_GCM_SHA384, as both its ends report.
+    #[test]
+    fn every_link_is_aes_256_gcm_at_both_ends() {
+        let daemon = Identity::generate().unwrap();
+        let home = Identity::generate().unwrap();
+        let context = connect(
+            server(&daemon).unwrap(),
+            client(&home, daemon.fingerprint()).unwrap(),
+        );
+        let alpn = crate::managed::ALPN;
+        let owner = owner_server(&daemon, home.fingerprint(), transport(true).unwrap(), alpn);
+        let subscriber = client_with(&home, daemon.fingerprint(), transport(false).unwrap(), alpn);
+        let managed = connect(owner.unwrap(), subscriber.unwrap());
+        assert_aes_256_gcm(&context);
+        assert_aes_256_gcm(&managed);
+    }
+
+    /// A peer that prefers ChaCha20-Poly1305 and AES-128-GCM and offers AES-256-GCM last is
+    /// answered with AES-256-GCM, client or daemon: a shards daemon, which takes its client's
+    /// order (hyper-tls `choose_suite_and_kx_group`), chose ChaCha20-Poly1305 for it before.
+    #[test]
+    fn a_peer_preferring_other_suites_gets_aes_256_gcm_either_way() {
+        for link in either_way(&CHACHA20_FIRST) {
+            assert_aes_256_gcm(&link);
+        }
+    }
+
+    /// A peer limited to ChaCha20-Poly1305, which the node provider allowed, is refused at
+    /// its handshake, client or daemon.
+    #[test]
+    fn a_peer_limited_to_chacha20_poly1305_is_refused_either_way() {
+        for link in either_way(&CHACHA20) {
+            assert_refused_for_its_cipher(&link);
+        }
+    }
+
+    /// A peer limited to AES-128-GCM, the one suite every TLS 1.3 peer must implement (RFC
+    /// 8446 §9.1), is refused at its handshake, client or daemon.
+    #[test]
+    fn a_peer_limited_to_aes_128_gcm_is_refused_either_way() {
+        for link in either_way(&AES_128) {
+            assert_refused_for_its_cipher(&link);
+        }
+    }
+
+    /// A shards of before, under the node provider (AES-256-GCM first, then
+    /// ChaCha20-Poly1305), still connects either way on AES-256-GCM: a context between a
+    /// machine updated and one not yet keeps working.
+    #[test]
+    fn an_earlier_shards_still_connects_on_aes_256_gcm() {
+        for link in either_way(hyper_quic::crypto::rustls::node_provider()) {
+            assert_aes_256_gcm(&link);
+        }
     }
 }

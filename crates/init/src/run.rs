@@ -46,6 +46,10 @@ fn setup_failed(message: impl Into<String>) -> Failure {
     }
 }
 
+/// Whether the run's owner hears each member's end (`member-ends`, D231): set as its spec
+/// arrives, once a boot, as init serves one run.
+static MEMBER_ENDS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// `page_reporting.flush` (resources/kernel/patches/0005), where the kernel has it: opened
 /// by a template's init before its root is the workload's, whose sysfs is read-only, and
 /// by a builder's before it answers its host's asks to give back (D188); kept for
@@ -208,6 +212,10 @@ pub fn main(device: &str, template: bool) -> ! {
     let signals = dial(run::SIGNAL_PORT, false).ok();
     let started = standby.and_then(|standby| {
         let (spec, standby) = receive(&conn, standby)?;
+        MEMBER_ENDS.store(
+            spec.setup.iter().any(|e| e == run::members::ENDS),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         // What processes the run's members start and end (D123), listened to before any
         // starts; none of a visit to a stopped microVM's files, which runs nothing.
         let procs = (spec.builtin != run::builtin::HOLD)
@@ -879,6 +887,31 @@ fn token_of(hex: &[u8]) -> Option<[u8; run::TOKEN]> {
 /// VM's CPU time in ns from /proc/stat, as dockerd's system usage, which `stats` clients
 /// divide by (D27), and its online CPUs; and the bytes its interfaces received and sent but
 /// loopback's (/proc/net/dev), as libnetwork counts a container's endpoints.
+/// The cgroup `STATS` reads for `args` (D231): `own`, the workload's or a joiner's, with
+/// none; the run's with `run`; a member's with `member` and its index, while it runs. A
+/// joiner's exec reads its own alone.
+fn stats_cgroup(
+    args: &[Vec<u8>],
+    own: &str,
+    joiner: bool,
+    member: impl Fn(u32) -> Option<String>,
+) -> io::Result<String> {
+    use run::builtin::stats;
+    match args {
+        [] => Ok(own.to_string()),
+        [scope] if !joiner && scope == stats::RUN => Ok(RUN_CGROUP.to_string()),
+        [scope, index] if !joiner && scope == stats::MEMBER => {
+            let index = std::str::from_utf8(index)
+                .ok()
+                .and_then(|i| i.parse::<u32>().ok())
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            member(index)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no member {index} runs")))
+        }
+        _ => Err(io::ErrorKind::InvalidInput.into()),
+    }
+}
+
 fn stats(cgroup: &str) -> String {
     let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
     let cg = |f: &str| read(&format!("{cgroup}/{f}"));
@@ -2696,7 +2729,7 @@ impl Standby {
         }
         // Where its command is born (D115): where the template's standby was, PID 1 of a
         // namespace of its own, but for `--init` and `--pid host`.
-        let born = if spec.builtin == run::builtin::HOLD {
+        let born = if matches!(spec.builtin, run::builtin::HOLD | run::builtin::ATTEND) {
             Born::Own
         } else if spec.setup.iter().any(|e| e == b"pid=host") {
             Born::Host
@@ -2756,6 +2789,11 @@ impl Standby {
                 crate::setup::rw_size(size).map_err(setup_failed)?;
             }
             return standby.hold(&spec.setup).map(|held| (held, None));
+        }
+        // An orchestrator's run of the image's members (D231): no command of the image's,
+        // the standby holding as a visit's does, and the members starting beside it.
+        if spec.builtin == run::builtin::ATTEND {
+            return standby.hold(&spec.setup).map(|held| (held, declared));
         }
         // Its devices first, as dockerd finds them and runc makes their nodes (D44), init's: in
         // the /dev it shares with the workload, the limits and filter on the cgroup it is
@@ -3514,7 +3552,10 @@ fn builtin(
                 .map_err(io::Error::other)
                 .and_then(|()| crate::plug::report_pluggable())
                 .and_then(|()| crate::plug::rehold_run(RUN_CGROUP)),
-            run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),
+            run::builtin::STATS => stats_cgroup(args, &cgroup, joiner.is_some(), |m| {
+                domains.iter().find(|d| d.member == m).map(|d| d.cgroup.clone())
+            })
+            .and_then(|scope| out.write_all(stats(&scope).as_bytes())),
             run::builtin::METRICS => metrics(&mut out, args, &cgroup, joiner.is_some(), domains),
             // Its answer a line, whose end says it is whole: one its host took past its
             // deadline is still what was given back (reclaim.rs `given`).
@@ -4462,6 +4503,22 @@ impl Workload {
         let mut fatal = None;
         'relay: loop {
             let exited = status.is_some();
+            // Each member's end, once its whole population has ended, told its owner once
+            // and before the run's own end (D231); one still running as the run ends goes
+            // with it, which the run's end says.
+            if !exited && MEMBER_ENDS.load(std::sync::atomic::Ordering::Relaxed) {
+                for d in self.domains.iter_mut().filter(|d| !d.end_told) {
+                    if let Some(status) = d.lifecycle.ended_status() {
+                        let ended = run::members::Ended {
+                            member: d.member,
+                            status,
+                        }
+                        .encode();
+                        to_host.extend(&[&run::header(kind::MEMBER_ENDED, ended.len() as u32), &ended]);
+                        d.end_told = true;
+                    }
+                }
+            }
             if exited {
                 for domain in &mut self.domains {
                     domain.stdout.abort();
@@ -6072,5 +6129,42 @@ mod cut_tests {
         reader.read_exact(&mut header).unwrap();
         assert_eq!(header, run::header(kind::QUIESCED, 0));
         assert!(!cut.sending(&Outbox::default()));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod stats_scope_tests {
+    use super::*;
+
+    fn member(m: u32) -> Option<String> {
+        (m == 2).then(|| format!("{RUN_CGROUP}/domains/harness-codex"))
+    }
+
+    /// STATS reads the workload's cgroup with no argument, as `shards stats` asks it; the
+    /// run's with `run`; a running member's with `member <index>` (D231); a joiner's exec its
+    /// own alone; anything else is refused, never read as another scope.
+    #[test]
+    fn stats_read_the_scope_asked_for() {
+        let own = "/sys/fs/cgroup/run/workload";
+        assert_eq!(stats_cgroup(&[], own, false, member).unwrap(), own);
+        assert_eq!(
+            stats_cgroup(&[b"run".to_vec()], own, false, member).unwrap(),
+            RUN_CGROUP
+        );
+        assert_eq!(
+            stats_cgroup(&[b"member".to_vec(), b"2".to_vec()], own, false, member).unwrap(),
+            "/sys/fs/cgroup/run/domains/harness-codex"
+        );
+        let refused = |args: &[&[u8]], joiner: bool| {
+            let args: Vec<Vec<u8>> = args.iter().map(|a| a.to_vec()).collect();
+            stats_cgroup(&args, own, joiner, member).unwrap_err().kind()
+        };
+        assert_eq!(refused(&[b"member", b"3"], false), io::ErrorKind::NotFound);
+        assert_eq!(refused(&[b"member", b"x"], false), io::ErrorKind::InvalidInput);
+        assert_eq!(refused(&[b"member"], false), io::ErrorKind::InvalidInput);
+        assert_eq!(refused(&[b"workload"], false), io::ErrorKind::InvalidInput);
+        assert_eq!(refused(&[b"run"], true), io::ErrorKind::InvalidInput);
+        assert_eq!(refused(&[b"member", b"2"], true), io::ErrorKind::InvalidInput);
     }
 }
