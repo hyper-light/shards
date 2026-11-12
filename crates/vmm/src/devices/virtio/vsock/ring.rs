@@ -259,9 +259,16 @@ impl Ring {
             freed: 0,
             pinned,
         };
-        // Its own positions are where the relay's offer left the page: at its start.
+        // Its own positions are where the relay's offer left the page: at its start. And it
+        // waits for the relay's first bytes: the relay rings only a side that says it waits
+        // (Dekker's handshake), and nothing else has the device look at the ring for the
+        // host before a doorbell, so a device that said nothing never heard the first
+        // request (docs/research/measurements/ring-pins-v1/logs/r1-red-first-request.txt).
         ring.store_u64(field::TO_HOST_TAIL, 0);
         ring.store_u64(field::TO_GUEST_HEAD, 0);
+        ring.memory
+            .device_wrote(ring.control_gpa + field::HOST_WAITS_DATA, 4);
+        ring.flag(field::HOST_WAITS_DATA).store(1, Ordering::SeqCst);
         Ok(ring)
     }
 
@@ -536,6 +543,19 @@ mod tests {
         drop(held);
         // Let go, its pages are free for the next.
         assert!(Ring::attach(&memory, &whole(1 << 20)).is_ok());
+    }
+
+    /// The device waits for the relay's first bytes from its attach: the relay rings only
+    /// a side that says it waits.
+    #[test]
+    fn an_attached_ring_says_it_waits_for_the_relays_first_bytes() {
+        let memory = memory();
+        let offer = whole(2 << 20);
+        let _ring = Ring::attach(&memory, &offer).unwrap();
+        assert_eq!(
+            guest_u32(&memory, &offer, field::HOST_WAITS_DATA).load(Ordering::SeqCst),
+            1
+        );
     }
 
     #[test]
