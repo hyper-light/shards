@@ -1613,6 +1613,7 @@ fn serve_workload(
                                 kept: None,
                                 capture: None,
                                 processes: None,
+                                members: None,
                                 host_net: None,
                                 resumed: None,
                             })
@@ -1683,6 +1684,7 @@ fn serve_workload(
                             Err(e) => shards_vmm::debug!("holding the kept layer's word: {e}"),
                         };
                         let processes = |records: &[u8]| crate::warm::processes(&link, records);
+                        let members = |ended: &[u8]| crate::warm::member_ended(&link, ended);
                         let host_net = |frame: &[u8]| crate::warm::host_net(&link, frame);
                         let ask = || {
                             // A template this VM saved is in place before the daemon hears the
@@ -1822,6 +1824,7 @@ fn serve_workload(
                                 saved: Some(&saved),
                                 kept: Some(&kept),
                                 processes: Some(&processes),
+                                members: Some(&members),
                                 host_net: Some(&host_net),
                                 resumed: conns,
                             })
