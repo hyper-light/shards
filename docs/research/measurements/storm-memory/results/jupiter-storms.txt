@@ -1,0 +1,15 @@
+# jupiter, the same tree: snapshot.rs whole, then both storm tests at SHARDS_STORM_CPUS=64 (256 MiB), 5 times
+test storm::a_busy_machine_goes_on_whole_past_its_snapshot has been running for over 60 seconds
+test storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write has been running for over 60 seconds
+test storm::a_busy_machine_goes_on_whole_past_its_snapshot ... ok
+test storm::restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write ... ok
+test result: ok. 10 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 162.32s
+# SHARDS_STORM_CPUS=64:
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 19.10s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 26.26s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 25.04s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 38.47s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 10.30s
+# Earlier trees, both storm tests at 2, 8 and 240 vCPUs with storm_mib: 451672250 130.51s; 34215b23e 84.73s; fc71859bc snapshot.rs whole 317.79s; all passed.
+# The red, 256 MiB at 240 vCPUs: 451672250 (137.03s) and 34215b23e (194.96s), the resume test, both:
+#   workqueue: Failed to create a worker thread: -EAGAIN ... Kernel panic - not syncing: Cannot create quota_unbound_wq

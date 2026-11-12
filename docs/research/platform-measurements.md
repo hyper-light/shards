@@ -21676,3 +21676,83 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   pause and commit (ROOT's); scripts/lint's whole workspace and its macOS and Windows
   targets, which compile none of this change (clippy of init, server and net ran clean on
   the four Linux targets, and `cargo fmt --all --check`, at 1464cdb88).
+
+### M532. A storm's memory grows with its vCPUs: 256 MiB to 64, then 4 MiB a vCPU, which holds the kernel's thread limit
+
+- **Question.** Both storm tests (`snapshot.rs`, `storm::`) failed on windows-2025 (CI run
+  43251385669, job 131297794363, 2556e892f; job 131325553441, c01aeb941). The guest
+  kernel panicked at boot: `workqueue: Failed to create a worker thread: -EAGAIN`, then
+  `Kernel panic - not syncing: Cannot create quota_unbound_wq` in `dquot_init`. Since
+  9933b02bf and d77ef9948 (NR_CPUS 255 on x86-64, read by `kernel_nr_cpus`), `storm_cpus`
+  asks for the host's most vCPUs: 240 under WHP, on GitHub's runners and on jupiter. The
+  storm still had 256 MiB. Why does that guest not boot, and how much memory does a storm
+  of N vCPUs need?
+- **Method.** jupiter (Windows 11 10.0.26200, AMD Ryzen AI Max+ 395, WHP: `shards: 4096
+  vCPUs requested; this host supports 240`), 2026-11-12, raw output in
+  `measurements/storm-memory/results/`:
+  - `measurements/storm-memory/probe.sh`: the test guest's `limits` mode booted without
+    `quiet`, 3 times at each size. It reads the kernel's `Memory:` line,
+    `kernel.threads-max`, and the tasks there as init starts (`/proc/loadavg`, a line this
+    change adds to `limits`).
+  - The storm tests as CI runs them (2, 8 and 240 vCPUs) on four trees, and at
+    `SHARDS_STORM_CPUS=64` 5 times. The red: 256 MiB at 240 vCPUs, on 451672250 and on
+    34215b23e.
+- **Found.** Each size's 3 boots agreed to within 0.2% of available memory and 5 tasks:
+
+  | vCPUs, MiB | available at boot | reserved | `threads-max` | tasks at init | boots |
+  |---|---|---|---|---|---|
+  | 1, 256 | 226,232K | 33,468K | 1,787 | 52-55 | yes |
+  | 2, 256 | 225,712K | 33,648K | 1,786 | 58-63 | yes |
+  | 8, 256 | 222,248-222,360K | 34,728K | 1,778 | 96-97 | yes |
+  | 64, 256 | 192,984-193,160K | 47,140K | 1,681 | 435-440 | yes |
+  | 128, 256 | 159,540-159,724K | 61,000K | 1,572 | 824-826 | yes |
+  | 128, 512 | 417,316-417,380K | 65,480K | 3,585 | 825-826 | yes |
+  | 240, 256 | 108,924-109,012K | 85,824K | none read | none | no: `-EAGAIN` |
+  | 240, 960 | 808,320-808,500K | 99,264K | 6,905 | 1,503-1,506 | yes |
+
+  - The kernel caps its threads at the memory free at boot over 8 × THREAD_SIZE, 128 KiB a
+    thread at x86-64's and arm64's 16 KiB stacks, neither config with KASAN (kernel/fork.c
+    `set_max_threads`). `copy_process` refuses a thread past the cap with `-EAGAIN`, its
+    own kernel threads included.
+  - Each vCPU adds 6.0 to 6.1 tasks at init (the kernel's per-CPU threads), about 220 KiB
+    reserved and 480 to 520 KiB less available, and takes 1.7 from the cap at a fixed size.
+    Each MiB more adds 7.9 to the cap (128 vCPUs: 1,572 at 256 MiB, 3,585 at 512).
+  - So at 240 vCPUs in 256 MiB the kernel's own 1,500 threads pass its cap, which is about
+    1,380 by the 1.7 a vCPU from 128 vCPUs. That is why it panics; it is not read, since the
+    guest never reaches init.
+  - The storm adds two threads a vCPU (its pairs' turns and its clock's readers) and 10 of
+    its own (the timer, reader and writer, the echo's two, four watchers and main).
+  - Storms: at 64 vCPUs in 256 MiB, both tests passed 5 of 5 (10 to 38 s, with jupiter's
+    32 CPUs busy at the time). At 240 vCPUs in `storm_mib`'s 960 MiB, both passed on all
+    four trees. In 256 MiB they failed with CI's panic on both red trees.
+- **Derivation (R03).** What binds is the kernel's thread cap, by which a guest of N vCPUs
+  needs `threads-max ≥ 52 + 6.1·N` (its own threads) `+ 2·N + 10` (the storm's). Both
+  sides grow linearly: the cap by 7.9 a MiB, less 1.7 a vCPU; the need by 8.1 a vCPU.
+  - 256 MiB holds a 64-vCPU storm with 2.9 times its threads to spare (1,681 against 578).
+  - Past 64, `storm_mib` gives each vCPU the 4 MiB a 64-vCPU storm has (256 × N / 64,
+    rounded up), which keeps that headroom at every size: 3.3 times at 128 (3,585 against
+    1,092), 3.5 at 240 (6,905 against 1,996). Since need and cap are both linear, the
+    headroom stays at least the anchor's for every N from 64 to the kernel's 255.
+  - At 128 vCPUs, 256 MiB alone would leave 1.44 times; at 240, none.
+  - Memory itself is not what binds: 808 MB available at 240 against a storm that touches a
+    few MiB of stacks and buffers.
+  - Cold start: the bound is a formula of the vCPU count alone and learns nothing, so a
+    host's first storm has it.
+  - Overflow: `cpus.saturating_mul(256)` stays within u32. Past 16,777,215 vCPUs it would
+    ask for 64 TiB, which no host gives and the run refuses. In practice N is at most
+    NR_CPUS (255 on x86-64: 1,020 MiB; 123 on arm64: 492 MiB).
+- **Reading.** The fault was the test's: it asked for a machine that cannot boot. A user's
+  `run --kernel --cpus 240 --memory 256` meets the same panic. That is the user's memory
+  to choose and is not changed here. What would falsify the fix: a storm of N vCPUs in
+  `storm_mib(N)` whose kernel or storm cannot start a thread.
+- **Held to 4 CPUs.** On 4 of jupiter's CPUs (`start /affinity F`, as CI's 4-CPU runners
+  have; jupiter's other work shares those CPUs), the 240-vCPU restore storm alone passed
+  (124.5 s). Run beside the resuming storm, and once with all of snapshot.rs, a guest
+  said nothing past its `PCI:` line for 3 minutes, and the harness's fixed 120 s, plus its
+  60 s of quiet, gave up on it. That patience is the harness's, and is its own landing.
+- **Unverified.**
+  - CI's windows-2025 run, whose 4 CPUs may meet the harness's patience above.
+  - Linux KVM x86-64 (255 vCPUs: 1,020 MiB), which CI's x86_64 Linux job has not reached
+    since NR_CPUS rose (its `api_image` hangs first).
+  - arm64 on KVM (the nested L1) and WHP: its tasks a vCPU and its costs a vCPU, unmeasured.
+  - macOS, whose storm runs at HVF's most vCPUs.
