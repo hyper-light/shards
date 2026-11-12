@@ -1,10 +1,10 @@
 //! number.rs against what Go's big.Float and OPA make of testdata/numbers.json
 //! (testdata/numbers-oracle.json, written by scripts/rego/generate).
 
-use shards_rego::funcs::{self, BuiltinError, Context};
-use shards_rego::number::{Error, Float};
-use shards_rego::value::{self, Value};
 use shards_rego::digits;
+use shards_rego::funcs::{self, BuiltinError, Context};
+use shards_rego::number::{self, Error, Float};
+use shards_rego::value::{self, Value};
 
 fn text(f: &Float) -> String {
     f.text(if f.is_int() { b'f' } else { b'g' }, u64::MAX).unwrap()
@@ -80,13 +80,20 @@ fn numbers_read_and_write_as_go_reads_and_writes_them() {
             }
             continue;
         }
+        let want = |k: &str| n.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        // Go's ±Inf is an error here (number::OVERFLOW): OPA makes no infinities of its own.
+        if want("text").ends_with("Inf") {
+            if !matches!(got, Err(ref e) if *e == number::OVERFLOW) {
+                failed.push(format!("{s:?}: {got:?}, Go reads it as {}", want("text")));
+            }
+            continue;
+        }
         let Ok(f) = got else {
             failed.push(format!("{s:?}: refused, Go reads it"));
             continue;
         };
-        let want = |k: &str| n.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let flag = |k: &str| n.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
-        let (int, exact) = f.int();
+        let (int, exact) = f.int(u64::MAX).unwrap();
         let got = (text(&f), f.is_int(), int.to_string(), exact, f.signbit());
         let wanted = (
             want("text"),

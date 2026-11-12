@@ -1,0 +1,143 @@
+diff --git a/crates/shards/src/cli/client.rs b/crates/shards/src/cli/client.rs
+index 2e92637bb..24d64beb4 100644
+--- a/crates/shards/src/cli/client.rs
++++ b/crates/shards/src/cli/client.rs
+@@ -573,10 +573,18 @@ fn ran_on(
+                 );
+             }
+             Ok(Some(_)) => {}
+-            Ok(None) | Err(_) => {
++            ended => {
++                let now = std::time::SystemTime::now()
++                    .duration_since(std::time::UNIX_EPOCH)
++                    .map_or(0, |d| d.as_millis());
++                let how = match ended {
++                    Err(e) => format!("{e} ({e:?})"),
++                    _ => "its end".to_string(),
++                };
+                 return Ran::Failed(format!(
+-                    "the command's microVM stopped before the command ended; see {}",
+-                    log(home).display()
++                    "the command's microVM stopped before the command ended; see {} (DIAG@{now} client {}: {how})",
++                    log(home).display(),
++                    std::process::id(),
+                 ));
+             }
+         }
+diff --git a/crates/shards/src/daemon.rs b/crates/shards/src/daemon.rs
+index cd9275537..0fbfd4c49 100644
+--- a/crates/shards/src/daemon.rs
++++ b/crates/shards/src/daemon.rs
+@@ -374,7 +374,10 @@ fn fail(message: &str) -> ExitCode {
+ fn log(message: impl std::fmt::Display) {
+     #[cfg(test)]
+     LOGGED.fetch_add(1, Ordering::Relaxed);
+-    let line = format!("shards daemon {}: {message}\n", std::process::id());
++    let now = std::time::SystemTime::now()
++        .duration_since(std::time::UNIX_EPOCH)
++        .map_or(0, |d| d.as_millis());
++    let line = format!("shards daemon {} DIAG@{now}: {message}\n", std::process::id());
+     let _ = io::stderr().write_all(line.as_bytes());
+ }
+ 
+@@ -3196,6 +3199,9 @@ impl<D: Disk> Daemon<D> {
+             crate::run::prepare(&run, &self.home, &heard, cancel)
+         });
+         if watched != Watched::Stayed {
++            log(format!(
++                "DIAG client {number}: {watched:?} as its run {id} was prepared; abandoned"
++            ));
+             abandon(&id);
+             return None;
+         }
+diff --git a/crates/shards/src/daemon/slots.rs b/crates/shards/src/daemon/slots.rs
+index 0193debfb..e93a12274 100644
+--- a/crates/shards/src/daemon/slots.rs
++++ b/crates/shards/src/daemon/slots.rs
+@@ -572,12 +572,12 @@ impl<D: Disk> Daemon<D> {
+         living: &Living<'_, D>,
+     ) -> io::Result<()> {
+         let Session {
++            n: session_n,
+             say,
+             answer,
+             input,
+             output,
+             errors,
+-            ..
+         } = session;
+         // The streams' ends here, held until the daemon has read the request they came
+         // with, which its first message says: a descriptor in flight is the sender's to
+@@ -610,17 +610,26 @@ impl<D: Disk> Daemon<D> {
+                     std::thread::Builder::new()
+                         .name("slot-say".into())
+                         .spawn_scoped(inner, move || {
+-                            loop {
++                            let why = loop {
+                                 #[cfg(unix)]
+                                 let said = slots::read_frame(say);
+                                 #[cfg(windows)]
+                                 let said = slots::read_frame_until(say, said_all);
+-                                let Ok(Some(f)) = said else {
+-                                    break;
++                                let f = match said {
++                                    Ok(Some(f)) => f,
++                                    Ok(None) => break "DIAG its client's say ended".to_string(),
++                                    Err(e) => break format!("DIAG reading its client's say: {e} ({e:?})"),
+                                 };
+-                                if shards_ipc::send(ours, f.kind, &f.payload, &[]).is_err() {
+-                                    break;
++                                if let Err(e) = shards_ipc::send(ours, f.kind, &f.payload, &[]) {
++                                    break format!("DIAG passing on kind {}: {e} ({e:?})", f.kind);
+                                 }
++                            };
++                            #[cfg(windows)]
++                            let all_said = said_all.is_set();
++                            #[cfg(unix)]
++                            let all_said = false;
++                            if !all_said {
++                                log(format!("DIAG slot-say ends ours before all was said: {why}"));
+                             }
+                             shards_ipc::end(ours);
+                         });
+@@ -629,8 +638,15 @@ impl<D: Disk> Daemon<D> {
+                 }
+             }
+             // The daemon's messages, back to the client.
+-            while let Ok(Some(m)) = shards_ipc::recv(ours) {
++            let mut last = None;
++            let why = loop {
++                let m = match shards_ipc::recv(ours) {
++                    Ok(Some(m)) => m,
++                    Ok(None) => break "DIAG the daemon's side ended".to_string(),
++                    Err(e) => break format!("DIAG reading the daemon's side: {e} ({e:?})"),
++                };
+                 relayed += 1;
++                last = Some(m.kind);
+                 streams = None;
+                 // A microVM given a host's devices sends its process's pidfd with EXIT
+                 // (D154): its run is over once that process has ended.
+@@ -639,14 +655,21 @@ impl<D: Disk> Daemon<D> {
+                 {
+                     ended(pidfd);
+                 }
+-                if living.answer(&answer, m.kind, &m.payload).is_err() {
+-                    break;
++                if let Err(e) = living.answer(&answer, m.kind, &m.payload) {
++                    break format!("DIAG answering kind {}: {e} ({e:?})", m.kind);
+                 }
+                 // Its answer's last word passed on: what the daemon's side holds after it,
+                 // a VM ending, holds a closed daemon no longer than a request's time.
+                 if matches!(m.kind, kind::EXIT | kind::END | kind::RESTART) {
+                     living.answered();
+                 }
++            };
++            if !matches!(last, Some(kind::EXIT | kind::END | kind::RESTART)) {
++                log(format!(
++                    "DIAG request slot {}: its session ends before its last word: {why}; {relayed} relayed, the last kind {last:?}, sent {:?}",
++                    session_n,
++                    sent.as_ref().map_err(|e| e.to_string())
++                ));
+             }
+             drop(streams.take());
+             // The client's end of the session: its reads end.

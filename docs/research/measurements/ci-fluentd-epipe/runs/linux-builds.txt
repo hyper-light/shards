@@ -1,0 +1,29 @@
+2026-11-12T18:54:20Z
+== base.build.log (head, tail)
+== 2026-11-12T18:33:37Z Linux 7.3.3-1-cachyos x86_64 base at fe44bc8ca
+fe44bc8c Merge softvirt: the software-virtualization record, PM M516 to M523, and their harnesses
+rustc 1.98.1 (48a229cea 2026-09-01)
+   Compiling libc v0.2.189
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 2m 46s
+  Executable unittests src/main.rs (/home/adalundhe/ci-fluentd-epipe/target/test-release/deps/shards-99924c38b6116f7e)
+== red.build.log (head, tail)
+== 2026-11-12T19:00:11Z Linux 7.3.3-1-cachyos x86_64 red at fe44bc8ca
+fe44bc8c Merge softvirt: the software-virtualization record, PM M516 to M523, and their harnesses
+stream.rs: 180724d85c160d0685dcf4d89e39553544338f896d0b6665f69c12cc1e862499  -
+rustc 1.98.1 (48a229cea 2026-09-01)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 1m 08s
+  Executable unittests src/main.rs (/home/adalundhe/ci-fluentd-epipe/target/test-release/deps/shards-99924c38b6116f7e)
+== fix.build.log (head, tail)
+== 2026-11-12T19:04:44Z Linux 7.3.3-1-cachyos x86_64 fix at fe44bc8ca
+fe44bc8c Merge softvirt: the software-virtualization record, PM M516 to M523, and their harnesses
+stream.rs: 6c8a638ea1d9bada948250c7efc5b983765a4cf9f8cdb30f32806e3aaab0bf5f  -
+rustc 1.98.1 (48a229cea 2026-09-01)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 1m 13s
+  Executable unittests src/main.rs (/home/adalundhe/ci-fluentd-epipe/target/test-release/deps/shards-99924c38b6116f7e)
+== fix2.build.log (head, tail)
+== 2026-11-12T19:38:18Z Linux 7.3.3-1-cachyos x86_64 fix2 at fe44bc8ca
+fe44bc8c Merge softvirt: the software-virtualization record, PM M516 to M523, and their harnesses
+stream.rs: 61ddaf6131363b4d603bbe856b323370286a067a38b02384906ec7dbb06e3d2d  -
+rustc 1.98.1 (48a229cea 2026-09-01)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 1m 08s
+  Executable unittests src/main.rs (/home/adalundhe/ci-fluentd-epipe/target/test-release/deps/shards-99924c38b6116f7e)

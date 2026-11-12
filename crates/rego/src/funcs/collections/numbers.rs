@@ -30,10 +30,14 @@ fn small(n: &Number) -> Option<i64> {
     n.as_i64().filter(|x| -1000 < *x && *x < 1000)
 }
 
-/// builtins.NumberToInt.
-fn to_int(n: &Number) -> Option<BigInt> {
-    let (i, exact) = n.to_float().ok()?.int();
-    exact.then_some(i)
+/// builtins.NumberToInt: `None` where Go's is inexact (or OPA panics: Go cannot read
+/// the number); refused where its limbs would pass `holdable`.
+fn to_int(n: &Number, holdable: u64) -> Result<Option<BigInt>, BuiltinError> {
+    let Ok(f) = n.to_float() else {
+        return Ok(None);
+    };
+    let (i, exact) = f.int(holdable).map_err(num_err)?;
+    Ok(exact.then_some(i))
 }
 
 /// big.Int's Uint64: the low 64 bits of the magnitude.
@@ -41,14 +45,27 @@ fn low_u64(i: &BigInt) -> u64 {
     i.magnitude().iter_u64_digits().next().unwrap_or(0)
 }
 
-/// An integer's text, `i.String()`, where writing it, beside the `held` bytes the
-/// builtin holds already, fits what the evaluation can hold.
-fn int_value(ctx: &Context, i: &BigInt, held: u64) -> Result<Value, BuiltinError> {
+/// The digits of m·2^shift, where writing them, beside the `held` bytes the builtin
+/// holds already, fits what the evaluation can hold; a refusal names the evaluation's
+/// bound, and the held bytes with the need.
+fn written(ctx: &Context, neg: bool, m: &BigUint, shift: u64, held: u64) -> Result<Value, BuiltinError> {
     let mut out = String::new();
-    let neg = i.sign() == Sign::Minus;
-    digits::write(&mut out, neg, i.magnitude(), 0, ctx.holdable.saturating_sub(held))
-        .map_err(num_err)?;
+    digits::write(&mut out, neg, m, shift, ctx.holdable.saturating_sub(held)).map_err(|e| {
+        num_err(match e {
+            number::Error::Unholdable { bits, need, .. } => number::Error::Unholdable {
+                bits,
+                need: need.saturating_add(held),
+                holdable: ctx.holdable,
+            },
+            e => e,
+        })
+    })?;
     Ok(Value::Number(Number(out.into())))
+}
+
+/// An integer's text, `i.String()`, as [`written`].
+fn int_value(ctx: &Context, i: &BigInt, held: u64) -> Result<Value, BuiltinError> {
+    written(ctx, i.sign() == Sign::Minus, i.magnitude(), 0, held)
 }
 
 /// The bits of a number operand's integer, from its float, before the integer is made
@@ -93,6 +110,12 @@ fn one() -> Float {
     Float::from_f64_exact(false, 1, 0)
 }
 
+/// `new(big.Float).SetInt(x.Int(nil))`, for an x below 2^64: [`whole`] answers those past
+/// their halves.
+fn int_float(x: &Float) -> Result<Float, BuiltinError> {
+    Float::from_int(&x.int(u64::MAX).map_err(num_err)?.0).map_err(num_err)
+}
+
 fn arity1(ctx: &Context, args: &[Value], f: fn(Float) -> Result<Float, BuiltinError>) -> Out {
     let n = number_operand(arg(args, 0)?, 1)?;
     number(ctx, &f(float(n)?)?)
@@ -127,7 +150,7 @@ pub(super) fn round(ctx: &mut Context, args: &[Value]) -> Out {
             Float::add(&a, &h, prec)
         }
         .map_err(num_err)?;
-        Float::from_int(&r.int().0).map_err(num_err)
+        int_float(&r)
     })
 }
 
@@ -136,7 +159,7 @@ pub(super) fn ceil(ctx: &mut Context, args: &[Value]) -> Out {
         return ok(v);
     }
     arity1(ctx, args, |a| {
-        let f = Float::from_int(&a.int().0).map_err(num_err)?;
+        let f = int_float(&a)?;
         if f.signbit() || Float::compare(&a, &f).is_eq() {
             return Ok(f);
         }
@@ -150,7 +173,7 @@ pub(super) fn floor(ctx: &mut Context, args: &[Value]) -> Out {
         return ok(v);
     }
     arity1(ctx, args, |a| {
-        let f = Float::from_int(&a.int().0).map_err(num_err)?;
+        let f = int_float(&a)?;
         if !f.signbit() || Float::compare(&a, &f).is_eq() {
             return Ok(f);
         }
@@ -283,12 +306,12 @@ pub(super) fn product(ctx: &mut Context, args: &[Value]) -> Out {
     number(ctx, &fold(args, one(), Float::mul)?)
 }
 
-/// builtins.BigIntOperand.
-fn big_int_operand(v: &Value, pos: usize) -> Result<BigInt, BuiltinError> {
+/// builtins.BigIntOperand, made where it fits `holdable`.
+fn big_int_operand(v: &Value, pos: usize, holdable: u64) -> Result<BigInt, BuiltinError> {
     let Value::Number(n) = v else {
         return Err(BuiltinError::operand_type(pos, v, &["integer"]));
     };
-    to_int(n)
+    to_int(n, holdable)?
         .ok_or_else(|| BuiltinError::operand(pos, "must be integer number but got floating-point number"))
 }
 
@@ -297,7 +320,7 @@ fn bits1(ctx: &Context, args: &[Value], f: fn(BigInt) -> BigInt) -> Out {
     let v = arg(args, 0)?;
     let bits = int_bits(v);
     holds(ctx, bits.saturating_add(1), &[bits])?;
-    let i = big_int_operand(v, 1)?;
+    let i = big_int_operand(v, 1, ctx.holdable)?;
     ok(int_value(ctx, &f(i), 0)?)
 }
 
@@ -307,8 +330,8 @@ fn bits2(ctx: &Context, args: &[Value], f: fn(BigInt, BigInt) -> BigInt) -> Out 
     let (va, vb) = (arg(args, 0)?, arg(args, 1)?);
     let (ba, bb) = (int_bits(va), int_bits(vb));
     holds(ctx, ba.max(bb).saturating_add(1), &[ba, bb])?;
-    let a = big_int_operand(va, 1)?;
-    let b = big_int_operand(vb, 2)?;
+    let a = big_int_operand(va, 1, ctx.holdable)?;
+    let b = big_int_operand(vb, 2, ctx.holdable)?;
     ok(int_value(ctx, &f(a, b), 0)?)
 }
 
@@ -344,8 +367,8 @@ fn shifted(ctx: &Context, args: &[Value]) -> Result<(BigInt, u64), BuiltinError>
     let (va, vb) = (arg(args, 0)?, arg(args, 1)?);
     let (ba, bb) = (int_bits(va), int_bits(vb));
     holds(ctx, 0, &[ba, bb])?;
-    let a = big_int_operand(va, 1)?;
-    let b = big_int_operand(vb, 2)?;
+    let a = big_int_operand(va, 1, ctx.holdable)?;
+    let b = big_int_operand(vb, 2, ctx.holdable)?;
     Ok((a, shift_count(&b)?))
 }
 
@@ -355,16 +378,7 @@ pub(super) fn bits_lsh(ctx: &mut Context, args: &[Value]) -> Out {
     let (a, shift) = shifted(ctx, args)?;
     let shift = if a.sign() == Sign::NoSign { 0 } else { shift };
     let held = limb_bytes(&[a.bits()]);
-    let mut out = String::new();
-    digits::write(
-        &mut out,
-        a.sign() == Sign::Minus,
-        a.magnitude(),
-        shift,
-        ctx.holdable.saturating_sub(held),
-    )
-    .map_err(num_err)?;
-    ok(Value::Number(Number(out.into())))
+    ok(written(ctx, a.sign() == Sign::Minus, a.magnitude(), shift, held)?)
 }
 
 pub(super) fn bits_rsh(ctx: &mut Context, args: &[Value]) -> Out {
@@ -439,7 +453,7 @@ fn range_operands(ctx: &Context, args: &[Value]) -> Result<(BigInt, BigInt), Bui
     let (bx, by) = (int_bits(vx), int_bits(vy));
     let bs = args.get(2).map_or(0, int_bits);
     holds(ctx, bx.max(by), &[bx, by, bs])?;
-    Ok((big_int_operand(vx, 1)?, big_int_operand(vy, 2)?))
+    Ok((big_int_operand(vx, 1, ctx.holdable)?, big_int_operand(vy, 2, ctx.holdable)?))
 }
 
 pub(super) fn range(ctx: &mut Context, args: &[Value]) -> Out {
@@ -460,7 +474,7 @@ pub(super) fn range_step(ctx: &mut Context, args: &[Value]) -> Out {
         return ok(cheap_range(x, y, step));
     }
     let (x, y) = range_operands(ctx, args)?;
-    let step = big_int_operand(arg(args, 2)?, 3)?;
+    let step = big_int_operand(arg(args, 2)?, 3, ctx.holdable)?;
     if step.sign() != Sign::Plus {
         return Err(BuiltinError::Other(STEP_ERR.into()));
     }

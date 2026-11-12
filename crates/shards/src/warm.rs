@@ -402,13 +402,13 @@ fn tell_lost(daemon: &UnixStream, ended: &workload::Ended) {
 
 fn head(payload: &[u8]) -> Result<Head<'_>, String> {
     let (head, spec) = shards_ipc::RunHead::decode(payload)?;
+    if !head.keeps_its_log() {
+        return Err("a request whose log keeps nothing".into());
+    }
     let retention = crate::spec::LogRetention {
         size: head.log_size,
         files: head.log_files,
     };
-    if retention.size == 0 || retention.files == 0 {
-        return Err("a request whose log keeps nothing".into());
-    }
     Ok(Head {
         flags: head.flags,
         retention,

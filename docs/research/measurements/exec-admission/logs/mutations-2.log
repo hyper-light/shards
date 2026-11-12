@@ -1,0 +1,183 @@
+# mutations of the fix; 2026-11-12T20:17:50Z Linux 7.2.9-2-cachyos x86_64; rustc 1.99.1 (58cf8f9c3 2026-10-13)
+applied HM1-busy-refuses
+## HM1-busy-refuses: cargo test -p shards-vm-process --bin shards-vm -- workload::
+test workload::hellos::tests::admission_takes_a_connection_while_the_waiters_lock_is_held ... FAILED
+test workload::capture::tests::trusted_abort_preserves_tenant_errno_and_coalesces_duplicate ... ok
+test workload::tests::a_runs_readiness_is_handed_on_as_it_comes ... ok
+test workload::capture::tests::explicit_control_end_preserves_layer_connection_but_unannounced_eof_ends_it ... ok
+test workload::tests::a_logger_keeps_records_whole_or_counts_them_lost ... ok
+test workload::tests::an_exec_the_guest_cannot_connect_fails_with_why ... ok
+test workload::hellos::tests::past_the_waiters_the_one_silent_longest_goes ... ok
+test workload::tests::engine_hellos::a_plain_hello_is_heard_and_what_follows_it_left_unread ... ok
+test workload::tests::engine_hellos::a_wrong_token_is_refused_before_its_offer_is_read ... ok
+test workload::tests::engine_hellos::an_offer_after_the_token_is_read_whole ... ok
+test workload::tests::a_log_rotates_and_keeps_its_newest_segments ... ok
+test workload::tests::an_admitted_connection_outlives_another_execs_wait ... ok
+test workload::tests::engine_hellos::a_hello_longer_than_a_token_and_an_offer_is_refused ... ok
+test workload::tests::quiesce_bad_response_keeps_its_typed_error_when_the_relay_ends ... ok
+test workload::tests::quiesce_replies_resolve_only_the_waiting_request ... ok
+test workload::tests::engine_hellos::an_offer_whose_bytes_say_no_slot_is_heard_as_malformed ... ok
+test workload::capture::tests::duplex_credit_services_quiet_sibling_stderr_while_stdout_is_idle ... ok
+test workload::tests::quiesce_send_failure_and_command_end_keep_their_ownership ... ok
+test workload::tests::records_are_written_whole_through_short_writes ... ok
+test workload::tests::exec_connections_go_only_to_the_exec_they_name ... ok
+test workload::tests::a_non_blocking_log_drops_only_what_comes_while_its_queue_is_full ... ok
+test workload::tests::an_exec_frame_stays_within_what_a_frame_carries ... ok
+test workload::tests::execs_at_once_each_get_their_own_connection ... FAILED
+thread 'workload::hellos::tests::admission_takes_a_connection_while_the_waiters_lock_is_held' (1034006) panicked at crates/vm-process/src/../../shards/src/workload/hellos.rs:423:9:
+assertion `left == right` failed
+  left: Closed
+ right: Accepted
+thread 'workload::tests::execs_at_once_each_get_their_own_connection' (1034027) panicked at crates/vm-process/src/../../shards/src/workload.rs:2579:9:
+test result: FAILED. 21 passed; 2 failed; 0 ignored; 0 measured; 25 filtered out; finished in 5.00s
+## HM1-busy-refuses exit 101
+applied HM2-arrivals-go-with-a-waiter
+## HM2-arrivals-go-with-a-waiter: cargo test -p shards-vm-process --bin shards-vm -- workload::
+test workload::hellos::tests::admission_takes_a_connection_while_the_waiters_lock_is_held ... ok
+test workload::hellos::tests::past_the_waiters_the_one_silent_longest_goes ... ok
+test workload::capture::tests::trusted_abort_preserves_tenant_errno_and_coalesces_duplicate ... ok
+test workload::capture::tests::explicit_control_end_preserves_layer_connection_but_unannounced_eof_ends_it ... ok
+test workload::tests::a_runs_readiness_is_handed_on_as_it_comes ... ok
+test workload::capture::tests::duplex_credit_services_quiet_sibling_stderr_while_stdout_is_idle ... ok
+test workload::tests::a_logger_keeps_records_whole_or_counts_them_lost ... ok
+test workload::tests::a_log_rotates_and_keeps_its_newest_segments ... ok
+test workload::tests::engine_hellos::a_hello_longer_than_a_token_and_an_offer_is_refused ... ok
+test workload::tests::engine_hellos::a_wrong_token_is_refused_before_its_offer_is_read ... ok
+test workload::tests::engine_hellos::a_plain_hello_is_heard_and_what_follows_it_left_unread ... ok
+test workload::tests::engine_hellos::an_offer_whose_bytes_say_no_slot_is_heard_as_malformed ... ok
+test workload::tests::engine_hellos::an_offer_after_the_token_is_read_whole ... ok
+test workload::tests::quiesce_bad_response_keeps_its_typed_error_when_the_relay_ends ... ok
+test workload::tests::quiesce_replies_resolve_only_the_waiting_request ... ok
+test workload::tests::quiesce_send_failure_and_command_end_keep_their_ownership ... ok
+test workload::tests::records_are_written_whole_through_short_writes ... ok
+test workload::tests::a_non_blocking_log_drops_only_what_comes_while_its_queue_is_full ... ok
+test workload::tests::an_exec_frame_stays_within_what_a_frame_carries ... ok
+test workload::tests::an_admitted_connection_outlives_another_execs_wait ... FAILED
+test workload::tests::an_exec_the_guest_cannot_connect_fails_with_why ... ok
+test workload::tests::exec_connections_go_only_to_the_exec_they_name ... ok
+test workload::tests::execs_at_once_each_get_their_own_connection ... ok
+thread 'workload::tests::an_admitted_connection_outlives_another_execs_wait' (1056985) panicked at crates/vm-process/src/../../shards/src/workload.rs:2536:9:
+test result: FAILED. 22 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 5.00s
+## HM2-arrivals-go-with-a-waiter exit 101
+applied HM3-newest-evicted
+## HM3-newest-evicted: cargo test -p shards-vm-process --bin shards-vm -- workload::
+test workload::hellos::tests::past_the_waiters_the_one_silent_longest_goes ... FAILED
+test workload::hellos::tests::admission_takes_a_connection_while_the_waiters_lock_is_held ... ok
+test workload::tests::a_runs_readiness_is_handed_on_as_it_comes ... ok
+test workload::tests::an_exec_the_guest_cannot_connect_fails_with_why ... ok
+test workload::capture::tests::trusted_abort_preserves_tenant_errno_and_coalesces_duplicate ... ok
+test workload::tests::a_log_rotates_and_keeps_its_newest_segments ... ok
+test workload::tests::a_logger_keeps_records_whole_or_counts_them_lost ... ok
+test workload::capture::tests::duplex_credit_services_quiet_sibling_stderr_while_stdout_is_idle ... ok
+test workload::tests::engine_hellos::a_hello_longer_than_a_token_and_an_offer_is_refused ... ok
+test workload::tests::engine_hellos::a_plain_hello_is_heard_and_what_follows_it_left_unread ... ok
+test workload::tests::engine_hellos::an_offer_after_the_token_is_read_whole ... ok
+test workload::tests::engine_hellos::an_offer_whose_bytes_say_no_slot_is_heard_as_malformed ... ok
+test workload::tests::engine_hellos::a_wrong_token_is_refused_before_its_offer_is_read ... ok
+test workload::tests::quiesce_replies_resolve_only_the_waiting_request ... ok
+test workload::tests::quiesce_send_failure_and_command_end_keep_their_ownership ... ok
+test workload::capture::tests::explicit_control_end_preserves_layer_connection_but_unannounced_eof_ends_it ... ok
+test workload::tests::quiesce_bad_response_keeps_its_typed_error_when_the_relay_ends ... ok
+test workload::tests::records_are_written_whole_through_short_writes ... ok
+test workload::tests::a_non_blocking_log_drops_only_what_comes_while_its_queue_is_full ... ok
+test workload::tests::an_exec_frame_stays_within_what_a_frame_carries ... ok
+test workload::tests::exec_connections_go_only_to_the_exec_they_name ... FAILED
+test workload::tests::an_admitted_connection_outlives_another_execs_wait ... FAILED
+test workload::tests::execs_at_once_each_get_their_own_connection ... ok
+thread 'workload::hellos::tests::past_the_waiters_the_one_silent_longest_goes' (1078951) panicked at crates/vm-process/src/../../shards/src/workload/hellos.rs:443:9:
+assertion `left == right` failed: the one that spoke stays
+  left: 0
+ right: 8
+thread 'workload::tests::exec_connections_go_only_to_the_exec_they_name' (1078968) panicked at crates/vm-process/src/../../shards/src/workload.rs:2426:9:
+assertion failed: matches!(idle_peers[0].read(&mut [0]), Ok(0))
+thread 'workload::tests::an_admitted_connection_outlives_another_execs_wait' (1078959) panicked at crates/vm-process/src/../../shards/src/workload.rs:2321:44:
+## HM3-newest-evicted exit 101
+applied GM1-no-kill
+## GM1-no-kill: cargo test -p shards-init -- exec_link_tests
+test run::exec_link_tests::an_ended_exec_waits_to_hear_from_the_host ... ok
+test run::exec_link_tests::an_ended_exec_whose_connection_fails_says_so_alone ... ok
+test run::exec_link_tests::a_connection_the_host_spoke_on_ends_as_its_stdin ... ok
+test run::exec_link_tests::an_exec_a_restore_reset_is_let_go_of_unsaid ... ok
+test run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so ... FAILED
+test run::exec_link_tests::an_exec_whose_connect_fails_says_so_and_its_process_ends ... FAILED
+thread 'run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so' (1112989) panicked at crates/init/src/run.rs:6522:13:
+assertion `left == right` failed: writing
+  left: Some(15)
+ right: Some(9)
+thread 'run::exec_link_tests::an_exec_whose_connect_fails_says_so_and_its_process_ends' (1112988) panicked at crates/init/src/run.rs:6498:9:
+assertion `left == right` failed
+  left: Some(15)
+ right: Some(9)
+test result: FAILED. 4 passed; 2 failed; 0 ignored; 0 measured; 198 filtered out; finished in 0.00s
+## GM1-no-kill exit 101
+applied GM2-not-told
+## GM2-not-told: cargo test -p shards-init -- exec_link_tests
+test run::exec_link_tests::an_ended_exec_waits_to_hear_from_the_host ... ok
+test run::exec_link_tests::an_ended_exec_whose_connection_fails_says_so_alone ... FAILED
+test run::exec_link_tests::a_connection_the_host_spoke_on_ends_as_its_stdin ... ok
+test run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so ... FAILED
+test run::exec_link_tests::an_exec_a_restore_reset_is_let_go_of_unsaid ... ok
+test run::exec_link_tests::an_exec_whose_connect_fails_says_so_and_its_process_ends ... FAILED
+thread 'run::exec_link_tests::an_ended_exec_whose_connection_fails_says_so_alone' (1132195) panicked at crates/init/src/run.rs:6537:9:
+assertion `left == right` failed: []
+  left: 0
+ right: 1
+thread 'run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so' (1132199) panicked at crates/init/src/run.rs:6519:13:
+assertion `left == right` failed: writing: []
+  left: 0
+ right: 1
+thread 'run::exec_link_tests::an_exec_whose_connect_fails_says_so_and_its_process_ends' (1132198) panicked at crates/init/src/run.rs:6491:9:
+assertion `left == right` failed: []
+  left: 0
+ right: 1
+test result: FAILED. 3 passed; 3 failed; 0 ignored; 0 measured; 198 filtered out; finished in 0.00s
+## GM2-not-told exit 101
+applied GM3-no-generation-guard
+## GM3-no-generation-guard: cargo test -p shards-init -- exec_link_tests
+test run::exec_link_tests::an_ended_exec_waits_to_hear_from_the_host ... ok
+test run::exec_link_tests::a_connection_the_host_spoke_on_ends_as_its_stdin ... ok
+test run::exec_link_tests::an_ended_exec_whose_connection_fails_says_so_alone ... ok
+test run::exec_link_tests::an_exec_a_restore_reset_is_let_go_of_unsaid ... FAILED
+test run::exec_link_tests::an_exec_whose_connect_fails_says_so_and_its_process_ends ... ok
+test run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so ... ok
+thread 'run::exec_link_tests::an_exec_a_restore_reset_is_let_go_of_unsaid' (1142590) panicked at crates/init/src/run.rs:6570:9:
+assertion failed: said(&failures).is_empty()
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 198 filtered out; finished in 0.00s
+## GM3-no-generation-guard exit 101
+applied GM4-old-finished
+## GM4-old-finished: cargo test -p shards-init -- exec_link_tests
+test run::exec_link_tests::an_ended_exec_waits_to_hear_from_the_host ... FAILED
+test run::exec_link_tests::an_ended_exec_whose_connection_fails_says_so_alone ... ok
+test run::exec_link_tests::an_exec_whose_connect_fails_says_so_and_its_process_ends ... ok
+test run::exec_link_tests::a_connection_the_host_spoke_on_ends_as_its_stdin ... ok
+test run::exec_link_tests::an_exec_a_restore_reset_is_let_go_of_unsaid ... ok
+test run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so ... ok
+thread 'run::exec_link_tests::an_ended_exec_waits_to_hear_from_the_host' (1161962) panicked at crates/init/src/run.rs:6586:9:
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 198 filtered out; finished in 0.00s
+## GM4-old-finished exit 101
+applied GM5-fix-reverted
+## GM5-fix-reverted: cargo test -p shards-init -- exec_link_tests
+test run::exec_link_tests::an_ended_exec_whose_connection_fails_says_so_alone ... FAILED
+test run::exec_link_tests::an_ended_exec_waits_to_hear_from_the_host ... FAILED
+test run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so ... FAILED
+test run::exec_link_tests::an_exec_whose_connect_fails_says_so_and_its_process_ends ... FAILED
+test run::exec_link_tests::an_exec_a_restore_reset_is_let_go_of_unsaid ... FAILED
+test run::exec_link_tests::a_connection_the_host_spoke_on_ends_as_its_stdin ... ok
+thread 'run::exec_link_tests::an_ended_exec_whose_connection_fails_says_so_alone' (1186225) panicked at crates/init/src/run.rs:6527:9:
+assertion `left == right` failed: []
+  left: 0
+ right: 1
+thread 'run::exec_link_tests::an_ended_exec_waits_to_hear_from_the_host' (1186224) panicked at crates/init/src/run.rs:6576:9:
+thread 'run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so' (1186228) panicked at crates/init/src/run.rs:6509:13:
+assertion `left == right` failed: writing: []
+  left: 0
+ right: 1
+thread 'run::exec_link_tests::an_exec_whose_connect_fails_says_so_and_its_process_ends' (1186227) panicked at crates/init/src/run.rs:6481:9:
+assertion `left == right` failed: []
+  left: 0
+ right: 1
+thread 'run::exec_link_tests::an_exec_a_restore_reset_is_let_go_of_unsaid' (1186226) panicked at crates/init/src/run.rs:6564:9:
+assertion failed: matches!(e.link, Link::Gone)
+test result: FAILED. 1 passed; 5 failed; 0 ignored; 0 measured; 198 filtered out; finished in 0.00s
+## GM5-fix-reverted exit 101
+# done 2026-11-12T20:18:56Z

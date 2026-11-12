@@ -1,0 +1,52 @@
+# r2. The reported symptom, as its tests said it: ROOT's ring-e2e-whp tester's engine_ring run 1
+# on jupiter (037c69cc8, `SHARDS_REQUIRE_VMS=1 cargo test --locked --profile test-release -p
+# shards --test engine_ring -- --test-threads 1 --nocapture`), its log c.log lines 987-1022 as
+# the tester read them back (its transcript, C:\Users\corph\.claude\projects\C--Users-corph\
+# 01a1d070-fa1a-7227-b545-ecf211a8a196.jsonl, tool results of 16:01:10Z and 16:01:15Z; the
+# test directories and c.log were removed with the tests). Its `unclaimed port` lines left out
+# by the tester's own filter but for the last four. Read 2026-11-12 ~21:00Z.
+#
+# Both runs are `run -d`, each its home's first after `pull -q`; both clients printed their
+# microVM's ID (stdout), which the daemon says once the microVM is made, before its VM boots
+# (daemon.rs: "`docker run -d` prints the ID once the container exists, before it starts"):
+# the daemon had made the run and was booting its template when the client's slot ended.
+# Neither daemon.log says a word of it: they end with the daemon's start (eng-ring-2) and with
+# the template VM's own lines (eng-pins-1-4, pid 36004): r1 has kiln ending pids 48108 and
+# 36004 at 16:00:49Z and 16:01:00Z.
+
+test a_microvms_engine_carries_bulk_whole_both_ways ...
+thread 'a_microvms_engine_carries_bulk_whole_both_ways' (32992) panicked at crates\shards\tests\engine_ring.rs:72:5:
+assertion `left == right` failed: status Some(125) after 1.302212s
+--- stdout
+2ba086314df341242bf21d91cbdfe3e9228d6ca11f66d68534746753b5299e24
+
+--- stderr
+shards: the command's microVM stopped before the command ended; see C:\Users\corph\AppData\Local\Temp\shards-tests\32016\eng-ring-2\daemon.log
+
+  left: Some(125)
+ right: Some(0)
+--- C:\Users\corph\AppData\Local\Temp\shards-tests\32016\eng-ring-2\daemon.log, its last 436 of 436 bytes
+shards daemon 48108: the default bridge is 172.18.0.0/16
+shards daemon 48108: serving C:\Users\corph\AppData\Local\Temp\shards-tests\32016\eng-ring-2 through C:\Users\corph\AppData\Local\Temp\shards-tests\32016\eng-ring-2\requests, with up to 16777216 descriptors open
+shards daemon 48108: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+
+FAILED
+test a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain ... ok
+test an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends ...
+thread 'an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends' (18652) panicked at crates\shards\tests\engine_ring.rs:409:9:
+assertion `left == right` failed: status Some(125) after 4.8581614s
+--- stdout
+76e82e7ac5af02b2fd1ac67803f36db76739f04e5641eb6138a7cbfc9b78c226
+
+--- stderr
+shards: the command's microVM stopped before the command ended; see C:\Users\corph\AppData\Local\Temp\shards-tests\32016\eng-pins-1-4\daemon.log
+
+  left: Some(125)
+ right: Some(0)
+--- C:\Users\corph\AppData\Local\Temp\shards-tests\32016\eng-pins-1-4\daemon.log, its last 32768 of 91690 bytes
+[36004    4557593us DEBUG] unclaimed port write 0xcfa (1 bytes)
+[36004    4557780us DEBUG] unclaimed port read 0xcc00 (2 bytes)
+[36004    4558186us DEBUG] unclaimed port write 0xcf8 (1 bytes)
+[36004    4558186us DEBUG] unclaimed port write 0xcf8 (1 bytes)
+
+FAILED

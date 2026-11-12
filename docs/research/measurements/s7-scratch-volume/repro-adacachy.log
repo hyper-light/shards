@@ -1,0 +1,21 @@
+host adacachy Linux 7.2.9-2-cachyos x86_64, 2026-11-12T19:13:09Z, Python 3.14.8, util-linux 2.42.4
+sha256 c4556f2c40dcfd62c295ee462d2d43cff0413730c43d6f8f1fc071c7a323d88f repro.py
+$ unshare -rm python3 -I repro.py ~/g121-tmp/s7-repro/w-20261112T191309Z
+kernel 7.2.9-2-cachyos, uid 0 in its namespace
+  [/data] before the scratch: its root holds /data: True
+  [/data] after the scratch at /tmp: /data exists: True
+  [/data] move_mount of the volume onto /data: ok
+  [/data] the member sees its staged /tmp/staged: True
+  [/data] the member's /tmp/handme is in its scratch, where its server reads: True
+  [/data] it is in the volume instead: False
+  [/tmp/x] before the scratch: its root holds /tmp/x: True
+  [/tmp/x] after the scratch at /tmp: /tmp/x exists: False
+  [/tmp/x] move_mount of the volume onto /tmp/x: ENOENT (No such file or directory)
+  [/tmp/x] as shards-init: mounting its volumes: errno 2
+  [/tmp] before the scratch: its root holds /tmp: True
+  [/tmp] after the scratch at /tmp: /tmp exists: True
+  [/tmp] move_mount of the volume onto /tmp: ok
+  [/tmp] the member sees its staged /tmp/staged: False
+  [/tmp] the member's /tmp/handme is in its scratch, where its server reads: False
+  [/tmp] it is in the volume instead: True
+exit=0

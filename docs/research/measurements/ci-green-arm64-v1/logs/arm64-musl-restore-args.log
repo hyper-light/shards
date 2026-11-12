@@ -1,0 +1,23 @@
+### fixed
+shards: the working set: /tmp/ra-fixed/snap/g-1/state: malformed snapshot state: truncated u8
+== the VM's arguments
+restore --working-set 5 /tmp/ra-fixed/snap --no-console --console-said 2048 --said-to 4 
+== helpers beside it
+/bin/sh /tmp/ra-fixed/vm restore --working-set 5 /tmp/ra-fixed/snap --no-console --console-said 2048 --said-to 4 
+/work/target/aarch64-unknown-linux-musl/test-release/shards console-said /tmp/ra-fixed/home unpinned 2048 
+RESULT working-set writer: started
+### mutant: the options after restore, as da8bcd272 put them
+== the VM's arguments
+restore --console-said 2048 --said-to 4 /tmp/ra-mutant/snap --no-console 
+== helpers beside it
+/bin/sh /tmp/ra-mutant/vm restore --console-said 2048 --said-to 4 /tmp/ra-mutant/snap --no-console 
+/work/target/aarch64-unknown-linux-musl/test-release/shards console-said /tmp/ra-mutant/home unpinned 2048 
+RESULT working-set writer: none
+test cli::said_options::learning_a_restores_console_moves_none_of_its_words ... FAILED
+thread 'cli::said_options::learning_a_restores_console_moves_none_of_its_words' (3702) panicked at crates/shards/src/cli/mod.rs:2256:9:
+assertion `left == right` failed: ["restore", "--console-said", "2048", "--said-to", "3", "snapshot", "--no-console"]
+  left: Some(["restore", "--console-said", "2048"])
+ right: Some(["restore", "snapshot", "--no-console"])
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 738 filtered out; finished in 0.00s
+source put back
+EXIT=0

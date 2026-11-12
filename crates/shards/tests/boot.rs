@@ -2146,6 +2146,43 @@ fn a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes() {
     );
 }
 
+/// What [`a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes`] counts as a
+/// run's: a process listed under a parent that started after it is no child of that
+/// parent, which took the ID of the one that started it, ended since (PM M528: the daemon
+/// tests' orphaned ping under a direct boot's share process on windows-2025). A parent
+/// that started first or at the same tick, or whose start or its child's is unknown, stays
+/// the parent.
+#[cfg(windows)]
+#[test]
+fn a_parent_that_started_after_its_child_is_not_its_parent() {
+    // Each process: its ID, its parent's as listed, when it started (100 ns ticks), and the
+    // parent it is given. 30 took the ID of the cmd.exe that started 20, which had ended.
+    let rows = [
+        (4, 0, Some(1), 0),
+        (10, 4, Some(100), 4),
+        (11, 10, Some(101), 10),
+        (20, 30, Some(200), 0),
+        (30, 4, Some(300), 4),
+        (40, 30, Some(301), 30),
+        // Started at its parent's tick: its child still.
+        (41, 30, Some(300), 30),
+        // Its start unknown, or its parent unlisted: kept as listed.
+        (50, 30, None, 30),
+        (60, 61, Some(600), 61),
+    ];
+    let listed = rows
+        .iter()
+        .map(|&(pid, parent, ..)| (pid, parent, format!("{pid}.exe")))
+        .collect();
+    let started = |pid: u32| rows.iter().find(|r| r.0 == pid).and_then(|r| r.2);
+    let given: Vec<u32> = common::live_parents(listed, started)
+        .iter()
+        .map(|&(_, parent, _)| parent)
+        .collect();
+    let want: Vec<u32> = rows.iter().map(|r| r.3).collect();
+    assert_eq!(given, want);
+}
+
 /// shards-api's client of this build's `shards` conforms: every case of its conformance
 /// suite against real guests, the test guest as PID 1 (`echo` serves port 1234, `kmsg`
 /// powers off), each wait guarded by [`E2E`], recorded side by side with the suite's boots.

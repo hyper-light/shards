@@ -862,7 +862,7 @@ pub fn vm_processes(parent: u32) -> Vec<u32> {
 }
 
 /// Every process of the system's, as its snapshot of them says (Toolhelp32): its ID, its
-/// parent's, and its executable's name.
+/// parent's ([`live_parents`]), and its executable's name.
 #[cfg(windows)]
 pub fn processes() -> Vec<(u32, u32, String)> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
@@ -895,7 +895,61 @@ pub fn processes() -> Vec<(u32, u32, String)> {
     }
     // SAFETY: the snapshot taken above, closed once.
     unsafe { CloseHandle(snap) };
-    found
+    live_parents(found, started)
+}
+
+/// `listed`, each process's parent kept only where that parent started no later than it
+/// did (`started`), else 0. Windows keeps the ID of a parent that has ended in its orphans'
+/// entries (th32ParentProcessID) and gives the ID to a process started later, whose
+/// children the orphans then seem: a ping the daemon tests' sleeper left, under a direct
+/// boot's processes on windows-2025 (PM M528). A parent that started after its child is
+/// that later process, as psutil's `Process.children` reads it. Where either start is
+/// unknown, the parent is kept as listed.
+#[cfg(windows)]
+pub fn live_parents(
+    listed: Vec<(u32, u32, String)>,
+    started: impl Fn(u32) -> Option<u64>,
+) -> Vec<(u32, u32, String)> {
+    let when: std::collections::HashMap<u32, u64> = listed
+        .iter()
+        .filter_map(|&(pid, ..)| Some((pid, started(pid)?)))
+        .collect();
+    listed
+        .into_iter()
+        .map(|(pid, parent, name)| {
+            let later = matches!((when.get(&parent), when.get(&pid)), (Some(p), Some(c)) if p > c);
+            (pid, if later { 0 } else { parent }, name)
+        })
+        .collect()
+}
+
+/// When process `pid` started, in 100 ns since 1601 (GetProcessTimes' creation time),
+/// asked through a handle of the least right; none where it does not open.
+#[cfg(windows)]
+fn started(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: a process's handle of one right, closed below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return None;
+    }
+    let [mut created, mut exited, mut kernel, mut user] = [FILETIME::default(); 4];
+    // SAFETY: the handle opened above, and four times for the call to fill.
+    let asked = unsafe {
+        GetProcessTimes(
+            process,
+            &raw mut created,
+            &raw mut exited,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    };
+    // SAFETY: the handle opened above, closed once.
+    unsafe { CloseHandle(process) };
+    (asked != 0).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
 }
 
 /// A process as [`command_lines`] lists it.
@@ -4907,4 +4961,39 @@ impl Told {
         #[cfg(windows)]
         self.server.write_all(b"\n").unwrap();
     }
+}
+
+/// Where a host directory is plugged into a member at its host path (D235): its own path
+/// where its top-level directory may be a plug root; a Windows drive's beneath `/mnt` as
+/// WSL has it (`C:\x` at `/mnt/c/x`); and beneath `/srv`, a Linux host's root, where its
+/// top is `/tmp`, which no root is and in which a Linux host's test directories lie.
+pub fn at_host_path(host: &Path) -> String {
+    let text = host.to_string_lossy().replace('\\', "/");
+    let text = text.strip_prefix("//?/").unwrap_or(&text).to_string();
+    match text.split_once(":/") {
+        Some((drive, rest)) if drive.len() == 1 => format!("/mnt/{}/{rest}", drive.to_ascii_lowercase()),
+        _ if text.starts_with("/tmp/") => format!("/srv/plugm{text}"),
+        _ => text,
+    }
+}
+
+/// The plug roots a run given host directory `bound` as it starts has (D235), as `shards`
+/// names them (setup.rs `plug_roots`): its host OS's own, and on Unix `bound`'s top-level
+/// directory, where that may be one.
+pub fn plug_roots(bound: &Path) -> Vec<String> {
+    let mut roots: Vec<String> = if cfg!(target_os = "macos") {
+        vec!["/Users".into(), "/Volumes".into()]
+    } else if cfg!(windows) {
+        vec!["/mnt".into()]
+    } else {
+        vec!["/home".into(), "/media".into(), "/mnt".into(), "/srv".into()]
+    };
+    let top = bound
+        .to_string_lossy()
+        .strip_prefix('/')
+        .and_then(|rest| rest.split('/').next().map(|t| format!("/{t}")));
+    if let Some(top) = top.filter(|t| cfg!(unix) && t != "/tmp" && !roots.contains(t)) {
+        roots.push(top);
+    }
+    roots
 }

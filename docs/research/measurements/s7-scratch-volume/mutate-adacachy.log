@@ -1,0 +1,86 @@
+host adacachy, Linux 7.2.9-2-cachyos x86_64, cargo 1.99.1, 2026-11-12
+$ cd ~/g121-tmp/s7-src  # 451672250 with the change applied to the index
+$ SHARDS_HELPERS=skip SHARDS_INIT_BINARY=~/g121-tmp/s7-fake/init SHARDS_SERVER_BINARY=~/g121-tmp/s7-fake/server CARGO_TARGET_DIR=~/g121-tmp/s7-target python3 -I docs/research/measurements/s7-scratch-volume/mutate.py 451672250
+base 451672250, head 451672250c7837e88d4fe71479a1a3d760d3268d with the change in the index
+== red: the code at the base, the new tests
+  shards-agentfile: exit 101, FAILED, as it must
+    test volumes_take_a_name_options_and_whom_they_are_for ... FAILED
+    thread 'volumes_take_a_name_options_and_whom_they_are_for' (2377300) panicked at crates/agentfile/tests/agentfile.rs:37:17:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.00s
+    error: test failed, to rerun pass `-p shards-agentfile --test agentfile`
+  shards: exit 101, FAILED, as it must
+    test volumes::tests::an_agentfiles_volumes_are_registered_as_it_and_the_run_say ... FAILED
+    test agentfile::tests::an_images_agentfile_is_read_from_its_root_and_checked ... FAILED
+    thread 'volumes::tests::an_agentfiles_volumes_are_registered_as_it_and_the_run_say' (2506435) panicked at crates/shards/src/volumes.rs:1510:13:
+    thread 'agentfile::tests::an_images_agentfile_is_read_from_its_root_and_checked' (2506434) panicked at crates/shards/src/agentfile.rs:939:13:
+    test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 736 filtered out; finished in 0.00s
+    error: test failed, to rerun pass `-p shards --bin shards`
+== the build's /tmp guard removed
+  shards-agentfile: exit 101, FAILED, as it must
+    test volumes_take_a_name_options_and_whom_they_are_for ... FAILED
+    thread 'volumes_take_a_name_options_and_whom_they_are_for' (2513933) panicked at crates/agentfile/tests/agentfile.rs:37:17:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.00s
+    error: test failed, to rerun pass `-p shards-agentfile --test agentfile`
+  shards: exit 101, FAILED, as it must
+    test volumes::tests::an_agentfiles_volumes_are_registered_as_it_and_the_run_say ... FAILED
+    test agentfile::tests::an_images_agentfile_is_read_from_its_root_and_checked ... FAILED
+    thread 'volumes::tests::an_agentfiles_volumes_are_registered_as_it_and_the_run_say' (2596104) panicked at crates/shards/src/volumes.rs:1510:13:
+    thread 'agentfile::tests::an_images_agentfile_is_read_from_its_root_and_checked' (2596103) panicked at crates/shards/src/agentfile.rs:939:13:
+    test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 736 filtered out; finished in 0.00s
+    error: test failed, to rerun pass `-p shards --bin shards`
+== the daemon's re-check removed
+  shards: exit 101, FAILED, as it must
+    test agentfile::tests::an_images_agentfile_is_read_from_its_root_and_checked ... FAILED
+    test volumes::tests::an_agentfiles_volumes_are_registered_as_it_and_the_run_say ... ok
+    thread 'agentfile::tests::an_images_agentfile_is_read_from_its_root_and_checked' (2625288) panicked at crates/shards/src/agentfile.rs:936:13:
+    test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 736 filtered out; finished in 0.01s
+    error: test failed, to rerun pass `-p shards --bin shards`
+== the daemon's Docker VOLUME guard removed
+  shards: exit 101, FAILED, as it must
+    test volumes::tests::an_agentfiles_volumes_are_registered_as_it_and_the_run_say ... FAILED
+    test agentfile::tests::an_images_agentfile_is_read_from_its_root_and_checked ... ok
+    thread 'volumes::tests::an_agentfiles_volumes_are_registered_as_it_and_the_run_say' (2649195) panicked at crates/shards/src/volumes.rs:1504:9:
+    test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 736 filtered out; finished in 0.00s
+    error: test failed, to rerun pass `-p shards --bin shards`
+== init's /tmp guard removed
+  shards-init: exit 101, FAILED, as it must
+    test domains::tests::a_volume_is_given_as_its_volume_says ... ok
+    test domains::tests::the_runs_shares_for_its_domains_are_read_from_its_entries ... ok
+    test domains::tests::run_env_replaces_inits_defaults_and_never_the_domains_name ... ok
+    test domains::tests::init_refuses_the_grant_unless_the_image_as_built_declares_it_alone ... ok
+    test domains::tests::no_volume_lies_in_what_init_mounts_for_a_domain ... FAILED
+    test domains::tests::within_is_a_directory_and_what_lies_beneath ... ok
+    test domains::tests::two_volumes_never_share_a_mount_point ... ok
+    thread 'domains::tests::no_volume_lies_in_what_init_mounts_for_a_domain' (2661970) panicked at crates/init/src/domains.rs:2998:13:
+    test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 192 filtered out; finished in 0.00s
+    error: test failed, to rerun pass `-p shards-init --bin shards-init`
+== init's refusal of a declared volume led into /tmp removed
+  shards-init: exit 101, FAILED, as it must
+    test domains::tests::a_volume_is_given_as_its_volume_says ... ok
+    test domains::tests::within_is_a_directory_and_what_lies_beneath ... ok
+    test domains::tests::run_env_replaces_inits_defaults_and_never_the_domains_name ... ok
+    test domains::tests::the_runs_shares_for_its_domains_are_read_from_its_entries ... ok
+    test domains::tests::two_volumes_never_share_a_mount_point ... ok
+    test domains::tests::init_refuses_the_grant_unless_the_image_as_built_declares_it_alone ... ok
+    test domains::tests::no_volume_lies_in_what_init_mounts_for_a_domain ... FAILED
+    thread 'domains::tests::no_volume_lies_in_what_init_mounts_for_a_domain' (2665099) panicked at crates/init/src/domains.rs:3016:9:
+    test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 192 filtered out; finished in 0.00s
+    error: test failed, to rerun pass `-p shards-init --bin shards-init`
+== green: the change whole
+  shards-agentfile: exit 0, passed
+    test volumes_take_a_name_options_and_whom_they_are_for ... ok
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.00s
+  shards: exit 0, passed
+    test agentfile::tests::an_images_agentfile_is_read_from_its_root_and_checked ... ok
+    test volumes::tests::an_agentfiles_volumes_are_registered_as_it_and_the_run_say ... ok
+    test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 736 filtered out; finished in 0.01s
+  shards-init: exit 0, passed
+    test domains::tests::a_volume_is_given_as_its_volume_says ... ok
+    test domains::tests::no_volume_lies_in_what_init_mounts_for_a_domain ... ok
+    test domains::tests::run_env_replaces_inits_defaults_and_never_the_domains_name ... ok
+    test domains::tests::init_refuses_the_grant_unless_the_image_as_built_declares_it_alone ... ok
+    test domains::tests::the_runs_shares_for_its_domains_are_read_from_its_entries ... ok
+    test domains::tests::within_is_a_directory_and_what_lies_beneath ... ok
+    test domains::tests::two_volumes_never_share_a_mount_point ... ok
+    test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 192 filtered out; finished in 0.00s
+

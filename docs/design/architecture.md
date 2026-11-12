@@ -1106,9 +1106,12 @@ for the exit status.
       it calls keeps [PM M98]), and on Linux the least of
       `RLIMIT_NPROC`, `threads-max` and the `pids.max` of its control groups, up to the
       root its namespace sees, where a container's limit is (Linux
-      Documentation/admin-guide/cgroup-v2.rst). Where none is said, POSIX's
-      `_POSIX_THREAD_THREADS_MAX` (64). `SHARDS_MAX_CLIENTS` sets fewer. The 256
-      before was chosen, not derived.
+      Documentation/admin-guide/cgroup-v2.rst). Windows keeps no count of them: there
+      they are the fewest its address space, its commit limit (its job's, where that
+      holds it to less) and a process's handles hold of a thread, each cost read off a
+      thread started as std starts every thread of shards' (D181, PM M529). Where none
+      is said, POSIX's `_POSIX_THREAD_THREADS_MAX` (64), which Windows took before.
+      `SHARDS_MAX_CLIENTS` sets fewer. The 256 before was chosen, not derived.
     - A client that waits long, on a microVM's end (`wait`) or its output
       (`logs -f`), counts among those in hand no more, so that waiters shut out no
       client however many there are. A thread that cannot be spawned still drops its
@@ -6112,13 +6115,71 @@ there where the container is not removed.
 - **No microVM's engine takes the host's daemon.** Each of its connections holds a thread
   of the daemon's, and is counted as a client in hand (`busy`), of the clients the
   daemon's threads hold (`most_clients`: the process's thread limit past the daemon's own
-  threads, at a client's two each; macOS gives 16,384 threads a process). A microVM's
+  threads, at a client's two each; macOS gives 16,384 threads a process, and Windows'
+  is derived, below). A microVM's
   engine holds an equal share of them alone, among the host's own clients and each
   microVM whose engine holds any: one alone holds half, two a third each. Past its share,
   or where the daemon holds as many clients as its threads do, a connection is answered
   503 with why and closed; one of its own going makes room. Without it, a workload's
   1,023 idle connections (the vsock muxer's bound, Firecracker's) held as many of the
   daemon's threads, and sixteen microVMs held them all.
+- **On Windows the thread limit is derived (PM M529).** Windows keeps no count of a
+  process's threads ("The number of threads a process can create is limited by the
+  available virtual memory", CreateThread), so `platform::thread_limit` said none there and
+  `most_clients` took POSIX's least, 64: 27 clients, of which a microVM's engine alone held
+  13, and the 32 streams at once of engine_ring's pins test at 32 vCPUs were answered 503 on
+  WHP (ring-pins-v1 r16). It is now the fewest threads any of three limits holds of one:
+  - the process's address space (MEMORYSTATUSEX's `ullTotalVirtual`, "the size of the
+    user-mode portion of the virtual address space") of a thread's stack's reservation,
+    which "is limited to the virtual address range" (Thread Stack Size);
+  - its commit limit of the commit a thread is charged: its stack's "initially committed
+    pages ... remove pages from the system total commit limit, which is the size of the
+    page file plus the size of the physical memory" (Thread Stack Size). The limit is
+    `ullTotalPageFile`, "the current committed memory limit for the system or the current
+    process, whichever is smaller", or the process's job's where less, which that leaves
+    out (in a job holding it to 64 MiB it said the host's 141 GB): the job's
+    `JOB_OBJECT_LIMIT_PROCESS_MEMORY` or `JOB_OBJECT_LIMIT_JOB_MEMORY`
+    (JOBOBJECT_BASIC_LIMIT_INFORMATION), read by QueryInformationJobObject of "the
+    immediate job of the calling process". A job above that one holding it to less ("the
+    most restrictive memory limit in the job chain") is not for the process to read;
+  - a process's 2^24 handles ("Kernel Objects"), of which a thread whose handle is kept
+    (std's `JoinHandle`) holds one; the daemon drops its clients' as it starts them.
+
+  Each cost is read on the daemon's own host, off a thread started as std starts every
+  thread of shards' (`thread::Builder`, std's default stack: `RUST_MIN_STACK`, else
+  2 MiB): the reservation GetCurrentThreadStackLimits gives; what Windows commits of every
+  thread's stack however far its code goes, its initial commit ("the initially committed
+  size is the default size specified in the executable header", Thread Stack Size: the
+  image's `SizeOfStackCommit`, the linker's 4 KB) and its guard pages, VirtualQuery's
+  PAGE_GUARD regions (std's `SetThreadStackGuarantee(0x5000)` and a page); and winternl.h's
+  TEB in whole pages, the least a TEB is ("Do not assume a maximum size for this
+  structure"). Not the pages its code has touched, which differ from thread to thread: a
+  process's first thread runs its one-time initialization on its own stack, a page more,
+  and under a test's output capture so does each. On jupiter (Windows 11, 10.0.26200;
+  123.6 GiB, a commit limit of 141.1 GB) a thread reserves 2 MiB and is counted 4 KiB of
+  initial commit, 24 KiB of guard pages and 8 KiB of TEB: its commit holds 3,827,251
+  threads, its address space 67,108,863 and its handles 16,777,216, so 1,913,620 clients,
+  956,810 of them a microVM's engine's alone.
+
+  Windows charges a thread more than any call reports of it, which is not counted, so that
+  the threads said are never fewer than Windows starts: the pages its code touches and its
+  share of the heap (in jobs of 16, 64 and 256 MiB each std thread was charged 47.9 KB,
+  36.9 KB of it counted; the limits said 455, 1,820 and 7,281 threads, and Windows started
+  333, 1,380 and 5,563, then refused the next, ERROR_COMMITMENT_LIMIT, with less than a
+  counted thread's commit left), and the kernel's own commit for its kernel stack, which
+  "can vary among different hardware platforms and different versions of the operating
+  system" (Using the Kernel Stack): about 35 KB of the system's commit more a thread on
+  jupiter, from bursts of 20,000 threads that other work's commit moved by up to 3 GB. As
+  Linux's `threads-max` counts a thread's kernel stack and not its user stack, this is a
+  limit, not what is free on a loaded host: a client whose thread cannot be started is
+  dropped, logged, as on every host. Tested natively on jupiter (windows_process.rs:
+  `the_threads_held_are_the_fewest_each_limit_holds`;
+  `a_thread_limit_is_what_the_host_holds_of_a_thread`, red while `thread_limit` said none,
+  and a thread that has touched 256 KiB of its stack counted as a fresh one;
+  `a_jobs_commit_limit_holds_the_threads_it_says`, a child in a job of its own whose limit
+  is the job's over a thread's count, and whose 64 threads Windows charged at least what
+  was counted of them). Owed: the pins test's 32 streams at once past the old bound on WHP
+  (ROOT's).
 
 Tested on real microVMs (`a_runs_command_reaches_its_own_microvms_engine`: made, started,
 waited for, logged, listed, inspected and removed through it, the host's other microVM and
@@ -7034,6 +7095,22 @@ descriptors.
   write, one reading 16 KiB at a time, 60 ms apart, was let go of a request's time in, 3 s
   in the test, still reading). A stop's slot is not counted: the daemon holds that session
   until its exit, which is how `daemon stop` learns of it.
+- **Whose end a run's client heard** (PM M530). A run's, an exec's and an attach's slot
+  passes on what its VM says, so the slot ends both where the VM's connection closes with no
+  last word and where the daemon itself ends: a killed daemon closes every slot it served.
+  The client said the same of both, "the command's microVM stopped before the command
+  ended", and blamed the microVM for kiln's between-turns sweep, which ended the WHP E2E's
+  daemons with `taskkill /F` (jupiter's kiln.log, 2026-11-12): a hunt through WHP, the VMM
+  and the guest. M188's and M331's daemons that exited under their clients were taken so too.
+  Now the slot says `UNANSWERED`, last, where the run's side ended without its last word
+  (`EXIT`, `END`, `RESTART`), and the client says so as the microVM's stop; a slot that ends
+  with no last word at all is its daemon's end, and the client says "the daemon ended before
+  the command did". A command's client (`END`) reads any early end as its daemon's already;
+  a socket's peer (a daemon of a build from before slots) is the run's VM. Held by
+  `a_side_that_ends_without_its_last_word_says_so` and
+  `a_runs_client_tells_its_daemons_end_from_its_microvms`, each red with its guard removed
+  (M530 says on which hosts); live on WHP, a daemon ended mid-run said so and a VM ended
+  said the microVM's words.
 - **Many clients on one list** (PM M262). On macOS a client waiting in select(2) for its
   slot could stop waking at all while the others took theirs: 12 of 16 clients slept
   through 20 s of records others took, and one of an E2E test's 16 waited 60 s while its
@@ -10300,6 +10377,11 @@ agents' (D59), never the command's (D115). So a sandboxed run could not be grant
   the start is refused. networks' `egress_names_each_destination_and_its_port` holds the
   option's reading.
 
+**Since (D236).** An Agentfile's `NETWORK --egress=HOST:PORT` grants its members
+destinations as this option grants a network's: one parser for both, which refuses a host
+whose last label is all digits and `localhost`, and takes `host.docker.internal` for the
+host itself, the gateway at that port alone, its loopback there.
+
 **Next.** IPv6 destinations (the network process learns A records alone); a destination
 on a network whose members' images have agents with grants of their own, held apart by
 the address its flows come from; a run's own grant on the default bridge, if one is
@@ -13037,6 +13119,25 @@ and the way every later one sends.
   - What a connection had not delivered when it ended (a reset, a receiver that
     restarts, a timeout after a partition) is held, and written again, in order, on the
     next. srslog, go-gelf and fluent-logger-golang lose it.
+  - An end that a write meets before the stream finds it is followed as one it finds
+    (PM M527). A write after its receiver's end meets EPIPE, on a unix socket at once and
+    over TCP once the reset its first write drew has come; one under way as its receiver
+    ends meets EPIPE or a reset. The stream then does as it does finding a reset: what the
+    connection held goes again in its place, the message being written among it once the
+    connection carried messages (over TLS, its handshake done), and the end is asked of
+    and said as any other (`ConnectionAborted`). Whether any of that message went is not
+    asked: macOS's write(2) that put part of it on the connection and then met the end
+    says the error alone, where Linux's says the part. A receiver that ends a connection
+    once more than its bound has come ends it on a message still being written wherever
+    the connection holds less than the message: Fluent Bit's forward input closes one as
+    its buffer is full at `buffer_max_size` (fluent-bit f5a3cd20,
+    plugins/in_forward/fw_conn.c, `fw_conn_event`), and a connection took 2,720,256 bytes
+    over loopback TCP on Linux before its writer waited, 1,465,848 on macOS, 233,152 and
+    12,288 over a unix socket. Such a message had been its caller's to give again, never
+    held, so never shown refused nor cut, and its run's log stopped there; and the close
+    said the write's own error, `Broken pipe`, which CI's unit tests met (runs
+    43183804136, 43189239973, 43250570050). A write its timeout gave up stays its
+    caller's: the stream's own wait, not its receiver's end.
   - A connection ends only once nothing is held: what is held is written on one where
     there is none and waited on until it is delivered, so that a receiver's end after the
     stream's is its answer to it, and one before it is followed as any other: the close
@@ -15166,8 +15267,12 @@ It is shards' own MCP's, and its runtime shards' to choose (AGENTFILE_ARCH §11 
   by pidfd. For each program it forks a worker, which holds the program's socket alone
   and loads a filter of its own before it reads the program: reading and writing, its
   memory, futexes, the clock, the kernel's randomness and exiting; any other call, or one
-  of another ABI (x32), kills it (`SECCOMP_RET_KILL_PROCESS`). A worker opens nothing: no
-  file, socket, process or descriptor. Each tool it calls is a frame to the instance over
+  of another ABI (x32), kills it (`SECCOMP_RET_KILL_PROCESS`). Both filters allow
+  `restart_syscall`, by which the kernel resumes a wait a stop broke into where no handler
+  ran (a cgroup's freeze for init's pause and commit, a job-control stop, a debugger): a
+  timed futex wait's on every architecture, and the helper's poll on x86_64 (PM M525,
+  M527). It calls only the restart the interrupted call left, else fails with EINTR, so it
+  allows no other call. A worker opens nothing: no file, socket, process or descriptor. Each tool it calls is a frame to the instance over
   its socket, which the instance answers as it answers its caller's MCP call of that tool,
   under the same grants, with the same refusals. Helper and workers are the instance's
   uid, gid and cgroup, its agent's (D60): a program's memory and CPU are its caller's,
@@ -15205,6 +15310,9 @@ Tested: in crates/server, on Linux, `a_program_calls_its_tools_over_its_socket`,
 cannot hold, a throw, an error's positions, a syntax error's, a promise nothing settles),
 `frames_are_read_whole_and_within_their_bound`,
 `a_worker_is_ended_for_a_call_its_filter_refuses` (`openat`, and x32 on x86_64, SIGSYS),
+`a_worker_stopped_in_a_timed_wait_lives_on` and `the_helper_stopped_in_its_poll_lives_on`
+(each stopped and continued in its wait under its own filter; without `restart_syscall`
+the worker dies on x86_64 and arm64, the helper on x86_64: PM M527),
 `initialize_begins_a_session`, `a_cancellation_names_a_request_in_its_own_session`,
 `a_programs_call_is_its_callers`; on real microVMs,
 `code_mode_runs_a_program_with_the_callers_grants`: a's program finds itself, its peers,
@@ -18240,7 +18348,8 @@ see; a build's `LABEL` or `--label`, or a run's `--label`, may not set one (audi
 reserves no label: recorded as ours).
 
 **The build** (`shards_agentfile::agentfile`), and the daemon again:
-- No volume over a domain's root, `/proc`, `/sys` or `/dev` (`covers_domain_mounts`), its
+- No volume over a domain's root, `/proc`, `/sys` or `/dev`, nor at or under its scratch,
+  `/tmp` (`domain_mount`, typed `DomainMount`; the scratch since 2026-11-12, below), its
   path rooted at `/` as Docker roots a relative `VOLUME` (measured: `VOLUME rel` mounts at
   `/rel`): a domain's are its init's.
 - One volume at each mount point in a stage's lineage: a domain is given what is mounted
@@ -18256,8 +18365,9 @@ reserves no label: recorded as ours).
 - Each of the image's mount points is marked for its agents and harnesses (the guest's
   entry carries `domains`); one `FOR` scopes is not mounted in the run's own root
   (`domain-volume=`, which the workload's setup passes over). A Docker `VOLUME` over a
-  domain's root, `/proc`, `/sys` or `/dev` (a base image's `VOLUME /dev/shm`) stays the run's
-  own root's: Docker mounts it there (measured), and no domain is given it.
+  domain's root, `/proc`, `/sys` or `/dev` (a base image's `VOLUME /dev/shm`), or at or under
+  `/tmp` (a base image's `VOLUME /tmp`), stays the run's own root's: Docker mounts it there
+  (measured), and no domain is given it.
 - A run's own `-v` or `--mount` of a volume or a directory at one of them stands in for it,
   as Docker's does for an image's `VOLUME` (D109), and is given as the Agentfile gives the volume
   (a Docker `VOLUME`'s stand-in too, which before went to no domain). A tmpfs (`--tmpfs`,
@@ -18321,6 +18431,57 @@ reserves no label: recorded as ours).
   and the gates now on the verified file, the domains' filter, the in-VM server, the
   network process's grants and `-p`'s refusal, each failing its E2E. Init's duplicate
   refusal is reached only past the daemon's: unit-tested.
+
+**A domain's `/tmp` is its own, as its root and system are** (2026-11-12, kiln plan
+01a1cd8e862e7169a074db3d5fa33f3d, step 7). Init makes a domain's scratch and moves it onto
+`/tmp` (D139) before the domain's volumes. So a volume given a domain at or under `/tmp`
+never worked:
+- **Under `/tmp`** (`/tmp/x`): its mount point, made in the root's skeleton, lies beneath
+  the scratch. `move_mount` finds no `/tmp/x` there (ENOENT), so the domain fails as it
+  starts (`mounting its volumes: errno 2`).
+- **At `/tmp`**: the volume goes over the scratch. The domain no longer sees what was staged
+  into it (D231). What the domain writes there reaches the volume, never the scratch its
+  server reads handed files from (D139).
+
+Both were reproduced live, with init's system calls in its order, in a user and mount
+namespace on Linux 7.2.9 x86_64; a volume at `/data` mounted as the control
+(`docs/research/measurements/s7-scratch-volume/repro.py`, `repro-adacachy.log`).
+
+Two ways out were weighed:
+- **Mount it over the scratch**, mounts by depth as shards' own run root has them
+  (`crates/shards/src/setup.rs`, after moby's `sortMounts`). Each mount point would have to be made in each
+  domain's fresh scratch. Staged files beneath a volume would have to be refused at both
+  ends, or the volume would cover them. A volume at `/tmp` would still hide the scratch.
+- **Refuse it**, as `/proc`, `/sys` and `/dev` are already refused. This needs no new mount
+  step and no new staging rule, and `/tmp` stays the domain's own. A harness that keeps
+  state puts its volume outside `/tmp` and points `HOME` (`run.env`, 997f4e47e) or its own
+  variable there, as kiln's Agentfiles already do (plan steps 19, 21, 27 and 28).
+
+The second is taken, with one typed refusal, `DomainMount::Scratch`, at each end:
+- **An Agentfile's `VOLUME` at or under `/tmp`** is refused by the build (`VOLUME may not be
+  at or under /tmp, a domain's own scratch: /tmp/x`), by the daemon for what it reads in an
+  image, and by init.
+- **A Docker `VOLUME` there** stays the run's own root's: accepted and mounted as Docker
+  mounts it, given to no domain (a base image's `VOLUME /tmp`), as `/dev/shm` is. A run's
+  `--tmpfs /tmp` may then stand there.
+
+Tested on Linux x86_64 (`mutate.py`, `mutate-adacachy.log`), and again at the merge with
+main on Linux x86_64, macOS arm64 and Windows x86_64, where `volumes.rs`'s test is Unix's
+alone; `scripts/lint` clean on all seven targets:
+- the build's refusals and a Dockerfile's `VOLUME /tmp /tmp/x` kept (`tests/agentfile.rs`);
+- a crafted image's volume at `/tmp` and at `/tmp/cache`, refused by the daemon (`agentfile.rs`);
+- a Docker `VOLUME /tmp` and `/tmp/x`, given to no domain and passed `--tmpfs /tmp`
+  (`volumes.rs`);
+- init's `domain_mount` and `given_at`, a volume an image's symlink leads into `/tmp`
+  included (`no_volume_lies_in_what_init_mounts_for_a_domain`).
+
+The code before the change fails the new tests, and so does each guard removed alone:
+the build's, the daemon's re-check, its Docker `VOLUME` guard, init's `/tmp` guard and
+init's refusal of a declared volume led there.
+
+Owed to a real-VM run, both cases on KVM, Hypervisor.framework and WHP:
+- an Agentfile's volume under and at `/tmp` refused;
+- a base image's `VOLUME /tmp` kept to the run's root while its domains keep their scratch.
 
 ### D108. `buildx policy eval` and `test`, SSH certificates, and a failing step's lines
 
@@ -19411,10 +19572,9 @@ held to more than OPA's answers:
   `tests/numbers.rs` holds 135 long numbers' texts and `abs` of the fuzzer's operands
   to OPA's own (lengths, ends and SHA-256, `scripts/rego/generate numbers`).
   `number.rs`'s tests hold the leading digits and the shortest decimal to the exact
-  decimals, and the bounds to the powers they bound. Left, owed (M524's Open): `floor`,
-  `ceil`, `round` and integer formatting of such a number, whose answer is all of an
-  integer's digits, still convert through num-bigint; numbers past 1e536870938 are refused
-  where Go reads them.
+  decimals, and the bounds to the powers they bound. M524's Open (`floor`, `ceil`, `round`
+  and integer formatting of such a number, whose answer is all of an integer's digits;
+  numbers past 1e536870938 refused where Go reads them) is closed below (M526).
 - The rewrite of local variables walked as OPA's does, and OPA's way is exponential:
   rewriteEveryStatement (ast/compile.go) rewrites a statement's body, then walks the
   whole statement again (rewriteDeclaredVarsInExpr), whose walk rewrites each
@@ -19449,6 +19609,48 @@ held to more than OPA's answers:
   unknown, and a node finds a
   child by name, as OPA's typeTreeNode does with its map. The times after: owed, the
   nesting bench's M510 inputs and deeper (`rego-nesting/run.sh`).
+- Numbers whose exponents are large, the rest (M526; `docs/research/measurements/ci-rego-compare`).
+  CI's fuzzing found ten builtin calls whose work grew with an exponent's value, such as
+  `lt(33, 3e33333333332)`: besides the text above, the comparison scaled both numbers by
+  powers of 5 and 2 as long as their exponents' gap, addition shifted the smaller operand
+  as far (Go's `uadd` does too), and an exact integer was made whole. Now:
+  - The comparison makes p × 5^n × 2^s exactly only while n ≤ bits(q)/2, the most a power
+    of five dividing q can have. Past that the sides can't be equal, and bounds on 5^n
+    (the text's, with exponents wide enough for n up to 2^64), refined until they decide,
+    answer. The work is bounded by the mantissas, and every order the exact scaling gave
+    is kept (20,000 random pairs; convergents of log2 10 within 2^-64 of each other). OPA
+    panics on most such pairs ("illegal value": `big.Rat.SetString` refuses |exp5| > 10^6
+    and |exp2| > 10^7, go1.26.1 `math/big/ratconv.go`; `big.Float.SetString`, exponents
+    past int32). Shards answers exactly.
+  - Addition and subtraction keep the smaller operand's bits within prec + 2 of the
+    larger's top, the rest a sticky bit (and a borrow). The round bit is then at or above
+    the cut, so the result rounds as Go's exact sum does (160,000 random sums and
+    differences against it).
+  - Go's `pow5` squares its factor once past its last use. Past MaxExp that is an unread
+    +Inf there, and it was an error here: 1e536870939 through 1e646456992, finite in Go,
+    failed (M524's Open). A 5^n past Go's exponents is +Inf, and z over it zero, so
+    `-1e-1000000000` reads as -0. The parser says "number too big" for a literal Go reads
+    as ±Inf, as OPA's does.
+  - An exact integer whose MantExp is past 10^5 (`number::MAX_EXPONENT`) is not made: its
+    decimal is all its digits, a num-bigint conversion growing faster than their count
+    (near n^1.8 here), where the text above writes leading digits and zeros. `floor`,
+    `ceil`, `round`, `rem`, `bits.*`, `numbers.range*`, `format_int` and `units.parse*`
+    fail with "number too big", the error OPA's parser gives such a literal
+    (`ast/parser.go` `parseNumber`, v1.14.1); `time.*` keep OPA's "timestamp too big".
+    The bound is OPA's own on a number in Rego source, set for this cost
+    (golang/go#11068), so no builtin makes an integer a policy could not write. At it,
+    `ceil` and `round` answer in about 80 ms. Past it OPA's cost grows with the
+    exponent's value: 41.7 s for `ceil(1e3000000)`, 10.4 s for the fuzzer's
+    `ceil(266000000e2028020)`; ASan's fuzzer passed 2 GB on such integers (M524's Open).
+    Alternatives: Go's big.Float range (MaxExp 2^31: integers of 646 million digits, hours
+    in OPA and here); Go's big.Rat limits (10^7 bits: 23 s for one conversion here); a
+    conversion lean in memory (M524's Open), which bounds memory but not the time a
+    number's size asks. The difference from OPA: OPA writes those integers, in time
+    growing with the exponent's value, or panics (`bits.lsh` past its memory,
+    `makeslice`); shards refuses them. `bits.lsh`'s chosen limit of 2^32 bits gives way
+    to the same bound.
+  - `numbers.range` stays unbounded, as OPA's. The fuzz target asks it for at most one
+    number per byte of its input.
 - Left: a rule whose local-variable rewrite errs is rewritten OPA's way, so an
   erroring rule of `every` statements and comprehensions alternating takes OPA's time.
   Evaluation asks no bound of a policy, as OPA's does not (`numbers.range` over any
@@ -21296,6 +21498,31 @@ The run's stdout stays empty, and the agent of files alone runs nothing. Each of
 mutations fails the test: hiding no other domain, keeping the bounding set, leaving the
 system writable.
 
+**A member's root shows the image's directories as the image made them** (2026-11-12,
+kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 7). A domain's root is an overlay of the
+image under a skeleton tmpfs. The skeleton holds what init mounts over and the image may
+lack: `/etc` always, and every mount point of its sockets, its server and its volumes, each
+with its parents. overlayfs shows a directory both layers hold with the upper one's owner
+and mode (Documentation/filesystems/overlayfs.rst, "Directories"), and the skeleton made
+every directory root's, 0755. So a volume at `/home/node/.cache` showed the image's
+`/home/node` (1000:1000 0750) as 0:0 0755, and `/etc` and the root as the skeleton's too.
+Reproduced live with init's system calls in its order, in a user and mount namespace with
+subordinate IDs on Linux 7.2.9 x86_64 (`docs/research/measurements/s7-home-workdir`,
+`repro.py`, `repro-adacachy.log`).
+
+Now each directory the skeleton makes that the image has takes the image's owner and mode
+(fchownat, then fchmodat: a chown clears set-ID bits), and the skeleton's tmpfs root takes
+the image root's (its `mode`, `uid` and `gid` options). A directory the image lacks stays
+root's, 0755, as a mount point's. `a_skeletons_directories_are_the_images_own` runs the
+real `skeleton` and `image_root` in a user and mount namespace and compares the root,
+`/home`, `/home/node`, `/etc` and `/tmp` with the image's, and their owners too where it
+runs as root of IDs past its own (`unshare --map-auto --map-root-user`). It fails at the
+base revision, and with either guard removed: the owner and mode copied, the root's options
+(`mutate4.sh`, `mutate4-adacachy.log`). Where a domain has plug roots (D235), its root's
+own writable layer is the uppermost for `/`, and D235's `image_root` gives that layer the
+image root's owner and mode. **Owed (ROOT):** the same in a real microVM on KVM,
+Hypervisor.framework and WHP.
+
 Part two, after `no_new_privs`, before its command:
 
 - **Landlock** (Documentation/userspace-api/landlock.rst; ABI 6 at least, which Linux 6.12
@@ -21937,8 +22164,13 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   program runs, within `run::MAX_PAYLOAD`. Native-sign-in delegation, not opacity (G18): the
   member reads what it is given.
 - *Ports and grants.* Published ports bound by `publish::bind`, only for a port the image
-  gives a member for ingress (D122) or for the run's own command; egress, remote MCP hosts
-  and DNS the image grants, kept or dropped by the orchestrator, never added.
+  gives a member for ingress (D122) or for the run's own command; egress, remote MCP hosts,
+  destinations (D236) and DNS the image grants, kept or dropped by the orchestrator, never
+  added. Each port bound names whom it reaches (`Bound::to`, channel version 3), so that a publish grant
+  names its "to whom": each member the image gives it, by declared index, at the member's
+  own port (another where an `EXPOSE` maps it), several where several claim it (the one
+  listening takes each connection); none where it reaches the run's own command. The rule
+  is `read ports`' (`agentfile::receiving`), one function for both.
 - *Shares.* At boot, as the run's `-v`, given to the members the image's `VOLUME` there is
   for (D109). Added while running: D214's path to the run's command, owed; to a member,
   refused (its mounts are made as it starts).
@@ -21951,17 +22183,29 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 **Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
 `docker run`'s `128 + signal`; every wait is on a fact.
 
-**Built so far** (branch `p/runtime-image-boot-v1`, light checks only): the abi entries,
-init's staging, member ends, `ATTEND` and `STATS` scopes, the VM process's relay of member
-ends, `shards_api::image` and `shards api-run` on Linux and macOS. **Owed:** the Windows run
-host (refused `Unsupported` there, its AppContainer launch not written), a member's stdin and
-terminal, DAX windows for its shares, templates and pools, a boot patience, shares added
+**Built:** the abi entries, init's staging, member ends, `ATTEND` and `STATS` scopes, the VM
+process's relay of member ends, `shards_api::image` and `shards api-run` on Linux, macOS and
+Windows; a boot within the orchestrator's patience (`Images::boot`), its refusal quoting what
+the run host and its VM said last. On Windows the run host starts its VM as the daemon does
+(D141, D142, D195): in a job of its own whose last handle it holds, which ends the VM, network
+and share processes as it ends, however it ends, where Unix has `STOP_ORDER`'s SIGKILL; the VM
+process confined in an AppContainer made suspended, its link, grants, null device and network
+handed by name, its network process started on the suspended VM, each share's stream a byte
+pair handed after `RUN` (D197). **Owed:** Windows arm64's build and its WHP runs (below), a
+member's stdin and terminal, DAX windows for its shares, templates and pools, shares added
 while running, `attach` after the owner's crash, one launch shared with the builder's and the
 daemon's, and a simulator.
 
-**Evidence owed** (ROOT): real-VM E2E on KVM x86_64 and arm64 and HVF
-(`crates/shards/tests/api_image.rs`); the run host's resident, CPU and kernel cost per
-microVM against the daemon's per run and Firecracker's (R14).
+**Tested** (real VMs, `crates/shards/tests/api_image.rs`, 2026-11-12): 6 of 6 on Linux x86_64
+KVM (Fedora 44, at 5333c2747, main), macOS arm64 HVF (an M5 Max, macOS 26.5.2) and Windows
+x86_64 WHP (Windows 11 26200), after main's CI failed every boot: the run host's request
+kept no log retention, which a warm VM refuses, and its follower held the link's lock for the
+run's life; each reproduced live before its fix (runtime-image-boot-v1/README.md). **Evidence
+owed** (ROOT): KVM arm64 (no arm64 Linux host here has KVM; the nested path of boot.rs);
+Windows arm64: unbuilt (jupiter has no C compiler for it: aws-lc-sys needs clang-cl) and no
+host here runs WHP on arm64 (GitHub's windows-11-arm has no hypervisor platform, PM M172;
+nested Windows 11 arm64 on an M-series Mac gets no partition, D209); the run host's resident,
+CPU and kernel cost per microVM against the daemon's per run and Firecracker's (R14).
 
 **What would falsify it.** A run host costing more per microVM than the daemon per run (then
 one host per orchestrator); an orchestrator needing to link the VMM; credentials a member
@@ -22071,6 +22315,184 @@ says; the report pipe on a Windows host; the seven-target lint.
 
 **What would falsify it.** A client that needs shards to own its VM processes after all (then
 D215's spawn alone).
+
+### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's; case handling and host edits' notices owed; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 8: kiln reads a session's diffs,
+HEAD and checkpoints on the host at the session's own path, so a member (an agent or
+harness, D59) must see the project at that same absolute path, writable, its writes the
+host's. D214's `plug volume` reached the run's command alone. A member's mount namespace is
+its own, its root a read-only overlay of the image as built, and its Landlock ruleset fixed
+as it execs: no rule is added to a running process's domain (landlock(7)), so a path the
+image lacks could never become a writable mount point in a running member.
+
+**Alternatives.**
+- *A tmpfs at each root, as a domain starts:* it hides the image's own `/home`, `/mnt` and
+  `/srv`, users' homes in many images (`/home/node`). Not taken.
+- *Landlock's every right beneath `/`:* it widens a receiving domain's Unix sockets'
+  directories, writable tmpfs, past making sockets. Not taken.
+- *A root covered at plug time:* Landlock skips the dentries a mount hides
+  (security/landlock/fs.c, `is_access_to_paths_allowed`, "Ignores hidden mount points",
+  Linux v6.18), so a rule on a covered root is lost. Not taken: a plug lies strictly
+  beneath a root.
+- *Directories shared up front at their host paths:* Docker Desktop shares `/Users`,
+  `/Volumes`, `/private`, `/tmp` and `/var/folders` into its VM; Lima and Colima the home. A
+  member's default deny (D59) gives nothing up front; here a root grants nothing until a
+  plug lands in it.
+
+**Decided.**
+- *Plug roots* (`shards_abi::run::plug`): setup entries `plug-root=/X`, named by the host
+  from data: its OS's own, Apple's standard directories of homes and mountable disks on macOS
+  (`/Users`, `/Volumes`; File System Programming Guide, "macOS Standard Directories"), the
+  Filesystem Hierarchy Standard 3.0's users' and mounted data on Linux (§3.8 `/home`, §3.11
+  `/media`, §3.12 `/mnt`, §3.17 `/srv`), WSL's root of a Windows host's drives (`/mnt`,
+  DrvFs's `automount.root`, drive C: at `/mnt/c`); and on Unix the top-level directory of
+  each host path a run's binds give it, so that a project a run starts beside names the root
+  of what is plugged later (setup.rs `plug_roots`). One rule, on host and guest alike
+  (`root_name`), refuses a root that is not one top-level directory, or is one of init's
+  own: `proc`, `sys`, `dev`, `tmp`, `etc`, `run`. `/root` is left out: images keep it 0700,
+  which a member never traverses; `/opt` too, the system's packages.
+- *Provisioned as a domain starts* (domains.rs): each root made in its skeleton where the
+  image lacks it; its root overlay given a writable layer, a tmpfs that init alone writes,
+  `upper` given the image root's owner and mode; Landlock's every right beneath each root.
+  A root grants nothing until a plug lands there: it lies on the domain's root mount, which
+  stays read-only (`SYSTEM`, pinned by `a_plug_root_lies_on_a_read_only_root`). A run whose
+  host names no root starts as before.
+- *A plug into a member* (init hotplug.rs, `share ADDR TAG DST ro|rw member N`): DST
+  strictly beneath one of the run's roots (`plug::beneath`), else refused naming them; the
+  share mounted `nosuid`, `nodev`, the files its host made named the member's (D38's owner
+  word) while the mount is writable, then made read-only where asked; the member's mount
+  namespace entered through a pidfd of one of its command's processes (two `NSpid:`
+  numbers, the inner not 1: not its namespace's init, which keeps a mount namespace of its
+  own, nor its in-VM server instance, which shares its cgroup in init's namespace), its
+  cgroup checked again once held, so that no PID another took meanwhile is entered; its
+  mount points made through a copy of its root's mount, attached nowhere and made writable
+  (open_tree, mount_setattr clearing `MOUNT_ATTR_RDONLY`), the root found as the domain's
+  own walk finds it and no symlink followed beneath it (openat2 `RESOLVE_NO_SYMLINKS`,
+  `RESOLVE_NO_XDEV`), so that nothing is made outside it.
+- *The daemon's:* `shards plug volume --for NAME MICROVM SOURCE:PATH[:ro]`, NAME an agent or
+  harness as an Agentfile's `FOR` names one, which runs a command; `unplug volume` by its
+  path, as D214's.
+- *The orchestrator's* (D231's run host; shards-api's image channel, version 4):
+  `ImageGuest::plug(member, host, at, read_only, patience)` and `unplug(at, patience)`. On
+  the wire, `PLUG` carries a `PlugAsk` (its id, the member's index, the host's directory,
+  the path, read-only), `UNPLUG` an `UnplugAsk` (its id, the path), and `PLUGGED` answers
+  each by id, done or refused by kind (`PlugRefusal`: `Request`, `Member`, `Outside`,
+  `Taken`, `Host`, `Device`, `Unknown`, `Busy`; `ImageRefusal::Plug` for the caller). The
+  version moves to 4, as a host of version 3 ends a run on a kind it does not know: a
+  mismatch is refused as the run is asked instead. `shards api-run` checks an ask as init
+  does (`plug::beneath`, against the roots it named), serves the directory by a share
+  process of its own, plugs it into its VM's bus (`DEVICE`, answered `DEVICED` on the VM's
+  link) and has init mount it in the member; init's `DEVICE` built-in says a mount in use by
+  its exit status (`DEVICE_BUSY`, EBUSY's number), so that an unplug's `Busy` is typed. Its
+  VM has D214's slots, as a daemon run's.
+
+**Verified** (adacachy, KVM x86_64, Linux 7.2.9): `a_project_is_plugged_into_a_running_agent_at_its_host_path`
+(tests/plug.rs): the agent, given its roots, makes nothing beneath any (EROFS, 30, for a
+directory and a file); a project plugged outside every root is refused naming them; plugged
+beneath one, the agent reads the host's file and writes its own, which the host reads; it is
+unplugged, plugged again and unplugged as the agent runs. Mutation: with no Landlock rule
+beneath the roots, the agent writes nothing there and the test fails.
+`a_project_is_plugged_into_the_running_harness` (tests/api_image.rs) holds the
+orchestrator's: refused outside the roots (`Outside`) and for a member of files alone
+(`Member`); plugged at its host path, read and written by the harness; unplugged, and a
+second unplug `Unknown`. HVF, WHP and arm64 KVM are owed (ROOT's).
+
+**Known limits.** A project in `/tmp` (macOS's `/private/tmp` as `/tmp`, a Linux host's
+`/tmp`) is no root's: the domain's own scratch is there. A path beneath a root through a
+symlink of the image's beneath it is refused. The directories made for a plug's mount point
+stay, empty and root's, once it is unplugged.
+
+### D236. A network's destinations: a member reaches the hosts its grants name, the host itself at one port (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 9, and the harness bring-up's
+finding H2 (docs/research/measurements/harness-bringup-v1): an Agentfile's egress named
+ports alone. `NETWORK --egress=443` with `EXPOSE 443 AS egress` let a harness open TCP 443 to
+any address past its microVM, and `--dns` let it resolve any name, where Codex needed
+`api.openai.com` and `chatgpt.com` alone. Nor could a member reach kiln's MCP, served over
+HTTP at `/api/mcp` on kiln's `http_addr` (`0.0.0.0:7070` by default, kiln
+`crates/kiln/src/config.rs`): the host itself is what `Policy::Ports` never reaches (its
+gateway and loopback refused, rootless-security.md R4.16). Only a remote `MCP` server's grant
+named a host (D59 part seven); a run's command had D192's.
+
+**Alternatives.**
+- *A directive of its own* (`EGRESS host:port FOR member`): a second grammar for what a
+  network's boundary says already, where D192 put destinations on a network. Not taken
+  (R13).
+- *Names held by what a flow says* (TLS SNI, HTTP Host: Squid's ACLs, cloud firewalls'
+  FQDN rules): a client chooses what it says (domain fronting; ECH hides SNI). Not taken: a
+  flow reaches the addresses its resolver path answered, which is what D59 holds.
+- *Learned addresses held per member in the guest* (Cilium's toFQDNs policy programs each
+  endpoint's allowed addresses from the DNS answers its proxy relays; dnsmasq's `--nftset`):
+  D192's "held apart by the address its flows come from". Not built here: what the union
+  cannot hold is refused instead (below), which lifts once it is.
+- *The host at an address of its own* outside eth0's subnet (Docker Desktop's
+  192.168.65.254, Lima's 192.168.5.2): any such address can be one of a user's own
+  networks. The gateway is never a destination (it is the network process), and D124 takes
+  it for the host's loopback already.
+
+**Decided.**
+- *Grammar.* `NETWORK --egress=HOST:PORT`, beside ports: TCP; HOST a host's name (RFC 1035
+  §2.3.1 and RFC 1123 §2.1 labels, the last not all digits, RFC 3696 §2, so that no port or
+  mapping reads as one), an IPv4 address, or `host.docker.internal`, the host itself (Docker
+  Desktop's name for it; `.internal` is the top-level domain ICANN reserved for private use,
+  2024, so no name in the DNS is it). Refused, saying why: one on `--expose` or `--ingress`
+  (a destination is reached, never let in), on a network carrying no TCP, a pattern, an IPv6
+  address (as D192), UDP, and `localhost` (the asker's own, RFC 6761 §6.3). One parser,
+  `shards_dns::destination`, reads D192's option and the Agentfile.
+- *Who, to whom, which port, which way.* The network's members (`CONNECT … ON` it, within its
+  `FOR`) for whom the microVM's boundary opens the port outward (`EXPOSE … AS egress`, or both
+  ways, `FOR` it; D122's `--agents` and `--harnesses` naming them): the host named, at its
+  port, out. Two boundaries, as a port's (§12 answer 6); an internal network's reach nothing.
+- *Names.* A member asks the agents' resolver for its destinations' names alone, as a remote
+  MCP server's (`--dns` neither needed nor implied). The host itself is in its hosts file at
+  eth0's gateway and never asked of a resolver: the network process forwards no question for
+  it. A remote MCP server's URL may name the host itself too (`MCP kiln FROM
+  http://host.docker.internal:7070/api/mcp FOR codex`, kiln's MCP), which its grant then is.
+- *Held.* The network process's policy names each destination beside the MCP servers'
+  (`encode_policy`): a flow to its port reaches only an address its resolver answered for the
+  name through it, or the address it is; the host itself is the gateway at that TCP port
+  alone, which it takes to the host's IPv4 loopback there (`Config::host_side`). The guest
+  lets the member out on that port (its gate, the switch, init's forward chain); the run's own
+  processes (`confine_eth0`) and its engine's members (D181) reach the gateway by TCP at its
+  resolver's port alone.
+- *Refused where it cannot be held* (`agentfile::held`, at build and as the daemon reads the
+  normalized Agentfile): the network process holds the whole microVM to the union of its
+  members' names on a port, and a member's init lets it out on that port to any address. So
+  on a TCP port that one member reaches by name (a destination, or a remote MCP server), every
+  other member granted the port is granted the same names and none a port grant of it; else
+  the image is refused, naming both members and what each reaches. Remote MCP servers beside
+  another member's other grants on one port, which passed before, are refused alike.
+- *Orchestrators* keep or drop destinations (`Narrowing.destinations`, D231, channel version
+  3), never add one. The build labels them (`vnd.osi.agentfile.destinations`) for Docker and
+  Kubernetes; the daemon holds a run to its own reading of the image (D109).
+
+```dockerfile
+HARNESS codex FROM ./codex
+NETWORK --egress=api.openai.com:443 --egress=chatgpt.com:443 --egress=host.docker.internal:7070 provider FOR codex
+EXPOSE --harnesses=codex 443 7070 AS egress FOR provider
+CONNECT codex WITH codex ON provider
+```
+
+**Literals.** `host.docker.internal`, Docker Desktop's documented name; TCP port 53, DNS's
+(RFC 1035 §4.2.2), the gateway's one service to the run's processes; 63, a label's most, and
+253, a name's as text, its 255 octets on the wire less its first length and the root's (RFC
+1035 §2.3.4), as D192 had them. No bound, wait or size of its own.
+
+**Evidence.** The implementer's record, light tests on Linux x86_64 (adacachy) and the
+supported targets' lint: docs/research/measurements/s9-grants-v1.
+
+**Evidence owed** (ROOT). On real microVMs (KVM, HVF, WHP): a member granted provider names
+reaches them and nothing else (another host on their port, another port, an address no answer
+gave), and resolves them alone; one granted `host.docker.internal:PORT` reaches a listener on
+the host's loopback at PORT and no other port of the host, while the run's own command and
+another member reach neither; an image `held` refuses fails its build, and its run when
+crafted. The bring-up's examples (docs/examples/harness-codex, harness-claude) moved to
+destinations once run so.
+
+**What would falsify it.** A provider whose clients reach it at addresses its names never
+answer (then address ranges as grants); a member that must reach one port by name beside
+another member's other names (then the per-member hold above, which lifts the refusal).
 
 ## 4. Start path (≤ 5 ms budget)
 

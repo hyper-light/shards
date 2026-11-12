@@ -8,7 +8,7 @@ use crate::ast::{
 };
 use std::rc::Rc;
 
-use crate::number::Float;
+use crate::number::{self, Float};
 use crate::scanner::{Scanner, Token};
 use crate::value::Number;
 
@@ -1689,14 +1689,18 @@ impl<'a> Parser<'a> {
             }
         }
         let s = format!("{prefix}{lit}");
-        let Ok(f) = Float::parse(&s) else {
-            self.illegal("invalid float");
-            return None;
+        let too_big = match Float::parse(&s) {
+            Ok(f) => !(-number::MAX_EXPONENT..=number::MAX_EXPONENT).contains(&f.go_exponent()),
+            // Go reads it as ±Inf, which OPA's parser calls too big too.
+            Err(e) if e == number::OVERFLOW => true,
+            Err(_) => {
+                self.illegal("invalid float");
+                return None;
+            }
         };
-        let exp = f.go_exponent();
-        if !(-100_000..=100_000).contains(&exp) {
+        if too_big {
             let l = self.loc();
-            self.error(l, "number too big".into());
+            self.error(l, number::TOO_BIG.to_string());
             return None;
         }
         Some(Term::new(TermValue::Number(Number(s.into())), loc))

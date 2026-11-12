@@ -10,9 +10,13 @@
 //! - `disk ADDR DST [ro]`: the disk at PCI address ADDR, its file system (ext4, XFS,
 //!   Btrfs, FAT or EROFS, as the kernel recognizes it) at DST. Answers its block device's
 //!   name.
-//! - `share ADDR TAG DST [ro]`: the shared directory at ADDR, virtio-fs by TAG, at DST.
-//! - `unmount ADDR DST`: DST unmounted in the workload, refused while anything there is
-//!   in use, then the function let go (its `remove`), for its host to unplug.
+//! - `share ADDR TAG DST [ro] [member N]`: the shared directory at ADDR, virtio-fs by TAG,
+//!   at DST; with `member N`, in the N-th domain's mount namespace instead of the
+//!   workload's (D235), DST beneath one of the run's plug roots, its mount point made there,
+//!   and the host's files the domain's.
+//! - `unmount ADDR DST [member N]`: DST unmounted in the workload, or the N-th domain,
+//!   refused while anything there is in use, then the function let go (its `remove`), for
+//!   its host to unplug.
 //! - `grow ADDR DST SECTORS`: once the disk at ADDR reads SECTORS, its ext4 file system at
 //!   DST grown to fill it (EXT4_IOC_RESIZE_FS, online). Answers its size in bytes.
 //! - `function ADDR group|node HOST`: a host's function at ADDR, HOST as its daemon named
@@ -33,8 +37,69 @@
 use std::ffi::CString;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::sync::OnceLock;
+
+use shards_abi::run::plug;
 
 use crate::devices::Uevents;
+
+/// The run's plug roots, as [`plug_roots`] read them, for what is plugged into its domains
+/// as they run.
+static ROOTS: OnceLock<Vec<CString>> = OnceLock::new();
+
+/// The run's plug roots, from its setup entries (`plug-root=/Users`, D235), each by its
+/// name (`Users`), and kept for what is plugged into its domains as they run. Each domain
+/// is given each as it starts (domains.rs): made where its image lacks it, and Landlock's
+/// every right granted beneath it, which grants nothing until something is plugged there,
+/// as the domain's root is read-only. One that is not a single top-level directory, or is
+/// one of init's own (`plug::REFUSED`), is refused.
+pub fn plug_roots(setup: &[Vec<u8>]) -> Result<Vec<CString>, String> {
+    let mut roots: Vec<CString> = Vec::new();
+    for entry in setup.iter().filter_map(|e| e.strip_prefix(plug::ROOT_KEY)) {
+        let name = plug::root_name(entry)
+            .and_then(|n| CString::new(n).ok())
+            .ok_or_else(|| {
+                format!(
+                    "plug root {:?}: not a top-level directory a domain may be given paths beneath",
+                    String::from_utf8_lossy(entry)
+                )
+            })?;
+        if !roots.contains(&name) {
+            roots.push(name);
+        }
+    }
+    let _ = ROOTS.set(roots.clone());
+    Ok(roots)
+}
+
+/// The components of `dst` where it lies strictly beneath one of `roots` (D235,
+/// `plug::beneath`); refused naming the roots there are.
+fn beneath_root<'a>(dst: &'a str, roots: &[CString]) -> Result<Vec<&'a str>, String> {
+    let names: Vec<&[u8]> = roots.iter().map(|r| r.as_bytes()).collect();
+    match plug::beneath(dst.as_bytes(), &names) {
+        // Its components are of a `str`'s split at `/`, each a `str` too.
+        Ok(parts) => Ok(parts
+            .into_iter()
+            .filter_map(|p| std::str::from_utf8(p).ok())
+            .collect()),
+        Err(plug::Outside::Relative) => Err(format!("{dst}: not an absolute path")),
+        Err(plug::Outside::Unplain) => Err(format!("{dst}: not a plain absolute path")),
+        Err(plug::Outside::Rootless) => {
+            let all: Vec<String> = roots
+                .iter()
+                .map(|r| format!("/{}", r.to_string_lossy()))
+                .collect();
+            Err(if all.is_empty() {
+                format!("{dst}: not beneath a plug root: the run has no plug roots")
+            } else {
+                format!(
+                    "{dst}: not beneath a plug root: the run's plug roots are {}",
+                    all.join(", ")
+                )
+            })
+        }
+    }
+}
 
 /// The file systems a plugged disk is tried as, in order.
 const FILE_SYSTEMS: [&std::ffi::CStr; 5] = [c"ext4", c"xfs", c"btrfs", c"vfat", c"erofs"];
@@ -42,14 +107,21 @@ const FILE_SYSTEMS: [&std::ffi::CStr; 5] = [c"ext4", c"xfs", c"btrfs", c"vfat", 
 /// EXT4_IOC_RESIZE_FS (fs/ext4/ext4.h: _IOW('f', 16, __u64)).
 const EXT4_IOC_RESIZE_FS: libc::c_ulong = 0x4008_6610;
 
-/// `fsmount`'s read-only attribute, and `move_mount`'s flag for a mount by its descriptor
-/// (include/uapi/linux/mount.h).
+/// `fsmount`'s and `mount_setattr`'s attributes, and `move_mount`'s flag for a mount by its
+/// descriptor (include/uapi/linux/mount.h).
 const MOUNT_ATTR_RDONLY: u64 = 0x1;
+const MOUNT_ATTR_NOSUID: u64 = 0x2;
+const MOUNT_ATTR_NODEV: u64 = 0x4;
 const MOVE_MOUNT_F_EMPTY_PATH: u32 = 0x4;
 
-/// Does what `args` ask in the microVM whose workload is process `workload`, saying the
-/// answer on `out`.
-pub fn device(args: &[Vec<u8>], workload: libc::pid_t, out: &mut impl Write) -> io::Result<()> {
+/// Does what `args` ask in the microVM whose workload is process `workload` and whose
+/// domains are `domains`, saying the answer on `out`.
+pub fn device(
+    args: &[Vec<u8>],
+    workload: libc::pid_t,
+    domains: &[crate::domains::Started],
+    out: &mut impl Write,
+) -> io::Result<()> {
     let text: Vec<String> = args
         .iter()
         .map(|a| String::from_utf8_lossy(a).into_owned())
@@ -68,17 +140,41 @@ pub fn device(args: &[Vec<u8>], workload: libc::pid_t, out: &mut impl Write) -> 
         }
         ["share", addr, tag, dst, rest @ ..] => {
             let read_only = rest.contains(&"ro");
+            // A domain's beneath one of the run's plug roots (D235), refused before its
+            // function is taken.
+            let member = member_of(rest, domains)?;
+            let parts = match member {
+                Some(_) => Some(
+                    beneath_root(dst, ROOTS.get().map_or(&[][..], Vec::as_slice))
+                        .map_err(io::Error::other)?,
+                ),
+                None => None,
+            };
             bound(addr)?;
             let tag = CString::new(*tag).map_err(io::Error::other)?;
             // The tag is virtio-fs's once its driver has the function: virtio_fs_probe adds
             // it before the probe returns, and a driver is bound only after (drivers/base/
             // dd.c `really_probe`, then `driver_bound`). Mounted once: a refusal is the
             // kernel's word.
-            let mounted = fs_mount(c"virtiofs", &tag, read_only)?;
-            attach(mounted, workload, dst)
+            let (Some((id, cgroup)), Some(parts)) = (member, parts) else {
+                let mounted = fs_mount(c"virtiofs", &tag, read_only, 0)?;
+                return attach(mounted, workload, dst);
+            };
+            // A domain's, as a volume given it is (D109): `nosuid` and `nodev`, and the
+            // files the host made there its user's, which it is told while the mount is
+            // still writable, as a read-only mount takes no attribute.
+            let mounted = fs_mount(c"virtiofs", &tag, false, MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV)?;
+            crate::setup::name_owner_as(&format!("/proc/self/fd/{}", mounted.as_raw_fd()), id, id);
+            if read_only {
+                set_attrs(&mounted, MOUNT_ATTR_RDONLY)?;
+            }
+            in_member(cgroup, || {
+                mount_point(&parts)?;
+                move_to(&mounted, dst)
+            })
         }
-        ["unmount", addr, dst] => {
-            in_workload(workload, || {
+        ["unmount", addr, dst, rest @ ..] => {
+            let unmount = || {
                 let path = CString::new(*dst).map_err(io::Error::other)?;
                 // SAFETY: umount2(2) of a NUL-terminated path.
                 if unsafe { libc::umount2(path.as_ptr(), 0) } != 0 {
@@ -96,7 +192,11 @@ pub fn device(args: &[Vec<u8>], workload: libc::pid_t, out: &mut impl Write) -> 
                     ));
                 }
                 Ok(())
-            })?;
+            };
+            match member_of(rest, domains)? {
+                Some((_, cgroup)) => in_member(cgroup, unmount)?,
+                None => in_workload(workload, unmount)?,
+            }
             crate::devices::sysfs_write(&format!("bus/pci/devices/{addr}/remove"), "1")
         }
         ["grow", addr, dst, sectors] => {
@@ -242,7 +342,7 @@ fn disk_mount(name: &str, read_only: bool) -> io::Result<OwnedFd> {
     let source = CString::new(format!("/proc/self/fd/{}", node.as_raw_fd())).map_err(io::Error::other)?;
     let mut tried = Vec::new();
     for fs in FILE_SYSTEMS {
-        match fs_mount(fs, &source, read_only) {
+        match fs_mount(fs, &source, read_only, 0) {
             Ok(fd) => return Ok(fd),
             Err(e) => tried.push(format!("{}: {e}", fs.to_string_lossy())),
         }
@@ -254,8 +354,14 @@ fn disk_mount(name: &str, read_only: bool) -> io::Result<OwnedFd> {
 }
 
 /// A new mount of `fstype` from `source`, read-only (the `ro` flag, and the mount's
-/// attribute) where asked, attached nowhere (fsopen(2), fsconfig(2), fsmount(2)).
-fn fs_mount(fstype: &std::ffi::CStr, source: &std::ffi::CStr, read_only: bool) -> io::Result<OwnedFd> {
+/// attribute) where asked, with mount attributes `attrs` besides, attached nowhere
+/// (fsopen(2), fsconfig(2), fsmount(2)).
+fn fs_mount(
+    fstype: &std::ffi::CStr,
+    source: &std::ffi::CStr,
+    read_only: bool,
+    attrs: u64,
+) -> io::Result<OwnedFd> {
     const FSOPEN_CLOEXEC: u32 = 0x1;
     const FSCONFIG_SET_FLAG: u32 = 0;
     const FSCONFIG_SET_STRING: u32 = 1;
@@ -282,7 +388,7 @@ fn fs_mount(fstype: &std::ffi::CStr, source: &std::ffi::CStr, read_only: bool) -
         config(FSCONFIG_SET_FLAG, c"ro".as_ptr(), null)?;
     }
     config(FSCONFIG_CMD_CREATE, null, null)?;
-    let attrs = if read_only { MOUNT_ATTR_RDONLY } else { 0 };
+    let attrs = attrs | if read_only { MOUNT_ATTR_RDONLY } else { 0 };
     // SAFETY: fsmount(2) of the context made above.
     let mounted = unsafe { libc::syscall(libc::SYS_fsmount, fs.as_raw_fd(), FSMOUNT_CLOEXEC, attrs) };
     if mounted < 0 {
@@ -434,43 +540,63 @@ fn owner_before(before: &str) -> Option<Option<(u32, u32)>> {
 fn attach(mounted: OwnedFd, workload: libc::pid_t, dst: &str) -> io::Result<()> {
     in_workload(workload, || {
         std::fs::create_dir_all(dst).map_err(|e| io::Error::new(e.kind(), format!("{dst}: {e}")))?;
-        let path = CString::new(dst).map_err(io::Error::other)?;
-        // SAFETY: move_mount(2) of a mount this process holds onto a NUL-terminated path.
-        let moved = unsafe {
-            libc::syscall(
-                libc::SYS_move_mount,
-                mounted.as_raw_fd(),
-                c"".as_ptr(),
-                libc::AT_FDCWD,
-                path.as_ptr(),
-                MOVE_MOUNT_F_EMPTY_PATH,
-            )
-        };
-        if moved != 0 {
-            let e = io::Error::last_os_error();
-            return Err(io::Error::new(e.kind(), format!("mounting at {dst}: {e}")));
-        }
-        Ok(())
+        move_to(&mounted, dst)
     })
+}
+
+/// Moves `mounted`, a mount attached nowhere, onto `dst` in this process's mount namespace.
+fn move_to(mounted: &OwnedFd, dst: &str) -> io::Result<()> {
+    let path = CString::new(dst).map_err(io::Error::other)?;
+    // SAFETY: move_mount(2) of a mount this process holds onto a NUL-terminated path.
+    let moved = unsafe {
+        libc::syscall(
+            libc::SYS_move_mount,
+            mounted.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            MOVE_MOUNT_F_EMPTY_PATH,
+        )
+    };
+    if moved != 0 {
+        let e = io::Error::last_os_error();
+        return Err(io::Error::new(e.kind(), format!("mounting at {dst}: {e}")));
+    }
+    Ok(())
+}
+
+/// `path` opened to be held, not read (`O_RDONLY`, close-on-exec).
+fn open_held(path: &str) -> io::Result<OwnedFd> {
+    let c = CString::new(path).map_err(io::Error::other)?;
+    // SAFETY: open(2) of a NUL-terminated path.
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor open just made, owned here alone.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 /// Runs `step` in the mount namespace of process `workload`, then comes back to this
 /// process's own.
 fn in_workload<T>(workload: libc::pid_t, step: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
-    let open = |path: &str| -> io::Result<OwnedFd> {
-        let c = CString::new(path).map_err(io::Error::other)?;
-        // SAFETY: open(2) of a NUL-terminated path.
-        let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: the descriptor open just made, owned here alone.
-        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
-    };
-    let ours = open("/proc/self/ns/mnt")?;
-    let root = open("/")?;
-    let theirs = open(&format!("/proc/{workload}/ns/mnt"))
+    let theirs = open_held(&format!("/proc/{workload}/ns/mnt"))
         .map_err(|e| io::Error::new(e.kind(), format!("the workload's mount namespace: {e}")))?;
+    in_namespace(&theirs, step)
+}
+
+/// Runs `step` in the mount namespace of the domain whose cgroup is `cgroup` (domains.rs
+/// `Started::cgroup`), then comes back to this process's own (D235).
+fn in_member<T>(cgroup: &str, step: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    let theirs = member_process(cgroup)?;
+    in_namespace(&theirs, step)
+}
+
+/// Runs `step` in the mount namespace `theirs` names (a namespace's descriptor, or a pidfd,
+/// which setns(2) takes since Linux 5.8), then comes back to this process's own.
+fn in_namespace<T>(theirs: &OwnedFd, step: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    let ours = open_held("/proc/self/ns/mnt")?;
+    let root = open_held("/")?;
     let enter = |ns: &OwnedFd| {
         // SAFETY: setns(2) on a descriptor this process holds, a single-threaded child.
         if unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNS) } == 0 {
@@ -479,7 +605,7 @@ fn in_workload<T>(workload: libc::pid_t, step: impl FnOnce() -> io::Result<T>) -
             Err(io::Error::last_os_error())
         }
     };
-    enter(&theirs)?;
+    enter(theirs)?;
     let done = step();
     enter(&ours)?;
     // SAFETY: fchdir(2) and chroot(2) back to this process's own root, held open above.
@@ -488,6 +614,204 @@ fn in_workload<T>(workload: libc::pid_t, step: impl FnOnce() -> io::Result<T>) -
         libc::chroot(c".".as_ptr());
     }
     done
+}
+
+/// The domain `rest` names (`member N`, the N-th domain's, D235), by its uid and its cgroup:
+/// none where it names none; refused where N started no domain.
+fn member_of<'a>(
+    rest: &[&str],
+    domains: &'a [crate::domains::Started],
+) -> io::Result<Option<(u32, &'a str)>> {
+    let mut words = rest.iter().skip_while(|w| **w != "member");
+    if words.next().is_none() {
+        return Ok(None);
+    }
+    let n: u32 = words
+        .next()
+        .and_then(|n| n.parse().ok())
+        .ok_or_else(|| io::Error::other("member takes a member's index"))?;
+    let started = domains
+        .iter()
+        .find(|d| d.member == n)
+        .ok_or_else(|| io::Error::other(format!("member {n} did not start")))?;
+    let id = crate::domains::FIRST_ID
+        .checked_add(n)
+        .ok_or_else(|| io::Error::other(format!("member {n}: past the domains' IDs")))?;
+    Ok(Some((id, started.cgroup.as_str())))
+}
+
+/// A process's PID in a domain's PID namespace, a child of init's, from its `status`
+/// (proc(5)): the last of its two `NSpid:` numbers; none for a process of init's namespace
+/// (one number), as each domain's in-VM server instance is, in its domain's cgroup.
+fn domain_pid(status: &str) -> Option<u32> {
+    let ids: Vec<&str> = status
+        .lines()
+        .find_map(|l| l.strip_prefix("NSpid:"))?
+        .split_whitespace()
+        .collect();
+    match ids.as_slice() {
+        [_, inner] => inner.parse().ok(),
+        _ => None,
+    }
+}
+
+/// A pidfd of a process in the command's mount namespace of the domain whose cgroup is
+/// `cgroup`: one of its PID namespace's but that namespace's init, which keeps a mount
+/// namespace of its own (managed.rs), its command (PID 2 there) first. Each is held before
+/// it is checked to be the domain's still, so that a PID another process took meanwhile is
+/// never entered: one that ended once held fails setns(2), and the next is tried.
+fn member_process(cgroup: &str) -> io::Result<OwnedFd> {
+    let procs = std::fs::read_to_string(format!("{cgroup}/cgroup.procs"))
+        .map_err(|e| io::Error::new(e.kind(), format!("{cgroup}: {e}")))?;
+    let group = cgroup.strip_prefix("/sys/fs/cgroup").unwrap_or(cgroup);
+    let side = |pid: &str| {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        let in_group = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+            .is_ok_and(|c| c.lines().any(|l| l.strip_prefix("0::") == Some(group)));
+        domain_pid(&status).filter(|inner| in_group && *inner != 1)
+    };
+    let mut candidates: Vec<(u32, &str)> = procs
+        .lines()
+        .filter_map(|pid| side(pid).map(|inner| (inner, pid)))
+        .collect();
+    candidates.sort_by_key(|(inner, _)| *inner != 2);
+    for (_, pid) in candidates {
+        let Ok(pid) = pid.parse::<libc::pid_t>() else {
+            continue;
+        };
+        // SAFETY: pidfd_open(2) of a PID, with no flags.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0u32) };
+        let Ok(fd) = libc::c_int::try_from(fd) else {
+            continue;
+        };
+        if fd < 0 {
+            continue;
+        }
+        // SAFETY: the descriptor pidfd_open just made, owned here alone.
+        let held = unsafe { OwnedFd::from_raw_fd(fd) };
+        if side(&pid.to_string()).is_some() {
+            return Ok(held);
+        }
+    }
+    Err(io::Error::other(
+        "it runs no process of its own: it has ended, or not yet started",
+    ))
+}
+
+/// `include/uapi/linux/openat2.h`'s `struct open_how` and its resolve flags, and
+/// `open_tree`'s (include/uapi/linux/mount.h).
+#[repr(C)]
+struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+const RESOLVE_NO_XDEV: u64 = 0x01;
+const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+const RESOLVE_IN_ROOT: u64 = 0x10;
+const OPEN_TREE_CLONE: u32 = 1;
+
+/// Sets `set` on `mounted`'s attributes, and clears `clear` (mount_setattr(2)).
+fn mount_attrs(mounted: &OwnedFd, set: u64, clear: u64) -> io::Result<()> {
+    let attr: [u64; 4] = [set, clear, 0, 0];
+    // SAFETY: mount_setattr(2) of a mount this process holds, with a struct mount_attr it owns.
+    if unsafe {
+        libc::syscall(
+            libc::SYS_mount_setattr,
+            mounted.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH,
+            attr.as_ptr(),
+            std::mem::size_of_val(&attr),
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Sets `set` on `mounted`'s attributes.
+fn set_attrs(mounted: &OwnedFd, set: u64) -> io::Result<()> {
+    mount_attrs(mounted, set, 0)
+}
+
+/// Makes `parts`, a path beneath a plug root (D235), in this process's root, a domain's:
+/// through a copy of its root's mount, attached nowhere and made writable, the domain's own
+/// being read-only, so that each directory is made in the writable layer of the domain's
+/// root, which init alone writes (domains.rs `image_root`). The root is found as the
+/// domain's own walk finds it, its image's symlinks followed within it; beneath it no
+/// symlink is followed, so that nothing is made outside it.
+fn mount_point(parts: &[&str]) -> io::Result<()> {
+    // SAFETY: open_tree(2) of a NUL-terminated path, a copy of its mount alone.
+    let copy = unsafe {
+        libc::syscall(
+            libc::SYS_open_tree,
+            libc::AT_FDCWD,
+            c"/".as_ptr(),
+            OPEN_TREE_CLONE | libc::O_CLOEXEC as u32,
+        )
+    };
+    let copy = match libc::c_int::try_from(copy) {
+        Ok(fd) if fd >= 0 => fd,
+        _ => {
+            let e = io::Error::last_os_error();
+            return Err(io::Error::new(
+                e.kind(),
+                format!("a copy of the domain's root: {e}"),
+            ));
+        }
+    };
+    // SAFETY: the descriptor open_tree just made, owned here alone.
+    let mut at = unsafe { OwnedFd::from_raw_fd(copy) };
+    mount_attrs(&at, 0, MOUNT_ATTR_RDONLY)?;
+    for (i, part) in parts.iter().enumerate() {
+        let name = CString::new(*part).map_err(io::Error::other)?;
+        // SAFETY: mkdirat(2) of a NUL-terminated name beneath a descriptor held here.
+        if unsafe { libc::mkdirat(at.as_raw_fd(), name.as_ptr(), 0o755) } != 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() != Some(libc::EEXIST) {
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!("making /{}: {e}", parts.get(..=i).unwrap_or_default().join("/")),
+                ));
+            }
+        }
+        let how = OpenHow {
+            flags: (libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
+            mode: 0,
+            resolve: RESOLVE_NO_XDEV
+                | if i == 0 {
+                    RESOLVE_IN_ROOT
+                } else {
+                    RESOLVE_NO_SYMLINKS
+                },
+        };
+        // SAFETY: openat2(2) of a NUL-terminated name beneath a descriptor held here, with an
+        // open_how of the size given.
+        let fd = unsafe {
+            libc::syscall(
+                libc::SYS_openat2,
+                at.as_raw_fd(),
+                name.as_ptr(),
+                &raw const how,
+                std::mem::size_of::<OpenHow>(),
+            )
+        };
+        let fd = libc::c_int::try_from(fd)
+            .ok()
+            .filter(|fd| *fd >= 0)
+            .ok_or_else(|| {
+                let e = io::Error::last_os_error();
+                io::Error::new(
+                    e.kind(),
+                    format!("/{}: {e}", parts.get(..=i).unwrap_or_default().join("/")),
+                )
+            })?;
+        // SAFETY: the descriptor openat2 just made, owned here alone.
+        at = unsafe { OwnedFd::from_raw_fd(fd) };
+    }
+    Ok(())
 }
 
 /// Grows the ext4 file system mounted at `dst` to `bytes` (EXT4_IOC_RESIZE_FS, online,
@@ -555,6 +879,105 @@ mod tests {
         );
         assert_eq!(effective_ids("Uid:\t1000\t1000\t1000\t1000\n"), None, "no Gid:");
         assert_eq!(effective_ids("Uid:\t1000\nGid:\t1000\n"), None, "no effective ID");
+    }
+
+    /// A plug root is one top-level directory, named once however often the host names it;
+    /// one of init's own, a deeper path, or none at all is refused, so nothing is granted
+    /// beneath it.
+    #[test]
+    fn plug_roots_are_top_level_directories_not_inits() {
+        let setup = |entries: &[&str]| -> Vec<Vec<u8>> {
+            entries
+                .iter()
+                .map(|e| e.as_bytes().to_vec())
+                .chain([b"volume=shards0\0/data\0domains\0".to_vec()])
+                .collect()
+        };
+        let named = |roots: Vec<std::ffi::CString>| -> Vec<String> {
+            roots
+                .into_iter()
+                .map(|r| r.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(
+            named(
+                plug_roots(&setup(&[
+                    "plug-root=/Users",
+                    "plug-root=/Volumes",
+                    "plug-root=/Users"
+                ]))
+                .unwrap()
+            ),
+            ["Users", "Volumes"]
+        );
+        assert!(plug_roots(&setup(&[])).unwrap().is_empty());
+        for wrong in [
+            "plug-root=Users",
+            "plug-root=/",
+            "plug-root=/Users/ada",
+            "plug-root=/Users/",
+            "plug-root=/..",
+            "plug-root=/.",
+            "plug-root=/tmp",
+            "plug-root=/run",
+            "plug-root=/proc",
+            "plug-root=/sys",
+            "plug-root=/dev",
+            "plug-root=/etc",
+            "plug-root=/a\0b",
+        ] {
+            assert!(plug_roots(&setup(&[wrong])).is_err(), "{wrong:?}");
+        }
+    }
+
+    /// What is plugged into a domain lies strictly beneath one of the run's plug roots, by a
+    /// plain absolute path; anywhere else is refused naming the roots there are, so that no
+    /// plug is mounted where Landlock grants the domain nothing, or covers a root's rule.
+    #[test]
+    fn a_domains_plug_lies_strictly_beneath_a_root() {
+        let roots = [
+            std::ffi::CString::new("Users").unwrap(),
+            std::ffi::CString::new("Volumes").unwrap(),
+        ];
+        assert_eq!(
+            beneath_root("/Users/ada/proj", &roots).unwrap(),
+            ["Users", "ada", "proj"]
+        );
+        assert_eq!(beneath_root("/Volumes/x", &roots).unwrap(), ["Volumes", "x"]);
+        let refused = beneath_root("/home/ada", &roots).unwrap_err();
+        assert!(refused.contains("/Users, /Volumes"), "{refused}");
+        for wrong in [
+            "/Users",
+            "/",
+            "Users/ada",
+            "/Users/../etc",
+            "/Users/./x",
+            "/Users//x",
+            "/Users/x/",
+            "/tmp/x",
+        ] {
+            assert!(beneath_root(wrong, &roots).is_err(), "{wrong:?}");
+        }
+        assert!(
+            beneath_root("/Users/ada", &[])
+                .unwrap_err()
+                .contains("no plug roots")
+        );
+    }
+
+    /// A domain's processes are found by the PID namespace they run in: two `NSpid:`
+    /// numbers, the inner one the domain's; a process of init's own namespace, as each
+    /// domain's in-VM server instance is, or of one nested deeper, is none of them.
+    #[test]
+    fn a_domains_process_is_known_by_its_pid_namespace() {
+        assert_eq!(
+            domain_pid("Name:\tsh\nNSpid:\t1234\t2\nNSgid:\t1234\t2\n"),
+            Some(2)
+        );
+        assert_eq!(domain_pid("NSpid:\t77\t1\n"), Some(1));
+        assert_eq!(domain_pid("NSpid:\t1234\n"), None);
+        assert_eq!(domain_pid("NSpid:\t1\t2\t3\n"), None);
+        assert_eq!(domain_pid("Name:\tsh\n"), None);
     }
 
     /// `/dev/iommu` is given back as it was before a function by its device node had it:

@@ -16,6 +16,8 @@
 //!   its PID namespace; a `/dev` of six nodes, the `fd` and stdio links, a `shm` of its
 //!   own and an `mqueue` of its IPC namespace's; and a scratch tmpfs of its own at
 //!   `/tmp`, lost when it ends;
+//! - beneath each of the host's path roots its run names (D235, `/Users`), what is plugged
+//!   into it as it runs, at its host path, and nothing before;
 //! - has only its own loopback, brought up;
 //! - runs as uid and gid `200000 + n`, the n-th domain's, with no supplementary groups and
 //!   no capability left, bounding set included, and `no_new_privs` set;
@@ -202,6 +204,51 @@ fn within(path: &str, dir: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
+/// What init mounts for each domain that a volume's mount point lies in (D109). The build
+/// and the daemon refuse the same (`shards_agentfile::agentfile::DomainMount`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DomainMount {
+    /// Its root, or `/proc`, `/sys` or `/dev`, the file systems mounted there.
+    System,
+    /// `/tmp`, its scratch (D139). The scratch hides a mount point beneath it, and a volume
+    /// at it hides the scratch, where its server reads the files it hands across and what
+    /// is staged for it is written (D231).
+    Scratch,
+}
+
+impl std::fmt::Display for DomainMount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            DomainMount::System => "a volume may not cover a domain's root, /proc, /sys or /dev",
+            DomainMount::Scratch => "a volume may not be at or under /tmp, a domain's own scratch",
+        })
+    }
+}
+
+/// The [`DomainMount`] `path`, absolute and clean, lies in, if any.
+fn domain_mount(path: &str) -> Option<DomainMount> {
+    if path == "/" || ["/proc", "/sys", "/dev"].iter().any(|s| within(path, s)) {
+        Some(DomainMount::System)
+    } else if within(path, "/tmp") {
+        Some(DomainMount::Scratch)
+    } else {
+        None
+    }
+}
+
+/// Whether the domains are given the volume a run mounts at `dest`, which lies at `real`
+/// in the image: not where either lies in a [`DomainMount`]. One the Agentfile declares
+/// there (`declared`), or whose `dest` lies there, is refused, as the build and the daemon
+/// refuse it; a Docker `VOLUME` an image's symlink leads there stays the run's own root's.
+fn given_at(dest: &str, real: &str, declared: bool) -> Result<bool, DomainMount> {
+    match (domain_mount(dest), domain_mount(real)) {
+        (Some(m), _) => Err(m),
+        (None, Some(m)) if declared => Err(m),
+        (None, Some(_)) => Ok(false),
+        (None, None) => Ok(true),
+    }
+}
+
 /// Whether `d` is given the volume at `dest`: where a `VOLUME` names it, as that says;
 /// a volume no `VOLUME` scopes (Docker's own, or one with no `FOR`), every domain.
 fn given_volume(d: &Domain, dest: &str) -> bool {
@@ -348,9 +395,9 @@ pub fn read() -> Result<Read, String> {
     }
     // Their links, clear of the microVM's own network.
     let names: Vec<crate::netplan::Name> = out.iter().map(|d| d.name.clone()).collect();
-    let own = crate::net::current().map(|(addr, prefix, _)| {
+    let own = crate::net::current().map(|(addr, prefix, gateway)| {
         let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
-        (std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix)
+        (std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix, gateway)
     });
     let own6 = crate::net::current6().map(|(addr, prefix, _)| {
         let mask = u128::MAX.checked_shl(128 - u32::from(prefix)).unwrap_or(0);
@@ -412,7 +459,7 @@ pub fn read() -> Result<Read, String> {
         // agents' resolver, at the switch's end of its gate's link (D61), which holds it to
         // what it may ask.
         if let Some(l) = &link
-            && (l.dns || !l.mcp.is_empty())
+            && (l.dns || !l.named.is_empty())
             && !l.addresses.is_empty()
         {
             d.resolv =
@@ -720,6 +767,11 @@ mod landlock {
     }
 }
 
+/// The attributes of the microVM's system as a domain sees it, its root's first (D59):
+/// read-only, `nosuid` and `nodev`. Read-only is what keeps a plug root (D235) granting
+/// nothing until something is plugged there, as Landlock grants every right beneath one.
+const SYSTEM: u64 = libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV;
+
 /// Everything a domain's first process uses, made before it is: after `clone3` it calls
 /// the kernel alone.
 struct Prepared {
@@ -742,6 +794,8 @@ struct Prepared {
     chooser: Option<(RawFd, *const libc::sock_fprog)>,
     /// Its root: the image as built, a mount not yet attached.
     root: RawFd,
+    /// The run's plug roots (D235), `/Users`, beneath which Landlock grants it every right.
+    plug_roots: Vec<CString>,
     /// Its Unix sockets' directories, each a mount not yet attached and where it goes,
     /// `/run/networks/<network>/<name>`; read-only where it only connects.
     sockets: Vec<(RawFd, CString)>,
@@ -899,33 +953,84 @@ fn scratch(lower: std::os::fd::BorrowedFd<'_>, id: u32) -> io::Result<Option<Own
 }
 
 /// What a domain mounts over and the image may lack, made where it does: the run makes
-/// them in its writable layer, which a domain does not see.
-fn skeleton(lower: std::os::fd::BorrowedFd<'_>, sockets: &[CString]) -> io::Result<OwnedFd> {
-    let skel = detached(c"tmpfs", &[(c"mode", c"0755")])?;
-    let lacks = |path: &CStr| {
+/// them in its writable layer, which a domain does not see. The run's plug roots (D235,
+/// `roots`) too, where the image lacks them. overlayfs shows a directory both layers hold
+/// with the upper one's owner and mode (Documentation/filesystems/overlayfs.rst,
+/// "Directories"), so each directory made here that the image has takes the image's, as
+/// the tmpfs's root takes the image's root's: a mount point's parents (`/home/node` of a
+/// volume at `/home/node/.cache`) stay as the image made them.
+fn skeleton(
+    lower: std::os::fd::BorrowedFd<'_>,
+    sockets: &[CString],
+    roots: &[CString],
+) -> io::Result<OwnedFd> {
+    let image = |path: &CStr| {
         // SAFETY: fstatat(2) of a NUL-terminated path into a zeroed stat it owns, a type of
-        // integers alone.
+        // integers alone; the empty path, with AT_EMPTY_PATH, is the image's root.
         unsafe {
             let mut st: libc::stat = std::mem::zeroed();
-            libc::fstatat(
-                lower.as_raw_fd(),
-                path.as_ptr(),
-                &raw mut st,
-                libc::AT_SYMLINK_NOFOLLOW,
-            ) != 0
+            let flags = libc::AT_SYMLINK_NOFOLLOW | if path.is_empty() { libc::AT_EMPTY_PATH } else { 0 };
+            (libc::fstatat(lower.as_raw_fd(), path.as_ptr(), &raw mut st, flags) == 0).then_some(st)
         }
     };
-    for dir in [c"proc", c"dev", c"sys", c"tmp", c"etc"] {
-        if !(lacks(dir) || dir == c"etc") {
-            continue;
-        }
+    let is_dir = |st: &libc::stat| st.st_mode & libc::S_IFMT == libc::S_IFDIR;
+    let root = image(c"").ok_or_else(io::Error::last_os_error)?;
+    let option = |n: String| CString::new(n).map_err(io::Error::other);
+    let (mode, uid, gid) = (
+        option(format!("{:o}", root.st_mode & 0o7777))?,
+        option(root.st_uid.to_string())?,
+        option(root.st_gid.to_string())?,
+    );
+    let skel = detached(
+        c"tmpfs",
+        &[
+            (c"mode", mode.as_c_str()),
+            (c"uid", uid.as_c_str()),
+            (c"gid", gid.as_c_str()),
+        ],
+    )?;
+    let make = |path: &CStr| -> io::Result<()> {
         // SAFETY: mkdirat(2) of a NUL-terminated path in the tmpfs just made.
-        if unsafe { libc::mkdirat(skel.as_raw_fd(), dir.as_ptr(), 0o755) } != 0 {
-            return Err(io::Error::last_os_error());
+        if unsafe { libc::mkdirat(skel.as_raw_fd(), path.as_ptr(), 0o755) } != 0 {
+            let e = io::Error::last_os_error();
+            // Made already, as an earlier mount point's parent.
+            return if e.kind() == io::ErrorKind::AlreadyExists {
+                Ok(())
+            } else {
+                Err(e)
+            };
+        }
+        let Some(st) = image(path).filter(is_dir) else {
+            return Ok(());
+        };
+        // SAFETY: fchownat(2) and fchmodat(2) of the directory just made in the tmpfs: its
+        // owner first, as a chown clears set-ID bits (chown(2)), then its mode whole.
+        unsafe {
+            if libc::fchownat(
+                skel.as_raw_fd(),
+                path.as_ptr(),
+                st.st_uid,
+                st.st_gid,
+                libc::AT_SYMLINK_NOFOLLOW,
+            ) != 0
+                || libc::fchmodat(skel.as_raw_fd(), path.as_ptr(), st.st_mode & 0o7777, 0) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    };
+    for dir in [c"proc", c"dev", c"sys", c"tmp", c"etc"]
+        .into_iter()
+        .chain(roots.iter().map(CString::as_c_str))
+    {
+        if image(dir).is_none() || dir == c"etc" {
+            make(dir)?;
         }
     }
-    // Where its Unix sockets' directories go: `run/networks/<network>/<name>`, each made
-    // with its parents, `run` merged with the image's own.
+    // Where its mounts go, each made with its parents: its Unix sockets' directories,
+    // `run/networks/<network>/<name>`, `run` merged with the image's own; its server's; its
+    // volumes'.
     for dir in sockets {
         let bytes = dir.to_bytes();
         for (at, _) in bytes
@@ -937,16 +1042,11 @@ fn skeleton(lower: std::os::fd::BorrowedFd<'_>, sockets: &[CString]) -> io::Resu
             let Ok(part) = CString::new(bytes.get(..at).unwrap_or_default()) else {
                 continue;
             };
-            // SAFETY: mkdirat(2) of a NUL-terminated path in the tmpfs just made.
-            if unsafe { libc::mkdirat(skel.as_raw_fd(), part.as_ptr(), 0o755) } != 0
-                && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists
-            {
-                return Err(io::Error::last_os_error());
-            }
+            make(&part)?;
         }
     }
     for file in [c"etc/hosts", c"etc/resolv.conf"] {
-        if !lacks(file) {
+        if image(file).is_some() {
             continue;
         }
         // SAFETY: openat(2) of a NUL-terminated path in the tmpfs just made.
@@ -967,17 +1067,54 @@ fn skeleton(lower: std::os::fd::BorrowedFd<'_>, sockets: &[CString]) -> io::Resu
     Ok(skel)
 }
 
-/// A domain's root: the image as built, under what [`skeleton`] adds, an overlay with no
-/// writable layer, attached nowhere.
-fn image_root(skel: &OwnedFd, lower: std::os::fd::BorrowedFd<'_>) -> io::Result<OwnedFd> {
+/// A domain's root: the image as built, under what [`skeleton`] adds, an overlay attached
+/// nowhere. With plug roots (D235, `pluggable`) it has a writable layer of its own, a tmpfs
+/// that init alone writes, through a mount of its own (hotplug.rs), to make the mount
+/// points of what is plugged into the domain as it runs; without, none. The domain's own
+/// mount of its root is read-only either way ([`child`]).
+fn image_root(skel: &OwnedFd, lower: std::os::fd::BorrowedFd<'_>, pluggable: bool) -> io::Result<OwnedFd> {
     let layers = CString::new(format!(
         "/proc/self/fd/{}:/proc/self/fd/{}",
         skel.as_raw_fd(),
         lower.as_raw_fd()
     ))
     .map_err(io::Error::other)?;
-    // One space of inode numbers for its layers (run::XINO).
-    detached(c"overlay", &[(c"lowerdir", layers.as_c_str()), (c"xino", c"on")])
+    if !pluggable {
+        // One space of inode numbers for its layers (run::XINO).
+        return detached(c"overlay", &[(c"lowerdir", layers.as_c_str()), (c"xino", c"on")]);
+    }
+    let rw = detached(c"tmpfs", &[(c"mode", c"0755")])?;
+    for dir in [c"upper", c"work"] {
+        // SAFETY: mkdirat(2) of a NUL-terminated name in the tmpfs just made.
+        if unsafe { libc::mkdirat(rw.as_raw_fd(), dir.as_ptr(), 0o755) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    // The root's owner and mode are its upper layer's, as overlayfs shows a directory both
+    // layers hold: so `upper` is given the image's own, as the domain's root is the image's.
+    // SAFETY: an all-zero stat is a valid out-parameter, which fstat(2) fills.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstat(2) of the image's root, a descriptor init holds, and fchownat(2) and
+    // fchmodat(2) of a NUL-terminated name in the tmpfs just made.
+    if unsafe {
+        libc::fstat(lower.as_raw_fd(), &raw mut st) != 0
+            || libc::fchownat(rw.as_raw_fd(), c"upper".as_ptr(), st.st_uid, st.st_gid, 0) != 0
+            || libc::fchmodat(rw.as_raw_fd(), c"upper".as_ptr(), st.st_mode & 0o7777, 0) != 0
+    } {
+        return Err(io::Error::last_os_error());
+    }
+    let of =
+        |dir: &str| CString::new(format!("/proc/self/fd/{}/{dir}", rw.as_raw_fd())).map_err(io::Error::other);
+    let (upper, work) = (of("upper")?, of("work")?);
+    detached(
+        c"overlay",
+        &[
+            (c"lowerdir", layers.as_c_str()),
+            (c"upperdir", upper.as_c_str()),
+            (c"workdir", work.as_c_str()),
+            (c"xino", c"on"),
+        ],
+    )
 }
 
 /// The domains' memory, watched: past their share (`memory.high`), the domain holding the
@@ -1220,7 +1357,7 @@ fn gate_of(
         egress: link.egress.clone(),
         // Past the uplink's translation, at the domain's own ports (D122).
         ingress: link.ingress.iter().map(|&(_, at)| at).collect(),
-        dns: link.dns || !link.mcp.is_empty(),
+        dns: link.dns || !link.named.is_empty(),
         own6: link.addresses6.iter().map(|a| a.addr).collect(),
         opens6: pairs
             .iter()
@@ -1264,7 +1401,7 @@ fn gate_of(
 pub fn uplinked(d: &Domain) -> bool {
     d.link
         .as_ref()
-        .is_some_and(|l| !l.egress.is_empty() || !l.ingress.is_empty() || l.dns || !l.mcp.is_empty())
+        .is_some_and(|l| !l.egress.is_empty() || !l.ingress.is_empty() || l.dns || !l.named.is_empty())
 }
 
 /// The switch `domains` link to: `pairs` of them allowed to open connections to each
@@ -1302,13 +1439,13 @@ fn switch(
     let dns: Vec<usize> = domains
         .iter()
         .enumerate()
-        .filter(|(_, d)| d.link.as_ref().is_some_and(|l| l.dns || !l.mcp.is_empty()))
+        .filter(|(_, d)| d.link.as_ref().is_some_and(|l| l.dns || !l.named.is_empty()))
         .map(|(i, _)| i)
         .collect();
     let uplink = match egress.is_empty() && ingress.is_empty() && dns.is_empty() {
         true => None,
         false => {
-            let (addr, prefix, _) = crate::net::current()
+            let (addr, prefix, gateway) = crate::net::current()
                 .ok_or_else(|| io::Error::other("the microVM has no address for its agents' egress"))?;
             let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
             let mut subnets: Vec<(std::net::Ipv4Addr, u8)> = Vec::new();
@@ -1384,6 +1521,7 @@ fn switch(
                 resolver: !dns.is_empty(),
                 subnets,
                 eth0: (addr, std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix),
+                gateway,
                 ipv6,
             })
         }
@@ -1425,7 +1563,14 @@ fn switch(
         askers.push(crate::agentdns::Asker {
             link: crate::links::link_index(i)?,
             any: l.dns,
-            names: l.mcp.iter().map(|(h, _)| h.clone()).collect(),
+            // Its destinations' names, but the host itself's, which its hosts file holds
+            // and no resolver is asked (D236).
+            names: l
+                .named
+                .iter()
+                .map(|(h, _)| h.clone())
+                .filter(|h| h != shards_dns::HOST)
+                .collect(),
             addrs: l.addresses.iter().map(|a| a.addr).collect(),
             local: Vec::new(),
         });
@@ -1487,7 +1632,14 @@ pub fn start(
     landlock_abi()?;
     let lower =
         crate::changes::lower().ok_or("the image's layers were not kept, which a domain's root is")?;
-    let skel = skeleton(lower, &[]).map_err(|e| format!("a domain's root: {e}"))?;
+    // The host's path roots (D235), beneath which paths are plugged into a domain as it runs.
+    let roots = crate::hotplug::plug_roots(setup)?;
+    let plug_roots: Vec<CString> = roots
+        .iter()
+        .map(|r| CString::new([&b"/"[..], r.to_bytes()].concat()))
+        .collect::<Result<_, _>>()
+        .map_err(|_| "a plug root with a NUL")?;
+    let skel = skeleton(lower, &[], &roots).map_err(|e| format!("a domain's root: {e}"))?;
     // The Unix sockets granted (`CONNECT --port=unix:<name>`): a directory each, of the
     // tmpfs the run's writable layer lies in, which no path from the run's root reaches and
     // no mount of the run's shares; sticky, so that none removes another's.
@@ -1539,21 +1691,10 @@ pub fn start(
             .resolve(sh.dest.as_bytes(), false)
             .map_err(|e| fail(e.to_string()))
             .and_then(|r| String::from_utf8(r).map_err(|_| fail("a name that is not UTF-8".into())))?;
-        // A domain's root and its system's mounts are its own: a volume there would cover
-        // them (Docker refuses `/` as a destination too). One the Agentfile declares is
-        // refused, as its build refuses it; a Docker `VOLUME` an image's symlink leads
-        // there stays the run's own root's.
-        let covers = |p: &str| p == "/" || ["/proc", "/sys", "/dev"].iter().any(|s| within(p, s));
-        if covers(&sh.dest) || covers(&real) {
-            if covers(&sh.dest)
-                || domains
-                    .iter()
-                    .any(|d| d.volumes.iter().any(|r| r.path == sh.dest))
-            {
-                return Err(fail(
-                    "a volume may not cover a domain's root, /proc, /sys or /dev".into(),
-                ));
-            }
+        let declared = domains
+            .iter()
+            .any(|d| d.volumes.iter().any(|r| r.path == sh.dest));
+        if !given_at(&sh.dest, &real, declared).map_err(|m| fail(m.to_string()))? {
             continue;
         }
         let at = format!("{rw}/volumes/{k}");
@@ -1808,13 +1949,15 @@ pub fn start(
             &skel
         } else {
             let dirs: Vec<CString> = copies.iter().map(|(_, t)| t.clone()).collect();
-            own_skel = skeleton(lower, &dirs).map_err(|e| format!("{}: its root: {e}", d.label))?;
+            own_skel = skeleton(lower, &dirs, &roots).map_err(|e| format!("{}: its root: {e}", d.label))?;
             &own_skel
         };
-        let root = image_root(skel_of, lower).map_err(|e| format!("{}: its root: {e}", d.label))?;
+        let root = image_root(skel_of, lower, !roots.is_empty())
+            .map_err(|e| format!("{}: its root: {e}", d.label))?;
         let prepared = Prepared {
             shm: shm.clone(),
             root: root.as_raw_fd(),
+            plug_roots: plug_roots.clone(),
             sockets,
             volumes,
             scratch: scratch.as_ref().map(AsRawFd::as_raw_fd),
@@ -2348,12 +2491,7 @@ fn child(
             fail(out, c"entering the image as built");
         }
         // The microVM's system, read-only, nosuid and nodev (struct mount_attr).
-        let attr: [u64; 4] = [
-            libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV,
-            0,
-            0,
-            0,
-        ];
+        let attr: [u64; 4] = [SYSTEM, 0, 0, 0];
         if libc::syscall(
             libc::SYS_mount_setattr,
             libc::AT_FDCWD,
@@ -2704,6 +2842,31 @@ fn exec_child(d: &Domain, p: &Prepared, flags: u32, program: &libc::sock_fprog) 
                 fail(out, c"adding its volume's Landlock rule");
             }
         }
+        // The run's plug roots (D235): what is plugged into it as it runs, beneath one,
+        // written as it pleases where it is not read-only. A root grants nothing before: it
+        // lies on its root's mount, read-only. One that is no directory in its view is
+        // skipped, as the base paths above are.
+        for at in &p.plug_roots {
+            let fd = libc::open(at.as_ptr(), libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC);
+            if fd < 0 {
+                continue;
+            }
+            let rule = landlock::PathBeneathAttr {
+                allowed_access: landlock::FS_ALL,
+                parent_fd: fd,
+            };
+            let added = libc::syscall(
+                libc::SYS_landlock_add_rule,
+                ruleset,
+                landlock::RULE_PATH_BENEATH,
+                &raw const rule,
+                0u32,
+            );
+            libc::close(fd);
+            if added != 0 {
+                fail(out, c"adding a plug root's Landlock rule");
+            }
+        }
         for at in &p.receives {
             let fd = libc::open(at.as_ptr(), libc::O_PATH | libc::O_CLOEXEC);
             let rule = landlock::PathBeneathAttr {
@@ -2944,11 +3107,211 @@ mod tests {
         }
     }
 
+    /// Runs `work` in a child of the test's, as root of a mount namespace of its own, and
+    /// returns what it says: in a user namespace of its own where the test is not root
+    /// already, its uid and gid there 0 (user_namespaces(7)), standing in for init's
+    /// privileges. None, said as a SKIP, where this host gives an unprivileged process
+    /// neither namespace.
+    fn as_root_of_own_mounts(work: impl FnOnce() -> String) -> Option<String> {
+        use std::io::{Read as _, Write as _};
+        let mut fds = [0 as RawFd; 2];
+        // SAFETY: pipe2(2) into a two-element array.
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: both descriptors were just made, and are owned here alone.
+        let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        // SAFETY: getuid(2), getgid(2) and geteuid(2) cannot fail.
+        let (uid, gid, root) = unsafe { (libc::getuid(), libc::getgid(), libc::geteuid() == 0) };
+        // SAFETY: fork(2); the child runs `work` and _exit(2)s, never returning into the
+        // test harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
+        if pid == 0 {
+            drop(r);
+            // A panic here is the child's to say, never to unwind into the harness.
+            let said = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let flags = libc::CLONE_NEWNS | if root { 0 } else { libc::CLONE_NEWUSER };
+                // SAFETY: unshare(2) of this single-threaded child.
+                if unsafe { libc::unshare(flags) } != 0 {
+                    return format!("SKIP: unshare: {}", io::Error::last_os_error());
+                }
+                if !root {
+                    let maps = std::fs::write("/proc/self/setgroups", "deny")
+                        .and_then(|()| std::fs::write("/proc/self/uid_map", format!("0 {uid} 1")))
+                        .and_then(|()| std::fs::write("/proc/self/gid_map", format!("0 {gid} 1")));
+                    if let Err(e) = maps {
+                        return format!("SKIP: its ID maps: {e}");
+                    }
+                }
+                // SAFETY: mount(2) of NUL-terminated literals, in this child's own namespace.
+                if unsafe {
+                    libc::mount(
+                        std::ptr::null(),
+                        c"/".as_ptr(),
+                        std::ptr::null(),
+                        libc::MS_REC | libc::MS_PRIVATE,
+                        std::ptr::null(),
+                    )
+                } != 0
+                {
+                    return format!("SKIP: its mounts private: {}", io::Error::last_os_error());
+                }
+                work()
+            }))
+            .unwrap_or_else(|_| "the child panicked".into());
+            let _ = std::fs::File::from(w).write_all(said.as_bytes());
+            // SAFETY: ends the child without running the harness's exit paths.
+            unsafe { libc::_exit(0) }
+        }
+        drop(w);
+        let mut said = String::new();
+        std::fs::File::from(r).read_to_string(&mut said).unwrap();
+        // SAFETY: waits for the test's own child.
+        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+        if said.starts_with("SKIP") {
+            eprintln!("{said}");
+            return None;
+        }
+        Some(said)
+    }
+
+    /// A domain's root shows each directory the image has as the image made it, where its
+    /// skeleton makes one there too: a volume's mount point's parents, `/etc`, the root
+    /// itself. overlayfs shows a merged directory with its upper layer's owner and mode, and
+    /// the skeleton's were root's, 0755, whatever the image's
+    /// (docs/research/measurements/s7-home-workdir). Owners are checked where the test runs
+    /// as root of IDs past its own (`unshare --map-auto --map-root-user`).
+    #[test]
+    fn a_skeletons_directories_are_the_images_own() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let dir = shards_testdir::TempDir::new("skel").unwrap();
+        let (lower, at) = (dir.path().join("lower"), dir.path().join("at"));
+        for d in ["home/node", "etc", "tmp"] {
+            std::fs::create_dir_all(lower.join(d)).unwrap();
+        }
+        std::fs::create_dir(&at).unwrap();
+        for (d, mode) in [("", 0o751), ("home/node", 0o750), ("etc", 0o711), ("tmp", 0o1777)] {
+            std::fs::set_permissions(lower.join(d), std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let said = as_root_of_own_mounts(|| {
+            // Another user's, where this namespace has one (1000), to see owners kept too.
+            let owners = std::os::unix::fs::chown(lower.join("home/node"), Some(1000), Some(1000)).is_ok();
+            let image = std::fs::File::open(&lower).unwrap();
+            let skel = match skeleton(image.as_fd(), &[c"home/node/.cache".into()], &[]) {
+                Ok(s) => s,
+                Err(e) => return format!("skeleton: {e}"),
+            };
+            let root = match image_root(&skel, image.as_fd(), false) {
+                Ok(r) => r,
+                Err(e) => return format!("its root: {e}"),
+            };
+            let target = CString::new(at.to_str().unwrap()).unwrap();
+            // SAFETY: move_mount(2) of the detached root onto a NUL-terminated path.
+            if unsafe {
+                libc::syscall(
+                    libc::SYS_move_mount,
+                    root.as_raw_fd(),
+                    c"".as_ptr(),
+                    libc::AT_FDCWD,
+                    target.as_ptr(),
+                    mount_api::MOVE_MOUNT_F_EMPTY_PATH,
+                )
+            } != 0
+            {
+                return format!("attaching its root: {}", io::Error::last_os_error());
+            }
+            let mut out = String::new();
+            for d in ["", "home", "home/node", "etc", "tmp", "home/node/.cache"] {
+                let (theirs, ours) = (lower.join(d), at.join(d));
+                let shown = |p: &std::path::Path| {
+                    std::fs::symlink_metadata(p).map_or_else(
+                        |e| format!("{e}"),
+                        |m| {
+                            let who = if owners {
+                                format!("{}:{} ", m.uid(), m.gid())
+                            } else {
+                                String::new()
+                            };
+                            format!("{who}{:o}", m.mode() & 0o7777)
+                        },
+                    )
+                };
+                out += &format!("/{d} {} as {};", shown(&ours), shown(&theirs));
+            }
+            out
+        });
+        let Some(said) = said else { return };
+        eprintln!("{said}");
+        let seen: Vec<(&str, &str, &str)> = said
+            .split(';')
+            .filter_map(|l| {
+                let (d, rest) = l.split_once(' ')?;
+                let (ours, theirs) = rest.split_once(" as ")?;
+                Some((d, ours, theirs))
+            })
+            .collect();
+        assert_eq!(seen.len(), 6, "{said}");
+        for (d, ours, theirs) in seen {
+            if d == "/home/node/.cache" {
+                // The image lacks the mount point itself: the skeleton's own, root's, 0755.
+                assert!(ours.ends_with("755") && theirs.contains("No such file"), "{said}");
+            } else {
+                assert_eq!(ours, theirs, "{d}: {said}");
+            }
+        }
+    }
+
+    /// A plug root (D235) grants nothing until something is plugged there: Landlock grants
+    /// every right beneath it, and it lies on its domain's root, which the domain's mount of
+    /// the microVM's system keeps read-only, so the domain can make nothing beneath it.
+    #[test]
+    fn a_plug_root_lies_on_a_read_only_root() {
+        assert_ne!(SYSTEM & libc::MOUNT_ATTR_RDONLY, 0);
+    }
+
     #[test]
     fn within_is_a_directory_and_what_lies_beneath() {
         assert!(within("/proc", "/proc"));
         assert!(within("/proc/self", "/proc"));
         assert!(!within("/process", "/proc"));
         assert!(!within("/", "/proc"));
+    }
+
+    /// A volume is given no domain where it would lie in what init mounts for each: its
+    /// root and system, or its scratch, where a volume beneath finds no mount point and one
+    /// at it hides the scratch (docs/research/measurements/s7-scratch-volume). The
+    /// Agentfile's own are refused there, a Docker `VOLUME` an image's symlink leads there
+    /// is the run's alone, as the build and the daemon hold them.
+    #[test]
+    fn no_volume_lies_in_what_init_mounts_for_a_domain() {
+        for p in ["/", "/proc", "/sys/fs", "/dev", "/dev/shm"] {
+            assert_eq!(domain_mount(p), Some(DomainMount::System), "{p}");
+        }
+        for p in ["/tmp", "/tmp/x", "/tmp/a/b"] {
+            assert_eq!(domain_mount(p), Some(DomainMount::Scratch), "{p}");
+        }
+        for p in ["/data", "/tmpfiles", "/var/tmp", "/home/h/tmp"] {
+            assert_eq!(domain_mount(p), None, "{p}");
+        }
+        assert_eq!(given_at("/data", "/data", true), Ok(true));
+        assert_eq!(given_at("/var/run/x", "/run/x", false), Ok(true));
+        for declared in [false, true] {
+            assert_eq!(given_at("/tmp/x", "/tmp/x", declared), Err(DomainMount::Scratch));
+            assert_eq!(given_at("/tmp", "/tmp", declared), Err(DomainMount::Scratch));
+            assert_eq!(
+                given_at("/dev/shm", "/dev/shm", declared),
+                Err(DomainMount::System)
+            );
+        }
+        // Led into the scratch by the image's symlink (`/cache` -> `/tmp/cache`).
+        assert_eq!(given_at("/cache", "/tmp/cache", false), Ok(false));
+        assert_eq!(given_at("/cache", "/tmp/cache", true), Err(DomainMount::Scratch));
+        assert_eq!(given_at("/var/shm", "/dev/shm", false), Ok(false));
+        assert!(
+            DomainMount::Scratch
+                .to_string()
+                .contains("/tmp, a domain's own scratch"),
+            "{}",
+            DomainMount::Scratch
+        );
     }
 }

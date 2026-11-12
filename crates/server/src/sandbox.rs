@@ -272,7 +272,13 @@ fn confine(prog: &[libc::sock_filter]) -> Result<(), String> {
 
 /// What a worker may call: read and write its socket, manage its memory, read the clock and
 /// the kernel's randomness, and end; what musl's fork leaves the child to call (`gettid`,
-/// signal masks); nothing else.
+/// signal masks); nothing else. And `restart_syscall`, which the kernel has a process call
+/// to resume a wait a stop broke into, as a job-control stop, a cgroup's freeze (init's
+/// pause and commit) or a debugger's attach does: a timed futex wait's (Linux v7.2-rc4
+/// kernel/futex/waitwake.c `futex_wait`), and the helper's poll on x86_64 (fs/select.c),
+/// where no handler ran (arch/x86/kernel/signal.c, arch/arm64/kernel/signal.c). It calls
+/// only the restart the interrupted call left, else fails with EINTR (kernel/signal.c
+/// `restart_syscall`, `do_no_restart_syscall`), so it allows no other call.
 fn worker_calls() -> Vec<libc::c_long> {
     vec![
         libc::SYS_read,
@@ -284,6 +290,7 @@ fn worker_calls() -> Vec<libc::c_long> {
         libc::SYS_brk,
         libc::SYS_madvise,
         libc::SYS_futex,
+        libc::SYS_restart_syscall,
         libc::SYS_clock_gettime,
         libc::SYS_getrandom,
         libc::SYS_gettid,
@@ -306,7 +313,7 @@ fn helper_calls() -> Vec<libc::c_long> {
         libc::SYS_recvmsg,
         libc::SYS_sendmsg,
         libc::SYS_ppoll,
-        libc::SYS_clone3,
+        libc::SYS_clone,
         libc::SYS_getpid,
         libc::SYS_getppid,
         libc::SYS_pidfd_send_signal,
@@ -557,7 +564,7 @@ fn serve_helper() -> Result<(), HelperFailure> {
         .map_err(|_| HelperCause::Io("its control poll slot", io::ErrorKind::OutOfMemory, None))?;
     let result = (|| -> Result<(), HelperCause> {
         loop {
-            // Every birth reserves its next poll slot before clone3. Rebuilding this
+            // Every birth reserves its next poll slot before clone. Rebuilding this
             // derived readiness view therefore allocates nothing after a birth.
             set.clear();
             for fd in std::iter::once(control).chain(workers.iter().map(|w| w.pidfd.as_raw_fd())) {
@@ -614,27 +621,27 @@ fn serve_helper() -> Result<(), HelperFailure> {
                         Worker::said(control, id, -1, -1)?;
                         continue;
                     }
-                    let mut pidfd = -1;
+                    let mut pidfd: libc::c_int = -1;
                     // SAFETY: getpid identifies this freshly exec'd, single-threaded helper.
                     let parent = unsafe { libc::getpid() };
-                    let mut args = libc::clone_args {
-                        flags: libc::CLONE_PIDFD as u64,
-                        pidfd: (&raw mut pidfd) as u64,
-                        child_tid: 0,
-                        parent_tid: 0,
-                        exit_signal: libc::SIGCHLD as u64,
-                        stack: 0,
-                        stack_size: 0,
-                        tls: 0,
-                        set_tid: 0,
-                        set_tid_size: 0,
-                        cgroup: 0,
-                    };
-                    // SAFETY: fork-like clone3 from the fresh single-threaded helper.
-                    // CLONE_PIDFD reserves/stores the parent handle before publishing
-                    // a child (Linux 6.18.48 kernel/fork.c, copy_process).
+                    // clone(2), which carries this request whole, as glibc's fork calls it
+                    // (sysdeps/unix/sysv/linux/arch-fork.h); not clone3, which Docker's
+                    // default seccomp profile answers ENOSYS (crates/seccomp/data/default.json).
+                    // SAFETY: fork-like clone from the fresh single-threaded helper.
+                    // CLONE_PIDFD reserves/stores the parent handle, through the third
+                    // argument (parent_tid), before publishing a child (Linux 6.18.48
+                    // kernel/fork.c, the clone entry and copy_process). No stack, TLS or
+                    // child TID: the last two arguments are 0 in either order an
+                    // architecture takes them.
                     let pid = unsafe {
-                        libc::syscall(libc::SYS_clone3, &raw mut args, size_of::<libc::clone_args>())
+                        libc::syscall(
+                            libc::SYS_clone,
+                            (libc::CLONE_PIDFD | libc::SIGCHLD) as libc::c_long,
+                            0 as libc::c_long,
+                            &raw mut pidfd,
+                            0 as libc::c_long,
+                            0 as libc::c_long,
+                        )
                     };
                     if pid < 0 {
                         Worker::said(control, id, -1, -1)?;
@@ -1279,5 +1286,251 @@ return [typeof __call, typeof globalThis.__call, Object.isFrozen(shards), change
                 "{x32:#x}"
             );
         }
+    }
+
+    /// The state `/proc/PID/stat` says of `pid` (proc(5)): the field after its command's
+    /// name, which is in parentheses and may hold any byte.
+    fn state(pid: libc::pid_t) -> Option<u8> {
+        let stat = std::fs::read(format!("/proc/{pid}/stat")).ok()?;
+        let name_end = stat.iter().rposition(|&b| b == b')')?;
+        stat.get(name_end + 2).copied()
+    }
+
+    /// A word of memory this process and its children share, its waiters found by futex(2)
+    /// in each (an anonymous shared mapping), and unmapped as it goes.
+    struct Shared(*mut libc::c_void);
+
+    impl Shared {
+        fn new() -> Shared {
+            // SAFETY: a new anonymous shared mapping of one page, checked below.
+            let at = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    4096,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_SHARED | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            assert_ne!(at, libc::MAP_FAILED, "{}", io::Error::last_os_error());
+            Shared(at)
+        }
+
+        fn word(&self) -> &std::sync::atomic::AtomicU32 {
+            // SAFETY: the mapping is page-aligned, zeroed, and lives as long as `self`.
+            unsafe { &*self.0.cast::<std::sync::atomic::AtomicU32>() }
+        }
+    }
+
+    impl Drop for Shared {
+        fn drop(&mut self) {
+            // SAFETY: munmap(2) of the page `new` mapped, which nothing uses after.
+            unsafe { libc::munmap(self.0, 4096) };
+        }
+    }
+
+    /// A child stopped and continued while it waits, as a job-control stop, a cgroup's
+    /// freeze (init's pause and commit) or a debugger's attach stops and continues a
+    /// process: whether it stopped, and its status as it ended. The child loads `filter`,
+    /// says so, and calls `wait`, which waits for its word to be set or its pipe to be
+    /// written; once it sleeps there, it is stopped and continued, then `wake` sets the word
+    /// or writes the pipe. It exits 0 where its wait came to that; its filter ends it with
+    /// SIGSYS where it refuses how the wait resumes.
+    fn stopped_while_waiting(
+        filter: &[libc::sock_filter],
+        wait: fn(&std::sync::atomic::AtomicU32, RawFd) -> bool,
+        wake: fn(&std::sync::atomic::AtomicU32, RawFd),
+    ) -> (bool, i32) {
+        let shared = Shared::new();
+        let pipe = || {
+            let mut fds = [0 as RawFd; 2];
+            // SAFETY: pipe2(2) into a two-element array.
+            assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+            // SAFETY: both were just made, and are owned here alone.
+            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+        };
+        let (ready_r, ready_w) = pipe();
+        let (wake_r, wake_w) = pipe();
+        // SAFETY: fork(2); the child loads the filter made above, writes, waits and exits,
+        // calling nothing that allocates where its filter is loaded.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            // No core of it, as its filter may end it with SIGSYS (a_worker_is_ended_for_a_
+            // call_its_filter_refuses).
+            // SAFETY: prctl(2) with constant arguments, write(2) of a byte of ours, then
+            // _exit(2) of the child.
+            unsafe {
+                libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+                let code = if confine(filter).is_err() {
+                    2
+                } else if libc::write(ready_w.as_raw_fd(), b"r".as_ptr().cast(), 1) != 1 {
+                    3
+                } else if wait(shared.word(), wake_r.as_raw_fd()) {
+                    0
+                } else {
+                    4
+                };
+                libc::_exit(code);
+            }
+        }
+        drop(ready_w);
+        let mut byte = [0u8; 1];
+        // SAFETY: read(2) into a byte of ours.
+        let ready = unsafe { libc::read(ready_r.as_raw_fd(), byte.as_mut_ptr().cast(), 1) } == 1;
+        // Once it sleeps in its wait: after the byte it wrote, the only call it makes that
+        // sleeps.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut sleeping = false;
+        while ready && std::time::Instant::now() < until {
+            match state(pid) {
+                Some(b'S') => {
+                    sleeping = true;
+                    break;
+                }
+                Some(b'R' | b'D') => std::thread::sleep(std::time::Duration::from_millis(1)),
+                _ => break,
+            }
+        }
+        let mut status = 0;
+        let mut stopped = false;
+        if sleeping {
+            // SAFETY: kill(2) and waitpid(2) of the child forked above.
+            unsafe {
+                assert_eq!(libc::kill(pid, libc::SIGSTOP), 0);
+                assert_eq!(libc::waitpid(pid, &raw mut status, libc::WUNTRACED), pid);
+                stopped = libc::WIFSTOPPED(status);
+                assert_eq!(libc::kill(pid, libc::SIGCONT), 0);
+            }
+        }
+        wake(shared.word(), wake_w.as_raw_fd());
+        // SAFETY: waitpid(2) of the child forked above.
+        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+        (stopped, status)
+    }
+
+    /// Waits on the word, 30 seconds at most each time: a timed futex wait, as a timed
+    /// condition variable or semaphore waits (FUTEX_WAIT with a timeout); whether the word
+    /// was set.
+    fn timed_futex_wait(word: &std::sync::atomic::AtomicU32, _: RawFd) -> bool {
+        let timeout = libc::timespec {
+            tv_sec: 30,
+            tv_nsec: 0,
+        };
+        while word.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            // SAFETY: futex(2) FUTEX_WAIT on a word of a mapping this process shares, while
+            // it holds 0, for at most `timeout`.
+            let r = unsafe {
+                libc::syscall(
+                    libc::SYS_futex,
+                    word.as_ptr(),
+                    libc::FUTEX_WAIT,
+                    0,
+                    &raw const timeout,
+                    0,
+                    0,
+                )
+            };
+            if r != 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ETIMEDOUT) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn set_word(word: &std::sync::atomic::AtomicU32, _: RawFd) {
+        word.store(1, std::sync::atomic::Ordering::SeqCst);
+        // SAFETY: futex(2) FUTEX_WAKE of the word's waiters.
+        unsafe {
+            libc::syscall(
+                libc::SYS_futex,
+                word.as_ptr(),
+                libc::FUTEX_WAKE,
+                i32::MAX,
+                0,
+                0,
+                0,
+            )
+        };
+    }
+
+    /// Polls the pipe's end as the helper polls its control socket and its workers, with no
+    /// timeout; whether it became readable.
+    fn polled(_: &std::sync::atomic::AtomicU32, fd: RawFd) -> bool {
+        let mut p = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            // SAFETY: poll(2) of one pollfd of ours.
+            let n = unsafe { libc::poll(&raw mut p, 1, -1) };
+            if n == 1 {
+                return true;
+            }
+            if n < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return false;
+        }
+    }
+
+    fn written(_: &std::sync::atomic::AtomicU32, fd: RawFd) {
+        // SAFETY: write(2) of a byte of ours to the pipe's other end.
+        assert_eq!(unsafe { libc::write(fd, b"w".as_ptr().cast(), 1) }, 1);
+    }
+
+    /// How a child ended, for an assertion's message.
+    fn ended(status: i32) -> String {
+        if libc::WIFSIGNALED(status) {
+            format!("ended by signal {}", libc::WTERMSIG(status))
+        } else {
+            format!("exited {}", libc::WEXITSTATUS(status))
+        }
+    }
+
+    /// A worker stopped in a timed futex wait, which its filter allows, lives on once
+    /// continued, on every architecture: the wait resumes by restart_syscall (worker_calls).
+    #[test]
+    fn a_worker_stopped_in_a_timed_wait_lives_on() {
+        let filter = allowlist(&worker_calls()).unwrap();
+        let (stopped, status) = stopped_while_waiting(&filter, timed_futex_wait, set_word);
+        eprintln!(
+            "STOPPED_IN_WAIT filter=worker wait=futex stopped={stopped} {}",
+            ended(status)
+        );
+        assert!(
+            stopped,
+            "it never slept in its wait to be stopped: {}",
+            ended(status)
+        );
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "{}",
+            ended(status)
+        );
+    }
+
+    /// The helper stopped in its poll lives on once continued: x86_64's poll(2) resumes by
+    /// restart_syscall whatever its timeout (fs/select.c), arm64's ppoll as itself.
+    #[test]
+    fn the_helper_stopped_in_its_poll_lives_on() {
+        let filter = allowlist(&helper_calls()).unwrap();
+        let (stopped, status) = stopped_while_waiting(&filter, polled, written);
+        eprintln!(
+            "STOPPED_IN_WAIT filter=helper wait=poll stopped={stopped} {}",
+            ended(status)
+        );
+        assert!(
+            stopped,
+            "it never slept in its wait to be stopped: {}",
+            ended(status)
+        );
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "{}",
+            ended(status)
+        );
     }
 }

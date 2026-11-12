@@ -17,7 +17,8 @@ use std::time::Duration;
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 use shards_api::image::{
     Channel, ImageGuest, ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _, Keep, MemberEnd,
-    MemberFile, MemberKind, MemberName, MemberSpec, Narrowing, Proto, Publish, RunEnd, Secret, StatsScope,
+    MemberFile, MemberKind, MemberName, MemberSpec, Narrowing, PlugRefusal, Proto, Publish, RunEnd, Secret,
+    StatsScope,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -137,7 +138,7 @@ fn staged_credentials_reach_the_harness_and_its_output_and_end_come_back() {
         stdin: false,
         terminal: false,
     }];
-    let guest = ImageShards::new().boot(&s).unwrap();
+    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
     let members: Vec<(MemberKind, &str, bool)> = guest
         .members()
         .iter()
@@ -197,7 +198,7 @@ fn what_the_image_does_not_grant_is_refused_before_boot() {
         stdin: false,
         terminal: false,
     };
-    let refused = |s: ImageSpec| match ImageShards::new().boot(&s) {
+    let refused = |s: ImageSpec| match ImageShards::new().boot(&s, TIMEOUT) {
         Err(e) => e,
         Ok(_) => panic!("booted"),
     };
@@ -210,6 +211,13 @@ fn what_the_image_does_not_grant_is_refused_before_boot() {
     let mut s = spec(&home, "api-refused:1");
     s.egress = Narrowing {
         egress: Keep::Only(vec!["22/tcp".into()]),
+        ..Narrowing::default()
+    };
+    assert!(matches!(refused(s), ImageRefusal::Widening(_)));
+    // A destination the image grants none of (D236).
+    let mut s = spec(&home, "api-refused:1");
+    s.egress = Narrowing {
+        destinations: Keep::Only(vec!["host.docker.internal:7070".into()]),
         ..Narrowing::default()
     };
     assert!(matches!(refused(s), ImageRefusal::Widening(_)));
@@ -261,7 +269,7 @@ fn a_share_at_a_granted_volume_reaches_the_harness() {
         at: "/work".into(),
         read_only: true,
     }];
-    let guest = ImageShards::new().boot(&s).unwrap();
+    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
     let said = String::from_utf8(read_all(&*guest, Channel::Stdout)).unwrap();
     assert_eq!(said, "== /work/hello.txt\nfrom the host\n");
     assert_eq!(
@@ -293,9 +301,18 @@ fn a_published_ingress_port_reaches_its_member() {
         host: Some("127.0.0.1".parse().unwrap()),
         host_port: 0,
     }];
-    let guest = ImageShards::new().boot(&s).unwrap();
-    let bound = guest.published().first().copied().expect("a bound port");
+    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    let bound = guest.published().first().cloned().expect("a bound port");
     assert_eq!((bound.guest_port, bound.proto), (7100, Proto::Tcp));
+    // It names whom it reaches: the harness, at its own port.
+    let [to] = bound.to.as_slice() else {
+        panic!("{bound:?}");
+    };
+    let member = guest.members().iter().find(|m| m.index == to.member).unwrap();
+    assert_eq!(
+        (member.kind, member.name.as_str(), to.port),
+        (MemberKind::Harness, "codex", 7100)
+    );
     // The listener comes up once its member runs: asked until it answers, within the bound.
     let deadline = std::time::Instant::now() + TIMEOUT;
     let answer = loop {
@@ -319,6 +336,85 @@ fn a_published_ingress_port_reaches_its_member() {
     guest.stop().unwrap();
 }
 
+/// A project plugged into the running harness through its run's own channel (D235), as
+/// an orchestrator plugs one: refused outside the run's plug roots, and for a member that
+/// runs nothing, each by its kind; then at its host path, read and written by the harness,
+/// its writes the host's, with nothing made beneath a root before; then unplugged, and
+/// refused unplugged again.
+#[test]
+fn a_project_is_plugged_into_the_running_harness() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-plug-home");
+    let files = TempDir::new("api-plug-files");
+    for dir in ["proj", "bound"] {
+        std::fs::create_dir(files.join(dir)).unwrap();
+    }
+    let proj = std::fs::canonicalize(files.join("proj")).unwrap();
+    let bound = std::fs::canonicalize(files.join("bound")).unwrap();
+    std::fs::write(proj.join("from-host"), "host\n").unwrap();
+    let dest = common::at_host_path(&proj);
+    let roots = common::plug_roots(&bound);
+    let mut options = vec!["plugged", dest.as_str()];
+    options.extend(roots.iter().map(String::as_str));
+    build(&home, "api-plug:1", &options, "");
+    let mut s = spec(&home, "api-plug:1");
+    s.shares = vec![ImageShare {
+        host: bound.clone(),
+        at: "/bound".into(),
+        read_only: true,
+    }];
+    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    match guest.plug(&codex(), &proj, "/outside/proj", false, TIMEOUT) {
+        Err(ImageRefusal::Plug(PlugRefusal::Outside, why)) => {
+            assert!(why.contains(roots[0].as_str()), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let helper = MemberName {
+        kind: MemberKind::Agent,
+        name: "helper".into(),
+    };
+    assert!(
+        matches!(
+            guest.plug(&helper, &proj, &dest, false, TIMEOUT),
+            Err(ImageRefusal::Plug(PlugRefusal::Member, _))
+        ),
+        "a member of files alone"
+    );
+    guest.plug(&codex(), &proj, &dest, false, TIMEOUT).unwrap();
+    let seen_at = proj.join("seen");
+    let started = std::time::Instant::now();
+    let seen = loop {
+        if let Ok(seen) = std::fs::read_to_string(&seen_at) {
+            break seen;
+        }
+        assert!(
+            started.elapsed() < TIMEOUT,
+            "the harness wrote no {}",
+            seen_at.display()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    for root in &roots {
+        let line = format!("root {root} mkdir errno 30 create errno 30");
+        assert!(seen.lines().any(|l| l == line), "no {line:?} in\n{seen}");
+    }
+    assert!(seen.lines().any(|l| l == "from-host host"), "{seen}");
+    assert_eq!(
+        std::fs::read_to_string(proj.join("from-member")).unwrap(),
+        "member\n"
+    );
+    guest.unplug(&dest, TIMEOUT).unwrap();
+    assert!(matches!(
+        guest.unplug(&dest, TIMEOUT),
+        Err(ImageRefusal::Plug(PlugRefusal::Unknown, _))
+    ));
+    guest.stop().unwrap();
+    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+}
+
 /// Stats read the run's cgroup and a running member's, typed; a member that does not run
 /// is refused by its guest.
 #[test]
@@ -328,7 +424,9 @@ fn stats_read_the_run_and_a_member() {
     }
     let home = TempDir::new("api-stats-home");
     build(&home, "api-stats:1", &["sleep-for", "60000"], "");
-    let guest = ImageShards::new().boot(&spec(&home, "api-stats:1")).unwrap();
+    let guest = ImageShards::new()
+        .boot(&spec(&home, "api-stats:1"), TIMEOUT)
+        .unwrap();
     let run = guest.stats(StatsScope::Run, TIMEOUT).unwrap();
     assert!(run.memory_bytes.is_some_and(|m| m > 0), "{run:?}");
     assert!(run.cpu_ns.is_some(), "{run:?}");
@@ -347,7 +445,9 @@ fn stop_ends_the_run_at_once() {
     }
     let home = TempDir::new("api-stop-home");
     build(&home, "api-stop:1", &["sleep-for", "600000"], "");
-    let guest = ImageShards::new().boot(&spec(&home, "api-stop:1")).unwrap();
+    let guest = ImageShards::new()
+        .boot(&spec(&home, "api-stop:1"), TIMEOUT)
+        .unwrap();
     assert_eq!(guest.wait_member(&codex(), Duration::ZERO).unwrap(), None);
     guest.stop().unwrap();
     assert_eq!(guest.wait_for(Duration::ZERO).unwrap(), Some(RunEnd::Stopped));

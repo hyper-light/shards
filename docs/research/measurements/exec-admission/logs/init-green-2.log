@@ -1,0 +1,35 @@
+# init green: the fix, the refused connect held at its port; 2026-11-12T20:01:23Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01)
+test run::exec_link_tests::an_ended_exec_waits_to_hear_from_the_host ... ok
+test run::exec_link_tests::an_ended_exec_whose_connection_fails_says_so_alone ... ok
+test run::exec_link_tests::an_exec_a_restore_reset_is_let_go_of_unsaid ... ok
+test run::exec_link_tests::a_connection_the_host_spoke_on_ends_as_its_stdin ... ok
+test run::exec_link_tests::an_exec_whose_connect_fails_says_so_and_its_process_ends ... ok
+test run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 198 filtered out; finished in 0.00s
+## exit 0
+thread 'run::exec_link_tests::an_ended_exec_whose_connection_fails_says_so_alone' (2665895) panicked at crates/init/src/run.rs:6496:9:
+assertion `left == right` failed: []
+  left: 0
+ right: 1
+thread 'run::exec_link_tests::an_ended_exec_whose_connection_fails_says_so_alone' (2667630) panicked at crates/init/src/run.rs:6496:9:
+assertion `left == right` failed: []
+  left: 0
+ right: 1
+thread 'run::exec_link_tests::an_ended_exec_whose_connection_fails_says_so_alone' (2669041) panicked at crates/init/src/run.rs:6496:9:
+assertion `left == right` failed: []
+  left: 0
+ right: 1
+thread 'run::exec_link_tests::an_exec_whose_connection_ends_before_the_host_speaks_says_so' (2669071) panicked at crates/init/src/run.rs:6478:13:
+assertion `left == right` failed: writing: []
+  left: 0
+ right: 1
+thread 'run::exec_link_tests::an_ended_exec_whose_connection_fails_says_so_alone' (2669396) panicked at crates/init/src/run.rs:6496:9:
+assertion `left == right` failed: []
+  left: 0
+ right: 1
+thread 'run::exec_link_tests::an_exec_a_restore_reset_is_let_go_of_unsaid' (2669412) panicked at crates/init/src/run.rs:6531:9:
+thread 'run::exec_link_tests::an_ended_exec_whose_connection_fails_says_so_alone' (2670131) panicked at crates/init/src/run.rs:6496:9:
+assertion `left == right` failed: []
+  left: 0
+ right: 1
+exec_link_tests x300: pass 293 fail 7

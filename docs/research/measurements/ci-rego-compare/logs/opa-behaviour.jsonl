@@ -1,0 +1,50 @@
+{"go": "go1.26.1", "opa": "v1.14.1", "host": "Darwin 25.4.0 arm64", "limit_seconds": 120}
+{"a":"1e-21306","b":"0x1p-70777","compare":1,"seconds":0.009547542}
+{"a":"1e-76573","b":"0x1p-254370","compare":-1,"seconds":0.000551458}
+{"a":"1e-97879","b":"0x1p-325147","compare":1,"seconds":0.000563833}
+{"a":"33","b":"3e33333333332","panic":"illegal value","seconds":0.000018458}
+{"a":"1e999999","b":"1e1000000","compare":-1,"seconds":0.222993708}
+{"a":"1e1000000","b":"1e1000001","panic":"illegal value","seconds":0.098542625}
+{"case":0,"detail":"illegal value","name":"lt","outcome":"panic","seconds":0.006081042}
+{"case":1,"detail":"illegal value","name":"lt","outcome":"panic","seconds":0.000028208}
+{"case":2,"detail":"illegal value","name":"max","outcome":"panic","seconds":0.000044292}
+{"case":3,"detail":"265999999999999999995119335026480770583320759678119733272426323333803868194797984993741720723169090979806651852325606590","length":2028029,"name":"ceil","outcome":"result","seconds":10.40191875}
+{"case":4,"detail":"199999999999999999991294660104334199090120931620410352694691354621501743823027948544143613747222843948620450752608092361","length":1752526,"name":"ceil","outcome":"result","seconds":7.782294917}
+{"case": 5, "outcome": "still working", "seconds": 120}
+{"case": 6, "outcome": "still working", "seconds": 120}
+{"case": 7, "outcome": "still working", "seconds": 120}
+{"case": 8, "outcome": "still working", "seconds": 120}
+{"case": 9, "outcome": "still working", "seconds": 120}
+{"case":10,"detail":"illegal value","name":"sort","outcome":"panic","seconds":0.000104459}
+{"case":11,"detail":"illegal value","name":"equal","outcome":"panic","seconds":0.000042542}
+{"case":12,"detail":"0","length":1,"name":"plus","outcome":"result","seconds":0.080042}
+{"case": 13, "outcome": "still working", "seconds": 120}
+{"case":14,"detail":"0.99999999999999999995","length":22,"name":"mul","outcome":"result","seconds":0.000083542}
+{"case": 15, "outcome": "still working", "seconds": 120}
+{"case":16,"detail":"illegal value","name":"abs","outcome":"panic","seconds":0.000767542}
+{"case":17,"detail":"100000000000000000002101689940614003979314460852530447345995426321866616545844104684029957195152258201745375483782690673","length":200001,"name":"round","outcome":"result","seconds":1.5534964580000001}
+{"case":18,"detail":"-10000000000000000000210168994061400397931446085253044734599542632186661654584410468402995719515225820174537548378269067","length":200002,"name":"floor","outcome":"result","seconds":0.202429208}
+{"case":19,"detail":"2","length":1,"name":"rem","outcome":"result","seconds":0.000241666}
+{"case":20,"detail":"-10000000000000000000210168994061400397931446085253044734599542632186661654584410468402995719515225820174537548378269067","length":200002,"name":"bits.negate","outcome":"result","seconds":0.027717042}
+{"case":21,"detail":"999002093014384507944032764330033590980429139054181691771529273863145832464257348327487331332449650403164394445555854930","length":30103,"name":"bits.lsh","outcome":"result","seconds":0.001507042}
+{"case":22,"detail":"runtime error: makeslice: len out of range","name":"bits.lsh","outcome":"panic","seconds":0.000082}
+{"case":23,"detail":"[10000000000000000000210168994061400397931446085253044734599542632186661654584410468402995719515225820174537548378269067","length":200003,"name":"numbers.range","outcome":"result","seconds":0.029800792}
+{"case":24,"detail":"\"3125294946d53a0f4000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","length":166099,"name":"format_int","outcome":"result","seconds":0.001483042}
+{"case":25,"detail":"100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","length":200001,"name":"units.parse","outcome":"result","seconds":0.011605208}
+{"case":26,"detail":"100000000000000000002101689940614003979314460852530447345995426321866616545844104684029957195152258201745375483782690673","length":200001,"name":"units.parse_bytes","outcome":"result","seconds":0.028037083}
+{"case":27,"detail":"0","length":1,"name":"units.parse_bytes","outcome":"result","seconds":0.000016709}
+{"case":28,"detail":"p.rego:1: eval_builtin_error: time.date: timestamp too big","name":"time.date","outcome":"error","seconds":0.000044167}
+{"case":29,"detail":"1e-99999999999","length":14,"name":"to_number","outcome":"result","seconds":0.000018375}
+{"case":30,"detail":"100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","length":30103,"name":"abs","outcome":"result","seconds":0.006161625}
+{"case":31,"detail":"100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","length":30104,"name":"abs","outcome":"result","seconds":0.003163875}
+{"case":32,"detail":"100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","length":300001,"name":"abs","outcome":"result","seconds":0.182704208}
+{"case":33,"detail":"100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000","length":3000001,"name":"abs","outcome":"result","seconds":15.679959875}
+{"case":34,"detail":"999999999999999999977677088836025797168825896132986662487409740340867445107692763759089020690277533770609255982986815641","length":30102,"name":"ceil","outcome":"result","seconds":0.180288834}
+{"case":35,"detail":"999999999999999999969185701646830101876870319089900911516680089391467958194795666715712677815431778051208529591518674250","length":300000,"name":"ceil","outcome":"result","seconds":0.781595583}
+{"case":36,"detail":"100000000000000000002279149947003368222490852481821423220341417677161308261947620532703913804966464080592498525385030716","length":3000001,"name":"ceil","outcome":"result","seconds":41.669847542}
+{"case":37,"detail":"1e-30000","length":8,"name":"abs","outcome":"result","seconds":3.410449916}
+{"case": 38, "outcome": "still working", "seconds": 120}
+{"case": 39, "outcome": "still working", "seconds": 120}
+{"case":40,"detail":"true","length":4,"name":"lt","outcome":"result","seconds":1.653997041}
+{"case":41,"detail":"illegal value","name":"lt","outcome":"panic","seconds":0.027075334}
+{"case":42,"detail":"true","length":4,"name":"lt","outcome":"result","seconds":0.000409792}

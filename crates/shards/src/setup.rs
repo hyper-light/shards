@@ -440,6 +440,52 @@ pub fn domain_seccomp(kernel: shards_seccomp::Kernel) -> Result<[Vec<u8>; 2], St
     Ok([domain_filter(kernel, false)?, domain_filter(kernel, true)?])
 }
 
+/// Where this host's OS keeps its users' files and mounts their volumes, the run's domains'
+/// plug roots for what is plugged into them later (D235): on macOS the home directories
+/// and mountable disks of Apple's standard directories (File System Programming Guide,
+/// "macOS Standard Directories"); on Linux the Filesystem Hierarchy Standard 3.0's users'
+/// and mounted data (§3.8 `/home`, §3.11 `/media`, §3.12 `/mnt`, §3.17 `/srv`); on Windows
+/// WSL's root of the host's drives, drive C: at `/mnt/c` (DrvFs's `automount.root`).
+#[cfg(target_os = "macos")]
+const STANDARD_ROOTS: &[&str] = &["/Users", "/Volumes"];
+#[cfg(target_os = "linux")]
+const STANDARD_ROOTS: &[&str] = &["/home", "/media", "/mnt", "/srv"];
+#[cfg(windows)]
+const STANDARD_ROOTS: &[&str] = &["/mnt"];
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+const STANDARD_ROOTS: &[&str] = &[];
+
+/// The setup entries of the plug roots of the run's domains (D235, `plug-root=/Users`):
+/// this host's own, and the top-level directory of each host path the run's binds give it,
+/// so that a project the run starts with names the root that what is plugged beside it
+/// later lies beneath. One a domain may not be given paths beneath (`plug::root_name`:
+/// `/tmp`, say) is named not at all.
+pub fn plug_roots(points: &[crate::volumes::MountPoint]) -> Vec<Vec<u8>> {
+    use shards_abi::run::plug;
+    let mut roots: Vec<String> = STANDARD_ROOTS.iter().map(|r| (*r).to_string()).collect();
+    // A Unix host's paths, the guest's at the same path; a Windows host's drives lie beneath
+    // its own root (`/mnt`) already.
+    if cfg!(unix) {
+        for p in points.iter().filter(|p| p.kind == "bind") {
+            let first = p
+                .source
+                .strip_prefix('/')
+                .and_then(|rest| rest.split('/').next())
+                .filter(|f| !f.is_empty());
+            if let Some(root) = first.map(|f| format!("/{f}"))
+                && !roots.contains(&root)
+            {
+                roots.push(root);
+            }
+        }
+    }
+    roots
+        .into_iter()
+        .filter(|r| plug::root_name(r.as_bytes()).is_some())
+        .map(|r| [plug::ROOT_KEY, r.as_bytes()].concat())
+        .collect()
+}
+
 fn domain_filter(kernel: shards_seccomp::Kernel, no_processes: bool) -> Result<Vec<u8>, String> {
     type Compiled = Vec<((shards_seccomp::Kernel, bool), Vec<u8>)>;
     static COMPILED: std::sync::Mutex<Compiled> = std::sync::Mutex::new(Vec::new());
@@ -914,6 +960,40 @@ fn devices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run's domains are given this host's own roots, and on Unix the top-level directory
+    /// of each host path its binds give it, once each; a volume's store is no project, and a
+    /// root init refuses (`/tmp`) is never named, so that no run fails for one.
+    #[test]
+    fn plug_roots_are_the_hosts_own_and_its_binds_tops() {
+        let point = |kind: &str, source: &str| crate::volumes::MountPoint {
+            kind: kind.into(),
+            source: source.into(),
+            destination: "/in".into(),
+            ..crate::volumes::MountPoint::default()
+        };
+        let said = |points: &[crate::volumes::MountPoint]| -> Vec<String> {
+            plug_roots(points)
+                .iter()
+                .map(|e| String::from_utf8_lossy(e).into_owned())
+                .collect()
+        };
+        let standard: Vec<String> = STANDARD_ROOTS.iter().map(|r| format!("plug-root={r}")).collect();
+        assert_eq!(said(&[]), standard);
+        let points = [
+            point("bind", "/data/proj"),
+            point("bind", "/data/other"),
+            point("bind", "/tmp/x"),
+            point("bind", "/etc/hosts"),
+            point("volume", "/var/lib/shards/volumes/v/_data"),
+            point("bind", r"C:\work\proj"),
+        ];
+        let mut want = standard.clone();
+        if cfg!(unix) {
+            want.push("plug-root=/data".into());
+        }
+        assert_eq!(said(&points), want);
+    }
 
     fn run(tmpfs: &[&str]) -> Run {
         Run {

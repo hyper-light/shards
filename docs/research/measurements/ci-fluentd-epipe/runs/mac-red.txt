@@ -1,0 +1,27 @@
+# red: fe44bc8ca + the new test and evidence-test.rs over main's stream (sha256 of stream.rs 180724d85c160d0685dcf4d89e39553544338f896d0b6665f69c12cc1e862499); Mac
+# shards-red --exact daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen --test-threads 1
+
+running 1 test
+test daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen ... FAILED
+
+failures:
+
+---- daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen stdout ----
+
+thread 'daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen' (81504516) panicked at crates/shards/src/daemon/ship/stream.rs:1470:39:
+called `Result::unwrap()` on an `Err` value: Os { code: 32, kind: BrokenPipe, message: "Broken pipe" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 735 filtered out; finished in 0.04s
+
+/tmp/ci-fluentd-build/bin/shards-red --exact  --test-threads 1 2>&1  0.01s user 0.01s system 0% cpu 2.299 total
+
+# shards-red --exact daemon::ship::stream::tests::evidence_a_write_meeting_its_receivers_end --ignored --nocapture --test-threads 1
+test daemon::ship::stream::tests::evidence_a_write_meeting_its_receivers_end ... EVIDENCE tcp: tries 40 said {"BrokenPipe": 29, "ConnectionReset": 11}, long sent false, ever held false, pointed at false
+EVIDENCE tls: tries 40 said {"BrokenPipe": 40}, long sent false, ever held false, pointed at false
+EVIDENCE unix: tries 40 said {"BrokenPipe": 39, "NotConnected": 1}, long sent false, ever held false, pointed at false
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 735 filtered out; finished in 21.50s

@@ -298,5 +298,37 @@
  {
   "name": "import-alias-keyword",
   "error": "1 error occurred: p.rego:3: rego_parse_error: unexpected if keyword: expected var\n\timport data.x as if\n\t                 ^"
+ },
+ {
+  "name": "number-past-the-bound-finite",
+  "error": "2 errors occurred:\np.rego:3: rego_parse_error: number too big\n\tx := 1e600000000\n\t     ^\np.rego:3: rego_parse_error: unexpected number token: expected rule value term (e.g., x := \u003cVALUE\u003e { ... })\n\tx := 1e600000000\n\t     ^"
+ },
+ {
+  "name": "number-past-the-bound-infinite",
+  "error": "2 errors occurred:\np.rego:3: rego_parse_error: number too big\n\tx := 1e700000000\n\t     ^\np.rego:3: rego_parse_error: unexpected number token: expected rule value term (e.g., x := \u003cVALUE\u003e { ... })\n\tx := 1e700000000\n\t     ^"
+ },
+ {
+  "name": "number-past-the-bound-tiny",
+  "error": "2 errors occurred:\np.rego:3: rego_parse_error: number too big\n\tx := 1e-600000000\n\t     ^\np.rego:3: rego_parse_error: unexpected number token: expected rule value term (e.g., x := \u003cVALUE\u003e { ... })\n\tx := 1e-600000000\n\t     ^"
+ },
+ {
+  "name": "number-underflows-to-zero",
+  "module": "package docker\n\nx := [1e-700000000, -1e-1000000000] if { true }"
+ },
+ {
+  "name": "number-past-maxexp",
+  "error": "2 errors occurred:\np.rego:3: rego_parse_error: unexpected number token: invalid float\n\tx := 1e3000000000\n\t     ^\np.rego:3: rego_parse_error: unexpected number token: expected rule value term (e.g., x := \u003cVALUE\u003e { ... })\n\tx := 1e3000000000\n\t     ^"
+ },
+ {
+  "name": "number-at-the-bound",
+  "module": "package docker\n\nx := [1e30102, -1e30102, 1e-30103, -1e-30103] if { true }"
+ },
+ {
+  "name": "number-just-past-the-bound",
+  "error": "2 errors occurred:\np.rego:3: rego_parse_error: number too big\n\tx := 1e30103\n\t     ^\np.rego:3: rego_parse_error: unexpected number token: expected rule value term (e.g., x := \u003cVALUE\u003e { ... })\n\tx := 1e30103\n\t     ^"
+ },
+ {
+  "name": "number-just-past-the-bound-tiny",
+  "error": "2 errors occurred:\np.rego:3: rego_parse_error: number too big\n\tx := 1e-30104\n\t     ^\np.rego:3: rego_parse_error: unexpected number token: expected rule value term (e.g., x := \u003cVALUE\u003e { ... })\n\tx := 1e-30104\n\t     ^"
  }
 ]

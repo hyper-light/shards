@@ -561,6 +561,11 @@ pub mod kind {
     /// moved its readiness (D234), `shards_abi::run::kind::READY`'s payload as its guest
     /// sent it (`shards_abi::run::nesting::Ready`). [`READY`] is the VM's own.
     pub const WORKLOAD_READY: u8 = 90;
+    /// Daemon → a slot's client of a run, an exec or an attach, last: the daemon's side of
+    /// the request ended without its last word (`EXIT`, `END` or `RESTART`), its microVM's
+    /// connection closed or the daemon's handling of it ended first. A slot that ends
+    /// without any last word ended with its daemon (D185).
+    pub const UNANSWERED: u8 = 91;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
@@ -2048,6 +2053,12 @@ impl RunHead {
     /// non-blocking), the queue's, the I/O limits' two, the CPUs held to, whether a
     /// group's budget holds it (0 or 1), then whether its layer comes as its file (0 or 1).
     pub const LEN: usize = 1 + 4 * 8 + 1 + 8 + 2 * 8 + 8 + 1 + 1;
+
+    /// Whether its log keeps anything, as a warm VM takes a run's request only where it
+    /// does (crates/shards/src/warm.rs `head`), a run that writes no log included.
+    pub fn keeps_its_log(&self) -> bool {
+        self.log_size > 0 && self.log_files > 0
+    }
 
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         out.push(self.flags);

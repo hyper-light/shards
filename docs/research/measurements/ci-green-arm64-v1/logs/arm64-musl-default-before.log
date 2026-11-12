@@ -1,0 +1,58 @@
+CapEff:	00000000a80425fb
+NoNewPrivs:	0
+Seccomp:	2
+Seccomp_filters:	1
+CapEff:	0000000000000000
+Seccomp:	2
+warning: aws-lc-sys@0.45.0: /work/vendor/aws-lc-sys/aws-lc/tests/compiler_features_tests/linux_random_h.c:15:10: fatal error: linux/random.h: No such file or directory
+warning: aws-lc-sys@0.45.0: /work/vendor/aws-lc-sys/aws-lc/tests/compiler_features_tests/linux_random_h.c:15:10: fatal error: linux/random.h: No such file or directory
+     Running unittests src/main.rs (target/aarch64-unknown-linux-musl/test-release/deps/shards_init-1080e1063982a612)
+test managed::tests::a_capture_failure_uses_the_same_owned_containment_and_keeps_its_cause ... FAILED
+test managed::tests::a_second_completion_cannot_replace_the_owned_status ... ok
+test managed::tests::a_real_observation_error_quarantines_only_the_owned_tenant ... FAILED
+test managed::tests::an_empty_population_cannot_supply_an_unobserved_exit_status ... ok
+test managed::tests::a_lost_leader_identity_is_a_shared_boundary_failure ... ok
+test managed::tests::a_lost_population_control_is_a_shared_boundary_failure ... ok
+test managed::tests::eof_or_an_unexpected_gate_word_never_releases_the_actor ... ok
+test managed::tests::only_a_complete_fresh_helper_ready_record_releases_startup ... ok
+test managed::tests::only_running_and_proven_ended_populations_are_checkpoint_ready ... ok
+test managed::tests::exec_closes_its_status_but_setup_and_exec_failures_stay_typed ... ok
+test managed::tests::malformed_status_never_becomes_a_successful_launch ... ok
+test managed::tests::quarantine_preserves_ended_proof_and_a_prior_boundary_failure ... ok
+failures:
+thread 'managed::tests::a_capture_failure_uses_the_same_owned_containment_and_keeps_its_cause' (3120) panicked at crates/init/src/managed.rs:1070:13:
+clone3: Function not implemented (os error 38)
+thread 'managed::tests::a_real_observation_error_quarantines_only_the_owned_tenant' (3123) panicked at crates/init/src/managed.rs:1070:13:
+clone3: Function not implemented (os error 38)
+failures:
+    managed::tests::a_capture_failure_uses_the_same_owned_containment_and_keeps_its_cause
+    managed::tests::a_real_observation_error_quarantines_only_the_owned_tenant
+test result: FAILED. 10 passed; 2 failed; 0 ignored; 0 measured; 186 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+     Running unittests src/main.rs (target/aarch64-unknown-linux-musl/test-release/deps/shards_server-ada2ce19a7cf5d67)
+test server::tests::an_unusable_helper_control_is_not_admitted ... FAILED
+test sandbox::tests::a_worker_not_reaped_ends_no_other ... FAILED
+failures:
+unusable_native_control_rejected=false
+thread 'server::tests::an_unusable_helper_control_is_not_admitted' (3134) panicked at crates/server/src/server.rs:2564:9:
+REAP_UNKNOWN first=[(2, -1, -1), (1, -1, -1)] control_closed=false worker_two_ran_on=false second=[] control_closed_later=false worker_two_ended=true helper_exited=true helper_code=0 helper_signal=0 helper_failure=""
+thread 'sandbox::tests::a_worker_not_reaped_ends_no_other' (3133) panicked at crates/server/src/sandbox.rs:1153:9:
+failures:
+    sandbox::tests::a_worker_not_reaped_ends_no_other
+    server::tests::an_unusable_helper_control_is_not_admitted
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 45 filtered out; finished in 5.02s
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+     Running unittests src/lib.rs (target/aarch64-unknown-linux-musl/test-release/deps/shards_testguest-47c03b4f158f42a2)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+     Running unittests src/main.rs (target/aarch64-unknown-linux-musl/test-release/deps/shards_testguest-c821c94b74c88fc2)
+test managed_network::tests::udp_interception_parser_has_explicit_origins ... FAILED
+failures:
+thread 'managed_network::tests::udp_interception_parser_has_explicit_origins' (3138) panicked at crates/testguest/src/managed_network.rs:974:93:
+called `Result::unwrap()` on an `Err` value: Custom { kind: InvalidInput, error: "UDP local-loopback and local-self: the backend already holds the destination tuple the reply reservation must bind in the router's namespace (EADDRINUSE); untestable by this fixture, the requirement stays open" }
+failures:
+    managed_network::tests::udp_interception_parser_has_explicit_origins
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-testguest --bin shards-testguest`
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+error: 3 targets failed:
+EXIT=101
