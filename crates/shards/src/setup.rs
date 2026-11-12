@@ -1348,13 +1348,16 @@ mod tests {
     fn decides(entry: &[u8], name: &str, arg0: u64) -> u32 {
         use shards_seccomp::bpf::{self, Data, Insn};
         let (_flags, insns) = entry.strip_prefix(b"seccomp=").unwrap().split_at(4);
+        let (insns, []) = insns.as_chunks::<8>() else {
+            panic!("a program of whole instructions")
+        };
         let program: Vec<Insn> = insns
-            .chunks_exact(8)
-            .map(|b| Insn {
-                code: u16::from_ne_bytes([b[0], b[1]]),
-                jt: b[2],
-                jf: b[3],
-                k: u32::from_ne_bytes([b[4], b[5], b[6], b[7]]),
+            .iter()
+            .map(|&[c0, c1, jt, jf, k0, k1, k2, k3]| Insn {
+                code: u16::from_ne_bytes([c0, c1]),
+                jt,
+                jf,
+                k: u32::from_ne_bytes([k0, k1, k2, k3]),
             })
             .collect();
         let (arch, calls) = CALLS;
