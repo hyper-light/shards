@@ -6526,4 +6526,225 @@ mod nesting_tests {
             setup(&["engine", "cgroups-rw", "nesting", "notify"])
         );
     }
+
+    /// `what` and how it went, as a child of this test's says it: `ok`, or its errno.
+    fn said(what: &str, done: io::Result<()>) -> String {
+        match done {
+            Ok(()) => format!("{what}=ok "),
+            Err(e) => format!("{what}={} ", e.raw_os_error().unwrap_or(-1)),
+        }
+    }
+
+    fn done(rc: libc::c_int) -> io::Result<()> {
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    /// A child of this test's, which runs `work` with the end of a pipe it says what it found
+    /// on, and ends; the test's end of that pipe.
+    fn forked(work: impl FnOnce(File)) -> (libc::pid_t, File) {
+        let (r, w) = pipe().map_err(|f| f.message).unwrap();
+        // SAFETY: fork(2); the child runs `work`, which unwraps nothing, then _exit(2)s
+        // without returning into the test harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
+        if pid == 0 {
+            drop(r);
+            work(File::from(w));
+            // SAFETY: ends the child without running the harness's exit paths.
+            unsafe { libc::_exit(0) }
+        }
+        drop(w);
+        (pid, File::from(r))
+    }
+
+    /// The workload's standby under the grant, on a real kernel (D234), in the cgroup `w`, as
+    /// init's view names it: into `w`, a cgroup and mount namespace of its own rooted there,
+    /// the hierarchy read-only over /sys/fs/cgroup, as `isolate` makes them; then its
+    /// `cgroups-rw` and `nesting` entries, by init's own setup; then what the workload may and
+    /// may not do there. A user namespace of its own stands in for init's privileges.
+    fn standby_in(w: &str) -> String {
+        let mut out = said("enter", enter_cgroup(w));
+        // SAFETY: getuid(2) and getgid(2), which cannot fail.
+        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        // SAFETY: unshare(2) of a single-threaded child.
+        out += &said(
+            "userns",
+            done(unsafe { libc::unshare(libc::CLONE_NEWUSER) })
+                .and_then(|()| std::fs::write("/proc/self/setgroups", "deny"))
+                .and_then(|()| std::fs::write("/proc/self/uid_map", format!("0 {uid} 1")))
+                .and_then(|()| std::fs::write("/proc/self/gid_map", format!("0 {gid} 1"))),
+        );
+        // SAFETY: unshare(2) of a single-threaded child.
+        out += &said(
+            "unshare",
+            done(unsafe { libc::unshare(libc::CLONE_NEWCGROUP | libc::CLONE_NEWNS) }),
+        );
+        let (nosuid, noexec, nodev) = (libc::MS_NOSUID, libc::MS_NOEXEC, libc::MS_NODEV);
+        // SAFETY: mount(2) of NUL-terminated literals, in this child's own mount namespace.
+        let private = unsafe {
+            libc::mount(
+                std::ptr::null(),
+                c"/".as_ptr(),
+                std::ptr::null(),
+                libc::MS_REC | libc::MS_PRIVATE,
+                std::ptr::null(),
+            )
+        };
+        // Where isolate detaches the hierarchy init's namespace has there, which a user
+        // namespace may not (its copy is locked): a tmpfs over it, so that the namespace's own
+        // is not the same file system on the same mount point again (EBUSY, do_add_mount).
+        // SAFETY: as above.
+        let cover = unsafe {
+            libc::mount(
+                c"tmpfs".as_ptr(),
+                c"/sys/fs/cgroup".as_ptr(),
+                c"tmpfs".as_ptr(),
+                nosuid | noexec | nodev,
+                std::ptr::null(),
+            )
+        };
+        // SAFETY: as above.
+        let cgroup2 = unsafe {
+            libc::mount(
+                c"cgroup2".as_ptr(),
+                c"/sys/fs/cgroup".as_ptr(),
+                c"cgroup2".as_ptr(),
+                libc::MS_RDONLY | nosuid | noexec | nodev,
+                std::ptr::null(),
+            )
+        };
+        out += &said(
+            "mount",
+            done(private)
+                .and_then(|()| done(cover))
+                .and_then(|()| done(cgroup2)),
+        );
+        for entry in [&b"cgroups-rw"[..], run::nesting::GRANT] {
+            out += &said(
+                &String::from_utf8_lossy(entry),
+                crate::setup::apply(entry).map_err(io::Error::from_raw_os_error),
+            );
+        }
+        let read = |p: &str| {
+            std::fs::read_to_string(p)
+                .map(|t| t.trim().to_string())
+                .unwrap_or_else(|e| format!("({e})"))
+        };
+        out += &format!(
+            "root=[{}] leaf=[{}] ",
+            read("/sys/fs/cgroup/cgroup.procs"),
+            read(&format!("/sys/fs/cgroup/{LEAF}/cgroup.procs"))
+        );
+        out += &said("boxes", std::fs::create_dir("/sys/fs/cgroup/boxes"));
+        // A domain controller, which no cgroup holding a process may enable for its children
+        // (cgroup-v2.rst, "no internal processes"), beside the threaded pids.
+        out += &said(
+            "enable",
+            std::fs::write("/sys/fs/cgroup/cgroup.subtree_control", "+memory +pids"),
+        );
+        out += &said(
+            "box-limits",
+            std::fs::write("/sys/fs/cgroup/boxes/memory.max", "134217728")
+                .and_then(|()| std::fs::write("/sys/fs/cgroup/boxes/pids.max", "10")),
+        );
+        out += &said(
+            "root-memory",
+            std::fs::write("/sys/fs/cgroup/memory.max", "1073741824"),
+        );
+        out += &said("root-pids", std::fs::write("/sys/fs/cgroup/pids.max", "1000"));
+        out
+    }
+
+    /// The grant's cgroup on a real kernel (D234), as a granted microVM's init and standby make
+    /// it, in a cgroup of the test's own for `run/workload`: its /sys/fs/cgroup writable; its
+    /// process in the leaf `init` and none in its namespace's root; memory and pids enabled for
+    /// children beside the leaf and a box of them limited; the root's own memory.max and
+    /// pids.max, init's limits, refused it by the kernel (nsdelegate) and left as init set
+    /// them; and an exec, whose join of the root the workload's controllers now refuse (EBUSY,
+    /// f9), in the leaf. Run with SHARDS_TEST_CGROUP naming a cgroup this test may write,
+    /// holding no process and offering memory and pids, on a hierarchy mounted with
+    /// nsdelegate (a delegated scope's: `systemd-run --user --scope -p Delegate=yes`, its
+    /// processes moved into a leaf of its own); else SKIP.
+    #[test]
+    fn on_a_real_kernel_the_granted_command_sits_in_its_leaf_and_its_root_is_inits() {
+        let Ok(base) = std::env::var("SHARDS_TEST_CGROUP") else {
+            eprintln!("SKIP: SHARDS_TEST_CGROUP names no cgroup of the test's own");
+            return;
+        };
+        let mounts = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
+        assert!(
+            mounts
+                .lines()
+                .any(|l| l.contains(" - cgroup2 ") && l.contains("nsdelegate")),
+            "the hierarchy is mounted with nsdelegate in every guest, and must be here"
+        );
+        std::fs::write(format!("{base}/cgroup.subtree_control"), "+memory +pids").unwrap();
+        // Init's part: the workload's cgroup, its limits, and the leaf (grant_nesting).
+        let w = format!("{base}/w-{}", std::process::id());
+        std::fs::create_dir(&w).unwrap();
+        std::fs::create_dir(format!("{w}/{LEAF}")).unwrap();
+        std::fs::write(format!("{w}/memory.max"), "268435456").unwrap();
+        std::fs::write(format!("{w}/pids.max"), "64").unwrap();
+
+        let (hold, held) = pipe().map_err(|f| f.message).unwrap();
+        let held_fd = held.as_raw_fd();
+        let standby_w = w.clone();
+        let (standby, mut said_standby) = forked(move |mut out| {
+            // SAFETY: this child's copy of the test's end of the pipe it holds on.
+            unsafe { libc::close(held_fd) };
+            let _ = out.write_all(standby_in(&standby_w).as_bytes());
+            drop(out);
+            // Its process stays in the leaf until the test is done with it.
+            let _ = File::from(hold).read(&mut [0u8; 1]);
+        });
+        let mut found = String::new();
+        said_standby.read_to_string(&mut found).unwrap();
+        assert_eq!(
+            found,
+            format!(
+                "enter=ok userns=ok unshare=ok mount=ok cgroups-rw=ok nesting=ok root=[] leaf=[{standby}] boxes=ok enable=ok box-limits=ok root-memory={} root-pids={} ",
+                libc::EPERM,
+                libc::EPERM
+            )
+        );
+
+        let exec_w = w.clone();
+        let (exec, mut said_exec) = forked(move |mut out| {
+            // SAFETY: this child's copy of the test's end of the standby's pipe.
+            unsafe { libc::close(held_fd) };
+            let root = said("exec-root", enter_cgroup(&exec_w));
+            let leaf = said(
+                "exec",
+                join_workload(&exec_w, true, || Err(libc::ESRCH)).map_err(io::Error::from_raw_os_error),
+            );
+            let now = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+            let _ = out.write_all(format!("{root}{leaf}cgroup={}", now.trim()).as_bytes());
+        });
+        let mut found = String::new();
+        said_exec.read_to_string(&mut found).unwrap();
+        // SAFETY: waits for the test's own child.
+        unsafe { libc::waitpid(exec, std::ptr::null_mut(), 0) };
+        let own = w.strip_prefix("/sys/fs/cgroup").unwrap();
+        assert_eq!(
+            found,
+            format!("exec-root={} exec=ok cgroup=0::{own}/{LEAF}", libc::EBUSY)
+        );
+        // From init's view: the root holds no process, its limit is init's.
+        let read = |p: String| std::fs::read_to_string(p).unwrap().trim().to_string();
+        assert_eq!(read(format!("{w}/cgroup.procs")), "");
+        assert_eq!(read(format!("{w}/{LEAF}/cgroup.procs")), standby.to_string());
+        assert_eq!(read(format!("{w}/memory.max")), "268435456");
+        assert_eq!(read(format!("{w}/pids.max")), "64");
+
+        drop(held);
+        // SAFETY: waits for the test's own child, which ends as its pipe closes.
+        unsafe { libc::waitpid(standby, std::ptr::null_mut(), 0) };
+        for dir in [format!("{w}/boxes"), format!("{w}/{LEAF}"), w] {
+            std::fs::remove_dir(&dir).unwrap();
+        }
+    }
 }

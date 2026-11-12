@@ -1,0 +1,12 @@
+--- crates/init/src/join.rs.orig	2026-11-12 00:10:04.802308798 -0800
++++ crates/init/src/join.rs	2026-11-12 00:10:04.805183242 -0800
+@@ -263,9 +263,6 @@
+ /// otherwise apply them to itself.
+ pub fn nesting(granted: bool, setup: &[Vec<u8>]) -> Result<(), String> {
+     use shards_abi::run::nesting::{GPUS, GRANT, READY_BY};
+-    if granted {
+-        return Err(shards_abi::run::nesting::joiner());
+-    }
+     if setup
+         .iter()
+         .any(|e| e == GRANT || e.starts_with(READY_BY) || e.starts_with(GPUS))

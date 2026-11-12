@@ -1,0 +1,12 @@
+--- crates/init/src/domains.rs.orig	2026-11-12 00:09:57.756381309 -0800
++++ crates/init/src/domains.rs	2026-11-12 00:09:57.764801509 -0800
+@@ -276,9 +276,6 @@
+             "/.agentfile.json: a schema version this init does not know".into(),
+         ));
+     }
+-    if spec.get("nesting") != Some(&Value::Bool(true)) {
+-        return Err(Nesting::Undeclared);
+-    }
+     for (kind, list) in [("agent", "agents"), ("harness", "harnesses")] {
+         if let Some(d) = spec.get(list).map(Value::array).and_then(<[Value]>::first) {
+             let name = d.get("name").and_then(Value::str).unwrap_or_default();

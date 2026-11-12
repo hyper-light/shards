@@ -1,0 +1,33 @@
+   Compiling shards-init v0.1.0 (/home/adalundhe/s38-init-step4/src/crates/init)
+warning: unused variable: `refused`
+    --> crates/init/src/run.rs:1326:13
+     |
+1326 |     let Err(refused) = enter_cgroup(&first) else {
+     |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_refused`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards-init` (bin "shards-init" test) generated 1 warning (run `cargo fix --bin "shards-init" -p shards-init --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.68s
+     Running unittests src/main.rs (/home/adalundhe/s38-init-step4/target/x86_64-unknown-linux-musl/debug/deps/shards_init-451fb1ae2b80b18c)
+
+running 1 test
+test run::nesting_tests::a_granted_runs_execs_join_its_leaf_never_its_root ... FAILED
+
+failures:
+
+---- run::nesting_tests::a_granted_runs_execs_join_its_leaf_never_its_root stdout ----
+
+thread 'run::nesting_tests::a_granted_runs_execs_join_its_leaf_never_its_root' (807309) panicked at crates/init/src/run.rs:6429:9:
+assertion `left == right` failed
+  left: Ok(())
+ right: Err(2)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    run::nesting_tests::a_granted_runs_execs_join_its_leaf_never_its_root
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 194 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
