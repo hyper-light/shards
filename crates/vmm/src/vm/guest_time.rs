@@ -369,16 +369,30 @@ mod tests {
     }
 
     /// Samples on another thread, as vCPUs run, leave and come back: each vCPU's time and
-    /// the machine's never fall from one sample to the next.
+    /// the machine's never fall from one sample to the next. Sampled until every vCPU has
+    /// come and gone `ROUNDS` times, however late its thread first runs: a fixed count of
+    /// samples ended before any had on CI's arm64 runners (run 43230466376), and the test
+    /// then found nothing gone.
     #[test]
     fn samples_never_see_the_total_fall_as_vcpus_come_and_go() {
+        const VCPUS: u32 = 4;
+        const ROUNDS: u64 = 100;
+        /// Ends the vCPUs' loops however the sampling ends, a failed check's panic included,
+        /// which the scope would otherwise wait out for ever.
+        struct Done<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Done<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
         let clocks = GuestClocks::default();
         let done = std::sync::atomic::AtomicBool::new(false);
-        std::thread::scope(|s| {
-            for index in 0..4u32 {
+        let rounds: Vec<AtomicU64> = (0..VCPUS).map(|_| AtomicU64::new(0)).collect();
+        let samples = std::thread::scope(|s| {
+            let _done = Done(&done);
+            for (index, rounds) in (0..VCPUS).zip(&rounds) {
                 let (clocks, done) = (&clocks, &done);
                 s.spawn(move || {
-                    let mut round = 0u64;
                     while !done.load(Ordering::SeqCst) {
                         let at = Arc::new(AtomicU64::new(0));
                         let joined = clocks.join(index, clock(&at));
@@ -386,24 +400,29 @@ mod tests {
                             at.store(step * (u64::from(index) + 1), Ordering::SeqCst);
                         }
                         drop(joined);
-                        round += 1;
+                        rounds.fetch_add(1, Ordering::SeqCst);
                     }
-                    round
                 });
             }
-            let mut last: Option<GuestTimes> = None;
-            for _ in 0..2_000 {
+            let (mut last, mut samples) = (None::<GuestTimes>, 0u64);
+            while rounds.iter().any(|r| r.load(Ordering::SeqCst) < ROUNDS) {
                 let t = clocks.sample();
                 if let Some(before) = &last {
                     assert!(t.total_ns() >= before.total_ns(), "{before:?} then {t:?}");
                     assert!(t.departed_ns >= before.departed_ns);
                 }
                 last = Some(t);
+                samples += 1;
+                std::thread::yield_now();
             }
-            done.store(true, Ordering::SeqCst);
+            samples
         });
         let t = clocks.sample();
-        assert!(t.vcpus.is_empty() && t.departed_ns > 0, "{t:?}");
+        let rounds: Vec<u64> = rounds.iter().map(|r| r.load(Ordering::SeqCst)).collect();
+        assert!(
+            t.vcpus.is_empty() && t.departed_ns > 0,
+            "{t:?} after {samples} samples, the vCPUs' rounds {rounds:?}"
+        );
     }
 
     /// Times encoded decode as they were: a vCPU unread, its reason's line breaks made

@@ -1,0 +1,28 @@
+== x86_64 musl, in rust:alpine under Docker's default seccomp
+CapEff:	00000000a80425fb
+Seccomp:	2
+CapEff:	0000000000000000
+Seccomp:	2
+     Running unittests src/main.rs (target/x86_64-unknown-linux-musl/test-release/deps/shards_init-a6b6568287cafe16)
+test result: ok. 197 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.05s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-musl/test-release/deps/shards_server-ae118b29741c071d)
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/lib.rs (target/x86_64-unknown-linux-musl/test-release/deps/shards_testguest-01f502709f063f47)
+     Running unittests src/main.rs (target/x86_64-unknown-linux-musl/test-release/deps/shards_testguest-66547c3d999bfc95)
+test result: ok. 39 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.20s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== x86_64 glibc, natively (no container, no seccomp)
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/test-release/deps/shards_init-a3db78d4841e4767)
+test result: ok. 197 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 4.02s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/test-release/deps/shards_server-3e0c3f7cef04a361)
+test sandbox::tests::a_worker_not_reaped_ends_no_other ... FAILED
+REAP_UNKNOWN first=[(1, 0, 10)] control_closed=false worker_two_ran_on=false second=[] control_closed_later=true worker_two_ended=true helper_exited=false helper_code=0 helper_signal=31 helper_failure=""
+thread 'sandbox::tests::a_worker_not_reaped_ends_no_other' (2058367) panicked at crates/server/src/sandbox.rs:1153:9:
+test result: FAILED. 46 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+     Running unittests src/lib.rs (target/x86_64-unknown-linux-gnu/test-release/deps/shards_testguest-ead427d91bb94673)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/test-release/deps/shards_testguest-58c400568244ca08)
+test result: ok. 39 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.76s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+EXIT=101

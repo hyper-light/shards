@@ -1,7 +1,8 @@
 # runtime-image-boot-v1: evidence (implementer record)
 
-D231, [decision record](../../runtime-image-boot-decision-v1.md). Implementer's light checks
-only: nothing here ran on a VM, and nothing here is a performance claim (R14 is ROOT's).
+D231, [decision record](../../runtime-image-boot-decision-v1.md). The implementer's light
+checks, then the real-VM runs ROOT assigned after main's CI failed (2026-11-12, below);
+nothing here is a performance claim (R14 is ROOT's).
 
 ## Identity
 
@@ -68,12 +69,49 @@ reaching another) are owed as real-VM observations (§8 of the record).
   `StreamEnd`); unknown tags and versions refused; `Secret` never in Debug.
 - R05/R13: one new interface (`Images`/`ImageGuest`) at the existing api seam; a simulator
   for it is owed.
-- R09: no defect is fixed here; this is new behaviour. The three `taken::linux` failures are
-  not attributed until reproduced (below).
+- R09: the three defects of 2026-11-12 (below) were each reproduced live before their fixes.
+  The three `taken::linux` failures are not attributed until reproduced (below).
 - R11/R12: Linux and macOS only for the run host in v1; Windows refused `Unsupported` (owed,
   not a platform limit); the run host's launch is a third copy of the builder's and the
   daemon's (owed, record §3.5).
-- R14/R15/R16: no profiling or benchmarks run; no subagents; runner caches left in place.
+- R14/R15/R16: no profiling or benchmarks run; one kiln agent on jupiter, at ROOT's word,
+  for the Windows host's build and its WHP runs; kiln's headroom guard froze the first
+  Linux run on adacachy and was not bypassed; runner caches left in place.
+
+## Real VMs, 2026-11-12: main's CI failures, their causes and fixes (R09, R10)
+
+`crates/shards/tests/api_image.rs` had never run before main's CI ran it. Every run below
+is `cargo test --profile test-release -p shards --test api_image`, serial
+(`-- --test-threads 1`) except on CI.
+
+| Run | Host | Revision | Result |
+|---|---|---|---|
+| CI 43230466376 | GitHub x86_64 KVM (gnu, musl jobs) | 8f3cd5b74 (main) | 4 boots FAILED about 2 s after the test guest built; the share test hung until the jobs' 56 and 60 minute limits: its run host in `do_wait` on its share process, whose door it still held (the job's hang dump) |
+| CI 43275175563, job 131382706564 | GitHub x86_64 KVM | 74cb24706 (boots bounded; a Boot refusal quotes the run host's last words) | 5 boots refused in 58 s, each `the VM ended before it took its run` after `its guest is ready`; no hang |
+| jupiter (Windows 11 26200, WHP), the D231 Windows lane | x86_64 WHP | e1be4007c + the request fix reverted by hand (log retention 0, 0) + the VM's report of a refused request | RED: `stop_ends_the_run_at_once` refused in 2.43 s, quoting the VM's `shards: a request whose log keeps nothing`; `its_request_is_one_a_warm_vm_takes` FAILED `LogRetention { size: 0, files: 0 }` |
+| same | same | the fix restored | GREEN: both pass |
+| jupiter | x86_64 WHP | e1be4007c (request fixed) | 5 passed; `stats_read_the_run_and_a_member` FAILED `no answer within 120s` |
+| adalundhe-macbook-pro (M5 Max, macOS 26.5.2) | arm64 HVF | 686514aa0 | 5 passed; stats FAILED as on WHP |
+| jupiter | x86_64 WHP | e1be4007c + the link lock fix + the VM's report | 6 passed |
+| adalundhe-macbook-pro | arm64 HVF | f6051bc93 | 6 passed, 4.12 s |
+
+Owed: the whole file on Linux x86_64 KVM at the landed revision (CI's run of f6051bc93,
+43291010930, was queued as it landed) and on arm64 KVM.
+
+Causes, each reproduced live before its fix:
+1. **A request a warm VM refuses** (686514aa0). The run host's `RunHead` kept `RunHead`'s
+   defaults, log retention 0 and 0; a warm VM refuses a request whose log keeps nothing
+   (warm.rs `head`), so every boot ended at `TAKEN`. The VM said nothing of it before its
+   link closed (its other failures it says there, vm_run.rs), and the run host killed it at
+   once, so no refusal said why until the VM reported it there too. Fix: `run_request`
+   keeps a daemon run's retention with no log (`DEFAULT_LOGS`), held by
+   `its_request_is_one_a_warm_vm_takes` to the VM's own check (`RunHead::keeps_its_log`).
+2. **A lock held for the run's life** (f6051bc93). `serve`'s follower took its clone of the
+   link in a `match` scrutinee, whose guard lives to the match's end: the link's mutex was
+   held through `follow`, and a stats exec's send waited on it until the run ended. The
+   Windows lane found it with labelled steps on WHP; HVF failed the same way.
+3. **A share process waited for with its door held** (86f3c87b2), CI's hang: reaped now as
+   a network process is, within `netproc::GRACE` (686514aa0), after its door is let go of.
 
 ## Open
 
