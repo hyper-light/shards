@@ -481,46 +481,79 @@ fn a_give_back_lets_an_idle_slot_go() {
 
 /// The budget the shrinking-room test holds its run to, its host's own (D183): on Linux a
 /// slice of the user's manager (slice 1), its cgroup's `memory.current` what it holds and
-/// `MemoryHigh` its budget; on macOS and Windows a group shards keeps, its directory of the
-/// home (slice 3), whose `memory.current` the daemon writes each pressure window and whose
-/// `memory.high` it holds the group's microVMs to as the file changes. The slice goes as it
-/// drops; a group goes with its home.
+/// `MemoryHigh` its budget; or, with no user's manager, as root (a guest's own hierarchy, the
+/// L1 path's), a cgroup made in it as an administrator delegates one (slice 2), its own
+/// `memory.high`; on macOS and Windows a group shards keeps, its directory of the home (slice
+/// 3), whose `memory.current` the daemon writes each pressure window and whose `memory.high` it
+/// holds the group's microVMs to as the file changes. Each goes as it drops, a group with its
+/// home.
 struct Budget {
     /// `--cgroup-parent`'s value.
     parent: String,
-    /// Where `memory.current` is: the slice's cgroup, or the group's directory.
+    /// Where `memory.current` and `memory.high` are: a cgroup's, or the group's directory.
     dir: PathBuf,
+    kind: Kind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Slice,
+    Delegated,
+    Group,
 }
 
 impl Budget {
-    /// Why not, where this Linux host has no user's manager on its bus.
+    /// Why not, where this Linux host has no user's manager on its bus and this test is not
+    /// root.
     fn new(home: &Path) -> Result<Budget, String> {
-        if cfg!(target_os = "linux") {
-            #[cfg(unix)]
-            // SAFETY: getuid(2) takes nothing and cannot fail.
-            let uid = unsafe { libc::getuid() };
-            #[cfg(not(unix))]
-            let uid = 0;
-            let bus = std::env::var_os("XDG_RUNTIME_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| format!("/run/user/{uid}").into())
-                .join("bus");
-            if !bus.exists() {
-                return Err(format!(
-                    "no user's systemd manager here: {} is not",
-                    bus.display()
-                ));
-            }
+        if !cfg!(target_os = "linux") {
+            let parent = format!("shardsring{}", std::process::id());
+            let dir = home.join("groups").join(&parent);
+            return Ok(Budget {
+                parent,
+                dir,
+                kind: Kind::Group,
+            });
+        }
+        #[cfg(unix)]
+        // SAFETY: getuid(2) takes nothing and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        #[cfg(not(unix))]
+        let uid = 0;
+        let bus = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| format!("/run/user/{uid}").into())
+            .join("bus");
+        if bus.exists() {
             let parent = format!("shardsring{}.slice", std::process::id());
             let dir = PathBuf::from(format!(
                 "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{parent}"
             ));
-            Ok(Budget { parent, dir })
-        } else {
-            let parent = format!("shardsring{}", std::process::id());
-            let dir = home.join("groups").join(&parent);
-            Ok(Budget { parent, dir })
+            return Ok(Budget {
+                parent,
+                dir,
+                kind: Kind::Slice,
+            });
         }
+        let root = Path::new("/sys/fs/cgroup");
+        if uid != 0 || !root.join("cgroup.subtree_control").exists() {
+            return Err(format!(
+                "no user's systemd manager here ({} is not), and no cgroup of root's to make",
+                bus.display()
+            ));
+        }
+        // Root's own hierarchy, where the hierarchy's root may hold processes and give its
+        // children the memory controller (cgroup-v2.rst, "No Internal Process Constraint").
+        let name = format!("shardsring{}", std::process::id());
+        let dir = root.join(&name);
+        std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        std::fs::write(root.join("cgroup.subtree_control"), "+memory")
+            .map_err(|e| format!("its memory controller: {e}"))?;
+        Ok(Budget {
+            parent: format!("/{name}"),
+            dir,
+            kind: Kind::Delegated,
+        })
     }
 
     /// What its runs hold now, its `memory.current`: waited for where the daemon has yet
@@ -541,9 +574,9 @@ impl Budget {
     }
 
     /// Holds its runs to `bytes`: the slice's `MemoryHigh` (no swap past it), or the
-    /// group's `memory.high`.
+    /// cgroup's or group's `memory.high`.
     fn hold_to(&self, bytes: u64) {
-        if cfg!(target_os = "linux") {
+        if self.kind == Kind::Slice {
             let set = std::process::Command::new("systemctl")
                 .args(["--user", "set-property", "--runtime", &self.parent])
                 .arg(format!("MemoryHigh={bytes}"))
@@ -559,21 +592,29 @@ impl Budget {
 
 impl Drop for Budget {
     fn drop(&mut self) {
-        if cfg!(target_os = "linux") {
-            for verb in ["revert", "stop"] {
-                let _ = std::process::Command::new("systemctl")
-                    .args(["--user", verb, &self.parent])
-                    .status();
+        match self.kind {
+            Kind::Slice => {
+                for verb in ["revert", "stop"] {
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["--user", verb, &self.parent])
+                        .status();
+                }
             }
+            // Its daemon's leaf in it goes as the daemon does; what is left, with the guest.
+            Kind::Delegated => {
+                let _ = std::fs::remove_dir(&self.dir);
+            }
+            Kind::Group => {}
         }
     }
 }
 
 /// A shrinking room lets an idle slot go, and a stream past the room goes over plain
 /// vsock (D188, D230), on every host: under its budget (`Budget`: a slice of the user's
-/// manager on Linux, a group shards keeps elsewhere), an engine connection held open and idle
-/// keeps its slot while the budget has room; with the budget brought down to what its run
-/// holds, the relay lets it go, and a new stream crosses whole with no ring.
+/// manager on Linux, or root's own cgroup where it has none, a group shards keeps elsewhere),
+/// an engine connection held open and idle keeps its slot while the budget has room; with the
+/// budget brought down to what its run holds, the relay lets it go, and a new stream crosses
+/// whole with no ring.
 #[test]
 fn a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain() {
     if cannot_run_vms() {
