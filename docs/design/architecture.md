@@ -17234,7 +17234,7 @@ Tested (E2E; each guard mutation-checked, the mutant built and run, killed unles
 - **Unmeasured until PM M146 and M147:** the start path's cost of the command's PID
   namespace, and of `--init`'s reaper, forked as such a run starts.
 
-### D232. A nested runtime's grant: one run's command makes boxes in its own microVM (decided)
+### D234. A nested runtime's grant: one run's command makes boxes in its own microVM (decided; building)
 
 **Why.** Hex runs its node as a Shards guest's own PID 1 (D215's direct boot, no
 Agentfile). That PID 1 mounts the node's file systems, gives the node its descriptor limit,
@@ -17252,7 +17252,7 @@ it lacks is the authority to make boxes:
 - a filter that lets it mount and pivot_root (f16, f17);
 - its deadline on its own clock (f23, f24, f25);
 - a readiness word (f26);
-- its GPU's words (f22).
+- its GPUs' identities (f22, f39).
 
 The research, every finding graded with its sources:
 [nesting-grant-decision-v1](../research/nesting-grant-decision-v1.md) (`fN` below).
@@ -17303,9 +17303,12 @@ The research, every finding graded with its sources:
     run reaches it, from `HOST_TIME` (the host's wall clock in nanoseconds, read in one
     access; crates/abi/src/lib.rs, f38) and its own CLOCK_BOOTTIME, so neither a template's
     restore nor a pool's wait counts against it (f23, f25).
-  - **Its GPU's words**, where the run gives them: the caller's text, written by init
-    before the command starts to `/run/shards/gpu-words` (mode 0444). A box sees them
-    only where its runtime puts them (f22). Render nodes come only through D44's rules
+  - **Its GPUs' identities**, where the run names its GPUs (`--gpu-device`, shards-api's
+    `gpu_devices`; D232). Init writes them before the command starts to `/run/shards/gpus`
+    (mode 0444), one a line in `shards_abi::gpu`'s grammar. They are the GPUs the VM
+    process bound and no others, the identities Hex's node keys its GPUs by (packed PCI
+    address, Metal registry ID), never text a caller could word as it likes (f22, f39). A box
+    sees them only where its runtime puts them. Render nodes come only through D44's rules
     (`--gpus`, `--device`). The workload's device filter is attached BPF_F_ALLOW_MULTI, so
     it still bounds any device programs the workload puts on its boxes (f20, f21).
   - **A readiness word**: `NOTIFY_SOCKET=/run/shards/notify`, sd_notify's datagram socket
@@ -17337,7 +17340,8 @@ The research, every finding graded with its sources:
 the image as built:
 - `nesting`: the grant (the leaf, the writable hierarchy, init's own checks, `/run/shards`).
 - `ready-by=<ns>`: the deadline, in nanoseconds since the Unix epoch on the host's clock.
-- `gpu-words=<text>`: the GPU's words.
+- `gpus=<identity>[,<identity>…]`: the run's own GPU selection, which init checks with
+  `shards_abi::gpu`'s grammar.
 - The capabilities and the filter travel as every run's do. No `seccomp-mounts=` is sent.
 
 From the guest to the host: a run message of a new kind, READY, carrying the readiness
@@ -17372,13 +17376,14 @@ caller's decision.
   the daemon's conversion and init's read shifts it by that step.
 - `fs.nr_open`: the run's own ask. The kernel's own ceiling refuses anything above it
   (f37).
-- The GPU's words: within `run::MAX_PAYLOAD`, as every setup entry is.
+- The GPUs' identities: as many as the run names, at most D232's `MAX_PHYSICAL_GPUS`,
+  in its grammar.
 - WORKLOAD_READY (marker 7) and the READY kind: the next free numbers of their tables.
-- `/run/shards/notify` and `/run/shards/gpu-words`: beside `/run/shards/engine.sock` (D181).
-- The words file's mode, 0444: readable by every user of the run, as the words are the
-  run's own; init alone writes the file, before the command starts.
+- `/run/shards/notify` and `/run/shards/gpus`: beside `/run/shards/engine.sock` (D181).
+- The identities file's mode, 0444: readable by every user of the run, as the GPUs are
+  the run's own; init alone writes the file, before the command starts.
 - The names: `NESTING`, `nesting=true`, and the setup words `nesting`, `ready-by=` and
-  `gpu-words=` are shards' own. `NOTIFY_SOCKET` and `READY=1` are sd_notify's.
+  `gpus=` are shards' own. `NOTIFY_SOCKET` and `READY=1` are sd_notify's.
   `SHARDS_READY_BY` takes the place of Hex's HEX_BOOT_READY_BY.
 - CAP_SYS_ADMIN (21) and CAP_NET_ADMIN (12): the kernel's numbers
   (include/uapi/linux/capability.h).
@@ -17394,7 +17399,7 @@ caller's decision.
   - There is no single grant to refuse a joiner by.
   - The workload stays in its namespace root, where its first controller write fails
     EBUSY (f9).
-  - There is no deadline, readiness or GPU words.
+  - There is no deadline, readiness or GPU identities.
 - A user-namespace grant (Hex's rootless node). It is tighter: no capability in the
   microVM's initial namespace, and no device programs (f11). But the kernel refuses a
   fresh /proc in a user namespace under shards' masked /proc, and Docker refuses writable

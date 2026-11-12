@@ -1,6 +1,6 @@
 # The nesting grant: what a nested runtime under shards-init needs (decision record, v1)
 
-The record behind D232 (docs/design/architecture.md). Step 38 of kiln plan
+The record behind D234 (docs/design/architecture.md). Step 38 of kiln plan
 01a1cd8e862e7169a074db3d5fa33f3d; its planning research is kiln research
 01a1cda5426f73cc86b87e7749163666, reproduced below as kiln graded it (each finding's
 grade and score are kiln's, from its sources' kinds, how many agree and whether each quote
@@ -23,7 +23,7 @@ was found where cited; `f1` to `f38` are its findings in order).
   Nothing was built or run in a microVM for this record: what only a live run shows (f28's
   pivot_root, f20's bound on nested device programs) is owed to the real-VM test of plan
   step 5, run by ROOT.
-- **Decision.** D232.
+- **Decision.** D234.
 
 **Research:** Plan step 38 [Shards]: shards-init grants one designated workload what Hex's node needs, each grant checked at build and at run: Hex ROOT's 8-item list in the step (mounts and /run, a writable delegated cgroup v2 subtree, descriptor limits, ready-by time, GPU words and DRM render nodes, subreaper, exit policy). Rules as plan step 5's goal. Full step: kiln plan 01a1cd8e862e7169a074db3d5fa33f3d.
 
