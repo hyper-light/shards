@@ -261,10 +261,20 @@ cat >"$work/selection-src/meson.build" <<EOF
 project('shards-gpu-selection', 'c', default_options: ['c_std=c11', 'warning_level=3', 'werror=true'])
 static_library('shards_gpu_selection', 'native-identity.c', c_args: ['-I$vkh'], install: false)
 EOF
-setup selection "$(native "$work/selection")" "$(native "$work/selection-src")" ${win[@]+"${win[@]}"}
+# On Windows, for the C runtime rustc links (/MD), as the renderer's and libepoxy's objects ask
+# for it: this project names no buildtype, and meson's default (debug) would compile the bridge
+# for the debug runtime (/MDd), where every object of a link must use the same one (MSVC's /MD).
+selection_args=()
+if [ "$host" = Windows-x86_64 ]; then
+    selection_args=(-Db_vscrt=md)
+fi
+setup selection "$(native "$work/selection")" "$(native "$work/selection-src")" ${win[@]+"${win[@]}"} \
+    ${selection_args[@]+"${selection_args[@]}"}
 ninja --quiet -C "$(native "$work/selection")"
 if [ "$host" = Windows-x86_64 ]; then
-    cp "$work/selection/shards_gpu_selection.lib" "$out/"
+    # meson names a static library lib*.a on Windows too: kept as Windows names one, which
+    # rustc links by that name, as the renderer's and libepoxy's above.
+    cp "$work/selection/libshards_gpu_selection.a" "$out/shards_gpu_selection.lib"
     libs+=(shards_gpu_selection.lib)
 elif [[ $host == Linux-* ]]; then
     # meson makes a library it does not install a thin archive (GNU ar's T), whose members name

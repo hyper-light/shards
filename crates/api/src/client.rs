@@ -2343,13 +2343,17 @@ mod tests {
         }
     }
     fn managed_model(coordinate_stop: bool) -> (ManagedGuest, triomphe::Arc<ModelNative>) {
-        let socket = Path::new("/model/native/v");
-        let plan = prepare_boot(&spec(), Path::new("/model/never-executed"), socket, 0).unwrap();
+        // Never opened, and absolute on every host as prepare_boot asks: under the root of
+        // this test's directory, which on Windows is its drive's (`/model` is not absolute there).
+        let here = std::env::current_dir().unwrap();
+        let root = here.ancestors().last().unwrap();
+        let socket = root.join("model").join("native").join("v");
+        let plan = prepare_boot(&spec(), &root.join("model").join("never-executed"), &socket, 0).unwrap();
         let native = triomphe::Arc::try_new(ModelNative {
             identity: Identity {
                 pid: 42,
                 started: 7,
-                vsock: socket.into(),
+                vsock: socket,
             },
             state: Mutex::new(NativeState::default()),
             changed: Condvar::new(),
