@@ -5,14 +5,15 @@
 #      keep.rs, what changes::keep keeps (F_GETFL) and a layer none may read; reaper.rs,
 #      the managed reaper's own loop under its filter, stopped in its wait; net.rs (x86_64,
 #      where its filter is installed), the network process's poller under its filter,
-#      stopped in its wait.
+#      stopped in its wait; atomics.rs, what a program's Atomics.wait comes to in a worker's
+#      runtime.
 #   3. Mutants: each guard taken away, its test run, the file put back and touched so that
 #      cargo builds it again. A mutant is KILLED where its test fails.
 # Every result is a line that starts with RESULT, PROBE or MUTANT.
 set -u
 h=docs/research/measurements/musl-opath-v1/harness
 t() { cargo test --locked --profile test-release --target "$TARGET" "$@" 2>&1; }
-said() { grep -aE "^test |test result|panicked at|STOPPED_IN_WAIT|KEPT|REAPER|NETWORK|refused syscall|not O_PATH|O_PATH asked" | head -${1:-40}; }
+said() { grep -aE "^test |test result|panicked at|STOPPED_IN_WAIT|KEPT|REAPER|NETWORK|ATOMICS_WAIT|refused syscall|not O_PATH|O_PATH asked" | head -${1:-40}; }
 uname -a
 echo "TARGET=$TARGET REV=${REV:-unknown}"
 
@@ -46,6 +47,8 @@ init="-p shards-init --bin shards-init"
 probe keep.rs crates/init/src/changes.rs "$init" \
   changes::probe::kept_layers_are_path_descriptors changes::probe::a_layer_none_may_read_is_kept
 probe reaper.rs crates/init/src/managed.rs "$init" managed::probe::the_reaper_stopped_in_its_wait_lives_on
+probe atomics.rs crates/server/src/sandbox.rs "-p shards-server --bin shards-server" \
+  sandbox::probe::a_program_cannot_wait_on_atomics
 case $TARGET in
 x86_64-*)
   probe net.rs crates/net/src/confine.rs "-p shards-net --lib" \
