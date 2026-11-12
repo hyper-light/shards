@@ -17193,7 +17193,8 @@ The research, every finding graded with its sources:
     (`cgroups-rw`, f7). Its command starts in the leaf `run/workload/init`, so its
     namespace root holds no process and it may enable cpu, cpuset, io, memory and pids for
     children beside the leaf at once (f8, f9). Each exec joins the leaf, never the root,
-    so no exec races the workload's controllers (moby's hack/dind loops on that race).
+    so no exec races the workload's controllers (moby's hack/dind loops on that race,
+    f35).
     nsdelegate keeps the root's own limits init's, and every process inside the subtree
     (f6).
   - **CAP_SYS_ADMIN and CAP_NET_ADMIN**, beside Docker's default set (f10). These cover its
@@ -17201,8 +17202,11 @@ The research, every finding graded with its sources:
   - **Docker's default filter, resolved for those capabilities, with `pivot_root` added**
     (f16), and without D121's mount filter (f17). The capabilities open `bpf` and
     `perf_event_open` there, as Docker's profile opens them for CAP_SYS_ADMIN. Everything
-    the profile refuses whatever the capabilities stays refused: AF_ALG and AF_VSOCK
-    sockets, io_uring, userfaultfd, keyctl, kexec and modules (f27).
+    the profile refuses whatever the capabilities stays refused (f27,
+    crates/seccomp/data/default.json):
+    - AF_ALG and AF_VSOCK sockets (its `socket` rules skip families 38 and 40);
+    - io_uring, userfaultfd, keyctl and kexec (no rule names them);
+    - modules (only CAP_SYS_MODULE opens them).
   - **Its descriptors.** The default of 1048576 stands (f14). Where the run's own `--ulimit
     nofile` hard limit is above `fs.nr_open`, init first raises `fs.nr_open` to it (f15).
     Above the kernel's own ceiling (`sysctl_nr_open_max`, fs/file.c), the start fails,
@@ -17210,9 +17214,9 @@ The research, every finding graded with its sources:
   - **Its deadline**, where the run gives one: `SHARDS_READY_BY`, an instant on the guest's
     CLOCK_BOOTTIME in nanoseconds, the clock Hex's HEX_BOOT_READY_BY uses (f24). The run
     carries its caller's deadline as the host's wall-clock time. Init converts it when the
-    run reaches it, from `HOST_TIME` (the host's clock, read in one access) and its own
-    CLOCK_BOOTTIME, so neither a template's restore nor a pool's wait counts against it
-    (f23, f25).
+    run reaches it, from `HOST_TIME` (the host's wall clock in nanoseconds, read in one
+    access; crates/abi/src/lib.rs, f38) and its own CLOCK_BOOTTIME, so neither a template's
+    restore nor a pool's wait counts against it (f23, f25).
   - **Its GPU's words**, where the run gives them: the caller's text, written by init
     before the command starts to `/run/shards/gpu-words` (mode 0444). A box sees them
     only where its runtime puts them (f22). Render nodes come only through D44's rules
@@ -17225,15 +17229,17 @@ The research, every finding graded with its sources:
   - to an image's agents and harnesses (refused beside them);
   - to a run joining its microVM (`--network container:`), refused by the daemon and again
     by init;
-  - to a build's steps, whose privileges stay `RUN --security=insecure` under `--allow`;
+  - to a build's steps, whose privileges stay `RUN --security=insecure` under `--allow`
+    (f32);
   - to any other run: a pooled or restored microVM's standby takes it only from its own
-    run's setup.
+    run's setup entries, as it takes `cgroups-rw` (f7).
 
   Egress past the microVM stays its network process's, on the host, and nothing in the
   guest changes it (f29).
 - *Already the workload's, unchanged*:
-  - `/proc`, `/sys`, `/dev`, and tmpfs mounts as a run asks (`--tmpfs /run`);
-  - shares at the paths a run names (`-v`);
+  - `/proc`, `/sys`, `/dev`, and tmpfs mounts as a run asks (`--tmpfs /run`; D115's table
+    gives them);
+  - shares at the paths a run names (`-v`, D109);
   - reaping: it is PID 1 of its own PID namespace, and Hex's node is already a subreaper
     (f12);
   - its end: the run ends with it, and its boxes end with its PID namespace (f13);
@@ -17262,19 +17268,24 @@ to D231's run host.
 | ready | `READY=1` | ready (no new event) |
 | starting, ready or ready-by passed | the workload's main process ends | exited (terminal) |
 
-Unknown sd_notify keys are ignored (sd_notify(3)). A datagram past PIPE_BUF, or one from a
-process outside the workload's cgroup, is ignored, as systemd ignores one
-(src/shared/notify-recv.c). A missed deadline is reported, not enforced: the caller set it,
-and stopping the run is the caller's decision.
+Unknown keys are ignored, as sd_notify(3) says the service manager does ("Unknown
+assignments are ignored", f36). Two kinds of datagram are ignored outright:
+- one past PIPE_BUF, as systemd ignores a truncated message (src/shared/notify-recv.c);
+- one from a process outside the workload's cgroup, as systemd's `NotifyAccess=all` accepts
+  only "all members of the service's control group" (systemd.service(5)).
+
+A missed deadline is reported, not enforced: the caller set it, and stopping the run is the
+caller's decision.
 
 **Literals.** None is chosen:
 - The leaf's name, `init`: the name moby's hack/dind gives the leaf a nested runtime moves
-  itself into.
+  itself into (f35).
 - The notify datagram's bound, PIPE_BUF: systemd's NOTIFY_BUFFER_MAX
-  (src/basic/constants.h:35).
+  (src/basic/constants.h:35, f36).
 - The deadline: the caller's, and none where it gives none. A host wall-clock step between
   the daemon's conversion and init's read shifts it by that step.
-- `fs.nr_open`: the run's own ask. The kernel's own ceiling refuses anything above it.
+- `fs.nr_open`: the run's own ask. The kernel's own ceiling refuses anything above it
+  (f37).
 - The GPU's words: within `run::MAX_PAYLOAD`, as every setup entry is.
 - WORKLOAD_READY (marker 7) and the READY kind: the next free numbers of their tables.
 - `/run/shards/notify` and `/run/shards/gpu-words`: beside `/run/shards/engine.sock` (D181).
