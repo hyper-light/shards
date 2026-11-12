@@ -180,12 +180,13 @@ fn destinations_of(spec: &Value, joined: &[String], d: (bool, &str)) -> Result<V
                 opened.extend(strings(e.get("ports")).iter().filter_map(|p| port_range(p)));
             }
         }
+        // Its egress's alone: one let in is no port `ingress_of` takes, which refuses it.
         for p in n.get("ports").map(Value::array).unwrap_or_default() {
             let Some(port) = p.get("port").and_then(Value::str).filter(|s| is_destination(s)) else {
                 continue;
             };
             if p.get("direction").and_then(Value::str) != Some("egress") {
-                return Err(format!("the destination {port:?} is egress's alone"));
+                continue;
             }
             let (host, at) = shards_dns::destination(port)?;
             let open = opened.iter().any(|&(q, lo, hi)| q == 6 && lo <= at && at <= hi);
@@ -1060,10 +1061,11 @@ mod tests {
         let unnamed = plan(&spec, &names, None, None).unwrap();
         let hosts = String::from_utf8(unnamed.links[2].as_ref().unwrap().hosts.clone()).unwrap();
         assert!(!hosts.contains("host.docker.internal"), "{hosts}");
-        // What the build refuses, crafted, refuses the plan: a destination let in, and one
-        // that is none.
+        // What the build refuses, crafted, refuses the plan: a destination let in, which is
+        // no port coming in, and one that is none.
         for (port, direction, why) in [
-            ("api.openai.com:443", "both", "egress's alone"),
+            ("api.openai.com:443", "both", "is no port or range of ports"),
+            ("api.openai.com:443", "ingress", "is no port or range of ports"),
             (
                 "bad host:443",
                 "egress",
