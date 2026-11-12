@@ -253,7 +253,7 @@ impl Conn {
     }
 
     /// A ring's packet owed the guest, written into `space`: its reply, then doorbells.
-    pub(super) fn ring_next_rx(&mut self, space: &[Span]) -> Option<Header> {
+    pub(super) fn ring_next_rx(&mut self, space: &[Span], spare: u32) -> Option<Header> {
         let credit = self.guest_credit();
         let (bytes, memory) = match &mut self.ringing {
             Ringing::Refused(reply, handle) => (reply.encode().to_vec(), handle.memory().clone()),
@@ -277,11 +277,11 @@ impl Conn {
             );
             self.kill();
             self.pending = Default::default();
-            return Some(self.header(op::RST));
+            return Some(self.header(op::RST, spare));
         }
         let len = bytes.len() as u32;
         self.rx_cnt += len;
-        let mut h = self.header(op::RW);
+        let mut h = self.header(op::RW, spare);
         h.len = len;
         Some(h)
     }
