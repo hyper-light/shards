@@ -14,8 +14,8 @@
 //! Device accesses complete inside `Vcpu::run` through [`Io`]. Firmware power management
 //! (PSCI on arm64) stays inside the backend, and a powered-off vCPU parks inside `run`. The
 //! caller sees only an [`Exit`]. Each backend exports the same names: `Vm`, `Vcpu`, `Kicker`,
-//! `Stage2`, `Error`, `check_host`, `max_vcpus`, plus the architecture's interrupt-controller
-//! types.
+//! `GuestClock` (what a vCPU has run of its guest, read from any thread), `Stage2`, `Error`,
+//! `check_host`, `max_vcpus`, plus the architecture's interrupt-controller types.
 
 #[cfg(hv = "hvf")]
 pub mod hvf;
@@ -113,6 +113,17 @@ pub(crate) fn every_page(gpa: u64, len: u64) -> impl Iterator<Item = u64> {
     (0..len.div_ceil(unit)).map(move |p| gpa.saturating_add(p * unit))
 }
 
+/// A WHP virtual processor's guest time in nanoseconds, of its runtime counters
+/// (WHV_PROCESSOR_RUNTIME_COUNTERS, WinHvPlatformDefs.h, Windows SDK 10.0.26100, one struct
+/// for x64 and Arm64): its run time, "a combination of the time the virtual processor
+/// consumes running guest code, and the time the associated logical processor spends
+/// running hypervisor code on behalf of that guest" (Hyper-V TLFS, "Virtual Processor Run
+/// Time Register"), less the hypervisor's, each in 100 ns units.
+#[cfg(any(hv = "whp", test))]
+pub(crate) fn whp_guest_ns(total_100ns: u64, hypervisor_100ns: u64) -> u64 {
+    total_100ns.saturating_sub(hypervisor_100ns).saturating_mul(100)
+}
+
 /// The guest's device accesses, as the VMM's buses serve them. Backends call these from
 /// vCPU threads, concurrently.
 pub trait Io: Sync {
@@ -202,5 +213,15 @@ mod tests {
         assert!(out.is_empty(), "no bit, no page");
         let all: Vec<u64> = every_page(0x1000, 0x3000).collect();
         assert_eq!(all, [0x1000, 0x2000, 0x3000], "a range unread counts whole");
+    }
+
+    /// A WHP virtual processor's guest time is its run time less the hypervisor's, from
+    /// 100 ns units; never below none, and at most u64's.
+    #[test]
+    fn a_whp_vcpus_guest_time_is_its_run_time_less_the_hypervisors() {
+        assert_eq!(whp_guest_ns(12_345, 345), 1_200_000);
+        assert_eq!(whp_guest_ns(0, 0), 0);
+        assert_eq!(whp_guest_ns(7, 9), 0, "the hypervisor's past the whole");
+        assert_eq!(whp_guest_ns(u64::MAX, 0), u64::MAX);
     }
 }

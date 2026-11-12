@@ -813,6 +813,20 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     let _ = writeln!(io::stderr(), "shards: its CPUs' hold: {e}");
                 }
             }
+            // What its microVM's vCPUs have run of their guest, for its stats, answered at
+            // once: a sample waits for no vCPU's exit to be handled, this connection's
+            // included, only for one in its guest to leave it (`Handle::guest_times`).
+            kind::GUEST_TIME if matches!(from, From::Daemon(_) | From::Joiner(..)) => {
+                if let Ok(number) = <[u8; 8]>::try_from(message.payload.as_slice()) {
+                    let answer = match crate::vm_run::guest_times() {
+                        Ok(times) => [&number[..], &[0], times.encode().as_bytes()].concat(),
+                        Err(e) => [&number[..], &[1], e.as_bytes()].concat(),
+                    };
+                    if let Err(e) = to_daemon(conn, kind::GUEST_TIMED, &answer, &[]) {
+                        let _ = writeln!(io::stderr(), "shards: answering its guest time: {e}");
+                    }
+                }
+            }
             // Paused where it is, or let go on (`pause`, `unpause`): in order, each
             // answered once done ([`pauses`]).
             kind::PAUSE if matches!(from, From::Daemon(_)) => {

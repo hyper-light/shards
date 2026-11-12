@@ -204,6 +204,10 @@ impl Handle {
     pub fn reported(&self) -> u64 {
         match self.0 {}
     }
+
+    pub fn guest_times(&self) -> super::GuestTimes {
+        match self.0 {}
+    }
 }
 
 #[derive(Debug)]

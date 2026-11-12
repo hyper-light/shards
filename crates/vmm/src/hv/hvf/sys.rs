@@ -608,6 +608,21 @@ impl Vcpu {
         })
     }
 
+    /// How long this vCPU has run its guest, in mach_absolute_time() units
+    /// (hv_vcpu.h:383-392, macOS 26.4 SDK, `hv_vcpu_get_exec_time`): "Must be called by the
+    /// owning thread", which the framework checks (`Hv::Vcpu::get_if_owning_thread`) and
+    /// `!Send` keeps. It reads two loads of the vCPU's context, no call into the kernel
+    /// (`Hv::Vcpu::get_execution_time`, macOS 26.4.1 25E253's framework, UUID
+    /// DE03F9CF-CA32-31F3-AC7B-607F2C78C0E7).
+    pub fn exec_time(&self) -> Result<u64> {
+        let mut v = 0;
+        // SAFETY: owning thread; writes one u64.
+        check("hv_vcpu_get_exec_time", unsafe {
+            ffi::hv_vcpu_get_exec_time(self.id, &mut v)
+        })?;
+        Ok(v)
+    }
+
     /// GIC CPU interface register by encoding. Owning thread (hv_gic.h).
     pub fn icc_reg(&self, reg: u16) -> Result<u64> {
         let mut v = 0;

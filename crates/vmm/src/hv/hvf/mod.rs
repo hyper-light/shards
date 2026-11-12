@@ -16,7 +16,8 @@ mod sys;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry as Slot;
 use std::fmt;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 pub use sys::{Gic, GicLayout, GicParams, MsiFrame};
 
@@ -24,7 +25,7 @@ use super::{Exit, Io, Touch};
 use crate::arch::aarch64::{self, Entry, esr, layout, prefetch, psci, sysreg};
 use crate::debug;
 use crate::devices::get_le;
-use crate::sync::lock;
+use crate::sync::{lock, wait};
 use power::Wake;
 
 /// The stage-2 page: shards sets HVF's 16 KiB IPA granule, the only one before macOS 26
@@ -422,6 +423,7 @@ impl Vm {
             el2,
             sys: vcpu,
             power: self.power.clone(),
+            ran: Arc::default(),
             index,
             on: false,
             memory: lock(&self.watch.regions).clone(),
@@ -649,12 +651,98 @@ impl Recording {
     }
 }
 
+/// What a vCPU's own thread has read of its guest's run time, for other threads:
+/// `hv_vcpu_get_exec_time` answers its owning thread alone ([`sys::Vcpu::exec_time`]). The
+/// thread reads it each time it leaves its guest, for a call and two loads; a reader of a
+/// vCPU in its guest makes it leave (`hv_vcpus_exit`) and waits for that alone, never for
+/// the handling of its exit, which comes after the read.
+#[derive(Debug, Default)]
+struct Ran {
+    /// Its guest's run time as it last left it, in mach_absolute_time() units.
+    ticks: AtomicU64,
+    /// Why the last read failed: the framework's code, 0 where it did not.
+    failed: AtomicI32,
+    /// Bumped as it enters its guest and as it leaves it: odd while in it.
+    stints: AtomicU64,
+    /// Readers waiting for it to leave its guest.
+    waiting: AtomicU32,
+    left: Mutex<()>,
+    gone: Condvar,
+}
+
+impl Ran {
+    /// On its vCPU's thread, as it enters its guest.
+    fn enter(&self) {
+        let stints = self.stints.load(Ordering::Relaxed);
+        self.stints.store(stints.wrapping_add(1), Ordering::SeqCst);
+    }
+
+    /// On its vCPU's thread, as it leaves its guest: its run time read then.
+    fn leave(&self, ticks: sys::Result<u64>) {
+        match ticks {
+            Ok(ticks) => {
+                self.ticks.store(ticks, Ordering::Relaxed);
+                self.failed.store(0, Ordering::Relaxed);
+            }
+            Err(e) => self.failed.store(e.code, Ordering::Relaxed),
+        }
+        let stints = self.stints.load(Ordering::Relaxed);
+        // Sequentially consistent with a reader's count of itself waiting: either it sees
+        // this leave, or this sees it waiting (`GuestClock::read`).
+        self.stints.store(stints.wrapping_add(1), Ordering::SeqCst);
+        if self.waiting.load(Ordering::SeqCst) != 0 {
+            // Taking the lock orders the wakeup after a waiter's look at `stints`.
+            drop(lock(&self.left));
+            self.gone.notify_all();
+        }
+    }
+}
+
+/// A vCPU's guest run time, read from any thread ([`Ran`]).
+#[derive(Debug, Clone)]
+pub struct GuestClock {
+    ran: Arc<Ran>,
+    kicker: sys::VcpuKicker,
+}
+
+impl GuestClock {
+    /// The nanoseconds its vCPU has run its guest: as it last left it, and where it is in it
+    /// now, as it leaves it, made to at once ("Forces an immediate exit", hv_vcpu.h), after
+    /// which it goes back in.
+    pub fn read(&self) -> Result<u64> {
+        let ran = &self.ran;
+        let stint = ran.stints.load(Ordering::SeqCst);
+        if stint % 2 == 1 {
+            ran.waiting.fetch_add(1, Ordering::SeqCst);
+            let left = self.kicker.kick().map(|()| {
+                let mut left = lock(&ran.left);
+                while ran.stints.load(Ordering::SeqCst) == stint {
+                    left = wait(&ran.gone, left);
+                }
+            });
+            ran.waiting.fetch_sub(1, Ordering::SeqCst);
+            left?;
+        }
+        match ran.failed.load(Ordering::Acquire) {
+            0 => Ok(crate::platform::mach_ns(u128::from(
+                ran.ticks.load(Ordering::Acquire),
+            ))),
+            code => Err(Error::Call(sys::Error {
+                op: "hv_vcpu_get_exec_time",
+                code,
+            })),
+        }
+    }
+}
+
 /// A vCPU, owned by the thread that created it.
 #[derive(Debug)]
 pub struct Vcpu {
     sys: sys::Vcpu,
     power: Arc<power::Table>,
     kicker: Kicker,
+    /// Its guest's run time, as its thread reads it for others.
+    ran: Arc<Ran>,
     index: usize,
     /// Where the VM has EL2: the SCTLR_EL2 an entry puts back.
     el2: Option<u64>,
@@ -670,6 +758,14 @@ pub struct Vcpu {
 impl Vcpu {
     pub fn kicker(&self) -> Kicker {
         self.kicker.clone()
+    }
+
+    /// Its guest's run time, for any thread to read.
+    pub fn guest_clock(&self) -> Result<GuestClock> {
+        Ok(GuestClock {
+            ran: self.ran.clone(),
+            kicker: self.sys.kicker(),
+        })
     }
 
     /// Makes this the boot vCPU: it enters at `entry` on its first `run`. Others stay
@@ -700,7 +796,10 @@ impl Vcpu {
             if self.power.take_kick(self.index) {
                 return Ok(Exit::Canceled);
             }
-            let (syndrome, ipa) = match self.sys.run()? {
+            self.ran.enter();
+            let ran = self.sys.run();
+            self.ran.leave(self.sys.exec_time());
+            let (syndrome, ipa) = match ran? {
                 sys::Exit::Canceled => {
                     self.power.kick_delivered(self.index);
                     return Ok(Exit::Canceled);
@@ -1607,6 +1706,107 @@ mod tests {
                 reads[reads.len() * 99 / 100],
                 reads[reads.len() - 1],
             );
+        });
+    }
+
+    /// A vCPU's guest time read from another thread through its [`GuestClock`] while its
+    /// guest spins on `b .` with no exit of its own: each read makes it leave its guest
+    /// once, and the times read never fall, keep up with its thread's CPU time (which
+    /// counts its guest, PM M288) and never pass it. Then what `hv_vcpu_get_exec_time`
+    /// costs its own thread, which reads it at every exit. Said as n, p50, p90, p99 and max.
+    /// Ignored because HVF allows one VM per process: run it alone with `--ignored --exact`.
+    #[test]
+    #[ignore]
+    fn a_vcpus_guest_time_is_read_from_another_thread_as_it_spins() {
+        use std::time::{Duration, Instant};
+        struct NoDevices;
+        impl Io for NoDevices {
+            fn mmio_read(&self, _addr: u64, data: &mut [u8]) {
+                data.fill(0);
+            }
+            fn mmio_write(&self, _addr: u64, _data: &[u8]) {}
+        }
+        let spread = |mut v: Vec<u128>| {
+            v.sort_unstable();
+            let at = |p: usize| v[(v.len() * p / 100).min(v.len() - 1)];
+            format!(
+                "n {} p50 {} p90 {} p99 {} max {}",
+                v.len(),
+                at(50),
+                at(90),
+                at(99),
+                v[v.len() - 1]
+            )
+        };
+        const RAM: u64 = 0x8000_0000;
+        let ram_len = 1usize << 20;
+        let ram = crate::platform::reserve(ram_len).unwrap().as_ptr();
+        // SAFETY: within the fresh reservation: `b .`.
+        unsafe { ram.cast::<u32>().write(0x1400_0000) };
+        let vm = Vm::new(VmConfig {
+            ipa_bits: 36,
+            mpidrs: vec![0],
+            el2: false,
+        })
+        .unwrap();
+        // SAFETY: the reservation is never unmapped.
+        unsafe { vm.map_ram(ram, RAM, ram_len) }.unwrap();
+        let _gic = vm
+            .create_gic(&GicLayout {
+                dist_base: 0x0800_0000,
+                redist_base: 0x080a_0000,
+                msi: None,
+                its: None,
+            })
+            .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let (vm, stop) = (&vm, &stop);
+        std::thread::scope(|s| {
+            let spinning = s.spawn(move || {
+                let mut a = vm.create_vcpu(0).unwrap();
+                a.boot(Entry { pc: RAM, x0: 0 }).unwrap();
+                let clock = crate::platform::ThreadClock::current().unwrap();
+                tx.send((a.guest_clock().unwrap(), a.kicker(), clock)).unwrap();
+                let mut kicked = 0u64;
+                while !stop.load(Ordering::Acquire) {
+                    assert_eq!(a.run(&NoDevices).unwrap(), Exit::Canceled);
+                    kicked += 1;
+                }
+                // What its thread pays at each exit: a read of its exec time.
+                let calls = 1_000_000u32;
+                let t0 = Instant::now();
+                for _ in 0..calls {
+                    std::hint::black_box(a.sys.exec_time().unwrap());
+                }
+                (kicked, t0.elapsed().as_nanos() / u128::from(calls))
+            });
+            let (guest, kicker, cpu) = rx.recv().unwrap();
+            let (t0, mut last, mut reads, mut lag) = (Instant::now(), 0u64, Vec::new(), Vec::new());
+            while t0.elapsed() < Duration::from_secs(2) {
+                std::thread::sleep(Duration::from_millis(10));
+                let r0 = Instant::now();
+                let ran = guest.read().unwrap();
+                reads.push(r0.elapsed().as_nanos());
+                let spent = cpu.read().unwrap();
+                assert!(ran >= last, "its guest time fell: {last} then {ran} ns");
+                assert!(ran <= spent, "{ran} ns in its guest, {spent} ns on its CPU");
+                lag.push(u128::from(spent - ran));
+                last = ran;
+            }
+            let (wall, spent) = (t0.elapsed().as_nanos(), cpu.read().unwrap());
+            stop.store(true, Ordering::Release);
+            kicker.kick();
+            let (kicked, call) = spinning.join().unwrap();
+            eprintln!(
+                "{last} ns in its guest of {wall} ns of wall time ({:.4}) and {spent} ns on its CPU; \
+                 {kicked} runs left; a read across threads (ns): {}; its CPU time past its guest \
+                 time (ns): {}; hv_vcpu_get_exec_time on its own thread: {call} ns a call",
+                last as f64 / wall as f64,
+                spread(reads),
+                spread(lag),
+            );
+            assert!(last > 0, "no guest time in 2 s of spinning");
         });
     }
 }
