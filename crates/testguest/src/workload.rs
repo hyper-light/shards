@@ -509,6 +509,7 @@ pub fn main() -> ! {
             "close-stdio" => managed_capture_close_stdio(arg(1), arg(3), arg(4), arg(5), arg(6)),
             "inherit-stdio" => managed_capture_inherit_stdio(arg(1), arg(3), arg(4), arg(5), arg(6), arg(7)),
             "inherited-child" => managed_capture_inherited_child(arg(1), arg(3), arg(4), arg(5), arg(6)),
+            "echo" => managed_capture_echo(arg(1)),
             _ => 1,
         },
         "managed-capture-main" => {
@@ -5492,6 +5493,38 @@ fn managed_capture_bytes(member: &str) -> io::Result<()> {
         .and_then(|()| err.write_all(member.as_bytes()))
         .and_then(|()| err.write_all(b"\0stderr\n\x80\xfeerr-tail"))
         .and_then(|()| err.flush())
+}
+
+/// A member that echoes its stdin: each read written to its stdout as it came, until its
+/// stdin ends, then `<member>\0echo-end <bytes>` on its stderr and exit 0: what a harness that
+/// speaks a stdio protocol does with its owner's input (plan step 5).
+fn managed_capture_echo(member: &str) -> i32 {
+    let mut buf = vec![0u8; 64 << 10];
+    let mut total = 0u64;
+    let mut out = io::stdout().lock();
+    loop {
+        // SAFETY: read(2) of fd 0 into a buffer it owns, at most its length.
+        let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
+        let Ok(n) = usize::try_from(n) else {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return 2;
+        };
+        if n == 0 {
+            break;
+        }
+        if out
+            .write_all(buf.get(..n).unwrap_or_default())
+            .and_then(|()| out.flush())
+            .is_err()
+        {
+            return 3;
+        }
+        total += n as u64;
+    }
+    let said = format!("{member}\0echo-end {total}");
+    i32::from(io::stderr().write_all(said.as_bytes()).is_err())
 }
 
 fn managed_capture(member: &str) -> i32 {

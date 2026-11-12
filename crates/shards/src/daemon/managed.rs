@@ -20,7 +20,7 @@ use shards_ipc::Stream;
 use shards_ipc::fd::AsRawFd as _;
 use shards_remote::{
     identity::{self, Fingerprint},
-    managed::{Admitted, Control, Endpoint, Producer, Progress, Rejected, RunId, Scope, State},
+    managed::{Admitted, Control, Endpoint, Producer, Progress, Rejected, RunId, Scope, State, input},
 };
 
 use super::{Daemon, Disk, Threads, lock, log};
@@ -29,9 +29,71 @@ const METADATA: &str = "managed-output";
 const GENERATION: &str = "managed-generation";
 // RFC 8446 §4: Handshake's uint24 length and four-byte type/length head.
 const HANDSHAKE_BYTES: usize = (1 << 24) - 1 + 4;
+/// The run's annotation naming the members whose stdin its owner writes (plan step 5, D231
+/// decision §3.3): each `KIND:NAME` as the image's Agentfile declares it (`agent` or
+/// `harness`), comma-separated. shards' own key, as `shards.egress` is a network's (D192):
+/// an OCI runtime's options travel in annotations (OCI runtime-spec config.md, "Annotations").
+/// A member it does not name has `/dev/null`: input is closed unless its owner asks for it.
+pub(super) const STDIN_ANNOTATION: &str = "shards.stdin";
+/// The most one input record carries: one `STDIN` frame to the member's init, which carries
+/// at most what the guest reads of a stream at once (`run::CHUNK`), as a command's and an
+/// exec's stdin frames do.
+const INPUT_ROOM: usize = run::CHUNK;
+
+/// The members a run's annotations give an input, by their declared index: each named
+/// once, each one of the image's members that runs a program (`active`), refused by name
+/// otherwise. None where the run names none.
+pub(super) fn input_members(
+    annotations: &[String],
+    labels: &[String],
+    active: &[u32],
+) -> Result<Vec<u32>, String> {
+    let mut named = None;
+    for kv in annotations {
+        let (key, value) = kv.split_once('=').unwrap_or((kv.as_str(), ""));
+        if key == STDIN_ANNOTATION {
+            // Docker's MapOpts keeps a key's last value (daemon.rs `annotations`).
+            named = Some(value);
+        }
+    }
+    let Some(value) = named else {
+        return Ok(Vec::new());
+    };
+    let mut members = Vec::new();
+    for entry in value.split(',').map(str::trim) {
+        let (kind, name) = entry
+            .split_once(':')
+            .filter(|(kind, name)| matches!(*kind, "agent" | "harness") && !name.is_empty())
+            .ok_or_else(|| {
+                format!("--annotation {STDIN_ANNOTATION}={value}: {entry:?} is no agent:NAME or harness:NAME")
+            })?;
+        let label = format!("{kind} {name}");
+        let member = labels
+            .iter()
+            .position(|l| *l == label)
+            .and_then(|i| u32::try_from(i).ok())
+            .ok_or_else(|| format!("--annotation {STDIN_ANNOTATION}: the image declares no {kind} {name}"))?;
+        if !active.contains(&member) {
+            return Err(format!(
+                "--annotation {STDIN_ANNOTATION}: {kind} {name} runs no program to read its stdin"
+            ));
+        }
+        if members.contains(&member) {
+            return Err(format!(
+                "--annotation {STDIN_ANNOTATION}: {kind} {name} named twice"
+            ));
+        }
+        members.try_reserve(1).map_err(|e| e.to_string())?;
+        members.push(member);
+    }
+    members.sort_unstable();
+    Ok(members)
+}
 
 #[derive(Debug)]
 pub(super) enum Failure {
+    /// What the run asked of its managed members that its image does not give.
+    Refused(String),
     Admission(Admission),
     Auth(Auth),
     Protocol(io::Error),
@@ -61,6 +123,7 @@ impl std::fmt::Display for Failure {
                 out,
                 "managed output admission: {requested} bytes requested, {available} available (retry after headroom returns)"
             ),
+            Self::Refused(why) => out.write_str(why),
             Self::Admission(reason) => write!(out, "managed output admission: {reason:?}"),
             Self::Auth(reason) => write!(out, "managed output owner: {reason:?}"),
             Self::Protocol(error) => write!(out, "managed output protocol: {error}"),
@@ -442,6 +505,8 @@ impl Drop for Output {
 
 struct Owner {
     outputs: Vec<Option<Arc<Output>>>,
+    /// Each member's input, by its index, where its owner asked for it.
+    inputs: Vec<Option<Arc<Input>>>,
     stream: Stream,
     credits: Arc<Credits>,
     _charge: Arc<Charge>,
@@ -453,6 +518,175 @@ impl Owner {
         shards_ipc::end(&self.stream);
         for output in self.outputs.iter().flatten() {
             output.abort();
+        }
+        for input in self.inputs.iter().flatten() {
+            input.record();
+            input.control.abort();
+            input.close();
+        }
+    }
+}
+
+/// A member's input, which its owner writes on its endpoint ([`input`]): the endpoint's
+/// control, and the member's input connection, which its VM hands over once its init's hello
+/// has come (`MANAGED_INPUT`), relayed to by a thread of its own.
+struct Input {
+    scope: input::Scope,
+    address: std::net::SocketAddr,
+    control: input::Control,
+    guest: Mutex<Guest>,
+    arrived: Condvar,
+    /// The run's metadata record, which the input's end is appended to, once.
+    metadata: Arc<Mutex<Ledger>>,
+    recorded: std::sync::atomic::AtomicBool,
+}
+
+/// The most bytes an input's terminal record takes ([`Input::record`]): its words as written,
+/// each number at its type's widest in decimal (a u32 member, a u8 channel, a u64 count and an
+/// i32 errno with its sign), and the longest of the words that vary.
+const INPUT_TERMINAL_MOST: usize = {
+    let member = u32::MAX.ilog10() as usize + 1;
+    let channel = u8::MAX.ilog10() as usize + 1;
+    let count = u64::MAX.ilog10() as usize + 1;
+    let errno = i32::MIN.unsigned_abs().ilog10() as usize + 2;
+    "member  channel  state  written  errno \n".len() + member + channel + "aborted".len() + count + errno
+};
+
+/// The member's input connection, as far as the daemon has it.
+enum Guest {
+    Awaited,
+    /// Here: the relay writes a copy of its own; this one ends it.
+    Here(Stream),
+    /// Ended, or never to come: the input ended or the run's scope did.
+    Gone,
+}
+
+impl Input {
+    /// The member's input connection has come: refused where one came before, or none will.
+    fn arrive(&self, conn: Stream) -> io::Result<()> {
+        let mut guest = lock(&self.guest);
+        if !matches!(*guest, Guest::Awaited) {
+            shards_ipc::end(&conn);
+            return Err(io::Error::other(
+                "a member's input connection that is not awaited",
+            ));
+        }
+        *guest = Guest::Here(conn);
+        drop(guest);
+        self.arrived.notify_all();
+        Ok(())
+    }
+
+    /// Waits for the member's input connection: a copy of it, none where it will not come.
+    fn wait(&self) -> Option<Stream> {
+        let mut guest = lock(&self.guest);
+        loop {
+            match &*guest {
+                Guest::Here(conn) => return conn.try_clone().ok(),
+                Guest::Gone => return None,
+                Guest::Awaited => {
+                    guest = self
+                        .arrived
+                        .wait(guest)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+            }
+        }
+    }
+
+    /// Appends the input's end to the run's metadata record, once: `closed` or `aborted` with
+    /// the bytes the member's stdin took and its errno, as its init told it; `revoked`, with
+    /// the bytes taken of its owner and none told, where the run's scope ended first.
+    fn record(&self) {
+        if self.recorded.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let (state, count, errno) = match self.control.state() {
+            input::State::Ended { written, end } => match end {
+                run::managed::InputEnd::Closed => ("closed", written, 0),
+                run::managed::InputEnd::Aborted(errno) => ("aborted", written, errno),
+            },
+            input::State::Open { at } | input::State::Ending { at, .. } => ("revoked", at, 0),
+            input::State::Revoked => ("revoked", 0, 0),
+        };
+        let mut buffer = [0u8; INPUT_TERMINAL_MOST];
+        let mut rest = buffer.as_mut_slice();
+        let written = writeln!(
+            rest,
+            "member {} channel {} state {state} written {count} errno {errno}",
+            self.scope.member,
+            input::CHANNEL
+        )
+        .map(|()| INPUT_TERMINAL_MOST.saturating_sub(rest.len()));
+        let result = written.and_then(|used| {
+            let line = buffer
+                .get(..used)
+                .ok_or_else(|| io::Error::other("managed input terminal record overflow"))?;
+            lock(&self.metadata).append(line)
+        });
+        if let Err(error) = result {
+            log(format!(
+                "managed input metadata member {}: {error}",
+                self.scope.member
+            ));
+        }
+    }
+
+    /// Ends the member's input connection, so that a record held for a member that does not
+    /// read it lets its relay go; once ended, none comes again.
+    fn close(&self) {
+        let mut guest = lock(&self.guest);
+        if let Guest::Here(conn) = &*guest {
+            shards_ipc::end(conn);
+        }
+        *guest = Guest::Gone;
+        drop(guest);
+        self.arrived.notify_all();
+    }
+}
+
+/// Takes the owner's records to the member's input connection as they come, each as one
+/// `STDIN` frame, and its end as an empty one, which init writes to the member's stdin
+/// exactly; told each is in the connection, the endpoint takes the next. A record the
+/// connection refuses is not delivered: the member's init tells its input's end, which
+/// [`Outputs::input_ended`] gives the endpoint.
+fn relay_input(input: &Input, relay: &input::Relay) {
+    let mut guest: Option<Stream> = None;
+    loop {
+        match relay.next() {
+            input::Next::Record { bytes, .. } => {
+                if guest.is_none() {
+                    guest = input.wait();
+                }
+                let Some(conn) = guest.as_ref() else {
+                    continue;
+                };
+                let Ok(len) = u32::try_from(bytes.len()) else {
+                    input.close();
+                    continue;
+                };
+                let header = run::header(run::kind::STDIN, len);
+                match (&*conn)
+                    .write_all(&header)
+                    .and_then(|()| (&*conn).write_all(&bytes))
+                {
+                    Ok(()) => relay.delivered(bytes),
+                    Err(_) => guest = None,
+                }
+            }
+            input::Next::End => {
+                if guest.is_none() {
+                    guest = input.wait();
+                }
+                if let Some(conn) = guest.as_ref() {
+                    let _ = (&*conn).write_all(&run::header(run::kind::STDIN, 0));
+                }
+            }
+            input::Next::Abort(_) => input.close(),
+            input::Next::Gone => {
+                input.close();
+                return;
+            }
         }
     }
 }
@@ -706,9 +940,68 @@ impl Outputs {
                         "authenticated owner output".into(),
                     ]
                 })
+                .chain(
+                    owner
+                        .inputs
+                        .iter()
+                        .flatten()
+                        .filter(|input| !matches!(input.control.state(), input::State::Revoked))
+                        .map(|input| {
+                            [
+                                format!("managed-{}-{}/udp", input.scope.member, input::CHANNEL),
+                                input.address.to_string(),
+                                "authenticated owner input".into(),
+                            ]
+                        }),
+                )
                 .collect(),
             _ => Vec::new(),
         }
+    }
+
+    fn input_of(&self, id: &str, member: u32) -> io::Result<Arc<Input>> {
+        let owner = match lock(&self.runs).get(id) {
+            Some(Entry::Serving(owner)) => Arc::clone(owner),
+            _ => return Err(io::Error::other("managed run is not registered")),
+        };
+        usize::try_from(member)
+            .ok()
+            .and_then(|m| owner.inputs.get(m))
+            .and_then(Option::as_ref)
+            .map(Arc::clone)
+            .ok_or_else(|| io::Error::other(format!("member {member} has no input")))
+    }
+
+    /// Whether run `id`'s member `member` has an input whose connection has not come: on
+    /// Windows, before a pipe is made for it.
+    #[cfg(windows)]
+    pub(super) fn awaits_input(&self, id: &str, member: u32) -> bool {
+        self.input_of(id, member)
+            .is_ok_and(|input| matches!(*lock(&input.guest), Guest::Awaited))
+    }
+
+    /// Member `member`'s input connection, as its VM handed it over: its relay writes to it.
+    /// One the run does not await is ended, and its init tells its input's end.
+    pub(super) fn input_arrived(&self, id: &str, member: u32, conn: Stream) -> io::Result<()> {
+        match self.input_of(id, member) {
+            Ok(input) => input.arrive(conn),
+            Err(e) => {
+                shards_ipc::end(&conn);
+                Err(e)
+            }
+        }
+    }
+
+    /// A member's input's end, as its init told it (`MANAGED_INPUT_ENDED`): its owner told,
+    /// and its connection ended here too.
+    pub(super) fn input_ended(&self, id: &str, bytes: &[u8]) -> io::Result<()> {
+        let ended = run::managed::InputEnded::decode(bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let input = self.input_of(id, ended.member)?;
+        input.control.ended(ended.written, ended.end);
+        input.record();
+        input.close();
+        Ok(())
     }
 
     fn begin(&self, id: &str) -> io::Result<()> {
@@ -739,6 +1032,7 @@ impl Outputs {
 }
 
 impl<D: Disk> Daemon<D> {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn managed_capture<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -746,16 +1040,18 @@ impl<D: Disk> Daemon<D> {
         client: &str,
         labels: &[String],
         active: &[u32],
+        inputs: &[u32],
         setup: &mut Vec<Vec<u8>>,
     ) -> Result<Stream, Failure> {
         self.managed.begin(id)?;
-        let result = self.start_managed_capture(threads, id, client, labels, active, setup);
+        let result = self.start_managed_capture(threads, id, client, labels, active, inputs, setup);
         if result.is_err() {
             self.managed.end(id);
         }
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_managed_capture<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -763,6 +1059,7 @@ impl<D: Disk> Daemon<D> {
         client: &str,
         labels: &[String],
         active: &[u32],
+        inputs: &[u32],
         setup: &mut Vec<Vec<u8>>,
     ) -> Result<Stream, Failure> {
         let members = u32::try_from(labels.len()).map_err(io::Error::other)?;
@@ -777,6 +1074,11 @@ impl<D: Disk> Daemon<D> {
         {
             return Err(
                 io::Error::new(io::ErrorKind::InvalidData, "invalid trusted active member plan").into(),
+            );
+        }
+        if inputs.windows(2).any(|w| w.first() >= w.get(1)) || inputs.iter().any(|m| !active.contains(m)) {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "invalid trusted input member plan").into(),
             );
         }
         let active_count = active
@@ -814,9 +1116,24 @@ impl<D: Disk> Daemon<D> {
             })
             .and_then(|n| u64::try_from(n).ok())
             .ok_or_else(|| io::Error::other("capture structure overflow"))?;
+        // Each input: its one record, what its endpoint sends and holds of its owner's stream,
+        // its handshake and datagrams, and its state.
+        let per_input = [
+            INPUT_ROOM,
+            input::TAKEN_BYTES,
+            input::RECORD_HEAD + INPUT_ROOM + input::END_BYTES,
+            HANDSHAKE_BYTES,
+            shards_remote::managed::DATAGRAM_BYTES,
+            shards_remote::managed::DATAGRAM_BYTES,
+            size_of::<Input>() + size_of::<Option<Arc<Input>>>(),
+        ]
+        .into_iter()
+        .try_fold(0u64, |sum, n| sum.checked_add(u64::try_from(n).ok()?))
+        .ok_or_else(|| io::Error::other("input reservation overflow"))?;
         let reservation = per_channel
             .checked_mul(u64::try_from(active_count).map_err(io::Error::other)?)
             .and_then(|n| n.checked_add(structural))
+            .and_then(|n| n.checked_add(per_input.checked_mul(u64::try_from(inputs.len()).ok()?)?))
             .ok_or_else(|| io::Error::other("capture reservation overflow"))?;
         let charge = Charge::reserve(&self.managed.budget, reservation)?;
         let identity = crate::context::identity(&self.home).map_err(io::Error::other)?;
@@ -857,6 +1174,33 @@ impl<D: Disk> Daemon<D> {
                 staged.push((scope, endpoint, producer, control));
             }
         }
+        let input_admitted = Admitted {
+            record_bytes: INPUT_ROOM,
+            transport_bytes: u64::try_from(input::TAKEN_BYTES).map_err(io::Error::other)?,
+            handshake_bytes: HANDSHAKE_BYTES,
+            datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
+            patience: shards_remote::tls::QUIET,
+        };
+        let mut staged_inputs = Vec::new();
+        staged_inputs
+            .try_reserve_exact(inputs.len())
+            .map_err(io::Error::other)?;
+        for &member in inputs {
+            let scope = input::Scope {
+                run,
+                generation,
+                member,
+            };
+            let (endpoint, relay, control) =
+                input::Endpoint::bind(&identity, key, scope, input_admitted).map_err(Failure::Endpoint)?;
+            let kernel = endpoint
+                .kernel_buffer_bytes()
+                .map_err(io::Error::other)?
+                .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
+                .ok_or_else(|| io::Error::other("input kernel queue overflow"))?;
+            charge.grow(kernel)?;
+            staged_inputs.push((scope, endpoint, relay, control));
+        }
         #[cfg(unix)]
         let (stream, peer) = Stream::pair()?;
         #[cfg(windows)]
@@ -882,6 +1226,15 @@ impl<D: Disk> Daemon<D> {
                 metadata,
                 "member {} channel {} address {}",
                 scope.member, scope.channel as u8, endpoint.address
+            )?;
+        }
+        for (scope, endpoint, _, _) in &staged_inputs {
+            writeln!(
+                metadata,
+                "member {} channel {} address {}",
+                scope.member,
+                input::CHANNEL,
+                endpoint.address
             )?;
         }
         metadata.sync_all()?;
@@ -949,8 +1302,41 @@ impl<D: Disk> Daemon<D> {
         }
         let reading = stream.try_clone()?;
         let writing = stream.try_clone()?;
+        let mut input_slots: Vec<Option<Arc<Input>>> = Vec::new();
+        input_slots
+            .try_reserve_exact(labels.len())
+            .map_err(io::Error::other)?;
+        input_slots.resize_with(labels.len(), || None);
+        let mut input_workers = Vec::new();
+        input_workers
+            .try_reserve_exact(staged_inputs.len())
+            .map_err(io::Error::other)?;
+        for (scope, endpoint, relay, control) in staged_inputs {
+            let input = Arc::new(Input {
+                scope,
+                address: endpoint.address,
+                control,
+                guest: Mutex::new(Guest::Awaited),
+                arrived: Condvar::new(),
+                metadata: Arc::clone(&metadata),
+                recorded: std::sync::atomic::AtomicBool::new(false),
+            });
+            // An owner's abort, or the input let go, cannot wait for a record the member
+            // does not read: its connection is ended under the relay.
+            let closing = Arc::downgrade(&input);
+            input.control.on_close(move || {
+                if let Some(input) = closing.upgrade() {
+                    input.close();
+                }
+            });
+            *input_slots
+                .get_mut(usize::try_from(scope.member).map_err(io::Error::other)?)
+                .ok_or_else(|| io::Error::other("input member index"))? = Some(Arc::clone(&input));
+            input_workers.push((endpoint, relay, input));
+        }
         let owner = Arc::new(Owner {
             outputs,
+            inputs: input_slots,
             stream,
             credits,
             _charge: charge,
@@ -973,6 +1359,21 @@ impl<D: Disk> Daemon<D> {
                         log(format!("managed output endpoint: {e}"));
                     }
                     output.abort();
+                })?;
+        }
+        for (endpoint, relay, input) in input_workers {
+            let relaying = Arc::clone(&input);
+            std::thread::Builder::new()
+                .name("managed-stdin".into())
+                .spawn_scoped(threads, move || relay_input(&relaying, &relay))?;
+            std::thread::Builder::new()
+                .name("managed-input".into())
+                .spawn_scoped(threads, move || {
+                    if let Err(e) = endpoint.run() {
+                        log(format!("managed input endpoint: {e}"));
+                    }
+                    input.control.abort();
+                    input.close();
                 })?;
         }
         let writer_owner = Arc::clone(&owner);
@@ -1016,6 +1417,28 @@ impl<D: Disk> Daemon<D> {
             activation.extend_from_slice(&member.to_be_bytes());
         }
         setup.push(activation);
+        if !inputs.is_empty() {
+            let mut named = Vec::new();
+            named
+                .try_reserve_exact(
+                    run::managed::INPUT_KEY
+                        .len()
+                        .checked_add(
+                            inputs
+                                .len()
+                                .checked_mul(size_of::<u32>())
+                                .ok_or_else(|| io::Error::other("input mask overflow"))?,
+                        )
+                        .ok_or_else(|| io::Error::other("input mask overflow"))?,
+                )
+                .map_err(io::Error::other)?;
+            named.extend_from_slice(run::managed::INPUT_KEY);
+            for member in inputs {
+                named.extend_from_slice(&member.to_be_bytes());
+            }
+            setup.try_reserve(1).map_err(io::Error::other)?;
+            setup.push(named);
+        }
         if owner
             .outputs
             .iter()
@@ -1900,6 +2323,107 @@ mod tests {
         out
     }
 
+    /// The run's annotation names its input members by kind and name, each one that runs a
+    /// program, once; a member it does not name has none. Docker's last value of a key wins.
+    #[test]
+    fn input_members_are_named_by_kind_and_name_and_each_runs_a_program() {
+        let labels: Vec<String> = vec![
+            "agent files".into(),
+            "agent helper".into(),
+            "harness driver".into(),
+        ];
+        let active = [1, 2];
+        let named = |value: &str| input_members(&[format!("{STDIN_ANNOTATION}={value}")], &labels, &active);
+        assert_eq!(input_members(&[], &labels, &active), Ok(Vec::new()));
+        assert_eq!(
+            input_members(&["other=harness:driver".into()], &labels, &active),
+            Ok(Vec::new())
+        );
+        assert_eq!(named("harness:driver"), Ok(vec![2]));
+        assert_eq!(named("harness:driver, agent:helper"), Ok(vec![1, 2]));
+        for refused in [
+            "agent:files",
+            "harness:nobody",
+            "harness:driver,harness:driver",
+            "driver",
+            "harness:",
+            "tool:driver",
+            "",
+        ] {
+            assert!(named(refused).is_err(), "{refused:?}");
+        }
+        let twice = [
+            format!("{STDIN_ANNOTATION}=agent:files"),
+            format!("{STDIN_ANNOTATION}=harness:driver"),
+        ];
+        assert_eq!(input_members(&twice, &labels, &active), Ok(vec![2]));
+    }
+
+    /// A member's input connection comes once; a second, or one after the input has gone, is
+    /// ended; its relay, waiting for the connection, lets go as the input is let go, which
+    /// ends the connection too, its peer reading its end.
+    #[cfg(unix)]
+    #[test]
+    fn an_inputs_connection_comes_once_and_its_revocation_lets_its_relay_go() {
+        let server = identity::Identity::generate().unwrap();
+        let scope = input::Scope {
+            run: RunId([7; 32]),
+            generation: 1,
+            member: 0,
+        };
+        let admitted = Admitted {
+            record_bytes: INPUT_ROOM,
+            transport_bytes: input::TAKEN_BYTES as u64,
+            handshake_bytes: HANDSHAKE_BYTES,
+            datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
+            patience: PATIENCE,
+        };
+        let (endpoint, relay, control) =
+            input::Endpoint::bind(&server, server.fingerprint(), scope, admitted).unwrap();
+        let dir = shards_testdir::TempDir::new("managed-input").unwrap();
+        let file = File::create(dir.join("metadata")).unwrap();
+        let input = Arc::new(Input {
+            scope,
+            address: endpoint.address,
+            control,
+            guest: Mutex::new(Guest::Awaited),
+            arrived: Condvar::new(),
+            metadata: shared_metadata(file).unwrap(),
+            recorded: std::sync::atomic::AtomicBool::new(false),
+        });
+        let closing = Arc::downgrade(&input);
+        input.control.on_close(move || {
+            if let Some(input) = closing.upgrade() {
+                input.close();
+            }
+        });
+        let (ours, mut theirs) = Stream::pair().unwrap();
+        input.arrive(ours).unwrap();
+        let (again, mut second) = Stream::pair().unwrap();
+        assert!(input.arrive(again).is_err(), "a second connection is ended");
+        let mut byte = [0];
+        assert_eq!(second.read(&mut byte).unwrap(), 0);
+        assert!(input.wait().is_some());
+        std::thread::scope(|threads| {
+            let relaying = threads.spawn(|| relay_input(&input, &relay));
+            input.control.abort();
+            relaying.join().unwrap();
+        });
+        assert_eq!(theirs.read(&mut byte).unwrap(), 0, "its connection ended with it");
+        assert!(matches!(*lock(&input.guest), Guest::Gone));
+        let (late, mut third) = Stream::pair().unwrap();
+        assert!(input.arrive(late).is_err());
+        assert_eq!(third.read(&mut byte).unwrap(), 0);
+        // Its end, revoked before its init told any, is recorded once.
+        input.record();
+        input.record();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("metadata")).unwrap(),
+            "member 0 channel 0 state revoked written 0 errno 0\n"
+        );
+        drop(endpoint);
+    }
+
     #[test]
     fn image_identity_and_channel_offsets_are_checked_independently() {
         let labels = vec!["harness first".into(), "agent second".into()];
@@ -2446,6 +2970,7 @@ mod tests {
         let writing = stream.try_clone().unwrap();
         let owner_side = Owner {
             outputs,
+            inputs: Vec::new(),
             stream,
             credits,
             _charge: Arc::clone(&charge),

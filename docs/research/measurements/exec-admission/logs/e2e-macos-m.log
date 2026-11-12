@@ -1,0 +1,38 @@
+# variant.sh m: the branch merged with origin/main 99d88fccf (34329a8ab), its own target directory, on the Mac Studio (HVF).
+m: its VM process carries the host fix: 1 (/Users/adalundhe/g121-tmp/exec-e2e/target-m/helpers/aarch64-apple-darwin/test-release/shards-vm)
+m: its init carries the guest fix: 1 (/Users/adalundhe/g121-tmp/exec-e2e/target-m/test-release/build/shards-ad0af196362c060d/out/init/aarch64-unknown-linux-musl/guest-test/shards-init)
+host Adas-Mac-Studio.local Darwin 25.4.0 arm64, 32 CPUs, load 34.78 30.28 28.47
+revision 34329a8abed79fb7ce1febd34603be8fbe8aefd1
+rustc 1.98.1 (48a229cea 2026-09-01)
+zig 0.16.0
+round 1 passed
+64 execs at once into a run that is up: the last ended 69.804958ms after, a lone one 8.607167ms
+64 execs at once into a run coming up, begun as it was created: the last ended 74.487875ms after it was up
+round 2 passed
+64 execs at once into a run that is up: the last ended 132.493417ms after, a lone one 8.737958ms
+64 execs at once into a run coming up, begun as it was created: the last ended 63.719833ms after it was up
+round 3 passed
+64 execs at once into a run that is up: the last ended 82.455167ms after, a lone one 20.142667ms
+64 execs at once into a run coming up, begun as it was created: the last ended 40.425791ms after it was up
+round 4 passed
+64 execs at once into a run that is up: the last ended 123.557167ms after, a lone one 10.852208ms
+64 execs at once into a run coming up, begun as it was created: the last ended 82.09475ms after it was up
+round 5 passed
+64 execs at once into a run that is up: the last ended 121.551542ms after, a lone one 28.929667ms
+64 execs at once into a run coming up, begun as it was created: the last ended 75.839333ms after it was up
+round 6 passed
+64 execs at once into a run that is up: the last ended 77.63275ms after, a lone one 18.89ms
+64 execs at once into a run coming up, begun as it was created: the last ended 105.374333ms after it was up
+round 7 passed
+64 execs at once into a run that is up: the last ended 99.520292ms after, a lone one 5.726584ms
+64 execs at once into a run coming up, begun as it was created: the last ended 45.989833ms after it was up
+round 8 passed
+64 execs at once into a run that is up: the last ended 90.9755ms after, a lone one 21.342875ms
+64 execs at once into a run coming up, begun as it was created: the last ended 47.177916ms after it was up
+round 9 passed
+64 execs at once into a run that is up: the last ended 119.795666ms after, a lone one 20.920584ms
+64 execs at once into a run coming up, begun as it was created: the last ended 61.403542ms after it was up
+round 10 passed
+64 execs at once into a run that is up: the last ended 85.735583ms after, a lone one 20.790833ms
+64 execs at once into a run coming up, begun as it was created: the last ended 47.179458ms after it was up
+10 of 10 rounds passed

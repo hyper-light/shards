@@ -1,0 +1,25 @@
+host adacachy Linux 7.2.9-2-cachyos x86_64, 2026-11-12T22:45:47Z, base aeac12d6727f03f2517b22bfdc0bf07e0fef677b
+== shallowest-mount
+thread 'domains::tests::a_members_home_lies_in_the_deepest_mount_that_holds_it' (1302906) panicked at crates/init/src/domains.rs:3226:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 219 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+== dotdot-home
+thread 'domains::tests::a_members_home_lies_in_the_deepest_mount_that_holds_it' (1304828) panicked at crates/init/src/domains.rs:3235:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 219 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+== twice-written
+thread 'staged::tests::a_file_from_before_is_replaced_and_one_staged_twice_refused' (1307144) panicked at crates/init/src/staged.rs:364:62:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 219 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+== no-replace
+thread 'staged::tests::a_file_from_before_is_replaced_and_one_staged_twice_refused' (1308907) panicked at crates/init/src/staged.rs:352:54:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 219 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+== link-followed
+thread 'staged::tests::links_in_the_way_are_not_followed' (1309987) panicked at crates/init/src/staged.rs:383:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 219 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+== green
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 209 filtered out; finished in 0.00s
+
+[exited with code 0]

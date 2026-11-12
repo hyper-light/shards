@@ -1,0 +1,39 @@
+{
+  "POLICY_READ": true,
+  "revision": "451672250c7837e88d4fe71479a1a3d760d3268d",
+  "source": "origin/main, read in full in this worktree (created from it) before any edit, build or run",
+  "files": {
+    "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "AGENTS.md": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+    "docs/development-evidence.md": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63"
+  },
+  "development_rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "coordinator": "ROOT (session g121-46, kiln agent 01a148884a4770fdaf0111f3f792a248)",
+  "task": "Plan step 5 of kiln plan 01a1cd8e862e7169a074db3d5fa33f3d: a HARNESS member's stdin, stdout and stderr are streams its owner holds, with exact bytes, backpressure, EOF and abort, and authorized observers (managed-runtime plan P3 extended with G24's input ownership).",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/s5-stdio",
+  "branch": "p/s5-stdio-v1",
+  "base": "origin/main 451672250c7837e88d4fe71479a1a3d760d3268d",
+  "owned_paths": [
+    "crates/init: the member's stdio descriptors (domains.rs child stdio and start's pipes only), input.rs, capture.rs control queue, run.rs relay loop for inputs",
+    "crates/shards: workload.rs Target, workload/capture.rs, warm.rs input hand-over, daemon/managed.rs, daemon.rs inbox messages and the managed-capture call",
+    "crates/remote: managed/input.rs",
+    "crates/abi: run/managed.rs input entries and end, run.rs MANAGED_INPUT_ENDED",
+    "crates/ipc: MANAGED_INPUT, MANAGED_INPUT_ENDED kinds",
+    "crates/testguest: the managed-capture echo mode",
+    "tests: crates/shards/tests/common/managed_capture.rs input writer, tests/managed_output.rs fixture, tests/managed_output/member_stdin.rs",
+    "docs/research/measurements/member-stdin-v1/**, docs/design/architecture.md (its subsection)"
+  ],
+  "not_owned": [
+    "domains.rs harness_env, the image's ENV, HOME, the working directory and mount order (step 7)",
+    "project paths, shares and inotify (step 8); grants (step 9); exec, attach and TTY (step 6)",
+    "crates/shards/src/workload/hellos.rs admission and the exec relay's failure path (p/exec-admission-v1)"
+  ],
+  "limits": [
+    "implement and test only this change: unit tests and light integration tests (loopback QUIC, no VM); real-VM suites, measurements, audits and sweeps are ROOT's",
+    "no builds on this Mac (load about 200): Linux builds on adacachy under ~/g121-tmp/s5-*, Windows on jupiter or the Windows 11 guest, macOS on the Mac Studio",
+    "commits via /Users/adalundhe/.kiln-run/bin/gits with named paths, Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>; merge origin/main in, push to main fast-forward only, never force"
+  ],
+  "rules_acknowledged": "R01-R16 read in full; docs/development-evidence.md checklist read in full; AGENTS.md read in full; the person's 2026-11-12 rule (subagents merge their own tested work to main and end) supersedes AGENTS.md's 'Subagents do not merge themselves to main' for this work",
+  "read_at": "2026-11-12"
+}

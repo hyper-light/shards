@@ -1,0 +1,27 @@
+# jupiter (Windows 11 10.0.26200, AMD Ryzen AI Max+ 395, WHP: 240 vCPUs a VM), 2026-11-12,
+# origin/main 41e5a0943 with the storm's memory and the test guest's tasks line;
+# probe.sh 3 1:256 2:256 8:256 64:256 128:256 128:512 240:256 240:960
+cpus=1 mib=256 round=1 | Memory: 226232K/261752K available | 33468K reserved | threads-max=1787 | tasks=52 | MemTotal=240599040 | SHARDS-TEST PASS;
+cpus=1 mib=256 round=2 | Memory: 226232K/261752K available | 33468K reserved | threads-max=1787 | tasks=55 | MemTotal=240599040 | SHARDS-TEST PASS;
+cpus=1 mib=256 round=3 | Memory: 226232K/261752K available | 33468K reserved | threads-max=1787 | tasks=55 | MemTotal=240599040 | SHARDS-TEST PASS;
+cpus=2 mib=256 round=1 | Memory: 225712K/261752K available | 33648K reserved | threads-max=1786 | tasks=63 | MemTotal=240414720 | SHARDS-TEST PASS;
+cpus=2 mib=256 round=2 | Memory: 225712K/261752K available | 33648K reserved | threads-max=1786 | tasks=60 | MemTotal=240414720 | SHARDS-TEST PASS;
+cpus=2 mib=256 round=3 | Memory: 225712K/261752K available | 33648K reserved | threads-max=1786 | tasks=58 | MemTotal=240414720 | SHARDS-TEST PASS;
+cpus=8 mib=256 round=1 | Memory: 222360K/261752K available | 34728K reserved | threads-max=1778 | tasks=96 | MemTotal=239308800 | SHARDS-TEST PASS;
+cpus=8 mib=256 round=2 | Memory: 222248K/261752K available | 34728K reserved | threads-max=1778 | tasks=97 | MemTotal=239308800 | SHARDS-TEST PASS;
+cpus=8 mib=256 round=3 | Memory: 222360K/261752K available | 34728K reserved | threads-max=1778 | tasks=96 | MemTotal=239308800 | SHARDS-TEST PASS;
+cpus=64 mib=256 round=1 | Memory: 193160K/261752K available | 47140K reserved | threads-max=1681 | tasks=435 | MemTotal=226598912 | SHARDS-TEST PASS;
+cpus=64 mib=256 round=2 | Memory: 192984K/261752K available | 47140K reserved | threads-max=1681 | tasks=436 | MemTotal=226598912 | SHARDS-TEST PASS;
+cpus=64 mib=256 round=3 | Memory: 193160K/261752K available | 47140K reserved | threads-max=1681 | tasks=440 | MemTotal=226598912 | SHARDS-TEST PASS;
+cpus=128 mib=256 round=1 | Memory: 159540K/261752K available | 61000K reserved | threads-max=1572 | tasks=824 | MemTotal=212414464 | SHARDS-TEST PASS;
+cpus=128 mib=256 round=2 | Memory: 159724K/261752K available | 61000K reserved | threads-max=1572 | tasks=826 | MemTotal=212414464 | SHARDS-TEST PASS;
+cpus=128 mib=256 round=3 | Memory: 159724K/261752K available | 61000K reserved | threads-max=1572 | tasks=825 | MemTotal=212414464 | SHARDS-TEST PASS;
+cpus=128 mib=512 round=1 | Memory: 417316K/523896K available | 65480K reserved | threads-max=3585 | tasks=825 | MemTotal=476262400 | SHARDS-TEST PASS;
+cpus=128 mib=512 round=2 | Memory: 417380K/523896K available | 65480K reserved | threads-max=3585 | tasks=825 | MemTotal=476262400 | SHARDS-TEST PASS;
+cpus=128 mib=512 round=3 | Memory: 417380K/523896K available | 65480K reserved | threads-max=3585 | tasks=826 | MemTotal=476262400 | SHARDS-TEST PASS;
+cpus=240 mib=256 round=1 | Memory: 108924K/261752K available | 85824K reserved | threads-max= | tasks= | MemTotal= | Kernel panic - not syncing: Cannot create quota_unbound_wq;
+cpus=240 mib=256 round=2 | Memory: 109012K/261752K available | 85824K reserved | threads-max= | tasks= | MemTotal= | Kernel panic - not syncing: Cannot create quota_unbound_wq;
+cpus=240 mib=256 round=3 | Memory: 109012K/261752K available | 85824K reserved | threads-max= | tasks= | MemTotal= | Kernel panic - not syncing: Cannot create quota_unbound_wq;
+cpus=240 mib=960 round=1 | Memory: 808500K/982648K available | 99264K reserved | threads-max=6905 | tasks=1503 | MemTotal=911433728 | SHARDS-TEST PASS;
+cpus=240 mib=960 round=2 | Memory: 808392K/982648K available | 99264K reserved | threads-max=6905 | tasks=1506 | MemTotal=911433728 | SHARDS-TEST PASS;
+cpus=240 mib=960 round=3 | Memory: 808320K/982648K available | 99264K reserved | threads-max=6905 | tasks=1504 | MemTotal=911433728 | SHARDS-TEST PASS;

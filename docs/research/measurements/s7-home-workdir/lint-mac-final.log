@@ -1,0 +1,18 @@
+host adas-mac-studio.local-2 (Darwin arm64), lint-mac.sh at a1e1ca716 (main with all four items, and
+4f3c06255, main's own fix of windows_process.rs's SAFETY placement)
+== a1e1ca716 Merge origin/main (e8d19fc68) into p/s7-part2-v1's item 3 before it lands 2026-11-12T22:48:32Z
+== zig 0.16.0 at /Users/adalundhe/g121-tmp/s7p2/zig-aarch64-macos-0.16.0
+== lint exit 0
+== format
+== aarch64-apple-darwin
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+== x86_64-unknown-linux-gnu
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+== aarch64-unknown-linux-gnu
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+== x86_64-pc-windows-msvc
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+== aarch64-pc-windows-msvc
+== x86_64-unknown-linux-musl
+== aarch64-unknown-linux-musl
+== done 2026-11-12T22:50:19Z lint 0 tests 0

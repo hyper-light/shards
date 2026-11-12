@@ -9819,6 +9819,169 @@ fn exec_runs_commands_in_a_running_microvm() {
     refused(&["-it", "ex", "/bin/testguest", "report"], 1, untty);
 }
 
+/// Many `exec`s at once into one run, each a command that fails at once and says why on
+/// stderr: every client ends, with its own command's status and stderr. Before, of 64 at
+/// once into a microVM of 32 vCPUs two clients waited for ever (ring-pins-v1 r11,
+/// exec-admission): the exec port refused a guest's connection while an exec registering
+/// held a lock, or gave it to another exec's wait, and the guest said nothing of the loss.
+/// Into a run that is up, and into one coming up, whose execs wait for its start
+/// (`await_start`) and reach its guest together, the case that hung most. The daemon's log
+/// says no refusal of the exec port's while they ran: its first for each reason is said at
+/// warn (workload/hellos.rs).
+#[test]
+fn execs_at_once_each_end_with_their_commands_status() {
+    let Some((home, image)) = home("containers-execs-at-once") else {
+        return;
+    };
+    // Twice the microVM's vCPUs, and at least 64: 64 at once into a microVM of 32 left two
+    // waiting (r11, its pins test's twice the vCPUs), and a microVM has as many vCPUs as its
+    // host has CPUs (D191).
+    let n = (2 * std::thread::available_parallelism().unwrap().get()).max(64);
+    let refusals = || -> Vec<String> {
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+        log.lines()
+            .filter(|l| l.contains("the exec port refused a guest's connection"))
+            .map(str::to_string)
+            .collect()
+    };
+    let mut up = start(&home, &image, &["--name", "up"], &["sleep"]);
+    // The run's own pace: an exec of the same kind, alone.
+    let lone = shards_in(&home, &["exec", "up", "/bin/testguest", "lone"]);
+    assert_eq!(
+        (lone.status, lone.stderr.as_str()),
+        (Some(2), "unknown mode \"lone\"\n"),
+        "{lone}"
+    );
+    let pace = lone.elapsed;
+    let took = each_ends(&home, execs_at_once(&home, "up", n), pace);
+    eprintln!("{n} execs at once into a run that is up: the last ended {took:?} after, a lone one {pace:?}");
+    assert_eq!(refusals(), Vec::<String>::new(), "into a run that is up");
+    // A run coming up: its execs begin once the daemon has it, which is before its microVM
+    // is up where its start outlasts their own; each waits for the start.
+    let said = home.join("fresh.stderr");
+    let mut fresh = common::command()
+        .args(run_args(&image, &["-d", "--name", "fresh"], &["sleep"]))
+        .env("SHARDS_HOME", &*home)
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&said).unwrap())
+        .spawn()
+        .unwrap();
+    let mut patience = Patience::of(&home, TIMEOUT);
+    let met = loop {
+        let state = shards_in(&home, &["inspect", "-f", "{{.State.Status}}", "fresh"]);
+        if state.status == Some(0) {
+            break state.stdout;
+        }
+        if let Some(ended) = fresh.try_wait().unwrap().filter(|s| !s.success()) {
+            panic!("the run {ended}: {}", std::fs::read_to_string(&said).unwrap());
+        }
+        assert!(patience.holds(), "the daemon never had the run: {state}");
+    };
+    let execs = execs_at_once(&home, "fresh", n);
+    let started = exit(&mut fresh, &home);
+    assert_eq!(started, Some(0), "{}", std::fs::read_to_string(&said).unwrap());
+    let took = each_ends(&home, execs, pace);
+    eprintln!(
+        "{n} execs at once into a run coming up, begun as it was {}: the last ended {took:?} after it was up",
+        met.trim()
+    );
+    assert_eq!(refusals(), Vec::<String>::new(), "into a run coming up");
+    assert_eq!(shards_in(&home, &["rm", "-f", "up", "fresh"]).status, Some(0));
+    let _ = exit(&mut up, &home);
+}
+
+/// `n` clients of `shards exec NAME /bin/testguest MODE`, started at once by as many threads
+/// let go together: each MODE its own (`NAME-I`), and no mode of the test guest's, which
+/// says `unknown mode "MODE"` on stderr and exits 2 at once (testguest workload.rs). Each
+/// client's stdout and stderr are files in the home, MODE.out and MODE.err.
+fn execs_at_once(home: &Path, name: &str, n: usize) -> Vec<(String, Child)> {
+    let together = std::sync::Barrier::new(n);
+    std::thread::scope(|s| {
+        let started: Vec<_> = (0..n)
+            .map(|i| {
+                let together = &together;
+                s.spawn(move || {
+                    let mode = format!("{name}-{i}");
+                    let mut exec = common::command();
+                    exec.args(["exec", name, "/bin/testguest", &mode])
+                        .env("SHARDS_HOME", home)
+                        .stdin(Stdio::null())
+                        .stdout(std::fs::File::create(home.join(format!("{mode}.out"))).unwrap())
+                        .stderr(std::fs::File::create(home.join(format!("{mode}.err"))).unwrap());
+                    together.wait();
+                    (mode, exec.spawn().unwrap())
+                })
+            })
+            .collect();
+        started.into_iter().map(|t| t.join().unwrap()).collect()
+    })
+}
+
+/// Waits for the clients [`execs_at_once`] started, each to end as its command did: status 2,
+/// `unknown mode "MODE"` on stderr, nothing on stdout. Served one at a time at `pace`, a lone
+/// exec's time into the same run, they would all end within their number of paces: one still
+/// waiting once that long has passed with none of them ending, since now or since the last
+/// that ended, fails the test, unless the daemon or its microVM still progresses
+/// ([`Patience`]), naming each still waiting with what it said. Gives how long after now the
+/// last ended.
+fn each_ends(home: &Path, mut execs: Vec<(String, Child)>, pace: Duration) -> Duration {
+    let (all, began) = (execs.len(), Instant::now());
+    let bound = pace * u32::try_from(all).unwrap();
+    let mut patience = Patience::of(home, bound);
+    let (mut last, mut ended) = (began, Vec::with_capacity(all));
+    let said = |mode: &str, of: &str| {
+        std::fs::read_to_string(home.join(format!("{mode}.{of}"))).unwrap_or_else(|e| format!("({e})"))
+    };
+    while !execs.is_empty() {
+        let mut i = 0;
+        while i < execs.len() {
+            match execs[i].1.try_wait().unwrap() {
+                Some(status) => {
+                    ended.push((execs.swap_remove(i).0, status.code()));
+                    last = Instant::now();
+                }
+                None => i += 1,
+            }
+        }
+        let progresses = patience.holds();
+        if !execs.is_empty() && last.elapsed() >= bound && !progresses {
+            let seen = common::stacks_of(&[("the first still waiting", execs[0].1.id())], Some(home));
+            let waiting: Vec<String> = execs
+                .iter_mut()
+                .map(|(mode, child)| {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    format!("{mode}: stderr {:?}", said(mode, "err"))
+                })
+                .collect();
+            panic!(
+                "{} of {all} execs' clients never ended: none ended for {bound:?}, {all} execs at a lone one's {pace:?}, nor did the daemon or its microVM progress\n{}{seen}",
+                waiting.len(),
+                waiting.join("\n")
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let wrong: Vec<String> = ended
+        .iter()
+        .map(|(mode, status)| (mode, *status, said(mode, "out"), said(mode, "err")))
+        .filter(|(mode, status, out, err)| {
+            *status != Some(2) || !out.is_empty() || *err != format!("unknown mode {mode:?}\n")
+        })
+        .map(|(mode, status, out, err)| format!("{mode}: status {status:?}, stdout {out:?}, stderr {err:?}"))
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "{} of {all} execs did not end as their commands did:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+    last.duration_since(began)
+}
+
 /// Who holds TCP port `port`, as lsof lists them: each process's ID, command and
 /// sockets, for a test to say whose a port it found taken is.
 fn holders_of(port: u16) -> String {

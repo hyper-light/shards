@@ -1,0 +1,15 @@
+host adas-mac-studio.local-2 (Darwin arm64), lint-mac-pkgs.sh at d6ac7e48f (item 2 on 6243ca378)
+== d6ac7e48 A member works in the directory its run names: the project path, end to end, absolute and plain (step 7) 2026-11-12T22:43:01Z
+== aarch64-apple-darwin: -p shards-abi -p shards-api -p shards-init -p shards
+clippy aarch64-apple-darwin exit=0
+== aarch64-unknown-linux-gnu: -p shards-abi -p shards-api -p shards-init -p shards
+clippy aarch64-unknown-linux-gnu exit=0
+== x86_64-pc-windows-msvc: -p shards-abi -p shards-api -p shards-init -p shards
+clippy x86_64-pc-windows-msvc exit=0
+== aarch64-pc-windows-msvc: -p shards-abi -p shards-api -p shards-init -p shards
+clippy aarch64-pc-windows-msvc exit=0
+== x86_64-unknown-linux-musl: -p shards-abi -p shards-api -p shards-init -p shards
+clippy x86_64-unknown-linux-musl exit=0
+== aarch64-unknown-linux-musl: -p shards-abi -p shards-api -p shards-init -p shards
+clippy aarch64-unknown-linux-musl exit=0
+== done 2026-11-12T22:44:25Z

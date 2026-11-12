@@ -1,0 +1,4 @@
+host adacachy, item 3 on main aeac12d67 (overlay: crates/init/src/{domains,staged}.rs)
+$ cargo test -j12 -p shards-init
+test result: ok. 219 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.03s
+exit=0

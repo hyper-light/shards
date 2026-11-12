@@ -143,6 +143,28 @@ directory's default; the runs used the tree's pinned 1.98.1):
 - Not run: aarch64 Linux and aarch64 Windows tests (no such host here), the workspace-wide
   `scripts/lint`, any real VM (ROOT's).
 
+## Member stdin connections (plan step 5)
+
+Built on this admission by `p/s5-stdio-v1` ([member-stdin-v1](../member-stdin-v1/README.md)):
+
+- **Host.** Each member whose owner writes its stdin has a token of its own, which the VM
+  process registers before the run's setup goes to the guest (`register(token,
+  Target::Input { member, to })`, workload/capture.rs `start_inputs`); a registration whose
+  setup never goes is dropped with `hellos::forget(&token)`. A HELLO saying it delivers the
+  connection to the input's hand-over thread (`Target::deliver`'s `Input` arm), which passes
+  it to the run's owner (`MANAGED_INPUT`) as an engine connection goes.
+- **Guest.** Init's input relay has explicit states of its own (`Dialing → Hello →
+  Relaying`, each into `Ended`; crates/init `input.rs`), as an exec's `Link` has. The host
+  says nothing on an input connection before its owner's first bytes, so a loss there is
+  never silent and never waited on: a connect that fails (`connect_result`), a hello that
+  cannot go, a connection that ends or fails before the owner's end, each closes the
+  member's stdin, so the member reads its end, and is told its owner typed
+  (`MANAGED_INPUT_ENDED`: the bytes its stdin took and the errno, `ECONNRESET` for an end
+  without the owner's) on the managed control connection, whose room for it is reserved as
+  the run starts. The member is not killed, as an exec's process is: an exec's stdio has no
+  other reader once its connection is lost, while a member's stdout, stderr and life stay
+  its owner's (P3: a lost stream ends that stream, not the member).
+
 ## Rules
 
 | Rule | Evidence / gap |
@@ -159,10 +181,91 @@ directory's default; the runs used the tree's pinned 1.98.1):
 | R15 | Implementer; merged to main by the person's 2026-11-12 rule; heavy E2E ROOT's. |
 | R16 | Work dirs `~/g121-tmp/xa-exec` on adacachy, `C:\xa-exec` on the Windows guest, `~/xa-exec-target` on the Mac Studio: build output only, removed after. |
 
+## E2E on real microVMs (lane `p/exec-e2e-v1`)
+
+ROOT's E2E goal (session g121-a0), implementer lane `p/exec-e2e-v1` from origin/main
+`34215b23e`; policy SHA-256 as above, read in full first. Owned paths:
+`crates/shards/tests/containers.rs` (the test), [e2e.sh](e2e.sh), [variant.sh](variant.sh),
+`logs/e2e-*`, this section.
+
+`execs_at_once_each_end_with_their_commands_status`, beside `exec_runs_commands_in_a_running_microvm`
+(containers.rs runs boot cold; no pool is in the exec path):
+
+- **How many:** twice the microVM's vCPUs, and at least 64: r11's case, 64 at once into a
+  microVM of 32 (its pins test's twice the vCPUs), and a microVM has as many vCPUs as its host
+  has CPUs (D191). 64 on every host here and on CI's.
+- **What each runs:** `/bin/testguest MODE`, MODE its own (`up-17`) and no mode of the test
+  guest's: it says `unknown mode "MODE"` on stderr and exits 2 at once, as r11's commands
+  failed at once on stderr. Each client's output is its own, so a connection given to another
+  exec's wait, or a loss said as a failure, shows as surely as a hang.
+- **Where:** into a run that is up (its command said `ready`, and a lone exec ran), and into
+  one coming up: its execs begin once the daemon has it (`inspect` finds it), before its
+  microVM is up, so each waits for the start in the daemon (`await_start`) and they reach its
+  guest together. Every burst into a fresh run here began so (`begun as it was created`).
+- **What must hold:** each client ends with status 2, its own `unknown mode` line on stderr and
+  nothing on stdout; the daemon's log says no `the exec port refused a guest's connection`
+  (each reason's first refusal is said at warn).
+- **Patience, no deadline:** the run's own pace is a lone exec of the same kind into the same
+  run, spawn to exit. Served one at a time at that pace, a burst of n would end within n
+  paces: a client still waiting once n paces have passed with none ending, counted from the
+  burst (or the fresh run's start) and again from each that ends, fails the test, naming each
+  with what it said, unless the daemon or its microVM still progresses (the suite's
+  `Patience`). Under 2 and 4 times the host's CPUs of busy loops the lone exec slowed with the
+  bursts (6.7–10.7 ms, 12.8–21.9 ms) and every round passed, the slowest whole burst taking
+  0.69 of its n paces ([e2e-linux-g-load](logs/e2e-linux-g-load.log)); n paces bound the gap
+  between two ends, each far shorter. Past n paces `Patience` sees the daemon's log once a second
+  and a microVM's CPU each 10 s, so on a host stalled longer than n paces with nothing
+  ending it may fail first; none did here.
+
+### Red and green (R09, R10)
+
+[variant.sh](variant.sh) builds each tree in a target directory of its own and says whether the
+VM process it built carries the host fix (`the exec port refused a guest's connection`) and the
+init the guest fix (`the command's connection to the host failed`); then [e2e.sh](e2e.sh)'s 10
+rounds. g is `c16facdb2` (Linux) and `fecd60256` (macOS, the same test with e2e.sh); r0, rh and
+rg are it with `2944d9ab5` and `0d4f20288`, `0d4f20288` alone, and `2944d9ab5` alone reverted.
+
+| Variant (fixes it carries) | Linux KVM x86_64, adacachy2 (7.3.3-1-cachyos, 32 CPUs) | macOS HVF arm64, Mac Studio (Darwin 25.4.0, 32 CPUs, load 18–32) |
+| --- | --- | --- |
+| g (host, guest) | 10 of 10; bursts 46–78 ms, a lone exec 4.3–6.5 ms, [e2e-linux-g](logs/e2e-linux-g.log) | 10 of 10; bursts 52–114 ms, a lone exec 5.9–24 ms, [e2e-macos-g](logs/e2e-macos-g.log) |
+| r0 (neither) | **0 of 10**: 1–3 of 64 clients never ended, nothing on their stderr, in the burst into the run up 6 times and into the fresh run 4, [e2e-linux-r0](logs/e2e-linux-r0.log) | **4 of 10**: 6 rounds left one client of the up burst that never ended, [e2e-macos-r0](logs/e2e-macos-r0.log) |
+| rh (guest) | **0 of 10**: 1–3 clients ended 1 with `shards: the command's connection to the host failed before the host had it: the host closed it`, [e2e-linux-rh](logs/e2e-linux-rh.log) | **3 of 10**: 7 rounds, 1–3 clients ended so (`; the command was killed` where it still ran), [e2e-macos-rh](logs/e2e-macos-rh.log) |
+| rg (host) | 10 of 10, [e2e-linux-rg](logs/e2e-linux-rg.log) | 10 of 10, [e2e-macos-rg](logs/e2e-macos-rg.log) |
+| m: merged with origin/main `99d88fccf` (`34329a8ab`) | 10 of 10, [e2e-linux-m](logs/e2e-linux-m.log) | 10 of 10, [e2e-macos-m](logs/e2e-macos-m.log) |
+
+The hang is the host's admission (r0); the guest fix turns the host's refusals and losses into
+failures said (rh), which the test also fails on, not as its commands ended. With the host fix
+nothing is refused or lost here, so the guest fix's own paths are not reached by this test
+(rg passes); its unit tests hold them (GM1–GM5). No refusal was said at warn in any green round.
+
+A trap on the way: the first red builds shared the green build's target directory, and
+macOS's carried the green VM process (its string present, one helpers digest) and passed 10
+of 10. The helpers' nested build found one `shards_vm` unit for both trees, built at 14:38:39,
+and the red tree's files, checked out at 14:36:47 before the green build, older than it:
+nothing was rebuilt. Each variant now has its own target directory, and variant.sh shows what
+its binaries carry.
+
+Portability (R11): Linux KVM x86_64 and macOS HVF arm64 above. WHP x86_64: CI's Windows jobs
+(windows-2022 and windows-2025, `SHARDS_REQUIRE_VMS=1`) on main: run
+[43328666195](https://github.com/hyper-light/shards/actions/runs/43328666195), of the push that
+landed it (`220fb2be6`), queued then; CI's x86_64 Linux job too. Not run: Linux arm64 KVM (no host here but L1 on an M3 Mac), WHP
+arm64 (no host). `scripts/lint`, all seven targets, of `34329a8ab` on the Mac Studio: clean, [e2e-lint](logs/e2e-lint.log).
+
+| Rule | E2E lane: evidence / gap |
+| --- | --- |
+| R01 | Test code only. |
+| R02, R12 | The suite's own conventions (`home`, `start`, `Patience`, `stacks_of`, `common::command`); no platform code. |
+| R03 | 64 and twice the vCPUs are r11's case; the patience is n lone paces, past them the suite's `Patience`; the 5 ms look is the file's own (`exit`). |
+| R04, R05, R06, R07, R13 | Two helpers (`execs_at_once`, `each_ends`). The clients' ends are looked at every 5 ms, as the file's `exit` looks: an ended child stays until it is reaped, so no look misses one. Comments give the derivations. |
+| R08, R14 | No performance claim; the times above are the test's own output. |
+| R09, R10 | Red, green and the partial reverts above, logs kept; the harnesses committed. |
+| R11 | Above; WHP from CI, arm64 Linux and Windows unverified. |
+| R15 | Implementer; merged to main by the person's 2026-11-12 rule. |
+| R16 | `~/g121-tmp/exec-e2e` on adacachy2 and the Mac Studio, removed after. adacachy2's disk was full (2 GB free): removed `~/fc-chk-target`, `~/slates-gate-target` and `~/fc-target` (15.8 GB, CACHEDIR-tagged cargo target directories, no file newer than three days); kept `~/slates-gate-target-b4` and `-main`, which had newer files. |
+
 ## Owed to ROOT
 
-- The 64+-concurrent exec E2E on KVM, HVF and WHP, fresh runs included; `daemon.log` should
-  show no exec-port refusal while execs are pending.
+- WHP's E2E result: CI run 43328666195's Windows jobs on main (above), queued at landing.
 - The relay's `exec_failures` flush and its cut and restore paths run only in a real guest.
 - Found, not changed: the host's `to_guest` returns true when its send on the signal
   connection fails, and frames queue for ever once that connection is gone while the
