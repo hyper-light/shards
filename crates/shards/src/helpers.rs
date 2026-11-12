@@ -63,6 +63,17 @@ pub fn vm_gpu() -> Result<PathBuf, String> {
     if let Some(given) = given() {
         return given;
     }
+    if carried::BESIDE {
+        let path = dir()?.join(format!("shards-vm-gpu{}", std::env::consts::EXE_SUFFIX));
+        return if path.is_file() {
+            Ok(path)
+        } else {
+            Err(format!(
+                "this shards starts the VM processes beside it, and the program carrying it wrote none for a GPU there: {} is not there",
+                path.display()
+            ))
+        };
+    }
     if carried::SHARDS_VM_GPU.is_empty() {
         return Err(
             "this shards was built without its GPU's VM process: scripts/gpu-libs builds the GPU's renderer, and SHARDS_GPU_LIBS names it to the build (D144)"
@@ -105,11 +116,37 @@ fn carried() -> [(&'static str, &'static [u8], &'static str); 2] {
     ]
 }
 
+/// The directory of `exe`, a `shards` built to be carried (`SHARDS_HELPERS=beside`, D237),
+/// where the program carrying it wrote the VM and network processes out beside it: that
+/// program owns the directory's life and the helpers' signatures, so nothing here writes,
+/// holds or collects it.
+fn beside(exe: &Path) -> Result<PathBuf, String> {
+    let dir = exe
+        .parent()
+        .ok_or_else(|| format!("{}: no directory holds it", exe.display()))?;
+    for (name, _, _) in carried() {
+        let helper = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        if !helper.is_file() {
+            return Err(format!(
+                "this shards starts the VM and network processes beside it, which the program carrying it writes out there (SHARDS_HELPERS=beside): {} is not there",
+                helper.display()
+            ));
+        }
+    }
+    Ok(dir.to_path_buf())
+}
+
 /// This build's helpers' directory: written out by the first process that needs it, and
-/// held by each that uses it for as long as it lives ([`hold`]).
+/// held by each that uses it for as long as it lives ([`hold`]); or, for a `shards` built to
+/// be carried (`SHARDS_HELPERS=beside`), the directory it was started from, where the program
+/// carrying it wrote them out ([`beside`]).
 fn dir() -> Result<PathBuf, String> {
-    static DIR: OnceLock<Result<(PathBuf, Locked), String>> = OnceLock::new();
+    static DIR: OnceLock<Result<(PathBuf, Option<Locked>), String>> = OnceLock::new();
     DIR.get_or_init(|| {
+        if carried::BESIDE {
+            let exe = std::env::current_exe().map_err(|e| format!("this shards' own path: {e}"))?;
+            return beside(&exe).map(|dir| (dir, None));
+        }
         if !carried::PRESENT {
             return Err(
                 "this shards was built without its VM and network processes (SHARDS_HELPERS=skip)".into(),
@@ -128,7 +165,7 @@ fn dir() -> Result<PathBuf, String> {
         if complete(&dir)
             && let Some(held) = hold(&dir)?
         {
-            return Ok((dir, held));
+            return Ok((dir, Some(held)));
         }
         let (held, placed) = write_out(&root, &id)?;
         if placed {
@@ -137,7 +174,7 @@ fn dir() -> Result<PathBuf, String> {
                 .name("helpers".into())
                 .spawn(move || collect(&root, &id));
         }
-        Ok((dir, held))
+        Ok((dir, Some(held)))
     })
     .as_ref()
     .map(|(dir, _)| dir.clone())
@@ -398,6 +435,34 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    /// A carried `shards` (SHARDS_HELPERS=beside, D237) starts the helpers in the directory
+    /// it was started from, both there, and refuses naming the one missing; it writes
+    /// nothing there.
+    #[test]
+    fn a_carried_shards_starts_the_helpers_beside_it() {
+        let root = shards_testdir::TempDir::new("beside").unwrap();
+        let exe = root.join(format!("shards{}", std::env::consts::EXE_SUFFIX));
+        fs::write(&exe, b"shards").unwrap();
+        let vm = root.join(format!("shards-vm{}", std::env::consts::EXE_SUFFIX));
+        let net = root.join(format!("shards-net{}", std::env::consts::EXE_SUFFIX));
+        fs::write(&vm, b"vm").unwrap();
+        let missing = beside(&exe).unwrap_err();
+        assert!(missing.contains(&net.display().to_string()), "{missing}");
+        fs::write(&net, b"net").unwrap();
+        assert_eq!(beside(&exe).unwrap(), root.to_path_buf());
+        let mut names = names(&root);
+        names.retain(|n| !n.starts_with('.'));
+        let exe_suffix = std::env::consts::EXE_SUFFIX;
+        assert_eq!(
+            names,
+            [
+                format!("shards{exe_suffix}"),
+                format!("shards-net{exe_suffix}"),
+                format!("shards-vm{exe_suffix}")
+            ]
+        );
     }
 
     #[test]
