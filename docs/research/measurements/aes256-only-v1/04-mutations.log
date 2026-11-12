@@ -1,0 +1,206 @@
+# Mutations (R10): each provider made to allow ChaCha20-Poly1305, then AES-128-GCM, after
+# AES-256-GCM (mutate.py chacha-remote, aes128-remote, chacha-server, aes128-server), each
+# crate's cipher tests run against it and the file restored and touched (mutations.sh).
+# runner: kiln 8fadc1ec213332e16cb0d915a3fb913f (kiln-a094a12d.attlocal.net), as 01, in the folder
+# 03-green.log's run had synced (no sync between: nothing had changed here)
+# source: 032b63b1c + this branch's diff before its first commit (the Rust identical to the commit)
+# command: bash docs/research/measurements/aes256-only-v1/run.sh mutations
+# runner sha256 of the raw part below: c51699fa9ee7b687ff9e9895d89c5682cf88b960455b89ad15644f46abe804c4
+# result: all four killed, each by two tests. chacha-remote: the ChaCha20-Poly1305 peer connected
+# and the peer preferring it got it; aes128-remote: the AES-128-GCM peer connected and the
+# preferring peer got AES-128-GCM; chacha-server and aes128-server: the client limited to the
+# suite was answered under it, and Go's order that puts it first got it.
+# ---- raw ----
+HEAD=032b63b1c9b642d0e2c8af71d6f9643909416f99 host=kiln-a094a12d.attlocal.net kernel=6.19.10-300.fc44.x86_64 rustc 1.98.1 (48a229cea 2026-09-01) zig=0.16.0
+ M crates/remote/src/lib.rs
+ M crates/remote/src/tls.rs
+ M crates/server/src/server.rs
+ M docs/design/architecture.md
+?? docs/research/measurements/aes256-only-v1/
+=== chacha-remote: crates/remote/src/tls.rs
+@@ -59,7 +59,7 @@
+ /// §5), which hyper-quic takes from aws-lc-rs whatever is offered here.
+ static PROVIDER: LazyLock<rustls::crypto::CryptoProvider> =
+     LazyLock::new(|| rustls::crypto::CryptoProvider {
+-        cipher_suites: vec![rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384],
++        cipher_suites: vec![rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384, rustls::crypto::aws_lc_rs::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256],
+         ..hyper_quic::crypto::rustls::node_provider().clone()
+     });
+ 
+   Compiling shards-remote v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/aes256-only-v1-cbdc75c18b/crates/remote)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
+     Running unittests src/lib.rs (target/debug/deps/shards_remote-29bd2c628b689384)
+
+running 8 tests
+test tls::tests::a_peer_limited_to_aes_128_gcm_is_refused_either_way ... ok
+test handshake::a_daemon_not_pinned_is_refused ... ok
+test handshake::homes_connect_by_their_raw_keys ... ok
+test tls::tests::every_link_is_aes_256_gcm_at_both_ends ... ok
+test handshake::only_a_clients_two_way_streams_open ... ok
+test tls::tests::an_earlier_shards_still_connects_on_aes_256_gcm ... ok
+test tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way ... FAILED
+test tls::tests::a_peer_limited_to_chacha20_poly1305_is_refused_either_way ... FAILED
+
+failures:
+
+---- tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way stdout ----
+
+thread 'tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way' (1989945) panicked at crates/remote/src/tls.rs:366:9:
+assertion `left == right` failed
+  left: Some(TLS13_CHACHA20_POLY1305_SHA256)
+ right: Some(TLS13_AES_256_GCM_SHA384)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tls::tests::a_peer_limited_to_chacha20_poly1305_is_refused_either_way stdout ----
+
+thread 'tls::tests::a_peer_limited_to_chacha20_poly1305_is_refused_either_way' (1989944) panicked at crates/remote/src/tls.rs:374:9:
+connected under Some(TLS13_CHACHA20_POLY1305_SHA256) and Some(TLS13_CHACHA20_POLY1305_SHA256)
+
+
+failures:
+    tls::tests::a_peer_limited_to_chacha20_poly1305_is_refused_either_way
+    tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way
+
+test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `-p shards-remote --lib`
+=== chacha-remote: cargo test exit 101 (non-zero: the mutant is killed)
+=== chacha-remote: crates/remote/src/tls.rs restored
+=== aes128-remote: crates/remote/src/tls.rs
+@@ -59,7 +59,7 @@
+ /// §5), which hyper-quic takes from aws-lc-rs whatever is offered here.
+ static PROVIDER: LazyLock<rustls::crypto::CryptoProvider> =
+     LazyLock::new(|| rustls::crypto::CryptoProvider {
+-        cipher_suites: vec![rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384],
++        cipher_suites: vec![rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384, rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_128_GCM_SHA256],
+         ..hyper_quic::crypto::rustls::node_provider().clone()
+     });
+ 
+   Compiling shards-remote v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/aes256-only-v1-cbdc75c18b/crates/remote)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+     Running unittests src/lib.rs (target/debug/deps/shards_remote-29bd2c628b689384)
+
+running 8 tests
+test tls::tests::a_peer_limited_to_chacha20_poly1305_is_refused_either_way ... ok
+test handshake::a_daemon_not_pinned_is_refused ... ok
+test handshake::only_a_clients_two_way_streams_open ... ok
+test tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way ... FAILED
+test handshake::homes_connect_by_their_raw_keys ... ok
+test tls::tests::an_earlier_shards_still_connects_on_aes_256_gcm ... ok
+test tls::tests::a_peer_limited_to_aes_128_gcm_is_refused_either_way ... FAILED
+test tls::tests::every_link_is_aes_256_gcm_at_both_ends ... ok
+
+failures:
+
+---- tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way stdout ----
+
+thread 'tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way' (1991515) panicked at crates/remote/src/tls.rs:366:9:
+assertion `left == right` failed
+  left: Some(TLS13_AES_128_GCM_SHA256)
+ right: Some(TLS13_AES_256_GCM_SHA384)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tls::tests::a_peer_limited_to_aes_128_gcm_is_refused_either_way stdout ----
+
+thread 'tls::tests::a_peer_limited_to_aes_128_gcm_is_refused_either_way' (1991511) panicked at crates/remote/src/tls.rs:374:9:
+connected under Some(TLS13_AES_128_GCM_SHA256) and Some(TLS13_AES_128_GCM_SHA256)
+
+
+failures:
+    tls::tests::a_peer_limited_to_aes_128_gcm_is_refused_either_way
+    tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way
+
+test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `-p shards-remote --lib`
+=== aes128-remote: cargo test exit 101 (non-zero: the mutant is killed)
+=== aes128-remote: crates/remote/src/tls.rs restored
+=== chacha-server: crates/server/src/server.rs
+@@ -795,7 +795,7 @@
+     // apart (RFC 8446 §4.1.3, §7.3): a client offering no AES-256-GCM is refused at its
+     // handshake.
+     let provider = Arc::new(rustls::crypto::CryptoProvider {
+-        cipher_suites: vec![rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384],
++        cipher_suites: vec![rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384, rustls::crypto::aws_lc_rs::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256],
+         ..rustls::crypto::aws_lc_rs::default_provider()
+     });
+     let new_key = || KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(err("a key"));
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/aes256-only-v1-cbdc75c18b/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 3 tests
+test server::tests::a_client_limited_to_aes_128_gcm_is_refused ... ok
+test server::tests::a_client_limited_to_chacha20_poly1305_is_refused ... FAILED
+test server::tests::an_instance_and_its_caller_are_aes_256_gcm_at_both_ends ... FAILED
+
+failures:
+
+---- server::tests::a_client_limited_to_chacha20_poly1305_is_refused stdout ----
+
+thread 'server::tests::a_client_limited_to_chacha20_poly1305_is_refused' (1993145) panicked at crates/server/src/server.rs:3286:33:
+the instance: Ok(Some(TLS13_CHACHA20_POLY1305_SHA256)), its client: Ok(Some(TLS13_CHACHA20_POLY1305_SHA256))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- server::tests::an_instance_and_its_caller_are_aes_256_gcm_at_both_ends stdout ----
+
+thread 'server::tests::an_instance_and_its_caller_are_aes_256_gcm_at_both_ends' (1993146) panicked at crates/server/src/server.rs:3318:13:
+assertion `left == right` failed: [TLS13_CHACHA20_POLY1305_SHA256, TLS13_AES_128_GCM_SHA256, TLS13_AES_256_GCM_SHA384]
+  left: Some(TLS13_CHACHA20_POLY1305_SHA256)
+ right: Some(TLS13_AES_256_GCM_SHA384)
+
+
+failures:
+    server::tests::a_client_limited_to_chacha20_poly1305_is_refused
+    server::tests::an_instance_and_its_caller_are_aes_256_gcm_at_both_ends
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+=== chacha-server: cargo test exit 101 (non-zero: the mutant is killed)
+=== chacha-server: crates/server/src/server.rs restored
+=== aes128-server: crates/server/src/server.rs
+@@ -795,7 +795,7 @@
+     // apart (RFC 8446 §4.1.3, §7.3): a client offering no AES-256-GCM is refused at its
+     // handshake.
+     let provider = Arc::new(rustls::crypto::CryptoProvider {
+-        cipher_suites: vec![rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384],
++        cipher_suites: vec![rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384, rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_128_GCM_SHA256],
+         ..rustls::crypto::aws_lc_rs::default_provider()
+     });
+     let new_key = || KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(err("a key"));
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/aes256-only-v1-cbdc75c18b/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 3 tests
+test server::tests::a_client_limited_to_chacha20_poly1305_is_refused ... ok
+test server::tests::a_client_limited_to_aes_128_gcm_is_refused ... FAILED
+test server::tests::an_instance_and_its_caller_are_aes_256_gcm_at_both_ends ... FAILED
+
+failures:
+
+---- server::tests::a_client_limited_to_aes_128_gcm_is_refused stdout ----
+
+thread 'server::tests::a_client_limited_to_aes_128_gcm_is_refused' (1994618) panicked at crates/server/src/server.rs:3286:33:
+the instance: Ok(Some(TLS13_AES_128_GCM_SHA256)), its client: Ok(Some(TLS13_AES_128_GCM_SHA256))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- server::tests::an_instance_and_its_caller_are_aes_256_gcm_at_both_ends stdout ----
+
+thread 'server::tests::an_instance_and_its_caller_are_aes_256_gcm_at_both_ends' (1994620) panicked at crates/server/src/server.rs:3318:13:
+assertion `left == right` failed: [TLS13_AES_128_GCM_SHA256, TLS13_AES_256_GCM_SHA384, TLS13_CHACHA20_POLY1305_SHA256]
+  left: Some(TLS13_AES_128_GCM_SHA256)
+ right: Some(TLS13_AES_256_GCM_SHA384)
+
+
+failures:
+    server::tests::a_client_limited_to_aes_128_gcm_is_refused
+    server::tests::an_instance_and_its_caller_are_aes_256_gcm_at_both_ends
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+=== aes128-server: cargo test exit 101 (non-zero: the mutant is killed)
+=== aes128-server: crates/server/src/server.rs restored
+=== source after:  3 files changed, 395 insertions(+), 51 deletions(-)

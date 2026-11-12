@@ -4768,6 +4768,39 @@ mode 2, and a network namespace of `lo` alone. Mutation-checked: without its uid
 as root; without the groups, the bounding set (`000001ffffffffff`), `no_new_privs`, its
 network namespace (`lo,eth0`) or its own seccomp filter (mode 0), the test fails.
 
+**AES-256-GCM, both ways (Ada, 2026-11-11: "all such communications should be AESGCM256
+bidirectional encrypted").** The mutual TLS an agent speaks to its instance carries that
+agent's control of shards: its MCP requests, code mode's programs (D136), its requests to and
+answers from the agents it is granted (below) and the files it hands across (D139). Its
+provider (`prepare`) is aws-lc-rs's narrowed to `TLS13_AES_256_GCM_SHA384`, where it took any
+of aws-lc-rs's three TLS 1.3 suites in its client's order (rustls's `ignore_client_order`
+off): a client of Go's crypto/tls on hardware with AES-GCM, which offers AES-128-GCM first
+(go1.26.1 src/crypto/tls/defaults.go), was given AES-128-GCM, and a client offering
+ChaCha20-Poly1305 or AES-128-GCM alone was given it. TLS 1.3 selects one suite for both
+directions and keys each apart (RFC 8446 §4.1.3, §7.3); over a stream socket there are no
+QUIC Initial packets, and only the ClientHello and ServerHello go before the suite's keys
+(§2). A client offering no AES-256-GCM is refused at its handshake
+(`PeerIncompatible::NoCipherSuitesInCommon` at the instance, handshake_failure to the client,
+§4.1.1), its connection closed as any refused handshake's is. The TLS an agent's MCP client
+runs on offers it: OpenSSL 3.6.4 and 4.1.0, and Node.js 24.14.1 on OpenSSL 3.5.5, offer
+AES-256-GCM first by default; Go offers all three; rustls's aws-lc-rs provider offers it
+first. A client offering only AES-128-GCM, the one suite RFC 8446 §9.1 makes mandatory, is
+refused. The provider is the instance's own, not the QUIC links' (`shards_remote::tls`, D180):
+the instance links crates.io's rustls, whose `CryptoProvider` is not hyper-tls's type, so one
+shared object would put hyper-tls in every microVM's server device, beside or instead of
+rustls, where TLS compiled into init was measured at 3.0 MiB of every microVM's memory (PM
+M122).
+Tested: `an_instance_and_its_caller_are_aes_256_gcm_at_both_ends`, clients in aws-lc-rs's order
+and in both of Go's (red on the base: Go's order with AES-GCM given AES-128-GCM),
+`a_client_limited_to_chacha20_poly1305_is_refused` and
+`a_client_limited_to_aes_128_gcm_is_refused` (red on the base: answered), the handshake run in
+memory against the instance's own configuration. Mutation-checked: ChaCha20-Poly1305 allowed
+again after AES-256-GCM fails the ChaCha20-Poly1305 client's test (answered) and the both-ends
+test (Go's order without AES-GCM given ChaCha20-Poly1305), and AES-128-GCM allowed fails the
+AES-128-GCM client's test and the both-ends test (Go's order with AES-GCM given AES-128-GCM)
+([evidence](../research/measurements/aes256-only-v1/evidence.json)). Owed: the in-VM server's
+E2E on a real microVM under it (tests/isolation.rs, tests/mcp.rs).
+
 **Messages, as granted.** init derives who may message whom from the Agentfile
 (`netplan::channels`): each `CONNECT`'s agents send requests to those after `TO`, both
 ways with `WITH`, and each `ATTACH`'s harnesses to its agents; the receiver answers. For
@@ -4952,6 +4985,58 @@ shards' JSON is Docker's, its maps sorted (the full suite found it: an Engine AP
 shards moved to 1.98.1 with them (rust-toolchain.toml, tests/toolchain.rs). The binary then
 carries two TLS implementations, rustls for registries and hyper-tls for QUIC: what that
 costs the binary and its launch (M113's 2.5 ms) is part 5's to measure.
+
+**AES-256-GCM, both ways (Ada, 2026-11-11: "all such communications should be AESGCM256
+bidirectional encrypted").** Every QUIC link shards makes, a context's (`shards/1`) and the
+managed output's (`shards-managed-output/1`), is built under one provider, `tls::provider`:
+hyper-quic's node provider (aws-lc-rs, the hybrid post-quantum groups SecP384r1MLKEM1024,
+X25519MLKEM768 and SecP256r1MLKEM768 alone) with its TLS 1.3 suites narrowed to
+`TLS13_AES_256_GCM_SHA384`, where the node provider allowed ChaCha20-Poly1305 too (hyper-raft
+233b7fce crates/hyper-quic/src/crypto/rustls.rs, `NODE_CIPHER_SUITES`). kiln's reach links
+narrow the same provider the same way (kiln d4990d3b crates/kiln/src/reach/e2e.rs, `PROVIDER`).
+- **What it covers.** TLS 1.3 selects one suite for a connection (RFC 8446 §4.1.3) and keys
+  each direction with its own secret (§7.3, `[sender]_write_key`); QUIC protects every
+  Handshake and 1-RTT packet with the negotiated AEAD under a secret for each direction (RFC
+  9001 §5, §5.1), and their headers with AES-256 (§5.4.3). So a command, its stdin, output
+  and exit status, a join's proof and a managed record cross under AES-256-GCM each way, and
+  with early data off on both sides (`tls.rs`: RFC 9001 §4.6's 0-RTT) nothing goes before
+  those keys.
+- **What no conforming QUIC changes.** "Initial packets use AEAD_AES_128_GCM with keys
+  derived from the Destination Connection ID field of the first Initial packet sent by the
+  client", and Retry packets AEAD_AES_128_GCM under a key RFC 9001 publishes (§5, §5.2,
+  §5.8): keys anyone who sees the packets derives ("not protected with a secret key", §7).
+  They carry the ClientHello and ServerHello, which TLS 1.3 over TCP sends in the clear too
+  (RFC 8446 §2), their acknowledgments and a refusal's CONNECTION_CLOSE, nothing of a
+  command. hyper-quic takes the Initial suite from aws-lc-rs's own table whatever a
+  configuration offers (`initial_suite`), so narrowing the offer leaves Initial packets as
+  RFC 9001 has them.
+- **A peer that offers no AES-256-GCM is refused** at its handshake, as client or as daemon:
+  the side choosing finds no suite in common (`PeerIncompatible::NoCipherSuitesInCommon`, RFC
+  8446 §4.1.1's handshake_failure), and its peer is told so as QUIC's CRYPTO_ERROR 0x128 (RFC
+  9001 §4.8). Each side's `ConnectionError` says it; the driver's handlers hear of it as of any
+  refused handshake (`net::Handler::lost`, its words and no code).
+- **Compatibility.** A shards of before offered AES-256-GCM first, and a daemon takes its
+  client's order (hyper-tls `choose_suite_and_kx_group`, `ignore_client_order` off), so two
+  shards negotiated AES-256-GCM already, and a machine updated and one not yet still connect
+  on it: no suite negotiated between shards changes, and only peers that would choose another
+  suite are refused. A peer of another implementation that prefers another suite but offers this
+  one gets it: Go's crypto/tls offers all three, AES-128-GCM first on hardware with AES-GCM
+  and ChaCha20-Poly1305 first without (go1.26.1 src/crypto/tls/defaults.go). A peer
+  offering only AES-128-GCM, the one suite RFC 8446 §9.1 makes mandatory (AES-256-GCM is a
+  SHOULD), is refused.
+
+Tested in `crates/remote` (`tls::tests`, over the in-process exchange of `lib.rs`'s handshake
+tests, both endpoints at loopback addresses): both kinds of link report
+`TLS13_AES_256_GCM_SHA384` at both ends; a peer offering ChaCha20-Poly1305, AES-128-GCM and
+AES-256-GCM in that order gets AES-256-GCM either way (red on the base: a daemon chose
+ChaCha20-Poly1305 for it); a peer limited to ChaCha20-Poly1305 (red on the base: connected) or
+to AES-128-GCM is refused either way, the refusing side's `TransportError` CRYPTO_ERROR 0x128
+for want of a suite in common and its peer's `ConnectionClosed` with that code; a shards of
+before, under the node provider, connects either way on AES-256-GCM; and `tests/loopback.rs`'s
+daemons and clients, over UDP on 127.0.0.1, run under it unchanged. Mutation-checked:
+ChaCha20-Poly1305 allowed again after AES-256-GCM fails the ChaCha20-Poly1305 test (connected
+under it) and the preference test (chosen), and AES-128-GCM allowed fails the AES-128-GCM test
+and the preference test the same way ([evidence](../research/measurements/aes256-only-v1/evidence.json)).
 
 **Part 1, built.** `crates/remote`: the identity (`identity.rs`), the TLS of raw keys
 (`tls.rs`), the stream's frames (`frame.rs`: the request, stdin, stdout and stderr as they
@@ -5861,7 +5946,8 @@ of moby's stringid.GenerateRandomID (`containers::new_id`); it was read up to 4 
 #### Managed owner-output transport under D180 (P1/P3 component)
 
 The managed output service reuses the native QUIC driver and TLS raw-key identity,
-with a distinct ALPN and one owning identity/subscription. It carries whole checked
+with a distinct ALPN and one owning identity/subscription; its TLS is D180's provider,
+AES-256-GCM alone both ways. It carries whole checked
 capture records, retains one admitted record until a contiguous application ACK,
 and never owns the VM through an observer connection. No persistent spool is implied.
 The caller must retain an actual resource reservation for its explicit allowances;

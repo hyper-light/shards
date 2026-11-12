@@ -1,0 +1,171 @@
+# INVALID: a green run that tested the red run's mutant builds, not the source. kiln's sync gave
+# crates/remote/src/tls.rs and crates/server/src/server.rs the Mac's mtimes (18:45:33), older
+# than the base-* mutants built on the runner at 18:56:43, so cargo kept those builds: the
+# dead-code warning for PROVIDER and the 2.30 s and 0.08 s finishes are the mutant's, and the
+# failures are red's, while the files held the narrowed providers (checked on the runner:
+# tls.rs line 67 `&PROVIDER`). run.sh touches both crates' sources since; 03-green.log is the
+# valid run. The gates run with it (clippy's first check builds, fmt and the policy check read
+# the files) was valid and is superseded by 05-gates-committed.log.
+# runner: kiln 8fadc1ec213332e16cb0d915a3fb913f (kiln-a094a12d.attlocal.net), as 01
+# command: bash docs/research/measurements/aes256-only-v1/run.sh green gates (green part below)
+# runner sha256 of the raw part below: 9a4a5b0dd4becf0e530abb8f675e8e25f64ea981abb131fb1ff0e62774a559a2
+# ---- raw ----
+HEAD=032b63b1c9b642d0e2c8af71d6f9643909416f99 host=kiln-a094a12d.attlocal.net kernel=6.19.10-300.fc44.x86_64 rustc 1.98.1 (48a229cea 2026-09-01) zig=0.16.0
+ M crates/remote/src/lib.rs
+ M crates/remote/src/tls.rs
+ M crates/server/src/server.rs
+ M docs/design/architecture.md
+?? docs/research/measurements/aes256-only-v1/
+warning: static `PROVIDER` is never used
+  --> crates/remote/src/tls.rs:60:8
+   |
+60 | static PROVIDER: LazyLock<rustls::crypto::CryptoProvider> =
+   |        ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards-remote` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.30s
+     Running unittests src/lib.rs (target/debug/deps/shards_remote-29bd2c628b689384)
+
+running 33 tests
+test frame::tests::frames_come_back_whole_however_they_arrive ... ok
+test frame::tests::a_request_carries_its_arguments_and_printing_variables_alone ... ok
+test managed::tests::a_record_cannot_be_acked_before_it_was_sent ... ok
+test invite::tests::a_proof_holds_for_its_secret_and_session_alone ... ok
+test managed::tests::control_lengths_and_tags_are_refused_before_payload_allocation ... ok
+test managed::tests::controls_preserve_scope_and_cursor_across_every_split ... ok
+test managed::tests::finishing_releases_the_last_record_only_after_its_application_ack ... ok
+test managed::tests::observer_loss_retains_only_the_unacknowledged_record_for_the_same_cursor ... ok
+test managed::tests::only_a_contiguous_application_ack_returns_credit ... ok
+test managed::tests::refusal_categories_preserve_scope_and_stale_generation ... ok
+test managed::tests::rejection_debug_never_prints_captured_content ... ok
+test managed::tests::replay_and_forward_cursors_do_not_subscribe_to_a_new_stream ... ok
+test managed::tests::terminal_ack_notification_exposes_finished_after_releasing_shared ... ok
+test managed::tests::terminal_finish_never_revives_an_aborted_slot_or_ending ... ok
+test managed::tests::terminal_observations_do_not_infer_completion_from_equal_cursors ... ok
+test net::tests::a_connection_lives_while_it_is_heard_and_its_handshake_alone_is_held_to_idle ... ok
+test managed::tests::finish_coalesces_the_queued_record_wake_without_discarding_the_record ... ok
+test managed::tests::finish_after_the_native_driver_drops_keeps_the_disconnect_error ... ok
+test managed::tests::growth_prepares_real_storage_and_refusal_preserves_the_previous_window ... ok
+test managed::tests::finish_coalesces_a_queued_wake_for_an_empty_stream ... ok
+test managed::tests::prepared_capture_storage_is_transferred_and_recycled_after_ack ... ok
+test managed::tests::capture_reconnect_preserves_the_borrowed_record_and_cursor ... ok
+test tls::tests::a_peer_limited_to_aes_128_gcm_is_refused_either_way ... ok
+test net::tests::an_interrupted_receive_keeps_serving_commands ... ok
+test invite::tests::an_invitation_is_written_private_and_read_back ... ok
+test handshake::a_daemon_not_pinned_is_refused ... ok
+test identity::tests::an_identity_is_made_once_and_kept ... ok
+test handshake::only_a_clients_two_way_streams_open ... ok
+test tls::tests::an_earlier_shards_still_connects_on_aes_256_gcm ... ok
+test tls::tests::every_link_is_aes_256_gcm_at_both_ends ... ok
+test handshake::homes_connect_by_their_raw_keys ... ok
+test tls::tests::a_peer_limited_to_chacha20_poly1305_is_refused_either_way ... FAILED
+test tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way ... FAILED
+
+failures:
+
+---- tls::tests::a_peer_limited_to_chacha20_poly1305_is_refused_either_way stdout ----
+
+thread 'tls::tests::a_peer_limited_to_chacha20_poly1305_is_refused_either_way' (3203419) panicked at crates/remote/src/tls.rs:374:9:
+connected under Some(TLS13_CHACHA20_POLY1305_SHA256) and Some(TLS13_CHACHA20_POLY1305_SHA256)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way stdout ----
+
+thread 'tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way' (3203421) panicked at crates/remote/src/tls.rs:366:9:
+assertion `left == right` failed
+  left: Some(TLS13_CHACHA20_POLY1305_SHA256)
+ right: Some(TLS13_AES_256_GCM_SHA384)
+
+
+failures:
+    tls::tests::a_peer_limited_to_chacha20_poly1305_is_refused_either_way
+    tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way
+
+test result: FAILED. 31 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `-p shards-remote --lib`
+remote_test_exit=101
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 47 tests
+test broker::tests::a_refusal_without_storage_says_it_was_refused ... ok
+test broker::tests::broker_completion_consumes_only_the_owned_request_once ... ok
+test broker::tests::broker_local_send_failure_preserves_cause_without_reusing_identity ... ok
+test broker::tests::broker_rejects_bad_arguments_ownership_and_exhausted_identity_before_send ... ok
+test broker::tests::a_file_longer_than_its_size_says_is_handed_as_before ... ok
+test broker::tests::broker_required_durable_refuses_before_opening_or_sending ... ok
+test broker::tests::broker_reservation_precedes_actual_send_and_retains_local_receipt ... ok
+test broker::tests::a_small_hand_reserves_what_its_file_holds ... ok
+test sandbox::tests::frames_are_read_whole_and_within_their_bound ... ok
+test server::json::tests::reads_what_rfc_8259_writes_and_no_more ... ok
+test broker::tests::broker_prebuilt_error_capacity_covers_actual_escaped_completion ... ok
+test server::tests::a_peers_file_is_heard_as_granted ... ok
+test server::tests::a_program_is_reserved_before_its_helper_receives_authority ... ok
+test server::tests::an_expired_program_is_refused_before_native_release ... ok
+test server::tests::a_typed_program_refusal_formats_without_requesting_storage ... ok
+test server::tests::an_exhausted_program_identity_cannot_release_another_worker ... ok
+test sandbox::tests::a_program_calls_its_tools_over_its_socket ... ok
+test server::tests::base64_is_rfc_4648s ... ok
+test server::tests::a_refused_native_release_does_not_reuse_its_issued_identity ... ok
+test server::tests::strings_are_quoted_as_json_writes_them ... ok
+test server::tests::each_refused_program_allocation_precedes_native_worker_release ... ok
+test server::tests::an_unusable_helper_control_is_not_admitted ... ok
+test sandbox::tests::a_worker_is_ended_for_a_call_its_filter_refuses ... ok
+test sandbox::tests::the_call_beneath_the_tools_is_out_of_reach ... ok
+test server::tests::a_peer_is_heard_only_as_granted ... ok
+test server::tests::a_cancellation_names_a_request_in_its_own_session ... ok
+test sandbox::tests::a_programs_broker_results_keep_their_receipt ... ok
+test sandbox::tests::what_a_program_came_to ... ok
+test server::tests::broker_exhausted_caller_identity_refuses_before_packet ... ok
+test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... ok
+test server::tests::an_instance_and_its_caller_are_aes_256_gcm_at_both_ends ... FAILED
+test server::tests::a_client_limited_to_chacha20_poly1305_is_refused ... FAILED
+test server::tests::earlier_revisions_and_what_every_revision_refuses ... ok
+test server::tests::the_current_revision_is_answered_request_by_request ... ok
+test server::tests::what_the_current_revision_refuses ... ok
+test server::tests::headers_that_differ_from_their_body_are_refused ... ok
+test server::tests::initialize_begins_a_session ... ok
+test server::tests::requests_past_their_bounds_are_refused ... ok
+test server::tests::broker_http_and_program_callers_share_the_actual_peer_admission ... ok
+test server::tests::a_programs_call_is_its_callers ... ok
+test server::tests::a_client_limited_to_aes_128_gcm_is_refused ... FAILED
+test server::tests::only_a_regular_file_of_the_scratch_is_handed ... ok
+test server::tests::an_instance_answers_its_own_caller_alone ... ok
+test sandbox::tests::a_refused_call_is_thrown ... ok
+test server::tests::a_program_answers_a_request_that_closes_its_connection ... ok
+test sandbox::tests::a_worker_not_reaped_ends_no_other ... ok
+test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... ok
+
+failures:
+
+---- server::tests::an_instance_and_its_caller_are_aes_256_gcm_at_both_ends stdout ----
+
+thread 'server::tests::an_instance_and_its_caller_are_aes_256_gcm_at_both_ends' (3203881) panicked at crates/server/src/server.rs:3315:13:
+assertion `left == right` failed: [TLS13_AES_128_GCM_SHA256, TLS13_AES_256_GCM_SHA384, TLS13_CHACHA20_POLY1305_SHA256]
+  left: Some(TLS13_AES_128_GCM_SHA256)
+ right: Some(TLS13_AES_256_GCM_SHA384)
+
+---- server::tests::a_client_limited_to_chacha20_poly1305_is_refused stdout ----
+
+thread 'server::tests::a_client_limited_to_chacha20_poly1305_is_refused' (3203866) panicked at crates/server/src/server.rs:3283:33:
+the instance: Ok(Some(TLS13_CHACHA20_POLY1305_SHA256)), its client: Ok(Some(TLS13_CHACHA20_POLY1305_SHA256))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- server::tests::a_client_limited_to_aes_128_gcm_is_refused stdout ----
+
+thread 'server::tests::a_client_limited_to_aes_128_gcm_is_refused' (3203864) panicked at crates/server/src/server.rs:3283:33:
+the instance: Ok(Some(TLS13_AES_128_GCM_SHA256)), its client: Ok(Some(TLS13_AES_128_GCM_SHA256))
+
+
+failures:
+    server::tests::a_client_limited_to_aes_128_gcm_is_refused
+    server::tests::a_client_limited_to_chacha20_poly1305_is_refused
+    server::tests::an_instance_and_its_caller_are_aes_256_gcm_at_both_ends
+
+test result: FAILED. 44 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+server_test_exit=101
