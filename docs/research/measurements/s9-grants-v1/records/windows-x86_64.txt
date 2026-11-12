@@ -1,0 +1,31 @@
+
+
+== b5883e8e Merge origin/main (ad600dd52) into p/s9-grants-v1 2026-11-13T04:27:59.8691536Z
+== cargo test -p shards-dns exit 0
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== cargo test -p shards-agentfile exit 0
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.87s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== cargo test -p shards-net exit 0
+test result: ok. 56 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.22s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== cargo test -p shards-api exit 101
+test client::borrowed_tests::withheld_reply_expires_before_fixture_release ... FAILED
+test physical::report::tests::private_report_refuses_missing_torn_and_over_bound_bytes ... FAILED
+test physical::report::tests::private_report_transfers_exactly_once_after_writer_eof ... FAILED
+thread '<unnamed>' (11144) panicked at crates\api\src\..\..\..\docs\research\measurements\managed-borrowed-nowait\focused.rs:28:35:
+called `Result::unwrap()` on an `Err` value: Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }
+thread 'client::borrowed_tests::withheld_reply_expires_before_fixture_release' (15340) panicked at crates\api\src\..\..\..\docs\research\measurements\managed-borrowed-nowait\focused.rs:99:19:
+thread 'physical::report::tests::private_report_refuses_missing_torn_and_over_bound_bytes' (13012) panicked at crates\api\src\physical\report.rs:241:69:
+thread 'physical::report::tests::private_report_transfers_exactly_once_after_writer_eof' (688) panicked at crates\api\src\physical\report.rs:220:65:
+test result: FAILED. 63 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.55s
+error: test failed, to rerun pass `-p shards-api --lib`
+== cargo test -p shards --bin shards -- api_run:: agentfile:: daemon::commands networks:: exit 0
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' failed - Err(Error { kind: 
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 683 filtered out; finished in 0.05s
+== done 2026-11-13T04:30:22.7134905Z status 1
