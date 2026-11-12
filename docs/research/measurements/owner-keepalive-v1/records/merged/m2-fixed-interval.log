@@ -1,0 +1,75 @@
+== 2026-11-12T06:43:39Z m2-fixed-interval: cargo test -p shards-remote --lib -- managed::tests::
+Linux 7.2.9-2-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+32
+ 22:43:39 up 7 days,  2:40, 625 users,  load average: 140.33, 87.32, 71.72
+a3c60b7a82e242e5174da6f887d92f7dd77939026313428389f7c89d128cf94f  crates/remote/src/managed.rs
+20427b504a65c03aded2ca86eed30f52d0bf641e92ceed2735ff50b9ff2e8b98  crates/remote/src/tls.rs
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/owner-keepalive-v1/target/debug/build/aws-lc-sys-6613dcf078cd05e9/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/owner-keepalive-v1/target/debug/build/aws-lc-sys-6613dcf078cd05e9/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/owner-keepalive-v1/target/debug/build/aws-lc-sys-6613dcf078cd05e9/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/owner-keepalive-v1/target/debug/build/aws-lc-sys-6613dcf078cd05e9/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cc8BwPt7.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/owner-keepalive-v1/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/owner-keepalive-v1/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cc6d4MHh.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/owner-keepalive-v1/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/owner-keepalive-v1/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+   Compiling shards-remote v0.1.0 (/home/adalundhe/owner-keepalive-v1/merged-src/crates/remote)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.26s
+     Running unittests src/lib.rs (/home/adalundhe/owner-keepalive-v1/target/debug/deps/shards_remote-29bd2c628b689384)
+
+running 23 tests
+test managed::tests::a_record_cannot_be_acked_before_it_was_sent ... ok
+test managed::tests::capture_reconnect_preserves_the_borrowed_record_and_cursor ... ok
+test managed::tests::prepared_capture_storage_is_transferred_and_recycled_after_ack ... ok
+test managed::tests::finishing_releases_the_last_record_only_after_its_application_ack ... ok
+test managed::tests::only_a_contiguous_application_ack_returns_credit ... ok
+test managed::tests::control_lengths_and_tags_are_refused_before_payload_allocation ... ok
+test managed::tests::finish_coalesces_the_queued_record_wake_without_discarding_the_record ... ok
+test managed::tests::finish_coalesces_a_queued_wake_for_an_empty_stream ... ok
+test managed::tests::three_keep_alives_fall_within_every_idle_bound_quic_carries ... ok
+test managed::tests::a_patience_under_a_millisecond_is_refused ... ok
+test managed::tests::terminal_observations_do_not_infer_completion_from_equal_cursors ... ok
+test managed::tests::refusal_categories_preserve_scope_and_stale_generation ... ok
+test managed::tests::growth_prepares_real_storage_and_refusal_preserves_the_previous_window ... ok
+test managed::tests::observer_loss_retains_only_the_unacknowledged_record_for_the_same_cursor ... ok
+test managed::tests::finish_after_the_native_driver_drops_keeps_the_disconnect_error ... ok
+test managed::tests::terminal_finish_never_revives_an_aborted_slot_or_ending ... ok
+test managed::tests::replay_and_forward_cursors_do_not_subscribe_to_a_new_stream ... ok
+test managed::tests::terminal_ack_notification_exposes_finished_after_releasing_shared ... ok
+test managed::tests::controls_preserve_scope_and_cursor_across_every_split ... ok
+test managed::tests::rejection_debug_never_prints_captured_content ... ok
+a vanished owner's subscription let go after Ok(10.061217937s), within 15s
+test managed::tests::a_vanished_owner_is_let_go_within_its_endpoints_patience ... ok
+
+thread 'managed::tests::a_quiet_subscription_outlives_its_owners_patience' (3849026) panicked at crates/remote/src/managed.rs:1766:9:
+a subscription held to 100s by its endpoint and 10s by its owner was let go in 12.5s of silence: Pending(Progress { accepted: 0, consumed: 0 }); its owner heard ["its connection lost: timed out"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test managed::tests::a_quiet_subscription_outlives_its_owners_patience ... FAILED
+
+thread 'managed::tests::a_quiet_subscription_outlives_its_endpoints_patience' (3849025) panicked at crates/remote/src/managed.rs:1766:9:
+a subscription held to 10s by its endpoint and 100s by its owner was let go in 12.5s of silence: Pending(Progress { accepted: 0, consumed: 0 }); its owner heard ["its connection lost: timed out"]
+test managed::tests::a_quiet_subscription_outlives_its_endpoints_patience ... FAILED
+
+failures:
+
+failures:
+    managed::tests::a_quiet_subscription_outlives_its_endpoints_patience
+    managed::tests::a_quiet_subscription_outlives_its_owners_patience
+
+test result: FAILED. 21 passed; 2 failed; 0 ignored; 0 measured; 15 filtered out; finished in 12.53s
+
+error: test failed, to rerun pass `-p shards-remote --lib`
+exit 101 2026-11-12T06:43:57Z

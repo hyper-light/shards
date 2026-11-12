@@ -154,10 +154,14 @@ case's 12.5 s: it vanished before acknowledging the endpoint's post-handshake pa
 were already the endpoint's first ack-eliciting packets since it last heard the owner, so
 its keep-alives restarted nothing (§10.1).
 
-The merged revision's runs, through [run.sh](run.sh) on the merged tree, are in
-`records/merged/`. `run.sh TREE LOGS` reproduces every phase from a checkout: its red phase
-takes the fix back (m1 and m4 together), which leaves the base's `fn transport` code
-exactly. The recorded pre-merge runs staged the tree as `git archive 1da9132b7` from an
+The merged revision (94299b662: this change and origin/main c4ae59ee0, aes256-only-v1's
+`tls.rs` among it) ran every phase again through [run.sh](run.sh), from that tree alone
+(`records/merged/`): red failed the same three tests (`managed.rs` 054bed2c, the fix taken
+back), green passed 23, m1 to m5 each failed its guard's tests and no other, fmt and clippy
+passed, and `cargo test -p shards-remote` passed 38 unit tests (aes256-only-v1's among them)
+and 17 loopback; a vanished owner was let go after 10.01 to 10.08 s. `run.sh TREE LOGS`
+reproduces every phase from a checkout: its red phase takes the fix back (m1 and m4
+together), which leaves the base's `fn transport` code exactly. The recorded pre-merge runs staged the tree as `git archive 1da9132b7` from an
 adacachy clone plus this change's red diff, as kiln's sync of the new worktree timed out
 (60 s) on kiln-a094a12d and adacachy; each log records the files' hashes.
 
