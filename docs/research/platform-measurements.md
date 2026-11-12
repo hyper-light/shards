@@ -21885,3 +21885,44 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     patience on a stand-in. Both stay.
   - What would show this wrong: a stand-in started once whose next start takes as long as a
     new one's, or a probe of one past the stand-ins' patience.
+
+### M535. The zero-patience test's refused socket, still open at its peer: a process another test starts holds it (D215)
+
+- **Question.** `client::borrowed_tests::contract::zero_patience_attempts_one_request_and_does_not_wait_for_accept_or_reply`
+  failed now and then on macOS (step 9's report) and on Linux (Hex upstream 0030, 0031): its
+  peer's read of the refused socket's end found it open, `WouldBlock` (contract.rs:40). What
+  held the socket?
+- **Method.** `docs/research/measurements/api-flakes/` (`runs.sh`; `spawns.rs`, the test's
+  check 5,000 times beside four threads each keeping eight processes alive, none, `/bin/sleep
+  0.2` or a new script each, with the time each refused socket's end then took): shards-api's
+  library at `test-release` on adas-mac-studio.local-2 (M3 Ultra, 32 CPUs, macOS 26.4) in
+  kiln's shell and as launchd jobs (load average 5 to 27), and on adacachy2 (x86_64 Linux,
+  CachyOS, a user unit of 12 CPUs, load 10 to 16), 2026-11-12.
+- **Found.** Runs of the whole library failed in this test:
+
+  | build | host | kiln's shell or Linux | launchd |
+  |---|---|---|---|
+  | main c2c4547c1 | macOS | 5 of 100 | 3 of 100 |
+  | main c2c4547c1 and M534's fix | macOS | 6 of 100 | |
+  | main 99d88fccf | macOS | 8 of 100 | |
+  | main 99d88fccf | Linux | 1 of 20 | |
+  | the fix | macOS | 0 of 200 | 0 of 100 |
+  | the fix | Linux | 0 of 20 | |
+  | the fix with its check in the library's process again | macOS | 2 of 100 | |
+
+  `spawns.rs` (macOS, kiln's shell): with none started, 0 of 5,000 found open; beside 165
+  `sleep`s, 3, each ending 0.1 to 0.5 ms later; beside 79 new scripts, 14, ending in under
+  1 ms but for 4.5 ms and 3,512 ms.
+- **Reading.**
+  - The product closes its socket. Its peer sees the end once no process holds the socket,
+    and a process another test starts holds every descriptor of this one as it starts,
+    close-on-exec ones too, until its exec closes them: a few tenths of a millisecond after
+    a `sleep`, up to seconds after a new script, which macOS assesses as it starts (M534).
+    The test read its peer at once, in that window.
+  - Its check now runs alone in a process of its own (`zero_patience_alone`, started by the
+    test as 0030's reader checks are), where no other test starts anything; the check is the
+    same.
+  - Not a fix the product could make: neither Linux's nor macOS's process start leaves a
+    starting child without its parent's descriptors, and std's own sockets are as exposed.
+  - What would show this wrong: the check failing alone, or a socket found open with no
+    process started beside it.
