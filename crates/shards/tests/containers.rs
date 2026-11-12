@@ -21,7 +21,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    Patience, Run, TempDir, bridge, cannot_run_vms, fixed_port, guest_init, kernel, noise, registry,
+    Patience, Run, TempDir, Told, bridge, cannot_run_vms, fixed_port, guest_init, kernel, noise, registry,
     run_shards_env, served, served_counting, sha256_digest, test_index,
 };
 #[cfg(unix)]
@@ -3714,78 +3714,6 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
         lines.join("\n")
     );
     assert_eq!(shards(&["rm", "-f", "reader", "prov"]).status, Some(0));
-}
-
-/// The pipe a test tells its daemon its host is short of memory through
-/// (`SHARDS_PRESSURE`, D188), each line a word: a FIFO on Unix, a named pipe on Windows,
-/// there before the daemon opens it as it starts.
-struct Told {
-    path: std::ffi::OsString,
-    #[cfg(windows)]
-    server: std::fs::File,
-}
-
-impl Told {
-    fn new(home: &Path) -> Told {
-        #[cfg(unix)]
-        {
-            let path = home.join("pressure");
-            let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
-            // SAFETY: mkfifo(3) of a NUL-terminated path.
-            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
-            Told {
-                path: path.into_os_string(),
-            }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
-            use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-            use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
-            use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, PIPE_TYPE_BYTE, PIPE_WAIT};
-            let _ = home;
-            let pipe = format!(r"\\.\pipe\shards-test-pressure-{}", std::process::id());
-            let name: Vec<u16> = pipe.encode_utf16().chain(Some(0)).collect();
-            // SAFETY: a NUL-terminated name and plain arguments.
-            let server = unsafe {
-                CreateNamedPipeW(
-                    name.as_ptr(),
-                    PIPE_ACCESS_DUPLEX,
-                    PIPE_TYPE_BYTE | PIPE_WAIT,
-                    1,
-                    4096,
-                    4096,
-                    0,
-                    std::ptr::null(),
-                )
-            };
-            assert_ne!(
-                server,
-                INVALID_HANDLE_VALUE,
-                "{pipe}: {}",
-                std::io::Error::last_os_error()
-            );
-            Told {
-                path: pipe.into(),
-                // SAFETY: the pipe just made, ours alone.
-                server: std::fs::File::from(unsafe { OwnedHandle::from_raw_handle(server) }),
-            }
-        }
-    }
-
-    /// Its host's word that it is short of memory, once.
-    fn say(&mut self) {
-        use std::io::Write as _;
-        #[cfg(unix)]
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&self.path)
-            .unwrap()
-            .write_all(b"\n")
-            .unwrap();
-        #[cfg(windows)]
-        self.server.write_all(b"\n").unwrap();
-    }
 }
 
 /// A host's word that it is short of memory, said on a thread of its own every `every` ms
