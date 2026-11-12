@@ -105,7 +105,7 @@ Causes, each reproduced live before its fix:
    link closed (its other failures it says there, vm_run.rs), and the run host killed it at
    once, so no refusal said why until the VM reported it there too. Fix: `run_request`
    keeps a daemon run's retention with no log (`DEFAULT_LOGS`), held by
-   `its_request_is_one_a_warm_vm_takes` to the VM's own check (`LogRetention::keeps`).
+   `its_request_is_one_a_warm_vm_takes` to the VM's own check (`RunHead::keeps_its_log`).
 2. **A lock held for the run's life** (f6051bc93). `serve`'s follower took its clone of the
    link in a `match` scrutinee, whose guard lives to the match's end: the link's mutex was
    held through `follow`, and a stats exec's send waited on it until the run ended. The

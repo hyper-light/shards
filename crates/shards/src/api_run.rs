@@ -1478,11 +1478,7 @@ mod tests {
         for published in [false, true] {
             let payload = run_request(&shards_abi::run::Spec::default(), published);
             let (head, spec) = shards_ipc::RunHead::decode(&payload).unwrap();
-            let retention = crate::spec::LogRetention {
-                size: head.log_size,
-                files: head.log_files,
-            };
-            assert!(retention.keeps(), "{retention:?}");
+            assert!(head.keeps_its_log(), "{head:?}");
             assert_eq!(head.flags & shards_ipc::RUN_PUBLISHED != 0, published);
             assert_eq!(head.flags & shards_ipc::RUN_LOG, 0);
             assert!(shards_abi::run::Spec::decode(spec).is_some());
