@@ -15166,8 +15166,12 @@ It is shards' own MCP's, and its runtime shards' to choose (AGENTFILE_ARCH §11 
   by pidfd. For each program it forks a worker, which holds the program's socket alone
   and loads a filter of its own before it reads the program: reading and writing, its
   memory, futexes, the clock, the kernel's randomness and exiting; any other call, or one
-  of another ABI (x32), kills it (`SECCOMP_RET_KILL_PROCESS`). A worker opens nothing: no
-  file, socket, process or descriptor. Each tool it calls is a frame to the instance over
+  of another ABI (x32), kills it (`SECCOMP_RET_KILL_PROCESS`). Both filters allow
+  `restart_syscall`, by which the kernel resumes a wait a stop broke into where no handler
+  ran (a cgroup's freeze for init's pause and commit, a job-control stop, a debugger): a
+  timed futex wait's on every architecture, and the helper's poll on x86_64 (PM M525,
+  M527). It calls only the restart the interrupted call left, else fails with EINTR, so it
+  allows no other call. A worker opens nothing: no file, socket, process or descriptor. Each tool it calls is a frame to the instance over
   its socket, which the instance answers as it answers its caller's MCP call of that tool,
   under the same grants, with the same refusals. Helper and workers are the instance's
   uid, gid and cgroup, its agent's (D60): a program's memory and CPU are its caller's,
@@ -15205,6 +15209,9 @@ Tested: in crates/server, on Linux, `a_program_calls_its_tools_over_its_socket`,
 cannot hold, a throw, an error's positions, a syntax error's, a promise nothing settles),
 `frames_are_read_whole_and_within_their_bound`,
 `a_worker_is_ended_for_a_call_its_filter_refuses` (`openat`, and x32 on x86_64, SIGSYS),
+`a_worker_stopped_in_a_timed_wait_lives_on` and `the_helper_stopped_in_its_poll_lives_on`
+(each stopped and continued in its wait under its own filter; without `restart_syscall`
+the worker dies on x86_64 and arm64, the helper on x86_64: PM M527),
 `initialize_begins_a_session`, `a_cancellation_names_a_request_in_its_own_session`,
 `a_programs_call_is_its_callers`; on real microVMs,
 `code_mode_runs_a_program_with_the_callers_grants`: a's program finds itself, its peers,
