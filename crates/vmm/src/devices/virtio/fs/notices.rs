@@ -66,6 +66,19 @@ impl Pending {
         }
     }
 
+    /// [`take`](Self::take), for no longer than `wait`: none where none came.
+    #[cfg(test)]
+    fn take_within(&self, wait: std::time::Duration) -> Option<Vec<u8>> {
+        let q = self.queued.lock().unwrap_or_else(PoisonError::into_inner);
+        let (q, _) = self
+            .ready
+            .wait_timeout_while(q, wait, |q| q.order.is_empty())
+            .unwrap_or_else(PoisonError::into_inner);
+        let empty = q.order.is_empty();
+        drop(q);
+        (!empty).then(|| self.take())
+    }
+
     /// The changes waiting, taken, as records: none until there is one.
     fn take(&self) -> Vec<u8> {
         let mut q = self.queued.lock().unwrap_or_else(PoisonError::into_inner);
@@ -357,6 +370,83 @@ mod tests {
         // share.
         assert_eq!(paths[MOST], Vec::<u8>::new());
         assert_eq!(paths[MOST + 1], Vec::<u8>::new());
+    }
+
+    /// The host's changes beneath a share are told where the guest holds their directory,
+    /// and none where it holds none, by each host's own watch; made by another process, as
+    /// FSEvents tells none of this process's own (IgnoreSelf).
+    #[test]
+    fn the_hosts_changes_are_told_where_the_guest_looks() {
+        use super::super::proto::op;
+        let dir = shards_testdir::TempDir::new("notices").unwrap();
+        // Its real path: FSEvents tells paths without the links on the way.
+        let root = std::fs::canonicalize(&dir).unwrap();
+        for d in ["held", "unheld"] {
+            std::fs::create_dir(root.join(d)).unwrap();
+        }
+        #[cfg(windows)]
+        let opened: super::super::host::Owned = {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            std::fs::File::options()
+                .read(true)
+                .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
+                .open(&root)
+                .unwrap()
+                .into()
+        };
+        #[cfg(unix)]
+        let opened: super::super::host::Owned = std::fs::File::open(&root).unwrap().into();
+        let server: &'static [Server] = Vec::leak(vec![Server::new(opened, false, None).unwrap()]);
+        let lookup = {
+            let mut r = Vec::new();
+            let body = b"held\0";
+            r.extend_from_slice(&u32::try_from(40 + body.len()).unwrap().to_le_bytes());
+            r.extend_from_slice(&op::LOOKUP.to_le_bytes());
+            r.extend_from_slice(&7u64.to_le_bytes());
+            r.extend_from_slice(&1u64.to_le_bytes());
+            r.extend_from_slice(&[0u8; 16]);
+            r.extend_from_slice(body);
+            r
+        };
+        // Watched as its share process watches it, before its guest asks anything.
+        let pending: &'static Pending = Box::leak(Box::new(Pending::new(vec![b"shards0".to_vec()])));
+        watch(server, Vec::leak(vec![0]), pending).unwrap();
+        let answered = server[0].handle(&lookup).unwrap();
+        assert_eq!(i32::from_le_bytes(answered[4..8].try_into().unwrap()), 0);
+        // Written by another process.
+        let write = |path: &std::path::Path| {
+            #[cfg(unix)]
+            let wrote = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg("echo x > \"$1\"")
+                .arg("sh")
+                .arg(path)
+                .status();
+            #[cfg(windows)]
+            let wrote = std::process::Command::new("cmd")
+                .arg("/c")
+                .arg(format!("echo x> \"{}\"", path.display()))
+                .status();
+            assert!(wrote.unwrap().success());
+        };
+        write(&root.join("unheld").join("u"));
+        write(&root.join("held").join("h"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut told: Vec<Vec<u8>> = Vec::new();
+        while !told.iter().any(|p| p == b"held/h") {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(!left.is_zero(), "held/h not told; told {told:?}");
+            let records = pending.take_within(left).unwrap_or_default();
+            let mut rest = records.as_slice();
+            while let shards_abi::run::notice::Decoded::Record { name, path, rest: r } =
+                shards_abi::run::notice::decode(rest)
+            {
+                assert_eq!(name, b"shards0");
+                told.push(path.to_vec());
+                rest = r;
+            }
+        }
+        assert!(!told.iter().any(|p| p.starts_with(b"unheld/")), "{told:?}");
     }
 
     /// A path FSEvents tells is placed beneath the root it is within, and none outside it,

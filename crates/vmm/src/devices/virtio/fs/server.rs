@@ -978,6 +978,7 @@ impl Server {
     /// Watches each directory the guest holds, from its root, as it looks each up, and lets
     /// each go as it forgets it, every event sent on `sink`, which `number` names among the
     /// process's sinks, for [`noticed`](Self::noticed) to say which paths it is of (D235).
+    /// Asked before the guest asks anything: a directory it looked up before is not watched.
     #[cfg(target_os = "linux")]
     pub fn watch_dirs(
         &self,
