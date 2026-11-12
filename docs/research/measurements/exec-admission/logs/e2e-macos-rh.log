@@ -1,0 +1,190 @@
+host Adas-Mac-Studio.local Darwin 25.4.0 arm64, 32 CPUs, load 22.81 26.70 28.91
+revision fecd60256049111a28c2bfb98d4d19b4217ccc1d, 0d4f20288 reverted
+rustc 1.98.1 (48a229cea 2026-09-01)
+zig 0.16.0
+=== round 1
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-rh/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+64 execs at once into a run that is up: the last ended 79.50175ms after, a lone one 7.10675ms
+64 execs at once into a run coming up, begun as it was created: the last ended 94.662ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 44.36s
+=== round 2
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-rh/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (31463383) panicked at crates/shards/tests/containers.rs:9775:5:
+1 of 64 execs did not end as their commands did:
+up-41: status Some(1), stdout "", stderr "shards: the command's connection to the host failed before the host had it: the host closed it; the command was killed\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88531/containers-execs-at-once-0/run-0.stderr
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88531/containers-execs-at-once-0/daemon.log, its last 3 lines
+shards daemon 88539: the default bridge is 172.17.0.0/16
+shards daemon 88539: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88531/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88531/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 88539: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88531/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88531/containers-execs-at-once-0/daemon.log, its last 465 of 465 bytes
+shards daemon 88539: the default bridge is 172.17.0.0/16
+shards daemon 88539: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88531/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88531/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 88539: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.59s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 3
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-rh/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (31464422) panicked at crates/shards/tests/containers.rs:9775:5:
+1 of 64 execs did not end as their commands did:
+up-38: status Some(1), stdout "", stderr "shards: the command's connection to the host failed before the host had it: the host closed it; the command was killed\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88649/containers-execs-at-once-0/run-0.stderr
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88649/containers-execs-at-once-0/daemon.log, its last 3 lines
+shards daemon 88681: the default bridge is 172.17.0.0/16
+shards daemon 88681: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88649/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88649/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 88681: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88649/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88649/containers-execs-at-once-0/daemon.log, its last 465 of 465 bytes
+shards daemon 88681: the default bridge is 172.17.0.0/16
+shards daemon 88681: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88649/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88649/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 88681: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.67s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 4
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-rh/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+64 execs at once into a run that is up: the last ended 92.503625ms after, a lone one 6.084041ms
+64 execs at once into a run coming up, begun as it was created: the last ended 63.088166ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.81s
+=== round 5
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-rh/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (31466563) panicked at crates/shards/tests/containers.rs:9775:5:
+2 of 64 execs did not end as their commands did:
+up-59: status Some(1), stdout "", stderr "shards: the command's connection to the host failed before the host had it: the host closed it\n"
+up-24: status Some(1), stdout "", stderr "shards: the command's connection to the host failed before the host had it: the host closed it\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88906/containers-execs-at-once-0/run-0.stderr
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88906/containers-execs-at-once-0/daemon.log, its last 3 lines
+shards daemon 88914: the default bridge is 172.17.0.0/16
+shards daemon 88914: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88906/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88906/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 88914: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88906/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88906/containers-execs-at-once-0/daemon.log, its last 465 of 465 bytes
+shards daemon 88914: the default bridge is 172.17.0.0/16
+shards daemon 88914: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88906/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88906/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 88914: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.53s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 6
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-rh/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (31467415) panicked at crates/shards/tests/containers.rs:9775:5:
+2 of 64 execs did not end as their commands did:
+up-55: status Some(1), stdout "", stderr "shards: the command's connection to the host failed before the host had it: the host closed it; the command was killed\n"
+up-9: status Some(1), stdout "", stderr "shards: the command's connection to the host failed before the host had it: the host closed it\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88987/containers-execs-at-once-0/run-0.stderr
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88987/containers-execs-at-once-0/daemon.log, its last 3 lines
+shards daemon 89004: the default bridge is 172.17.0.0/16
+shards daemon 89004: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88987/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88987/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 89004: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88987/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88987/containers-execs-at-once-0/daemon.log, its last 465 of 465 bytes
+shards daemon 89004: the default bridge is 172.17.0.0/16
+shards daemon 89004: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88987/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/88987/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 89004: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.53s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 7
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-rh/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+64 execs at once into a run that is up: the last ended 52.990042ms after, a lone one 8.554708ms
+64 execs at once into a run coming up, begun as it was created: the last ended 45.761083ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.83s
+=== round 8
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-rh/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (31469564) panicked at crates/shards/tests/containers.rs:9775:5:
+1 of 64 execs did not end as their commands did:
+up-28: status Some(1), stdout "", stderr "shards: the command's connection to the host failed before the host had it: the host closed it; the command was killed\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89230/containers-execs-at-once-0/run-0.stderr
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89230/containers-execs-at-once-0/daemon.log, its last 3 lines
+shards daemon 89238: the default bridge is 172.17.0.0/16
+shards daemon 89238: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89230/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89230/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 89238: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89230/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89230/containers-execs-at-once-0/daemon.log, its last 465 of 465 bytes
+shards daemon 89238: the default bridge is 172.17.0.0/16
+shards daemon 89238: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89230/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89230/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 89238: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.52s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 9
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-rh/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (31470308) panicked at crates/shards/tests/containers.rs:9775:5:
+1 of 64 execs did not end as their commands did:
+up-28: status Some(1), stdout "", stderr "shards: the command's connection to the host failed before the host had it: the host closed it; the command was killed\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89311/containers-execs-at-once-0/run-0.stderr
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89311/containers-execs-at-once-0/daemon.log, its last 3 lines
+shards daemon 89319: the default bridge is 172.17.0.0/16
+shards daemon 89319: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89311/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89311/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 89319: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89311/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89311/containers-execs-at-once-0/daemon.log, its last 465 of 465 bytes
+shards daemon 89319: the default bridge is 172.17.0.0/16
+shards daemon 89319: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89311/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89311/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 89319: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.54s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 10
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-rh/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (31471043) panicked at crates/shards/tests/containers.rs:9775:5:
+3 of 64 execs did not end as their commands did:
+up-43: status Some(1), stdout "", stderr "shards: the command's connection to the host failed before the host had it: the host closed it\n"
+up-40: status Some(1), stdout "", stderr "shards: the command's connection to the host failed before the host had it: the host closed it\n"
+up-48: status Some(1), stdout "", stderr "shards: the command's connection to the host failed before the host had it: the host closed it; the command was killed\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89392/containers-execs-at-once-0/run-0.stderr
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89392/containers-execs-at-once-0/daemon.log, its last 3 lines
+shards daemon 89406: the default bridge is 172.17.0.0/16
+shards daemon 89406: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89392/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89392/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 89406: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89392/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89392/containers-execs-at-once-0/daemon.log, its last 465 of 465 bytes
+shards daemon 89406: the default bridge is 172.17.0.0/16
+shards daemon 89406: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89392/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/89392/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 89406: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.57s
+error: test failed, to rerun pass `-p shards --test containers`

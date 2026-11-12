@@ -1,0 +1,77 @@
+# e2e.sh's output on adacachy2 (Linux 7.3.3-1-cachyos x86_64, 32 CPUs, KVM): variant g (c16facdb2, its own target
+# directory; its VM process carries the host fix, its init the guest fix: 1 and 1), 10 rounds beside 2x and then 4x its
+# CPUs of busy loops (sh -c 'while :; do :; done'), started 2 s before each set and killed after it.
+g: VM process host fix 1, init guest fix 1
+== g under 64 busy loops (2 x 32 CPUs)
+host adacachy2 Linux 7.3.3-1-cachyos x86_64, 32 CPUs, load 15.44, 14.98, 17.54
+revision c16facdb2
+rustc 1.98.1 (48a229cea 2026-09-01)
+zig 0.16.0
+round 1 passed
+64 execs at once into a run that is up: the last ended 195.652047ms after, a lone one 8.893257ms
+64 execs at once into a run coming up, begun as it was created: the last ended 392.467268ms after it was up
+round 2 passed
+64 execs at once into a run that is up: the last ended 335.947614ms after, a lone one 8.951075ms
+64 execs at once into a run coming up, begun as it was created: the last ended 199.504347ms after it was up
+round 3 passed
+64 execs at once into a run that is up: the last ended 185.361714ms after, a lone one 10.615877ms
+64 execs at once into a run coming up, begun as it was created: the last ended 149.541594ms after it was up
+round 4 passed
+64 execs at once into a run that is up: the last ended 195.400802ms after, a lone one 7.185163ms
+64 execs at once into a run coming up, begun as it was created: the last ended 179.593719ms after it was up
+round 5 passed
+64 execs at once into a run that is up: the last ended 215.798837ms after, a lone one 8.649ms
+64 execs at once into a run coming up, begun as it was created: the last ended 173.546872ms after it was up
+round 6 passed
+64 execs at once into a run that is up: the last ended 204.970071ms after, a lone one 9.030874ms
+64 execs at once into a run coming up, begun as it was created: the last ended 164.890678ms after it was up
+round 7 passed
+64 execs at once into a run that is up: the last ended 195.729242ms after, a lone one 6.653279ms
+64 execs at once into a run coming up, begun as it was created: the last ended 148.686572ms after it was up
+round 8 passed
+64 execs at once into a run that is up: the last ended 222.18368ms after, a lone one 8.885532ms
+64 execs at once into a run coming up, begun as it was created: the last ended 154.877364ms after it was up
+round 9 passed
+64 execs at once into a run that is up: the last ended 215.050532ms after, a lone one 8.657546ms
+64 execs at once into a run coming up, begun as it was created: the last ended 174.65531ms after it was up
+round 10 passed
+64 execs at once into a run that is up: the last ended 191.837052ms after, a lone one 10.688282ms
+64 execs at once into a run coming up, begun as it was created: the last ended 174.302109ms after it was up
+10 of 10 rounds passed
+== g under 128 busy loops (4 x 32 CPUs)
+host adacachy2 Linux 7.3.3-1-cachyos x86_64, 32 CPUs, load 46.98, 22.36, 19.90
+revision c16facdb2
+rustc 1.98.1 (48a229cea 2026-09-01)
+zig 0.16.0
+round 1 passed
+64 execs at once into a run that is up: the last ended 383.114609ms after, a lone one 14.943227ms
+64 execs at once into a run coming up, begun as it was created: the last ended 245.2904ms after it was up
+round 2 passed
+64 execs at once into a run that is up: the last ended 388.962217ms after, a lone one 17.7798ms
+64 execs at once into a run coming up, begun as it was created: the last ended 278.590443ms after it was up
+round 3 passed
+64 execs at once into a run that is up: the last ended 353.012834ms after, a lone one 12.81088ms
+64 execs at once into a run coming up, begun as it was created: the last ended 298.80458ms after it was up
+round 4 passed
+64 execs at once into a run that is up: the last ended 278.264977ms after, a lone one 21.879995ms
+64 execs at once into a run coming up, begun as it was created: the last ended 300.780148ms after it was up
+round 5 passed
+64 execs at once into a run that is up: the last ended 280.48284ms after, a lone one 15.955349ms
+64 execs at once into a run coming up, begun as it was created: the last ended 247.849531ms after it was up
+round 6 passed
+64 execs at once into a run that is up: the last ended 279.724499ms after, a lone one 15.416722ms
+64 execs at once into a run coming up, begun as it was created: the last ended 268.981684ms after it was up
+round 7 passed
+64 execs at once into a run that is up: the last ended 371.616564ms after, a lone one 15.956631ms
+64 execs at once into a run coming up, begun as it was created: the last ended 250.563769ms after it was up
+round 8 passed
+64 execs at once into a run that is up: the last ended 300.745209ms after, a lone one 16.439473ms
+64 execs at once into a run coming up, begun as it was created: the last ended 274.48737ms after it was up
+round 9 passed
+64 execs at once into a run that is up: the last ended 326.133877ms after, a lone one 20.161561ms
+64 execs at once into a run coming up, begun as it was created: the last ended 335.028123ms after it was up
+round 10 passed
+64 execs at once into a run that is up: the last ended 275.265518ms after, a lone one 16.353342ms
+64 execs at once into a run coming up, begun as it was created: the last ended 279.279762ms after it was up
+10 of 10 rounds passed
+ 15:05:14 up 19:57,  0 users,  load average: 98.31, 38.67, 25.50

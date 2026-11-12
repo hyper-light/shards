@@ -1,0 +1,38 @@
+# variant.sh m: the branch merged with origin/main 99d88fccf (34329a8ab), its own target directory, on adacachy2 (KVM).
+m: its VM process carries the host fix: 1 (/home/adalundhe/g121-tmp/exec-e2e/target-m/helpers/x86_64-unknown-linux-musl/test-release/shards-vm)
+m: its init carries the guest fix: 1 (/home/adalundhe/g121-tmp/exec-e2e/target-m/test-release/build/shards-530092e3dcf4aac9/out/init/x86_64-unknown-linux-musl/guest-test/shards-init)
+host adacachy2 Linux 7.3.3-1-cachyos x86_64, 32 CPUs, load 24.49, 26.81, 23.92
+revision 34329a8ab
+rustc 1.98.1 (48a229cea 2026-09-01)
+zig 0.16.0
+round 1 passed
+64 execs at once into a run that is up: the last ended 66.890378ms after, a lone one 4.354396ms
+64 execs at once into a run coming up, begun as it was created: the last ended 61.915803ms after it was up
+round 2 passed
+64 execs at once into a run that is up: the last ended 72.476716ms after, a lone one 4.372641ms
+64 execs at once into a run coming up, begun as it was created: the last ended 61.730195ms after it was up
+round 3 passed
+64 execs at once into a run that is up: the last ended 56.658399ms after, a lone one 4.333868ms
+64 execs at once into a run coming up, begun as it was created: the last ended 51.470966ms after it was up
+round 4 passed
+64 execs at once into a run that is up: the last ended 56.658579ms after, a lone one 4.348996ms
+64 execs at once into a run coming up, begun as it was created: the last ended 51.513074ms after it was up
+round 5 passed
+64 execs at once into a run that is up: the last ended 61.722901ms after, a lone one 4.354517ms
+64 execs at once into a run coming up, begun as it was created: the last ended 56.674539ms after it was up
+round 6 passed
+64 execs at once into a run that is up: the last ended 61.740034ms after, a lone one 4.371308ms
+64 execs at once into a run coming up, begun as it was created: the last ended 61.696261ms after it was up
+round 7 passed
+64 execs at once into a run that is up: the last ended 61.700299ms after, a lone one 4.301327ms
+64 execs at once into a run coming up, begun as it was created: the last ended 56.533695ms after it was up
+round 8 passed
+64 execs at once into a run that is up: the last ended 67.121319ms after, a lone one 4.347984ms
+64 execs at once into a run coming up, begun as it was created: the last ended 66.719147ms after it was up
+round 9 passed
+64 execs at once into a run that is up: the last ended 56.867339ms after, a lone one 4.347173ms
+64 execs at once into a run coming up, begun as it was created: the last ended 61.842425ms after it was up
+round 10 passed
+64 execs at once into a run that is up: the last ended 61.836143ms after, a lone one 4.339709ms
+64 execs at once into a run coming up, begun as it was created: the last ended 66.912217ms after it was up
+10 of 10 rounds passed
