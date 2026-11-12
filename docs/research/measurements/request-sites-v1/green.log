@@ -1,0 +1,34 @@
+# Green: 032b63b1c + green-source.diff (daemon.rs 84c850da...). On
+# 8fadc1ec213332e16cb0d915a3fb913f; sync files_sent 8, 2.1 s. Output as kiln returned it;
+# aws-lc-sys warnings dropped and cargo's last 60 lines kept, by the command. The last line
+# lists $TMPDIR/shards-tests: the test process's own directory (shards_testdir), which the
+# next test process removes.
+032b63b1c9b642d0e2c8af71d6f9643909416f99
+ M crates/shards/src/daemon.rs
+ M crates/shards/src/daemon/engine/own_networks.rs
+ M crates/shards/src/daemon/networks.rs
+ M crates/shards/src/daemon/remote.rs
+ M crates/shards/src/daemon/update.rs
+?? docs/research/measurements/request-sites-v1/
+84c850da9b498d8614569c943eb94492f8d1f071153b71245c607aa76a9f0220  crates/shards/src/daemon.rs
+5ea5436849b0aa5dbe1627be4edc59aec3e3c45bb7fc123e8150f9ba66c0195f  crates/shards/src/daemon/update.rs
+52e4a3cc510d8ac9c4c55d086c3fd7fe370cbabfd14b9dc453e1df10d65b140d  crates/shards/src/daemon/networks.rs
+92c99125913ad1dbedb5eaec31f4370902e6c0d4218cf0517e333bdeaa1c6bb7  crates/shards/src/daemon/engine/own_networks.rs
+1e6ae2e5cc8cc343208bafb07d04842fbd5a1ddfd5307d4b2ec9aa3165c05d20  crates/shards/src/daemon/remote.rs
+2026-11-12T02:43:09Z
+$ cargo test -p shards --bin shards -j4 -- --exact (the three tests) --nocapture
+   Compiling shards v0.7.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/request-sites-v1-1548cdb1b8/crates/shards)
+    Finished `test` profile [unoptimized] target(s) in 8.18s
+     Running unittests src/main.rs (target/debug/deps/shards-18bc4ad81ca6886a)
+
+running 3 tests
+test daemon::tests::an_update_written_partway_keeps_the_request_it_had ... ok
+test daemon::tests::a_record_written_partway_is_not_kept ... ok
+test daemon::tests::a_request_kept_at_once_is_whole ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 715 filtered out; finished in 0.07s
+
+exit: 0
+2026-11-12T02:43:18Z
+525346
+--- kiln: runner 8fadc1ec213332e16cb0d915a3fb913f (kiln-a094a12d.attlocal.net), exit_code 0

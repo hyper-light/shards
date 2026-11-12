@@ -1,0 +1,19 @@
+--- a/crates/shards/src/daemon.rs
++++ b/crates/shards/src/daemon.rs
+@@ -8797,15 +8797,7 @@
+ /// with the rename costs 4.3 ms at the median (PM M46), on the path each new microVM takes
+ /// to start. So a power loss may still leave one cut, as it may the record.
+ fn keep_whole(path: &Path, bytes: &[u8]) -> io::Result<()> {
+-    static WRITES: AtomicU64 = AtomicU64::new(0);
+-    let mut new = path.as_os_str().to_owned();
+-    new.push(format!(".new.{}", WRITES.fetch_add(1, Ordering::Relaxed)));
+-    let new = PathBuf::from(new);
+-    let kept = std::fs::write(&new, bytes).and_then(|()| std::fs::rename(&new, path));
+-    if kept.is_err() {
+-        let _ = std::fs::remove_file(&new);
+-    }
+-    kept
++    std::fs::write(path, bytes)
+ }
+ 
+ /// The request microVM `id` was made by, as a client asks to start it again: attached

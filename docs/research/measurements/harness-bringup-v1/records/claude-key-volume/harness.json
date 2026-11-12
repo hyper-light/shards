@@ -1,0 +1,1 @@
+{"entrypoint":"claude -p","options":["--settings","/run/claude-auth/settings.json","--output-format","stream-json","--verbose","Reply with the single word: ready"]}

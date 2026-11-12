@@ -1,0 +1,12 @@
+TIME                            MEMBER         PID  EVENT  WHAT
+2026-11-12T03:13:10.719390074Z  command        907  exec   sleep 600
+2026-11-12T03:13:10.724297605Z  harness probe  910  fork   from 1
+2026-11-12T03:13:10.725809145Z  harness probe  910  exec   shards-server "harness probe" /proc/self/fd/6 200000 3 4 "" [] 7
+2026-11-12T03:13:10.734066370Z  harness probe  915  fork   from 910
+2026-11-12T03:13:10.734376463Z  harness probe  915  exec   shards-server sandbox
+2026-11-12T03:13:10.734728735Z  harness probe  919  fork   from 1
+2026-11-12T03:13:10.734847929Z  harness probe  920  fork   from 919
+2026-11-12T03:13:10.735029410Z  harness probe  919  exec   shards-init managed-reaper
+2026-11-12T03:13:10.736841204Z  harness probe  920  exec   /bin/sh -c "sleep 125; echo after-quiet"
+2026-11-12T03:13:10.738424539Z  harness probe  921  fork   from 920
+2026-11-12T03:13:10.738815073Z  harness probe  921  exec   sleep 125

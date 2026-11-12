@@ -1,0 +1,1 @@
+{"entrypoint":"sh -c","options":["sleep 75; echo after-quiet"]}

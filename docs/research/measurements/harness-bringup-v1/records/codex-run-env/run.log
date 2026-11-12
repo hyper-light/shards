@@ -1,0 +1,7 @@
+shards run vm -d -e CODEX_API_KEY=sk-shards-placeholder-not-a-key -e OPENAI_API_KEY=sk-shards-placeholder-not-a-key --name codex harness-codex:1 sleep 600
+status Some(0) after 289.315266ms
+--- stdout
+7e6f1ea056d8a4c9ae6cce16c8973f523edc6f241951be2c610c3627d27fb2b4
+
+--- stderr
+WARNING: CAP_NET_RAW withheld from the command: the image's Agentfile runs agents and harnesses beside the command, and CAP_NET_RAW reads and writes the packets of their flows past the microVM, which cross the command's network namespace

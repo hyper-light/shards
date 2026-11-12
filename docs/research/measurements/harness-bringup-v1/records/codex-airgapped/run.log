@@ -1,0 +1,6 @@
+shards run vm -d --name codex harness-codex:1 sleep 600
+status Some(0) after 308.508918ms
+--- stdout
+e6b829ef35fd76fe49f708605a3ba9b9659ae1df2d3d2a31e71cd2533ab3d264
+
+--- stderr

@@ -36,21 +36,24 @@ mod handshake {
     use std::time::Instant;
 
     use bytes::BytesMut;
+    use hyper_quic::crypto::rustls::HandshakeData;
+    use hyper_quic::rustls::CipherSuite;
     use hyper_quic::rustls::pki_types::CertificateDer;
     use hyper_quic::{
-        Connection, ConnectionHandle, DatagramEvent, Dir, Endpoint, EndpointConfig, Event, StreamEvent,
+        ClientConfig, Connection, ConnectionError, ConnectionHandle, DatagramEvent, Dir, Endpoint,
+        EndpointConfig, Event, ServerConfig, StreamEvent,
     };
 
     use crate::identity::Identity;
     use crate::tls;
 
     /// An endpoint at `address`, and the connection it holds, once it holds one.
-    struct Side {
+    pub(crate) struct Side {
         endpoint: Endpoint,
         address: SocketAddr,
         connection: Option<(ConnectionHandle, Connection)>,
-        connected: bool,
-        lost: Option<String>,
+        pub(crate) connected: bool,
+        pub(crate) lost: Option<ConnectionError>,
     }
 
     impl Side {
@@ -66,11 +69,45 @@ mod handshake {
             while let Some(event) = connection.poll() {
                 match event {
                     Event::Connected => self.connected = true,
-                    Event::ConnectionLost { reason } => self.lost = Some(reason.to_string()),
+                    Event::ConnectionLost { reason } => self.lost = Some(reason),
                     _ => {}
                 }
             }
         }
+
+        /// The TLS 1.3 suite its handshake chose, once it has chosen one.
+        pub(crate) fn suite(&self) -> Option<CipherSuite> {
+            let (_, connection) = self.connection.as_ref()?;
+            let data = connection.crypto_session().handshake_data()?;
+            data.downcast::<HandshakeData>().ok()?.negotiated_cipher_suite
+        }
+    }
+
+    /// `datagram` from `from` arrives at `to`; what `to` answers at once, where it refused a
+    /// connection at its first packet.
+    fn arrive(now: Instant, to: &mut Side, from: SocketAddr, datagram: &[u8]) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        match to
+            .endpoint
+            .handle(now, from, None, None, BytesMut::from(datagram), &mut out)
+        {
+            Some(DatagramEvent::NewConnection(incoming)) => {
+                match to.endpoint.accept(incoming, now, &mut out, None, None) {
+                    Ok(accepted) => to.connection = Some(accepted),
+                    Err(refused) => {
+                        to.lost = Some(refused.cause);
+                        return refused.response.map(|close| out[..close.size].to_vec());
+                    }
+                }
+            }
+            Some(DatagramEvent::ConnectionEvent(_, event)) => {
+                if let Some((_, connection)) = to.connection.as_mut() {
+                    connection.handle_event(event, to.endpoint.configs_mut());
+                }
+            }
+            Some(DatagramEvent::Response(_)) | None => {}
+        }
+        None
     }
 
     /// Delivers what `from` has to send to `to`, as a network would; whether anything moved.
@@ -87,51 +124,24 @@ mod handshake {
                 return moved;
             };
             moved = true;
-            let datagram = BytesMut::from(&buffer[..transmit.size]);
-            let mut out = Vec::new();
-            match to
-                .endpoint
-                .handle(now, from.address, None, None, datagram, &mut out)
-            {
-                Some(DatagramEvent::NewConnection(incoming)) => {
-                    let accepted = to.endpoint.accept(incoming, now, &mut out, None, None);
-                    to.connection = Some(accepted.map_err(|e| e.cause).unwrap());
-                }
-                Some(DatagramEvent::ConnectionEvent(_, event)) => {
-                    if let Some((_, connection)) = to.connection.as_mut() {
-                        connection.handle_event(event, to.endpoint.configs_mut());
-                    }
-                }
-                Some(DatagramEvent::Response(_)) | None => {}
+            if let Some(close) = arrive(now, to, from.address, &buffer[..transmit.size]) {
+                arrive(now, from, to.address, &close);
             }
             to.events();
             from.events();
         }
     }
 
-    fn pair(pin_server: bool) -> (Side, Side, Identity, Identity) {
-        let server_id = Identity::generate().unwrap();
-        let client_id = Identity::generate().unwrap();
-        let server = Endpoint::new(
-            EndpointConfig::default(),
-            Some(tls::server(&server_id).unwrap()),
-            true,
-            None,
-        )
-        .unwrap();
-        let mut client = Endpoint::new(EndpointConfig::default(), None, true, None).unwrap();
-        let pinned = if pin_server {
-            server_id.fingerprint()
-        } else {
-            Identity::generate().unwrap().fingerprint()
-        };
-        let config = client
-            .insert_client_config(tls::client(&client_id, pinned).unwrap())
-            .unwrap();
+    /// A client under `client` connects to a server under `server`, the datagrams between
+    /// them delivered until neither has more to send.
+    pub(crate) fn connect(server: ServerConfig, client: ClientConfig) -> (Side, Side) {
+        let server = Endpoint::new(EndpointConfig::default(), Some(server), true, None).unwrap();
+        let mut endpoint = Endpoint::new(EndpointConfig::default(), None, true, None).unwrap();
+        let config = endpoint.insert_client_config(client).unwrap();
         let server_address: SocketAddr = "127.0.0.1:7001".parse().unwrap();
         let client_address: SocketAddr = "127.0.0.1:7002".parse().unwrap();
         let now = Instant::now();
-        let connection = client
+        let connection = endpoint
             .connect(now, config, server_address, tls::SERVER_NAME, None)
             .unwrap();
         let mut server = Side {
@@ -142,7 +152,7 @@ mod handshake {
             lost: None,
         };
         let mut client = Side {
-            endpoint: client,
+            endpoint,
             address: client_address,
             connection: Some(connection),
             connected: false,
@@ -155,6 +165,21 @@ mod handshake {
                 break;
             }
         }
+        (server, client)
+    }
+
+    fn pair(pin_server: bool) -> (Side, Side, Identity, Identity) {
+        let server_id = Identity::generate().unwrap();
+        let client_id = Identity::generate().unwrap();
+        let pinned = if pin_server {
+            server_id.fingerprint()
+        } else {
+            Identity::generate().unwrap().fingerprint()
+        };
+        let (server, client) = connect(
+            tls::server(&server_id).unwrap(),
+            tls::client(&client_id, pinned).unwrap(),
+        );
         (server, client, server_id, client_id)
     }
 
