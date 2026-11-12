@@ -21626,3 +21626,53 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   on Linux and macOS, by SIGTERM, for which the daemon installs no handler, so that its
   default ends it as a kill does: held there by the unit tests alone; GitHub's windows-2025
   failures of the same day are not this (no kiln there; M528).
+
+### M531. init's path descriptors on musl, and code mode's workers stopped in a timed wait (PM M525's two latent defects)
+
+- **Question.** M525 found init's four production opens of a path descriptor made through
+  std's `OpenOptions::custom_flags(O_PATH)`, which musl's `O_ACCMODE` (`03|O_SEARCH`, its
+  `O_SEARCH` being `O_PATH`) loses to std's mask, and a code-mode worker's filter that
+  allows futex but not `restart_syscall`. Are both real, on which architectures and libcs,
+  and does any other filter of shards' own share the second?
+- **Method.** On x86_64 (adacachy, kernel 7.2.9) natively (glibc) and in CI's pinned musl
+  image under Docker's default seccomp profile, and on arm64 (Docker Desktop's VM, kernel
+  6.12.76-linuxkit) in the same musl image and in Debian's `rust:1.98.1`, each as uid 1000:
+  init's and the code-mode server's unit tests; probes, test modules appended for one run
+  (`changes::keep`'s descriptors read back by F_GETFL and a mode-0 layer kept, fixed and as
+  main had it; the managed reaper's own loop and the network process's poller, each under
+  its filter, stopped and continued in its wait; a program's `Atomics.wait` in a worker's
+  runtime); and mutants of each guard. Harnesses, logs and sources:
+  [the record](measurements/musl-opath-v1/README.md). Revisions 883796ec1 and fc71859bc
+  (main), 2026-11-12.
+- **Found.**
+
+  | Defect | Before (main's code) | After |
+  |---|---|---|
+  | init's kept layers (`changes::keep`), musl | not `O_PATH`: `O_RDONLY \| O_DIRECTORY \| O_LARGEFILE` (x86_64 `0o300000`, arm64 `0o440000`); a mode-0 layer refused EACCES | `O_PATH \| O_DIRECTORY` (`0o10200000`, `0o10040000`); kept |
+  | the same, glibc | `O_PATH` already (glibc's `O_ACCMODE` is 3) | unchanged |
+  | a worker stopped and continued in a timed futex wait | SIGSYS on x86_64 and arm64, glibc and musl (`restart_syscall` refused) | exits 0 on each |
+  | the helper stopped in its poll (M525's fix kept) | lives; with `restart_syscall` in neither filter, SIGSYS on x86_64, lives on arm64 (ppoll restarts as itself) | lives on each |
+  | the managed reaper, the network process (x86_64) | live through the stop: no call they allow resumes through `restart_syscall` (ppoll and wait4 restart as themselves; epoll_wait returns EINTR, which the poller takes as no events) | unchanged |
+  | a program's timed `Atomics.wait` in a worker | throws "cannot block in this thread" (QuickJS-NG blocks only where `JS_SetCanBlock` allows; rquickjs never sets it) | unchanged |
+
+- **Mutants**, on each of the four: a call site put back on std's `OpenOptions` (killed by
+  the test that no source of init's asks std for `O_PATH`, on glibc too); the helper given
+  std's flags (killed on musl, "not O_PATH: 0o300000"; survives on glibc, which keeps
+  `O_PATH`: the source test is the guard there); the filters as main had them (the worker's
+  test killed, SIGSYS); `restart_syscall` in neither (the helper's test killed on x86_64
+  alone).
+- **Reading.** Both defects were real and latent. init, musl alone, made read-only opens
+  where it meant path descriptors: each its directory's file system's open and release,
+  fsnotify's events, a read permission asked, and a descriptor able to read the directory;
+  init runs them as root, so none failed in a guest. The worker's filter allowed a timed
+  futex wait and killed its resumption after a stop, a cgroup's freeze (init's pause and
+  commit) or a debugger, on both architectures; no worker path is known to make one today.
+  The fix: `opath::open` (open(2) itself, `O_PATH | O_CLOEXEC`) for init's five opens, and
+  `restart_syscall` in the worker's list, which the helper's extends (D136). What would
+  falsify it: a path descriptor of init's whose F_GETFL lacks `O_PATH` on musl, or a
+  filtered worker or helper ended by SIGSYS after a stop.
+- **Unverified.** The guest paths that hold these descriptors on real microVMs (diff,
+  commit, export and size of runs and joiners, D190's go-over) and code mode under init's
+  pause and commit (ROOT's); scripts/lint's whole workspace and its macOS and Windows
+  targets, which compile none of this change (clippy of init, server and net ran clean on
+  the four Linux targets, and `cargo fmt --all --check`, at 1464cdb88).
