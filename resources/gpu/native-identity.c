@@ -10,9 +10,10 @@ struct shards_gpu_properties {
     uint8_t luid[VK_LUID_SIZE];
     uint32_t domain, bus, device, function;
     uint32_t luid_valid, pci_valid, host_memory_valid;
+    uint8_t name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
 };
 
-_Static_assert(sizeof(struct shards_gpu_properties) == 52,
+_Static_assert(sizeof(struct shards_gpu_properties) == 308,
                "Rust/C native GPU properties must have the same ABI");
 
 int32_t
@@ -63,6 +64,9 @@ shards_gpu_get_properties(PFN_vkGetPhysicalDeviceProperties2 properties,
         .pNext = &ids,
     };
     properties(device, &props);
+    if (!memchr(props.properties.deviceName, '\0', VK_MAX_PHYSICAL_DEVICE_NAME_SIZE))
+        return VK_ERROR_INITIALIZATION_FAILED;
+    memcpy(out->name, props.properties.deviceName, sizeof(out->name));
     memcpy(out->uuid, ids.deviceUUID, sizeof(out->uuid));
     memcpy(out->luid, ids.deviceLUID, sizeof(out->luid));
     out->luid_valid = ids.deviceLUIDValid;

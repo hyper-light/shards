@@ -4,7 +4,7 @@
 pub use shards_abi::gpu::{MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError, check_selection};
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Properties {
     pub uuid: [u8; 16],
     pub luid: [u8; 8],
@@ -15,6 +15,24 @@ pub struct Properties {
     pub luid_valid: u32,
     pub pci_valid: u32,
     pub host_memory_valid: u32,
+    pub name: [u8; shards_abi::gpu::GPU_NAME_BYTES],
+}
+
+impl Default for Properties {
+    fn default() -> Self {
+        Self {
+            uuid: [0; 16],
+            luid: [0; 8],
+            domain: 0,
+            bus: 0,
+            device: 0,
+            function: 0,
+            luid_valid: 0,
+            pci_valid: 0,
+            host_memory_valid: 0,
+            name: [0; shards_abi::gpu::GPU_NAME_BYTES],
+        }
+    }
 }
 
 /// The same immutable native properties used to resolve the selector, retained
@@ -54,6 +72,9 @@ pub fn resolved(
         uuid: props.uuid,
         pci,
         luid,
+        name: Some(shards_abi::gpu::GpuName::from_buffer(&props.name).map_err(|_| JoinError::InvalidNative)?),
+        // The actual memory query fills this independently after exact identity resolution.
+        device_local_bytes: None,
     })
 }
 
@@ -67,6 +88,19 @@ pub enum JoinError {
     Aliased,
     InvalidUuid,
     InvalidNative,
+    Memory,
+}
+
+/// Vulkan DEVICE_LOCAL heaps are distinct entries, not memory types (which may
+/// alias a heap). The caller passes each queried heap once; overflow refuses.
+pub fn local_heap_bytes(mut heaps: impl Iterator<Item = (u64, bool)>) -> Result<u64, JoinError> {
+    heaps.try_fold(0u64, |total, (size, local)| {
+        if local {
+            total.checked_add(size).ok_or(JoinError::Memory)
+        } else {
+            Ok(total)
+        }
+    })
 }
 
 fn native(
@@ -180,6 +214,7 @@ impl std::fmt::Display for JoinError {
             Self::InvalidNative => {
                 f.write_str("native Vulkan GPU properties exceed their identity representation")
             }
+            Self::Memory => f.write_str("selected device-local Vulkan heap sizes overflow"),
         }
     }
 }
@@ -188,6 +223,39 @@ impl std::error::Error for JoinError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_heaps_are_counted_once_without_inventing_budget_or_usage() {
+        assert_eq!(
+            local_heap_bytes([(4, true), (7, false), (8, true)].into_iter()),
+            Ok(12)
+        );
+        assert_eq!(local_heap_bytes([(0, true)].into_iter()), Ok(0));
+        assert_eq!(
+            local_heap_bytes([(u64::MAX, false), (8, true)].into_iter()),
+            Ok(8)
+        );
+        assert_eq!(
+            local_heap_bytes([(u64::MAX, true), (1, true)].into_iter()),
+            Err(JoinError::Memory)
+        );
+    }
+
+    #[test]
+    fn native_report_keeps_renderer_name_with_the_same_complete_uuid_join() {
+        assert_eq!(std::mem::size_of::<Properties>(), 308);
+        let mut props = properties(7);
+        let name = b"actual renderer GPU\0";
+        props.name[..name.len()].copy_from_slice(name);
+        let report = resolved(pci(7), &props, false).unwrap();
+        assert_eq!(report.name.unwrap().as_str().unwrap(), "actual renderer GPU");
+        assert_eq!(
+            report.device_local_bytes, None,
+            "memory is not inferred from an identity query"
+        );
+        props.name.fill(0xff);
+        assert_eq!(resolved(pci(7), &props, false), Err(JoinError::InvalidNative));
+    }
 
     fn pci(bus: u8) -> PhysicalGpu {
         PhysicalGpu::Pci {

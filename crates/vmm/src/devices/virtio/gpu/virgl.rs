@@ -263,6 +263,8 @@ struct MemoryProperties {
 const STRUCTURE_TYPE_INSTANCE_CREATE_INFO: i32 = 1;
 const MEMORY_PROPERTY_HOST_VISIBLE: u32 = 1 << 1;
 const MEMORY_PROPERTY_DEVICE_LOCAL: u32 = 1 << 0;
+/// VkMemoryHeapFlagBits::VK_MEMORY_HEAP_DEVICE_LOCAL_BIT, not a memory-type flag.
+const MEMORY_HEAP_DEVICE_LOCAL: u32 = 1 << 0;
 
 /// `VkExtensionProperties` (vulkan_core.h).
 #[repr(C)]
@@ -683,25 +685,29 @@ fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<SelectedGpu>, Held
         let mut total = 0u64;
         for (position, index) in indices.into_iter().enumerate() {
             let device = *devices.get(index).ok_or("Vulkan selection index is invalid")?;
-            if !selected.is_empty() {
+            let mut native = if !selected.is_empty() {
                 let props = properties
                     .get(index)
                     .ok_or("Vulkan selection identity is missing")?;
                 let physical = selected.get(position).ok_or("Vulkan selection order changed")?;
-                uuids.push(SelectedGpu {
-                    text: uuid_text(&props.uuid)?,
-                    native: selection::resolved(*physical, props, cfg!(target_os = "macos"))
+                Some(
+                    selection::resolved(*physical, props, cfg!(target_os = "macos"))
                         .map_err(|error| error.to_string())?,
-                });
-            }
+                )
+            } else {
+                None
+            };
             #[cfg(windows)]
-            if if selected.is_empty() {
-                !vk.imports_host_memory(device)
+            let imports_host = if selected.is_empty() {
+                vk.imports_host_memory(device)
             } else {
                 properties
                     .get(index)
-                    .is_none_or(|props| props.host_memory_valid == 0)
-            } {
+                    .is_some_and(|props| props.host_memory_valid != 0)
+            };
+            #[cfg(not(windows))]
+            let imports_host = true;
+            if native.is_none() && !imports_host {
                 continue;
             }
             let mut props = MemoryProperties {
@@ -720,6 +726,23 @@ fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<SelectedGpu>, Held
                 .heaps
                 .get(..usize::try_from(props.heap_count).map_err(|_| "Vulkan heap count overflows")?)
                 .ok_or("Vulkan heap count is invalid")?;
+            if let Some(native) = &mut native {
+                native.device_local_bytes = Some(
+                    selection::local_heap_bytes(
+                        heaps
+                            .iter()
+                            .map(|heap| (heap.size, heap.flags & MEMORY_HEAP_DEVICE_LOCAL != 0)),
+                    )
+                    .map_err(|error| error.to_string())?,
+                );
+                uuids.push(SelectedGpu {
+                    text: uuid_text(&native.uuid)?,
+                    native: *native,
+                });
+            }
+            if !imports_host {
+                continue;
+            }
             let mut counted = [false; 16]; // VK_MAX_MEMORY_HEAPS.
             for kind in types
                 .iter()
