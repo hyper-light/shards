@@ -20860,3 +20860,59 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     and no task port came.
   - Without an embedded Info.plist, the sandboxed binary died at launch (SIGTRAP), as
     crates/vm-process/build.rs records for shards' own VM process.
+
+### M523. The floors of a translation engine's own mechanisms, against QEMU's (softvirt)
+
+- **Question.** M521 found QEMU's TCG serving a guest system call under every trap, but
+  paying for the guest's memory management: a fault 17 times native, a process 21 to
+  28, a context switch 6 to 7. Is that translation's cost or QEMU's design? What do the
+  mechanisms a purpose-built engine would use cost at their floor?
+- **Method.** `docs/research/measurements/softvirt-engine/engine.c` at b4f688be4: the
+  mechanisms modelled in C, in one process, no host trap anywhere.
+  - A guest's memory: 1 GiB, touched once beforehand, so no host fault lands in a
+    measurement.
+  - Its address spaces: 4-level page tables in that memory, 4 KiB pages.
+  - A 4,096-entry software TLB, tagged by address space, its index mixed with the tag.
+
+  Each test runs n=20000 batches of 256 operations (5,000 samples of 16 faults):
+  - loads that hit, and that miss and walk 256 MiB at random, each against a native load
+    of the same pattern;
+  - an address-space switch then 16 pages touched, with the tag and with a flush;
+  - the engine's part of a guest system call (registers saved, privilege raised, a
+    handler called through its number, registers restored), against native `getppid`;
+  - 16 first-touch faults handled inside the engine (the guest kernel's handler gives
+    each a zeroed frame and builds its page tables), against 16 native first touches.
+
+  Hosts, three runs each, 2026-11-12:
+  - kiln-a094a12d: i9-14900HX, Linux 6.19.10, pinned to a performance core.
+  - adas-mac-studio.local-2: M3 Ultra, macOS 26.4, unpinned.
+
+  Raw: `measurements/softvirt-engine/results/engine-x86_64-linux-and-arm64-macos.md`.
+- **Results** (p50 range over the three runs; arm64's first run's native loads ran slower
+  than the next two, all kept in the raw file):
+
+  | mechanism | x86_64 | x86_64 native | arm64 (macOS) | arm64 native | QEMU TCG, x86_64 (M521) |
+  |---|---|---|---|---|---|
+  | load, TLB hit | 1.2-1.5 ns | 0.6 ns | 1.1-1.3 ns | 0.5-2.3 ns | |
+  | load, miss and walk (256 MiB, random) | 28.0-29.9 ns | 10.9-11.7 ns | 11.6-11.7 ns | 2.9-5.9 ns | |
+  | switch then 16 pages, tagged | 14.7-15.2 ns | | 33.8-36.4 ns | | |
+  | switch then 16 pages, flushed | 1,748-1,801 ns | | 662-682 ns | | |
+  | a system call, the engine's part | 8.7-9.1 ns | 63 ns (whole) | 8.6 ns | 70-75 ns (whole) | 441-476 ns (whole) |
+  | 16 first-touch faults | 5.5-5.9 us | 9.1-11.1 us | 1.6 us | 2.25 us | 145-150 us |
+
+- **Found.**
+  - The translation's own mechanisms cost little at their floor:
+    - a load through the software MMU, 1.1 to 1.5 ns when its translation is cached (2 to
+      2.5 times a native load), 12 to 30 ns when it walks the page tables;
+    - a guest system call's entry and return, 9 ns.
+  - An address space's switch costs nothing measurable with a tagged TLB. Flushed, as
+    QEMU's TCG flushes at each switch, the switch and its 16 pages cost 0.66 to 1.8 us.
+  - A guest fault served inside the engine costs less than a native one, 1.6 against
+    2.25 us and 5.5 to 5.9 against 9.1 to 11.1 us for 16. It takes no host trap. What
+    is left is the zeroing and page-table building that the guest's kernel would do on
+    any engine.
+  - QEMU's 145 to 150 us for 16 faults, then, is its design, not translation's floor.
+  - These are C models of what translated code would do, compiled, not a translator. A
+    translator adds instruction decoding, x86 flag handling, branch-target lookup and
+    the guest kernel's own code (M521: 1.1 to 1.3 times native). They bound the design;
+    the prototype measures how close it comes.
