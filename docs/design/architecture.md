@@ -6531,13 +6531,17 @@ throughput both ways, small requests no slower, on every host.
 | Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2 | Protocol constants. |
 | Offer extents at most (4 KiB + 2 S) / 4 KiB | A slot's pages, none merged. |
 
-Owed to ROOT, none run by its implementers: correctness and hostile-offer E2E, the pins
-E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back and a
-shrinking room let idle slots go, a stream past the room goes plain; at 1, 2 and many
-vCPUs with as many streams as vCPUs and twice that), and throughput, small-request latency
-(paced and back to back), connection setup with its slot's making, a ring's ramp, CPU and
-pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64; compile checks of
-macOS, Windows and aarch64.
+The pins E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back
+and a shrinking room let idle slots go, a stream past the room goes plain; at 1, 2 and many
+vCPUs with as many streams as vCPUs and twice that) and the bulk test ran green on KVM x86_64
+and arm64 (L1) and HVF; on WHP x86_64 the give-back and the shrinking room, the bulk test once
+in two (its microVM stopped, as one with no engine did), and the pins test was refused past
+13 connections at once by the daemon's bound on Windows (D181's share of `clients_for` 64
+threads, as Windows states no thread limit), not the ring's (ring-pins-v1 r13, r16). Every
+supported target lints clean (r15, r16). Owed to ROOT: correctness and hostile-offer E2E; the
+pins E2E on WHP arm64, and on WHP x86_64 past that bound; and throughput, small-request
+latency (paced and back to back), connection setup with its slot's making, a ring's ramp, CPU
+and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
@@ -19385,6 +19389,31 @@ held to more than OPA's answers:
   walk that meets it (three times as long each level: 12 deep 3.25 s, now 0.5 ms); the
   safety check's and print rewrite's outputs read again for each expression, and each
   equality copying the whole safe set (cubic: 1000 closures in a body 42 s, now 0.48 s).
+- A number's text (`number.rs`). Go's `Text` (decimal.go's `init`, ftoa.go's
+  `roundShortest`) computes a float's exact decimal and both its neighbours' half an ulp
+  away, whole. A number read from JSON may carry an exponent up to Go's limit: OPA's
+  parser refuses such a literal past a binary exponent of 10^5 ("number too big",
+  golang/go#11068), but input, data and builtins' results do not pass through it. `abs`
+  of the fuzzer's 80000000000e00029174680 is "8" and 29,174,690 zeros, and Go takes 63 s
+  and 447 MB to write it. This port's three num-bigint conversions took ASan's fuzzer
+  past 2 GB in 11 s (CI's fuzz job; M524). roundShortest reads at most
+  ⌊(prec + 1)·log10 2⌋ + 3 digits of each (`digits_read`, proved there). So where the
+  whole decimals have 8.26 times as many digits or more (`LEADING_FROM`, the two ways'
+  measured crossover on arm64 macOS and x86_64 Linux, M524), only those are computed,
+  each exact (`leading`):
+  - the integer's leading digits, ⌊V / 10^j⌋, from bounds of its power of five at p bits
+    from below and from above, p doubling until their floors agree (they differ only
+    within the bounds' gap of an integer, and V / 10^j is none);
+  - the decimal's length and exponent, from V's twos and fives.
+
+  A walk that would read past them goes Go's way. `abs` of that number now: 29 ms and
+  57 MiB (was 92 s and 281 MiB), 361 ms under ASan's fuzzer. Byte for byte OPA's:
+  `tests/numbers.rs` holds 135 long numbers' texts and `abs` of the fuzzer's operands
+  to OPA's own (lengths, ends and SHA-256, `scripts/rego/generate numbers`).
+  `number.rs`'s tests hold the leading digits and the shortest decimal to the exact
+  decimals, and the bounds to the powers they bound. M524's Open (`floor`, `ceil`, `round`
+  and integer formatting of such a number, whose answer is all of an integer's digits;
+  numbers past 1e536870938 refused where Go reads them) is closed below (M525).
 - The rewrite of local variables walked as OPA's does, and OPA's way is exponential:
   rewriteEveryStatement (ast/compile.go) rewrites a statement's body, then walks the
   whole statement again (rewriteDeclaredVarsInExpr), whose walk rewrites each
@@ -19419,43 +19448,46 @@ held to more than OPA's answers:
   unknown, and a node finds a
   child by name, as OPA's typeTreeNode does with its map. The times after: owed, the
   nesting bench's M510 inputs and deeper (`rego-nesting/run.sh`).
-- Numbers whose exponents are large (M524; `docs/research/measurements/ci-rego-compare`).
+- Numbers whose exponents are large, the rest (M525; `docs/research/measurements/ci-rego-compare`).
   CI's fuzzing found ten builtin calls whose work grew with an exponent's value, such as
-  `lt(33, 3e33333333332)`: the comparison scaled both numbers by powers of 5 and 2 as
-  long as their exponents' gap, addition shifted the smaller operand as far (Go's `uadd`
-  does too), and a number's text and an exact integer were made whole. Now:
+  `lt(33, 3e33333333332)`: besides the text above, the comparison scaled both numbers by
+  powers of 5 and 2 as long as their exponents' gap, addition shifted the smaller operand
+  as far (Go's `uadd` does too), and an exact integer was made whole. Now:
   - The comparison makes p × 5^n × 2^s exactly only while n ≤ bits(q)/2, the most a power
-    of five dividing q can have. Past that the sides can't be equal, and bounds on 5^n,
-    refined until they decide, answer. The work is bounded by the mantissas, and every
-    order the exact scaling gave is kept (20,000 random pairs; convergents of log2 10
-    within 2^-64 of each other). OPA panics on most such pairs ("illegal value":
-    `big.Rat.SetString` refuses |exp5| > 10^6 and |exp2| > 10^7, go1.26.1
-    `math/big/ratconv.go`; `big.Float.SetString`, exponents past int32). Shards answers
-    exactly.
+    of five dividing q can have. Past that the sides can't be equal, and bounds on 5^n
+    (the text's, with exponents wide enough for n up to 2^64), refined until they decide,
+    answer. The work is bounded by the mantissas, and every order the exact scaling gave
+    is kept (20,000 random pairs; convergents of log2 10 within 2^-64 of each other). OPA
+    panics on most such pairs ("illegal value": `big.Rat.SetString` refuses |exp5| > 10^6
+    and |exp2| > 10^7, go1.26.1 `math/big/ratconv.go`; `big.Float.SetString`, exponents
+    past int32). Shards answers exactly.
   - Addition and subtraction keep the smaller operand's bits within prec + 2 of the
     larger's top, the rest a sticky bit (and a borrow). The round bit is then at or above
     the cut, so the result rounds as Go's exact sum does (160,000 random sums and
     differences against it).
   - Go's `pow5` squares its factor once past its last use. Past MaxExp that is an unread
-    +Inf there, and it was an error here: `1e600000000` failed. A 5^n past Go's exponents
-    is +Inf, and z over it zero, so `-1e-1000000000` reads as -0. The parser says "number
-    too big" for a literal Go reads as ±Inf, as OPA's does.
-  - A builtin writes no number text, and makes no exact integer, whose MantExp is past
-    ±10^5 (`number::MAX_EXPONENT`). It fails with "number too big", the error OPA's parser
-    gives such a literal (`ast/parser.go` `parseNumber`, v1.14.1); `time.*` keep OPA's
-    "timestamp too big". The bound is OPA's own on a number in Rego source, set for this
-    cost (golang/go#11068), so a builtin makes no number a policy could not write. At it,
-    shards writes a text in about 80 ms and the tiniest `g` texts in about 0.3 s. Past it
-    the cost grows with the exponent's value, as OPA's does: OPA took 15.7 s for
-    `abs(1e3000000)`, 41.7 s for `ceil(1e3000000)` and over 120 s for four of the ten,
-    and Go's text of a number near 2^-325147 took 54 s. Alternatives measured: Go's
-    big.Float range (MaxExp 2^31: texts of 646 million digits, hours in OPA and here);
-    Go's big.Rat limits (10^7 bits: 23 s for one text here, num-bigint converting near
-    n^1.8); float64's range (RFC 8259's interoperable one), which would change answers
-    OPA and shards give today between 10^309 and 10^30102. The difference from OPA: OPA
-    writes those texts, in time growing with the exponent's value, or panics; shards
-    refuses them. `bits.lsh`'s chosen limit of 2^32 bits gives way to the same bound
-    (OPA's Go panics, `makeslice`, past its memory).
+    +Inf there, and it was an error here: 1e536870939 through 1e646456992, finite in Go,
+    failed (M524's Open). A 5^n past Go's exponents is +Inf, and z over it zero, so
+    `-1e-1000000000` reads as -0. The parser says "number too big" for a literal Go reads
+    as ±Inf, as OPA's does.
+  - An exact integer whose MantExp is past 10^5 (`number::MAX_EXPONENT`) is not made: its
+    decimal is all its digits, a num-bigint conversion growing faster than their count
+    (near n^1.8 here), where the text above writes leading digits and zeros. `floor`,
+    `ceil`, `round`, `rem`, `bits.*`, `numbers.range*`, `format_int` and `units.parse*`
+    fail with "number too big", the error OPA's parser gives such a literal
+    (`ast/parser.go` `parseNumber`, v1.14.1); `time.*` keep OPA's "timestamp too big".
+    The bound is OPA's own on a number in Rego source, set for this cost
+    (golang/go#11068), so no builtin makes an integer a policy could not write. At it,
+    `ceil` and `round` answer in about 80 ms. Past it OPA's cost grows with the
+    exponent's value: 41.7 s for `ceil(1e3000000)`, 10.4 s for the fuzzer's
+    `ceil(266000000e2028020)`; ASan's fuzzer passed 2 GB on such integers (M524's Open).
+    Alternatives: Go's big.Float range (MaxExp 2^31: integers of 646 million digits, hours
+    in OPA and here); Go's big.Rat limits (10^7 bits: 23 s for one conversion here); a
+    conversion lean in memory (M524's Open), which bounds memory but not the time a
+    number's size asks. The difference from OPA: OPA writes those integers, in time
+    growing with the exponent's value, or panics (`bits.lsh` past its memory,
+    `makeslice`); shards refuses them. `bits.lsh`'s chosen limit of 2^32 bits gives way
+    to the same bound.
   - `numbers.range` stays unbounded, as OPA's. The fuzz target asks it for at most one
     number per byte of its input.
 - Left: a rule whose local-variable rewrite errs is rewritten OPA's way, so an

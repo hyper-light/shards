@@ -264,11 +264,11 @@ fn answer_within_a_minute(name: &'static str, args: &'static str) -> String {
 }
 
 /// Numbers whose exponents are millions to billions, where CI's fuzzing found work as
-/// long as their values (docs/research/measurements/ci-rego-compare: its first nine
-/// artifacts, then each path bounded): comparisons answer exactly; a number text or
-/// exact integer past OPA's bound on numbers (MantExp ±1e5, which OPA's parser keeps a
-/// literal to) is "number too big". OPA panics on the comparisons ("illegal value") and
-/// writes the rest for hours (ci-rego-compare/opa).
+/// long as their values (docs/research/measurements/ci-rego-compare: its artifacts, then
+/// each path bounded): comparisons answer exactly, a float's text is OPA's (number.rs's
+/// `shortest`), and an exact integer past OPA's bound on numbers (MantExp 1e5, which
+/// OPA's parser keeps a literal to) is "number too big". OPA panics on the comparisons
+/// ("illegal value") and writes the integers for minutes to hours (ci-rego-compare/opa).
 #[test]
 fn numbers_with_huge_exponents_answer_in_bounded_work() {
     let big = |name: &str| format!("error p.rego:1: eval_builtin_error: {name}: number too big");
@@ -286,18 +286,6 @@ fn numbers_with_huge_exponents_answer_in_bounded_work() {
         ),
         ("ceil", "[266000000e2028020]", big("ceil")),
         ("ceil", "[2e001752525]", big("ceil")),
-        ("abs", "[80000000000e00029174680]", big("abs")),
-        ("abs", "[9e9999995]", big("abs")),
-        (
-            "div",
-            "[3333337333333e00000000130951909,3333333333333333333333334]",
-            big("div"),
-        ),
-        (
-            "div",
-            "[4,80000000000000000000000204920496382304e12172402]",
-            big("div"),
-        ),
         // Each path to such work, bounded.
         (
             "sort",
@@ -306,13 +294,11 @@ fn numbers_with_huge_exponents_answer_in_bounded_work() {
         ),
         ("equal", "[1e999999999,10e999999998]", "result true".to_string()),
         ("plus", "[1e600000000,-1e600000000]", "result 0".to_string()),
-        ("minus", "[1e600000000,1e-600000000]", big("minus")),
         (
             "mul",
             "[1e60000,1e-60000]",
             "result 0.99999999999999999995".to_string(),
         ),
-        ("abs", "[1e-600000000]", big("abs")),
         // Past Go's MinExp: SetString refuses it (OPA panics, "illegal value").
         (
             "abs",
@@ -356,4 +342,19 @@ fn numbers_with_huge_exponents_answer_in_bounded_work() {
         answer_within_a_minute("bits.lsh", "[1,99999]"),
         format!("result {two}")
     );
+    // A float's text, whatever its exponent: its digits, then zeros to its point, or its
+    // shortest digits and an exponent.
+    let nine = answer_within_a_minute("abs", "[9e9999995]");
+    assert!(nine.len() == "result ".len() + 9999996 && nine.starts_with("result 9000"));
+    assert!(nine.bytes().skip("result 9".len()).all(|b| b == b'0'));
+    for (name, args) in [
+        ("abs", "[1e-600000000]"),
+        ("div", "[4,80000000000000000000000204920496382304e12172402]"),
+    ] {
+        let got = answer_within_a_minute(name, args);
+        assert!(
+            got.starts_with("result ") && got.len() < 40 && got.contains("e-"),
+            "{name}{args}: {got}"
+        );
+    }
 }

@@ -18,13 +18,10 @@
 mod common;
 
 use std::ffi::OsStr;
-// The give-back test's host word, written to its pipe: Unix's alone.
-#[cfg(unix)]
-use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use common::{Patience, Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
+use common::{Patience, Run, TempDir, Told, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
 const TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -328,9 +325,7 @@ fn vcpus() -> Vec<usize> {
 /// joiner of its, `idle`, that sleeps. A microVM's own engine serves calls on the joiners it
 /// made alone, and neither `GET /events` nor calls on `prov` itself (engine/scope.rs, which
 /// answers them 501 and 404 and closes); a wait writes its head at once and nothing after it
-/// until its joiner ends. The connection ends as `prov.idle` is removed. The give-back and
-/// shrinking-room tests', Unix's alone.
-#[cfg(unix)]
+/// until its joiner ends. The connection ends as `prov.idle` is removed.
 fn held_open(home: &Path, image: &str) -> std::thread::JoinHandle<Run> {
     answering(home);
     joiner(home, image, "idle", r#""sleep""#);
@@ -452,11 +447,10 @@ fn an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends() {
     }
 }
 
-/// A give-back lets an idle slot go (D188's `RECLAIM`, D230): an engine connection held
-/// open, idle, keeps its slot until the daemon hears its host is short of memory
-/// (`SHARDS_PRESSURE`); the relay then asks the device to let it go, and the connection
-/// goes on over plain vsock.
-#[cfg(unix)]
+/// A give-back lets an idle slot go (D188's `RECLAIM`, D230), on every host: an engine
+/// connection held open, idle, keeps its slot until the daemon hears its host is short of
+/// memory (`SHARDS_PRESSURE`: a FIFO on Unix, a named pipe on Windows, `common::Told`); the
+/// relay then asks the device to let it go, and the connection goes on over plain vsock.
 #[test]
 fn a_give_back_lets_an_idle_slot_go() {
     if cannot_run_vms() {
@@ -464,10 +458,8 @@ fn a_give_back_lets_an_idle_slot_go() {
     }
     let (image, _) = served();
     let home = TempDir::new("eng-giveback");
-    let pipe = home.join("pressure");
-    let c = std::ffi::CString::new(pipe.as_os_str().as_encoded_bytes()).unwrap();
-    // SAFETY: mkfifo(3) of a NUL-terminated path.
-    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    let mut told = Told::new(&home);
+    let pipe = told.path.clone();
     let more: [(&str, &OsStr); 2] = [
         ("SHARDS_LOG", "debug".as_ref()),
         ("SHARDS_PRESSURE", pipe.as_os_str()),
@@ -477,13 +469,8 @@ fn a_give_back_lets_an_idle_slot_go() {
     prov(&home, &image, &[]);
     let held = held_open(&home, &image);
     let before = rings(&home);
-    // The host's word: short of memory (each line one, as containers.rs says it).
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(&pipe)
-        .unwrap()
-        .write_all(b"\n")
-        .unwrap();
+    // The host's word: short of memory.
+    told.say();
     await_rings(&home, "the idle slot given back", |r| {
         r.asked > before.asked && r.let_go == r.attached
     });
@@ -492,59 +479,165 @@ fn a_give_back_lets_an_idle_slot_go() {
     let _ = held.join();
 }
 
+/// The budget the shrinking-room test holds its run to, its host's own (D183): on Linux a
+/// slice of the user's manager (slice 1), its cgroup's `memory.current` what it holds and
+/// `MemoryHigh` its budget; or, with no user's manager, as root (a guest's own hierarchy, the
+/// L1 path's), a cgroup made in it as an administrator delegates one (slice 2), its own
+/// `memory.high`; on macOS and Windows a group shards keeps, its directory of the home (slice
+/// 3), whose `memory.current` the daemon writes each pressure window and whose `memory.high` it
+/// holds the group's microVMs to as the file changes. Each goes as it drops, a group with its
+/// home.
+struct Budget {
+    /// `--cgroup-parent`'s value.
+    parent: String,
+    /// Where `memory.current` and `memory.high` are: a cgroup's, or the group's directory.
+    dir: PathBuf,
+    kind: Kind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Slice,
+    Delegated,
+    Group,
+}
+
+impl Budget {
+    /// Why not, where this Linux host has no user's manager on its bus and this test is not
+    /// root.
+    fn new(home: &Path) -> Result<Budget, String> {
+        if !cfg!(target_os = "linux") {
+            let parent = format!("shardsring{}", std::process::id());
+            let dir = home.join("groups").join(&parent);
+            return Ok(Budget {
+                parent,
+                dir,
+                kind: Kind::Group,
+            });
+        }
+        #[cfg(unix)]
+        // SAFETY: getuid(2) takes nothing and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        #[cfg(not(unix))]
+        let uid = 0;
+        let bus = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| format!("/run/user/{uid}").into())
+            .join("bus");
+        if bus.exists() {
+            let parent = format!("shardsring{}.slice", std::process::id());
+            let dir = PathBuf::from(format!(
+                "/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{parent}"
+            ));
+            return Ok(Budget {
+                parent,
+                dir,
+                kind: Kind::Slice,
+            });
+        }
+        let root = Path::new("/sys/fs/cgroup");
+        if uid != 0 || !root.join("cgroup.subtree_control").exists() {
+            return Err(format!(
+                "no user's systemd manager here ({} is not), and no cgroup of root's to make",
+                bus.display()
+            ));
+        }
+        // Root's own hierarchy, where the hierarchy's root may hold processes and give its
+        // children the memory controller (cgroup-v2.rst, "No Internal Process Constraint").
+        let name = format!("shardsring{}", std::process::id());
+        let dir = root.join(&name);
+        std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        std::fs::write(root.join("cgroup.subtree_control"), "+memory")
+            .map_err(|e| format!("its memory controller: {e}"))?;
+        Ok(Budget {
+            parent: format!("/{name}"),
+            dir,
+            kind: Kind::Delegated,
+        })
+    }
+
+    /// What its runs hold now, its `memory.current`: waited for where the daemon has yet
+    /// to write it (a group's, each pressure window).
+    fn held(&self, home: &Path) -> u64 {
+        let mut patience = Patience::of(home, TIMEOUT);
+        loop {
+            let read = std::fs::read_to_string(self.dir.join("memory.current"))
+                .ok()
+                .and_then(|t| t.trim().parse::<u64>().ok())
+                .filter(|&bytes| bytes > 0);
+            if let Some(bytes) = read {
+                return bytes;
+            }
+            assert!(patience.holds(), "{}: no memory.current", self.dir.display());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Holds its runs to `bytes`: the slice's `MemoryHigh` (no swap past it), or the
+    /// cgroup's or group's `memory.high`.
+    fn hold_to(&self, bytes: u64) {
+        if self.kind == Kind::Slice {
+            let set = std::process::Command::new("systemctl")
+                .args(["--user", "set-property", "--runtime", &self.parent])
+                .arg(format!("MemoryHigh={bytes}"))
+                .arg("MemorySwapMax=0")
+                .output()
+                .unwrap();
+            assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
+        } else {
+            std::fs::write(self.dir.join("memory.high"), format!("{bytes}\n")).unwrap();
+        }
+    }
+}
+
+impl Drop for Budget {
+    fn drop(&mut self) {
+        match self.kind {
+            Kind::Slice => {
+                for verb in ["revert", "stop"] {
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["--user", verb, &self.parent])
+                        .status();
+                }
+            }
+            // Its daemon's leaf in it goes as the daemon does; what is left, with the guest.
+            Kind::Delegated => {
+                let _ = std::fs::remove_dir(&self.dir);
+            }
+            Kind::Group => {}
+        }
+    }
+}
+
 /// A shrinking room lets an idle slot go, and a stream past the room goes over plain
-/// vsock (D188, D230): under a slice of the user's manager, an engine connection held open
-/// and idle keeps its slot while the budget has room; with the budget brought down to what
-/// the slice holds, the relay lets it go, and a new stream crosses whole with no ring.
-#[cfg(target_os = "linux")]
+/// vsock (D188, D230), on every host: under its budget (`Budget`: a slice of the user's
+/// manager on Linux, or root's own cgroup where it has none, a group shards keeps elsewhere),
+/// an engine connection held open and idle keeps its slot while the budget has room; with the
+/// budget brought down to what its run holds, the relay lets it go, and a new stream crosses
+/// whole with no ring.
 #[test]
 fn a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain() {
-    use std::process::Command;
     if cannot_run_vms() {
-        return;
-    }
-    // SAFETY: getuid(2) takes nothing and cannot fail.
-    let uid = unsafe { libc::getuid() };
-    let bus = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| format!("/run/user/{uid}").into())
-        .join("bus");
-    if !bus.exists() {
-        eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
         return;
     }
     let (image, _) = served();
     let home = TempDir::new("eng-room");
-    let slice = format!("shardsring{}.slice", std::process::id());
-    struct Stopped<'a>(&'a str);
-    impl Drop for Stopped<'_> {
-        fn drop(&mut self) {
-            for verb in ["revert", "stop"] {
-                let _ = Command::new("systemctl").args(["--user", verb, self.0]).status();
-            }
+    let budget = match Budget::new(&home) {
+        Ok(budget) => budget,
+        Err(why) => {
+            eprintln!("SKIP: {why}");
+            return;
         }
-    }
-    let _stopped = Stopped(&slice);
-    let budget = |high: &str| {
-        let set = Command::new("systemctl")
-            .args(["--user", "set-property", "--runtime", &slice])
-            .arg(format!("MemoryHigh={high}"))
-            .arg("MemorySwapMax=0")
-            .output()
-            .unwrap();
-        assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
     };
     let debug: [(&str, &OsStr); 1] = [("SHARDS_LOG", "debug".as_ref())];
     let pulled = shards_with(&home, &["pull", "-q", &image], &debug);
     assert_eq!(pulled.status, Some(0), "{pulled}");
-    // The slice made by the run, with no budget yet: room for a slot.
-    prov(&home, &image, &["--cgroup-parent", &slice]);
+    // Its budget made by the run, with none set yet: room for a slot.
+    prov(&home, &image, &["--cgroup-parent", &budget.parent]);
     let held = held_open(&home, &image);
     let before = rings(&home);
-    // The budget brought down to what the slice holds: no room past it.
-    let cgroup = format!("/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{slice}");
-    let holds = std::fs::read_to_string(format!("{cgroup}/memory.current")).unwrap();
-    budget(holds.trim());
+    // The budget brought down to what its run holds: no room past it.
+    budget.hold_to(budget.held(&home));
     await_rings(&home, "the idle slot let go for the room", |r| {
         r.asked > before.asked && r.let_go == r.attached
     });

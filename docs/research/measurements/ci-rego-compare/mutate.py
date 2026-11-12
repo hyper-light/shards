@@ -33,43 +33,35 @@ MUTANTS = [
         NUMBER,
         "let at = x.exp.min(y.exp).max(floor);",
         "let at = x.exp.min(y.exp);",
-        LIB + ["--", "number::tests::alignment_is_bounded_by_the_precision_not_the_gap"],
+        LIB + ["--", "number::exponent_tests::alignment_is_bounded_by_the_precision_not_the_gap"],
     ),
     (
         "alignment: the borrow of what the smaller dropped",
         NUMBER,
         "let mant = if dropped { d - 1u32 } else { d };",
         "let mant = d;",
-        LIB + ["--", "number::tests::sums_and_differences_round_as_the_exact_ones"],
+        LIB + ["--", "number::exponent_tests::sums_and_differences_round_as_the_exact_ones"],
     ),
     (
         "pow5: the squaring after the factor's last use",
         NUMBER,
         "        n >>= 1;\n        if n > 0 {\n            f = Float::mul(&f, &f, fprec)?;\n        }\n",
         "        n >>= 1;\n        f = Float::mul(&f, &f, fprec)?;\n",
-        LIB + ["--", "number::tests::huge_exponents_read_as_go_reads_them"],
+        LIB + ["--", "number::exponent_tests::huge_exponents_read_as_go_reads_them"],
     ),
     (
         "parse: Go's z / +Inf, zero",
         NUMBER,
         "            Err(_) if e5 < 0 => return Ok(Float::zero(prec, neg)),\n",
         "",
-        LIB + ["--", "number::tests::huge_exponents_read_as_go_reads_them"],
-    ),
-    (
-        "text: the bound on numbers",
-        NUMBER,
-        "        if !self.is_zero() && !(-MAX_EXPONENT..=MAX_EXPONENT).contains(&self.go_exp()) {\n"
-        "            return Err(TOO_BIG);\n        }\n",
-        "",
-        LIB + ["--", "number::tests::texts_and_integers_end_at_opas_bound"],
+        LIB + ["--", "number::exponent_tests::huge_exponents_read_as_go_reads_them"],
     ),
     (
         "int: the bound on numbers",
         NUMBER,
         "        if self.go_exp() > MAX_EXPONENT {\n            return Err(TOO_BIG);\n        }\n",
         "",
-        LIB + ["--", "number::tests::texts_and_integers_end_at_opas_bound"],
+        LIB + ["--", "number::exponent_tests::integers_end_at_opas_bound"],
     ),
     (
         "bits.lsh: the bound on numbers, before the shift",
@@ -131,7 +123,7 @@ def main():
             if code == 0:
                 failed.append(name)
         log.write("restored; the unmutated tests:\n")
-        code = run(LIB + ["--", "number::tests", "value::tests"], log)
+        code = run(LIB + ["--", "number::exponent_tests", "value::tests"], log)
         code |= run(BUILTINS, log)
         log.write(f"{'green' if code == 0 else 'RED'}\n")
     print(out.read_text())

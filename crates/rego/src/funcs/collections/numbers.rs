@@ -18,8 +18,8 @@ fn float(n: &Number) -> Result<Float, BuiltinError> {
 }
 
 /// builtins.FloatToNumber.
-fn number(f: &Float) -> Result<Value, BuiltinError> {
-    Ok(Value::Number(Number::from_float(f).map_err(num_err)?))
+fn number(f: &Float) -> Value {
+    Value::Number(Number::from_float(f))
 }
 
 /// `n.Int()` when inSmallIntRange.
@@ -67,7 +67,7 @@ fn one() -> Float {
 
 fn arity1(args: &[Value], f: fn(Float) -> Result<Float, BuiltinError>) -> Out {
     let n = number_operand(arg(args, 0)?, 1)?;
-    ok(number(&f(float(n)?)?)?)
+    ok(number(&f(float(n)?)?))
 }
 
 /// `new(big.Float).SetInt(x.Int(nil))`.
@@ -125,7 +125,7 @@ fn small_or_float(args: &[Value], small_op: fn(i64, i64) -> i64, op: FloatOp) ->
         return ok(Value::int(small_op(x, y)));
     }
     let (a, b) = (float(n1)?, float(n2)?);
-    ok(number(&op(&a, &b, Float::max_prec(&a, &b)).map_err(num_err)?)?)
+    ok(number(&op(&a, &b, Float::max_prec(&a, &b)).map_err(num_err)?))
 }
 
 pub(super) fn plus(_: &mut Context, args: &[Value]) -> Out {
@@ -156,7 +156,7 @@ pub(super) fn div(_: &mut Context, args: &[Value]) -> Out {
     }
     ok(number(
         &Float::quo(&a, &b, Float::max_prec(&a, &b)).map_err(num_err)?,
-    )?)
+    ))
 }
 
 pub(super) fn rem(_: &mut Context, args: &[Value]) -> Out {
@@ -215,11 +215,11 @@ pub(super) fn sum(_: &mut Context, args: &[Value]) -> Out {
         args,
         Float::from_f64_exact(false, 0, 0),
         Float::add,
-    )?)?)
+    )?))
 }
 
 pub(super) fn product(_: &mut Context, args: &[Value]) -> Out {
-    ok(number(&fold(args, one(), Float::mul)?)?)
+    ok(number(&fold(args, one(), Float::mul)?))
 }
 
 /// builtins.BigIntOperand.

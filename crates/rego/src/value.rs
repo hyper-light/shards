@@ -35,8 +35,8 @@ impl Number {
     }
 
     /// `builtins.FloatToNumber`.
-    pub fn from_float(f: &Float) -> Result<Number, number::Error> {
-        Ok(Number(f.text(if f.is_int() { b'f' } else { b'g' })?.into()))
+    pub fn from_float(f: &Float) -> Number {
+        Number(f.text(if f.is_int() { b'f' } else { b'g' }).into())
     }
 }
 
@@ -120,10 +120,12 @@ fn compare_exact(a: &(bool, BigUint, i64, i64), b: &(bool, BigUint, i64, i64)) -
     // |a| / |b| = (ma / mb) × 2^d2 × 5^d5, the power of five put where it multiplies.
     let d2 = i128::from(a.2) - i128::from(b.2);
     let d5 = i128::from(a.3) - i128::from(b.3);
+    // Two i64s differ by less than 2^64.
+    let n = u64::try_from(d5.unsigned_abs()).unwrap_or(u64::MAX);
     let mag = if d5 < 0 {
-        scaled_cmp(&b.1, d5.unsigned_abs(), -d2, &a.1).reverse()
+        scaled_cmp(&b.1, n, -d2, &a.1).reverse()
     } else {
-        scaled_cmp(&a.1, d5.unsigned_abs(), d2, &b.1)
+        scaled_cmp(&a.1, n, d2, &b.1)
     };
     if sa < 0 { mag.reverse() } else { mag }
 }
@@ -137,19 +139,19 @@ fn compare_exact(a: &(bool, BigUint, i64, i64), b: &(bool, BigUint, i64, i64)) -
 /// their precision halves how near the sides may be and still be told apart, and the
 /// sides differ, so the loop ends; a pair of mantissas made to put the sides within
 /// 2^-k of each other costs precision of about k bits.
-fn scaled_cmp(p: &BigUint, n: u128, s: i128, q: &BigUint) -> Ordering {
+fn scaled_cmp(p: &BigUint, n: u64, s: i128, q: &BigUint) -> Ordering {
     if let Some(small) = u32::try_from(n).ok().filter(|n| u64::from(*n) <= q.bits() / 2) {
         return shifted_cmp(&(p * BigUint::from(5u32).pow(small)), s, q);
     }
     // First, bounds within 2^-(bits(p) + bits(q)) of 5^n: each squaring doubles a bound's
-    // error, so they start bitlen(n) + 2 bits more precise than that (see pow5_bounds).
-    let mut prec = p.bits() + q.bits() + u64::from(u128::BITS - n.leading_zeros()) + 2;
+    // error, so they start bitlen(n) + 2 bits more precise than that.
+    let mut prec = p.bits() + q.bits() + u64::from(u64::BITS - n.leading_zeros()) + 2;
     loop {
-        let (lo, hi, e) = pow5_bounds(n, prec);
-        if shifted_cmp(&(p * &lo), s + e, q) != Ordering::Less {
+        let ((lo, at_lo), (hi, at_hi)) = number::pow5_wide(n, prec);
+        if shifted_cmp(&(p * &lo), s + at_lo, q) != Ordering::Less {
             return Ordering::Greater;
         }
-        if shifted_cmp(&(p * &hi), s + e, q) != Ordering::Greater {
+        if shifted_cmp(&(p * &hi), s + at_hi, q) != Ordering::Greater {
             return Ordering::Less;
         }
         prec = prec.saturating_mul(2);
@@ -171,42 +173,6 @@ fn shifted_cmp(x: &BigUint, s: i128, y: &BigUint) -> Ordering {
         (x << shift).cmp(y)
     } else {
         x.cmp(&(y << shift))
-    }
-}
-
-/// Bounds on 5^n: `lo × 2^e <= 5^n <= hi × 2^e`, lo and hi at most `prec` bits, made by
-/// squaring as Go's pow5 does, each product's low bits cut, down for lo and up for hi.
-/// They hold at any precision; how near they are does not. A cut moves a bound by less
-/// than 2^(2 - prec) of itself, and squaring doubles what a bound is off by, so after the
-/// bitlen(n) squarings they are within about 2^(bitlen(n) + 3 - prec) of 5^n.
-fn pow5_bounds(n: u128, prec: u64) -> (BigUint, BigUint, i128) {
-    let narrow = |lo: &mut BigUint, hi: &mut BigUint, e: &mut i128| {
-        let cut = hi.bits().saturating_sub(prec);
-        if cut > 0 {
-            *lo >>= cut;
-            *hi >>= cut;
-            *hi += 1u32;
-            *e += i128::from(cut);
-        }
-    };
-    let (mut lo, mut hi, mut e) = (BigUint::from(1u32), BigUint::from(1u32), 0i128);
-    let (mut flo, mut fhi, mut fe) = (BigUint::from(5u32), BigUint::from(5u32), 0i128);
-    let mut n = n;
-    loop {
-        if n & 1 != 0 {
-            lo *= &flo;
-            hi *= &fhi;
-            e += fe;
-            narrow(&mut lo, &mut hi, &mut e);
-        }
-        n >>= 1;
-        if n == 0 {
-            return (lo, hi, e);
-        }
-        flo = &flo * &flo;
-        fhi = &fhi * &fhi;
-        fe *= 2;
-        narrow(&mut flo, &mut fhi, &mut fe);
     }
 }
 

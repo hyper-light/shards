@@ -58,7 +58,7 @@ fi
 if want numbers; then
 	SHARDS_NUMBERS="$root/crates/rego/testdata/numbers.json" \
 		SHARDS_NUMBERS_OUT="$root/crates/rego/testdata/numbers-oracle.json" \
-		go test -count=1 -run '^TestShardsNumbers$' .
+		go test -count=1 -timeout 60m -run '^TestShardsNumbers$' .
 fi
 if want builtins; then
 	SHARDS_BUILTINS_OUT="$root/crates/rego/src/builtins.json" \
