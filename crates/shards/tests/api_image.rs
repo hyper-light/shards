@@ -308,7 +308,9 @@ fn stats_read_the_run_and_a_member() {
     }
     let home = TempDir::new("api-stats-home");
     build(&home, "api-stats:1", &["sleep-for", "60000"], "");
-    let guest = ImageShards::new().boot(&spec(&home, "api-stats:1"), TIMEOUT).unwrap();
+    let guest = ImageShards::new()
+        .boot(&spec(&home, "api-stats:1"), TIMEOUT)
+        .unwrap();
     let run = guest.stats(StatsScope::Run, TIMEOUT).unwrap();
     assert!(run.memory_bytes.is_some_and(|m| m > 0), "{run:?}");
     assert!(run.cpu_ns.is_some(), "{run:?}");
@@ -327,7 +329,9 @@ fn stop_ends_the_run_at_once() {
     }
     let home = TempDir::new("api-stop-home");
     build(&home, "api-stop:1", &["sleep-for", "600000"], "");
-    let guest = ImageShards::new().boot(&spec(&home, "api-stop:1"), TIMEOUT).unwrap();
+    let guest = ImageShards::new()
+        .boot(&spec(&home, "api-stop:1"), TIMEOUT)
+        .unwrap();
     assert_eq!(guest.wait_member(&codex(), Duration::ZERO).unwrap(), None);
     guest.stop().unwrap();
     assert_eq!(guest.wait_for(Duration::ZERO).unwrap(), Some(RunEnd::Stopped));

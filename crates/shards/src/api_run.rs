@@ -258,6 +258,23 @@ fn ports_granted(
     Ok(())
 }
 
+/// The run's request (`kind::RUN`) as a warm VM takes one (warm.rs `head`): its head, then
+/// `spec`. It writes no log, yet its head keeps a run's default retention, as a daemon
+/// run's with no log does (`--log-driver none`, daemon.rs `DEFAULT_LOGS`): a warm VM
+/// refuses a request whose log keeps nothing.
+fn run_request(spec: &shards_abi::run::Spec, published: bool) -> Vec<u8> {
+    let mut payload = Vec::new();
+    shards_ipc::RunHead {
+        flags: if published { shards_ipc::RUN_PUBLISHED } else { 0 },
+        log_size: crate::daemon::DEFAULT_LOGS.size,
+        log_files: crate::daemon::DEFAULT_LOGS.files,
+        ..Default::default()
+    }
+    .encode_into(&mut payload);
+    spec.encode_into(&mut payload);
+    payload
+}
+
 mod hosted {
     use std::collections::HashMap;
     use std::ffi::{OsStr, OsString};
@@ -1113,17 +1130,7 @@ mod hosted {
         }
         let null = std::fs::File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let err = io::stderr();
-        let mut payload = Vec::new();
-        shards_ipc::RunHead {
-            flags: if plan.listeners.is_empty() {
-                0
-            } else {
-                shards_ipc::RUN_PUBLISHED
-            },
-            ..Default::default()
-        }
-        .encode_into(&mut payload);
-        plan.prepared.spec.encode_into(&mut payload);
+        let payload = super::run_request(&plan.prepared.spec, !plan.listeners.is_empty());
         // A stream's end as a message hands it on: borrowed on Unix, a handle of its own on
         // Windows (`shards_ipc::handed`).
         let client = shards_ipc::handed(client).map_err(|e| format!("the run's client: {e}"))?;
@@ -1661,6 +1668,25 @@ mod tests {
             ..wire::Narrowing::default()
         };
         assert!(matches!(egress(None, &asked), Err(No(Cause::Widening, _))));
+    }
+
+    /// The run's request is one a warm VM takes: its log keeps something by the VM's own
+    /// check (warm.rs `head`), though it writes none, and its head says whether it
+    /// publishes ports.
+    #[test]
+    fn its_request_is_one_a_warm_vm_takes() {
+        for published in [false, true] {
+            let payload = run_request(&shards_abi::run::Spec::default(), published);
+            let (head, spec) = shards_ipc::RunHead::decode(&payload).unwrap();
+            let retention = crate::spec::LogRetention {
+                size: head.log_size,
+                files: head.log_files,
+            };
+            assert!(retention.keeps(), "{retention:?}");
+            assert_eq!(head.flags & shards_ipc::RUN_PUBLISHED != 0, published);
+            assert_eq!(head.flags & shards_ipc::RUN_LOG, 0);
+            assert!(shards_abi::run::Spec::decode(spec).is_some());
+        }
     }
 
     /// With no command of its own, a run publishes only ports the image gives a member

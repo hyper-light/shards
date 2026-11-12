@@ -1525,7 +1525,7 @@ fn count(name: &str, default: u64) -> Result<u64, String> {
 
 /// How much of a microVM's output its log keeps unless a setting says otherwise: its
 /// newest 1 GiB (the user's call, 2026-10-18; `shards configure disk`, D186).
-const DEFAULT_LOGS: LogRetention = crate::disk::log_retention(crate::disk::LOG_HISTORY);
+pub(crate) const DEFAULT_LOGS: LogRetention = crate::disk::log_retention(crate::disk::LOG_HISTORY);
 
 /// A daemon's settings.
 #[derive(Debug, Clone, Copy)]
