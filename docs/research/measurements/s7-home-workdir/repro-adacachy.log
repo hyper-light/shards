@@ -1,0 +1,12 @@
+host adacachy Linux 7.2.9-2-cachyos x86_64, 2026-11-12T20:43:28Z, Python 3.14.8, unshare from util-linux 2.42.4
+sha256 bf2ba4caec89b541bcd3aab96ad5dbcb9357273dc29797daae3d95e982889f44 repro.py
+$ unshare --map-auto --map-root-user --mount python3 -I repro.py /home/adalundhe/g121-tmp/s7p2/w-20261112T204328Z
+kernel 7.2.9-2-cachyos, uid 0 in its namespace
+  [parents] the image's /home: 0:0 0755; the member's: 0:0 0755
+  [parents] the image's /home/node: 1000:1000 0750; the member's: 0:0 0755
+  [parents] the volume mounted at /home/node/.cache: True
+  [home] HOME=/home/claude, a volume there: True
+  [home] the member's /home/claude/.claude/.credentials.json exists: False
+  [home] the member's /tmp/.claude/.credentials.json exists: True
+  [home] the volume itself holds .claude/.credentials.json: False
+exit=0

@@ -1220,6 +1220,7 @@ dependencies = [
  "base64",
  "serde_json",
  "sha2",
+ "shards-abi",
  "shards-cmdline",
  "shards-dns",
  "shards-image",

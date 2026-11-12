@@ -889,7 +889,8 @@ pub fn prepare(
         false => Some(emulator_for(&platform, request, home, say, cancel)?),
     };
     // An Agentfile's image: its Agentfile, as its root holds it and its digest names it
-    // (D109). One whose Agentfile does not hold is not run.
+    // (D109), and the image's environment its agents and harnesses start with (D59). One
+    // whose Agentfile does not hold is not run.
     let agentfile = match image
         .config
         .config
@@ -897,7 +898,12 @@ pub fn prepare(
         .and_then(|c| c.labels.as_ref())
         .and_then(|l| l.get("vnd.osi.agentfile.digest"))
     {
-        Some(digest) => Some(crate::agentfile::agentfile(&rootfs, digest)?),
+        Some(digest) => {
+            let mut a = crate::agentfile::agentfile(&rootfs, digest)?;
+            let env = image.config.config.as_ref().and_then(|c| c.env.as_deref());
+            a.image_env = crate::agentfile::members_env(&a, env.unwrap_or_default())?;
+            Some(a)
+        }
         None => None,
     };
     let image_labels = image

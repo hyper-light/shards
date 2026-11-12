@@ -1,0 +1,12 @@
+# rev fc71859 (main fc71859bc), adacachy: clippy -D warnings of shards-init, shards-server, shards-net, all targets, x86_64-unknown-linux-gnu
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.56s
+# unit tests, x86_64-unknown-linux-gnu, natively
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/test-release/deps/shards_init-a3db78d4841e4767)
+test result: ok. 211 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.04s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/test-release/deps/shards_server-3e0c3f7cef04a361)
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+# unit tests, x86_64-unknown-linux-musl, CI's pinned rust:1.98.1-alpine image
+     Running unittests src/main.rs (target/x86_64-unknown-linux-musl/test-release/deps/shards_init-a6b6568287cafe16)
+test result: ok. 211 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.03s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-musl/test-release/deps/shards_server-ae118b29741c071d)
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s

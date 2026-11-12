@@ -1,0 +1,26 @@
+host adacachy Linux 7.2.9-2-cachyos x86_64, 2026-11-12T21:17:23Z, base ad600dd523ac1d14b0d7b882f9793b0e41b2fdd7
+== red: domains.rs sha256 efcb7a4885cd571c
+thread 'domains::tests::a_skeletons_directories_are_the_images_own' (2087376) panicked at crates/init/src/domains.rs:3194:17:
+assertion `left == right` failed: /: / 755 as 751;/home 755 as 755;/home/node 755 as 750;/etc 755 as 711;/tmp 1777 as 1777;/home/node/.cache 755 as No such file or directory (os error 2);
+  left: "755"
+ right: "751"
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 200 filtered out; finished in 0.00s
+== no-copy: domains.rs sha256 6b65326981ea6a50
+thread 'domains::tests::a_skeletons_directories_are_the_images_own' (2088222) panicked at crates/init/src/domains.rs:3228:17:
+assertion `left == right` failed: /home/node: / 751 as 751;/home 755 as 755;/home/node 755 as 750;/etc 755 as 711;/tmp 1777 as 1777;/home/node/.cache 755 as No such file or directory (os error 2);
+  left: "755"
+ right: "750"
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 200 filtered out; finished in 0.00s
+== root-0755: domains.rs sha256 af6cd055609543da
+thread 'domains::tests::a_skeletons_directories_are_the_images_own' (2089225) panicked at crates/init/src/domains.rs:3222:17:
+assertion `left == right` failed: /: / 755 as 751;/home 755 as 755;/home/node 750 as 750;/etc 711 as 711;/tmp 1777 as 1777;/home/node/.cache 755 as No such file or directory (os error 2);
+  left: "755"
+ right: "751"
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 200 filtered out; finished in 0.00s
+== green: domains.rs sha256 92f07910d80f11a1
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 200 filtered out; finished in 0.00s
+== green, as root of the subordinate IDs: /home/adalundhe/g121-tmp/s7p2/target/debug/deps/shards_init-efa7b4d2495f5c91
+test domains::tests::a_skeletons_directories_are_the_images_own ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 200 filtered out; finished in 0.00s
+
+[exited with code 0]

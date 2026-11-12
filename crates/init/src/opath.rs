@@ -10,7 +10,7 @@
 //! `File::open_c`, Rust 1.94.1 to 1.100), and musl's `O_ACCMODE` holds `O_PATH`
 //! (`03|O_SEARCH`, its `O_SEARCH` being `O_PATH`: musl 1.2.5 include/fcntl.h; libc 0.2.189
 //! `0o10000003`). Built for musl, as init alone is, such an open is a read-only one (PM
-//! M525, M527).
+//! M525, M531).
 
 use std::io;
 use std::os::fd::{FromRawFd as _, OwnedFd};

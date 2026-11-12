@@ -1006,6 +1006,77 @@ fn an_agentfile_declaring_nesting_builds() {
     );
 }
 
+/// An image declaring agents or harnesses gives them its `ENV` (D59), so the build refuses
+/// one naming their domain, `SHARDS_DOMAIN`, which shards-init sets: written in the
+/// Agentfile or its base image's, as the daemon and init refuse it again. An image of
+/// neither keeps it, as BuildKit does.
+#[test]
+fn an_image_with_members_never_names_their_domain_in_its_env() {
+    use shards_agentfile::plan::{self, EpochSource, Options, Resolved, Resolver};
+    use shards_agentfile::platform::Platform;
+    /// Every base image, as one of one layer for linux/amd64 whose config's `Env` is its own.
+    struct Bases(&'static str);
+    impl Resolver for Bases {
+        fn resolve(&self, name: &[u8], _: Option<&Platform>, _: &[u8]) -> Result<Resolved, Vec<u8>> {
+            Ok(Resolved {
+                reference: name.to_vec(),
+                digest: None,
+                config: format!(
+                    r#"{{"architecture":"amd64","os":"linux","config":{{"Env":[{}]}},"rootfs":{{"type":"layers","diff_ids":["sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d"]}}}}"#,
+                    self.0
+                )
+                .into_bytes(),
+            })
+        }
+
+        fn epoch(&self, _: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
+            Ok(None)
+        }
+    }
+    let opts = Options {
+        target_platform: Platform::new("linux", "amd64"),
+        build_platforms: vec![Platform::new("linux", "amd64")],
+        dialect: Dialect::Agentfile,
+        ..Default::default()
+    };
+    let base = Bases(r#""PATH=/usr/bin""#);
+    let refused = |text: &[u8], bases: &Bases| {
+        let e = plan::plan(text, &opts, bases).unwrap_err();
+        String::from_utf8_lossy(&e.message).into_owned()
+    };
+    for (text, bases) in [
+        (
+            &b"FROM alpine\nAGENT a FROM ./a\nENV SHARDS_DOMAIN=agent\n"[..],
+            &base,
+        ),
+        (b"FROM alpine\nHARNESS h FROM ./h\nENV SHARDS_DOMAIN=x\n", &base),
+        (
+            b"FROM alpine\nAGENT a FROM ./a\n",
+            &Bases(r#""SHARDS_DOMAIN=base""#),
+        ),
+    ] {
+        let e = refused(text, bases);
+        assert!(
+            e.contains("the image's ENV, which its agents and harnesses start with")
+                && e.contains("SHARDS_DOMAIN, which init sets"),
+            "{e}"
+        );
+    }
+    let built = plan::plan(b"FROM alpine\nAGENT a FROM ./a\nENV LANG=C.UTF-8\n", &opts, &base).unwrap();
+    assert_eq!(built.image.config.env, [b("PATH=/usr/bin"), b("LANG=C.UTF-8")]);
+    for text in [
+        &b"FROM alpine\nENV SHARDS_DOMAIN=x\n"[..],
+        b"FROM alpine\nNETWORK n\nENV SHARDS_DOMAIN=x\n",
+    ] {
+        let kept = plan::plan(text, &opts, &base).unwrap();
+        assert!(
+            kept.image.config.env.contains(&b("SHARDS_DOMAIN=x")),
+            "{:?}",
+            kept.image.config.env
+        );
+    }
+}
+
 /// The ports an Agentfile's image may reach past its microVM (D59), its network process's
 /// union: of each joined network that is not internal, those both its own grants and the
 /// microVM's for it (`EXPOSE ... FOR`) open outward (§12 answer 6); each once.

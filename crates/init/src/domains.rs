@@ -74,8 +74,12 @@ pub struct Domain {
     /// `memory.max`, in bytes, where its config asks one (`asks.memory`): under the
     /// domains' own, which every domain has.
     pub memory: Option<u64>,
+    /// Its config's `run.command`, as written: its program is found as it starts
+    /// ([`executable`]), on the `PATH` it runs with.
     pub argv: Vec<CString>,
-    pub env: Vec<CString>,
+    /// Its config's `run.env`, as written: its environment is made as it starts
+    /// ([`harness_env`]), with the image's and what is staged for it.
+    pub run_env: Vec<String>,
     pub workdir: CString,
     /// Whether it is a harness, and its name, as `CONNECT`s name it.
     pub name: crate::netplan::Name,
@@ -563,26 +567,41 @@ fn quote(s: &str) -> String {
     out
 }
 
-/// A supplied domain's environment: init's `PATH` (its own directory first), `HOME=/tmp` and
-/// `SHARDS_DOMAIN`, then its config's `run.env`, each name once and the last given winning, so a
-/// harness.json sets its harness's `HOME` or `PATH` (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
-/// master step 7: run.env was appended after init's before, and a program reads the first).
-/// `SHARDS_DOMAIN` is init's alone: a domain's own name, never its image's word.
-fn harness_env(path: &str, label: &str, given: &[String]) -> Result<Vec<String>, String> {
+/// A supplied domain's environment, each name once and the last given winning (kiln plan
+/// 01a1cd8e862e7169a074db3d5fa33f3d, step 7; a program reads a name's first entry):
+/// - init's own: `PATH`, the domain's directory and its `bin` first, then the image's
+///   `PATH`, else Docker's; `HOME=/tmp`, its scratch; and `SHARDS_DOMAIN`, its own name;
+/// - over them, the image's environment (`image`, its config's `Env`), as Docker lays an
+///   image's over its own defaults (moby daemon/container/env.go, ReplaceOrAppendEnvValues),
+///   but for its `PATH`, which init's holds, and its `HOME`: one for every member could be
+///   private to none, and a domain's is its own;
+/// - over those, its config's `run.env` (`given`), its own, which no other member shares.
+///
+/// What its orchestrator stages goes over all of it (staged.rs `env`, D231). `SHARDS_DOMAIN`
+/// is init's alone: a domain's own name, never its image's word.
+fn harness_env(dir: &str, label: &str, image: &[String], given: &[String]) -> Result<Vec<String>, String> {
+    let base = image
+        .iter()
+        .rev()
+        .find_map(|e| e.strip_prefix("PATH="))
+        .unwrap_or(PATH);
     let mut env = vec![
-        format!("PATH={path}"),
+        format!("PATH={dir}:{dir}/bin:{base}"),
         "HOME=/tmp".to_string(),
         format!("SHARDS_DOMAIN={label}"),
     ];
-    for e in given {
+    let name = |e: &str, whose: &str| -> Result<String, String> {
         let Some((name, _)) = e.split_once('=').filter(|(name, _)| !name.is_empty()) else {
-            return Err(format!("{label}: run.env entry {e:?} is no NAME=value"));
+            return Err(format!("{label}: {whose} entry {e:?} is no NAME=value"));
         };
         if name == "SHARDS_DOMAIN" {
             return Err(format!(
-                "{label}: run.env sets SHARDS_DOMAIN, which is init's: a domain's own name"
+                "{label}: {whose} sets SHARDS_DOMAIN, which is init's: a domain's own name"
             ));
         }
+        Ok(name.to_string())
+    };
+    let mut put = |e: &String, name: &str| {
         let at = env
             .iter()
             .position(|kept| kept.split_once('=').is_some_and(|(n, _)| n == name));
@@ -590,8 +609,49 @@ fn harness_env(path: &str, label: &str, given: &[String]) -> Result<Vec<String>,
             Some(kept) => kept.clone_from(e),
             None => env.push(e.clone()),
         }
+    };
+    for e in image {
+        let name = name(e, "the image's ENV")?;
+        if !matches!(name.as_str(), "PATH" | "HOME") {
+            put(e, &name);
+        }
+    }
+    for e in given {
+        put(e, &name(e, "run.env")?);
     }
     Ok(env)
+}
+
+/// The program `d` starts, its config's `run.command`'s first word: an absolute one as
+/// written, a relative one its directory's, and a bare name found on the `PATH` of `env`,
+/// the environment it runs with, as execvp(3) finds one (its own artifact's before the
+/// system's tools, the inherited `PATH` letting a launcher such as nohup find its child):
+/// here, as the child may not allocate.
+fn executable(d: &Domain, env: &[CString]) -> Result<CString, String> {
+    let first = d.argv.first().map(|a| a.to_bytes()).unwrap_or_default();
+    let cstr = |b: Vec<u8>| CString::new(b).map_err(|_| format!("{}: a NUL in its program", d.label));
+    if first.starts_with(b"/") {
+        return cstr(first.to_vec());
+    }
+    if first.contains(&b'/') {
+        return cstr([d.dir.as_slice(), b"/", first].concat());
+    }
+    let path = env
+        .iter()
+        .rev()
+        .find_map(|e| e.to_bytes().strip_prefix(b"PATH="))
+        .unwrap_or_default();
+    path.split(|&b| b == b':')
+        .filter_map(|p| CString::new([p, b"/", first].concat()).ok())
+        // SAFETY: access(2) of a NUL-terminated path.
+        .find(|c| unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 })
+        .ok_or_else(|| {
+            format!(
+                "{}: {:?} is on no directory of PATH",
+                d.label,
+                String::from_utf8_lossy(first)
+            )
+        })
 }
 
 fn domain(
@@ -629,41 +689,7 @@ fn domain(
         ),
     };
     let workdir = run.get("workdir").and_then(Value::str).unwrap_or(".");
-    // A supplied bare command lives in its own artifact before the system tools.
-    // The inherited PATH also lets an explicit launcher such as nohup find its child.
-    let path = format!("{dir}:{dir}/bin:{PATH}");
-    let given = run.get("env").and_then(Value::strings).unwrap_or_default();
-    let env = harness_env(&path, &label, &given)?;
-    // Its program is found on the PATH it runs with: init's, unless run.env gave its own.
-    let path = env
-        .iter()
-        .find_map(|e| e.strip_prefix("PATH="))
-        .unwrap_or(&path)
-        .to_string();
-    let env = env.iter().map(|e| cstr(e)).collect::<Result<Vec<_>, _>>()?;
-    let first = command.first().map(String::as_str).unwrap_or_default();
-    let program = if first.starts_with('/') {
-        first.to_string()
-    } else if first.contains('/') {
-        // Relative: its directory's.
-        format!("{dir}/{first}")
-    } else {
-        // A bare name, on PATH as execvp(3) would find it, found here: the child may not
-        // allocate.
-        path.split(':')
-            .map(|p| format!("{p}/{first}"))
-            .find(|p| {
-                CString::new(p.as_str()).is_ok_and(|c| {
-                    // SAFETY: access(2) of a NUL-terminated path.
-                    unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 }
-                })
-            })
-            .ok_or_else(|| format!("{label}: {first:?} is on no directory of PATH"))?
-    };
-    let mut argv = vec![cstr(&program)?];
-    for a in command.iter().skip(1) {
-        argv.push(cstr(a)?);
-    }
+    let argv = command.iter().map(|a| cstr(a)).collect::<Result<Vec<_>, _>>()?;
     let workdir = cstr(&format!("{dir}/{workdir}"))?;
     Ok(Domain {
         cgroup: format!("{kind}-{name}"),
@@ -674,7 +700,7 @@ fn domain(
         no_processes,
         memory,
         argv,
-        env,
+        run_env: run.get("env").and_then(Value::strings).unwrap_or_default(),
         workdir,
         name: (kind == "harness", name.to_string()),
         link: None,
@@ -954,40 +980,83 @@ fn scratch(lower: std::os::fd::BorrowedFd<'_>, id: u32) -> io::Result<Option<Own
 
 /// What a domain mounts over and the image may lack, made where it does: the run makes
 /// them in its writable layer, which a domain does not see. The run's plug roots (D235,
-/// `roots`) too, where the image lacks them.
+/// `roots`) too, where the image lacks them. overlayfs shows a directory both layers hold
+/// with the upper one's owner and mode (Documentation/filesystems/overlayfs.rst,
+/// "Directories"), so each directory made here that the image has takes the image's, as
+/// the tmpfs's root takes the image's root's: a mount point's parents (`/home/node` of a
+/// volume at `/home/node/.cache`) stay as the image made them.
 fn skeleton(
     lower: std::os::fd::BorrowedFd<'_>,
     sockets: &[CString],
     roots: &[CString],
 ) -> io::Result<OwnedFd> {
-    let skel = detached(c"tmpfs", &[(c"mode", c"0755")])?;
-    let lacks = |path: &CStr| {
+    let image = |path: &CStr| {
         // SAFETY: fstatat(2) of a NUL-terminated path into a zeroed stat it owns, a type of
-        // integers alone.
+        // integers alone; the empty path, with AT_EMPTY_PATH, is the image's root.
         unsafe {
             let mut st: libc::stat = std::mem::zeroed();
-            libc::fstatat(
-                lower.as_raw_fd(),
+            let flags = libc::AT_SYMLINK_NOFOLLOW | if path.is_empty() { libc::AT_EMPTY_PATH } else { 0 };
+            (libc::fstatat(lower.as_raw_fd(), path.as_ptr(), &raw mut st, flags) == 0).then_some(st)
+        }
+    };
+    let is_dir = |st: &libc::stat| st.st_mode & libc::S_IFMT == libc::S_IFDIR;
+    let root = image(c"").ok_or_else(io::Error::last_os_error)?;
+    let option = |n: String| CString::new(n).map_err(io::Error::other);
+    let (mode, uid, gid) = (
+        option(format!("{:o}", root.st_mode & 0o7777))?,
+        option(root.st_uid.to_string())?,
+        option(root.st_gid.to_string())?,
+    );
+    let skel = detached(
+        c"tmpfs",
+        &[
+            (c"mode", mode.as_c_str()),
+            (c"uid", uid.as_c_str()),
+            (c"gid", gid.as_c_str()),
+        ],
+    )?;
+    let make = |path: &CStr| -> io::Result<()> {
+        // SAFETY: mkdirat(2) of a NUL-terminated path in the tmpfs just made.
+        if unsafe { libc::mkdirat(skel.as_raw_fd(), path.as_ptr(), 0o755) } != 0 {
+            let e = io::Error::last_os_error();
+            // Made already, as an earlier mount point's parent.
+            return if e.kind() == io::ErrorKind::AlreadyExists {
+                Ok(())
+            } else {
+                Err(e)
+            };
+        }
+        let Some(st) = image(path).filter(is_dir) else {
+            return Ok(());
+        };
+        // SAFETY: fchownat(2) and fchmodat(2) of the directory just made in the tmpfs: its
+        // owner first, as a chown clears set-ID bits (chown(2)), then its mode whole.
+        unsafe {
+            if libc::fchownat(
+                skel.as_raw_fd(),
                 path.as_ptr(),
-                &raw mut st,
+                st.st_uid,
+                st.st_gid,
                 libc::AT_SYMLINK_NOFOLLOW,
             ) != 0
+                || libc::fchmodat(skel.as_raw_fd(), path.as_ptr(), st.st_mode & 0o7777, 0) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
         }
+        Ok(())
     };
     for dir in [c"proc", c"dev", c"sys", c"tmp", c"etc"]
         .into_iter()
         .chain(roots.iter().map(CString::as_c_str))
     {
-        if !(lacks(dir) || dir == c"etc") {
-            continue;
-        }
-        // SAFETY: mkdirat(2) of a NUL-terminated path in the tmpfs just made.
-        if unsafe { libc::mkdirat(skel.as_raw_fd(), dir.as_ptr(), 0o755) } != 0 {
-            return Err(io::Error::last_os_error());
+        if image(dir).is_none() || dir == c"etc" {
+            make(dir)?;
         }
     }
-    // Where its Unix sockets' directories go: `run/networks/<network>/<name>`, each made
-    // with its parents, `run` merged with the image's own.
+    // Where its mounts go, each made with its parents: its Unix sockets' directories,
+    // `run/networks/<network>/<name>`, `run` merged with the image's own; its server's; its
+    // volumes'.
     for dir in sockets {
         let bytes = dir.to_bytes();
         for (at, _) in bytes
@@ -999,16 +1068,11 @@ fn skeleton(
             let Ok(part) = CString::new(bytes.get(..at).unwrap_or_default()) else {
                 continue;
             };
-            // SAFETY: mkdirat(2) of a NUL-terminated path in the tmpfs just made.
-            if unsafe { libc::mkdirat(skel.as_raw_fd(), part.as_ptr(), 0o755) } != 0
-                && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists
-            {
-                return Err(io::Error::last_os_error());
-            }
+            make(&part)?;
         }
     }
     for file in [c"etc/hosts", c"etc/resolv.conf"] {
-        if !lacks(file) {
+        if image(file).is_some() {
             continue;
         }
         // SAFETY: openat(2) of a NUL-terminated path in the tmpfs just made.
@@ -1564,6 +1628,15 @@ pub fn start(
         domains.iter().any(|d| d.id.checked_sub(FIRST_ID) == Some(m))
     })?;
     let shm = shm_of(setup)?;
+    // The image's environment, which every member starts with (D59), as the host read it
+    // from the image's config and the build and the daemon checked it.
+    let image_env = shards_abi::run::members::image_envs(setup)
+        .map_err(|e| format!("the image's environment: {e}"))?
+        .into_iter()
+        .map(|e| {
+            String::from_utf8(e.to_vec()).map_err(|_| "the image's environment: a variable that is not UTF-8")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     // The kernel's log holds what it says of the domains' processes (a fault, an OOM kill
     // naming each process of their cgroup): only for CAP_SYSLOG, which no run of an
     // Agentfile's image is given (D115), not for any process that calls syslog(2) or
@@ -1877,10 +1950,18 @@ pub fn start(
         // Its scratch, which its instance holds too, to read the files it hands across.
         let scratch = scratch(lower, d.id).map_err(|e| format!("{}: its /tmp: {e}", d.label))?;
         // What its orchestrator staged for it (D231): its files in its home before anything
-        // of it runs, its variables over its image's.
+        // of it runs, its variables over its own and its image's; its program found on the
+        // PATH it runs with.
         crate::staged::files(scratch.as_ref().map(AsFd::as_fd), (d.id, d.id), member, setup)
             .map_err(|e| format!("{}: {e}", d.label))?;
-        let env = crate::staged::env(&d.env, member, setup).map_err(|e| format!("{}: {e}", d.label))?;
+        let its_dir =
+            std::str::from_utf8(&d.dir).map_err(|_| format!("{}: a directory that is not UTF-8", d.label))?;
+        let own = harness_env(its_dir, &d.label, &image_env, &d.run_env)?
+            .into_iter()
+            .map(|e| CString::new(e).map_err(|_| format!("{}: a NUL in its environment", d.label)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let env = crate::staged::env(&own, member, setup).map_err(|e| format!("{}: {e}", d.label))?;
+        let argv0 = executable(d, &env)?;
         let dir = server.start(
             i,
             d,
@@ -1932,10 +2013,9 @@ pub fn start(
                 .collect(),
             hostname: CString::new(d.cgroup.as_str())
                 .map_err(|_| format!("{}: a NUL in its name", d.label))?,
-            argv: d
-                .argv
-                .iter()
-                .map(|a| a.as_ptr())
+            argv: [argv0.as_ptr()]
+                .into_iter()
+                .chain(d.argv.iter().skip(1).map(|a| a.as_ptr()))
                 .chain([std::ptr::null()])
                 .collect(),
             envp: env.iter().map(|a| a.as_ptr()).chain([std::ptr::null()]).collect(),
@@ -2944,28 +3024,43 @@ mod tests {
         );
     }
 
-    /// A harness.json's run.env sets its harness's HOME and PATH, the last given winning, and never
-    /// its domain's name (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, master step 7).
+    /// A member's environment (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 7): init's
+    /// own, then the image's ENV over it, but for its PATH, which init's holds after the
+    /// member's own directories, and its HOME, the member's own; then its config's run.env,
+    /// the last given of each name winning; never its domain's name, from either. What is
+    /// staged for it goes over all of it (staged.rs).
     #[test]
-    fn run_env_replaces_inits_defaults_and_never_the_domains_name() {
+    fn a_members_environment_is_inits_then_its_images_then_its_own() {
         let given = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
         assert_eq!(
-            harness_env("/d:/d/bin:/usr/bin", "harness agy", &[]).unwrap(),
+            harness_env("/d", "harness agy", &[], &[]).unwrap(),
             [
-                "PATH=/d:/d/bin:/usr/bin",
+                format!("PATH=/d:/d/bin:{PATH}"),
+                "HOME=/tmp".into(),
+                "SHARDS_DOMAIN=harness agy".into()
+            ]
+        );
+        let image = given(&[
+            "PATH=/usr/local/cargo/bin:/usr/bin",
+            "HOME=/root",
+            "LANG=C.UTF-8",
+            "TZ=UTC",
+        ]);
+        assert_eq!(
+            harness_env("/d", "harness agy", &image, &[]).unwrap(),
+            [
+                "PATH=/d:/d/bin:/usr/local/cargo/bin:/usr/bin",
                 "HOME=/tmp",
-                "SHARDS_DOMAIN=harness agy"
+                "SHARDS_DOMAIN=harness agy",
+                "LANG=C.UTF-8",
+                "TZ=UTC"
             ]
         );
         let env = harness_env(
-            "/d:/d/bin:/usr/bin",
+            "/d",
             "harness agy",
-            &given(&[
-                "HOME=/home/agy",
-                "LANG=C.UTF-8",
-                "HOME=/home/two",
-                "PATH=/opt/agy/bin",
-            ]),
+            &image,
+            &given(&["HOME=/home/agy", "LANG=C", "HOME=/home/two", "PATH=/opt/agy/bin"]),
         )
         .unwrap();
         assert_eq!(
@@ -2974,7 +3069,8 @@ mod tests {
                 "PATH=/opt/agy/bin",
                 "HOME=/home/two",
                 "SHARDS_DOMAIN=harness agy",
-                "LANG=C.UTF-8"
+                "LANG=C",
+                "TZ=UTC"
             ]
         );
         for (bad, why) in [
@@ -2982,9 +3078,69 @@ mod tests {
             ("NOEQUALS", "NAME=value"),
             ("=x", "NAME=value"),
         ] {
-            let e = harness_env("/d", "harness agy", &given(&[bad])).unwrap_err();
-            assert!(e.contains(why), "{bad}: {e}");
+            let e = harness_env("/d", "harness agy", &[], &given(&[bad])).unwrap_err();
+            assert!(e.contains(why) && e.contains("run.env"), "{bad}: {e}");
+            let e = harness_env("/d", "harness agy", &given(&[bad]), &[]).unwrap_err();
+            assert!(e.contains(why) && e.contains("the image's ENV"), "{bad}: {e}");
         }
+    }
+
+    /// A domain of `argv` whose directory is `dir`.
+    fn domain_at(dir: &str, argv: &[&str]) -> Domain {
+        Domain {
+            label: "agent a".into(),
+            cgroup: "agent-a".into(),
+            dir: dir.as_bytes().to_vec(),
+            id: FIRST_ID,
+            pids: None,
+            no_processes: false,
+            memory: None,
+            argv: argv.iter().map(|a| CString::new(*a).unwrap()).collect(),
+            run_env: Vec::new(),
+            workdir: CString::default(),
+            name: (false, "a".into()),
+            link: None,
+            channels: Vec::new(),
+            mcp: "[]".into(),
+            resolv: None,
+            volumes: Vec::new(),
+        }
+    }
+
+    /// A member's program: an absolute one as written, a relative one its directory's, a
+    /// bare name found on the PATH it runs with, whatever gave that PATH last.
+    #[test]
+    fn a_members_program_is_found_on_the_path_it_runs_with() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = shards_testdir::TempDir::new("program").unwrap();
+        let root = dir.path().to_str().unwrap();
+        for (d, mode) in [("bin", 0o755), ("other", 0o755)] {
+            std::fs::create_dir(dir.path().join(d)).unwrap();
+            let tool = dir.path().join(d).join("tool");
+            std::fs::write(&tool, b"#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let env = |path: String| vec![CString::new("HOME=/tmp").unwrap(), CString::new(path).unwrap()];
+        let found = |argv: &[&str], path: String| executable(&domain_at(root, argv), &env(path));
+        let at = |p: &str| CString::new(format!("{root}/{p}")).unwrap();
+        assert_eq!(
+            found(&["tool"], format!("PATH={root}/none:{root}/bin")).unwrap(),
+            at("bin/tool")
+        );
+        assert_eq!(
+            found(&["tool"], format!("PATH={root}/other:{root}/bin")).unwrap(),
+            at("other/tool")
+        );
+        assert_eq!(
+            found(&["bin/tool", "-x"], "PATH=/nowhere".into()).unwrap(),
+            at("bin/tool")
+        );
+        assert_eq!(
+            found(&["/usr/bin/env"], "PATH=/nowhere".into()).unwrap(),
+            CString::new("/usr/bin/env").unwrap()
+        );
+        let e = found(&["tool"], "PATH=/nowhere".into()).unwrap_err();
+        assert!(e.contains("\"tool\" is on no directory of PATH"), "{e}");
     }
 
     /// The host's entries (volumes.rs, `open`): those for the domains, with their tag,
@@ -3025,22 +3181,8 @@ mod tests {
     #[test]
     fn a_volume_is_given_as_its_volume_says() {
         let d = |volumes: Vec<VolumeRule>| Domain {
-            label: "agent a".into(),
-            cgroup: "agent-a".into(),
-            dir: b"/agents/a".to_vec(),
-            id: FIRST_ID,
-            pids: None,
-            no_processes: false,
-            memory: None,
-            argv: Vec::new(),
-            env: Vec::new(),
-            workdir: CString::default(),
-            name: (false, "a".into()),
-            link: None,
-            channels: Vec::new(),
-            mcp: "[]".into(),
-            resolv: None,
             volumes,
+            ..domain_at("/agents/a", &[])
         };
         let rule = |path: &str, granted: bool| VolumeRule {
             path: path.into(),
@@ -3066,6 +3208,159 @@ mod tests {
             &["/a/../b", "/b"],
         ] {
             assert!(once_each(s(paths)).is_err(), "{paths:?}");
+        }
+    }
+
+    /// Runs `work` in a child of the test's, as root of a mount namespace of its own, and
+    /// returns what it says: in a user namespace of its own where the test is not root
+    /// already, its uid and gid there 0 (user_namespaces(7)), standing in for init's
+    /// privileges. None, said as a SKIP, where this host gives an unprivileged process
+    /// neither namespace.
+    fn as_root_of_own_mounts(work: impl FnOnce() -> String) -> Option<String> {
+        use std::io::{Read as _, Write as _};
+        let mut fds = [0 as RawFd; 2];
+        // SAFETY: pipe2(2) into a two-element array.
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: both descriptors were just made, and are owned here alone.
+        let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        // SAFETY: getuid(2), getgid(2) and geteuid(2) cannot fail.
+        let (uid, gid, root) = unsafe { (libc::getuid(), libc::getgid(), libc::geteuid() == 0) };
+        // SAFETY: fork(2); the child runs `work` and _exit(2)s, never returning into the
+        // test harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
+        if pid == 0 {
+            drop(r);
+            // A panic here is the child's to say, never to unwind into the harness.
+            let said = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let flags = libc::CLONE_NEWNS | if root { 0 } else { libc::CLONE_NEWUSER };
+                // SAFETY: unshare(2) of this single-threaded child.
+                if unsafe { libc::unshare(flags) } != 0 {
+                    return format!("SKIP: unshare: {}", io::Error::last_os_error());
+                }
+                if !root {
+                    let maps = std::fs::write("/proc/self/setgroups", "deny")
+                        .and_then(|()| std::fs::write("/proc/self/uid_map", format!("0 {uid} 1")))
+                        .and_then(|()| std::fs::write("/proc/self/gid_map", format!("0 {gid} 1")));
+                    if let Err(e) = maps {
+                        return format!("SKIP: its ID maps: {e}");
+                    }
+                }
+                // SAFETY: mount(2) of NUL-terminated literals, in this child's own namespace.
+                if unsafe {
+                    libc::mount(
+                        std::ptr::null(),
+                        c"/".as_ptr(),
+                        std::ptr::null(),
+                        libc::MS_REC | libc::MS_PRIVATE,
+                        std::ptr::null(),
+                    )
+                } != 0
+                {
+                    return format!("SKIP: its mounts private: {}", io::Error::last_os_error());
+                }
+                work()
+            }))
+            .unwrap_or_else(|_| "the child panicked".into());
+            let _ = std::fs::File::from(w).write_all(said.as_bytes());
+            // SAFETY: ends the child without running the harness's exit paths.
+            unsafe { libc::_exit(0) }
+        }
+        drop(w);
+        let mut said = String::new();
+        std::fs::File::from(r).read_to_string(&mut said).unwrap();
+        // SAFETY: waits for the test's own child.
+        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+        if said.starts_with("SKIP") {
+            eprintln!("{said}");
+            return None;
+        }
+        Some(said)
+    }
+
+    /// A domain's root shows each directory the image has as the image made it, where its
+    /// skeleton makes one there too: a volume's mount point's parents, `/etc`, the root
+    /// itself. overlayfs shows a merged directory with its upper layer's owner and mode, and
+    /// the skeleton's were root's, 0755, whatever the image's
+    /// (docs/research/measurements/s7-home-workdir). Owners are checked where the test runs
+    /// as root of IDs past its own (`unshare --map-auto --map-root-user`).
+    #[test]
+    fn a_skeletons_directories_are_the_images_own() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let dir = shards_testdir::TempDir::new("skel").unwrap();
+        let (lower, at) = (dir.path().join("lower"), dir.path().join("at"));
+        for d in ["home/node", "etc", "tmp"] {
+            std::fs::create_dir_all(lower.join(d)).unwrap();
+        }
+        std::fs::create_dir(&at).unwrap();
+        for (d, mode) in [("", 0o751), ("home/node", 0o750), ("etc", 0o711), ("tmp", 0o1777)] {
+            std::fs::set_permissions(lower.join(d), std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let said = as_root_of_own_mounts(|| {
+            // Another user's, where this namespace has one (1000), to see owners kept too.
+            let owners = std::os::unix::fs::chown(lower.join("home/node"), Some(1000), Some(1000)).is_ok();
+            let image = std::fs::File::open(&lower).unwrap();
+            let skel = match skeleton(image.as_fd(), &[c"home/node/.cache".into()], &[]) {
+                Ok(s) => s,
+                Err(e) => return format!("skeleton: {e}"),
+            };
+            let root = match image_root(&skel, image.as_fd(), false) {
+                Ok(r) => r,
+                Err(e) => return format!("its root: {e}"),
+            };
+            let target = CString::new(at.to_str().unwrap()).unwrap();
+            // SAFETY: move_mount(2) of the detached root onto a NUL-terminated path.
+            if unsafe {
+                libc::syscall(
+                    libc::SYS_move_mount,
+                    root.as_raw_fd(),
+                    c"".as_ptr(),
+                    libc::AT_FDCWD,
+                    target.as_ptr(),
+                    mount_api::MOVE_MOUNT_F_EMPTY_PATH,
+                )
+            } != 0
+            {
+                return format!("attaching its root: {}", io::Error::last_os_error());
+            }
+            let mut out = String::new();
+            for d in ["", "home", "home/node", "etc", "tmp", "home/node/.cache"] {
+                let (theirs, ours) = (lower.join(d), at.join(d));
+                let shown = |p: &std::path::Path| {
+                    std::fs::symlink_metadata(p).map_or_else(
+                        |e| format!("{e}"),
+                        |m| {
+                            let who = if owners {
+                                format!("{}:{} ", m.uid(), m.gid())
+                            } else {
+                                String::new()
+                            };
+                            format!("{who}{:o}", m.mode() & 0o7777)
+                        },
+                    )
+                };
+                out += &format!("/{d} {} as {};", shown(&ours), shown(&theirs));
+            }
+            out
+        });
+        let Some(said) = said else { return };
+        eprintln!("{said}");
+        let seen: Vec<(&str, &str, &str)> = said
+            .split(';')
+            .filter_map(|l| {
+                let (d, rest) = l.split_once(' ')?;
+                let (ours, theirs) = rest.split_once(" as ")?;
+                Some((d, ours, theirs))
+            })
+            .collect();
+        assert_eq!(seen.len(), 6, "{said}");
+        for (d, ours, theirs) in seen {
+            if d == "/home/node/.cache" {
+                // The image lacks the mount point itself: the skeleton's own, root's, 0755.
+                assert!(ours.ends_with("755") && theirs.contains("No such file"), "{said}");
+            } else {
+                assert_eq!(ours, theirs, "{d}: {said}");
+            }
         }
     }
 

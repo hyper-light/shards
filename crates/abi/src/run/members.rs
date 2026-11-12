@@ -14,6 +14,10 @@ pub const ENV_KEY: &[u8] = b"member-env=";
 /// `member-file=<index>\0<mode in octal>\0<path>\0<bytes>`: a regular file under the
 /// member's home, its own scratch tmpfs.
 pub const FILE_KEY: &[u8] = b"member-file=";
+/// `image-env=KEY=VALUE`: one of the image's own variables (its config's `Env`, OCI
+/// image-spec config.md), which every member starts with: over init's defaults, under its
+/// own config's `run.env` and what is staged for it (init domains.rs `harness_env`).
+pub const IMAGE_ENV_KEY: &[u8] = b"image-env=";
 /// `member-ends`, alone: the run's owner hears each member's end
 /// ([`kind::MEMBER_ENDED`](super::kind::MEMBER_ENDED)), which a daemon's run does not ask.
 pub const ENDS: &[u8] = b"member-ends";
@@ -133,6 +137,24 @@ pub fn env(member: u32, variable: &[u8]) -> Result<Vec<u8>, Error> {
     entry.push(0);
     entry.extend_from_slice(variable);
     Ok(entry)
+}
+
+/// The setup entry giving every member the image's `variable`, refused as [`variable_ok`]
+/// refuses it: an image's `ENV` may not name a member's domain.
+pub fn image_env(variable: &[u8]) -> Result<Vec<u8>, Error> {
+    variable_ok(variable)?;
+    Ok([IMAGE_ENV_KEY, variable].concat())
+}
+
+/// Every `image-env=` entry of `setup`, in order, each checked; the first refused ends it
+/// with its error.
+pub fn image_envs(setup: &[Vec<u8>]) -> Result<Vec<&[u8]>, Error> {
+    let mut out = Vec::new();
+    for variable in setup.iter().filter_map(|e| e.strip_prefix(IMAGE_ENV_KEY)) {
+        variable_ok(variable)?;
+        out.push(variable);
+    }
+    Ok(out)
 }
 
 /// The setup entry staging `bytes` at `path` under member `member`'s home with `mode`,
@@ -394,6 +416,29 @@ mod tests {
         assert_eq!(parse_env(b"0\0SHARDS_DOMAIN=agent x"), Err(Error::Reserved));
         assert!(env(0, b"SHARDS_DOMAINS=fine").is_ok());
         assert!(env(0, b"EMPTY=").is_ok());
+    }
+
+    /// The image's variables reach every member in order, each checked as a staged one
+    /// is, made and read alike: none names the domain or holds a NUL, and each is
+    /// KEY=VALUE.
+    #[test]
+    fn the_images_variables_are_checked_as_staged_ones() {
+        let setup = vec![
+            image_env(b"PATH=/opt/bin:/usr/bin").unwrap(),
+            env(0, b"A=staged").unwrap(),
+            image_env(b"LANG=C.UTF-8").unwrap(),
+        ];
+        assert_eq!(
+            image_envs(&setup).unwrap(),
+            [&b"PATH=/opt/bin:/usr/bin"[..], b"LANG=C.UTF-8"]
+        );
+        assert_eq!(image_env(b"SHARDS_DOMAIN=agent x"), Err(Error::Reserved));
+        assert_eq!(image_env(b"NOEQUALS"), Err(Error::Variable));
+        assert_eq!(image_env(b"A=b\0c"), Err(Error::Variable));
+        for crafted in [&b"SHARDS_DOMAIN=agent x"[..], b"=v", b"NOEQUALS"] {
+            let setup = vec![[IMAGE_ENV_KEY, crafted].concat()];
+            assert!(image_envs(&setup).is_err(), "{crafted:?}");
+        }
     }
 
     /// An index has one spelling: no sign, no leading zero, no overflow, no other byte.
