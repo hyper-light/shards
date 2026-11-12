@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a1ce87-9a28-7be1-a8d4-bca9b270d6fc"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/sh -lc 'ls -1'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/sh -lc 'ls -1'","aggregated_output":"shards-turn-alpha.txt\nshards-turn-beta.md\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"shards-turn-alpha.txt\nshards-turn-beta.md"}}
+{"type":"turn.completed","usage":{"input_tokens":29344,"cached_input_tokens":26752,"cache_write_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0}}

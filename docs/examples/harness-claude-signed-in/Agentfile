@@ -11,9 +11,10 @@
 # it refreshed (docs/research/measurements/harness-bringup-v2/credentials.py settle).
 FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
-# The system's libraries Claude Code's musl build links, and the bash its Bash tool runs
-# (code.claude.com/docs/en/setup, "Alpine Linux and musl-based distributions"): Alpine's
-# own, not the harness.
+# The system's libraries Claude Code's musl build links (code.claude.com/docs/en/setup,
+# "Alpine Linux and musl-based distributions"), and the bash its Bash tool runs commands
+# with (/bin/bash -c in the kernel's record of this example's run): Alpine's own, not the
+# harness.
 RUN apk add --no-cache bash libgcc libstdc++
 
 HARNESS claude FROM ./claude

@@ -1,0 +1,7 @@
+shards run vm -d -v /run/user/1000/shards-signed-in.4mBwzu/claude-home:/run/claude-home -v /tmp/shards-tests/1882476/harness-project-0:/work:ro --name claude harness-claude:1 sleep 600
+status Some(0) after 2.491718492s
+--- stdout
+ee8b45210a673a0ddb43794ad6f91bb4b9c8525c3494ce8b626c839ffaa78342
+
+--- stderr
+WARNING: CAP_NET_RAW withheld from the command: the image's Agentfile runs agents and harnesses beside the command, and CAP_NET_RAW reads and writes the packets of their flows past the microVM, which cross the command's network namespace
