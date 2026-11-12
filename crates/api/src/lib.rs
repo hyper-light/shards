@@ -47,7 +47,7 @@ pub use client::{
     ConfiguredShards, ManagedGuest, Shards, attach_managed, boot_managed, connect_borrowed, connect_prepared,
     prepare_boot, recorded_console_bytes,
 };
-pub use physical::{GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
+pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]

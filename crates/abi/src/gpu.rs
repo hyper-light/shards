@@ -3,7 +3,7 @@
 //! filter. One checked grammar, `--gpu-device`'s, for shards-api's client and the VM process.
 
 mod probe;
-pub use probe::{GpuProbe, GpuProbeError, ResolvedGpu, probe_bytes, uuid_from_hex};
+pub use probe::{GPU_NAME_BYTES, GpuName, GpuProbe, GpuProbeError, ResolvedGpu, probe_bytes, uuid_from_hex};
 
 use alloc::vec::Vec;
 use core::fmt;

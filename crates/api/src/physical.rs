@@ -4,8 +4,8 @@
 use std::fmt;
 
 pub use shards_abi::gpu::{
-    GpuProbe, GpuProbeError, MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError, ResolvedGpu, check_selection,
-    probe_bytes,
+    GPU_NAME_BYTES, GpuName, GpuProbe, GpuProbeError, MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError,
+    ResolvedGpu, check_selection, probe_bytes,
 };
 
 /// Canonical ASCII grammar has a fixed maximum encoded length for each

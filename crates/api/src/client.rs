@@ -2281,6 +2281,8 @@ mod tests {
                 uuid: [7; 16],
                 pci: None,
                 luid: Some(7u64.to_be_bytes()),
+                name: None,
+                device_local_bytes: None,
             }],
             host_visible_bytes: 4096,
         };

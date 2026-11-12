@@ -4,12 +4,67 @@ use super::{MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError, check_selection};
 use alloc::{string::String, vec::Vec};
 use core::fmt::{self, Write};
 
-const HEADER: &str = "shards-gpu-selection 2";
-const LINE_BYTES: usize =
+const HEADER: &str = "shards-gpu-selection 3";
+const IDENTITY_HEADER: &str = "shards-gpu-selection 2";
+const IDENTITY_LINE_BYTES: usize =
     "metal:ffffffffffffffff\tffffffffffffffffffffffffffffffff\tpci:ffffffff:ff:1f.7\tffffffffffffffff\n"
         .len();
 const FIXED_BYTES: usize =
-    "shards-gpu-selection 2\nhost-visible 18446744073709551615\ndevices 65536\nend\n".len();
+    "shards-gpu-selection 3\nhost-visible 18446744073709551615\ndevices 65536\nend\n".len();
+
+/// Vulkan's VK_MAX_PHYSICAL_DEVICE_NAME_SIZE includes the UTF-8 string's NUL.
+pub const GPU_NAME_BYTES: usize = 256;
+
+/// The renderer driver's reported name, never a selector or a catalog/model guess.
+/// Fixed storage keeps ownership transfer fallible only where text is requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpuName {
+    bytes: [u8; GPU_NAME_BYTES],
+}
+
+impl GpuName {
+    pub fn new(text: &str) -> Result<Self, GpuProbeError> {
+        if text.len() >= GPU_NAME_BYTES || text.contains('\0') {
+            return Err(GpuProbeError::Properties);
+        }
+        let mut bytes = [0; GPU_NAME_BYTES];
+        bytes
+            .get_mut(..text.len())
+            .ok_or(GpuProbeError::Properties)?
+            .copy_from_slice(text.as_bytes());
+        Ok(Self { bytes })
+    }
+
+    pub fn from_buffer(bytes: &[u8; GPU_NAME_BYTES]) -> Result<Self, GpuProbeError> {
+        let end = bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or(GpuProbeError::Properties)?;
+        Self::new(
+            core::str::from_utf8(bytes.get(..end).ok_or(GpuProbeError::Properties)?)
+                .map_err(|_| GpuProbeError::Properties)?,
+        )
+    }
+
+    pub fn as_str(&self) -> Result<&str, GpuProbeError> {
+        let end = self
+            .bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or(GpuProbeError::Properties)?;
+        core::str::from_utf8(self.bytes.get(..end).ok_or(GpuProbeError::Properties)?)
+            .map_err(|_| GpuProbeError::Properties)
+    }
+
+    pub fn try_text(&self) -> Result<String, GpuProbeError> {
+        let name = self.as_str()?;
+        let mut text = String::new();
+        text.try_reserve_exact(name.len())
+            .map_err(|_| GpuProbeError::Allocation)?;
+        text.push_str(name);
+        Ok(text)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedGpu {
@@ -19,6 +74,11 @@ pub struct ResolvedGpu {
     pub pci: Option<PhysicalGpu>,
     /// Exact native byte order from VkPhysicalDeviceIDProperties when valid.
     pub luid: Option<[u8; 8]>,
+    /// Actual VkPhysicalDeviceProperties::deviceName when reported. None stays unknown.
+    pub name: Option<GpuName>,
+    /// Checked sum of this selected device's DEVICE_LOCAL heaps, in bytes. This is
+    /// neither host RAM, free VRAM, a working-set budget nor a utilization reading.
+    pub device_local_bytes: Option<u64>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -38,14 +98,20 @@ pub enum GpuProbeError {
     Allocation,
     Unavailable,
     Pending,
+    Properties,
 }
 
 pub fn probe_bytes(count: usize) -> Result<usize, GpuProbeError> {
     if count == 0 || count > MAX_PHYSICAL_GPUS {
         return Err(GpuProbeError::Count);
     }
+    let line_bytes = GPU_NAME_BYTES
+        .checked_mul(2)
+        .and_then(|name| name.checked_add("\t\t18446744073709551615".len()))
+        .and_then(|facts| facts.checked_add(IDENTITY_LINE_BYTES))
+        .ok_or(GpuProbeError::Count)?;
     count
-        .checked_mul(LINE_BYTES)
+        .checked_mul(line_bytes)
         .and_then(|n| n.checked_add(FIXED_BYTES))
         .ok_or(GpuProbeError::Count)
 }
@@ -115,6 +181,9 @@ impl GpuProbe {
             if !matches {
                 return Err(GpuProbeError::Identity);
             }
+            if let Some(name) = &resolved.name {
+                name.as_str()?;
+            }
             uuids.push(resolved.uuid);
         }
         uuids.sort_unstable();
@@ -171,6 +240,20 @@ impl GpuProbe {
                 }
                 None => out.write_char('-')?,
             };
+            out.write_char('\t')?;
+            match device.name {
+                Some(name) => {
+                    for byte in name.bytes {
+                        write!(out, "{byte:02x}")?;
+                    }
+                }
+                None => out.write_char('-')?,
+            }
+            out.write_char('\t')?;
+            match device.device_local_bytes {
+                Some(bytes) => write!(out, "{bytes}")?,
+                None => out.write_char('-')?,
+            }
             out.write_char('\n')?;
         }
         writeln!(out, "end")
@@ -209,9 +292,11 @@ impl GpuProbe {
             return Err(GpuProbeError::Syntax);
         }
         let mut lines = text.lines();
-        if lines.next() != Some(HEADER) {
-            return Err(GpuProbeError::Syntax);
-        }
+        let facts = match lines.next() {
+            Some(HEADER) => true,
+            Some(IDENTITY_HEADER) => false,
+            _ => return Err(GpuProbeError::Syntax),
+        };
         fn field<'a>(line: Option<&'a str>, prefix: &str) -> Result<&'a str, GpuProbeError> {
             line.and_then(|line| line.strip_prefix(prefix))
                 .ok_or(GpuProbeError::Syntax)
@@ -236,6 +321,24 @@ impl GpuProbe {
             let uuid = fields.next().ok_or(GpuProbeError::Syntax)?;
             let pci = fields.next().ok_or(GpuProbeError::Syntax)?;
             let luid = fields.next().ok_or(GpuProbeError::Syntax)?;
+            let (name, device_local_bytes) = if facts {
+                let name = fields.next().ok_or(GpuProbeError::Syntax)?;
+                let size = fields.next().ok_or(GpuProbeError::Syntax)?;
+                let name = if name == "-" {
+                    None
+                } else {
+                    let bytes = fixed_hex(name)?;
+                    let name = GpuName::from_buffer(&bytes)?;
+                    if name.bytes != bytes {
+                        return Err(GpuProbeError::Properties);
+                    }
+                    Some(name)
+                };
+                let size = if size == "-" { None } else { Some(number(size)?) };
+                (name, size)
+            } else {
+                (None, None)
+            };
             if fields.next().is_some() {
                 return Err(GpuProbeError::Syntax);
             }
@@ -248,6 +351,8 @@ impl GpuProbe {
                     Some(pci.parse().map_err(GpuProbeError::Selection)?)
                 },
                 luid: if luid == "-" { None } else { Some(fixed_hex(luid)?) },
+                name,
+                device_local_bytes,
             });
         }
         if lines.next() != Some("end") || lines.next().is_some() {
@@ -280,6 +385,7 @@ impl fmt::Display for GpuProbeError {
             Self::Pending => {
                 out.write_str("GPU probe has no completed native result within the caller deadline")
             }
+            Self::Properties => out.write_str("renderer GPU properties are malformed or unavailable"),
         }
     }
 }
@@ -310,6 +416,8 @@ mod tests {
                 uuid: [7; 16],
                 pci: Some(native),
                 luid: Some(9u64.to_le_bytes()),
+                name: None,
+                device_local_bytes: None,
             }],
             host_visible_bytes: 4096,
         };
@@ -333,5 +441,73 @@ mod tests {
         ] {
             assert!(GpuProbe::parse(&bad).is_err());
         }
+    }
+
+    #[test]
+    fn renderer_properties_keep_known_zero_and_unknown_distinct_and_legacy_unknown() {
+        let physical = PhysicalGpu::Pci {
+            domain: 7,
+            bus: 2,
+            device: 1,
+            function: 0,
+        };
+        let mut probe = GpuProbe {
+            devices: vec![ResolvedGpu {
+                physical,
+                uuid: [1; 16],
+                pci: Some(physical),
+                luid: None,
+                name: Some(GpuName::new("actual renderer\tGPU\nα").unwrap()),
+                device_local_bytes: Some(0),
+            }],
+            host_visible_bytes: 4096,
+        };
+        let encoded = probe.encode().unwrap();
+        let parsed = GpuProbe::parse(&encoded).unwrap();
+        assert_eq!(parsed, probe);
+        assert_eq!(
+            parsed.devices[0].name.unwrap().try_text().unwrap(),
+            "actual renderer\tGPU\nα"
+        );
+        assert_eq!(parsed.devices[0].device_local_bytes, Some(0));
+        probe.devices[0].name = None;
+        probe.devices[0].device_local_bytes = None;
+        let unknown = probe.encode().unwrap();
+        assert_eq!(GpuProbe::parse(&unknown).unwrap(), probe);
+        let old = unknown.replace(HEADER, IDENTITY_HEADER).replace("\t-\t-\n", "\n");
+        assert_eq!(GpuProbe::parse(&old).unwrap(), probe);
+        assert!(encoded.len() <= probe_bytes(1).unwrap());
+    }
+
+    #[test]
+    fn renderer_name_and_heap_receipt_reject_overflow_noncanonical_and_hostile_text() {
+        assert!(GpuName::new(&"x".repeat(GPU_NAME_BYTES)).is_err());
+        assert!(GpuName::new("a\0b").is_err());
+        assert!(GpuName::from_buffer(&[b'x'; GPU_NAME_BYTES]).is_err());
+        let mut bytes = [0; GPU_NAME_BYTES];
+        bytes[0] = 0xff;
+        assert!(GpuName::from_buffer(&bytes).is_err());
+        let physical = PhysicalGpu::MetalRegistry(7);
+        let probe = GpuProbe {
+            devices: vec![ResolvedGpu {
+                physical,
+                uuid: [1; 16],
+                pci: None,
+                luid: Some(7u64.to_be_bytes()),
+                name: Some(GpuName::new("actual").unwrap()),
+                device_local_bytes: Some(u64::MAX),
+            }],
+            host_visible_bytes: 4096,
+        };
+        let encoded = probe.encode().unwrap();
+        for bad in [
+            encoded.replace("\t18446744073709551615\n", "\t18446744073709551616\n"),
+            encoded.replace("\t18446744073709551615\n", "\t+1\n"),
+            encoded.replace(&"00".repeat(GPU_NAME_BYTES - 6), &"01".repeat(GPU_NAME_BYTES - 6)),
+            encoded.replace("61637475616c", "ff637475616c"),
+        ] {
+            assert!(GpuProbe::parse(&bad).is_err());
+        }
+        assert!(GpuName::new(&"x".repeat(GPU_NAME_BYTES - 1)).is_ok());
     }
 }
