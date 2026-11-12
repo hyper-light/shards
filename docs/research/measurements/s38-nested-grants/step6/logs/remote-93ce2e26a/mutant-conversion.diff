@@ -1,0 +1,11 @@
+--- /home/adalundhe/s38-api-step6/orig	2026-11-12 06:53:36.836230613 -0800
++++ crates/shards/src/api_run.rs	2026-11-12 06:53:36.843879985 -0800
+@@ -106,7 +106,7 @@
+                 ),
+             )
+         })?;
+-    clock.checked_add(budget).map(Some).ok_or_else(|| {
++    Some(budget).map(Some).ok_or_else(|| {
+         No(
+             Cause::Request,
+             format!(

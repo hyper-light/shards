@@ -60,6 +60,23 @@
         "docs/development-evidence.md"
       ],
       "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+    },
+    {
+      "date": "2026-11-12",
+      "why": "the E2E round (ROOT's first real-VM run of engine_ring), branch p/ring-e2e-v1 from p/whp-parity-fixes 3d49939ca",
+      "revision": "8f3cd5b74",
+      "ref": "origin/main",
+      "same_as_receipt": [
+        "AGENTS.md",
+        "docs/development-rules.md",
+        "docs/development-evidence.md"
+      ],
+      "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "instructions": [
+        "ROOT: run engine_ring E2E on Linux KVM, fix it, merge origin/main, fast-forward push to main",
+        "the person, through ROOT: build and lint for Windows, macOS, arm64 and amd64 too (scripts/lint every supported target; vsock unit tests on macOS)",
+        "ROOT: do not fix the exec path (its goal)"
+      ]
     }
   ],
   "superseding_instruction": {

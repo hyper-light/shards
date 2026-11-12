@@ -1,0 +1,3 @@
+python3 scripts/check-development-policy at 8a857b2670bbf094ea40e44d8f173764a4f5fcda (2026-11-12T15:41:13Z), this Mac:
+Development policy checks passed; evidence/coordinator review is still required.
+exit 0

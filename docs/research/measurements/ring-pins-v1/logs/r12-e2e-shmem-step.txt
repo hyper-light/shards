@@ -1,0 +1,25 @@
+# The engine ring E2E, adacachy (Linux KVM), the pins test's streams one exec a set (api-bulk streams), its
+# baseline the more of the two idle readings, its witness still the guest's shared memory (Shmem)
+# source: 3d49939ca + crates/shards/tests/engine_ring.rs, crates/testguest/src/engine_bulk.rs as then
+# command: ~/g121-tmp/ringe2e.sh, cargo test --locked --profile test-release -p shards --test engine_ring -- --test-threads 1 --nocapture
+
+START 2026-11-12T10:30:56Z 3d49939ca with 2 files changed; load 71.35 62.66 57.79
+RING-EXIT 101
+END 2026-11-12T10:41:41Z load 34.75 39.66 46.68
+46:ok
+47:test a_microvms_engine_carries_bulk_whole_both_ways ... ok
+51:ok
+52:test an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends ... 1 vCPUs: Shmem idle 2400 kB with the engine's socket, 2428 kB without
+53:1 vCPUs: Shmem 2400 kB before the streams, 2400 kB once settled after; the same execs in bare: 2428 kB, then 2428 kB
+54:2 vCPUs: Shmem idle 2400 kB with the engine's socket, 2400 kB without
+55:2 vCPUs: Shmem 2400 kB before the streams, 2400 kB once settled after; the same execs in bare: 2400 kB, then 2428 kB
+56:32 vCPUs: Shmem idle 2400 kB with the engine's socket, 2400 kB without
+58:thread 'an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends' (4169309) panicked at crates/shards/tests/engine_ring.rs:286:9:
+59:32 vCPUs: every stream's slot freed, 2400 kB before, the same execs leaving 0 kB without the engine: 2432 kB of shared memory after 600s, not below 2412 kB
+376:FAILED
+385:test result: FAILED. 3 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out; finished in 642.05s
+# (46: the give-back test ok; 51: the shrinking-room test ok.) At 32 vCPUs prov's Shmem stood at 2432 kB for 600 s
+# after its streams, 32 kB over its 2400 kB before them, though the device had let go of every ring and bare,
+# with no engine, stayed at 2400 kB through the same window; in r10 bare (no engine) had moved 2400 -> 2428 kB
+# in its own. A one-time step of the guest's shared memory, engine or none, larger than a slot: Shmem cannot
+# witness slots. The test now counts the guest's pinned pages (/proc/vmstat FOLL_PIN acquired less released).

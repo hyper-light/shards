@@ -1,0 +1,20 @@
+# Diagnostic (adacachy, Linux KVM): a 1-vCPU microVM's shared memory after each engine stream, one stream at a
+# time, and 3 s after the last. A test of its own (not kept), on the r7 tree:
+#   prov --cpus 1, its emitter (4 MiB); then 3 x `api-bulk ping 50`, 3 x `api-bulk logs emitter 4194304`, each
+#   followed by await_rings(let_go == attached) and `testguest meminfo Shmem`; then 3 s; then 3 idle reads.
+# Its lines (DIAG):
+DIAG setup done: shmem 2444 rings Rings { attached: 4, pinned: 49152, let_go: 4, unpinned: 49152, asked: 0 }
+DIAG ping 0: ping 50 977808 22786: shmem 2468 rings Rings { attached: 5, pinned: 61440, let_go: 5, unpinned: 61440, asked: 0 }
+DIAG ping 1: ping 50 150392 24132: shmem 2432 rings Rings { attached: 6, pinned: 73728, let_go: 6, unpinned: 73728, asked: 0 }
+DIAG ping 2: ping 50 200387 34416: shmem 2432 rings Rings { attached: 7, pinned: 86016, let_go: 7, unpinned: 86016, asked: 0 }
+DIAG logs 0: bulk logs 4194304 11146264: shmem 2444 rings Rings { attached: 15, pinned: 2207744, let_go: 15, unpinned: 2207744, asked: 7 }
+DIAG logs 1: bulk logs 4194304 5664513: shmem 2444 rings Rings { attached: 16, pinned: 3260416, let_go: 16, unpinned: 3260416, asked: 7 }
+DIAG logs 2: bulk logs 4194304 8987778: shmem 2444 rings Rings { attached: 18, pinned: 6414336, let_go: 18, unpinned: 6414336, asked: 8 }
+DIAG after 3 s: shmem 2432
+DIAG idle exec 0: shmem 2432
+DIAG idle exec 1: shmem 2432
+DIAG idle exec 2: shmem 2432
+# Reading: right after a stream's device let go, Shmem stood 12 to 36 kB (one to three of the least slots) above
+# the 2432 kB it came back to within 3 s and stayed at: the relay frees a slot once it has heard its device's
+# DETACH and passed on what the slot held, after the stream's client (the exec) has ended. No slot stays. The
+# pins test read once, right after (r7: +80 kB); it now reads until it is back within a slot (`settled`).

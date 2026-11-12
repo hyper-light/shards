@@ -1,0 +1,7 @@
+#### stage fmt at 93ce2e26aec83a1804f833778136c1de652a4835 (2026-11-12T14:44:42Z), kiln runner 00aad8daff2fa3c9daa65d53c425d450
+Linux 7.3.3-1-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+2026-11-12T14:44:56Z
+== fmt: cargo fmt --all --check
+== fmt exit 0
+#### stage fmt exit 0

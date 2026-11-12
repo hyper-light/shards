@@ -1,0 +1,16 @@
+# A hang outside the engine ring, found by the pins test at 32 vCPUs (adacachy, Linux KVM): of 64 concurrent
+# `shards exec bare /bin/testguest api-bulk ...` (bare runs no engine: each command fails at once, finding no
+# DOCKER_HOST), two never ended; their CLIs waited on their exec's pipe from the daemon for 660 s, the daemon saying
+# nothing of them. Owed to the exec path's owner (ROOT told); the pins test now drives each set of streams from one
+# exec (api-bulk streams), as it means the relay's concurrency, not exec's.
+# source: the r10 tree with the settled baseline (3d49939ca + engine_ring.rs, engine_bulk.rs)
+
+# 2026-11-12T10:29:54Z adacachy, the pins test at 32 vCPUs, its baseline phase: 32 then 64 concurrent
+# 'shards exec bare /bin/testguest api-bulk ...' into a run with no engine (each fails at once, no DOCKER_HOST)
+# still running:
+    PID ELAPSED STAT WCHAN                COMMAND
+2610728     660 S<l  anon_pipe_read.cold  /home/adalundhe/g121-tmp/ringe2e/target/e2e/shards-b706751b43a16ad9/shards exec bare /bin/testguest api-bulk logs emitter 419430
+2611000     660 S<l  anon_pipe_read.cold  /home/adalundhe/g121-tmp/ringe2e/target/e2e/shards-b706751b43a16ad9/shards exec bare /bin/testguest api-bulk logs emitter 419430
+# shards exec processes left: 2
+# its home's daemon.log: 3292 lines; its lines naming an exec or an error:
+# load: 101.46 63.10 57.50

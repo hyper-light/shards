@@ -1,0 +1,22 @@
+# The engine ring E2E again, adacachy (Linux KVM): bulk-sum Cmd, the joiner wait held open, the pins test
+# reading until settled, and the test guest client's body() reading no content for 1xx/204/304 (r9)
+# source: 3d49939ca + crates/shards/tests/engine_ring.rs, crates/testguest/src/engine_bulk.rs as committed next
+#   (the pins test then still based "no slot" on prov's idle reading alone)
+# command: ~/g121-tmp/ringe2e.sh (systemd-run --user -p MemoryMax=24G -p Nice=10), cargo test --locked
+#   --profile test-release -p shards --test engine_ring -- --test-threads 1 --nocapture
+
+46:ok
+47:test a_microvms_engine_carries_bulk_whole_both_ways ... ok
+51:ok
+52:test an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends ... 1 vCPUs: Shmem idle 2432 kB with the engine's socket, 2428 kB without
+53:1 vCPUs: Shmem 2432 kB before the streams, 2432 kB once settled after; the same execs in bare: 2428 kB, then 2428 kB
+54:2 vCPUs: Shmem idle 2400 kB with the engine's socket, 2428 kB without
+56:thread 'an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends' (1232973) panicked at crates/shards/tests/engine_ring.rs:285:9:
+57:the setup's slots freed: 2432 kB of shared memory after 600s, not below 2412 kB
+345:FAILED
+354:test result: FAILED. 3 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out; finished in 650.43s
+# (46: a_give_back_lets_an_idle_slot_go ... ok, its "test" line at 27 among the guest build's output;
+#  51: a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain ... ok)
+# The 2-vCPU failure: prov read 2400 kB idle, below bare's 2428 kB, and 2432 kB (bare's and the relay's page) from
+# its setup's end on, for 600 s: not a slot kept but an idle reading taken before prov settled. The test now takes
+# the more of the two runs' idle readings as where no slot stands.

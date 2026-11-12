@@ -1,0 +1,28 @@
+{
+  "POLICY_READ": {
+    "revision": "8f3cd5b7411dfeea47956a5143eec2c3466b058f",
+    "ref": "origin/main, fetched 2026-11-12 and read in full with git show; the branch base is that revision, its copies byte-identical",
+    "files": {
+      "AGENTS.md": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+      "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "docs/development-evidence.md": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63"
+    },
+    "rules_acknowledged": "R01-R16 binding, with docs/development-evidence.md's checklist; macOS support is arm64 only",
+    "role": "implementer",
+    "coordinator": "Shards ROOT's implementer, coordinating kiln plan 01a1cda5426f73cc810ea93e3bd008cd (step 38 of the Shards plan)",
+    "date": "2026-11-12",
+    "task": "Step 6 of 7 of kiln plan 01a1cda5426f73cc810ea93e3bd008cd: the nesting grant (D234) through D231's image boot, shards-api's ImageShards and `shards api-run`: ImageSpec's `nesting` and `ready_by`, carried on the wire, made the run's consent and deadline in `as_run`, refused typed, and READY relayed to the orchestrator",
+    "branch": "p/s38-api-v1",
+    "base": "origin/main 8f3cd5b7411dfeea47956a5143eec2c3466b058f",
+    "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/s38-api",
+    "owned_paths": [
+      "crates/api/src/image.rs, crates/api/src/image/wire.rs, crates/api/src/image/session.rs",
+      "crates/shards/src/api_run.rs",
+      "crates/shards/tests/api_image.rs (its spec() literal, and two nesting refusals in what_the_image_does_not_grant_is_refused_before_boot: written and compiled here, run by ROOT on real VMs)",
+      "docs/research/measurements/s38-nested-grants/step6/**"
+    ],
+    "light_test_scope": "unit and light tests only, on adacachy (Linux x86_64) over ssh, under systemd-run --user --scope -q -p MemoryMax=16G -p CPUQuota=400%, -j4, CARGO_TARGET_DIR outside the copy, copies removed after; no real-VM E2E, benchmarks, profiling, audits, chaos or seven-target lint (ROOT's); no subagents; D234 itself not edited",
+    "commits": "signed with /Users/adalundhe/.kiln-run/bin/gits, of named paths, never force",
+    "landing": "the person's rule of 2026-11-12, as the coordinator relays it: once green, merge origin/main, re-run the tests the merge touched, fast-forward main with `git push origin HEAD:main`; this supersedes AGENTS.md's 'Subagents do not merge themselves to main' for this work"
+  }
+}
