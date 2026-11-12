@@ -23,29 +23,43 @@ cp "$out/pagemap" "$root/pagemap"
 mkdir -p "$root/proc" "$root/sys" "$root/dev" "$root/tmp"
 cat > "$root/init" <<'INIT'
 #!/bin/sh
+# The same agent-like work under each of the guest kernel's huge-page policies: its own
+# default (transparent huge pages on madvise, no smaller sizes), THP always, 64 KiB
+# folios always (multi-size THP), and every folio size always.
 mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev; mount -t tmpfs tmp /tmp
-echo "- guest: $(uname -r) $(uname -m), $(grep -c ^processor /proc/cpuinfo) vCPUs, THP $(cat /sys/kernel/mm/transparent_hugepage/enabled)"
-cd /tmp
-python3 -c '
+thp=/sys/kernel/mm/transparent_hugepage
+echo "- guest: $(uname -r) $(uname -m), $(grep -c ^processor /proc/cpuinfo) vCPUs, THP $(cat $thp/enabled), sizes: $(ls -d $thp/hugepages-*kB 2>/dev/null | sed 's/.*hugepages-//' | tr '\n' ' ')"
+cat > /tmp/work.py <<'PY'
 import time
 d = {i: str(i) * 3 for i in range(1_000_000)}
 l = [bytes(64) for _ in range(200_000)]
 print("python holds", len(d), "entries", flush=True)
-time.sleep(600)' &
-node -e '
+time.sleep(600)
+PY
+cat > /tmp/work.js <<'JS'
 const a = []; for (let i = 0; i < 1000000; i++) a.push({i, s: "x" + i});
 const m = new Map(); for (let i = 0; i < 200000; i++) m.set(i, Buffer.alloc(64));
-console.log("node holds", a.length, "objects"); setTimeout(() => {}, 600000);' &
-git init -q repo && cd repo && i=0
-while [ $i -lt 2000 ]; do echo "line $i" > "f$i.txt"; i=$((i + 1)); done
-git add . && git -c user.name=t -c user.email=t@t commit -q -m files && cd /tmp
-sleep 20
-echo "### after python, node and git (git's processes gone)"
-/pagemap -v
-i=0; while [ $i -lt 300 ]; do sh -c 'true' ; i=$((i + 1)); done
-python3 -c 'x = [bytearray(4096) for _ in range(100000)]; del x'
-echo "### after 300 shells and 400 MiB allocated and freed"
-/pagemap
+console.log("node holds", a.length, "objects"); setTimeout(() => {}, 600000);
+JS
+policy() {
+    for f in $thp/hugepages-*kB/enabled; do echo never > "$f"; done
+    case $1 in
+    default) echo madvise > $thp/enabled; echo inherit > $thp/hugepages-2048kB/enabled ;;
+    thp-always) echo always > $thp/enabled; echo inherit > $thp/hugepages-2048kB/enabled ;;
+    64k-always) echo never > $thp/enabled; echo always > $thp/hugepages-64kB/enabled ;;
+    all-always) echo always > $thp/enabled; for f in $thp/hugepages-*kB/enabled; do echo always > "$f"; done ;;
+    esac
+}
+for p in default thp-always 64k-always all-always; do
+    policy $p
+    python3 /tmp/work.py & py=$!
+    node /tmp/work.js & js=$!
+    sleep 25
+    echo "### policy $p: THP $(cat $thp/enabled); 64kB $(cat $thp/hugepages-64kB/enabled 2>/dev/null); $(grep AnonHugePages /proc/meminfo | tr -s ' ')"
+    /pagemap -v
+    kill $py $js; wait $py $js 2>/dev/null
+    echo 3 > /proc/sys/vm/drop_caches; sleep 2
+done
 sync; reboot -f
 INIT
 chmod +x "$root/init"
