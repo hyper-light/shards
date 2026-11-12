@@ -1,0 +1,129 @@
+   Compiling shards-agentfile v0.1.0 (/home/adalundhe/.cache/s38-step2/src/crates/agentfile)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.75s
+     Running unittests src/lib.rs (target/debug/deps/shards_agentfile-539aa959329a6e50)
+
+running 43 tests
+test caps::tests::refusals_are_said_as_apicaps_says_them ... ok
+test instructions::tests::csv_reads_as_go_reads ... ok
+test image::tests::a_repeated_array_reuses_what_the_first_left ... ok
+test caps::tests::blob_sources_ask_for_image_blobs ... ok
+test instructions::tests::suggestions_are_deterministic ... ok
+test lex::tests::patterns_match_in_linear_time ... ok
+test lex::tests::nesting_is_bounded ... ok
+test lex::tests::words_survive_nested_expansions ... ok
+test llb::tests::a_broken_definition_given_whole_is_refused ... ok
+test llb::tests::a_definition_given_whole_is_written_as_it_came ... ok
+test llb::tests::an_op_given_and_one_of_ours_alike_are_one ... ok
+test llb::tests::each_output_read_adds_its_locations ... ok
+test llb::tests::entries_added_together_land_as_added_one_by_one ... ok
+test llb::tests::source_maps_alike_are_one ... ok
+test parser::tests::nesting_is_bounded ... ok
+test plan::tests::a_frontend_shards_cannot_run_is_refused_where_it_is_named ... ok
+test plan::tests::a_named_context_gives_the_time_before_a_stage ... ok
+test plan::tests::a_partial_target_platform_is_completed_from_the_builds ... ok
+test plan::tests::a_source_stage_gives_the_build_its_time ... ok
+test plan::tests::a_target_that_is_not_linux_is_refused ... ok
+test plan::tests::an_artifact_a_build_context_gives_comes_from_its_layout ... ok
+test plan::tests::an_empty_needle_is_found_at_the_start ... ok
+test plan::tests::an_implicit_target_leaves_the_image_its_bases_platform ... ok
+test plan::tests::build_arg_options_are_read ... ok
+test plan::tests::copying_what_the_ignore_file_excludes_is_warned_of ... ok
+test plan::tests::each_source_of_the_time_is_asked_for_as_it_is_named ... ok
+test plan::tests::git_contexts_take_their_times_and_advice ... ok
+test plan::tests::supplied_domains_read_their_local_startup_config ... ok
+test plan::tests::the_agentfile_label_namespace_is_the_builds_own ... ok
+test platform::tests::platform_specifiers_parse ... ok
+test run_options::tests::build_frontend_options_are_read ... ok
+test run_options::tests::zstd_downloads_are_archives ... ok
+test startup::tests::a_simple_descriptor_needs_a_declared_name ... ok
+test startup::tests::a_supplied_entrypoint_starts_literal_words_followed_by_options ... ok
+test startup::tests::an_existing_osi_descriptor_keeps_its_runtime_contract ... ok
+test startup::tests::invalid_startup_descriptors_are_refused_instead_of_skipped ... ok
+test startup::tests::quoting_does_not_expand_variables_globs_or_commands ... ok
+test subrequests::tests::bytes_are_base64_as_encoding_json_writes_them ... ok
+test url::tests::references_resolve_as_gos ... ok
+test url::tests::request_uris_read_as_gos ... ok
+test lex::tests::patterns_match_as_backtracking_does ... ok
+test lex::tests::long_patterns_match_as_backtracking_does ... ok
+test lex::tests::replacing_every_rune_takes_linear_time ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+
+     Running tests/agentfile.rs (target/debug/deps/agentfile-bc1146fc106af5af)
+
+running 32 tests
+test a_remote_mcp_servers_endpoint_is_its_urls ... ok
+test a_dockerfile_reads_no_agentfile_directive ... ok
+test a_stage_sees_its_lineages_names_alone ... ok
+test a_normalized_agentfile_records_nesting ... ok
+test a_volumes_name_is_one_the_engine_takes ... ok
+test agents_have_ipv6_where_a_joined_network_says_so ... ok
+test agents_and_harnesses_take_a_name_a_source_and_where_they_go ... ok
+test connections_go_with_or_to_agents_on_networks ... ok
+test an_agentfile_whose_names_hold_is_checked_whole ... ok
+test a_normalized_agentfile_reads_back_as_its_grants ... ok
+test connections_join_one_kind_on_networks_that_allow_them ... ok
+test connections_grant_only_what_their_networks_let_in ... ok
+test egress_declared_ports_are_named_for_the_run ... ok
+test egress_is_what_joined_networks_open ... ok
+test every_name_a_grant_uses_is_declared_of_its_kind ... ok
+test harnesses_are_attached_to_agents_by_name ... ok
+test mcp_servers_are_named_and_offered_to_every_agent_or_those_named ... ok
+test expose_takes_a_direction_and_networks_and_stays_plain_without_them ... ok
+test nesting_is_declared_once ... ok
+test nesting_is_refused_beside_an_agent_or_harness ... ok
+test nesting_takes_no_arguments ... ok
+test networks_take_composes_options_and_their_ports ... ok
+test no_agentfile_directive_is_an_onbuild_trigger ... ok
+test networks_carry_only_their_protocols ... ok
+test ingress_reaches_a_networks_one_member ... ok
+test skills_are_taken_as_add_takes_a_source_for_every_agent_or_those_named ... ok
+test stages_agents_and_harnesses_share_one_namespace ... ok
+test reach_through_any_declared_edge_is_reach ... ok
+test an_agentfile_declaring_nesting_builds ... ok
+test the_normalized_agentfile_holds_what_was_declared ... ok
+test two_volumes_never_share_a_mount_point ... ok
+test volumes_take_a_name_options_and_whom_they_are_for ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/commit.rs (target/debug/deps/commit-d77aa9a5b29775c1)
+
+running 1 test
+test commit_changes_apply_to_the_config ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/gateway.rs (target/debug/deps/gateway-20f63673cd80e22e)
+
+running 3 tests
+test the_build_files_own_definition_is_the_recorded_one ... ok
+test a_parse_error_carries_its_source_lines ... ok
+test a_build_files_build_is_planned ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/oracle.rs (target/debug/deps/oracle-d854a6ef0a0cbf05)
+
+running 12 tests
+test ignore_files_are_read ... ok
+test image_configs_read_and_write_as_gos ... ok
+test build_files_parse ... ok
+test instructions_parse ... ok
+test patterns_match_as_gos ... ok
+test sizes_read_as_go_units_reads_them ... ok
+test plans_match_their_recorded_answers ... ok
+test urls_read_as_gos ... ok
+test exports_match_their_recorded_images ... ok
+test subrequests_match_their_recorded_answers ... ok
+test words_are_expanded_and_split ... ok
+test a_long_chain_of_stages_plans ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 26.16s
+
+   Doc-tests shards_agentfile
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

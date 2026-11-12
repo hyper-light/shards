@@ -347,6 +347,44 @@ drivers use for `local` and `global`:
     VOLUME --target-kind=harness ./data /data FOR main
   ```
 
+### 4.11 `NESTING`
+
+Added 2026-11-11 (architecture.md D234).
+
+```
+NESTING
+```
+
+- It takes no arguments and no options: `NESTING true` is refused (`NESTING takes no
+  arguments`, BuildKit's words for `HEALTHCHECK NONE`), and an option as any unknown
+  flag is.
+- It declares that the image's run may give its own command the nesting grant. The
+  command can then make boxes in its own microVM, as a nested runtime does: runc, or Hex's
+  node. The image's word is half of the grant. A run takes it only where it asks for it
+  too, with `--security-opt nesting=true`. An image that declares it, run without that,
+  runs without the grant and says so. D234 lists what the grant gives.
+- The grant makes the command its microVM's only principal. So an image declares it once,
+  and never beside an `AGENT` or `HARNESS` (D115's reason). The build refuses either in a
+  stage's lineage, in either order, at the second of the two lines. Beside a domain, it
+  names the image's first agent, or else its first harness. After `FROM alpine`, for
+  `AGENT a FROM ./a` then `NESTING`, and for `NESTING` twice:
+
+  ```
+  dockerfile parse error on line 3: cannot give the command the nesting grant: the grant makes the command its microVM's only principal, and the image's Agentfile declares agent a
+  dockerfile parse error on line 3: NESTING: declared already
+  ```
+
+  The daemon and shards-init refuse the grant beside a domain in the same words, of the
+  image as built (D234).
+- The normalized Agentfile (§8) records it as `"nesting": true`, after its schema's
+  version, only where it is declared. Every other image's normalized Agentfile reads as
+  before.
+- The build labels the image `vnd.osi.agentfile.nesting=1`, for Docker and Kubernetes to
+  see. Nothing reads the label to grant: the daemon reads the normalized Agentfile, checked
+  against the image's digest (D109).
+- Like every directive here, it is no `ONBUILD` trigger: a base image's trigger would
+  declare it for the file built from it.
+
 ## 5. Communication between agents in a microVM
 
 Networks between agents need more than the directives:
@@ -973,6 +1011,15 @@ until the review changes it. The first four fix the grammar the parser reads; th
       runs it in a process forked for it, which may read and write its one socket and
       nothing more, each tool it calls answered by the instance as the caller's own call
       (architecture.md D136).
+
+19. **`NESTING` (architecture.md D234), decided 2026-11-11.** It is a directive of no
+    arguments, declared once in an image, and beside no `AGENT` or `HARNESS` (§4.11). The
+    grant it asks for makes the run's command the microVM's only principal, and that
+    command's capabilities reach what the image's domains share (D115). Neither word alone
+    grants it: the image declares it, and the run asks for it with `--security-opt
+    nesting=true` on `run` and `create`. Established nesting grants take both the
+    workload's word and the operator's: BuildKit's `security.insecure` and Incus's
+    `security.nesting`.
 
 ## 11. Conformance: every directive, at build and at run
 

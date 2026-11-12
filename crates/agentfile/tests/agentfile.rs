@@ -349,6 +349,7 @@ fn a_dockerfile_reads_no_agentfile_directive() {
     for (line, said) in [
         ("AGENT main FROM a", "unknown instruction: AGENT"),
         ("ATTACH a FOR h", "unknown instruction: ATTACH"),
+        ("NESTING", "unknown instruction: NESTING"),
         ("VOLUME --chown=a /x", "unknown flag: --chown"),
     ] {
         let text = format!("FROM scratch\n{line}\n");
@@ -368,6 +369,29 @@ fn a_dockerfile_reads_no_agentfile_directive() {
 fn no_agentfile_directive_is_an_onbuild_trigger() {
     assert!(refused("ONBUILD AGENT main FROM a").contains("AGENT isn't allowed as an ONBUILD trigger"));
     assert!(refused("ONBUILD network n").contains("NETWORK isn't allowed as an ONBUILD trigger"));
+    // A base image's trigger would declare the grant for the file built from it (D234).
+    assert!(refused("ONBUILD NESTING").contains("NESTING isn't allowed as an ONBUILD trigger"));
+}
+
+/// `NESTING` (D234) takes nothing, read in any case: a word is refused in one message, an
+/// option as any unknown flag is.
+#[test]
+fn nesting_takes_no_arguments() {
+    use shards_agentfile::agentfile::NestingRefused;
+    assert_eq!(one("NESTING"), Directive::Nesting);
+    assert_eq!(one("nesting"), Directive::Nesting);
+    assert_eq!(
+        NestingRefused::Arguments.to_string(),
+        "NESTING takes no arguments"
+    );
+    for line in ["NESTING true", "NESTING a b", "NESTING [\"x\"]"] {
+        assert_eq!(
+            refused(line),
+            format!("dockerfile parse error on line 2: {}", NestingRefused::Arguments),
+            "{line}"
+        );
+    }
+    assert!(refused("NESTING --privileged").contains("unknown flag: --privileged"));
 }
 
 /// `text`, an Agentfile, parsed and its names checked: the error's text, if any.
@@ -543,6 +567,75 @@ fn a_stage_sees_its_lineages_names_alone() {
     );
 }
 
+/// The nesting grant makes the command its microVM's only principal (D234, D115's reason):
+/// the build refuses `NESTING` and an agent or harness in one lineage, in either order, at
+/// the second, naming the first agent, else the first harness, as shards-init does. Its
+/// words are the daemon's and init's (`shards_abi::run::beside::nesting`).
+#[test]
+fn nesting_is_refused_beside_an_agent_or_harness() {
+    use shards_agentfile::agentfile::{NestingRefused, nesting_beside};
+    assert_eq!(
+        nesting_beside(TargetKind::Agent, b"a"),
+        "cannot give the command the nesting grant: the grant makes the command its microVM's only principal, and the image's Agentfile declares agent a"
+    );
+    assert_eq!(
+        nesting_beside(TargetKind::Harness, b"h"),
+        "cannot give the command the nesting grant: the grant makes the command its microVM's only principal, and the image's Agentfile declares harness h"
+    );
+    let beside = |line: usize, kind: TargetKind, name: &str| {
+        format!(
+            "dockerfile parse error on line {line}: {}",
+            NestingRefused::Beside { kind, name: b(name) }
+        )
+    };
+    checked("FROM alpine\nNESTING\n").unwrap();
+    for (text, refused) in [
+        (
+            "FROM alpine\nAGENT a FROM ./a\nNESTING\n",
+            beside(3, TargetKind::Agent, "a"),
+        ),
+        (
+            "FROM alpine\nNESTING\nAGENT a FROM ./a\n",
+            beside(3, TargetKind::Agent, "a"),
+        ),
+        (
+            "FROM alpine\nNESTING\nHARNESS h FROM ./h\n",
+            beside(3, TargetKind::Harness, "h"),
+        ),
+        (
+            "FROM alpine\nHARNESS h FROM ./h\nAGENT a FROM ./a\nNESTING\n",
+            beside(4, TargetKind::Agent, "a"),
+        ),
+        (
+            "FROM alpine AS base\nNESTING\nFROM base\nAGENT a FROM ./a\n",
+            beside(4, TargetKind::Agent, "a"),
+        ),
+        (
+            "FROM alpine AS base\nHARNESS h FROM ./h\nFROM base\nNESTING\n",
+            beside(4, TargetKind::Harness, "h"),
+        ),
+    ] {
+        assert_eq!(checked(text).unwrap_err(), refused, "{text}");
+    }
+    // Another lineage's domains are not beside it.
+    checked("FROM alpine AS agents\nAGENT a FROM ./a\nFROM alpine\nNESTING\n").unwrap();
+}
+
+/// An image declares the grant once (D234): a second `NESTING` in its lineage is refused,
+/// in one message; stages of other lineages each declare their own.
+#[test]
+fn nesting_is_declared_once() {
+    use shards_agentfile::agentfile::NestingRefused;
+    assert_eq!(NestingRefused::Twice.to_string(), "NESTING: declared already");
+    let twice = |line: usize| format!("dockerfile parse error on line {line}: {}", NestingRefused::Twice);
+    assert_eq!(checked("FROM alpine\nNESTING\nNESTING\n").unwrap_err(), twice(3));
+    assert_eq!(
+        checked("FROM alpine AS base\nNESTING\nFROM base\nNESTING\n").unwrap_err(),
+        twice(4)
+    );
+    checked("FROM alpine AS one\nNESTING\nFROM alpine AS two\nNESTING\n").unwrap();
+}
+
 /// The normalized Agentfile: what was declared, in order, defaults resolved, as JSON whose
 /// first field is its schema's version.
 #[test]
@@ -693,7 +786,13 @@ fn a_normalized_agentfile_reads_back_as_its_grants() {
     };
     let sets = |g: Grants| {
         let set = |v: Vec<Vec<u8>>| v.into_iter().collect::<std::collections::BTreeSet<_>>();
-        (set(g.egress), set(g.mcp), g.dns, set(g.egress_declared))
+        (
+            set(g.egress),
+            set(g.mcp),
+            g.dns,
+            set(g.egress_declared),
+            g.nesting,
+        )
     };
     for text in [
         "FROM alpine:3.22 AS base\n\
@@ -719,6 +818,7 @@ fn a_normalized_agentfile_reads_back_as_its_grants() {
          SKILL ./more.md FOR main\n",
         "FROM scratch\nAGENT a FROM ./a\n",
         "FROM scratch\n",
+        "FROM scratch\nNETWORK --egress=443 out\nNESTING\nEXPOSE 443 AS egress FOR out\n",
     ] {
         let d = directives(text);
         let written = spec(&d);
@@ -756,6 +856,132 @@ fn a_normalized_agentfile_reads_back_as_its_grants() {
         let e = from_spec(bad).unwrap_err();
         assert!(e.contains(said), "{}: {e}", String::from_utf8_lossy(bad));
     }
+}
+
+/// `NESTING` in the normalized Agentfile (D234): `"nesting":true` after its schema's
+/// version, only where declared, so every other image's reads as before; read back first,
+/// so that of directives in its order, `from_spec` of `spec` is what was written. What the
+/// daemon reads of a crafted image is checked as the build checks a file, and [`Grants`]
+/// carries the grant only where the build would give it.
+#[test]
+fn a_normalized_agentfile_records_nesting() {
+    use shards_agentfile::agentfile::{NestingRefused, from_spec, grants, nesting, spec};
+    let x = vec![Directive::Nesting, one("EXPOSE 443 AS egress FOR out")];
+    let written = spec(&x);
+    assert!(
+        String::from_utf8_lossy(&written).starts_with("{\"schemaVersion\":1,\"nesting\":true,\"agents\":[],"),
+        "{}",
+        String::from_utf8_lossy(&written)
+    );
+    assert_eq!(from_spec(&written).unwrap(), x);
+    assert_eq!(
+        from_spec(&spec(&[Directive::Nesting])).unwrap(),
+        vec![Directive::Nesting]
+    );
+    assert_eq!(nesting(&x), Ok(true));
+    assert!(grants(&x).nesting);
+    let plain = &x[1..];
+    assert!(!String::from_utf8_lossy(&spec(plain)).contains("nesting"));
+    assert_eq!(nesting(plain), Ok(false));
+    assert!(!grants(plain).nesting);
+    // What no build makes: refused in the build's words, and never carried.
+    let (agent, harness) = (one("AGENT a FROM ./a"), one("HARNESS h FROM ./h"));
+    for (directives, refused) in [
+        (
+            vec![Directive::Nesting, Directive::Nesting],
+            NestingRefused::Twice,
+        ),
+        (
+            vec![Directive::Nesting, harness.clone()],
+            NestingRefused::Beside {
+                kind: TargetKind::Harness,
+                name: b("h"),
+            },
+        ),
+        (
+            vec![harness, agent, Directive::Nesting],
+            NestingRefused::Beside {
+                kind: TargetKind::Agent,
+                name: b("a"),
+            },
+        ),
+    ] {
+        assert_eq!(nesting(&directives), Err(refused), "{directives:?}");
+        assert!(!grants(&directives).nesting, "{directives:?}");
+    }
+    // A crafted image's normalized Agentfile, the grant beside its domains, reads back as
+    // written, and the daemon's check of what it read refuses it as the build does.
+    let crafted = spec(&[
+        Directive::Nesting,
+        one("HARNESS h FROM ./h"),
+        one("AGENT a FROM ./a"),
+    ]);
+    assert_eq!(
+        nesting(&from_spec(&crafted).unwrap()),
+        Err(NestingRefused::Beside {
+            kind: TargetKind::Agent,
+            name: b("a"),
+        })
+    );
+    // `"nesting"` written as anything but true: not one the build wrote.
+    let lists = "\"agents\":[],\"harnesses\":[],\"skills\":[],\"mcp\":[],\"networks\":[],\
+                 \"connections\":[],\"attachments\":[],\"exposures\":[],\"volumes\":[]";
+    for value in ["false", "1", "\"true\"", "null"] {
+        let text = format!("{{\"schemaVersion\":1,\"nesting\":{value},{lists}}}");
+        let e = from_spec(text.as_bytes()).unwrap_err();
+        assert_eq!(e, "\"nesting\" is written only as true", "{value}");
+    }
+}
+
+/// `FROM alpine` then `NESTING` builds (D234): its image holds the normalized Agentfile
+/// that records the grant, and its `vnd.osi.agentfile.nesting` label says so for Docker and
+/// Kubernetes, which nothing reads to grant (D109). Beside an agent the build refuses it.
+#[test]
+fn an_agentfile_declaring_nesting_builds() {
+    use shards_agentfile::agentfile::{DIGEST_LABEL, NESTING_LABEL, NestingRefused, digest, spec};
+    use shards_agentfile::plan::{self, EpochSource, Options, Resolved, Resolver};
+    use shards_agentfile::platform::Platform;
+    /// Every base image, as one of one layer for linux/amd64.
+    struct Bases;
+    impl Resolver for Bases {
+        fn resolve(&self, name: &[u8], _: Option<&Platform>, _: &[u8]) -> Result<Resolved, Vec<u8>> {
+            Ok(Resolved {
+                reference: name.to_vec(),
+                digest: None,
+                config: br#"{"architecture":"amd64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":["sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d"]}}"#.to_vec(),
+            })
+        }
+
+        fn epoch(&self, _: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
+            Ok(None)
+        }
+    }
+    let opts = Options {
+        target_platform: Platform::new("linux", "amd64"),
+        build_platforms: vec![Platform::new("linux", "amd64")],
+        dialect: Dialect::Agentfile,
+        ..Default::default()
+    };
+    let built = plan::plan(b"FROM alpine\nNESTING\n", &opts, &Bases).unwrap();
+    let labels = &built.image.config.labels;
+    assert_eq!(labels.get(NESTING_LABEL).map(Vec::as_slice), Some(&b"1"[..]));
+    assert_eq!(
+        labels.get(DIGEST_LABEL),
+        Some(&digest(&spec(&[Directive::Nesting])))
+    );
+    // An image that declares none has no such label.
+    let other = plan::plan(b"FROM alpine\nNETWORK n\n", &opts, &Bases).unwrap();
+    assert!(other.image.config.labels.contains_key(DIGEST_LABEL));
+    assert!(!other.image.config.labels.contains_key(NESTING_LABEL));
+    let e = plan::plan(b"FROM alpine\nAGENT a FROM ./a\nNESTING\n", &opts, &Bases).unwrap_err();
+    let refused = NestingRefused::Beside {
+        kind: TargetKind::Agent,
+        name: b("a"),
+    };
+    assert_eq!(
+        String::from_utf8_lossy(&e.message),
+        format!("dockerfile parse error on line 3: {refused}")
+    );
 }
 
 /// The ports an Agentfile's image may reach past its microVM (D59), its network process's

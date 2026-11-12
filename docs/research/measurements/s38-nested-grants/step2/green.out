@@ -1,0 +1,15 @@
+== green rev=914e7596f46d2fbe1de6402d70bdb5ed5c97a066 patch=green.diff sha=0cb0e6ecbc922ee0 host=adacachy load=56.90 65.63 68.80
+toolchain: rustc 1.98.1 (48a229cea 2026-09-01)
+     Running unittests src/lib.rs (target/debug/deps/shards_agentfile-539aa959329a6e50)
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s
+     Running tests/agentfile.rs (target/debug/deps/agentfile-bc1146fc106af5af)
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/commit.rs (target/debug/deps/commit-d77aa9a5b29775c1)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running tests/gateway.rs (target/debug/deps/gateway-20f63673cd80e22e)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/oracle.rs (target/debug/deps/oracle-d854a6ef0a0cbf05)
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 27.70s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+exit=0
+ssh-exit=0
