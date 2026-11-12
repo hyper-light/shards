@@ -176,7 +176,12 @@ The mutant is the fix with one text removed: in `pump`'s write on an existing co
   stream.rs (8da059c8…, the fix with its record's number changed):
   `daemon::ship` 29 passed, 1 ignored; the flaky test 200 of 200 and the new test 200 of
   200, 32 at once; clippy clean (`runs/linux-final.txt`). On the Mac, this worktree at
-  6d71ca54b: MAC-FINAL
+  6d71ca54b: `daemon::ship` 30 passed, 1 ignored (`runs/mac-final-ship.txt`).
+- Main moved twice more (83f0549ad, d35c4cf79: control-end, grants, exec admission; no
+  file of the ship code), merged as 9c299bdd4 and 74c6b92e7. On Linux, main d35c4cf79
+  with this branch's stream.rs, 74c6b92e7's compiled content: `daemon::ship` 29 passed,
+  1 ignored; the flaky test 200 of 200 and the new test 200 of 200, 32 at once; clippy
+  clean (`runs/linux-final2.txt`). The Mac's last build is 6d71ca54b's.
 
 ## Owed and unverified
 
