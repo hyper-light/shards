@@ -21579,7 +21579,8 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     for, the run's VM process ended instead, its daemon alive. A diagnostic build
     (`harness/diag.patch`, not merged) said how each side of the slot ended.
   - The fix: its unit tests, then each guard removed (`harness/unit.sh`), on Linux, macOS
-    and Windows, and the shards binary's whole unit suite; `kill.sh` again with the fix.
+    and Windows, and the shards binary's whole unit suite; `kill.sh` again with the fix;
+    `scripts/lint` on every supported target from a Mac (`harness/lint.sh`, `lint2.sh`).
 - **Found.**
   - kiln ended them. At 16:00:49.831Z its agent "stopping what agents' commands left running,
     now that they're between turns" ended 48108 (the eng-ring-2 daemon, whose log's lines are
@@ -21605,14 +21606,20 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   - With the fix the daemon ended mid-run said "the daemon ended before the command did",
     6 of 6 (3 and 3), and the VM ended "the command's microVM stopped before the command
     ended", 3 of 3 (r4).
-  - The unit tests, on Linux: green; with the relay's `UNANSWERED` a no-op, the relay's test
-    failed ("left: Some([12]) right: Some([12, 91])"); with the client's line for a wordless
-    end put back, the client's test failed (its words against "the daemon ended before the
-    command did"); the shards binary's unit suite passed in test-release, 730 of 730, 14
-    ignored (r5). On Windows, green, and the relay's test red without its guard, as on
-    Linux; the rest of Windows' and macOS' as the record's Owed says. In the dev profile
-    the suite ended at a stack overflow of a test's `policy` thread (Rego) on Linux and
-    Windows alike, code this change leaves alone.
+  - The unit tests, on Linux (adacachy, x86_64), Windows (jupiter) and macOS (a Mac
+    Studio, arm64), rustc 1.98.1: green; with the relay's `UNANSWERED` a no-op, the relay's test
+    failed on each ("left: Some([12]) right: Some([12, 91])"); with the client's line for a
+    wordless end put back, the client's test failed on each (its words against "the daemon
+    ended before the command did"); the shards binary's unit suite passed in test-release:
+    730 passed and 14 ignored on Linux, 709 and 10 on Windows, 730 and 12 on macOS, none
+    failed (r5). In the dev
+    profile the suite ended at a stack overflow in
+    `build::policy::tests::the_deepest_policy_runs_on_the_policy_thread` (its `policy`
+    thread) on Linux and Windows alike, code this change leaves alone.
+  - `scripts/lint`, every supported target (r6): clean, but for both Windows targets'
+    workspace lint, stopped by another change's test (windows_process.rs:544, an unsafe
+    block whose SAFETY comment sat above its `assert_ne!`; cacbd8883, fixed on main by 63bdbf315);
+    this change's crates, shards and shards-ipc, were clean there alone.
 - **Consequence (D185).** The cause is outside shards: kiln's between-turns sweep ends a
   shards daemon, and every microVM it holds, once the agent whose command started it is
   between turns, whatever still uses it. For agents in kiln sessions: wait for a run that

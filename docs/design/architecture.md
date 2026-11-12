@@ -7108,8 +7108,8 @@ descriptors.
   the command did". A command's client (`END`) reads any early end as its daemon's already;
   a socket's peer (a daemon of a build from before slots) is the run's VM. Held by
   `a_side_that_ends_without_its_last_word_says_so` and
-  `a_runs_client_tells_its_daemons_end_from_its_microvms`, each red with its guard removed
-  (M530 says on which hosts); live on WHP, a daemon ended mid-run said so and a VM ended
+  `a_runs_client_tells_its_daemons_end_from_its_microvms`, each red with its guard removed,
+  on Linux, macOS and Windows; live on WHP, a daemon ended mid-run said so and a VM ended
   said the microVM's words.
 - **Many clients on one list** (PM M262). On macOS a client waiting in select(2) for its
   slot could stop waking at all while the others took theirs: 12 of 16 clients slept
