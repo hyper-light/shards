@@ -68,5 +68,19 @@ r430 (KVM, load 38-55, 11 rounds), the shared ring's ceiling, both sides spinnin
 | guest -> host | 3.8 ms | 6.4 | 24.9 | 68,224 |
 | host -> guest | 25.1 ms | 47.4 | 55.1 | 10,214 |
 
-Not measured yet: the Mac's combined window sweep and ring (r428 lost to a runner disconnect;
-rerun r433), Windows (WHP) at all, aarch64 Linux KVM.
+r433 (M3 Ultra, load 2-3, 11 rounds), the fixed credit rule, host window = guest buffer = host
+socket buffers unless said:
+
+| config | h->g relayed | g->h direct | g->h relayed | echo relayed | 64 B RTT direct / relayed |
+|---|---|---|---|---|---|
+| 64 KiB, sockets 64 KiB | 112.6 | 90.6 | 149.4 | 189.7 | 30.3 / 41.1 us |
+| 256 KiB | 111.9 | 37.7 | 88.8 | 137.5 | 30.4 / 39.6 us |
+| 1 MiB | 85.3 | 20.7 | 86.4 | 79.3 | 29.8 / 41.4 us |
+| 4 MiB | 85.5 | 14.3 | 85.9 | 78.5 | 29.8 / 40.6 us |
+| 4 MiB, sockets 256 KiB | 85.7 | 14.3 | 87.0 | 78.9 | 29.8 / 40.5 us |
+
+On HVF the 4 MiB window holds too (guest to host direct 18 GB/s); relayed traffic flattens at
+about 86 ms from 1 MiB, bound by the guest relay; host to guest at about 85 ms, bound by the
+guest's sub-4 KiB receive buffers. Host socket buffers of 256 KiB measure the same as 4 MiB.
+
+Not measured yet: Windows (WHP) at all, aarch64 Linux KVM.
