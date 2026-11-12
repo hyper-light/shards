@@ -185,19 +185,24 @@ pub trait ManagedProcess: Send + Sync {
     fn terminal(&self) -> Result<Option<ManagedEnd>, Refusal>;
 }
 
+/// The SAME fallibly allocated native scope owner retained by its canonical slot.
+/// Unsizing below transfers a reference; it allocates no wrapper or owner.
+pub type ManagedReceipt = triomphe::Arc<dyn ManagedProcess>;
+
+pub fn managed_receipt<T: ManagedProcess + 'static>(owner: triomphe::Arc<T>) -> ManagedReceipt {
+    use unsize::CoerceUnsize;
+    owner.unsize(unsize::Coercion!(to dyn ManagedProcess))
+}
+
 /// Borrowed synchronous launch/attach callbacks, usually over the caller's stack
-/// transaction. The returned Arc must come from existing native receipt ownership
-/// or fallible native storage, never a second process-box record/manager. The API
-/// owns draining/presentation, the native receipt alone owns observation/reaping.
+/// transaction. The returned owner comes from the native slot, never a second
+/// process-box record/manager. The API owns draining/presentation, while that same
+/// native receipt alone owns observation/reaping.
 pub trait ManagedLauncher {
-    fn launch(
-        &mut self,
-        plan: &PreparedBoot,
-        io: LaunchIo,
-    ) -> Result<std::sync::Arc<dyn ManagedProcess>, Refusal>;
+    fn launch(&mut self, plan: &PreparedBoot, io: LaunchIo) -> Result<ManagedReceipt, Refusal>;
     /// Reopen only this recorded identity/envelope, without creating a process or
     /// replacing old stdio. Recovery has no historical output to manufacture.
-    fn attach(&mut self, identity: &Identity) -> Result<std::sync::Arc<dyn ManagedProcess>, Refusal>;
+    fn attach(&mut self, identity: &Identity) -> Result<ManagedReceipt, Refusal>;
 }
 
 /// What a guest's kernel runs first.

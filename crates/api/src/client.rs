@@ -1364,7 +1364,7 @@ fn managed_marker() -> Result<Vec<u8>, Refusal> {
 
 /// The existing API protocol around a receipt the native owner already owns.
 pub struct ManagedGuest {
-    process: Arc<dyn crate::ManagedProcess>,
+    process: crate::ManagedReceipt,
     shared: triomphe::Arc<Shared>,
 }
 
@@ -1460,7 +1460,7 @@ fn lossy_output(bytes: &[u8]) -> Result<String, Refusal> {
 
 fn watch_managed(
     shared: triomphe::Arc<Shared>,
-    process: Arc<dyn crate::ManagedProcess>,
+    process: crate::ManagedReceipt,
     writer: Option<io::PipeWriter>,
 ) {
     // This subscribes to the existing native receipt; it opens/reaps no PID.
@@ -1488,7 +1488,7 @@ fn watch_managed(
 
 fn managed_watch(
     shared: &triomphe::Arc<Shared>,
-    process: &Arc<dyn crate::ManagedProcess>,
+    process: &crate::ManagedReceipt,
     writer: Option<io::PipeWriter>,
     name: String,
 ) -> Result<(), Refusal> {
@@ -1568,10 +1568,10 @@ impl ManagedGuest {
     pub fn try_clone(&self) -> Result<Self, Refusal> {
         self.shared
             .managed_owners
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
             .map_err(|_| Refusal::Launch(crate::LaunchError::Count))?;
         Ok(Self {
-            process: Arc::clone(&self.process),
+            process: self.process.clone(),
             shared: self.shared.clone(),
         })
     }
@@ -1667,7 +1667,7 @@ impl Drop for ManagedGuest {
         match self
             .shared
             .managed_owners
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
         {
             Ok(1) => {}
             Ok(_) => return,
@@ -1917,25 +1917,25 @@ mod tests {
             Ok(())
         }
     }
-    struct ModelLauncher(Arc<ModelNative>);
+    struct ModelLauncher(triomphe::Arc<ModelNative>);
     impl crate::ManagedLauncher for ModelLauncher {
         fn launch(
             &mut self,
             _: &crate::PreparedBoot,
             io: crate::LaunchIo,
-        ) -> Result<Arc<dyn crate::ManagedProcess>, Refusal> {
+        ) -> Result<crate::ManagedReceipt, Refusal> {
             self.0.state.lock().unwrap().io = Some(io);
-            Ok(self.0.clone())
+            Ok(crate::managed_receipt(self.0.clone()))
         }
-        fn attach(&mut self, identity: &Identity) -> Result<Arc<dyn crate::ManagedProcess>, Refusal> {
+        fn attach(&mut self, identity: &Identity) -> Result<crate::ManagedReceipt, Refusal> {
             assert_eq!(identity, &self.0.identity);
-            Ok(self.0.clone())
+            Ok(crate::managed_receipt(self.0.clone()))
         }
     }
-    fn managed_model(coordinate_stop: bool) -> (ManagedGuest, Arc<ModelNative>) {
+    fn managed_model(coordinate_stop: bool) -> (ManagedGuest, triomphe::Arc<ModelNative>) {
         let socket = Path::new("/model/native/v");
         let plan = prepare_boot(&spec(), Path::new("/model/never-executed"), socket, 0).unwrap();
-        let native = Arc::new(ModelNative {
+        let native = triomphe::Arc::try_new(ModelNative {
             identity: Identity {
                 pid: 42,
                 started: 7,
@@ -1945,7 +1945,8 @@ mod tests {
             changed: Condvar::new(),
             coordinate_stop,
             stops: std::sync::atomic::AtomicUsize::new(0),
-        });
+        })
+        .unwrap();
         let guest = boot_managed(plan, &mut ModelLauncher(native.clone())).unwrap();
         (guest, native)
     }
