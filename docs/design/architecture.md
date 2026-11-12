@@ -17344,7 +17344,8 @@ the image as built:
   `shards_abi::gpu`'s grammar.
 - The capabilities and the filter travel as every run's do. No `seccomp-mounts=` is sent.
 
-From the guest to the host: a run message of a new kind, READY, carrying the readiness
+From the guest to the host: a run message of a new kind, READY (`run::kind` 49, relayed to
+the daemon as ipc kind 90), carrying the readiness
 state and, for a late or missed deadline, how far past it. It is relayed as a run event and
 to D231's run host.
 
@@ -17378,7 +17379,11 @@ caller's decision.
   (f37).
 - The GPUs' identities: as many as the run names, at most D232's `MAX_PHYSICAL_GPUS`,
   in its grammar.
-- WORKLOAD_READY (marker 7) and the READY kind: the next free numbers of their tables.
+- `WORKLOAD_READY` = 7 in `shards_abi::marker`, which holds 1 to 6 on main at 43114652a.
+  The guest's READY message is `shards_abi::run::kind` 49 (0 to 3 and 16 to 48 are taken), and
+  its relay to the daemon is `shards_ipc` kind 90 (kinds run to 89; 128 and 148 stand apart).
+  These are identifiers, not quantities: each is its table's next free value, checked again
+  when its step merges, as D numbers are.
 - `/run/shards/notify` and `/run/shards/gpus`: beside `/run/shards/engine.sock` (D181).
 - The identities file's mode, 0444: readable by every user of the run, as the GPUs are
   the run's own; init alone writes the file, before the command starts.
