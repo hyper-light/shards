@@ -719,35 +719,49 @@ mod tests {
         }
     }
 
+    /// How long a test waits for what should come at once: only a failing test waits it
+    /// out, as crates/shards/tests/api_image.rs's `TIMEOUT` bounds its waits.
+    const BOUND: Duration = Duration::from_secs(120);
+
+    /// A wait with no clock for the readiness past `seen`, on a thread of its own, its
+    /// answer sent on as it comes: a test that fails ends at once, never held by its waiter.
+    fn waiter(
+        s: &Arc<Shared>,
+        seen: Option<Ready>,
+    ) -> std::sync::mpsc::Receiver<Result<Option<Ready>, ImageRefusal>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let s = Arc::clone(s);
+        std::thread::spawn(move || {
+            let _ = tx.send(s.wait(Duration::MAX, |st| ready_past(st, true, seen)).transpose());
+        });
+        rx
+    }
+
     /// READY moves the run's readiness as its host relays it (D234), and answers a waiter
-    /// as it is taken, never at a clock's: its first, then each that differs from what the
-    /// waiter saw, and none past what it saw. One that is no readiness breaks the channel;
-    /// the run's end ends a wait for a newer one, and what came before it is still told.
-    /// A run without the grant is refused a wait at once; a host gone without its run's end
-    /// ends one.
+    /// with no clock as it is taken: its first, then each that differs from what the waiter
+    /// saw, and none past what it saw. One that is no readiness breaks the channel; the
+    /// run's end ends a wait for a newer one, and what came before it is still told. A run
+    /// without the grant is refused a wait at once; a host gone without its run's end ends
+    /// one.
     #[test]
     fn readiness_is_told_as_it_moves() {
-        let s = shared();
+        let s = Arc::new(shared());
         let wait = |seen, timeout| s.wait(timeout, |st| ready_past(st, true, seen)).transpose();
         assert_eq!(wait(None, Duration::ZERO), Ok(None));
-        std::thread::scope(|scope| {
-            let waiter = scope.spawn(|| wait(None, Duration::MAX));
-            assert_eq!(
-                take(&s, wire::to_client::READY, &Ready::Passed(3).encode()),
-                Ok(false)
-            );
-            assert_eq!(waiter.join().unwrap(), Ok(Some(Ready::Passed(3))));
-        });
+        let first = waiter(&s, None);
+        assert_eq!(
+            take(&s, wire::to_client::READY, &Ready::Passed(3).encode()),
+            Ok(false)
+        );
+        assert_eq!(first.recv_timeout(BOUND).unwrap(), Ok(Some(Ready::Passed(3))));
         assert_eq!(wait(None, Duration::ZERO), Ok(Some(Ready::Passed(3))));
         assert_eq!(wait(Some(Ready::Passed(3)), Duration::ZERO), Ok(None));
-        std::thread::scope(|scope| {
-            let waiter = scope.spawn(|| wait(Some(Ready::Passed(3)), Duration::MAX));
-            assert_eq!(
-                take(&s, wire::to_client::READY, &Ready::Late(9).encode()),
-                Ok(false)
-            );
-            assert_eq!(waiter.join().unwrap(), Ok(Some(Ready::Late(9))));
-        });
+        let next = waiter(&s, Some(Ready::Passed(3)));
+        assert_eq!(
+            take(&s, wire::to_client::READY, &Ready::Late(9).encode()),
+            Ok(false)
+        );
+        assert_eq!(next.recv_timeout(BOUND).unwrap(), Ok(Some(Ready::Late(9))));
         for malformed in [&[1, 0, 0, 0, 0, 0, 0, 0, 1][..], &[], &[2; 10]] {
             assert!(
                 take(&s, wire::to_client::READY, malformed).is_err(),
@@ -758,12 +772,12 @@ mod tests {
         let ended = RunEnd::Exited(0).encode().unwrap();
         assert_eq!(take(&s, wire::to_client::ENDED, &ended), Ok(true));
         assert_eq!(
-            wait(Some(Ready::Late(9)), Duration::MAX),
+            wait(Some(Ready::Late(9)), BOUND),
             Err(ImageRefusal::Ended(RunEnd::Exited(0)))
         );
         assert_eq!(wait(None, Duration::ZERO), Ok(Some(Ready::Late(9))));
         assert!(matches!(
-            s.wait(Duration::MAX, |st| ready_past(st, false, None)),
+            s.wait(BOUND, |st| ready_past(st, false, None)),
             Some(Err(ImageRefusal::Spec { what: "nesting", .. }))
         ));
         let gone = shared();
@@ -773,7 +787,7 @@ mod tests {
             st.answered = true;
         }
         assert!(matches!(
-            gone.wait(Duration::MAX, |st| ready_past(st, true, None)),
+            gone.wait(BOUND, |st| ready_past(st, true, None)),
             Some(Err(ImageRefusal::Host(_)))
         ));
     }
