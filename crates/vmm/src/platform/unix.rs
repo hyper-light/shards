@@ -2336,6 +2336,42 @@ pub fn watch_writes(file: &File, call: fn(libc::c_int)) -> io::Result<libc::c_in
         .watch_calling(file, libc::IN_MODIFY, call)
 }
 
+/// An inotify event, whole: its watch, its mask and the name in the directory watched it is
+/// of (none for the directory's own) (inotify(7)). Of no watch (-1) with `IN_Q_OVERFLOW`
+/// where events were lost.
+#[cfg(not(target_os = "macos"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Named {
+    pub watched: libc::c_int,
+    pub mask: u32,
+    pub name: Vec<u8>,
+}
+
+/// Watches what `path` names (its last name never followed) for `mask` with the process's
+/// one inotify instance ([`notify`]), each of its events sent whole on `sink`, which
+/// `number` names among the sinks of the process: the watch's descriptor. A file watched
+/// twice is one watch, which sends to each sink.
+#[cfg(target_os = "linux")]
+pub fn watch_named(
+    path: &std::ffi::CStr,
+    mask: u32,
+    number: u64,
+    sink: &std::sync::mpsc::Sender<Named>,
+) -> io::Result<libc::c_int> {
+    notify::shared()
+        .ok_or_else(|| io::Error::other("the process's inotify instance could not be made"))?
+        .watch_named(path, mask, number, sink)
+}
+
+/// The sink `number` names sent `watched`'s events no more ([`watch_named`]): the watch
+/// ends with the last it wakes.
+#[cfg(target_os = "linux")]
+pub fn unwatch_named(watched: libc::c_int, number: u64) {
+    if let Some(shared) = notify::shared() {
+        shared.unwatch_named(watched, number);
+    }
+}
+
 /// One of `watched`'s calls of `call` ([`watch_writes`]) made no more: the watch ends with
 /// the last.
 #[cfg(target_os = "linux")]
@@ -2368,17 +2404,19 @@ mod notify {
         waking: Mutex<HashMap<libc::c_int, Waking>>,
     }
 
-    /// What a watch wakes: eventfds it counts its events into, and functions it calls with
-    /// its descriptor ([`super::watch_writes`]).
+    /// What a watch wakes: eventfds it counts its events into, functions it calls with
+    /// its descriptor ([`super::watch_writes`]), and channels each event is sent on whole,
+    /// by their numbers ([`super::watch_named`]).
     #[derive(Debug, Default)]
     struct Waking {
         fds: Vec<RawFd>,
         calls: Vec<fn(libc::c_int)>,
+        sinks: Vec<(u64, std::sync::mpsc::Sender<super::Named>)>,
     }
 
     impl Waking {
         fn is_empty(&self) -> bool {
-            self.fds.is_empty() && self.calls.is_empty()
+            self.fds.is_empty() && self.calls.is_empty() && self.sinks.is_empty()
         }
     }
 
@@ -2464,6 +2502,41 @@ mod notify {
             Ok(watched)
         }
 
+        /// [`watch`](Self::watch) of what `path` names, never following its last name
+        /// (`IN_DONT_FOLLOW`), each event sent whole on `sink`, which `number` names, under
+        /// the reader's lock: a channel's send, which never waits.
+        pub fn watch_named(
+            &self,
+            path: &std::ffi::CStr,
+            mask: u32,
+            number: u64,
+            sink: &std::sync::mpsc::Sender<super::Named>,
+        ) -> io::Result<libc::c_int> {
+            let mut waking = self.waking.lock().unwrap_or_else(PoisonError::into_inner);
+            // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
+            let watched = unsafe {
+                libc::inotify_add_watch(
+                    self.fd.as_raw_fd(),
+                    path.as_ptr(),
+                    mask | libc::IN_MASK_ADD | libc::IN_DONT_FOLLOW,
+                )
+            };
+            if watched < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let w = waking.entry(watched).or_default();
+            if !w.sinks.iter().any(|(n, _)| *n == number) {
+                w.sinks.push((number, sink.clone()));
+            }
+            Ok(watched)
+        }
+
+        /// The sink `number` names sent `watched`'s events no more; the watch removed with
+        /// the last it wakes.
+        pub fn unwatch_named(&self, watched: libc::c_int, number: u64) {
+            self.let_go(watched, |w| w.sinks.retain(|(n, _)| *n != number));
+        }
+
         /// `wakes` woken by `watched` no more; the watch removed with the last it wakes.
         pub fn unwatch(&self, watched: libc::c_int, wakes: RawFd) {
             self.let_go(watched, |w| {
@@ -2531,6 +2604,35 @@ mod notify {
                         }
                         for call in &w.calls {
                             call(watched);
+                        }
+                        if !w.sinks.is_empty() {
+                            // Its name, NUL-padded to the event's length (inotify(7)).
+                            let name = buf
+                                .get(at.saturating_add(16)..at.saturating_add(16).saturating_add(len))
+                                .unwrap_or_default();
+                            let name = name.split(|&b| b == 0).next().unwrap_or_default();
+                            for (_, sink) in &w.sinks {
+                                let _ = sink.send(super::Named {
+                                    watched,
+                                    mask,
+                                    name: name.to_vec(),
+                                });
+                            }
+                        }
+                    } else if mask & libc::IN_Q_OVERFLOW != 0 {
+                        // Events were lost: every sink is told, of no watch (-1).
+                        let mut told: Vec<u64> = Vec::new();
+                        for (_, w) in waking.iter() {
+                            for (number, sink) in &w.sinks {
+                                if !told.contains(number) {
+                                    told.push(*number);
+                                    let _ = sink.send(super::Named {
+                                        watched,
+                                        mask,
+                                        name: Vec::new(),
+                                    });
+                                }
+                            }
                         }
                     }
                     if mask & libc::IN_IGNORED != 0 {

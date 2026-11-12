@@ -238,6 +238,20 @@ pub(super) fn stored_as(dir: host::Raw, name: &CStr) -> bool {
     }
 }
 
+/// The path on its host of the directory `fd` holds, as it is named now (fcntl(2)
+/// F_GETPATH), at most a path's most (sys/syslimits.h, `PATH_MAX`, 1024).
+#[cfg(target_os = "macos")]
+pub(super) fn path_of_fd(fd: host::Raw) -> Option<Vec<u8>> {
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: fcntl(2) F_GETPATH into a buffer of PATH_MAX bytes, as the call asks.
+    if unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let len = buf.iter().position(|&b| b == 0)?;
+    buf.truncate(len);
+    Some(buf)
+}
+
 /// What the symlink `name` in `dir` holds (readlinkat(2)).
 pub(super) fn readlink_at(dir: host::Raw, name: &CStr) -> Result<Vec<u8>, Errno> {
     let mut buf = vec![0u8; 4096];

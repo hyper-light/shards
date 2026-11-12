@@ -732,6 +732,9 @@ mod hosted {
         door: Stream,
         #[cfg(windows)]
         ends: Vec<OwnedFd>,
+        /// The pipe it tells what its host changes on (D235), until its guest's NOTICE
+        /// built-in is given it.
+        notices: Option<OwnedFd>,
     }
 
     impl Shares {
@@ -747,7 +750,9 @@ mod hosted {
                 door,
                 #[cfg(windows)]
                 ends,
+                notices,
             } = self;
+            drop(notices);
             #[cfg(unix)]
             drop(door);
             #[cfg(windows)]
@@ -832,7 +837,7 @@ mod hosted {
         let shares = if plan.dirs.is_empty() {
             None
         } else {
-            Some(start_shares(home, &plan.dirs).map_err(boot)?)
+            Some(start_shares(home, &plan.dirs, Some(&run_tags(plan.dirs.len()))).map_err(boot)?)
         };
         let (ours, theirs) = Stream::pair().map_err(|e| boot(format!("the VM's link: {e}")))?;
         let grants = if cfg!(target_os = "macos") {
@@ -945,7 +950,7 @@ mod hosted {
         let shares = if plan.dirs.is_empty() {
             None
         } else {
-            Some(start_shares(home, &plan.dirs, &job).map_err(boot)?)
+            Some(start_shares(home, &plan.dirs, &job, Some(&run_tags(plan.dirs.len()))).map_err(boot)?)
         };
         let (ours, theirs) = Stream::pair().map_err(|e| boot(format!("the VM's link: {e}")))?;
         // Its end, the VM's alone once given it: this process's copy goes, so that the
@@ -1071,10 +1076,23 @@ mod hosted {
     /// the home's private directory after them. The VM's end of its connection goes with
     /// the run, which hands the VM each share's stream (`SHARE_ENDS`).
     #[cfg(unix)]
-    fn start_shares(home: &Path, dirs: &[(OwnedFd, bool, OsString)]) -> Result<Shares, String> {
+    fn start_shares(
+        home: &Path,
+        dirs: &[(OwnedFd, bool, OsString)],
+        tags: Option<&[String]>,
+    ) -> Result<Shares, String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let (door, share) = Stream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        // Its notices of what its host changes (D235), on a pipe past its others.
+        let told = tags.filter(|t| t.len() == dirs.len()).map(|t| t.join(","));
+        let notices = match &told {
+            Some(told) => {
+                args.extend([OsStr::new(crate::share::NOTICES), OsStr::new(told)]);
+                Some(io::pipe().map_err(|e| format!("its notices' pipe: {e}"))?)
+            }
+            None => None,
+        };
         for (_, read_only, only) in dirs {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
@@ -1087,9 +1105,22 @@ mod hosted {
             fds.push((dir.as_fd(), number(4usize.saturating_add(i))?));
         }
         fds.push((ghosts.as_fd(), number(4usize.saturating_add(dirs.len()))?));
+        if let Some((_, w)) = &notices {
+            fds.push((w.as_fd(), number(5usize.saturating_add(dirs.len()))?));
+        }
         let child = shards_ipc::spawn_in(&exe, &args, &fds, false, &[])
             .map_err(|e| format!("starting the share process: {e}"))?;
-        Ok(Shares { child, door })
+        Ok(Shares {
+            child,
+            door,
+            notices: notices.map(|(r, _)| OwnedFd::from(r)),
+        })
+    }
+
+    /// The tags of a run's `n` shares, as its VM names their devices (vm::Config,
+    /// `shards{i}`).
+    fn run_tags(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("shards{i}")).collect()
     }
 
     /// [`start_shares`] on Windows (D197), as a direct boot's (cli/shares.rs `served`): each
@@ -1103,6 +1134,7 @@ mod hosted {
         home: &Path,
         dirs: &[(OwnedFd, bool, OsString)],
         job: &shards_ipc::GroupJob,
+        tags: Option<&[String]>,
     ) -> Result<Shares, String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let streams = dirs
@@ -1111,6 +1143,15 @@ mod hosted {
             .collect::<io::Result<Vec<_>>>()
             .map_err(|e| format!("a share's stream: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
+        // Its notices of what its host changes (D235), on a pipe past its others.
+        let told = tags.filter(|t| t.len() == dirs.len()).map(|t| t.join(","));
+        let notices = match &told {
+            Some(told) => {
+                args.extend([OsStr::new(crate::share::NOTICES), OsStr::new(told)]);
+                Some(io::pipe().map_err(|e| format!("its notices' pipe: {e}"))?)
+            }
+            None => None,
+        };
         for (_, read_only, only) in dirs {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
@@ -1130,6 +1171,9 @@ mod hosted {
                 number(5usize.saturating_add(n).saturating_add(i))?,
             ));
         }
+        if let Some((_, w)) = &notices {
+            fds.push((w.as_fd(), number(5usize.saturating_add(n.saturating_mul(2)))?));
+        }
         let env = crate::netproc::child_env();
         let child =
             shards_ipc::spawn_detached(Some(job), &exe, &args, &fds, &crate::netproc::env_pairs(&env))
@@ -1137,6 +1181,7 @@ mod hosted {
         Ok(Shares {
             child,
             ends: streams.into_iter().map(|(_, vm)| vm).collect(),
+            notices: notices.map(|(r, _)| OwnedFd::from(r)),
         })
     }
 
@@ -1215,6 +1260,11 @@ mod hosted {
         devices: Mutex<Option<Vec<Asked>>>,
         /// What is plugged into the run's members, by the path it is at.
         plugged: Mutex<HashMap<String, Plugged>>,
+        /// The pipe the run's share process tells what its host changes on (D235), until
+        /// its guest's NOTICE built-in is given it as the run starts; and the streams each
+        /// of those built-ins' ends are told on, held while the run is.
+        notices_due: Mutex<Option<OwnedFd>>,
+        notices: Mutex<Vec<Stream>>,
         /// On Windows the run's job, which each plug's share process is made in too.
         #[cfg(windows)]
         job: &'a shards_ipc::GroupJob,
@@ -1230,6 +1280,9 @@ mod hosted {
         address: String,
         member: u32,
         share: Shares,
+        /// The stream its guest's NOTICE built-in's end is told on (D235), held while it is
+        /// plugged in.
+        told: Option<Stream>,
     }
 
     fn channel_of(c: managed::Channel) -> Channel {
@@ -1377,11 +1430,13 @@ mod hosted {
             "prepared {}, {} vCPUs, {} MiB; starting its VM",
             plan.prepared.image_id, plan.prepared.size.0, plan.prepared.size.1
         ));
-        let launched = launch(home, &plan)?;
+        let mut launched = launch(home, &plan)?;
         super::say(format_args!(
             "its VM process {} started; waiting for its guest",
             launched.vm.id()
         ));
+        // Its share process's notices (D235), given its guest as its run starts.
+        let due = launched.shares.as_mut().and_then(|s| s.notices.take());
         let served = (|| -> Result<(), No> {
             if let Some((_, control)) = &launched.net {
                 tell_net(control, &plan.listeners, plan.egress.as_deref()).map_err(boot)?;
@@ -1435,6 +1490,8 @@ mod hosted {
                 roots: &plan.roots,
                 devices: Mutex::new(Some(Vec::new())),
                 plugged: Mutex::new(HashMap::new()),
+                notices_due: Mutex::new(due),
+                notices: Mutex::new(Vec::new()),
                 #[cfg(windows)]
                 job: &launched.job,
             };
@@ -1549,6 +1606,16 @@ mod hosted {
             };
             if m.kind == kind::DONE {
                 status = m.payload.first().copied();
+            } else if m.kind == kind::STARTED {
+                // Its guest told what its host changes in its shares from now on (D235).
+                if let Some(pipe) = lock(&live.notices_due).take() {
+                    match notice_exec(live, pipe) {
+                        Ok(told) => lock(&live.notices).push(told),
+                        Err(e) => super::say(format_args!(
+                            "its guest is told none of its shares' changes: {e}"
+                        )),
+                    }
+                }
             } else if m.kind == kind::EXEC_TAKEN {
                 if let Some(number) = m.payload.first_chunk::<8>()
                     && let Some(held) = lock(&live.held).as_mut()
@@ -1808,6 +1875,38 @@ mod hosted {
         })
     }
 
+    /// Starts the guest's NOTICE built-in (D235): its stdin `pipe`, on which a share
+    /// process tells what its host changes, its output this process's stderr; the stream
+    /// its end is told on, to be held while it runs.
+    fn notice_exec(live: &Live<'_>, pipe: OwnedFd) -> Result<Stream, String> {
+        let spec = protocol::Spec {
+            builtin: protocol::builtin::NOTICE,
+            ..Default::default()
+        };
+        let (client, theirs) = Stream::pair().map_err(|e| e.to_string())?;
+        let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut payload = number.to_be_bytes().to_vec();
+        payload.push(shards_ipc::EXEC_INTERACTIVE);
+        spec.encode_into(&mut payload);
+        let handed = shards_ipc::handed(&theirs).map_err(|e| e.to_string())?;
+        let err = io::stderr();
+        let fds = [handed.as_fd(), pipe.as_fd(), err.as_fd(), err.as_fd()];
+        // Held until the VM says it has it; none once its link has closed.
+        match lock(&live.held).as_mut() {
+            Some(held) => {
+                held.insert(number, theirs.try_clone().map_err(|e| e.to_string())?);
+            }
+            None => return Err("the run has ended".into()),
+        }
+        if let Err(e) = shards_ipc::send(&lock(&live.link), kind::EXEC_RUN, &payload, &fds) {
+            if let Some(held) = lock(&live.held).as_mut() {
+                held.remove(&number);
+            }
+            return Err(e.to_string());
+        }
+        Ok(client)
+    }
+
     /// A plug's or an unplug's outcome, told its orchestrator (`PLUGGED`).
     fn plugged(live: &Live<'_>, id: u32, result: Result<(), (wire::PlugRefusal, String)>) {
         if let Ok(payload) = (wire::PlugAnswer { id, result }).encode() {
@@ -1877,15 +1976,16 @@ mod hosted {
             return Err((R::Host, format!("{}: not a directory", ask.host)));
         }
         let dirs = [(OwnedFd::from(dir), ask.read_only, OsString::new())];
-        #[cfg(unix)]
-        let share = start_shares(live.home, &dirs).map_err(|e| (R::Host, e))?;
-        #[cfg(windows)]
-        let share = start_shares(live.home, &dirs, live.job).map_err(|e| (R::Host, e))?;
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let tag = format!(
             "shards-plug{}",
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
+        let tags = [tag.clone()];
+        #[cfg(unix)]
+        let mut share = start_shares(live.home, &dirs, Some(&tags)).map_err(|e| (R::Host, e))?;
+        #[cfg(windows)]
+        let mut share = start_shares(live.home, &dirs, live.job, Some(&tags)).map_err(|e| (R::Host, e))?;
         let step = [&[shards_ipc::device::SHARE][..], tag.as_bytes()].concat();
         // On Unix its connection, which the share process sends and holds until it is
         // taken (M24); on Windows its stream itself, a duplex pipe made here (D197).
@@ -1928,6 +2028,12 @@ mod hosted {
             share.end();
             return Err((R::Device, e));
         }
+        // Its guest told what its host changes beneath it from now on (D235).
+        let told = share.notices.take().and_then(|pipe| {
+            notice_exec(live, pipe)
+                .map_err(|e| super::say(format_args!("{}: its guest is told none of its changes: {e}", ask.at)))
+                .ok()
+        });
         lock(&live.plugged).insert(
             ask.at.clone(),
             Plugged {
@@ -1935,6 +2041,7 @@ mod hosted {
                 address,
                 member: ask.member,
                 share,
+                told,
             },
         );
         Ok(())

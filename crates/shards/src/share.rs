@@ -66,6 +66,56 @@ fn take_moved(args: &mut Vec<OsString>) -> bool {
 /// machine ([`take_moved`]).
 pub(crate) const MOVED: &str = "--moved";
 
+/// The flag before a share process's shares that says it tells what its host changes
+/// beneath them (D235), and its argument the guest's names of them, their virtio-fs tags,
+/// joined by `,`, one for each share: its notices go to the descriptor after its others,
+/// on Unix 5 + n, past the home's private directory; on Windows 5 + 2n, past each share's
+/// stream; as records its guest's init takes as they are (`run::builtin::NOTICE`).
+pub(crate) const NOTICES: &str = "--notices";
+
+/// The tags [`NOTICES`] names before the shares, taken out with it: none where it is not
+/// there; an error where it names none.
+fn take_notices(args: &mut Vec<OsString>) -> Result<Option<Vec<Vec<u8>>>, String> {
+    let at = args
+        .iter()
+        .take_while(|a| *a == MOVED || *a == NOTICES)
+        .position(|a| a == NOTICES);
+    let Some(at) = at else {
+        return Ok(None);
+    };
+    args.remove(at);
+    if at >= args.len() {
+        return Err("share: --notices takes its shares' tags".into());
+    }
+    let tags = args.remove(at);
+    let tags = bytes_of(&tags)?;
+    Ok(Some(tags.split(|&b| b == b',').map(<[u8]>::to_vec).collect()))
+}
+
+/// Tells `out` what the host changes beneath each of `servers`' shares (D235), the k-th as
+/// share `shares[k]`, its place among the process's shares, on threads
+/// that last as long as the process, as its servers do once it serves them: their notices
+/// are told until the process ends. A share whose changes cannot be watched is served all
+/// the same, its guest told none of them, which its log says.
+fn tell_notices(servers: Vec<Server>, shares: Vec<u32>, tags: Vec<Vec<u8>>, out: std::fs::File) -> &'static [Server] {
+    use shards_vmm::devices::virtio::fs::notices::Pending;
+    let servers: &'static [Server] = Vec::leak(servers);
+    let shares: &'static [u32] = Vec::leak(shares);
+    let pending: &'static Pending = Box::leak(Box::new(Pending::new(tags)));
+    if let Err(e) = shards_vmm::devices::virtio::fs::notices::watch(servers, shares, pending) {
+        let _ = writeln!(std::io::stderr(), "shards: share: its guest is told none of its host's changes: {e}");
+        return servers;
+    }
+    let sent = std::thread::Builder::new().name("notices out".into()).spawn(move || {
+        let mut out = out;
+        let _ = pending.send(&mut out);
+    });
+    if let Err(e) = sent {
+        let _ = writeln!(std::io::stderr(), "shards: share: its notices' thread: {e}");
+    }
+    servers
+}
+
 /// The arguments after `share`: `MODE NAME` for each share.
 fn parse(args: &[OsString]) -> Result<Vec<Given>, String> {
     if !args.len().is_multiple_of(2) {
@@ -136,6 +186,10 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
     if args.first().is_some_and(|a| a == "--join") {
         return join();
     }
+    let notices = match take_notices(&mut args) {
+        Ok(notices) => notices,
+        Err(e) => return failed(&e),
+    };
     let moved = take_moved(&mut args);
     let given = match parse(&args) {
         Ok(given) => given,
@@ -184,6 +238,20 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
         }
     }
     let (servers, conns): (Vec<Server>, Vec<_>) = served.into_iter().unzip();
+    let kept: Vec<Server>;
+    let servers: &[Server] = match notices {
+        Some(tags) => match take(5 + 2 * n, "the notices' pipe") {
+            Ok(out) => {
+                let shares = (0..servers.len()).filter_map(|k| u32::try_from(k).ok()).collect();
+                tell_notices(servers, shares, tags, std::fs::File::from(out))
+            }
+            Err(e) => return failed(&e),
+        },
+        None => {
+            kept = servers;
+            &kept
+        }
+    };
     let mut status = ExitCode::SUCCESS;
     std::thread::scope(|scope| {
         let mut threads = Vec::new();
@@ -219,10 +287,26 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
     if args.first().is_some_and(|a| a == "--join") {
         return join();
     }
+    let notices = match take_notices(&mut args) {
+        Ok(notices) => notices,
+        Err(e) => return failed(&e),
+    };
     let moved = take_moved(&mut args);
     let given = match parse(&args) {
         Ok(given) => given,
         Err(e) => return failed(&e),
+    };
+    // Where its notices go (D235): past the home's private directory.
+    let notices = match notices {
+        Some(tags) => {
+            let at = 5 + i32::try_from(given.len()).unwrap_or(i32::MAX);
+            if !is(at, libc::S_IFIFO) && !is(at, libc::S_IFSOCK) {
+                return failed(&format!("share: descriptor {at} is not where its notices go"));
+            }
+            // SAFETY: the pipe the daemon left for this process alone, checked above.
+            Some((tags, std::fs::File::from(unsafe { OwnedFd::from_raw_fd(at) })))
+        }
+        None => None,
     };
     if !is(3, libc::S_IFSOCK) {
         return failed("share: descriptor 3 is not the VM's connection");
@@ -246,6 +330,8 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
     // SAFETY: the directory the daemon left for this process alone, checked above.
     let ghosts = unsafe { OwnedFd::from_raw_fd(ghosts) };
     let (mut dirs, mut conns, mut theirs) = (Vec::new(), Vec::new(), Vec::new());
+    // Each served directory's place among the shares, which its notices are told by.
+    let mut places: Vec<u32> = Vec::new();
     for (i, g) in given.into_iter().enumerate() {
         let fd = 4 + i as i32;
         // A client's own directory, which its client serves through its context (D228):
@@ -262,6 +348,7 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
         }
         // SAFETY: a directory the daemon left for this process alone, checked above.
         dirs.push((unsafe { OwnedFd::from_raw_fd(fd) }, g));
+        places.push(u32::try_from(i).unwrap_or(u32::MAX));
         let (ours, vms) = match UnixStream::pair() {
             Ok(pair) => pair,
             Err(e) => return failed(&format!("share {i}: a connection: {e}")),
@@ -312,6 +399,14 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
             Err(e) => return failed(&format!("share {i}: {e}")),
         }
     }
+    let kept: Vec<Server>;
+    let servers: &[Server] = match notices {
+        Some((tags, out)) => tell_notices(servers, places, tags, out),
+        None => {
+            kept = servers;
+            &kept
+        }
+    };
     // The VM's ends, kept until it says it has them all.
     if let Err(e) = hand_over(&vm, &theirs) {
         return failed(&format!("share: the VM's connections: {e}"));
@@ -540,6 +635,27 @@ fn joiner(server: &Server, link: &Link) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--notices TAGS` and `--moved` are taken before the shares in either order, and a
+    /// share's mode and name never taken for them.
+    #[test]
+    fn its_flags_are_taken_before_its_shares() {
+        let args = |a: &[&str]| -> Vec<OsString> { a.iter().map(OsString::from).collect() };
+        let mut given = args(&["--notices", "shards0,shards1", "--moved", "rw", "", "ro", "f"]);
+        assert_eq!(
+            take_notices(&mut given).unwrap(),
+            Some(vec![b"shards0".to_vec(), b"shards1".to_vec()])
+        );
+        assert!(take_moved(&mut given));
+        assert_eq!(given, args(&["rw", "", "ro", "f"]));
+        let mut given = args(&["--moved", "--notices", "shards-plug3", "rw", ""]);
+        assert_eq!(take_notices(&mut given).unwrap(), Some(vec![b"shards-plug3".to_vec()]));
+        assert!(take_moved(&mut given));
+        assert_eq!(given, args(&["rw", ""]));
+        let mut given = args(&["rw", "--notices"]);
+        assert_eq!(take_notices(&mut given).unwrap(), None);
+        assert!(take_notices(&mut args(&["--notices"])).is_err());
+    }
 
     #[test]
     fn shares_are_read_as_given() {

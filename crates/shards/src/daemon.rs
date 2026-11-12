@@ -1048,6 +1048,9 @@ struct Inbox {
     /// command's, served scoped to its microVM; a save keeps its token for its restore
     /// (D176), and its pulls are its client's.
     engine: Option<OwnEngine>,
+    /// The streams its guest's NOTICE built-ins are told on, one for each share process
+    /// that tells what its host changes (D235): held while it runs.
+    notices: Vec<shards_ipc::Stream>,
 }
 
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
@@ -1322,6 +1325,10 @@ struct Daemon<D: Disk = Real> {
     /// completes once they have, so that none holds a file of its volumes or binds as they
     /// go, which NTFS renames no directory beneath (D197).
     shared_by: Mutex<HashMap<String, Vec<Arc<shards_ipc::Child>>>>,
+    /// Each microVM's share processes' notices of what their host changes (D235), by its
+    /// ID: the pipes they tell them on, until its run starts, when each is its guest's
+    /// NOTICE built-in's stdin.
+    noticing: Mutex<HashMap<String, Vec<shards_ipc::fd::OwnedFd>>>,
     /// Each joiner's link to its microVM's join share, by its ID, with the ID of the
     /// run whose microVM it is: its volumes are served until the link closes, as it
     /// ends.
@@ -2114,6 +2121,7 @@ impl<D: Disk> Daemon<D> {
             plugged: Mutex::default(),
             join_shares: Mutex::default(),
             shared_by: Mutex::default(),
+            noticing: Mutex::default(),
             joiner_links: Mutex::default(),
             members: Mutex::default(),
             events,
@@ -3858,7 +3866,7 @@ impl<D: Disk> Daemon<D> {
                 crate::spec::fits(&prepared.spec)?;
                 // Copies of the volumes a microVM moved here was saved with (D176 part 6).
                 let moved = lock(&self.containers).made(&id).is_some_and(|c| c.moved);
-                let link = self.start_shares(threads, &id, &opened.dirs, &prepared.parent, moved)?;
+                let link = self.start_shares(threads, &id, &opened.dirs, &prepared.parent, moved, true)?;
                 prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
                 Ok(link)
             });
@@ -4637,7 +4645,8 @@ impl<D: Disk> Daemon<D> {
 
     /// Starts the share process (share.rs) serving `dirs`: the VM's connection to it, none
     /// for none. It is reaped on the followers' loop, and ends as its VM's connections
-    /// close.
+    /// close. A run's (`noticed`) tells its guest what its host changes beneath them once
+    /// it starts (D235); a visit's, which runs nothing, tells nothing.
     fn start_shares<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -4645,11 +4654,18 @@ impl<D: Disk> Daemon<D> {
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
         moved: bool,
+        noticed: bool,
     ) -> Result<Option<ShareEnds>, String> {
         if dirs.is_empty() {
             return Ok(None);
         }
-        let (ends, child) = self.started_shares(threads, dirs, parent, moved)?;
+        // Each share's tag, as the VM's devices are named (vm::Config, `shards{i}`).
+        let tags: Vec<String> = (0..dirs.len()).map(|i| format!("shards{i}")).collect();
+        let tags = noticed.then_some(tags.as_slice());
+        let (ends, child, notices) = self.started_shares(threads, dirs, parent, moved, tags)?;
+        if let Some(notices) = notices {
+            lock(&self.noticing).insert(id.to_string(), vec![notices]);
+        }
         // On Windows none where every share is a client's, served from it (D228).
         #[cfg(unix)]
         let child = Some(child);
@@ -4663,6 +4679,7 @@ impl<D: Disk> Daemon<D> {
     /// Ends microVM `id`'s share processes and waits for them, as its removal completes:
     /// its runs have ended, and nothing of theirs is served any more.
     fn end_shares(&self, id: &str) {
+        lock(&self.noticing).remove(id);
         let children = lock(&self.shared_by).remove(id).unwrap_or_default();
         for child in children {
             let _ = child.kill(shards_ipc::signal::SIGKILL);
@@ -4689,12 +4706,15 @@ impl<D: Disk> Daemon<D> {
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
         moved: bool,
-    ) -> Result<(ShareEnds, Option<Arc<shards_ipc::Child>>), String> {
+        tags: Option<&[String]>,
+    ) -> Result<(ShareEnds, Option<Arc<shards_ipc::Child>>, Option<OwnedFd>), String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         // Each share's VM end, in order: a client's its relay's, the rest made below.
         let mut ends: Vec<Option<OwnedFd>> = Vec::with_capacity(dirs.len());
         let mut served = Vec::new();
-        for (dir, read_only, only) in dirs {
+        // The tags of those served here, whose notices it tells (D235).
+        let mut served_tags: Vec<&str> = Vec::new();
+        for (i, (dir, read_only, only)) in dirs.iter().enumerate() {
             if is_pipe(dir) {
                 ends.push(Some(
                     dir.try_clone().map_err(|e| format!("a client's share: {e}"))?,
@@ -4702,10 +4722,13 @@ impl<D: Disk> Daemon<D> {
             } else {
                 ends.push(None);
                 served.push((dir, *read_only, only));
+                if let Some(tag) = tags.and_then(|t| t.get(i)) {
+                    served_tags.push(tag);
+                }
             }
         }
         if served.is_empty() {
-            return Ok((ends.into_iter().flatten().collect(), None));
+            return Ok((ends.into_iter().flatten().collect(), None, None));
         }
         let group = if parent.is_empty() {
             None
@@ -4721,6 +4744,16 @@ impl<D: Disk> Daemon<D> {
         if moved {
             args.push(OsStr::new(crate::share::MOVED));
         }
+        // Its notices of what its host changes (D235), where its tags are known, on a pipe
+        // of their own, past its other handles.
+        let told = served_tags.join(",");
+        let notices = if tags.is_some() && served_tags.len() == served.len() {
+            args.push(OsStr::new(crate::share::NOTICES));
+            args.push(OsStr::new(&told));
+            Some(io::pipe().map_err(|e| format!("its notices' pipe: {e}"))?)
+        } else {
+            None
+        };
         for (_, read_only, only) in &served {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
@@ -4734,6 +4767,9 @@ impl<D: Disk> Daemon<D> {
         for (i, ((dir, _, _), (server, _))) in served.iter().zip(&streams).enumerate() {
             fds.push((dir.as_fd(), number(4 + i)?));
             fds.push((server.as_fd(), number(5 + n + i)?));
+        }
+        if let Some((_, w)) = &notices {
+            fds.push((w.as_fd(), number(5 + 2 * n)?));
         }
         let env = crate::netproc::child_env();
         let child = shards_ipc::spawn_in_job(
@@ -4751,7 +4787,7 @@ impl<D: Disk> Daemon<D> {
             .map(|end| end.or_else(|| made.next()))
             .collect::<Option<Vec<_>>>()
             .ok_or("a share's stream was not made")?;
-        Ok((ends, Some(child)))
+        Ok((ends, Some(child), notices.map(|(r, _)| OwnedFd::from(r))))
     }
 
     /// [`start_shares`](Self::start_shares)'s process, for `dirs`, some.
@@ -4762,13 +4798,25 @@ impl<D: Disk> Daemon<D> {
         dirs: &[(OwnedFd, bool, OsString)],
         parent: &str,
         moved: bool,
-    ) -> Result<(UnixStream, Arc<shards_ipc::Child>), String> {
+        tags: Option<&[String]>,
+    ) -> Result<(UnixStream, Arc<shards_ipc::Child>, Option<OwnedFd>), String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let (vm, share) = UnixStream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
         if moved {
             args.push(OsStr::new(crate::share::MOVED));
         }
+        // Its notices of what its host changes (D235), where its tags are known, on a pipe
+        // of their own, past its other descriptors.
+        let told = tags.map(|t| t.join(","));
+        let notices = match &told {
+            Some(told) if tags.is_some_and(|t| t.len() == dirs.len()) => {
+                args.push(OsStr::new(crate::share::NOTICES));
+                args.push(OsStr::new(told));
+                Some(io::pipe().map_err(|e| format!("its notices' pipe: {e}"))?)
+            }
+            _ => None,
+        };
         for (_, read_only, only) in dirs {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
@@ -4784,11 +4832,14 @@ impl<D: Disk> Daemon<D> {
             ghosts.as_fd(),
             4 + i32::try_from(dirs.len()).map_err(|_| "too many shares")?,
         ));
+        if let Some((_, w)) = &notices {
+            fds.push((w.as_fd(), 5 + i32::try_from(dirs.len()).map_err(|_| "too many shares")?));
+        }
         // Of its microVM's processes: under its parent (D183).
         let child = shards_ipc::spawn_in_group(self.group_of(parent)?, &exe, &args, &fds, false, &[])
             .map_err(|e| format!("starting the share process: {e}"))?;
         let child = self.follow_share(threads, child);
-        Ok((vm, child))
+        Ok((vm, child, notices.map(|(r, _)| OwnedFd::from(r))))
     }
 
     /// Container `id` of `run`, with the name the run gave, or one made for it, as dockerd
@@ -5618,6 +5669,7 @@ impl<D: Disk> Daemon<D> {
             guest_times: Default::default(),
             saved_as: None,
             engine,
+            notices: Vec::new(),
         }));
         let tracked = Tracked {
             base: Arc::new(Base {
@@ -6328,6 +6380,15 @@ impl<D: Disk> Daemon<D> {
     /// `SetRunning`).
     fn run_started(&self, id: &str, inbox: &mut Inbox) {
         inbox.started = true;
+        // Its guest told what its host changes in its shares from now on (D235).
+        if !inbox.visit {
+            for pipe in lock(&self.noticing).remove(id).unwrap_or_default() {
+                match self.notice_exec(inbox, pipe) {
+                    Ok(told) => inbox.notices.push(told),
+                    Err(e) => log(format!("container {id}: its guest is told none of its shares' changes: {e}")),
+                }
+            }
+        }
         // What its restart's way took, for the next (D190).
         if let Some((way, held, chosen)) = inbox.layer_way.take()
             && let Err(e) = lock(&self.layer_restarts).record(&self.home, way, held, chosen.elapsed())
