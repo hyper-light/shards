@@ -59,6 +59,7 @@ pub mod bounds;
 pub mod build;
 pub mod changes;
 pub mod emulate;
+pub mod ring;
 pub mod run;
 
 include!(concat!(env!("OUT_DIR"), "/identity.rs"));
