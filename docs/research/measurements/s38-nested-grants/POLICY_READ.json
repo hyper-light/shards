@@ -1,0 +1,37 @@
+{
+  "POLICY_READ": {
+    "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+    "ref": "origin/main (read in full with git show); the branch base carries byte-identical copies",
+    "files": {
+      "AGENTS.md": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+      "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "docs/development-evidence.md": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63"
+    },
+    "rules_sha256_expected": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "rules_sha256_matches": true,
+    "checkout_policy_matches_origin_main": "AGENTS.md and docs/development-rules.md at the branch base hash as at origin/main",
+    "rules_acknowledged": "R01-R16 binding, with docs/development-evidence.md's checklist",
+    "role": "implementer",
+    "coordinator": "Shards ROOT, kiln agent 01a148884a4770fdaf0111f3f792a248",
+    "agent": "kiln agent 01a1cda53b9474ab8a9721b7420f0054",
+    "date": "2026-11-11",
+    "task": "Step 38 of kiln plan 01a1cd8e862e7169a074db3d5fa33f3d: shards-init grants one designated workload what Hex's node needs, each grant checked at build and at run. Planned as kiln plan 01a1cda5426f73cc810ea93e3bd008cd (seven steps), research 01a1cda5426f73cc86b87e7749163666; decided as D232",
+    "branch": "p/s38-nested-grants-v1",
+    "base": "origin/p/integrate-engine-20261111 032b63b1c9b642d0e2c8af71d6f9643909416f99",
+    "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants",
+    "owned_paths": [
+      "docs/design/architecture.md (D232 only)",
+      "docs/research/nesting-grant-decision-v1.md",
+      "docs/research/measurements/s38-nested-grants/**",
+      "docs/architecture/AGENTFILE_ARCH.md (the NESTING directive's grammar and confinement only)",
+      "crates/agentfile/src/agentfile.rs and crates/agentfile/tests/agentfile.rs (the directive, its spec, its grants and its build refusals)",
+      "crates/shards/src/agentfile.rs, crates/shards/src/setup.rs and the run and join paths of the daemon that consent, refusal and composition need, each listed in the report",
+      "crates/abi/src (the WORKLOAD_READY marker, the READY kind, the setup words)",
+      "crates/ipc/src/lib.rs (the READY relay)",
+      "crates/init/src (setup.rs, run.rs's isolation and exec placement, join.rs's refusal, one readiness module)",
+      "crates/shards/tests/nesting.rs and crates/testguest probes (real-VM E2E written and compiled, run by ROOT)",
+      "crates/api (after D231 is on the integration branch: the image spec's fields)"
+    ],
+    "light_test_scope": "unit and light tests only, on kiln Linux runners through kiln run (adacachy2 00aad8daff2fa3c9daa65d53c425d450, or kiln-a094a12d 8fadc1ec213332e16cb0d915a3fb913f under systemd-run --user --scope -q -p MemoryMax=24G), needs <= cpus=4,mem=16g,disk=40g, -j4; no builds on this Mac (below its 30 GiB floor); no real-VM suites, profiling, benchmarks, audits or seven-target lint (ROOT's); no subagents; signed gits commits of named paths, never force, no push"
+  }
+}
