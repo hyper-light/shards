@@ -20548,9 +20548,12 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   - kiln-a094a12d: Intel Core i9-14900HX, 32 CPUs, bare metal, Fedora 44, Linux
     6.19.10-300.fc44, other jobs running (load 7 of 32); three runs one after another,
     2026-11-12.
-  - GitHub's ubuntu-24.04 (x86_64) and ubuntu-24.04-arm (arm64, no `/dev/kvm`) runners,
-    cloud VMs: `softvirt-traps.yml`, run 43135435859, queued since 01:34 UTC behind the
-    repository's 52 queued runs; not yet run. Their rows come here when it has.
+  - GitHub's ubuntu-24.04 (x86_64; `/dev/kvm` present, unused) and ubuntu-24.04-arm
+    (arm64, Arm Neoverse N2, no `/dev/kvm`) runners: 4-vCPU Azure VMs, Linux
+    7.0.0-1017-azure, GCC 13.3.0, `softvirt-traps.yml`, two runs each, 2026-11-12: run
+    43135435859 (`linux.c` at 85f525fca) and run 43162571571 (at df68484b0, whose `maps`
+    allocates its buffers before it maps; see Found). The x86_64 runs drew different CPUs:
+    an AMD EPYC 9V45, then an Intel Xeon Platinum 8573C.
 - **Results, kiln-a094a12d** (ns; run 3's distribution, then the p50 range of the three runs):
 
   | test | variant | n | p50 | p90 | p99 | max | p50, 3 runs |
@@ -20587,6 +20590,75 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   allowed, all faults refused (`vm.unprivileged_userfaultfd` 0). A core-scheduling cookie
   for the process: allowed. Landlock ABI 7. `vm.max_map_count` 1,048,576 (the kernel's
   own default is 65,530, `DEFAULT_MAX_MAP_COUNT` in `include/linux/mm.h`).
+- **Results, GitHub's ubuntu-24.04, x86_64** (ns; run 2's distribution on the Xeon
+  Platinum 8573C, then run 1's p50 on the EPYC 9V45, whose `maps` crashed):
+
+  | test | variant | n | p50 | p90 | p99 | max | p50, run 1 |
+  |---|---|---|---|---|---|---|---|
+  | native | `getppid`, no filter | 20000 | 127 | 130 | 171 | 39,424 | 160 |
+  | native | `getppid`, a filter allows it | 20000 | 148 | 150 | 186 | 17,768 | 200 |
+  | sigsys | SIGSYS to a handler in the guest's process | 20000 | 1,079 | 1,101 | 1,126 | 26,380 | 1,803 |
+  | futex | another process, same CPU | 20000 | 2,279 | 2,479 | 3,196 | 18,629 | 5,028 |
+  | futex | another process, other core | 20000 | 24,147 | 25,128 | 33,254 | 400,005 | 12,909 |
+  | futex | other core, both spinning | 20000 | 314 | 370 | 421 | 45,634 | 110 |
+  | handoff | SIGSYS, then futex to another process, same CPU | 20000 | 5,099 | 5,509 | 6,640 | 32,088 | 7,402 |
+  | handoff | the same, other core | 20000 | 24,163 | 24,971 | 31,086 | 102,857 | 14,542 |
+  | handoff | the same, other core spinning | 20000 | 1,355 | 1,421 | 1,450 | 18,063 | 2,063 |
+  | notify | `SECCOMP_RET_USER_NOTIF`, same CPU | 20000 | 2,428 | 2,550 | 3,031 | 20,528 | 5,327 |
+  | notify | the same, sync wake-up | 20000 | 2,505 | 2,560 | 3,418 | 37,941 | 5,338 |
+  | notify | other core | 20000 | 24,052 | 24,803 | 30,451 | 401,780 | 12,308 |
+  | notify | other core, sync wake-up | 20000 | 23,999 | 24,715 | 29,981 | 1,382,043 | 11,647 |
+  | sysemu | `PTRACE_SYSEMU`, registers read and written, same CPU | 20000 | 4,604 | 4,655 | 4,908 | 31,838 | 9,785 |
+  | sysemu | the same, other core | 20000 | 25,419 | 26,468 | 33,479 | 2,174,925 | 14,602 |
+  | fault | SIGSEGV, the handler `mprotect`s the page | 20000 | 2,041 | 2,068 | 2,160 | 28,623 | 3,245 |
+  | fault | SIGSEGV, the handler maps a guest page (memfd) | 20000 | 3,218 | 3,280 | 3,463 | 142,859 | 5,248 |
+  | maps | map one 4 KiB page, all 262,120 | 262120 | 1,589 | 2,114 | 4,761 | 236,613 | |
+  | maps | the first 1,000 | 1000 | 1,506 | 2,624 | 16,010 | 23,175 | |
+  | maps | the last 1,000 | 1000 | 1,647 | 2,166 | 4,705 | 8,424 | |
+  | maps | first touch of a mapped page | 262120 | 1,091 | 1,242 | 1,443 | 33,466 | |
+  | maps | unmap one page | 262120 | 2,523 | 3,155 | 4,653 | 180,934 | |
+  | maps | map one 2 MiB unit | 514 | 1,508 | 2,242 | 4,010 | 17,458 | |
+  | maps | first touch of a 2 MiB unit's 512 pages | 514 | 412,665 | 420,148 | 448,852 | 485,645 | |
+  | maps | unmap one 2 MiB unit | 514 | 40,561 | 44,130 | 62,577 | 133,605 | |
+
+- **Results, GitHub's ubuntu-24.04-arm, arm64 without `/dev/kvm`** (ns; run 2's
+  distribution, then the p50 range of both runs; run 1's `maps` crashed):
+
+  | test | variant | n | p50 | p90 | p99 | max | p50, 2 runs |
+  |---|---|---|---|---|---|---|---|
+  | native | `getppid`, no filter | 20000 | 232 | 240 | 520 | 18,544 | 232 |
+  | native | `getppid`, a filter allows it | 20000 | 248 | 248 | 528 | 18,840 | 248 |
+  | sigsys | SIGSYS to a handler in the guest's process | 20000 | 1,344 | 1,360 | 1,632 | 10,288 | 1,344-1,352 |
+  | futex | another process, same CPU | 20000 | 4,000 | 4,472 | 5,184 | 28,944 | 2,384-4,000 |
+  | futex | another process, other core | 20000 | 13,744 | 14,040 | 20,560 | 1,498,663 | 13,744-13,969 |
+  | futex | other core, both spinning | 20000 | 240 | 248 | 264 | 32,736 | 240-328 |
+  | handoff | SIGSYS, then futex to another process, same CPU | 20000 | 8,656 | 9,240 | 10,392 | 51,264 | 8,248-8,656 |
+  | handoff | the same, other core | 20000 | 15,520 | 15,872 | 17,832 | 3,463,375 | 15,520-15,968 |
+  | handoff | the same, other core spinning | 20000 | 1,592 | 1,608 | 1,880 | 25,144 | 1,568-1,592 |
+  | notify | `SECCOMP_RET_USER_NOTIF`, same CPU | 20000 | 5,632 | 5,896 | 6,592 | 73,568 | 4,760-5,632 |
+  | notify | the same, sync wake-up | 20000 | 5,352 | 5,600 | 6,224 | 60,272 | 4,696-5,352 |
+  | notify | other core | 20000 | 13,320 | 13,568 | 14,648 | 116,768 | 13,320-13,505 |
+  | notify | other core, sync wake-up | 20000 | 13,200 | 13,432 | 14,464 | 72,496 | 13,200-13,601 |
+  | sysemu | `PTRACE_SYSEMU`, registers read and written, same CPU | 20000 | 8,832 | 9,224 | 9,840 | 67,464 | 4,488-8,832 |
+  | sysemu | the same, other core | 20000 | 14,240 | 14,512 | 15,680 | 777,151 | 14,240-14,505 |
+  | fault | SIGSEGV, the handler `mprotect`s the page | 20000 | 1,928 | 1,944 | 2,000 | 16,288 | 1,928-1,944 |
+  | fault | SIGSEGV, the handler maps a guest page (memfd) | 20000 | 3,000 | 3,272 | 4,392 | 71,912 | 3,000-3,064 |
+  | maps | map one 4 KiB page, all 262,127 | 262127 | 2,040 | 2,744 | 4,744 | 204,840 | |
+  | maps | the first 1,000 | 1000 | 1,528 | 2,272 | 7,008 | 17,960 | |
+  | maps | the last 1,000 | 1000 | 2,224 | 2,864 | 4,856 | 183,976 | |
+  | maps | first touch of a mapped page | 262127 | 760 | 960 | 1,216 | 63,128 | |
+  | maps | unmap one page | 262127 | 3,416 | 4,560 | 7,952 | 301,456 | |
+  | maps | map one 2 MiB unit | 514 | 1,544 | 2,264 | 5,064 | 14,608 | |
+  | maps | first touch of a 2 MiB unit's 512 pages | 514 | 312,448 | 316,448 | 335,264 | 339,256 | |
+  | maps | unmap one 2 MiB unit | 514 | 60,440 | 65,648 | 88,680 | 172,655 | |
+
+- **Probes, the cloud VMs** (both runs agree): `RLIMIT_MEMLOCK` 8 MiB soft and hard.
+  `memfd_secret`: 1 MiB mapped and touched (first touch 11.2 and 18.2 us a page on x86_64,
+  2.8 and 3.4 us on arm64), 64 MiB refused with `EAGAIN`. userfaultfd: user-mode-only
+  faults allowed, all faults refused (`vm.unprivileged_userfaultfd` 0). A core-scheduling
+  cookie: allowed on x86_64; `ENODEV` on arm64, whose vCPUs have no SMT
+  (`sched_core_share_pid` refuses when `!sched_smt_active()`, `kernel/sched/core_sched.c`).
+  Landlock ABI 8. `vm.max_map_count` 262,144.
 - **Found.**
   - Against run 3's native 76 ns, the trap a guest system call pays: 699 ns (9.2 times)
     when its handler runs in the guest's own process; 2,560 ns (34 times) handed to
@@ -20607,6 +20679,35 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     0.15 to 1 ms, on a host whose other jobs held load at 7; p99s stayed within 8.2 us.
   - Unprivileged, `memfd_secret` can hold keys, not guest memory: the 8 MiB lock limit
     stops it, and its pages cost 13.8 us each to first touch.
+  - On GitHub's cloud VMs (two runs a runner; the x86_64 runs on two CPU models):
+    - `getppid` takes 127 to 232 ns (bare metal 63 to 91) and the in-process SIGSYS trap
+      1.08 to 1.80 us on x86_64 and 1.34 to 1.35 us on arm64 (bare metal 0.70 to 0.75):
+      8.5 to 11.3 times native on x86_64 and 5.8 times on arm64, against 9.2 on bare
+      metal.
+    - Handing a trap to a process on another vCPU costs 11.6 to 25.4 us at p50 (futex,
+      USER_NOTIF, the SIGSYS handoff and SYSEMU alike): 3.8 to 8.4 times bare metal's
+      run 3. The cost is the sleeping server's wake-up: with the server spinning, the
+      handoff takes 1.36 to 2.06 us and a futex round trip 0.11 to 0.33 us. On one vCPU
+      the paths take 2.3 to 9.8 us (bare metal 1.8 to 3.6), and the same arm64 CPU model
+      gave SYSEMU 4.5 us in one run and 8.8 us in the other.
+    - The map limit binds at 262,144. The 4 KiB loop got 262,120 (x86_64) and 262,127
+      (arm64) mappings, 1 GiB of 4 KiB pages, then `ENOMEM`. With the process's other
+      mappings (`[vsyscall]`, listed but not counted, aside) both add up to 262,145, one
+      past the limit: `do_mmap` refuses only above `max_map_count` (`mm/mmap.c`), and
+      the split of the reservation each page lands in goes unchecked (`__split_vma`,
+      `mm/vma.c`). There the process can make no new mapping at all, `malloc`'s
+      included: run 1's harness allocated a buffer after the loop and crashed there on
+      both runners (fixed in df68484b0). A software MMU that maps guest pages into its
+      own process must keep its own allocations' headroom below the limit.
+    - Mapping costs more: a 4 KiB page maps in 1.59 to 2.04 us at p50 (bare metal 0.99
+      to 1.02), unmaps in 2.5 to 3.4 us (0.84 to 0.85) and is first touched in 0.76 to
+      1.09 us (0.61 to 0.62). A 2 MiB unit maps in 1.5 us (0.70 to 0.79), its 512 first
+      touches take 312 to 413 us (0.61 to 0.81 us a page), and it unmaps in 41 to 60 us.
+    - What an unprivileged process may use matches bare metal's: `memfd_secret` within
+      the 8 MiB lock limit, user-mode-only userfaultfd, Landlock (ABI 8). Core
+      scheduling exists only where vCPUs have SMT siblings to share a core with.
+    - GitHub's x86_64 Linux runner offers `/dev/kvm`; its arm64 runner does not. There
+      shards has no hardware virtualization at all, which is the case this goal serves.
 
 ### M517. What a rootless software hypervisor's traps cost on macOS, and whether a parent can drive its child (softvirt)
 
