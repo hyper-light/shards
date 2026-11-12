@@ -21234,3 +21234,73 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | Reproduced live on macOS arm64 and Linux x86_64 (out of memory at 2,097 to 2,169 MiB), green after, five mutations caught, raw logs under `results/`. |
   | R11, R12 | One implementation, no platform branch. Unit tests: macOS arm64 and Windows x86_64 (jupiter), the whole crate each. Linux x86_64: the fuzz runs and the crossover. Lint: all 7 targets. Owed: the crate's tests natively on Linux arm64, Windows arm64 and musl, which CI's matrix runs. |
   | R15, R16 | No children started. Scratch on adacachy, adacachy2 and jupiter removed; this Mac's under /tmp removed after. |
+
+### M525. Numbers whose exponents are large in shards' Rego, past their text: comparisons, sums, reading and integers (D98)
+
+- **Question.** CI's fuzz job ran `rego-builtins` out of memory on main ten times on
+  2026-11-12 (run 43250570050's `lt(33, 3e33333333332)` and nine runs before it), each
+  input an exponent of millions to billions. M524 writes a float's text from the digits Go
+  reads. What of the rest a builtin does with such a number: compare it, add it, read it,
+  make it an integer, range over it? And what does OPA do with the same operands?
+- **Method.** origin/main 87bf86b31; the fix at 944f16220, then merged with M524's lane
+  (5e53d5e3a). `docs/research/measurements/ci-rego-compare`: the ten artifacts from the
+  jobs' logs (`logs/ci-fuzz-failures.log`), replayed with CI's flags; OPA v1.14.1's own
+  builtins on the same operands and the bound's edges, one case a process given 120 s
+  (`opa/run.sh`, go1.26.1); num-bigint 0.4.8's decimal conversion by size
+  (`bigint-text`); shards' builtins at the bound (`at-bound`, release, n = 21, beside a
+  fuzz run); fuzzing as CI's job does (`fuzz-linux.sh`: nightly-2026-09-05, cargo-fuzz
+  0.13.1 built with 1.98.1, `-rss_limit_mb=2048 -max_len=65536`, the artifacts as seeds)
+  on adacachy2 (Linux 7.3.3-1-cachyos x86_64, 32 cores, held to 4 and 16 GiB); the
+  crate's tests and one mutant a fix (`mutate.py`) on this Mac (Apple M5 Max, macOS
+  26.4.1, shared with other sessions' builds). 2026-11-12.
+- **Results.**
+  - Before: every artifact ran CI's runner out of memory (2,049 to 2,166 MB of 2,048);
+    seven replayed here ran past libFuzzer's 120 s timeout. After: each answers in 0 ms on
+    Linux, comparisons exactly, integers past the bound with "number too big".
+  - OPA, on the same operands (`logs/opa-behaviour.jsonl`):
+
+    | call | OPA v1.14.1 | shards |
+    |---|---|---|
+    | `lt`, `max`, `sort`, `equal` past Go's big.Rat limits (five artifacts and cases) | panics, "illegal value" | the exact order |
+    | `lt` of 1e-21306, 1e-76573, 1e-97879 and 2^-70777, 2^-254370, 2^-325147 | 1, -1, 1 | 1, -1, 1 |
+    | `ceil` of the two `ceil` artifacts | 10.4 s and 7.8 s, two million digits | "number too big" |
+    | `abs` and `div` of four artifacts, `numbers.range_step`'s | still working at 120 s | M524's text; a range as long as asked |
+    | `abs(1e3000000)`, `ceil(1e3000000)` | 15.7 s, 41.7 s | M524's text; "number too big" |
+    | `abs(1e-30000)`, `abs(1e-300000)` | 3.4 s; still working at 120 s | M524's text |
+    | `rem(1e200000, 7)`, `bits.negate(1e200000)` | at once; 0.03 s | "number too big" |
+    | `bits.lsh(1, 2^62)` | panics, `makeslice: len out of range` | "number too big" |
+    | `time.date(1e200000)`, `units.parse_bytes("1e700000000")` | "timestamp too big", 0 | the same |
+
+  - Go's own text of a tiny number is quadratic in its exponent (golang/go#11068): near
+    2^-70777 5 to 20 s an operation, near 2^-254370 49 s to 3 min (`logs/go-text-timings.log`).
+  - num-bigint's decimal conversion (`logs/bigint-text.log`): 17 ms at 10^5 bits, 0.45 s
+    at 10^6, 3.4 s at 3.3 × 10^6, 23 s at 10^7, near n^1.8.
+  - At the bound, MantExp 10^5 (`logs/shards-cost-at-bound.log`, p50 of 21): `ceil(1e30102)`
+    78 ms, `round(-1e30102)` 53 ms, `format_int(1e30102, 10)` 1.9 ms.
+  - The comparison keeps every order the exact scaling gave (20,000 random pairs), and
+    sums and differences round as Go's exact ones (160,000).
+  - Fuzzing, ten times CI's 60 s for `rego-builtins` and CI's 60 s for the rest, nothing
+    found: at 944f16220 (`logs/fuzz-linux-944f162.log`) 2,205,952 runs, the others from
+    350,367 (`rego`) to 19,567,834 (`snapshot-state`); merged, at 5e53d5e3a
+    (`logs/fuzz-linux-5e53d5e.log`), 302,971 runs, the artifacts replaying in 0 to 1.7 s
+    (M524's texts, the longest 130 million digits), the others from 458,268 to 22,543,821.
+  - Mutants: each fix's guard removed fails its test, 10 of 10 at 944f16220 and 9 of 9 at
+    5e53d5e3a, the text's bound gone with the merge (`logs/mutants.log`).
+- **Open.**
+  - Debug builds only, origin/main's as this branch's: `tests/builtins.rs`'s corpus
+    overflows `stack::LEAF` in the test's own recursive `encode`, and `tests/compile.rs`'s
+    two 10 s budgets miss. Both pass in release, as CI runs them.
+  - `number_compare` is no total order where OPA's trimmed-float shortcut makes equal
+    what the exact order separates (OPA's own: 10.0 equals 1 and 10, while 1 < 10), nor
+    for a number `exact_parts` cannot read (an exponent past i64), ordered by its text.
+    Rust's stable `sort` panics on it, and a release build aborts: `sort` of 200,000 random
+    arrays of such numbers panicked 79,016 times on the quirk alone and 53,534 on the
+    unread alone (`sort-order`, `logs/sort-order.log`), on origin/main as here. Go's sort
+    does not panic. Owed, its own change (R01).
+  - A float's text is as long as its exponent asks (M524): up to 646 million digits at
+    Go's MaxExp, which the fuzz harness holds three times; such texts took the merged
+    fuzzer from 3,700 to 500 runs a second.
+  - `numbers.range` makes as many numbers as asked (D98); the fuzz target asks it for at
+    most one a byte of its input.
+- **Rules** (policy df2acf47, role implementer): `ci-rego-compare/evidence.json` accounts
+  for R01 to R16. The timings are an implementer's, owed the coordinator's review (R14).
