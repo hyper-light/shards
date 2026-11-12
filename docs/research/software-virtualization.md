@@ -178,6 +178,86 @@ The prototype, in order, each step measured against M521 and M519 before the nex
 3. macOS and Windows hosts: the same engine, its JIT through `MAP_JIT` and Windows'
    protection changes (M517, M518).
 
+## The translator's design, choice by choice (R02, 2026-11-12)
+
+What the established translators do, from their own sources, and what the prototype takes
+from each. Same instruction set throughout: the guest's architecture is the host's.
+
+1. **Near-identical translation, no IR.**
+   - VMware's translator emitted most guest instructions unchanged ("IDENT"). It worked
+     a translation unit of at most 12 instructions or up to the next control transfer,
+     and rewrote only control flow, PC-relative addressing and privileged instructions
+     (Adams and Agesen, ASPLOS 2006, §3.2).
+   - DynamoRIO, copying a program's own instructions into its code cache, runs SPEC at
+     about 10% over native, worst cases over 50%. Its thesis reports 0 to 30% time and
+     memory (Bruening, MIT 2004: defence slides 21-22 and the abstract).
+   - QEMU goes through an IR (TCG) for any guest on any host: a guest ARM instruction
+     becomes 8.18 host x86 instructions on average (Jiang et al., arXiv 2402.09688,
+     citing their [2]). shards needs only its own architecture.
+   - So: decode, copy what is safe unchanged, rewrite memory operands and the sensitive
+     and privileged instructions.
+2. **A software MMU with a TLB tagged by address space, its hit path inline.**
+   - VMware kept its monitor out of a guest's reach with x86 segmentation (truncated
+     guest segments), and ran guest user code directly rather than translated (§3.2).
+     Both rest on the monitor owning the CPU's segments and page tables, a kernel's
+     privilege that a rootless engine has not; arm64 has no segmentation.
+   - QEMU's software TLB is direct-mapped per MMU index, resized at a flush, with a
+     victim TLB (`accel/tcg/cputlb.c`: `tlb_index`, `tlb_mmu_resize_locked`,
+     `tlb_set_page_full`). It is flushed whole at every x86 CR3 write, PCID unread
+     (`target/i386/helper.c`: `cpu_x86_update_cr3` calls `tlb_flush`). That is the
+     context-switch cost M521 measured; M523 measured a tagged TLB's switch at nothing.
+   - Hong et al. (ACM TACO, "Optimizing Control Transfer and Memory Virtualization in
+     Full System Emulators") made QEMU's software TLB more efficient and its control
+     transfers cheaper, for 1.98x on SPEC CINT2006 (ARM on x86-64) and 1.40 to 1.44x
+     (x86 and AArch64 on x86-64).
+3. **Blocks chained across pages; indirect branches through an inline cache.**
+   - QEMU chains a block only to one in the same page and resolves an indirect branch
+     through a helper call (`tcg_gen_lookup_and_goto_ptr`, `tb_jmp_cache`;
+     docs/devel/tcg, multi-thread-tcg).
+   - Hong et al. name indirect-branch target caching and block chaining among their
+     optimizations (their abstract; how much of the speedup each gives, unread).
+   - DynamoRIO's direct linking took its overhead to about 3x, an inline hash-table
+     lookup for indirect branches to about 20%, traces to about 10% (slides 19-21).
+   - VMware's hash-table lookup costs "typically a single-digit percentage" (§3.2).
+4. **Translations keyed by guest physical page, shared by every process mapping it.**
+   - QEMU: "all caches in QEMU are physically indexed", each block "indexed with its
+     physical address" (docs/devel/tcg).
+   - Writes to a page holding translations go through the software MMU's slow path
+     and invalidate them: QEMU's `TLB_NOTDIRTY` and `DIRTY_MEMORY_CODE` (`cputlb.c`),
+     and DynamoRIO's invariant that code is read-only (slides 43-46).
+   - Guest JITs (V8, the JVM) pay this per change; how often is open question 3.
+5. **Privileged guest instructions emulated in the translation cache where short.**
+   - VMware: `rdtsc` cost 2,030 cycles trapped and emulated, 1,254 called out, 216
+     emulated in its translation cache (§3.3).
+   - shards' guest kernel is its own, so its hottest privileged paths (TLB maintenance,
+     timers) become paravirtual calls.
+6. **Guest exceptions and interrupts delivered inside the engine, at block
+   boundaries.** M523: a fault served so costs less than a native one.
+7. **The isolation core: a checker over the generated code, not trust in the
+   translator.**
+   - Every block is written, checked, then made executable (W^X; a Mac's `MAP_JIT`
+     protection flips in 83 ns, M517). The checker confirms that the block's memory
+     accesses go through the software MMU and its jumps land only where the engine
+     allows.
+   - RockSalt's checker is generated from a declarative policy proven against a Coq
+     model of x86. It checks about a million instructions a second, and its trusted
+     core is a DFA and tens of lines of C (PLDI 2012).
+   - VeriWasm checks native code compiled from Wasm, its soundness proven in Coq. It
+     found a bug that broke isolation (Lucet's loop-invariant code motion), with no
+     false positives (NDSS 2021).
+   - The translator, large, stays outside the trusted base; the checker, small, is what
+     isolation rests on. The confined host process stays as the second wall.
+
+Sources:
+- QEMU: https://www.qemu.org/docs/master/devel/tcg.html, .../devel/multi-thread-tcg.html,
+  and `accel/tcg/cputlb.c`, `target/i386/helper.c` at qemu/qemu master, read 2026-11-12.
+- Adams and Agesen: https://www.scs.stanford.edu/~zyedidia/docs/papers/hwsw.pdf.
+- Bruening: https://burningcutlery.com/derek/phd.html and its defence slides.
+- Hong et al.: https://www.iis.sinica.edu.tw/papers/dyhong/19476-F.pdf.
+- Jiang et al.: https://arxiv.org/abs/2402.09688.
+- RockSalt: https://www.cse.psu.edu/~gxt29/papers/rocksalt.pdf.
+- VeriWasm: https://www.ndss-symposium.org/wp-content/uploads/ndss2021_5B-3_24078_paper.pdf.
+
 ## Questions, each with what settles it
 
 1. Windows' costs: M518 (GitHub's windows-2025 and windows-11-arm runners, queued).
