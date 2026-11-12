@@ -217,11 +217,48 @@ fn forward(
     end
 }
 
+/// SO_VM_SOCKETS_BUFFER_SIZE and SO_VM_SOCKETS_BUFFER_MAX_SIZE, options of level AF_VSOCK
+/// that take a u64 (include/uapi/linux/vm_sockets.h), which the libc crate does not have.
+const SO_VM_SOCKETS_BUFFER_SIZE: libc::c_int = 0;
+const SO_VM_SOCKETS_BUFFER_MAX_SIZE: libc::c_int = 2;
+
+/// Whether a relay's socket that kept Linux's buffer was said: once, as every connection's
+/// socket is the same kernel's.
+static WINDOW_REFUSAL_SAID: AtomicBool = AtomicBool::new(false);
+
+/// Asks the relay's vsock socket to buffer the host's whole window
+/// ([`shards_abi::VSOCK_WINDOW`]): Linux sends no more unacknowledged than its own buffer
+/// (8ee784fdf006), 256 KiB unless its program raises it (VSOCK_DEFAULT_BUFFER_SIZE,
+/// net/vmw_vsock/af_vsock.c), and is sent no more than that. Its maximum first, which bounds
+/// the size (`vsock_update_buffer_size`); Linux tells the host the new size at once
+/// (`virtio_transport_notify_buffer_size`).
+fn ask_window(fd: RawFd) -> io::Result<()> {
+    let window = u64::from(shards_abi::VSOCK_WINDOW);
+    for option in [SO_VM_SOCKETS_BUFFER_MAX_SIZE, SO_VM_SOCKETS_BUFFER_SIZE] {
+        // SAFETY: setsockopt(2) of a u64 option from `window`, its size the length, on a
+        // socket the caller holds.
+        let set = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::AF_VSOCK,
+                option,
+                (&raw const window).cast(),
+                std::mem::size_of::<u64>() as libc::socklen_t,
+            )
+        };
+        if set != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::io::Read as _;
+    use std::os::fd::FromRawFd as _;
     use std::thread::JoinHandle;
 
     // What `docker logs -f` asks of the engine; the relay carries it as bytes.
@@ -337,49 +374,6 @@ mod tests {
             )
         );
     }
-}
-
-/// SO_VM_SOCKETS_BUFFER_SIZE and SO_VM_SOCKETS_BUFFER_MAX_SIZE, options of level AF_VSOCK
-/// that take a u64 (include/uapi/linux/vm_sockets.h), which the libc crate does not have.
-const SO_VM_SOCKETS_BUFFER_SIZE: libc::c_int = 0;
-const SO_VM_SOCKETS_BUFFER_MAX_SIZE: libc::c_int = 2;
-
-/// Whether a relay's socket that kept Linux's buffer was said: once, as every connection's
-/// socket is the same kernel's.
-static WINDOW_REFUSAL_SAID: AtomicBool = AtomicBool::new(false);
-
-/// Asks the relay's vsock socket to buffer the host's whole window
-/// ([`shards_abi::VSOCK_WINDOW`]): Linux sends no more unacknowledged than its own buffer
-/// (8ee784fdf006), 256 KiB unless its program raises it (VSOCK_DEFAULT_BUFFER_SIZE,
-/// net/vmw_vsock/af_vsock.c), and is sent no more than that. Its maximum first, which bounds
-/// the size (`vsock_update_buffer_size`); Linux tells the host the new size at once
-/// (`virtio_transport_notify_buffer_size`).
-fn ask_window(fd: RawFd) -> io::Result<()> {
-    let window = u64::from(shards_abi::VSOCK_WINDOW);
-    for option in [SO_VM_SOCKETS_BUFFER_MAX_SIZE, SO_VM_SOCKETS_BUFFER_SIZE] {
-        // SAFETY: setsockopt(2) of a u64 option from `window`, its size the length, on a
-        // socket the caller holds.
-        let set = unsafe {
-            libc::setsockopt(
-                fd,
-                libc::AF_VSOCK,
-                option,
-                (&raw const window).cast(),
-                std::mem::size_of::<u64>() as libc::socklen_t,
-            )
-        };
-        if set != 0 {
-            return Err(io::Error::last_os_error());
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::os::fd::FromRawFd as _;
-
-    use super::*;
 
     /// The relay's socket asks for the host's whole window, its maximum first, which bounds
     /// the size: a vsock socket of this kernel reads both back as the window.
