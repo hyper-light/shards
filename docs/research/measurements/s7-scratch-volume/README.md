@@ -56,7 +56,12 @@ No wait or cache is added or touched. The checks are pure functions of a path.
 
 ## Portability (R11, R12)
 
-The host code is the same on every OS. Runs on macOS and Windows, and the seven-target lint, are listed in the step's report as they are done.
+The host code is the same on every OS. Results at 03b32b299 (the change merged with main 3103d2eab):
+- **Linux x86_64** (adacachy, glibc, cargo 1.99.1): every test of shards-agentfile (91) and of shards-init (198, 1 ignored as before); shards' `volumes::` and `agentfile::` tests (11). All pass.
+- **macOS arm64** (Mac Studio, Darwin arm64): the same shards-agentfile and shards tests pass.
+- **Windows x86_64** (the Windows 11 guest on adacachy, rustc 1.98.1): the build's test and the daemon's crafted-image test pass. `volumes.rs`'s test is `cfg(unix)`, so it has no Windows run.
+- **Lint**: `scripts/lint` on the Mac Studio (zig 0.16.0 from scripts/install-zig) is clean: format, then all seven targets, plus the GPU renderer's four.
+- **Owed**: unit runs on Linux arm64 and Windows arm64. This work had no host for them; CI's matrix runs them after the push.
 
 ## Operations (R15, R16)
 

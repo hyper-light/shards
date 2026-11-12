@@ -18341,7 +18341,7 @@ namespace on Linux 7.2.9 x86_64; a volume at `/data` mounted as the control
 
 Two ways out were weighed:
 - **Mount it over the scratch**, mounts by depth as shards' own run root has them
-  (`setup.rs`, after moby's `sortMounts`). Each mount point would have to be made in each
+  (`crates/shards/src/setup.rs`, after moby's `sortMounts`). Each mount point would have to be made in each
   domain's fresh scratch. Staged files beneath a volume would have to be refused at both
   ends, or the volume would cover them. A volume at `/tmp` would still hide the scratch.
 - **Refuse it**, as `/proc`, `/sys` and `/dev` are already refused. This needs no new mount
@@ -18357,7 +18357,9 @@ The second is taken, with one typed refusal, `DomainMount::Scratch`, at each end
   mounts it, given to no domain (a base image's `VOLUME /tmp`), as `/dev/shm` is. A run's
   `--tmpfs /tmp` may then stand there.
 
-Tested on Linux x86_64 (`mutate.py`, `mutate-adacachy.log`):
+Tested on Linux x86_64 (`mutate.py`, `mutate-adacachy.log`), and again at the merge with
+main on Linux x86_64, macOS arm64 and Windows x86_64, where `volumes.rs`'s test is Unix's
+alone; `scripts/lint` clean on all seven targets:
 - the build's refusals and a Dockerfile's `VOLUME /tmp /tmp/x` kept (`tests/agentfile.rs`);
 - a crafted image's volume at `/tmp` and at `/tmp/cache`, refused by the daemon (`agentfile.rs`);
 - a Docker `VOLUME /tmp` and `/tmp/x`, given to no domain and passed `--tmpfs /tmp`
