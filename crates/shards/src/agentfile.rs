@@ -45,7 +45,7 @@ pub struct Agentfile {
 }
 
 /// Grants of destinations by name, each `host:port` as the build lists a remote MCP server
-/// or a destination (D59, D235), as the network process's policy names them
+/// or a destination (D59, D236), as the network process's policy names them
 /// (`shards_net::encode_policy`): the host, an IPv6 address in its brackets, and the TCP port.
 pub fn named(list: &[Vec<u8>]) -> Vec<(String, u16)> {
     list.iter()
@@ -336,7 +336,7 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
     let said = |e: Vec<u8>| fail(String::from_utf8_lossy(&e).into_owned());
     let directives = af::resolve_targets(&af::from_spec(&json).map_err(fail)?).map_err(said)?;
     af::connections(&directives).map_err(said)?;
-    // Its members' reach past the microVM held apart as its build holds it (D235).
+    // Its members' reach past the microVM held apart as its build holds it (D236).
     af::held(&directives).map_err(said)?;
     let receivers = af::ingress(&directives).map_err(said)?;
     af::reach(&directives).map_err(said)?;
@@ -956,7 +956,7 @@ mod tests {
                 nesting_beside.as_str(),
             ),
             // Two members granted one port past the microVM unalike, by name and by port,
-            // which its network process could not hold apart (D235).
+            // which its network process could not hold apart (D236).
             (
                 "held",
                 vec![

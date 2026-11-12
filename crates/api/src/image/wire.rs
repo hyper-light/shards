@@ -16,7 +16,7 @@ pub use shards_abi::run::nesting::Ready;
 
 /// The channel's version, the first byte of [`Request`]: changed only by appending. 2
 /// appends the nesting grant's consent and deadline (D234); 3, the destinations kept
-/// ([`Narrowing::destinations`], D235), and to each published port in [`Started`], the
+/// ([`Narrowing::destinations`], D236), and to each published port in [`Started`], the
 /// members it reaches.
 pub const VERSION: u8 = 3;
 
@@ -170,7 +170,7 @@ pub struct Narrowing {
     pub egress: Keep,
     /// Remote MCP servers, `host:port`.
     pub mcp: Keep,
-    /// Destinations, `host:port` as a network's `--egress=HOST:PORT` names one (D235): a
+    /// Destinations, `host:port` as a network's `--egress=HOST:PORT` names one (D236): a
     /// host's name, an IPv4 address, or `host.docker.internal`, the host itself.
     pub destinations: Keep,
     /// Names past the microVM, where the image grants them.
@@ -1183,7 +1183,7 @@ mod tests {
             [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0],
             "appended: the grant's flag, the deadline's, then the destinations kept (all)"
         );
-        // Destinations kept by name, the host itself among them (D235), and none.
+        // Destinations kept by name, the host itself among them (D236), and none.
         for destinations in [
             Keep::Only(vec![
                 "api.openai.com:443".into(),

@@ -447,7 +447,7 @@ impl Stream {
     }
 }
 
-/// The host itself, as a destination names it (D235): Docker Desktop's name for the host its
+/// The host itself, as a destination names it (D236): Docker Desktop's name for the host its
 /// containers reach, under `.internal`, the top-level domain ICANN reserved for private use
 /// (2024), so that no name in the DNS is it. A microVM reaches it at its gateway, which its
 /// network process takes to the host's loopback at the granted port alone (as D124 takes
@@ -474,7 +474,7 @@ pub fn host_name(name: &str) -> bool {
             .is_some_and(|tld| !tld.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// A destination as a grant names one, `HOST:PORT` of TCP (D192, D235): a host's name,
+/// A destination as a grant names one, `HOST:PORT` of TCP (D192, D236): a host's name,
 /// lowered, or an IPv4 address, and its port, 1 to 65535. A name of loopback (`localhost`,
 /// RFC 6761 §6.3) is refused: it is the asker's own, never past its microVM, where the host
 /// is [`HOST`].

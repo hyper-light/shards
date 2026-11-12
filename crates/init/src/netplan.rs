@@ -93,7 +93,7 @@ pub struct Link {
     /// networks, not internal, says so (`NETWORK --dns`).
     pub dns: bool,
     /// The destinations it is granted by name, each a host and a TCP port: its remote MCP
-    /// servers' (§4.4, §9.6) and its networks' (`--egress=HOST:PORT`, D235). It reaches each
+    /// servers' (§4.4, §9.6) and its networks' (`--egress=HOST:PORT`, D236). It reaches each
     /// at that port, at the addresses the host resolves to (or the address it is), and may
     /// ask the resolver for each host's name alone (`agentdns`); the host itself
     /// ([`shards_dns::HOST`]) it reaches at the microVM's gateway, its name in its hosts
@@ -149,13 +149,13 @@ fn port_range(s: &str) -> Option<Egress> {
     (lo <= hi).then_some((proto, lo, hi))
 }
 
-/// Whether a network's port as written is a destination (`HOST:PORT`, D235), as the build's
+/// Whether a network's port as written is a destination (`HOST:PORT`, D236), as the build's
 /// `agentfile::destination_of` tells one from a port, a range or a Unix socket.
 fn is_destination(s: &str) -> bool {
     port_range(s).is_none() && !s.starts_with("unix:") && s.contains(':')
 }
 
-/// The destinations `d`, a harness or not, may reach past the microVM on `joined` (D235):
+/// The destinations `d`, a harness or not, may reach past the microVM on `joined` (D236):
 /// of each joined network that is not internal, each `--egress=HOST:PORT` whose TCP port an
 /// `EXPOSE ... FOR` it opens outward for `d` too (naming `d`, or no member), as the build's
 /// `agentfile::destinations_on` reads them. One the build would refuse refuses the plan.
@@ -248,7 +248,7 @@ pub(crate) fn overlaps(a: (Ipv4Addr, u8), b: (Ipv4Addr, u8)) -> bool {
 /// Plans the links of `names`, the domains that run, from `spec`, the normalized
 /// Agentfile; `own` and `own6` are the microVM's own network's subnets, which no subnet
 /// may overlap, `own`'s with its gateway, at which a domain reaches the host itself where a
-/// destination grants it (D235).
+/// destination grants it (D236).
 pub fn plan(
     spec: &Value,
     names: &[Name],
@@ -519,7 +519,7 @@ pub fn plan(
     }
     // Names: each domain's own, and every member's of each network it joins, the first
     // network's address for a name on several; and the host itself's, at the microVM's
-    // gateway, for one granted it (D235).
+    // gateway, for one granted it (D236).
     let gateway = own.map(|(_, _, g)| g);
     for d in 0..links.len() {
         let Some(own) = links.get(d).and_then(Option::as_ref) else {
@@ -578,7 +578,7 @@ pub fn plan(
                     && matches!(n.get("dns"), Some(Value::Bool(true)))
                     && !matches!(n.get("internal"), Some(Value::Bool(true)))
             });
-        // Its destinations by name: its remote MCP servers', then its networks' (D235).
+        // Its destinations by name: its remote MCP servers', then its networks' (D236).
         let mut granted = mcp.get(d).cloned().unwrap_or_default();
         if let Some((harness, name)) = names.get(d) {
             for dst in destinations_of(spec, &joined, (*harness, name))? {
@@ -996,7 +996,7 @@ mod tests {
         assert!(p.pairs.is_empty() && p.uplink);
     }
 
-    /// A network's destinations (D235) reach the members an EXPOSE opens their port out for,
+    /// A network's destinations (D236) reach the members an EXPOSE opens their port out for,
     /// by name and nothing else: each's names, its port up its link, and no port grant;
     /// the host itself named in its hosts file at the microVM's gateway; another member of
     /// the network, a port no EXPOSE opens and an internal network's destination, none; and

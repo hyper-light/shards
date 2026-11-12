@@ -3459,7 +3459,7 @@ impl<D: Disk> Daemon<D> {
                         return None;
                     }
                 };
-                // Its remote MCP servers' and its networks' destinations (D235), each by name.
+                // Its remote MCP servers' and its networks' destinations (D236), each by name.
                 let mut named = crate::agentfile::named(&g.mcp);
                 for d in crate::agentfile::named(&g.destinations) {
                     if !named.contains(&d) {

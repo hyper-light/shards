@@ -1453,7 +1453,7 @@ fn stage_directives(text: &str) -> Vec<Directive> {
         .collect()
 }
 
-/// A network's destinations (D235): `--egress=HOST:PORT` of TCP, a host's name, an IPv4
+/// A network's destinations (D236): `--egress=HOST:PORT` of TCP, a host's name, an IPv4
 /// address or the host itself, reaching the members a joined network's `EXPOSE` opens
 /// their port out for, two boundaries as a port's are, each once; none of an internal or
 /// unjoined network's, nor where the microVM's boundary opens no such port. The normalized
@@ -1573,7 +1573,7 @@ fn a_destination_is_a_tcp_host_reached_out() {
 }
 
 /// Members granted one TCP port past the microVM unalike, where any reaches it by name,
-/// are refused at build and at run alike (D235), naming both: the network process holds
+/// are refused at build and at run alike (D236), naming both: the network process holds
 /// the microVM to the union of its members' names on a port. One member's names beside
 /// its own port grant, members granted the same names, and members granted ports alone
 /// are held, and pass.
@@ -1652,7 +1652,7 @@ fn members_reaching_one_port_by_name_reach_it_alike() {
     }
 }
 
-/// A destination is a reach past the microVM (§9.5, D235): an internal-only agent with a
+/// A destination is a reach past the microVM (§9.5, D236): an internal-only agent with a
 /// path to one granted a destination reaches the world through it, refused, the path named.
 #[test]
 fn a_destination_reaches_the_world() {

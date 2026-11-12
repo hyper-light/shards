@@ -101,7 +101,7 @@ pub struct Uplink {
     pub subnets: Vec<(Ipv4Addr, u8)>,
     pub eth0: (Ipv4Addr, Ipv4Addr, u8),
     /// eth0's gateway: the host itself at each port a member is granted the host at
-    /// (D235), which no member its engine makes reaches ([`not_the_host`]).
+    /// (D236), which no member its engine makes reaches ([`not_the_host`]).
     pub gateway: Ipv4Addr,
     /// The ports let in, each to the address of the domain they are for: the microVM's,
     /// translated to the domain's where an `EXPOSE` maps them (D122).
@@ -1781,7 +1781,7 @@ pub(crate) fn address(list: &mut Vec<u8>, offset: u32, addr: Ipv4Addr) {
 pub(crate) const SOURCE: u32 = 12;
 pub(crate) const DESTINATION: u32 = 16;
 
-/// TCP to `gateway`, eth0's, dropped but at its resolver's port, 53 (D235): the gateway is
+/// TCP to `gateway`, eth0's, dropped but at its resolver's port, 53 (D236): the gateway is
 /// the host itself at each port a member is granted the host at, which the run's own
 /// processes and the members its engine makes are granted at none. Under a run's grants
 /// the gateway serves them nothing else by TCP (its network process's resolver alone).
@@ -2390,7 +2390,7 @@ fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink, members: &[Member]) -> io::Res
         }
     }
     // Past the domains' own grants, the host itself is no member's its engine made: within
-    // eth0's subnet, they would reach its gateway (D235).
+    // eth0's subnet, they would reach its gateway (D236).
     if !members.is_empty() {
         let mut e = Vec::new();
         on(&mut e, nft::NFT_META_IIF, UPLINK_IFINDEX as u32);
@@ -2440,7 +2440,7 @@ fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink, members: &[Member]) -> io::Res
 /// process holds the agents' grants for the whole microVM, from before the run, so no new
 /// flow leaves eth0 but to eth0's own subnet (its network's members, D46), and none by TCP
 /// to its gateway but its resolver's, the gateway being the host itself where a member is
-/// granted the host (D235). Chain `out` of
+/// granted the host (D236). Chain `out` of
 /// family ip, and of ip6 where eth0 has IPv6, each dropping the rest. Made before the
 /// run's command starts, and fails the run where the kernel has no ip6 family for it.
 pub fn confine_eth0() -> io::Result<()> {
@@ -2467,7 +2467,7 @@ pub fn confine_eth0() -> io::Result<()> {
             b.rule(b"out\0", neighbor_discovery());
         }
         // The gateway, of the subnet, is the host itself at a port a member is granted the
-        // host at (D235), which the run's own processes are not.
+        // host at (D236), which the run's own processes are not.
         if let Some(gateway) = gateway {
             let mut e = Vec::new();
             meta(&mut e, nft::NFT_META_OIF);

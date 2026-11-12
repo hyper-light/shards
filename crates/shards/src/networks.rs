@@ -90,12 +90,12 @@ pub const HOST_IPV6: &str = "com.docker.network.host_ipv6";
 /// shards' own option, not dockerd's: the destinations past their microVMs that its
 /// members' own commands may reach, each `HOST:PORT` of TCP, comma-separated, a host a name
 /// or an IPv4 address (D192), or the host itself, `host.docker.internal`, at its gateway
-/// (D235). Default deny: nothing else, and of names only those the destinations name,
+/// (D236). Default deny: nothing else, and of names only those the destinations name,
 /// resolved through each member's network process alone.
 pub const EGRESS: &str = "shards.egress";
 
 /// [`EGRESS`]'s destinations, each a host (lowercased) and a TCP port, as given: each as an
-/// Agentfile's `NETWORK --egress=HOST:PORT` names one (`shards_dns::destination`, D235),
+/// Agentfile's `NETWORK --egress=HOST:PORT` names one (`shards_dns::destination`, D236),
 /// the host itself among them.
 pub fn parse_egress(value: &str) -> Result<Vec<(String, u16)>, String> {
     let mut out = Vec::new();

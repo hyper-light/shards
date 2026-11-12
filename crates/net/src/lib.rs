@@ -274,7 +274,7 @@ pub struct Config {
     /// name the network's members do not hold, and only as a grant names it (D59).
     pub resolvers: Vec<(Ipv4Addr, u16)>,
     /// Destinations granted by name, each a host and a TCP port (an Agentfile's remote MCP
-    /// servers, D59, and its networks' destinations, D235): reached at the address a host
+    /// servers, D59, and its networks' destinations, D236): reached at the address a host
     /// is, or at those the host's resolver answered for it through this process; the host
     /// itself (`dns::HOST`) at the gateway, which is its loopback there.
     pub named: Vec<(String, u16)>,
@@ -435,7 +435,7 @@ impl Config {
 
     /// Where a flow to `to`'s `port` of `proto` goes on the host: `to` itself, but for the
     /// gateway under the host's network (D124), which is the host's own loopback, of its
-    /// version; and for the gateway at a TCP port a grant names the host itself at (D235),
+    /// version; and for the gateway at a TCP port a grant names the host itself at (D236),
     /// the host's IPv4 loopback there.
     fn host_side(&self, to: IpAddr, proto: Proto, port: u16) -> IpAddr {
         match (&self.policy, to) {
@@ -450,7 +450,7 @@ impl Config {
         }
     }
 
-    /// Whether a grant names the host itself at TCP `port` (`dns::HOST`, D235): the guest
+    /// Whether a grant names the host itself at TCP `port` (`dns::HOST`, D236): the guest
     /// reaches it at its gateway, and this process takes that to the host's loopback, at
     /// that port alone. Under the ports a run's grants give alone: a build's policy, and
     /// the host's network, have none.
@@ -463,7 +463,7 @@ impl Config {
     }
 
     /// Whether a question for `name` may go past the microVM: any name where names may be
-    /// resolved (`NETWORK --dns`), else a destination's that a grant names (D59, D235), but
+    /// resolved (`NETWORK --dns`), else a destination's that a grant names (D59, D236), but
     /// the host itself's, which is no name of the DNS's (`dns::HOST`).
     fn asks(&self, name: &str) -> bool {
         self.dns_all
@@ -497,7 +497,7 @@ impl Config {
         // judged as it is: a host socket to it reaches it.
         let to = to.to_canonical();
         // The host itself, as a grant names it: the gateway, at that TCP port alone, which
-        // `host_side` takes to the host's loopback (D235).
+        // `host_side` takes to the host's loopback (D236).
         if proto == Proto::Tcp && to == IpAddr::V4(self.gateway_ip) && self.host_granted(port) {
             return true;
         }
@@ -3007,7 +3007,7 @@ mod tests {
         assert_eq!(ports.host_side(gateway, Proto::Tcp, 80), gateway);
     }
 
-    /// The host itself, as a destination names it (D235): the gateway, at that TCP port
+    /// The host itself, as a destination names it (D236): the gateway, at that TCP port
     /// alone, taken to the host's IPv4 loopback there; never another port of it, nor UDP,
     /// nor the host's loopback or the gateway at another port by any other grant, nor the
     /// host's network's or a build's policy's; and its name is never asked of a resolver,

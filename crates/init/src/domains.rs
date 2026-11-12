@@ -1427,7 +1427,7 @@ fn switch(
             link: crate::links::link_index(i)?,
             any: l.dns,
             // Its destinations' names, but the host itself's, which its hosts file holds
-            // and no resolver is asked (D235).
+            // and no resolver is asked (D236).
             names: l
                 .named
                 .iter()
