@@ -131,6 +131,39 @@ SHA-256: red (main's code, the new test and `evidence-test.rs`) 180724d8…, the
 The mutant is the fix with one text removed: in `pump`'s write on an existing connection,
 `Err(self.write_failed(e))` as `Err(e)` (`mutant.diff`), the path the flaky test met.
 
+## R01-R16
+
+- R01: the production change adds no unwrap, expect, indexing or unchecked arithmetic; the
+  workspace's deny lints pass (clippy above). The tests unwrap, as tests may.
+- R02: sources: D163's record; Fluent Bit's forward input (fluent-bit f5a3cd20,
+  plugins/in_forward/fw_conn.c); each platform's own answer, measured (`endmet.py`,
+  `onesend.py`, `absorbed.py`). Alternatives: the test alone tried again (main took that,
+  M525, and it leaves (2) and (3)); a write's failure followed only for EPIPE and ECONNRESET
+  (refused: `settle` follows every failure of its look as a reset, and a write's every
+  failure but its timeout ends the connection alike); whether a message began to go read
+  from bytes written (refused: macOS's write(2) says none, and the new test failed with it
+  50 of 50 there).
+- R03: no production literal added. The test's 16 MiB is six times the most a connection
+  here took (`absorbed.py`); its 100-byte bound is the other stream tests' receivers'.
+- R04: the stream's own states (`Asking`, `ended_with`) take a write's end as they take a
+  reset `settle` finds; a write's timeout keeps the transitions it had.
+- R05: no new interface, wait or cache: `write_failed` and `Conn::handshaken` sit at the
+  stream's write paths; the waits (`await_delivery`, `settle`'s window) are unchanged.
+- R06, R13: three write paths now end in one function; nothing else moved.
+- R07: comments say what the code cannot (macOS's write(2), TLS's handshake, the timeout's
+  exception) and cite the record.
+- R08, R14: no performance claim is made; none measured.
+- R09: the CI failure reproduced on main before any change (Mac 3 of 200, Linux 17 and 19
+  of 1,000), and the production fault before the fix (the evidence test, both hosts).
+- R10: this directory; PM M527; D163's stream bullets; before, after and the mutant.
+- R11: Linux x86_64 (glibc) and macOS arm64 run; Windows, aarch64 Linux and musl not run
+  here (Owed).
+- R12: one change in the stream every platform shares; no platform's own code.
+- R15: implementer: light unit tests and repeats only, no real-VM run, benchmark, audit or
+  seven-target lint; signed commits (`gits`), landed as the person's rule of 2026-11-12 says.
+- R16: the Mac stayed above its 30 GiB floor (138 GiB free at the start); on adacachy2 the
+  target directory was 1.2 GB, and this work's copies there are removed after.
+
 ## The merged revisions
 
 - 23aeed57c, this branch merged with main 5333c2747, which brought main's ship-test change
@@ -139,7 +172,11 @@ The mutant is the fix with one text removed: in `pump`'s write on an existing co
   `daemon::ship` 29 passed, 1 ignored; the flaky test 200 of 200 and the new test 200 of
   200, 32 at once; clippy clean (`runs/linux-merged.txt`).
 - Main then moved to ad600dd52 (rego work, and its own PM M526): this record renumbered
-  M527, and main merged again. FINAL-ROWS
+  M527, and main merged again: 6d71ca54b. On Linux, main ad600dd52 with this branch's
+  stream.rs (8da059c8…, the fix with its record's number changed):
+  `daemon::ship` 29 passed, 1 ignored; the flaky test 200 of 200 and the new test 200 of
+  200, 32 at once; clippy clean (`runs/linux-final.txt`). On the Mac, this worktree at
+  6d71ca54b: MAC-FINAL
 
 ## Owed and unverified
 
