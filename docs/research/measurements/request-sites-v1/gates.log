@@ -1,0 +1,69 @@
+# Gates on the committed source: 032b63b1c + green-source.diff (daemon.rs 8b5b5c72...).
+# r630 on 8fadc1ec213332e16cb0d915a3fb913f. Output as kiln returned it; the command dropped
+# aws-lc-sys warnings, cargo's Compiling and Checking lines, and of the daemon:: run every line
+# but the summary, test names not ending "... ok" and failures.
+032b63b1c9b642d0e2c8af71d6f9643909416f99
+ M crates/shards/src/daemon.rs
+ M crates/shards/src/daemon/engine/own_networks.rs
+ M crates/shards/src/daemon/networks.rs
+ M crates/shards/src/daemon/remote.rs
+ M crates/shards/src/daemon/update.rs
+?? docs/research/measurements/request-sites-v1/
+8b5b5c729894edfa7735809e300354faaea88540ebb2a382f0a1ee09ead67760  crates/shards/src/daemon.rs
+5ea5436849b0aa5dbe1627be4edc59aec3e3c45bb7fc123e8150f9ba66c0195f  crates/shards/src/daemon/update.rs
+52e4a3cc510d8ac9c4c55d086c3fd7fe370cbabfd14b9dc453e1df10d65b140d  crates/shards/src/daemon/networks.rs
+92c99125913ad1dbedb5eaec31f4370902e6c0d4218cf0517e333bdeaa1c6bb7  crates/shards/src/daemon/engine/own_networks.rs
+1e6ae2e5cc8cc343208bafb07d04842fbd5a1ddfd5307d4b2ec9aa3165c05d20  crates/shards/src/daemon/remote.rs
+2026-11-12T03:23:52Z
+$ cargo fmt --all --check
+fmt exit: 0
+$ cargo test -p shards --bin shards -j4 -- --exact (the three tests) --nocapture
+    Finished `test` profile [unoptimized] target(s) in 8.70s
+     Running unittests src/main.rs (target/debug/deps/shards-18bc4ad81ca6886a)
+
+running 3 tests
+test daemon::tests::an_update_written_partway_keeps_the_request_it_had ... ok
+test daemon::tests::a_record_written_partway_is_not_kept ... ok
+test daemon::tests::a_request_kept_at_once_is_whole ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 715 filtered out; finished in 0.07s
+
+three exit: 0
+2026-11-12T03:24:13Z
+$ cargo test -p shards --bin shards -j4 -- daemon::
+     Running unittests src/main.rs (target/debug/deps/shards-18bc4ad81ca6886a)
+running 338 tests
+test daemon::managed::terminal_order_tests::native_completion_wins_then_owner_stops_while_metadata_locked ... ignored, ROOT native fixture: pauses the explicit resolve-to-publish seam
+test daemon::managed::terminal_order_tests::native_file_limit_cuts_back_a_partial_append_and_keeps_known_canonical_errno ... ignored, ROOT isolated child only: caller sets RLIMIT_FSIZE and ignores SIGXFSZ
+test daemon::managed::terminal_order_tests::native_owner_stop_after_finish_while_metadata_locked ... ignored, ROOT native fixture: requires exact caller binary, directory and deadlines
+test daemon::managed::terminal_order_tests::native_owner_stop_before_finish_while_metadata_locked ... ignored, ROOT native fixture: requires exact caller binary, directory and deadlines
+test daemon::managed::terminal_order_tests::native_readonly_file_error_keeps_logical_completion_and_retires_driver ... ignored, ROOT native fixture: real read-only File append error
+test daemon::managed::tests::torn_append_child ... ignored, child of a_terminal_record_that_fails_part_way_leaves_whole_lines: sets its process's RLIMIT_FSIZE
+test daemon::ship::tests::what_cutting_a_long_line_costs ... ignored, a measurement (PM M494)
+test daemon::tests::a_stopping_daemon_stops_a_run_being_handed_over ... shards daemon 2302059: container f9c38bcac28718f158afff930b1371b10a9a2a140833b7422d37560732b842a0: a VM asked for a log segment out of turn
+test daemon::logs::tests::logs_read_as_the_plain_way_reads_them has been running for over 60 seconds
+test result: ok. 331 passed; 0 failed; 7 ignored; 0 measured; 380 filtered out; finished in 96.27s
+
+real	1m36.564s
+user	3m17.647s
+sys	0m17.722s
+daemon:: exit: 0
+2026-11-12T03:25:50Z
+$ cargo clippy -p shards --bin shards -j4 -- -D warnings
+    Finished `dev` profile [unoptimized] target(s) in 3.18s
+clippy exit: 0
+2026-11-12T03:25:53Z
+$ cargo clippy -p shards --bin shards --profile test -j4 -- -D warnings
+    Finished `test` profile [unoptimized] target(s) in 17.31s
+clippy (test profile) exit: 0
+2026-11-12T03:26:11Z
+== which mode each clippy check was, from cargo's compiler-artifact records
+== clippy --profile dev
+{'profile_test': False, 'fresh': True, 'kind': ['bin']}
+build-finished success: True
+== clippy --profile test
+{'profile_test': True, 'fresh': True, 'kind': ['bin']}
+build-finished success: True
+3.4G	target
+/dev/nvme1n1p3  7.3T  5.7T  1.6T  79% /home
+--- kiln: runner 8fadc1ec213332e16cb0d915a3fb913f (kiln-a094a12d.attlocal.net), exit_code 0
