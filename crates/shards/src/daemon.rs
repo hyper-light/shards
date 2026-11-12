@@ -172,6 +172,11 @@ type ShareEnds = UnixStream;
 #[cfg(windows)]
 type ShareEnds = Vec<OwnedFd>;
 
+/// What a share process's start gives on Windows (D197): each share's VM end, the process
+/// where one serves any of them, and the pipe it tells what its host changes on (D235).
+#[cfg(windows)]
+type StartedShares = (ShareEnds, Option<Arc<shards_ipc::Child>>, Option<OwnedFd>);
+
 /// A microVM's join share's door (D119): the daemon's connection to its process, on which
 /// each joiner's link goes; on Windows with that process's handle, which every link of the
 /// daemon's gives what it sends into (D197).
@@ -4717,7 +4722,7 @@ impl<D: Disk> Daemon<D> {
         parent: &str,
         moved: bool,
         tags: Option<&[String]>,
-    ) -> Result<(ShareEnds, Option<Arc<shards_ipc::Child>>, Option<OwnedFd>), String> {
+    ) -> Result<StartedShares, String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         // Each share's VM end, in order: a client's its relay's, the rest made below.
         let mut ends: Vec<Option<OwnedFd>> = Vec::with_capacity(dirs.len());
