@@ -18,6 +18,8 @@
 //!   in_its_own_subtree` (runc fails at its first step that needs each);
 //! - nsdelegate's boundary: `a_granted_workload_is_held_to_its_subtree`;
 //! - the readiness relay: `a_granted_workloads_readiness_reaches_the_host`;
+//! - the deadline's conversion and passthrough through shards-api, and READY's relay to
+//!   the run host: `a_deadline_given_through_shards_api_is_met_or_said_passed`;
 //! - the workload's device program, attached BPF_F_ALLOW_MULTI: `a_granted_runs_boxes_
 //!   reach_its_gpu_as_their_rules_and_its_own_say` (box `beyond`);
 //! - AF_VSOCK still refused: `a_granted_workload_still_reaches_no_host_port_over_vsock`.
@@ -446,6 +448,56 @@ fn a_granted_workloads_readiness_reaches_the_host() {
     );
     let removed = home.shards(&["remove", "vm"], &["-f", "nesting-ready"]);
     assert_eq!(removed.status, Some(0), "{}", shown(&removed));
+}
+
+/// The variables a run host is given through shards-api (D231): this home, this build's
+/// guest, and the tests' own docker config, with no local store (tests/api_image.rs's).
+fn host_env(home: &Home) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    vec![
+        ("SHARDS_HOME".into(), home.dir.as_os_str().into()),
+        ("SHARDS_KERNEL".into(), home.kernel.as_os_str().into()),
+        ("SHARDS_INIT".into(), guest_init().as_os_str().into()),
+        ("SHARDS_LOCAL_STORE".into(), "none".into()),
+        ("DOCKER_CONFIG".into(), common::docker_config().as_os_str().into()),
+    ]
+}
+
+/// Case (d), its deadline: given through shards-api's image spec (D231's image boot,
+/// `ready_by`), a budget the workload meets says it ready on time; a budget spent before
+/// the run reaches its guest says its ready-by passed at once (`SHARDS_READY_BY=0`), then
+/// ready, late, at its `READY=1`; each as the orchestrator reads it (`wait_ready`). Guards:
+/// the budget's conversion and passthrough, and READY's relay to the run host.
+#[test]
+fn a_deadline_given_through_shards_api_is_met_or_said_passed() {
+    use shards_api::image::{ImageShards, ImageSpec, Images as _, Narrowing, Ready};
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    let home = Home::new("nesting-d-api");
+    home.nesting_image();
+    let spec = |ready_by: Duration| ImageSpec {
+        image: "nesting:1".into(),
+        vcpus: 1,
+        memory_mib: 512,
+        command: Some(["nesting", "ready", "500"].map(String::from).to_vec()),
+        members: Vec::new(),
+        publish: Vec::new(),
+        egress: Narrowing::default(),
+        shares: Vec::new(),
+        binary: Some(common::shards().to_path_buf()),
+        env: host_env(&home),
+        nesting: true,
+        ready_by: Some(ready_by),
+    };
+    let guest = ImageShards::new().boot(&spec(TIMEOUT)).unwrap();
+    assert_eq!(guest.wait_ready(None, TIMEOUT).unwrap(), Some(Ready::OnTime));
+    drop(guest);
+    let guest = ImageShards::new().boot(&spec(Duration::ZERO)).unwrap();
+    let passed = guest.wait_ready(None, TIMEOUT).unwrap();
+    assert!(matches!(passed, Some(Ready::Passed(_))), "{passed:?}");
+    let late = guest.wait_ready(passed, TIMEOUT).unwrap();
+    assert!(matches!(late, Some(Ready::Late(_))), "{late:?}");
 }
 
 /// The kernel of a guest given this host's GPU and the VM process that gives it, as
