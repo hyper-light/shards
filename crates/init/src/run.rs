@@ -779,6 +779,19 @@ fn default_caps() -> u64 {
     }
 }
 
+/// What of a run's setup undoes its nesting grant (D234), in init's words: the microVM's
+/// cgroup namespace for the command (`--cgroupns host`), or init's PID namespace
+/// (`--pid host`).
+fn undoes_nesting(setup: &[Vec<u8>]) -> Option<String> {
+    if setup.iter().any(|e| e == b"cgroupns=host") {
+        return Some(run::nesting::cgroupns_host());
+    }
+    if setup.iter().any(|e| e == b"pid=host") {
+        return Some(run::nesting::pid_host());
+    }
+    None
+}
+
 /// Init's part of a run's nesting grant (D234), before any process of its command is born:
 /// its own check against the image as built (D109), which must declare `NESTING` and no
 /// agent or harness; the command kept in a cgroup namespace of its own, whose root's limits
@@ -787,8 +800,8 @@ fn default_caps() -> u64 {
 /// command starts in.
 fn grant_nesting(setup: &[Vec<u8>]) -> Result<(), Failure> {
     crate::domains::nesting().map_err(|refused| setup_failed(refused.to_string()))?;
-    if setup.iter().any(|e| e == b"cgroupns=host") {
-        return Err(setup_failed(run::nesting::cgroupns_host()));
+    if let Some(why) = undoes_nesting(setup) {
+        return Err(setup_failed(why));
     }
     let now = crate::setup::read_sysctl("fs.nr_open")
         .and_then(|n| n.parse::<u64>().map_err(|e| format!("reading fs.nr_open: {e}")))
@@ -6392,6 +6405,25 @@ mod stats_scope_tests {
 #[cfg(test)]
 mod nesting_tests {
     use super::*;
+
+    /// The grant is refused where the command would have the microVM's cgroup or PID
+    /// namespace (D234), each in its own words, and no other entry refuses it.
+    #[test]
+    fn the_grant_is_refused_with_the_microvms_cgroup_or_pid_namespace() {
+        let entries = |l: &[&str]| l.iter().map(|e| e.as_bytes().to_vec()).collect::<Vec<_>>();
+        assert_eq!(
+            undoes_nesting(&entries(&["nesting", "cgroupns=host"])),
+            Some(run::nesting::cgroupns_host())
+        );
+        assert_eq!(
+            undoes_nesting(&entries(&["nesting", "pid=host"])),
+            Some(run::nesting::pid_host())
+        );
+        assert_eq!(
+            undoes_nesting(&entries(&["nesting", "cgroups-rw", "ipc=host", "uts=host"])),
+            None
+        );
+    }
 
     /// A cgroup tree of plain files: the workload's cgroup, its leaf and a box beneath it,
     /// each with an empty `cgroup.procs`.

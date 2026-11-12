@@ -183,6 +183,13 @@ pub fn cgroupns_host() -> String {
     "cannot give the command the nesting grant in the microVM's cgroup namespace (--cgroupns host): the grant makes the command's cgroup namespace writable, and the microVM's holds the command's own limits and every other cgroup".into()
 }
 
+/// Refusing the grant with `--pid host` (D115): the command in init's PID namespace, whose
+/// boxes then no longer end with it (pid_namespaces(7)), and where the grant's CAP_SYS_ADMIN
+/// faces init's processes and their namespaces.
+pub fn pid_host() -> String {
+    "cannot give the command the nesting grant in the microVM's PID namespace (--pid host): its boxes would no longer end with it, and the grant's CAP_SYS_ADMIN would face init's processes and their namespaces".into()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
