@@ -3806,8 +3806,8 @@ fn builtin(
                 .and_then(|held| held.map_or(Ok(()), |held| write!(out, "{held}"))),
             run::builtin::FREEZE => freeze(&cgroup, args.first().is_some_and(|a| a == b"1")),
             // A device plugged in or let go of, or a disk grown, in the workload's mounts
-            // (D214).
-            run::builtin::DEVICE => crate::hotplug::device(args, workload, &mut out),
+            // (D214), or a domain's (D235).
+            run::builtin::DEVICE => crate::hotplug::device(args, workload, domains, &mut out),
             run::builtin::SIZE => match &layers {
                 Some((_, upper)) => Some(format!("/proc/self/fd/{}", upper.as_raw_fd())),
                 None => crate::changes::upper(),

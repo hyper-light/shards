@@ -2276,13 +2276,21 @@ pub static PLUG_DISK: Command = Command {
 };
 
 /// `shards plug volume` (D214): a host directory or a named volume plugged into a running
-/// microVM, mounted at PATH in it.
+/// microVM, mounted at PATH in it; with `--for`, in one of its agents or harnesses (D235).
 pub static PLUG_VOLUME: Command = Command {
-    usage: "MICROVM SOURCE:PATH[:ro]",
+    usage: "[OPTIONS] MICROVM SOURCE:PATH[:ro]",
     about: "Plug a host directory or a volume into a running microVM, mounted at PATH",
     aliases: "shards plug volume",
     args: Args::Exactly(2),
-    flags: &[HELP],
+    flags: &[
+        HELP,
+        Flag::string(
+            "for",
+            None,
+            "",
+            "Plug it into the agent or harness of this name instead of the microVM's command, PATH beneath one of its host's path roots (as /Users/NAME/project)",
+        ),
+    ],
     unserved: "",
     interspersed: true,
     error_prefix: "",
