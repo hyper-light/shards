@@ -21673,5 +21673,6 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   filtered worker or helper ended by SIGSYS after a stop.
 - **Unverified.** The guest paths that hold these descriptors on real microVMs (diff,
   commit, export and size of runs and joiners, D190's go-over) and code mode under init's
-  pause and commit (ROOT's); scripts/lint on all seven targets (clippy of init, server and
-  net ran on x86_64 glibc alone).
+  pause and commit (ROOT's); scripts/lint's whole workspace and its macOS and Windows
+  targets, which compile none of this change (clippy of init, server and net ran clean on
+  the four Linux targets, and `cargo fmt --all --check`, at 1464cdb88).

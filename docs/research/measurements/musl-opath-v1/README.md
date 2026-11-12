@@ -144,7 +144,10 @@ kept gives each image a copy of its own, with fresh mtimes and fresh target volu
 
 ## Owed
 
-- To ROOT (not run here): scripts/lint on all seven targets (clippy of the three crates ran
-  on x86_64 glibc only); real-VM runs of the guest paths that hold these descriptors (diff,
-  commit, export and size of runs and joiners, D190's go-over) and of code mode under init's
-  pause and commit.
+- Ran at main 1464cdb88 on adacachy: `cargo fmt --all --check` clean, and clippy -D
+  warnings of init, server and net, all targets, on the four Linux targets (x86_64 and
+  aarch64, gnu and musl, scripts/lint's zig for their C) clean.
+- To ROOT (not run here): scripts/lint's whole workspace, and its macOS and Windows
+  targets, which compile none of this change (`cfg(target_os = "linux")`); real-VM runs of
+  the guest paths that hold these descriptors (diff, commit, export and size of runs and
+  joiners, D190's go-over) and of code mode under init's pause and commit.
