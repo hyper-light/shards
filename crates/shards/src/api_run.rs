@@ -1282,7 +1282,7 @@ mod hosted {
         share: Shares,
         /// The stream its guest's NOTICE built-in's end is told on (D235), held while it is
         /// plugged in.
-        told: Option<Stream>,
+        _told: Option<Stream>,
     }
 
     fn channel_of(c: managed::Channel) -> Channel {
@@ -2041,7 +2041,7 @@ mod hosted {
                 address,
                 member: ask.member,
                 share,
-                told,
+                _told: told,
             },
         );
         Ok(())
