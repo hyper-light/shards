@@ -299,6 +299,66 @@ fn a_host_edit_wakes_a_watch_in_the_guest() {
     shards(&["rm"], &["-f", "noticed"]);
 }
 
+/// How long a host's edit takes to wake a watch in the guest (D235), as its host sees it:
+/// from just before the host makes a file in a bind to the guest watcher's line for it
+/// reaching this process, the watcher's own report back (the exec's output) included, each
+/// file made once the last was heard. `SHARDS_NOTICE_SAMPLES` of them (200 by default), and
+/// 10 first that are not counted. Prints n, p50, p90, p99 and max, then each sample, in
+/// milliseconds. A measurement: docs/research/measurements/s8-notices/run.sh runs it.
+#[test]
+#[ignore = "a measurement, run by docs/research/measurements/s8-notices/run.sh"]
+fn notices_latency() {
+    if cannot_run_vms() {
+        return;
+    }
+    const PATIENCE: Duration = Duration::from_secs(60);
+    let samples: usize = std::env::var("SHARDS_NOTICE_SAMPLES")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(200);
+    let (image, _) = served();
+    let home = TempDir::new("notice-lat");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let files = TempDir::new("notice-lat-files");
+    let bind = format!("{}:/w", files.display());
+    let r = run_shards_env(&["run"], &["-d", "--name", "lat", "-v", &bind, &image, "sleep"], &env, TIMEOUT);
+    assert_eq!(r.status, Some(0), "{}", r.stderr);
+    let vm_env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
+    let mut watch = Vm::spawn_env(&["exec", "lat", "/bin/testguest", "inotify", "/w"], &vm_env);
+    watch.wait_for("inotify ready", PATIENCE);
+    let mut took = Vec::with_capacity(samples);
+    for i in 0..samples + 10 {
+        let name = format!("f{i}");
+        let start = std::time::Instant::now();
+        std::fs::write(files.join(&name), "x").unwrap();
+        watch.wait_for(&format!("inotify IN_MODIFY {name}"), PATIENCE);
+        if i >= 10 {
+            took.push(start.elapsed().as_secs_f64() * 1e3);
+        }
+    }
+    watch.kill();
+    let _ = run_shards_env(&["rm"], &["-f", "lat"], &env, TIMEOUT);
+    let mut sorted = took.clone();
+    sorted.sort_by(f64::total_cmp);
+    let at = |q: f64| sorted[((q * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len()) - 1];
+    println!(
+        "notices latency ms: n {} p50 {:.3} p90 {:.3} p99 {:.3} max {:.3}",
+        sorted.len(),
+        at(0.50),
+        at(0.90),
+        at(0.99),
+        sorted[sorted.len() - 1]
+    );
+    println!(
+        "samples ms: {}",
+        took.iter().map(|t| format!("{t:.3}")).collect::<Vec<_>>().join(" ")
+    );
+}
+
 /// Names that differ in case alone, through a share, are what its host makes of them
 /// (D235): the steps of `shards_testguest::case` taken in the guest's view of a share give
 /// what they give on the host itself, in a directory beside it, whether the host's
