@@ -1,0 +1,27 @@
+# runc v1.5.2's pin, checked 2026-11-12T09:32:29Z on Darwin 25.4.0 arm64
+
+$ shasum -a 256 runc.amd64 runc.arm64
+599f6f94ff8c5057241eff0d54c3c74f95c34935b6457b33fe545defc61e9488  runc.amd64
+d10ecae898361832a059be2089bab92d158aec54661b18ed7346ed79628b46b0  runc.arm64
+
+$ grep -E " \*?runc\.(amd64|arm64)$" runc.sha256sum
+599f6f94ff8c5057241eff0d54c3c74f95c34935b6457b33fe545defc61e9488  runc.amd64
+d10ecae898361832a059be2089bab92d158aec54661b18ed7346ed79628b46b0  runc.arm64
+
+$ file runc.amd64 runc.arm64
+runc.amd64: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), static-pie linked, BuildID[sha1]=34d710b29c0392e37fd5cff3ac109d8154dfc479, for GNU/Linux 3.2.0, stripped
+runc.arm64: ELF 64-bit LSB pie executable, ARM aarch64, version 1 (SYSV), static-pie linked, BuildID[sha1]=f93df46e32a14db14669da7f508ae67b86191c2d, for GNU/Linux 3.7.0, stripped
+
+$ GNUPGHOME=<empty> gpg --import runc.keyring; gpg --verify runc.<arch>.asc runc.<arch>
+[amd64] gpg: Signature made Fri Sep 25 14:09:51 2026 PDT
+[amd64] gpg:                using RSA key C2428CD75720FACDCF76B6EA17DE5ECB75A1100E
+[amd64] gpg: Good signature from "Kir Kolyshkin <kolyshkin@gmail.com>" [unknown]
+[amd64] gpg: WARNING: This key is not certified with a trusted signature!
+[amd64] gpg:          There is no indication that the signature belongs to the owner.
+[amd64]       C2428CD75720FACDCF76B6EA17DE5ECB75A1100E
+[arm64] gpg: Signature made Fri Sep 25 14:09:51 2026 PDT
+[arm64] gpg:                using RSA key C2428CD75720FACDCF76B6EA17DE5ECB75A1100E
+[arm64] gpg: Good signature from "Kir Kolyshkin <kolyshkin@gmail.com>" [unknown]
+[arm64] gpg: WARNING: This key is not certified with a trusted signature!
+[arm64] gpg:          There is no indication that the signature belongs to the owner.
+[arm64]       C2428CD75720FACDCF76B6EA17DE5ECB75A1100E

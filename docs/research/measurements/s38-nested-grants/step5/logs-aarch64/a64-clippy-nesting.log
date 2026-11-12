@@ -1,0 +1,265 @@
+   Compiling libc v0.2.189
+    Checking typenum v1.20.1
+   Compiling find-msvc-tools v0.1.14
+    Checking cfg-if v1.0.5
+   Compiling shlex v2.0.1
+   Compiling fs_extra v1.3.0
+   Compiling dunce v1.0.5
+   Compiling pkg-config v0.3.34
+   Compiling proc-macro2 v1.0.107
+   Compiling autocfg v1.5.1
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling aws-lc-rs v1.18.1 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/vendor/aws-lc-rs)
+    Checking zeroize v1.9.0
+    Checking memchr v2.8.3
+    Checking const-oid v0.10.2
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling serde_json v1.0.151
+    Checking zlib-rs v0.6.8
+    Checking regex-syntax v0.8.11
+   Compiling serde v1.0.229
+    Checking rustls-pki-types v1.15.1
+    Checking itoa v1.0.18
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/abi)
+   Compiling version_check v0.9.5
+    Checking once_cell v1.21.4
+    Checking base64 v0.23.1
+    Checking aho-corasick v1.1.5
+    Checking untrusted v0.9.0
+    Checking subtle v2.6.1
+   Compiling num-traits v0.2.19
+    Checking twox-hash v2.1.4
+   Compiling generic-array v0.14.7
+    Checking hybrid-array v0.4.15
+    Checking foldhash v0.2.0
+    Checking shards-erofs v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/erofs)
+    Checking alloc-no-stdlib v2.0.4
+    Checking ruzstd v0.9.1
+    Checking shards-template v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/template)
+    Checking rand_core v0.10.1
+   Compiling getrandom v0.4.3
+    Checking alloc-stdlib v0.2.4
+   Compiling portable-atomic v1.15.0
+    Checking log v0.4.34
+    Checking flate2 v1.1.10
+   Compiling rustls v0.23.46
+   Compiling jobserver v0.1.35
+    Checking block-buffer v0.12.1
+    Checking crypto-common v0.2.2
+   Compiling libm v0.2.16
+    Checking cpufeatures v0.3.1
+    Checking brotli-decompressor v5.0.3
+   Compiling unsize v1.1.0
+    Checking keccak v0.2.2
+   Compiling thiserror v2.0.21
+   Compiling cc v1.5.1
+    Checking regex-automata v0.4.18
+    Checking tinyvec v1.13.3
+    Checking num-conv v0.2.2
+    Checking crypto-common v0.1.7
+    Checking block-buffer v0.10.4
+    Checking deranged v0.5.8
+   Compiling syn v3.0.6
+    Checking powerfmt v0.2.0
+    Checking time-core v0.1.9
+    Checking num-integer v0.1.47
+    Checking digest v0.11.3
+    Checking digest v0.10.7
+    Checking num-bigint v0.4.8
+    Checking cpufeatures v0.2.17
+    Checking brotli v8.0.4
+    Checking chacha20 v0.10.2
+    Checking tracing-core v0.1.36
+    Checking sha2 v0.11.0
+    Checking sha3 v0.11.0
+    Checking siphasher v1.0.4
+    Checking pin-project-lite v0.2.17
+    Checking openssl-probe v0.2.1
+   Compiling httparse v1.10.1
+    Checking rand v0.10.3
+    Checking sha1 v0.10.7
+    Checking rustls-native-certs v0.8.4
+    Checking shards-netring v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/netring)
+    Checking shards-syscall-filter v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/syscall-filter)
+    Checking shards-ipc v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/ipc)
+    Checking tracing v0.1.44
+    Checking rand_pcg v0.10.2
+    Checking hashbrown v0.17.1
+   Compiling cmake v0.1.58
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/vmm)
+    Checking bytes v1.12.1
+    Checking lru-slab v0.1.3
+    Checking rustc-hash v2.1.3
+    Checking percent-encoding v2.3.2
+    Checking slab v0.4.12
+    Checking libbz2-rs-sys v0.2.5
+    Checking time v0.3.55
+    Checking fastbloom v0.17.0
+    Checking form_urlencoded v1.2.2
+    Checking lzma-rust2 v0.21.0
+    Checking triomphe v0.1.17
+    Checking sha1-checked v0.10.0
+    Checking unicode-normalization v0.1.25
+    Checking pem v4.0.0
+    Checking hashlink v0.12.2
+    Checking encoding_rs v0.8.35
+    Checking iri-string v0.7.14
+    Checking bzip2 v0.6.1
+    Checking shards-devcgroup v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/devcgroup)
+    Checking regex v1.13.1
+    Checking arraydeque v0.5.1
+    Checking shards-dns v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/dns)
+    Checking shards-api v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/api)
+    Checking shards-testdir v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/testdir)
+    Checking shards-git v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/git)
+    Checking shards-archive v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/archive)
+    Checking shards-tui v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/tui)
+    Checking shards-user v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/user)
+    Checking shards-net v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/net)
+    Checking shards-gateway v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/gateway)
+    Checking shards-ext4 v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/ext4)
+    Checking shards-cmdline v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/cmdline)
+    Checking shards-rego v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/rego)
+    Checking shards-bus v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/bus)
+    Checking shards-zstd v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/zstd)
+    Checking shards-flate v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/flate)
+    Checking yaml-rust2 v0.13.0
+   Compiling aws-lc-sys v0.45.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/vendor/aws-lc-sys)
+   Compiling shards v0.7.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/shards)
+    Checking yasna v0.6.0
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.21
+    Checking shards-image v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/image)
+    Checking shards-seccomp v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/seccomp)
+    Checking shards-agentfile v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/agentfile)
+    Checking shards-build v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/build)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_unknown_linux_musl
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/l1-s38/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-b76a701ca7356376/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_aarch64_unknown_linux_musl': '/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_aarch64_unknown_linux_musl: /Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/l1-s38/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-b76a701ca7356376/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/l1-s38/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-b76a701ca7356376/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: info: available CPUs for architecture 'aarch64':
+warning: aws-lc-sys@0.45.0:  a64fx
+warning: aws-lc-sys@0.45.0:  ampere1
+warning: aws-lc-sys@0.45.0:  ampere1a
+warning: aws-lc-sys@0.45.0:  ampere1b
+warning: aws-lc-sys@0.45.0:  apple_a10
+warning: aws-lc-sys@0.45.0:  apple_a11
+warning: aws-lc-sys@0.45.0:  apple_a12
+warning: aws-lc-sys@0.45.0:  apple_a13
+warning: aws-lc-sys@0.45.0:  apple_a14
+warning: aws-lc-sys@0.45.0:  apple_a15
+warning: aws-lc-sys@0.45.0:  apple_a16
+warning: aws-lc-sys@0.45.0:  apple_a17
+warning: aws-lc-sys@0.45.0:  apple_a18
+warning: aws-lc-sys@0.45.0:  apple_a7
+warning: aws-lc-sys@0.45.0:  apple_a8
+warning: aws-lc-sys@0.45.0:  apple_a9
+warning: aws-lc-sys@0.45.0:  apple_m1
+warning: aws-lc-sys@0.45.0:  apple_m2
+warning: aws-lc-sys@0.45.0:  apple_m3
+warning: aws-lc-sys@0.45.0:  apple_m4
+warning: aws-lc-sys@0.45.0:  apple_s10
+warning: aws-lc-sys@0.45.0:  apple_s4
+warning: aws-lc-sys@0.45.0:  apple_s5
+warning: aws-lc-sys@0.45.0:  apple_s6
+warning: aws-lc-sys@0.45.0:  apple_s7
+warning: aws-lc-sys@0.45.0:  apple_s8
+warning: aws-lc-sys@0.45.0:  apple_s9
+warning: aws-lc-sys@0.45.0:  carmel
+warning: aws-lc-sys@0.45.0:  cobalt_100
+warning: aws-lc-sys@0.45.0:  cortex_a320
+warning: aws-lc-sys@0.45.0:  cortex_a34
+warning: aws-lc-sys@0.45.0:  cortex_a35
+warning: aws-lc-sys@0.45.0:  cortex_a510
+warning: aws-lc-sys@0.45.0:  cortex_a520
+warning: aws-lc-sys@0.45.0:  cortex_a520ae
+warning: aws-lc-sys@0.45.0:  cortex_a53
+warning: aws-lc-sys@0.45.0:  cortex_a55
+warning: aws-lc-sys@0.45.0:  cortex_a57
+warning: aws-lc-sys@0.45.0:  cortex_a65
+warning: aws-lc-sys@0.45.0:  cortex_a65ae
+warning: aws-lc-sys@0.45.0:  cortex_a710
+warning: aws-lc-sys@0.45.0:  cortex_a715
+warning: aws-lc-sys@0.45.0:  cortex_a72
+warning: aws-lc-sys@0.45.0:  cortex_a720
+warning: aws-lc-sys@0.45.0:  cortex_a720ae
+warning: aws-lc-sys@0.45.0:  cortex_a725
+warning: aws-lc-sys@0.45.0:  cortex_a73
+warning: aws-lc-sys@0.45.0:  cortex_a75
+warning: aws-lc-sys@0.45.0:  cortex_a76
+warning: aws-lc-sys@0.45.0:  cortex_a76ae
+warning: aws-lc-sys@0.45.0:  cortex_a77
+warning: aws-lc-sys@0.45.0:  cortex_a78
+warning: aws-lc-sys@0.45.0:  cortex_a78ae
+warning: aws-lc-sys@0.45.0:  cortex_a78c
+warning: aws-lc-sys@0.45.0:  cortex_r82
+warning: aws-lc-sys@0.45.0:  cortex_r82ae
+warning: aws-lc-sys@0.45.0:  cortex_x1
+warning: aws-lc-sys@0.45.0:  cortex_x1c
+warning: aws-lc-sys@0.45.0:  cortex_x2
+warning: aws-lc-sys@0.45.0:  cortex_x3
+warning: aws-lc-sys@0.45.0:  cortex_x4
+warning: aws-lc-sys@0.45.0:  cortex_x925
+warning: aws-lc-sys@0.45.0:  cyclone
+warning: aws-lc-sys@0.45.0:  emag
+warning: aws-lc-sys@0.45.0:  exynos_m1
+warning: aws-lc-sys@0.45.0:  exynos_m2
+warning: aws-lc-sys@0.45.0:  exynos_m3
+warning: aws-lc-sys@0.45.0:  exynos_m4
+warning: aws-lc-sys@0.45.0:  exynos_m5
+warning: aws-lc-sys@0.45.0:  falkor
+warning: aws-lc-sys@0.45.0:  fujitsu_monaka
+warning: aws-lc-sys@0.45.0:  gb10
+warning: aws-lc-sys@0.45.0:  generic
+warning: aws-lc-sys@0.45.0:  grace
+warning: aws-lc-sys@0.45.0:  kryo
+warning: aws-lc-sys@0.45.0:  neoverse_512tvb
+warning: aws-lc-sys@0.45.0:  neoverse_e1
+warning: aws-lc-sys@0.45.0:  neoverse_n1
+warning: aws-lc-sys@0.45.0:  neoverse_n2
+warning: aws-lc-sys@0.45.0:  neoverse_n3
+warning: aws-lc-sys@0.45.0:  neoverse_v1
+warning: aws-lc-sys@0.45.0:  neoverse_v2
+warning: aws-lc-sys@0.45.0:  neoverse_v3
+warning: aws-lc-sys@0.45.0:  neoverse_v3ae
+warning: aws-lc-sys@0.45.0:  olympus
+warning: aws-lc-sys@0.45.0:  oryon_1
+warning: aws-lc-sys@0.45.0:  saphira
+warning: aws-lc-sys@0.45.0:  thunderx
+warning: aws-lc-sys@0.45.0:  thunderx2t99
+warning: aws-lc-sys@0.45.0:  thunderx3t110
+warning: aws-lc-sys@0.45.0:  thunderxt81
+warning: aws-lc-sys@0.45.0:  thunderxt83
+warning: aws-lc-sys@0.45.0:  thunderxt88
+warning: aws-lc-sys@0.45.0:  tsv110
+warning: aws-lc-sys@0.45.0:  xgene1
+warning: aws-lc-sys@0.45.0: 
+warning: aws-lc-sys@0.45.0: error: unknown CPU: 'armv8.4'
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' failed - Err(Error { kind: ToolExecError, message: "command did not execute successfully (status code exit status: 1): LC_ALL=\"C\" \"/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/scripts/zig-cc\" \"-O0\" \"-ffunction-sections\" \"-fdata-sections\" \"-fPIC\" \"-g\" \"-gdwarf-4\" \"-fno-omit-frame-pointer\" \"-mno-omit-leaf-frame-pointer\" \"--target=aarch64-unknown-linux-musl\" \"-Werror\" \"-Wall\" \"-Wextra\" \"-march=armv8.4-a+sha3\" \"-Wno-unused-parameter\" \"-o\" \"/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/l1-s38/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-b76a701ca7356376/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o\" \"-c\" \"/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/vendor/aws-lc-sys/aws-lc/tests/compiler_features_tests/neon_sha3_check.c\"" }).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/target/l1-s38/aarch64-unknown-linux-musl/debug/build/aws-lc-sys-b76a701ca7356376/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: Skipping due to missing compiler features: "/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/vendor/aws-lc-sys/aws-lc/third_party/s2n-bignum/s2n-bignum-imported/arm/sha3/sha3_keccak2_f1600.S"
+warning: aws-lc-sys@0.45.0: Skipping due to missing compiler features: "/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/vendor/aws-lc-sys/aws-lc/third_party/s2n-bignum/s2n-bignum-imported/arm/sha3/sha3_keccak4_f1600_alt2.S"
+warning: aws-lc-sys@0.45.0: Skipping due to missing compiler features: "/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/vendor/aws-lc-sys/aws-lc/third_party/s2n-bignum/s2n-bignum-imported/arm/sha3/sha3_keccak_f1600_alt.S"
+    Checking rustls-webpki v0.103.16
+    Checking shards-gitsign v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/gitsign)
+    Checking rcgen v0.14.10
+    Checking hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+    Checking shards-tuf v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/tuf)
+    Checking shards-sigstore v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/sigstore)
+    Checking rustls-platform-verifier v0.7.1
+    Checking shards-testguest v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/testguest)
+    Checking shards-registry v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/registry)
+    Checking hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+    Checking shards-remote v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/s38-nested-grants/crates/remote)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11m 33s
