@@ -151,6 +151,8 @@ hypervisor! {
     fn hv_vcpu_get_simd_fp_reg(vcpu: hv_vcpu_t, reg: hv_simd_fp_reg_t, value: *mut u8) -> hv_return_t = MISSING;
     fn hv_vcpu_get_vtimer_offset(vcpu: hv_vcpu_t, offset: *mut u64) -> hv_return_t = MISSING;
     fn hv_vcpu_set_vtimer_offset(vcpu: hv_vcpu_t, offset: u64) -> hv_return_t = MISSING;
+    // In mach_absolute_time() units, on the owning thread alone (hv_vcpu.h).
+    fn hv_vcpu_get_exec_time(vcpu: hv_vcpu_t, time: *mut u64) -> hv_return_t = MISSING;
     fn hv_gic_config_create() -> hv_gic_config_t = std::ptr::null_mut();
     fn hv_gic_config_set_distributor_base(config: hv_gic_config_t, base: hv_ipa_t) -> hv_return_t = MISSING;
     fn hv_gic_config_set_redistributor_base(config: hv_gic_config_t, base: hv_ipa_t) -> hv_return_t = MISSING;

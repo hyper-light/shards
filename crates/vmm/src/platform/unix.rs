@@ -2604,25 +2604,7 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
         if got != size {
             return Err(io::Error::last_os_error());
         }
-        // <mach/mach_time.h>'s, bound here: libc's binding is deprecated in favour of a
-        // crate, the call itself is not.
-        #[repr(C)]
-        struct Timebase {
-            numer: u32,
-            denom: u32,
-        }
-        unsafe extern "C" {
-            fn mach_timebase_info(info: *mut Timebase) -> libc::c_int;
-        }
-        let mut base = Timebase { numer: 0, denom: 0 };
-        // SAFETY: mach_timebase_info(3) fills `base`.
-        unsafe { mach_timebase_info(&raw mut base) };
-        let ticks = u128::from(info.pti_total_user) + u128::from(info.pti_total_system);
-        let ns = if base.denom == 0 {
-            ticks
-        } else {
-            ticks * u128::from(base.numer) / u128::from(base.denom)
-        };
+        let ns = mach_ns(u128::from(info.pti_total_user) + u128::from(info.pti_total_system));
         // SAFETY: a zeroed rusage_info_v2 is a valid out-parameter for its flavor, which
         // proc_pid_rusage(2) fills.
         let mut rusage: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
@@ -2640,7 +2622,7 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
         Ok(Usage {
             resident: info.pti_resident_size,
             footprint: rusage.ri_phys_footprint,
-            cpu_ns: u64::try_from(ns).unwrap_or(u64::MAX),
+            cpu_ns: ns,
             faults: u64::try_from(info.pti_faults).unwrap_or(0),
         })
     }
@@ -2679,6 +2661,89 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
             faults,
         })
     }
+}
+
+/// Nanoseconds of `ticks` of mach_absolute_time(3)'s clock, by its timebase
+/// (mach_timebase_info(3): 125/3 on Apple silicon, whose counter runs at 24 MHz), the unit
+/// of the kernel's task times and of Hypervisor.framework's vCPU times on arm64
+/// (hv_vcpu.h, `hv_vcpu_get_exec_time`); past u64's range, its most.
+#[cfg(target_os = "macos")]
+pub fn mach_ns(ticks: u128) -> u64 {
+    // <mach/mach_time.h>'s, bound here: libc's binding is deprecated in favour of a
+    // crate, the call itself is not.
+    #[repr(C)]
+    struct Timebase {
+        numer: u32,
+        denom: u32,
+    }
+    unsafe extern "C" {
+        fn mach_timebase_info(info: *mut Timebase) -> libc::c_int;
+    }
+    let mut base = Timebase { numer: 0, denom: 0 };
+    // SAFETY: mach_timebase_info(3) fills `base`.
+    unsafe { mach_timebase_info(&raw mut base) };
+    let ns = match base.denom {
+        0 => ticks,
+        denom => ticks.saturating_mul(u128::from(base.numer)) / u128::from(denom),
+    };
+    u64::try_from(ns).unwrap_or(u64::MAX)
+}
+
+/// The nanoseconds thread `tid` of this process has run a KVM guest, as Linux keeps it, read
+/// from any thread while that thread lives; an error once it has gone. Linux charges a
+/// thread's guest time a whole scheduler tick as each tick lands while it runs one
+/// (kernel/sched/cputime.c, `account_guest_time` from `account_system_time` and
+/// `irqtime_account_process_tick`, Linux v6.17), and keeps no other count of a vCPU's time in
+/// its guest: KVM's statistics count its exits and halts (include/linux/kvm_types.h
+/// `kvm_vcpu_stat_generic`; arch/{x86,arm64}/include/asm/kvm_host.h `kvm_vcpu_stat`). /proc
+/// says it in clock ticks (fs/proc/array.c, `do_task_stat`: field 43, `nsec_to_clock_t(gtime)`),
+/// sysconf's _SC_CLK_TCK a second: USER_HZ, 100, so 10 ms steps. Its file is opened and read
+/// each time, one page at most: nothing is held between reads.
+#[cfg(target_os = "linux")]
+pub fn thread_guest_ns(tid: libc::pid_t) -> io::Result<u64> {
+    use std::io::Read as _;
+    let mut stat = File::open(format!("/proc/self/task/{tid}/stat"))?;
+    let mut line = [0u8; STAT_LINE_MOST];
+    let read = loop {
+        match stat.read(&mut line) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            read => break read?,
+        }
+    };
+    let unknown = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "a thread's stat line as Linux does not write one",
+        )
+    };
+    let line = line
+        .get(..read)
+        .filter(|_| read < STAT_LINE_MOST)
+        .ok_or_else(unknown)?;
+    let ticks = guest_ticks(line).ok_or_else(unknown)?;
+    // SAFETY: sysconf(3) reads a constant.
+    let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
+        .ok()
+        .filter(|&hz| hz != 0)
+        .ok_or_else(|| io::Error::other("this host says no clock tick rate"))?;
+    Ok(u64::try_from(u128::from(ticks) * 1_000_000_000 / u128::from(hz)).unwrap_or(u64::MAX))
+}
+
+/// Room for a thread's /proc stat line, read whole in one read: a page, the buffer seq_file
+/// first gives a file's one record (fs/seq_file.c, `seq_read_iter`), past the line's most,
+/// 52 fields of at most a sign or space and 20 digits each, and a name of at most 63 bytes
+/// (fs/proc/array.c, `do_task_stat` and `proc_task_name`'s 64-byte buffer).
+#[cfg(target_os = "linux")]
+const STAT_LINE_MOST: usize = 4096;
+
+/// Field 43 of a /proc stat line, its thread's guest time in clock ticks: the 41st after the
+/// name, which may hold spaces and parentheses and ends at the line's last `)` (proc(5);
+/// fs/proc/array.c, `do_task_stat`).
+#[cfg(any(target_os = "linux", test))]
+fn guest_ticks(line: &[u8]) -> Option<u64> {
+    let name_end = line.iter().rposition(|&b| b == b')')?;
+    let fields = std::str::from_utf8(line.get(name_end.checked_add(1)?..)?).ok()?;
+    fields.split_ascii_whitespace().nth(40)?.parse().ok()
 }
 
 /// A thread's CPU clock, read from any thread of the process while the thread lives
@@ -2823,6 +2888,107 @@ mod usage_tests {
         assert!(after.resident > 0);
         assert!(after.footprint > 0);
         assert!(after.cpu_ns > before.cpu_ns, "{before:?} {after:?}");
+    }
+
+    /// A /proc stat line's guest time is its 43rd field, counted from after its name's last
+    /// `)`, whatever the name holds; a line short of it, or not a number there, has none.
+    #[test]
+    fn a_stat_lines_guest_time_is_its_43rd_field() {
+        let line = |name: &str, fields: std::ops::RangeInclusive<u32>, guest: &str| {
+            let after: Vec<String> = fields
+                .map(|f| if f == 43 { guest.to_string() } else { f.to_string() })
+                .collect();
+            format!("4242 ({name}) {}\n", after.join(" "))
+        };
+        assert_eq!(guest_ticks(line("vcpu0", 3..=52, "777").as_bytes()), Some(777));
+        // A name with spaces and parentheses of its own, as a thread may be given.
+        assert_eq!(guest_ticks(line("a) b (c", 3..=52, "12").as_bytes()), Some(12));
+        assert_eq!(
+            guest_ticks(line("x", 3..=44, "5").as_bytes()),
+            Some(5),
+            "the fields after it may go"
+        );
+        assert_eq!(
+            guest_ticks(line("x", 3..=42, "5").as_bytes()),
+            None,
+            "short of it"
+        );
+        assert_eq!(
+            guest_ticks(line("x", 3..=52, "-1").as_bytes()),
+            None,
+            "not a count"
+        );
+        assert_eq!(guest_ticks(b"4242 no name 0 0"), None);
+        assert_eq!(
+            guest_ticks(&[0xff, b')', b' ', b'1']),
+            None,
+            "short, and not text"
+        );
+    }
+
+    /// A thread that has run no guest has none, read from another thread; and its own line is
+    /// one this reads.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_thread_that_ran_no_guest_has_no_guest_time() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (done, finish) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                // SAFETY: gettid(2) has no preconditions.
+                tx.send(unsafe { libc::gettid() }).unwrap();
+                let _ = finish.recv();
+            });
+            assert_eq!(thread_guest_ns(rx.recv().unwrap()).unwrap(), 0);
+            done.send(()).unwrap();
+        });
+        let own = std::fs::read("/proc/thread-self/stat").unwrap();
+        assert_eq!(guest_ticks(&own), Some(0), "{}", String::from_utf8_lossy(&own));
+    }
+
+    /// Once its thread has gone, its guest time is an error, not a number. A join returns as
+    /// the thread clears its ID, before the kernel lets its task go (kernel/exit.c: `exit_mm`
+    /// before `exit_notify`), so the read is waited for to fail.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_gone_threads_guest_time_is_an_error() {
+        let tid = std::thread::spawn(|| {
+            // SAFETY: gettid(2) has no preconditions.
+            unsafe { libc::gettid() }
+        })
+        .join()
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while thread_guest_ns(tid).is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "its guest time still read 10 s after its end"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// Mach time in nanoseconds: none of none, and the counter's time across a sleep about
+    /// the sleep's.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mach_time_is_counted_in_nanoseconds() {
+        unsafe extern "C" {
+            fn mach_absolute_time() -> u64;
+        }
+        assert_eq!(mach_ns(0), 0);
+        // SAFETY: no arguments; reads the system counter.
+        let (t0, w0) = (unsafe { mach_absolute_time() }, std::time::Instant::now());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // SAFETY: as above.
+        let ticks = unsafe { mach_absolute_time() } - t0;
+        let wall = u64::try_from(w0.elapsed().as_nanos()).unwrap();
+        let ns = mach_ns(u128::from(ticks));
+        assert!(
+            ns <= wall + 1_000_000 && ns + 1_000_000 >= wall,
+            "{ns} ns by the counter, {wall} by the wall"
+        );
+        assert_eq!(mach_ns(u128::MAX), u64::MAX);
     }
 
     /// A thread's clock, read from another thread, counts what it spins: about no more
