@@ -1,0 +1,293 @@
+# engine_ring's four E2E tests on every host this work reaches (ROOT's round of 2026-11-12):
+# the give-back and shrinking-room tests no longer #[cfg(unix)] or Linux's alone (037c69cc8): the host's
+# word through the platform's own pipe (tests/common's Told: a FIFO on Unix, a named pipe on Windows, moved
+# from containers.rs), and the room shrunk through the host's own budget (engine_ring.rs's Budget): a slice
+# of the user's systemd manager on Linux (D183 slice 1); as root with no user's manager, a cgroup made in
+# root's own hierarchy as an administrator delegates one (slice 2, bdd0e9583, for the L1 guest); a group
+# shards keeps on macOS and Windows (slice 3), whose memory.high the test writes. f674182bb: the SKIP said
+# by the test (clippy's print_stderr refused it in the helper on Linux's lint).
+#
+# 1. Linux KVM x86_64: kiln-a094a12d, a clone at bdd0e9583, under systemd-run --user -p MemoryMax=24G -p Nice=10,
+#    TMPDIR on disk, CARGO_BUILD_JOBS=8, SHARDS_REQUIRE_VMS=1.
+# revision bdd0e9583ed5bc3855508762498dd9fb79e4b45a with 0 files changed; kiln-a094a12d.attlocal.net; Linux 6.19.10-300.fc44.x86_64; rustc 1.98.1 (48a229cea 2026-09-01); zig 0.16.0; 2026-11-12T16:11:27Z
+# scripts/lint x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+LINT-EXIT 0
+      1 == format
+      1 == x86_64-unknown-linux-gnu
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.62s
+      1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.04s
+      1 == aarch64-unknown-linux-gnu
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.63s
+      1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+      1 == x86_64-unknown-linux-musl
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.62s
+      1 == aarch64-unknown-linux-musl
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.58s
+#    (each target's "Checking shards v0.7.0" the changed test file's; warm from the same targets' lint of
+#     f674182bb at 15:59:53Z, LINT-EXIT 0, 18.80s to 2m35s a target)
+# cargo test --locked --profile test-release -p shards --test engine_ring -- --test-threads 1 --nocapture  (Linux KVM)
+RING-EXIT 0
+test a_microvms_engine_carries_bulk_whole_both_ways ... ok
+test a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain ... Removed '/run/user/1000/systemd/user.control/shardsring2071496.slice.d/50-MemorySwapMax.conf'.
+ok
+test an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends ... 1 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+1 vCPUs: 14 rings attached and let go, 4276224 bytes pinned and unpinned; 0 pages pinned again
+2 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+2 vCPUs: 30 rings attached and let go, 5398528 bytes pinned and unpinned; 0 pages pinned again
+32 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+32 vCPUs: 437 rings attached and let go, 112971776 bytes pinned and unpinned; 0 pages pinned again
+ok
+test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+test engine_ring_measurement ... ignored, a measurement: the coordinator's to run
+test result: ok. 4 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 55.42s
+END 2026-11-12T16:12:35Z
+#    (a_give_back_lets_an_idle_slot_go ok, its "ok" after the build's output; the shrinking-room test through
+#     slice 1, the "Removed" line systemctl's revert of its slice)
+#
+# 2. HVF, macOS arm64: this Mac, the worktree, through docs/research/measurements/macos-sched/launchd-run.sh
+#    (a GUI launchd job, out of the session's QoS clamp), SHARDS_REQUIRE_VMS=1. The shrinking-room test through
+#    a group shards keeps (slice 3).
+# revision bdd0e9583ed5bc3855508762498dd9fb79e4b45a with 0 files changed; Adas-MacBook-Pro-2.local; macOS 26.4.1 arm64 Apple M5 Max; rustc 1.98.1 (48a229cea 2026-09-01); 2026-11-12T16:11:41Z
+# cargo test --locked --profile test-release -p shards --test engine_ring -- --test-threads 1 --nocapture  (HVF), through launchd-run.sh
+RING-EXIT 0
+ok
+test a_microvms_engine_carries_bulk_whole_both_ways ... ok
+test a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain ... ok
+test an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends ... 1 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+1 vCPUs: 12 rings attached and let go, 1122304 bytes pinned and unpinned; 0 pages pinned again
+2 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+2 vCPUs: 15 rings attached and let go, 1667072 bytes pinned and unpinned; 0 pages pinned again
+18 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+18 vCPUs: 111 rings attached and let go, 31944704 bytes pinned and unpinned; 0 pages pinned again
+ok
+test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+test engine_ring_measurement ... ignored, a measurement: the coordinator's to run
+test result: ok. 4 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 7.64s
+END 2026-11-12T16:11:50Z
+#    (the first "ok" a_give_back_lets_an_idle_slot_go's; the same four green at 037c69cc8, 15:48:36Z, 41.91s
+#     with its build, and at f674182bb, 16:00:20Z, 6.11s: 110 and 116 rings at 18 vCPUs, 0 pages pinned after)
+#
+# 3. Linux arm64 KVM, in a guest with EL2 on this M5 Max (the L1 path: boot.rs's
+#    snapshot_tests_pass_on_a_kvm_host_of_this_architecture, test binaries built for aarch64 Linux), through
+#    launchd-run.sh. The guest runs its tests as root with no user's systemd manager.
+#    At f674182bb (16:07:33Z), L1-EXIT 0, 4 passed, but the shrinking-room test returned at its SKIP:
+#      E2E stderr: SKIP: no user's systemd manager here: /run/user/0/bus is not
+#    so bdd0e9583 makes the guest's budget a cgroup of root's own (slice 2). At bdd0e9583:
+# revision bdd0e9583ed5bc3855508762498dd9fb79e4b45a; Adas-MacBook-Pro-2.local; macOS 26.4.1 Apple M5 Max; 2026-11-12T16:10:06Z
+# L1: SHARDS_L1_TESTS=engine_ring:--nocapture SHARDS_L1_CONSOLE=<scratch>/l1-console.txt cargo test --locked --profile test-release -p shards --test boot -- snapshot_tests_pass_on_a_kvm_host_of_this_architecture --nocapture
+L1-EXIT 0
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 31 filtered out; finished in 11.70s
+END 2026-11-12T16:10:19Z
+#    the guest's console (SHARDS_L1_CONSOLE), its E2E lines:
+E2E: test a_give_back_lets_an_idle_slot_go ... ok
+E2E: test a_microvms_engine_carries_bulk_whole_both_ways ... ok
+E2E: test a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain ... ok
+E2E stderr: 1 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+E2E stderr: 1 vCPUs: 15 rings attached and let go, 6377472 bytes pinned and unpinned; 0 pages pinned again
+E2E stderr: 2 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+E2E stderr: 2 vCPUs: 30 rings attached and let go, 5398528 bytes pinned and unpinned; 0 pages pinned again
+E2E stderr: 8 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+E2E stderr: 8 vCPUs: 114 rings attached and let go, 30908416 bytes pinned and unpinned; 0 pages pinned again
+E2E: test an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends ... ok
+E2E: test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+E2E: test engine_ring_measurement ... ignored, a measurement: the coordinator's to run
+E2E: test result: ok. 4 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 8.93s
+#    (no SKIP; the L1 run of f674182bb before it, without the console kept: L1-EXIT 0 in 136.50s, the guests built)
+#
+# 4. WHP, Windows x86_64: jupiter (Windows 11 Pro 10.0.26200.9974, AMD64, 32 logical CPUs, HypervisorPresent
+#    True), natively, by a kiln agent of this work's (ring-e2e-whp, 01a1d070f1867083a86047794511720f, run-only,
+#    POLICY_READ 7ad28fab1 rules_sha256=df2acf47…), a scratch clone at 037c69cc8 (git status clean), rustc 1.98.1,
+#    Git Bash, PATH with C:\Users\corph\tools\nasm-3.02 (NASM 3.02) and zig-x86_64-windows-0.16.0, a target
+#    directory of its own; clone, target and logs removed after. 037c69cc8 to bdd0e9583 changes only Budget's
+#    Linux branches (slice 2) and where the SKIP is said: the Windows path these ran is the head's.
+# a. cargo test --locked -p shards-vmm --lib -- devices::virtio::vsock
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 389 filtered out; finished in 0.46s
+# b. SHARDS_HELPERS=skip SHARDS_INIT_BINARY=<empty file> SHARDS_SERVER_BINARY=<empty file> cargo test --locked -p shards --bin shards -- served_pipes_tests
+#    (r15's owed run: built natively now that NASM is on PATH)
+its_standard_handles_are_refused ... ok
+a_pipe_it_holds_goes_by_name ... ok
+managed_report_adopts_the_same_pipe_without_helper_inheritance ... ok
+a_warm_vms_link_goes_by_name_once ... ok
+what_is_no_pipe_it_holds_is_refused ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 702 filtered out; finished in 0.03s
+# c. SHARDS_REQUIRE_VMS=1 cargo test --locked --profile test-release -p shards --test engine_ring -- --test-threads 1 --nocapture, twice
+#    | test                                                                   | run 1  | run 2  |
+#    | a_give_back_lets_an_idle_slot_go                                       | ok     | ok     |
+#    | a_microvms_engine_carries_bulk_whole_both_ways                         | FAILED | ok     |
+#    | a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain  | ok     | ok     |
+#    | an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends       | FAILED | FAILED |
+run 1: test result: FAILED. 2 passed; 2 failed; 3 ignored; 0 measured; 0 filtered out; finished in 140.92s
+run 2: test result: FAILED. 3 passed; 1 failed; 3 ignored; 0 measured; 0 filtered out; finished in 82.95s
+#    Run 1, the bulk test: engine_ring.rs:72:5, "status Some(125) after 1.302212s", its stderr
+#      shards: the command's microVM stopped before the command ended; see ...\shards-tests\32016\eng-ring-2\daemon.log
+#    the daemon's log three lines, its bridge, its slots and its pressure watcher's, nothing of the stop.
+#    Run 1, the pins test: engine_ring.rs:409:9, "status Some(125) after 4.8581614s", the same words for
+#    eng-pins-1-4: the plain `run -d --name bare --cpus 1 ... sleep`, a run with no engine's socket at all.
+#    Its debug log's last 32 KiB all "unclaimed port write 0xcf8/0xcfa" and "read 0xcb00/0xcb0a/0xcc00/0xcc0a";
+#    the test directories went as the tests ended. Not D230's (no ring, no engine), cause unknown: owed.
+#    Run 2, the pins test:
+1 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+1 vCPUs: 13 rings attached and let go, 2174976 bytes pinned and unpinned; 0 pages pinned again
+2 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+2 vCPUs: 31 rings attached and let go, 6451200 bytes pinned and unpinned; 0 pages pinned again
+32 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+#    then engine_ring.rs:429:13, "status Some(1) after 366.9619ms", its stdout
+#      api-bulk error stream 0: logs: HTTP/1.1 503 Service Unavailable
+#    the first of the 32 streams at once at 32 vCPUs. The daemon's own bound, not the ring's: a microVM's own
+#    engine holds share(most, others) = most / (others + 2) connections (daemon/engine.rs `admit`, D181), and
+#    on Windows `most` is clients_for(POSIX_THREADS) = 27 (daemon.rs `most_clients`; its unit test pins the 27),
+#    as thread_limit() says none there (windows_process.rs: "limited by the available virtual memory",
+#    CreateThread's documentation), so a microVM's engine holds 13 at once (Linux and macOS derive theirs:
+#    RLIMIT_NPROC, threads-max and pids.max; kern.num_taskthreads). A product gap of the daemon's admission on
+#    Windows, not changed here; the 503's body was not kept. The device's log for eng-pins-32-6 to then, its
+#    last lines rings attached (2101248 bytes pinned) and let go (HostEnded), one "a swap refused: Ended".
+#
+# 5. Windows (x86_64 and aarch64, MSVC, through cargo-xwin) and macOS arm64 lint on bdd0e9583: this Mac, nice 10.
+#    x86_64-pc-windows-msvc finished (4m35s, its gpu feature 1m21s) and aarch64-pc-windows-msvc (13m04s), nothing
+#    said; aarch64-apple-darwin stopped part way, as the merge with main (below) superseded the revision.
+#
+# 6. The merge with main: 716dc45fb (origin/main 87bf86b31 into bdd0e9583, no conflict; main's side D234's
+#    nesting grant: the test guest's nesting mode, api-run, tests/nesting.rs and api_image.rs, records). Then
+#    38d857d88, origin/main fe44bc8ca (softvirt's records, harnesses and workflow) merged in while 6c ran:
+#    `git diff --stat 716dc45fb 38d857d88 -- '*.rs' '*.toml' Cargo.lock scripts resources` is empty, so 6a to 6c
+#    are its source's; scripts/check-development-policy passed on both.
+# 6a. Linux, kiln-a094a12d, the clone at 716dc45fb, as in 1:
+# revision 716dc45fbdf886e9fb54d4d375093d8dbeeb3ea1 with 0 files changed; kiln-a094a12d.attlocal.net; Linux 6.19.10-300.fc44.x86_64; rustc 1.98.1 (48a229cea 2026-09-01); zig 0.16.0; 2026-11-12T17:06:26Z
+# scripts/lint x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+LINT-EXIT 0
+      1 == format
+      1 == x86_64-unknown-linux-gnu
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 19.63s
+      1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+      1 == aarch64-unknown-linux-gnu
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.95s
+      1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+      1 == x86_64-unknown-linux-musl
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.86s
+      1 == aarch64-unknown-linux-musl
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 21.26s
+# cargo test --locked --profile test-release -p shards --test engine_ring -- --test-threads 1 --nocapture  (Linux KVM)
+RING-EXIT 0
+ok
+test a_microvms_engine_carries_bulk_whole_both_ways ... ok
+test a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain ... Removed '/run/user/1000/systemd/user.control/shardsring1626030.slice.d/50-MemorySwapMax.conf'.
+ok
+test an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends ... 1 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+1 vCPUs: 14 rings attached and let go, 3227648 bytes pinned and unpinned; 0 pages pinned again
+2 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+2 vCPUs: 29 rings attached and let go, 4345856 bytes pinned and unpinned; 0 pages pinned again
+32 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+32 vCPUs: 440 rings attached and let go, 114032640 bytes pinned and unpinned; 0 pages pinned again
+ok
+test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+test engine_ring_measurement ... ignored, a measurement: the coordinator's to run
+test result: ok. 4 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 77.90s
+END 2026-11-12T17:11:25Z
+# 6b. HVF, this Mac, the worktree at 716dc45fb (its source; 4 records changed beside it, no .rs), as in 2, the host
+#     at a load average near 150 (other work's VMs and builds):
+# revision 716dc45fbdf886e9fb54d4d375093d8dbeeb3ea1 with 4 files changed; Adas-MacBook-Pro-2.local; macOS 26.4.1 arm64 Apple M5 Max; rustc 1.98.1 (48a229cea 2026-09-01); 2026-11-12T17:07:02Z
+# cargo test --locked --profile test-release -p shards --test engine_ring -- --test-threads 1 --nocapture  (HVF), through launchd-run.sh
+RING-EXIT 0
+ok
+test a_microvms_engine_carries_bulk_whole_both_ways ... ok
+test a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain ... ok
+test an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends ... 1 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+1 vCPUs: 12 rings attached and let go, 1122304 bytes pinned and unpinned; 0 pages pinned again
+2 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+2 vCPUs: 15 rings attached and let go, 1667072 bytes pinned and unpinned; 0 pages pinned again
+18 vCPUs: 0 pages pinned idle with the engine's socket, 0 without
+18 vCPUs: 105 rings attached and let go, 15667200 bytes pinned and unpinned; 0 pages pinned again
+ok
+test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+test engine_ring_measurement ... ignored, a measurement: the coordinator's to run
+test result: ok. 4 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 27.94s
+END 2026-11-12T17:08:12Z
+# 6c. Windows (x86_64 and aarch64, MSVC, through cargo-xwin) and macOS arm64 lint, this Mac, nice 10, the worktree
+#     at 716dc45fb (its source; 4 records changed beside it, no .rs), the host's load average 50 to 150 throughout
+#     (other work's VMs and builds), hence the times:
+# revision 716dc45fbdf886e9fb54d4d375093d8dbeeb3ea1 with 4 files changed (0 .rs), macOS 26.4.1 arm64, rustc 1.98.1 (48a229cea 2026-09-01), 2026-11-12T17:07:14Z
+# scripts/lint x86_64-pc-windows-msvc aarch64-pc-windows-msvc aarch64-apple-darwin
+LINT-EXIT 0
+   1 == format
+   1 == x86_64-pc-windows-msvc
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 15m 39s
+   1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.04s
+   1 == aarch64-pc-windows-msvc
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 12m 39s
+   1 == aarch64-apple-darwin
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 47m 17s
+   1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 3m 54s
+END 2026-11-12T18:34:21Z
+#     (the build script's note on the gpu feature's renderer, a check build's; no lint said anything)
+#
+# 7. 6d9219874: origin/main 451672250 merged in (main's side since fe44bc8ca: tests in shards-api's client.rs and
+#    shards-vmm's guest_time.rs, scripts/gpu-libs, records; none of this work's files).
+# 7a. Linux, kiln-a094a12d, the clone at 6d9219874, as in 1, then main's changed tests and this work's light ones:
+# revision 6d9219874cec07ad4f4cc66b9029122f8f792128 with 0 files changed; kiln-a094a12d.attlocal.net; Linux 6.19.10-300.fc44.x86_64; rustc 1.98.1 (48a229cea 2026-09-01); zig 0.16.0; 2026-11-12T18:54:40Z
+# scripts/lint x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+LINT-EXIT 0
+      1 == format
+      1 == x86_64-unknown-linux-gnu
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.85s
+      1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.08s
+      1 == aarch64-unknown-linux-gnu
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.01s
+      1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.28s
+      1 == x86_64-unknown-linux-musl
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.85s
+      1 == aarch64-unknown-linux-musl
+      1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.48s
+-- cargo test --locked -p shards-vmm --lib -- vm::guest_time
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 475 filtered out; finished in 0.01s
+-- cargo test --locked -p shards-api --lib -- client::tests
+test result: ok. 31 passed; 0 failed; 3 ignored; 0 measured; 68 filtered out; finished in 0.96s
+-- cargo test --locked -p shards-vmm --lib -- devices::virtio::vsock
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 418 filtered out; finished in 1.94s
+END 2026-11-12T18:57:26Z
+# 7b. Windows, this Mac, the worktree at 6d9219874 (its source; 5 records changed beside it, no .rs):
+# revision 6d9219874cec07ad4f4cc66b9029122f8f792128 with 5 files changed (0 .rs), macOS 26.4.1 arm64, rustc 1.98.1 (48a229cea 2026-09-01), 2026-11-12T18:53:14Z
+# scripts/lint x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+LINT-EXIT 0
+   1 == format
+   1 == x86_64-pc-windows-msvc
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 07s
+   1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 49.47s
+   1 == aarch64-pc-windows-msvc
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 53s
+END 2026-11-12T19:01:49Z
+# 7c. macOS arm64, this Mac, the worktree at 6d9219874 (as 7b):
+# revision 6d9219874cec07ad4f4cc66b9029122f8f792128 with 5 files changed (0 .rs), macOS 26.4.1 arm64, rustc 1.98.1 (48a229cea 2026-09-01), 2026-11-12T19:02:02Z
+# scripts/lint aarch64-apple-darwin
+LINT-EXIT 0
+   1 == format
+   1 == aarch64-apple-darwin
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 40s
+   1 warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+   1     Finished `dev` profile [unoptimized + debuginfo] target(s) in 33.70s
+END 2026-11-12T19:06:04Z
+#
+# 8. ROOT asked, during this round, after main's Windows CI, said not to compile engine_ring.rs on
+#    aarch64-pc-windows-msvc (an unused import, held_open dead). GitHub's records of CI's own runs, read from
+#    18:55Z to 19:00Z (gh run view, the jobs' logs): the one engine_ring.rs refusal on Windows was this branch's
+#    037c69cc8 (run 43250996416, job 131296419179, its Lints step):
+#      error: use of `eprintln!`
+#         --> crates\shards\tests\engine_ring.rs:509:17
+#      509 |                 eprintln!("SKIP: no user's systemd manager here: {} is not", bus.display());
+#      error: could not compile `shards` (test "engine_ring") due to 1 previous error
+#    which f674182bb fixed (run 43253785018: Lints passed on every target). On main, the runs of 7ad28fab1
+#    (43250570050), 87bf86b31 (43255586977) and fe44bc8ca (43263852791) passed aarch64-pc-windows-msvc's Lints
+#    (`cargo clippy --locked --workspace --all-targets --target aarch64-pc-windows-msvc -- -D warnings`, 7m42s on
+#    fe44bc8ca, whose Tests compiled and ran engine_ring too); their Tests failed elsewhere (fe44bc8ca's: shards'
+#    daemon::ship::etwlogs, shards-api's client tests, shards-git's real_git, shards-vmm's guest_time), and x86_64
+#    Windows' on 7ad28fab1 and 87bf86b31 at the GPU's renderer step. Main's engine_ring.rs is 33cc69d1e's, its
+#    held_open and Write import #[cfg(unix)] as their tests are; this branch runs both tests on every host, so
+#    neither is gated.
