@@ -25,7 +25,7 @@
       "crates/vmm/src/hv/** (each backend's GuestClock; hvf ffi/sys/mod, kvm/mod, whp/{ffi,mod}, whp_arm64/{ffi,mod}, hv/mod.rs)",
       "crates/vmm/src/vm/{guest_time.rs (new), mod.rs, runtime.rs, unsupported.rs}",
       "crates/vmm/src/platform/unix.rs (mach_ns; Linux ThreadGuestTime)",
-      "crates/ipc/src/lib.rs (kinds GUEST_TIME 87, GUEST_TIMED 88)",
+      "crates/ipc/src/lib.rs (kinds GUEST_TIME 88, GUEST_TIMED 89)",
       "crates/shards/src/{vm_run.rs, warm.rs, daemon.rs, daemon/commands.rs, daemon/engine/watch.rs}",
       "crates/testguest/src/linux.rs (the `spin` mode, for the real-VM test)",
       "crates/shards/tests/guest_time.rs (new; real-VM test for ROOT)",

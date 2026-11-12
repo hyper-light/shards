@@ -17,8 +17,12 @@ pub(crate) fn kept(kernel: &Path) -> usize {
     let Some(home) = home() else {
         return console_said(ConsoleRecords::default(), ConsoleRecords::default());
     };
+    kept_at(&home, kernel)
+}
+
+pub(crate) fn kept_at(home: &Path, kernel: &Path) -> usize {
     let dir = home.join("said");
-    let own = pin(&home, kernel).map_or_else(ConsoleRecords::default, |pin| read(&dir.join(pin)));
+    let own = pin(home, kernel).map_or_else(ConsoleRecords::default, |pin| read(&dir.join(pin)));
     console_said(own, every(&dir))
 }
 

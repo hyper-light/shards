@@ -547,13 +547,16 @@ pub mod kind {
     pub const PRECOPYING: u8 = 85;
     /// VM to daemon: trusted tenant abort on the independent control path (managed::Abort).
     pub const MANAGED_ABORT: u8 = 86;
+    /// VM to its owner: a member's population has ended, its index and status
+    /// (`shards_abi::run::members::Ended`), where the run asked to hear it (D231).
+    pub const MEMBER_ENDED: u8 = 87;
     /// Daemon → a running run's VM, on its link or a joiner's: what each of its microVM's
     /// vCPUs has run of its guest, by its number (8, big-endian), answered with
     /// [`GUEST_TIMED`].
-    pub const GUEST_TIME: u8 = 87;
+    pub const GUEST_TIME: u8 = 88;
     /// A VM → its daemon: [`GUEST_TIME`]'s answer, by its number (8, big-endian), then 0 and
     /// the times as `shards_vmm::vm::GuestTimes::encode` writes them, or 1 and why not.
-    pub const GUEST_TIMED: u8 = 88;
+    pub const GUEST_TIMED: u8 = 89;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the

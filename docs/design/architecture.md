@@ -21504,12 +21504,16 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   `buffer_sizes` are the OS's SO_SNDBUF/SO_RCVBUF.
 
 **What it holds to** (the requirement its tests cite as D215):
-- *A spec* becomes `run --kernel`'s flags as vm_run.rs reads them, the kernel first. A
+- *A spec* becomes `run --kernel`'s flags as vm_run.rs reads them, the kernel first; one
+  that asks for a GPU adds `--gpu`, which `shards` runs in the GPU's VM process (D144), and
+  one that names the host's GPUs adds `--gpu-device` for each, by its exact identity (D232). A
   disk's or a share's path that ends in `:ro`, which shards would read as a mode, is
   refused `Unsupported`. Past shards-vmm's bounds (no vCPU; memory odd or under the least)
   it is refused `Bounds` before anything boots, and the hypervisor's own refusal of its
-  vCPUs comes back as `Bounds` too; a host without a backend (macOS x86_64, Windows arm64)
-  is refused `NoBackend`, by name.
+  vCPUs comes back as `Bounds` too; a host without a backend (macOS x86_64) is refused
+  `NoBackend`, by name. Windows on arm64 is WHP's, the VMM's `hv::whp_arm64` (D209): the
+  API names the backend the VMM builds on each host, and a host whose hypervisor runs no
+  guest says so as its VM process starts (`check_host`).
 - *A guest's socket directory* is the client's alone (0700), named apart from its pid,
   short enough to bind (else /tmp on Unix; refused by name on Windows), and removed with
   the guest.
@@ -21536,6 +21540,174 @@ suite and E2E on HVF.
 
 **What would falsify it.** A conforming client that needs to link the VMM; a host class
 whose runs are slower than its record (a new record, not a raised bound).
+
+### D231. An image booted for an orchestrator: a run of its own, hosted by one `shards` process (decided; building)
+
+**Why.** An orchestrator that runs each harness in a microVM of its own (Hex, for every
+kiln harness) needs an Agentfile's image booted under shards-init, which applies the
+Agentfile (each member started in its confined domain, its grants enforced, D59, D109), with
+no daemon: its records, pools and runs are a home's and Docker's, where the orchestrator owns
+each microVM's life as it owns each direct boot's (D215). D215's direct boot runs the
+orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternatives:
+[runtime-image-boot-decision-v1](../research/runtime-image-boot-decision-v1.md).
+
+**Decided.**
+- *One host per run.* `shards_api::image::ImageShards::boot` starts `shards api-run`, an
+  internal command, and speaks to it over that process's stdin and stdout, where alone the
+  request's credentials travel. The run host prepares the run with the daemon's own
+  functions (`run::prepare`, `volumes::open_for`, `setup::setup`, `security_setup`,
+  `domain_seccomp`, `guest::server_device`, managed capture admission, the egress policy),
+  starts the VM process cold in its warm mode with its network process through the
+  builder's launch made shared, and plays the daemon's side of the warm link for that one
+  run (`READY`, `RUN`, `TAKEN`, `STOP_ORDER` of SIGKILL so that the run ends with its host,
+  the run's messages, execs). It owns the run's managed output (P3) and relays each
+  member's channels and end to the orchestrator. Its channel closing ends the run.
+- *Members' streams and ends.* stdout and stderr are managed capture's, credited per
+  channel by the orchestrator's reads; a member's end is `MEMBER_ENDED` (its status as
+  `docker run` reports one), sent by init once, when its population has ended. stdin
+  (closed unless asked for at create, then a pipe fed by a connection of the member's own,
+  dialed to the exec port with a token, as an exec's is) and a terminal (G24) are owed,
+  refused `Unsupported` on every host.
+- *Staging.* `member-env=` and `member-file=` setup entries, by the member's declared
+  index: variables over its image's (`SHARDS_DOMAIN` refused), regular files under its home
+  tmpfs at relative paths, owned by its uid, permission bits alone, applied before its
+  program runs, within `run::MAX_PAYLOAD`. Native-sign-in delegation, not opacity (G18): the
+  member reads what it is given.
+- *Ports and grants.* Published ports bound by `publish::bind`, only for a port the image
+  gives a member for ingress (D122) or for the run's own command; egress, remote MCP hosts
+  and DNS the image grants, kept or dropped by the orchestrator, never added.
+- *Shares.* At boot, as the run's `-v`, given to the members the image's `VOLUME` there is
+  for (D109). Added while running: D214's path to the run's command, owed; to a member,
+  refused (its mounts are made as it starts).
+- *Stats.* `builtin::STATS` with a scope: the workload's (as before), the run's, or a
+  member's cgroup.
+- *Stop.* The VM process killed at once, as `Guest::stop`.
+- *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
+  the members start.
+
+**Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
+`docker run`'s `128 + signal`; every wait is on a fact.
+
+**Built so far** (branch `p/runtime-image-boot-v1`, light checks only): the abi entries,
+init's staging, member ends, `ATTEND` and `STATS` scopes, the VM process's relay of member
+ends, `shards_api::image` and `shards api-run` on Linux and macOS. **Owed:** the Windows run
+host (refused `Unsupported` there, its AppContainer launch not written), a member's stdin and
+terminal, DAX windows for its shares, templates and pools, a boot patience, shares added
+while running, `attach` after the owner's crash, one launch shared with the builder's and the
+daemon's, and a simulator.
+
+**Evidence owed** (ROOT): real-VM E2E on KVM x86_64 and arm64 and HVF
+(`crates/shards/tests/api_image.rs`); the run host's resident, CPU and kernel cost per
+microVM against the daemon's per run and Firecracker's (R14).
+
+**What would falsify it.** A run host costing more per microVM than the daemon per run (then
+one host per orchestrator); an orchestrator needing to link the VMM; credentials a member
+must not read (then plan P10's opaque broker).
+
+### D232. A microVM's GPU by its host GPUs' exact identities (built; real-GPU validation owed)
+
+**Why.** A host with several GPUs, or an orchestrator dividing a host's GPUs among microVMs
+(Hex places each GPU guest on the GPUs it chose), needs a guest's Venus contexts to render on
+the GPUs it was given and on no other. A `--gpu` VM's renderer offered every Vulkan device the
+host's loader found (D144, D201, D202). A model name or an ordinal names no device across
+reboots, driver updates or hot plug; a device's own identity does.
+
+**Decided.**
+- *Identities.* `shards_abi::gpu::PhysicalGpu`: a PCI address (durable on Linux and Windows),
+  a Metal registry ID (macOS), or the current boot's DXGI LUID (Windows: this boot's only,
+  rejoined, never kept as PCI). One grammar (`pci:DOMAIN:BUS:DEVICE.FUNCTION`, `metal:HEX`,
+  `luid:HEX`), checked in the no_std ABI shards-api and the VM process share; a selection
+  names an identity once.
+- *The flag.* `run --kernel … --gpu-device ID`, repeatable, implying `--gpu`; shards-api's
+  `GuestSpec.gpu_devices` becomes it (D215).
+- *Binding.* The VM process resolves each identity to the host's live Vulkan device UUIDs
+  before any guest context or window exists (`vm::gpu_selection`), refusing one missing,
+  ambiguous, aliased or foreign, and creates every Venus context of the VM bound to exactly
+  those: virglrenderer's physical-device filter and the selection's transport to its render
+  server (`resources/gpu/physical-{linux,krunkit}.patch`, `physical-transport-*.patch`,
+  applied by `scripts/gpu-libs`) and an identity bridge reading each device's ID, PCI and
+  memory properties through the pinned Vulkan headers (`resources/gpu/native-identity.c`). A
+  context whose selection fails is destroyed before the guest hears of it.
+- *Probe and report.* `--gpu-probe` runs the renderer alone and prints each GPU's identities,
+  name and host-visible memory (`shards_abi::gpu::probe`, versioned; `Guests::probe_gpu`
+  reads it); a managed launch's VM process writes the same report, framed with its launch's
+  scope, to its client's private pipe before the guest runs (`--gpu-report`, D233).
+- *Snapshots.* Format 29 keeps the selection, rejoined as a snapshot restores; 28 reads.
+- *The driver held.* The renderer keeps the host's Vulkan loader and an instance for its life
+  (`HeldDriver`): unheld, each context loaded the driver anew, and NVIDIA's static-TLS
+  library could not load at a VM's 19th (Hex's measurement).
+
+**Literals.** `MAX_PHYSICAL_GPUS`, 65,536, a u16's every index: the render server transport's
+own bound on a context's identities (`VIRGL_DEVICE_UUID_MAX_COUNT`, `1 + UINT16_MAX`), which
+bounds that message's payload; it came from Hex's scheduler's u16 device index, and is owed a
+derivation of shards' own (R03). `GPU_NAME_BYTES`, 256: Vulkan's
+`VK_MAX_PHYSICAL_DEVICE_NAME_SIZE`. The probe's byte bounds are its encoding's longest lines
+for the count (`probe.rs`). Snapshot format 29.
+
+**Held.** A GPU VM process for Windows on arm64 (`gpu_target`, gpu-libs' arm64 build): never
+built or run for that target; ROOT's GPU lane holds it.
+
+**Evidence.** Hex's research on the filter and transport (Hex's
+docs/hex-venus-physical-filter) and the managed-virtio-gpu lane's check of these patches'
+bytes (docs/research/measurements/managed-virtio-gpu/DESTROY-CONTRACT.md, selected-de0a);
+docs/research/measurements/hex-upstream-v1: on an RTX 5060 Ti (Linux, NVIDIA 615.78.08) the
+renderer's, the held driver's and the selection's tests, the identity bridge's thin archive
+red and green, and the held driver's red and green; strict clippy and unit tests on x86_64
+Linux.
+
+**Evidence owed** (ROOT). A GPU VM with `--gpu-device` on each GPU host class (Linux NVIDIA,
+AMD and Intel, macOS Metal, Windows x86_64): rendering on the selected GPU and no other; a
+wrong identity refused; a format-29 snapshot restored; no 19th-context failure in a GPU VM
+running a Vulkan program 30 times; the seven-target lint.
+
+**What would falsify it.** A driver whose device UUIDs change within a boot (then rejoin per
+context); GPUs Vulkan cannot tell apart by UUID.
+
+### D233. A client that contains its own VM processes launches them through its native owner (built; real-VM validation owed)
+
+**Why.** shards-api's client spawns the VM process (D215). A client that must contain every
+process it starts, in a cgroup or a Job object (Hex's node, for its accounting and its
+cleanup), needs to start the VM process itself, inside its own scope, and still use the
+API's protocol: its output drained, its end, its connections.
+
+**Decided.**
+- *Prepare, then launch.* `prepare_boot` (`prepare_native_boot` with typed startup inputs)
+  returns the binary, arguments, socket, ports and output bound, launching nothing; the
+  client's `ManagedLauncher` starts it with the API's output pipes and hands back its native
+  receipt (`ManagedProcess`: identity, wait, stop, terminal), which the client allocated,
+  fallibly, before any effect: `ManagedReceipt` is that allocation, a triomphe `Arc` coerced by
+  `unsize` (`=1.1.0`, the one new dependency; alternatives in Hex's
+  docs/design/managed-native-receipts.md), so no allocation follows the launch.
+  `boot_managed` and `attach_managed` give it the API's client; no second process record.
+- *Ends.* A receipt's end tells the process's exit (`TerminalScope::Process`) from its whole
+  scope's release (`Released`), which its native owner alone says; a stop's intent is
+  published before the native stop, which may complete inline.
+- *Scope.* `Refusal::Scope` keeps a scope's typed failure before its process's identity is
+  known; `--host-managed` keeps the processes shards starts beside the VM in the client's
+  process group; `Shards::configured(cache, home)` gives its probe and launches exactly the
+  client's `SHARDS_CACHE` and `SHARDS_HOME`, the environment otherwise cleared.
+- *Images.* `verify_native_image` checks a declared executable's whole bytes (length,
+  SHA-256) against the same open file by the caller's deadline: a content witness, not
+  permission to run it.
+- *Connections.* `connect_before(port, deadline)` dials under an absolute deadline, a socket
+  completed after it never published; `connect_once_before` dials once, refused at once where
+  nothing listens.
+- *The report.* D232's report reaches the client on its private pipe: one complete scoped
+  frame by the deadline, anything else uncertainty.
+
+**Literals.** None new beyond D232's; every wait is the caller's deadline.
+
+**Evidence.** Hex's design records (docs/design/managed-native-receipts.md,
+native-physical-report.md in Hex) and the failures each port's commit cites (an inline stop,
+Hex's 74481869; a late dial, db481f0e); shards-api's unit tests here (the native model, the
+report pipe, the single attempt, the refusal chain).
+
+**Evidence owed** (ROOT). A client's native launcher (a Linux cgroup, a Windows Job object,
+macOS) booting real guests through `boot_managed`: scope released and refused as its receipt
+says; the report pipe on a Windows host; the seven-target lint.
+
+**What would falsify it.** A client that needs shards to own its VM processes after all (then
+D215's spawn alone).
 
 ## 4. Start path (≤ 5 ms budget)
 

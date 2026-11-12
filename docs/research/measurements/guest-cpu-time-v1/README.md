@@ -128,8 +128,8 @@ keyed by vCPU index, not a fixed array; a departed vCPU stays in a monotone tota
   - `Handle::guest_times() -> GuestTimes { vcpus: [VcpuTime { index, guest_ns, unread }], departed_ns }`, with
     `total_ns()`. Its text form (`encode`/`decode`) is a line each, `departed NS`, then `vcpu INDEX NS [unread
     WHY]`, in the style of init's STATS lines, so that clients that do not link the vmm crate can read it.
-- **VM process.** `vm_run::guest_times()` reads the running VM's handle. A daemon's ask, `GUEST_TIME` (kind 87,
-  numbered), arrives on the run's link or a joiner's, and `warm.rs` answers `GUEST_TIMED` (88) with 0 and the
+- **VM process.** `vm_run::guest_times()` reads the running VM's handle. A daemon's ask, `GUEST_TIME` (kind 88,
+  numbered), arrives on the run's link or a joiner's, and `warm.rs` answers `GUEST_TIMED` (89) with 0 and the
   text, or 1 and why. It answers at once, because a sample waits on no vCPU exit's handling, including this
   connection's.
 - **Daemon.** `guest_times_of(id)` asks the run's VM and waits for its numbered answer through the run's inbox,
@@ -169,7 +169,7 @@ keyed by vCPU index, not a fixed array; a departed vCPU stays in a monotone tota
   - `STAT_LINE_MOST` = 4096: a page, seq_file's first buffer for a single record (`fs/seq_file.c`,
     `seq_read_iter`), above the line's bound of 52 fields of at most 21 bytes and a name of at most 63
     (`proc_task_name`'s 64-byte buffer).
-  - Kinds 87 and 88: the next free.
+  - Kinds 88 and 89: the next free, after main's `MEMBER_ENDED` took 87 (D231) as this merged.
   - `TAKE_TIMEOUT`: existing, reused for the same purpose as `usage_of`.
   - The real-VM test's spin, idle and sample period are test-only and explained in it. Its slack is the step of
     the process CPU clock it compares against, read live (`cpu_step`), times vCPUs + 1.

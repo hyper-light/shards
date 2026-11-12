@@ -1,0 +1,33 @@
+{
+  "POLICY_READ": true,
+  "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "source": "origin/main, read in full with git show from the g121 worktree; p/integrate-engine-20261111 (82083f2781bea1db6b4f23c7e154bd3481f4ec00) carries byte-identical copies",
+  "files": {
+    "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "AGENTS.md": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+    "docs/development-evidence.md": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+    "CLAUDE.md": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f"
+  },
+  "development_rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "coordinator": "ROOT (agent 01a148884a4770fdaf0111f3f792a248)",
+  "task": "Upstream into Shards what Hex vendors as patches on Shards 33df95b0 (0001-0031) and on the Shards GPU line 0342b85d (0001-0008): classify each (already in Shards / applies / needs adaptation / Hex-only / wrong), port each that belongs as its own signed commit naming the Hex patch, with red-first tests for reproducible defects (R09) and guard-removal mutations for added guards; fix f7f8b03b's release build and 1ab4a163's clippy if ported.",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/hex-upstream-v1",
+  "branch": "p/hex-upstream-v1",
+  "base": "82083f2781bea1db6b4f23c7e154bd3481f4ec00 (origin/p/integrate-engine-20261111)",
+  "owned_paths": [
+    "the files the ported Hex patches touch (listed in the report; crates/api edits limited to what the patches change, another implementer owns new crates/api modules)",
+    "docs/research/measurements/hex-upstream-v1/"
+  ],
+  "read_only": [
+    "/Users/adalundhe/.cache/hex-lead and its worktrees (Hex's repository)"
+  ],
+  "limits": [
+    "light tests only: unit tests of touched crates, cargo fmt --all --check, clippy -D warnings on x86_64-unknown-linux-gnu (musl targets for guest crates), python3 scripts/check-development-policy",
+    "no real-VM suites, benchmarks, profiling or measurements (ROOT's)",
+    "no builds on this Mac (below its disk floor); cargo on kiln runner 8fadc1ec213332e16cb0d915a3fb913f (or 451397fcc585f7f7cb9aaf00e42064bb), systemd-run --user --scope -q -p MemoryMax=24G, -j4, TMPDIR=$HOME/g121-tmp, only when no amphora-bench runs, zig 0.16.0 from $HOME/.local/share/shards-zig/zig-x86_64-linux-0.16.0",
+    "no subagents; no push, merge or rebase; commits via /Users/adalundhe/.kiln-run/bin/gits with named paths, signed, final line Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>, never force"
+  ],
+  "rules_acknowledged": "R01-R16 read in full; AGENTS.md and docs/development-evidence.md checklist read in full",
+  "read_at": "2026-11-11"
+}
