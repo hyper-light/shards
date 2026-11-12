@@ -40,7 +40,7 @@
     "R07": "Comments carry the derivations and Go's and OPA's names.",
     "R08": "Not a performance change; OPA's costs on these operands are recorded, not competed with.",
     "R09": "Reproduced live: CI's jobs (logs/ci-fuzz-failures.log) and seven artifacts on this Mac; after: every artifact in 0 ms on Linux.",
-    "R10": "Before/after, mutants, logs and harnesses here; D98 and PM M525.",
+    "R10": "Before/after, mutants, logs and harnesses here; D98 and PM M526.",
     "R11": "One implementation, no platform branch. Tests: macOS arm64; fuzzing: Linux x86_64. Owed: the crate's tests on Linux arm64, Windows and musl (CI's matrix), and the seven-target lint (the coordinator's).",
     "R12": "Shared pow5 bounds; no platform code.",
     "R13": "int_value's bound check, unreachable, removed; the text bound removed at the merge in favour of the lane that writes OPA's text.",

@@ -1037,21 +1037,23 @@ mod tests {
 
     impl Child {
         fn start() -> Self {
-            let mut pidfd = -1;
-            let mut args = crate::domains::CloneArgs {
-                flags: libc::CLONE_PIDFD as u64,
-                pidfd: (&raw mut pidfd) as u64,
-                exit_signal: libc::SIGCHLD as u64,
-                ..Default::default()
-            };
+            let mut pidfd: libc::c_int = -1;
             // SAFETY: a private fixture child; its branch calls only raw setup/pause/exit.
             let parent = unsafe { libc::getpid() };
-            // SAFETY: clone3 writes its pidfd into this slot in the parent only.
+            // clone(2) as fork(2), as init's own forks are (`Launch::child`), not clone3,
+            // which Docker's default seccomp profile, CI's musl container's, answers ENOSYS
+            // (crates/seccomp/data/default.json); clone(2) carries this request whole.
+            // SAFETY: CLONE_PIDFD writes the pidfd through the third argument, parent_tid
+            // (kernel/fork.c), in the parent only. No stack, TLS or child TID: the last two
+            // arguments are 0 in either order an architecture takes them.
             let pid = unsafe {
                 libc::syscall(
-                    libc::SYS_clone3,
-                    &raw mut args,
-                    size_of::<crate::domains::CloneArgs>(),
+                    libc::SYS_clone,
+                    (libc::CLONE_PIDFD | libc::SIGCHLD) as libc::c_long,
+                    0 as libc::c_long,
+                    &raw mut pidfd,
+                    0 as libc::c_long,
+                    0 as libc::c_long,
                 )
             };
             if pid == 0 {
@@ -1067,7 +1069,7 @@ mod tests {
                     }
                 }
             }
-            assert!(pid > 0, "clone3: {}", io::Error::last_os_error());
+            assert!(pid > 0, "clone: {}", io::Error::last_os_error());
             assert!(pidfd >= 0);
             Self {
                 pid: Some(libc::pid_t::try_from(pid).unwrap()),

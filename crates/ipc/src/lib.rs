@@ -2049,6 +2049,12 @@ impl RunHead {
     /// group's budget holds it (0 or 1), then whether its layer comes as its file (0 or 1).
     pub const LEN: usize = 1 + 4 * 8 + 1 + 8 + 2 * 8 + 8 + 1 + 1;
 
+    /// Whether its log keeps anything, as a warm VM takes a run's request only where it
+    /// does (crates/shards/src/warm.rs `head`), a run that writes no log included.
+    pub fn keeps_its_log(&self) -> bool {
+        self.log_size > 0 && self.log_files > 0
+    }
+
     pub fn encode_into(&self, out: &mut Vec<u8>) {
         out.push(self.flags);
         for n in [self.log_size, self.log_files, self.first, self.plug] {
