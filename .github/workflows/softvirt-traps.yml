@@ -32,3 +32,29 @@ jobs:
         with:
           name: softvirt-traps-${{ matrix.runner }}
           path: ${{ runner.temp }}/traps-${{ matrix.runner }}.md
+
+  # Windows' own primitives, on its hosted x86_64 runner and its arm64 one (whose image
+  # has no hypervisor platform, PM M172).
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-2025, arch: x64 }
+          - { runner: windows-11-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build and run
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set VS=%%i
+          call "%VS%\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.arch }} || exit /b 1
+          cl /nologo /O2 /W4 /Fe:%RUNNER_TEMP%\traps.exe docs\research\measurements\softvirt-traps\windows.c || exit /b 1
+          %RUNNER_TEMP%\traps.exe > %RUNNER_TEMP%\traps-${{ matrix.runner }}.md
+          type %RUNNER_TEMP%\traps-${{ matrix.runner }}.md
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: softvirt-traps-${{ matrix.runner }}
+          path: ${{ runner.temp }}/traps-${{ matrix.runner }}.md

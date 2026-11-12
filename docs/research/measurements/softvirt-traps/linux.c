@@ -29,6 +29,7 @@
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/ptrace.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -49,6 +50,9 @@
 #endif
 #ifndef SECCOMP_USER_NOTIF_FD_SYNC_WAKE_UP
 #define SECCOMP_USER_NOTIF_FD_SYNC_WAKE_UP 1UL
+#endif
+#ifndef SYS_memfd_secret
+#define SYS_memfd_secret 447 // the same on x86_64 and arm64
 #endif
 
 // A system call number no architecture assigns: the guest's "system call", which the
@@ -685,6 +689,66 @@ static void t_maps(void) {
     report("maps", "unmap one 2 MiB unit", tmp, units);
 }
 
+// --- probes: what an unprivileged process may use for guest memory and isolation ------
+
+static void probe_secret(size_t mib) {
+    char variant[64], what[128];
+    snprintf(variant, sizeof variant, "memfd_secret, %zu MiB mapped and touched", mib);
+    int fd = (int)syscall(SYS_memfd_secret, 0);
+    if (fd < 0) {
+        note("probe", variant, strerror(errno));
+        return;
+    }
+    size_t len = mib << 20;
+    if (ftruncate(fd, (off_t)len)) {
+        note("probe", variant, strerror(errno));
+        close(fd);
+        return;
+    }
+    char *p = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED) {
+        note("probe", variant, strerror(errno));
+        close(fd);
+        return;
+    }
+    uint64_t t = now_ns();
+    for (size_t i = 0; i < len; i += PAGE)
+        p[i] = 1;
+    snprintf(what, sizeof what, "ok, first touch %llu ns a page",
+             (unsigned long long)((now_ns() - t) / (len / PAGE)));
+    note("probe", variant, what);
+    munmap(p, len);
+    close(fd);
+}
+
+static void t_probe(void) {
+    char what[160];
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_MEMLOCK, &rl) == 0) {
+        snprintf(what, sizeof what, "soft %llu KiB, hard %llu KiB",
+                 (unsigned long long)(rl.rlim_cur == RLIM_INFINITY ? 0 : rl.rlim_cur >> 10),
+                 (unsigned long long)(rl.rlim_max == RLIM_INFINITY ? 0 : rl.rlim_max >> 10));
+        note("probe", "RLIMIT_MEMLOCK (0 = unlimited)", what);
+    }
+    probe_secret(1);
+    probe_secret(64);
+    int uffd = (int)syscall(SYS_userfaultfd, O_CLOEXEC | 1 /* UFFD_USER_MODE_ONLY */);
+    note("probe", "userfaultfd, user-mode faults only", uffd >= 0 ? "ok" : strerror(errno));
+    if (uffd >= 0)
+        close(uffd);
+    int uffd_all = (int)syscall(SYS_userfaultfd, O_CLOEXEC);
+    note("probe", "userfaultfd, all faults", uffd_all >= 0 ? "ok" : strerror(errno));
+    if (uffd_all >= 0)
+        close(uffd_all);
+    // PR_SCHED_CORE (62), PR_SCHED_CORE_CREATE (1), for this thread group (type 1).
+    int rc = prctl(62, 1, 0, 1, 0);
+    note("probe", "core scheduling cookie for this process", rc == 0 ? "ok" : strerror(errno));
+    // landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION) gives the ABI.
+    long abi = syscall(444, NULL, 0, 1UL);
+    snprintf(what, sizeof what, "%ld%s", abi, abi < 0 ? " (none)" : "");
+    note("probe", "Landlock ABI", what);
+}
+
 // --- the host ------------------------------------------------------------------------
 
 static int parse_list(const char *path, cpu_set_t *set) {
@@ -807,7 +871,7 @@ struct test {
 static const struct test tests[] = {
     {"native", t_native}, {"sigsys", t_sigsys}, {"futex", t_futex},
     {"handoff", t_handoff}, {"notify", t_notify}, {"sysemu", t_sysemu},
-    {"fault", t_fault}, {"maps", t_maps},
+    {"fault", t_fault}, {"maps", t_maps}, {"probe", t_probe},
 };
 
 int main(int argc, char **argv) {
