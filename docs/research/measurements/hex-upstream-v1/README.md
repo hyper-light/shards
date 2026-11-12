@@ -55,11 +55,45 @@ mutations/. Runners: kiln-a094a12d (8fadc1ec) and adacachy (451397fc, RTX 5060 T
 of the full worktree timed out from 19:20, so later runs overlay the changed paths on the
 runner's copy (in-copy.sh, outside the repository).
 
+## Windows x86_64, after the merge to main
+
+From 482c5d78, main's two x86_64 Windows CI jobs failed at "The GPU's renderer" (run 43230466376,
+jobs 131224103597 and 131224104258): `cp: cannot stat '…/selection/shards_gpu_selection.lib'`.
+These ports had not been built, linted or tested on Windows before. Four defects, each seen failing,
+then passing:
+
+| Defect | Seen failing | Fix | Seen passing |
+|---|---|---|---|
+| gpu-libs packaged a name no build makes: meson names every static library lib*.a, on Windows too (meson's FAQ, "Why does building my project with MSVC output static libraries called libfoo.a?"). From Hex's GPU 0002 | CI 43230466376, both x86_64 Windows jobs | 1cd72867: libshards_gpu_selection.a copied as shards_gpu_selection.lib, as the renderer's and libepoxy's are | CI 43251385669, "The GPU's renderer" on windows-2025-vs2026 and windows-2022; jupiter S1 |
+| A Windows test's SAFETY comment parted from its unsafe block by rustfmt (cli/mod.rs, from GPU 0005, b20e593c) | CI job 130975788127 (aarch64-pc-windows-msvc, c4ae59ee0) | 8b5fb57c; ea348285 (ring-pins) made the same change on main, and the merge keeps it once | jupiter S5 and S6; CI 43251385669 Lints, aarch64 and x86_64 Windows |
+| shards-api's managed test model gave prepare_boot `/model/…`, which is not absolute on Windows (from Hex 0012) | jupiter S5 at 2556e892: 2 of 66 lib tests panicked at client.rs:2347:89 | 7c4e3c4e: its paths sit under the root of the test's directory | jupiter S5 at c01aeb94 |
+| The identity bridge was compiled for the debug C runtime (/MDd: its object asked for msvcrtd.lib, the renderer's 62 and libepoxy's 4 for msvcrt.lib), so every link warned LNK4098; MSVC requires one runtime across a link's modules (its /MD reference). The binaries imported the release runtime alone. From Hex's GPU 0002 | jupiter at c01aeb94: `llvm-readobj --coff-directives`, LNK4098 in each GPU test binary's link | 1f86d092: on Windows the bridge's setup names `-Db_vscrt=md` (its project names no buildtype; meson's default, debug, picks /MDd) | jupiter at 8320b782: all three libraries ask for msvcrt.lib, no linker warning |
+
+jupiter (Windows 11 Pro 10.0.26200, Ryzen AI Max+ 395, Radeon 8060S, Visual Studio 2022 Build Tools,
+MSVC 14.44.35207, SDK 10.0.26100.0) had no LLVM or Python of its own: LLVM 20.1.8 and Python 3.12.10
+(python-build-standalone 20250517), the versions CI's windows-2025-vs2026 image has, were unpacked
+user-local, each checked against its published sha256; zig 0.16.0, NASM 3.02, rustc 1.98.1, meson 1.11.2
+and ninja 1.13.2 as pinned. Kiln agent 01a1d06b ran S1-S6 at c01aeb94 (main 87bf86b3 plus the
+packaging and test-model fixes) and S1-S4 again at 8320b782 (main fe44bc8c plus all three), for
+x86_64-pc-windows-msvc:
+
+| Step | Command | c01aeb94 | 8320b782 |
+|---|---|---|---|
+| S1 | `scripts/gpu-libs` | exit 0, 106 s; shards_gpu_selection.lib 80,662 B, a whole archive (native-identity.c.obj) | exit 0, 65 s; 80,650 B; /DEFAULTLIB:msvcrt.lib in each library's every object |
+| S2 | `cargo clippy -p shards-vmm --features gpu --all-targets -- -D warnings` | clean | clean |
+| S3 | `cargo test -p shards-vmm --features gpu --profile test-release gpu::` | 16 passed (the_renderer_offers_venus_and_holds_its_blobs through vulkan-1.dll on the Radeon 8060S among them); LNK4098 | 16 passed; no linker warning |
+| S4 | `cargo build -p shards --profile test-release`, SHARDS_GPU_LIBS set | exit 0; carried shards-vm-gpu 4,318,208 B (linked after gpu-libs removed its scratch) | exit 0; 4,318,208 B, sha256 d3c7709a…; imports VCRUNTIME140.dll and the release UCRT, no debug DLL |
+| S5 | shards-api `--lib --test sim`; shards-abi; the shards binary's `cli:: spec:: vm_run::` | 66 + 5; 49 + 2; 33 passed | (unchanged by 1f86d092) |
+| S6 | `cargo clippy --workspace --all-targets --keep-going -- -D warnings` | clean | (unchanged by 1f86d092) |
+
+gpu-libs' Windows libraries are not byte-reproducible: each embeds its scratch directory's random
+name (two builds of one source differed by 90 bytes, 80 of them that name).
+
 ## Owed to ROOT
 
 Real-GPU VMs on each host class (D232); a native launcher's real guests (D233); the 19th
-Vulkan context in an NVIDIA GPU VM before and after GPU 0008; Windows (the report pipe,
-0019/0026) and macOS checks; the seven-target lint; shards' full suite in test-release; the
+Vulkan context in an NVIDIA GPU VM before and after GPU 0008; the report pipe in a real managed
+launch on Windows (D233); macOS checks; arm64 Windows' tests; the seven-target lint; shards' full suite in test-release; the
 zero-patience contract flake (managed-borrowed-nowait/contract.rs:40, 4 times in about 550
 whole-lib runs here),
 no Hex patch's.
@@ -78,7 +112,7 @@ no Hex patch's.
 | R08 | No performance claim. |
 | R09 | Reproduced live before fixing: 0030 (30/30 red), 0031 (OpenStat ENOENT and ESRCH), the refusal chain, GPU 0007 (thin archive, link failure), GPU 0008 (driver reloads on NVIDIA). The other patches port features whose defects Hex reproduced (cited in their commits); not re-reproduced here. |
 | R10 | Records and harnesses here; guard removals for 0030, the chain, GPU 0006 and 0028; GPU 0008's and 0007's reds are their guards removed. |
-| R11 | Verified on x86_64 Linux (glibc; musl for the guest crates). macOS, Windows (0019's and 0026's pipe code, the krunkit renderer patches) and arm64 are unverified. |
+| R11 | Verified on x86_64 Linux (glibc; musl for the guest crates) and natively on x86_64 Windows (jupiter: gpu-libs, the GPU VM process's lint and link, the renderer's unit tests on a Radeon 8060S, the touched crates' unit tests including 0019's and 0026's pipe code, the workspace lint); aarch64-pc-windows-msvc's workspace lint passes on CI (43251385669). macOS and arm64 tests are CI's (ROOT's). |
 | R12 | One identity type in shards-abi for the API and the VM process; no OS-specific duplicate added. |
 | R13 | f7f8b03b's unused helpers.rs half and Hex's own test campaign not ported. |
 | R14 | No profiling or benchmark (ROOT's). |
