@@ -78,7 +78,8 @@ mod packed;
 mod parents;
 mod processes;
 mod ps;
-mod publish;
+// The run host's too, an orchestrator's run's (api_run.rs, D231).
+pub(crate) mod publish;
 mod pull;
 mod push;
 mod reclaim;

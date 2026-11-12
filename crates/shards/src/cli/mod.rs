@@ -106,7 +106,7 @@ const OWN: [&str; 26] = [
 /// (`context::kept_here`): a child of a command run `--context default` reads the same
 /// home, whose current context may be another machine's. No client of this machine's runs
 /// one (daemon/remote.rs `owners`).
-pub(crate) const INTERNAL: [&str; 8] = [
+pub(crate) const INTERNAL: [&str; 9] = [
     // The VM's broker (`shards run vm --kernel`, `shards restore vm`, macOS).
     "grants",
     // The recorder of a directly booted VM's console report (`shards run vm --kernel`,
@@ -126,6 +126,8 @@ pub(crate) const INTERNAL: [&str; 8] = [
     // What serves a client's binds for a run through its context that goes on without
     // its command (D228).
     crate::client_binds::SERVE_APART,
+    // An image's run for an orchestrator, which shards-api starts (D231).
+    "api-run",
 ];
 
 fn dispatch(args: Vec<OsString>) -> ExitCode {
