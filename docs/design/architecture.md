@@ -6531,13 +6531,17 @@ throughput both ways, small requests no slower, on every host.
 | Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2 | Protocol constants. |
 | Offer extents at most (4 KiB + 2 S) / 4 KiB | A slot's pages, none merged. |
 
-Owed to ROOT, none run by its implementers: correctness and hostile-offer E2E, the pins
-E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back and a
-shrinking room let idle slots go, a stream past the room goes plain; at 1, 2 and many
-vCPUs with as many streams as vCPUs and twice that), and throughput, small-request latency
-(paced and back to back), connection setup with its slot's making, a ring's ramp, CPU and
-pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64; compile checks of
-macOS, Windows and aarch64.
+The pins E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back
+and a shrinking room let idle slots go, a stream past the room goes plain; at 1, 2 and many
+vCPUs with as many streams as vCPUs and twice that) and the bulk test ran green on KVM x86_64
+and arm64 (L1) and HVF; on WHP x86_64 the give-back and the shrinking room, the bulk test once
+in two (its microVM stopped, as one with no engine did), and the pins test was refused past
+13 connections at once by the daemon's bound on Windows (D181's share of `clients_for` 64
+threads, as Windows states no thread limit), not the ring's (ring-pins-v1 r13, r16). Every
+supported target lints clean (r15, r16). Owed to ROOT: correctness and hostile-offer E2E; the
+pins E2E on WHP arm64, and on WHP x86_64 past that bound; and throughput, small-request
+latency (paced and back to back), connection setup with its slot's making, a ring's ramp, CPU
+and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
@@ -17284,7 +17288,7 @@ Tested (E2E; each guard mutation-checked, the mutant built and run, killed unles
 - **Unmeasured until PM M146 and M147:** the start path's cost of the command's PID
   namespace, and of `--init`'s reaper, forked as such a run starts.
 
-### D234. A nested runtime's grant: one run's command makes boxes in its own microVM (decided; building)
+### D234. A nested runtime's grant: one run's command makes boxes in its own microVM (decided; built; its real-VM runs owed)
 
 **Why.** Hex runs its node as a Shards guest's own PID 1 (D215's direct boot, no
 Agentfile). That PID 1 mounts the node's file systems, gives the node its descriptor limit,
@@ -17411,7 +17415,9 @@ the image as built:
 From the guest to the host: a run message of a new kind, READY (`run::kind` 49), carrying the
 readiness state and, for a late or missed deadline, how far past it. The VM process relays it
 to the daemon as ipc kind 90, `WORKLOAD_READY` (ipc's kind 1 is already its own READY). The
-daemon gives it as the run's events `ready` and `ready-by-passed`, and to D231's run host.
+daemon gives it as the run's events `ready` and `ready-by-passed`, and to D231's run host,
+which tells the orchestrator in shards-api's image wire (its kind READY), where
+`wait_ready` reads it.
 
 **Readiness** (init is its one owner; R04):
 
@@ -17457,6 +17463,18 @@ it, and stopping the run is the caller's decision.
   quantities: each is its table's next value, checked again when its step merges, as D
   numbers are. The unmerged branch p/managed-credentials-input-kiln-v1 takes run kind 49 for
   INPUT_BYTES, and must renumber, as it already collides with main's 48.
+- The run host's READY, shards-api's image wire kind `to_client::READY` = 23
+  (crates/api/src/image/wire.rs): the next after its kinds 16 to 22, named as the guest's
+  message is (ipc's is WORKLOAD_READY only because its kind 1 is READY). Its payload is
+  READY's 9 bytes, unchanged.
+- The image wire's `VERSION` 2: the next after 1, as that wire changes only by appending.
+  It appends `nesting` (a flag byte) and `ready_by` (an option tag, then the budget's
+  nanoseconds as a big-endian u64: `ready-by=`'s unit and width), in the wire's own
+  encodings.
+- The daemon's request carries the deadline as its extension section `ready-by`, named as
+  the setup entry is.
+- `wait_ready`: shards-api's way to wait for the readiness, named for what it waits on, as
+  `wait_member` is.
 - `/run/shards/notify` and `/run/shards/gpus`: beside `/run/shards/engine.sock` (D181), each
   named for what it holds: the sd_notify socket, and the run's GPUs.
 - `/run/shards`'s mode, 0755: as init makes it for engine.sock (crates/init/src/engine.rs),
@@ -17513,12 +17531,36 @@ it, and stopping the run is the caller's decision.
 - The image's word alone: every run of an image would escalate as its author says, where
   established nesting grants ask the operator too (f32).
 
+**Built** (light tests and mutants on Linux x86_64; the record has each step's):
+- the Agentfile's `NESTING`, its normalized Agentfile and label, and the build's refusals
+  (plan step 2, e871b1cf8);
+- init's side: the leaf, the writable hierarchy, `fs.nr_open`, `SHARDS_READY_BY`, the
+  notify socket and the readiness states, its re-check, and its refusals of joiners,
+  `--cgroupns host` and `--pid host` (step 4, b3001d90a to 40edb79da, and 6f752173d);
+- the daemon's side: consent, its refusals and the warning where it is not asked, the
+  capabilities and filter, the entries, the joiner's refusal, and READY relayed and said
+  as events (step 3, 3ab1eab5d to 5ba5f377a);
+- shards-api's `nesting` and `ready_by`, the deadline made on the run host, its typed
+  refusals, and `wait_ready` (step 6, 93ce2e26a and 0d63d6bf2);
+- the real-VM test, `crates/shards/tests/nesting.rs`, with runc 1.5.2 as the stand-in
+  nested runtime (step 5).
+
+Not built:
+- `gpus=`. No run carries a D232 selection that its VM process binds: the daemon's run
+  has `--gpus` alone, and shards-api's image spec has no `gpu_devices`. So no run sends
+  the entry, and none has `/run/shards/gpus`, until a run's own GPU selection is built.
+- How late a `ready` was, on its event: the daemon's log says it, and the run host's
+  `Ready::Late`. No event attribute is named for it.
+
 **Evidence owed** (ROOT):
 - the real-VM E2E (`crates/shards/tests/nesting.rs`, plan step 5) on KVM x86_64, nested
-  arm64 KVM, HVF with its GPU, and WHP;
-- mutations of its guards;
+  arm64 KVM, HVF with its GPU, and WHP, through `shards run vm` and through shards-api;
+- mutations of its guards, which its header lists with the test each fails;
+- the daemon's filter tests on arm64, whose syscall numbers are checked against the
+  kernel's headers but have not run there;
 - `scripts/lint` on the seven targets;
-- a granted run's start against an ungranted one (build-ab, R14).
+- a granted run's start against an ungranted one (build-ab, R14), the parse of the
+  grant's filter at each start included.
 
 The evidence record is
 [s38-nested-grants](../research/measurements/s38-nested-grants/README.md).
@@ -19347,6 +19389,32 @@ held to more than OPA's answers:
   walk that meets it (three times as long each level: 12 deep 3.25 s, now 0.5 ms); the
   safety check's and print rewrite's outputs read again for each expression, and each
   equality copying the whole safe set (cubic: 1000 closures in a body 42 s, now 0.48 s).
+- A number's text (`number.rs`). Go's `Text` (decimal.go's `init`, ftoa.go's
+  `roundShortest`) computes a float's exact decimal and both its neighbours' half an ulp
+  away, whole. A number read from JSON may carry an exponent up to Go's limit: OPA's
+  parser refuses such a literal past a binary exponent of 10^5 ("number too big",
+  golang/go#11068), but input, data and builtins' results do not pass through it. `abs`
+  of the fuzzer's 80000000000e00029174680 is "8" and 29,174,690 zeros, and Go takes 63 s
+  and 447 MB to write it. This port's three num-bigint conversions took ASan's fuzzer
+  past 2 GB in 11 s (CI's fuzz job; M524). roundShortest reads at most
+  ⌊(prec + 1)·log10 2⌋ + 3 digits of each (`digits_read`, proved there). So where the
+  whole decimals have 8.26 times as many digits or more (`LEADING_FROM`, the two ways'
+  measured crossover on arm64 macOS and x86_64 Linux, M524), only those are computed,
+  each exact (`leading`):
+  - the integer's leading digits, ⌊V / 10^j⌋, from bounds of its power of five at p bits
+    from below and from above, p doubling until their floors agree (they differ only
+    within the bounds' gap of an integer, and V / 10^j is none);
+  - the decimal's length and exponent, from V's twos and fives.
+
+  A walk that would read past them goes Go's way. `abs` of that number now: 29 ms and
+  57 MiB (was 92 s and 281 MiB), 361 ms under ASan's fuzzer. Byte for byte OPA's:
+  `tests/numbers.rs` holds 135 long numbers' texts and `abs` of the fuzzer's operands
+  to OPA's own (lengths, ends and SHA-256, `scripts/rego/generate numbers`).
+  `number.rs`'s tests hold the leading digits and the shortest decimal to the exact
+  decimals, and the bounds to the powers they bound. Left, owed (M524's Open): `floor`,
+  `ceil`, `round` and integer formatting of such a number, whose answer is all of an
+  integer's digits, still convert through num-bigint; numbers past 1e536870938 are refused
+  where Go reads them.
 - The rewrite of local variables walked as OPA's does, and OPA's way is exponential:
   rewriteEveryStatement (ast/compile.go) rewrites a statement's body, then walks the
   whole statement again (rewriteDeclaredVarsInExpr), whose walk rewrites each

@@ -1,0 +1,10 @@
+--- /home/adalundhe/s38-api-step6/orig	2026-11-12 07:34:04.405926754 -0800
++++ crates/api/src/image/session.rs	2026-11-12 07:34:04.433926513 -0800
+@@ -476,7 +476,6 @@
+             let answer = wire::StatsAnswer::decode(payload).map_err(bad)?;
+             state.stats.insert(answer.id, answer.result);
+         }
+-        k::READY => state.ready = Some(wire::ready(payload).map_err(bad)?),
+         k::ENDED => {
+             let end = wire::RunEnd::decode(payload).map_err(bad)?;
+             if state.end.replace(end).is_some() {

@@ -623,12 +623,24 @@ themselves run on the runner's kernel
 (`a_slots_pins_count_to_the_instances_maker_and_go_with_its_entry`: `VmPin` up by the
 slot's pages, and back as its entry is emptied).
 
-**Owed to ROOT (real VMs, measurements; none run here).**
-- E2E (`crates/shards/tests/engine_ring.rs`): `an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends`
-  (1, 2 and the host's vCPUs; V and 2V streams at once), `a_give_back_lets_an_idle_slot_go`
-  (`SHARDS_PRESSURE`), `a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain`
-  (a user slice's `MemoryHigh`), and the existing bulk and measurement tests, on KVM x86_64
-  and arm64, HVF, WHP x86_64 and arm64; the engine suite (D181), isolation's token test,
+**The E2E on real VMs (2026-11-12).** `crates/shards/tests/engine_ring.rs`:
+`an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends` (1, 2 and the host's
+vCPUs; V and 2V streams at once, each set one exec's; the guest's pinned pages, its kernel's
+FOLL_PIN count, those of the same run without the engine's socket while idle, and back to
+them once its streams end, exactly), `a_give_back_lets_an_idle_slot_go` (`SHARDS_PRESSURE`
+through the host's own pipe, a joiner's wait held open),
+`a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain` (the host's own
+budget, D183: a user slice's `MemoryHigh` on Linux, root's own cgroup where no user's manager
+is, a group's `memory.high` on macOS and Windows) and the bulk test: green on Linux KVM x86_64,
+HVF arm64 and Linux arm64 KVM in L1 ([evidence](measurements/ring-pins-v1/README.md), r13 and
+r16: each first failure the test's or the test guest's, none the ring's). On WHP x86_64
+give-back and the shrinking room green; the bulk test once in two, its microVM stopping as a
+run with no engine did too; the pins test refused past 13 connections at once by the daemon's
+bound on Windows (D181's `share`, `thread_limit()` none there), not the ring's.
+
+**Owed to ROOT (real VMs, measurements).**
+- The E2E on WHP arm64; on WHP x86_64 the pins test past the daemon's Windows bound, and the
+  bulk test's microVM stop root-caused; the engine suite (D181), isolation's token test,
   budget and reclaim suites (a run with no engine socket unaffected).
 - E2E mutations: `told()` removed from `ROOM` (the shrinking-room test must fail: pins past
   the room); the leaf join removed (`read metrics` scope run must lose the slots' bytes:

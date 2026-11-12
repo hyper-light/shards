@@ -247,9 +247,12 @@ its owner goes.
 
 `shards_api::image` (crates/api/src/image.rs): `Images` (`backend`, `boot`); `ImageGuest`
 (`members`, `published`, `take_output(member, Channel)` a pipe's read end once each,
-`take_input`, `wait_member`, `stats(StatsScope, patience)`, `stop`, `wait_for`);
+`take_input`, `wait_member`, `stats(StatsScope, patience)`, `wait_ready(seen, timeout)` (the
+nesting grant's readiness, D234), `stop`, `wait_for`);
 `ImageSpec` (`image`, `vcpus`, `memory_mib`, `command`, `members: Vec<MemberSpec>`,
-`publish`, `egress: Narrowing`, `shares`, `binary`, `env` of the run host's own process);
+`publish`, `egress: Narrowing`, `shares`, `binary`, `env` of the run host's own process,
+and D234's `nesting`, the run's consent to the nesting grant, and `ready_by`, its deadline's
+budget);
 `MemberSpec` (`member: MemberName`, `env: Vec<(String, Secret)>`, `files: Vec<MemberFile>`,
 `stdin`, `terminal`); `Secret` (bytes, `Debug` by length); `MemberEnd`, `RunEnd`, `Stats`;
 `ImageRefusal`, its own typed enum, so that D215's `Refusal` keeps its variants. The channel

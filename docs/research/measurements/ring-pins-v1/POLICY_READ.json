@@ -60,6 +60,52 @@
         "docs/development-evidence.md"
       ],
       "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+    },
+    {
+      "date": "2026-11-12",
+      "why": "the E2E round (ROOT's first real-VM run of engine_ring), branch p/ring-e2e-v1 from p/whp-parity-fixes 3d49939ca",
+      "revision": "8f3cd5b74",
+      "ref": "origin/main",
+      "same_as_receipt": [
+        "AGENTS.md",
+        "docs/development-rules.md",
+        "docs/development-evidence.md"
+      ],
+      "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "instructions": [
+        "ROOT: run engine_ring E2E on Linux KVM, fix it, merge origin/main, fast-forward push to main",
+        "the person, through ROOT: build and lint for Windows, macOS, arm64 and amd64 too (scripts/lint every supported target; vsock unit tests on macOS)",
+        "ROOT: do not fix the exec path (its goal)"
+      ]
+    },
+    {
+      "date": "2026-11-12",
+      "why": "ROOT's round: the give-back and shrinking-room tests on every host, the E2E on HVF, WHP x86_64 and Linux arm64 (L1); policy re-read after a context compaction",
+      "revision": "87bf86b31",
+      "ref": "origin/main",
+      "same_as_receipt": [
+        "AGENTS.md",
+        "docs/development-rules.md",
+        "docs/development-evidence.md",
+        "CLAUDE.md"
+      ],
+      "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "instructions": [
+        "ROOT: a_give_back_lets_an_idle_slot_go off #[cfg(unix)], the host's word through the platform's own pipe (a named pipe on Windows)",
+        "ROOT: the shrinking-room test through Shards' own group (D183 slice 3) on macOS and Windows, the systemd slice on Linux; a platform whose room cannot be shrunk is a product gap, said with its evidence before gating",
+        "ROOT: engine_ring on HVF on this Mac through launchd-run.sh, and on WHP x86_64 natively through a kiln agent on jupiter (NASM and zig given, never waiting on a person), with the native Windows shards unit tests that did not build",
+        "ROOT: Linux arm64 through the L1 path (SHARDS_L1_TESTS=engine_ring) on an M3 or later Mac, else owed",
+        "ROOT: then merge origin/main, push to main as a fast-forward, report per OS and arch, and end"
+      ],
+      "delegated": [
+        {
+          "agent": "ring-e2e-whp 01a1d070f1867083a86047794511720f",
+          "machine": "jupiter",
+          "role": "run-only tester, no edits, commits or pushes",
+          "readback": "POLICY_READ 7ad28fab136fb72cac910de9c0f4bfc1db2d81f9 rules_sha256=df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3 role=run-only-tester task=ring-e2e-whp",
+          "ended": "stopped after its report; its clone, target and logs removed"
+        }
+      ]
     }
   ],
   "superseding_instruction": {

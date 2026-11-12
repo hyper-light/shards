@@ -84,6 +84,8 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         publish: Vec::new(),
         egress: Narrowing::default(),
         shares: Vec::new(),
+        nesting: false,
+        ready_by: None,
         binary: Some(common::shards().to_path_buf()),
         env: host_env(home),
     }
@@ -178,7 +180,9 @@ fn staged_credentials_reach_the_harness_and_its_output_and_end_come_back() {
 }
 
 /// What would widen the image's grants, or names a member it does not declare or one of
-/// files alone, is refused by type before anything boots.
+/// files alone, is refused by type before anything boots: the nesting grant (D234) asked of
+/// an image declaring no NESTING among them, in the daemon's words; and a deadline without
+/// the grant, the request's.
 #[test]
 fn what_the_image_does_not_grant_is_refused_before_boot() {
     if cannot_run_vms() {
@@ -217,6 +221,22 @@ fn what_the_image_does_not_grant_is_refused_before_boot() {
         host_port: 0,
     }];
     assert!(matches!(refused(s), ImageRefusal::Widening(_)));
+    let mut s = spec(&home, "api-refused:1");
+    s.nesting = true;
+    s.ready_by = Some(Duration::from_secs(60));
+    assert_eq!(
+        refused(s),
+        ImageRefusal::Widening(shards_abi::run::nesting::undeclared())
+    );
+    let mut s = spec(&home, "api-refused:1");
+    s.ready_by = Some(Duration::from_secs(60));
+    assert_eq!(
+        refused(s),
+        ImageRefusal::Spec {
+            what: "the request",
+            why: shards_abi::run::nesting::Error::Ungranted("ready-by=").to_string(),
+        }
+    );
 }
 
 /// A host directory shared at the path of a `VOLUME` the image gives its harness reaches

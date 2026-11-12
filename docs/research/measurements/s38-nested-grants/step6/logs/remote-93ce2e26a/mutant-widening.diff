@@ -1,0 +1,11 @@
+--- /home/adalundhe/s38-api-step6/orig	2026-11-12 06:56:28.611908547 -0800
++++ crates/shards/src/api_run.rs	2026-11-12 06:56:28.619431436 -0800
+@@ -131,7 +131,7 @@
+     use crate::agentfile::NestingRefused as Refused;
+     let nesting = crate::agentfile::nesting(agentfile, run).map_err(|e| {
+         let cause = match e {
+-            Refused::Undeclared => Cause::Widening,
++            Refused::Undeclared => Cause::Request,
+             Refused::CgroupnsHost
+             | Refused::PidHost
+             | Refused::Joiner

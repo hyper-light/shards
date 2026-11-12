@@ -692,6 +692,10 @@ pub fn main() -> ! {
                 }
             }
         }
+        // A nested runtime under the nesting grant (D234; nesting.rs): `nesting CASE`, and
+        // what each of its boxes runs, `nesting-box WHAT`.
+        "nesting" => crate::nesting::nesting(args.get(1..).unwrap_or_default()),
+        "nesting-box" => crate::nesting::in_box(args.get(1..).unwrap_or_default()),
         // Its IPC as it has it (D156): its namespace, its /dev/shm's size or none, and
         // whether it sees System V segment KEY and file /dev/shm/KEY.
         "ipc" => ipc_report(arg(1)),
@@ -742,6 +746,19 @@ pub fn main() -> ! {
                     "{}",
                     line.split_whitespace().collect::<Vec<_>>().join(" ")
                 );
+            }
+            0
+        }
+        // Each KEY's value in /proc/vmstat, as the kernel says it (`nr_foll_pin_acquired`, ...):
+        // `KEY VALUE`, or `KEY none`.
+        "vmstat" => {
+            let stat = std::fs::read_to_string("/proc/vmstat").unwrap_or_default();
+            for key in args.get(1..).unwrap_or_default() {
+                let value = stat
+                    .lines()
+                    .find_map(|l| l.strip_prefix(key.as_str())?.strip_prefix(' '))
+                    .unwrap_or("none");
+                let _ = writeln!(io::stdout(), "{key} {value}");
             }
             0
         }

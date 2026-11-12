@@ -456,6 +456,34 @@ mod tests {
     const RAM: u64 = 64 << 20;
     const RING: u32 = 64 << 10;
 
+    /// A socket pair, the host's end nonblocking as the device holds it, whose buffers hold
+    /// what a test writes to one end before it reads the other: a ring and 100 bytes at most
+    /// (`a_full_ring_takes_no_more_and_the_host_socket_waits`), so twice a ring. macOS gives a
+    /// Unix stream socket 8 KiB each way (net.local.stream.sendspace and recvspace), and a
+    /// test whose write that outruns them blocked for good there; Linux gives 208 KiB.
+    fn pair() -> (UnixStream, UnixStream) {
+        use std::os::fd::AsRawFd as _;
+        let (host, daemon) = UnixStream::pair().unwrap();
+        let held = libc::c_int::try_from(2 * RING).unwrap();
+        for end in [&host, &daemon] {
+            for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
+                // SAFETY: setsockopt(2) of a socket this test holds, reading the int it is given.
+                let set = unsafe {
+                    libc::setsockopt(
+                        end.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        option,
+                        (&raw const held).cast(),
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    )
+                };
+                assert_eq!(set, 0, "{}", std::io::Error::last_os_error());
+            }
+        }
+        host.set_nonblocking(true).unwrap();
+        (host, daemon)
+    }
+
     fn memory() -> Arc<GuestMemory> {
         Arc::new(GuestMemory::anonymous(&[(0, RAM as usize)]).unwrap())
     }
@@ -592,8 +620,7 @@ mod tests {
         for offer in [whole(2 << 20), scattered(4 << 20, 2)] {
             let memory = memory();
             let mut ring = Ring::attach(&memory, &offer).unwrap();
-            let (host, daemon) = UnixStream::pair().unwrap();
-            host.set_nonblocking(true).unwrap();
+            let (host, daemon) = pair();
             // Guest to host: three rings' worth in turns of five ninths of a ring, so that
             // each turn's span wraps somewhere new.
             let sent = pattern(3 * RING as usize, 7);
@@ -638,8 +665,7 @@ mod tests {
         let memory = memory();
         let offer = whole(2 << 20);
         let mut ring = Ring::attach(&memory, &offer).unwrap();
-        let (host, daemon) = UnixStream::pair().unwrap();
-        host.set_nonblocking(true).unwrap();
+        let (host, daemon) = pair();
         (&daemon).write_all(&pattern(RING as usize + 100, 3)).unwrap();
         let mut moved = 0;
         loop {
@@ -671,8 +697,7 @@ mod tests {
         let memory = memory();
         let offer = whole(2 << 20);
         let mut ring = Ring::attach(&memory, &offer).unwrap();
-        let (host, daemon) = UnixStream::pair().unwrap();
-        host.set_nonblocking(true).unwrap();
+        let (host, daemon) = pair();
         // Waiting for data: the host's bytes ring it once.
         guest_u32(&memory, &offer, field::GUEST_WAITS_DATA).store(1, Ordering::SeqCst);
         (&daemon).write_all(b"hello").unwrap();
@@ -699,8 +724,7 @@ mod tests {
         let memory = memory();
         let offer = whole(2 << 20);
         let mut ring = Ring::attach(&memory, &offer).unwrap();
-        let (host, daemon) = UnixStream::pair().unwrap();
-        host.set_nonblocking(true).unwrap();
+        let (host, daemon) = pair();
         let head = guest_u64(&memory, &offer, field::TO_HOST_HEAD);
         head.store(u64::from(RING) + 1, Ordering::Release);
         assert_eq!(ring.to_host(&host), Err(Broken::HeadAhead));
@@ -727,8 +751,7 @@ mod tests {
         let memory = memory();
         let offer = whole(2 << 20);
         let mut ring = Ring::attach(&memory, &offer).unwrap();
-        let (host, daemon) = UnixStream::pair().unwrap();
-        host.set_nonblocking(true).unwrap();
+        let (host, daemon) = pair();
         assert_eq!(ring.from_host(&host).unwrap(), Turn::default());
         daemon.shutdown(std::net::Shutdown::Write).unwrap();
         assert!(ring.from_host(&host).unwrap().eof);
@@ -742,8 +765,7 @@ mod tests {
         let memory = memory();
         let offer = whole(2 << 20);
         let mut ring = Ring::attach(&memory, &offer).unwrap();
-        let (host, daemon) = UnixStream::pair().unwrap();
-        host.set_nonblocking(true).unwrap();
+        let (host, daemon) = pair();
         memory.watch_device_writes();
         (&daemon).write_all(&pattern(3 * abi::PAGE as usize, 1)).unwrap();
         ring.from_host(&host).unwrap();

@@ -16,8 +16,10 @@
 use std::io::{self, Write as _};
 use std::process::ExitCode;
 use std::sync::{Mutex, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use shards_api::image::wire::{self, Cause};
+use shards_ipc::kind;
 
 /// Why the run will not be, for the orchestrator.
 struct No(Cause, String);
@@ -85,7 +87,97 @@ fn host(answers: &Answers) -> Result<(), No> {
         Ok(None) => return Err(No(Cause::Request, "the channel closed before its request".into())),
         Err(e) => return Err(No(Cause::Request, format!("the request: {e}"))),
     };
-    hosted::run(answers, &request, input)
+    let ready_by = deadline(request.ready_by, SystemTime::now())?;
+    hosted::run(answers, &request, ready_by, input)
+}
+
+/// The nesting grant's deadline (D234) as an instant, made as the request reaches this
+/// process: `budget` nanoseconds past `now`, this host's clock, in nanoseconds since the
+/// Unix epoch, as `ready-by=` carries it to init; none where the request gives none.
+/// Refused where the clock reads before the epoch or past what a u64 of nanoseconds counts
+/// (the year 2554), whose instants none is; and where the instant is past that count.
+fn deadline(budget: Option<u64>, now: SystemTime) -> Result<Option<u64>, No> {
+    let Some(budget) = budget else {
+        return Ok(None);
+    };
+    let clock = now
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|since| u64::try_from(since.as_nanos()).ok())
+        .ok_or_else(|| {
+            No(
+                Cause::Boot,
+                format!(
+                    "the deadline: this host's clock reads {now:?}, which no count of nanoseconds since the Unix epoch in a u64 is"
+                ),
+            )
+        })?;
+    clock.checked_add(budget).map(Some).ok_or_else(|| {
+        No(
+            Cause::Request,
+            format!(
+                "the deadline: {budget} ns past this host's clock, {clock} ns since the Unix epoch, is past what a u64 of nanoseconds counts"
+            ),
+        )
+    })
+}
+
+/// What the run's command is given of the nesting grant (D234), decided as the daemon
+/// decides it for a run of its own (`agentfile::nesting`), refused typed, in its words: the
+/// grant asked of an image whose Agentfile declares no `NESTING` a widening of its grants;
+/// the rest the request's, a deadline without the grant among them. (A crafted image,
+/// declaring it beside an agent or harness, never comes here: `run::prepare`'s read of its
+/// Agentfile refuses it first, in its build's words.) An image declaring it, run without it,
+/// says so.
+fn nesting(
+    agentfile: Option<&crate::agentfile::Agentfile>,
+    run: &shards_ipc::Run,
+    say: &dyn Fn(&str),
+) -> Result<crate::agentfile::Nesting, No> {
+    use crate::agentfile::NestingRefused as Refused;
+    let nesting = crate::agentfile::nesting(agentfile, run).map_err(|e| {
+        let cause = match e {
+            Refused::Undeclared => Cause::Widening,
+            Refused::CgroupnsHost
+            | Refused::PidHost
+            | Refused::Joiner
+            | Refused::Joined
+            | Refused::Ungranted => Cause::Request,
+        };
+        No(cause, e.to_string())
+    })?;
+    if nesting == crate::agentfile::Nesting::Unasked {
+        say(&format!("WARNING: {}", crate::agentfile::NESTING_UNASKED));
+    }
+    Ok(nesting)
+}
+
+/// What the orchestrator is told of a message on the VM's link, as an answer's kind and
+/// payload: a member's end (D231), and its own command's readiness under the nesting grant
+/// (D234), each as the guest said it; none for the rest. A readiness that is none is said
+/// on this host's stderr and dropped, as the daemon drops it.
+fn relayed(which: u8, payload: &[u8]) -> Option<(u8, Vec<u8>)> {
+    match which {
+        kind::MEMBER_ENDED => {
+            let e = shards_abi::run::members::Ended::decode(payload)?;
+            let ended = wire::MemberEnded {
+                member: e.member,
+                status: e.status,
+            };
+            Some((wire::to_client::MEMBER_ENDED, ended.encode()))
+        }
+        kind::WORKLOAD_READY => match wire::Ready::decode(payload) {
+            Some(ready) => Some((wire::to_client::READY, ready.encode().to_vec())),
+            None => {
+                let _ = writeln!(
+                    io::stderr(),
+                    "shards api-run: a readiness its guest said malformed: {payload:?}"
+                );
+                None
+            }
+        },
+        _ => None,
+    }
 }
 
 /// Members a request names, by their declared index, from the image's managed plan's
@@ -281,7 +373,7 @@ fn run_request(spec: &shards_abi::run::Spec, published: bool) -> Vec<u8> {
 mod hosted {
     use super::{Answers, Cause, No, wire};
 
-    pub(super) fn run(_: &Answers, _: &wire::Request, _: std::io::Stdin) -> Result<(), No> {
+    pub(super) fn run(_: &Answers, _: &wire::Request, _: Option<u64>, _: std::io::Stdin) -> Result<(), No> {
         Err(No(
             Cause::Unsupported,
             "an orchestrator's run on Windows: its VM's launch in an AppContainer, with its network and shares by named handles (D141, D142, D197), is owed (D231)".into(),
@@ -328,16 +420,23 @@ mod hosted {
         capture: Option<(u32, Vec<u32>)>,
     }
 
-    pub(super) fn run(answers: &Answers, request: &wire::Request, input: io::Stdin) -> Result<(), No> {
+    pub(super) fn run(
+        answers: &Answers,
+        request: &wire::Request,
+        ready_by: Option<u64>,
+        input: io::Stdin,
+    ) -> Result<(), No> {
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
-        let plan = plan(request, &home)?;
+        let plan = plan(request, ready_by, &home)?;
         launch_and_serve(answers, input, &home, plan)
     }
 
     /// The request as `shards run` would have asked it of a daemon: the image, its own
-    /// command or none, its published ports, its shares as `-v`, and a network only where
-    /// something goes past the microVM.
-    fn as_run(request: &wire::Request) -> shards_ipc::Run {
+    /// command or none, its published ports, its shares as `-v`, a network only where
+    /// something goes past the microVM, and the nesting grant as `--security-opt
+    /// nesting=true` asks for it (D234), with `ready_by`, its deadline as an instant
+    /// (`super::deadline`).
+    pub(super) fn as_run(request: &wire::Request, ready_by: Option<u64>) -> shards_ipc::Run {
         let publish = request
             .publish
             .iter()
@@ -386,13 +485,19 @@ mod hosted {
             .into(),
             publish,
             binds,
+            security_opt: if request.nesting {
+                vec!["nesting=true".into()]
+            } else {
+                Vec::new()
+            },
+            ready_by,
             remove: true,
             ..Default::default()
         }
     }
 
-    fn plan(request: &wire::Request, home: &Path) -> Result<Plan, No> {
-        let mut run = as_run(request);
+    fn plan(request: &wire::Request, ready_by: Option<u64>, home: &Path) -> Result<Plan, No> {
+        let mut run = as_run(request, ready_by);
         let say = |line: &str| {
             let _ = writeln!(io::stderr(), "{line}");
         };
@@ -428,12 +533,7 @@ mod hosted {
         if let Some(a) = &agentfile {
             a.refuse(&run).map_err(no(Cause::Request))?;
         }
-        // The nesting grant (D234), as the daemon decides it for a run of its own.
-        let nesting = crate::agentfile::nesting(agentfile.as_ref(), &run)
-            .map_err(|e| No(Cause::Request, e.to_string()))?;
-        if nesting == crate::agentfile::Nesting::Unasked {
-            say(&format!("WARNING: {}", crate::agentfile::NESTING_UNASKED));
-        }
+        let nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
         let bridge = if run.network == "bridge" {
             Some(
                 shards_net::bridge::elected_here(&mut |note| say(&note))
@@ -1061,8 +1161,9 @@ mod hosted {
         drop(client);
     }
 
-    /// Reads the VM's link until it closes: each member's end to the orchestrator, the run's
-    /// status from its `DONE`.
+    /// Reads the VM's link until it closes: each member's end and the command's readiness
+    /// to the orchestrator as they come (`super::relayed`), the run's status from its
+    /// `DONE`.
     fn follow(live: &Live<'_>, link: &UnixStream) -> RunEnd {
         let mut status = None;
         let failed = loop {
@@ -1071,20 +1172,10 @@ mod hosted {
                 Ok(None) => break None,
                 Err(e) => break Some(format!("the VM's link: {e}")),
             };
-            match m.kind {
-                kind::MEMBER_ENDED => {
-                    if let Some(e) = protocol::members::Ended::decode(&m.payload) {
-                        let ended = wire::MemberEnded {
-                            member: e.member,
-                            status: e.status,
-                        };
-                        let _ = live
-                            .answers
-                            .send(wire::to_client::MEMBER_ENDED, &[&ended.encode()]);
-                    }
-                }
-                kind::DONE => status = m.payload.first().copied(),
-                _ => {}
+            if m.kind == kind::DONE {
+                status = m.payload.first().copied();
+            } else if let Some((answer, payload)) = super::relayed(m.kind, &m.payload) {
+                let _ = live.answers.send(answer, &[&payload]);
             }
         };
         if let Some(why) = failed {
@@ -1294,6 +1385,8 @@ mod tests {
             publish: Vec::new(),
             egress: wire::Narrowing::default(),
             shares: Vec::new(),
+            nesting: false,
+            ready_by: None,
         }
     }
 
@@ -1429,5 +1522,223 @@ mod tests {
             ports_granted(&[udp], Some(&agentfile), false),
             Err(No(Cause::Widening, _))
         ));
+    }
+
+    /// The nesting grant's deadline (D234) is the budget past this host's clock as the
+    /// request arrives, in nanoseconds since the Unix epoch: none for none, the clock's own
+    /// instant for none of budget (already past as init reads it, which it takes as passed
+    /// at once); refused, typed, where the instant is past what a u64 of nanoseconds
+    /// counts, and where the clock reads before the epoch or past that count.
+    #[test]
+    fn a_deadline_is_its_budget_past_the_clock_as_the_request_arrives() {
+        use std::time::Duration;
+        let at = |ns: u64| UNIX_EPOCH + Duration::from_nanos(ns);
+        let now = at(1_794_466_320_362_000_000);
+        assert_eq!(deadline(None, now).ok(), Some(None));
+        assert_eq!(
+            deadline(None, UNIX_EPOCH - Duration::from_secs(1)).ok(),
+            Some(None)
+        );
+        assert_eq!(deadline(Some(0), now).ok(), Some(Some(1_794_466_320_362_000_000)));
+        assert_eq!(
+            deadline(Some(5_000_000_007), now).ok(),
+            Some(Some(1_794_466_325_362_000_007))
+        );
+        assert_eq!(deadline(Some(7), UNIX_EPOCH).ok(), Some(Some(7)));
+        assert_eq!(
+            deadline(Some(u64::MAX - 1_794_466_320_362_000_000), now).ok(),
+            Some(Some(u64::MAX))
+        );
+        for budget in [u64::MAX - 1_794_466_320_361_999_999, u64::MAX] {
+            match deadline(Some(budget), now) {
+                Err(No(Cause::Request, why)) => assert!(why.contains("past what a u64"), "{why}"),
+                Err(No(cause, why)) => panic!("{cause:?}: {why}"),
+                Ok(at) => panic!("{budget}: {at:?}"),
+            }
+        }
+        // A second either way, past any clock's resolution (Windows' is 100 ns).
+        for clock in [
+            UNIX_EPOCH - Duration::from_secs(1),
+            at(u64::MAX) + Duration::from_secs(1),
+        ] {
+            assert!(
+                matches!(deadline(Some(0), clock), Err(No(Cause::Boot, _))),
+                "{clock:?}"
+            );
+        }
+    }
+
+    /// The nesting grant (D234) is asked of the daemon's own decision as `--security-opt
+    /// nesting=true` asks for it from the command line, the deadline with it: given where
+    /// the image declares it, with the deadline; asked of an image that declares none,
+    /// refused as a widening in the daemon's words; asked by an image's run that does not
+    /// ask for it, withheld and said; and a deadline without it refused as the daemon
+    /// refuses it, the request's.
+    #[cfg(unix)]
+    #[test]
+    fn the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it() {
+        use crate::agentfile::{Agentfile, NESTING_UNASKED, Nesting};
+        use shards_abi::run::nesting::{self as abi, Grant};
+        let declaring = Agentfile {
+            grants: shards_agentfile::agentfile::Grants {
+                nesting: true,
+                ..Default::default()
+            },
+            ..Agentfile::default()
+        };
+        let said = Mutex::new(Vec::new());
+        let say = |line: &str| said.lock().unwrap().push(line.to_string());
+        let asking = wire::Request {
+            nesting: true,
+            command: Some(vec!["node".into()]),
+            ..request(Vec::new())
+        };
+        let run = hosted::as_run(&asking, Some(7));
+        assert_eq!(run.security_opt, ["nesting=true"]);
+        assert_eq!(run.ready_by, Some(7));
+        assert_eq!(
+            nesting(Some(&declaring), &run, &say).ok(),
+            Some(Nesting::Granted(Grant {
+                ready_by: Some(7),
+                gpus: Vec::new()
+            }))
+        );
+        assert_eq!(
+            nesting(Some(&declaring), &hosted::as_run(&asking, None), &say).ok(),
+            Some(Nesting::Granted(Grant::default()))
+        );
+        for image in [None, Some(&Agentfile::default())] {
+            match nesting(image, &run, &say) {
+                Err(No(Cause::Widening, why)) => assert_eq!(why, abi::undeclared()),
+                Err(No(cause, why)) => panic!("{cause:?}: {why}"),
+                Ok(n) => panic!("{n:?}"),
+            }
+        }
+        assert!(said.lock().unwrap().is_empty());
+        let plain = hosted::as_run(&request(Vec::new()), None);
+        assert!(plain.security_opt.is_empty());
+        assert_eq!(plain.ready_by, None);
+        assert_eq!(
+            nesting(Some(&declaring), &plain, &say).ok(),
+            Some(Nesting::Unasked)
+        );
+        assert_eq!(*said.lock().unwrap(), [format!("WARNING: {NESTING_UNASKED}")]);
+        assert_eq!(nesting(None, &plain, &say).ok(), Some(Nesting::Neither));
+        let late = hosted::as_run(&request(Vec::new()), Some(7));
+        for image in [Some(&declaring), None] {
+            match nesting(image, &late, &say) {
+                Err(No(Cause::Request, why)) => {
+                    assert_eq!(why, abi::Error::Ungranted("ready-by=").to_string());
+                }
+                Err(No(cause, why)) => panic!("{cause:?}: {why}"),
+                Ok(n) => panic!("{n:?}"),
+            }
+        }
+    }
+
+    /// A crafted image, declaring NESTING beside an agent where no build would (D234), is
+    /// refused as its Agentfile is read, before any grant is decided: the refusal
+    /// `run::prepare` gives and this host sends as the image's, word for word the daemon's,
+    /// in the build's words.
+    #[test]
+    fn a_crafted_image_is_refused_in_its_builds_words_before_its_grant_is_decided() {
+        use shards_agentfile::agentfile::{Directive, Domain, Processes, TargetKind};
+        use shards_image::erofs::{DataRef, Kind, Meta, Node, Source, Tree};
+        struct Mem(Vec<u8>);
+        impl Source for Mem {
+            fn read_at(&mut self, _: DataRef, at: u64, buf: &mut [u8]) -> std::io::Result<()> {
+                let at = usize::try_from(at).unwrap();
+                buf.copy_from_slice(&self.0[at..at + buf.len()]);
+                Ok(())
+            }
+        }
+        let crafted = shards_agentfile::agentfile::spec(&[
+            Directive::Agent(Domain {
+                name: b"a".to_vec(),
+                source: b"./a".to_vec(),
+                to: None,
+                processes: Processes::Unbounded,
+            }),
+            Directive::Nesting,
+        ]);
+        let digest = String::from_utf8(shards_agentfile::agentfile::digest(&crafted)).unwrap();
+        let meta = |mode| Meta {
+            mode,
+            ..Meta::default()
+        };
+        let mut tree = Tree::new(meta(0o755));
+        tree.insert(
+            Tree::ROOT,
+            b".agentfile.json",
+            Node {
+                kind: Kind::File {
+                    size: crafted.len() as u64,
+                    data: DataRef { source: 0, offset: 0 },
+                },
+                meta: meta(0o444),
+            },
+        )
+        .unwrap();
+        let dir = shards_testdir::TempDir::new("api-run-crafted").unwrap();
+        let root = dir.join("root.erofs");
+        let mut out = std::fs::File::create(&root).unwrap();
+        shards_image::erofs::write(&tree, &mut Mem(crafted), &mut out).unwrap();
+        drop(out);
+        let why = crate::agentfile::agentfile(&root, &digest).unwrap_err();
+        assert_eq!(
+            why,
+            format!(
+                "the image's Agentfile ({digest}): {}",
+                shards_agentfile::agentfile::nesting_beside(TargetKind::Agent, b"a")
+            )
+        );
+        let refused = wire::Refused {
+            cause: Cause::Image,
+            why: why.clone(),
+        };
+        assert_eq!(
+            wire::Refused::decode(&refused.encode().unwrap()).unwrap().why,
+            why
+        );
+    }
+
+    /// The VM's link reaches the orchestrator as the guest said it: each readiness of the
+    /// command's under the nesting grant (D234) as READY, its nine bytes whole; a member's
+    /// end as MEMBER_ENDED; a readiness that is none, and every other message, not at all.
+    #[test]
+    fn the_vms_link_is_relayed_to_the_orchestrator_as_its_guest_said_it() {
+        for ready in [
+            wire::Ready::OnTime,
+            wire::Ready::Late(u64::MAX),
+            wire::Ready::Passed(3),
+        ] {
+            let said = ready.encode();
+            let (answer, payload) = relayed(kind::WORKLOAD_READY, &said).unwrap();
+            assert_eq!(answer, wire::to_client::READY);
+            assert_eq!(payload, said);
+            assert_eq!(wire::ready(&payload), Ok(ready));
+        }
+        for malformed in [&[0u8; 9][..], &[1, 0, 0, 0, 0, 0, 0, 0, 1], &[2; 8], &[]] {
+            assert_eq!(relayed(kind::WORKLOAD_READY, malformed), None, "{malformed:?}");
+        }
+        let ended = shards_abi::run::members::Ended {
+            member: 1,
+            status: 137,
+        }
+        .encode();
+        assert_eq!(
+            relayed(kind::MEMBER_ENDED, &ended),
+            Some((
+                wire::to_client::MEMBER_ENDED,
+                wire::MemberEnded {
+                    member: 1,
+                    status: 137
+                }
+                .encode()
+            ))
+        );
+        for other in [kind::READY, kind::PROCESS, kind::DONE] {
+            assert_eq!(relayed(other, &[1; 9]), None);
+        }
     }
 }

@@ -1,0 +1,44 @@
+   Compiling libc v0.2.189
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling pkg-config v0.3.34
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling serde_core v1.0.229
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/s38-coord-step5/vendor/aws-lc-rs)
+   Compiling zmij v1.0.23
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling shards-abi v0.1.0 (/home/adalundhe/s38-coord-step5/crates/abi)
+   Compiling rustls v0.23.46
+    Checking zeroize v1.9.0
+    Checking rustls-pki-types v1.15.1
+   Compiling jobserver v0.1.35
+   Compiling cc v1.5.1
+    Checking memchr v2.8.3
+    Checking untrusted v0.9.0
+    Checking itoa v1.0.18
+   Compiling cmake v0.1.58
+    Checking once_cell v1.21.4
+    Checking subtle v2.6.1
+    Checking shards-seccomp v0.1.0 (/home/adalundhe/s38-coord-step5/crates/seccomp)
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/s38-coord-step5/vendor/aws-lc-sys)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/s38-coord-step5/crates/devcgroup)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/s38-coord-step5-target/x86_64-unknown-linux-musl/debug/build/aws-lc-sys-e126053cec12d180/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_musl': '/home/adalundhe/s38-coord-step5/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_musl: /home/adalundhe/s38-coord-step5/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/s38-coord-step5-target/x86_64-unknown-linux-musl/debug/build/aws-lc-sys-e126053cec12d180/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/s38-coord-step5-target/x86_64-unknown-linux-musl/debug/build/aws-lc-sys-e126053cec12d180/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/s38-coord-step5-target/x86_64-unknown-linux-musl/debug/build/aws-lc-sys-e126053cec12d180/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Checking rustls-webpki v0.103.16
+    Checking shards-testguest v0.1.0 (/home/adalundhe/s38-coord-step5/crates/testguest)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 35.56s

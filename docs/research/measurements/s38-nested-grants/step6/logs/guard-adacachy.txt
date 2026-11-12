@@ -1,0 +1,27 @@
+adacachy (Linux 7.2.9-2-cachyos x86_64, kiln runner 451397fc and kiln's server), 2026-11-12,
+step 6's first light round (tree 05d19eb33, `bash s38-api-remote.sh tests` over ssh), copied
+from this lane's session output.
+
+06:21-06:26 PST: the rustc processes of my scope run-p2815820-i454537839.scope (systemd-run
+--user --scope, MemoryMax=16G, CPUQuota=400%) slept in do_freezer_trap; the scope's
+cgroup.freeze was 1 (set on it, its parent app.slice 0). kiln's headroom guard listed it in
+~/.local/share/kiln/agent/headroom/paced/1253764-1794460351.json, "stopped": 58 cgroups in
+all (other kiln agents' and runs' among them). Its learned.json had the detectors "agent
+messages" and "kiln server delay" alarming (harm true, not quiet); the journal said
+"headroom event=runner disk: a probe has been out 1000 ms, its tolerance 1000 ms" every few
+minutes. /proc/pressure/io: some avg10 16 to 20.
+
+06:27: test-api finished between freezes: shards-api lib 93 passed, 0 failed, 9 ignored; its
+tests/sim.rs 14 passed, 2 failed (a_connect_waits_for_a_guest_that_listens_late: connect not
+ok within its patience; client::the_longest_report_shards_writes_is_quoted_whole: "no OK
+within 201.66146ms: Dial: handshake deadline expired"), both deadline-bound tests of the
+direct-boot client under the freezes.
+
+06:31: the next scope (run-p4000677-i455725912.scope, the shards test-release build), sampled
+every 2 s for 60 s: cgroup.freeze 1 in all 30 samples; its cpu.stat usage_usec rose by
+2085 ms in that minute (about 3.5% of one core).
+
+The guard is the owner's protection (R16: never bypassed): I stopped my own scope
+(systemctl --user stop run-p4000677-i455725912.scope) and moved the light checks to the kiln
+runner adacachy2 (00aad8da, Linux 7.3.3-1-cachyos x86_64), through kiln run --no-sync
+--stdin (round-kiln.sh), which ssh does not reach.

@@ -1,0 +1,20 @@
+# Two checks of the pushed tests (kiln-a094a12d, Linux KVM x86_64, the r13 tree at 4a3861e4a; each change below
+# temporary, the tree restored after it: `git status` 0 files):
+# (a) A sum container that ends at once (its Cmd made ["no-such-mode"]): the bulk test's stdin arm ends with its
+#     exit, not a hang (ROOT's ask after WHP, where it waited until the runner's 580 s kill).
+# (b) The pins test's witness, the guest's pinned pages (/proc/vmstat FOLL_PIN acquired less released), counts the
+#     relay's slots: a held connection's ring attached, then its connection ended.
+DIAG START 2026-11-12T14:31:13Z 4a3861e4a
+patched: 1
+FAILFAST-EXIT 101 after 29 s (build included)
+thread 'a_microvms_engine_carries_bulk_whole_both_ways' (726702) panicked at crates/shards/tests/engine_ring.rs:126:5:
+api-bulk error the sum container ended {"StatusCode":2}: it said ""
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 28.34s
+restored: 0 files differ
+PINS-EXIT 0
+DIAG pinned pages: 0 idle, 3 while a held connection's ring is attached (Rings { attached: 4, pinned: 49152, let_go: 3, unpinned: 36864, asked: 0 })
+DIAG pinned pages after its connection ended: 0 (Rings { attached: 4, pinned: 49152, let_go: 4, unpinned: 49152, asked: 0 }; rm Some(0))
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 27.13s
+restored: 0 files differ
+DIAG END 2026-11-12T14:32:11Z
+# 3 pages: one slot of MIN_RING (a control page and two 4 KiB rings), the held connection's; 0 before and after.

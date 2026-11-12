@@ -651,6 +651,20 @@ the command does not get where those flows cross its namespace, the run says it 
 An exec beside the command is held the same way. The checks are twins at build and at run,
 since an image can be crafted and the CLI mutates a run (§9.2's rule, D109).
 
+**The nesting grant gives the run's own command more of its microVM** (D234, §4.11), so it
+makes that command the microVM's only principal. An image declares it beside no agent or
+harness, and a run joining its microVM (`--network container:`) is refused, by the daemon
+and again by shards-init. Given it, the command keeps its own PID namespace, whose end ends
+its boxes, and its cgroup namespace rooted at its own subtree, mounted writable, the command
+in a leaf of it; nsdelegate keeps the subtree's own limits init's. It gains CAP_SYS_ADMIN and
+CAP_NET_ADMIN, and Docker's default filter resolved for them, with `pivot_root` added and
+D121's mount filter left off. What that profile refuses whatever the capabilities stays
+refused: AF_VSOCK and AF_ALG sockets, io_uring, userfaultfd, keyctl, kexec and modules, so
+the grant opens no way to the host. Its devices stay D44's, under a device program attached
+with BPF_F_ALLOW_MULTI, which bounds any program its boxes attach. `--cgroupns host` and
+`--pid host` are refused with it, and its egress past the microVM stays its network
+process's, as every run's does. An exec into it takes its grant, in its leaf.
+
 ### 9.4 Crossing domains
 
 What one domain produces reaches another (an `ATTACH`ed harness reading an agent's output,
