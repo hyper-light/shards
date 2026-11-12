@@ -20665,3 +20665,71 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   - On a Mac, then, a guest system call served by a trap costs at least 3.4 us. One that
     translated code turns into a call into shards traps nothing. What translation costs
     the rest of a guest's code is the next measurement.
+
+### M519. What today's rootless sandboxes without hardware virtualization cost a guest: gVisor and User-mode Linux against native and KVM (softvirt)
+
+- **Question.** The bar a software hypervisor of shards' own must clear (R08): what do the
+  established rootless designs that need no hardware virtualization cost a guest's system
+  calls, processes, page faults, context switches and own code? gVisor's systrap platform
+  reimplements Linux in a sandboxed Go kernel. User-mode Linux runs Linux itself as a
+  process, by seccomp or by ptrace. Measure on bare metal, in a VM that has no hardware
+  virtualization of its own, and in a KVM guest for the hardware's own cost.
+- **Method.** `docs/research/measurements/softvirt-baselines/`. `workload.c`, static (zig
+  0.16 cc, musl): a mode times one operation per sample.
+  - `syscall`: `getppid`.
+  - `forkexec`: fork, exec of itself to exit, wait.
+  - `fault`: 16 first-touch page faults.
+  - `pipe`: one byte to another process and back.
+  - `compute`: FNV-1a over 256 KiB, user code alone.
+
+  n=20000 (`forkexec` and `compute` 1000). The variants:
+  - gVisor release 20261109.0, `runsc --rootless --network=none --platform=systrap do`.
+  - User-mode Linux 7.3.4, x86_64 defconfig, the workload its initramfs's init,
+    `seccomp=on` and `seccomp=off` (ptrace).
+  - Firecracker v1.18.0 on KVM, shards' pinned kernel 6.18.48, 2 vCPUs, the workload its init.
+
+  Hosts:
+  - kiln-a094a12d, bare metal: Intel Core i9-14900HX, Fedora 44, Linux 6.19.10, other
+    jobs running (load 7 to 8.4); `run.sh` at dc05f8142, three rounds of every variant
+    interleaved, pinned to the performance cores 0-15.
+  - A Firecracker microVM on the same host: no VMX exposed, `/dev/kvm` absent in it, as
+    in a cloud VM without nested virtualization; 2 vCPUs, Alpine 3.24.4 root; `vm.sh`
+    at 736f90daa, one round, unpinned.
+
+  Raw, every round: `measurements/softvirt-baselines/results/x86_64-fedora44-i9-14900hx.md`.
+- **Results, bare metal** (p50 range over the three rounds; ns, us where marked):
+
+  | mode | native | gVisor systrap | UML, seccomp | UML, ptrace | KVM (Firecracker) |
+  |---|---|---|---|---|---|
+  | syscall `getppid` | 73-79 | 4,135-4,337 | 8,704 | 10,752-11,264 | 74-81 |
+  | fork, exec, exit, wait (us) | 65.9-66.5 | 500-512 | 432-450 | 509-524 | 65.8-74.9 |
+  | 16 first-touch faults (us) | 8.68-9.08 | 15.0-15.5 | 135-140 | 257-264 | 9.35-9.81 |
+  | pipe, there and back (us) | 2.94-3.12 | 10.1-10.3 | 23.3-25.3 | 28.9-30.0 | 4.93-5.39 |
+  | compute, FNV-1a 256 KiB (us) | 219-232 | 222-230 | (not run) | (not run) | 218-223 |
+
+  UML's image held the workload of its first build, before the compute mode.
+- **Results, in the VM without hardware virtualization** (p50, one round):
+
+  | mode | native | gVisor systrap | UML, seccomp | UML, ptrace |
+  |---|---|---|---|---|
+  | syscall `getppid` (ns) | 85 | 4,188 | 14,080 | 15,872 |
+  | fork, exec, exit, wait (us) | 72.5 | 877 | 453 | 562 |
+  | 16 first-touch faults (us) | 10.1 | 15.4 | 176 | 389 |
+  | pipe, there and back (us) | 5.7 | 11.2 | 40.7 | 45.1 |
+
+- **Found.**
+  - A KVM guest runs every mode at native speed, within its spread, but for the pipe's
+    second vCPU. Hardware virtualization costs a guest's system calls, faults and own
+    code nothing measurable here.
+  - Against native on bare metal, gVisor's systrap costs a system call 55 times (4.1 to
+    4.3 us), a process 7.6 times, 16 faults 1.7 times, a pipe round trip 3.3 times; its
+    user code runs at native speed (compute within the spread). User-mode Linux costs a
+    system call 110 times (seccomp) to 140 times (ptrace), faults 15 to 29 times.
+  - The VM without hardware virtualization changes little for gVisor (system call 4.2 us,
+    a process 877 us). User-mode Linux's costs grow in it: its system call 14 to 16 us,
+    its faults 1.3 times their bare-metal cost under seccomp and 1.5 times under ptrace.
+  - Against M516's floors: gVisor's 4.2 us system call is 1.6 times the 2.6 us
+    cross-process handoff, User-mode Linux's 8.7 us 3.4 times. What R08's 4 to 5 times
+    gVisor asks, under 1.05 us a system call, only the in-process trap (0.70 us) or no
+    trap at all reaches. Its process creation, 100 to 128 us, is near native's 66 us:
+    no design that makes a host process for each guest process gets there.
