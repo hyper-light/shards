@@ -162,8 +162,9 @@ streams and end are separate: `Member { stdout, stderr: StreamState, ended: Opti
   not an end, plan §4), init sends `MEMBER_ENDED` (member, status as `docker run` reports it:
   code, or 128 plus a fatal signal), once; the VM process passes it to its owner; the run host
   to the orchestrator.
-- *stdin* is new and closed unless the orchestrator asks for it at create (P3's input policy:
-  owned by an authorized session). Asked, init makes the member's stdin the read end of a
+- *stdin* is designed here and owed (v1's client refuses it `Unsupported`): closed unless the
+  orchestrator asks for it at create (P3's input policy: owned by an authorized session).
+  Asked, init makes the member's stdin the read end of a
   pipe, and the member's input arrives on a connection of its own that init dials to the
   exec port with a token the setup names, as an exec's does (abi/src/run.rs:20-23, 79-88), so
   vsock's own credit backs it up and an unread stdin holds up nothing else; the VM process
@@ -212,7 +213,8 @@ gives the member the secret) remain plan P10's.
 **4. Shares.**
 - *At boot*: each `(host directory, guest path, read-only)` becomes the run's `-v
   HOST:PATH[:ro]` through `volumes::open_for` and `setup::setup`, served by a share process
-  (D38) with a DAX window as the daemon gives one (D189). A member gets it where the image's
+  (D38); a DAX window as the daemon gives one (D189) is owed (v1's go through FUSE). A
+  member gets it where the image's
   `VOLUME` at that path is for it (D109); a path no `VOLUME` declares reaches the run's own
   command alone. Never widening: no share reaches a member the image does not grant.
 - *Added while running*: designed on D214's path (a share process started by the run host,
@@ -243,22 +245,29 @@ its owner goes.
 
 ### 3.4 What the orchestrator sees
 
-`shards_api::image`: `Images` (`backend`, `boot`), `ImageGuest` (`members`, `stdout`,
-`stderr`, `stdin`, `wait_member`, `published`, `stats`, `stop`, `wait_for`), `ImageSpec`
-(`image`, `vcpus`, `memory_mib`, `command`, `members: Vec<MemberSpec>`, `publish`,
-`egress: Narrowing`, `shares`, `binary`), `MemberSpec` (`member: MemberName`, `env`,
-`files`, `stdin`, `terminal`), `Secret` (bytes, `Debug` by length), typed refusals. Exact
-signatures are the code's (crates/api/src/image.rs). `ImageShards` is the client of the
-binary; a simulator and conformance cases hold the contract where they can without a VM.
+`shards_api::image` (crates/api/src/image.rs): `Images` (`backend`, `boot`); `ImageGuest`
+(`members`, `published`, `take_output(member, Channel)` a pipe's read end once each,
+`take_input`, `wait_member`, `stats(StatsScope, patience)`, `stop`, `wait_for`);
+`ImageSpec` (`image`, `vcpus`, `memory_mib`, `command`, `members: Vec<MemberSpec>`,
+`publish`, `egress: Narrowing`, `shares`, `binary`, `env` of the run host's own process);
+`MemberSpec` (`member: MemberName`, `env: Vec<(String, Secret)>`, `files: Vec<MemberFile>`,
+`stdin`, `terminal`); `Secret` (bytes, `Debug` by length); `MemberEnd`, `RunEnd`, `Stats`;
+`ImageRefusal`, its own typed enum, so that D215's `Refusal` keeps its variants. The channel
+is `shards_api::image::wire`, which `shards api-run` serves. `ImageShards` is the client of
+the binary; a simulator of image guests is owed (§5).
 
-### 3.5 Shared, not copied
+### 3.5 Shared, and where v1 is not yet
 
-- The builder's `launch` (build/builder.rs:556-728) becomes the shared launch of a VM process
-  with its network process, its confinement and its grants, called by the builder and the run
-  host with what each gives the VM (the builder its attach socket, the run host its link).
-  The daemon's `start` (daemon.rs:8109, 8270) keeps its own for now; folding it in too is a
-  refactor of the daemon's pool bookkeeping, owed separately.
-- `publish::bind` and the share window's default become `pub(crate)`.
+- Shared and reused as they are: `run::prepare`, `volumes::register`/`open_for`,
+  `setup::setup`/`security_setup`/`domain_seccomp`, `guest::server_device`/`version_of`,
+  `netproc::start`, the Agentfile's `refuse`/`caps`, `shards_net::encode_policy`, the warm
+  link's messages (`RunHead`, `READY`, `RUN`, `TAKEN`, `STOP_ORDER`, `EXEC_RUN`), the VM's
+  managed capture; `daemon::publish` made `pub(crate)` for its binding.
+- **Not yet shared (R12 gap, owed):** the run host's Unix launch of its VM process
+  (api_run.rs `launch`) takes the same steps as the builder's (build/builder.rs:570-640) and
+  the daemon's (daemon.rs:8109): fds at fixed numbers, macOS grants answered in-process,
+  the network side handed. Folding the three into one launch is owed; v1 adds a third copy
+  rather than change the builder's and the daemon's under other lanes' work.
 
 ### 3.6 Literals (R03)
 
@@ -273,37 +282,52 @@ boot's is (D215).
 
 ## 4. Per host
 
+What v1 builds (code), against what is owed; nothing here has run on a VM yet (§8).
+
 | Host | 1 stdout/stderr, end | 1 stdin | 1 terminal | 2 staging | 3 ports, grants | 4 shares at boot | 4 added | 5 stats | 6 stop |
 |---|---|---|---|---|---|---|---|---|---|
-| Linux x86_64 KVM (gnu, musl) | v1 | v1 | owed | v1 | v1 | v1 | owed (to the command); members cannot | v1 | v1 |
-| Linux arm64 KVM (gnu, musl) | v1 | v1 | owed | v1 | v1 | v1 | as above | v1 | v1 |
-| macOS arm64 HVF | v1 | v1 | owed | v1 | v1 | v1 | as above | v1 | v1 |
-| Windows x86_64 WHP | v1 | v1 | owed | v1 | v1 | v1 | as above | v1 | v1 |
-| Windows arm64 WHP (D209) | v1 code; runs where its backend boots | as x86_64 | owed | v1 | v1 | v1 | as above | v1 | v1 |
+| Linux x86_64 KVM (gnu, musl) | v1 | owed | owed | v1 | v1 | v1 (FUSE, no DAX window) | owed (to the command); members cannot | v1 | v1 |
+| Linux arm64 KVM (gnu, musl) | v1 | owed | owed | v1 | v1 | v1 (as above) | as above | v1 | v1 |
+| macOS arm64 HVF | v1 | owed | owed | v1 | v1 | v1 (as above) | as above | v1 | v1 |
+| Windows x86_64 WHP | owed: the run host refuses `Unsupported` | owed | owed | guest side v1 | owed | owed | as above | owed | the client's v1 |
+| Windows arm64 WHP (D209) | as x86_64 | owed | owed | guest side v1 | owed | owed | as above | owed | as x86_64 |
 | macOS x86_64 | refused `NoBackend`, as D215 | | | | | | | | |
 
-The guest side is Linux on every host, so the init pieces are one implementation; the host
-side differs where the platform does, inside the shared `launch` (App Sandbox grants on
-macOS, AppContainer and job on Windows, seccomp and Landlock on Linux), all existing. An
-orchestrator's identity and `attach` after its own crash (D215's `Guests::attach`) do not
-carry over in v1: the run ends with its owner (§3.1); re-ownership is P11's (owner transfer)
-and refused `Unsupported` until built.
+Windows is owed, not refused for a limit of its own: its run host needs the AppContainer
+launch with its network process started on the suspended VM and its link, grants and share
+streams handed by name (D141, D142, D197, as build/builder.rs:646-728 and daemon.rs:8270 do
+for theirs), which v1 does not yet write; `shards api-run` refuses there with
+`Cause::Unsupported` naming it, and the client, the wire, init and the VM process's changes
+compile and are the same there. The guest side is Linux on every host, so the init pieces
+are one implementation. An orchestrator's identity and `attach` after its own crash (D215's
+`Guests::attach`) do not carry over in v1: the run ends with its owner (§3.1);
+re-ownership is P11's (owner transfer).
 
 ## 5. Built in v1, in committed steps
 
 1. This record and the D-entry.
-2. abi: `kind::MEMBER_ENDED`, `builtin::ATTEND`, the staging entries' codec and bounds, the
-   stdin entry; unit tests, hostile input.
-3. init: staging applied as a member starts; `MEMBER_ENDED` once a member's population has
-   ended; `ATTEND`; `STATS` by scope; member stdin.
-4. crates/shards: the shared `launch`; `shards api-run` (prepare, network, publish, egress
-   narrowing, shares at boot, the warm link's daemon side, the capture owner, stats, stop).
-5. crates/api: `image` module, its wire codec, `ImageShards`, refusals; unit tests.
-6. Real-VM E2E tests (`crates/shards/tests/api_image.rs`), written for ROOT to run.
+2. abi and ipc: `kind::MEMBER_ENDED`, `builtin::ATTEND`, `builtin::stats` scopes, the
+   staging entries' codec and bounds (`run::members`), `member-ends`; ipc's `MEMBER_ENDED`.
+3. init: staging applied as a member starts (`staged.rs`: files into its scratch tmpfs, by
+   its descriptor, before its clone; variables over its image's); `MEMBER_ENDED` once a
+   member's population has ended, where `member-ends` asks; `ATTEND`; `STATS` by scope.
+4. The VM process passes `MEMBER_ENDED` to its owner (workload.rs, warm.rs); the test guest's
+   `staged` mode.
+5. crates/api: the `image` module, its wire codec, `ImageShards`, `ImageRefusal`.
+6. crates/shards: `shards api-run` (prepare, network, publish, egress narrowing, shares at
+   boot, the warm link's daemon side, the capture owner, stats, stop) on Linux and macOS;
+   real-VM E2E tests (`crates/shards/tests/api_image.rs`), written for ROOT to run.
 
-Owed beyond v1: a member's terminal; shares added while running; templates and pools for
-orchestrated runs (D25, D26: a cold boot each run until measured); `attach` after the
-owner's crash; the shared launch folded into the daemon.
+Owed beyond v1, each its own slice: a member's stdin (its input connection, §3.3, refused
+`Unsupported` by the client today) and terminal (G24); the Windows run host (§4); shares
+added while running (D214, to the run's own command); DAX windows for an orchestrated run's
+shares (D189: v1 passes no `--share-window`, so its shares go through FUSE); templates and
+pools for orchestrated runs (D25, D26: a cold boot each run until measured); a boot patience
+(the daemon's progress-based `READY` wait, daemon.rs `ready`, shared: v1 waits on facts, and a
+guest that never says `READY` holds `boot`); `attach` after the owner's crash; the run's own
+command's stdout and stderr as streams of their own (v1 gives them the run host's stderr,
+diagnostics); the launch shared with the builder's and the daemon's (§3.5); a simulator of
+image guests for orchestrators' tests.
 
 ## 6. Tests that hold it (acceptance, not results)
 

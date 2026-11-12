@@ -21564,9 +21564,9 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   member's channels and end to the orchestrator. Its channel closing ends the run.
 - *Members' streams and ends.* stdout and stderr are managed capture's, credited per
   channel by the orchestrator's reads; a member's end is `MEMBER_ENDED` (its status as
-  `docker run` reports one), sent by init once, when its population has ended; stdin is
-  closed unless asked for at create, then a pipe fed by a connection of the member's own,
-  dialed to the exec port with a token, as an exec's is. A member's terminal: owed (G24),
+  `docker run` reports one), sent by init once, when its population has ended. stdin
+  (closed unless asked for at create, then a pipe fed by a connection of the member's own,
+  dialed to the exec port with a token, as an exec's is) and a terminal (G24) are owed,
   refused `Unsupported` on every host.
 - *Staging.* `member-env=` and `member-file=` setup entries, by the member's declared
   index: variables over its image's (`SHARDS_DOMAIN` refused), regular files under its home
@@ -21588,7 +21588,15 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 **Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
 `docker run`'s `128 + signal`; every wait is on a fact.
 
-**Evidence owed** (ROOT): real-VM E2E on KVM x86_64 and arm64, HVF and WHP
+**Built so far** (branch `p/runtime-image-boot-v1`, light checks only): the abi entries,
+init's staging, member ends, `ATTEND` and `STATS` scopes, the VM process's relay of member
+ends, `shards_api::image` and `shards api-run` on Linux and macOS. **Owed:** the Windows run
+host (refused `Unsupported` there, its AppContainer launch not written), a member's stdin and
+terminal, DAX windows for its shares, templates and pools, a boot patience, shares added
+while running, `attach` after the owner's crash, one launch shared with the builder's and the
+daemon's, and a simulator.
+
+**Evidence owed** (ROOT): real-VM E2E on KVM x86_64 and arm64 and HVF
 (`crates/shards/tests/api_image.rs`); the run host's resident, CPU and kernel cost per
 microVM against the daemon's per run and Firecracker's (R14).
 
