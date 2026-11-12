@@ -212,7 +212,7 @@ impl<D: Disk> Daemon<D> {
             }
         }
         run.resources = merged;
-        std::fs::write(dir.join(REQUEST), run.encode()).map_err(|e| cannot(e.to_string()))?;
+        super::keep_whole(&dir.join(REQUEST), &run.encode()).map_err(|e| cannot(e.to_string()))?;
         if let Some(p) = policy {
             let changed = lock(&self.containers).change(&id, |c| {
                 c.restart.policy.clone_from(&p.0);

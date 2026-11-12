@@ -1,0 +1,11 @@
+--- a/crates/shards/src/daemon/update.rs
++++ b/crates/shards/src/daemon/update.rs
+@@ -212,7 +212,7 @@
+             }
+         }
+         run.resources = merged;
+-        super::keep_whole(&dir.join(REQUEST), &run.encode()).map_err(|e| cannot(e.to_string()))?;
++        std::fs::write(dir.join(REQUEST), run.encode()).map_err(|e| cannot(e.to_string()))?;
+         if let Some(p) = policy {
+             let changed = lock(&self.containers).change(&id, |c| {
+                 c.restart.policy.clone_from(&p.0);
