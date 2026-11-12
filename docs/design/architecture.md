@@ -22410,7 +22410,11 @@ API's protocol: its output drained, its end, its connections.
   completed after it never published; `connect_once_before` dials once, refused at once where
   nothing listens.
 - *The report.* D232's report reaches the client on its private pipe: one complete scoped
-  frame by the deadline, anything else uncertainty.
+  frame by the deadline, anything else uncertainty. On Windows the pipe is a named pipe, as
+  Windows' anonymous pipes are (which take no overlapped reads), with a name of the
+  client process's own, its nonce and counter as its socket directories have: a scope
+  names a frame, not a channel, and a pipe named for its scope refused every other report
+  of that scope while its one instance lived, ERROR_PIPE_BUSY (PM M533).
 
 **Literals.** None new beyond D232's; every wait is the caller's deadline.
 

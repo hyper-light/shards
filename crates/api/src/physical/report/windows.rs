@@ -1,5 +1,8 @@
 //! Windows anonymous pipes are synchronous. This private local pipe has an
-//! overlapped read end; only its synchronous owned writer leaves the API.
+//! overlapped read end; only its synchronous owned writer leaves the API. It is a
+//! named pipe, as Windows makes its anonymous pipes, with a name of this process's
+//! alone (`private_name`): one named for its scope refused a second report of that
+//! scope, its one instance still live, ERROR_PIPE_BUSY (PM M533).
 #![allow(unsafe_code)]
 
 use std::cell::UnsafeCell;
@@ -74,21 +77,17 @@ fn owned(raw: *mut core::ffi::c_void, operation: &'static str) -> Result<OwnedHa
 }
 
 impl Reader {
-    pub fn new(byte_count: usize, scope: [u8; 16]) -> Result<(Self, io::PipeWriter), Refusal> {
+    pub fn new(byte_count: usize) -> Result<(Self, io::PipeWriter), Refusal> {
         use core::fmt::Write as _;
         let allocation = || Refusal::GpuProbe(GpuProbeError::Allocation);
         let mut text = String::new();
-        let scope_chars = scope
-            .len()
-            .checked_mul(2)
-            .ok_or(Refusal::GpuProbe(GpuProbeError::Count))?;
         let prefix = r"\\.\pipe\shards-api-gpu-";
-        text.try_reserve_exact(prefix.len().checked_add(scope_chars).ok_or_else(allocation)?)
+        // The nonce's 16 hex digits, a dash, and the counter's at most 20 decimal ones.
+        let numbers = "ffffffffffffffff-18446744073709551615".len();
+        text.try_reserve_exact(prefix.len().checked_add(numbers).ok_or_else(allocation)?)
             .map_err(|_| allocation())?;
-        text.push_str(prefix);
-        for byte in scope {
-            write!(&mut text, "{byte:02x}").map_err(|_| allocation())?;
-        }
+        let (nonce, n) = crate::client::private_name();
+        write!(&mut text, "{prefix}{nonce:016x}-{n}").map_err(|_| allocation())?;
         let mut name = Vec::new();
         name.try_reserve_exact(text.len().checked_add(1).ok_or_else(allocation)?)
             .map_err(|_| allocation())?;
@@ -447,7 +446,7 @@ mod tests {
     /// never writer EOF or request success, can close this pending read storage.
     #[test]
     fn pending_private_read_keeps_cells_until_positive_cancel_completion() {
-        let (mut reader, writer) = Reader::new(64, [0x91; 16]).unwrap();
+        let (mut reader, writer) = Reader::new(64).unwrap();
         let operation = reader.operation.first().unwrap().get();
         let buffer = reader.bytes.as_ptr();
         let deadline = Instant::now()
