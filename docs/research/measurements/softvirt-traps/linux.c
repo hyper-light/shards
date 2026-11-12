@@ -619,7 +619,14 @@ static void t_maps(void) {
 
     char *r = mmap(NULL, pages * PAGE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
                    -1, 0);
-    uint64_t *s = calloc(pages, sizeof *s);
+    // Every buffer comes before the loop. A loop that meets the limit ends one mapping past
+    // max_map_count (do_mmap refuses only above it, and the reservation's split is not
+    // checked), where the process can make no new mapping at all, malloc's included.
+    uint64_t *s = calloc(pages, sizeof *s), *tmp = calloc(pages, sizeof *tmp);
+    if (r == MAP_FAILED || !s || !tmp) {
+        note("maps", "4 KiB pages", strerror(errno));
+        return;
+    }
     size_t stride = 7919, mapped = 0;
     int err = 0;
     for (; mapped < pages; mapped++) {
@@ -638,7 +645,6 @@ static void t_maps(void) {
              mapped, pages, limit, before, err ? strerror(err) : "no failure");
     note("maps", "4 KiB pages at non-adjacent offsets", what);
     size_t head = mapped < 1000 ? mapped : 1000;
-    uint64_t *tmp = calloc(pages, sizeof *tmp);
     memcpy(tmp, s, head * sizeof *s);
     report("maps", "map one page, first 1000", tmp, head);
     memcpy(tmp, s + (mapped - head), head * sizeof *s);
@@ -663,6 +669,10 @@ static void t_maps(void) {
     size_t units = pages * PAGE / HUGE;
     char *base = mmap(NULL, (units + 1) * HUGE, PROT_NONE,
                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (base == MAP_FAILED) {
+        note("maps", "2 MiB units", strerror(errno));
+        return;
+    }
     char *r2 = (char *)(((uintptr_t)base + HUGE - 1) & ~(HUGE - 1));
     size_t ustride = 7;
     while (units % ustride == 0)
@@ -670,8 +680,13 @@ static void t_maps(void) {
     for (size_t i = 0; i < units; i++) {
         off_t off = (off_t)((i * ustride) % units * HUGE);
         uint64_t t = now_ns();
-        mmap(r2 + i * HUGE, HUGE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, off);
+        void *m = mmap(r2 + i * HUGE, HUGE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd,
+                       off);
         tmp[i] = now_ns() - t;
+        if (m == MAP_FAILED) {
+            note("maps", "map one 2 MiB unit", strerror(errno));
+            return;
+        }
     }
     report("maps", "map one 2 MiB unit", tmp, units);
     for (size_t i = 0; i < units; i++) {

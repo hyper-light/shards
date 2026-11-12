@@ -65,11 +65,12 @@ static void note_err(const char *test, const char *variant, DWORD err) {
 
 #if defined(_M_X64) || defined(__x86_64__)
 #define BREAK_LEN 1
-static void advance(CONTEXT *c) { c->Rip += BREAK_LEN; }
+static DWORD64 *pc_of(CONTEXT *c) { return &c->Rip; }
 #elif defined(_M_ARM64) || defined(__aarch64__)
 #define BREAK_LEN 4
-static void advance(CONTEXT *c) { c->Pc += BREAK_LEN; }
+static DWORD64 *pc_of(CONTEXT *c) { return &c->Pc; }
 #endif
+static void advance(CONTEXT *c) { *pc_of(c) += BREAK_LEN; }
 
 static void break_loop(uint64_t *s, size_t total) {
     for (size_t i = 0; i < total; i++) {
@@ -170,6 +171,8 @@ static void t_debug(void) {
         return;
     }
     HANDLE thread = pi.hThread;
+    size_t at = 0, past = 0, other = 0;
+    DWORD exit_code = 0;
     for (;;) {
         DEBUG_EVENT ev;
         if (!WaitForDebugEventEx(&ev, 60000)) {
@@ -184,9 +187,11 @@ static void t_debug(void) {
             if (ev.u.LoadDll.hFile)
                 CloseHandle(ev.u.LoadDll.hFile);
         } else if (ev.dwDebugEventCode == EXCEPTION_DEBUG_EVENT) {
-            DWORD code = ev.u.Exception.ExceptionRecord.ExceptionCode;
-            if (code == EXCEPTION_BREAKPOINT) {
-                // The loader's own breakpoint comes first; every one is stepped over.
+            EXCEPTION_RECORD *er = &ev.u.Exception.ExceptionRecord;
+            if (er->ExceptionCode == EXCEPTION_BREAKPOINT) {
+                // The loader's own breakpoint comes first. A debugger may find the thread at
+                // the break instruction or already past it: step over it only when at it,
+                // and count which one Windows gives.
                 HANDLE th = ev.dwThreadId == pi.dwThreadId
                                 ? thread
                                 : OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE,
@@ -195,19 +200,37 @@ static void t_debug(void) {
                 memset(&c, 0, sizeof c);
                 c.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
                 GetThreadContext(th, &c);
-                advance(&c);
-                SetThreadContext(th, &c);
+                if (*pc_of(&c) == (DWORD64)(uintptr_t)er->ExceptionAddress) {
+                    advance(&c);
+                    SetThreadContext(th, &c);
+                    at++;
+                } else {
+                    past++;
+                }
                 if (th != thread)
                     CloseHandle(th);
             } else {
+                if (other++ == 0) {
+                    char what[96];
+                    snprintf(what, sizeof what, "exception 0x%08lx at %p, %s chance",
+                             (unsigned long)er->ExceptionCode, er->ExceptionAddress,
+                             ev.u.Exception.dwFirstChance ? "first" : "last");
+                    note("debug", "child", what);
+                }
                 status = DBG_EXCEPTION_NOT_HANDLED;
             }
         } else if (ev.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT) {
+            exit_code = ev.u.ExitProcess.dwExitCode;
             ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE);
             break;
         }
         ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, status);
     }
+    char what[128];
+    snprintf(what, sizeof what,
+             "%zu with the PC at the instruction, %zu past it; %zu other exceptions; exit %lu",
+             at, past, other, (unsigned long)exit_code);
+    note("debug", "breakpoints served", what);
     WaitForSingleObject(pi.hProcess, INFINITE);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
