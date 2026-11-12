@@ -9,7 +9,7 @@ rev=$1; shift
 base=$HOME/g121-tmp/s7p2
 pin=b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489
 mkdir -p "$base" && cd "$base/shards" || exit 2
-git fetch -q origin p/s7-part2-v1 main && git checkout -q --detach "$rev" || exit 3
+git fetch -q origin p/s7-part2-v1 p/s7-part2-land main && git checkout -q --detach "$rev" || exit 3
 echo "== $(git log --oneline -1) $(date -u +%FT%TZ)"
 zigdir=$base/zig-aarch64-macos-0.16.0
 if [ ! -x "$zigdir/zig" ]; then
