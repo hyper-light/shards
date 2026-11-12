@@ -1,4 +1,4 @@
-# PM M528, win-thread-limits on jupiter: Windows 10.0.26200.9974 (Windows 11), AMD Ryzen AI Max+
+# PM M529, win-thread-limits on jupiter: Windows 10.0.26200.9974 (Windows 11), AMD Ryzen AI Max+
 # 395 (32 CPUs), 123.6 GiB; run through kiln (the process in kiln's job: LimitFlags 0x2020,
 # KILL_ON_JOB_CLOSE | PRIORITY_CLASS, no memory limit); rustc 1.98.1, release. Shared with other
 # work (CommitTotal 39-60 GB of 141 GB during these runs). 2026-11-12.

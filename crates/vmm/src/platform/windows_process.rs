@@ -149,8 +149,8 @@ pub fn thread_limit() -> Option<u64> {
 /// stack's initial commit and guard pages (std's stack guarantee's among them) and its TEB's.
 /// Not the pages its code has touched: a process's first thread runs its one-time
 /// initialization on its own stack, and a test's every thread its output's capture, a page
-/// more each (PM M528). No call reports what else a thread is charged: its share of the heap
-/// (7 KB of the 48 KB Windows charged each in a job, PM M528), nor the kernel's own commit for
+/// more each (PM M529). No call reports what else a thread is charged: its share of the heap
+/// (7 KB of the 48 KB Windows charged each in a job, PM M529), nor the kernel's own commit for
 /// it, its kernel stack's, which "can vary among different hardware platforms and different
 /// versions of the operating system" (Using the Kernel Stack). None of these is counted, so
 /// that the threads a commit is said to hold are never fewer than Windows starts in it.
@@ -164,7 +164,7 @@ impl Thread {
     /// The calling thread's: the bounds GetCurrentThreadStackLimits gives; the image's initial
     /// commit ([`stack_commit`]) and the guard pages VirtualQuery finds between them
     /// (PAGE_GUARD); and winternl.h's TEB, the least a TEB is ("Do not assume a maximum size
-    /// for this structure"; two pages, as measured, PM M528). Each in whole pages.
+    /// for this structure"; two pages, as measured, PM M529). Each in whole pages.
     fn here() -> Option<Thread> {
         let (mut low, mut high) = (0usize, 0usize);
         // SAFETY: two words to fill with this thread's stack's bounds.
@@ -247,7 +247,7 @@ impl Room {
     /// MEMORYSTATUSEX's ullTotalVirtual, "the size of the user-mode portion of the virtual
     /// address space of the calling process", and the fewer of its ullTotalPageFile, "the
     /// current committed memory limit for the system or the current process, whichever is
-    /// smaller", and its job's ([`job_commit`]), which that leaves out (PM M528).
+    /// smaller", and its job's ([`job_commit`]), which that leaves out (PM M529).
     fn now() -> Option<Room> {
         let mut status = MEMORYSTATUSEX {
             dwLength: u32::try_from(size_of::<MEMORYSTATUSEX>()).ok()?,
@@ -430,7 +430,7 @@ mod tests {
 
     /// The threads a host holds are the fewest its address space, its commit and a
     /// process's handles each hold: each binds in turn here, the first two with jupiter's
-    /// readings and a thread as it measured one (PM M528: 2 MiB reserved, its stack's 4 KiB
+    /// readings and a thread as it measured one (PM M529: 2 MiB reserved, its stack's 4 KiB
     /// initial commit and 24 KiB of guard pages, and 8 KiB of TEB); and a thread that reserves
     /// nothing is none to count by.
     #[test]

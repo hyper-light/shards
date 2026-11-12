@@ -40,7 +40,7 @@
     "crates/vmm/src/platform/windows_process.rs",
     "crates/vmm/Cargo.toml (windows-sys features)",
     "the D181 record and the daemon's admission paragraph (docs/design/architecture.md)",
-    "PM M528 (docs/research/platform-measurements.md)",
+    "PM M529 (docs/research/platform-measurements.md)",
     "docs/research/measurements/win-thread-limits/**"
   ],
   "light_test_scope": "crates/vmm platform tests natively on Windows (jupiter, through kiln, a carrier of the crates shards-vmm needs), green and under mutants; the win-thread-limits harness; fmt; scripts/lint of the seven supported targets on runners other than this Mac; no builds on this Mac; real-VM tests, E2E and benchmarks are ROOT's",

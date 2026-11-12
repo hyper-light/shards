@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 pub mod managed;
 pub mod members;
 pub mod nesting;
+pub mod plug;
 pub mod quiesce;
 
 /// The host port the guest dials for its workload.

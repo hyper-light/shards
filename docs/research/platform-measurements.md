@@ -21425,7 +21425,59 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     is never followed by an end the stream finds; or one where a connection holds 16 MiB,
     which leaves the new test to the stream's look, not its write.
 
-### M528. What limits how many threads a Windows process may have, and what each costs it (D181)
+### M528. A parent's ID outlives it on Windows: the E2E harness took an orphaned ping for a direct boot's process
+
+- **Question.** `a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes` failed
+  on windows-2025 (CI run 43251385669, job 131297794363, 2556e892f): `left running:
+  [(6900, "PING.EXE")] of [(6900, "PING.EXE"), (3136, "shards.exe"), (6688,
+  "shards-vm.exe")]`. A direct boot starts no ping. Whose process was it, and why was it
+  counted as the run's?
+- **Method.** `measurements/pid-reuse` (`cargo run --release -- 20`, twice; its output in
+  `results/`). Each attempt:
+  - cmd.exe starts ping, as the daemon unit tests' `sleeper` does (`cmd /c ping -n 601
+    127.0.0.1 >nul`). Only cmd.exe is ended, which leaves ping an orphan.
+  - A marker thread's ID is freed just before cmd.exe's, and threads are started and
+    joined until the marker's ID comes back.
+  - Then a process is started, and Toolhelp32's snapshot read for what it lists under
+    that process: by parent ID alone (the harness's walk), and by the creation-time rule
+    (GetProcessTimes; psutil's `Process.children`, which drops a child older than its
+    parent).
+
+  Hosts, 2026-11-12: Windows 11 Pro 10.0.26200 (the dockurr/windows guest on adacachy, 8
+  vCPUs); jupiter (Windows 11 10.0.26200, WHP) for the direct boot's test, and for
+  PowerShell's start and end of 3,000 processes in turn after each of 5 ended cmd.exes.
+- **Found.**
+  - Process and thread IDs come from one table, and the ID freed longest ago is handed
+    out first. The marker came back after 2,146 to 2,218 threads, every attempt, in 0.50
+    to 1.33 s.
+  - In 7 of 20 and 10 of 20 attempts the next process took cmd.exe's ID. Each time,
+    Toolhelp32 listed the orphaned ping under it by parent ID (its `th32ParentProcessID`
+    still cmd.exe's), and the ping had started first (e.g. 134390168088308814 against the
+    taker's 134390168093764188, in 100 ns ticks). By the rule, nothing was under the taker
+    in any of the 40.
+  - On jupiter no ended cmd.exe's ID came back within 3,000 processes, in 5 of 5 trials:
+    each process's ID went back to the free list behind the others. A reuse waits until
+    the list turns over, and a CI runner's suite turns it over. The sleeper's pings live
+    600 s; `daemon::tests` ran 16:36 to 16:38 and the boot test 16:42 in that job.
+- **Fix.** On Windows, `common::processes` keeps a process's listed parent only where that
+  parent started no later than it did, else gives 0 (`live_parents`). `under` and
+  `vm_processes_under` walk that.
+  - `a_parent_that_started_after_its_child_is_not_its_parent` (boot.rs) holds the rule.
+    Its mutant, the rule removed, fails because the orphan gets the later process as its
+    parent: `[0, 4, 10, 30, …]` where `[0, 4, 10, 0, …]` was expected.
+  - On jupiter's WHP the direct boot's test passed 3 of 3 with the fix, and boot.rs whole
+    2 of 2 (32 passed each; `results/jupiter-tests.txt`).
+- **Reading.** The fault was the harness's, not the product's. The run's share process
+  and VM process had both ended by the deadline in that job. The same walk also chose what
+  `run_command` ends on Windows at a deadline (`Leftovers::Ended`), so it could have ended
+  another test's process. What would falsify the fix: a process listed under a run that
+  started before the run's client did.
+- **Unverified.** CI's windows-2025 run of the fix. The test's other windows-2025 failure
+  has a different cause and is owed a live repro: at c01aeb941 (job 131325553441) the
+  share process and the VM process themselves were still running E2E's bound after the
+  client's TerminateProcess.
+
+### M529. What limits how many threads a Windows process may have, and what each costs it (D181)
 
 - **Question.** Windows keeps no count of a process's threads, and `platform::thread_limit`
   said none there, so the daemon took POSIX's least, 64 threads: 27 clients, 13 connections

@@ -1109,7 +1109,7 @@ for the exit status.
       Documentation/admin-guide/cgroup-v2.rst). Windows keeps no count of them: there
       they are the fewest its address space, its commit limit (its job's, where that
       holds it to less) and a process's handles hold of a thread, each cost read off a
-      thread started as std starts every thread of shards' (D181, PM M528). Where none
+      thread started as std starts every thread of shards' (D181, PM M529). Where none
       is said, POSIX's `_POSIX_THREAD_THREADS_MAX` (64), which Windows took before.
       `SHARDS_MAX_CLIENTS` sets fewer. The 256 before was chosen, not derived.
     - A client that waits long, on a microVM's end (`wait`) or its output
@@ -6123,7 +6123,7 @@ there where the container is not removed.
   503 with why and closed; one of its own going makes room. Without it, a workload's
   1,023 idle connections (the vsock muxer's bound, Firecracker's) held as many of the
   daemon's threads, and sixteen microVMs held them all.
-- **On Windows the thread limit is derived (PM M528).** Windows keeps no count of a
+- **On Windows the thread limit is derived (PM M529).** Windows keeps no count of a
   process's threads ("The number of threads a process can create is limited by the
   available virtual memory", CreateThread), so `platform::thread_limit` said none there and
   `most_clients` took POSIX's least, 64: 27 clients, of which a microVM's engine alone held
@@ -22267,6 +22267,77 @@ says; the report pipe on a Windows host; the seven-target lint.
 
 **What would falsify it.** A client that needs shards to own its VM processes after all (then
 D215's spawn alone).
+
+### D235. A project plugged into a running member at its host path (built: the daemon's plugs; the orchestrator's, case handling and host edits' notices next; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 8: kiln reads a session's diffs,
+HEAD and checkpoints on the host at the session's own path, so a member (an agent or
+harness, D59) must see the project at that same absolute path, writable, its writes the
+host's. D214's `plug volume` reached the run's command alone. A member's mount namespace is
+its own, its root a read-only overlay of the image as built, and its Landlock ruleset fixed
+as it execs: no rule is added to a running process's domain (landlock(7)), so a path the
+image lacks could never become a writable mount point in a running member.
+
+**Alternatives.**
+- *A tmpfs at each root, as a domain starts:* it hides the image's own `/home`, `/mnt` and
+  `/srv`, users' homes in many images (`/home/node`). Not taken.
+- *Landlock's every right beneath `/`:* it widens a receiving domain's Unix sockets'
+  directories, writable tmpfs, past making sockets. Not taken.
+- *A root covered at plug time:* Landlock skips the dentries a mount hides
+  (security/landlock/fs.c, `is_access_to_paths_allowed`, "Ignores hidden mount points",
+  Linux v6.18), so a rule on a covered root is lost. Not taken: a plug lies strictly
+  beneath a root.
+- *Directories shared up front at their host paths:* Docker Desktop shares `/Users`,
+  `/Volumes`, `/private`, `/tmp` and `/var/folders` into its VM; Lima and Colima the home. A
+  member's default deny (D59) gives nothing up front; here a root grants nothing until a
+  plug lands in it.
+
+**Decided.**
+- *Plug roots* (`shards_abi::run::plug`): setup entries `plug-root=/X`, named by the host
+  from data: its OS's own, Apple's standard directories of homes and mountable disks on macOS
+  (`/Users`, `/Volumes`; File System Programming Guide, "macOS Standard Directories"), the
+  Filesystem Hierarchy Standard 3.0's users' and mounted data on Linux (§3.8 `/home`, §3.11
+  `/media`, §3.12 `/mnt`, §3.17 `/srv`), WSL's root of a Windows host's drives (`/mnt`,
+  DrvFs's `automount.root`, drive C: at `/mnt/c`); and on Unix the top-level directory of
+  each host path a run's binds give it, so that a project a run starts beside names the root
+  of what is plugged later (setup.rs `plug_roots`). One rule, on host and guest alike
+  (`root_name`), refuses a root that is not one top-level directory, or is one of init's
+  own: `proc`, `sys`, `dev`, `tmp`, `etc`, `run`. `/root` is left out: images keep it 0700,
+  which a member never traverses; `/opt` too, the system's packages.
+- *Provisioned as a domain starts* (domains.rs): each root made in its skeleton where the
+  image lacks it; its root overlay given a writable layer, a tmpfs that init alone writes,
+  `upper` given the image root's owner and mode; Landlock's every right beneath each root.
+  A root grants nothing until a plug lands there: it lies on the domain's root mount, which
+  stays read-only (`SYSTEM`, pinned by `a_plug_root_lies_on_a_read_only_root`). A run whose
+  host names no root starts as before.
+- *A plug into a member* (init hotplug.rs, `share ADDR TAG DST ro|rw member N`): DST
+  strictly beneath one of the run's roots (`plug::beneath`), else refused naming them; the
+  share mounted `nosuid`, `nodev`, the files its host made named the member's (D38's owner
+  word) while the mount is writable, then made read-only where asked; the member's mount
+  namespace entered through a pidfd of one of its command's processes (two `NSpid:`
+  numbers, the inner not 1: not its namespace's init, which keeps a mount namespace of its
+  own, nor its in-VM server instance, which shares its cgroup in init's namespace), its
+  cgroup checked again once held, so that no PID another took meanwhile is entered; its
+  mount points made through a copy of its root's mount, attached nowhere and made writable
+  (open_tree, mount_setattr clearing `MOUNT_ATTR_RDONLY`), the root found as the domain's
+  own walk finds it and no symlink followed beneath it (openat2 `RESOLVE_NO_SYMLINKS`,
+  `RESOLVE_NO_XDEV`), so that nothing is made outside it.
+- *The daemon's:* `shards plug volume --for NAME MICROVM SOURCE:PATH[:ro]`, NAME an agent or
+  harness as an Agentfile's `FOR` names one, which runs a command; `unplug volume` by its
+  path, as D214's.
+
+**Verified** (adacachy, KVM x86_64, Linux 7.2.9): `a_project_is_plugged_into_a_running_agent_at_its_host_path`
+(tests/plug.rs): the agent, given its roots, makes nothing beneath any (EROFS, 30, for a
+directory and a file); a project plugged outside every root is refused naming them; plugged
+beneath one, the agent reads the host's file and writes its own, which the host reads; it is
+unplugged, plugged again and unplugged as the agent runs. Mutation: with no Landlock rule
+beneath the roots, the agent writes nothing there and the test fails. HVF, WHP and arm64
+KVM are owed (ROOT's).
+
+**Known limits.** A project in `/tmp` (macOS's `/private/tmp` as `/tmp`, a Linux host's
+`/tmp`) is no root's: the domain's own scratch is there. A path beneath a root through a
+symlink of the image's beneath it is refused. The directories made for a plug's mount point
+stay, empty and root's, once it is unplugged.
 
 ### D236. A network's destinations: a member reaches the hosts its grants name, the host itself at one port (built; real-VM validation owed)
 

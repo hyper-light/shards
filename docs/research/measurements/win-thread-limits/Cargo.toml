@@ -1,5 +1,5 @@
 # What limits how many threads a Windows process may have, and what each thread costs it
-# (D181's admission on Windows, PM M528): the host's address space and commit limits, a job's
+# (D181's admission on Windows, PM M529): the host's address space and commit limits, a job's
 # limits, a thread's stack reservation and the commit Windows charges for it, the process's
 # and the system's, and how many threads a job's process memory limit lets a process start.
 [package]
