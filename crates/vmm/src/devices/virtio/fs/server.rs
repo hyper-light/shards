@@ -603,9 +603,13 @@ impl Reply {
     }
     /// struct fuse_entry_out.
     fn entry(&mut self, nodeid: u64, st: &Stat, owner: Owner, dax: bool) -> &mut Self {
+        self.entry_for(nodeid, st, owner, dax, VALID_S)
+    }
+    /// [`entry`](Self::entry), its name trusted by the guest's kernel for `secs` seconds.
+    fn entry_for(&mut self, nodeid: u64, st: &Stat, owner: Owner, dax: bool, secs: u64) -> &mut Self {
         self.u64(nodeid)
             .u64(0)
-            .u64(VALID_S)
+            .u64(secs)
             .u64(VALID_S)
             .u32(0)
             .u32(0)
@@ -1214,6 +1218,11 @@ impl Server {
             op::SETXATTR if owner_control(body).is_some() => {
                 set_default_owner(&mut state, nodeid, caller, body)
             }
+            // A notice of its host's (D235): the file as it is, nothing changed.
+            _ if noticing(caller) => match self.confined(&state, opcode, nodeid, body) {
+                Ok(()) => self.notice(&mut state, opcode, nodeid, caller, body, &mut r),
+                Err(e) => Err(e),
+            },
             _ => match self.confined(&state, opcode, nodeid, body) {
                 Ok(()) => self.dispatch(&mut state, opcode, nodeid, caller, body, &mut r),
                 Err(e) => Err(e),
@@ -1254,6 +1263,34 @@ impl Server {
         match &self.only {
             Some(only) => only_confined(only, ROOT, opcode, nodeid, body),
             None => Ok(()),
+        }
+    }
+
+    /// A request of a notice of its host's (D235, [`noticing`]): a SETATTR answered with the
+    /// node's attributes as they are, nothing set, in a read-only share too; what only looks
+    /// answered as any is; anything else refused (EACCES), so that a notice changes nothing
+    /// on the host. The guest's kernel tells its own inotify of the SETATTR it sent as of
+    /// the times it asked set (include/linux/fsnotify.h, `fsnotify_change`).
+    fn notice(
+        &self,
+        s: &mut State,
+        opcode: u32,
+        nodeid: u64,
+        caller: (u32, u32),
+        body: &[u8],
+        r: &mut Reply,
+    ) -> Result<(), Errno> {
+        match opcode {
+            op::SETATTR => {
+                let st = node_stat(s, nodeid)?;
+                let owner = node_owner(s, nodeid, Some(&st))?;
+                let dax = self.dax_of(s, nodeid, &st);
+                r.u64(VALID_S).u32(0).u32(0).attr(&st, owner, dax);
+                Ok(())
+            }
+            op::LOOKUP | op::READLINK => self.dispatch(s, opcode, nodeid, caller, body, r),
+            _ if reads(opcode) => self.dispatch(s, opcode, nodeid, caller, body, r),
+            _ => Err(EACCES),
         }
     }
 
@@ -1346,7 +1383,7 @@ impl Server {
                 let name = a.name()?;
                 let (id, st, owner) = lookup(s, nodeid, &name)?;
                 let dax = self.dax_of(s, id, &st);
-                r.entry(id, &st, owner, dax);
+                r.entry_for(id, &st, owner, dax, name_valid(s, nodeid, &name)?);
             }
             op::GETATTR => {
                 let flags = a.u32()?;
@@ -1556,7 +1593,7 @@ impl Server {
                 } else {
                     let (id, found, owner) = lookup(s, nodeid, &name)?;
                     let dax = self.dax_of(s, id, &found);
-                    r.entry(id, &found, owner, dax);
+                    r.entry_for(id, &found, owner, dax, name_valid(s, nodeid, &name)?);
                     id
                 };
                 // Made with a mode that refuses its own handle (a read-only file opened to be
@@ -2120,6 +2157,13 @@ fn set_default_owner(s: &mut State, nodeid: u64, caller: (u32, u32), body: &[u8]
     Ok(())
 }
 
+/// Whether a request is a notice of its host's (D235): its caller the guest's root, its
+/// group [`shards_abi::NOTICE_ID`], as init's notice built-in asks; any other process the
+/// group's would have its own requests refused, and never another's.
+fn noticing(caller: (u32, u32)) -> bool {
+    caller == (0, shards_abi::NOTICE_ID)
+}
+
 /// The owner set for the files of node `nodeid`'s share, or its volume in a join share,
 /// that hold none of the guest's ([`State::owner`]): none where none was set, root's.
 fn set_owner_of(s: &State, nodeid: u64) -> Option<(u32, u32)> {
@@ -2337,6 +2381,23 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner),
     };
     let owner = node_owner(s, id, Some(&st))?;
     Ok((id, st, owner))
+}
+
+/// How long the guest may trust that `name`, just found in directory node `parent`, names
+/// what it found: [`VALID_S`] where the host stores the name as the guest gave it; none
+/// where it found the file by another case or Unicode form of the name (a case-insensitive
+/// APFS volume's, an NTFS directory's), so that a rename or removal through any other of
+/// its names is seen at once (D235). The guest's kernel keeps a name for each it looked
+/// the file up by, and a rename or removal of one leaves the others it trusts naming a
+/// file the host no longer has by them (measured: tests/plug.rs
+/// `a_shares_names_are_its_hosts_case_and_all` on macOS APFS, `stat foo` ok in the guest
+/// after `rename Foo Bar`, as the host says none).
+fn name_valid(s: &mut State, parent: u64, name: &CStr) -> Result<u64, Errno> {
+    if s.joined && parent == ROOT {
+        return Ok(VALID_S);
+    }
+    let dir = dir_fd(s, parent)?;
+    Ok(if stored_as(dir, name) { VALID_S } else { 0 })
 }
 
 /// A node ID no node has, nor the root's or [`NO_VOLUME`]: the next of the share's keyed
@@ -3693,6 +3754,82 @@ mod tests {
         assert_eq!(host_mode(&path.join("file")) & 0o7777, 0o640);
         let _ = std::fs::remove_dir_all(&path);
         let _ = std::fs::remove_file(&outside);
+    }
+
+    /// A request of init's notice built-in (D235): the guest's root, as `NOTICE_ID`.
+    fn notice_req(opcode: u32, nodeid: u64, body: &[u8]) -> Vec<u8> {
+        let mut r = req(opcode, nodeid, 0, body);
+        r[28..32].copy_from_slice(&shards_abi::NOTICE_ID.to_le_bytes());
+        r
+    }
+
+    /// A notice of its host's (D235): a SETATTR as `NOTICE_ID`, as init's notice built-in
+    /// touches a file (utimensat's UTIME_OMIT, UTIME_NOW), is answered with the file as the
+    /// host has it now, its times left as they were, in a read-only share too; a lookup is
+    /// answered as any is; whatever would change the host is refused (EACCES) and changes
+    /// nothing; and the guest's root as any other group is not one.
+    #[test]
+    fn a_notice_changes_nothing_on_the_host() {
+        for read_only in [false, true] {
+            let p = shards_testdir::TempDir::new("fs-notice").unwrap();
+            let file = p.join("f");
+            std::fs::write(&file, "one").unwrap();
+            let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1 << 30);
+            let set = |at| {
+                std::fs::File::options()
+                    .write(true)
+                    .open(&file)
+                    .unwrap()
+                    .set_modified(at)
+                    .unwrap()
+            };
+            set(old);
+            let s = Server::new(root_of(&p), read_only, None).unwrap();
+            let (e, entry) = answer(&s, &notice_req(op::LOOKUP, ROOT, &name("f")));
+            assert_eq!(e, 0, "read-only {read_only}");
+            let f = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+            // The host writes it, keeping its old time.
+            std::fs::write(&file, "one two 3").unwrap();
+            set(old);
+            let touch = setattr(fattr::MTIME | fattr::MTIME_NOW, 0);
+            let (e, attr) = answer(&s, &notice_req(op::SETATTR, f, &touch));
+            assert_eq!(e, 0, "read-only {read_only}");
+            // struct fuse_attr_out: its validity, then fuse_attr, whose size follows ino.
+            assert_eq!(u64::from_le_bytes(attr[24..32].try_into().unwrap()), 9);
+            let modified = || std::fs::metadata(&file).unwrap().modified().unwrap();
+            assert_eq!(modified(), old, "read-only {read_only}: its time set");
+            let mut create = Vec::new();
+            for v in [linux::O_CREAT | linux::O_EXCL | 1, 0o100_644, 0, 0] {
+                create.extend_from_slice(&v.to_le_bytes());
+            }
+            create.extend(name("g"));
+            let mut mkdir = 0o755u32.to_le_bytes().to_vec();
+            mkdir.extend([0u8; 4]);
+            mkdir.extend(name("d"));
+            let mut rename = ROOT.to_le_bytes().to_vec();
+            rename.extend(name("f"));
+            rename.extend(name("h"));
+            for (opcode, node, body) in [
+                (op::CREATE, ROOT, create),
+                (op::MKDIR, ROOT, mkdir),
+                (op::UNLINK, ROOT, name("f")),
+                (op::RENAME, ROOT, rename),
+            ] {
+                let (e, _) = answer(&s, &notice_req(opcode, node, &body));
+                assert_eq!(e, -EACCES, "request {opcode}, read-only {read_only}");
+            }
+            let mut names: Vec<_> = std::fs::read_dir(&p)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            names.sort();
+            assert_eq!(names, ["f"], "read-only {read_only}");
+            assert_eq!(std::fs::read(&file).unwrap(), b"one two 3");
+            // The guest's root of any other group sets the time, where it may write.
+            let (e, _) = answer(&s, &req(op::SETATTR, f, 0, &touch));
+            assert_eq!(e, if read_only { -EROFS } else { 0 });
+            assert_eq!(modified() != old, !read_only);
+        }
     }
 
     /// `request`'s errno, or none if it is still waiting after ten seconds, when the FIFO

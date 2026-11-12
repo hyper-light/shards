@@ -622,6 +622,50 @@ pub fn open_unfollowed_at(
     same_file(&first, again)
 }
 
+/// The name NTFS keeps of `h`'s file, the last part of its normalized path: the case and
+/// form it was made with, whatever an open found it by, a directory not case-sensitive
+/// finding any case of it (FileNormalizedNameInfo, GetFileInformationByHandleEx). None
+/// where the system or its file system says none.
+pub fn kept_name(h: BorrowedHandle<'_>) -> Option<Vec<u16>> {
+    use std::mem::offset_of;
+    use windows_sys::Win32::Foundation::ERROR_MORE_DATA;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_NAME_INFO, FileNormalizedNameInfo};
+    let at = offset_of!(FILE_NAME_INFO, FileName);
+    // A path of Windows' own most first (MAX_PATH, 260 characters), then the length NTFS
+    // says it is where it is longer.
+    let mut room = 260usize.checked_mul(2)?;
+    loop {
+        let mut buf = vec![0u8; at.checked_add(room)?];
+        // SAFETY: a buffer of its length for the class asked, on a handle the caller holds.
+        let done = unsafe {
+            GetFileInformationByHandleEx(
+                h.as_raw_handle(),
+                FileNormalizedNameInfo,
+                buf.as_mut_ptr().cast(),
+                u32::try_from(buf.len()).ok()?,
+            )
+        };
+        let len = usize::try_from(u32::from_le_bytes(buf.get(..4)?.try_into().ok()?)).ok()?;
+        if done == 0 {
+            let more = std::io::Error::last_os_error().raw_os_error() == i32::try_from(ERROR_MORE_DATA).ok();
+            if more && len > room {
+                room = len;
+                continue;
+            }
+            return None;
+        }
+        let path: Vec<u16> = buf
+            .get(at..at.checked_add(len)?)?
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
+            .collect();
+        let cut = path.iter().rposition(|&c| c == u16::from(b'\\')).map_or(0, |i| i + 1);
+        return Some(path.get(cut..)?.to_vec());
+    }
+}
+
 /// The names in the directory `h` holds open, `.` and `..` aside, as NTFS keeps them,
 /// read through `h` (FileFullDirectoryRestartInfo, then FileFullDirectoryInfo until
 /// ERROR_NO_MORE_FILES): that directory's, wherever it has gone.

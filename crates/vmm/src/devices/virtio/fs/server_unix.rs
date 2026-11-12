@@ -180,6 +180,64 @@ pub(super) fn stat_at(dir: host::Raw, name: &CStr) -> Result<Stat, Errno> {
     Ok(Stat::from(&st))
 }
 
+/// Whether the host keeps `name` in `dir` as the guest gave it, byte for byte (D235). On
+/// macOS the name its file system stores (getattrlist(2), `ATTR_CMN_NAME`, as Libc's
+/// realpath(3) asks it the case of each name): a case-insensitive APFS volume finds a file
+/// by another case or Unicode form of its name, which is not the name it keeps. A Linux
+/// host finds each name as asked; a directory it folds the case of (`chattr +F`) is not
+/// asked, as the guest's own Linux would ask none. One that cannot be asked is taken as
+/// kept.
+pub(super) fn stored_as(dir: host::Raw, name: &CStr) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let mut list = libc::attrlist {
+            bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+            reserved: 0,
+            commonattr: libc::ATTR_CMN_NAME,
+            volattr: 0,
+            dirattr: 0,
+            fileattr: 0,
+            forkattr: 0,
+        };
+        // Its length (u32), then an attrreference_t (its name's offset from the reference,
+        // and its length with the NUL), then the name, no longer than a path
+        // (sys/syslimits.h, `PATH_MAX`, 1024); words, for the u32's alignment.
+        let mut buf = [0u32; 3 + 1024 / 4];
+        // SAFETY: getattrlistat(2) of a NUL-terminated name relative to a directory the
+        // server holds, into a buffer of its size, never following the name.
+        let rc = unsafe {
+            libc::getattrlistat(
+                dir,
+                name.as_ptr(),
+                (&raw mut list).cast(),
+                buf.as_mut_ptr().cast(),
+                std::mem::size_of_val(&buf),
+                libc::c_ulong::from(libc::FSOPT_NOFOLLOW),
+            )
+        };
+        if rc != 0 {
+            return true;
+        }
+        let bytes: Vec<u8> = buf.iter().flat_map(|w| w.to_ne_bytes()).collect();
+        let word = |at: usize| -> Option<u32> {
+            Some(u32::from_ne_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?))
+        };
+        let stored = (|| {
+            let offset = i32::from_ne_bytes(word(4)?.to_ne_bytes());
+            let len = usize::try_from(word(8)?).ok()?;
+            let start = usize::try_from(4i64.checked_add(i64::from(offset))?).ok()?;
+            let named = bytes.get(start..start.checked_add(len)?)?;
+            Some(named.strip_suffix(&[0]).unwrap_or(named).to_vec())
+        })();
+        stored.is_none_or(|stored| stored == name.to_bytes())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (dir, name);
+        true
+    }
+}
+
 /// What the symlink `name` in `dir` holds (readlinkat(2)).
 pub(super) fn readlink_at(dir: host::Raw, name: &CStr) -> Result<Vec<u8>, Errno> {
     let mut buf = vec![0u8; 4096];
