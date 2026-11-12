@@ -231,3 +231,129 @@ fn answer_as_opa() {
         failed.join("\n")
     );
 }
+
+/// One call's answer as `answer_as_opa` writes it, or a failure once a minute passes:
+/// each of these takes milliseconds, and the work its exponent would ask for, hours.
+#[allow(clippy::unwrap_used)]
+fn answer_within_a_minute(name: &'static str, args: &'static str) -> String {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let f = funcs::lookup(name).unwrap();
+        let doc = value::from_json(args).unwrap();
+        let Value::Array(args) = &doc else {
+            let _ = tx.send(format!("{name}{args}: operands not an array"));
+            return;
+        };
+        let mut ctx = Context {
+            time_ns: 1_700_000_000_000_000_000,
+            ..Context::default()
+        };
+        let got = match f(&mut ctx, args) {
+            Ok(Some(v)) => {
+                let mut s = String::new();
+                encode(&mut s, &v);
+                format!("result {s}")
+            }
+            Ok(None) => "undefined".to_string(),
+            Err(e) => format!("error {}", error_text(name, &e)),
+        };
+        let _ = tx.send(got);
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(60))
+        .unwrap_or_else(|_| format!("{name}{args}: still working after a minute"))
+}
+
+/// Numbers whose exponents are millions to billions, where CI's fuzzing found work as
+/// long as their values (docs/research/measurements/ci-rego-compare: its first nine
+/// artifacts, then each path bounded): comparisons answer exactly; a number text or
+/// exact integer past OPA's bound on numbers (MantExp ±1e5, which OPA's parser keeps a
+/// literal to) is "number too big". OPA panics on the comparisons ("illegal value") and
+/// writes the rest for hours (ci-rego-compare/opa).
+#[test]
+fn numbers_with_huge_exponents_answer_in_bounded_work() {
+    let big = |name: &str| format!("error p.rego:1: eval_builtin_error: {name}: number too big");
+    let cases = [
+        ("lt", "[33,3e33333333332]", "result true".to_string()),
+        (
+            "lt",
+            "[1202022222200000E0297138122009577,1]",
+            "result false".to_string(),
+        ),
+        (
+            "max",
+            "[[44222222222222222200000008854029,2222222000000222222222222222200000008854029,222222200000008854008854029,22e22224444]]",
+            "result 22e22224444".to_string(),
+        ),
+        ("ceil", "[266000000e2028020]", big("ceil")),
+        ("ceil", "[2e001752525]", big("ceil")),
+        ("abs", "[80000000000e00029174680]", big("abs")),
+        ("abs", "[9e9999995]", big("abs")),
+        (
+            "div",
+            "[3333337333333e00000000130951909,3333333333333333333333334]",
+            big("div"),
+        ),
+        (
+            "div",
+            "[4,80000000000000000000000204920496382304e12172402]",
+            big("div"),
+        ),
+        // Each path to such work, bounded.
+        (
+            "sort",
+            "[[3e33333333332,1,1e-33333333332,-3e33333333332,0e99999999999]]",
+            "result [-3e33333333332,0e99999999999,1e-33333333332,1,3e33333333332]".to_string(),
+        ),
+        ("equal", "[1e999999999,10e999999998]", "result true".to_string()),
+        ("plus", "[1e600000000,-1e600000000]", "result 0".to_string()),
+        ("minus", "[1e600000000,1e-600000000]", big("minus")),
+        (
+            "mul",
+            "[1e60000,1e-60000]",
+            "result 0.99999999999999999995".to_string(),
+        ),
+        ("abs", "[1e-600000000]", big("abs")),
+        // Past Go's MinExp: SetString refuses it (OPA panics, "illegal value").
+        (
+            "abs",
+            "[1e-99999999999]",
+            "error p.rego:1: eval_builtin_error: abs: exponent out of range".to_string(),
+        ),
+        ("round", "[1e200000]", big("round")),
+        ("floor", "[-1e200000]", big("floor")),
+        ("rem", "[1e200000,7]", big("rem")),
+        ("bits.negate", "[1e200000]", big("bits.negate")),
+        ("bits.lsh", "[1,100000]", big("bits.lsh")),
+        ("bits.lsh", "[1,4611686018427387904]", big("bits.lsh")),
+        ("numbers.range", "[1e200000,1e200000]", big("numbers.range")),
+        ("format_int", "[1e200000,16]", big("format_int")),
+        // As units' other errors, the name twice (OPA's errUnitsNumConv and kin).
+        ("units.parse", "[\"1e200000\"]", big("units.parse: units.parse")),
+        (
+            "units.parse_bytes",
+            "[\"1e200000\"]",
+            big("units.parse_bytes: units.parse_bytes"),
+        ),
+        // Go's ±Inf, whose Int is 0, and an int64 OPA's Int64 refuses: OPA's answers.
+        ("units.parse_bytes", "[\"1e700000000\"]", "result 0".to_string()),
+        (
+            "time.date",
+            "[1e200000]",
+            "error p.rego:1: eval_builtin_error: time.date: timestamp too big".to_string(),
+        ),
+        (
+            "to_number",
+            "[\"1e-99999999999\"]",
+            "result 1e-99999999999".to_string(),
+        ),
+    ];
+    for (name, args, want) in cases {
+        assert_eq!(answer_within_a_minute(name, args), want, "{name}{args}");
+    }
+    // Up to the bound, the number is made.
+    let two = (num_bigint::BigInt::from(1) << 99999u32).to_string();
+    assert_eq!(
+        answer_within_a_minute("bits.lsh", "[1,99999]"),
+        format!("result {two}")
+    );
+}

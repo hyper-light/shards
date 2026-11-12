@@ -18,8 +18,8 @@ fn float(n: &Number) -> Result<Float, BuiltinError> {
 }
 
 /// builtins.FloatToNumber.
-fn number(f: &Float) -> Value {
-    Value::Number(Number::from_float(f))
+fn number(f: &Float) -> Result<Value, BuiltinError> {
+    Ok(Value::Number(Number::from_float(f).map_err(num_err)?))
 }
 
 /// `n.Int()` when inSmallIntRange.
@@ -27,10 +27,14 @@ fn small(n: &Number) -> Option<i64> {
     n.as_i64().filter(|x| -1000 < *x && *x < 1000)
 }
 
-/// builtins.NumberToInt.
-fn to_int(n: &Number) -> Option<BigInt> {
-    let (i, exact) = n.to_float().ok()?.int();
-    exact.then_some(i)
+/// builtins.NumberToInt: `None` where Go's is inexact (or OPA panics: Go cannot read
+/// the number).
+fn to_int(n: &Number) -> Result<Option<BigInt>, BuiltinError> {
+    let Ok(f) = n.to_float() else {
+        return Ok(None);
+    };
+    let (i, exact) = f.int().map_err(num_err)?;
+    Ok(exact.then_some(i))
 }
 
 /// big.Int's Int64: the low 64 bits of the magnitude, signed.
@@ -63,7 +67,12 @@ fn one() -> Float {
 
 fn arity1(args: &[Value], f: fn(Float) -> Result<Float, BuiltinError>) -> Out {
     let n = number_operand(arg(args, 0)?, 1)?;
-    ok(number(&f(float(n)?)?))
+    ok(number(&f(float(n)?)?)?)
+}
+
+/// `new(big.Float).SetInt(x.Int(nil))`.
+fn truncated(x: &Float) -> Result<Float, BuiltinError> {
+    Float::from_int(&x.int().map_err(num_err)?.0).map_err(num_err)
 }
 
 pub(super) fn abs(_: &mut Context, args: &[Value]) -> Out {
@@ -80,13 +89,13 @@ pub(super) fn round(_: &mut Context, args: &[Value]) -> Out {
             Float::add(&a, &h, prec)
         }
         .map_err(num_err)?;
-        Float::from_int(&r.int().0).map_err(num_err)
+        truncated(&r)
     })
 }
 
 pub(super) fn ceil(_: &mut Context, args: &[Value]) -> Out {
     arity1(args, |a| {
-        let f = Float::from_int(&a.int().0).map_err(num_err)?;
+        let f = truncated(&a)?;
         if f.signbit() || Float::compare(&a, &f).is_eq() {
             return Ok(f);
         }
@@ -97,7 +106,7 @@ pub(super) fn ceil(_: &mut Context, args: &[Value]) -> Out {
 
 pub(super) fn floor(_: &mut Context, args: &[Value]) -> Out {
     arity1(args, |a| {
-        let f = Float::from_int(&a.int().0).map_err(num_err)?;
+        let f = truncated(&a)?;
         if !f.signbit() || Float::compare(&a, &f).is_eq() {
             return Ok(f);
         }
@@ -116,7 +125,7 @@ fn small_or_float(args: &[Value], small_op: fn(i64, i64) -> i64, op: FloatOp) ->
         return ok(Value::int(small_op(x, y)));
     }
     let (a, b) = (float(n1)?, float(n2)?);
-    ok(number(&op(&a, &b, Float::max_prec(&a, &b)).map_err(num_err)?))
+    ok(number(&op(&a, &b, Float::max_prec(&a, &b)).map_err(num_err)?)?)
 }
 
 pub(super) fn plus(_: &mut Context, args: &[Value]) -> Out {
@@ -147,7 +156,7 @@ pub(super) fn div(_: &mut Context, args: &[Value]) -> Out {
     }
     ok(number(
         &Float::quo(&a, &b, Float::max_prec(&a, &b)).map_err(num_err)?,
-    ))
+    )?)
 }
 
 pub(super) fn rem(_: &mut Context, args: &[Value]) -> Out {
@@ -163,7 +172,7 @@ pub(super) fn rem(_: &mut Context, args: &[Value]) -> Out {
         }
         return ok(Value::int(x % y));
     }
-    let (Some(x), Some(y)) = (to_int(n1), to_int(n2)) else {
+    let (Some(x), Some(y)) = (to_int(n1)?, to_int(n2)?) else {
         return Err(BuiltinError::Other("modulo on floating-point number".into()));
     };
     if low_i64(&y) == 0 {
@@ -206,11 +215,11 @@ pub(super) fn sum(_: &mut Context, args: &[Value]) -> Out {
         args,
         Float::from_f64_exact(false, 0, 0),
         Float::add,
-    )?))
+    )?)?)
 }
 
 pub(super) fn product(_: &mut Context, args: &[Value]) -> Out {
-    ok(number(&fold(args, one(), Float::mul)?))
+    ok(number(&fold(args, one(), Float::mul)?)?)
 }
 
 /// builtins.BigIntOperand.
@@ -218,7 +227,7 @@ fn big_int_operand(v: &Value, pos: usize) -> Result<BigInt, BuiltinError> {
     let Value::Number(n) = v else {
         return Err(BuiltinError::operand_type(pos, v, &["integer"]));
     };
-    to_int(n)
+    to_int(n)?
         .ok_or_else(|| BuiltinError::operand(pos, "must be integer number but got floating-point number"))
 }
 
@@ -260,19 +269,17 @@ fn shift_count(b: &BigInt) -> Result<u64, BuiltinError> {
     Ok(low_u64(b))
 }
 
-/// The most bits a left shift may make. Go allocates whatever the shift asks and
-/// fails when memory runs out; this refuses first, a result past it being one no
-/// policy can hold.
-const MAX_SHIFT: u64 = 1 << 32;
-
 pub(super) fn bits_lsh(_: &mut Context, args: &[Value]) -> Out {
     bits2(args, |a, b| {
         let shift = shift_count(&b)?;
         if a.sign() == Sign::NoSign {
             return Ok(a);
         }
-        if shift > MAX_SHIFT {
-            return Err(BuiltinError::Other("shift count too large".into()));
+        // Go makes whatever the shift asks, and fails when memory runs out; a result
+        // past the bound on numbers is refused before it is made.
+        let bits = a.bits().saturating_add(shift);
+        if i64::try_from(bits).map_or(true, |b| b > number::MAX_EXPONENT) {
+            return Err(num_err(number::TOO_BIG));
         }
         Ok(a << shift)
     })

@@ -1,10 +1,27 @@
 //! number.rs against what Go's big.Float and OPA make of testdata/numbers.json
 //! (testdata/numbers-oracle.json, written by scripts/rego/generate).
 
-use shards_rego::number::Float;
+use shards_rego::number::{self, Float};
 
-fn text(f: &Float) -> String {
+fn text(f: &Float) -> Result<String, number::Error> {
     f.text(if f.is_int() { b'f' } else { b'g' })
+}
+
+/// Whether Go's text is of a number past OPA's bound on numbers, MantExp ±1e5: a text
+/// longer than 30105 characters is an integer's of at least 10^30103, or its negative.
+fn past_the_bound(go: &str) -> bool {
+    go.len() > 30105 || Float::parse(go).is_ok_and(|f| f.go_exponent().abs() > number::MAX_EXPONENT)
+}
+
+/// This port's text against Go's: the same, or this port's error where Go writes ±Inf
+/// (OVERFLOW) or a number past the bound (TOO_BIG), the differences D98 records.
+fn agrees(got: Result<String, number::Error>, go: &str) -> bool {
+    match got {
+        Ok(t) => t == go,
+        Err(e) if e == number::OVERFLOW => go.ends_with("Inf"),
+        Err(e) if e == number::TOO_BIG => past_the_bound(go),
+        Err(_) => false,
+    }
 }
 
 #[test]
@@ -21,14 +38,20 @@ fn numbers_read_and_write_as_go_reads_and_writes_them() {
             }
             continue;
         }
+        let want = |k: &str| n.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if want("text").ends_with("Inf") {
+            if !matches!(got, Err(ref e) if *e == number::OVERFLOW) {
+                failed.push(format!("{s:?}: {got:?}, Go reads it as {}", want("text")));
+            }
+            continue;
+        }
         let Ok(f) = got else {
             failed.push(format!("{s:?}: refused, Go reads it"));
             continue;
         };
-        let want = |k: &str| n.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let flag = |k: &str| n.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
-        let (int, exact) = f.int();
-        let got = (text(&f), f.is_int(), int.to_string(), exact, f.signbit());
+        let (int, exact) = f.int().unwrap();
+        let got = (text(&f).unwrap(), f.is_int(), int.to_string(), exact, f.signbit());
         let wanted = (
             want("text"),
             flag("is_int"),
@@ -50,15 +73,15 @@ fn numbers_read_and_write_as_go_reads_and_writes_them() {
             ("mul", Float::mul(&x, &y, prec)),
         ];
         for (op, r) in ops {
-            let got = text(&r.unwrap());
-            if got != p[op].as_str().unwrap() {
-                failed.push(format!("{a} {op} {b}: {got}, Go {}", p[op]));
+            let got = r.and_then(|f| text(&f));
+            if !agrees(got.clone(), p[op].as_str().unwrap()) {
+                failed.push(format!("{a} {op} {b}: {got:?}, Go {:.200}", p[op]));
             }
         }
         if let Some(q) = p.get("quo").and_then(|v| v.as_str()) {
-            let got = text(&Float::quo(&x, &y, prec).unwrap());
-            if got != q {
-                failed.push(format!("{a} quo {b}: {got}, Go {q}"));
+            let got = Float::quo(&x, &y, prec).and_then(|f| text(&f));
+            if !agrees(got.clone(), q) {
+                failed.push(format!("{a} quo {b}: {got:?}, Go {q:.200}"));
             }
         }
         let compare = shards_rego::value::number_compare(a, b) as i64;
