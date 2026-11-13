@@ -203,20 +203,7 @@ fn compile(
     // is built; its paths remapped as the Rust's are (`-ffile-prefix-map`). A compiler
     // named for the target already is used instead.
     let var = triple.replace('-', "_");
-    if std::env::var_os(format!("CC_{var}")).is_none() {
-        let tool = |name: &str| {
-            let script = root.join("scripts").join(name);
-            if cfg!(windows) {
-                format!("sh {}", sh_path(&script))
-            } else {
-                script.display().to_string()
-            }
-        };
-        command
-            .env(format!("CC_{var}"), tool("zig-cc"))
-            .env(format!("AR_{var}"), tool("zig-ar"))
-            .env("ZIG_TARGET", format!("{arch}-linux-musl"));
-    }
+    zig_c(&mut command, root, &triple);
     let maps: Vec<String> = remaps
         .iter()
         .filter_map(|r| r.strip_prefix("--remap-path-prefix="))
@@ -429,6 +416,8 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
             ),
             "rust-lld",
         );
+        // The network process's AWS-LC (D242) is C, compiled as the init's is.
+        zig_c(&mut command, &root, &target);
     }
     command
         .current_dir(&root)
@@ -454,6 +443,13 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let tail: Vec<&str> = stderr.lines().rev().take(20).collect();
         let mut message = format!("building the VM and network processes for {target} failed");
+        if stderr.contains("aws-lc") || stderr.contains("zig") {
+            message.push_str(&format!(
+                "\nits C (AWS-LC) is compiled by zig 0.16.0: install it (https://ziglang.org/download/, \
+                 `brew install zig`), or name a compiler with CC_{}",
+                target.replace('-', "_")
+            ));
+        }
         message.push_str("\nor name prebuilt ones with SHARDS_HELPERS_DIR");
         for line in tail.iter().rev() {
             message.push('\n');
@@ -462,6 +458,30 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
         return Err(message);
     }
     Ok(target_dir.join(&target).join(dir_name))
+}
+
+/// AWS-LC's C for a musl `triple` (the init's TLS, AGENTFILE_ARCH.md §12 answer 18; the
+/// network process's, D242), by zig on every host (scripts/zig-cc, which drops the Rust triple
+/// cc-rs passes): one compiler, so that what is built is the same wherever it is. A compiler
+/// named for the target already is used instead.
+fn zig_c(command: &mut Command, root: &Path, triple: &str) {
+    let var = triple.replace('-', "_");
+    if env::var_os(format!("CC_{var}")).is_some() {
+        return;
+    }
+    let arch = triple.split('-').next().unwrap_or(triple);
+    let tool = |name: &str| {
+        let script = root.join("scripts").join(name);
+        if cfg!(windows) {
+            format!("sh {}", sh_path(&script))
+        } else {
+            script.display().to_string()
+        }
+    };
+    command
+        .env(format!("CC_{var}"), tool("zig-cc"))
+        .env(format!("AR_{var}"), tool("zig-ar"))
+        .env("ZIG_TARGET", format!("{arch}-linux-musl"));
 }
 
 /// Whether `target` carries a GPU's VM process where its renderer's libraries are given
