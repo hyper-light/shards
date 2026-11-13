@@ -4519,6 +4519,8 @@ mod tests {
         refresh: Vec<u8>,
         provider_calls: usize,
         revoked: usize,
+        /// Where set, each refresh is refused so, the provider never called.
+        refuse: Option<signin::Declined>,
     }
 
     impl Broker {
@@ -4560,6 +4562,13 @@ mod tests {
                                 access_placeholder: SIGNED_ACCESS.into(),
                                 refresh_placeholder: Some(SIGNED_REFRESH.into()),
                             }),
+                        }
+                    }
+                    signin::Told::Refresh { id, sign_in } if self.refuse.is_some() => {
+                        assert_eq!(sign_in, SIGN_IN);
+                        signin::Answered::Refreshed {
+                            id,
+                            result: Err(self.refuse.clone().unwrap()),
                         }
                     }
                     signin::Told::Refresh { id, sign_in } => {
@@ -5094,7 +5103,33 @@ mod tests {
     /// each request once it has ended: `:status` 200, an `x-echo` of its Authorization, and DATA
     /// of its Authorization, a newline and its body; telling the test what it had.
     fn h2_host(root: &CertifiedIssuer<'static, KeyPair>) -> (SocketAddr, mpsc::Receiver<H2Had>) {
-        let mut config = (*leaf_config(root, &[GRANTED, OTHER])).clone();
+        h2_serving(root, &[GRANTED, OTHER], h2_echo)
+    }
+
+    /// The echo `h2_host` answers with: `:status` 200, an `x-echo` of the request's
+    /// Authorization, and DATA of its Authorization, a newline and its body.
+    fn h2_echo(fields: &[hpack::Field], body: &[u8]) -> (Vec<hpack::Field>, Vec<u8>) {
+        let auth = fields
+            .iter()
+            .find(|f| f.name == b"authorization")
+            .map(|f| f.value.to_vec())
+            .unwrap_or_default();
+        let data = [&auth[..], b"\n", body].concat();
+        (vec![field(":status", b"200"), field("x-echo", &auth)], data)
+    }
+
+    /// How an HTTP/2 test host answers a request, from its fields and body: its response's fields
+    /// and DATA.
+    type H2Answer = fn(&[hpack::Field], &[u8]) -> (Vec<hpack::Field>, Vec<u8>);
+
+    /// An HTTPS server for `names` speaking HTTP/2 alone (ALPN `h2`), its windows `HOST_HOLDS`,
+    /// answering each request once it has ended as `answer` says, and telling the test what it had.
+    fn h2_serving(
+        root: &CertifiedIssuer<'static, KeyPair>,
+        names: &[&str],
+        answer: H2Answer,
+    ) -> (SocketAddr, mpsc::Receiver<H2Had>) {
+        let mut config = (*leaf_config(root, names)).clone();
         config.alpn_protocols = vec![b"h2".to_vec()];
         let config = Arc::new(config);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -5104,13 +5139,13 @@ mod tests {
             for tcp in listener.incoming() {
                 let Ok(tcp) = tcp else { return };
                 let (config, tx) = (config.clone(), tx.clone());
-                std::thread::spawn(move || h2_answer(config, tcp, tx));
+                std::thread::spawn(move || h2_answer(config, tcp, tx, answer));
             }
         });
         (addr, rx)
     }
 
-    fn h2_answer(config: Arc<ServerConfig>, tcp: TcpStream, tx: mpsc::Sender<H2Had>) {
+    fn h2_answer(config: Arc<ServerConfig>, tcp: TcpStream, tx: mpsc::Sender<H2Had>, answer: H2Answer) {
         let mut tls = rustls::StreamOwned::new(ServerConnection::new(config).unwrap(), tcp);
         let mut peer = Peer::new(End::Server, HOST_HOLDS);
         let mut requests: BTreeMap<u32, (Vec<hpack::Field>, Vec<u8>)> = BTreeMap::new();
@@ -5141,13 +5176,9 @@ mod tests {
                     continue;
                 }
                 let (fields, body) = requests.remove(&stream).unwrap();
-                let auth = fields
-                    .iter()
-                    .find(|f| f.name == b"authorization")
-                    .map(|f| f.value.to_vec())
-                    .unwrap_or_default();
-                peer.send_headers(stream, &[field(":status", b"200"), field("x-echo", &auth)], false);
-                peer.send_data(stream, &[&auth[..], b"\n", &body].concat(), true);
+                let (head, data) = answer(&fields, &body);
+                peer.send_headers(stream, &head, false);
+                peer.send_data(stream, &data, true);
                 let _ = tx.send(H2Had { fields, body });
             }
         }
@@ -5386,5 +5417,319 @@ mod tests {
             had.recv_timeout(Duration::from_secs(10)).unwrap().request,
             swapped(&request, PLACEHOLDER.as_bytes(), VALUE)
         );
+    }
+
+    // A sign-in's token host over HTTP/2 (#74 steps 7 and 8): step 8's token handling per stream.
+
+    /// A token host as Claude Code's is (`TOKEN_URL`), speaking HTTP/2 alone: a code's exchange
+    /// answered with the issued tokens, a GET with a JSON text naming no token, anything else 400;
+    /// each a JSON text framed by its Content-Length.
+    fn h2_token_answer(fields: &[hpack::Field], body: &[u8]) -> (Vec<hpack::Field>, Vec<u8>) {
+        let get = fields
+            .iter()
+            .any(|f| f.name == b":method" && &f.value[..] == b"GET");
+        let (status, answer) = if holds(body, br#""grant_type":"authorization_code""#) {
+            ("200", token_response(ISSUED_ACCESS, ISSUED_REFRESH))
+        } else if get {
+            ("200", r#"{"ok":true}"#.to_string())
+        } else {
+            ("400", r#"{"error":"unexpected"}"#.to_string())
+        };
+        let head = vec![
+            field(":status", status.as_bytes()),
+            field("content-type", b"application/json"),
+            field("cache-control", b"no-store"),
+            field("content-length", answer.len().to_string().as_bytes()),
+        ];
+        (head, answer.into_bytes())
+    }
+
+    /// A guest of the token host offering `alpn`, its handshake done and HTTP/2 chosen.
+    fn h2_token_bench(credentials: &mut Credentials, addr: SocketAddr, alpn: &[&[u8]]) -> (Bench, Peer) {
+        let guest = guest_offering(credentials.ca.der().to_vec().into(), TOKEN_HOST, None, alpn);
+        let mut bench = Bench::new(guest, addr);
+        while bench.guest.is_handshaking() {
+            if !bench.turn(credentials) {
+                std::thread::yield_now();
+            }
+        }
+        assert_eq!(
+            bench.guest.alpn_protocol(),
+            Some(&b"h2"[..]),
+            "the guest was not served HTTP/2"
+        );
+        (bench, Peer::new(End::Client, GUEST_HOLDS))
+    }
+
+    /// Turns an HTTP/2 guest's bench until `done` says so of what the guest read, the broker
+    /// answering what the run asks and the flow looking for its answers each turn, every byte the
+    /// guest read kept in `seen`. It waits on the bench's own progress alone (R03); a connection
+    /// that ends fails it.
+    fn h2_drive(
+        bench: &mut Bench,
+        peer: &mut Peer,
+        seen: &mut Vec<u8>,
+        credentials: &mut Credentials,
+        broker: &mut Broker,
+        done: impl Fn(&Peer) -> bool,
+    ) {
+        while !done(peer) {
+            assert!(!bench.closed, "the connection ended: {:?}", peer.events);
+            let out = peer.take_out();
+            if !out.is_empty() {
+                bench.guest.writer().write_all(&out).unwrap();
+            }
+            let moved = bench.turn(credentials);
+            if !bench.got.is_empty() {
+                let got = std::mem::take(&mut bench.got);
+                seen.extend_from_slice(&got);
+                peer.feed(&got);
+            }
+            let asked = broker.serve(credentials);
+            let _ = (credentials.leases.resumed(), credentials.sign_ins.resumed());
+            bench.step(credentials, None, |f, run, q| f.resume(run, q));
+            if !moved && asked == 0 {
+                std::thread::yield_now();
+            }
+        }
+    }
+
+    /// A POST of `body` to the token host's `path`, as a CLI sends one, asking a coded response.
+    fn h2_post(path: &str, body: &str) -> Vec<hpack::Field> {
+        let mut fields = h2_request("POST", TOKEN_HOST, path, None);
+        fields.push(field("content-type", b"application/json"));
+        fields.push(field("accept-encoding", b"gzip, br"));
+        fields.push(field("content-length", body.len().to_string().as_bytes()));
+        fields
+    }
+
+    /// Whether `seen`, or any field the guest decoded, holds one of `reals`.
+    fn h2_leaked(peer: &Peer, seen: &[u8], reals: &[&str]) -> Option<String> {
+        reals
+            .iter()
+            .find(|real| {
+                holds(seen, real.as_bytes())
+                    || peer.events.iter().any(|e| match e {
+                        Event::Headers { fields, .. } => {
+                            fields.iter().any(|f| holds(&f.value, real.as_bytes()))
+                        }
+                        _ => false,
+                    })
+            })
+            .map(|r| r.to_string())
+    }
+
+    /// Do: a guest offering `h2` and `http/1.1` exchanges Claude Code's code at its token host,
+    /// which speaks HTTP/2 alone, on stream 1. Expect: HTTP/2 on both hops; the exchange reaching
+    /// the host asking `identity` and its body as sent; the response held until the broker keeps
+    /// the issued tokens, then reaching the guest on its stream with the broker's placeholders in
+    /// their places and a Content-Length of its new length; no real token in anything the guest
+    /// read; the capture audited; no stream reset.
+    #[test]
+    fn an_h2_token_response_is_captured_on_its_stream_and_the_guest_sees_placeholders() {
+        let root = root("shards test root");
+        let (addr, had) = h2_serving(&root, &[TOKEN_HOST], h2_token_answer);
+        let mut credentials = sign_in_credentials(&root, false);
+        let mut broker = Broker::default();
+        let (mut bench, mut peer) = h2_token_bench(&mut credentials, addr, &[b"h2", b"http/1.1"]);
+        let mut seen = Vec::new();
+        let exchange = r#"{"grant_type":"authorization_code","code":"c0de","redirect_uri":"https://platform.claude.com/oauth/code/callback","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e","code_verifier":"v","state":"s"}"#;
+        peer.send_headers(1, &h2_post("/v1/oauth/token", exchange), false);
+        peer.send_data(1, exchange.as_bytes(), true);
+        h2_drive(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut broker,
+            |p| p.response(1).ended,
+        );
+        let sent = had.recv().unwrap();
+        let codings: Vec<&[u8]> = sent
+            .fields
+            .iter()
+            .filter(|f| f.name == b"accept-encoding")
+            .map(|f| &f.value[..])
+            .collect();
+        assert_eq!(
+            codings,
+            [&b"identity"[..]],
+            "the token host was not asked `identity`"
+        );
+        assert_eq!(sent.body, exchange.as_bytes());
+        assert_eq!(
+            broker.access,
+            ISSUED_ACCESS.as_bytes(),
+            "the issued token was not kept"
+        );
+        assert_eq!(broker.refresh, ISSUED_REFRESH.as_bytes());
+        let Got { fields, data, .. } = peer.response(1);
+        let expected = token_response(SIGNED_ACCESS, SIGNED_REFRESH);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        assert_eq!(String::from_utf8_lossy(&data), expected);
+        assert_eq!(
+            value_of(&fields, "content-length"),
+            Some(expected.len().to_string().as_bytes())
+        );
+        assert_eq!(h2_leaked(&peer, &seen, &[ISSUED_ACCESS, ISSUED_REFRESH]), None);
+        let did: Vec<Did> = bench.audit.iter().map(|a| a.what).collect();
+        assert_eq!(did, [Did::Captured]);
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
+    }
+
+    /// Do: a guest of a sign-in captured before (a later run's) refreshes it over HTTP/2 on stream
+    /// 1, then sends a GET on stream 3. Expect: the refresh answered on its stream from the broker,
+    /// one call to the provider outside, the guest given the sign-in's placeholders kept from
+    /// caches and no rotated token; the held lease of the access token let go; the host's first
+    /// request the GET, so that the refresh never reached it; the refresh audited.
+    #[test]
+    fn an_h2_refresh_is_answered_outside_on_its_stream_with_placeholders() {
+        let root = root("shards test root");
+        let (addr, had) = h2_serving(&root, &[TOKEN_HOST], h2_token_answer);
+        let mut credentials = sign_in_credentials(&root, true);
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        let (mut bench, mut peer) = h2_token_bench(&mut credentials, addr, &[b"h2", b"http/1.1"]);
+        let mut seen = Vec::new();
+        let refresh = refresh_body();
+        peer.send_headers(1, &h2_post("/v1/oauth/token", &refresh), false);
+        peer.send_data(1, refresh.as_bytes(), true);
+        h2_drive(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut broker,
+            |p| p.response(1).ended,
+        );
+        assert_eq!(broker.provider_calls, 1);
+        let Got { fields, data, .. } = peer.response(1);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        assert_eq!(value_of(&fields, "cache-control"), Some(&b"no-store"[..]));
+        assert_eq!(value_of(&fields, "pragma"), Some(&b"no-cache"[..]));
+        assert_eq!(
+            String::from_utf8_lossy(&data),
+            token_response(SIGNED_ACCESS, SIGNED_REFRESH)
+        );
+        let reals = [ISSUED_ACCESS, ISSUED_REFRESH, ROTATED_ACCESS, ROTATED_REFRESH];
+        assert_eq!(h2_leaked(&peer, &seen, &reals), None);
+        assert!(
+            credentials
+                .leases
+                .held(&access_reference(), Instant::now())
+                .is_none(),
+            "the rotated token's old value is held still"
+        );
+        peer.send_headers(3, &h2_request("GET", TOKEN_HOST, "/after", None), true);
+        h2_drive(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut broker,
+            |p| p.response(3).ended,
+        );
+        let first = had.recv().unwrap();
+        assert!(
+            first
+                .fields
+                .iter()
+                .any(|f| f.name == b":path" && &f.value[..] == b"/after"),
+            "the refresh reached the host"
+        );
+        let did: Vec<Did> = bench.audit.iter().map(|a| a.what).collect();
+        assert_eq!(did, [Did::Refreshed]);
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
+    }
+
+    /// Do: on one HTTP/2 connection to the token host, stream 1 a refresh the broker refuses (its
+    /// provider refused the refresh token) and stream 3 a GET, at once. Expect: stream 1 answered
+    /// by the injector on that stream alone with the HTTP/1.1 path's status and text, RFC 6749
+    /// §5.2's `invalid_grant` in a 400, so that its CLI signs in anew; stream 3 answered by the
+    /// host; no stream reset and the connection going on.
+    #[test]
+    fn a_refused_h2_refresh_is_answered_on_its_stream_while_another_completes() {
+        let root = root("shards test root");
+        let (addr, had) = h2_serving(&root, &[TOKEN_HOST], h2_token_answer);
+        let mut credentials = sign_in_credentials(&root, true);
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        broker.refuse = Some(signin::Declined::Denied("the refresh token was revoked".into()));
+        let (mut bench, mut peer) = h2_token_bench(&mut credentials, addr, &[b"h2", b"http/1.1"]);
+        let mut seen = Vec::new();
+        let refresh = refresh_body();
+        peer.send_headers(1, &h2_post("/v1/oauth/token", &refresh), false);
+        peer.send_data(1, refresh.as_bytes(), true);
+        peer.send_headers(3, &h2_request("GET", TOKEN_HOST, "/meanwhile", None), true);
+        h2_drive(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut broker,
+            |p| p.response(1).ended && p.response(3).ended,
+        );
+        let refused = Refusal::Declined {
+            refresh: true,
+            why: signin::Declined::Denied("the refresh token was revoked".into()),
+        }
+        .response();
+        let body_at = refused.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let Got { fields, data, .. } = peer.response(1);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"400"[..]));
+        assert_eq!(value_of(&fields, "content-type"), Some(&b"application/json"[..]));
+        assert_eq!(data, &refused[body_at..], "not the HTTP/1.1 path's answer");
+        let Got { fields, data, .. } = peer.response(3);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        assert_eq!(data, br#"{"ok":true}"#);
+        let first = had.recv().unwrap();
+        assert!(
+            first
+                .fields
+                .iter()
+                .any(|f| f.name == b":path" && &f.value[..] == b"/meanwhile")
+        );
+        assert_eq!(broker.provider_calls, 0);
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
+        assert!(!bench.closed, "the connection ended with its refusal");
+    }
+
+    /// Do: a guest offering `h2` alone (no `http/1.1`) reaches the token host, revokes its
+    /// sign-in on stream 1 and GETs on stream 3. Expect: served HTTP/2, not refused at its
+    /// handshake; the revocation answered 200 here on its stream, the kept tokens as they were;
+    /// the GET answered by the host.
+    #[test]
+    fn a_guest_offering_h2_alone_to_a_token_host_is_served_h2() {
+        let root = root("shards test root");
+        let (addr, _had) = h2_serving(&root, &[TOKEN_HOST], h2_token_answer);
+        let mut credentials = sign_in_credentials(&root, true);
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        let (mut bench, mut peer) = h2_token_bench(&mut credentials, addr, &[b"h2"]);
+        let mut seen = Vec::new();
+        let revoke = format!(
+            r#"{{"token":"{SIGNED_REFRESH}","token_type_hint":"refresh_token","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e"}}"#
+        );
+        peer.send_headers(1, &h2_post("/v1/oauth/token/revoke", &revoke), false);
+        peer.send_data(1, revoke.as_bytes(), true);
+        peer.send_headers(3, &h2_request("GET", TOKEN_HOST, "/", None), true);
+        h2_drive(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut broker,
+            |p| p.response(1).ended && p.response(3).ended,
+        );
+        let Got { fields, data, .. } = peer.response(1);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        assert!(data.is_empty());
+        assert_eq!(broker.revoked, 1);
+        assert_eq!(
+            broker.refresh,
+            ISSUED_REFRESH.as_bytes(),
+            "the kept token was revoked"
+        );
+        assert_eq!(value_of(&peer.response(3).fields, ":status"), Some(&b"200"[..]));
+        let did: Vec<Did> = bench.audit.iter().map(|a| a.what).collect();
+        assert_eq!(did, [Did::Revoked]);
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
     }
 }
