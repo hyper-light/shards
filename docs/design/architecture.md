@@ -8203,9 +8203,21 @@ user's host as Docker's.
   network process; it now waits one slice. The cost: a network process stuck on nothing of
   its own is ended 10 s or more after its VM, where it was 1 s; one that exits as its links
   close, as each does, ends the wait at once. The waits that took that second as their
-  basis keep it, their own basis owed (R03): init's relay drain (hostbind.rs `DRAIN`), the
-  daemon's `PUBLISH_PATIENCE`, and the VM process's wait for its network process's
-  unpublish (warm.rs).
+  basis keep it, their own basis owed (R03): init's relay drain (hostbind.rs `DRAIN`), and
+  the VM process's wait for its network process's unpublish (warm.rs).
+- **The daemon's asks of a network process are followed too** (ROOT, 2026-11-13; it was
+  `PUBLISH_PATIENCE`, the same second, picked): a published port, a peer, a network's names
+  (`networks::ask_net`, `Asks`), and a run's on the host's network (`HostNet`), each wait for
+  room and for its answer judged by D215's judge (`netproc::until_ready`) on the daemon's
+  record of its network processes' answers (`netproc::NET_ANSWERS`, one for the process, W*
+  its slowest answer), its network process followed by its pid (`NetLink`, carried with its
+  control from its start): before the record's first answer, the process's liveness alone,
+  its socket's end; past W*, looked at each W*, and refused where a whole W* shows it ran
+  no CPU and its host was not the reason. Each answer teaches the record, its wall and the
+  process's CPU. A wait for room is one for poll(2)'s POLLOUT (WSAPoll's POLLWRNORM), so no
+  write is cut part-way. Red at 07adbbc8b (`ask_red_tests`, adas-mac-studio.local): an answer
+  1.5 s on was refused at 1.002 s; green: `netproc::ask_tests`, a busy stand-in's answers 1.5
+  s on taken, cold and past W*, and a sleeping one's ask refused past a taught W*.
 - **The slice is the host's own, W*.** Each end heard is kept in the home (`ends`:
   `teardown MS`, `exit MS` and `helper MS`, the slowest of each this home's processes have
   heard: its daemon and its runs' hosts keep one record, each end put with what it holds

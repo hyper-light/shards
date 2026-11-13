@@ -125,11 +125,6 @@ const USAGE: &str = "usage: shards run daemon [--detached] [--listen ADDR:PORT]
 /// and a claim of a pool with none starting waits for one: a VM that runs its start is
 /// waited for as long as it takes its host, whose speed sets a boot's cost (PM M357).
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long a VM's network process may take to say it has a run's published ports: a
-/// round trip on a socket pair to a process polling it. It was the second a network
-/// process was given to end, `netproc::GRACE`, which a network process's own progress
-/// replaced (PM M546); its own basis is owed (R03).
-const PUBLISH_PATIENCE: Duration = Duration::from_secs(1);
 /// A template whose warm VMs fail this many times in a row is removed and saved again.
 const MAX_FAILURES: u32 = 3;
 const DEFAULT_POOL: usize = 2;
@@ -657,9 +652,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 struct Ready {
     vm: Arc<shards_ipc::Child>,
     socket: UnixStream,
-    /// Its network process's control socket, if it has one: where its run's published
-    /// ports go.
-    net: Option<crate::netproc::Control>,
+    /// Its network process's control socket, and its process, if it has one: where its
+    /// run's published ports go.
+    net: Option<crate::netproc::NetLink>,
     /// The guest's MAC on its network, if it has one.
     mac: Option<[u8; 6]>,
     /// The pool it came from.
@@ -940,8 +935,9 @@ struct Tracked {
     visit: bool,
     /// Its guest's MAC on its network, for `inspect`.
     mac: Option<[u8; 6]>,
-    /// Its network process's control socket, where peers on its network come (D46).
-    net: Option<crate::netproc::Control>,
+    /// Its network process's control socket, and its process, where peers on its network
+    /// come (D46).
+    net: Option<crate::netproc::NetLink>,
     /// For a joiner of another's network (D119), the ID of the run it joins: `vm` is its
     /// VM, which this run never ends, pauses or reads as its own.
     joined: Option<String>,
@@ -5712,7 +5708,7 @@ impl<D: Disk> Daemon<D> {
                         .map_err(|e| log(format!("container {id}: its network process: {e}")))
                         .ok()
                 })
-                .map(|net| hostnet::HostNet::new(net, PUBLISH_PATIENCE))
+                .map(hostnet::HostNet::new)
         } else {
             None
         };
@@ -8436,7 +8432,13 @@ impl<D: Disk> Daemon<D> {
         // The VM holds its side of its network now; its network process goes with it.
         // The control socket stays the daemon's.
         let (net_process, net_control) = match launched.net {
-            Some((process, control)) => (Some(process), Some((control, net))),
+            Some((process, control)) => {
+                let pid = process.id();
+                (
+                    Some(process),
+                    Some((crate::netproc::NetLink { control, pid }, net)),
+                )
+            }
             None => (None, None),
         };
         let vm = Arc::new(launched.vm);
@@ -8489,7 +8491,7 @@ impl<D: Disk> Daemon<D> {
         child: Arc<shards_ipc::Child>,
         socket: UnixStream,
         grants: Option<UnixStream>,
-        net: Option<(crate::netproc::Control, Option<[u8; 6]>)>,
+        net: Option<(crate::netproc::NetLink, Option<[u8; 6]>)>,
         dest: For,
         net_process: Option<crate::netproc::NetProcess>,
         layer: Option<layers::LayerFile>,
