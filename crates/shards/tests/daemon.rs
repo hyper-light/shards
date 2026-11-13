@@ -2801,7 +2801,7 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     };
     // Runs well apart: each is served by the one VM refilled for the run before. "Apart"
     // is past the pool's refill window, SRTT + 4·RTTVAR of its refills from start to ready
-    // (RFC 6298, as demand.rs keeps it), which the daemon alone sees: a loaded host's
+    // (RFC 6298, as shards_api::demand keeps it), which the daemon alone sees: a loaded host's
     // refills are slow to say they are ready, and two runs it judges one burst keep the
     // pool at two for the keep-alive. So the spacing starts at a second and doubles while
     // the pool keeps two, each try beginning again past the keep-alive, when the burst it

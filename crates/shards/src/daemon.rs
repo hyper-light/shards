@@ -979,7 +979,7 @@ struct Inbox {
     records: Option<Records>,
     working_set: WorkingSet,
     /// The pool its warm VM came from, which counts it among its runs going until it ends
-    /// (demand.rs).
+    /// (`shards_api::demand`).
     pool: Option<PoolKey>,
     /// The run's directory, and the log segment the VM writes there, which
     /// the daemon made.
@@ -1182,7 +1182,7 @@ struct Daemon<D: Disk = Real> {
     /// shards-vm, beside this binary: each VM runs in a process of its own.
     vm: PathBuf,
     identity: Identity,
-    /// The most warm VMs a template's pool keeps ([`demand`]).
+    /// The most warm VMs a template's pool keeps ([`shards_api::demand`]).
     target: usize,
     /// Warm VMs kept ahead of runs, all pools together ([`DEFAULT_WARM_MAX`]).
     warm_max: usize,
@@ -5652,7 +5652,7 @@ impl<D: Disk> Daemon<D> {
             link_local: _,
             engine,
         } = keep;
-        // A pool's run keeps its pool in use until it ends (demand.rs).
+        // A pool's run keeps its pool in use until it ends (`shards_api::demand`).
         if let Some(key) = &ready.pool
             && let Some(pool) = lock(&self.state).pools.get_mut(key)
         {
@@ -6574,7 +6574,8 @@ impl<D: Disk> Daemon<D> {
     /// Run `id` ended: `done` is its DONE, or `None` for a VM that ended without one.
     fn run_ended(&self, id: &str, inbox: &mut Inbox, done: Option<&[u8]>) {
         self.managed.end(id);
-        // Its pool has one run fewer going, and is idle from the last to end (demand.rs).
+        // Its pool has one run fewer going, and is idle from the last to end
+        // (`shards_api::demand`).
         if let Some(key) = inbox.pool.take()
             && let Some(pool) = lock(&self.state).pools.get_mut(&key)
         {
@@ -13529,7 +13530,7 @@ mod tests {
     /// The warm VMs a refill plans count as starting at once, before any is started, so
     /// that a claim or refill planning meanwhile starts none of them again; outside the
     /// pools' lock, those that cannot start count no more. A pool never claimed from keeps
-    /// one (demand.rs).
+    /// one (`shards_api::demand`).
     #[test]
     fn a_refills_vms_count_as_starting_once_planned() {
         let mut t = Test::new("planned");

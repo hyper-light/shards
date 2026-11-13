@@ -1262,7 +1262,8 @@ for the exit status.
       larger than all pools may keep, or more than 256 warm VMs (the clients' bound, for
       the same threads and descriptors) stop it, and `shards daemon --detached` says
       why to the client that started it, at once.
-    - **A pool keeps what its runs need while they come** (`daemon/demand.rs`).
+    - **A pool keeps what its runs need while they come** (`daemon/demand.rs`, since D253
+      shards-api's `demand.rs`, which an orchestrator's pools keep theirs by too).
       - Its size is the largest burst of runs seen within its keep-alive, at least one
         and at most SHARDS_POOL. A burst is the runs that arrive within one refill of
         each other, the refill's time, from a warm VM's start to its `READY`, estimated
@@ -16615,7 +16616,7 @@ progress; D222's estimators).
 | `STOP_GRACE` (daemon.rs) | 10 s | cited | moby v28.5.1 container/container_unix.go l. 26, container/container.go l. 601; Compose spec |
 | `PATIENCE` (daemon.rs tests) | 20 s | kept, a test's hang bound | no daemon wait; tests may bound a hang |
 | `TOP_LIMIT` (daemon/commands.rs) | 16 MiB | `build::holdable()` | init procs.rs `dump` (whole in guest memory) |
-| `KEEP` (daemon/demand.rs tests) | 600 s | kept, a test's input | past the test's longest step |
+| `KEEP` (shards-api demand.rs tests) | 600 s | kept, a test's input | past the test's longest step |
 | `BODY_MOST` (daemon/engine.rs) | 8 MiB | `build::holdable()` | moby v28.5.1 api/server/httputils ReadJSON (unbounded) |
 | `MAX_PATH` (daemon/moves.rs) | 4096 | cited | Linux 6.18 include/uapi/linux/limits.h l. 13 |
 | `MAX_PLAN` (daemon/moves.rs) | 16 MiB | `shards_remote::frame::MAX_FRAME` | the `ready` step's request frame (cli/moves.rs) |
