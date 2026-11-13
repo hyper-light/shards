@@ -19,7 +19,7 @@ API = ["cargo", "test", "-p", "shards-api", "--lib"]
 BIN = ["cargo", "test", "-p", "shards", "--bin", "shards"]
 
 # name: (file, the guard as it stands, the guard taken out, the test command, the test that
-# must fail, and what its failure must say)
+# must fail, and what its failure must say: one phrase, or any of several)
 MUTANTS = {
     "vcpu-order": (
         "crates/api/src/image/wire.rs",
@@ -33,9 +33,10 @@ MUTANTS = {
         "crates/api/src/image/wire.rs",
         "let n = self.count(4 + 8 + 1)?;",
         "let n = usize::try_from(self.u32()?).map_err(|_| WireError::TooLong)?;",
-        API,
-        "image::wire::tests::a_runs_microvm_reads_back_as_its_host_said_it",
-        "memory allocation",
+        ["cargo", "test", "-p", "shards-api", "--test", "allocations"],
+        "a_hostile_vcpu_count_allocates_nothing_its_bytes_cannot_fill",
+        # Its assertion, or a host that refuses the allocation outright.
+        ("allocated", "memory allocation of"),
     ),
     "version-7": (
         "crates/api/src/image/wire.rs",
@@ -95,8 +96,9 @@ def run(name):
         os.utime(source)
     out = done.stdout + done.stderr
     failed = done.returncode != 0 and (f"{test} ... FAILED" in out or "memory allocation" in out)
-    if failed and says in out:
-        return f"{name}: caught ({test} failed: {says!r} in its output)"
+    said = next((s for s in ((says,) if isinstance(says, str) else says) if s in out), None)
+    if failed and said:
+        return f"{name}: caught ({test} failed: {said!r} in its output)"
     if failed:
         return f"{name}: SURVIVED ({test} failed, but not saying {says!r})\n{out[-3000:]}"
     return f"{name}: SURVIVED (exit {done.returncode})\n{out[-3000:]}"
