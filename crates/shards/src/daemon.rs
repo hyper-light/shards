@@ -1247,6 +1247,9 @@ struct Daemon<D: Disk = Real> {
     /// The connections of `shards daemon stop`, held open until this daemon has let go
     /// of its home, which is how they learn it has exited.
     stoppers: Mutex<Vec<UnixStream>>,
+    /// [`shards_ipc::STOPPING_LOCK`], made anew and locked as it closes, let go of once it
+    /// has let go of its home ([`finish`](Self::finish)): what `stop daemon` waits on.
+    stopping_lock: Mutex<Option<File>>,
     /// Every run whose microVM exists and has not ended, by the microVM's ID.
     runs: Mutex<HashMap<String, RunState>>,
     /// The microVMs a client waits on, by their processes' IDs, each as the listener last
@@ -1789,6 +1792,9 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     layers::clear(&home);
     let _ = std::fs::remove_file(crate::context::LISTENING);
     let _ = std::fs::remove_file(home.join(shards_ipc::STOPPING));
+    // One a daemon that died closed left: let go of with it, and none this one's until it
+    // closes, so that no stop waits on it.
+    let _ = std::fs::remove_file(home.join(shards_ipc::STOPPING_LOCK));
     // The request slots' lists (D185), how its clients reach it, made at once: a client
     // that finds them waits on them for its slot, which comes once the daemon is ready,
     // where one that found none would start another daemon to wait for this one's lock.
@@ -2109,6 +2115,7 @@ impl<D: Disk> Daemon<D> {
             live: Mutex::default(),
             socket_at: Mutex::new(()),
             stoppers: Mutex::default(),
+            stopping_lock: Mutex::default(),
             runs: Mutex::default(),
             followed: Mutex::default(),
             ends,
@@ -2178,13 +2185,15 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Ends its offers and removes the Engine API's socket, once: no client arrives from
-    /// here on.
+    /// here on. It names itself stopping first ([`name_stopping`](Self::name_stopping)),
+    /// at a stop's word or idle.
     fn close(&self) {
         {
             let _at = lock(&self.socket_at);
             if self.closed.load(Ordering::SeqCst) {
                 return;
             }
+            self.name_stopping();
             self.closed.store(true, Ordering::SeqCst);
             // A request still being read is taken no more: its reader ends, and its client,
             // told RESTART, asks the next daemon, as a closed daemon tells one whose request
@@ -2205,6 +2214,23 @@ impl<D: Disk> Daemon<D> {
         // other, which a holder of the runs' may take.
         let _runs = lock(&self.runs);
         self.resolved.notify_all();
+    }
+
+    /// Names this daemon stopping, before its slots go: its process in `STOPPING`, which a
+    /// daemon or client that finds none serving waits for while it ends its runs, however
+    /// long their stop timeouts (`shards_ipc::exiting`); and `STOPPING_LOCK`, made anew and
+    /// held until it has let go of its home ([`finish`](Self::finish)), which `stop daemon`
+    /// waits for, whatever its slot said (D185).
+    fn name_stopping(&self) {
+        let stopping = self.home.join(shards_ipc::STOPPING);
+        if let Err(e) = shards_ipc::this_process().and_then(|named| keep_whole(&stopping, named.as_bytes())) {
+            log(format!("{}: {e}", stopping.display()));
+        }
+        let held = self.home.join(shards_ipc::STOPPING_LOCK);
+        match held_anew(&held) {
+            Ok(file) => *lock(&self.stopping_lock) = Some(file),
+            Err(e) => log(format!("{}: {e}", held.display())),
+        }
     }
 
     /// Binds the Engine API's socket again where someone removed it while the daemon
@@ -2774,6 +2800,12 @@ impl<D: Disk> Daemon<D> {
         }
         // Let go of before its file closes (M244): flock(2)'s LOCK_UN, UnlockFile.
         let _ = self.home_lock.unlock();
+        // Then what `stop daemon` waits for: had by a shared lock from here, its name gone
+        // after, so that whoever finds it finds it held until the home is let go of.
+        if let Some(held) = lock(&self.stopping_lock).take() {
+            let _ = held.unlock();
+        }
+        let _ = std::fs::remove_file(self.home.join(shards_ipc::STOPPING_LOCK));
         lock(&self.stoppers).clear();
     }
 
@@ -7029,12 +7061,6 @@ impl<D: Disk> Daemon<D> {
     /// 3c2e3cd3's CI).
     fn step_aside<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, why: &str) {
         log(format!("stepping aside: {why}"));
-        // Before its slots go: whoever then finds no daemon serving waits for this one
-        // while it ends its runs, however long their stop timeouts.
-        let stopping = self.home.join(shards_ipc::STOPPING);
-        if let Err(e) = shards_ipc::this_process().and_then(|named| keep_whole(&stopping, named.as_bytes())) {
-            log(format!("{}: {e}", stopping.display()));
-        }
         self.close();
         self.stopping.store(true, Ordering::SeqCst);
         for (_, booting) in lock(&self.booting).drain() {
@@ -8898,6 +8924,27 @@ fn keep_first(path: &Path, bytes: &[u8]) -> io::Result<bool> {
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(false),
         Err(e) => Err(e),
     }
+}
+
+/// A file made beside `path`, locked exclusively, then renamed there, so that whoever opens
+/// `path` finds it held from the first ([`shards_ipc::STOPPING_LOCK`]); its own file removed
+/// on any error, as [`keep_whole`]'s is.
+fn held_anew(path: &Path) -> io::Result<File> {
+    let new = beside(path);
+    let made = File::options()
+        .write(true)
+        .create_new(true)
+        .open(&new)
+        .and_then(|file| {
+            // No other has its name yet: taken at once.
+            file.lock()?;
+            std::fs::rename(&new, path)?;
+            Ok(file)
+        });
+    if made.is_err() {
+        let _ = std::fs::remove_file(&new);
+    }
+    made
 }
 
 /// A name beside `path` of this write's alone: a count of this process's writes, the one
@@ -10908,6 +10955,40 @@ mod tests {
             joined(starting.run).unwrap();
         });
         assert_eq!(READY_TIMEOUT, 6 * READY_STALL);
+    }
+
+    /// A daemon that closes, idle or at a stop's word, names itself stopping and holds
+    /// `STOPPING_LOCK` until `finish` has let go of its home's lock, then lets go of it and
+    /// its name: a stop's shared lock of it is had only once the home is free (D185, *A
+    /// stop's wait*).
+    #[test]
+    fn a_closed_daemon_holds_its_stopping_lock_until_its_home_is_let_go_of() {
+        let t = Test::new("stopping-lock");
+        let at = t.home.join(shards_ipc::STOPPING_LOCK);
+        let home_lock = t.home.join("daemon.lock");
+        // As `take_lock` takes it.
+        t.daemon.home_lock.lock().unwrap();
+        assert!(!at.exists(), "made before it closed");
+        t.daemon.close();
+        assert!(shards_ipc::exiting(&t.home), "not named stopping");
+        let waiter = File::open(&at).unwrap();
+        assert!(
+            matches!(waiter.try_lock_shared(), Err(std::fs::TryLockError::WouldBlock)),
+            "not held once closed"
+        );
+        std::thread::scope(|s| {
+            let had = s.spawn(|| {
+                waiter.lock_shared().unwrap();
+                let home = File::open(&home_lock).unwrap();
+                let free = home.try_lock().is_ok();
+                let _ = home.unlock();
+                let _ = waiter.unlock();
+                free
+            });
+            t.daemon.finish();
+            assert!(had.join().unwrap(), "had while its home was held");
+        });
+        assert!(!at.exists(), "its name left");
     }
 
     /// A daemon told to stop ends the clients it would otherwise wait for: one that never

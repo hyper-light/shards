@@ -982,6 +982,14 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
     `%PROGRAMDATA%\docker\certs.d` (docker/docs `engine/security/certificates.md`).
   - One TLS configuration serves every host of a pull (registry, token realm, CDN): the
     trust its user set for a registry is for the hosts its pulls go to.
+  - Or the one directory `SHARDS_CERTS_D` names, alone, in their place, as
+    `SHARDS_DAEMON_JSON` names one daemon.json (D194), and as there one named must be
+    there (2026-11-13, CI cluster 14). A client sends it to the daemon with the rest of
+    `REGISTRY_ENV`. The tests name their own, empty (tests/common `as_tests_run`): a
+    stand-in host certs.d under `XDG_CONFIG_HOME` holding, for the tests' own registry, a
+    client key with no certificate failed a build from it (red at 60216c106), and reaches no
+    test now (`images`' `a_hosts_certs_d_reaches_no_test`; `certs`'
+    `the_certs_d_named_is_read_alone`).
 - **The store** lives in `$SHARDS_HOME/images`, else in the platform's data directory:
   - `~/Library/Application Support` on macOS, per Apple's guidance;
   - `$XDG_DATA_HOME` or `~/.local/share` elsewhere on Unix;
@@ -1325,10 +1333,11 @@ for the exit status.
   - A client of another build, told apart by its binary's file identity, gets
     `RESTART`. The daemon removes its socket, ends its runs as `shards daemon stop`
     does, and exits; the client starts its own, which takes the home once the old one
-    has gone. A daemon ending its runs names itself in `daemon.stopping` first, and the
-    new daemon and the client wait while that process lives, however long its runs'
-    stop timeouts make it; otherwise a daemon waits 20 s for another's lock, and a
-    client 30 s for its daemon to listen.
+    has gone. A daemon ending its runs names itself in `daemon.stopping` first, as it
+    closes for any reason, and the new daemon and the client wait while that process
+    lives, however long its runs' stop timeouts make it; otherwise a daemon waits 20 s
+    for another's lock, and a client 30 s for its daemon to listen. `daemon stop` waits on
+    the lock it holds beside it until it has let go of the home (D185, *A stop's wait*).
   - It follows each run to its end. The warm VM tells the daemon of its command's start
     (`STARTED`) before its client has any of the command's output, and of its end
     (`DONE`) before its client has the status; a Unix socket's send puts a message in
@@ -7784,7 +7793,7 @@ descriptors.
   its list `free` has a reader, the daemon's own (`slots::served`): a starting daemon
   waiting for the lock (`take_lock`) and a context's look at its machine ask that, or
   whether an older build's socket answers. `daemon stop` asks through a slot and waits for
-  the slot's end, which comes as the daemon exits, at most 60 s (`Client::recv_within`); the
+  the daemon to let go of its home (*A stop's wait*, below); the
   requests a daemon puts to itself for a context's steps go through slots of its own home
   (`cli::ask_here`), which start no daemon. The default context's endpoint is the Engine
   API's socket, which Docker's clients take.
@@ -7858,6 +7867,31 @@ descriptors.
   write, one reading 16 KiB at a time, 60 ms apart, was let go of a request's time in, 3 s
   in the test, still reading). A stop's slot is not counted: the daemon holds that session
   until its exit, which is how `daemon stop` learns of it.
+- **A stop's wait** (2026-11-13). A daemon holds a stop it took until it has let go of its
+  home (`finish` ends `stoppers` after the home's unlock), but `stop` took any end of its
+  slot for that: a RESTART from a daemon closed already (another stop's word, an idle
+  exit) or no slot offered returned at once while that daemon still ended its runs and held
+  `daemon.lock`, and a RESTART from one serving on (its request cut, no descriptor left) for
+  a stop though nothing stopped. managed_output's HVF run at 4a426c367 showed a stop
+  returned with its daemon still stepping aside, which its single taken stop does not
+  explain and ea6f4b53b did not show again. Now a daemon names itself stopping as it
+  closes, for any reason (`name_stopping`): `daemon.stopping` as before, and
+  `daemon.stopping.lock` (`shards_ipc::STOPPING_LOCK`), a file made beside its name, locked
+  (flock(2), LockFileEx) and renamed there, held until the home's lock is let go of and
+  only then let go of, its name removed last. `stop`, its slot ended, answered RESTART or
+  given none, takes a shared lock of that file where there is one, and so returns once the
+  daemon that stops has let go of its home, whatever its slot said; where there is none
+  and the daemon it asked still holds the home (`daemon.pid`, `shards_ipc::Named`), it asks
+  again after that answer, within `RESTARTS`. No serving daemon holds that file (a starting
+  one removes a dead one's), so a stop never waits on a next daemon's lock of the home, as
+  one blocked on `daemon.lock` could once a successor polling `take_lock` took it first;
+  nor on a process's ID, whose exit Linux watches only from 5.3 (pidfd_open(2)). It is
+  apart from `daemon.stopping`, whose readers (`exiting`) Windows' mandatory byte-range
+  locks would refuse. Held by `a_stop_returns_once_its_daemon_has_let_go_of_its_home`
+  (cli/client.rs: a stand-in daemon, this process, holding the home's lock and, closed,
+  `STOPPING_LOCK`, serving real slots: a session ended early, a RESTART from a closed
+  daemon, no slot, a RESTART from one serving on), red before; and on real VMs by
+  `a_stop_while_another_stops_its_daemon_waits_for_its_home_let_go_of` (tests/daemon.rs).
 - **Whose end a run's client heard** (PM M530). A run's, an exec's and an attach's slot
   passes on what its VM says, so the slot ends both where the VM's connection closes with no
   last word and where the daemon itself ends: a killed daemon closes every slot it served.
@@ -24724,7 +24758,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built; log lanes building, goal 58's step 7: the lane and its controller built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -25340,6 +25374,58 @@ abi (`members::tests::a_signal_says_its_member_and_number`) and init (`run::memb
   is found among its processes and signalled alone while its sibling of PID 3 runs on, and none
   is found once it has ended.
 
+*Log lanes* (goal 58's step 7, design L1, ROOT's; `control::exec::Kind::Log`). The logs a run
+keeps of its command's output (D161) and of every member's (D240) are read on a lane of their
+own, asked as an exec is, so that a controller reads what a harness wrote while it was away and
+goes on from where it got to, byte for byte.
+- *The ask* (`Log`, tag 9): the scope (run, generation, member), then whose log (the run's
+  command, its member field 0, or member N), which channels (stdout, stderr or both), each
+  channel's place (the store's own `Pos`, D163's cursor: segment, record, byte; none for the
+  oldest kept), and whether it follows. An endpoint that admits no exec refuses it `Scope`, as
+  it refuses another run (`Scope`) or generation (`Stale`); the member is its host's to know,
+  not the endpoint's, since the run keeps every member's output whatever streams the endpoint
+  serves.
+- *Its records*: an exec in all but its start. Its host reads the log into one stream of step
+  5's records (offset and bytes, one in flight, each consumed before the next goes: the
+  controller's credit), each one typed record (`exec::LogRecord`) at its own place: output (its
+  channel, place, time and bytes), a gap (its channel, place, time, the bytes lost and why,
+  `Behind` or `Unwritten`), or `Rotated { oldest }` where segments its retention let go went
+  before the lane read them. Each fits the run's exec admission (`run::CHUNK`); output comes in
+  pieces of that record less its 34-byte head.
+- *Its refusals, typed* (`exec::Unlogged`): `Rotated { oldest }`, a frame of its own (tag 45,
+  the oldest place kept), where a place asked is older than the oldest kept, saying what was
+  lost (all of it, unless the place was its segment's very end); `Unkept` (23), a run kept with
+  `--log-driver none`; `Uncached` (24), the command's log of a run whose driver keeps no copy
+  (`cache-disabled=true`, as `logs` refuses it); `Unknown` (25), a member the run has not. The
+  run's budget and its host's failures as an exec's (`Unstarted`).
+- *Its end*: unfollowed, once all that was kept as it asked is consumed; followed, at its
+  source's end. Its host then says it exited, told once its records have finished, as an exec's
+  exit is.
+- *The controller* (`Execs::log(source, channels, cursor, follow)`): a `Log` whose `next_record`
+  gives each record, typed, the one before acknowledged; its `cursor` is each channel it reads
+  past every record handed out, never back (a channel it does not read keeps its place, and the
+  log is read in its order, so a read channel has had all of itself before each record), where a
+  later lane goes on, inside a record too. A `Log` let go before its end abandons its lane
+  (`Ask::Hangup`), which hangs its host up as a connection's end does. A record that does not
+  read as one breaks its lane's protocol, as any frame does. `Dialed::lanes` names `log:run`,
+  and `log:N` for each member its subscriptions name, where execs are granted; another
+  member's log is read the same way, unnamed, as the controller knows no more of the run's
+  members.
+
+Tested in `crates/remote`: the ask, the records and the told frames read back, `Rotated` with
+its place and the codes apart from every other; the cursor moving past what its reader had, for
+the channels it reads alone, never back. Over loopback through the controller, with a stand-in
+host: every record from the oldest kept, exact and at its place, a long output in pieces of the
+lane's room; a later lane from inside a record reading its rest alone, the other channel's place
+kept; a place older than the oldest refused `Rotated`, naming it; a member the run has not
+refused `Unknown`; a followed lane reading what comes as it comes and ending at its source's end;
+a lane let go before its end letting its host go. Red first: with the endpoint refusing the log of
+a member it serves no stream of, `Refused(Scope)` where `Unlogged(Unknown)` was due.
+
+Building next: the daemon's log host (until it lands, the daemon's exec host refuses a log lane
+`Failed`), and every member's output kept in its log, owned or not, within the run's one log cap
+(D240).
+
 Record:
 [agent-control-v1](../research/measurements/agent-control-v1/README.md).
 
@@ -25388,6 +25474,11 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | `builtin::SIGNAL` 22 | the next after `RESIZE` 21 (D244) |
 | `SIGNAL_ENDED` 3, `SIGNAL_UNKNOWN` 2 | ESRCH's and ENOENT's numbers (include/uapi/asm-generic/errno-base.h), as `DEVICE_BUSY` is EBUSY's |
 | PID 2 | the first process a namespace's init forks: the member's command (init managed.rs `ACTOR`) |
+| Frame tags `Log` 9, `Rotated` 45 | this protocol's own, after `Member` 8 and `Steered` 44 |
+| `Unlogged` 23, 24, 25 | this protocol's own, after `Unsteered`'s 19 to 22 |
+| A log ask past its scope, 53 bytes | its source, channels and follow (a byte each), and each channel's place (a flag byte and the store's 24-byte `Pos`) |
+| A log record's kinds 1, 2, 3; its head, 34 bytes | output, gap, rotation; the kind and channel (a byte each), its place (24) and its time (8) |
+| A gap's why, 1 and 2 | `Behind` (let go so as never to hold up its owner, D240) and `Unwritten` (its write failed) |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 
@@ -25638,7 +25729,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; HTTP/2 and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2, the sign-ins' wiring and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -26224,11 +26315,79 @@ s33-leak-scan).**
 - *Owed.* ROOT's runs of it on KVM, HVF and WHP (its README); step 10's second part, the
   injector's A/B latency harness, is another lane's.
 
+**Built: step 8's first slice, the sign-in profiles** (`crates/net/src/signin.rs`; kiln plan
+01a1d2b88be57304b972761e2a5c6781 step 8; research f16, f43, f47, f49, f50, f52–f55, f63, f64; record
+docs/research/s33-veil-creds/STEP8.md). What Claude Code's and Codex's own sign-ins say to their providers' token
+endpoints, as their pinned builds say it (Claude Code 2.1.311's bundle and Codex rust-v0.167.2, each held to its kiln
+pin, read on Linux and never run), as data and pure functions the injector drives (the second slice).
+- *The profiles.* Claude Code: platform.claude.com's `/v1/oauth/token`, where it exchanges its pasted code and
+  refreshes, JSON both (`grant_type`, `refresh_token`, `client_id`, `scope`), and `/v1/oauth/token/revoke` (JSON
+  `token`, `token_type_hint`, `client_id`); it reads `access_token`, `refresh_token` (keeping its old one where none
+  comes), `expires_in`, `refresh_token_expires_in` and `scope`. Codex: auth.openai.com's `/oauth/token` (its device
+  flow's code exchanged in form encoding, its refresh in JSON) and `/oauth/revoke` (JSON, its refresh token else its
+  access token); it reads `id_token`, `access_token` and `refresh_token`. signin.rs cites each to its build's offset or
+  line.
+- *A token response read where its tokens lie, and given placeholders* (`read`, `write`). Its whole body
+  (identity-coded, its chunks joined; a coded one refused, `readable`) is read as one JSON text (RFC 8259) by the
+  network process's own reader, which follows nesting with a stack of its own: no JSON parser is in its tree, and
+  serde_json's `Value` would let a token's copies go unwiped (refused for that). Each string read is decoded into a
+  buffer sized at once and wiped as it drops. The outermost object's `access_token`, `refresh_token` and `id_token`,
+  each a string once, are its tokens; such a name anywhere else (nested, twice, not a string) is refused (`Misplaced`),
+  as is a token's value in any other string, its escapes decoded (`Echoed`), so that replacing each token's own place
+  leaves none behind. A response naming no token (an error, a device flow's code) passes as it came. The body is
+  written in one buffer, each token's string replaced by its placeholder's (a b64token, which a JSON string holds as it
+  is), and its head framed anew (`frame`): its Content-Length and Transfer-Encoding cut and one Content-Length of the
+  new length written (RFC 9112 §6.3, RFC 9110 §8.6, f43).
+- *Question 4: Codex's ID token is a credential, made inert.* Codex's browser login exchanges its ID token at its
+  token endpoint for an API key (RFC 8693's token exchange, `requested_token=openai-api-key`: server.rs:446-450,
+  1036-1069); its device flow, kiln's, does not ask it (device_code_auth.rs:226), but the exchange is the issuer's,
+  open to any holder of an unexpired ID token. Codex reads an ID token's payload alone (token_data.rs:144-155: three
+  parts, none empty, the signature never read), so the VM's ID token keeps its header and payload (the identity Codex
+  reads: email, plan, account) and has `shards-placeholder` in its signature's place: no credential, and filled in
+  nowhere. Refused: the real ID token kept (the plan's first reading of f52); a JWT-shaped placeholder for the access
+  token too, whose `exp` would go stale at a refresh that keeps its placeholder, Codex then refreshing at every request
+  (manager.rs:3536-3541); an opaque ID token, which Codex cannot parse (server.rs:859).
+- *Question 5: no profile is at_hash-fallback.* Claude Code's `at_hash` check is panva's openid-client's
+  (`validateIdToken`, offset 267701855), used by its LLM gateway's OIDC sign-in and XAA's IdP login for MCP servers,
+  never by its Anthropic sign-in, which asks no `openid` scope and reads no `id_token` (`c9o`, `formatTokens`); Codex
+  has none. A run that signs in through Claude Code's LLM gateway or XAA is tmpfs-fallback: a placeholder access token
+  beside a real ID token fails that check (f50).
+- *Question 7: sender-constrained tokens.* Neither provider's sign-in: both send bearer tokens with no DPoP proof and
+  no client certificate. Claude Code's Bedrock credentials through `aws login` refresh with a DPoP proof (the AWS SDK's
+  `fromLoginCredentials`, offsets 261406663 and 261409863): fallback (f49).
+- *No value toward an endpoint that mints a key.* Claude Code's default scopes ask `org:create_api_key` (offset
+  238937512), and its `API_KEY_URL` answers a bearer token's POST with `raw_key`, an API key in the clear (`u9o`,
+  242107148), which the CLI asks only for its console sign-in (266757798). A member holding a captured token's
+  placeholder could ask it through the injector and hold a key, so the profile names it (`Profile::mints`) and the
+  injector fills no value toward it (the second slice), its path read as widely as a server may: percent-decoded,
+  empty and dot segments gone, lowered, anything under it. Claude Code's console sign-in, whose credential is that
+  key, is not served by capture; an API-key grant serves it. Whether a claude.ai sign-in's token is granted
+  `org:create_api_key` its token response's `scope` says, at ROOT's real sign-in.
+- *A refresh's or a revocation's placeholder found* (`ask`). A POST to the profile's token path whose body (JSON or a
+  form, by its Content-Type) has `grant_type` `refresh_token` and a sign-in's refresh placeholder, compared in
+  constant time as `decide` compares, is `Refresh`; one to its revocation path naming either of a sign-in's
+  placeholders is `Revoke`; anything else, or a field named twice, passes, its response read.
+- *The answers given outside* (`refreshed`, `REVOKED`): a refresh's token response with placeholders, kept from caches
+  (`Cache-Control: no-store`, `Pragma: no-cache`, RFC 6749 §5.1); a revocation's 200 with no body, which a server
+  answers to a token it revoked or never knew (RFC 7009 §2.2), so the VM's logout ends nothing outside.
+- *Literals.* None of its own: RFC 8259's grammar, RFC 6749's fields, RFC 7009's 200; what is read is bounded by its
+  connection's window, its caller's. `shards-placeholder` is a name.
+- *Tests (macOS arm64, adas-mac-studio.local; STEP8.md).* `cargo test -p shards-net --lib signin`, 17 passed: each
+  CLI's token response given placeholders, every other byte unchanged, Codex's ID token's header and payload kept and
+  its signature gone; a token nested, twice, not a string, or echoed elsewhere (escaped or not, or as a name) refused;
+  a body that is no JSON text refused and one naming no token passed; framing recomputed; a coded body not read; each
+  CLI's refresh (JSON and form) and revocation found, and a refresh of another or a near placeholder passed; the
+  minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
+  clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
+
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** The injector that
-fills HTTP/2 headers (step 7); the Claude Code and Codex
-sign-in/refresh profiles (step 8); and ROOT's real-VM runs on KVM, HVF and WHP with a
-whole-guest-memory leak scan (its harness built, D259) and the injector's measured cost (step 10). Step 6's own owed
-items are its block's, above.
+fills HTTP/2 headers (step 7); the sign-in profiles' wiring (step 8's second slice: the network
+process telling its run host of a capture, a refresh and a revocation, the run host its
+orchestrator, the injector capturing and answering outside) and kiln's broker answering them
+(its third); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
+(its harness built, D259), the injector's measured cost (step 10), and a real sign-in of each
+CLI surviving a refresh answered outside (step 8). Step 6's own owed items are its block's,
+above.
 
 **Literals.** None of its own: this slice adds no numeric bound. A credential's `reference`
 is bounded by the store it names (kiln-seams `NAME_MAX`, 512), not re-stated here; its hosts
