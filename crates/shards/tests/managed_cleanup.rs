@@ -9,7 +9,7 @@
 )]
 mod common;
 
-use common::{Run, TempDir, guest_init, kernel};
+use common::{Patience, Run, TempDir, guest_init, kernel};
 use std::io::{self, BufRead as _, BufReader, Write as _};
 #[cfg(unix)]
 use std::os::fd::AsRawFd as _;
@@ -17,7 +17,6 @@ use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-const PATIENCE: Duration = Duration::from_secs(90);
 fn call(home: &Path, args: &[&str]) -> Run {
     common::run_shards_env(
         &[],
@@ -31,8 +30,6 @@ fn call(home: &Path, args: &[&str]) -> Run {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
-    #[cfg(windows)]
-    Connect,
     Readiness,
     Completion,
 }
@@ -40,7 +37,8 @@ enum Phase {
 #[derive(Debug)]
 enum ClientError {
     Io(io::Error),
-    Deadline(Phase),
+    /// Its wait on `Phase` refused: its judge's (said on stderr), or its caller's deadline past.
+    Refused(Phase),
     OutputEnded {
         ready_bytes: usize,
     },
@@ -67,7 +65,7 @@ impl std::fmt::Display for ClientError {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(error) => write!(out, "cleanup client I/O: {error}"),
-            Self::Deadline(phase) => write!(out, "cleanup client {phase:?} deadline"),
+            Self::Refused(phase) => write!(out, "cleanup client {phase:?} refused"),
             Self::OutputEnded { ready_bytes } => write!(
                 out,
                 "cleanup client output ended with {ready_bytes} readiness bytes"
@@ -98,6 +96,52 @@ struct Completed {
     bytes: Vec<u8>,
 }
 
+/// What a client's wait on a phase is held to.
+enum Bound {
+    /// A wait judged as the tests' waits are (D209): on the daemon of its home and its
+    /// microVMs, or on what this test started; its kind its call site.
+    Judged(Patience),
+    /// One absolute deadline of its caller's: the native fixtures', whose patience is their
+    /// caller's explicit synthetic input (managed-cleanup/readiness.md), partial readiness
+    /// not extending it.
+    Until(Instant),
+}
+
+impl Bound {
+    fn until(patience: Duration) -> Result<Bound, ClientError> {
+        if patience.is_zero() {
+            return Err(ClientError::Patience);
+        }
+        let until = Instant::now()
+            .checked_add(patience)
+            .ok_or(ClientError::Patience)?;
+        Ok(Bound::Until(until))
+    }
+
+    /// How long a wait for its client's next event may block before it is looked at again.
+    fn left(&self) -> Duration {
+        match self {
+            Bound::Judged(patience) => patience.next_look(),
+            Bound::Until(until) => until.saturating_duration_since(Instant::now()),
+        }
+    }
+
+    /// Whether its wait goes on, asked once no event came within [`left`](Self::left).
+    fn holds(&mut self) -> bool {
+        match self {
+            Bound::Judged(patience) => patience.holds(),
+            Bound::Until(until) => Instant::now() < *until,
+        }
+    }
+
+    /// Its phase came: a judged wait's answer, which teaches its kind.
+    fn done(self) {
+        if let Bound::Judged(patience) = self {
+            patience.done();
+        }
+    }
+}
+
 #[cfg(windows)]
 use shards_ipc::{ExitWatch, Poller};
 #[cfg(unix)]
@@ -117,7 +161,8 @@ struct Client {
     exit: Option<ExitWatch>,
     status: Option<ExitStatus>,
     state: ClientState,
-    ready_by: Instant,
+    /// Its readiness's bound, taken by [`await_ready`](Client::await_ready).
+    ready: Option<Bound>,
 }
 
 /// A child as the kernel knows it, so a check after its reap never names another process
@@ -185,11 +230,10 @@ fn started(pid: libc::pid_t) -> Option<(u64, u64)> {
 }
 
 impl Client {
-    fn spawn(command: &mut Command, patience: Duration) -> Result<Self, ClientError> {
-        let deadline = Self::deadline(patience)?;
+    fn spawn(command: &mut Command, ready: Bound) -> Result<Self, ClientError> {
         let poller = Poller::new()?;
         #[cfg(windows)]
-        let (output, writer) = windows_stdout(deadline)?;
+        let (output, writer) = windows_stdout()?;
         #[cfg(windows)]
         command.stdout(writer);
         #[cfg(unix)]
@@ -210,7 +254,7 @@ impl Client {
             exit: None,
             status: None,
             state: ClientState::Starting,
-            ready_by: deadline,
+            ready: Some(ready),
         };
         // Before the first try_wait, which may reap the child and free its PID.
         #[cfg(unix)]
@@ -249,22 +293,15 @@ impl Client {
         Ok(client)
     }
 
-    fn deadline(patience: Duration) -> Result<Instant, ClientError> {
-        if patience.is_zero() {
-            return Err(ClientError::Patience);
-        }
-        Instant::now().checked_add(patience).ok_or(ClientError::Patience)
-    }
-
-    fn wait_change(&mut self, deadline: Instant, phase: Phase) -> Result<(), ClientError> {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(ClientError::Deadline(phase));
-        }
+    fn wait_change(&mut self, bound: &mut Bound, phase: Phase) -> Result<(), ClientError> {
         let mut events = Vec::new();
-        self.poller.wait(&mut events, Some(left))?;
+        self.poller.wait(&mut events, Some(bound.left()))?;
         if events.is_empty() {
-            return Err(ClientError::Deadline(phase));
+            return if bound.holds() {
+                Ok(())
+            } else {
+                Err(ClientError::Refused(phase))
+            };
         }
         if events.contains(&(Wake::Exit as u64)) {
             self.status = self.child.try_wait()?;
@@ -282,13 +319,10 @@ impl Client {
         if self.state != ClientState::Starting {
             return Err(ClientError::InvalidPhase);
         }
-        let deadline = self.ready_by;
+        let mut bound = self.ready.take().ok_or(ClientError::InvalidPhase)?;
         let expected = b"ready\n";
         let mut ready = Vec::new();
         while ready.len() < expected.len() {
-            if Instant::now() >= deadline {
-                return Err(ClientError::Deadline(Phase::Readiness));
-            }
             let output = self.output.as_mut().ok_or(ClientError::MissingStdout)?;
             match output.fill_buf() {
                 Ok([]) => {
@@ -305,26 +339,43 @@ impl Client {
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    self.wait_change(deadline, Phase::Readiness)?
+                    self.wait_change(&mut bound, Phase::Readiness)?
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error.into()),
             }
         }
+        bound.done();
         self.state = ClientState::Ready;
         Ok(())
     }
 
-    fn finish(&mut self, patience: Duration) -> Result<Completed, ClientError> {
+    /// Whether nothing has come of it yet, at this one look: it has said nothing more and
+    /// has not exited. What it said stays buffered for [`finish`](Self::finish).
+    fn quiet(&mut self) -> Result<bool, ClientError> {
         if self.state != ClientState::Ready {
             return Err(ClientError::InvalidPhase);
         }
-        let deadline = Self::deadline(patience)?;
+        if self.status.is_none() {
+            self.status = self.child.try_wait()?;
+        }
+        if self.status.is_some() {
+            return Ok(false);
+        }
+        let output = self.output.as_mut().ok_or(ClientError::MissingStdout)?;
+        match output.fill_buf() {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(true),
+            Ok(_) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn finish(&mut self, mut bound: Bound) -> Result<Completed, ClientError> {
+        if self.state != ClientState::Ready {
+            return Err(ClientError::InvalidPhase);
+        }
         let mut bytes = Vec::new();
         loop {
-            if Instant::now() >= deadline {
-                return Err(ClientError::Deadline(Phase::Completion));
-            }
             let output = self.output.as_mut().ok_or(ClientError::MissingStdout)?;
             match output.fill_buf() {
                 Ok([]) => break,
@@ -334,7 +385,7 @@ impl Client {
                     output.consume(n);
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    self.wait_change(deadline, Phase::Completion)?
+                    self.wait_change(&mut bound, Phase::Completion)?
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error.into()),
@@ -343,8 +394,9 @@ impl Client {
         self.poller
             .remove(self.output.as_ref().ok_or(ClientError::MissingStdout)?.get_ref())?;
         while self.status.is_none() {
-            self.wait_change(deadline, Phase::Completion)?;
+            self.wait_change(&mut bound, Phase::Completion)?;
         }
+        bound.done();
         self.state = ClientState::Finished;
         Ok(Completed {
             status: self.status.ok_or(ClientError::ExitNotification)?,
@@ -354,12 +406,10 @@ impl Client {
 }
 
 #[cfg(windows)]
-fn windows_stdout(deadline: Instant) -> Result<(Output, Stdio), ClientError> {
+fn windows_stdout() -> Result<(Output, Stdio), ClientError> {
     use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use windows_sys::Win32::Foundation::{
-        GENERIC_WRITE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
-    };
+    use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0};
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, OPEN_EXISTING, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
     };
@@ -392,19 +442,11 @@ fn windows_stdout(deadline: Instant) -> Result<(Output, Stdio), ClientError> {
     }
     // SAFETY: the new handle is owned exactly once until Command takes its Stdio.
     let writer = unsafe { OwnedHandle::from_raw_handle(raw) };
-    let left = deadline.saturating_duration_since(Instant::now());
-    if left.is_zero() {
-        return Err(ClientError::Deadline(Phase::Connect));
-    }
-    let ms = u32::try_from(left.as_micros().div_ceil(1000)).map_err(|_| ClientError::Patience)?;
-    // INFINITE is a sentinel, never a finite caller deadline.
-    if ms == INFINITE {
-        return Err(ClientError::Patience);
-    }
+    // No bound: the listener's connect was pending before this thread's own CreateFileW
+    // opened its client end, which completes it; the wait is ordered after that open.
     // SAFETY: Listener owns its manual-reset connect event until this returns.
-    match unsafe { WaitForSingleObject(listener.event(), ms) } {
+    match unsafe { WaitForSingleObject(listener.event(), INFINITE) } {
         WAIT_OBJECT_0 => {}
-        WAIT_TIMEOUT => return Err(ClientError::Deadline(Phase::Connect)),
         WAIT_FAILED => return Err(io::Error::last_os_error().into()),
         _ => return Err(ClientError::ConnectEvent),
     }
@@ -424,7 +466,11 @@ impl Drop for Client {
     }
 }
 
-fn ready(home: &Path, args: &[&str], patience: Duration) -> Client {
+/// A client of `home`'s daemon that said it is ready, its wait on that judged ([`Bound::Judged`]),
+/// its kind its caller's call site.
+#[track_caller]
+fn ready(home: &Path, args: &[&str]) -> Client {
+    let bound = Bound::Judged(Patience::of(home));
     let mut client = Client::spawn(
         common::interruptible(
             common::command()
@@ -436,7 +482,7 @@ fn ready(home: &Path, args: &[&str], patience: Duration) -> Client {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit()),
         ),
-        patience,
+        bound,
     )
     .unwrap();
     client
@@ -444,8 +490,11 @@ fn ready(home: &Path, args: &[&str], patience: Duration) -> Client {
         .unwrap_or_else(|error| panic!("{args:?}: {error}"));
     client
 }
-fn finished(client: &mut Client, patience: Duration) -> String {
-    let result = client.finish(patience).unwrap();
+/// What a client of `home`'s daemon said to its end, its wait judged, its kind its caller's
+/// call site.
+#[track_caller]
+fn finished(home: &Path, client: &mut Client) -> String {
+    let result = client.finish(Bound::Judged(Patience::of(home))).unwrap();
     assert!(
         result.status.success(),
         "{}: {} output bytes",
@@ -492,8 +541,8 @@ fn main_cleanup_reaps_owned_children_and_preserves_independent_joiner() {
             "init" => args.push("--init"),
             _ => {}
         }
-        args.extend([&image, "cleanup", "/tmp/cleanup-control", &token, &count, "90000"]);
-        let mut main = ready(&home, &args, PATIENCE);
+        args.extend([&image, "cleanup", "/tmp/cleanup-control", &token, &count]);
+        let mut main = ready(&home, &args);
         let join = call(
             &home,
             &[
@@ -524,38 +573,18 @@ fn main_cleanup_reaps_owned_children_and_preserves_independent_joiner() {
                 "watch",
                 &token,
                 &count,
-                "20000",
             ],
-            PATIENCE,
         );
-        if mode == "own" {
-            // A held-live control proves the observer cannot report cleanup merely
-            // because main acknowledged readiness. This is not a product failure.
-            let mut negative = ready(
-                &home,
-                &[
-                    "exec",
-                    "observer",
-                    "/bin/testguest",
-                    "cleanup-control",
-                    "watch",
-                    &token,
-                    &count,
-                    "100",
-                ],
-                PATIENCE,
-            );
-            let negative = negative.finish(PATIENCE).unwrap();
-            assert_eq!(
-                negative.status.code(),
-                Some(1),
-                "known-live control passed; output bytes={}",
-                negative.bytes.len()
-            );
-            println!(
-                "CLEANUP_CONTROL deliberately_unreleased=true children={n} expected_observer_timeout=true"
-            );
-        }
+        // The held-live control, as an order: the observer, ready while every child is held,
+        // has reported nothing and not ended before the release is asked, so its report
+        // comes of the release and not of main's readiness. (Its old form, a watch of 100 ms
+        // that had to fail, was a claim that nothing happens within a time, which a judged
+        // wait cannot refuse.)
+        assert!(
+            watcher.quiet().unwrap(),
+            "the observer reported or ended before the release, mode={mode} children={n}"
+        );
+        println!("CLEANUP_CONTROL observer_quiet_before_release=true mode={mode} children={n}");
         let began = Instant::now();
         let release = call(
             &home,
@@ -569,9 +598,9 @@ fn main_cleanup_reaps_owned_children_and_preserves_independent_joiner() {
             ],
         );
         assert_eq!(release.status, Some(0), "{release}");
-        let ended = finished(&mut main, PATIENCE);
+        let ended = finished(&home, &mut main);
         assert_eq!(ended, format!("released {n}\n"));
-        let observed = finished(&mut watcher, PATIENCE);
+        let observed = finished(&home, &mut watcher);
         assert!(
             observed.contains(&format!("cleanup children {n} reaped {n} remaining 0")),
             "{observed}"
@@ -630,7 +659,7 @@ mod native {
                 .arg("stdin")
                 .stdin(Stdio::piped())
                 .stderr(Stdio::inherit()),
-            patience(),
+            Bound::until(patience()).unwrap(),
         )
         .unwrap()
     }
@@ -727,12 +756,12 @@ mod native {
                 .args(["-c", "echo ready"])
                 .stdin(Stdio::null())
                 .stderr(Stdio::inherit()),
-            PATIENCE,
+            Bound::Judged(Patience::started()),
         )
         .unwrap();
         let returned = Returned::of(&client);
         client.await_ready().unwrap();
-        let completed = client.finish(PATIENCE).unwrap();
+        let completed = client.finish(Bound::Judged(Patience::started())).unwrap();
         assert!(completed.status.success());
         drop(client);
         returned.check();
@@ -743,7 +772,7 @@ mod native {
         let returned = Returned::of(&client);
         let result = client.await_ready();
         let expected = if deadline {
-            matches!(result, Err(ClientError::Deadline(Phase::Readiness)))
+            matches!(result, Err(ClientError::Refused(Phase::Readiness)))
         } else {
             matches!(result, Err(ClientError::OutputEnded { ready_bytes: 0 }))
         };
@@ -777,7 +806,7 @@ mod native {
         let returned = Returned::of(&client);
         client.await_ready().unwrap();
         client.child.stdin.as_mut().unwrap().write_all(b"r").unwrap();
-        let completed = client.finish(patience()).unwrap();
+        let completed = client.finish(Bound::until(patience()).unwrap()).unwrap();
         assert!(completed.status.success());
         assert_eq!(completed.bytes, b"released\n");
         drop(client);
