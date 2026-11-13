@@ -22724,10 +22724,17 @@ API's protocol: its output drained, its end, its connections.
 - *Scope.* `Refusal::Scope` keeps a scope's typed failure before its process's identity is
   known; `--host-managed` keeps the processes shards starts beside the VM in the client's
   process group; `Shards::configured(cache, home)` gives its probe and launches exactly the
-  client's `SHARDS_CACHE` and `SHARDS_HOME`, the environment otherwise cleared.
+  client's `SHARDS_CACHE` and `SHARDS_HOME`, the environment otherwise cleared, but on
+  Windows the system root the OS reports (`GetSystemWindowsDirectoryW`, not an inherited
+  variable): Winsock's catalog names its providers under `%SystemRoot%`, so without it
+  WSAStartup fails with WSAEPROVIDERFAILEDINIT (10106) and `shards` opens no socket, its
+  vsock's included (plan step 2's review: red on Windows 11 26200, green with it).
 - *Images.* `verify_native_image` checks a declared executable's whole bytes (length,
   SHA-256) against the same open file by the caller's deadline: a content witness, not
-  permission to run it.
+  permission to run it. It reads them in the pieces the file's file system prefers
+  (`st_blksize`; on Windows `FILE_STORAGE_INFO.PhysicalBytesPerSectorForPerformance`), not in
+  SHA-256's 64-byte blocks, which made a launch's tens of MiB about a million reads (a MiB was
+  16,384 reads; `a_verified_image_is_read_in_its_file_systems_pieces` holds it under that).
 - *Connections.* `connect_before(port, deadline)` dials under an absolute deadline, a socket
   completed after it never published; `connect_once_before` dials once, refused at once where
   nothing listens.
@@ -22738,7 +22745,9 @@ API's protocol: its output drained, its end, its connections.
   names a frame, not a channel, and a pipe named for its scope refused every other report
   of that scope while its one instance lived, ERROR_PIPE_BUSY (PM M533).
 
-**Literals.** None new beyond D232's; every wait is the caller's deadline.
+**Literals.** None new beyond D232's but SHA-256's 64-byte block (FIPS 180-4 §5.1.1), what an
+image is read in where its file system names no preferred size; every wait is the caller's
+deadline.
 
 **Evidence.** Hex's design records (docs/design/managed-native-receipts.md,
 native-physical-report.md in Hex) and the failures each port's commit cites (an inline stop,
