@@ -25020,6 +25020,15 @@ member's are, so one stdio protocol carries both. The pieces:
   (D243). Its length is bound by the run protocol's own `MAX_PAYLOAD`, which is as large as Linux
   execs. An endpoint that admits no exec, or an ask for another run, generation or member,
   refuses the lane alone, typed.
+- *Its scope where it serves no member stream* (goal 58, for D252's run host and D254): the
+  run and generation an ask names are fixed as the endpoint binds (`exec::Execs::run`): its
+  member streams', or at an endpoint of none the zero run and generation 0, as its socket lanes
+  name them (D251); the controller names the same (`drive.rs`, its outputs' run else the zero
+  run), and gives `Execs` with no output subscribed. Such an endpoint leaves the member to its
+  host, which knows its run's members and refuses one it has not, typed. Before, the run was
+  read from the endpoint's first output: an endpoint of none refused every ask `Scope`, and
+  once an exec's own streams had joined its outputs, would have read the exec's run for its own.
+  Tested: `control::tests::lanes::an_endpoint_of_no_member_stream_takes_asks_in_the_zero_run`.
 - *Its streams*: the endpoint numbers each exec. The exec's stdout, its stderr (none on a
   terminal) and its stdin (where it reads one) are step 5's streams under a run of their own: the
   run's identity and the exec's number hashed (SHA-256), so the controller's subscriptions name

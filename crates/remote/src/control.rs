@@ -433,7 +433,12 @@ impl Endpoint {
             receive: u64::try_from(windows.connection).unwrap_or(u64::MAX),
             send: windows.send,
         };
-        let (execs, (handed, members)) = exec::Execs::new(streams.execs, base);
+        // The run its asks name: its member streams', else the zero run (`exec::Execs::run`).
+        let run = streams
+            .outputs
+            .first()
+            .map_or((RunId([0; 32]), 0), |(scope, _)| (scope.run, scope.generation));
+        let (execs, (handed, members)) = exec::Execs::new(streams.execs, base, run);
         let (sockets, connects) = unix::Carried::new(streams.sockets);
         let lanes = Lanes::new(controller, streams, windows.streams, execs, sockets)?;
         let (mut driver, sender) = Driver::bind_bounded(
@@ -2579,6 +2584,82 @@ mod tests {
                 Err(Fault::Unstarted(exec::Unstarted::Refused))
             );
             host.join().unwrap();
+        }
+
+        /// An endpoint of no member stream (an orchestrator's run host's, D252) takes asks in the
+        /// zero run and generation 0, as its socket lanes are, and leaves their member to its
+        /// host: the controller asks there with no stream subscribed; an ask after an exec's
+        /// streams joined the endpoint's is scoped as the first was; another run or generation
+        /// is refused alone, typed.
+        #[test]
+        fn an_endpoint_of_no_member_stream_takes_asks_in_the_zero_run() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let streams = Streams {
+                outputs: &[],
+                inputs: &[],
+                execs: Some(exec_admissions()),
+                sockets: None,
+            };
+            let (endpoint, served) = Endpoint::bind(&vm, kiln.fingerprint(), loopback(), streams).unwrap();
+            let address = endpoint.address;
+            let _serving = std::thread::spawn(move || endpoint.run());
+            let (starts, members) = (served.execs.unwrap(), served.members.unwrap());
+            let host = std::thread::spawn(move || {
+                for _ in 0..2 {
+                    let start = starts.recv_timeout(PATIENCE).unwrap();
+                    let asked = (start.ask.run, start.ask.generation, start.ask.member);
+                    assert_eq!(asked, (RunId([0; 32]), 0, 5));
+                    mcp_stand_in(start);
+                }
+                let member = members.recv_timeout(PATIENCE).unwrap();
+                assert_eq!(member.ask.member, 5);
+                member.replies.tell(exec::Reply::Exited(7));
+            });
+            let (dialed, _driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                address,
+                Subscriptions {
+                    outputs: &[],
+                    inputs: &[],
+                    execs: Some(exec_admissions()),
+                    sockets: None,
+                },
+            );
+            let execs = dialed.execs.as_ref().unwrap();
+            for request in [&b"first"[..], b"second"] {
+                let McpConnection {
+                    mut from,
+                    mut to,
+                    mut end,
+                } = execs.mcp(5).unwrap();
+                assert_eq!(to.write(request).unwrap(), request.len());
+                assert_eq!(
+                    from.next_record().unwrap(),
+                    Got::Record {
+                        at: 0,
+                        bytes: request.to_vec()
+                    }
+                );
+                assert_eq!(to.end().unwrap(), (request.len() as u64, InputEnd::Closed));
+                assert_eq!(from.next_record().unwrap(), Got::Finished);
+                assert_eq!(end.wait(), Ok(0));
+            }
+            assert!(matches!(execs.member(5), Ok(crate::control::Member::Ended(7))));
+            host.join().unwrap();
+            let mut live = Live::dial(&kiln, vm.fingerprint(), address);
+            for (lane, (frame, why)) in [
+                (member_ask(run(), 0, 5), Reason::Scope),
+                (member_ask(RunId([0; 32]), 1, 5), Reason::Stale),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                live.open(lane, &frame);
+                assert_eq!(live.take(lane, refusal), why, "lane {lane}");
+                assert_eq!(live.end(lane), Heard::End(lane));
+            }
+            drop(served.revoke);
         }
 
         /// An exec its host says started and exited before the endpoint's next turn, its
