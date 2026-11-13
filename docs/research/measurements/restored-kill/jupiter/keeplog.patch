@@ -1,0 +1,18 @@
+--- a/crates/shards/tests/engine.rs
++++ b/crates/shards/tests/engine.rs
+@@ -2207,7 +2207,15 @@
+     assert_eq!((status, out.as_str()), (Some(0), ""), "{err}");
+     let (_, out, _) = docker(&["checkpoint", "ls", "cp"]);
+     assert_eq!(out, "CHECKPOINT NAME\n");
++    // MEASUREMENT ONLY (not committed): rm -f's time and what the daemon logged.
++    let began = std::time::Instant::now();
+     let (status, _, _) = docker(&["rm", "-f", "cp"]);
++    if let Some(path) = std::env::var_os("SHARDS_TEST_KEEP_LOG") {
++        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
++        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
++            let _ = writeln!(f, "=== rm -f: {:?} in {:?}\n{log}", status, began.elapsed());
++        }
++    }
+     assert_eq!(status, Some(0));
+ }
+ 
