@@ -24537,6 +24537,84 @@ and vCPU count, measured, as D191 owes for its marks.
 by more than a period's share and its vCPUs' overrun; a daemon run, its whole CPUs held in
 milli-CPU, held otherwise than before (D191's tests).
 
+### D248. An orchestrator's run host is started holding its three standard streams alone (built; real-VM validation owed)
+
+**Why.** "Children get only what they are given" (D26's warm pool, `shards_ipc::spawn`; on
+Windows D195's handle list) held for every child shards starts but one: shards-api started
+D231's run host, `shards api-run`, through std's `Command`. That hands it whatever another
+thread of its orchestrator holds inheritable at that moment, for as long as its VM runs
+(CVE-2024-21626's class). On macOS std's spawn, posix_spawnp, sets no
+`POSIX_SPAWN_CLOEXEC_DEFAULT` (rust-src `library/std/src/sys/process/unix/unix.rs`), and
+pipe(2), socket(2), socketpair(2) and accept(2) take no close-on-exec flag, so a descriptor
+another thread has just made waits unmarked until that thread marks it; on Windows std's
+CreateProcessW inherits every inheritable handle (`inherit_handles`, with no
+`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`; `library/std/src/sys/process/windows.rs`). Hex starts
+every program holding its stdio alone, so it booted no image VM on macOS or Windows (Hex plan
+step 12; Ada, 2026-11-12: the image class works there too). Hex carried the fix as its
+vendored change 0001 (Hex main,
+`vendor/patches/shards/0001-image-the-run-host-started-holding-its-three-standard.patch`).
+
+**Alternatives** (R02, R12):
+- *std's `Command`* (as it was): the leak above. Not kept.
+- *A spawn of shards-api's own* (Hex's change 0001: posix_spawn with file actions for 0, 1
+  and 2 and `POSIX_SPAWN_CLOEXEC_DEFAULT` on Apple's; CreateProcessW with a
+  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` of its three; 768 lines): a second copy of what
+  `shards_ipc::spawn` does for the daemon, the CLI and the registry's credential helpers. Not
+  taken (R12).
+- *`shards_ipc::spawn_with`* (taken): the child gets exactly the descriptors named for it,
+  each at its number, its signal mask empty and every signal at its default; on Linux every
+  descriptor shards holds is close-on-exec (`cloexec_inherited` marks what this process was
+  given open); on Windows the three handles alone, in its handle list. Its `Child` waits
+  without reaping (`ended`), reaps once (`wait`) and signals only while unreaped (`kill`),
+  what the session's own waiter did with libc and windows-sys by hand. shards-api now depends
+  on shards-ipc: an orchestrator that vendors shards-api vendors crates/ipc beside it.
+
+**Decided.** The session starts its host with `shards_ipc::spawn_with(program, ["api-run"],
+[stdin, stdout and stderr pipes at 0, 1 and 2], not detached, its spec's variables over this
+process's)`. A program named alone (`shards`, the spec's default) is found as std's `Command`
+found it: the first file of that name in a directory of this process's `PATH` (on Windows
+`.exe` added to a name with no extension), else refused (`ImageRefusal::Boot`, "in no directory
+of PATH"). It is never taken from the current directory, where std never looks for one either
+(its Unix spawn is posix_spawnp, its Windows `resolve_exe` searches PATH, the program's own and
+the system's directories; rust-src `library/std/src/sys/process`): `shards_ipc::spawn` is
+posix_spawn(2), which would take a name alone as relative to the current directory, and
+CreateProcessW, given no application name, searches "the current directory for the parent
+process" second and `PATH` last (Microsoft Learn, CreateProcessW, `lpCommandLine`). A directory of `PATH` that is empty, which exec(3) reads
+as the current one, is skipped, as std's Windows spawn skips it. A variable's name that is not UTF-8
+is refused as the spec's (`ImageRefusal::Spec`, "the run host's environment"), as the spawn
+names variables in UTF-8. The host is reaped under the state's lock as `exited` is set, and
+killed only while unreaped, by the `Child`'s own lock.
+
+**Literals.** 0, 1 and 2: the standard streams' numbers (POSIX `STDIN_FILENO`,
+`STDOUT_FILENO`, `STDERR_FILENO`; Windows' first three in the handle list, as
+`shards_ipc::spawn` numbers them). `exe`: the extension CreateProcessW adds to a name that has
+none, and std's spawn adds as it searches. None of its own.
+
+**Tests** (unit, one macOS arm64 host). `image::session::tests`:
+`a_run_host_holds_no_end_it_was_not_given` (macOS and Windows, in a test process of its own:
+a pipe's write end left inheritable, a run host started, that end let go; its read end finds
+every writer gone), `a_run_host_takes_its_environment_and_speaks_on_its_streams` (a host named
+alone found on `PATH`, its variable said, its stdin's line read back, its stderr empty, its
+exit 0; a variable's name not UTF-8 refused as the spec's),
+`a_program_named_alone_is_found_on_path_alone` (names on no directory of `PATH`, one of them a
+file in the current directory, refused as not found; one named with its directory as it is; a
+shell named alone found in a directory of `PATH`), and
+`a_feed_sends_its_callers_bytes_within_its_room_then_its_end`, its host's stdin a pipe now
+(on every OS). Red/green on adas-mac-studio.local (Darwin 25.2.0 arm64, rustc 1.98.1),
+`cargo test -p shards-api image::session`: with the spawn as it was (std's `Command`, behind
+the same interface) and 6ab5332f3's fallback (a name alone that no directory of `PATH` holds
+passed on as it is), 8 passed and 2 failed, `a_run_host_holds_no_end_it_was_not_given` ("the
+run host holds the write end of a pipe it was never given") and
+`a_program_named_alone_is_found_on_path_alone` (`Ok("Cargo.toml")` where not found was
+expected); as built, 10 passed. Clippy for shards-api, all targets, `-D warnings`: clean. The
+Windows leak check is unrun on a host here (CI's Windows legs build and run it).
+
+**Evidence owed** (ROOT, real VMs). `cargo test -p shards --profile test-release --test
+api_image` on HVF and WHP; Hex's image_real on macOS and Windows once Hex vendors this.
+
+**What would falsify it.** A run host that holds a descriptor or handle of its orchestrator's
+it was not given (then `shards_ipc::spawn` leaks to every child shards starts, D26).
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM

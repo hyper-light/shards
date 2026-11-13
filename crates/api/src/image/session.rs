@@ -4,15 +4,16 @@
 //! fact: an answer, a channel's bytes or end, the host's exit; a caller's patience bounds
 //! only its own wait.
 //!
-//! The host is reaped under the state's lock as `exited` is set, and signalled only while
-//! it is not, so no signal reaches another process that took its pid (as `crate::client`
-//! does a direct boot's).
+//! The host is started holding its three standard streams alone (D248), reaped under the
+//! state's lock as `exited` is set, and signalled only while it is unreaped
+//! (`shards_ipc::Child`), so no signal reaches another process that took its pid (as
+//! `crate::client` does a direct boot's).
 
 use std::collections::{HashMap, VecDeque};
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Read as _, Write as _};
 use std::num::NonZeroU64;
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -126,7 +127,7 @@ struct Shared {
     changed: Condvar,
     /// The host's stdin: closed once the run's end has come, which the host takes as the
     /// last of its owner, and by `stop`.
-    to_host: Mutex<Option<std::process::ChildStdin>>,
+    to_host: Mutex<Option<io::PipeWriter>>,
 }
 
 impl Shared {
@@ -296,94 +297,104 @@ impl Shared {
     }
 }
 
-/// The host's process: held to reap it, and its pid (Unix) or a handle of its own
-/// (Windows) to wait for its exit without the lock a kill takes.
-#[derive(Debug)]
+/// The run host started, and the ends of its standard streams this process holds.
 struct Host {
-    child: Mutex<Child>,
-    #[cfg(unix)]
-    pid: u32,
-    #[cfg(windows)]
-    handle: std::os::windows::io::OwnedHandle,
+    process: shards_ipc::Child,
+    to_host: io::PipeWriter,
+    from_host: io::PipeReader,
+    said: io::PipeReader,
 }
 
-impl Host {
-    fn of(child: Child) -> io::Result<Host> {
-        #[cfg(unix)]
-        let pid = child.id();
-        #[cfg(windows)]
-        let handle = {
-            use std::os::windows::io::AsHandle as _;
-            child.as_handle().try_clone_to_owned()?
-        };
-        Ok(Host {
-            child: Mutex::new(child),
-            #[cfg(unix)]
-            pid,
-            #[cfg(windows)]
-            handle,
+/// Starts `program` with `args`, its environment this process's with `env` over it, holding
+/// its stdin, stdout and stderr, pipes to this process, and nothing else this process holds
+/// (D248): `shards_ipc`'s spawn gives a child exactly the descriptors named for it
+/// (`POSIX_SPAWN_CLOEXEC_DEFAULT` on macOS, every descriptor close-on-exec on Linux, a
+/// `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` of its three on Windows), where std's would hand it
+/// whatever another thread of the orchestrator holds inheritable at that moment. A variable's
+/// name that is not UTF-8 is refused, as that spawn names variables in UTF-8.
+fn start_host(program: &Path, args: &[&OsStr], env: &[(OsString, OsString)]) -> Result<Host, ImageRefusal> {
+    let os = |what: &'static str| move |e: io::Error| ImageRefusal::Os { what, kind: e.kind() };
+    let set = env
+        .iter()
+        .map(|(name, value)| {
+            name.to_str()
+                .map(|name| (name, value.as_os_str()))
+                .ok_or_else(|| ImageRefusal::Spec {
+                    what: "the run host's environment",
+                    why: format!("{name:?}: a variable's name that is not UTF-8"),
+                })
         })
-    }
+        .collect::<Result<Vec<(&str, &OsStr)>, ImageRefusal>>()?;
+    let boot = |e: io::Error| ImageRefusal::Boot(format!("{}: {e}", program.display()));
+    let found = on_path(program).map_err(boot)?;
+    let (child_in, to_host) = io::pipe().map_err(os("the run host's pipes"))?;
+    let (from_host, child_out) = io::pipe().map_err(os("the run host's pipes"))?;
+    let (said, child_err) = io::pipe().map_err(os("the run host's pipes"))?;
+    #[cfg(unix)]
+    let ends = {
+        use std::os::fd::AsFd as _;
+        [
+            (child_in.as_fd(), 0),
+            (child_out.as_fd(), 1),
+            (child_err.as_fd(), 2),
+        ]
+    };
+    #[cfg(windows)]
+    let ends = {
+        use std::os::windows::io::AsHandle as _;
+        [
+            (child_in.as_handle(), 0),
+            (child_out.as_handle(), 1),
+            (child_err.as_handle(), 2),
+        ]
+    };
+    let process = shards_ipc::spawn_with(&found, args, &ends, false, &set).map_err(boot)?;
+    // The host holds its ends now; this process's go, so that each pipe ends with it.
+    drop((child_in, child_out, child_err));
+    Ok(Host {
+        process,
+        to_host,
+        from_host,
+        said,
+    })
+}
 
-    /// Waits for it to exit, leaving it unreaped.
-    fn awaited(&self) -> io::Result<()> {
-        #[cfg(unix)]
-        loop {
-            // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            // SAFETY: waitid(2) of our own child into `info`; WNOWAIT leaves it unreaped.
-            let r = unsafe {
-                libc::waitid(
-                    libc::P_PID,
-                    self.pid,
-                    &raw mut info,
-                    libc::WEXITED | libc::WNOWAIT,
-                )
-            };
-            if r == 0 {
-                return Ok(());
-            }
-            let e = io::Error::last_os_error();
-            if e.kind() != io::ErrorKind::Interrupted {
-                return Err(e);
-            }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::AsRawHandle as _;
-            use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-            use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
-            // SAFETY: a process handle this value owns.
-            if unsafe { WaitForSingleObject(self.handle.as_raw_handle(), INFINITE) } == WAIT_OBJECT_0 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
-            }
-        }
+/// `program` as std's spawn finds one: itself where it names a directory; else the first file
+/// of that name in a directory of this process's `PATH` (on Windows `.exe` added to a name
+/// with no extension, as CreateProcessW adds it); else refused, not found. Never one in the
+/// current directory, where std's spawn never looks for a name alone either: posix_spawn(2)
+/// would take that name as relative to it, and CreateProcessW looks there before `PATH`
+/// (D248). A directory of `PATH` that is empty, which exec(3) reads as the current one, is
+/// skipped, as std's Windows spawn skips it.
+fn on_path(program: &Path) -> io::Result<PathBuf> {
+    if !program.parent().is_some_and(|dir| dir.as_os_str().is_empty()) {
+        return Ok(program.to_path_buf());
     }
+    let name = if cfg!(windows) && program.extension().is_none() {
+        program.with_extension("exe")
+    } else {
+        program.to_path_buf()
+    };
+    std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .map(|dir| dir.join(&name))
+                .find(|candidate| candidate.is_file())
+        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "in no directory of PATH"))
+}
 
-    /// Kills it at once, while `state` says it is unreaped.
-    fn kill(&self, state: &State) {
-        if state.exited {
-            return;
-        }
-        #[cfg(unix)]
-        if let Ok(pid) = libc::pid_t::try_from(self.pid) {
-            // SAFETY: kill(2) of our own child, unreaped while `exited` is false.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
-        }
-        #[cfg(windows)]
-        {
-            let _ = lock(&self.child).kill();
-        }
-    }
+/// Kills the host at once, unless it is reaped (`shards_ipc::Child::kill`).
+fn kill(host: &shards_ipc::Child) {
+    let _ = host.kill(shards_ipc::signal::SIGKILL);
 }
 
 /// One image run, as its client holds it.
 #[derive(Debug)]
 pub(super) struct Session {
     shared: Arc<Shared>,
-    host: Arc<Host>,
+    host: Arc<shards_ipc::Child>,
     members: Vec<MemberInfo>,
     published: Vec<wire::Bound>,
     outputs: Mutex<HashMap<(u32, Channel), io::PipeReader>>,
@@ -406,31 +417,19 @@ impl Session {
             .or_else(|| std::env::var_os("SHARDS_BIN").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("shards"));
         let os = |what: &'static str| move |e: io::Error| ImageRefusal::Os { what, kind: e.kind() };
-        let mut child = Command::new(&binary)
-            .arg("api-run")
-            .envs(spec.env.iter().map(|(k, v)| (k, v)))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| ImageRefusal::Boot(format!("{}: {e}", binary.display())))?;
-        let pipes = (child.stdin.take(), child.stdout.take(), child.stderr.take());
-        let host = Host::of(child).map_err(os("the run host's handle"))?;
-        let (Some(to_host), Some(from_host), Some(said)) = pipes else {
-            let _ = lock(&host.child).kill();
-            let _ = lock(&host.child).wait();
-            return Err(ImageRefusal::Os {
-                what: "the run host's pipes",
-                kind: io::ErrorKind::BrokenPipe,
-            });
-        };
+        let Host {
+            process,
+            to_host,
+            from_host,
+            said,
+        } = start_host(&binary, &[OsStr::new("api-run")], &spec.env)?;
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
             to_host: Mutex::new(Some(to_host)),
         });
         // Shared: the session and its exit watcher, which outlives this call.
-        let host = Arc::new(host);
+        let host = Arc::new(process);
         let threads = (|| {
             let (watcher, watched) = (shared.clone(), host.clone());
             std::thread::Builder::new()
@@ -456,7 +455,7 @@ impl Session {
                 .map_err(os("the run host's request"))
         })();
         let end_it = |shared: &Shared| {
-            host.kill(&lock(&shared.state));
+            kill(&host);
             lock(&shared.to_host).take();
         };
         if let Err(e) = threads {
@@ -702,7 +701,7 @@ fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
 /// Reads the host's answers until it closes its stdout, each into the state; one that
 /// breaks the channel's contract ends the session as a failed run. The run's end closes
 /// the host's stdin: the host then ends.
-fn read_answers(shared: &Shared, mut from_host: std::process::ChildStdout) {
+fn read_answers(shared: &Shared, mut from_host: io::PipeReader) {
     let failed = loop {
         let (kind, payload) = match wire::read_frame(&mut from_host) {
             Ok(Some(frame)) => frame,
@@ -837,7 +836,7 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
 }
 
 /// Keeps the host's last diagnostics until they end.
-fn keep_said(shared: &Shared, mut said: std::process::ChildStderr) {
+fn keep_said(shared: &Shared, mut said: io::PipeReader) {
     let keep = said_kept();
     let mut buf = [0u8; 4096];
     while let Ok(n) = said.read(&mut buf) {
@@ -854,10 +853,10 @@ fn keep_said(shared: &Shared, mut said: std::process::ChildStderr) {
 }
 
 /// Waits for the host to exit, then reaps it under the state's lock as `exited` is set.
-fn watch(shared: &Shared, host: &Host) {
-    let awaited = host.awaited();
+fn watch(shared: &Shared, host: &shards_ipc::Child) {
+    let awaited = host.ended();
     let mut state = lock(&shared.state);
-    let _ = lock(&host.child).wait();
+    let _ = host.wait();
     if let Err(e) = awaited {
         state
             .end
@@ -1076,7 +1075,7 @@ impl ImageGuest for Session {
         // (`STOP_ORDER`). A run that has ended is not asked: its host is cleaning up.
         let ended = lock(&self.shared.state).end.is_some();
         if !ended && self.shared.send(wire::to_host::STOP, &[]).is_err() {
-            self.host.kill(&lock(&self.shared.state));
+            kill(&self.host);
         }
         // The run's end comes as its VM goes, which the host kills at once; or the host is
         // gone. The host's own exit after (its cleanup) is the watcher's to reap.
@@ -1163,20 +1162,15 @@ mod tests {
     }
 
     /// The caller's bytes reach the host as they were written, never past the room it gave,
-    /// and the pipe's close is the input's end. The host here is `cat`, which hands back what
-    /// the feed sent.
-    #[cfg(unix)]
+    /// and the pipe's close is the input's end. The host's stdin here is a pipe this test
+    /// reads.
     #[test]
     fn a_feed_sends_its_callers_bytes_within_its_room_then_its_end() {
-        let mut host = Command::new("cat")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let (mut from_host, to_host) = io::pipe().unwrap();
         let s = Arc::new(Shared {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
-            to_host: Mutex::new(host.stdin.take()),
+            to_host: Mutex::new(Some(to_host)),
         });
         lock(&s.state).inputs.insert(1, InputFlow::default());
         let (reader, mut writer) = io::pipe().unwrap();
@@ -1190,7 +1184,6 @@ mod tests {
         // Room for 7 bytes, then the rest: no frame carries more than it was given.
         let room = |bytes| wire::InputRoom { member: 1, bytes }.encode();
         assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(7)), Ok(false));
-        let mut from_host = host.stdout.take().unwrap();
         let (kind, first) = wire::read_frame(&mut from_host).unwrap().unwrap();
         assert_eq!(kind, wire::to_host::INPUT);
         let first = wire::Input::decode(&first).unwrap();
@@ -1215,7 +1208,203 @@ mod tests {
         assert_eq!(got, payload);
         feeding.join().unwrap();
         lock(&s.to_host).take();
-        host.wait().unwrap();
+    }
+
+    /// The variable under which the leak check runs, in a test process of its own.
+    #[cfg(any(target_os = "macos", windows))]
+    const ALONE: &str = "SHARDS_API_SPAWN_ALONE";
+
+    /// A program that reads its stdin to its end, saying each line with its argument in it, by
+    /// its path: findstr on Windows, grep on macOS.
+    #[cfg(any(target_os = "macos", windows))]
+    fn reader() -> PathBuf {
+        if cfg!(windows) {
+            let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+            PathBuf::from(root).join("System32").join("findstr.exe")
+        } else {
+            PathBuf::from("/usr/bin/grep")
+        }
+    }
+
+    /// Leaves `write` inheritable: as a descriptor another thread has made and not yet marked
+    /// close-on-exec is on macOS, whose pipe, socket, socketpair and accept take no
+    /// close-on-exec flag; or a handle another part of this process made inheritable for a
+    /// child of its own is on Windows.
+    #[cfg(any(target_os = "macos", windows))]
+    fn inheritable(write: &io::PipeWriter) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd as _;
+            // SAFETY: fcntl(2) of a descriptor `write` owns, clearing its close-on-exec flag.
+            assert_eq!(unsafe { libc::fcntl(write.as_raw_fd(), libc::F_SETFD, 0) }, 0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+            // SAFETY: a pipe handle `write` owns, alive for the call.
+            let ok = unsafe {
+                SetHandleInformation(write.as_raw_handle(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)
+            };
+            assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+        }
+    }
+
+    /// Whether every write end of `read`'s pipe is gone, every process's: a read that would
+    /// wait finds its end (Unix), or a look at it finds it broken (Windows), at once.
+    #[cfg(any(target_os = "macos", windows))]
+    fn writers_gone(read: &io::PipeReader) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd as _;
+            // SAFETY: fcntl(2) of a descriptor `read` owns, making its reads not wait.
+            let set = unsafe { libc::fcntl(read.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+            assert_eq!(set, 0);
+            match (&*read).read(&mut [0u8; 1]) {
+                Ok(0) => true,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => false,
+                other => panic!("a read of a pipe nothing was written to: {other:?}"),
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, GetLastError};
+            use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+            let mut ready = 0u32;
+            // SAFETY: a pipe handle `read` owns; only the count is asked for, into `ready`.
+            let ok = unsafe {
+                PeekNamedPipe(
+                    read.as_raw_handle(),
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                    &raw mut ready,
+                    std::ptr::null_mut(),
+                )
+            };
+            // SAFETY: reads this thread's last error, which the failed call above set.
+            ok == 0 && unsafe { GetLastError() } == ERROR_BROKEN_PIPE
+        }
+    }
+
+    /// D231's run host holds its three standard streams alone (D248): do leave a pipe's write
+    /// end inheritable in this process, then start a run host and let go of that end. Expect:
+    /// the pipe's read end finds every writer gone, the run host holding none of it. It runs
+    /// in a test process of its own, so no other test's spawn holds that end for its moment.
+    /// Linux makes every descriptor close-on-exec as it makes it (pipe2, SOCK_CLOEXEC,
+    /// accept4, O_CLOEXEC), so none waits unmarked there.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_run_host_holds_no_end_it_was_not_given() {
+        if std::env::var_os(ALONE).is_some() {
+            let (read, write) = io::pipe().unwrap();
+            inheritable(&write);
+            let host = start_host(&reader(), &[OsStr::new("api-run")], &[]).unwrap();
+            drop(write);
+            let gone = writers_gone(&read);
+            drop(host.to_host);
+            host.process.wait().unwrap();
+            assert!(
+                gone,
+                "the run host holds the write end of a pipe it was never given"
+            );
+            return;
+        }
+        let alone = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "image::session::tests::a_run_host_holds_no_end_it_was_not_given",
+                "--test-threads=1",
+            ])
+            .env(ALONE, "1")
+            .output()
+            .unwrap();
+        assert!(
+            alone.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&alone.stdout),
+            String::from_utf8_lossy(&alone.stderr)
+        );
+    }
+
+    /// Do start a run host named alone, found on `PATH` as exec(3)'s `p` functions find one,
+    /// with a variable over this process's environment, write it lines and end its stdin.
+    /// Expect: its stdout says the variable and the line it was asked for, its stderr nothing,
+    /// and it ends 0. Do name a variable that is not UTF-8. Expect: the spec's refusal, before
+    /// anything starts.
+    #[test]
+    fn a_run_host_takes_its_environment_and_speaks_on_its_streams() {
+        let env = [("SHARDS_API_SPAWN_TEST".into(), "said".into())];
+        // Each says the variable, then reads its stdin to its end, saying the line asked for.
+        let host = if cfg!(windows) {
+            let args = [
+                "/d",
+                "/q",
+                "/c",
+                "echo",
+                "%SHARDS_API_SPAWN_TEST%&",
+                "findstr",
+                "api-run",
+            ];
+            let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+            start_host(Path::new("cmd"), &args, &env)
+        } else {
+            let args = ["-c", "printf '%s\\n' \"$SHARDS_API_SPAWN_TEST\"; grep api-run"];
+            let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+            start_host(Path::new("sh"), &args, &env)
+        }
+        .unwrap();
+        let Host {
+            process,
+            mut to_host,
+            mut from_host,
+            mut said,
+        } = host;
+        to_host.write_all(b"other\napi-run\n").unwrap();
+        drop(to_host);
+        let mut out = String::new();
+        from_host.read_to_string(&mut out).unwrap();
+        let mut why = String::new();
+        said.read_to_string(&mut why).unwrap();
+        assert_eq!(process.wait().unwrap(), 0);
+        let lines: Vec<&str> = out.lines().map(str::trim_end).collect();
+        assert_eq!(lines, ["said", "api-run"], "{out:?}");
+        assert_eq!(why, "");
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt as _;
+            let bad = [(OsString::from_vec(vec![0xff]), OsString::from("x"))];
+            assert!(matches!(
+                start_host(Path::new("sh"), &[], &bad),
+                Err(ImageRefusal::Spec {
+                    what: "the run host's environment",
+                    ..
+                })
+            ));
+        }
+    }
+
+    /// Do find programs named alone that no directory of `PATH` holds, one of them in the
+    /// current directory (the crate's, where cargo runs its tests). Expect: each refused as
+    /// not found, none taken from the current directory, where posix_spawn(2) would take it
+    /// and CreateProcessW would look before `PATH`. Do find one named with its directory, and
+    /// a shell named alone. Expect: the first as it is, the second in a directory of `PATH`.
+    #[test]
+    fn a_program_named_alone_is_found_on_path_alone() {
+        assert!(Path::new("Cargo.toml").is_file());
+        for alone in ["Cargo.toml", "shards-api-no-such-program"] {
+            let found = on_path(Path::new(alone)).map_err(|e| e.kind());
+            assert_eq!(found, Err(io::ErrorKind::NotFound), "{alone}");
+        }
+        let named = Path::new("target").join("shards");
+        assert_eq!(on_path(&named).unwrap(), named);
+        let shell = on_path(Path::new(if cfg!(windows) { "cmd" } else { "sh" })).unwrap();
+        let path = std::env::var_os("PATH").unwrap();
+        assert!(
+            std::env::split_paths(&path).any(|dir| shell.parent() == Some(dir.as_path())),
+            "{shell:?}"
+        );
     }
 
     /// A refusal comes back typed by its cause, its host's words unchanged: the nesting
