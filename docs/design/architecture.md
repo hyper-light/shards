@@ -22826,8 +22826,31 @@ derivation of shards' own (R03). `GPU_NAME_BYTES`, 256: Vulkan's
 `VK_MAX_PHYSICAL_DEVICE_NAME_SIZE`. The probe's byte bounds are its encoding's longest lines
 for the count (`probe.rs`). Snapshot format 29.
 
-**Held.** A GPU VM process for Windows on arm64 (`gpu_target`, gpu-libs' arm64 build): never
-built or run for that target; ROOT's GPU lane holds it.
+**Windows on arm64 (plan step 2's step 3; Hex's one vendored change, upstreamed).** `gpu_target`
+takes `aarch64-pc-windows-msvc`, and scripts/gpu-libs builds the renderer, libepoxy and the
+identity bridge for it:
+- the host is named from `SHARDS_GPU_TARGET`, else the developer prompt's target
+  (`VSCMD_ARG_TGT_ARCH`), else Windows' own (`PROCESSOR_ARCHITEW6432`, `PROCESSOR_ARCHITECTURE`),
+  and any other name is refused;
+- every Windows build, x86_64's included, is a meson cross build for the machine named (clang-cl
+  `--target`, `host_machine`), never for the one its tools default to (Hex's reason: x64 tools
+  under emulation on an ARM host);
+- the bridge, which meson names `lib*.a` on Windows too, is copied as `shards_gpu_selection.lib`
+  and built for `/MD`, as on x86_64 (1cd728678, 1f86d092a).
+Its two pins are PyPI's published digests (pypi.org/pypi/NAME/VERSION/json, read 2026-11-12;
+the wheels re-checked against them 2026-11-13), not numbers of ours (R03): ninja 1.13.2's
+win_arm64 wheel, sha256 `1db9852e…85fb1`, and pkgconf 3.0.7.post0's, `3716a2a2…05f05`. Both files
+are byte for byte Hex's vendored shards-gpu (Shards e82b9403 plus Hex's 0001 patch, at Hex main
+65ef204f), so Hex can drop the patch at its next vendor. Never built: no arm64 Windows host runs
+it here, and Hex never compiled it either (Hex 97f9bbbb checked it by `vendor.py check` and
+`bash -n`; Hex's scripts/shards-gpu/build.sh builds on Linux alone). x86_64's cross build is
+checked against meson 1.11.2's source and the pinned sources' meson files (no program of the
+host's is run), not built; CI's renderer step, whose cache key hashes gpu-libs, rebuilds it on
+main. Owed to ROOT: the native arm64 build and its GPU VM process's link; x86_64 Windows' build
+and its `gpu::` tests on jupiter; scripts/lint for both Windows targets; and a clippy of
+`shards-vmm --features gpu` for `aarch64-pc-windows-msvc`, which no lint or CI job runs. A GPU
+VM on WHP arm64 is unverified, as no host has the hardware (R11).
+docs/research/measurements/hex-upstream-v1/windows-arm64-gpu.md.
 
 **Evidence.** Hex's research on the filter and transport (Hex's
 docs/hex-venus-physical-filter) and the managed-virtio-gpu lane's check of these patches'
