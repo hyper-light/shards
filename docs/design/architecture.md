@@ -24758,7 +24758,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built; log lanes building, goal 58's step 7: the lane and its controller built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built; log lanes building, goal 58's step 7: the lane, its controller and the daemon's log host built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -25422,9 +25422,44 @@ refused `Unknown`; a followed lane reading what comes as it comes and ending at 
 a lane let go before its end letting its host go. Red first: with the endpoint refusing the log of
 a member it serves no stream of, `Refused(Scope)` where `Unlogged(Unknown)` was due.
 
-Building next: the daemon's log host (until it lands, the daemon's exec host refuses a log lane
-`Failed`), and every member's output kept in its log, owned or not, within the run's one log cap
-(D240).
+*The daemon's log host* (`daemon/managed/log_lanes.rs`). The run's exec host hands each log lane
+to it, on a thread of its own:
+- *Refused, typed*, as `logs` refuses a run's log: `Unkept`, `Uncached`; `Unknown` for a member
+  that runs no program; `Rotated { oldest }` for a place older than the oldest segment kept; and
+  `Capacity` where the run's budget has no room for what it holds (its lanes' windows, its
+  stream's record and its reader's two buffers, as an exec's are charged).
+- *Read byte for byte* (`daemon::logs::Records`): the store's records as written, from each
+  channel's place (inside a record, its rest), in the log's order, in pieces of the stream's
+  record less the head; a gap's record given typed; segments let go before it read them said
+  (`Rotated`) and read on from the oldest kept. `logs`' and the shipper's reader, which holds a
+  line until it ends and goes on from a line's start, walks the same segments (`logs::walk`) and
+  passes over a gap's record: a log without gaps reads byte for byte as before.
+- *Followed* as `logs -f` follows a log: woken by its watch on the segment it reads
+  (`platform::FileWatch`, a segment's coming among its changes), by its source's end (the run's,
+  for its command; for a member, its channels all ended in the drain, a latch the drain sets), or
+  by its lane let go (its steering closed, which the endpoint does as it drops the lane); every
+  `UNWATCHED` where no watch can be had (PM M257). Unfollowed, it reads what is kept as it is
+  asked.
+- *Its end*: its stream finished once read, and its exit told after, so that its lane goes.
+- *A gap in the log* (spec.rs `INDEX_GAP`, the index entry's bit 61; its stream byte 3; its
+  bytes why and how many were lost): written by the daemon into members' logs alone (D240); a
+  run's own log, which its VM writes, holds none. A record's start is the entry's bits below 61
+  now, past what any log reaches.
+
+Until the daemon keeps an owned member's output (D240), a log lane of an owned member is refused
+`Failed`.
+
+Tested in the daemon: `daemon::logs::tests` reads a log through `Records` from any place, in
+pieces, across segments its writer cut records over, inside a record and one channel alone; a
+gap's record given typed and passed over by `logs` and `--tail`, which read the log as they read
+it without the gap; segments let go before the reader read on said `Rotated`. The readers'
+existing tests hold logs without gaps to what they read before. `daemon::managed::tests`, through
+the run's endpoint and the production controller: the command's log from its oldest kept, a place
+older refused `Rotated` naming it, a member that runs no program `Unknown`, a drained member's
+log, then followed from its cursor, given what is kept as it is kept and ended with its member's
+channels; the run's budget charged while it reads and given back. Red first: with `logs`' line
+reader taking a gap's record as output, the gap test fails, `logs` showing the gap's bytes (why 1
+and 4096 lost) joined to the next line.
 
 Record:
 [agent-control-v1](../research/measurements/agent-control-v1/README.md).
@@ -25479,6 +25514,7 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | A log ask past its scope, 53 bytes | its source, channels and follow (a byte each), and each channel's place (a flag byte and the store's 24-byte `Pos`) |
 | A log record's kinds 1, 2, 3; its head, 34 bytes | output, gap, rotation; the kind and channel (a byte each), its place (24) and its time (8) |
 | A gap's why, 1 and 2 | `Behind` (let go so as never to hold up its owner, D240) and `Unwritten` (its write failed) |
+| `INDEX_GAP` bit 61; a gap's stream byte 3; its bytes, 9 | the index entry's next bit below `INDEX_LINE`'s 62; the stream byte after `LOG_STDERR`'s 2; why (a byte) and how many bytes it lost (u64) |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 
