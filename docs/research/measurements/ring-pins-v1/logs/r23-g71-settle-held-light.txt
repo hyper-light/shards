@@ -90,7 +90,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; fi
 == clippy (16:24:41Z) exit 0 (16:25:00Z)
 
 == kiln run r341, at 4130e0725 (main moved: b97d37664 and the record's commit c0472af14 merged with
-   origin/main b87c0ce19): landed
+   origin/main b87c0ce19)
 == green (16:27:25Z) exit 0 (16:28:53Z)
 test the_held_connections_wait_reads_a_word_its_log_keeps ... ok
 test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... ok
@@ -112,3 +112,17 @@ test the_held_connections_wait_reads_a_word_its_log_keeps ... FAILED (engine_rin
 test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.36s
 == api-pause (16:29:12Z) exit 0 (16:29:19Z): test client::tests::a_pause_weighs_the_dials_cost_against_lateness ... ok (1 passed; 165 filtered out)
 == clippy (16:29:19Z) exit 0 (16:29:42Z)
+
+== Main moved twice more before the push. 75761254e merged 4506d5268 (D185 on Windows: crates/ipc's
+   #[cfg(windows)] pipe and named-slot modules, a Windows-target windows-sys feature, docs), which no
+   macOS build compiles; e072a886f merged f6d6f7da2 (crates/shards/src/workload.rs and
+   workload/capture.rs), and the run was made again there.
+== kiln run r351, at e072a886f: landed (main f6d6f7da2..e072a886f, fast-forward)
+== green (16:30:57Z) exit 0 (16:31:52Z): 4 passed; 0 failed; 6 filtered out; finished in 0.38s
+== red-main-window exit 101: the HVF test FAILED (engine_ring.rs:903:13)
+  left: Err(Stalled { now: 21, want: 0, stall: Stall { waited: 222753292, over: 222753292, least: [0, 176722000], slowest: 176722000 } })
+== red-sizes-shared exit 101: the HVF test FAILED (engine_ring.rs:900:13)
+  left: Err(Stalled { now: 21, want: 0, stall: Stall { waited: 9221542, over: 9221542, least: [0, 7543875], slowest: 8592458 } })
+  and the two learned-kind tests at their lookups by kind (engine_ring.rs:935:56, 968:56)
+== red-held-attached-still exit 101: the_held_connections_wait_reads_a_word_its_log_keeps FAILED (engine_ring.rs:1023:5)
+== api-pause exit 0 (1 passed); clippy exit 0 (16:32:02Z to 16:32:19Z)
