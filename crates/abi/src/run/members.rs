@@ -58,6 +58,8 @@ pub enum Error {
     Twice,
     /// The entry lacks one of its fields.
     Shape,
+    /// A second member for one exec ([`EXEC_KEY`]).
+    SecondMember,
 }
 
 impl core::fmt::Display for Error {
@@ -71,6 +73,7 @@ impl core::fmt::Display for Error {
             Error::Workdir => "a working directory that is not absolute, plain and within PATH_MAX",
             Error::Twice => "a second working directory for one member",
             Error::Shape => "an entry missing a field",
+            Error::SecondMember => "a second member for one exec",
         })
     }
 }
@@ -338,6 +341,111 @@ impl Ended {
             member: u32::from_be_bytes([a, b, c, d]),
             status: u32::from_be_bytes([e, f, g, h]),
         })
+    }
+}
+
+/// `in-member=<index>`: an exec's setup entry that runs its command in the member of that
+/// declared index (plan step 6, D241): born in its PID namespace and cgroup, in the
+/// namespaces of its command, and confined as its command is, with its environment under
+/// the exec's own and its working directory where the exec names none. One at most.
+pub const EXEC_KEY: &[u8] = b"in-member=";
+
+/// The setup entry that runs an exec in member `member`.
+pub fn exec_in(member: u32) -> Vec<u8> {
+    let mut entry = Vec::new();
+    entry.extend_from_slice(EXEC_KEY);
+    push_decimal(&mut entry, member);
+    entry
+}
+
+/// The member an exec's `setup` runs it in, where it names one: every `in-member=` entry
+/// checked, and a second refusing the whole.
+pub fn exec_member(setup: &[Vec<u8>]) -> Result<Option<u32>, Error> {
+    let mut found = None;
+    for value in setup.iter().filter_map(|e| e.strip_prefix(EXEC_KEY)) {
+        if found.replace(decimal(value)?).is_some() {
+            return Err(Error::SecondMember);
+        }
+    }
+    Ok(found)
+}
+
+/// Why init ran no command in a member (plan step 6, D241), as its exec's
+/// [`kind::SYSTEM_ERR`](super::kind::SYSTEM_ERR) says after the class
+/// [`exec_failed::MEMBER`](super::exec_failed::MEMBER): a code, what that code carries, then
+/// the words for a person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// No member of that index started in this run.
+    Unknown,
+    /// It runs no process of its own: it has ended.
+    Ended,
+    /// Its cgroup runs as many processes as its `pids.max` lets it.
+    Processes,
+    /// The exec asks for what its member has not: a user, or capabilities, of its own.
+    Widening,
+    /// Its namespaces could not be entered, with the errno.
+    Joining(i32),
+    /// A step of its confinement failed: which (init's `domains::Confining`, by its
+    /// number), and the errno.
+    Confining(u8, i32),
+}
+
+impl Refusal {
+    const UNKNOWN: u8 = 1;
+    const ENDED: u8 = 2;
+    const PROCESSES: u8 = 3;
+    const WIDENING: u8 = 4;
+    const JOINING: u8 = 5;
+    const CONFINING: u8 = 6;
+
+    /// Its code and what it carries, then `words`.
+    pub fn encode(self, words: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(6 + words.len());
+        match self {
+            Refusal::Unknown => out.push(Self::UNKNOWN),
+            Refusal::Ended => out.push(Self::ENDED),
+            Refusal::Processes => out.push(Self::PROCESSES),
+            Refusal::Widening => out.push(Self::WIDENING),
+            Refusal::Joining(errno) => {
+                out.push(Self::JOINING);
+                out.extend_from_slice(&errno.to_be_bytes());
+            }
+            Refusal::Confining(step, errno) => {
+                out.extend_from_slice(&[Self::CONFINING, step]);
+                out.extend_from_slice(&errno.to_be_bytes());
+            }
+        }
+        out.extend_from_slice(words);
+        out
+    }
+
+    /// The refusal `bytes` begins with, and its words; none for a code no refusal has, or
+    /// one cut short.
+    pub fn decode(bytes: &[u8]) -> Option<(Refusal, &[u8])> {
+        let (&code, rest) = bytes.split_first()?;
+        let errno = |b: &[u8]| -> Option<i32> { Some(i32::from_be_bytes(*b.first_chunk::<4>()?)) };
+        Some(match code {
+            Self::UNKNOWN => (Refusal::Unknown, rest),
+            Self::ENDED => (Refusal::Ended, rest),
+            Self::PROCESSES => (Refusal::Processes, rest),
+            Self::WIDENING => (Refusal::Widening, rest),
+            Self::JOINING => (Refusal::Joining(errno(rest)?), rest.get(4..)?),
+            Self::CONFINING => {
+                let (&step, rest) = rest.split_first()?;
+                (Refusal::Confining(step, errno(rest)?), rest.get(4..)?)
+            }
+            _ => return None,
+        })
+    }
+
+    /// Whether init could not start what it would have run (`docker exec`'s 126, an OCI
+    /// runtime's failure), not refused it (`docker exec`'s 1, the daemon's refusal).
+    pub fn not_started(self) -> bool {
+        matches!(
+            self,
+            Refusal::Processes | Refusal::Joining(_) | Refusal::Confining(..)
+        )
     }
 }
 
@@ -625,5 +733,55 @@ mod tests {
         }
         assert_eq!(Ended::decode(&[0; 7]), None);
         assert_eq!(Ended::decode(&[0; 9]), None);
+    }
+
+    /// An exec names one member at most, in the index's one spelling; an exec naming none
+    /// runs where it would.
+    #[test]
+    fn an_exec_names_one_member() {
+        for member in [0, 7, u32::MAX] {
+            assert_eq!(exec_member(&[exec_in(member)]), Ok(Some(member)));
+        }
+        assert_eq!(exec_member(&[b"caps=1".to_vec()]), Ok(None));
+        assert_eq!(exec_member(&[]), Ok(None));
+        assert_eq!(exec_member(&[exec_in(1), exec_in(1)]), Err(Error::SecondMember));
+        for bad in [
+            &b"in-member="[..],
+            b"in-member=01",
+            b"in-member=-1",
+            b"in-member=4294967296",
+        ] {
+            assert_eq!(exec_member(&[bad.to_vec()]), Err(Error::Index), "{bad:?}");
+        }
+    }
+
+    /// Every refusal round-trips with its words; one cut short, or of a code no refusal
+    /// has, is none.
+    #[test]
+    fn refusals_round_trip() {
+        for r in [
+            Refusal::Unknown,
+            Refusal::Ended,
+            Refusal::Processes,
+            Refusal::Widening,
+            Refusal::Joining(1),
+            Refusal::Joining(i32::MIN),
+            Refusal::Confining(13, 22),
+            Refusal::Confining(0, -1),
+        ] {
+            for words in [&b""[..], b"agent main: it has ended", b"\0\xff"] {
+                let said = r.encode(words);
+                assert_eq!(Refusal::decode(&said), Some((r, words)), "{r:?}");
+                // Cut anywhere within what the code carries, it is none.
+                let carried = said.len() - words.len();
+                for cut in 0..carried {
+                    assert_eq!(Refusal::decode(&said[..cut]), None, "{r:?} cut at {cut}");
+                }
+            }
+        }
+        assert_eq!(Refusal::decode(&[0]), None);
+        assert_eq!(Refusal::decode(&[7, b'x']), None);
+        assert!(!Refusal::Unknown.not_started() && !Refusal::Widening.not_started());
+        assert!(Refusal::Processes.not_started() && Refusal::Confining(1, 1).not_started());
     }
 }
