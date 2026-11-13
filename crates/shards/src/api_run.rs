@@ -964,23 +964,23 @@ fn started<M: Machine>(m: &mut M, way: Way) -> Result<StartedVm<M>, No> {
         dir: dir.clone(),
         fresh: fresh.clone(),
     };
-    // A VM never ready makes no template, whatever it wrote: its save is removed.
+    // A VM never ready makes no template, whatever it wrote: its save is removed
+    // (`run::settle_boot`).
     let mut vm = match m.launch(&save) {
         Ok(vm) => vm,
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&fresh);
+            let _ = crate::run::settle_boot(false, &fresh, &dir, || Ok(()));
             return Err(boot(e));
         }
     };
     if let Err(e) = m.ready(&mut vm) {
         m.end(vm);
-        let _ = std::fs::remove_dir_all(&fresh);
+        let _ = crate::run::settle_boot(false, &fresh, &dir, || Ok(()));
         return Err(boot(e));
     }
-    if let Err(e) = m.record(&dir) {
+    if let Err(e) = crate::run::settle_boot(true, &fresh, &dir, || m.record(&dir)) {
         m.say(&format!("{}: its record: {e}", dir.display()));
     }
-    crate::run::settle(&fresh, &dir);
     let held = if shards_vmm::snapshot::exists(&dir) {
         match m.hold(&dir) {
             Ok(held) => Some(held),

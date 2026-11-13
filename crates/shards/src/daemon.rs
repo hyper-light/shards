@@ -7856,8 +7856,10 @@ impl<D: Disk> Daemon<D> {
             &prepared.parent,
             prepared.layer,
         );
-        if ready.is_ok()
-            && let Err(e) = crate::run::Origin::of(
+        // Its template only where its VM was ready, its record written beside it; a VM that
+        // saved its snapshot and then failed makes none (run::settle_boot).
+        let record = || {
+            crate::run::Origin::of(
                 guest,
                 &prepared.rootfs,
                 stamp.as_deref(),
@@ -7866,10 +7868,10 @@ impl<D: Disk> Daemon<D> {
                 prepared.emulator.as_ref().map(|e| e.root.as_path()),
             )
             .write(&dir)
-        {
+        };
+        if let Err(e) = crate::run::settle_boot(ready.is_ok(), &fresh, &dir, record) {
             log(format!("{}: its origin: {e}", dir.display()));
         }
-        crate::run::settle(&fresh, &dir);
         if let Ok(r) = &mut ready
             && shards_vmm::snapshot::exists(&dir)
         {
