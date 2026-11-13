@@ -378,6 +378,63 @@ That unit test was written after the change (with it, not red first): its red is
 - R11/R12: platform-independent code, one implementation shared by HTTP/1.1 and HTTP/2; clippy on three targets.
 - R15: implementer scope; R16: the runners' target dirs removed after landing.
 
+## A flow's sign-in answers end with it (#74 step 8)
+
+Role: implementer for ROOT (g121). Policy read at origin/main 2731499f7: AGENTS.md sha256 f66d304c…, docs/development-
+rules.md df2acf47…, docs/development-evidence.md 61613a24…, and /tmp/g121-shot/brief-common.md. Worktree
+`s33-answers-drop`, branch `p/s33-answers-drop-v1`. Found by the agent that landed 2731499f7: a flow that ended while
+its sign-in's asks were under way left its answers (a token response among them) in the network process until the
+run ended, over HTTP/1.1 and HTTP/2 alike, unless an HTTP/2 stream was let go of first (`SignIns::forget`).
+
+### Change
+
+- `crates/net/src/signin.rs`: `SignIns::gone(flow)` drops every answer kept for any of the flow's streams (each
+  `Answer::Refreshed` a `Zeroizing` buffer, wiped as it drops) and takes the flow from every ask under way (a capture's
+  asker made none, a refresh's `waiting` without it). The ask stays under way, as with `forget`: a refresh still
+  rotates the sign-in for the run (its lease made stale) and a capture is still the sign-in's. An answer coming after
+  finds no asker of that flow and is kept for none. `forget` and `gone` share one let-go (`let_go`).
+- `crates/net/src/lib.rs`: `Stack::release`, the one place a TCP slot is emptied (`settle`'s two paths: a closed
+  connection, whether closed, reset or failed; and one whose socket cannot be waited on), tells the run's sign-ins
+  that the slot's flow is gone first. The run's own end drops the whole `Credentials`, so its answers too.
+
+### Tests (adas-mac-studio.local, macOS arm64; carrier `/tmp/s33-ad-carrier`, `run.sh REF STAGE...`)
+
+- **Red at 4deca30b4** (the tests alone; kiln run r1032): 2 failed. `tests::a_flow_that_ends_mid_refresh_keeps_no_answer`
+  ("a flow gone still waits on its ask": 2, not 1) and `tests::an_h2_flow_that_ends_mid_ask_keeps_no_answer_for_its_streams`
+  (3, not 1). Both run through the real `Stack::settle` of a connection reset in its slot, with no fixed waits.
+- **Green at e963d155a** (kiln run r1038): `cargo test -p shards-net --profile test-release --lib -- signin:: inject::
+  tests::a_flow_that_ends_mid_refresh tests::an_h2_flow_that_ends`: 46 passed, 0 failed, 2 ignored (the
+  measurements). With the fix came `signin::tests::a_flow_gone_takes_its_answers_with_it`, which covers an answer
+  already come when its flow goes and a capture whose flow goes first; its red is mutations 2 and 3 below.
+- `cargo fmt --all --check`, and `cargo clippy -p shards-net --all-targets -- -D warnings` on aarch64-apple-darwin,
+  x86_64-unknown-linux-gnu (zig) and x86_64-pc-windows-msvc (xwin), all clean. `cargo check -p shards --tests` with
+  `SHARDS_HELPERS=skip` is clean.
+
+### Guard-removal mutations (ROOT's; on the green tree, `cargo test -p shards-net --profile test-release --lib -- <filter>`, then `git checkout -- crates/net/src` and touch the file)
+
+1. A flow's slot emptied tells its sign-ins. Fails both `tests::a_flow_that_ends` and `tests::an_h2_flow_that_ends`
+   ("still waits on its ask"):
+   `perl -0pi -e 's/c\.sign_ins\.gone\(self\.tcp\.token\(slot\)\);/let _ = c;/' crates/net/src/lib.rs`
+2. Answers dropped with their askers. Fails `signin::tests::a_flow_gone` ("an answer kept for stream 1") and
+   `signin::tests::each_stream` ("an answer kept for a stream let go of"):
+   `perl -0pi -e 's/self\.answers\.retain\(\|a, _\| !gone\(a\)\);//' crates/net/src/signin.rs`
+3. A capture's asker gone with its flow. Fails `signin::tests::a_flow_gone` ("a flow gone waits on a capture"):
+   `perl -0pi -e 's/if asker\.as_ref\(\)\.is_some_and\(&gone\)/if false/' crates/net/src/signin.rs`
+
+### R01-R16
+
+- R01: no unwrap, indexing or arithmetic in the new production code. Tests alone assert.
+- R02/R05/R13: no new mechanism. The slot's release is the flow's one end, and `forget`'s let-go is generalized, not
+  copied. No cache: `answers` is bounded by asks and now by live flows.
+- R03: no literal.
+- R04: `Asking`'s states are unchanged; a flow's end is one event (`gone`).
+- R06/R07: two small functions; the comments say why (no answer outlives its flow).
+- R08/R14: no performance claim. Step 10's whole-memory leak scan is ROOT's.
+- R09: the red is the live reproduction (the answer's asker kept past its flow's reset).
+- R10: red, green and mutations above.
+- R11/R12: platform-independent code; clippy on three targets.
+- R15: implementer scope. R16: the runner's `~/g121-tmp/s33-ad` is removed after landing.
+
 ## Owed
 
 - Slice 3 (kiln): `RunLessor` answering capture, refresh and revoke from the broker.
