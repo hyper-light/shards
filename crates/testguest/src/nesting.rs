@@ -36,6 +36,7 @@ pub fn nesting(args: &[String]) -> i32 {
         "gpu" => gpu(),
         "exit" => exit_leaving_a_box(arg(1).parse().unwrap_or(1)),
         "hold" => hold(),
+        "listen" => listen(arg(1), args.get(2..).unwrap_or_default()),
         other => {
             let _ = writeln!(io::stderr(), "nesting: no case {other:?}");
             2
@@ -450,6 +451,65 @@ fn exit_leaving_a_box(code: i32) -> i32 {
     ));
     say(&format!("exiting {code}"));
     code
+}
+
+/// `nesting listen DIR NAME...` (D251; Hex's step 39 fixture): the workload as Hex's relay is
+/// under shards-init. It binds an AF_UNIX stream listener for each name in `dir`, says READY=1
+/// once all of them listen (so READY means every socket is there), then serves each connection
+/// on a thread of its own: it reads the connection to its end (its controller's half-close),
+/// writes back the socket's name, a newline and what it read reversed, and ends its own half.
+fn listen(dir: &str, names: &[String]) -> i32 {
+    use std::io::{Read as _, Write as _};
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        say(&format!("mkdir {dir}: {}", errno(&e)));
+        return 1;
+    }
+    let mut listeners = Vec::new();
+    for name in names {
+        match std::os::unix::net::UnixListener::bind(Path::new(dir).join(name)) {
+            Ok(listener) => listeners.push((name.clone(), listener)),
+            Err(e) => {
+                say(&format!("bind {name}: {}", errno(&e)));
+                return 1;
+            }
+        }
+    }
+    let Some(socket) = std::env::var_os("NOTIFY_SOCKET") else {
+        say("notify none");
+        return 1;
+    };
+    let sent = std::os::unix::net::UnixDatagram::unbound().and_then(|s| s.send_to(b"READY=1", &socket));
+    say(&format!(
+        "listening {} in {dir}; sent READY=1: {}",
+        names.join(" "),
+        sent.map_or_else(|e| errno(&e), |n| format!("{n} bytes"))
+    ));
+    for (name, listener) in listeners {
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut conn) = conn else { continue };
+                let name = name.clone();
+                std::thread::spawn(move || {
+                    let mut got = Vec::new();
+                    if let Err(e) = conn.read_to_end(&mut got) {
+                        say(&format!("{name}: read {}", errno(&e)));
+                        return;
+                    }
+                    let mut back = format!("{name}\n").into_bytes();
+                    back.extend(got.iter().rev());
+                    let wrote = conn
+                        .write_all(&back)
+                        .and_then(|()| conn.shutdown(std::net::Shutdown::Write));
+                    say(&format!(
+                        "{name}: read {} wrote {}",
+                        got.len(),
+                        wrote.map_or_else(|e| errno(&e), |()| back.len().to_string())
+                    ));
+                });
+            }
+        });
+    }
+    hold()
 }
 
 fn hold() -> i32 {
