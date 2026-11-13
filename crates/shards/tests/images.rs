@@ -354,6 +354,37 @@ fn a_hosts_daemon_json_reaches_no_test() {
     assert_eq!(built.status, Some(0), "{built}");
 }
 
+/// A test's `shards` reads the tests' own certs.d (`common::as_tests_run`), never the host's
+/// (D23): a host's, standing in here as the rootless engine's (under `XDG_CONFIG_HOME`; the
+/// native one's on Windows, under `PROGRAMDATA`), holds for the tests' own registry a client
+/// key with no certificate, which dockerd refuses and which fails every pull that reads it,
+/// and a build from that registry reads none of it. No VM: a build of a base alone runs no
+/// step.
+#[test]
+fn a_hosts_certs_d_reaches_no_test() {
+    let (image, _) = served();
+    let host = image.split('/').next().unwrap();
+    let home = TempDir::new("host-certs-d");
+    let config = home.join("config");
+    let certs = config.join("docker").join("certs.d");
+    let dir = if cfg!(windows) {
+        certs.join(host.replace(':', ""))
+    } else {
+        certs.join(host)
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("client.key"), "").unwrap();
+    let ctx = TempDir::new("host-certs-d-ctx");
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\n")).unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("XDG_CONFIG_HOME", config.as_os_str()),
+        ("PROGRAMDATA", config.as_os_str()),
+    ];
+    let built = run_shards_env(&["build"], &[ctx.as_os_str()], &env, TIMEOUT);
+    assert_eq!(built.status, Some(0), "{built}");
+}
+
 /// The tests' seed of a remote image (`common::hub_held`) holds a manifest an index it pulled
 /// lists, which a test may pin alone: on an x86_64 host images.rs's x86-64 level test pins
 /// alpine:3.22's amd64 manifest, whose index containers.rs's seed holds, and the seed's build
