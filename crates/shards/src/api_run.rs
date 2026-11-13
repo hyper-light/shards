@@ -1109,6 +1109,7 @@ mod hosted {
     use shards_ipc::kind;
 
     use super::{Answers, No, no};
+    use crate::daemon::ends::Ends;
     use crate::daemon::publish;
 
     fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1460,10 +1461,11 @@ mod hosted {
     impl Shares {
         /// Its end, its VM's gone: what of it this process holds let go of, the last of its
         /// streams where the VM never took them (a run refused before `TAKEN`), then waited
-        /// for as a network process is, [`crate::netproc::GRACE`] at most, and ended. Waited
-        /// for with its door still held here, it never went (CI run 43230466376,
+        /// for as a network process is, while it goes on with its end, and ended once it does
+        /// not (`netproc::reap`, the home's `record` of this host's ends). Waited for with its
+        /// door still held here, it never went (CI run 43230466376,
         /// `a_share_at_a_granted_volume_reaches_the_harness`, this process in `do_wait`).
-        fn end(self) {
+        fn end(self, record: &Ends) {
             let Shares {
                 child,
                 #[cfg(unix)]
@@ -1477,7 +1479,7 @@ mod hosted {
             drop(door);
             #[cfg(windows)]
             drop(ends);
-            crate::netproc::reap(&child);
+            crate::netproc::reap(&child, record);
         }
     }
 
@@ -1625,7 +1627,7 @@ mod hosted {
             Ok(vm) => vm,
             Err(e) => {
                 if let Some((child, _)) = &net {
-                    crate::netproc::reap(child);
+                    crate::netproc::reap(child, &Ends::kept_in(home));
                 }
                 return Err(boot(format!("starting {}: {e}", binary.display())));
             }
@@ -2027,6 +2029,9 @@ mod hosted {
     /// What the serving threads share.
     struct Live<'a> {
         answers: &'a Answers,
+        /// The home's record of this host's ends, by which a share process plugged in is
+        /// followed to its end ([`Shares::end`]).
+        ends: Ends,
         flows: Mutex<Flows>,
         /// Each input member's stdin, by its index.
         feeds: Mutex<HashMap<u32, Feed>>,
@@ -2325,38 +2330,42 @@ mod hosted {
                 .link
                 .try_clone()
                 .map_err(|e| boot(format!("the VM's link: {e}")))?;
-            let live =
-                Live {
-                    answers,
-                    flows: Mutex::new(Flows::default()),
-                    feeds: Mutex::new(plan.inputs.iter().map(|m| (*m, Feed::default())).collect()),
-                    fed: std::sync::Condvar::new(),
-                    capture: capture.map(|(ours, _)| Mutex::new(ours)),
-                    link: Mutex::new(link),
-                    held: Mutex::new(Some(HashMap::new())),
-                    stopping: std::sync::atomic::AtomicBool::new(false),
-                    next_exec: std::sync::atomic::AtomicU64::new(0),
-                    home,
-                    members: &plan.members,
-                    roots: &plan.roots,
-                    devices: Mutex::new(Some(Vec::new())),
-                    guest_times: Mutex::new(Some(Vec::new())),
-                    rates: Mutex::new(Some(Vec::new())),
-                    lanes: Mutex::new(Some(HashMap::new())),
-                    next_lane: std::sync::atomic::AtomicU64::new(0),
-                    plugged: Mutex::new(HashMap::new()),
-                    notices_due: Mutex::new(due),
-                    notices: Mutex::new(Vec::new()),
-                    leasing: launched.net.as_ref().filter(|_| plan.credentials.is_some()).map(
-                        |(_, control)| super::Leasing {
-                            ledger: Mutex::new(super::Ledger::new(plan.granted.clone())),
-                            net: control,
-                            sending: Mutex::new(()),
-                        },
-                    ),
-                    #[cfg(windows)]
-                    job: &launched.job,
-                };
+            // Its credentials' leases (D242), where it has grants and so a network process.
+            let leasing = launched
+                .net
+                .as_ref()
+                .filter(|_| plan.credentials.is_some())
+                .map(|(_, control)| super::Leasing {
+                    ledger: Mutex::new(super::Ledger::new(plan.granted.clone())),
+                    net: control,
+                    sending: Mutex::new(()),
+                });
+            let live = Live {
+                answers,
+                ends: Ends::kept_in(home),
+                flows: Mutex::new(Flows::default()),
+                feeds: Mutex::new(plan.inputs.iter().map(|m| (*m, Feed::default())).collect()),
+                fed: std::sync::Condvar::new(),
+                capture: capture.map(|(ours, _)| Mutex::new(ours)),
+                link: Mutex::new(link),
+                held: Mutex::new(Some(HashMap::new())),
+                stopping: std::sync::atomic::AtomicBool::new(false),
+                next_exec: std::sync::atomic::AtomicU64::new(0),
+                home,
+                members: &plan.members,
+                roots: &plan.roots,
+                devices: Mutex::new(Some(Vec::new())),
+                guest_times: Mutex::new(Some(Vec::new())),
+                rates: Mutex::new(Some(Vec::new())),
+                lanes: Mutex::new(Some(HashMap::new())),
+                next_lane: std::sync::atomic::AtomicU64::new(0),
+                plugged: Mutex::new(HashMap::new()),
+                notices_due: Mutex::new(due),
+                notices: Mutex::new(Vec::new()),
+                leasing,
+                #[cfg(windows)]
+                job: &launched.job,
+            };
             answers
                 .send(wire::to_client::STARTED, &[&started])
                 .map_err(|e| boot(format!("its orchestrator: {e}")))?;
@@ -2364,7 +2373,7 @@ mod hosted {
             // What was plugged in goes with the VM: each share process ends as its streams
             // close (`Shares::end`).
             for (_, p) in std::mem::take(&mut *lock(&live.plugged)) {
-                p.share.end();
+                p.share.end(&live.ends);
             }
             Ok(())
         })();
@@ -2384,12 +2393,13 @@ mod hosted {
         let _ = vm.kill(shards_ipc::signal::SIGKILL);
         let _ = vm.wait();
         drop(link);
+        let record = Ends::kept_in(home);
         if let Some((child, control)) = net {
             drop(control);
-            crate::netproc::reap(&child);
+            crate::netproc::reap(&child, &record);
         }
         if let Some(shares) = shares {
-            shares.end();
+            shares.end(&record);
         }
         #[cfg(windows)]
         drop(job);
@@ -2518,14 +2528,14 @@ mod hosted {
     }
 
     /// Its VM gone and its end said, a run's network process that relays its leases (D242)
-    /// waited for, [`crate::netproc::GRACE`] at most, then ended, as the run's end reaps it:
-    /// so that its control closes, and the relay of its asks with it, whatever that process
-    /// does.
+    /// reaped as the run's end reaps it (`netproc::reap`: followed while it goes on with its
+    /// end, then ended): so that its control closes, and the relay of its asks with it,
+    /// whatever that process does.
     fn net_gone(live: &Live<'_>, launched: &Launched) {
         if live.leasing.is_some()
             && let Some((child, _)) = &launched.net
         {
-            crate::netproc::reap(child);
+            crate::netproc::reap(child, &live.ends);
         }
     }
 
@@ -2854,7 +2864,7 @@ mod hosted {
                                     plugged(live, id, result);
                                     // Its share process ends as its device's stream closes.
                                     if let Some(share) = share {
-                                        share.end();
+                                        share.end(&live.ends);
                                     }
                                 }),
                         )
@@ -3444,7 +3454,7 @@ mod hosted {
         let (devfn, address) = match placed {
             Ok(placed) => placed,
             Err(e) => {
-                share.end();
+                share.end(&live.ends);
                 return Err((R::Device, e));
             }
         };
@@ -3454,7 +3464,7 @@ mod hosted {
             // Taken off again, its guest having found it or not.
             let _ = guest_device(live, &["unmount", &address, &ask.at, "member", &index]);
             let _ = ask_device(live, &[shards_ipc::device::UNPLUG, devfn], &[]);
-            share.end();
+            share.end(&live.ends);
             return Err((R::Device, e));
         }
         // Its guest told what its host changes beneath it from now on (D235).
@@ -3625,7 +3635,7 @@ mod hosted {
                 door,
                 notices: None,
             }
-            .end();
+            .end(&Ends::kept_in(&dir));
             assert!(
                 said.exists(),
                 "the share process was ended at the grace's end, not by its door's"
