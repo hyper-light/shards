@@ -2346,18 +2346,21 @@ fn a_client_frozen_mid_import_past_its_daemons_window_keeps_its_connection() {
     // the daemon's (the credit it grants as `drip` reads on) waited through the freeze, which a
     // freeze of a fixed length met only now and then (main at 8bfa6150e passed a 200 ms one at
     // load 7, kiln r714). Resumed as the guard drops, whatever becomes of this test meanwhile.
-    struct Frozen(u32);
+    // Signalled by kill(2), not a kill(1) of std's spawning, which would hold whatever pipe of
+    // another test's std had made and not yet marked close-on-exec as it ran
+    // (`a_command_holds_no_descriptor_it_was_not_given`). Its pid is its own until it is
+    // reaped, which its wait does only once it has ended.
+    let pid = libc::pid_t::try_from(pid).unwrap();
+    struct Frozen(libc::pid_t);
     impl Drop for Frozen {
         fn drop(&mut self) {
-            let _ = Command::new("kill").args(["-CONT", &self.0.to_string()]).status();
+            // SAFETY: kill(2) of this test's own child, not yet reaped.
+            unsafe { libc::kill(self.0, libc::SIGCONT) };
         }
     }
     let frozen = Frozen(pid);
-    let stopped = Command::new("kill")
-        .args(["-STOP", &pid.to_string()])
-        .status()
-        .unwrap();
-    assert!(stopped.success());
+    // SAFETY: as above.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
     let stopped_at = began.elapsed();
     d.seen.saw(&Seen::Unheard("laptop".into()));
     let told = began.elapsed();
