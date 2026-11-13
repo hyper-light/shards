@@ -21,6 +21,9 @@
 //! - has only its own loopback, brought up;
 //! - runs as uid and gid `200000 + n`, the n-th domain's, with no supplementary groups and
 //!   no capability left, bounding set included, and `no_new_privs` set;
+//! - has its signals as a new process has them, none ignored and none blocked, as an
+//!   exec's do: init's SIGPIPE, which Rust's runtime ignores, would stay ignored past
+//!   execve;
 //! - holds no descriptor of init's but its stdio: stdin `/dev/null`, or where its owner
 //!   asked for its input as the run was made a pipe whose write end init holds
 //!   ([`crate::input`]), stdout and stderr pipes of their own that init relays to its
@@ -3057,9 +3060,9 @@ fn exec_child(d: &Domain, p: &Prepared, flags: u32, program: &libc::sock_fprog) 
             fail(out, c"entering its Landlock ruleset");
         }
         libc::close(ruleset as libc::c_int);
-        let mut signals: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&raw mut signals);
-        if libc::sigprocmask(libc::SIG_SETMASK, &raw const signals, std::ptr::null_mut()) != 0 {
+        // Its signals a new process's, as an exec's are: none ignored, which execve would
+        // keep ignored (init's SIGPIPE), and none blocked.
+        if !crate::defaults::signals() {
             fail(out, c"restoring its signals");
         }
         // Its seccomp filter, last: what it refuses, nothing after may need.

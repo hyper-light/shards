@@ -2,7 +2,8 @@
 """measure.py's output as the PM entry's tables, each run alone or with --pool every run given
 as one (runs of one host): for each build and arm (free, held), over the rounds after the
 caches' (round 0's free arms, where a run has one; round 1's before it had): its time, its scope's anonymous peak and budget
-(Linux), and its builder's give-backs, each answer's time from its word, what it freed of
+(Linux), and its builder's give-backs, each answer's time from its ask (a give-back's goes at its
+word), those that came past their pass's patience among them, what it freed of
 its files, what it asked to unplug and what its guest then held plugged less (its own samples,
 a second on), and each build's sums; the rooms its budget left told it and what its guest
 held the build within, and what it refused; each as n, p50, p90, p99 and max.
@@ -178,7 +179,11 @@ def report(title, into):
             answers = [g for r in rounds for g in gives.get((name, arm, r), []) if "answered_ms" in g]
             unanswered = [g for r in rounds for g in gives.get((name, arm, r), []) if "unanswered_ms" in g]
             if answers or unanswered:
-                print(f"   answers           {len(answers)}, unanswered {len(unanswered)}")
+                # An ask with no answer within its pass's patience (give.patch says each once)
+                # whose answer came after: give.patch's `late=1`, its time from its ask.
+                late = sum(1 for g in answers if g.get("late") == "1")
+                print(f"   answers           {len(answers)}, unanswered {len(unanswered)}"
+                      + (f", {late} of them answered later" if late else ""))
                 print(f"   answered in       {stats([int(g['answered_ms']) for g in answers], ' ms')}")
                 print(f"   freed an answer   {stats([int(g['freed']) for g in answers], ' MiB', MIB)}")
                 print(f"   unplug asked      {stats([int(g['unplugging']) for g in answers], ' MiB', MIB)}")
