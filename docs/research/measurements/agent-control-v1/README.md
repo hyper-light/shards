@@ -33,7 +33,8 @@ speculative abstraction (R05).
 | The controller's side: kiln's and Hex's client of the stdio lanes (attach included), typed faults, cursors to resume at | built, goal #58's plan step 2 | `control::{Controller, Subscriptions, Output, Input, Fault, Got, Hangup}` (`control/drive.rs`), `net::Handler::cause` |
 | The daemon's endpoint per run: `shards.control=true`, a key per run, `control`/`vm` metadata, revoked with the run's scope | built, goal #58's plan step 3 | `daemon::managed::{CONTROL_ANNOTATION, control_asked, bind_agent, Agent}` |
 | Exec lanes, the endpoint's side (design (B)): the ask, its streams, its host's start and replies, its steering, its exit | built, goal #58's plan step 4 slice (a) | `control::exec`, `net::Io::limit` |
-| The exec host in the daemon; the controller's exec handle; signal, inspect, terminal and log lanes | goal #58's plan steps 4 (b, c) to 7 | — |
+| The controller's execs: `Execs::exec`, the exec's stdio as `Output`/`Input`, `ExecControl` (resize, signal, wait) | built, goal #58's plan step 4 slice (b) | `control::{Execs, Exec, ExecControl}` |
+| The exec host in the daemon; signal, inspect, terminal and log lanes | goal #58's plan steps 4 (c) to 7 | — |
 | Log lane; where the endpoint runs and how its key's SHA-256 reaches the controller | held for step 10 | — |
 
 ## Decision (R02, R03, R05, R12)
@@ -167,6 +168,12 @@ frames, exec scopes; an exec over its lanes with a stand-in host; asks refused a
 started; an endpoint with no exec; a connection gone hanging its exec up); `cargo test -p
 shards --bin shards -- daemon::managed::tests` 12 passed; `cargo clippy -p shards-remote -p
 shards --all-targets -- -D warnings` clean.
+
+The controller's execs, the same host, on `c5ba4f454` with the change applied: `cargo test -p
+shards-remote --lib control::` 33 passed (the new: the controller execs into a member, its stdio,
+steering and exit, and one not started); `cargo test -p shards --bin shards --
+daemon::managed::tests` 12 passed; `cargo clippy -p shards-remote -p shards --all-targets -- -D
+warnings` clean.
 
 ## R01–R16
 

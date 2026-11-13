@@ -9,12 +9,7 @@ use std::os::unix::net::UnixListener;
 
 fn identity(path: PathBuf) -> Identity {
     let pid = std::process::id();
-    #[cfg(unix)]
     let started = crate::taken::started(pid).unwrap();
-    #[cfg(windows)]
-    // SAFETY: current-process pseudo-handle stays valid and is never owned/closed here.
-    let started =
-        created_handle(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() }).unwrap();
     Identity {
         pid,
         started,

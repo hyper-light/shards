@@ -5,7 +5,8 @@ for some hosts alone -- a cfg of `unix`, `windows` or `target_os = ...`, or any(
 not() of them, before a fn, mod, struct, enum, impl, const, static, type or use -- that no
 item of its name in its file, nor a twin platform-parity.tsv names for it, is compiled for on
 the hosts it misses, so that what stands alone on one host is found. Test code (`#[cfg(test)]`
-modules, tests/ and benches/) is left out, and so are imports (`use`), which do no work of
+modules, in their file or in a file of their own, tests/ and benches/) is left out, and so are
+imports (`use`), which do no work of
 their own, and the guest's crates, which run in the Linux microVM on every host: shards-init,
 the test guest and the in-VM server.
 
@@ -24,7 +25,9 @@ Hypervisor.framework's stage 2 never does) says so in their place, its reason wi
     FILE<TAB>KIND NAME<TAB>-<TAB>none: HOST[,HOST]<TAB>WHY THEY NEED NONE
 
     platform-parity.py [ROOT]   one line a lone item: file:line, its cfg, its kind and name,
-                                and the hosts it misses; exits 1 while any stands alone
+                                and the hosts it misses; exits 1 while any stands alone, or
+                                while a line of platform-parity.tsv names an item no longer
+                                in its file
 """
 import os, re, sys
 
@@ -110,6 +113,35 @@ def items(path):
         out.append((i + 1, cfg, m.group(1), m.group(2) or line.strip()[:60]))
     return out
 
+TEST_MOD = re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;')
+PATH_ATTR = re.compile(r'^\s*#\[path\s*=\s*"([^"]+)"\]\s*$')
+
+def test_files(path):
+    """The files `path` declares test modules of (`#[cfg(test)]`, or `all(test, ...)`, before
+    `mod NAME;`): `#[path]`'s, beside `path`, or where rustc looks for NAME, in `path`'s
+    directory where it is a mod.rs, lib.rs or main.rs, else in the directory of its name."""
+    lines = open(path, errors="replace").read().split("\n")
+    out = []
+    for i, line in enumerate(lines):
+        m = TEST_MOD.match(line)
+        if not m:
+            continue
+        attrs, j = [], i - 1
+        while j >= 0 and lines[j].strip().startswith(("#[", "//")):
+            attrs.append(lines[j])
+            j -= 1
+        if not any(re.match(r'^\s*#\[cfg\((all\()?test\b', a) for a in attrs):
+            continue
+        here = os.path.dirname(path)
+        given = next((PATH_ATTR.match(a).group(1) for a in attrs if PATH_ATTR.match(a)), None)
+        if given:
+            out.append(os.path.normpath(os.path.join(here, given)))
+            continue
+        stem = os.path.splitext(os.path.basename(path))[0]
+        base = here if stem in ("mod", "lib", "main") else os.path.join(here, stem)
+        out += [os.path.join(base, m.group(1) + ".rs"), os.path.join(base, m.group(1), "mod.rs")]
+    return out
+
 def sides_of(cfg):
     return HOSTS if cfg is None else hosts(cfg)
 
@@ -144,34 +176,48 @@ for n, raw in enumerate(open(os.path.join(here, "platform-parity.tsv"), errors="
     twins.setdefault((parts[0], parts[1]), []).append((parts[2], parts[3]))
 
 root = sys.argv[1] if len(sys.argv) > 1 else "crates"
-lone = 0
+walked = []
 for dirpath, _, files in os.walk(root):
     if "/tests" in dirpath or dirpath.endswith("/benches") or any(g in dirpath + "/" for g in GUEST):
         continue
-    for f in sorted(files):
-        if not f.endswith(".rs"):
-            continue
-        path = os.path.join(dirpath, f)
-        # An item no host compiles outside its tests (`all(test, unix)`) is a test's.
-        its = [i for i in defs(path) if i[1] is not None and i[2] != "use" and hosts(i[1])]
-        for line, cfg, kind, name in its:
-            key = f"{kind} {name}"
-            covered = hosts_of(path, key, False)
-            for twin_path, twin_key in twins.get((path, key), []):
-                if twin_path == "-" and twin_key.startswith("none: "):
-                    covered |= set(twin_key[len("none: "):].split(",")) & HOSTS
-                    continue
-                only = HOSTS
-                if twin_key.endswith("]") and " [" in twin_key:
-                    twin_key, served = twin_key[:-1].rsplit(" [", 1)
-                    only = set(served.split(",")) & HOSTS
-                there = hosts_of(twin_path, twin_key, True) & only
-                if not there:
-                    print(f"platform-parity.tsv: {path}'s {key} names {twin_path}'s {twin_key}, which is not there", file=sys.stderr)
-                covered |= there
-            missing = HOSTS - covered
-            if missing:
-                lone += 1
-                print(f"{path}:{line}\t{cfg}\t{key}\tmissing: {','.join(sorted(missing))}")
+    walked += [os.path.join(dirpath, f) for f in sorted(files) if f.endswith(".rs")]
+# A test module's file is test code, and so is every file it declares a module of.
+tests, todo = set(), [t for p in walked for t in test_files(p)]
+while todo:
+    t = os.path.normpath(todo.pop())
+    if t not in tests and os.path.exists(t):
+        tests.add(t)
+        todo += [os.path.join(os.path.splitext(t)[0], n) for n in os.listdir(os.path.splitext(t)[0])
+                 if n.endswith(".rs")] if os.path.isdir(os.path.splitext(t)[0]) else []
+stale = 0
+for path, key in twins:
+    if path.startswith(root) and os.path.exists(path) and not any(f"{k} {n}" == key for _, _, k, n in defs(path)):
+        stale += 1
+        print(f"platform-parity.tsv: {path}'s {key} is no longer there", file=sys.stderr)
+lone = 0
+for path in walked:
+    if os.path.normpath(path) in tests:
+        continue
+    # An item no host compiles outside its tests (`all(test, unix)`) is a test's.
+    its = [i for i in defs(path) if i[1] is not None and i[2] != "use" and hosts(i[1])]
+    for line, cfg, kind, name in its:
+        key = f"{kind} {name}"
+        covered = hosts_of(path, key, False)
+        for twin_path, twin_key in twins.get((path, key), []):
+            if twin_path == "-" and twin_key.startswith("none: "):
+                covered |= set(twin_key[len("none: "):].split(",")) & HOSTS
+                continue
+            only = HOSTS
+            if twin_key.endswith("]") and " [" in twin_key:
+                twin_key, served = twin_key[:-1].rsplit(" [", 1)
+                only = set(served.split(",")) & HOSTS
+            there = hosts_of(twin_path, twin_key, True) & only
+            if not there:
+                print(f"platform-parity.tsv: {path}'s {key} names {twin_path}'s {twin_key}, which is not there", file=sys.stderr)
+            covered |= there
+        missing = HOSTS - covered
+        if missing:
+            lone += 1
+            print(f"{path}:{line}\t{cfg}\t{key}\tmissing: {','.join(sorted(missing))}")
 print(f"# {lone} items compiled for some hosts alone, with no twin of their name in their file nor in platform-parity.tsv", file=sys.stderr)
-sys.exit(1 if lone else 0)
+sys.exit(1 if lone or stale else 0)
