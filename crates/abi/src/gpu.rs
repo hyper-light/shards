@@ -12,8 +12,13 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::str::FromStr;
 
-/// The most GPUs a selection names: a u16's every index, the bound the render server's
-/// selection transport holds a context's identities to (D232).
+/// The most GPUs a selection names: the renderer's own bound, to which its patches hold a
+/// context's selection and, for a selected context, the host's Vulkan devices
+/// (`VIRGL_DEVICE_UUID_MAX_COUNT`, `VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT`, `1 + UINT16_MAX`,
+/// resources/gpu/physical-*.patch), so that nothing here takes a selection the renderer
+/// refuses. Below it, before a host's GPUs are enumerated, a count is bounded by what carries
+/// it (a receipt's lines, a snapshot's bytes) and after, by the host's GPUs, each named once.
+/// The renderer's figure is still owed its derivation from its transport's own bound (D232).
 pub const MAX_PHYSICAL_GPUS: usize = 1 << u16::BITS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

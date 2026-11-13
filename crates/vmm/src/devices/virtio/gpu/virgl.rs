@@ -871,6 +871,10 @@ pub struct Venus {
 
 // SAFETY: the renderer's state is process-global and every call is made on the device's
 // worker, one at a time; the iovecs' pointers are guest RAM's, which outlives the renderer.
+// The held driver's instance and loader are used by nothing once made but its own drop, on
+// whichever thread drops it: vkDestroyInstance asks only that no other use of the instance
+// runs at once (Vulkan's threading rules: host access to `instance` is externally
+// synchronized), and dlclose(3) and FreeLibrary are safe on any thread.
 unsafe impl Send for Venus {}
 
 impl std::fmt::Debug for Venus {

@@ -540,8 +540,25 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         stdio: [shards_ipc::fd::BorrowedFd<'_>; 3],
     ) -> std::io::Result<shards_ipc::Stream> {
         let (ours, theirs) = shards_ipc::Stream::pair()?;
+        let flags = if input { shards_ipc::EXEC_INTERACTIVE } else { 0 };
+        self.hand_exec(id, spec, argv, flags, stdio, &theirs)?;
+        Ok(ours)
+    }
+
+    /// Hands microVM `id`'s VM an exec of `spec` (`EXEC_RUN`, its `flags`) with `stdio` and
+    /// `theirs`, its client's end of the connection its end is told on, logging its events if
+    /// it is a command (`argv`).
+    pub(super) fn hand_exec(
+        &self,
+        id: &str,
+        spec: &shards_abi::run::Spec,
+        argv: Option<&[String]>,
+        flags: u8,
+        stdio: [shards_ipc::fd::BorrowedFd<'_>; 3],
+        theirs: &shards_ipc::Stream,
+    ) -> std::io::Result<()> {
         let held = theirs.try_clone()?;
-        let handed = shards_ipc::handed(&theirs)?;
+        let handed = shards_ipc::handed(theirs)?;
         // Taken out of `runs` before the inbox is locked (commands.rs, exec).
         let (socket, inbox) = match lock(&self.runs).get(id) {
             Some(RunState::Tracked(run)) => (run.socket.clone(), run.inbox.clone()),
@@ -550,7 +567,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         let number = self.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut payload = Vec::with_capacity(9 + spec.encoded_len().unwrap_or(0));
         payload.extend_from_slice(&number.to_be_bytes());
-        payload.push(if input { shards_ipc::EXEC_INTERACTIVE } else { 0 });
+        payload.push(flags);
         spec.encode_into(&mut payload);
         let exec_id = argv.and_then(|argv| self.exec_events(id, argv));
         {
@@ -568,7 +585,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             held.exec_ids.retain(|(n, _)| *n != number);
             return Err(e);
         }
-        Ok(ours)
+        Ok(())
     }
 }
 

@@ -34,7 +34,8 @@ speculative abstraction (R05).
 | The daemon's endpoint per run: `shards.control=true`, a key per run, `control`/`vm` metadata, revoked with the run's scope | built, goal #58's plan step 3 | `daemon::managed::{CONTROL_ANNOTATION, control_asked, bind_agent, Agent}` |
 | Exec lanes, the endpoint's side (design (B)): the ask, its streams, its host's start and replies, its steering, its exit | built, goal #58's plan step 4 slice (a) | `control::exec`, `net::Io::limit` |
 | The controller's execs: `Execs::exec`, the exec's stdio as `Output`/`Input`, `ExecControl` (resize, signal, wait) | built, goal #58's plan step 4 slice (b) | `control::{Execs, Exec, ExecControl}` |
-| The exec host in the daemon; signal, inspect, terminal and log lanes | goal #58's plan steps 4 (c) to 7 | — |
+| The daemon's exec host: an exec charged to the run's budget, run in its member through its VM process, its start typed (`EXEC_TOLD`), its stdio pumped, its steering passed on, hung up as its controller goes | built, goal #58's plan step 4 slice (c) | `daemon::managed::execs`, `Daemon::{launch_exec, hand_exec}`, `shards_ipc::{EXEC_TOLD, kind::EXEC_UNSTARTED}`, `workload::exec_session`, `control::exec::lane_bytes` |
+| Signal, inspect, terminal and log lanes | goal #58's plan steps 5 to 7 | — |
 | Log lane; where the endpoint runs and how its key's SHA-256 reaches the controller | held for step 10 | — |
 
 ## Decision (R02, R03, R05, R12)
@@ -175,6 +176,48 @@ steering and exit, and one not started); `cargo test -p shards --bin shards --
 daemon::managed::tests` 12 passed; `cargo clippy -p shards-remote -p shards --all-targets -- -D
 warnings` clean.
 
+The daemon's exec host, the same host (adas-mac-studio.local, macOS 26.2 arm64, rustc 1.98.1),
+on `fe353a203` with the change applied, `SHARDS_HELPERS=skip` and placeholder guest binaries:
+`cargo test -p shards-remote --lib control::` 33 passed; `cargo test -p shards --bin shards --
+daemon::managed` 31 passed, 6 ignored (ROOT's native fixtures), the four new among them (the exec
+host through the run's endpoint and a stand-in VM process; a member's exec takes its command and
+stdio alone; a guest's refusal typed by its class; a pipe's buffer measured or bounded); `cargo
+test -p shards-vm-process --bin shards-vm -- workload::tests::a_told_exec` 1 passed; `cargo clippy
+-p shards-ipc -p shards-remote -p shards -p shards-vm-process --all-targets -- -D warnings` clean;
+rustfmt clean. Again on the tree that lands, origin/main `f8d5a4913` with the change merged (its
+kind `EXEC_UNSTARTED` 96, as D247 took 94 and 95), the same host: `control::` 33 passed; `cargo
+test -p shards --bin shards -- daemon::managed daemon::health` 38 passed, 6 ignored (health.rs's
+`send_exec`, split for the host, among them); `a_told_exec` 1 passed; the same clippy clean.
+
+Each end's word on its TLS (the control lane's report, D238; ROOT, 2026-11-13), on origin/main
+`24d64a414` with the change merged, and again on `ae583f055`, the tree that lands (the same counts), adas-mac-studio-3.local (macOS 26.2 arm64, rustc 1.98.1),
+`SHARDS_HELPERS=skip`: `cargo test -p shards-remote --lib control::` 35 passed, the two new among
+them (the control lane answered with the endpoint's own TLS13_AES_256_GCM_SHA384 and its group,
+an ask of more than its tag refused alone and the next answered; the controller's `Link` the same
+at both ends, its member's lanes going on) and `the_controllers_windows_are_its_lanes_own_summed`
+counting the lane's report and ask; `tls::` 6 passed (a negotiation the provider's for that suite
+alone, AES-128-GCM, ChaCha20-Poly1305 and codes rustls names none of not); `frame::` 2 passed;
+`cargo test -p shards --bin shards -- daemon::managed` 37 passed, 6 ignored (ROOT's native
+fixtures); `cargo clippy -p shards-remote -p shards --all-targets -- -D warnings` clean; rustfmt
+clean on the files changed.
+
+D254's `Mcp` asks (the endpoint's and the controller's) and D180's values derived, together, on origin/main
+`039f5019c` with the change applied, adas-mac-studio-3.local (macOS 26.2 arm64, rustc 1.98.1),
+`SHARDS_HELPERS=skip`: `cargo test -p shards-remote --lib` `control::` 36 passed (an MCP
+connection through a stand-in host, its bytes exact both ways, its end told, a member with no
+bridge refused), `tls::` 7 (a handshake waited for until R1 at its first probe timeout, 15 s for
+a peer never measured), `frame::` 2, `net::` 1 (a handshake held to its bound alone),
+`managed::` 30; `cargo test -p shards-remote --test loopback` 17 passed (a stranger let go at its
+connection's bound, no daemon answering told at the handshake's, an enrolled client's command
+running past a stranger's bound, 8 MiB crossing whole); `cargo test -p shards --bin shards --
+daemon::managed context::` 50 passed, 6 ignored (the daemon's host refusing an MCP ask before
+its VM process hears of it); `cargo test -p shards --test context_client` 6 passed, 1 ignored
+(a command whose output nobody reads hung up there, through the client's relays without a
+high-water mark); `cargo clippy -p shards-remote -p shards --all-targets -- -D warnings` clean;
+rustfmt clean. Red before: the same `control::` run on the ask code as it was hung in the new MCP
+test, its binary waiting 13 minutes at 0.45 s of CPU (an ask the endpoint's first read took
+whole, never read on: D254, "Built"), until its processes were ended.
+
 ## R01–R16
 
 | Rule | Evidence / gap |
@@ -201,3 +244,26 @@ warnings` clean.
 - The plan of the rest is kiln plan `01a1d2c733ea7731bb3204cad78bc94d`: the controller's side of the stdio lanes (attach is step 5's subscriptions, so these lanes are attach's), the endpoint where step 10 puts it, exec lanes on step 6's member exec, member signal and inspect, a member's own terminal, the log lane.
 - ROOT's: every real-VM run, R14's costs (handshake CPU, per-VM memory, allocations), the
   adversarial campaign (floods, slow readers, hostile frames).
+- The control lane's report: each end's refusal of a connection whose suite its provider does not
+  offer is held by no test, as no peer of this crate's provider negotiates another suite; its
+  guard mutations (the endpoint's and the controller's `is_provided` checks) are ROOT's, as the
+  report's own are (the endpoint answering a refusal instead, the controller reading no report).
+  kiln's session record of both ends (goal 60's relay) is read in step 34's E2E, ROOT's.
+- D254's owed: the member's listener and bridge (D251's agent); the run hosts' pairing of each
+  connection with its ask (this goal's, after the listener lands); kiln's server over the two
+  streams (kiln's step 18); every real-VM run of a harness calling kiln's server through the
+  bridge, ROOT's. Guard mutations, ROOT's: the endpoint's `Tag::Mcp` arm, `Kind::Mcp`'s stdin and
+  missing stderr, and the whole ask's read of no room (`read_exec`).
+- D180's values: quinn-proto's stream and connection windows, its send window and the 100
+  streams a daemon's client may open are left as hyper-quic sets them (D180, "Its values
+  derived"); the per-peer RTT kept in the home (`Rtt::Measured`) is the next slice, every caller
+  passing `Rtt::Unmeasured` until it lands. Guard mutations, ROOT's: the R1 count, the RTO
+  floor, the reader's credit at an empty queue, the one-slot queue (none deadlocks).
+- The exec host's real-VM run, ROOT's: no E2E drives a run's agent-control endpoint yet. Its place
+  is `crates/shards/tests/managed_output.rs` (Linux; a submodule beside `member_stdin.rs`): a run
+  started with `--annotation shards.control=true`, its controller dialed at the metadata's
+  `control` and `vm` lines with the home's key, an exec in the harness member (stdin echoed, an
+  exit status, a terminal resized and `stty size` read back, a signal), and one refused by a
+  member that has ended. Its macOS, Windows and aarch64 runs with it; the slice's guard
+  mutations (`member_spec`'s refusal, `EXEC_TOLD`'s `STARTED`, the pump's buffer before its
+  record), R15 excluding them from an implementer.

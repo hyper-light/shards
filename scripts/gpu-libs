@@ -12,7 +12,7 @@
 #   GPU's VM process runs as a thread of its own, each context a thread of it) and
 #   libepoxy.a. Vulkan is the host's, its loader (libvulkan.so.1) opened as the renderer
 #   starts.
-# - Windows on x86_64 (D202): virglrenderer.lib (the krunkit fork's Venus, which renders in
+# - Windows on x86_64 and arm64 (D202): virglrenderer.lib (the krunkit fork's Venus, which renders in
 #   this process as on macOS, with shards' patch for Windows, resources/gpu) and
 #   epoxy.lib. Vulkan is the host's, its loader (vulkan-1.dll) opened as the renderer
 #   starts.
@@ -29,12 +29,18 @@ repo=$(cd "$(dirname "$0")/.." && pwd)
 out=${1:-$repo/target/gpu-libs}
 host=$(uname -s)-$(uname -m)
 case $host in
-MINGW64_NT-*-x86_64 | MSYS_NT-*-x86_64) host=Windows-x86_64 ;;
+MINGW*_NT-* | MSYS_NT-* | CYGWIN_NT-*)
+    case ${SHARDS_GPU_TARGET:-${VSCMD_ARG_TGT_ARCH:-${PROCESSOR_ARCHITEW6432:-${PROCESSOR_ARCHITECTURE:-x86_64}}}} in
+    aarch64-pc-windows-msvc | aarch64 | arm64 | ARM64) host=Windows-aarch64 ;;
+    x86_64-pc-windows-msvc | x86_64 | x64 | AMD64) host=Windows-x86_64 ;;
+    *) echo "SHARDS_GPU_TARGET must name Windows amd64 or arm64" >&2; exit 2 ;;
+    esac
+    ;;
 esac
 case $host in
-Darwin-arm64 | Linux-x86_64 | Linux-aarch64 | Windows-x86_64) ;;
+Darwin-arm64 | Linux-x86_64 | Linux-aarch64 | Windows-x86_64 | Windows-aarch64) ;;
 *)
-    echo "the GPU's renderer is built on Apple silicon, on Linux and on x86_64 Windows (D144, D201, D202), not $host" >&2
+    echo "the GPU's renderer is built on Apple silicon, on Linux and on amd64/arm64 Windows (D144, D201, D202), not $host" >&2
     exit 2
     ;;
 esac
@@ -59,7 +65,7 @@ fi
 # A path as the build's tools take it: Windows' own form on Windows, where they are no
 # programs of Git Bash's.
 native() {
-    if [ "$host" = Windows-x86_64 ]; then
+    if [[ $host == Windows-* ]]; then
         cygpath -m "$1"
     else
         printf '%s\n' "$1"
@@ -92,7 +98,7 @@ fetch "$epoxy_url" epoxy.tar.gz "$epoxy_sha256"
 mkdir "$work/src"
 tar -xzf "$work/virgl.tar.gz" -C "$work/src"
 tar -xzf "$work/epoxy.tar.gz" -C "$work/src"
-if [ "$host" = Windows-x86_64 ]; then
+if [[ $host == Windows-* ]]; then
     patch -p1 -s -d "$work/src/$virgl_name" <"$repo/resources/gpu/venus-windows.patch"
 fi
 # Each Venus context bound to the GPUs its VM was given (D232): the renderer's physical-device
@@ -109,10 +115,10 @@ fetch "$vkh_url" vkh.tar.gz "$vkh_sha256"
 tar -xzf "$work/vkh.tar.gz" -C "$work/src"
 
 # meson and ninja, as PyPI published them: ninja's wheels for macOS, for Linux on x86_64
-# and arm64, with glibc (manylinux) and with musl (musllinux), and for x86_64 Windows.
+# and arm64, with glibc (manylinux) and with musl (musllinux), and for Windows on x86_64 and arm64.
 cat >"$work/tools.txt" <<'EOF'
 meson==1.11.2 --hash=sha256:7e4f6e83fec83e3eaac928e058b073c7557b282c35b6a2024cea143a39926a39
-ninja==1.13.2 --hash=sha256:fd82e26c0706ad4ab88e5fdd26f3fab0a987a90f810160f6c322e752c6af298b --hash=sha256:65a24341b5ac09fcadcc37082660be40a94174e51a937fabf6e2cae26225fa2c --hash=sha256:d775a5e43e9088f507a6250d57fcf5678eb31268c545feb5064ffeee33735622 --hash=sha256:1293f4078278b70d0ee4b6cc8f3a9e030656c9b2f59909970343c4fe76070118 --hash=sha256:915bd482c4be41c75120fd67a22e0bb3f0fbb3bbc5f95b89787deadd59e27ef2 --hash=sha256:0e083700470c02ca154a855ae6d692d03564f5064cae52e113896f9ccc078418
+ninja==1.13.2 --hash=sha256:fd82e26c0706ad4ab88e5fdd26f3fab0a987a90f810160f6c322e752c6af298b --hash=sha256:65a24341b5ac09fcadcc37082660be40a94174e51a937fabf6e2cae26225fa2c --hash=sha256:d775a5e43e9088f507a6250d57fcf5678eb31268c545feb5064ffeee33735622 --hash=sha256:1293f4078278b70d0ee4b6cc8f3a9e030656c9b2f59909970343c4fe76070118 --hash=sha256:915bd482c4be41c75120fd67a22e0bb3f0fbb3bbc5f95b89787deadd59e27ef2 --hash=sha256:0e083700470c02ca154a855ae6d692d03564f5064cae52e113896f9ccc078418 --hash=sha256:1db9852e528efa7702f5123969f86678663e46d57ff28ab13f5fd84d64a85fb1
 EOF
 # virglrenderer 1.3.0 makes its format tables from YAML: PyYAML's wheels for CPython 3.11
 # to 3.14 on Linux, x86_64 and arm64, with glibc and with musl.
@@ -122,11 +128,11 @@ Linux-*)
 PyYAML==6.0.3 --hash=sha256:b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d --hash=sha256:10892704fc220243f5305762e276552a0395f7beb4dbf9b14ec8fd43b57f126c --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc --hash=sha256:9149cad251584d5fb4981be1ecde53a1ca46c891a79788c0df828d2f166bda28 --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6 --hash=sha256:ee2922902c45ae8ccada2c5b501ab86c36525b883eff4255313a253a3160861c --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5 --hash=sha256:501a031947e3a9025ed4405a168e6ef5ae3126c59f90ce0cd6f2bfc477be31b7 --hash=sha256:5e0b74767e5f8c593e8c9b5912019159ed0533c70051e9cce3e8b6aa699fcd69 --hash=sha256:418cf3f2111bc80e0933b2cd8cd04f286338bb88bdc7bc8e6dd775ebde60b5e0 --hash=sha256:37503bfbfc9d2c40b344d06b2199cf0e96e97957ab1c1b546fd4f87e53e5d3e4 --hash=sha256:1d37d57ad971609cf3c53ba6a7e365e40660e3be0e5175fa9f2365a379d6095a --hash=sha256:41715c910c881bc081f1e8872880d3c650acf13dfa8214bad49ed4cede7c34ea --hash=sha256:8dc52c23056b9ddd46818a57b78404882310fb473d63f17b07d5c40421e47f8e --hash=sha256:eda16858a3cab07b80edaf74336ece1f986ba330fdb8ee0d6c0d68fe82bc96be --hash=sha256:f7057c9a337546edc7973c0d3ba84ddcdf0daa14533c2065749c9075001090e6 --hash=sha256:5190d403f121660ce8d1d2c1bb2ef1bd05b5f68533fc5c2ea899bd15f4399b35 --hash=sha256:7c6610def4f163542a622a73fb39f534f8c101d690126992300bf3207eab9764
 EOF
     ;;
-# pkg-config, which a Windows host has none of: pkgconf's wheel for x86_64 Windows, and
+# pkg-config, which a Windows host has none of: pkgconf's wheels for Windows on x86_64 and arm64, and
 # colorama's, which it requires there.
 Windows-*)
     cat >>"$work/tools.txt" <<'EOF'
-pkgconf==3.0.7.post0 --hash=sha256:e7906bb5ec1d0d074e397466075a8545f1c50cb11710768644f222ba8acebc7f
+pkgconf==3.0.7.post0 --hash=sha256:e7906bb5ec1d0d074e397466075a8545f1c50cb11710768644f222ba8acebc7f --hash=sha256:3716a2a2b2dca3466589b371e5bfa88bb5a4e84e4e7a3771ce14b112a0965f05
 colorama==0.4.6 --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
 EOF
     ;;
@@ -135,7 +141,7 @@ esac
 # python3 may be its Store's placeholder), whose environment's programs are in Scripts.
 python=python3
 bin=bin
-if [ "$host" = Windows-x86_64 ]; then
+if [[ $host == Windows-* ]]; then
     python=
     for p in python3 python; do
         if "$p" -c 'import sys; sys.exit(sys.version_info < (3, 10))' >/dev/null 2>&1; then
@@ -165,12 +171,33 @@ export PKG_CONFIG_LIBDIR=$prefix/lib/pkgconfig
 # (EPOXY_PUBLIC), not a DLL's.
 win=()
 epoxy_args=()
-if [ "$host" = Windows-x86_64 ]; then
+if [[ $host == Windows-* ]]; then
     if ! command -v clang-cl >/dev/null && [ -x "/c/Program Files/LLVM/bin/clang-cl.exe" ]; then
         export PATH="/c/Program Files/LLVM/bin:$PATH"
     fi
     export CC=clang-cl AR=llvm-lib
     win=(--vsenv)
+    # Cross/native builds select the same explicit COFF machine; running tools
+    # under x64 emulation on an ARM host must not silently build an x64 renderer.
+    case $host in
+    Windows-aarch64) windows_arch=aarch64; windows_triple=aarch64-pc-windows-msvc ;;
+    *) windows_arch=x86_64; windows_triple=x86_64-pc-windows-msvc ;;
+    esac
+    cat >"$work/windows.ini" <<EOF
+[binaries]
+c = ['clang-cl', '--target=$windows_triple']
+cpp = ['clang-cl', '--target=$windows_triple']
+ar = 'llvm-lib'
+pkg-config = 'pkg-config'
+[host_machine]
+system = 'windows'
+cpu_family = '$windows_arch'
+cpu = '$windows_arch'
+endian = 'little'
+[properties]
+needs_exe_wrapper = true
+EOF
+    win+=(--cross-file "$(native "$work/windows.ini")")
     epoxy_args=(-Dc_args=-DEPOXY_PUBLIC=extern)
 fi
 mvk=
@@ -205,7 +232,7 @@ setup epoxy "$(native "$work/epoxy")" "$(native "$work/src/libepoxy-1.5.10")" ${
 ninja --quiet -C "$(native "$work/epoxy")" install
 
 mkdir -p "$out/include"
-if [ "$host" = Windows-x86_64 ]; then
+if [[ $host == Windows-* ]]; then
     # clang-cl's warnings of MSVC's headers and of the fork's C, which it takes for errors
     # where the fork asks (-Werror=pedantic); the CRT's own names (_CRT_SECURE_NO_WARNINGS
     # keeps its standard C functions from its deprecations of them).
@@ -265,13 +292,13 @@ EOF
 # for it: this project names no buildtype, and meson's default (debug) would compile the bridge
 # for the debug runtime (/MDd), where every object of a link must use the same one (MSVC's /MD).
 selection_args=()
-if [ "$host" = Windows-x86_64 ]; then
+if [[ $host == Windows-* ]]; then
     selection_args=(-Db_vscrt=md)
 fi
 setup selection "$(native "$work/selection")" "$(native "$work/selection-src")" ${win[@]+"${win[@]}"} \
     ${selection_args[@]+"${selection_args[@]}"}
 ninja --quiet -C "$(native "$work/selection")"
-if [ "$host" = Windows-x86_64 ]; then
+if [[ $host == Windows-* ]]; then
     # meson names a static library lib*.a on Windows too: kept as Windows names one, which
     # rustc links by that name, as the renderer's and libepoxy's above.
     cp "$work/selection/libshards_gpu_selection.a" "$out/shards_gpu_selection.lib"

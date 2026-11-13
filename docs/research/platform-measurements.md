@@ -22550,3 +22550,215 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R10 | Red, then green, in unit tests for (4), and for the patch. Logs are in `measurements/g51-linux-flakes/logs`. |
   | R11 | Unit tests on macOS arm64 and Linux arm64; red on Linux x86_64. Clippy for shards-api (`--all-targets`), Linux arm64. The other targets are CI's on main. |
   | R15, R16 | Implementer, no agents started. `~/g121-tmp/g51-s7` was removed on adacachy and on adalundhe-macbook-pro. |
+
+### M542. macOS refused a daemon's request wait past what one select(2) takes, and its descriptors never ran out (D222, D185)
+
+- **Question.** Why does `tests/daemon.rs`'s `a_daemon_out_of_descriptors_waits_for_room`
+  fail on every macOS CI run since 11-10 ("the daemon never ran out of descriptors, 2693
+  clients in"), while it passes on Linux?
+- **Method.** The test's daemon log as CI printed it (job 131480418809, main d35c4cf79),
+  each line counted; the test's result on each macOS CI job back to the last green run;
+  then the code that logs the line, and XNU's select(2).
+- **Found.**
+  - The test passed at main e64ff8407 (11-09 23:03Z) and failed from df0563e90 (11-10)
+    on, on one runner image. Between them, fb1f28d42 replaced the request's fixed 10 s wait
+    with a learned cutoff that doubles with each cut in a row (D222's `Cutoff::wait`,
+    `backed_off`, up to 2^31 times).
+  - The daemon log: 34 silent clients cut ("its request not whole in 1.0 to 1.98 s"), then
+    2659 slots ending at once: "request slot N: Invalid argument (os error 22)". Each
+    slot's descriptors went at once, so the daemon never ran out.
+  - On macOS a request's rest is waited for in select(2), whose timeout XNU checks before
+    any descriptor: `tv_sec > 100000000` is EINVAL (bsd/kern/kern_time.c, `itimerfix`;
+    bsd/kern/sys_generic.c, `select_nocancel`). After 27 cuts in a row, 1 s doubled is
+    past that, and every new slot's wait failed. Linux's poll(2) clamps the
+    millisecond wait it is given, and takes any.
+- **Fix.** `shards_ipc::await_any_within` waits at most XNU's bound in one select on macOS,
+  and a longer wait goes on to its own deadline in the next. A bound XNU's source states
+  (R03).
+- **The unit test's EINVAL** (`daemon::tests::a_client_no_descriptor_is_left_for_is_refused_with_the_spare`,
+  `daemon.rs:11707` in the plan's CI runs) had another cause, fixed on main by c2c4547c1
+  (11-12) before this: macOS refuses setsockopt(2) on a socket whose connection has ended,
+  and the test now bounds its client's read before the refusal.
+- **A build without its helpers starts no daemon.** Built with `SHARDS_HELPERS=skip` (as
+  `scripts/lint` builds), `shards ps` exits 125 and the daemon's log says "this shards was
+  built without its VM and network processes": the integration test failed at
+  `start_daemon` for that reason alone (kiln runs r124, r161). It needs a build that
+  carries them.
+- **Checked** (one host, adalundhe-macbook-pro, macOS arm64, on the tree merged with main
+  8479be870, helpers carried): `cargo test -p shards-ipc --lib --
+  a_wait_past_selects_most_is_waited_not_refused` (a ready pipe under a 2^34 s wait: EINVAL
+  in the unix.rs before the fix, ready after); `cargo test -p shards --bin shards --
+  daemon::tests::a_client_no_descriptor_is_left_for_is_refused_with_the_spare`; `cargo test
+  -p shards --test daemon -- a_daemon_out_of_descriptors_waits_for_room` alone (8.4 s);
+  `cargo clippy -p shards-ipc -p shards --all-targets -- -D warnings`. All green. The
+  integration test's red is CI's.
+- **Owed.** CI's: its macOS leg on main, where both tests run, and its Linux legs, where the
+  unit test runs; the change compiles on macOS alone (`cfg(target_os = "macos")`), so
+  Linux's poll(2) path is the one it had.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap or panic added; the bound is a constant of XNU's. |
+  | R02, R03 | XNU's own source for the bound; no number of ours. |
+  | R04, R05 | The wait's states are unchanged: ready, timed out at its own deadline, or interrupted. |
+  | R09, R10 | Red: CI's log above and the unit test before the fix. Green: the three tests after. |
+  | R11 | The bound is macOS's alone; Linux's and Windows' waits are unchanged. |
+  | R15, R16 | Implementer, no agents started. `~/g51-s2-target` and `~/g51-carrier/src-s5` on adalundhe-macbook-pro are removed after. |
+
+### M543. A run's agents heard by no one: their output waited for an owner no `shards run` had (D240, D59)
+
+- **Question.** Why do `tests/build.rs`'s agent tests (23 to 24 of them), `isolation.rs`'s
+  `a_local_mcp_server_reaches_only_what_its_caller_reaches` and, likely,
+  `managed_lifecycle.rs`'s supplied-agent test fail on every CI run since 2026-11-10, on
+  GitHub's x86_64 Linux (gnu, musl) and both x86_64 Windows runners alike? An agent's own
+  lines (`confined uid=200000 ...`) never reach the client, though init's lines about the
+  agents do.
+- **Method.**
+  - The x86_64 Linux job's `tests/build.rs` result on each main CI run, read back from
+    11-08 (`/tmp/g51/ci`, `gh api` job logs).
+  - Then the source diff of the range.
+- **Found.**
+  - CI's build.rs passed whole at main 42e3f7582 (run 42822558219: 133 passed). It failed 24
+    at main 24f48ee5e (run 42827483243). Both ran on runner image 20261101.360.1, 75 min
+    apart, and every main run since fails the same way. ROOT's host reading (CachyOS) is
+    withdrawn.
+  - In the range, 9151296a8 ("Capture managed channels through an admitted private
+    transport", managed-runtime P3, G01) removed init's relay (`frames.rs`) that wrote each
+    agent line to the run's stderr as `[label] line`. A member's stdout and stderr became
+    managed records, read by its owner's subscription to the run's QUIC endpoints. G01
+    moved "display formatting ... to viewers", but no viewer was built: no `shards run`
+    subscribes.
+  - The daemon grants a channel's credit only while an owner's subscription is ready
+    (`daemon/managed.rs`, `Credits::next`). So a plain run's agents were heard by no one.
+    By inference from that code, not run: an agent that writes more than a pipe holds
+    waits forever.
+- **Decision** (ROOT, 2026-11-13, option A).
+  - The daemon reads every member's output that the run names no owner for. A run names
+    owners in `shards.output`, each `KIND:NAME` as `shards.stdin` names an input.
+  - It keeps that output whole in the member's log: `members/<index>` in the run's
+    directory, in the run log's own format and segments, under the run's own retention.
+    None is kept where the run keeps no log.
+  - It credits the channel again as soon as the record is kept. Nothing waits on a reader:
+    a detached run's members, those of one whose client has gone, and those under a
+    terminal that has stopped.
+  - A client attached to the run is shown each kept line on its own stderr, after
+    `[label] `, as D59 always showed an agent's. A thread follows the member's log for it
+    (`daemon/logs.rs`'s reader), and nothing waits on that thread.
+  - The run's stdout, stderr and log stay its command's (G01). Owners keep their endpoints
+    for the members they name. The tests that subscribe as owners (`managed_output.rs`,
+    `harness_bringup.rs`, `build.rs`'s code mode) now name theirs.
+  - No product subscribes to a daemon run's owner output today: Hex's and kiln's mains
+    hold no client of it.
+  - The run log's writer moved to `log_writer.rs`, which both binaries compile: the VM
+    process writes the run's log with it, and the daemon a member's (R12).
+- **Merged with agent control** (D238, step 11, which landed meanwhile): a run's owner
+  reads the members `shards.output` names through its own endpoints or through its run's
+  agent-control lanes alike, as the lanes serve the members `shards.stdin` names an input;
+  the daemon drains the rest. Before, the lanes served every active member.
+- **A hang in the first run of its own test.** On adalundhe-macbook-pro
+  `a_drained_channel_is_credited_again_as_soon_as_its_record_is_kept` ran 21 minutes at 0%
+  CPU until stopped. `sample` showed the credit worker in `Credits::next`, the bridge in
+  `read_exact`, and the test's scope parked. Run alone with `--nocapture`, it said
+  `managed.rs:2485: Err(Payload)`: the test sized a data record's header by encoding an
+  empty `Data` record, which the ABI refuses (`Record::encoded_len`). The panic then left
+  the scope waiting on threads whose VM side the test still held. The room is now the
+  credit less `run::managed::HEADER`, and a failing play drops its VM side and closes the
+  credit queue as it unwinds, so a failure is told rather than hung.
+- **Checked** (one host, adas-mac-studio.local, macOS arm64, on the merged tree):
+  `cargo test -p shards --bin shards -- daemon::managed workload::tests::a_log
+  workload::tests::a_logger workload::tests::a_non_blocking_log` (33 passed, 6 ignored as
+  ROOT's native fixtures), including the credit path through the real credit worker and
+  bridge with the test as the VM and no subscriber, and the drain's keeping, viewing and
+  restart tests; `cargo test -p shards-vm-process -- workload::tests::a_log
+  workload::tests::a_logger workload::tests::a_non_blocking_log` (3 passed); `cargo clippy
+  -p shards -p shards-vm-process --all-targets -- -D warnings` for aarch64-apple-darwin, and
+  for x86_64-pc-windows-msvc through cargo-xwin. Its red is CI's (the runs above).
+- **Owed** (ROOT): `tests/build.rs`, `isolation.rs`, `managed_lifecycle.rs`,
+  `managed_output.rs` and `harness_bringup.rs` on KVM, HVF and WHP; a `shards logs` that
+  shows a run's members (their logs are kept, not yet read by `logs`); a later `attach`
+  shown its members; an owner's channel that waits on no subscriber either (served from the
+  member's log; its credit still waits on its owner); a run asking for agent control, with
+  and without `shards.output`, its unnamed members drained (D238).
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap, index or panic in the new production code; every step returns its error. |
+  | R02 | The cause read from source and CI history; managed-runtime-plan.md G01; D240; ROOT's decision. |
+  | R03 | No number introduced: a member's log keeps the run's own retention, and its credit window climbs as an owner's does (D226's quantum, from the run's record capacity). |
+  | R04 | A drained channel's stream is Open, Ended or Aborted; the run's capture ends it whole. |
+  | R05 | The viewer waits on the drain's own notice, not a probe; the log is the one record. |
+  | R07, R13 | Comments say why; one writer for both logs. |
+  | R08, R14 | Not measured: the drain's write is the run log's own path. |
+  | R09, R10 | Red: CI's runs above. Green: the focused tests above. No mutation run (the person's rule). |
+  | R11 | Written for every OS; tested on macOS arm64 alone. CI covers the rest. |
+  | R15, R16 | No agents started; the target directories on adalundhe-macbook-pro and adas-mac-studio.local are removed after. |
+
+### M544. An orchestrator's share process waited for with its door still held, and a harness that ended with its run (D231)
+
+- **Question.** In three of main's CI runs (revisions ac87190d3, 87bf86b31 and 451672250;
+  GitHub's x86_64 Linux KVM runners) `tests/api_image.rs`'s
+  `a_share_at_a_granted_volume_reaches_the_harness` hung until the job's 56-minute limit:
+  who held the share's stream? And in run 43303186680 (83f0549ad, x86_64 Linux gnu)
+  `staged_credentials_reach_the_harness_and_its_output_and_end_come_back` saw its harness
+  end `WithRun` where `Exited(3)` was expected: why?
+- **The hang.**
+  - The hang watcher's snapshot (run 43280969775, job 131401806021): `shards api-run` in
+    `do_wait` for its child `shards share ro`, which sat in a Unix stream read with no VM
+    process left.
+  - The holder was the run host itself. Its teardown waited for the share process while it
+    still held the process's door: the share process's last connection where the VM never
+    took it (a run refused before `TAKEN`), so the process never saw its end.
+  - Fixed on main by 86f3c87b2, merged through 5333c2747 (11-12 20:14Z). The run host lets
+    go of the VM's link, the network's control and the share process's door before it
+    waits for each process: today's `Shares::end`. All three hanging revisions predate it
+    (`git merge-base --is-ancestor 86f3c87b2 <rev>` is false for each), and no retained run
+    since has hung.
+  - Nothing light held that order. `api_run::hosted::tests::a_share_process_goes_as_its_door_is_let_go_of`
+    (Unix) now does: a shell that reads its door to its end and then writes a file stands in
+    for the share process, and after `Shares::end` the file is there. With the door let go
+    of after the wait instead, `netproc::reap` kills the process at its grace's end and the
+    file is never written.
+- **The harness that ended with its run.**
+  - Seen once in the retained logs: 21 of the test's runs on Linux and macOS passed. Its 7
+    other failures were Windows' refusal at the time ("owed (D231)").
+  - `wait_member` says `WithRun` when the run's end (`ENDED`, or a failure the session
+    records) or the run host's exit comes before the member's `MEMBER_ENDED`
+    (crates/api/src/image/session.rs). An `ATTEND` run ends only as it is stopped (the abi's
+    `builtin::ATTEND`), and init tells a member's end once its whole population has ended,
+    before the run's own (crates/init/src/run.rs, the relay's `MEMBER_ENDS`). So this run
+    ended within seconds of its harness, and nothing in the test stopped it.
+  - Read and excluded, from code:
+    - A credit written to a capture the VM had closed. api-run grants under the same lock
+      that marks a channel ended, and the VM process takes no record without a grant, so no
+      credit is outstanding after a channel's end (crates/shards/src/workload/capture.rs and
+      api_run.rs, `records` and `grant`).
+    - Interleaved answers. `Answers::send` writes one frame at a time under its lock, and no
+      child of the run host holds its stdout.
+    - Interleaved asks. The session's `send` writes under its lock.
+  - Not excluded: a failure the session recorded (a breach of the channel's contract, or its
+    reader's error), the run host's exit, or the guest failing its run. The test printed only
+    `Some(WithRun)`, so the cause is not named (R09: not reproduced).
+  - The four tests that wait for the harness's end now say the run's own end beside one they
+    did not expect (`assert_ended`, printing `wait_for`'s `RunEnd`: `Stopped`, `Failed` in its
+    host's words, or `Exited`), so the next occurrence names it.
+- **Checked** (one host, adalundhe-macbook-pro, macOS arm64, on the tree merged with main
+  039f5019c): `cargo test -p shards --bin shards --
+  api_run::hosted::tests::a_share_process_goes_as_its_door_is_let_go_of`, green in 0.06 s;
+  red in 1.06 s with `Shares::end`'s door let go of after `reap`, the order before
+  86f3c87b2 (`/tmp/g51/carrier/red-s6.sh`); `cargo clippy -p shards --all-targets -- -D
+  warnings` clean.
+- **Owed** (ROOT): `cargo test -p shards --profile test-release --test api_image` on KVM and
+  HVF, repeated until `staged_credentials...` ends `WithRun` again, its message read; on WHP
+  once the Windows run host (D231, goal 110) lands. Linux's run of the new unit test is CI's.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | Test code alone; production code unchanged. |
+  | R02, R03 | No decision or number of ours: the grace is `netproc::GRACE`'s (its own R03 standing is not this entry's). |
+  | R04, R05 | The share process's end is its own going, the wait after nothing of this process holds it up. |
+  | R09, R10 | The hang: CI's snapshot, fixed by 86f3c87b2; the new test red before that order, green after. `WithRun`: not reproduced, its cause not named; the test now says it. |
+  | R11 | The test is Unix's (the door is Unix's; Windows' shares go with its job). |
+  | R15, R16 | No agents started for this; `~/g51-carrier/src-s6b` and `~/g51-s2-target` on adalundhe-macbook-pro are removed after. |

@@ -219,6 +219,7 @@ pub fn start(
     mac: &[u8; 6],
     bridge: &shards_net::bridge::Bridge,
     group: Option<shards_ipc::Group>,
+    credentials: bool,
 ) -> Result<(shards_ipc::Child, VmSide), String> {
     let at = |e: std::io::Error| format!("a VM's network: {e}");
     let region = shards_netring::memory().map_err(at)?;
@@ -251,6 +252,11 @@ pub fn start(
     for r in &resolvers {
         args.push("--resolver".as_ref());
         args.push(r.as_ref());
+    }
+    // A run's credential grants (D242): its CA's key is made before the process confines
+    // itself.
+    if credentials {
+        args.push("--credentials".as_ref());
     }
     if let Some((port, socket)) = &proxy {
         args.extend::<[&std::ffi::OsStr; 4]>([
@@ -451,6 +457,7 @@ pub fn prepare(
     policy: shards_net::Policy,
     mac: &[u8; 6],
     bridge: &shards_net::bridge::Bridge,
+    credentials: bool,
 ) -> Result<(Ready, VmSide), String> {
     let at = |e: std::io::Error| format!("a VM's network: {e}");
     let region = shards_netring::memory().map_err(at)?;
@@ -485,6 +492,10 @@ pub fn prepare(
     ];
     for r in resolvers() {
         args.extend(["--resolver".into(), r.into()]);
+    }
+    // A run's credential grants (D242), as on Unix.
+    if credentials {
+        args.push("--credentials".into());
     }
     let proxy = match proxy {
         Some((port, socket)) => {

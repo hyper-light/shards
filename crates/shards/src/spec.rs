@@ -276,8 +276,25 @@ pub const RUN_VALUED: &[&str] = &[
 /// there as needing one, every time, and never read as a flag where the line is read ahead
 /// of it (cli/shares.rs `take`), which reads it through this too.
 pub fn next_word<T: AsRef<std::ffi::OsStr>>(args: &mut impl Iterator<Item = T>) -> Option<(T, Option<T>)> {
+    next_vm_word(args, false)
+}
+
+/// The flags `restore` reads a value after besides [`RUN_VALUED`]'s, whose `Common` options
+/// it shares (vm_run.rs `parse_restore`, which takes every value it reads through
+/// [`next_vm_word`], so a flag it reads a value after that neither lists is refused there).
+pub const RESTORE_VALUED: &[&str] = &["--backing", "--layer-cloned", "--resume", "--working-set"];
+
+/// [`next_word`] for `run`'s command line, or with `restore`, `restore`'s: its own valued
+/// flags ([`RESTORE_VALUED`]) given their values too.
+pub fn next_vm_word<T: AsRef<std::ffi::OsStr>>(
+    args: &mut impl Iterator<Item = T>,
+    restore: bool,
+) -> Option<(T, Option<T>)> {
     let word = args.next()?;
-    let valued = word.as_ref().to_str().is_some_and(|w| RUN_VALUED.contains(&w));
+    let valued = word
+        .as_ref()
+        .to_str()
+        .is_some_and(|w| RUN_VALUED.contains(&w) || (restore && RESTORE_VALUED.contains(&w)));
     let value = if valued { args.next() } else { None };
     Some((word, value))
 }

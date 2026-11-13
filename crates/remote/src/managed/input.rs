@@ -1091,6 +1091,9 @@ mod tests {
     use super::*;
 
     const CONN: ConnKey = 1;
+    /// How long a test waits for what it awaits: a patience of its own, shorter than
+    /// [`tls::QUIET`].
+    const PATIENCE: Duration = Duration::from_secs(10);
     /// The guest's errnos, Linux's (include/uapi/asm-generic/errno-base.h, errno.h), as its
     /// init reports them whatever the host's own.
     const EIO: i32 = 5;
@@ -1474,7 +1477,7 @@ mod tests {
 
     impl Live {
         fn connect(identity: &Identity, server: Fingerprint, to: SocketAddr, offset: u64) -> Live {
-            let patience = tls::IDLE;
+            let patience = PATIENCE;
             let config = client_config(identity, server, admitted(patience)).unwrap();
             let (hears, heard) = mpsc::channel();
             let (mut driver, asks) = Driver::bind_bounded(
@@ -1510,7 +1513,7 @@ mod tests {
         }
 
         fn hear(&self) -> Heard {
-            self.heard.recv_timeout(tls::IDLE).unwrap()
+            self.heard.recv_timeout(PATIENCE).unwrap()
         }
 
         fn taken(&self) -> u64 {
@@ -1547,7 +1550,7 @@ mod tests {
     /// An owner's subscription at `offset`, made again while the endpoint still holds a
     /// connection it has not let go of, told its first record goes at `at`.
     fn subscribed(owner: &Identity, server: Fingerprint, address: SocketAddr, offset: u64, at: u64) -> Live {
-        let deadline = std::time::Instant::now() + tls::IDLE * 3;
+        let deadline = std::time::Instant::now() + PATIENCE * 3;
         loop {
             let live = Live::connect(owner, server, address, offset);
             match live.hear() {
@@ -1596,7 +1599,7 @@ mod tests {
         let server = Identity::generate().unwrap();
         let owner = Identity::generate().unwrap();
         let (endpoint, relay, control) =
-            Endpoint::bind(&server, owner.fingerprint(), scope(), admitted(tls::IDLE)).unwrap();
+            Endpoint::bind(&server, owner.fingerprint(), scope(), admitted(PATIENCE)).unwrap();
         let address = endpoint.address;
         let control = Arc::new(control);
         let endpoint_driver = std::thread::Builder::new()
@@ -1624,7 +1627,7 @@ mod tests {
             panic!("heard while its record was held: {heard:?}");
         }
         gate.send(()).unwrap();
-        assert_eq!(records.recv_timeout(tls::IDLE).unwrap(), first);
+        assert_eq!(records.recv_timeout(PATIENCE).unwrap(), first);
         let at = live.taken();
         assert_eq!(at, first.len() as u64);
 
@@ -1633,7 +1636,7 @@ mod tests {
         let second: &[u8] = b"no-newline\xc3\x28";
         live.send(record_frame(at, second));
         gate.send(()).unwrap();
-        assert_eq!(records.recv_timeout(tls::IDLE).unwrap(), second);
+        assert_eq!(records.recv_timeout(PATIENCE).unwrap(), second);
         live.vanish();
         let at = at + second.len() as u64;
         // The endpoint lets the vanished owner go within its patience; until then a second

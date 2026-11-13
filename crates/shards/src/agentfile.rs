@@ -218,6 +218,14 @@ pub fn joining(run: &shards_ipc::Run, joins_granted: bool) -> Result<(), Nesting
 }
 
 impl Agentfile {
+    /// Whether it links its agents past the microVM: grants them what lies past it, or their
+    /// flows or names cross init's network namespace to eth0 (D59). Their init links them so
+    /// whatever a run keeps of those grants (its `/.agentfile.json`), through the microVM's
+    /// network, which `--network none` does not give it (D250).
+    pub fn linked_past(&self) -> bool {
+        self.domains > 0 && (self.grants.past() || self.uplink)
+    }
+
     /// Whether its agents' flows past the microVM go by IPv6 too (D99): they have IPv6, and
     /// are granted ports, remote MCP servers or destinations past it. Their run's eth0 then
     /// needs an IPv6 address, which a network without IPv6 does not give it.
@@ -285,7 +293,7 @@ impl Agentfile {
             return Err(beside::link_local(&ip.to_string()));
         }
         self.ids(&run.user, &run.group_add)?;
-        if run.network == "none" && (self.grants.past() || self.uplink) {
+        if run.network == "none" && self.linked_past() {
             return Err(
                 "cannot run without a network: the image's Agentfile grants its agents what lies past the microVM, and --network none gives the microVM none".into(),
             );

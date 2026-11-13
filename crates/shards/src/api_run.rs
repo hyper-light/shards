@@ -386,6 +386,81 @@ fn egress(
     Ok(Some(shards_net::encode_policy(&ports, &named, dns)))
 }
 
+/// The run's credential grants for its network process (D242), by reference and never a
+/// value: each toward one host at least, and each host one its egress grants reach (D236),
+/// as a grant that could never be filled is refused, not kept silently; the network process
+/// checks them again as it takes them (D109). None where the run has none.
+fn credentials(grants: &[wire::CredentialGrant], egress: Option<&[u8]>) -> Result<Option<Vec<u8>>, No> {
+    if grants.is_empty() {
+        return Ok(None);
+    }
+    let (ports, named, _) = egress.and_then(shards_net::decode_policy).unwrap_or_default();
+    let mut held = Vec::with_capacity(grants.len());
+    for g in grants {
+        if g.toward.is_empty() {
+            return Err(No(
+                Cause::Request,
+                format!(
+                    "credential {}: a grant toward no host could never be filled",
+                    g.reference
+                ),
+            ));
+        }
+        if let Some(host) = g.toward.iter().find(|h| !shards_net::reaches(&ports, &named, h)) {
+            return Err(No(
+                Cause::Request,
+                format!(
+                    "credential {} toward {host}: none of the run's egress grants reaches it (D236), so it could never be filled",
+                    g.reference
+                ),
+            ));
+        }
+        held.push(shards_net::Grant {
+            reference: g.reference.clone(),
+            toward: g.toward.clone(),
+        });
+    }
+    shards_net::encode_grants(&held).map(Some).ok_or_else(|| {
+        No(
+            Cause::Request,
+            "the run's credential grants: a reference past 65535 bytes, or a host past 255".into(),
+        )
+    })
+}
+
+/// The characters of a PEM line: "Generators MUST wrap the base64-encoded lines so that each
+/// line consists of exactly 64 characters except for the final line" (RFC 7468 §2).
+const PEM_LINE: usize = 64;
+
+/// The setup entries giving the run's members its CA (D242, `shards_abi::run::trust`), once
+/// its network process has answered `grants` (as `NET_CREDENTIALS` carries them) with the
+/// CA's certificate `der`: the certificate in PEM (RFC 7468), and each host the grants name,
+/// once. init lays it in the trust of each member whose link reaches one of those hosts.
+fn trust(der: &[u8], grants: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    use base64::Engine as _;
+    use shards_abi::run::trust as entries;
+    let grants = shards_net::decode_grants(grants).ok_or("the run's credential grants are malformed")?;
+    let base64 = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut pem = b"-----BEGIN CERTIFICATE-----\n".to_vec();
+    for line in base64.as_bytes().chunks(PEM_LINE) {
+        pem.extend_from_slice(line);
+        pem.push(b'\n');
+    }
+    pem.extend_from_slice(b"-----END CERTIFICATE-----\n");
+    let mut hosts: Vec<&str> = Vec::new();
+    for host in grants.iter().flat_map(|g| &g.toward) {
+        if !hosts.contains(&host.as_str()) {
+            hosts.push(host);
+        }
+    }
+    let said = |e: entries::Error| format!("the run's CA: {e}");
+    let mut out = vec![entries::ca(&pem).map_err(said)?];
+    for host in hosts {
+        out.push(entries::host(host.as_bytes()).map_err(said)?);
+    }
+    Ok(out)
+}
+
 /// Each member held to its reach of the names kept, where the request holds its members
 /// apart (`Narrowing::members`, version 12, D246). A member reaches each destination and
 /// remote MCP server kept that it reaches by name (`Agentfile::named`): its init lets it out
@@ -468,6 +543,30 @@ fn held_apart(
         }
     }
     Ok(())
+}
+
+/// The run's network and its network process's policy (D231, D250): the image's grants as the
+/// request narrows them ([`egress`]), each member held apart where asked ([`held_apart`]),
+/// and a bridge where the request keeps anything past the microVM or the image links its
+/// members past it (`Agentfile::linked_past`), whatever is kept. Their init links them to
+/// eth0 as their image grants (its `/.agentfile.json`, which no narrowing reaches), and the
+/// network process holds the microVM to what is kept, nothing where nothing is (no policy
+/// told: its `Policy::DenyAll`). Then the run refused what of it would reach the image's
+/// domains ([`crate::agentfile::Agentfile::refuse`]).
+fn network(
+    agentfile: Option<&crate::agentfile::Agentfile>,
+    request: &wire::Request,
+    run: &mut shards_ipc::Run,
+) -> Result<Option<Vec<u8>>, No> {
+    let egress = egress(agentfile.map(|a| &a.grants), &request.egress)?;
+    held_apart(agentfile, &request.egress)?;
+    if egress.is_some() || agentfile.is_some_and(crate::agentfile::Agentfile::linked_past) {
+        run.network = "bridge".into();
+    }
+    if let Some(a) = agentfile {
+        a.refuse(run).map_err(no(Cause::Request))?;
+    }
+    Ok(egress)
 }
 
 /// Refuses a published port that would widen the run: one the image's Agentfile declares
@@ -618,16 +717,16 @@ fn held_of(room: Option<i64>, out: &[u8]) -> Result<Option<u64>, String> {
 }
 
 /// How a run ended, from its VM's link (D249): why the link failed, else its `DONE`. That is
-/// the command's status and, where the command never started, why not, in the words the
-/// daemon reads there too (warm.rs `finish`, daemon.rs `run_ended`). Such a run failed, in
-/// its VM's words: the status alone, the code dockerd gives a run whose command never
-/// started, would read as the command's own exit.
-fn run_end(failed: Option<String>, done: Option<&[u8]>) -> wire::RunEnd {
+/// the command's status and, where the command never started (its guest said no `STARTED`),
+/// why not, read as the daemon reads them (warm.rs `finish`, daemon.rs `run_ended`). Such a
+/// run failed, in its VM's words: the status alone, the code dockerd gives a run whose
+/// command never started, would read as the command's own exit.
+fn run_end(failed: Option<String>, done: Option<&[u8]>, started: bool) -> wire::RunEnd {
     if let Some(why) = failed {
         return wire::RunEnd::Failed(why);
     }
     match done.and_then(<[u8]>::split_first) {
-        Some((status, said)) if !said.is_empty() => wire::RunEnd::Failed(format!(
+        Some((status, said)) if !started && !said.is_empty() => wire::RunEnd::Failed(format!(
             "its command never started (status {status}): {}",
             String::from_utf8_lossy(said)
         )),
@@ -669,6 +768,9 @@ mod hosted {
         members: Vec<wire::MemberInfo>,
         listeners: Vec<publish::Listener>,
         egress: Option<Vec<u8>>,
+        /// Its credential grants as its network process takes them (`NET_CREDENTIALS`), where
+        /// it has any.
+        credentials: Option<Vec<u8>>,
         dirs: Vec<(OwnedFd, bool, OsString)>,
         /// The anonymous volumes its `VOLUME`s made, removed as it ends (`--rm`'s).
         made: Vec<String>,
@@ -696,8 +798,9 @@ mod hosted {
     }
 
     /// The request as `shards run` would have asked it of a daemon: the image, its own
-    /// command or none, its published ports, its shares as `-v`, a network only where
-    /// something goes past the microVM, and the nesting grant as `--security-opt
+    /// command or none, its published ports, its shares as `-v`, a network where a port is
+    /// published (`super::network` gives one where more needs it), and the nesting grant as
+    /// `--security-opt
     /// nesting=true` asks for it (D234), with `ready_by`, its deadline as an instant
     /// (`super::deadline`).
     pub(super) fn as_run(request: &wire::Request, ready_by: Option<u64>) -> shards_ipc::Run {
@@ -792,14 +895,8 @@ mod hosted {
         let inputs = super::inputs(request, &members)?;
         let terminals = super::terminals(request, &members)?;
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
-        let egress = super::egress(agentfile.as_ref().map(|a| &a.grants), &request.egress)?;
-        super::held_apart(agentfile.as_ref(), &request.egress)?;
-        if egress.is_some() {
-            run.network = "bridge".into();
-        }
-        if let Some(a) = &agentfile {
-            a.refuse(&run).map_err(no(Cause::Request))?;
-        }
+        let egress = super::network(agentfile.as_ref(), request, &mut run)?;
+        let credentials = super::credentials(&request.credentials, egress.as_deref())?;
         let nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
         let bridge = if run.network == "bridge" {
             Some(
@@ -934,6 +1031,7 @@ mod hosted {
             members,
             listeners: bound.listeners,
             egress,
+            credentials,
             dirs: opened.dirs,
             made,
             bridge,
@@ -1064,8 +1162,14 @@ mod hosted {
         let (net, side) = match &plan.bridge {
             Some(bridge) => {
                 let mac = shards_net::random_mac().map_err(|e| boot(format!("a guest's MAC: {e}")))?;
-                let (child, side) =
-                    crate::netproc::start(shards_net::Policy::DenyAll, &mac, bridge, None).map_err(boot)?;
+                let (child, side) = crate::netproc::start(
+                    shards_net::Policy::DenyAll,
+                    &mac,
+                    bridge,
+                    None,
+                    plan.credentials.is_some(),
+                )
+                .map_err(boot)?;
                 (Some((child, mac)), Some(side))
             }
             None => (None, None),
@@ -1177,8 +1281,13 @@ mod hosted {
         let network = match &plan.bridge {
             Some(bridge) => {
                 let mac = shards_net::random_mac().map_err(|e| boot(format!("a guest's MAC: {e}")))?;
-                let (ready, side) =
-                    crate::netproc::prepare(shards_net::Policy::DenyAll, &mac, bridge).map_err(boot)?;
+                let (ready, side) = crate::netproc::prepare(
+                    shards_net::Policy::DenyAll,
+                    &mac,
+                    bridge,
+                    plan.credentials.is_some(),
+                )
+                .map_err(boot)?;
                 Some((mac, ready, side))
             }
             None => None,
@@ -1428,7 +1537,8 @@ mod hosted {
         net: &crate::netproc::Control,
         listeners: &[publish::Listener],
         egress: Option<&[u8]>,
-    ) -> Result<(), String> {
+        credentials: Option<&[u8]>,
+    ) -> Result<Option<Vec<u8>>, String> {
         let mut asked = Vec::new();
         for batch in listeners.chunks(shards_ipc::MAX_FDS) {
             let ports: Vec<u8> = batch
@@ -1456,7 +1566,19 @@ mod hosted {
                 Err(e) => return Err(format!("{what}: the network process: {e}")),
             }
         }
-        Ok(())
+        // The run's credential grants (D242), once its policy is taken, which the network
+        // process checks them against: answered with the run's CA's certificate, made for
+        // their hosts alone.
+        let Some(grants) = credentials else {
+            return Ok(None);
+        };
+        crate::netproc::send(net, kind::NET_CREDENTIALS, grants, &[])
+            .map_err(|e| format!("credential grants: {e}"))?;
+        match crate::netproc::recv(net) {
+            Ok(Some(m)) if m.kind == kind::NET_CREDENTIALS && !m.payload.is_empty() => Ok(Some(m.payload)),
+            Ok(_) => Err("credential grants: the network process did not take them".into()),
+            Err(e) => Err(format!("credential grants: the network process: {e}")),
+        }
     }
 
     /// The run's managed output, owned here: each active member channel's credit and what
@@ -1635,10 +1757,12 @@ mod hosted {
     /// Hands the VM its run, as the daemon hands a warm VM one (daemon.rs `hand_over`): once
     /// it is `READY`, `RUN` with the run's head, spec and descriptors, on Windows its
     /// shares' streams after it (D197), then `TAKEN`; then `STOP_ORDER`, SIGKILL with no
-    /// grace, so that a VM whose link closes, this process gone, ends its run.
+    /// grace, so that a VM whose link closes, this process gone, ends its run. `trust` joins
+    /// its setup: the run's CA for its members' trust (D242), known only now.
     fn hand_over(
         link: &Stream,
         plan: &Plan,
+        trust: &[Vec<u8>],
         client: &Stream,
         shares: Option<&Shares>,
         capture: Option<&Stream>,
@@ -1651,7 +1775,14 @@ mod hosted {
         }
         let null = std::fs::File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let err = io::stderr();
-        let payload = super::run_request(&plan.prepared.spec, !plan.listeners.is_empty());
+        let payload = if trust.is_empty() {
+            super::run_request(&plan.prepared.spec, !plan.listeners.is_empty())
+        } else {
+            let mut spec = plan.prepared.spec.clone();
+            spec.setup.extend_from_slice(trust);
+            crate::spec::fits(&spec)?;
+            super::run_request(&spec, !plan.listeners.is_empty())
+        };
         // A stream's end as a message hands it on: borrowed on Unix, a handle of its own on
         // Windows (`shards_ipc::handed`).
         let client = shards_ipc::handed(client).map_err(|e| format!("the run's client: {e}"))?;
@@ -1713,8 +1844,24 @@ mod hosted {
         // Its share process's notices (D235), given its guest as its run starts.
         let due = launched.shares.as_mut().and_then(|s| s.notices.take());
         let served = (|| -> Result<(), No> {
+            // The run's CA for its members' trust (D242), once its network process made it.
+            let mut trust = Vec::new();
             if let Some((_, control)) = &launched.net {
-                tell_net(control, &plan.listeners, plan.egress.as_deref()).map_err(boot)?;
+                let ca = tell_net(
+                    control,
+                    &plan.listeners,
+                    plan.egress.as_deref(),
+                    plan.credentials.as_deref(),
+                )
+                .map_err(boot)?;
+                if let (Some(der), Some(grants)) = (&ca, plan.credentials.as_deref()) {
+                    let digest = <sha2::Sha256 as sha2::Digest>::digest(der);
+                    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+                    super::say(format_args!(
+                        "its credential grants taken; its CA's SHA-256 {hex}"
+                    ));
+                    trust = super::trust(der, grants).map_err(boot)?;
+                }
             }
             let (client, client_theirs) =
                 handed_pair().map_err(|e| boot(format!("the run's client: {e}")))?;
@@ -1725,6 +1872,7 @@ mod hosted {
             hand_over(
                 &launched.link,
                 &plan,
+                &trust,
                 &client_theirs,
                 launched.shares.as_ref(),
                 capture.as_ref().map(|(_, theirs)| theirs),
@@ -1887,6 +2035,7 @@ mod hosted {
     /// as the VM takes it, the run's end from its `DONE` (`super::run_end`).
     fn follow(live: &Live<'_>, link: &Stream) -> RunEnd {
         let mut done = None;
+        let mut started = false;
         let failed = loop {
             let m = match shards_ipc::recv(link) {
                 Ok(Some(m)) => m,
@@ -1896,6 +2045,7 @@ mod hosted {
             if m.kind == kind::DONE {
                 done = Some(m.payload);
             } else if m.kind == kind::STARTED {
+                started = true;
                 // Its guest told what its host changes in its shares from now on (D235).
                 if let Some(pipe) = lock(&live.notices_due).take() {
                     match notice_exec(live, pipe) {
@@ -1938,7 +2088,7 @@ mod hosted {
         for member in members {
             end_input(live, member);
         }
-        super::run_end(failed, done.as_deref())
+        super::run_end(failed, done.as_deref(), started)
     }
 
     /// The orchestrator's asks, until its channel closes: credit, stats, stop. A channel
@@ -2806,6 +2956,40 @@ mod hosted {
             });
         }
     }
+
+    #[cfg(all(test, unix))]
+    #[allow(clippy::unwrap_used)]
+    mod tests {
+        use super::*;
+
+        /// A run's share process ends as its run ends, by its own going: [`Shares::end`]
+        /// lets go of its door before it waits, and the process, which goes once its
+        /// connection to the VM ends, has gone well before `reap`'s grace ends it (CI run
+        /// 43230466376, its run host in `do_wait` with the door still held, 56 minutes).
+        /// The process here is a shell that reads its door to its end and then says so in a
+        /// file, which one killed at the grace's end never writes.
+        #[test]
+        fn a_share_process_goes_as_its_door_is_let_go_of() {
+            let dir = shards_testdir::TempDir::new("share-end").unwrap();
+            let said = dir.join("gone");
+            let (door, theirs) = Stream::pair().unwrap();
+            let script = OsStr::new("read -r _ <&3; : >\"$0\"");
+            let args = [OsStr::new("-c"), script, said.as_os_str()];
+            let child = shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[(theirs.as_fd(), 3)], false, &[])
+                .unwrap();
+            drop(theirs);
+            Shares {
+                child,
+                door,
+                notices: None,
+            }
+            .end();
+            assert!(
+                said.exists(),
+                "the share process was ended at the grace's end, not by its door's"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2817,16 +3001,20 @@ mod tests {
         members_of(&["agent helper".into(), "harness codex".into()], &[1])
     }
 
-    /// Do end a run with a `DONE` of a status alone, of a status and the words of a command
-    /// that never started (warm.rs `finish`), after a broken link, and with none. Expect: the
-    /// status as the run's exit; a failure saying the command never started, its status and
-    /// the VM's words, never that status as an exit; the link's failure; a failure.
+    /// Do end a run whose guest said `STARTED` with a `DONE` of a status alone; one whose
+    /// guest never did with a status and the words of a command that never started (warm.rs
+    /// `finish`); one that started with such words; one after a broken link; and one with no
+    /// `DONE`. Expect: the status as the run's exit; a failure saying the command never
+    /// started, its status and the VM's words, never that status as an exit; the status, as
+    /// the daemon keeps a started command's (daemon.rs `run_ended`); the link's failure; a
+    /// failure.
     #[test]
     fn a_command_that_never_started_ends_its_run_failed_saying_why() {
-        assert_eq!(run_end(None, Some(&[3])), wire::RunEnd::Exited(3));
-        assert_eq!(run_end(None, Some(&[0])), wire::RunEnd::Exited(0));
+        assert_eq!(run_end(None, Some(&[3]), true), wire::RunEnd::Exited(3));
+        assert_eq!(run_end(None, Some(&[0]), true), wire::RunEnd::Exited(0));
         let never = b"\x80exec: \"/bin/sh\": operation not permitted";
-        match run_end(None, Some(never)) {
+        assert_eq!(run_end(None, Some(never), true), wire::RunEnd::Exited(128));
+        match run_end(None, Some(never), false) {
             wire::RunEnd::Failed(why) => assert_eq!(
                 why,
                 "its command never started (status 128): exec: \"/bin/sh\": operation not permitted"
@@ -2834,10 +3022,60 @@ mod tests {
             other => panic!("a command that never started ended its run as {other:?}"),
         }
         assert_eq!(
-            run_end(Some("the VM's link: reset".into()), Some(&[3])),
+            run_end(Some("the VM's link: reset".into()), Some(&[3]), true),
             wire::RunEnd::Failed("the VM's link: reset".into())
         );
-        assert!(matches!(run_end(None, None), wire::RunEnd::Failed(_)));
+        assert!(matches!(run_end(None, None, false), wire::RunEnd::Failed(_)));
+    }
+
+    /// A run that keeps nothing past the microVM of what the image grants its members has
+    /// the network their links need all the same (their init links each member granted
+    /// anything past the microVM through eth0, D59, D250), and its network process lets
+    /// nothing past (no policy told: `Policy::DenyAll`). Do: narrow an image whose harness is
+    /// granted egress and DNS to nothing, as Hex's image class asks by default (kiln plan
+    /// 01a1cd8e862e7169a074db3d5fa33f3d step 12); keep it whole; and run an image that
+    /// grants nothing. Expect: the first on a bridge with no policy, never refused "cannot
+    /// run without a network"; the second on a bridge with the image's policy; the third on
+    /// none.
+    #[test]
+    fn a_run_keeping_nothing_past_the_microvm_has_its_members_network_and_no_policy() {
+        let granted = crate::agentfile::Agentfile {
+            domains: 2,
+            uplink: true,
+            grants: shards_agentfile::agentfile::Grants {
+                egress: vec![b"443/tcp".to_vec()],
+                dns: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut nothing = request(Vec::new());
+        nothing.egress = wire::Narrowing {
+            egress: wire::Keep::Only(Vec::new()),
+            mcp: wire::Keep::Only(Vec::new()),
+            destinations: wire::Keep::Only(Vec::new()),
+            dns: false,
+            members: None,
+        };
+        let mut run = hosted::as_run(&nothing, None);
+        let policy = network(Some(&granted), &nothing, &mut run);
+        assert!(
+            matches!(&policy, Ok(None)),
+            "{}",
+            policy.err().map(|No(_, why)| why).unwrap_or_default()
+        );
+        assert_eq!(run.network, "bridge");
+        let whole = request(Vec::new());
+        let mut run = hosted::as_run(&whole, None);
+        assert!(matches!(network(Some(&granted), &whole, &mut run), Ok(Some(_))));
+        assert_eq!(run.network, "bridge");
+        let plain = crate::agentfile::Agentfile {
+            domains: 2,
+            ..Default::default()
+        };
+        let mut run = hosted::as_run(&whole, None);
+        assert!(matches!(network(Some(&plain), &whole, &mut run), Ok(None)));
+        assert_eq!(run.network, "none");
     }
 
     /// Labels become members by their declared index; only an active one runs.
@@ -3046,6 +3284,85 @@ mod tests {
             ..wire::Narrowing::default()
         };
         assert!(matches!(egress(None, &asked), Err(No(Cause::Widening, _))));
+    }
+
+    /// The run's credential grants reach its network process by reference alone, each
+    /// toward a host its egress grants reach (D242, D236); a grant toward a host past them,
+    /// or toward none, could never be filled and is refused before anything starts, and a
+    /// run with none sends none (R10: each refusal's test fails without it).
+    #[test]
+    fn credential_grants_reach_the_network_process_by_reference() {
+        let grant = |reference: &str, toward: &[&str]| wire::CredentialGrant {
+            reference: reference.into(),
+            toward: toward.iter().map(|h| (*h).to_string()).collect(),
+        };
+        let named = shards_net::encode_policy(
+            &shards_net::Ports::default(),
+            &[("api.anthropic.com".into(), 443)],
+            false,
+        );
+        assert_eq!(credentials(&[], Some(&named)).ok().unwrap(), None);
+        let sent = credentials(
+            &[grant("anthropic/claude-max", &["api.anthropic.com"])],
+            Some(&named),
+        )
+        .ok()
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            shards_net::decode_grants(&sent),
+            Some(vec![shards_net::Grant {
+                reference: "anthropic/claude-max".into(),
+                toward: vec!["api.anthropic.com".into()],
+            }])
+        );
+        for refused in [
+            credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&named)),
+            credentials(&[grant("anthropic/claude-max", &[])], Some(&named)),
+            credentials(&[grant("anthropic/claude-max", &["api.anthropic.com"])], None),
+        ] {
+            assert!(matches!(refused, Err(No(Cause::Request, _))));
+        }
+        // A TCP port granted reaches every host on it.
+        let any443 = shards_net::encode_policy(&shards_net::Ports::parse("443/tcp").unwrap(), &[], false);
+        assert!(credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&any443)).is_ok());
+    }
+
+    /// The run's CA goes to its guest for its members' trust (D242): its certificate in PEM,
+    /// its base64 in lines of 64 characters but the last (RFC 7468 §2), read back to the DER
+    /// by rustls' own PEM reader; and each host the grants name, once. Malformed grants
+    /// give nothing.
+    #[test]
+    fn credential_grants_ca_goes_to_the_guest_in_pem_with_each_host_once() {
+        let der: Vec<u8> = (0..=255u8).cycle().take(700).collect();
+        let grants = shards_net::encode_grants(&[
+            shards_net::Grant {
+                reference: "anthropic/claude-max".into(),
+                toward: vec!["api.anthropic.com".into(), "claude.ai".into()],
+            },
+            shards_net::Grant {
+                reference: "anthropic/console".into(),
+                toward: vec!["api.anthropic.com".into()],
+            },
+        ])
+        .unwrap();
+        let entries = trust(&der, &grants).unwrap();
+        let got = shards_abi::run::trust::of(&entries).unwrap().unwrap();
+        assert_eq!(got.hosts, [b"api.anthropic.com".as_slice(), b"claude.ai"]);
+        let pem = std::str::from_utf8(got.pem).unwrap();
+        let lines: Vec<&str> = pem.lines().collect();
+        assert_eq!(lines.first(), Some(&"-----BEGIN CERTIFICATE-----"));
+        assert_eq!(lines.last(), Some(&"-----END CERTIFICATE-----"));
+        let body = &lines[1..lines.len() - 1];
+        assert!(
+            body[..body.len() - 1].iter().all(|l| l.len() == PEM_LINE),
+            "{body:?}"
+        );
+        assert!((1..=PEM_LINE).contains(&body[body.len() - 1].len()));
+        use rustls::pki_types::pem::PemObject as _;
+        let back = rustls::pki_types::CertificateDer::from_pem_slice(got.pem).unwrap();
+        assert_eq!(back.as_ref(), der.as_slice());
+        assert!(trust(&der, b"\x00").is_err());
     }
 
     /// Each member held to its reach of the names kept (D246). Do: keep a destination that

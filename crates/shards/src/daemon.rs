@@ -4070,16 +4070,41 @@ impl<D: Disk> Daemon<D> {
                 &agentfile.managed_labels,
                 &agentfile.active_members,
             )
-            .and_then(|inputs| Ok((inputs, managed::control_asked(&run.annotations)?)))
+            .and_then(|inputs| {
+                let owned = managed::output_members(
+                    &run.annotations,
+                    &agentfile.managed_labels,
+                    &agentfile.active_members,
+                )?;
+                Ok((inputs, owned, managed::control_asked(&run.annotations)?))
+            })
             .map_err(managed::Failure::Refused)
-            .and_then(|(inputs, agent_control)| {
+            .and_then(|(inputs, owned, agent_control)| {
+                // What the daemon reads of the members it is shown an attached client on its
+                // stderr, as an agent's output always was (D59); a detached run's is kept
+                // alone.
+                let to = if run.detach {
+                    None
+                } else {
+                    stderr.try_clone().map(File::from).ok()
+                };
                 self.managed_capture(
                     threads,
                     &id,
                     &run.client,
                     &agentfile.managed_labels,
-                    &agentfile.active_members,
-                    &inputs,
+                    managed::Members {
+                        active: &agentfile.active_members,
+                        inputs: &inputs,
+                        owned: &owned,
+                    },
+                    managed::Shown {
+                        retention: kept.map(|k| LogRetention {
+                            size: k.size,
+                            files: k.files,
+                        }),
+                        to,
+                    },
                     agent_control,
                     &mut prepared.spec.setup,
                 )
@@ -8378,6 +8403,7 @@ impl<D: Disk> Daemon<D> {
                     mac,
                     bridge,
                     group,
+                    false,
                 )?)
             }
             None => None,
@@ -8536,7 +8562,12 @@ impl<D: Disk> Daemon<D> {
         let network = match &net {
             Some(mac) => {
                 let bridge = self.bridge.as_ref().ok_or(shards_net::bridge::NO_SUBNET)?;
-                Some(crate::netproc::prepare(shards_net::Policy::DenyAll, mac, bridge)?)
+                Some(crate::netproc::prepare(
+                    shards_net::Policy::DenyAll,
+                    mac,
+                    bridge,
+                    false,
+                )?)
             }
             None => None,
         };
@@ -14984,6 +15015,56 @@ mod tests {
             drop(held);
             let (status, out, err) = ready(port.to_string());
             assert_eq!(status, 0, "the port let go: {out}{err}");
+        });
+    }
+
+    /// A move (D176 part 6) refuses a run with a managed scope where it runs, before anything
+    /// of it is saved: typed on stdout, in words on stderr, status 1. On the machine a run
+    /// moved to, its `key` step answers the run's own key and the key its move replaced, and
+    /// refuses typed a lease asked under the replaced one.
+    #[test]
+    fn a_managed_runs_move_and_a_lease_under_its_replaced_key_are_refused_typed() {
+        let t = Test::new("move-key");
+        t.run(|t| {
+            let id = t.create("web");
+            let own = lock(&t.daemon.containers).dir(&id);
+            let answer = |out: &str| serde_json::from_str::<serde_json::Value>(out.trim()).unwrap();
+            let (status, out, err) = t.ask(&[shards_ipc::MOVE_STEP, "key", "web"]);
+            assert_eq!(status, 0, "{err}");
+            assert_eq!(answer(&out), serde_json::json!({ "key": null, "replaces": null }));
+
+            let new = shards_remote::identity::hex(&[0xab_u8; 32]);
+            let metadata = format!("shards managed output 1\nvm {new}\n");
+            std::fs::write(own.join("managed-output"), metadata).unwrap();
+            let (status, out, err) = t.ask(&[shards_ipc::MOVE_STEP, "save", "web"]);
+            assert_eq!(status, 1, "{out}{err}");
+            let refused: moves::Refused = serde_json::from_str(out.trim()).unwrap();
+            assert_eq!(refused, moves::Refused::Managed { name: "web".into() });
+            assert_eq!(err, format!("shards: {refused}\n"));
+            assert!(
+                t.record(&id).is_some_and(|c| c.saved.is_none()),
+                "nothing of it saved"
+            );
+
+            let old = "cd".repeat(32);
+            std::fs::write(own.join("key-replaced"), &old).unwrap();
+            let (status, out, err) = t.ask(&[shards_ipc::MOVE_STEP, "key", "web"]);
+            assert_eq!(status, 0, "{err}");
+            assert_eq!(answer(&out), serde_json::json!({ "key": new, "replaces": old }));
+            let (status, out, err) = t.ask(&[shards_ipc::MOVE_STEP, "key", "web", &old]);
+            assert_eq!(status, 1, "{out}{err}");
+            let refused: moves::Refused = serde_json::from_str(out.trim()).unwrap();
+            assert_eq!(
+                refused,
+                moves::Refused::KeyReplaced {
+                    name: "web".into(),
+                    asked: old.clone(),
+                    current: Some(new.clone()),
+                }
+            );
+            assert_eq!(err, format!("shards: {refused}\n"));
+            let (status, _, err) = t.ask(&[shards_ipc::MOVE_STEP, "key", "web", &new]);
+            assert_eq!(status, 0, "a lease under its own key: {err}");
         });
     }
 }

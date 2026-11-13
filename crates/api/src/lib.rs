@@ -63,7 +63,8 @@ pub struct GuestSpec {
     /// Its kernel's command line.
     pub cmdline: String,
     pub vcpus: u32,
-    /// Its memory, in MiB: even, at least [`min_memory_mib`].
+    /// Its memory, in MiB: even, at least [`min_memory_mib`]; [`envelope`] rounds an ask up
+    /// to one.
     pub memory_mib: u64,
     /// A GPU (`--gpu`): Venus over the host's own Vulkan driver, rendered by the GPU's VM
     /// process (D144, D201, D202, D208); a selection below implies it.
@@ -840,26 +841,64 @@ pub fn min_memory_mib(arch: &str) -> u64 {
     if arch == "x86_64" { 128 } else { 64 }
 }
 
+/// Guest memory's unit, in MiB: shards-vmm boots an even number of MiB alone (`ram_bytes`
+/// in `vm/aarch64.rs`, `ram_ranges` in `vm/x86_64.rs`). On arm64 that keeps the DTB at
+/// RAM's top within one 2 MiB block of RAM, as its boot protocol maps it; on x86-64 it is
+/// its large page (docs/design/architecture.md D29, "Its size").
+const MEMORY_UNIT_MIB: u64 = 2;
+
+/// A MiB in bytes. shards-vmm counts a guest's memory in bytes in a u64 (the same
+/// functions' `checked_mul(MIB)`), so memory whose bytes pass what a u64 holds boots on no
+/// host.
+const MIB: u64 = 1 << 20;
+
+/// The least spec shards-vmm boots on a guest of `arch` (`std::env::consts::ARCH`'s names)
+/// that holds `vcpus` vCPUs and `memory_mib` MiB, as `(vcpus, memory_mib)`: at least one
+/// vCPU, and the memory rounded up to the VMM's unit (an even number of MiB) and to at
+/// least [`min_memory_mib`]. It is the rule [`check`] holds a spec to, from this one source:
+/// a spec is refused there unless it is its own envelope. Refused as [`Refusal::Bounds`]
+/// (`memory_mib`) where that memory's bytes pass what a u64 holds. How many vCPUs and how
+/// much memory a host runs is its hypervisor's own limit, which shards reads as it starts
+/// the VM.
+pub fn envelope(arch: &str, vcpus: u32, memory_mib: u64) -> Result<(u32, u64), Refusal> {
+    let memory = memory_mib
+        .max(min_memory_mib(arch))
+        .checked_next_multiple_of(MEMORY_UNIT_MIB)
+        .filter(|mib| mib.checked_mul(MIB).is_some())
+        .ok_or_else(|| Refusal::Bounds {
+            what: "memory_mib",
+            why: format!("{memory_mib} MiB: guest memory past the bytes a u64 holds"),
+        })?;
+    Ok((vcpus.max(1), memory))
+}
+
 /// Checks `spec` against the bounds shards-vmm holds every host to, so that both the
-/// client and the simulator refuse it before anything boots: at least one vCPU, and memory
-/// even and at least the least (`vm/aarch64.rs:414`, `vm/x86_64.rs:361`). How many vCPUs a
-/// host takes is its hypervisor's own limit, which shards reads as it starts the VM
-/// (`vm/runtime.rs:1059` `check_vcpus`); its refusal comes back as [`Refusal::Bounds`].
+/// client and the simulator refuse it before anything boots: its vCPUs and memory are their
+/// own [`envelope`]. How many vCPUs a host takes is its hypervisor's own limit, which shards
+/// reads as it starts the VM (`check_vcpus` in `vm/runtime.rs`); its refusal comes back as
+/// [`Refusal::Bounds`].
 pub fn check(spec: &GuestSpec) -> Result<(), Refusal> {
     physical::check_selection(&spec.gpu_devices).map_err(Refusal::Gpu)?;
-    if spec.vcpus == 0 {
+    fits(std::env::consts::ARCH, spec.vcpus, spec.memory_mib)
+}
+
+/// `vcpus` and `memory_mib` on a guest of `arch`, as [`check`] holds a spec's: refused by
+/// the field that differs from their [`envelope`], or as that refuses them.
+fn fits(arch: &str, vcpus: u32, memory_mib: u64) -> Result<(), Refusal> {
+    let (least_vcpus, least_mib) = envelope(arch, vcpus, memory_mib)?;
+    if least_vcpus != vcpus {
         return Err(Refusal::Bounds {
             what: "vcpus",
             why: "at least one vCPU is required".into(),
         });
     }
-    let least = min_memory_mib(std::env::consts::ARCH);
-    if spec.memory_mib < least || !spec.memory_mib.is_multiple_of(2) {
+    if least_mib != memory_mib {
         return Err(Refusal::Bounds {
             what: "memory_mib",
             why: format!(
-                "{} MiB: guest memory must be an even number of MiB, at least {least}",
-                spec.memory_mib
+                "{memory_mib} MiB: guest memory must be an even number of MiB, at least {}; \
+                 {least_mib} MiB holds it",
+                min_memory_mib(arch)
             ),
         });
     }
@@ -1041,5 +1080,130 @@ mod tests {
         );
         assert_eq!(min_memory_mib("x86_64"), 128);
         assert_eq!(min_memory_mib("aarch64"), 64);
+    }
+
+    /// The most MiB an envelope holds: the last even MiB whose bytes a u64 holds, 2^44 - 2,
+    /// where 2^44 MiB is 2^64 bytes.
+    const MOST_MIB: u64 = (1 << 44) - 2;
+
+    /// An envelope rounds an ask up to what shards-vmm boots: its memory to the VMM's unit,
+    /// an even number of MiB, and to the least on each architecture, never below the ask; no
+    /// vCPU to one, and any other count as asked (D215).
+    #[test]
+    fn an_envelope_rounds_up_to_the_unit_and_the_least() {
+        for (arch, least) in [("x86_64", 128), ("aarch64", 64)] {
+            assert_eq!(envelope(arch, 1, 257), Ok((1, 258)), "{arch}");
+            assert_eq!(envelope(arch, 2, 258), Ok((2, 258)), "{arch}");
+            assert_eq!(envelope(arch, 1, least + 1), Ok((1, least + 2)), "{arch}");
+            assert_eq!(envelope(arch, 1, least), Ok((1, least)), "{arch}");
+            assert_eq!(envelope(arch, 1, least - 1), Ok((1, least)), "{arch}");
+            assert_eq!(envelope(arch, 1, least - 2), Ok((1, least)), "{arch}");
+            assert_eq!(envelope(arch, 3, 0), Ok((3, least)), "{arch}");
+            assert_eq!(envelope(arch, 0, 256), Ok((1, 256)), "{arch}");
+            assert_eq!(envelope(arch, u32::MAX, 256), Ok((u32::MAX, 256)), "{arch}");
+            assert_eq!(envelope(arch, 1, MOST_MIB - 1), Ok((1, MOST_MIB)), "{arch}");
+            assert_eq!(envelope(arch, 1, MOST_MIB), Ok((1, MOST_MIB)), "{arch}");
+        }
+    }
+
+    /// Memory whose envelope's bytes pass what a u64 holds, in which shards-vmm counts a
+    /// guest's, is refused by name: one MiB past the most rounds up past it, and so does a
+    /// u64's most, whose next even number no u64 holds (D215).
+    #[test]
+    fn an_envelope_past_what_a_u64_holds_is_refused() {
+        assert!(MOST_MIB.checked_mul(MIB).is_some());
+        assert!((MOST_MIB + MEMORY_UNIT_MIB).checked_mul(MIB).is_none());
+        for arch in ["x86_64", "aarch64"] {
+            for past in [MOST_MIB + 1, MOST_MIB + 2, u64::MAX - 1, u64::MAX] {
+                for vcpus in [0, 1] {
+                    assert!(
+                        matches!(
+                            envelope(arch, vcpus, past),
+                            Err(Refusal::Bounds {
+                                what: "memory_mib",
+                                ..
+                            })
+                        ),
+                        "{arch} {vcpus} {past}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `check` holds a spec's vCPUs and memory to their envelope alone, on each architecture,
+    /// at every bound and one past it: it takes a spec exactly where the spec is its own
+    /// envelope, refuses one by the field the envelope moves, or as the envelope refuses it;
+    /// and what an envelope gives is its own envelope, which `check` takes (D215).
+    #[test]
+    fn check_and_envelope_agree_on_every_case() {
+        let unit = MEMORY_UNIT_MIB;
+        for arch in ["x86_64", "aarch64"] {
+            let least = min_memory_mib(arch);
+            let memories = [
+                0,
+                1,
+                unit,
+                least - unit,
+                least - 1,
+                least,
+                least + 1,
+                least + unit,
+                257,
+                258,
+                MOST_MIB - 1,
+                MOST_MIB,
+                MOST_MIB + 1,
+                MOST_MIB + unit,
+                u64::MAX - 1,
+                u64::MAX,
+            ];
+            for vcpus in [0, 1, 2, u32::MAX] {
+                for memory in memories {
+                    let case = format!("{arch} {vcpus} vCPUs {memory} MiB");
+                    let checked = fits(arch, vcpus, memory);
+                    match envelope(arch, vcpus, memory) {
+                        Ok(own) if own == (vcpus, memory) => assert_eq!(checked, Ok(()), "{case}"),
+                        Ok((least_vcpus, least_mib)) => {
+                            let moved = if least_vcpus == vcpus {
+                                "memory_mib"
+                            } else {
+                                "vcpus"
+                            };
+                            assert!(
+                                matches!(&checked, Err(Refusal::Bounds { what, .. }) if *what == moved),
+                                "{case}: {checked:?}"
+                            );
+                            assert!(least_vcpus >= vcpus && least_mib >= memory, "{case}");
+                            assert!(least_mib - memory.max(least) < unit, "{case}");
+                            assert_eq!(
+                                envelope(arch, least_vcpus, least_mib),
+                                Ok((least_vcpus, least_mib)),
+                                "{case}"
+                            );
+                            assert_eq!(fits(arch, least_vcpus, least_mib), Ok(()), "{case}");
+                        }
+                        Err(refused) => assert_eq!(checked, Err(refused), "{case}"),
+                    }
+                }
+            }
+        }
+        // And `check` itself, on this host's architecture, whose guests it boots.
+        let arch = std::env::consts::ARCH;
+        for vcpus in [0, 1, u32::MAX] {
+            for memory in [0, 257, 258, MOST_MIB, MOST_MIB + 1, u64::MAX] {
+                let spec = GuestSpec {
+                    vcpus,
+                    memory_mib: memory,
+                    ..spec()
+                };
+                assert_eq!(check(&spec), fits(arch, vcpus, memory), "{vcpus} {memory}");
+                assert_eq!(
+                    check(&spec).is_ok(),
+                    envelope(arch, vcpus, memory) == Ok((vcpus, memory)),
+                    "{vcpus} {memory}"
+                );
+            }
+        }
     }
 }

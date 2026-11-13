@@ -607,7 +607,9 @@ fn field<'a>(fields: &'a [(String, String)], key: &str) -> Option<&'a str> {
     fields.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
 }
 
-fn unhex32(text: &str) -> Option<[u8; 32]> {
+/// A 32-byte value, a key's SHA-256, from the 64 hex digits [`shards_remote::identity::hex`]
+/// writes; none from any other text.
+pub(crate) fn unhex32(text: &str) -> Option<[u8; 32]> {
     let bytes = text.as_bytes();
     if bytes.len() != 64 {
         return None;
@@ -643,11 +645,12 @@ impl Context {
         })
     }
 
-    /// Where its daemon is.
+    /// Where its daemon is, its handshake starting as a daemon never measured's.
     pub(crate) fn remote(&self) -> Remote {
         Remote {
             address: self.address,
             daemon: self.daemon,
+            rtt: shards_remote::tls::Rtt::Unmeasured,
         }
     }
 }

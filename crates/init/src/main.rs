@@ -94,6 +94,8 @@ mod swap;
 mod terms;
 #[cfg(target_os = "linux")]
 mod tree;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod trust;
 
 fn main() {
     #[cfg(target_os = "linux")]

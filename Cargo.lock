@@ -1406,6 +1406,8 @@ name = "shards-net"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rcgen",
+ "rustls",
  "shards-abi",
  "shards-afunix",
  "shards-dns",
@@ -1413,6 +1415,7 @@ dependencies = [
  "shards-netring",
  "shards-syscall-filter",
  "shards-testdir",
+ "time",
  "windows-sys 0.61.2",
 ]
 
