@@ -25523,8 +25523,12 @@ member's are, so one stdio protocol carries both. The pieces:
 - *Its steering*: after `Started`, the lane carries the controller's resizes and signals (D180's
   `Resize` and `Signal` frames, a signal `1..=NSIG`), one in flight to the host at a time, as
   step 5 has one record in flight.
-- *Its end*: its exit is told only once its outputs have finished, every record consumed, so no
-  tail is cut. Its steering channel stays open until the endpoint lets the exec go. A host keeps
+- *Its end*: its exit is told only once its outputs have finished, every record consumed and
+  their end (the FIN) told their controller's lane, so no tail is cut. An output that finished
+  before its lane came (a log lane with nothing to read, which has no record to wait on) is kept
+  until that lane is told its end: let go at its finish, the lane that came after found no
+  output and was refused `Scope` (managed.rs `End`, ROOT's HVF run of log_lanes.rs at edca0b3f6).
+  Its steering channel stays open until the endpoint lets the exec go. A host keeps
   each stream's control until then, because a control dropped revokes its stream.
 - *Its connection*: an exec belongs to the connection that asked for it. That connection gone,
   or the lane stopped, hangs the exec up: its steering is dropped, its streams are let go.
@@ -25809,8 +25813,11 @@ host: every record from the oldest kept, exact and at its place, a long output i
 lane's room; a later lane from inside a record reading its rest alone, the other channel's place
 kept; a place older than the oldest refused `Rotated`, naming it; a member the run has not
 refused `Unknown`; a followed lane reading what comes as it comes and ending at its source's end;
-a lane let go before its end letting its host go. Red first: with the endpoint refusing the log of
-a member it serves no stream of, `Refused(Scope)` where `Unlogged(Unknown)` was due.
+a lane let go before its end letting its host go; a lane with nothing to read, of the command and
+of a member, finishing. Red first: with the endpoint refusing the log of
+a member it serves no stream of, `Refused(Scope)` where `Unlogged(Unknown)` was due; and with an
+exec let go once its outputs finished, before its controller's lane was told their end, the lane
+with nothing to read refused `Scope`.
 
 *The daemon's log host* (`daemon/managed/log_lanes.rs`). The run's exec host hands each log lane
 to it, on a thread of its own:
