@@ -1413,6 +1413,39 @@ mod tests {
         assert_eq!(stall.slowest(), slowest);
     }
 
+    /// A process stopped since the look before is still, though its stop ran it: a stop
+    /// signal wakes a sleeper to stop itself (kernel/signal.c `do_signal_stop`), CPU of no
+    /// progress of its own (ROOT, 2026-11-13). Red while a look that found CPU grown called it
+    /// progressed whatever its state: ends.rs's "stopped, it goes on with nothing" on
+    /// adacachy2 at ba81cd9d2.
+    #[cfg(unix)]
+    #[test]
+    fn a_process_stopped_since_the_look_before_is_still_though_its_stop_ran_it() {
+        let mut sleeper = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        let pid = sleeper.id();
+        let mut watch = Watch::of(Followed::of_pid(pid).unwrap().unwrap())
+            .unwrap()
+            .unwrap();
+        // Asleep: looked at until a look finds it did nothing since the look before.
+        while watch.look().unwrap() != Found::Still {
+            std::thread::yield_now();
+        }
+        let id = libc::pid_t::try_from(pid).unwrap();
+        // SAFETY: kill(2) of this test's own child.
+        assert_eq!(unsafe { libc::kill(id, libc::SIGSTOP) }, 0);
+        // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid(2) of this test's own child, to its stop; WNOWAIT leaves it so.
+        let waited = unsafe { libc::waitid(libc::P_PID, pid, &raw mut info, libc::WSTOPPED | libc::WNOWAIT) };
+        assert_eq!(waited, 0);
+        let found = watch.look().unwrap();
+        let stopped = watch.stopped();
+        sleeper.kill().unwrap();
+        sleeper.wait().unwrap();
+        assert!(stopped, "{watch:?}");
+        assert_eq!(found, Found::Still, "{watch:?}");
+    }
+
     /// A process whose thread spins is seen runnable: running, or waiting for a CPU (ROOT's
     /// ruling of 2026-11-13). Looked at until seen so, a wait for that fact, with no clock.
     #[cfg(unix)]
