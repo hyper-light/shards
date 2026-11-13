@@ -2347,11 +2347,13 @@ mod hosted {
 
     /// A member's stdin, which its orchestrator writes (plan step 5): its guest's input
     /// connection once its VM hands it over, what the orchestrator sent and its writer has
-    /// not yet written, the room it was given and has not used, and its end.
+    /// not yet written, the room it was given and has not used, and its end. What it sent is
+    /// what a person typed, a credential as often as not: each part a [`wire::Secret`], wiped
+    /// as it is written, cleared or let go of (D242).
     #[derive(Default)]
     struct Feed {
         conn: Conn,
-        queued: std::collections::VecDeque<Vec<u8>>,
+        queued: std::collections::VecDeque<wire::Secret>,
         room: u64,
         /// The orchestrator's end or abort, to go after what is queued.
         end: Option<wire::StreamEnd>,
@@ -3438,7 +3440,7 @@ mod hosted {
     fn input_given(live: &Live<'_>, given: wire::Input) -> Result<(), ()> {
         let mut feeds = lock(&live.feeds);
         let feed = feeds.get_mut(&given.member).ok_or(())?;
-        let n = u64::try_from(given.bytes.len()).map_err(|_| ())?;
+        let n = u64::try_from(given.bytes.0.len()).map_err(|_| ())?;
         if n > feed.room || feed.end.is_some() {
             return Err(());
         }
@@ -3472,7 +3474,7 @@ mod hosted {
 
     /// What a member's input writer does next.
     enum Write {
-        Part(Stream, Vec<u8>),
+        Part(Stream, wire::Secret),
         End(Stream),
         Done,
     }
@@ -3509,10 +3511,10 @@ mod hosted {
             };
             match next {
                 Write::Part(conn, part) => {
-                    let sent = u32::try_from(part.len()).ok().filter(|len| {
+                    let sent = u32::try_from(part.0.len()).ok().filter(|len| {
                         (&conn)
                             .write_all(&protocol::header(protocol::kind::STDIN, *len))
-                            .and_then(|()| (&conn).write_all(&part))
+                            .and_then(|()| (&conn).write_all(&part.0))
                             .is_ok()
                     });
                     let Some(len) = sent else {

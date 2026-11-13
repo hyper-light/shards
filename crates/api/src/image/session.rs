@@ -905,7 +905,9 @@ fn pump(shared: &Shared, member: u32, channel: Channel, mut writer: io::PipeWrit
 /// the room the host gave, and its end once the caller closes its pipe; ends with the input,
 /// the run or the host, dropping its pipe's read end so that the caller's writes fail then.
 fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
-    let mut buf = vec![0u8; AHEAD as usize];
+    // What the caller types into the member, a credential as often as not (D242): wiped here
+    // once sent, and the buffer as it goes.
+    let mut buf = zeroize::Zeroizing::new(vec![0u8; AHEAD as usize]);
     loop {
         // Room first: nothing is read of the caller that its host has no room for.
         let room = shared.wait(Duration::MAX, |s| {
@@ -936,13 +938,21 @@ fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
         if let Some(flow) = lock(&shared.state).inputs.get_mut(&member) {
             flow.room = flow.room.saturating_sub(n as u64);
         }
-        let mut payload = Vec::with_capacity(4 + n);
-        payload.extend_from_slice(&wire::Input::head(member));
-        payload.extend_from_slice(buf.get(..n).unwrap_or_default());
-        if shared.send(wire::to_host::INPUT, &payload).is_err() {
+        if send_input(shared, member, buf.get_mut(..n).unwrap_or_default()).is_err() {
             return;
         }
     }
+}
+
+/// Sends `typed`, bytes for member `member`'s stdin, as one `INPUT` frame in its parts, never
+/// copied whole into one (`send_parts`), then wipes them where they were read; the frame's
+/// own copy is wiped as it drops (D242).
+fn send_input(shared: &Shared, member: u32, typed: &mut [u8]) -> io::Result<()> {
+    let mut payload = zeroize::Zeroizing::new(Vec::with_capacity(4 + typed.len()));
+    payload.extend_from_slice(&wire::Input::head(member));
+    payload.extend_from_slice(typed);
+    zeroize::Zeroize::zeroize(typed);
+    shared.send_parts(wire::to_host::INPUT, &payload)
 }
 
 /// Reads the host's answers until it closes its stdout, each into the state; one that
@@ -1568,6 +1578,32 @@ mod tests {
         }
     }
 
+    /// A member's typed stdin goes to its host as one `INPUT` frame and is wiped where it was
+    /// read (D242). Do: send typed bytes from a buffer of the test's. Expect: the buffer all
+    /// zeros after; the host reads one `INPUT` frame of the member's bytes, and nothing more.
+    #[test]
+    fn a_members_typed_input_is_wiped_where_it_was_read_once_sent() {
+        let (mut host, to_host) = io::pipe().unwrap();
+        let s = shared();
+        *lock(&s.to_host) = Some(to_host);
+        let mut typed = *b"sk-ant-typed-in-1234";
+        send_input(&s, 4, &mut typed).unwrap();
+        assert!(
+            typed.iter().all(|&b| b == 0),
+            "the typed bytes were left where they were read"
+        );
+        drop(lock(&s.to_host).take());
+        let mut frame = Vec::new();
+        let (kind, len) = wire::read_frame_into(&mut host, &mut frame).unwrap().unwrap();
+        assert_eq!(kind, wire::to_host::INPUT);
+        let input = wire::Input::decode(&frame[..len]).unwrap();
+        assert_eq!(
+            (input.member, input.bytes.0.as_slice()),
+            (4, b"sk-ant-typed-in-1234".as_slice())
+        );
+        assert!(wire::read_frame_into(&mut host, &mut frame).unwrap().is_none());
+    }
+
     /// A member's stdin has its flow as the run's start is taken, under the lock that answer
     /// is taken in: the host gives it room (`INPUT_ROOM`) as soon as its input connection
     /// comes, which this session's reader may take before the caller waiting for the start
@@ -1671,9 +1707,9 @@ mod tests {
         let (kind, first) = wire::read_frame(&mut from_host).unwrap().unwrap();
         assert_eq!(kind, wire::to_host::INPUT);
         let first = wire::Input::decode(&first).unwrap();
-        assert_eq!((first.member, first.bytes.as_slice()), (1, &payload[..7]));
+        assert_eq!((first.member, first.bytes.0.as_slice()), (1, &payload[..7]));
         assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(1024)), Ok(false));
-        let mut got = first.bytes;
+        let mut got = first.bytes.0.clone();
         loop {
             let (kind, frame) = wire::read_frame(&mut from_host).unwrap().unwrap();
             if kind == wire::to_host::INPUT_END {
@@ -1687,7 +1723,7 @@ mod tests {
                 break;
             }
             assert_eq!(kind, wire::to_host::INPUT);
-            got.extend(wire::Input::decode(&frame).unwrap().bytes);
+            got.extend_from_slice(&wire::Input::decode(&frame).unwrap().bytes.0);
         }
         assert_eq!(got, payload);
         feeding.join().unwrap();
