@@ -6369,7 +6369,11 @@ Tested: abi `run::managed` (the input entries, one token a member, the end's cod
 `input` (binary, no newline, invalid UTF-8 across split frames reach the pipe exactly; an
 unread stdin stops the connection's reading and resumes as it is read; a member that stops
 reading ends its input as `EPIPE` idle and writing; a connection cut short or of another
-protocol, and a hello that cannot go, end typed) and `capture` (the end's room reserved and
+protocol, and a hello that cannot go, end typed), `setup` (the input tokens the VM process
+mints, and every entry init reads for its members, of any bytes, are no entry of the
+standby's: `what_init_reads_for_its_members_is_no_workload_setup`, red on main at 845d7eb93
+with the EINVAL every run asking a member's stdin met as "error remounting the root
+read-only: invalid argument" on KVM) and `capture` (the end's room reserved and
 told before the scope's end); remote `managed::input` (frames; a record taken whole once the
 last is delivered; resubscription and refusals by scope, generation, channel and offset; an
 abort held by an unread record closes its connection; revocation), and over the real transport
@@ -9862,6 +9866,20 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   holds who is looked at and the slice (a sixth of `READY_TIMEOUT`), and
   `a_busy_process_is_seen_running_with_its_cpu_and_faults` the look on the host's own
   process times.
+- **Amended (2026-11-13, ROOT's R03 ruling): a microVM's heartbeat is no progress of a
+  test's subject.** A nesting test whose runc hung waited on it to Linux CI's 56-minute
+  limit (8a50a9742, run 43391975331), and HVF's past its own bound (fafe35efc): the daemon
+  says it each `READY_STALL` while that microVM's CPU runs, whatever it runs, and the guest
+  of a runtime that hangs runs. Past its bound a wait goes on only while its subject
+  progresses: `common::Said` takes each whole line its home's daemon says but that heartbeat
+  (`common::HEARTBEAT`) for progress, a microVM's start said slowly among them, as liveness
+  governs a cold start, which the daemon gives up on itself past `READY_TIMEOUT`. The daemon
+  still logs it, a slow workload's durable evidence; a test's client is waited on past its
+  deadline through what the daemon says of its run, never through its microVM's CPU alone.
+  Held by tests/harness.rs's stand-ins: `a_daemons_heartbeat_is_no_progress_and_its_other_lines_are`,
+  `a_wait_whose_daemon_says_only_its_heartbeat_ends_at_its_bound`, red before the change and
+  red again with the heartbeat's distinction taken out. `common::Ran`, which judges a client's
+  own microVMs by their CPU, is unchanged.
 - **A test's own waits on pools and microVMs follow them too** (M424). daemon.rs' rerun at
   b57cad27 failed 7 of 38, each a wait of the test's own past a fixed minute (a pool
   filled, a restored run's VM up) while its daemon's log showed templates saved, 264 MiB
@@ -22558,7 +22576,8 @@ Tested: `agents_run_in_their_domains` boots a real microVM. Its agent comes from
 artifact pushed to a registry; beside it is an agent of files alone. The agent reports:
 
 - uid and gid 200000, no groups;
-- PID 1, alone in its `/proc`;
+- PID 2 of its PID namespace, under init's sealed reaper (PID 1; D59's owned native domain
+  lifetime above), the two alone in its `/proc`;
 - its host name;
 - all five capability sets empty, and `no_new_privs`;
 - the other agent's directory and `/sys` unreadable (EACCES);
@@ -23507,7 +23526,8 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   warm link for that one run (`READY`, `RUN`, `TAKEN`, `STOP_ORDER` of SIGKILL so that the
   run ends with its host, the run's messages, execs). It owns the run's managed output (P3)
   and relays each member's channels and end to the orchestrator. Its channel closing ends
-  the run.
+  the run: `STOP` alone ends it `Stopped`; its channel closed without it, or broken, ends it
+  failed, saying why (D258).
 - *Members' streams and ends.* stdout and stderr are managed capture's, credited per
   channel by the orchestrator's reads; a member's end is `MEMBER_ENDED` (its status as
   `docker run` reports one), sent by init once, when its population has ended. stdin is
@@ -23568,7 +23588,8 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 - *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
   the members start.
 - *Its end* (`RunEnd`): `Exited` with the status its own command or `ATTEND`'s holder ended
-  with; a command that never started, `Failed` in its VM's words (D249).
+  with; a command that never started, `Failed` in its VM's words (D249); a run its VM could
+  not serve, `Failed` in its words (D258).
 
 **Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
 `docker run`'s `128 + signal`; every wait is on a fact.
@@ -25174,7 +25195,8 @@ docs/research/s33-veil-creds/STEP4.md.
   (`Ungranted`), a second lease of a credential while one lives (`Live`), and anything after
   the run's release (`Ended`). Every end of a run passes `end_run`, which releases the ledger
   and says `RELEASED` before `ENDED`: the run's command's exit, `STOP`, the owner's channel
-  closing (both end the run `Stopped`), and its VM failing. On the orchestrator's side
+  closing or breaking (`STOP` ends it `Stopped`, the rest `Failed`, saying why: D258), and its
+VM failing. On the orchestrator's side
   (`image::session`): each ask is put to the run's `Lessor` on a thread of its own, and each
   lease it gave is released once: as the host says `RELEASED`, as the channel ends where it
   never says it, or at once where given after the run's release or with none of its life left
@@ -25190,7 +25212,8 @@ docs/research/s33-veil-creds/STEP4.md.
   (`ImageRefusal::Spec`, "the run's lessor"). The daemon gives no network process grants, so
   none of its runs asks.
 - *The run's identity: its own key where it has one, else its channel* (the implementer's
-  decision, for ROOT to confirm). D238's key is made where a run's agent-control endpoint
+  decision, confirmed by ROOT on 2026-11-13: the run's D252 key where it binds an endpoint,
+  else its channel, no key made for leases alone, `KeyReplaced` carried end to end). D238's key is made where a run's agent-control endpoint
   binds: by the daemon as a run's managed scope begins (daemon/managed.rs `bind_agent`, its
   SHA-256 the `vm` line of the run's managed metadata), and by `shards api-run` once the run's
   VM has started, where its orchestrator asks for an endpoint (D252: `ImageSpec::control`, told
@@ -25216,11 +25239,18 @@ docs/research/s33-veil-creds/STEP4.md.
   type holding a value prints it: `Secret` its length, `lease::Asked` and `lease::Leases` neither.
 - *Wiping.* `Secret` zeroizes its bytes as it drops; the network process holds a value in
   `Zeroizing`; the copies of a frame that carries one are wiped once sent or taken (the
-  orchestrator's `LEASED` payload, the run host's read of it and the `NET_LEASE` it sends, the
-  network process's received message), each value appended last and whole, so that no buffer
-  let go of as one grows holds a part of it. Not wiped: kernel pipe and socket buffers, std's
-  `Stdin` buffer in the run host (later frames overwrite it), and the memory of a process
-  killed before its drop.
+  orchestrator's `LEASED` payload, the `NET_LEASE` the run host sends, the network process's
+  received message), each value appended last and whole, so that no buffer let go of as one
+  grows holds a part of it. The run host reads its channel into a buffer of its own
+  (`api_run::Channel` over `wire::read_frame_into`: its own descriptor of stdin, or handle,
+  read unbuffered, each frame read exactly), never through std's `Stdin`, whose buffer read
+  ahead and kept each frame until later ones overwrote it. Each frame is wiped in that buffer
+  as it is let go of (`api_run::Frame`'s drop, a frame cut short as well), so between frames
+  it is all zeros: a lease's value, a staged credential and a member's typed input alike. On
+  Windows the answer to the network process is written as it lies, its header and then its
+  payload (`shards_ipc::write_message_parts`), where `write_message`'s frame was a copy. Not
+  wiped: kernel pipe and socket buffers, which no call of a process's clears, and the memory
+  of a process killed before its drop.
 - *Literals.* Kind 100, the run channel's kinds 13 (`LEASED`), 30 (`LEASE`) and 31
   (`RELEASED`) and its version 20 are sequence numbers (98 and 99 went first to D251's
   `LANE_OPEN` and `LANE_HELD`; 14 to 19, to guest-cpu-time-v1's typed unread time, D252's
@@ -25250,13 +25280,19 @@ docs/research/s33-veil-creds/STEP4.md.
   where its start told one, under none where it told none. `image`: grants without a lessor
   refused. `api_run`: the ledger's states; the relay end to end over a socket and pipes, the
   network process's real lease client with a simulated orchestrator, at three kinds of end; an
-  answer to no ask breaking the channel; the audit's lines.
+  answer to no ask breaking the channel; the audit's lines; a `LEASED` frame read through the
+  run host's channel leaving not one byte other than zero in its buffer once let go of, its
+  next frame read whole (red before the wipe and with it removed, STEP4.md).
 - *Owed (ROOT).* A real run with a credential grant through `shards api-run` (KVM x86_64, HVF,
   WHP): the lease asked on first use and released at each end, with the run host's diagnostics
   saying each and no value. That needs the injector (step 3), the first caller of
   `Leases::ask`; until it lands, nothing in a run asks. Hex's vendored shards-api takes
-  `ImageSpec::lessor` (step 6). The daemon's runs have no grants, so their lease relay and a
-  move's release there are owed with them.
+  `ImageSpec::lessor` (step 6). The daemon's runs have no credential grants: their lease relay
+  and a move's release there are owed by the first change that gives a daemon's run grants.
+  No step brings them: not this plan's ten, nor the 39 of kiln plan
+  01a1cd8e862e7169a074db3d5fa33f3d, whose harness runs are all an orchestrator's, through
+  `shards api-run` (D231; its steps 9 and 15 grant names on the network, D236, not
+  credentials).
 
 **Built: step 5, kiln's broker (kiln main 752ca8bbc, its ledger 13991fea1; CP-T8.3).** In kiln, through kiln-seams'
 `Secrets` alone, so that `SimSecrets`, kiln's own store and Veil's (CP-T8.1) serve it alike.
@@ -26408,9 +26444,14 @@ controller's bytes and the harness's exact, its end told, a member with no bridg
 typed), `daemon::managed::tests` (the daemon's host refusing an MCP ask before its VM process
 hears of it).
 
-**Owed.** The listener, the bridge and `LANE_ACCEPTED` (D251's agent); the daemon's and the orchestrator's
-hosts pairing each connection with its ask; kiln's harness configs naming the bridge and its
-in-process server over the two streams (kiln's step 18); every real-VM run, ROOT's: each
+**Owed.** The listener, the bridge and `LANE_ACCEPTED` (D251's agent, building them; ipc kind
+101); the daemon's and the orchestrator's hosts pairing each connection with its ask, and the
+asking (the daemon's annotation, the orchestrator's MemberSpec field), goal 58's; kiln's harness
+configs naming the bridge. kiln's in-process server over the two streams is built (kiln main
+`dace992a6`, `reach::mcp::serve_lane`: one `Execs::mcp(member)` connection's newline-delimited
+JSON-RPC read from `McpConnection::from` and answered on `to`, in the runner's own process, no
+socket, on Windows too), its connection to a launch waiting on kiln's next re-vendor of Shards
+and this pairing (kiln's step 18, goal 61). Every real-VM run, ROOT's: each
 harness that takes MCP calling kiln's server through the bridge, on KVM, HVF and WHP, with the
 microVM and the kiln runner on one machine and on two.
 
@@ -26605,9 +26646,14 @@ are none.
   `domains::tests::a_members_command_line_is_its_command_then_its_runs_arguments`.
 
 **Owed** (ROOT).
-- A real-VM test: a member whose command prints its own arguments (a test guest mode that
-  writes each with its NUL), booted through `ImageShards` with `MemberSpec::args` of `--resume`,
-  `s 1` and an empty one, its stdout its own options then those three, on HVF, KVM and WHP.
+- The real-VM test's runs on HVF, KVM and WHP: api_image.rs
+  `a_members_arguments_follow_its_images_command_in_order` (written; built and linted only),
+  whose harness is the test guest's `argv` mode, writing its command line word by word, each
+  with its NUL. Booted through `ImageShards` with `MemberSpec::args` of `--resume`, `s 1` and an
+  empty one, its stdout is its program as found in its own `bin`, its image's options (`argv`,
+  `--from-image`), then those three. An argument holding a NUL is refused as "a member's
+  argument" by its place alone, and two of half `run::MAX_PAYLOAD` each as "the spec", before
+  any run host starts.
 - Guard-removal mutants, each of which must fail its test: init `command_line` without its
   arguments, the run host's `member-arg=` entries unstaged, the wire's arguments unwritten, and
   `arg_ok`'s NUL check.
@@ -26703,6 +26749,82 @@ abi's, so D28 already covers them; the literals were the gap (ROOT's go, 2026-11
 entry of an unregistered key started, applied or silently ignored; a file writing a spec's
 setup that the census does not read; an init of another build that accepts a key it has no
 reader for.
+
+### D258. An orchestrator's run ends saying why: its asks' end typed, its VM's failure to serve it told, its end kept once seen, its host's diagnostics whole where asked (built; real-VM runs owed)
+
+**Why.** Four ways a run for an orchestrator (D231) ended without saying why, three of them
+seen on real runs:
+- Hex's grants-none run ended `Stopped`, nothing said (the Hex lead, 2026-11-13). api-run's asks
+  loop broke on every frame it could not read or act on (one cut short or malformed, a kind no
+  ask has, a credit it could not pass on, an input past its room) as it broke on `STOP` and at
+  its channel's end, and every break ended the run `Stopped`; that `Stopped` also overrode an
+  end its VM had said first. The cause there was the member-stdin refusal (22101e85e).
+- api_image's `a_share_at_a_granted_volume_reaches_the_harness` ended `Exited(125)` once on HVF
+  under load (ROOT, 2b89e8504), its harness's output read whole and its end `WithRun`. 125 is
+  `spec::NOT_RUN`. Where a VM's serve fails, warm.rs `finish` writes `shards: {e}` to the VM's
+  stderr, its run host's, and sends `DONE` [125] with no words, which the run host read as the
+  command's own exit (as `docker run` exits 125 for dockerd's own failures).
+- A run whose host exited without its run's end read `Failed`, in the host's last words, to
+  `wait_for`, then `Stopped` after `stop()`: `wait_for` made that failure up at each look and
+  kept none of it, and `stop()` put `Stopped` where nothing was kept (the Hex lead).
+- The run host's diagnostics, its VM's among them, were kept only as the last bytes a refusal
+  or a failed end quotes (`said_kept`): the cause of a run that went wrong long before its end
+  is gone from them (the Hex lead's ask).
+
+**Decided and built.**
+- *The asks' end, typed* (`api_run::AsksEnd`, `read_ask`, `judged`, `ended_by`). `STOP` alone
+  ends the run `Stopped`. Its channel's end without `STOP` (its owner gone) ends it
+  `Failed("its orchestrator's channel ended without STOP")`. A frame cut short, a malformed ask
+  (by its kind's name and the wire's words), a kind that is no ask, an input past its room,
+  after its end, or for a member with no stdin, an input ended twice, and a lease's answer the
+  run cannot take end it `Failed("its orchestrator's channel broke: …")`. An answer the host
+  could not send its orchestrator, or a credit it could not pass to its VM's capture, ends it
+  `Failed`, saying so. Each failed end is said on the host's stderr too. An end the VM said
+  first (its `DONE` came) stands, whatever the asks did meanwhile. Frames are read in place
+  and wiped as they go (D242's channel), and a lease's answer is served from its frame.
+- *A VM that could not serve its run tells why* (`shards_ipc::kind::UNSERVED`, 101), before
+  its `DONE` (warm.rs `finish`). The run host keeps it (`api_run::Told`), and the run ends
+  `Failed("its VM could not serve its run: …")`, whether its command had started and whether
+  its link broke after. A VM that served its run keeps its command's end. The daemon logs it
+  for the run; its client heard it as it exited.
+- *An end, once seen, is kept* (shards-api `State::end_seen`, `State::stopped`): its host's
+  word, or its host gone without one, `Failed` in its last words, as first seen. `stop()` keeps
+  it, and every later `wait_for` reads the same. `ImageGuest::stop` says so.
+- *The run host's diagnostics, whole* (`ImageGuest::keep_diagnostics(File)`): written to the
+  file named from then on, after what the session kept of them until then. Each part is kept
+  and written under that file's lock, which naming a file takes first, so it lands once, in the
+  part written first or after. A part the file refuses is lost to it alone. The tail is kept to
+  quote as before. api_image's harness-end tests keep theirs in the test's home, which a failing
+  test shows as its home goes.
+
+**Literals.** The kind's number, 101: the next free above main's at landing (NET_LEASE 100).
+No other.
+
+**Cold start** (R03). Nothing is learned or chosen.
+
+**Tested** (light, red then green; adas-mac-studio.local, Darwin 26.2 arm64, rustc 1.98.1):
+- `api_run::tests::an_orchestrators_channel_that_breaks_ends_its_run_failed_saying_why` and
+  `a_vm_that_could_not_serve_its_run_ends_it_failed_in_its_words`. Red at 226f7bf41 and
+  7d7cc6e62: both failed ("Stopped after the VM's own end"; `Exited(125)`). As built,
+  `cargo test -p shards --bin shards api_run::` passed 34 of 34.
+- shards-api `image::session::tests::a_runs_end_once_seen_is_kept_through_its_stop` and
+  `a_hosts_diagnostics_are_written_whole_to_the_file_its_caller_names`. Red at c344f5a6f and
+  19e122a2a: both failed. As built, `cargo test -p shards-api --lib image::` passed 56 of 56.
+- `shards-ipc every_message_kind_has_its_own_number`, and clippy `-D warnings` for shards,
+  shards-api, shards-vm-process and shards-ipc, all targets: clean.
+
+**Owed** (ROOT).
+- The real-VM suites on HVF, KVM and WHP: api_image whole, member_exec, and boot.rs
+  `shards_api_*`. Hex's grants rerun, its run's end now saying why.
+- The share test's `Exited(125)` under load, run again in a loop. Its end now names the VM's
+  words where its VM could not serve the run, and its home shows its run host's diagnostics.
+- These light tests on Linux and Windows (CI), and `scripts/lint` on every target of the
+  matrix.
+
+**What would falsify it.** A run ended `Stopped` that its orchestrator never stopped. A run
+ended by an orchestrator's broken channel, or by a VM that could not serve it, whose end does
+not say why. A run's end read once as one thing and later as another. A host's diagnostic that
+its named file lacks, or holds twice.
 
 ## 4. Start path (≤ 5 ms budget)
 
