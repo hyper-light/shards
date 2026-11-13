@@ -14,8 +14,6 @@ use std::time::Duration;
 
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
-const TIMEOUT: Duration = Duration::from_secs(180);
-
 /// A build context holding `dockerfile` as its Dockerfile.
 fn context(name: &str, dockerfile: &str) -> TempDir {
     let dir = TempDir::new(name);
@@ -206,13 +204,13 @@ fn run_steps_reach_the_network_unless_it_is_none() {
     };
     let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
     let port = server.local_addr().unwrap().port();
-    // Serves one connection if one comes before the build is done; a build that never
-    // connects leaves it to give up, so that the test fails rather than hangs.
+    // Serves one connection if one comes before the build is done: the build's end (its
+    // word, or its sender dropped as the test fails) ends it, no bound of its own, so that a
+    // build that never connects fails the test rather than hangs it.
     server.set_nonblocking(true).unwrap();
     let (built_tx, built_rx) = std::sync::mpsc::channel::<()>();
     let serving = std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + TIMEOUT;
-        while std::time::Instant::now() < deadline && built_rx.try_recv().is_err() {
+        while matches!(built_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
             match server.accept() {
                 Ok((mut c, _)) => {
                     c.set_nonblocking(false).unwrap();

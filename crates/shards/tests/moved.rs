@@ -22,14 +22,12 @@
 
 mod common;
 
+use common::{
+    Patience, Run, TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, run_shards_env, served,
+};
 use std::ffi::OsStr;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
-
-use common::{Run, TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, run_shards_env, served};
-
-const TIMEOUT: Duration = Duration::from_secs(120);
 
 /// `shards ARGS` in `home`, whose runs boot the test kernel and init.
 fn shards_in(home: &Path, args: &[&str]) -> Run {
@@ -145,12 +143,18 @@ fn counts(logs: &str) -> Vec<u64> {
     logs.lines().filter_map(|l| l.parse().ok()).collect()
 }
 
-fn until(what: &str, done: &mut dyn FnMut() -> bool, said: &dyn Fn() -> String) {
-    let deadline = Instant::now() + TIMEOUT;
+/// Waits until `done`, failing the test with what `said` says then once `home`'s daemon and
+/// its microVMs progress no more ([`Patience`], its kind its caller's call site). A wait on a
+/// microVM another machine runs follows this machine's home alone: what it waits on there is
+/// no party of this host's.
+#[track_caller]
+fn until(home: &Path, what: &str, done: &mut dyn FnMut() -> bool, said: &dyn Fn() -> String) {
+    let mut patience = Patience::of(home);
     while !done() {
-        assert!(Instant::now() < deadline, "{what}: {}", said());
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(patience.holds(), "{what}: {}", said());
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
 }
 
 /// The end of a home's daemon log, for a failing test to say.
@@ -241,7 +245,12 @@ fn a_running_microvm_moves_to_another_machine_and_goes_on_there() {
             .collect()
     };
     let said_here = || daemon_log(&here);
-    until("appending", &mut || written(&file_here).len() >= 10, &said_here);
+    until(
+        &here,
+        "appending",
+        &mut || written(&file_here).len() >= 10,
+        &said_here,
+    );
     let moved = shards_in(&here, &["move", "vm", "counter", "lab"]);
     assert_eq!(
         (moved.status, moved.stdout.as_str()),
@@ -258,6 +267,7 @@ fn a_running_microvm_moves_to_another_machine_and_goes_on_there() {
     let file_there = there.join("volumes/kept/_data/counts");
     let said_there = || format!("{}\n{}", daemon_log(&there), logs(&there, "counter"));
     until(
+        &there,
         "appending there",
         &mut || written(&file_there).len() >= at_move.len() + 10,
         &said_there,
@@ -297,7 +307,12 @@ fn a_moved_microvms_log_and_image_go_with_it() {
     );
     assert_eq!(run.status, Some(0), "{run}");
     let log_here = || logs(&here, "counter");
-    until("counting", &mut || counts(&log_here()).len() >= 10, &log_here);
+    until(
+        &here,
+        "counting",
+        &mut || counts(&log_here()).len() >= 10,
+        &log_here,
+    );
     let moved = shards_in(&here, &["move", "vm", "counter", "lab"]);
     assert_eq!(
         (moved.status, moved.stdout.as_str()),
@@ -309,6 +324,7 @@ fn a_moved_microvms_log_and_image_go_with_it() {
     let log_there = || logs(&there, "counter");
     let n = counts(&log_there()).len();
     until(
+        &there,
         "counting there",
         &mut || counts(&log_there()).len() >= n + 10,
         &log_there,
@@ -343,7 +359,7 @@ fn a_move_refused_leaves_the_microvm_running_here() {
     );
     assert_eq!(run.status, Some(0), "{run}");
     let log = || logs(&here, "counter");
-    until("counting", &mut || counts(&log()).len() >= 5, &log);
+    until(&here, "counting", &mut || counts(&log()).len() >= 5, &log);
     let refused = shards_in(&here, &["move", "vm", "counter", "lab"]);
     assert_eq!(refused.status, Some(1), "{refused}");
     assert!(
@@ -352,7 +368,12 @@ fn a_move_refused_leaves_the_microvm_running_here() {
         "{refused}"
     );
     let n = counts(&log()).len();
-    until("counting on here", &mut || counts(&log()).len() >= n + 5, &log);
+    until(
+        &here,
+        "counting on here",
+        &mut || counts(&log()).len() >= n + 5,
+        &log,
+    );
     let all = counts(&log());
     assert_eq!(all, (1..=all.len() as u64).collect::<Vec<_>>());
     assert_eq!(shards_in(&here, &["rm", "-f", "counter"]).status, Some(0));
@@ -392,7 +413,12 @@ fn a_microvm_moved_saved_keeps_its_cpu_image_files_and_connections() {
     let image_id = field(&here, &["inspect", "-f", "{{.Image}}", "mover"]);
     assert_ne!(image_id, other_id);
     let log_here = || logs(&here, "mover");
-    until("counting", &mut || counts(&log_here()).len() >= 10, &log_here);
+    until(
+        &here,
+        "counting",
+        &mut || counts(&log_here()).len() >= 10,
+        &log_here,
+    );
     let cpu = |home: &Path| {
         cpu_identity(&field(
             home,
@@ -421,6 +447,7 @@ fn a_microvm_moved_saved_keeps_its_cpu_image_files_and_connections() {
     let log_there = || logs(&there, "mover");
     let n = counts(&log_there()).len();
     until(
+        &there,
         "counting there",
         &mut || counts(&log_there()).len() >= n + 10,
         &log_there,
@@ -457,17 +484,11 @@ fn a_microvm_moved_saved_keeps_its_cpu_image_files_and_connections() {
 
     // Its connections, dialed again: an exec, and a stop's signal.
     assert_eq!(cpu(&there), cpu_here, "its CPUs, as its guest sees them");
-    let asked = Instant::now();
+    // Its signal, not its grace's end: SIGTERM's 143, where the kill past the grace says 137.
     let stopped = shards_in(&there, &["stop", "-t", "30", "mover"]);
-    let took = asked.elapsed();
     assert_eq!(stopped.status, Some(0), "{stopped}");
     let code = field(&there, &["inspect", "-f", "{{.State.ExitCode}}", "mover"]);
-    assert_eq!(
-        (code.as_str(), took < Duration::from_secs(30)),
-        ("143", true),
-        "stopped in {took:?}\n{}",
-        daemon_log(&there)
-    );
+    assert_eq!(code, "143", "{stopped}\n{}", daemon_log(&there));
     assert_eq!(shards_in(&there, &["rm", "-f", "mover"]).status, Some(0));
 }
 
@@ -506,6 +527,7 @@ fn a_volume_shared_here_moves_with_one_and_the_other_goes_on_here() {
     let data = |home: &Path, file: &str| home.join("volumes/shared/_data").join(file);
     let said_here = || daemon_log(&here);
     until(
+        &here,
         "appending",
         &mut || appended(&data(&here, "first")).len() >= 10 && appended(&data(&here, "second")).len() >= 10,
         &said_here,
@@ -520,6 +542,7 @@ fn a_volume_shared_here_moves_with_one_and_the_other_goes_on_here() {
     );
     let at_move = appended(&data(&here, "first")).len();
     until(
+        &there,
         "appending there",
         &mut || appended(&data(&there, "first")).len() >= at_move + 10,
         &|| daemon_log(&there),
@@ -544,6 +567,7 @@ fn a_volume_shared_here_moves_with_one_and_the_other_goes_on_here() {
     );
     let n = appended(&data(&here, "second")).len();
     until(
+        &here,
         "appending on here",
         &mut || appended(&data(&here, "second")).len() >= n + 10,
         &said_here,
@@ -584,7 +608,7 @@ fn a_moved_microvms_published_port_answers_there() {
     );
     assert_eq!(run.status, Some(0), "{run}");
     let log_here = || logs(&here, "web");
-    until("serving", &mut || log_here().contains("ready"), &log_here);
+    until(&here, "serving", &mut || log_here().contains("ready"), &log_here);
     let ask = |home: &Path| {
         let listed = shards_in(home, &["port", "web", "7000"]);
         let port: u16 = listed
@@ -594,11 +618,13 @@ fn a_moved_microvms_published_port_answers_there() {
             .and_then(|p| p.trim().parse().ok())
             .unwrap_or_else(|| panic!("{listed}"));
         let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        c.set_read_timeout(Some(TIMEOUT)).unwrap();
         c.write_all(b"hello").unwrap();
         c.shutdown(std::net::Shutdown::Write).unwrap();
+        // Read as a stream `home`'s daemon carries to its guest, a judged wait.
         let mut got = String::new();
-        c.read_to_string(&mut got).unwrap();
+        common::Following::of_home(&c, home)
+            .read_to_string(&mut got)
+            .unwrap();
         got
     };
     let answered = ask(&here);
@@ -664,7 +690,12 @@ fn a_running_microvm_moves_live_and_goes_on_there() {
     );
     assert_eq!(run.status, Some(0), "{run}");
     let log_here = || logs(&here, "counter");
-    until("counting", &mut || counts(&log_here()).len() >= 10, &log_here);
+    until(
+        &here,
+        "counting",
+        &mut || counts(&log_here()).len() >= 10,
+        &log_here,
+    );
     let (moved, downtime) = move_live(&here, "counter");
     assert_eq!(
         (moved.status, moved.stdout.as_str()),
@@ -681,6 +712,7 @@ fn a_running_microvm_moves_live_and_goes_on_there() {
     let log_there = || logs(&there, "counter");
     let n = counts(&log_there()).len();
     until(
+        &there,
         "counting there",
         &mut || counts(&log_there()).len() >= n + 10,
         &log_there,
@@ -704,12 +736,17 @@ fn a_running_microvm_moves_live_and_goes_on_there() {
     );
     assert_eq!(run.status, Some(0), "{run}");
     let log = || logs(&here, "busy");
-    until("counting", &mut || counts(&log()).len() >= 5, &log);
+    until(&here, "counting", &mut || counts(&log()).len() >= 5, &log);
     let (refused, _) = move_live(&here, "busy");
     assert_eq!(refused.status, Some(1), "{refused}");
     assert!(refused.stderr.contains("busy goes on here"), "{refused}");
     let n = counts(&log()).len();
-    until("counting on here", &mut || counts(&log()).len() >= n + 5, &log);
+    until(
+        &here,
+        "counting on here",
+        &mut || counts(&log()).len() >= n + 5,
+        &log,
+    );
     assert_eq!(shards_in(&here, &["rm", "-f", "busy"]).status, Some(0));
 }
 
@@ -738,7 +775,12 @@ fn a_microvm_writing_its_memory_moves_live_with_none_of_it_lost() {
     );
     assert_eq!(run.status, Some(0), "{run}");
     let log_here = || logs(&here, "scribbler");
-    until("sweeping", &mut || counts(&log_here()).len() >= 2, &log_here);
+    until(
+        &here,
+        "sweeping",
+        &mut || counts(&log_here()).len() >= 2,
+        &log_here,
+    );
     let (moved, downtime) = move_live(&here, "scribbler");
     assert_eq!(
         (moved.status, moved.stdout.as_str()),
@@ -751,6 +793,7 @@ fn a_microvm_writing_its_memory_moves_live_with_none_of_it_lost() {
     let log_there = || logs(&there, "scribbler");
     let n = counts(&log_there()).len();
     until(
+        &there,
         "sweeping there",
         &mut || counts(&log_there()).len() >= n + 3 || log_there().contains("BAD"),
         &log_there,
@@ -817,7 +860,12 @@ fn a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it() {
         );
         assert_eq!(run.status, Some(0), "{run}");
         let log_here = || logs(&here, name);
-        until("counting", &mut || counts(&log_here()).len() >= 3, &log_here);
+        until(
+            &here,
+            "counting",
+            &mut || counts(&log_here()).len() >= 3,
+            &log_here,
+        );
     };
     start("host");
     let hosts = features(&cpu(&here, "host"));
@@ -891,7 +939,12 @@ fn an_x86_cpu_baseline_is_all_its_guest_finds_and_goes_with_it() {
         );
         assert_eq!(run.status, Some(0), "{run}");
         let log_here = || logs(&here, name);
-        until("counting", &mut || counts(&log_here()).len() >= 3, &log_here);
+        until(
+            &here,
+            "counting",
+            &mut || counts(&log_here()).len() >= 3,
+            &log_here,
+        );
     };
     start("host");
     let hosts = flags(&cpu(&here, "host"));
@@ -1101,12 +1154,18 @@ fn a_microvm_moves_to_another_host_saved_and_live() {
     );
     assert_eq!(run.status, Some(0), "{run}");
     let log_here = || logs(&here, &counter);
-    until("appending", &mut || counts(&log_here()).len() >= 10, &log_here);
+    until(
+        &here,
+        "appending",
+        &mut || counts(&log_here()).len() >= 10,
+        &log_here,
+    );
     let moved = move_timed(&here, &counter, "peer");
     moved_to_peer(&here, &moved, &counter);
     eprintln!("saved move: {}", moved.stderr);
     let n = counts(&logs_there(&counter)).len();
     until(
+        &here,
         "appending there",
         &mut || counts(&logs_there(&counter)).len() >= n + 10,
         &|| logs_there(&counter),
@@ -1140,7 +1199,12 @@ fn a_microvm_moves_to_another_host_saved_and_live() {
     );
     assert_eq!(run.status, Some(0), "{run}");
     let log_here = || logs(&here, &scribbler);
-    until("sweeping", &mut || counts(&log_here()).len() >= 2, &log_here);
+    until(
+        &here,
+        "sweeping",
+        &mut || counts(&log_here()).len() >= 2,
+        &log_here,
+    );
     let (moved, downtime) = move_live_to(&here, &scribbler, "peer");
     moved_to_peer(&here, &moved, &scribbler);
     assert!(moved.stderr.contains("move: round 0: "), "{moved}");
@@ -1148,6 +1212,7 @@ fn a_microvm_moves_to_another_host_saved_and_live() {
     eprintln!("live move: downtime {downtime} us; {}", moved.stderr);
     let n = counts(&logs_there(&scribbler)).len();
     until(
+        &here,
         "sweeping there",
         &mut || {
             let said = logs_there(&scribbler);
@@ -1297,7 +1362,12 @@ fn a_microvm_moved_to_another_host_keeps_its_cpu_image_files_and_connections() {
     assert_eq!(run.status, Some(0), "{run}");
     let image_id = field(&here, &["inspect", "-f", "{{.Image}}", &name]);
     let log_here = || logs(&here, &name);
-    until("counting", &mut || counts(&log_here()).len() >= 10, &log_here);
+    until(
+        &here,
+        "counting",
+        &mut || counts(&log_here()).len() >= 10,
+        &log_here,
+    );
     let cpu = |at: &[&str]| {
         let mut args = at.to_vec();
         args.extend(["exec", name.as_str(), "/bin/testguest", "files", "/proc/cpuinfo"]);
@@ -1318,6 +1388,7 @@ fn a_microvm_moved_to_another_host_keeps_its_cpu_image_files_and_connections() {
     let log_there = || logs_at_peer(&here, &name);
     let n = counts(&log_there()).len();
     until(
+        &here,
         "counting there",
         &mut || counts(&log_there()).len() >= n + 10,
         &log_there,
@@ -1358,16 +1429,11 @@ fn a_microvm_moved_to_another_host_keeps_its_cpu_image_files_and_connections() {
         cpu_here,
         "its CPUs, as its guest sees them"
     );
-    let asked = Instant::now();
+    // Its signal, not its grace's end: SIGTERM's 143, where the kill past the grace says 137.
     let stopped = shards_in(&here, &at_peer(&["stop", "-t", "30", &name]));
-    let took = asked.elapsed();
     assert_eq!(stopped.status, Some(0), "{stopped}");
     let code = field(&here, &at_peer(&["inspect", "-f", "{{.State.ExitCode}}", &name]));
-    assert_eq!(
-        (code.as_str(), took < Duration::from_secs(30)),
-        ("143", true),
-        "stopped in {took:?}"
-    );
+    assert_eq!(code, "143", "{stopped}");
 }
 
 /// A volume two microVMs share here moves with the first moved to another machine
@@ -1405,6 +1471,7 @@ fn a_volume_shared_here_moves_to_another_host_with_one_and_the_other_goes_on_her
     let data = |file: &str| here.join("volumes").join(&volume).join("_data").join(file);
     let said_here = || daemon_log(&here);
     until(
+        &here,
         "appending",
         &mut || appended(&data(&first)).len() >= 10 && appended(&data(&second)).len() >= 10,
         &said_here,
@@ -1415,6 +1482,7 @@ fn a_volume_shared_here_moves_to_another_host_with_one_and_the_other_goes_on_her
     let log_there = || logs_at_peer(&here, &first);
     let n = counts(&log_there()).len();
     until(
+        &here,
         "appending there",
         &mut || counts(&log_there()).len() >= n + 10,
         &log_there,
@@ -1454,6 +1522,7 @@ fn a_volume_shared_here_moves_to_another_host_with_one_and_the_other_goes_on_her
     );
     let n = appended(&data(&second)).len();
     until(
+        &here,
         "appending on here",
         &mut || appended(&data(&second)).len() >= n + 10,
         &said_here,
@@ -1503,7 +1572,7 @@ fn a_moved_microvms_published_port_answers_on_another_host() {
     );
     assert_eq!(run.status, Some(0), "{run}");
     let log_here = || logs(&here, &name);
-    until("serving", &mut || log_here().contains("ready"), &log_here);
+    until(&here, "serving", &mut || log_here().contains("ready"), &log_here);
     // The port the machine `at` asks published it at, and what the guest answered there, at
     // address `ip`.
     let ask = |at: &[&str], ip: std::net::IpAddr| {
@@ -1517,14 +1586,18 @@ fn a_moved_microvms_published_port_answers_on_another_host() {
             .and_then(|p| p.trim().parse().ok())
             .unwrap_or_else(|| panic!("{listed}"));
         let to = std::net::SocketAddr::new(ip, port);
-        let mut c = std::net::TcpStream::connect_timeout(&to, TIMEOUT).unwrap_or_else(|e| {
+        // Its connect bounded by the host's TCP (its SYN retries), no bound of the test's.
+        let mut c = std::net::TcpStream::connect(to).unwrap_or_else(|e| {
             panic!("{to}: {e}: the machine moved to takes no TCP from this one there (SHARDS_MOVE_PORT names a port it takes)")
         });
-        c.set_read_timeout(Some(TIMEOUT)).unwrap();
         c.write_all(b"hello").unwrap();
         c.shutdown(std::net::Shutdown::Write).unwrap();
+        // Read as a stream this machine's home carries or relays, a judged wait: the other
+        // machine's daemon is no party of this host's.
         let mut got = String::new();
-        c.read_to_string(&mut got).unwrap();
+        common::Following::of_home(&c, &here)
+            .read_to_string(&mut got)
+            .unwrap();
         (port, got)
     };
     let (_, answered) = ask(&[], std::net::Ipv4Addr::LOCALHOST.into());
@@ -1609,7 +1682,7 @@ fn a_move_another_host_cannot_take_is_refused_before_anything_moves() {
     );
     assert_eq!(run.status, Some(0), "{run}");
     let log = || logs(&here, &name);
-    until("counting", &mut || counts(&log()).len() >= 5, &log);
+    until(&here, "counting", &mut || counts(&log()).len() >= 5, &log);
     let refused = move_timed(&here, &name, "peer");
     assert_eq!(refused.status, Some(1), "{refused}");
     assert!(
@@ -1626,7 +1699,12 @@ fn a_move_another_host_cannot_take_is_refused_before_anything_moves() {
     let there = shards_in(&here, &at_peer(&["inspect", &name]));
     assert_eq!(there.status, Some(1), "nothing of it there: {there}");
     let n = counts(&log()).len();
-    until("counting on here", &mut || counts(&log()).len() >= n + 5, &log);
+    until(
+        &here,
+        "counting on here",
+        &mut || counts(&log()).len() >= n + 5,
+        &log,
+    );
     let all = counts(&log());
     assert_eq!(
         all,
@@ -1697,7 +1775,7 @@ fn live_move_downtime() {
         );
         assert_eq!(run.status, Some(0), "{run}");
         let log = || logs(&here, &name);
-        until("counting", &mut || counts(&log()).len() >= 5, &log);
+        until(&here, "counting", &mut || counts(&log()).len() >= 5, &log);
         let (moved, downtime) = move_live(&here, &name);
         assert_eq!(moved.status, Some(0), "{moved}");
         let rounds: Vec<&str> = moved

@@ -192,7 +192,7 @@ pub mod kind {
     /// Guest to host, on the signal connection: the managed control scope ended normally.
     pub const MANAGED_CONTROL_END: u8 = 47;
     /// Guest to host, on the workload's connection, once a member's population has ended
-    /// (D231): its member index and its status, as
+    /// (D231): its member index and how its command ended, exited or signaled, as
     /// [`members::Ended`](super::members::Ended) encodes them; once a member.
     pub const MEMBER_ENDED: u8 = 48;
     /// Guest to host, on the workload's connection of a run given the nesting grant (D234):

@@ -1241,6 +1241,159 @@ fn a_members_arguments_follow_its_images_command_in_order() {
     ));
 }
 
+/// What `call` on a run's agent-control endpoint gives (a lane's answer, a member's end, a read
+/// of a member's channel), judged as a call of its run's is (`common::judged`, as [`ask`]): its
+/// party what this test's process started. Refused, the run is stopped, which ends its
+/// endpoint and every lane with it.
+#[track_caller]
+fn on_endpoint<T: Send>(guest: &dyn ImageGuest, what: &str, call: impl FnOnce() -> T + Send) -> T {
+    common::judged(
+        Party::started(None),
+        what,
+        || {
+            let _ = guest.stop();
+        },
+        call,
+    )
+    .unwrap_or_else(|refused| panic!("{refused}"))
+}
+
+/// D238's member lanes through an orchestrator's run (plan step 11; the Hex lead's ask 3, which
+/// makes kiln's interrupt and stop real signals): shards-api boots an image of two harnesses
+/// under a control ask of the orchestrator's key, `codex` with an MCP bridge (D254) its harness
+/// writes MCP's `initialize` into, `claude` asleep; its controller dials the run's endpoint
+/// subscribed to exec lanes.
+/// - **The MCP connection.** `Execs::mcp(codex)` carries the harness's `initialize`, exactly.
+/// - **The signals.** TERM to `codex`'s command ends it `Signaled(15)`, never `Exited(143)`;
+///   KILL to `claude`'s, `Signaled(9)`: on its lane (`exec::End`) and on the image channel
+///   (`MemberEnd`) alike.
+/// - **After.** A steer of an ended member is refused `Ended`; its lane asked anew says how it
+///   ended.
+///
+/// Each wait on the guest is judged (`common::judged`, D209), the run stopped where one is
+/// refused; none is fixed.
+#[test]
+fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_its_endpoint() {
+    use shards_api::control::{
+        Controller, Fault, Got, Identity, McpConnection, Member, MemberControl, Subscriptions, Unsteered,
+        exec, exec_admissions,
+    };
+    use shards_api::image::ControlAsk;
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-lanes-home");
+    build(&home, "api-lanes:1", &[], "HARNESS claude FROM ./harness.tar\n");
+    let hex = Identity::generate().unwrap();
+    let claude = MemberName::harness("claude");
+    let member = |member: MemberName, mode: &str, mcp: bool| MemberSpec {
+        member,
+        env: Vec::new(),
+        files: Vec::new(),
+        workdir: None,
+        stdin: false,
+        terminal: false,
+        args: vec![mode.into()],
+        mcp,
+    };
+    let mut s = spec(&home, "api-lanes:1");
+    s.members = vec![
+        member(codex(), "mcp-hello", true),
+        member(claude.clone(), "sleep", false),
+    ];
+    s.control = Some(ControlAsk {
+        controller: hex.fingerprint(),
+        sockets: None,
+    });
+    let guest = boot(&home, &s);
+    let index = |name: &MemberName| {
+        guest
+            .members()
+            .iter()
+            .find(|m| m.kind == name.kind && m.name == name.name)
+            .map(|m| m.index)
+            .unwrap()
+    };
+    let (codex_at, claude_at) = (index(&codex()), index(&claude));
+    let at = *guest.control().expect("the run's agent-control endpoint");
+    let (controller, dialed) = Controller::dial(
+        &hex,
+        at.vm,
+        at.address,
+        Subscriptions {
+            outputs: &[],
+            inputs: &[],
+            execs: Some(exec_admissions()),
+            sockets: None,
+        },
+    )
+    .unwrap();
+    let driver = std::thread::spawn(move || controller.run());
+    let execs = dialed.execs.expect("exec lanes subscribed");
+    // The harness's connection to its bridge, held for the controller until it asks.
+    let said = on_endpoint(&*guest, "codex's MCP connection", || {
+        let McpConnection { mut from, .. } = execs.mcp(codex_at).unwrap();
+        let mut said = Vec::new();
+        while said.len() < shards_testguest::MCP_INITIALIZE.len() {
+            match from.next_record().unwrap() {
+                Got::Record { bytes, .. } => said.extend(bytes),
+                Got::Finished => break,
+            }
+        }
+        said
+    });
+    assert_eq!(
+        String::from_utf8_lossy(&said),
+        String::from_utf8_lossy(shards_testguest::MCP_INITIALIZE)
+    );
+    // `claude` asleep, as its own word says, before it is signalled.
+    let mut asleep = guest.take_output(&claude, Channel::Stdout).unwrap();
+    let mut line = [0; 6];
+    on_endpoint(&*guest, "claude's ready", || asleep.read_exact(&mut line)).unwrap();
+    assert_eq!(&line, b"ready\n");
+    let signalled = |at: u32, signal: u32| {
+        on_endpoint(&*guest, "a member's signal and its end", || {
+            let Member::Running(MemberControl {
+                mut steering,
+                mut end,
+            }) = execs.member(at).unwrap()
+            else {
+                panic!("member {at} runs");
+            };
+            let sent = steering.signal(signal);
+            let ended = end.wait();
+            let after = steering.signal(signal);
+            (sent, ended, after)
+        })
+    };
+    let (sent, ended, after) = signalled(codex_at, 15);
+    assert_eq!(sent, Ok(()));
+    assert_eq!(ended, Ok(exec::End::Signaled(15)), "TERM, never an exit of 143");
+    assert_eq!(after, Err(Fault::Unsteered(Unsteered::Ended)));
+    let (sent, ended, _) = signalled(claude_at, 9);
+    assert_eq!(sent, Ok(()));
+    assert_eq!(ended, Ok(exec::End::Signaled(9)));
+    assert_eq!(
+        ask(&*guest, |g| g.wait_member(&codex(), Duration::MAX)).unwrap(),
+        Some(MemberEnd::Signaled(15))
+    );
+    assert_eq!(
+        ask(&*guest, |g| g.wait_member(&claude, Duration::MAX)).unwrap(),
+        Some(MemberEnd::Signaled(9))
+    );
+    let again = on_endpoint(&*guest, "an ended member's lane", || execs.member(codex_at));
+    assert!(
+        matches!(again, Ok(Member::Ended(exec::End::Signaled(15)))),
+        "{again:?}"
+    );
+    guest.stop().unwrap();
+    assert_eq!(
+        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        Some(RunEnd::Stopped)
+    );
+    let _ = driver.join().unwrap();
+}
+
 /// A value the guest's memory holds, unique to this test's run: a SHA-256 of `label`, this
 /// process and the time, in hex.
 fn canary(label: &str) -> String {

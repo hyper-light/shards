@@ -169,20 +169,29 @@ fn host_addresses() -> std::collections::BTreeSet<IpAddr> {
 
 /// The first connection on `listener` whose peer `ours` admits, before `until`. A peer it
 /// does not is closed unanswered and returned among the refused.
+/// The first connection on `listener` from `ours`, the strangers before it refused: within
+/// the campaign's deadline `until`, or with none where the connections were made before the
+/// call (an order, the gate's own unit test).
 fn accept_from(
     listener: &TcpListener,
     ours: impl Fn(IpAddr) -> bool,
-    until: Instant,
+    until: Option<Instant>,
 ) -> (TcpStream, SocketAddr, Vec<SocketAddr>) {
     listener.set_nonblocking(true).unwrap();
     let mut refused = Vec::new();
     loop {
-        let left = until.saturating_duration_since(Instant::now());
-        assert!(
-            !left.is_zero(),
-            "original gate deadline; refused peers {refused:?}"
-        );
-        let ms = i32::try_from(left.as_millis().checked_add(1).unwrap()).unwrap();
+        // poll(2)'s and WSAPoll's -1: no timeout.
+        let ms = match until {
+            Some(until) => {
+                let left = until.saturating_duration_since(Instant::now());
+                assert!(
+                    !left.is_zero(),
+                    "original gate deadline; refused peers {refused:?}"
+                );
+                i32::try_from(left.as_millis().checked_add(1).unwrap()).unwrap()
+            }
+            None => -1,
+        };
         if !connection_waits(listener, ms) {
             continue;
         }
@@ -209,7 +218,7 @@ fn connection_waits(listener: &TcpListener, ms: i32) -> bool {
         events: libc::POLLIN,
         revents: 0,
     };
-    // SAFETY: one initialized pollfd borrowing the live owned listener; finite timeout.
+    // SAFETY: one initialized pollfd borrowing the live owned listener.
     let result = unsafe { libc::poll(&raw mut ready, 1, ms) };
     if result < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
         return false;
@@ -235,7 +244,7 @@ fn connection_waits(listener: &TcpListener, ms: i32) -> bool {
         events: POLLRDNORM,
         revents: 0,
     };
-    // SAFETY: one initialized WSAPOLLFD naming the live owned listener; finite timeout.
+    // SAFETY: one initialized WSAPOLLFD naming the live owned listener.
     let result = unsafe { WSAPoll(&raw mut ready, 1, ms) };
     assert_eq!(
         result,
@@ -250,7 +259,7 @@ fn connection_waits(listener: &TcpListener, ms: i32) -> bool {
 fn release_gate(listener: &TcpListener, inputs: &Inputs, until: Instant) {
     let until = until.min(Instant::now().checked_add(inputs.call).unwrap());
     let host = host_addresses();
-    let (mut peer, address, refused) = accept_from(listener, |ip| host.contains(&ip), until);
+    let (mut peer, address, refused) = accept_from(listener, |ip| host.contains(&ip), Some(until));
     peer.set_write_timeout(Some(
         until.saturating_duration_since(Instant::now()).min(inputs.call),
     ))
@@ -380,7 +389,8 @@ fn the_gate_releases_only_a_peer_of_this_host() {
     let elsewhere = stranger().map(|source| connect_from(source, at));
     let own = connect_from(Ipv4Addr::LOCALHOST, at);
     let ours = |ip: IpAddr| ip == IpAddr::from(Ipv4Addr::LOCALHOST);
-    let (_peer, address, refused) = accept_from(&gate, ours, Instant::now() + WITHIN);
+    // Both connections made before it: its accept is an order, no bound.
+    let (_peer, address, refused) = accept_from(&gate, ours, None);
     assert_eq!(address, own.local_addr().unwrap());
     match elsewhere {
         Some(mut elsewhere) => {
