@@ -293,8 +293,9 @@ pub fn read_refused(bytes: &[u8]) -> Result<Option<Reason>, Option<Tag>> {
 
 /// How many connections of its controller the endpoint holds: the one it serves, and the one
 /// that replaces it. A newer connection's handshake closes the older ([`Lanes::connected`]),
-/// which the driver keeps until its close has drained (RFC 9000 §10.2); a third, until then,
-/// is refused at its first packet, and its controller dials again.
+/// whose place, while its close drains (RFC 9000 §10.2), the driver frees for the next to come
+/// (`DriverLimits::connections`); a third is refused at its first packet only while both are
+/// open, the newer's handshake not yet done, and its controller dials again.
 const CONNECTIONS: usize = 2;
 
 /// What one microVM's endpoint serves: each member stream, with what its caller admitted for
