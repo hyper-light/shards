@@ -4262,6 +4262,15 @@ mod tests {
             }
         }
 
+        /// The flow resumed as lib.rs' `resume_flows` resumes it: its leases answered since the
+        /// last, each its own.
+        fn resume(&mut self, credentials: &mut Credentials) {
+            for r in credentials.leases.resumed() {
+                assert_eq!(r.waiter, self.waiter);
+            }
+            self.step(credentials, None, |f, run, q| f.resume(run, q));
+        }
+
         /// The flow's step with the run, its say taken as tcp.rs takes it.
         fn step(
             &mut self,
@@ -4404,10 +4413,7 @@ mod tests {
                 );
                 let moved = self.turn(credentials);
                 if lease && lease_all(credentials) > 0 {
-                    for r in credentials.leases.resumed() {
-                        assert_eq!(r.waiter, self.waiter);
-                    }
-                    self.step(credentials, None, |f, run, q| f.resume(run, q));
+                    self.resume(credentials);
                 } else if !moved {
                     std::thread::sleep(Duration::from_millis(1));
                 }
@@ -4575,6 +4581,65 @@ mod tests {
             "a lease asked for no grant's request"
         );
         assert!(free.audit.is_empty() && granted.audit.is_empty());
+    }
+
+    /// Do: send a granted host a request with the credential's placeholder, the run's broker
+    /// refusing its lease; then, on a new connection, the same request, its lease answered.
+    /// Expect: the first answered 503 by the injector naming the refusal, its connection
+    /// closed, nothing of it reaching the host and nothing filled; one lease asked for it. The
+    /// second asked anew, a refusal answering its own ask alone, and arriving filled.
+    #[test]
+    fn a_request_whose_lease_is_refused_is_answered_503_and_a_later_one_asks_anew() {
+        let root = root("shards test root");
+        let (addr, had) = echo(echo_config(&root), false);
+        let mut credentials = credentials(&root);
+        let mut bench = Bench::new(guest(credentials.ca.der().to_vec().into(), GRANTED, None), addr);
+        let request =
+            format!("GET /v1/models HTTP/1.1\r\nHost: {GRANTED}\r\nx-api-key: {PLACEHOLDER}\r\n\r\n")
+                .into_bytes();
+        bench.guest.writer().write_all(&request).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut refused = 0;
+        while !whole(&bench.got) {
+            assert!(
+                Instant::now() < deadline,
+                "no end: the guest read {:?}",
+                String::from_utf8_lossy(&bench.got)
+            );
+            let moved = bench.turn(&mut credentials);
+            let n = refuse_leases(&mut credentials);
+            refused += n;
+            // The refusal reaches the request as its flow resumes: an ask after it is the request
+            // waiting again on what was refused, asked of the broker without end.
+            assert!(
+                refused <= 1,
+                "a refused lease was asked again: its request was never answered"
+            );
+            if n > 0 {
+                bench.resume(&mut credentials);
+            } else if !moved {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        assert_eq!(refused, 1, "one lease asked");
+        let said = String::from_utf8_lossy(&bench.got).into_owned();
+        assert!(said.starts_with("HTTP/1.1 503 Service Unavailable\r\n"), "{said}");
+        assert!(
+            said.contains(&format!("credential {CLAUDE} was not leased")),
+            "{said}"
+        );
+        assert!(bench.closed, "the connection was kept after its 503");
+        assert!(bench.audit.is_empty(), "{:?}", bench.audit);
+        assert!(
+            had.recv_timeout(Duration::from_millis(200)).is_err(),
+            "an unleased request reached the host"
+        );
+        let mut later = Bench::new(guest(credentials.ca.der().to_vec().into(), GRANTED, None), addr);
+        later.guest.writer().write_all(&request).unwrap();
+        later.until(&mut credentials, true, |b| whole(&b.got));
+        let got = had.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(got.request, swapped(&request, PLACEHOLDER.as_bytes(), VALUE));
+        assert_eq!(later.audit.len(), 1);
     }
 
     /// Do: send a granted host's connection a request for another host, with the placeholder.
@@ -6399,10 +6464,7 @@ mod tests {
             let asked = serve(credentials);
             if asked > 0 {
                 let _ = credentials.sign_ins.resumed();
-                for r in credentials.leases.resumed() {
-                    assert_eq!(r.waiter, bench.waiter);
-                }
-                bench.step(credentials, None, |f, run, q| f.resume(run, q));
+                bench.resume(credentials);
             }
             if out.is_empty() && !moved && asked == 0 {
                 return false;
@@ -6451,6 +6513,78 @@ mod tests {
             Bench::on(guest, Wire::Here(Box::new(host))),
             Peer::new(End::Client, GUEST_HOLDS),
         )
+    }
+
+    /// Each lease asked refused, as a broker whose policy keeps the credential from the run.
+    fn refuse_leases(credentials: &mut Credentials) -> usize {
+        let asks = credentials.leases.asks();
+        for ask in &asks {
+            let (id, _) = lease::decode_ask(ask).unwrap();
+            let why = lease::Refusal::Denied("this run's policy keeps it".into());
+            let answer = lease::encode_answer(id, Err(&why)).unwrap();
+            assert!(credentials.leases.answered(&answer, Instant::now()));
+        }
+        asks.len()
+    }
+
+    /// Do: on one HTTP/2 connection to the granted host, stream 1 carrying the credential's
+    /// placeholder and stream 3 carrying none, the run's broker refusing the lease. Expect:
+    /// stream 1 answered 503 by the injector on that stream alone, nothing of it reaching the
+    /// host and nothing filled; stream 3 answered by the host; no stream reset, the connection
+    /// kept.
+    #[test]
+    fn an_h2_stream_whose_lease_is_refused_is_answered_503_while_another_completes() {
+        let root = root("shards test root");
+        let mut credentials = credentials(&root);
+        let host = H2Host::new(&root, &[GRANTED, OTHER]);
+        let (mut bench, mut peer) = h2_here_bench(&credentials, GRANTED, host);
+        let mut seen = Vec::new();
+        let bearer = format!("Bearer {PLACEHOLDER}");
+        peer.send_headers(
+            1,
+            &h2_request("GET", GRANTED, "/v1/messages", Some(&bearer)),
+            true,
+        );
+        peer.send_headers(3, &h2_request("GET", GRANTED, "/v1/models", None), true);
+        let mut refused = 0;
+        h2_here_until(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut |c| {
+                let n = refuse_leases(c);
+                refused += n;
+                // The refusal reaches its stream as the flow resumes: an ask after it is the
+                // stream waiting again on what was refused, asked of the broker without end.
+                assert!(
+                    refused <= 1,
+                    "a refused lease was asked again: its stream was never answered"
+                );
+                n
+            },
+            |p, _| p.response(1).ended && p.response(3).ended,
+        );
+        assert_eq!(refused, 1, "one lease asked");
+        let Got { fields, data, .. } = peer.response(1);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"503"[..]));
+        assert!(
+            String::from_utf8_lossy(&data).contains(&format!("credential {CLAUDE} was not leased")),
+            "{:?}",
+            String::from_utf8_lossy(&data)
+        );
+        let Got { fields, .. } = peer.response(3);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        assert_eq!(
+            bench.host().streams.len(),
+            1,
+            "the unleased stream reached the host"
+        );
+        assert!(bench.host().at("/v1/models").ended);
+        assert!(bench.audit.is_empty(), "{:?}", bench.audit);
+        assert!(!holds(&seen, VALUE));
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
+        assert!(!bench.closed, "the connection ended with its 503");
     }
 
     /// Do: on one HTTP/2 connection to a captured sign-in's API host, stream 1 to the endpoint
