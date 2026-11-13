@@ -23083,3 +23083,94 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | Red with the old rule, green after; the draft's two reds named. |
   | R11 | Unix's poll and macOS's select; Windows follows its clients' ends, owed. |
   | R15, R16 | Implementer; targets removed after landing. |
+
+### M550. A registry's answers and silences follow their path's liveness and progress, then the slowest it has shown (D222)
+
+- **Question.** D222's waits for a lookup's answer and for a download's next byte were a
+  restart cutoff (Luby, Sinclair and Zuckerman's t* over a Kaplan-Meier estimate of the
+  path's times), drawn from [t, 2t), doubled for each cut in a row and at least a second
+  (RFC 6298 §2.4, §5.5): a floor, a doubling and a draw, none of them the path's. The person
+  ruled on 2026-11-13: "we do not tolerate arbitrary constants. learned and data-derived
+  values. Period."; and of every such wait: "The cold start, and every wait after a
+  run-out, follows the party's liveness and progress. After that the bound is the slowest
+  answer seen." What are an answer's and a silence's stalls, what bounds them, and what
+  follows one that runs out?
+- **Found** (from the code, and from the crate's own tests on adas-mac-studio.local).
+  - A stall is a gap with no progress: an answer's, from its request's end to its head's
+    first byte; a silence, a read's own wait for its bytes. The old silence counted from the
+    read before, so the reader's own time between its reads was in it
+    (`a_silence_is_a_reads_own_wait_not_its_readers_time`, red below).
+  - An asking cut at the slowest, and asked again only to be cut there again, would never
+    let a slower answer through with no doubling now: a fresh home's `/v2/` check teaching a
+    bound that each slower manifest then runs out on until its budget ends the pull. So
+    the rule's run-out clause is built (`Bounded::RanOut`), and its removal goes red below.
+  - With the exact slowest as the bound, a fresh path's k-th answer is its slowest yet with
+    chance 1/k where its times are alike (records among exchangeable times; Glick,
+    "Breaking records and breaking boards", Amer. Math. Monthly 85(1), 1978), and it runs
+    out. Run, the crate's lib tests failed 22 and then 11 of 168 in two rounds (r40, at
+    dc0950b5b): every one a scripted server whose next answer an asking again took out of
+    turn (pull.rs, search.rs, push.rs, fetch.rs, registry.rs), none a fault of the client's.
+    Those tests' clients now follow liveness alone (`testing::client`), with no number of
+    the tests' own.
+  - `Client::learned` counted a connect's or a handshake's timeout only where
+    `took >= within` by `Instant`. A system wait may end a tick before its time by the clock
+    (Microsoft Learn, Wait Functions), as an answer's read did on CI's arm64 Windows
+    (48ef5a191), so such a timeout went uncounted, its next wait not doubled: found from the
+    code by goal 51's step 4, reproduced by `a_wait_its_own_time_ended_counts_as_its_timeout`,
+    which ends a wait by its own time with no time passed by the clock (red below).
+- **Decision** (D222's first bullet and "A wait's end is its own stop").
+  - Each path keeps its slowest answer and its slowest silence (`Shown::slowest_answer_us`,
+    `slowest_silence_us`), in the home's links record, merged by the slower; a run-out
+    learns nothing.
+  - A wait begins `Bounded::Cold` (none of its kind shown: liveness alone, a body all its
+    life), `Slowest(d)` (past d with nothing come it runs out: overdue, typed `Overdue::Answer`
+    or `Overdue::Silence`, asked again at once; a download resumed where it was) or
+    `RanOut(d)` (the next of its kind after one ran out: liveness alone until an answer
+    comes, whatever its time; for silences until one longer than d ends, which is then the
+    slowest and bounds the rest of its body, or until a body that brought bytes ends).
+  - A head's rest after its first byte waits as a silence does.
+  - A connect's and a handshake's timeout is counted by its own stop (`Error::is_timed_out`):
+    its dial's deadline, an attempt's `connect_timeout` set to what was left, attempts still
+    pending as it passed, a name's lookup past it, a handshake's deadline or socket timeout.
+  - Gone: `Cutoff`, `Sketch`, `ALPHA`, the draw (`Client::drawing`), what a cut cost
+    (`again_us`), and the crate's export of both.
+- **Tests.**
+  - patience.rs `a_paths_waits_follow_the_slowest_and_a_run_out_learns_nothing`; the
+    record's, the merge's and the routes' tests on the slowest; records of RFC 6298's and
+    of the cutoff's read whole, cold.
+  - http.rs `an_answer_cut_by_its_wait_is_overdue`, `an_answer_is_cut_only_before_its_first_byte`,
+    `a_silence_is_a_reads_own_wait_not_its_readers_time`,
+    `a_wait_its_own_time_ended_counts_as_its_timeout`, `a_handshake_or_a_dial_its_time_ends_says_so`.
+  - registry.rs `a_paths_answers_are_waited_for_as_long_as_it_shows`,
+    `a_silent_download_is_cut_and_resumed_and_its_silence_learned`; fetch.rs
+    `a_stuck_layer_keeps_no_other_waiting` (its CDN's path having shown a second).
+- **Checked** (one host, adas-mac-studio.local, macOS arm64, `CARGO_INCREMENTAL=0`, a
+  carrier's checkout at 8ec9cca76 over main baba912ee; kiln runs r40, r107, r118):
+  - `cargo test -p shards-registry --lib`: 169 passed, three rounds (r107). Before its
+    scripted servers' clients followed liveness, 146 and 157 of 168 (r40, above).
+  - Red with each guard removed (`/tmp/r03-carrier/red-reg.sh`, r118), each failing for its
+    own reason: the second back as the cold start (four tests, among them a 1.5 s path's
+    answers cut at a second until its 100 s budget ended the request); no run-out clause
+    (two, the same path's answers cut at 0.3 s again and again until the budget); the
+    answer's bound kept past its first byte; a head's rest unbounded; timeouts counted by
+    the clock (`1s` where `2s` was due); silences counted from the read before; a silence
+    run-out ended by the next silence (101 range requests where two were due, each resume
+    cut at its first 0.5 s gap).
+  - `cargo clippy -p shards-registry --all-targets -- -D warnings`: clean (r107).
+  - `cargo fmt --check`: clean.
+- **Owed.** CI's: Linux and Windows (where a system wait's early end is the own-stop rule's
+  reason) and arm64 Linux. ROOT's: real pulls and pushes on every backend (api_image.rs,
+  containers.rs), where a fresh home's first pull now runs out on a few answers a path's
+  first askings make (about ln n of n askings over a home's life, above), each asked
+  again at once.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap, index or panic added to production code; times saturate (`micros`, `slower`). |
+  | R02, R03 | The person's rule, quoted; the bound is each path's own slowest, cold its liveness; the second, the doubling and the draw go, and the tests' clients carry no number either. RFC 6298 stays for connects and handshakes, a cited protocol bound. |
+  | R04 | `Bounded` (`Cold`, `Slowest`, `RanOut`), `Overdue` (`Answer`, `Silence`), `Last` (`Unread`, `Bytes`, `RanOut`), `Error::is_timed_out`: typed, matched by their callers. |
+  | R05 | Each wait is a socket's readiness and its timeout, no probe; a re-arm only as a run-out ends. |
+  | R09, R10 | The CI run of 48ef5a191 and the unit tests above; red with each guard removed, green after. |
+  | R11 | Cross-platform code; macOS arm64 run, Linux and Windows owed to CI. |
+  | R15, R16 | Implementer; the carrier's checkout and target on adas-mac-studio.local are removed after landing. |

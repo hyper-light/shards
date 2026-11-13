@@ -804,8 +804,8 @@ impl Registry {
                 }
                 // A timeout, a reset or a cut answer: ridden out while it lasts a moment. A
                 // file's body is resumed by its upload instead, from what the registry has.
-                // An overdue answer is asked again at once: its wait was drawn to end
-                // where the pause would have (crate::patience `Cutoff`).
+                // An overdue answer, one past the slowest its path has shown, is asked again
+                // at once, that asking waited for as its connection lives (crate::patience).
                 Err(e) if e.kind() == ErrorKind::Transient && file.is_none() => {
                     match trouble.wait(asked, self.http.budget(url), None) {
                         Some(wait) => {
@@ -1872,10 +1872,7 @@ mod tests {
         let file = std::fs::File::open(&path).unwrap();
         let server = route(None, move |seen| Some((answer(seen), After::Keep)));
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
-        let http = Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        );
+        let http = crate::testing::client();
         let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
         let desc = Descriptor {
             media_type: "application/octet-stream".into(),
@@ -1946,10 +1943,7 @@ mod tests {
                 }
             });
             let reference = Reference::parse(&format!("127.0.0.1:{port}/test/image:v1")).unwrap();
-            let http = Client::new(
-                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-                "shards-test",
-            );
+            let http = crate::testing::client();
             let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
             let url = registry.base.join("manifests/v1").unwrap();
             for _ in 0..2 {
@@ -2038,12 +2032,7 @@ mod tests {
                 });
             }
         });
-        let client = || {
-            Client::new(
-                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-                "shards-test",
-            )
-        };
+        let client = || crate::testing::client();
         let reference = |path: &str| Reference::parse(&format!("{ip}:{port}/{path}:v1")).unwrap();
         // Not named: HTTPS alone, its plain answer a failure.
         let secure = Registry::new(client(), &reference("test/image"), Credentials::Anonymous).unwrap();
@@ -2105,11 +2094,7 @@ mod tests {
         )
         .unwrap();
         let plain = |host: &str| {
-            let client = Client::new(
-                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-                "shards-test",
-            )
-            .with_registries(named.clone());
+            let client = crate::testing::client().with_registries(named.clone());
             let reference = Reference::parse(&format!("{host}/test/image:v1")).unwrap();
             let registry = Registry::new(client, &reference, Credentials::Anonymous).unwrap();
             registry.plain.map(|p| (p.port, p.on_refusal))
@@ -2140,12 +2125,7 @@ mod tests {
         let hub = answering("/nothing/");
         let first = answering("/manifests/");
         let second = answering("/referrers/");
-        let client = || {
-            Client::new(
-                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-                "shards-test",
-            )
-        };
+        let client = || crate::testing::client();
         let reference = Reference::parse(&format!("127.0.0.1:{}/library/x:v1", hub.port)).unwrap();
         let mirror = |port: u16| {
             Registry::mirror(
@@ -2229,11 +2209,7 @@ mod tests {
             });
             let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
             // A gateway's failure is ridden out for a moment (D222): a short one here.
-            let http = Client::new(
-                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-                "shards-test",
-            )
-            .with_moment(Duration::from_millis(300));
+            let http = crate::testing::client().with_moment(Duration::from_millis(300));
             let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
             registry
                 .referrers(&digest, &[], &[])
@@ -2294,10 +2270,7 @@ mod tests {
             });
             port.store(server.port, Ordering::SeqCst);
             let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
-            let http = Client::new(
-                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-                "shards-test",
-            );
+            let http = crate::testing::client();
             let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
             let checked = registry.exists(&desc, manifest, tag);
             (checked, server.requests())
@@ -2372,10 +2345,7 @@ mod tests {
             Some((page.into_bytes(), After::Keep))
         });
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image", server.port)).unwrap();
-        let http = Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        );
+        let http = crate::testing::client();
         let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
         assert_eq!(
             registry.tags().unwrap(),
@@ -2457,10 +2427,7 @@ mod tests {
             let dir = shards_testdir::TempDir::new(&format!("encodings-{}", server.port)).unwrap();
             let store = Store::open(&dir).unwrap();
             let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
-            let http = Client::new(
-                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-                "shards-test",
-            );
+            let http = crate::testing::client();
             let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
             let desc = Descriptor {
                 media_type: "application/vnd.oci.image.layer.v1.tar+gzip".into(),
@@ -2695,10 +2662,7 @@ mod tests {
         let serving = |answer: &'static [u8]| {
             let server = route(None, move |_| Some((answer.to_vec(), After::Keep)));
             let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
-            let http = Client::new(
-                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-                "shards-test",
-            );
+            let http = crate::testing::client();
             let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
             (server, registry)
         };
@@ -2806,10 +2770,7 @@ mod tests {
         });
         let dir = shards_testdir::TempDir::new("upload-through").unwrap();
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
-        let http = Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        );
+        let http = crate::testing::client();
         let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
         let results = blobs
             .iter()
@@ -2909,10 +2870,7 @@ mod tests {
             let blob = b"0123456789";
             std::fs::write(&path, blob).unwrap();
             let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
-            let http = Client::new(
-                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-                "shards-test",
-            );
+            let http = crate::testing::client();
             let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
             let desc = Descriptor {
                 media_type: "application/octet-stream".into(),
@@ -3033,12 +2991,7 @@ mod tests {
     #[test]
     fn logins_answer_the_registrys_challenge_and_keep_its_refresh_token() {
         use base64::Engine as _;
-        let client = || {
-            Client::new(
-                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-                "shards-test",
-            )
-        };
+        let client = || crate::testing::client();
         let password = |p: &str| Credentials::Password {
             username: "u".into(),
             password: p.into(),
@@ -3160,10 +3113,7 @@ mod tests {
         // Lasted the moment: given up on.
         assert_eq!(Trouble::default().wait(ago(moment), moment, None), None);
         // Over: what fails next begins another, and the path learns how long it lasted.
-        let http = Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        );
+        let http = crate::testing::client();
         let url = Url::parse("https://r.example/v2/").unwrap();
         trouble.over(&http, &url);
         assert!(trouble.lasted().is_zero());
@@ -3195,11 +3145,15 @@ mod tests {
             failing.map(|status| (http(status, fields), After::Keep))
         });
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
-        let http = Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        )
-        .with_moment(moment);
+        // Its answers within what its path has shown, so that none is cut: the trouble is
+        // the registry's alone.
+        let shown = crate::patience::Shown {
+            slowest_answer_us: Some(60_000_000),
+            ..crate::patience::Shown::default()
+        };
+        let http = crate::testing::client()
+            .with_moment(moment)
+            .showing("127.0.0.1", server.port, shown);
         let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
         let url = registry.base().join("manifests/v1").unwrap();
         let t0 = Instant::now();
@@ -3285,11 +3239,7 @@ mod tests {
         });
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
         let cancel = crate::http::Cancel::new();
-        let http = Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        )
-        .cancelled_by(cancel.clone());
+        let http = crate::testing::client().cancelled_by(cancel.clone());
         let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
         let url = registry.base().join("manifests/v1").unwrap();
         let canceller = std::thread::spawn(move || {
@@ -3335,11 +3285,7 @@ mod tests {
             let dir = shards_testdir::TempDir::new(&format!("nothing-{}", server.port)).unwrap();
             let store = Store::open(&dir).unwrap();
             let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
-            let http = Client::new(
-                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-                "shards-test",
-            )
-            .with_moment(moment);
+            let http = crate::testing::client().with_moment(moment);
             let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
             let desc = Descriptor {
                 media_type: "application/vnd.oci.image.layer.v1.tar".into(),
@@ -3375,128 +3321,201 @@ mod tests {
         assert!(took >= short && paused < short * 2, "{paused:?} of {took:?}");
     }
 
-    /// A path whose answers come 1.5 s late: its first, past the 1.25 s drawn from the
-    /// second a path starts with (RFC 6298 §2.1), is cut and asked again at once with the
-    /// wait doubled (§5.5), and answered; its answer, its cut and what the cut cost
-    /// learned, the next is waited for, asked once (D222).
+    /// A path whose answers come 1.5 s late. Where it has shown none, its first is waited
+    /// for as its connection lives, asked once, and its answer learned. Where it has shown
+    /// answers of 0.3 s at most, its first is cut past them and asked again at once, that
+    /// asking waited for as its connection lives, since what the path showed bounds it no
+    /// more, and answered; the cut learns nothing, the answer is its slowest. Either way an
+    /// answer within what it learned, 1 s, is waited for after, asked once (D222).
     #[test]
     fn a_paths_answers_are_waited_for_as_long_as_it_shows() {
-        // Every answer 1.5 s late.
+        // Every answer `late` ms late.
+        let late = Arc::new(AtomicU64::new(1500));
+        let lateness = late.clone();
         let server = route(None, move |_| {
-            std::thread::sleep(Duration::from_millis(1500));
+            std::thread::sleep(Duration::from_millis(lateness.load(Ordering::SeqCst)));
             Some((http("200 OK", &[]), After::Keep))
         });
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
-        let http = Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        )
-        .drawing(0.25);
-        let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
-        let url = registry.base().join("manifests/v1").unwrap();
-        let t0 = Instant::now();
-        let (response, _) = registry.request("GET", &url, &[]).unwrap();
-        let took = t0.elapsed();
-        assert_eq!(response.status, 200);
-        drop(response);
-        assert!(took >= Duration::from_millis(1250 + 1500), "{took:?}");
-        assert_eq!(server.requests().len(), 2, "cut at 1.25 s, asked again");
-        let shown = registry.http.shown("127.0.0.1", server.port);
-        let answers = &shown.answers;
-        assert_eq!(
-            (answers.answered.total(), answers.cut.total(), answers.agains),
-            (1, 1, 1),
-            "{shown:?}"
-        );
+        let ask = |shown: crate::patience::Shown| {
+            late.store(1500, Ordering::SeqCst);
+            let http = Client::new(
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+                "shards-test",
+            )
+            .showing("127.0.0.1", server.port, shown);
+            let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+            let url = registry.base().join("manifests/v1").unwrap();
+            let asked = server.requests().len();
+            let t0 = Instant::now();
+            let (response, _) = registry.request("GET", &url, &[]).unwrap();
+            let took = t0.elapsed();
+            assert_eq!(response.status, 200);
+            drop(response);
+            let shown = registry.http.shown("127.0.0.1", server.port);
+            // Its next, within what it learned: asked once.
+            late.store(1000, Ordering::SeqCst);
+            let again = server.requests().len();
+            let (response, _) = registry.request("GET", &url, &[]).unwrap();
+            drop(response);
+            assert_eq!(server.requests().len(), again + 1, "{shown:?}");
+            (again - asked, took, shown)
+        };
+        let (asked, took, shown) = ask(crate::patience::Shown::default());
+        assert_eq!(asked, 1, "nothing shown: waited for as its connection lives");
+        assert!(took >= Duration::from_millis(1500), "{took:?}");
+        assert!(shown.slowest_answer_us.unwrap() >= 1_500_000, "{shown:?}");
+        let (asked, took, shown) = ask(crate::patience::Shown {
+            slowest_answer_us: Some(300_000),
+            ..crate::patience::Shown::default()
+        });
+        assert_eq!(asked, 2, "cut past 0.3 s, asked again");
+        assert!(took >= Duration::from_millis(300 + 1500), "{took:?}");
+        assert!(took < Duration::from_millis(1500 * 2), "{took:?}");
+        assert!(shown.slowest_answer_us.unwrap() >= 1_500_000, "{shown:?}");
         // Its connections, the cut one's and the one after, each made in time.
         assert!(shown.connect.n >= 2, "{shown:?}");
-        // What it showed is waited for: the same answer again, asked once.
-        let (response, _) = registry.request("GET", &url, &[]).unwrap();
-        drop(response);
-        assert_eq!(server.requests().len(), 3);
     }
 
-    /// A download silent past its path's patience is cut and resumed where it was, and
-    /// its silences learned: one that pauses 1.5 s, past the second a path starts with, is
-    /// fetched whole over two connections, and its path waits longer after (D222).
+    /// A download silent past the slowest silence its path has shown is cut and resumed
+    /// where it was; the run-out learns nothing, and the resumed body's silences are waited
+    /// out as its connection lives until one ends longer than the slowest, 0.5 s past 0.3 s,
+    /// which is then the slowest and bounds the rest: not its first, which its head's own
+    /// bytes end at once. Where the path has shown none, the same download, silent 1.5 s, is
+    /// waited out on its one connection, and its silence learned (D222). Its answers within
+    /// what the path has shown, so that none is cut: the silences are the test's.
     #[test]
     fn a_silent_download_is_cut_and_resumed_and_its_silence_learned() {
         use std::io::{BufRead, BufReader, Write};
         let blob: Vec<u8> = (0..200_000u32).map(|i| (i % 249) as u8).collect();
         let digest = Digest::from_hash(Algorithm::Sha256, &Sha256::digest(&blob[..]));
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let body = blob.clone();
-        let served = std::thread::spawn(move || {
-            let mut ranges = Vec::new();
-            while ranges.len() < 2 {
-                let n = ranges.len();
-                let (mut tcp, _) = listener.accept().unwrap();
-                // Asked in TLS first, it answers as a plain registry does (testing.rs).
-                let mut first = [0u8; 1];
-                if tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
-                    let _ = tcp.write_all(crate::testing::GO_BAD_REQUEST);
-                    continue;
-                }
-                let mut reader = BufReader::new(tcp.try_clone().unwrap());
-                let mut from = 0usize;
-                loop {
-                    let mut line = String::new();
-                    reader.read_line(&mut line).unwrap();
-                    if let Some(r) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
-                        from = r.trim().trim_end_matches('-').parse().unwrap();
-                    }
-                    if line == "\r\n" {
+        let fetched = |shown: crate::patience::Shown| {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let ranges = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let body = Arc::new(blob.clone());
+            let (asked, stopping) = (ranges.clone(), stop.clone());
+            // Each connection on its own thread, so that a resumed asking is answered at
+            // once, whatever an earlier one is doing.
+            let acceptor = std::thread::spawn(move || {
+                let mut served = Vec::new();
+                for tcp in listener.incoming() {
+                    if stopping.load(Ordering::SeqCst) {
                         break;
                     }
+                    let mut tcp = tcp.unwrap();
+                    let (asked, body) = (asked.clone(), body.clone());
+                    served.push(std::thread::spawn(move || {
+                        // Asked in TLS first, it answers as a plain registry does (testing.rs).
+                        let mut first = [0u8; 1];
+                        if tcp.peek(&mut first).is_ok_and(|n| n == 1) && first[0] == 0x16 {
+                            let _ = tcp.write_all(crate::testing::GO_BAD_REQUEST);
+                            return;
+                        }
+                        let mut reader = BufReader::new(tcp.try_clone().unwrap());
+                        let mut from = 0usize;
+                        loop {
+                            let mut line = String::new();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                                return;
+                            }
+                            if let Some(r) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
+                                from = r.trim().trim_end_matches('-').parse().unwrap();
+                            }
+                            if line == "\r\n" {
+                                break;
+                            }
+                        }
+                        let n = {
+                            let mut asked = asked.lock().unwrap();
+                            asked.push(from);
+                            asked.len()
+                        };
+                        let rest = &body[from..];
+                        let status = if from == 0 {
+                            "200 OK"
+                        } else {
+                            "206 Partial Content"
+                        };
+                        let _ = write!(tcp, "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n", rest.len());
+                        if n == 1 {
+                            // Half, then silence for 1.5 s, then the rest.
+                            let _ = tcp.write_all(&rest[..100_000]);
+                            std::thread::sleep(Duration::from_millis(1500));
+                            let _ = tcp.write_all(&rest[100_000..]);
+                        } else {
+                            // Resumed: a little, then silence for 0.5 s, then the rest.
+                            let _ = tcp.write_all(&rest[..1000]);
+                            std::thread::sleep(Duration::from_millis(500));
+                            let _ = tcp.write_all(&rest[1000..]);
+                        }
+                    }));
                 }
-                ranges.push(from);
-                let rest = &body[from..];
-                let status = if from == 0 {
-                    "200 OK"
-                } else {
-                    "206 Partial Content"
-                };
-                let _ = write!(tcp, "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n", rest.len());
-                if n == 0 {
-                    // Half, then silence past a second, then the rest, which no one reads.
-                    let _ = tcp.write_all(&rest[..100_000]);
-                    std::thread::sleep(Duration::from_millis(1500));
-                    let _ = tcp.write_all(&rest[100_000..]);
-                } else {
-                    let _ = tcp.write_all(rest);
+                for thread in served {
+                    let _ = thread.join();
                 }
-            }
-            ranges
-        });
-        let dir = shards_testdir::TempDir::new(&format!("silent-{port}")).unwrap();
-        let store = Store::open(&dir).unwrap();
-        let reference = Reference::parse(&format!("127.0.0.1:{port}/test/image:v1")).unwrap();
-        // Its silence cut at the 1.25 s drawn from a second.
-        let http = Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        )
-        .drawing(0.25);
-        let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
-        let desc = Descriptor {
-            media_type: "application/vnd.oci.image.layer.v1.tar".into(),
-            digest: digest.to_string(),
-            size: 200_000,
-            platform: None,
-            annotations: Default::default(),
+            });
+            let dir = shards_testdir::TempDir::new(&format!("silent-{port}")).unwrap();
+            let store = Store::open(&dir).unwrap();
+            let reference = Reference::parse(&format!("127.0.0.1:{port}/test/image:v1")).unwrap();
+            let http = Client::new(
+                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+                "shards-test",
+            )
+            .showing("127.0.0.1", port, shown);
+            let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+            let desc = Descriptor {
+                media_type: "application/vnd.oci.image.layer.v1.tar".into(),
+                digest: digest.to_string(),
+                size: 200_000,
+                platform: None,
+                annotations: Default::default(),
+            };
+            registry
+                .fetch_blob(&store, &desc, &Limits::none(), &|_| {})
+                .unwrap();
+            assert_eq!(std::fs::read(store.blob_path(&digest)).unwrap(), blob);
+            let shown = registry.http.shown("127.0.0.1", port);
+            let silence = registry.http.silence("127.0.0.1", port);
+            drop(registry);
+            // Ends the server's accept loop, which then joins its connections' threads.
+            stop.store(true, Ordering::SeqCst);
+            drop(std::net::TcpStream::connect(("127.0.0.1", port)));
+            acceptor.join().unwrap();
+            let ranges = ranges.lock().unwrap().clone();
+            (ranges, shown, silence)
         };
-        registry
-            .fetch_blob(&store, &desc, &Limits::none(), &|_| {})
-            .unwrap();
-        assert_eq!(std::fs::read(store.blob_path(&digest)).unwrap(), blob);
-        let ranges = served.join().unwrap();
-        assert_eq!(ranges[0], 0);
+        let answers = Some(60_000_000);
+        let (ranges, shown, silence) = fetched(crate::patience::Shown {
+            slowest_answer_us: answers,
+            ..crate::patience::Shown::default()
+        });
+        assert_eq!(ranges, [0], "nothing shown: waited out on its one connection");
+        // The read that waited it out, begun just after the bytes before it were taken.
+        let slowest = shown.slowest_silence_us.unwrap();
+        assert!(slowest >= 1_000_000, "{shown:?}");
+        assert_eq!(
+            silence,
+            crate::patience::Bounded::Slowest(Duration::from_micros(slowest))
+        );
+        let (ranges, shown, silence) = fetched(crate::patience::Shown {
+            slowest_answer_us: answers,
+            slowest_silence_us: Some(300_000),
+            ..crate::patience::Shown::default()
+        });
+        assert_eq!(ranges.len(), 2, "cut past 0.3 s and resumed once: {ranges:?}");
         assert!(ranges[1] > 0, "resumed where it was cut: {ranges:?}");
-        let shown = registry.http.shown("127.0.0.1", port);
-        let silences = &shown.silences;
-        assert!(silences.answered.total() > 0, "{shown:?}");
-        assert_eq!((silences.cut.total(), silences.agains), (1, 1), "{shown:?}");
+        let slowest = shown.slowest_silence_us.unwrap();
+        assert!(
+            (400_000..1_500_000).contains(&slowest),
+            "the resumed body's 0.5 s the slowest, the 1.5 s cut learned nothing: {shown:?}"
+        );
+        assert_eq!(
+            silence,
+            crate::patience::Bounded::Slowest(Duration::from_micros(slowest)),
+            "the resumed body brought bytes: bounded again"
+        );
     }
 
     /// A whole blob whose answer ends as its framing says, short of its descriptor's size,
@@ -3513,10 +3532,7 @@ mod tests {
         let dir = shards_testdir::TempDir::new(&format!("short-{}", server.port)).unwrap();
         let store = Store::open(&dir).unwrap();
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
-        let http = Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        );
+        let http = crate::testing::client();
         let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
         let desc = Descriptor {
             media_type: "application/vnd.oci.image.layer.v1.tar".into(),
