@@ -10,12 +10,14 @@ use std::io::{self, Write as _};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use shards_remote::client::{self, Remote};
 use shards_remote::frame::{self, Request};
 use shards_remote::identity::{self, Identity};
 use shards_remote::invite::{self, Invitation};
+use shards_remote::net::Seen;
+use shards_remote::tls::Known;
 
 /// The exit status of a command shards did not run: an error before its command ran, the
 /// status a `docker` script reads for one.
@@ -565,11 +567,14 @@ fn replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
     replaced.map_err(at(path))
 }
 
-/// Where `path`'s record is written before it takes its name: beside it, this process's,
-/// under a name no record has, as no record's name holds `~`.
+/// Where `path`'s record is written before it takes its name: beside it, this process's and
+/// this write's alone (the threads of one command each keep a record of the path they
+/// crossed, [`keep`]), under a name no record has, as no record's name holds `~`.
 fn unnamed(path: &Path) -> PathBuf {
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let write = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    path.with_file_name(format!("~{name}.{}", std::process::id()))
+    path.with_file_name(format!("~{name}.{}.{write}", std::process::id()))
 }
 
 /// A new file at `path`, only its owner's wherever the home is (shards_ipc::create_private),
@@ -645,14 +650,144 @@ impl Context {
         })
     }
 
-    /// Where its daemon is, its handshake starting as a daemon never measured's.
-    pub(crate) fn remote(&self) -> Remote {
+    /// Where its daemon is, its handshake and its waits starting from `known`, what this home
+    /// knows of the daemon's path ([`known`]).
+    pub(crate) fn remote(&self, known: Known) -> Remote {
         Remote {
             address: self.address,
             daemon: self.daemon,
-            rtt: shards_remote::tls::Rtt::Unmeasured,
+            known,
         }
     }
+
+    /// The record of `known` for its daemon at its address: none for a daemon never reached,
+    /// nor for a duration past what nanoseconds in 64 bits hold.
+    fn peer_text(&self, known: Known) -> Option<String> {
+        let (state, path) = match known {
+            Known::Never => return None,
+            Known::Reached(path) => ("reached", path),
+            Known::RanOut(path) => ("ran-out", path),
+        };
+        let nanos = |d: Duration| u64::try_from(d.as_nanos()).ok();
+        let mut text = format!(
+            "{PEER}\ndaemon {}\naddress {}\nstate {state}\nrtt {}\nhandshake {}\nanswer {}\n",
+            identity::hex(&self.daemon),
+            self.address,
+            nanos(path.rtt)?,
+            nanos(path.handshake)?,
+            nanos(path.answer)?,
+        );
+        if let Some(lost) = path.lost {
+            text.push_str(&format!("lost {}\n", nanos(lost)?));
+        }
+        Some(text)
+    }
+
+    /// What `text`, a record of its daemon's path, holds: never reached, where it is a record
+    /// of another daemon, or of another address, or no record.
+    fn peer_parse(&self, text: &str) -> Known {
+        let read = || -> Option<Known> {
+            let fields = fields(text, PEER)?;
+            if unhex32(field(&fields, "daemon")?)? != self.daemon
+                || field(&fields, "address")?.parse::<SocketAddr>().ok()? != self.address
+            {
+                return None;
+            }
+            let nanos = |key: &str| field(&fields, key)?.parse().ok().map(Duration::from_nanos);
+            let path = shards_remote::tls::Path {
+                rtt: nanos("rtt")?,
+                handshake: nanos("handshake")?,
+                answer: nanos("answer")?,
+                lost: match field(&fields, "lost") {
+                    Some(_) => Some(nanos("lost")?),
+                    None => None,
+                },
+            };
+            match field(&fields, "state")? {
+                "reached" => Some(Known::Reached(path)),
+                "ran-out" => Some(Known::RanOut(path)),
+                _ => None,
+            }
+        };
+        read().unwrap_or(Known::Never)
+    }
+}
+
+const PEER: &str = "shards peer 1";
+
+/// Where `home` keeps what it learned of context `name`'s daemon's path.
+fn peer_record(home: &Path, name: &str) -> PathBuf {
+    home.join("peers").join(name)
+}
+
+/// What `home` knows of `context`'s daemon's path from its connections before (D180,
+/// [`Known`]): its record, `peers/NAME`, which holds for that daemon at that address alone, as
+/// a path's RTT is its network's (RFC 9002 §6.2.2: "Resumed connections over the same network
+/// MAY use the previous connection's final smoothed RTT value"). A daemon never reached where
+/// there is none, or it is of another daemon or address, or reads as no record.
+pub(crate) fn known(home: &Path, context: &Context) -> Known {
+    fs::read_to_string(peer_record(home, &context.name)).map_or(Known::Never, |text| context.peer_parse(&text))
+}
+
+/// Keeps what `home` knows of `context`'s daemon's path after a connection that started from
+/// `before` and saw `seen` ([`Known::after`]): written whole beside its record, then renamed
+/// over it, so that a connection starting meanwhile reads the one or the other.
+pub(crate) fn keep(home: &Path, context: &Context, before: Known, seen: &Seen) -> Result<(), String> {
+    let after = before.after(seen);
+    if after == before {
+        return Ok(());
+    }
+    let Some(text) = context.peer_text(after) else {
+        return Ok(());
+    };
+    replace(&dir(home, "peers")?.join(&context.name), text.as_bytes())
+}
+
+/// Runs `request` on `context`'s daemon as [`client::exec_made`] does (D180), as the home
+/// `home` whose identity is `identity`: its handshake and its waits starting from what the home
+/// knows of the daemon's path ([`known`]), and what its connection saw kept for the next
+/// ([`keep`]). A daemon never reached, or whose last wait ran out, is waited for as long as
+/// this command is, each probe of its handshake told on stderr. What the connection saw, too.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn exec(
+    home: &Path,
+    identity: &Identity,
+    context: &Context,
+    request: Request,
+    stdin: Option<Box<dyn io::Read + Send>>,
+    stdout: impl io::Write + Send + 'static,
+    stderr: impl io::Write + Send + 'static,
+    steered: impl FnOnce(client::Controls),
+    made: impl FnMut(&[u8]),
+) -> (Result<Result<i32, String>, shards_remote::Error>, Seen) {
+    let before = known(home, context);
+    let told = |unanswered: client::Unanswered| {
+        let _ = writeln!(
+            io::stderr(),
+            "shards: {}: no answer yet from {}: {} probes over {:.1?}",
+            context.name,
+            context.address,
+            unanswered.probes,
+            unanswered.waited
+        );
+        true
+    };
+    let (ran, seen) = client::exec_with(
+        identity,
+        context.remote(before),
+        request,
+        stdin,
+        stdout,
+        stderr,
+        steered,
+        made,
+        told,
+        |_| {},
+    );
+    if let Err(e) = keep(home, context, before, &seen) {
+        let _ = writeln!(io::stderr(), "shards: {e}");
+    }
+    (ran, seen)
 }
 
 /// The context `name`, if this home joined one by that name.
@@ -782,6 +917,7 @@ fn policy_args(args: &[OsString]) -> Option<Vec<OsString>> {
 /// client's login for the source's registry alone, and an HTTP source a policy's function
 /// reads, each asked of it as a step ([`crate::build::policy_command::POLICY_STEP`]).
 struct PolicyBuilder<'a> {
+    home: &'a Path,
     identity: &'a Identity,
     context: &'a Context,
     platform: std::cell::OnceCell<shards_agentfile::platform::Platform>,
@@ -803,13 +939,15 @@ impl PolicyBuilder<'_> {
             env,
             terminal: None,
         };
-        let ran = client::exec(
+        let (ran, _) = exec(
+            self.home,
             self.identity,
-            self.context.remote(),
+            self.context,
             request,
             Some(Box::new(io::Cursor::new(input))),
             Taken(out_tx),
             Taken(err_tx),
+            |_| {},
             |_| {},
         );
         let said = || String::from_utf8_lossy(&err_rx.try_iter().flatten().collect::<Vec<u8>>()).into_owned();
@@ -1389,7 +1527,7 @@ fn artifact_building(words: &[String]) -> Option<Built> {
 /// kept there as its referrer, once the machine finds that it signs what the name names
 /// still. `None` where the command is no artifact's signature, or asks for its help, which
 /// the machine says.
-fn artifact_sign_there(identity: &Identity, context: &Context, words: &[String]) -> Option<ExitCode> {
+fn artifact_sign_there(home: &Path, identity: &Identity, context: &Context, words: &[String]) -> Option<ExitCode> {
     let said = shards_cmdline::grammar::rewrite(words).unwrap_or_else(|| words.to_vec());
     let [kind_word, action, rest @ ..] = said.as_slice() else {
         return None;
@@ -1408,7 +1546,7 @@ fn artifact_sign_there(identity: &Identity, context: &Context, words: &[String])
     };
     let name = args.name.to_string();
     let step = crate::agent::SIGN_STEP;
-    let subject = match asked_there(identity, context, &[step, "subject", kind_word, &name], &[]) {
+    let subject = match asked_there(home, identity, context, &[step, "subject", kind_word, &name], &[]) {
         Ok(said) => match serde_json::from_slice::<shards_image::oci::Descriptor>(&said) {
             Ok(subject) => subject,
             Err(e) => return fail(format!("{}: what {name} is: {e}", context.name)),
@@ -1426,7 +1564,7 @@ fn artifact_sign_there(identity: &Identity, context: &Context, words: &[String])
         name.as_str(),
         subject.digest.as_str(),
     ];
-    let referrer = match asked_there(identity, context, &keep, &bundle) {
+    let referrer = match asked_there(home, identity, context, &keep, &bundle) {
         Ok(said) => String::from_utf8_lossy(&said).trim().to_string(),
         Err(code) => return Some(code),
     };
@@ -1441,6 +1579,7 @@ fn artifact_sign_there(identity: &Identity, context: &Context, words: &[String])
 /// What a step there says on its stdout, given `input`, its stderr said here as it comes:
 /// the status this client ends with where it fails, or the machine refuses it, said so.
 fn asked_there(
+    home: &Path,
     identity: &Identity,
     context: &Context,
     args: &[&str],
@@ -1452,13 +1591,15 @@ fn asked_there(
         env: Vec::new(),
         terminal: None,
     };
-    let ran = client::exec(
+    let (ran, _) = exec(
+        home,
         identity,
-        context.remote(),
+        context,
         request,
         Some(Box::new(io::Cursor::new(input.to_vec()))),
         Taken(out_tx),
         io::stderr(),
+        |_| {},
         |_| {},
     );
     let refused = |why: String| {
@@ -1544,6 +1685,7 @@ fn bases_of(
 /// asked, what changed here since sent as the build's stdin, with the build file's
 /// directory, and the build run there of the copy, its output and status this process's.
 fn build_there(
+    home: &Path,
     identity: &Identity,
     context: &Context,
     built: Built,
@@ -1580,7 +1722,7 @@ fn build_there(
     }
     // The other trees it names, each brought in step there first.
     for tree in &built.trees {
-        if let Err(code) = put_tree(identity, context, tree) {
+        if let Err(code) = put_tree(home, identity, context, tree) {
             return code;
         }
     }
@@ -1598,13 +1740,15 @@ fn build_there(
         env: Vec::new(),
         terminal: None,
     };
-    let asked = client::exec(
+    let (asked, _) = exec(
+        home,
         identity,
-        context.remote(),
+        context,
         request,
         Some(Box::new(io::empty())),
         Taken(out_tx),
         io::stderr(),
+        |_| {},
         |_| {},
     );
     match asked {
@@ -1751,7 +1895,7 @@ fn build_there(
                     };
                     let relayed = std::thread::Builder::new()
                         .name("build-agent".into())
-                        .spawn_scoped(scope, move || relay_agent(identity, context, key, &token, agent));
+                        .spawn_scoped(scope, move || relay_agent(home, identity, context, key, &token, agent));
                     if let Err(e) = relayed {
                         let _ = writeln!(io::stderr(), "shards: a thread for an agent: {e}");
                     }
@@ -1785,14 +1929,16 @@ fn build_there(
                 })
                 .map_err(|e| shards_remote::Error::new(format!("a thread for the build's terminal: {e}")))?;
         }
-        let ran = client::exec(
+        let (ran, _) = exec(
+            home,
             identity,
-            context.remote(),
+            context,
             request,
             Some(Box::new(reader)),
             crate::synced::Demux::new(io::stdout(), fetched),
             io::stderr(),
             steered,
+            |_| {},
         );
         #[cfg(windows)]
         drop(ended);
@@ -1820,13 +1966,13 @@ fn build_there(
 
 /// Brings `tree`'s copy there in step with it here, before the build that names it: what its
 /// copy holds asked, and what changed since sent alone, as a build's context is (part 3c).
-fn put_tree(identity: &Identity, context: &Context, tree: &Tree) -> Result<(), ExitCode> {
+fn put_tree(home: &Path, identity: &Identity, context: &Context, tree: &Tree) -> Result<(), ExitCode> {
     let fail = |why: String| {
         let _ = writeln!(io::stderr(), "shards: {why}");
         ExitCode::from(NOT_RUN)
     };
     let step = crate::synced::SYNC_STEP;
-    let said = asked_there(identity, context, &[step, "manifest", &tree.key], &[])?;
+    let said = asked_there(home, identity, context, &[step, "manifest", &tree.key], &[])?;
     let there = crate::synced::decode(&said).map_err(fail)?;
     let walked = shards_build::context::walk(&tree.root, &tree.filters)
         .map_err(|e| fail(format!("{}: {e}", tree.root.display())))?;
@@ -1851,13 +1997,15 @@ fn put_tree(identity: &Identity, context: &Context, tree: &Tree) -> Result<(), E
         env: Vec::new(),
         terminal: None,
     };
-    let ran = client::exec(
+    let (ran, _) = exec(
+        home,
         identity,
-        context.remote(),
+        context,
         request,
         Some(Box::new(reader)),
         io::sink(),
         io::stderr(),
+        |_| {},
         |_| {},
     );
     let sent = sending.join();
@@ -2006,6 +2154,7 @@ impl crate::synced::Outputs for Fetched {
 /// readOnlyAgent), refused here too, whatever the machine let by, so that no machine has
 /// this client's agent forget or take a key.
 fn relay_agent(
+    home: &Path,
     identity: &Identity,
     context: &Context,
     key: &str,
@@ -2027,13 +2176,15 @@ fn relay_agent(
         let answered = std::thread::Builder::new()
             .name("build-agent-answers".into())
             .spawn_scoped(scope, move || answer_agent(asked, answering, agent));
-        let _ = client::exec(
+        let _ = exec(
+            home,
             identity,
-            context.remote(),
+            context,
             request,
             Some(Box::new(answers)),
             asking,
             io::sink(),
+            |_| {},
             |_| {},
         );
         if let Ok(answered) = answered {
@@ -2636,6 +2787,7 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
     };
     if let Some(rest) = policy_args(&args) {
         let builder = PolicyBuilder {
+            home,
             identity: &identity,
             context,
             platform: std::cell::OnceCell::new(),
@@ -2708,7 +2860,7 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
             }
             Err(e) => return fail(e),
         },
-        (false, false) => match crate::client_binds::Relays::start(home, context.remote(), &served) {
+        (false, false) => match crate::client_binds::Relays::start(home, context, &served) {
             Ok(relays) => Some(relays),
             Err(e) => return fail(e),
         },
@@ -2793,22 +2945,22 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         Ok(text)
     };
     match building(&words_sent, &stdin_file) {
-        Ok(Some(built)) => return build_there(&identity, context, built, env),
+        Ok(Some(built)) => return build_there(home, &identity, context, built, env),
         Ok(None) => {}
         Err(e) => return fail(e),
     }
     // An artifact made of a directory here, and signed by this client's key or identity.
     if let Some(built) = artifact_building(&words_sent) {
-        return build_there(&identity, context, built, env);
+        return build_there(home, &identity, context, built, env);
     }
-    if let Some(code) = artifact_sign_there(&identity, context, &words_sent) {
+    if let Some(code) = artifact_sign_there(home, &identity, context, &words_sent) {
         return code;
     }
     // A copy is driven here, as this machine's CLI drives one, each of its steps asked of the
     // machine's daemon: its files here are this client's. What steers a command steers no
     // step, so a signal ends the client, and the step there with its stream.
     if let Some(parsed) = copying(&words_sent) {
-        return crate::cli::cp::copy(&parsed, &|argv, fds| step_there(&identity, context, argv, fds));
+        return crate::cli::cp::copy(&parsed, &|argv, fds| step_there(home, &identity, context, argv, fds));
     }
     // The file is made once the signals that would end the client are taken, and named
     // while it is made, so that one that ends the client removes it.
@@ -2943,9 +3095,10 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
             }
         }
     };
-    let mut ran = client::exec_made(
+    let (mut ran, _) = exec(
+        home,
         &identity,
-        context.remote(),
+        context,
         request,
         Some(stdin),
         stdout,
@@ -2974,15 +3127,18 @@ pub(crate) fn forward(home: &Path, context: &Context, args: Vec<OsString>) -> Ex
         let steered = |controls| {
             *STEERED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controls);
         };
-        ran = client::exec(
+        ran = exec(
+            home,
             &identity,
-            context.remote(),
+            context,
             request,
             Some(Box::new(io::empty())),
             recorded,
             io::stderr(),
             steered,
-        );
+            |_| {},
+        )
+        .0;
     }
     // The file is kept once the command's exit says it is whole and every byte of it was
     // written here; else it goes, as a save here leaves nothing that is not whole.
@@ -3033,6 +3189,7 @@ fn copying(words: &[String]) -> Option<shards_cmdline::flags::Parsed> {
 /// into the one in `fds` and an extract's read from it; else what it said on stdout, and on
 /// stderr, taken whole, with its status.
 fn step_there(
+    home: &Path,
     identity: &Identity,
     context: &Context,
     argv: Vec<String>,
@@ -3061,13 +3218,15 @@ fn step_there(
         env: Vec::new(),
         terminal: None,
     };
-    let ran = client::exec(
+    let (ran, _) = exec(
+        home,
         identity,
-        context.remote(),
+        context,
         request,
         Some(stdin),
         stdout,
         Taken(err_tx),
+        |_| {},
         |_| {},
     );
     let taken = |rx: std::sync::mpsc::Receiver<Vec<u8>>| rx.try_iter().flatten().collect::<Vec<u8>>();
@@ -3196,7 +3355,8 @@ fn create(home: &Path, name: &str, rest: &[&str]) -> Result<(), String> {
     let text = fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
     let invitation = Invitation::parse(&text).map_err(|e| format!("{file}: {e}"))?;
     let identity = identity(home)?;
-    match client::join(&identity, &invitation) {
+    let (joined, seen) = client::join(&identity, &invitation);
+    match joined {
         Ok(Ok(())) => {}
         Ok(Err(refused)) => return Err(format!("{}: {refused}", invitation.address)),
         Err(e) => return Err(e.to_string()),
@@ -3208,6 +3368,13 @@ fn create(home: &Path, name: &str, rest: &[&str]) -> Result<(), String> {
         daemon: invitation.daemon,
     };
     write_new(&dir(home, "contexts")?.join(name), context.text().as_bytes())?;
+    // Its join is the first of the daemon's path the home knows: a record of another
+    // context's of this name, removed, is replaced, and one not kept leaves its next command
+    // to start as from a daemon never reached.
+    let _ = fs::remove_file(peer_record(home, name));
+    if let Err(e) = keep(home, &context, Known::Never, &seen) {
+        let _ = writeln!(io::stderr(), "shards: {e}");
+    }
     let _ = writeln!(io::stdout(), "{name}");
     let _ = writeln!(io::stderr(), "Successfully created context {name:?}");
     Ok(())
@@ -3286,6 +3453,7 @@ fn remove(home: &Path, names: &[&str]) -> Result<(), String> {
             let _ = fs::remove_file(home.join("context"));
         }
         let _ = fs::remove_file(home.join(engine_socket(name)));
+        let _ = fs::remove_file(peer_record(home, name));
         drop(locked);
         let _ = writeln!(io::stdout(), "{name}");
     }
@@ -3652,6 +3820,60 @@ mod tests {
         assert!(!valid_name("g"));
         assert!(!valid_name("-gpu"));
         assert!(!valid_name("gpu desktop"));
+    }
+
+    /// What a home keeps of a context's daemon's path (`peers/NAME`, D180) reads back as kept,
+    /// for that daemon at that address alone: none, a record of another daemon or address, or
+    /// one that does not read, is a daemon never reached. A connection that changes nothing
+    /// known writes nothing, and the context's removal takes the record with it.
+    #[test]
+    fn a_daemons_path_reads_back_for_its_daemon_and_address_alone() {
+        let home = shards_testdir::TempDir::new("ctx-peer").unwrap();
+        let gpu = Context {
+            name: "gpu".into(),
+            description: String::new(),
+            address: "192.0.2.1:2376".parse().unwrap(),
+            daemon: [7; 32],
+        };
+        std::fs::create_dir(home.join("contexts")).unwrap();
+        std::fs::write(home.join("contexts").join("gpu"), gpu.text()).unwrap();
+        assert_eq!(known(&home, &gpu), Known::Never);
+        let ms = Duration::from_millis;
+        let seen = Seen {
+            handshake: Some(ms(30)),
+            rtt: ms(9),
+            answer: ms(40),
+            lost: Some(ms(300_000)),
+            ..Seen::default()
+        };
+        keep(&home, &gpu, Known::Never, &seen).unwrap();
+        let path = shards_remote::tls::Path {
+            rtt: ms(9),
+            handshake: ms(30),
+            answer: ms(40),
+            lost: Some(ms(300_000)),
+        };
+        assert_eq!(known(&home, &gpu), Known::Reached(path));
+        let ran_out = Seen { ran_out: true, ..seen };
+        keep(&home, &gpu, known(&home, &gpu), &ran_out).unwrap();
+        assert_eq!(known(&home, &gpu), Known::RanOut(path));
+        let other = Context {
+            daemon: [8; 32],
+            ..gpu.clone()
+        };
+        assert_eq!(known(&home, &other), Known::Never);
+        let moved = Context {
+            address: "192.0.2.2:2376".parse().unwrap(),
+            ..gpu.clone()
+        };
+        assert_eq!(known(&home, &moved), Known::Never);
+        let unread = "shards peer 1\ndaemon x\n";
+        std::fs::write(peer_record(&home, "gpu"), unread).unwrap();
+        assert_eq!(known(&home, &gpu), Known::Never);
+        keep(&home, &gpu, Known::Never, &Seen::default()).unwrap();
+        assert_eq!(std::fs::read_to_string(peer_record(&home, "gpu")).unwrap(), unread);
+        remove(&home, &["gpu"]).unwrap();
+        assert!(!peer_record(&home, "gpu").exists());
     }
 
     /// A context's removal takes its record, the home's choice of it and its engine's socket

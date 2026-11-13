@@ -28,7 +28,7 @@ use crate::cli::cp::Ask;
 /// What a step on the other machine said: its status, its stdout and its stderr.
 type There = (u8, Vec<u8>, Vec<u8>);
 
-/// A step asked of the other machine, as `shards_remote::client::exec_seen` says it: answered
+/// A step asked of the other machine, as `context::exec` says it: answered
 /// (`Ok(Ok)`); refused there, in its daemon's words (`Ok(Err)`); or unanswered, its
 /// connection ended first or never made (`Err`).
 type Asked = Result<Result<There, String>, String>;
@@ -196,13 +196,16 @@ fn baseline_of(home: &Path, contexts: &str) -> Result<shards_vmm::arch::cpu::Id,
             env: Vec::new(),
             terminal: None,
         };
-        let (ran, _) = shards_remote::client::exec_seen(
+        let (ran, _) = crate::context::exec(
+            home,
             &identity,
-            context.remote(),
+            &context,
             request,
             None,
             Taken(out_tx),
             Taken(err_tx),
+            |_| {},
+            |_| {},
         );
         let there = match ran {
             Ok(Ok(status)) => (u8::try_from(status).unwrap_or(1), taken(&out_rx), taken(&err_rx)),
@@ -372,13 +375,16 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
             env: Vec::new(),
             terminal: None,
         };
-        let (ran, seen) = shards_remote::client::exec_seen(
+        let (ran, seen) = crate::context::exec(
+            home,
             &identity,
-            context.remote(),
+            &context,
             request,
             stdin,
             Taken(out_tx),
             Taken(err_tx),
+            |_| {},
+            |_| {},
         );
         let asked = match ran {
             Ok(Ok(status)) => Ok(Ok((

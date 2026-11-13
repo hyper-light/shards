@@ -66,6 +66,10 @@ pub trait Host: Send {
     /// How many invitations the machine holds open: as many clients it has not enrolled may
     /// be connected at once, to join, as an invitation enrolls one client.
     fn invited(&self) -> usize;
+    /// How many handshakes of keys not yet known the machine holds at once: its own resources'
+    /// bound, past which the oldest unanswered is given up for the newest (the person's ruling,
+    /// 2026-11-13).
+    fn handshakes(&self) -> usize;
 }
 
 /// The daemon's answer to any join that failed, whatever made it fail: a refusal tells
@@ -233,10 +237,9 @@ struct Peer {
     spki: Vec<u8>,
     client: Option<String>,
     streams: HashMap<StreamId, Stream>,
-    /// When a stranger is let go unless it has joined: as long after its handshake as its
-    /// connection waits for an unanswered peer ([`tls::unanswered`] at the probe timeout its
-    /// handshake measured), a join being one request, one answer.
-    joins_by: Instant,
+    /// When its handshake ended: of the strangers holding the machine's invitations, the oldest
+    /// gives its place to a newer one.
+    since: Instant,
 }
 
 struct Server<H: Host> {
@@ -261,13 +264,12 @@ impl<H: Host> Server<H> {
         self.peers.get_mut(&conn).and_then(|p| p.streams.get_mut(&id))
     }
 
-    /// The connections of peers the machine has not enrolled, and when each is due to have
-    /// joined ([`Peer::joins_by`]).
+    /// The connections of peers the machine has not enrolled, and when each connected.
     fn strangers(&self) -> impl Iterator<Item = (ConnKey, Instant)> + '_ {
         self.peers
             .iter()
             .filter(|(_, p)| p.client.is_none())
-            .map(|(conn, p)| (*conn, p.joins_by))
+            .map(|(conn, p)| (*conn, p.since))
     }
 
     /// Reads `id` and acts on its frames: each whole one before reading more, and none while
@@ -654,26 +656,33 @@ impl<H: Host> Handler for Server<H> {
 
     fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, peer: &[u8]) -> Result<(), Close> {
         let client = self.host.enrolled(peer);
-        // A peer the machine has not enrolled connects to join alone, while an invitation is
-        // free for it.
-        if client.is_none() && self.strangers().count() >= self.host.invited() {
-            return Err(Close {
-                code: UNENROLLED,
-                why: "not enrolled",
-            });
+        // A peer the machine has not enrolled connects to join alone, in a place an invitation
+        // holds for it: none while the machine holds none; and where every place is taken, the
+        // oldest stranger's, which has not joined in all the time since (the person's ruling,
+        // 2026-11-13: no deadline of shards' own, the slots its resources hold, the oldest
+        // unanswered given up).
+        if client.is_none() {
+            let invited = self.host.invited();
+            if invited == 0 {
+                return Err(Close {
+                    code: UNENROLLED,
+                    why: "not enrolled",
+                });
+            }
+            if self.strangers().count() >= invited
+                && let Some((oldest, _)) = self.strangers().min_by_key(|(_, since)| *since)
+            {
+                io.close(oldest, UNENROLLED, "not enrolled: a newer stranger took its place");
+                self.peers.remove(&oldest);
+            }
         }
-        let now = io.now();
-        let bound = io
-            .unanswered(conn)
-            .unwrap_or_else(|| tls::Rtt::Unmeasured.handshake_bound());
-        let joins_by = now.checked_add(bound).unwrap_or(now);
         self.peers.insert(
             conn,
             Peer {
                 spki: peer.to_vec(),
                 client,
                 streams: HashMap::new(),
-                joins_by,
+                since: io.now(),
             },
         );
         Ok(())
@@ -750,22 +759,6 @@ impl<H: Host> Handler for Server<H> {
         false
     }
 
-    fn due(&self) -> Option<Instant> {
-        self.strangers().map(|(_, due)| due).min()
-    }
-
-    /// A peer the machine has not enrolled that has not joined in its time is let go.
-    fn timeout(&mut self, io: &mut Io<'_>, now: Instant) {
-        let late: Vec<ConnKey> = self
-            .strangers()
-            .filter(|(_, due)| *due <= now)
-            .map(|(conn, _)| conn)
-            .collect();
-        for conn in late {
-            io.close(conn, UNENROLLED, "not enrolled in time");
-            self.peers.remove(&conn);
-        }
-    }
 }
 
 /// Stops a [`serve`]: each connection closed, its peer told.
@@ -787,14 +780,16 @@ pub fn serve<H: Host>(
     ready: impl FnOnce(SocketAddr, Stopper),
 ) -> Result<(), Error> {
     let config = tls::server(identity)?;
+    let slots = host.handshakes();
     let server = Server {
         host,
         peers: HashMap::new(),
         sender: None,
     };
-    // A client's round trip is not known before its handshake measures it.
-    let handshake = tls::Rtt::Unmeasured.handshake_bound();
-    let (mut driver, sender) = Driver::bind(at, Some(config), server, handshake)?;
+    // A client is not known before its handshake says whose key it holds: each is held as a
+    // peer never reached, its handshake waited for as long as its probing goes on.
+    let (mut driver, sender) = Driver::bind(at, Some(config), server, tls::Known::Never)?;
+    driver.hold_handshakes(slots);
     driver.handler_mut().sender = Some(sender.try_clone()?);
     ready(driver.local()?, Stopper(sender));
     driver.run()

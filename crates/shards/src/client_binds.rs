@@ -9,7 +9,7 @@
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 
-use shards_remote::client::{self, Controls};
+use shards_remote::client::Controls;
 use shards_remote::frame::Request;
 use shards_remote::identity::Identity;
 
@@ -260,8 +260,8 @@ pub(crate) struct Relays {
 
 impl Relays {
     /// Serves `served` for the run there that names their tokens, once each relay is kept on
-    /// `remote`, the machine: or why one is not.
-    pub(crate) fn start(home: &Path, remote: client::Remote, served: &[Served]) -> Result<Relays, String> {
+    /// `context`'s machine, as the home `home` asks it (`context::exec`): or why one is not.
+    pub(crate) fn start(home: &Path, context: &crate::context::Context, served: &[Served]) -> Result<Relays, String> {
         // As far as its limit may go, as a share process raises its own.
         let _ = shards_vmm::platform::raise_descriptor_limit();
         let limits = shards_vmm::devices::virtio::fs::server::Limits::now()
@@ -278,9 +278,10 @@ impl Relays {
             let (steer_tx, steer_rx) = std::sync::mpsc::channel::<Controls>();
             let (token, here) = (s.relay.token.clone(), s.relay.here.clone());
             let identity = crate::context::identity(home)?;
+            let (home, context) = (home.to_path_buf(), context.clone());
             let thread = std::thread::Builder::new()
                 .name("context-bind".into())
-                .spawn(move || serve(&identity, remote, &token, &here, &server, ready_tx, steer_tx))
+                .spawn(move || serve(&home, &identity, &context, &token, &here, &server, ready_tx, steer_tx))
                 .map_err(|e| format!("a thread for {}: {e}", s.relay.here))?;
             relays.threads.push(thread);
             waits.push((ready_rx, steer_rx));
@@ -330,11 +331,13 @@ impl Drop for Relays {
     }
 }
 
-/// Serves directory `here` as `token` on `remote`'s relay with `server` until it ends:
+/// Serves directory `here` as `token` on `context`'s relay with `server` until it ends:
 /// `ready` told once the machine keeps it, or why not; `steer` given what hangs it up.
+#[allow(clippy::too_many_arguments)]
 fn serve(
+    home: &Path,
     identity: &Identity,
-    remote: client::Remote,
+    context: &crate::context::Context,
     token: &str,
     here: &str,
     server: &shards_vmm::devices::virtio::fs::server::Server,
@@ -368,9 +371,10 @@ fn serve(
                 let _ = shards_vmm::devices::virtio::fs::answer_afar(server, asked, answering);
             });
         let (err_tx, err_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        let ran = client::exec(
+        let (ran, _) = crate::context::exec(
+            home,
             identity,
-            remote,
+            context,
             request,
             Some(Box::new(answers)),
             asking,
@@ -378,6 +382,7 @@ fn serve(
             |controls| {
                 let _ = steer.send(controls);
             },
+            |_| {},
         );
         let said: Vec<u8> = err_rx.try_iter().flatten().collect();
         let why = match ran {
@@ -473,7 +478,7 @@ pub(crate) fn serve_apart(args: impl Iterator<Item = std::ffi::OsString>) -> std
     let started = shards_ipc::home().and_then(|home| {
         let context =
             crate::context::load(&home, context)?.ok_or_else(|| format!("no context {context:?}"))?;
-        Relays::start(&home, context.remote(), &served)
+        Relays::start(&home, &context, &served)
     });
     match started {
         Ok(relays) => {

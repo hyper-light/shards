@@ -74,8 +74,9 @@ pub(super) struct Engine {
     conns: Mutex<HashMap<u64, UnixStream>>,
     /// What hangs up each connection relayed to a context's machine (relay.rs), by its
     /// number, which a daemon that stops hangs up: ending its client's connection here
-    /// half-closes it there, and a stream there may outlast that.
-    relayed: Mutex<HashMap<u64, shards_remote::client::Controls>>,
+    /// half-closes it there, and a stream there may outlast that; and a handshake with a
+    /// machine never reached has no deadline of its own (D180), so this is what ends it.
+    relayed: Mutex<HashMap<u64, shards_remote::client::HangUp>>,
     next: AtomicU64,
     /// Attaches waiting for their microVM's start, by its ID: its start's output goes
     /// to them (`docker run` attaches before it starts).
@@ -276,17 +277,12 @@ impl Engine {
     /// hung up now where it is stopping already. `stopping` is read under the lock
     /// [`end_engine`](Daemon::end_engine) hangs them up under, and stored before it: each
     /// connection is hung up by one or the other.
-    pub(super) fn hold_relayed(
-        &self,
-        number: u64,
-        controls: shards_remote::client::Controls,
-        stopping: &AtomicBool,
-    ) {
+    pub(super) fn hold_relayed(&self, number: u64, hang_up: shards_remote::client::HangUp, stopping: &AtomicBool) {
         let mut relayed = lock(&self.relayed);
         if stopping.load(Ordering::SeqCst) {
-            let _ = controls.hang_up();
+            let _ = hang_up.now();
         } else {
-            relayed.insert(number, controls);
+            relayed.insert(number, hang_up);
         }
     }
 }
@@ -564,8 +560,8 @@ impl<D: Disk> Daemon<D> {
         for conn in lock(&self.engine.conns).values() {
             shards_ipc::end(conn);
         }
-        for controls in lock(&self.engine.relayed).values() {
-            let _ = controls.hang_up();
+        for hang_up in lock(&self.engine.relayed).values() {
+            let _ = hang_up.now();
         }
     }
 

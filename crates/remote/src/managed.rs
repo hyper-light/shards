@@ -1700,7 +1700,7 @@ mod tests {
         let most = Duration::from_millis(VarInt::MAX.into_inner());
         for bound in [
             Duration::from_millis(1),
-            tls::Rtt::Unmeasured.handshake_bound(),
+            PATIENCE,
             tls::QUIET,
             most,
         ] {

@@ -790,6 +790,9 @@ pub struct Driver<H: Handler> {
     /// The one peer its socket is connected to, where it was aimed ([`Driver::aim`]): an ICMP
     /// port-unreachable then reads as that peer's refusal.
     aimed: Option<SocketAddr>,
+    /// The handshakes it holds at once from peers not yet known, its owner's resources' bound
+    /// ([`Driver::hold_handshakes`]): past it, the oldest unanswered is given up for the newest.
+    slots: Option<usize>,
     out: VecDeque<(SocketAddr, Vec<u8>)>,
 }
 
@@ -898,6 +901,7 @@ impl<H: Handler> Driver<H> {
                 lost: held.lost,
                 checked: held.checked,
                 aimed: None,
+                slots: None,
                 out: VecDeque::new(),
             },
             Sender {
@@ -919,6 +923,13 @@ impl<H: Handler> Driver<H> {
             .map_err(|e| Error::new(format!("aiming the driver's socket at {peer}: {e}")))?;
         self.aimed = Some(peer);
         Ok(())
+    }
+
+    /// Holds `slots` handshakes at once from peers not yet known, the bound its owner's own
+    /// resources set (the person's ruling, 2026-11-13: no deadline of shards' own): a handshake
+    /// that comes past it takes the place of the oldest still unanswered, which is given up.
+    pub fn hold_handshakes(&mut self, slots: usize) {
+        self.slots = Some(slots);
     }
 
     /// The address the socket serves on.
@@ -1115,6 +1126,7 @@ impl<H: Handler> Driver<H> {
                     }
                     return Ok(());
                 }
+                self.make_room(now);
                 match self.endpoint.accept(incoming, now, &mut response, None, None) {
                     Ok((handle, quic)) => {
                         let mut liveness = Liveness::new(now, self.handshake, self.answer);
@@ -1167,7 +1179,26 @@ impl<H: Handler> Driver<H> {
             .find_map(|(key, c)| (c.handle == handle).then_some(*key))
     }
 
-    /// Runs `key`'s endpoint events and tells the handler what changed.
+    /// A handshake comes: where the handshakes held fill their slots, the oldest still
+    /// unanswered is given up ([`given_up`]), its handler told.
+    fn make_room(&mut self, now: Instant) {
+        let Some(slots) = self.slots else {
+            return;
+        };
+        let held: Vec<(ConnKey, Instant)> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| !c.connected && !c.quic.is_closed())
+            .map(|(key, c)| (*key, c.liveness.began))
+            .collect();
+        if let Some(key) = given_up(&held, slots) {
+            let (mut io, handler) = self.io(now);
+            io.close(key, 0, "a newer handshake took its place");
+            handler.lost(&mut io, key, "its handshake gave its place to a newer one", None);
+            self.client = io.client;
+        }
+    }
+
     /// The aimed peer refused: each connection ends so, its handler told.
     fn refused(&mut self, now: Instant) {
         self.keys.clear();
@@ -1235,6 +1266,7 @@ impl<H: Handler> Driver<H> {
         }
     }
 
+    /// Runs `key`'s endpoint events and tells the handler what changed.
     fn pump(&mut self, now: Instant, key: ConnKey) {
         loop {
             let Some(conn) = self.conns.get_mut(&key) else {
@@ -1491,6 +1523,15 @@ impl<H: Handler> Driver<H> {
         self.flush_datagrams();
         Ok(())
     }
+}
+
+/// Of the handshakes `held` (each connection and when it began), the one a newer gives its
+/// place to where they fill `slots`: the oldest, unanswered longest; none while a slot is free.
+fn given_up(held: &[(ConnKey, Instant)], slots: usize) -> Option<ConnKey> {
+    if held.len() < slots {
+        return None;
+    }
+    held.iter().min_by_key(|(_, began)| *began).map(|(key, _)| *key)
 }
 
 /// The ack-eliciting frames a connection sent (RFC 9002 §2: every frame but ACK, PADDING and
@@ -1758,5 +1799,17 @@ mod tests {
         assert_eq!(keep_within(None, Some(ms(10_000))), Some(ms(10_000)));
         assert_eq!(keep_within(Some(ms(90_000)), None), Some(ms(90_000)));
         assert_eq!(keep_within(None, None), None);
+    }
+
+    /// A handshake past the slots its driver's owner holds takes the place of the oldest still
+    /// unanswered; while a slot is free, none is given up.
+    #[test]
+    fn a_handshake_past_its_slots_takes_the_oldest_unanswered_place() {
+        let t0 = Instant::now();
+        let held = [(4, t0 + ms(30)), (2, t0 + ms(10)), (7, t0 + ms(20))];
+        assert_eq!(given_up(&held, 4), None);
+        assert_eq!(given_up(&held, 3), Some(2));
+        assert_eq!(given_up(&held[..1], 1), Some(4));
+        assert_eq!(given_up(&[], 0), None);
     }
 }
