@@ -571,7 +571,8 @@ pub enum Refusal {
     GpuProbe(GpuProbeError),
     /// Preparation failed before any native owner launches a process.
     Launch(LaunchError),
-    /// Managed output/observer setup failed without allocating diagnostic text.
+    /// A managed guest's own I/O failed, typed, without allocating diagnostic text: its
+    /// output's and observer's setup, or its rate's exchange on its vsock socket (D255).
     ManagedIo {
         operation: &'static str,
         kind: io::ErrorKind,
@@ -588,6 +589,10 @@ pub enum Refusal {
     /// over the time since the look before, a whole W*, the slowest answer of the wait's kind
     /// this process has seen ([`Seen`]). The guest is not stopped: it is still its caller's.
     Stalled(Stall),
+    /// A managed guest's VM process held its vCPUs to no rate it was told (D255), in its
+    /// words: its microVM not started, its governor's thread not made, or an answer none of
+    /// the rate's protocol's (`shards_abi::rate`).
+    Rate(String),
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -646,6 +651,7 @@ impl std::fmt::Display for Refusal {
                 stall.least().cpu,
                 stall.least().over
             ),
+            Refusal::Rate(why) => write!(f, "the guest's rate: {why}"),
         }
     }
 }
