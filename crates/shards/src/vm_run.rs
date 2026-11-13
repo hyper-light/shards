@@ -423,6 +423,23 @@ fn gpu_report_arg(value: String) -> Result<LinkArg, String> {
     Ok(value)
 }
 
+/// `--gpu-device`'s identity, checked alone and added to `selection`, which `parse_run` checks
+/// whole once every flag is read (D232): checked whole after each flag, it was copied and
+/// sorted again for every one, quadratic in the flags given.
+fn gpu_device(selection: &mut Vec<vm::gpu_selection::PhysicalGpu>, value: OsString) -> Result<(), String> {
+    let device = text(value)?
+        .parse::<vm::gpu_selection::PhysicalGpu>()
+        .map_err(|error| format!("--gpu-device: {error}"))?;
+    if selection.len() >= vm::gpu_selection::MAX_PHYSICAL_GPUS {
+        return Err("--gpu-device count exceeds the physical device-index space".into());
+    }
+    selection
+        .try_reserve(1)
+        .map_err(|_| "--gpu-device storage unavailable")?;
+    selection.push(device);
+    Ok(())
+}
+
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut args = args;
     let mut rootfs = None;
@@ -546,18 +563,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 cfg.gpu = true;
             }
             "--gpu-device" => {
-                let device = text(value("--gpu-device")?)?
-                    .parse::<vm::gpu_selection::PhysicalGpu>()
-                    .map_err(|error| format!("--gpu-device: {error}"))?;
-                if cfg.gpu_devices.len() >= vm::gpu_selection::MAX_PHYSICAL_GPUS {
-                    return Err("--gpu-device count exceeds the physical device-index space".into());
-                }
-                cfg.gpu_devices
-                    .try_reserve(1)
-                    .map_err(|_| "--gpu-device storage unavailable")?;
-                cfg.gpu_devices.push(device);
-                vm::gpu_selection::check_selection(&cfg.gpu_devices)
-                    .map_err(|error| format!("--gpu-device: {error}"))?;
+                gpu_device(&mut cfg.gpu_devices, value("--gpu-device")?)?;
                 cfg.gpu = true;
             }
             "--pci-test" => cfg.pci_test = vec![(vm::TEST_DEVICE, 0)],
@@ -589,6 +595,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
+    vm::gpu_selection::check_selection(&cfg.gpu_devices).map_err(|error| format!("--gpu-device: {error}"))?;
     common.check_workload()?;
     served_shares(&mut cfg, &served, warm.is_some())?;
     if !cfg.pci_test.is_empty() && common.snapshot_dir.is_some() {
@@ -3439,6 +3446,124 @@ mod managed_report_tests {
         for value in ["9", "ask", "answer", "working-set", "said-to"] {
             assert!(gpu_report_arg(value.into()).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod gpu_device_tests {
+    use super::*;
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+    use vm::gpu_selection::{MAX_PHYSICAL_GPUS, PhysicalGpuError};
+
+    /// The system's allocator, counting what the thread that asks allocates while it asks
+    /// ([`allocations`]): no other test of this binary asks.
+    struct Counting;
+
+    thread_local! {
+        static COUNTING: Cell<bool> = const { Cell::new(false) };
+        static COUNTED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn count() {
+        if COUNTING.with(Cell::get) {
+            COUNTED.with(|n| n.set(n.get().saturating_add(1)));
+        }
+    }
+
+    // SAFETY: every call goes to the system allocator unchanged.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            count();
+            // SAFETY: the caller's contract, passed on.
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: the caller's contract, passed on.
+            unsafe { System.dealloc(ptr, layout) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            count();
+            // SAFETY: the caller's contract, passed on.
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: Counting = Counting;
+
+    /// `f`'s result, and the allocations and reallocations it made on this thread.
+    fn allocations<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        COUNTED.with(|n| n.set(0));
+        COUNTING.with(|c| c.set(true));
+        let out = f();
+        COUNTING.with(|c| c.set(false));
+        (out, COUNTED.with(Cell::get))
+    }
+
+    fn flag(value: &str) -> [OsString; 2] {
+        [OsString::from("--gpu-device"), OsString::from(value)]
+    }
+
+    fn refusal(gpu: impl Iterator<Item = OsString>) -> String {
+        let words = ["--kernel", "/never-opened/kernel"]
+            .into_iter()
+            .map(OsString::from);
+        parse_run(words.chain(gpu)).err().expect("refused")
+    }
+
+    /// D232: a `--gpu-device` adds its identity alone, copying no selection: the selection
+    /// is checked whole once its flags are read, where checked after every flag it was
+    /// copied and sorted for each, quadratic in the flags given.
+    #[test]
+    fn a_gpu_device_copies_no_selection() {
+        let given = 64;
+        let mut selection = Vec::with_capacity(given + 1);
+        for i in 0..given {
+            gpu_device(&mut selection, OsString::from(format!("luid:{i:x}"))).unwrap();
+        }
+        let next = OsString::from(format!("luid:{given:x}"));
+        let (added, allocated) = allocations(|| gpu_device(&mut selection, next));
+        added.unwrap();
+        assert_eq!(allocated, 0, "a --gpu-device beside {given} others allocated");
+    }
+
+    /// D232: `--gpu-device`'s refusals, each as it was given while the selection was checked
+    /// whole after every flag: the same text, the same flag named.
+    #[test]
+    fn a_gpu_devices_refusals_name_it() {
+        assert_eq!(
+            refusal([OsString::from("--gpu-device")].into_iter()),
+            "--gpu-device needs a value"
+        );
+        assert_eq!(
+            refusal(flag("NVIDIA").into_iter()),
+            format!("--gpu-device: {}", PhysicalGpuError::Syntax)
+        );
+        assert_eq!(
+            refusal(flag("pci:0000:01:20.0").into_iter()),
+            format!("--gpu-device: {}", PhysicalGpuError::PciAddress)
+        );
+        let repeated = flag("luid:7")
+            .into_iter()
+            .chain(flag("luid:8"))
+            .chain(flag("luid:7"));
+        assert_eq!(
+            refusal(repeated),
+            format!("--gpu-device: {}", PhysicalGpuError::Duplicate)
+        );
+    }
+
+    /// D232: one identity past the physical device-index space is refused at its flag.
+    #[test]
+    fn a_gpu_device_past_the_index_space_is_refused() {
+        let past = (0..=MAX_PHYSICAL_GPUS).flat_map(|i| flag(&format!("luid:{i:x}")));
+        assert_eq!(
+            refusal(past),
+            "--gpu-device count exceeds the physical device-index space"
+        );
     }
 }
 
