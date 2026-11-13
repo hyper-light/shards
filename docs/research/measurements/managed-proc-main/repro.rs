@@ -3,7 +3,6 @@ use std::io::{BufRead as _, Write as _};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
-use std::time::Instant;
 
 const NAME: &[u8] = b"own \xff) ) \xfe"; // Fits Linux TASK_COMM_LEN, includes raw name bytes.
 
@@ -58,9 +57,6 @@ fn raw_comm_child() {
 
 #[test]
 fn legal_raw_comm_preserves_held_process_start() {
-    let deadline = Instant::now()
-        .checked_add(crate::conformance::PATIENCE.get())
-        .unwrap();
     let mut owned = OwnedChild {
         child: Command::new(std::env::current_exe().unwrap())
             .args([
@@ -90,12 +86,9 @@ fn legal_raw_comm_preserves_held_process_start() {
         }
     }));
     owned.child.stdin.as_mut().unwrap().write_all(b"n").unwrap();
-    assert_eq!(
-        receive
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap(),
-        "RAW_READY"
-    );
+    // The child's own line, a fact waited for as such: a child that ends without it ends its
+    // reader, whose sender then refuses this wait.
+    assert_eq!(receive.recv().unwrap(), "RAW_READY");
     let raw = std::fs::read(format!("/proc/{pid}/stat")).unwrap();
     assert!(raw.windows(NAME.len()).any(|window| window == NAME));
     assert!(std::str::from_utf8(&raw).is_err());
@@ -103,12 +96,7 @@ fn legal_raw_comm_preserves_held_process_start() {
     let observed = started(pid);
     println!("own_tgid_raw_comm={NAME:02x?} held_alive=true observed_start={observed:?}");
     owned.child.stdin.as_mut().unwrap().write_all(b"r").unwrap();
-    assert_eq!(
-        receive
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap(),
-        "NAME_RESTORED"
-    );
+    assert_eq!(receive.recv().unwrap(), "NAME_RESTORED");
     assert_eq!(started(pid).unwrap(), original);
     assert!(!held.exited(false).unwrap());
     drop(owned.child.stdin.take());

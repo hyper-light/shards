@@ -1667,9 +1667,9 @@ fn vcpu_thread(
 }
 
 /// How vCPU `vcpu`'s guest time is read, from any thread: its hypervisor's clock.
-fn guest_clock(vcpu: &hv::Vcpu) -> Result<guest_time::Read, String> {
-    let clock = vcpu.guest_clock().map_err(|e| e.to_string())?;
-    Ok(Box::new(move || clock.read().map_err(|e| e.to_string())))
+fn guest_clock(vcpu: &hv::Vcpu) -> guest_time::Read {
+    let clock = vcpu.guest_clock();
+    Box::new(move || clock.read())
 }
 
 /// Writes the snapshot the guest asks for, once every vCPU has parked.

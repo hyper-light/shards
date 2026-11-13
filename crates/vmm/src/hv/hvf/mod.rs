@@ -708,8 +708,8 @@ pub struct GuestClock {
 impl GuestClock {
     /// The nanoseconds its vCPU has run its guest: as it last left it, and where it is in it
     /// now, as it leaves it, made to at once ("Forces an immediate exit", hv_vcpu.h), after
-    /// which it goes back in.
-    pub fn read(&self) -> Result<u64> {
+    /// which it goes back in; or why not, typed.
+    pub fn read(&self) -> std::result::Result<u64, shards_abi::guest_time::Unread> {
         let ran = &self.ran;
         let stint = ran.stints.load(Ordering::SeqCst);
         if stint % 2 == 1 {
@@ -721,16 +721,13 @@ impl GuestClock {
                 }
             });
             ran.waiting.fetch_sub(1, Ordering::SeqCst);
-            left?;
+            left.map_err(|e| shards_abi::guest_time::Unread::HvfExit(e.code))?;
         }
         match ran.failed.load(Ordering::Acquire) {
             0 => Ok(crate::platform::mach_ns(u128::from(
                 ran.ticks.load(Ordering::Acquire),
             ))),
-            code => Err(Error::Call(sys::Error {
-                op: "hv_vcpu_get_exec_time",
-                code,
-            })),
+            code => Err(shards_abi::guest_time::Unread::HvfExecTime(code)),
         }
     }
 }
@@ -761,11 +758,11 @@ impl Vcpu {
     }
 
     /// Its guest's run time, for any thread to read.
-    pub fn guest_clock(&self) -> Result<GuestClock> {
-        Ok(GuestClock {
+    pub fn guest_clock(&self) -> GuestClock {
+        GuestClock {
             ran: self.ran.clone(),
             kicker: self.sys.kicker(),
-        })
+        }
     }
 
     /// Makes this the boot vCPU: it enters at `entry` on its first `run`. Others stay
@@ -1767,7 +1764,7 @@ mod tests {
                 let mut a = vm.create_vcpu(0).unwrap();
                 a.boot(Entry { pc: RAM, x0: 0 }).unwrap();
                 let clock = crate::platform::ThreadClock::current().unwrap();
-                tx.send((a.guest_clock().unwrap(), a.kicker(), clock)).unwrap();
+                tx.send((a.guest_clock(), a.kicker(), clock)).unwrap();
                 let mut kicked = 0u64;
                 while !stop.load(Ordering::Acquire) {
                     assert_eq!(a.run(&NoDevices).unwrap(), Exit::Canceled);

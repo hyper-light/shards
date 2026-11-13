@@ -33,6 +33,7 @@ pub mod conformance;
 pub mod image;
 mod native;
 pub mod physical;
+mod progress;
 mod said;
 pub mod sim;
 mod stream;
@@ -50,6 +51,7 @@ pub use client::{
 };
 pub use native::{ImageIdentity, NativeBoot, NativeImages, NativeStartup, verify_native_image};
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
+pub use progress::{Awaited, Rate, Seen, Stall};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +63,8 @@ pub struct GuestSpec {
     /// Its kernel's command line.
     pub cmdline: String,
     pub vcpus: u32,
-    /// Its memory, in MiB: even, at least [`min_memory_mib`].
+    /// Its memory, in MiB: even, at least [`min_memory_mib`]; [`envelope`] rounds an ask up
+    /// to one.
     pub memory_mib: u64,
     /// A GPU (`--gpu`): Venus over the host's own Vulkan driver, rendered by the GPU's VM
     /// process (D144, D201, D202, D208); a selection below implies it.
@@ -342,72 +345,6 @@ pub enum End {
     Failed(String),
 }
 
-/// Bounds seeded from records of a host class's runs: macOS-HVF, Linux-KVM and
-/// Windows-WHP are recorded apart and chosen as this crate is built; a class with no record
-/// seeds from the slowest of any, and every bound rises with what its node sees.
-pub mod record {
-    /// This host's class.
-    pub const CLASS: &str = if cfg!(target_os = "macos") {
-        "macOS-HVF"
-    } else if cfg!(target_os = "linux") {
-        "Linux-KVM"
-    } else if cfg!(windows) {
-        "Windows-WHP"
-    } else {
-        "no backend"
-    };
-
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::Duration;
-
-    /// A bound on a wait that can't wait on a fact alone, from the records of its waits by
-    /// host class (`docs/research/measurements/shards-api-waits/run.sh`): twice (the
-    /// margin) this class's slowest record; where this class has none, twice the slowest of
-    /// any class's, as an unrecorded model seeds from the highest on record; and either
-    /// rising to twice the slowest this node has seen ([`Learned::saw`]), never falling.
-    #[derive(Debug)]
-    pub struct Learned {
-        name: &'static str,
-        records: &'static [(&'static str, Duration)],
-        /// The slowest seen here, in ns.
-        seen: AtomicU64,
-    }
-
-    impl Learned {
-        pub const fn new(name: &'static str, records: &'static [(&'static str, Duration)]) -> Learned {
-            Learned {
-                name,
-                records,
-                seen: AtomicU64::new(0),
-            }
-        }
-
-        /// What it bounds.
-        pub fn name(&self) -> &'static str {
-            self.name
-        }
-
-        /// The bound now: twice the slowest of this class's records, else of any class's,
-        /// or of what this node has seen, whichever is longer.
-        pub fn get(&self) -> Duration {
-            let own = self.records.iter().filter(|(class, _)| *class == CLASS);
-            let slowest = |r: &mut dyn Iterator<Item = &(&str, Duration)>| r.map(|(_, d)| *d).max();
-            let recorded = slowest(&mut own.clone())
-                .or_else(|| slowest(&mut self.records.iter()))
-                .unwrap_or_default();
-            let seen = Duration::from_nanos(self.seen.load(Ordering::Relaxed));
-            recorded.max(seen).saturating_mul(2)
-        }
-
-        /// A wait it bounds took `took`: the bound rises to twice it where it is the
-        /// slowest yet.
-        pub fn saw(&self, took: Duration) {
-            let ns = u64::try_from(took.as_nanos()).unwrap_or(u64::MAX);
-            self.seen.fetch_max(ns, Ordering::Relaxed);
-        }
-    }
-}
-
 /// The native operation that could not observe a process identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessOperation {
@@ -425,6 +362,18 @@ pub enum ProcessOperation {
     GetExitCode,
     QueryScope,
     StopScope,
+    /// Linux: clock_getcpuclockid(3) or clock_gettime(2) of a VM process's CPU clock.
+    CpuClock,
+    /// macOS: mach_timebase_info(3), which converts a VM process's CPU times.
+    MachTimebase,
+    /// Windows: CreateToolhelp32Snapshot, a snapshot of the system's processes.
+    Snapshot,
+    /// Windows: Process32FirstW or Process32NextW, a snapshot's processes.
+    ListProcesses,
+    /// Windows: QueryProcessCycleTime, the cycles a VM process's threads used.
+    CycleTime,
+    /// Windows: DuplicateHandle (std's `try_clone_to_owned`), a VM process's handle.
+    DuplicateHandle,
 }
 
 /// A failure of the concrete process-identity producers. Observation failure is
@@ -448,6 +397,9 @@ pub enum ProcessFailure {
     CapacityUnavailable,
     BufferBounds,
     InvalidStartRecord,
+    /// A CPU clock read a time no clock keeps (Linux: a negative second, or a second's
+    /// nanoseconds or more).
+    InvalidCpuTime,
     DifferentStart {
         observed: u64,
     },
@@ -482,6 +434,7 @@ impl std::fmt::Display for ProcessFailure {
             Self::CapacityUnavailable => f.write_str("process stat capacity unavailable"),
             Self::BufferBounds => f.write_str("process stat buffer bounds"),
             Self::InvalidStartRecord => f.write_str("process stat has no valid starttime"),
+            Self::InvalidCpuTime => f.write_str("process CPU clock read no valid time"),
             Self::DifferentStart { observed } => {
                 write!(f, "process started at {observed}: another process's since")
             }
@@ -628,6 +581,11 @@ pub enum Refusal {
     /// An owning connection failed within its caller's absolute deadline.
     /// The native owner is retained; the handshake phase/cause stays typed.
     Connect { port: u32, failure: HandshakeError },
+    /// A wait that follows its guest's VM process ([`Guest::connect_while_runs`],
+    /// [`Guest::wait_while_runs`]) found it stalled ([`Stall`]): it had run no CPU at all
+    /// over the time since the look before, a whole W*, the slowest answer of the wait's kind
+    /// this process has seen ([`Seen`]). The guest is not stopped: it is still its caller's.
+    Stalled(Stall),
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -675,6 +633,17 @@ impl std::fmt::Display for Refusal {
             }
             Refusal::Borrowed { port, failure } => write!(f, "vsock port {port}: {failure}"),
             Refusal::Allocation { what } => write!(f, "cannot allocate {what}"),
+            Refusal::Stalled(stall) => write!(
+                f,
+                "the guest's VM process stalled: {:?} into the wait it ran no CPU in {:?}, past the \
+                 slowest answer seen ({:?}); the least a VM process ran here and still answered was \
+                 {:?} in {:?}",
+                stall.waited(),
+                stall.over(),
+                stall.slowest(),
+                stall.least().cpu,
+                stall.least().over
+            ),
         }
     }
 }
@@ -810,6 +779,42 @@ pub trait Guest: Send + Sync {
     fn wait_for(&self, timeout: Duration) -> Result<Option<End>, Refusal>;
     /// What names it for [`Guests::attach`].
     fn identity(&self) -> Result<Identity, Refusal>;
+    /// A stream to its vsock `port`, as [`connect`](Guest::connect) with no clock gives one,
+    /// waited for while its VM process runs (D215). It is refused as `connect` refuses, and
+    /// [`Refusal::Stalled`] where the VM process ran no CPU at all for a whole W*: the
+    /// slowest `OK` of its kind this process has seen ([`Awaited::Boot`] while the guest has
+    /// answered no connect yet, else [`Awaited::Connect`]), looked at once each W* past the
+    /// wait's start. Its answer teaches its kind ([`Shards::seen`]).
+    ///
+    /// For a wait in which the VM works toward its answer (a boot to its listener): a guest
+    /// that idles before it answers (on a timer, an input) runs nothing and is refused; ask
+    /// such a guest with [`connect`](Guest::connect). A VM that runs without answering (a
+    /// spin) is never judged stalled. Before its kind's first answer ([`Seen::Cold`]) it
+    /// follows liveness alone, so a guest whose VM runs but never answers is ended only by its
+    /// caller: [`stop`](Guest::stop), from a thread of its own, ends the wait as
+    /// `Ended(Stopped)`.
+    ///
+    /// By default, for a [`Guest`] with no VM process of its own to follow (the simulator), it
+    /// follows liveness alone, as a cold record does: `connect(port, Duration::MAX)`.
+    fn connect_while_runs(&self, port: u32) -> Result<Box<dyn Stream>, Refusal> {
+        self.connect(port, Duration::MAX)
+    }
+    /// Its end, as [`wait_for`](Guest::wait_for) with no clock gives it, waited for while its
+    /// VM process runs (D215): [`Refusal::Stalled`] where it ran no CPU at all for a whole W*,
+    /// the slowest end this process has seen ([`Awaited::End`]), as
+    /// [`connect_while_runs`](Guest::connect_while_runs) judges, with its contract: for a guest
+    /// that works toward its end (a workload that powers off). An end it did not
+    /// [`stop`](Guest::stop) teaches its kind.
+    ///
+    /// By default it follows liveness alone, as a cold record does:
+    /// `wait_for(Duration::MAX)`.
+    fn wait_while_runs(&self) -> Result<End, Refusal> {
+        loop {
+            if let Some(end) = self.wait_for(Duration::MAX)? {
+                return Ok(end);
+            }
+        }
+    }
 }
 
 /// The backend shards boots Linux guests with on `os` and `arch` (`std::env::consts`'):
@@ -836,26 +841,64 @@ pub fn min_memory_mib(arch: &str) -> u64 {
     if arch == "x86_64" { 128 } else { 64 }
 }
 
+/// Guest memory's unit, in MiB: shards-vmm boots an even number of MiB alone (`ram_bytes`
+/// in `vm/aarch64.rs`, `ram_ranges` in `vm/x86_64.rs`). On arm64 that keeps the DTB at
+/// RAM's top within one 2 MiB block of RAM, as its boot protocol maps it; on x86-64 it is
+/// its large page (docs/design/architecture.md D29, "Its size").
+const MEMORY_UNIT_MIB: u64 = 2;
+
+/// A MiB in bytes. shards-vmm counts a guest's memory in bytes in a u64 (the same
+/// functions' `checked_mul(MIB)`), so memory whose bytes pass what a u64 holds boots on no
+/// host.
+const MIB: u64 = 1 << 20;
+
+/// The least spec shards-vmm boots on a guest of `arch` (`std::env::consts::ARCH`'s names)
+/// that holds `vcpus` vCPUs and `memory_mib` MiB, as `(vcpus, memory_mib)`: at least one
+/// vCPU, and the memory rounded up to the VMM's unit (an even number of MiB) and to at
+/// least [`min_memory_mib`]. It is the rule [`check`] holds a spec to, from this one source:
+/// a spec is refused there unless it is its own envelope. Refused as [`Refusal::Bounds`]
+/// (`memory_mib`) where that memory's bytes pass what a u64 holds. How many vCPUs and how
+/// much memory a host runs is its hypervisor's own limit, which shards reads as it starts
+/// the VM.
+pub fn envelope(arch: &str, vcpus: u32, memory_mib: u64) -> Result<(u32, u64), Refusal> {
+    let memory = memory_mib
+        .max(min_memory_mib(arch))
+        .checked_next_multiple_of(MEMORY_UNIT_MIB)
+        .filter(|mib| mib.checked_mul(MIB).is_some())
+        .ok_or_else(|| Refusal::Bounds {
+            what: "memory_mib",
+            why: format!("{memory_mib} MiB: guest memory past the bytes a u64 holds"),
+        })?;
+    Ok((vcpus.max(1), memory))
+}
+
 /// Checks `spec` against the bounds shards-vmm holds every host to, so that both the
-/// client and the simulator refuse it before anything boots: at least one vCPU, and memory
-/// even and at least the least (`vm/aarch64.rs:414`, `vm/x86_64.rs:361`). How many vCPUs a
-/// host takes is its hypervisor's own limit, which shards reads as it starts the VM
-/// (`vm/runtime.rs:1059` `check_vcpus`); its refusal comes back as [`Refusal::Bounds`].
+/// client and the simulator refuse it before anything boots: its vCPUs and memory are their
+/// own [`envelope`]. How many vCPUs a host takes is its hypervisor's own limit, which shards
+/// reads as it starts the VM (`check_vcpus` in `vm/runtime.rs`); its refusal comes back as
+/// [`Refusal::Bounds`].
 pub fn check(spec: &GuestSpec) -> Result<(), Refusal> {
     physical::check_selection(&spec.gpu_devices).map_err(Refusal::Gpu)?;
-    if spec.vcpus == 0 {
+    fits(std::env::consts::ARCH, spec.vcpus, spec.memory_mib)
+}
+
+/// `vcpus` and `memory_mib` on a guest of `arch`, as [`check`] holds a spec's: refused by
+/// the field that differs from their [`envelope`], or as that refuses them.
+fn fits(arch: &str, vcpus: u32, memory_mib: u64) -> Result<(), Refusal> {
+    let (least_vcpus, least_mib) = envelope(arch, vcpus, memory_mib)?;
+    if least_vcpus != vcpus {
         return Err(Refusal::Bounds {
             what: "vcpus",
             why: "at least one vCPU is required".into(),
         });
     }
-    let least = min_memory_mib(std::env::consts::ARCH);
-    if spec.memory_mib < least || !spec.memory_mib.is_multiple_of(2) {
+    if least_mib != memory_mib {
         return Err(Refusal::Bounds {
             what: "memory_mib",
             why: format!(
-                "{} MiB: guest memory must be an even number of MiB, at least {least}",
-                spec.memory_mib
+                "{memory_mib} MiB: guest memory must be an even number of MiB, at least {}; \
+                 {least_mib} MiB holds it",
+                min_memory_mib(arch)
             ),
         });
     }
@@ -952,34 +995,6 @@ mod tests {
         assert!(check(&GuestSpec { ports, ..spec() }).is_ok());
     }
 
-    /// A bound is twice its own class's slowest record; a class with none seeds from twice
-    /// the slowest of any class's; and either rises to twice the slowest this node has
-    /// seen, never falling (review: the per-class rule).
-    #[test]
-    fn a_bound_seeds_from_the_records_and_rises_with_what_it_sees() {
-        let ms = Duration::from_millis;
-        static OWN: record::Learned = record::Learned::new(
-            "own",
-            &[
-                (record::CLASS, Duration::from_millis(5)),
-                ("another", Duration::from_millis(10)),
-            ],
-        );
-        assert_eq!(OWN.get(), ms(10));
-        static UNRECORDED: record::Learned = record::Learned::new(
-            "unrecorded",
-            &[
-                ("one", Duration::from_millis(10)),
-                ("another", Duration::from_millis(30)),
-            ],
-        );
-        assert_eq!(UNRECORDED.get(), ms(60));
-        UNRECORDED.saw(ms(40));
-        assert_eq!(UNRECORDED.get(), ms(80));
-        UNRECORDED.saw(ms(1));
-        assert_eq!(UNRECORDED.get(), ms(80));
-    }
-
     /// A refusal printed with its chain of causes (each `source()` after its Display, as error
     /// reporters print them) says each cause once: a refusal or failure whose Display already
     /// says its failure gives that failure's own source, not the failure again (D215).
@@ -1065,5 +1080,130 @@ mod tests {
         );
         assert_eq!(min_memory_mib("x86_64"), 128);
         assert_eq!(min_memory_mib("aarch64"), 64);
+    }
+
+    /// The most MiB an envelope holds: the last even MiB whose bytes a u64 holds, 2^44 - 2,
+    /// where 2^44 MiB is 2^64 bytes.
+    const MOST_MIB: u64 = (1 << 44) - 2;
+
+    /// An envelope rounds an ask up to what shards-vmm boots: its memory to the VMM's unit,
+    /// an even number of MiB, and to the least on each architecture, never below the ask; no
+    /// vCPU to one, and any other count as asked (D215).
+    #[test]
+    fn an_envelope_rounds_up_to_the_unit_and_the_least() {
+        for (arch, least) in [("x86_64", 128), ("aarch64", 64)] {
+            assert_eq!(envelope(arch, 1, 257), Ok((1, 258)), "{arch}");
+            assert_eq!(envelope(arch, 2, 258), Ok((2, 258)), "{arch}");
+            assert_eq!(envelope(arch, 1, least + 1), Ok((1, least + 2)), "{arch}");
+            assert_eq!(envelope(arch, 1, least), Ok((1, least)), "{arch}");
+            assert_eq!(envelope(arch, 1, least - 1), Ok((1, least)), "{arch}");
+            assert_eq!(envelope(arch, 1, least - 2), Ok((1, least)), "{arch}");
+            assert_eq!(envelope(arch, 3, 0), Ok((3, least)), "{arch}");
+            assert_eq!(envelope(arch, 0, 256), Ok((1, 256)), "{arch}");
+            assert_eq!(envelope(arch, u32::MAX, 256), Ok((u32::MAX, 256)), "{arch}");
+            assert_eq!(envelope(arch, 1, MOST_MIB - 1), Ok((1, MOST_MIB)), "{arch}");
+            assert_eq!(envelope(arch, 1, MOST_MIB), Ok((1, MOST_MIB)), "{arch}");
+        }
+    }
+
+    /// Memory whose envelope's bytes pass what a u64 holds, in which shards-vmm counts a
+    /// guest's, is refused by name: one MiB past the most rounds up past it, and so does a
+    /// u64's most, whose next even number no u64 holds (D215).
+    #[test]
+    fn an_envelope_past_what_a_u64_holds_is_refused() {
+        assert!(MOST_MIB.checked_mul(MIB).is_some());
+        assert!((MOST_MIB + MEMORY_UNIT_MIB).checked_mul(MIB).is_none());
+        for arch in ["x86_64", "aarch64"] {
+            for past in [MOST_MIB + 1, MOST_MIB + 2, u64::MAX - 1, u64::MAX] {
+                for vcpus in [0, 1] {
+                    assert!(
+                        matches!(
+                            envelope(arch, vcpus, past),
+                            Err(Refusal::Bounds {
+                                what: "memory_mib",
+                                ..
+                            })
+                        ),
+                        "{arch} {vcpus} {past}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `check` holds a spec's vCPUs and memory to their envelope alone, on each architecture,
+    /// at every bound and one past it: it takes a spec exactly where the spec is its own
+    /// envelope, refuses one by the field the envelope moves, or as the envelope refuses it;
+    /// and what an envelope gives is its own envelope, which `check` takes (D215).
+    #[test]
+    fn check_and_envelope_agree_on_every_case() {
+        let unit = MEMORY_UNIT_MIB;
+        for arch in ["x86_64", "aarch64"] {
+            let least = min_memory_mib(arch);
+            let memories = [
+                0,
+                1,
+                unit,
+                least - unit,
+                least - 1,
+                least,
+                least + 1,
+                least + unit,
+                257,
+                258,
+                MOST_MIB - 1,
+                MOST_MIB,
+                MOST_MIB + 1,
+                MOST_MIB + unit,
+                u64::MAX - 1,
+                u64::MAX,
+            ];
+            for vcpus in [0, 1, 2, u32::MAX] {
+                for memory in memories {
+                    let case = format!("{arch} {vcpus} vCPUs {memory} MiB");
+                    let checked = fits(arch, vcpus, memory);
+                    match envelope(arch, vcpus, memory) {
+                        Ok(own) if own == (vcpus, memory) => assert_eq!(checked, Ok(()), "{case}"),
+                        Ok((least_vcpus, least_mib)) => {
+                            let moved = if least_vcpus == vcpus {
+                                "memory_mib"
+                            } else {
+                                "vcpus"
+                            };
+                            assert!(
+                                matches!(&checked, Err(Refusal::Bounds { what, .. }) if *what == moved),
+                                "{case}: {checked:?}"
+                            );
+                            assert!(least_vcpus >= vcpus && least_mib >= memory, "{case}");
+                            assert!(least_mib - memory.max(least) < unit, "{case}");
+                            assert_eq!(
+                                envelope(arch, least_vcpus, least_mib),
+                                Ok((least_vcpus, least_mib)),
+                                "{case}"
+                            );
+                            assert_eq!(fits(arch, least_vcpus, least_mib), Ok(()), "{case}");
+                        }
+                        Err(refused) => assert_eq!(checked, Err(refused), "{case}"),
+                    }
+                }
+            }
+        }
+        // And `check` itself, on this host's architecture, whose guests it boots.
+        let arch = std::env::consts::ARCH;
+        for vcpus in [0, 1, u32::MAX] {
+            for memory in [0, 257, 258, MOST_MIB, MOST_MIB + 1, u64::MAX] {
+                let spec = GuestSpec {
+                    vcpus,
+                    memory_mib: memory,
+                    ..spec()
+                };
+                assert_eq!(check(&spec), fits(arch, vcpus, memory), "{vcpus} {memory}");
+                assert_eq!(
+                    check(&spec).is_ok(),
+                    envelope(arch, vcpus, memory) == Ok((vcpus, memory)),
+                    "{vcpus} {memory}"
+                );
+            }
+        }
     }
 }

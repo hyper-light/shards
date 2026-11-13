@@ -1518,11 +1518,11 @@ impl Vcpu {
     }
 
     /// Its guest's run time, for any thread to read.
-    pub fn guest_clock(&self) -> Result<GuestClock> {
-        Ok(GuestClock {
+    pub fn guest_clock(&self) -> GuestClock {
+        GuestClock {
             partition: self.partition.clone(),
             index: self.index,
-        })
+        }
     }
 
     fn set(&self, names: &[WHV_REGISTER_NAME], values: &[Value], op: &'static str) -> Result<()> {
@@ -1875,12 +1875,13 @@ pub struct GuestClock {
 }
 
 impl GuestClock {
-    /// The nanoseconds its vCPU has run its guest, in 100 ns steps.
-    pub fn read(&self) -> Result<u64> {
+    /// The nanoseconds its vCPU has run its guest, in 100 ns steps; or the call's HRESULT,
+    /// typed.
+    pub fn read(&self) -> std::result::Result<u64, shards_abi::guest_time::Unread> {
         let mut counters = WHV_PROCESSOR_RUNTIME_COUNTERS::default();
         // SAFETY: counters of the size given, of a virtual processor of the partition this
         // holds: one deleted fails the call.
-        check("WHvGetVirtualProcessorCounters", unsafe {
+        let hr = unsafe {
             WHvGetVirtualProcessorCounters(
                 self.partition.0,
                 self.index,
@@ -1889,7 +1890,11 @@ impl GuestClock {
                 size_of::<WHV_PROCESSOR_RUNTIME_COUNTERS>() as u32,
                 std::ptr::null_mut(),
             )
-        })?;
+        };
+        // FAILED(hr), as `check` reads a call's HRESULT.
+        if hr < 0 {
+            return Err(shards_abi::guest_time::Unread::WhpCounters(hr));
+        }
         Ok(super::whp_guest_ns(
             counters.TotalRuntime100ns,
             counters.HypervisorRuntime100ns,

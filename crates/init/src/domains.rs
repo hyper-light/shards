@@ -872,6 +872,9 @@ struct Prepared {
     hosts: Option<Vec<u8>>,
     /// Its `/etc/resolv.conf`, where it reaches past the microVM.
     resolv: Option<Vec<u8>>,
+    /// Where its image's trust bundle lies, and the bundle with the run's CA laid over it
+    /// (D242), where its link reaches a host the run's credential grants name.
+    trust: Option<(CString, Vec<u8>)>,
     /// Where it waits for its link, before it holds nothing of init's.
     go: Option<RawFd>,
     /// Where it sends the listener of the chooser's filter, and the filter, for a domain
@@ -1773,6 +1776,15 @@ pub fn start(
         .map_err(|e| format!("the image's layers: {e}"))?;
     let passwd = built_file(&built, "/etc/passwd")?;
     let group = built_file(&built, "/etc/group")?;
+    // The run's CA (D242), for each member whose link reaches a host the run's credential
+    // grants name: the image's own bundle with the CA appended, made once.
+    let trust = crate::trust::Run::of(setup).map_err(|e| e.to_string())?;
+    let laid = match &trust {
+        Some(t) if domains.iter().any(|d| t.reaches(d.link.as_ref())) => {
+            Some(t.lay(&built).map_err(|e| e.to_string())?)
+        }
+        _ => None,
+    };
     // Each share staged, and where it lies in the image.
     let mut staged: Vec<(Share, String, String)> = Vec::new();
     for (k, sh) in shares_of(setup).into_iter().enumerate() {
@@ -2041,7 +2053,18 @@ pub fn start(
             .into_iter()
             .map(|e| CString::new(e).map_err(|_| format!("{}: a NUL in its environment", d.label)))
             .collect::<Result<Vec<_>, _>>()?;
-        let env = crate::staged::env(&own, member, setup).map_err(|e| format!("{}: {e}", d.label))?;
+        let mut env = crate::staged::env(&own, member, setup).map_err(|e| format!("{}: {e}", d.label))?;
+        // The run's CA, where its link reaches a host the run's credential grants name: its
+        // bundle named by each variable its TLS stacks read roots from, and laid as it starts.
+        let given = laid
+            .as_ref()
+            .filter(|_| trust.as_ref().is_some_and(|t| t.reaches(d.link.as_ref())));
+        if let Some(l) = given {
+            if scratch.is_none() {
+                return Err(format!("{}: {}", d.label, crate::trust::Refused::NoScratch));
+            }
+            l.name_in(&mut env).map_err(|e| format!("{}: {e}", d.label))?;
+        }
         let argv0 = executable(d, &env)?;
         let workdir = crate::staged::workdir(member, setup)
             .map_err(|e| format!("{}: {e}", d.label))?
@@ -2157,6 +2180,7 @@ pub fn start(
             envp: env.iter().map(|a| a.as_ptr()).chain([std::ptr::null()]).collect(),
             hosts: d.link.as_ref().map(|l| l.hosts.clone()),
             resolv: d.resolv.clone(),
+            trust: given.map(|l| (l.path.clone(), l.bundle.clone())),
             go: None,
             chooser: None,
             stdin: None,
@@ -2850,6 +2874,27 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
                 || libc::unlink(made.as_ptr()) != 0
             {
                 fail(out, mounting);
+            }
+        }
+        // Its trust bundle with the run's CA (D242), over its image's, read-only, made as its
+        // names are; never passed over, as a member given it does not start without it (its
+        // bundle and its scratch were found before the clone).
+        if let Some((target, content)) = &p.trust {
+            let made = c"/tmp/.trust";
+            let fd = libc::open(
+                made.as_ptr(),
+                libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY | libc::O_CLOEXEC,
+                0o444,
+            );
+            if fd < 0 || libc::write(fd, content.as_ptr().cast(), content.len()) != content.len() as isize {
+                fail(out, c"writing its trust bundle");
+            }
+            libc::close(fd);
+            if libc::mount(made.as_ptr(), target.as_ptr(), null, libc::MS_BIND, nil) != 0
+                || libc::mount(null, target.as_ptr(), null, ro, nil) != 0
+                || libc::unlink(made.as_ptr()) != 0
+            {
+                fail(out, c"mounting its trust bundle");
             }
         }
         // Its Unix sockets' directories, each its own mount, read-only where it only
