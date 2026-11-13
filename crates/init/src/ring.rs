@@ -550,6 +550,9 @@ impl Pool {
                 if let Some(index) = making.index {
                     self.free(index);
                 }
+                // Its bytes are the room's again, as a freed slot's are: a growth refused while
+                // it was being made asks again now (ring-pins-v1's F5), not at an unrelated free.
+                self.room_gen = self.room_gen.wrapping_add(1);
                 self.fail(why);
                 None
             }
@@ -2525,6 +2528,31 @@ mod tests {
 
     /// A refused offer is freed at once (the device took nothing of it), and the
     /// connection goes on plain.
+    /// A slot whose making fails gives its room back as a freed one does, and moves the
+    /// generation a refused growth asks again by (ring-pins-v1's F5): otherwise that growth
+    /// waits for an unrelated free, or a word of the run's room, before it tries again.
+    #[test]
+    fn a_slot_whose_making_fails_moves_the_room_a_refused_growth_waits_on() {
+        let ring = abi::MIN_RING;
+        let pool = pool(room(abi::slot_len(ring)));
+        let mut p = pool.lock().unwrap();
+        let making = p.reserve(Some(ring)).unwrap();
+        let refused_at = p.room_gen;
+        assert!(
+            p.reserve(Some(ring)).is_none(),
+            "room for one slot, and it is being made"
+        );
+        assert!(p.made(&making, Err(Unmade::Short)).is_none());
+        assert_ne!(
+            p.room_gen, refused_at,
+            "a growth refused at {refused_at} would never ask again"
+        );
+        assert!(
+            p.reserve(Some(ring)).is_some(),
+            "the room the failed slot gave back"
+        );
+    }
+
     #[test]
     fn a_refused_slot_is_freed_and_the_connection_goes_on_plain() {
         let pool = pool(room(PLENTY));

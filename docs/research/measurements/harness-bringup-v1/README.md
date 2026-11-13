@@ -34,6 +34,11 @@ nothing it fetches is committed ([fetch/fetched.json](fetch/fetched.json)).
 | Publisher's check | each binary against its keyless cosign bundle (`.sigstore`): certificate identity `https://github.com/openai/codex/.github/workflows/rust-release.yml@refs/tags/rust-v0.167.2`, issuer `https://token.actions.githubusercontent.com`, verified by cosign v3.1.4 (OpenAI's signing version, `cosign-linux-amd64` sha256 `424e2c97…bbfa` from sigstore's `cosign_checksums.txt`) | GnuPG `VALIDSIG` of `manifest.json.sig` by the documented primary key `31DD DE24 DDFA B679 F42D 7BD2 BAA9 29FF 1A7E CACE`, then the binary's SHA-256 in that manifest ([code.claude.com/docs/en/setup](https://code.claude.com/docs/en/setup), "Binary integrity and code signing") |
 | Guard checks | the same bundle refused with the identity of tag `rust-v0.167.1` ("none of the expected identities matched") and against the other binary ("matching bundle to payload": bundle `a9672d0f…`, payload `007c6279…`) | not exercised: fetch.sh refuses a status without `VALIDSIG` by that fingerprint, and a manifest of another `version`, but no bad signature was tried |
 
+Since the review (plan step 2, [F8](../harness-bringup-v2/review.md)), fetch.sh takes the
+guest's architecture (amd64 or arm64), pins arm64's builds beside these and cosign before it
+runs, and takes only a good signature by the pinned key, refusing each other kind by name;
+[fetch-test.sh](fetch-test.sh) holds it to recorded GnuPG statuses and digests.
+
 Codex starts `codex-code-mode-host` from its own directory, as OpenAI's package archive
 carries it: without it every session's first event was
 `Code Mode is unavailable because failed to spawn code-mode host
@@ -300,7 +305,7 @@ earlier run); the owner's `shards rm -f` ends it.
 |---|---|
 | R01 | No production code changed. The test may unwrap and assert. |
 | R02 | No architecture decided. Sources: the publishers' release workflow, installer and docs (cited above); the base image and the musl libraries Anthropic documents; each CLI's own `--help` and docs for its flags and credential inputs. Credential options are reported for the person, not chosen. |
-| R03 | No production literal. Test patience `WITHIN` = 600 s and the H1 silences, `QUIET ± QUIET/4` (one keep-alive interval as `tls.rs` sets it), are test-only and documented in the test. |
+| R03 | No production literal. Test patience `WITHIN` = 600 s and the H1 silences, `QUIET ± QUIET/4` (one keep-alive interval as `tls.rs` sets it), are test-only and documented in the test. The review (plan step 2, [../harness-bringup-v2/review.md](../harness-bringup-v2/review.md)) removed `WITHIN`, the run's `sleep 600` and `bringup.sh`'s 300 s deadline: the test and the script wait on facts with no clock. |
 | R04 | No state machine added; the observer's records pass the existing `StreamState` checks. |
 | R05 | No production interface; the test's `Case` serves its nine cases. No cache or wait added to production. |
 | R06, R07, R13 | One test file, a shared bring-up, comments for intent and sources. |

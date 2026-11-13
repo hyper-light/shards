@@ -191,56 +191,42 @@ impl<D: Disk> Daemon<D> {
             return None;
         }
         pool.starting += count;
-        // It writes no file of the home: the daemon gives it its microVM's log (D30).
-        let mut args: Vec<OsString> = vec![
-            "restore".into(),
-            dir.into(),
-            "--warm".into(),
-            super::VM_LINK.into(),
-        ];
-        if let Some(rootfs) = &pool.rootfs {
-            let mut backing = rootfs.as_os_str().to_os_string();
-            backing.push(":ro");
-            args.extend(["--backing".into(), backing]);
-        }
-        // An Agentfile's template restores against the in-VM server's device too (D60),
-        // the daemon's own, as its cold boot was given it: without it every restore is
-        // refused and each run boots.
-        if *pool
+        // Its template's backing files, as its cold boot was given them (run::Backings): an
+        // Agentfile's template restores against the in-VM server's device too (D60), the
+        // daemon's own, resolved, as the VM saving the template recorded it: without it every
+        // restore is refused and each run boots.
+        let server = if *pool
             .server
             .get_or_insert_with(|| crate::run::Origin::read(dir).is_some_and(|o| o.server()))
         {
             match crate::guest::server_device(&self.home) {
-                Ok(device) => {
-                    // As the VM saving the template recorded it: resolved, as its root
-                    // filesystem is.
-                    let mut backing = resolved(&device).into_os_string();
-                    backing.push(":ro");
-                    args.extend(["--backing".into(), backing]);
+                Ok(device) => Some(resolved(&device)),
+                Err(e) => {
+                    log(format!("{}: the in-VM server's device: {e}", dir.display()));
+                    None
                 }
-                Err(e) => log(format!("{}: the in-VM server's device: {e}", dir.display())),
             }
-        }
-        // Another CPU's image's template restores against the emulator image's root too
-        // (D179), last, as its cold boot was given it.
-        if let Some(root) = pool
+        } else {
+            None
+        };
+        // Another CPU's image's template against the emulator image's root too (D179), last.
+        let emulator = pool
             .emulator
             .get_or_insert_with(|| {
                 crate::run::Origin::read(dir).and_then(|o| o.emulator().map(Path::to_path_buf))
             })
-            .as_ref()
-        {
-            let mut backing = resolved(root).into_os_string();
-            backing.push(":ro");
-            args.extend(["--backing".into(), backing]);
-        }
+            .as_deref()
+            .map(resolved);
         // A GPU's template restores in the GPU's VM process (D150).
-        if *pool
+        let gpu = *pool
             .gpu
-            .get_or_insert_with(|| crate::run::Origin::read(dir).is_some_and(|o| o.gpu()))
-        {
-            args.push("--gpu".into());
-        }
+            .get_or_insert_with(|| crate::run::Origin::read(dir).is_some_and(|o| o.gpu()));
+        let backings = crate::run::Backings {
+            rootfs: pool.rootfs.as_deref(),
+            server: server.as_deref(),
+            emulator: emulator.as_deref(),
+        };
+        let args = crate::run::restore_args(dir, &backings, gpu, crate::launch::LINK);
         Some(Planned {
             key: key.clone(),
             args,
