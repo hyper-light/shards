@@ -1,5 +1,5 @@
 #!/bin/bash
-# PM M536's measurements on this host, from a checkout's root: the crossovers
+# PM M537's measurements on this host, from a checkout's root: the crossovers
 # (digits_crossover.rs), the allocations against the bound (tests/text_memory.rs), and
 # whole calls' time and peak memory (text/run.sh), built for release. CARGO_TARGET_DIR
 # may name a target elsewhere (a full disk's host: its tmpfs).

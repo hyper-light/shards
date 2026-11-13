@@ -1,4 +1,4 @@
-//! PM M536's crossovers for `digits` (crates/rego/src/digits.rs takes this by #[path]):
+//! PM M537's crossovers for `digits` (crates/rego/src/digits.rs takes this by #[path]):
 //!
 //! - `schoolbook_against_transforms`: a product by schoolbook rows against one by
 //!   transforms as `mul` makes it past `SCHOOL` (by pieces where the other operand is far

@@ -1,4 +1,4 @@
-# PM M536: an earlier revision's allocation test and whole calls, kept for the bound's
+# PM M537: an earlier revision's allocation test and whole calls, kept for the bound's
 # history. Below digits::FROM (2^20 limbs) num-bigint 0.4.8's to_str_radix wrote the
 # integer, and need was the larger of the conversion's peak and the text's.
 # adas-mac-studio-2.local, 2026-11-12 15:46 to 15:51 PST, carrier patch eac633fcb2a5c287

@@ -1,5 +1,5 @@
 //! An integer's decimal digits, however many: made once from its 64-bit limbs, holding
-//! the digits and a working set bounded before it starts ([`need`]; D98, PM M536).
+//! the digits and a working set bounded before it starts ([`need`]; D98, PM M537).
 //!
 //! num-bigint 0.4.8's `to_str_radix` divides by powers of ten and conquers, its
 //! Burnikel-Ziegler division cloning its operands at each level of its recursion; Go's
@@ -35,7 +35,7 @@ const BASE_INV: u64 = (u128::MAX / BASE as u128 - (1u128 << 64)) as u64;
 
 /// Products with an operand of at most this many limbs are schoolbook's: past it the
 /// transforms measured cheaper at every size, s by s limbs and s by 64·s, on arm64 macOS
-/// (from 73) and x86_64 Linux (from 164) (PM M536, `digits_crossover.rs`'s
+/// (from 73) and x86_64 Linux (from 164) (PM M537, `digits_crossover.rs`'s
 /// `schoolbook_against_transforms`). The transforms' cost steps where their points
 /// double, so they win in windows before that (112 to 128 on a Ryzen 9950X3D2).
 const SCHOOL: usize = 163;
@@ -355,7 +355,7 @@ fn school(a: &[u64], b: &[u64]) -> Result<Vec<u64>, Error> {
 /// The transforms' working words, made once at the size the largest of a conversion's
 /// products asks and lent to each: a product's own buffers, given back and made again
 /// larger at each level, stayed resident in macOS's allocator besides those in use, past
-/// what the conversion needs at once (PM M536).
+/// what the conversion needs at once (PM M537).
 #[derive(Debug, Default)]
 struct Scratch {
     words: Vec<u64>,
@@ -733,7 +733,7 @@ fn sizes(bits: u64) -> Sizes {
 ///   point.
 ///
 /// Then, on top of those (an allocator may keep what the conversion gave back while the
-/// text is made: macOS's did, PM M536), the text, its digits (19 a limb, from the last
+/// text is made: macOS's did, PM M537), the text, its digits (19 a limb, from the last
 /// product's limbs) and a sign, and its caller's copy (`Rc<str>` from a String copies).
 pub fn need(bits: u64) -> u64 {
     let z = sizes(bits);
