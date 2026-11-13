@@ -67,6 +67,14 @@ pub struct Path {
 impl Known {
     const NEVER_RTT: Duration = Duration::from_millis(333);
 
+    /// The probe timeout RFC 9002 gives a handshake on a path with no RTT sample, past which a
+    /// handshake on a path with no window is told its caller (D180, `client::Stall::Unreached`):
+    /// §5.3 starts smoothed_rtt at kInitialRtt and rttvar at half of it, and §6.2.1's PTO is
+    /// smoothed_rtt + max(4·rttvar, kGranularity), its max_ack_delay 0 in the Initial and
+    /// Handshake spaces: three kInitialRtt (4·rttvar, two of them, past §6.1.2's 1 ms
+    /// kGranularity), 999 ms, when a cold start's handshake sends its first probe.
+    pub const COLD_PTO: Duration = Self::NEVER_RTT.saturating_add(Self::NEVER_RTT.saturating_mul(2));
+
     /// What its path has shown, where it was reached.
     pub fn path(self) -> Option<Path> {
         match self {

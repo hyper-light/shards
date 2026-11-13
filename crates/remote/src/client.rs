@@ -25,10 +25,11 @@ pub struct Remote {
     pub known: tls::Known,
 }
 
-/// A daemon's handshake that has not ended, told as each probe goes (RFC 9002 §6.2): the
-/// datagrams sent in all, and how long it has waited. Its caller says whether it waits on: a
-/// handshake has no deadline but its caller's, one with a daemon reached before running out past
-/// the slowest seen from it and going on as one never reached does (`net::RanOut::Handshake`).
+/// A daemon's handshake that has not ended, asked of its caller as each probe goes (RFC 9002
+/// §6.2): the datagrams sent in all, and how long it has waited. Its caller says whether it
+/// waits on: a handshake has no deadline but its caller's, one with a daemon reached before
+/// running out past the slowest seen from it and going on as one never reached does
+/// (`net::RanOut::Handshake`). What its user is told of it is a stall's ([`Stall::Unreached`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unanswered {
     pub probes: u64,
@@ -51,15 +52,21 @@ pub enum Stall {
     /// Answered at last, `after` the send it stalled on (`net::RanOut::Answered`).
     Answered { after: std::time::Duration },
     /// Its handshake not ended `waited` since it began, unheard past what its path has shown
-    /// ([`Told`]): `window`, the slowest handshake seen from it, or none on a path with no
-    /// window. Told once a handshake; it goes on for as long as its caller waits.
+    /// ([`Told`]): `window`, the slowest handshake seen from it (`net::RanOut::Handshake`), or
+    /// none on a path with no window, never reached or marked, told past the probe timeout
+    /// RFC 9002 gives a path with no RTT sample (`tls::Known::COLD_PTO`). Told once a
+    /// handshake; it goes on for as long as its caller waits.
     Unreached {
         waited: std::time::Duration,
         window: Option<std::time::Duration>,
     },
 }
 
-/// Whether a handshake that has not ended has been told its caller as a stall (R04).
+/// Whether a handshake that has not ended has been told its caller as a stall (R04), as an
+/// established connection's stall is, once, past the window its path has shown (D180, ROOT's
+/// ruling A). A probe within it is no stall: a loaded host's sub-millisecond probe timeout
+/// told every probe, "4 probes over 424.6µs" on a command's stderr (ROOT's KVM run at
+/// 21a65b459).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Told {
     /// Nothing told of it yet.
@@ -70,15 +77,34 @@ enum Told {
 
 impl Told {
     /// A probe of a handshake on a path known as `known`, `waited` since it began: the stall to
-    /// tell, if any. Each probe past its first flight is told.
-    fn probe(&mut self, _known: tls::Known, waited: std::time::Duration) -> Option<Stall> {
-        Some(Stall::Unreached { waited, window: None })
+    /// tell, where its path has no window (never reached, or marked, `tls::Known::handshake_window`)
+    /// and its probes have gone past the probe timeout a path with no RTT sample has
+    /// (`tls::Known::COLD_PTO`), none told yet. A path with a window is told at its run-out
+    /// ([`Told::ran_out`]).
+    fn probe(&mut self, known: tls::Known, waited: std::time::Duration) -> Option<Stall> {
+        match self {
+            Told::Once => None,
+            Told::Not if known.handshake_window().is_some() || waited < tls::Known::COLD_PTO => None,
+            Told::Not => {
+                *self = Told::Once;
+                Some(Stall::Unreached { waited, window: None })
+            }
+        }
     }
 
     /// Its handshake ran out of its path's window, `waited` since it began
-    /// (`RanOut::Handshake`): the stall to tell, if any.
-    fn ran_out(&mut self, _waited: std::time::Duration, _window: std::time::Duration) -> Option<Stall> {
-        None
+    /// (`RanOut::Handshake`): the stall to tell, none told yet.
+    fn ran_out(&mut self, waited: std::time::Duration, window: std::time::Duration) -> Option<Stall> {
+        match self {
+            Told::Once => None,
+            Told::Not => {
+                *self = Told::Once;
+                Some(Stall::Unreached {
+                    waited,
+                    window: Some(window),
+                })
+            }
+        }
     }
 }
 
@@ -203,6 +229,8 @@ struct Client<'a> {
     waits: Option<Waits<'a>>,
     /// Told of each stall of its daemon's.
     stalls: Option<Stalls<'a>>,
+    /// Whether its handshake has been told as a stall.
+    told: Told,
     answer: Option<Answer>,
     failed: Option<String>,
     done: bool,
@@ -211,6 +239,13 @@ struct Client<'a> {
 }
 
 impl Client<'_> {
+    /// Tells its caller of a stall ([`Stall`]).
+    fn stall(&mut self, stall: Stall) {
+        if let Some(stalls) = self.stalls.as_mut() {
+            stalls(stall);
+        }
+    }
+
     /// What its connection saw, kept before it goes.
     fn note(&mut self, io: &mut Io<'_>) {
         if let Some(seen) = self.conn.and_then(|conn| io.seen(conn)) {
@@ -526,8 +561,11 @@ impl Handler for Client<'_> {
     }
 
     fn unanswered(&mut self, io: &mut Io<'_>, _conn: ConnKey, probes: u64, waited: std::time::Duration) {
-        let told = Unanswered { probes, waited };
-        let goes_on = self.waits.as_mut().is_none_or(|waits| waits(told));
+        if let Some(stall) = self.told.probe(self.remote.known, waited) {
+            self.stall(stall);
+        }
+        let asked = Unanswered { probes, waited };
+        let goes_on = self.waits.as_mut().is_none_or(|waits| waits(asked));
         if !goes_on {
             self.fail(
                 io,
@@ -539,16 +577,19 @@ impl Handler for Client<'_> {
         }
     }
 
-    /// Its daemon unheard past its window, and answered after: told its caller ([`Stall`]).
+    /// Its daemon unheard past its window, and answered after, or its handshake past its
+    /// path's window: told its caller ([`Stall`]).
     fn ran_out(&mut self, _io: &mut Io<'_>, _conn: ConnKey, what: RanOut) {
         let stall = match what {
             RanOut::Stalled { unheard, window } => Stall::Unheard { unheard, window },
             RanOut::Answered { after } => Stall::Answered { after },
-            RanOut::Handshake { .. } | RanOut::Send { .. } => return,
+            RanOut::Handshake { waited, window } => match self.told.ran_out(waited, window) {
+                Some(stall) => stall,
+                None => return,
+            },
+            RanOut::Send { .. } => return,
         };
-        if let Some(stalls) = self.stalls.as_mut() {
-            stalls(stall);
-        }
+        self.stall(stall);
     }
 
     fn command(&mut self, io: &mut Io<'_>, command: Event) {
@@ -664,7 +705,8 @@ pub fn exec_made(
 /// [`exec_made`], `unanswered` asked as each probe of a handshake that has not ended goes
 /// whether it waits on ([`Unanswered`]: a handshake is waited for as long as its caller does,
 /// one with a daemon reached before past its run-out too), `stalled` told of each stall of its
-/// daemon's and its end ([`Stall`]: waited through for as long as its caller waits), `hang_up` given what
+/// daemon's and its end, its handshake's once past what its path has shown ([`Stall`]: waited
+/// through for as long as its caller waits), `hang_up` given what
 /// ends it from another thread once its connection is made ([`HangUp`]), and what its connection
 /// saw ([`Seen`]), answered or not, for what its caller keeps of the daemon
 /// ([`tls::Known::after`]).
@@ -805,6 +847,7 @@ fn run(
             made,
             waits,
             stalls,
+            told: Told::Not,
             answer: None,
             failed: None,
             done: false,
@@ -925,7 +968,11 @@ mod tests {
             })
         );
         for waited in [ms(40), ms(80), ms(2000)] {
-            assert_eq!(told.probe(known, waited), None, "a probe {waited:?} in, past its run-out");
+            assert_eq!(
+                told.probe(known, waited),
+                None,
+                "a probe {waited:?} in, past its run-out"
+            );
         }
         assert_eq!(told.ran_out(ms(90), us(1700)), None);
     }
@@ -945,7 +992,11 @@ mod tests {
         for known in [tls::Known::Never, marked] {
             let mut told = Told::Not;
             for waited in [us(424), ms(30), ms(500), ms(998)] {
-                assert_eq!(told.probe(known, waited), None, "{known:?}: a probe {waited:?} in");
+                assert_eq!(
+                    told.probe(known, waited),
+                    None,
+                    "{known:?}: a probe {waited:?} in"
+                );
             }
             assert_eq!(
                 told.probe(known, ms(1000)),
@@ -956,7 +1007,11 @@ mod tests {
                 "{known:?}"
             );
             for waited in [ms(2000), ms(4000)] {
-                assert_eq!(told.probe(known, waited), None, "{known:?}: a probe {waited:?} in");
+                assert_eq!(
+                    told.probe(known, waited),
+                    None,
+                    "{known:?}: a probe {waited:?} in"
+                );
             }
         }
     }

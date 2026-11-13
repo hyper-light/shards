@@ -787,11 +787,11 @@ pub(crate) fn exec(
 /// Runs `request` on `context`'s daemon as [`client::exec_with`] does (D180), as the home
 /// `home` whose identity is `identity`: its handshake and its waits starting from what the home
 /// knows of the daemon's path ([`known`]), and what its connection saw kept for the next
-/// ([`keep`]). Each probe of a handshake that has not ended is told on stderr, and `waits`
-/// asked whether it waits on: a daemon never reached, or whose last wait ran out, has no
-/// deadline but its caller's. A daemon unheard past the window its path has shown is told on
-/// stderr once a stall, and waited for as long as its user waits (D180, ROOT's ruling A). What
-/// the connection saw, too.
+/// ([`keep`]). `waits` is asked, as each probe of a handshake that has not ended goes, whether
+/// it waits on: a daemon never reached, or whose last wait ran out, has no deadline but its
+/// caller's. A daemon unheard past the window its path has shown, its handshake's or its
+/// answers', is told on stderr once a stall, and waited for as long as its user waits (D180,
+/// ROOT's ruling A; `client::Stall`). What the connection saw, too.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn exec_with(
     home: &Path,
@@ -803,20 +803,9 @@ pub(crate) fn exec_with(
     stderr: impl io::Write + Send + 'static,
     steered: impl FnOnce(client::Controls),
     made: impl FnMut(&[u8]),
-    mut waits: impl FnMut(client::Unanswered) -> bool,
+    waits: impl FnMut(client::Unanswered) -> bool,
 ) -> (Result<Result<i32, String>, shards_remote::Error>, Seen) {
     let before = known(home, context);
-    let told = |unanswered: client::Unanswered| {
-        let _ = writeln!(
-            io::stderr(),
-            "shards: {}: no answer yet from {}: {} probes over {:.1?}",
-            context.name,
-            context.address,
-            unanswered.probes,
-            unanswered.waited
-        );
-        waits(unanswered)
-    };
     let stalled = |stall: client::Stall| match stall {
         client::Stall::Unheard { unheard, .. } => {
             STALLED.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -828,7 +817,14 @@ pub(crate) fn exec_with(
             );
         }
         client::Stall::Answered { .. } => STALLED.store(false, std::sync::atomic::Ordering::SeqCst),
-        client::Stall::Unreached { .. } => {}
+        client::Stall::Unreached { waited, .. } => {
+            let _ = writeln!(
+                io::stderr(),
+                "shards: {}: no answer yet from {} in {waited:.1?}; still waiting (it may be busy, loaded or not listening; ^C ends this)",
+                context.name,
+                context.address,
+            );
+        }
     };
     let (ran, seen) = client::exec_with(
         identity,
@@ -839,7 +835,7 @@ pub(crate) fn exec_with(
         stderr,
         steered,
         made,
-        told,
+        waits,
         stalled,
         |_| {},
     );

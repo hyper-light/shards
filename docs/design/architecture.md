@@ -5389,8 +5389,8 @@ terminal that went away), and checks a client's enrollment again for each comman
 `shards remove client` ends its access at once. A join's refusal is the same whatever made
 it fail. The client's side (`client.rs`, `context.rs`) refuses here what a context does not
 carry yet, the client's terminal and files, read by shards' own parser of each command (a
-flag past another's value included); and where no daemon answers, it says so as each probe
-of its handshake goes, and waits on for as long as its user does, past the slowest handshake
+flag past another's value included); and where no daemon answers, it says so once, past what
+its path has shown, and waits on for as long as its user does, past the slowest handshake
 seen from a daemon reached before ("Its values derived", below). A connection that has done
 its handshake lives while its peer makes progress, its liveness checked as it is used, with
 no idle timeout (D176 part 6, "Over a slow link": 10 s of silence ended 2 of the first 20
@@ -6472,12 +6472,26 @@ replaced by:
   previous RTT is available, the initial RTT SHOULD be set to 333 milliseconds"), the only
   figure here, the protocol's own, and has no deadline: QUIC probes it as §6.2 does, its
   backoff doubling each probe timeout, and each probe past its first flight, while nothing of
-  the daemon's has been heard, is told typed to whoever waits (`Handler::unanswered`,
-  `client::Unanswered { probes, waited }`). The CLI says each on stderr
-  (`shards: NAME: no answer yet from ADDR: N probes over T`) and waits as long as its user
-  does; a daemon's relay logs each, and waits until that daemon answers or this one stops,
-  which hangs it up at once from its start (`client::HangUp`), as a probe its backoff puts ever
-  further off would not. A host that answers its port unreachable refuses at once: the
+  the daemon's has been heard, is asked typed of whoever waits whether it waits on
+  (`Handler::unanswered`, `client::Unanswered { probes, waited }`), the user's patience alone
+  deciding. What its user is told is a stall's, once a handshake, as an established
+  connection's is (ROOT's ruling A): a path with no window, a cold start's or a marked one's,
+  is told at the first probe past the probe timeout RFC 9002 gives a path with no RTT sample
+  (`tls::Known::COLD_PTO`: §5.3 starts smoothed_rtt at kInitialRtt and rttvar at half of it,
+  §6.2.1's PTO is smoothed_rtt + max(4·rttvar, kGranularity) with no max_ack_delay in the
+  handshake's spaces: 999 ms, three kInitialRtt, the first probe a cold start sends), and a
+  path with one at its run-out (below), typed `client::Stall::Unreached { waited, window }`
+  (`client::Told`). The CLI says it on stderr (`shards: NAME: no answer yet from ADDR in T;
+  still waiting (…; ^C ends this)`) and waits as long as its user does; a daemon's relay logs
+  it the same way, and waits until that daemon answers or this one stops, which hangs it up at
+  once from its start (`client::HangUp`), as a probe its backoff puts ever further off would
+  not. Each probe was told from 1e4c5a905: a marked path starts its probes from its own RTT,
+  and on a loaded host a reached one's handshake probes within its window, so a command's
+  stderr held "shards: gpu: no answer yet from 127.0.0.1:44476: 4 probes over 424.6µs" (ROOT's
+  KVM run at 21a65b459 on adacachy2, `tests/context.rs`'s
+  `a_policy_through_a_context_is_the_clients_its_builder_the_machine`); red and green so in
+  `client.rs`'s `a_handshake_within_its_paths_window_is_told_nothing_and_once_past_it` and
+  `a_handshake_with_no_window_is_told_once_past_the_cold_probe_timeout`. A host that answers its port unreachable refuses at once: the
   client's socket is connected to its one peer (`Driver::aim`), so its ICMP reads as a refusal
   (ECONNREFUSED; Windows' WSAECONNRESET), said so, and the record kept as it was, whichever of
   its next send and its next read is told of it (`Driver::flush_datagrams`): Linux gives a
@@ -6494,9 +6508,10 @@ replaced by:
   nothing heard from it (its Initial and Handshake packets count; before its first, nothing
   does, QUIC's probes being this side's own sends) past the later of when it was last heard and
   that timeout, it has run out. Run out, it is marked, told once, typed (`Handler::ran_out`,
-  `RanOut::Handshake { waited, window }`), and its window let go (`Liveness::handshake_ran_out`):
-  it goes on as a cold start's does, with no deadline, each probe told to whoever waits, until it
-  ends or its caller gives up, as every wait after a run-out follows the party's liveness and
+  `RanOut::Handshake { waited, window }`, to its user `Stall::Unreached` with its window), and
+  its window let go (`Liveness::handshake_ran_out`): it goes on as a cold start's does, with no
+  deadline, each probe asked of whoever waits and nothing more told, until it ends or its
+  caller gives up, as every wait after a run-out follows the party's liveness and
   progress (the person's ruling; D222's "a run-out learns nothing"). One that goes past its
   window and its probe timeout both while it is heard has run out too, and goes on, marked. A
   marked record's next handshake waits as a cold start does, until a handshake ends again.
