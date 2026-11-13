@@ -1,0 +1,25 @@
+# red: origin/main e8d19fc683cc + lock-red-test.patch; 2026-11-12T23:03:06Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 138.64 113.25 103.40
+# cargo test -p shards-vm-process --bin shards-vm --profile test-release -- workload::tests::a_send_its_guest_has_yet_to_read
+
+running 1 test
+[1747785          0us WARN] the guest's signal connection is lost: the guest closed it before its end: its workload takes no more signals, terminal sizes, answers or execs, its command going on; execs that waited and failed with it: 0
+test workload::tests::a_send_its_guest_has_yet_to_read_holds_no_other_frames_caller ... FAILED
+
+failures:
+
+---- workload::tests::a_send_its_guest_has_yet_to_read_holds_no_other_frames_caller stdout ----
+
+thread 'workload::tests::a_send_its_guest_has_yet_to_read_holds_no_other_frames_caller' (1747790) panicked at crates/vm-process/src/../../shards/src/workload.rs:3594:9:
+assertion `left == right` failed: a signal waited on another frame's send
+  left: Err(Timeout)
+ right: Ok(Ok(()))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    workload::tests::a_send_its_guest_has_yet_to_read_holds_no_other_frames_caller
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 57 filtered out; finished in 5.03s
+
+error: test failed, to rerun pass `-p shards-vm-process --bin shards-vm`
+## exit 101

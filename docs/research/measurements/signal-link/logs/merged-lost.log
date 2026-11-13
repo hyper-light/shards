@@ -1,0 +1,4 @@
+# tests/containers.rs a_lost_signal_connection_fails_execs_and_kills_at_once: 54735c4ae318, 0 files changed (); 2026-11-12T23:45:42Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 89.95 125.78 104.53
+test a_lost_signal_connection_fails_execs_and_kills_at_once ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 163 filtered out; finished in 45.66s
+## exit 0 after 46 s, 23:46:28

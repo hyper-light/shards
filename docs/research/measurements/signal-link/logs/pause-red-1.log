@@ -1,0 +1,18 @@
+# tests/containers.rs a_paused_microvms_unpause_waits_for_no_exec_on_its_way: e8d19fc683cc, 1 files changed (crates/shards/tests/containers.rs ); 2026-11-12T23:20:25Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 77.16 69.14 86.49
+# its output's panics (from pause-red-1.out; the run was ended by hand once stuck, its microVM paused for good, so the harness wrote no summary):
+thread '<unnamed>' (2790678) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2783775/containers-paused-exec-0/big.env busy /bin/testguest exit 0 did not exit within 60s
+thread '<unnamed>' (2790674) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2783775/containers-paused-exec-0/big.env busy /bin/testguest exit 0 did not exit within 60s
+thread 'a_paused_microvms_unpause_waits_for_no_exec_on_its_way' (2783778) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards unpause busy did not exit within 60s
+thread '<unnamed>' (2790676) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2783775/containers-paused-exec-0/big.env busy /bin/testguest exit 0 did not exit within 60s
+thread '<unnamed>' (2790680) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2783775/containers-paused-exec-0/big.env busy /bin/testguest exit 0 did not exit within 60s
+thread '<unnamed>' (2790686) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2783775/containers-paused-exec-0/big.env busy /bin/testguest exit 0 did not exit within 60s
+thread '<unnamed>' (2790681) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2783775/containers-paused-exec-0/big.env busy /bin/testguest exit 0 did not exit within 60s
+thread '<unnamed>' (2790677) panicked at crates/shards/tests/common/mod.rs:2349:78:
+shards exec --env-file /tmp/shards-tests/2783775/containers-paused-exec-0/big.env busy /bin/testguest exit 0 did not exit within 60s

@@ -21885,3 +21885,100 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     patience on a stand-in. Both stay.
   - What would show this wrong: a stand-in started once whose next start takes as long as a
     new one's, or a probe of one past the stand-ins' patience.
+
+### M535. The zero-patience test's refused socket, still open at its peer: a process another test starts holds it (D215)
+
+- **Question.** `client::borrowed_tests::contract::zero_patience_attempts_one_request_and_does_not_wait_for_accept_or_reply`
+  failed now and then on macOS (step 9's report) and on Linux (Hex upstream 0030, 0031): its
+  peer's read of the refused socket's end found it open, `WouldBlock` (contract.rs:40). What
+  held the socket?
+- **Method.** `docs/research/measurements/api-flakes/` (`runs.sh`; `spawns.rs`, the test's
+  check 5,000 times beside four threads each keeping eight processes alive, none, `/bin/sleep
+  0.2` or a new script each, with the time each refused socket's end then took): shards-api's
+  library at `test-release` on adas-mac-studio.local-2 (M3 Ultra, 32 CPUs, macOS 26.4) in
+  kiln's shell and as launchd jobs (load average 5 to 27), and on adacachy2 (x86_64 Linux,
+  CachyOS, a user unit of 12 CPUs, load 10 to 16), 2026-11-12.
+- **Found.** Runs of the whole library failed in this test:
+
+  | build | host | kiln's shell or Linux | launchd |
+  |---|---|---|---|
+  | main c2c4547c1 | macOS | 5 of 100 | 3 of 100 |
+  | main c2c4547c1 and M534's fix | macOS | 6 of 100 | |
+  | main 99d88fccf | macOS | 8 of 100 | |
+  | main 99d88fccf | Linux | 1 of 20 | |
+  | the fix | macOS | 0 of 200 | 0 of 100 |
+  | the fix | Linux | 0 of 20 | |
+  | the fix with its check in the library's process again | macOS | 2 of 100 | |
+
+  `spawns.rs` (macOS, kiln's shell): with none started, 0 of 5,000 found open; beside 165
+  `sleep`s, 3, each ending 0.1 to 0.5 ms later; beside 79 new scripts, 14, ending in under
+  1 ms but for 4.5 ms and 3,512 ms.
+- **Reading.**
+  - The product closes its socket. Its peer sees the end once no process holds the socket,
+    and a process another test starts holds every descriptor of this one as it starts,
+    close-on-exec ones too, until its exec closes them: a few tenths of a millisecond after
+    a `sleep`, up to seconds after a new script, which macOS assesses as it starts (M534).
+    The test read its peer at once, in that window.
+  - Its check now runs alone in a process of its own (`zero_patience_alone`, started by the
+    test as 0030's reader checks are), where no other test starts anything; the check is the
+    same.
+  - Not a fix the product could make: neither Linux's nor macOS's process start leaves a
+    starting child without its parent's descriptors, and std's own sockets are as exposed.
+  - What would show this wrong: the check failing alone, or a socket found open with no
+    process started beside it.
+
+### M536. A blocking read of an AF_UNIX stream on Windows sleeps through its peer's end (D140)
+
+- **Question.** `client::borrowed_tests::exact_bytes_clone_and_half_close` hung on Windows, past
+  120 s, in a few runs of every 100 (M533's last runs), at main as on its fix. Where did it
+  wait, and why?
+- **Method.** `docs/research/measurements/api-flakes/` (`hang.sh`: the test binary again and
+  again, and at a time limit every thread's stack from cdb, WinDbg 1.2611's console
+  debugger, attached noninvasively, `~*kn`, symbolized from the build's PDB; `half-close.rs`:
+  a read waiting on a pair while its peer writes three bytes, ends its side, through a copy
+  of its socket or not, or only closes, its socket blocking or not, the reader in recv
+  itself or in WSAPoll first, 2,000 times each, a read seeing no end within 2 s counted
+  lost and freed by a shutdown of its own): on jupiter (Windows 10.0.26200, x86_64, 32
+  CPUs), beside ROOT's WHP gate of the whole workspace, CPU load 29% to 100%, 2026-11-12.
+- **Found.** Every hang's stacks (7: 4 of the test alone, 3 of the whole library, main
+  c2c4547c1) were the same: the test's thread in `server.join()` (focused.rs:79); its
+  server's in `ws2_32!recv`, from `shards_afunix::UnixStream::read_into`, at focused.rs:63,
+  the read of its peer's end after the peer had written three bytes, ended its side through
+  its `try_clone` copy and closed both copies.
+
+  | build | `half-close.rs`, reads that missed the end: recv | WSAPoll, then recv |
+  |---|---|---|
+  | main 7f9f73b6a (three ways to end, a blocking peer) | 3 of 6,000 (all of a close) | 0 of 6,000 |
+  | main 99d88fccf | 4 of 12,000 | 0 of 12,000 |
+  | the fix less its WSAPoll before a read with no timeout | 6 of 12,000 | 0 of 12,000 |
+  | the fix (its recv waits in WSAPoll first) | 0 of 12,000 | 0 of 12,000 |
+
+  Each missed end was a half-close or a close, of a blocking or a non-blocking peer; each
+  missing read was freed by its own side's shutdown, so its thread had sat in recv.
+
+  | build | the test alone, 20 s limit | runs hung |
+  |---|---|---|
+  | main c2c4547c1 | 150 | 4 |
+  | main 99d88fccf | 300 | 7 |
+  | the fix | 1,000 | 0 |
+  | the fix less its WSAPoll before a read with no timeout | 300 | 26 |
+
+  And the fix's whole library, 20 runs: none hung or failed. The loads: 97% to 100% CPU as
+  main's, the fix's and the mutant's runs ran, 51% as the whole library's did.
+- **Reading.**
+  - A recv waiting on an AF_UNIX stream (afunix.sys) can miss its peer's end, a half-close
+    or a close, and wait for good: 13 of 30,000 waits here, about one in 2,300, where WSAPoll
+    on the same streams saw all of 54,000. XNU's reader has a gap of its kind (M236); this
+    is Windows' own, and no record of it from Microsoft or others was found.
+  - The fix is where every such read is made, `shards_afunix`: a blocking stream's read
+    (`Read`, `readv`) waits in WSAPoll, for ever where it has no timeout, and only then
+    reads; a read of nothing waits for nothing. shards_ipc's Windows `read` reads these
+    streams, so it waits so too. A clone keeps its stream's mode, which their socket
+    shares (WSADuplicateSocketW: "All of the state information associated with a socket is
+    held in common across all the descriptors"), so a non-blocking stream's clone (shards-api
+    makes them) never waits in the poll.
+  - The other readers were looked at: shards-api's streams and the VMM's vsock sockets do not
+    block (each waits in WSAPoll or on WSAEventSelect's events, D140, D215); the daemon's
+    log streams wait on WSAEventSelect's events and peek; named pipes end at once (M340).
+  - What would show this wrong: a read waiting in WSAPoll that misses an end, or a blocking
+    stream read that still sleeps in recv.

@@ -1,0 +1,5 @@
+# build: e8d19fc683cc + e2e-test.patch; 2026-11-12T22:58:07Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); zig 0.16.0; load 119.16 124.25 104.36
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 5m 58s
+  Executable tests/containers.rs (/home/adalundhe/g121-tmp/to-guest2/target/test-release/deps/containers-e29fa805b69eceb2)
+real	5m58.370s
+## exit 0 2026-11-12T23:04:05Z
