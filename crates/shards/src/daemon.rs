@@ -121,10 +121,6 @@ const USAGE: &str = "usage: shards run daemon [--detached] [--listen ADDR:PORT]
     volume of a microVM (default: as long as the host's memory; 0, none): its large files
     read and written from the host's page cache, never copied into the guest's.";
 
-/// How long a starting VM may run nothing of its start before it is given up ([`ready`]),
-/// and a claim of a pool with none starting waits for one: a VM that runs its start is
-/// waited for as long as it takes its host, whose speed sets a boot's cost (PM M357).
-const READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// A template whose warm VMs fail this many times in a row is removed and saved again.
 const MAX_FAILURES: u32 = 3;
 const DEFAULT_POOL: usize = 2;
@@ -1320,7 +1316,7 @@ struct Daemon<D: Disk = Real> {
     runs: Mutex<HashMap<String, RunState>>,
     /// The microVMs a client waits on, by their processes' IDs, each as the listener last
     /// looked at it ([`Daemon::log_progress`]).
-    followed: Mutex<HashMap<u32, Progress>>,
+    followed: Mutex<HashMap<u32, Looked>>,
     /// How long this host's microVMs have taken to end once killed, kept in the home
     /// (D217).
     ends: ends::Ends,
@@ -2530,13 +2526,18 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Logs what each microVM a client waits on has done, its run's own client or an
-    /// exec's, once each [`READY_STALL`], where it ran more than an idle microVM takes in as
-    /// long (`shards_vmm::platform::progressed`, PM M357): its CPU time and page faults, and
+    /// exec's, where it ran more than an idle microVM takes in as long
+    /// (`shards_vmm::platform::progressed`, PM M357): its CPU time and page faults, and
     /// what each grew by. The durable word by which the wait of a client whose workload its
     /// host runs slowly is told from one on a microVM that runs nothing (D209), which is
-    /// said nothing of, as an idle microVM has nothing to say: a liveness line, which the
-    /// tests' waits take for no progress of their subject (tests/common `HEARTBEAT` matches
-    /// it). How long until the next look is due; none where no client waits.
+    /// said nothing of, as an idle microVM has nothing to say. Its looks are paced by this
+    /// daemon's record of starts (`Answers::ready`, D215's judge): its first W*, the slowest
+    /// start seen, after the client began to wait, and each after twice as long as the
+    /// look before it, so that what a wait says grows with the logarithm of its length
+    /// however small W* is (RFC 6298 §5.5's doubling). Before this daemon's first READY, none:
+    /// a heartbeat is a diagnostic, not a wait's progress, which a client's own look at the
+    /// microVM's process reads. How long until the next look is due; none where no client
+    /// waits or no start has been seen.
     fn log_progress(&self) -> Option<Duration> {
         let inboxes: Vec<(String, Arc<Mutex<Inbox>>)> = lock(&self.runs)
             .iter()
@@ -2555,19 +2556,26 @@ impl<D: Disk> Daemon<D> {
             .collect();
         let mut followed = lock(&self.followed);
         followed.retain(|pid, _| waited.iter().any(|(_, p)| p == pid));
+        let shards_api::Seen::Learned { slowest, .. } = self.answers.ready.seen() else {
+            return None;
+        };
         let mut next: Option<Duration> = None;
         // A joiner's microVM is its provider's (D119): looked at once a turn, as one.
         for (id, pid) in &waited {
-            let progress = followed.entry(*pid).or_insert_with(|| Progress::of(*pid));
-            if progress.since() >= READY_STALL {
-                let look = progress.look();
+            let looked = followed.entry(*pid).or_insert_with(|| Looked {
+                progress: Progress::of(*pid),
+                every: slowest,
+            });
+            if looked.progress.since() >= looked.every {
+                let look = looked.progress.look();
                 if look.ran {
                     log(format!(
                         "container {id}: VM {pid} runs as its client waits: {look}"
                     ));
                 }
+                looked.every = looked.every.saturating_mul(2);
             }
-            let due = READY_STALL.saturating_sub(progress.since());
+            let due = looked.every.saturating_sub(looked.progress.since());
             next = Some(next.map_or(due, |n| n.min(due)));
         }
         next
@@ -8132,7 +8140,10 @@ impl<D: Disk> Daemon<D> {
 
     /// A warm VM of pool `key`, once one is ready: one waiting, or one started for this run
     /// where none is starting for it, so a run is served whatever its pool keeps, and a
-    /// burst waits for no refill (audit A13, A14).
+    /// burst waits for no refill (audit A13, A14). Waited for while a VM of its pool starts,
+    /// whose watcher, D215's judge of its start (`ready`), wakes it as that VM is ready or
+    /// given up; refused at once where none is starting and none can be planned, as then
+    /// none comes for it.
     fn claim<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -8140,7 +8151,7 @@ impl<D: Disk> Daemon<D> {
         rootfs: &Path,
         stamp: Option<&str>,
     ) -> Result<Ready, Claim> {
-        let deadline = Instant::now() + READY_TIMEOUT;
+        let began = Instant::now();
         let mut state = lock(&self.state);
         let mut waiting = false;
         let leave = |state: &mut State, waiting: bool| {
@@ -8193,22 +8204,20 @@ impl<D: Disk> Daemon<D> {
             if state.pools.get(key).is_some_and(|p| p.failures >= MAX_FAILURES) {
                 continue;
             }
-            // Past its deadline, a claim waits on while a VM of its pool is starting: that
-            // VM's watcher says when it is ready or given up, as long as it runs its start
-            // however slowly its host runs it (`ready`), and wakes it then.
-            let left = deadline.saturating_duration_since(Instant::now());
+            // A claim waits while a VM of its pool is starting: that VM's watcher says when it
+            // is ready or given up, as long as it runs its start however slowly its host runs
+            // it (`ready`), and wakes it then. With none starting, and none planned above (its
+            // template collected, or its root filesystem unrecorded or replaced), none comes.
             let starting = state.pools.get(key).is_some_and(|p| p.starting > 0);
-            if left.is_zero() && !starting {
+            if !starting {
                 leave(&mut state, waiting);
                 return Err(Claim::Failed(format!(
-                    "no warm VM of {} was ready in {READY_TIMEOUT:?}",
-                    key.dir.display()
+                    "no warm VM of {} was ready in {:?}: none is starting for it",
+                    key.dir.display(),
+                    began.elapsed()
                 )));
             }
-            let wait = if left.is_zero() { READY_STALL } else { left };
-            state = timed(Some(wait), || self.changed.wait_timeout(state, wait))
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
+            state = timed(None, || self.changed.wait(state)).unwrap_or_else(PoisonError::into_inner);
         }
     }
 
@@ -8698,6 +8707,7 @@ impl<D: Disk> Daemon<D> {
                     For::Pool(key) => Some(key.dir.as_path()),
                     For::Run(_) => None,
                 },
+                &self.answers.grants,
             ),
             _ => Ok::<(), GrantError>(()),
         };
@@ -9269,33 +9279,36 @@ impl Drop for Unwatched<'_> {
     }
 }
 
-/// How long a VM process may take to send its first request for access before its stacks
-/// are sampled: a diagnostic's trigger, not a limit. A sixth of [`READY_TIMEOUT`], so that
-/// the sample is taken while a stalled VM is still stalled, and four thousand times the
-/// VM process's measured launch (2.5 ms, PM M113). The stall it catches, a VM that asks
-/// nothing for the whole wait, is the open p99 flake that only its stacks while stalled
-/// can explain.
+/// Answers what VM `pid` asks to reach until it has all it needs and closes the link, each
+/// request waited for by D215's judge on `record`, this daemon's record of requests for
+/// access (`Answers::grants`): before its first, the VM's liveness alone, the link's end;
+/// then past W*, the slowest request seen from the answer before it or the VM's spawn, looked
+/// at each W* and given up on where a whole W* shows it ran no CPU, its host not the reason.
+/// A request there as its wait begins teaches nothing (D222's wait of nothing), nor does the
+/// link's end, which is no request. A VM first quiet past W*, before its first request or
+/// between two, is sampled once (Apple's sample(1), 3 s of its threads' stacks) into the
+/// home, beside daemon.log, as it goes on being waited for; a wait that then fails says
+/// where. It was `GRANT_STALL`'s 10 s and `READY_TIMEOUT`'s 60 s, picked (ROOT's (3)).
 #[cfg(target_os = "macos")]
-const GRANT_STALL: Duration = Duration::from_secs(10);
-
-/// Answers what VM `pid` asks to reach until it has all it needs and closes the link,
-/// each request within [`READY_TIMEOUT`] (macOS, grant). A VM that has said nothing for
-/// [`GRANT_STALL`], before its first request or between two, is sampled once (Apple's
-/// sample(1), 3 s of its threads' stacks) into the home, beside daemon.log, as it goes on
-/// being waited for; a wait that then fails says where.
-#[cfg(target_os = "macos")]
-fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), GrantError> {
-    use std::os::fd::AsRawFd as _;
+fn grant(
+    link: &UnixStream,
+    pid: u32,
+    template: Option<&Path>,
+    record: &shards_api::Record,
+) -> Result<(), GrantError> {
     let started = |why: String| GrantError { why, started: true };
-    link.set_read_timeout(Some(READY_TIMEOUT))
+    link.set_read_timeout(None)
         .map_err(|e| started(format!("VM {pid}: {e}")))?;
-    let _waiting = Waiting::of(Some(READY_TIMEOUT));
     // A VM the host has not let run yet: its stacks would hold nothing (PM M166).
     let unstarted = || shards_vmm::platform::launched(pid) == Some(false);
     let mut sampled: Option<String> = None;
+    let mut said_unstarted = false;
     // Its spawn to its first request answered, its launch and the host's admission of it
     // among it, for a run that waits for it (cold, D25): said at debug.
     let spawned = Instant::now();
+    // The wait for the request before, which teaches once it is known to have been one: as
+    // the next wait begins.
+    let mut asked: Option<shards_api::Follow<'_>> = None;
     let served = crate::grant_answer::serve_waiting(link, template, &mut |sent| {
         if sent == 1 {
             shards_vmm::debug!(
@@ -9303,70 +9316,102 @@ fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), Gra
                 spawned.elapsed().as_micros()
             );
         }
-        if sampled.is_some() {
-            return;
+        if let Some(mut answered) = asked.take() {
+            answered.answered();
         }
-        let mut next = libc::pollfd {
-            fd: link.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let stall = i32::try_from(GRANT_STALL.as_millis()).unwrap_or(i32::MAX);
-        let polled = timed(poll_timeout(stall), || {
-            // SAFETY: poll(2) of one pollfd of ours.
-            unsafe { libc::poll(&raw mut next, 1, stall) }
-        });
-        if polled != 0 {
-            return;
+        if readable_within(link, Some(Duration::ZERO)) {
+            return Ok(());
         }
-        if sent == 0 && unstarted() {
-            log(format!(
-                "VM {pid}: not started by the host in {GRANT_STALL:?}: it has run nothing yet, \
-                 as macOS admits each launch after it has assessed the executables launched \
-                 before it (PM M166)"
-            ));
-            return;
-        }
-        let file = format!("vm-{pid}.sample");
-        log(format!(
-            "VM {pid}: nothing said in {GRANT_STALL:?} after {sent} messages; sampling its \
-             stacks to {file}"
-        ));
-        // Made as every child of the daemon is, by its spawner (PM M158).
-        let spawned = File::open("/dev/null").and_then(|null| {
-            let pid = pid.to_string();
-            let args = [pid.as_str(), "3", "-mayDie", "-file", file.as_str()].map(OsStr::new);
-            let stdio = [0, 1, 2].map(|n| (null.as_fd(), n));
-            shards_ipc::spawn(Path::new("/usr/bin/sample"), &args, &stdio, false)
-        });
-        match spawned {
-            // Reaped where it ends, on a thread of its own, so that no zombie is left.
-            Ok(child) => {
-                let _ = std::thread::Builder::new()
-                    .name("sample".into())
-                    .spawn(move || child.wait());
+        let began = Instant::now();
+        let mut follow = shards_api::Followed::of_pid(pid)
+            .ok()
+            .flatten()
+            .and_then(|followed| shards_api::Follow::begin(record, followed).ok().flatten());
+        loop {
+            let wait = follow
+                .as_ref()
+                .and_then(shards_api::Follow::due)
+                .map(|due| due.saturating_duration_since(Instant::now()));
+            if readable_within(link, wait) {
+                break;
             }
-            Err(e) => log(format!("VM {pid}: sampling it: {e}")),
+            let Some(followed) = follow.as_mut() else {
+                continue;
+            };
+            followed.look().map_err(|why| match why {
+                shards_api::Unfollowed::Stalled(stall) => format!(
+                    "VM {pid} asked nothing after {sent} messages: it ran nothing for {:?}, past the slowest request seen ({:?}), {:?} into its wait",
+                    stall.over(),
+                    stall.slowest(),
+                    began.elapsed()
+                ),
+                shards_api::Unfollowed::Process { failure, .. } => {
+                    format!("VM {pid}: its process could not be read: {failure}")
+                }
+            })?;
+            if sampled.is_some() || said_unstarted {
+                continue;
+            }
+            if sent == 0 && unstarted() {
+                said_unstarted = true;
+                log(format!(
+                    "VM {pid}: not started by the host {:?} after its spawn, past the slowest \
+                     request seen: it has run nothing yet, as macOS admits each launch after it \
+                     has assessed the executables launched before it (PM M166)",
+                    spawned.elapsed()
+                ));
+                continue;
+            }
+            sampled = Some(sample(pid, sent, began.elapsed()));
         }
-        sampled = Some(file);
+        asked = follow;
+        Ok(())
     });
     served.map_err(|e| {
         if unstarted() {
             return GrantError {
                 why: format!(
                     "VM {pid}: not started by the host in {:?}: it has run nothing (PM M166): {e}",
-                    GRANT_STALL + READY_TIMEOUT
+                    spawned.elapsed()
                 ),
                 started: false,
             };
         }
         started(match &sampled {
-            Some(file) => {
-                format!("VM {pid}: {e} (its stacks once quiet {GRANT_STALL:?}: {file} in the home)")
-            }
+            Some(file) => format!(
+                "VM {pid}: {e} (its stacks once quiet past the slowest request seen: {file} in the home)"
+            ),
             None => format!("VM {pid}: {e}"),
         })
     })
+}
+
+/// Samples VM `pid`'s stacks, quiet `quiet` after `sent` messages, into the home (Apple's
+/// sample(1), 3 s of its threads), beside daemon.log: the file's name.
+#[cfg(target_os = "macos")]
+fn sample(pid: u32, sent: usize, quiet: Duration) -> String {
+    let file = format!("vm-{pid}.sample");
+    log(format!(
+        "VM {pid}: nothing said in {quiet:?} after {sent} messages, past the slowest request \
+         seen; sampling its stacks to {file}"
+    ));
+    // Made as every child of the daemon is, by its spawner (PM M158).
+    let spawned = File::open("/dev/null").and_then(|null| {
+        let pid = pid.to_string();
+        let args = [pid.as_str(), "3", "-mayDie", "-file", file.as_str()].map(OsStr::new);
+        let stdio = [0, 1, 2].map(|n| (null.as_fd(), n));
+        shards_ipc::spawn(Path::new("/usr/bin/sample"), &args, &stdio, false)
+    });
+    match spawned {
+        // Reaped where it ends, on a thread of its own, so that no zombie is left.
+        Ok(child) => {
+            let _ = std::thread::Builder::new()
+                .name("sample".into())
+                .spawn(move || child.wait());
+        }
+        Err(e) => log(format!("VM {pid}: sampling it: {e}")),
+    }
+    file
 }
 
 /// Why a VM was not granted what it asked: `started` false for one the host had not let
@@ -9378,14 +9423,12 @@ struct GrantError {
     started: bool,
 }
 
-/// How long a starting VM may go without saying it is ready before the daemon looks at what
-/// its process has done, and again each as long after, while it waits: the slice its
-/// progress is judged over ([`ready`]), and the log's word of a VM not ready yet. A sixth of
-/// [`READY_TIMEOUT`], as macOS's `GRANT_STALL`, so that a stalled VM is said while it is
-/// still stalled: the open p99 flake of a run that waits out the whole wait (CI's
-/// windows-2022 and windows-2025, `published_ports_are_free_at_once_while_the_daemon_makes_
-/// vms`), which only what its process did meanwhile can tell apart.
-pub(crate) const READY_STALL: Duration = Duration::from_secs(10);
+/// A microVM a client waits on, as the listener last looked at it
+/// ([`Daemon::log_progress`]): what it had done then, and how long until the next look.
+struct Looked {
+    progress: Progress,
+    every: Duration,
+}
 
 /// Whether `socket` has something to read, or has closed, within `wait` (none: until it
 /// has); an error is taken for something to read, for the read that follows to say.
@@ -9702,7 +9745,7 @@ mod tests {
     /// an idle one's 10 s on either runner (31 and 63 ms) is no progress; a cold boot, a CPU's
     /// worth to its start (1.6 s of 1.6 s), and step 10's nested boot (FullReal04's VM 2340:
     /// 10,578 ms of CPU by 10 s, 32,249 ms by 20 s) are; a process whose time is unread never
-    /// is, and a VM held to READY_TIMEOUT from its start then, as before.
+    /// is.
     #[test]
     fn a_starting_vm_progresses_by_more_cpu_than_an_idle_one_takes() {
         let s = Duration::from_secs;
@@ -9737,8 +9780,6 @@ mod tests {
             !progressed(Some(ms(5)), Some(ms(1)), s(10)),
             "a time read backwards"
         );
-        // A stall is judged in slices, each a sixth of the time a VM may run nothing.
-        assert_eq!(READY_TIMEOUT, 6 * READY_STALL);
     }
 
     /// A starting VM is waited for while its process goes on with its start, its READY
@@ -11397,21 +11438,33 @@ mod tests {
     }
 
     /// A run's microVM is looked at for its progress while its own client waits on it, an
-    /// attached run's, until it ends; a detached run's, whose client has gone, is not. Each
-    /// look is due within READY_STALL, a sixth of READY_TIMEOUT: a microVM that runs its
-    /// workload is said to six times before the daemon would give up on its start. A played
-    /// VM, a sleep, runs nothing, and is said nothing of.
+    /// attached run's, until it ends; a detached run's, whose client has gone, is not. Its
+    /// looks are paced by the daemon's record of starts: none before its first READY, and
+    /// once it has one, the first due within its W*, the slowest start seen, and each after
+    /// twice as long as the one before. A played VM, a sleep, runs nothing, and is said
+    /// nothing of. It was looked at each READY_STALL's 10 s, picked (ROOT's (3)).
     #[test]
     fn a_microvm_is_followed_while_a_client_waits_on_it() {
         let t = Test::new("followed");
         t.run(|t| {
             let (_, attached, vm) = running(t, "attached");
+            assert_eq!(
+                t.daemon.log_progress(),
+                None,
+                "looked at before any start was seen"
+            );
+            let slowest = Duration::from_millis(50);
+            t.daemon.answers.ready.teach(slowest, Duration::from_millis(1));
             let due = t
                 .daemon
                 .log_progress()
                 .expect("an attached run's microVM not followed");
-            assert!(due <= READY_STALL, "{due:?}");
+            assert!(due <= slowest, "{due:?}");
             assert_eq!(lock(&t.daemon.followed).len(), 1);
+            // Its first look made, the next is due twice as long after it.
+            std::thread::sleep(due);
+            let next = t.daemon.log_progress().unwrap();
+            assert!(next > slowest && next <= 2 * slowest, "{next:?}");
             say(&vm, kind::DONE, &[0]);
             joined(attached.run).unwrap();
             t.until("its end seen", |d| d.log_progress().is_none());
@@ -11434,7 +11487,6 @@ mod tests {
             say(&vm, kind::DONE, &[0]);
             joined(starting.run).unwrap();
         });
-        assert_eq!(READY_TIMEOUT, 6 * READY_STALL);
     }
 
     /// A daemon that closes, idle or at a stop's word, names itself stopping and holds
@@ -13888,8 +13940,8 @@ mod tests {
         });
     }
 
-    /// A run whose warm VM cannot be started is told why at once, where it waited
-    /// READY_TIMEOUT for one; and the template is not counted broken for it: the host
+    /// A run whose warm VM cannot be started is told why at once, where it waited a
+    /// minute for one; and the template is not counted broken for it: the host
     /// failed, not the template. (A test's daemon names a VM binary that is not there.)
     #[test]
     fn a_run_whose_vm_cannot_start_is_told_why_at_once() {
