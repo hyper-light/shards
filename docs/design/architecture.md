@@ -2923,8 +2923,11 @@ gone with the VM. So a microVM that stays (not `--rm`) keeps it on the host:
   linked as the record rather than renamed over it (`keep_first`: `hard_link` fails where
   another kept one first, link(2)'s EEXIST, CreateHardLinkW's ERROR_ALREADY_EXISTS). So
   each caller takes the one kept, where by rename 200 of 200 rounds of 14 callers took an ID
-  the home did not keep (request-sites-v1/review.md). The record, with its red, green and
-  mutations:
+  the home did not keep. A request's change is one client's at a time (`Daemon::request_turn`,
+  held from its read to its keep, an `update`'s exec into the VM included, as moby holds a
+  container's lock across an update and a connect). Two clients at once had lost a change:
+  200 rounds of `update` beside `network connect` kept 154 to 186 of 200 networks
+  (request-sites-v1/review.md). The record, with its red, green and mutations:
   [request-sites-v1](../research/measurements/request-sites-v1/README.md), after
   [audit-fix-request-v1](../research/measurements/audit-fix-request-v1/README.md).
 - **A start refused before it starts** leaves the microVM as it was: nothing of a
