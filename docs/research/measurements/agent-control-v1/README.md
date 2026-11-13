@@ -277,8 +277,9 @@ limit saying the record's failed write first (no word of it since).
   streams a daemon's client may open are left as hyper-quic sets them (D180, "Its values
   derived"). The same liveness for step 5's and D238's endpoints, which still admit `QUIET`
   (this goal's next slice, ROOT's call C), goal 75's `unix::link()` with it; a relay's engine
-  client gone mid-handshake seen as it goes; a daemon's starts off its driver, with their times
-  measured on the real daemon (ROOT's); the handshake slots' memory term. hyper-quic's patch
+  client gone mid-handshake seen as it goes; the handshake slots' memory term. A host's start
+  is off the daemon's driver since (`a_slow_start_holds_up_no_other_client`, red with it on the
+  driver). hyper-quic's patch
   Q30 is on hyper-raft's branch `p/negotiated-idle-v1` (b51afe30, one commit over 233b7fce,
   Shards' pin before), for ROOT to take to hyper-raft's main. Guard mutations, ROOT's: the
   probe-timeout floor, the handshake's counts at its end, the first flight told as no probe,

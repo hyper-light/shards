@@ -82,10 +82,12 @@ pub(super) trait Hosts: Clone + Send + Sync + 'static {
     fn warmed(&self, starting: Self::Starting) -> Result<Self::Warm, ImageRefusal>;
     /// Ends a host that is starting, as its pool ends.
     fn kill(&self, kill: &Self::Kill);
-    /// Hands warm host `warm` the run `request`, waiting at most `patience` for its start.
+    /// Hands warm host `warm` the run `request` of `spec`, waiting at most `patience` for its
+    /// start.
     fn take(
         &self,
         warm: Self::Warm,
+        spec: &ImageSpec,
         request: &wire::Request,
         patience: Duration,
     ) -> Result<Box<dyn ImageGuest>, Taken>;
@@ -386,7 +388,7 @@ impl<H: Hosts> Pooling<H> {
             reply,
         });
         let warm = asked.ok().and_then(|()| warm.recv().ok()).flatten();
-        let guest = match warm.map(|w| self.hosts.take(w, request, patience)) {
+        let guest = match warm.map(|w| self.hosts.take(w, spec, request, patience)) {
             Some(Ok(guest)) => Ok(guest),
             Some(Err(Taken::Refused(refused))) => Err(refused),
             Some(Err(Taken::Unfit)) | None => self.hosts.fresh(spec, request, patience),
@@ -738,7 +740,13 @@ mod tests {
             });
         }
 
-        fn take(&self, warm: Warmed, _: &wire::Request, _: Duration) -> Result<Box<dyn ImageGuest>, Taken> {
+        fn take(
+            &self,
+            warm: Warmed,
+            _: &ImageSpec,
+            _: &wire::Request,
+            _: Duration,
+        ) -> Result<Box<dyn ImageGuest>, Taken> {
             drop(warm);
             if self.log().unfit {
                 return Err(Taken::Unfit);
@@ -768,6 +776,7 @@ mod tests {
             publish: Vec::new(),
             egress: wire::Narrowing::default(),
             credentials: Vec::new(),
+            lessor: None,
             shares: Vec::new(),
             nesting: false,
             ready_by: None,

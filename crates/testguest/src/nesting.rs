@@ -3,13 +3,18 @@
 //! stand-in nested runtime) and the kernel's own interfaces, and says what each step met;
 //! `nesting-box WHAT` is what each box runs. Every line is one fact the host test matches.
 
-use std::io::{self, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Where the image puts the stand-in runtime (the test's Agentfile `COPY`s it there).
 const RUNC: &str = "/usr/local/bin/runc";
+/// The most a runc of a case may take before it is asked where it waits: a third of the
+/// host test's bound on the whole run (tests/nesting.rs `TIMEOUT`, 180 s), so that its
+/// answer comes back within that bound.
+const RUNC_MOST: Duration = Duration::from_secs(60);
 /// runc's state, in the run's own `/run`, a tmpfs the run asks for (`--tmpfs /run`).
 const STATE: &str = "/run/runc";
 /// Each box's bundle, and the one root every box is given, read-only.
@@ -121,7 +126,10 @@ fn run_box(id: &str, args: &[&str], resources: &str, devices: &str) -> Option<i3
         .arg(&dir)
         .arg(id)
         .stdin(Stdio::null())
-        .output();
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|runc| bounded(runc, id));
     match ran {
         Ok(out) => {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
@@ -142,6 +150,53 @@ fn run_box(id: &str, args: &[&str], resources: &str, devices: &str) -> Option<i3
             None
         }
     }
+}
+
+/// `runc`'s output, as `Command::output` gives it; where it has not ended within
+/// [`RUNC_MOST`], once SIGQUIT has had Go's runtime write where each of its goroutines waits
+/// to its stderr and exit, so that a runtime that hangs says where (box `what`).
+fn bounded(mut runc: std::process::Child, what: &str) -> io::Result<std::process::Output> {
+    let read = |pipe: Option<Box<dyn io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let out = read(
+        runc.stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn io::Read + Send>),
+    );
+    let err = read(
+        runc.stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn io::Read + Send>),
+    );
+    let deadline = Instant::now() + RUNC_MOST;
+    let status = loop {
+        if let Some(status) = runc.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            say(&format!(
+                "box {what}: runc did not end within {RUNC_MOST:?}, asked where it waits (SIGQUIT)"
+            ));
+            if let Ok(pid) = libc::pid_t::try_from(runc.id()) {
+                // SAFETY: kill(2) of this process's own child, not yet reaped.
+                unsafe { libc::kill(pid, libc::SIGQUIT) };
+            }
+            break runc.wait()?;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
 }
 
 /// `KEY`'s count in the kept box's cgroup file `FILE`, as the workload reads it from inside
@@ -419,14 +474,27 @@ fn exit_leaving_a_box(code: i32) -> i32 {
             return 1;
         }
     };
-    let started = Command::new(RUNC)
-        .args(["--root", STATE, "run", "--detach", "--no-new-keyring", "--bundle"])
-        .arg(&dir)
-        .arg("held")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    // What runc says goes to a file, not a pipe: the held box takes runc's stdio for its
+    // own (`--detach`), and would hold a pipe open past runc. Said where runc did not end
+    // as it should, its goroutines' stacks among it ([`bounded`]).
+    let said = format!("{BUNDLES}/held.runc-stderr");
+    let started = std::fs::File::create(&said).and_then(|stderr| {
+        Command::new(RUNC)
+            .args(["--root", STATE, "run", "--detach", "--no-new-keyring", "--bundle"])
+            .arg(&dir)
+            .arg("held")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(stderr)
+            .spawn()
+            .and_then(|runc| bounded(runc, "held"))
+            .map(|out| out.status)
+    });
+    if !started.as_ref().is_ok_and(std::process::ExitStatus::success) {
+        for line in std::fs::read_to_string(&said).unwrap_or_default().lines() {
+            say(&format!("box held runc: {line}"));
+        }
+    }
     let state = Command::new(RUNC)
         .args(["--root", STATE, "state", "held"])
         .stdin(Stdio::null())
