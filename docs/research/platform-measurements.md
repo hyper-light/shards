@@ -23174,3 +23174,74 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | The CI run of 48ef5a191 and the unit tests above; red with each guard removed, green after. |
   | R11 | Cross-platform code; macOS arm64 run, Linux and Windows owed to CI. |
   | R15, R16 | Implementer; the carrier's checkout and target on adas-mac-studio.local are removed after landing. |
+
+### M551. A run's relays drain to their own peers' ends, typed, with no clock (D124)
+
+- **Question.** On the host's network (D124) init's hostbind process relays connections to
+  the guest's loopback servers, and once the run has ended it passed on what they held for
+  a second (`DRAIN`), the network process's grace that PM M546 retired (`netproc::GRACE`).
+  The person ruled on 2026-11-13 that a wait follows the party's liveness and progress, then
+  the slowest answer seen, cold the liveness alone. ROOT's frame: progress is bytes
+  relayed; each run's relay drains once, so in-process learning is always cold, and the
+  slowest drain would have to come from the host (the run's setup) to bound anything; cold
+  means the relays' own peers' ends. What are those ends, and what is left to pass on?
+- **Found** (from Linux's source, and the relay's unit tests on adacachy2).
+  - The run's other processes are killed before init lets the relay process go; a killed
+    server's socket closes with a FIN, or with a reset where its client's bytes lay unread
+    (tcp_close()'s `data_was_unread`), and tcp_recvmsg() gives what was queued before the
+    reset's error. The relay ended at any failure, that reset among them, and lost what it
+    held of the server's (red below: `[Failed(Local, 104)]`).
+  - A relay's socket to the client, closed with the client's bytes unread, resets in turn,
+    which takes its unsent queue with it: what the client sends after its server's end has
+    to be read and dropped.
+  - Written is not sent: a client with a small window leaves the relay's bytes queued in the
+    guest. TCP_NOTSENT_LOWAT of one byte (Linux 3.12) has POLLOUT say so only once nothing
+    is left unsent (tcp_stream_memory_free()), and SIOCOUTQNSD says how much is.
+  - A client that holds its connection open without a word (an idle pooled one) never sends
+    its end: waiting for it would hold the run's end for ever.
+  - poll(2) says POLLERR and POLLHUP whatever is asked: a reset socket kept in the set would
+    wake the loop again and again; one waited on no more goes in as -1.
+- **Decision** (D124's "Let go."; D217's owed list).
+  - Once init has gone, `hostbind::drain` waits on its relays' sockets alone, no clock, each
+    relay until its own end, typed (`Ended`): `Drained`, its server's end (FIN or reset) and
+    all it sent before passed on and sent, its end then told the client; `Failed(Side,
+    errno)`, a socket's failure, the client's (its reset) ending it; `Closed`, both ways
+    ended as the run went on; `Unwatched(errno)`, poll(2) failing. Each way's read and write
+    says how it went (`Moved::On`, `Moved::Failed(errno)`), and a relay's run says whether it
+    has ended (`Drain::No`, `Drain::Yes { sent }`).
+  - The bound the host could give is not built: a client that stops taking a dead server's
+    last bytes holds its run's end while it lives, as a closed daemon's client does (PM
+    M549), and the run's kill ends it.
+- **Tests** (init's hostbind.rs, each with its harness waiting on events alone):
+  `a_relay_drains_its_servers_bytes_however_long_its_client_takes` (4 MiB, a 4 KiB window,
+  reading from 1.5 s), `a_relays_drain_ends_once_its_servers_bytes_are_sent` (256 KiB the
+  relay can write at once: its drain ends after its client began to read),
+  `a_reset_servers_bytes_are_drained_too`, `a_relays_drain_ends_with_its_server_or_its_client`
+  (a client that holds its connection: drained; one that resets: `Failed(Net, ECONNRESET)`).
+- **Checked** (one host, adacachy2, CachyOS Linux 7.3.3 x86_64, glibc, `nice -n 10`,
+  `CARGO_INCREMENTAL=0`, a carrier's checkout at 8ec9cca76 over main baba912ee; kiln runs
+  r52, r76, r108):
+  - `cargo test -p shards-init -- hostbind::`: 7 passed (r52 at 5c02cd61b, r108 at
+    8ec9cca76).
+  - Red with each guard removed (`/tmp/r03-carrier/red-drain.sh`, r76): the second back
+    failed the 4 MiB and the sent tests (fewer bytes, the server's writes broken); the
+    sent-wait gone failed the sent test (drained before its client read); a reset ending the
+    relay failed the reset test (`[Failed(Local, 104)]` for `[Drained]`); no drain failed
+    four (`Closed` for `Drained`, the reset's loss, and the held-open client's drain never
+    ending).
+  - `cargo clippy -p shards-init --all-targets -- -D warnings`: clean (r108).
+  - `cargo fmt --check`: clean.
+- **Owed.** CI's: the musl and aarch64 lints and tests. ROOT's: tests/containers.rs
+  `a_run_on_the_hosts_network_is_on_the_hosts_network` (its relays drained at the run's
+  end) on KVM and HVF.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap, index or panic added to production code; `unsent` reads none as none. |
+  | R02, R03 | Linux's own TCP (tcp_close, tcp_recvmsg, TCP_NOTSENT_LOWAT, SIOCOUTQNSD) is the evidence; no clock remains; the host's bound, which would need the host's record, is said not built. |
+  | R04 | `Ended`, `Moved`, `Side`, `Drain`: typed, the drain's and the pump's decisions matched on them. |
+  | R05 | The drain waits on its sockets' readiness alone; a socket waited on no more is passed over (-1). |
+  | R09, R10 | Red with each guard removed, green after: above. |
+  | R11 | Linux-only code (init); x86_64 glibc run, musl and aarch64 owed to CI. |
+  | R15, R16 | Implementer; the carrier's checkout and target on adacachy2 are removed after landing. |

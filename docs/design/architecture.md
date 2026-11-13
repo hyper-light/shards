@@ -7963,9 +7963,9 @@ user's host as Docker's.
   network process; it now waits one slice. The cost: a network process stuck on nothing of
   its own is ended 10 s or more after its VM, where it was 1 s; one that exits as its links
   close, as each does, ends the wait at once. The waits that took that second as their
-  basis keep it, their own basis owed (R03): init's relay drain (hostbind.rs `DRAIN`), the
-  daemon's `PUBLISH_PATIENCE`, and the VM process's wait for its network process's
-  unpublish (warm.rs).
+  basis keep it, their own basis owed (R03): the daemon's `PUBLISH_PATIENCE`, and the VM
+  process's wait for its network process's unpublish (warm.rs). Init's relay drain
+  (hostbind.rs `DRAIN`) follows its relays' peers since (D124, PM M551).
 - **The slice is the host's own.** Each end heard is kept in the home (`ends`: `teardown
   MS`, `exit MS` and `helper MS`, the slowest of each this home's processes have heard: its
   daemon and its runs' hosts keep one record, each end put with what it holds then, written
@@ -17306,8 +17306,24 @@ host networking does for its VM's containers (PM M177).
   network process answers a port's letting go once it has closed its copy, which the
   daemon waits for before it binds the port again, and only then. What a relay holds is
   passed on before it goes: a server's last datagrams, sent before its socket closed;
-  and, at the run's end, which spares the relays, what their connections hold, for up to
-  a second, the network process's own grace. The VM puts what the guest sent in the
+  and, at the run's end, which spares the relays, what their connections hold of their
+  servers', each until its own end (PM M551; `hostbind::drain`, `Pair::drain`, its ends
+  typed, `Ended`): the server's end (its FIN, or its reset once what it held was read, as
+  a killed server's socket with its client's bytes unread resets) and all it sent before
+  passed on, sent (TCP_NOTSENT_LOWAT of a byte, which says POLLOUT only once nothing is
+  left unsent, Linux 3.12 and later; where a guest's kernel refuses it, once written) and
+  its end told; or the client's end, its reset or a failure, which nothing more can pass
+  to. What the client sends then reaches no one, read and dropped, so that none is left
+  unread to make the relay's close a reset (Linux's tcp_close()), and no client that holds
+  its connection open without a word holds the run's end. Each run's relay drains once, so
+  a drain of its own could tell it nothing of how long another took, and in-process
+  learning is always cold: the cold start, the relays' own peers' ends alone, with no
+  clock. A bound would have to be the host's (its runs' slowest drain, given in the run's
+  setup), and none is: a client that stops taking a dead server's last bytes holds its
+  run's end while it lives, as a closed daemon's client does (D185, PM M549), and the run's
+  kill ends it. It was a second, the network process's grace (`netproc::GRACE`, PM M546):
+  a client slower than that lost what the relays still held, and a server's reset ended
+  its relay at once, what it held lost. The VM puts what the guest sent in the
   network process's ring before the daemon's word to close a port, which that process
   takes first. As a microVM ends, before its end is told, its ports go (PM M181): the
   VM asks the daemon to let go of them (`HOST_RELEASE`), which closes its copies, waits
@@ -17360,7 +17376,12 @@ host networking does for its VM's containers (PM M177).
   (below) fails without the gateway's entry at boot, after a new MAC, on a network of
   the run's own, or for IPv6's gateway. Init's
   `a_bind_goes_where_its_address_says`, `a_gone_sockets_cookie_is_read_from_its_message`
-  and `a_calls_arguments_are_read_as_the_kernel_takes_them`; the network process's
+  and `a_calls_arguments_are_read_as_the_kernel_takes_them`; its drain's (PM M551),
+  `a_relay_drains_its_servers_bytes_however_long_its_client_takes` (4 MiB to a client that
+  reads only after 1.5 s), `a_relays_drain_ends_once_its_servers_bytes_are_sent`,
+  `a_reset_servers_bytes_are_drained_too` and `a_relays_drain_ends_with_its_server_or_its_client`,
+  each red with its guard removed (the second back, the sent-wait gone, a reset ending the
+  relay, no drain); the network process's
   `the_hosts_network_reaches_what_the_host_does` and
   `a_hosted_port_is_let_go_by_its_number`; seccomp's
   `the_hosts_networks_binds_are_notified_on_every_abi`; the ABI's
