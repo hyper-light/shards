@@ -515,9 +515,19 @@ fn compile_gpu_helper(out: &mut impl io::Write, libs: &Path) -> Result<PathBuf, 
     }
     let os = var("CARGO_CFG_TARGET_OS")?;
     let given: &[&str] = match os.as_str() {
-        "macos" => &["libvirglrenderer.a", "libepoxy.a", "libMoltenVK.a"],
-        "windows" => &["virglrenderer.lib", "epoxy.lib"],
-        _ => &["libvirglrenderer.a", "librender_server.a", "libepoxy.a"],
+        "macos" => &[
+            "libvirglrenderer.a",
+            "libepoxy.a",
+            "libMoltenVK.a",
+            "libshards_gpu_selection.a",
+        ],
+        "windows" => &["virglrenderer.lib", "epoxy.lib", "shards_gpu_selection.lib"],
+        _ => &[
+            "libvirglrenderer.a",
+            "librender_server.a",
+            "libepoxy.a",
+            "libshards_gpu_selection.a",
+        ],
     };
     for lib in given {
         let _ = writeln!(out, "cargo::rerun-if-changed={}", libs.join(lib).display());
