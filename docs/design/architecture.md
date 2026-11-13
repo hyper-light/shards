@@ -25294,6 +25294,77 @@ buffer are the caller's admission (R03).
 - A half-close turned into a full close.
 - A lane held past its window.
 
+### D252. An orchestrator's run binds its own agent-control endpoint, and shards-api carries Shards' controller (built; real-VM runs owed)
+
+**Why.** D238 built the endpoint for a daemon's run that asks for it (`shards.control=true`,
+`bind_agent`), but D231's run host (`shards api-run`) bound none. Hex's node runs on such a run
+(Hex's `node-under-shards-init.md` §5): its host reaches the node only through the run's
+endpoint, over the socket lane (D251). Hex vendors shards-api, and D238 has a controller's side
+be Shards' own code. Hex's acceptance (step11-b-run-host-endpoint) is held to here.
+
+**Decided.**
+- *The ask.* `ImageSpec::control: Option<ControlAsk>` holds the controller's key's SHA-256 (D180's
+  raw public key, RFC 7250), the one key the endpoint takes. It also holds an optional
+  `SocketGrant` (D251): the directory, the lanes and the window, the caller's numbers (R03).
+  shards-api refuses a grant whose directory is not absolute and plain, one of 0 lanes or 0
+  bytes, or one in a run without a command of its own, as a `Spec`, before a run host starts.
+  The run host refuses it again, and so does init. The image channel carries the ask in its
+  version 15 (`Request::control`), so a host of an earlier version refuses the run as it is
+  asked, and guesses no endpoint.
+- *The endpoint.* The run host binds it once its VM has started. The microVM's key is made
+  then and held by the endpoint alone: never in guest memory, never a template's (D238), and
+  two runs never share one. It binds on loopback, as step 5's endpoints do, and serves the
+  run's socket lanes. Each lane goes to its VM as `LANE_OPEN` and is answered in the run host's
+  follow of its link. The connection is taken (`LANE_HELD`) and handed to the endpoint
+  (`Reply::Connected`), or the guest's errno is (`Reply::Unreached`). The endpoint is revoked as
+  the run's asks end, and every lane with it. A lane its VM can no longer answer is refused
+  ESRCH, as its command is.
+- *What the orchestrator reads.* `ImageGuest::control()` gives a `ControlAt`: where the endpoint
+  is bound and the microVM key's SHA-256, which the controller pins. It is told in `Started`,
+  version 15. shards-api holds the run host to it: an endpoint told where none was asked, or
+  none where one was, breaks the channel's contract (`Host`).
+- *The controller in shards-api* (`shards_api::control`). It re-exports Shards' own:
+  `Controller`, `Dialed`, `Ended`, `Fault`, `Hangup`, `Link`, `Linked`, `Socket`,
+  `SocketAdmission`, `SocketReader`, `SocketWriter`, `Sockets`, `Subscriptions`, `Identity`,
+  `Fingerprint` and `Reason`. shards-api now depends on shards-remote.
+
+**Differences from Hex's interface, said.**
+- `Fault::Lost(Ended)` is the connection's end where Hex proposed `Fault::Ended`. A socket's reset
+  reads as `ConnectionReset`, with `Fault::Revoked` its source (Hex's `Fault::Reset`).
+- The suite and the end are read through `Dialed::link` (`Linked::wait`'s `Link`: each end's
+  `Negotiated`) and through a lane's `Fault::Lost`, where Hex proposed `Dialed::suite()` and
+  `ended()`.
+- Inside the microVM, the lane's connection is the guest's dial to the exec port, by the lane's
+  own token (D251), where Hex proposed a host-initiated `CONNECT 1031`.
+- An endpoint serving nothing is refused (`Capacity`), as shards-remote's endpoints are (D238), so
+  Hex's case (g) grants a socket directory. Binding an endpoint of the control lane alone is goal
+  58's to decide.
+- A revoked endpoint's connections close with code 0, which a controller reads as
+  `Transport(Peer)`: typed, never `Silent`. (g) asks never `Silent`, as (f) does.
+
+**Literals.** None new. The window and lanes are the caller's (R03). Loopback is where step 5's
+endpoints bind.
+
+**Built and tested** (unit, focused).
+- shards-api, `image::wire`: the control ask crosses the channel whole at version 15, absent
+  where not asked; `Started` tells where an endpoint is, IPv4 and IPv6, or none.
+- shards-api, `image::tests`: a grant outside its bounds is refused before a run host starts,
+  as Hex's red test asks; a grant within them is carried whole; a grant without a command is
+  refused.
+- shards (api_run): the run host holds the grant as shards-api does; its endpoint binds on
+  loopback under a key of its own per run.
+
+**Evidence owed** (ROOT, real VMs).
+- Hex's cases (f) `nesting::a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller`
+  and (g) `nesting::an_orchestrators_run_binds_its_own_agent_control_endpoint`, on HVF, KVM x86_64
+  and WHP.
+- The run host's resident and CPU cost with its endpoint, against the daemon's per run (R14).
+
+**What would falsify it.**
+- A run's key reached by another run's controller.
+- An endpoint outliving its run.
+- A grant shards-api takes and init refuses, or the other way round.
+
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller; the member's listener and bridge, the run hosts' pairing, kiln's side and every real-VM run owed)
 
 **Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`
