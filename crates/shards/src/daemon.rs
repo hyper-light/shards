@@ -8393,9 +8393,17 @@ impl<D: Disk> Daemon<D> {
             lock(&self.state).starting.insert(vm.id(), vm.clone());
         }
         let watched = vm.clone();
+        // Ended by `unwatched` where its watcher's thread does not start: its closure is
+        // dropped unrun then (std's `thread::Builder::spawn_scoped`).
+        let unwatched = Unwatched {
+            vm: Some(vm.clone()),
+            net: net_process,
+            ends: &self.ends,
+        };
         let watching = std::thread::Builder::new()
             .name("warm vm".into())
             .spawn_scoped(threads, move || {
+                let net_process = unwatched.watched();
                 self.watch(
                     threads,
                     watched,
@@ -8411,7 +8419,6 @@ impl<D: Disk> Daemon<D> {
             if pooled {
                 lock(&self.state).starting.remove(&vm.id());
             }
-            let _ = vm.kill(shards_ipc::signal::SIGKILL);
             return Err(format!("watching VM {}: {e}", vm.id()));
         }
         Ok(())
@@ -8965,6 +8972,36 @@ fn new_log(dir: &Path) -> io::Result<Log> {
         index: made(index)?,
         seq: 0,
     })
+}
+
+/// A launched VM process a watcher is to follow (`Daemon::start`), and its network process:
+/// ended where no watcher takes them, as a watcher's thread that does not start drops them
+/// unrun. Its VM is killed and waited for, then its network process, which goes as its VM
+/// does, is followed to its end by the home's record (`netproc::reap`, D217).
+struct Unwatched<'s> {
+    vm: Option<Arc<shards_ipc::Child>>,
+    net: Option<crate::netproc::NetProcess>,
+    ends: &'s ends::Ends,
+}
+
+impl Unwatched<'_> {
+    /// Its network process, for the watcher that takes them: neither is ended as this goes.
+    fn watched(mut self) -> Option<crate::netproc::NetProcess> {
+        self.vm = None;
+        self.net.take()
+    }
+}
+
+impl Drop for Unwatched<'_> {
+    fn drop(&mut self) {
+        if let Some(vm) = self.vm.take() {
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+            let _ = vm.wait();
+        }
+        if let Some(net) = self.net.take() {
+            crate::netproc::reap(&net, self.ends);
+        }
+    }
 }
 
 /// How long a VM process may take to send its first request for access before its stacks
@@ -12870,6 +12907,52 @@ mod tests {
             });
             joined(starting.run).unwrap();
         });
+    }
+
+    /// A launched VM no watcher takes is ended, and its network process reaped, as a
+    /// watcher's thread that does not start drops what it was given (`start`). The VM here is
+    /// a stand-in, `cat` on a pipe the test holds open, holding the doorbell a stand-in
+    /// network process (`cat`) reads, which goes as that VM goes, as shards-net goes as its
+    /// ring's doorbell hangs up. Reaped, neither's pid is any process's, not even a zombie's.
+    #[cfg(unix)]
+    #[test]
+    fn a_vm_no_watcher_takes_is_ended_and_its_network_process_reaped() {
+        let null = File::open(crate::os::NULL).unwrap();
+        let (doorbell, rings) = io::pipe().unwrap();
+        let net = shards_ipc::spawn(
+            Path::new("/bin/cat"),
+            &[],
+            &[(doorbell.as_fd(), 0), (null.as_fd(), 1), (null.as_fd(), 2)],
+            false,
+        )
+        .unwrap();
+        drop(doorbell);
+        let (held, open) = io::pipe().unwrap();
+        let vm = shards_ipc::spawn(
+            Path::new("/bin/cat"),
+            &[],
+            &[
+                (held.as_fd(), 0),
+                (null.as_fd(), 1),
+                (null.as_fd(), 2),
+                (rings.as_fd(), 3),
+            ],
+            false,
+        )
+        .unwrap();
+        drop((held, rings));
+        let pids = [vm.id(), net.id()];
+        let home = shards_testdir::TempDir::new("unwatched").unwrap();
+        let record = ends::Ends::kept_in(&home);
+        drop(Unwatched {
+            vm: Some(Arc::new(vm)),
+            net: Some(net),
+            ends: &record,
+        });
+        for pid in pids {
+            assert!(reaped(pid), "process {pid} is left");
+        }
+        drop(open);
     }
 
     /// A VM's network process is given a slice of this host's once the VM has ended,
