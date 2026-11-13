@@ -785,11 +785,13 @@ pub fn command() -> Command {
 /// publishing the microVMs it makes to no local image store (pull.rs `publish`), so that no
 /// test writes to the Docker engine of the host it runs on (a test of publishing names an
 /// engine of its own), and given the tests' own docker config ([`docker_config`]), so that
-/// none reads this host's or runs its credential helpers. No default platform of the
-/// host's user's reaches it.
+/// none reads this host's or runs its credential helpers, and their own daemon.json in place
+/// of the host's Docker's (`SHARDS_DAEMON_JSON`, D194), so that no mirror or insecure
+/// registry of the host's reaches one. No default platform of the host's user's reaches it.
 pub fn as_tests_run(cmd: &mut Command) -> &mut Command {
     cmd.env("SHARDS_LOCAL_STORE", "none")
         .env("DOCKER_CONFIG", docker_config())
+        .env("SHARDS_DAEMON_JSON", docker_config().join("daemon.json"))
         .env_remove("DOCKER_AUTH_CONFIG")
         // A platform this host's user prefers is no test's: a test names its own.
         .env_remove("SHARDS_DEFAULT_PLATFORM")
@@ -799,7 +801,8 @@ pub fn as_tests_run(cmd: &mut Command) -> &mut Command {
 /// The tests' own docker config, which every command is given unless a test gives its
 /// own: no test, nor any daemon one starts, reads this host's docker config or its
 /// credential helpers. Its `auths` name a host no test reaches, so that no platform helper
-/// is looked for either (D184: a config that holds credentials keeps them itself).
+/// is looked for either (D184: a config that holds credentials keeps them itself). Beside it,
+/// the tests' own daemon.json, which names no registry ([`as_tests_run`]).
 pub fn docker_config() -> &'static Path {
     static CONFIG: OnceLock<TempDir> = OnceLock::new();
     CONFIG.get_or_init(|| {
@@ -809,6 +812,7 @@ pub fn docker_config() -> &'static Path {
             r#"{"auths":{"shards-tests.invalid":{}}}"#,
         )
         .unwrap();
+        std::fs::write(dir.join("daemon.json"), "{}").unwrap();
         dir
     })
 }

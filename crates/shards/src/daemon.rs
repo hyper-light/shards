@@ -4434,6 +4434,14 @@ impl<D: Disk> Daemon<D> {
         lock(&self.joiner_links).remove(id);
     }
 
+    /// The VM of run `id`, whose published ports the daemon holds ([`free_ports`](Self::free_ports)).
+    fn ports_vm(&self, id: &str) -> Option<u32> {
+        lock(&self.ports_held)
+            .iter()
+            .find(|h| h.container == id)
+            .and_then(|h| h.vm)
+    }
+
     /// Lets go of what microVM `id`'s run, or VM `vm`'s network process, held: the
     /// daemon's copies of its listening sockets close, and their ports are free.
     fn free_ports(&self, id: Option<&str>, vm: Option<u32>) {
@@ -5892,7 +5900,19 @@ impl<D: Disk> Daemon<D> {
                 )),
                 // Its network process has closed its published ports: the daemon's copies
                 // close, and the ports are free (PM M380).
-                kind::PORTS_FREE => self.free_ports(Some(id), None),
+                kind::PORTS_FREE => {
+                    if let Some(vm) = self.ports_vm(id) {
+                        self.unpublished(vm);
+                    }
+                    self.free_ports(Some(id), None);
+                }
+                // Its VM waits on its network process to close the run's ports, which the
+                // daemon follows from here ([`follow_unpublish`](Self::follow_unpublish)).
+                kind::UNPUBLISHING => {
+                    if let Some(vm) = self.ports_vm(id) {
+                        self.follow_unpublish(vm);
+                    }
+                }
                 kind::LOST => self.log_lost(id, &m.payload),
                 kind::OOM => self.oom_killed(id, &m.payload),
                 kind::PIDS => self.pids_refused(id, &m.payload),
@@ -13390,6 +13410,50 @@ mod tests {
             // The VM is reaped once its ports are freed (follow.rs), which the wait above
             // could see first.
             t.until("the VM was not reaped", |_| reaped(vm.id()));
+        });
+    }
+
+    /// A network process its VM waits on to close its run's ports (`UNPUBLISHING`) is
+    /// followed from then, as one whose VM has gone (D217's helper slice): ended once it has
+    /// gone on with nothing for a slice, its VM running still, which ends its VM's wait; and
+    /// one that answered (`PORTS_FREE`) is followed no more while its VM runs. Before, nothing
+    /// followed it while its VM ran, and the VM process gave up on it a second on, picked
+    /// (ROOT's (A), 2026-11-13).
+    #[test]
+    fn a_network_process_its_vm_waits_on_is_followed_until_it_answers() {
+        let t = Test::new("net-unpub");
+        t.run(|t| {
+            // A helper's end this home has heard: its slice, W*.
+            let slice = Duration::from_millis(200);
+            t.daemon.ends.heard(ends::End::Helper, slice).unwrap();
+            let (ready, _theirs) = t.warm_vm(None);
+            let vm = ready.vm.clone();
+            let net = sleeper(600);
+            let net_pid = net.id();
+            t.t.daemon.follow_vm(t.threads, vm.clone(), None, Some(net));
+            let asked = Instant::now();
+            t.daemon.follow_unpublish(vm.id());
+            t.until(
+                "a network process its VM waits on, doing nothing, was not ended",
+                |_| reaped(net_pid),
+            );
+            assert!(asked.elapsed() >= slice, "{:?}", asked.elapsed());
+            assert!(!reaped(vm.id()), "its VM ended with it");
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+            // Its answer come: followed no more while its VM runs.
+            let (ready, _theirs) = t.warm_vm(None);
+            let vm = ready.vm.clone();
+            let net = sleeper(600);
+            let net_pid = net.id();
+            t.t.daemon.follow_vm(t.threads, vm.clone(), None, Some(net));
+            t.daemon.follow_unpublish(vm.id());
+            t.daemon.unpublished(vm.id());
+            std::thread::sleep(slice * 3);
+            assert!(!reaped(net_pid), "a network process that answered was ended");
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+            t.until("the network process was not reaped after its VM", |_| {
+                reaped(net_pid)
+            });
         });
     }
 
