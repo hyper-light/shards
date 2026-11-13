@@ -28059,6 +28059,52 @@ tests unchanged.
 on HVF, KVM x86_64 and WHP; R14's start of a warm run against a restored one, the warm host's
 resident memory, and its start's time from `WARMED`.
 
+**Decided: a run host's layers end with it** (plan step 17, #73). A run host makes its
+microVM's writable layer's file in its home's `layers` (D190, layers.rs `fresh`), unlinked as
+its handle goes once the microVM is ready or has failed. A host that ends before that, stopped
+mid-boot (D231's `BootStop`: its process group killed on Unix, its job on Windows) or failing,
+never lets go of it: the file stayed, sparse, up to the run's 10 GiB, its written blocks
+counted, until a daemon next started in that home cleared `layers`, and an orchestrator's home
+may never run one. Found from source by the boot-stop test's implementer; reproduced by the
+stand-in host tests below, red before the change.
+- *Considered: no name to outlive its holders.* Unlink as the VM process opens the file, or
+  hand it a descriptor of an unlinked file. Rejected for this slice: the VM process takes
+  `--layer PATH` and opens it by path (`platform::open_input`, through its grants on macOS and
+  Windows), a restore's file is a clone made by name (`for_restore`), and a daemon's run that
+  stays needs the name until its microVM has gone, when it renames it into its directory
+  (`keep_at`). A descriptor-only layer means a new grant kind on three platforms and a
+  `keep_at` that links an open file back to a name (Linux's `linkat` of `/proc/self/fd`, none
+  on macOS or Windows): a larger redesign, and the window between `fresh` and the hand-off
+  stays either way.
+- *Decided: the orchestrator removes them.* Only the process that makes a layer's file names it,
+  by its own pid (`shards_ipc::layer_name`, now shared by `fresh` and the sweep;
+  `layer_maker` reads it back). The orchestrator's watcher of each host (`session.rs`
+  `watch`) waits for the host's end without reaping it (`Child::ended`, waitid `WNOWAIT`), then
+  removes every `layers/<hostpid>-*` file (`clear_layers`), then reaps it. Ended, the host
+  makes no more; unreaped (on Windows, its handle held by the watcher), its pid is no other
+  process's, so no live host of the same pid in the same home can exist and lose its file to
+  the sweep. Which home is the host's is found as the host finds it, from the environment it is
+  given over the orchestrator's (`shards_ipc::home_in`, `home`'s rule with the lookup passed
+  in). A file its microVM still holds as it is killed goes as the one its host let go of at
+  readiness does: the name now, the blocks with the microVM.
+- *Unchanged:* a run that stays keeps its layer. A kept layer is renamed out of `layers` into
+  its run's directory (`keep_at`) or never was in it (`in_place`), and an orchestrator's run host
+  keeps none. A host that ends after its run started has let go of its file already, and the
+  sweep finds nothing. The daemon's `clear` at start stays for a daemon's own.
+- *Literals:* none. Removal failures are not refusals: the watcher has no caller to tell, a
+  name left is what the drop leaves on the same failure, and the next daemon clears it.
+
+**Tested** (unit, stand-in hosts, no VM): `a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started`
+(Unix) and its Windows twin `a_stop_mid_boot_ends_the_boot_its_host_and_the_vm_of_its_job`,
+whose hosts now make a layer's file as the real one names it and are stopped mid-boot;
+`a_run_host_that_ends_before_its_run_starts_leaves_no_layer` (Unix), whose host makes two
+and exits. Each expects the host's gone and another pid's kept. `a_layers_name_says_its_maker`
+(shards-ipc).
+
+**Owed** (ROOT, real VMs): `api_image.rs`'s
+`a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run`, which now also expects no
+`layers/<host>-*` file once stopped, on HVF, KVM x86_64 and WHP.
+
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the run hosts' pairing, kiln's side and every real-VM run owed)
 
 **Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`

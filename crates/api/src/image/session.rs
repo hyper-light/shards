@@ -620,11 +620,12 @@ impl Begun {
             host,
             armed: true,
         };
+        let layers = host_layers(env);
         let threads = (|| {
             let (watcher, watched) = (begun.shared.clone(), begun.host.clone());
             std::thread::Builder::new()
                 .name("shards-api-image-exit".into())
-                .spawn(move || watch(&watcher, &watched))
+                .spawn(move || watch(&watcher, &watched, layers.as_deref()))
                 .map_err(os("the run host's watcher"))?;
             let reader = begun.shared.clone();
             std::thread::Builder::new()
@@ -1637,8 +1638,11 @@ fn keep_said(shared: &Shared, mut said: io::PipeReader) {
 }
 
 /// Waits for the host to exit, then reaps it under the state's lock as `exited` is set.
-fn watch(shared: &Shared, host: &shards_ipc::Child) {
+fn watch(shared: &Shared, host: &shards_ipc::Child, layers: Option<&Path>) {
     let awaited = host.ended();
+    if let (Ok(()), Some(layers)) = (&awaited, layers) {
+        clear_layers(layers, host.id());
+    }
     let mut state = lock(&shared.state);
     let _ = host.wait();
     if let Err(e) = awaited {
@@ -1648,6 +1652,47 @@ fn watch(shared: &Shared, host: &shards_ipc::Child) {
     }
     state.exited = true;
     shared.changed.notify_all();
+}
+
+/// Where the run host started with `env` over this process's environment makes its
+/// microVMs' writable layers' files (D190, shards' layers.rs `fresh`): its home's
+/// [`LAYERS`](shards_ipc::LAYERS), its home found as it finds it ([`shards_ipc::home_in`]),
+/// a variable `env` names twice its last, as the host is given it. None where it finds no
+/// home, as it then makes none.
+fn host_layers(env: &[(OsString, OsString)]) -> Option<PathBuf> {
+    let named = |n: &OsString, name: &str| {
+        // Windows' variables are named without regard to case.
+        n.to_str()
+            .is_some_and(|n| n == name || (cfg!(windows) && n.eq_ignore_ascii_case(name)))
+    };
+    let var = |name: &str| {
+        env.iter()
+            .rev()
+            .find(|(n, _)| named(n, name))
+            .map(|(_, v)| v.clone())
+            .or_else(|| std::env::var_os(name))
+    };
+    shards_ipc::home_in(var)
+        .ok()
+        .map(|home| home.join(shards_ipc::LAYERS))
+}
+
+/// Removes from `layers` every file run host `pid` made ([`shards_ipc::layer_maker`]): the
+/// layers of its microVMs it made and had not let go of as it ended (D253), its microVM not
+/// yet holding one, killed mid-boot or failed. Called once it has ended and before it is
+/// reaped: ended, it makes no more, and only it makes files of its pid's; unreaped (on
+/// Windows, its handle held), its pid is no other process's, so no other run host's file is
+/// taken. A microVM of its still ending that has one open is removed from as one its host
+/// let go of as it started is (layers.rs `LayerFile`'s drop): the name goes, and the file
+/// with the microVM. What cannot be removed stays, as what that drop could not remove does,
+/// for the home's next daemon to clear (layers.rs `clear`).
+fn clear_layers(layers: &Path, pid: u32) {
+    for entry in std::fs::read_dir(layers).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        if name.to_str().and_then(shards_ipc::layer_maker) == Some(pid) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn quoted(said: &VecDeque<u8>) -> String {

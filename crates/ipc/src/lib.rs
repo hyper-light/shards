@@ -19,7 +19,14 @@ use std::path::{Path, PathBuf};
 /// `XDG_DATA_HOME` ignored. Whoever starts another shards process passes it this one
 /// ([`HOME`]).
 pub fn home() -> Result<PathBuf, String> {
-    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
+    home_in(|name| std::env::var_os(name))
+}
+
+/// The [`home`] a process whose environment `var` reads finds, from this process's working
+/// directory: a run host's, which its orchestrator starts with variables of its own over
+/// its environment.
+pub fn home_in(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    let var = |name: &str| var(name).filter(|v| !v.is_empty());
     let absolute = |p: PathBuf| std::path::absolute(&p).map_err(|e| format!("{}: {e}", p.display()));
     if let Some(home) = var(HOME) {
         return absolute(PathBuf::from(home));
@@ -42,6 +49,25 @@ pub fn home() -> Result<PathBuf, String> {
 
 /// The variable that names shards' home.
 pub const HOME: &str = "SHARDS_HOME";
+
+/// The directory of a home where its daemon and its run hosts make their microVMs' writable
+/// layers' files (D190), each named by [`layer_name`].
+pub const LAYERS: &str = "layers";
+
+/// The name of the `n`th writable layer's file process `pid` makes in [`LAYERS`]: its maker
+/// in its name ([`layer_maker`]), so that what a process left there as it ended is found by
+/// its pid alone (D253).
+pub fn layer_name(pid: u32, n: u64) -> String {
+    format!("{pid}-{n}")
+}
+
+/// The pid of the process that made the layer's file `name` ([`layer_name`]); none for a name
+/// it does not make.
+pub fn layer_maker(name: &str) -> Option<u32> {
+    let (pid, n) = name.split_once('-')?;
+    n.parse::<u64>().ok()?;
+    pid.parse().ok()
+}
 
 /// What a daemon that no longer serves keeps in its home while it ends its runs: its
 /// process, as [`this_process`] names it. A daemon or client that finds none serving waits
@@ -2549,6 +2575,30 @@ impl Latch {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    /// A layer's file's name says its maker's pid; a name no process makes there (a kept
+    /// layer's, one half a name) says none.
+    #[test]
+    fn a_layers_name_says_its_maker() {
+        assert_eq!(super::layer_maker(&super::layer_name(4242, 7)), Some(4242));
+        assert_eq!(
+            super::layer_maker(&super::layer_name(u32::MAX, u64::MAX)),
+            Some(u32::MAX)
+        );
+        for not in [
+            "",
+            "layer.ext4",
+            "4242",
+            "4242-",
+            "-7",
+            "4242-x",
+            "x-7",
+            "4242-7-1",
+            "-1-7",
+        ] {
+            assert_eq!(super::layer_maker(not), None, "{not:?}");
+        }
+    }
+
     /// A MAC goes as text and comes back the same; what is not six two-digit hex bytes
     /// between colons is no MAC.
     #[test]
