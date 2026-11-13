@@ -1,0 +1,49 @@
+{
+  "draft": "draft-ietf-oauth-v2-31",
+  "doc_id": "RFC6749",
+  "title": "The OAuth 2.0 Authorization Framework",
+  "authors": [
+    "D. Hardt, Ed."
+  ],
+  "format": [
+    "TEXT",
+    "HTML"
+  ],
+  "page_count": "76",
+  "pub_status": "PROPOSED STANDARD",
+  "status": "PROPOSED STANDARD",
+  "source": "Web Authorization Protocol",
+  "abstract": "The OAuth 2.0 authorization framework enables a third-party application to obtain limited access to an HTTP service, either on behalf of a resource owner by orchestrating an approval interaction between the resource owner and the HTTP service, or by allowing the third-party application to obtain access on its own behalf.  This specification replaces and obsoletes the OAuth 1.0 protocol described in RFC 5849. [STANDARDS-TRACK]",
+  "pub_date": "October 2012",
+  "keywords": [
+    "Client",
+    "Resource Owner",
+    "Authorization Server",
+    "Resource Server",
+    "Token Endpoint",
+    "Authorization Endpoint",
+    "Authorization Request",
+    "Authorization Grant",
+    "Protected Resource",
+    "Access Token",
+    "Refresh\u00a0Token",
+    "Authorization Code",
+    "Implicit Grant",
+    "Client Identifier",
+    "Access Token Scope",
+    "Delegation"
+  ],
+  "obsoletes": [
+    "RFC5849"
+  ],
+  "obsoleted_by": [],
+  "updates": [],
+  "updated_by": [
+    "RFC8252",
+    "RFC8996",
+    "RFC9700"
+  ],
+  "see_also": [],
+  "doi": "10.17487/RFC6749",
+  "errata_url": "https://www.rfc-editor.org/errata/rfc6749"
+}

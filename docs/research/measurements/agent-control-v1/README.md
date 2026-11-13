@@ -10,10 +10,10 @@ hyper-transport", its "Building: the endpoint").
 
 | | |
 |---|---|
-| Policy | origin/main `e82b9403b`; `docs/development-rules.md` sha256 `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`; role implementer ([POLICY_READ.json](POLICY_READ.json)) |
+| Policy | origin/main `e82b9403b`, read again at `1145bd3f2` for slice 2's landing (same hashes); `docs/development-rules.md` sha256 `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`; role implementer ([POLICY_READ.json](POLICY_READ.json)) |
 | Coordinator | ROOT, session g121, kiln agent `01a148884a4770fdaf0111f3f792a248`; goal `ec1320d898ad86488f95fa5c52d850e1` |
 | Handoff | this step's first implementer (`a3b6e82f900fc1cd2`) was stopped by an interruption; its successor kept its uncommitted work and its instruction |
-| Source | branch `p/s11-control-v1`, from origin/main `e7825cb32`, fast-forwarded to `e82b9403b` |
+| Source | branch `p/s11-control-v1`, from origin/main `e7825cb32`, fast-forwarded to `e82b9403b`; slice 2 `c9630c6b4`, merged with origin/main `1145bd3f2` as `6fcef62bb` (its Rust byte for byte `c9630c6b4`'s) |
 | Owned | `crates/remote/src/control.rs` (and `control/`), its line in `lib.rs` and the handshake tests' helpers there, D238's endpoint text, this directory |
 | Not owned | step 6's member exec, attach and TTY (`p/s6-exec-tty-v1`); step 8's paths; step 10's harness (`control-end`, ROOT's) |
 
@@ -29,7 +29,7 @@ speculative abstraction (R05).
 | The microVM's identity: its own Ed25519 key, pinned both ways (decided over CSR enrollment, R02) | built, slice 1 | D238; `control::{endpoint, controller}` over `identity.rs`, `tls.rs` |
 | An unenrolled peer refused, typed | built, slice 1 | `control::{Ended, ended}` |
 | A lane's first frame; a lane's refusal | built, slice 1 | `control::{lane, refused, read_refused}` |
-| The lanes' service: stdio lanes on step 5's streams | next slice | — |
+| The lanes' service: stdio lanes on step 5's streams, one connection of the controller's at a time | built, slice 2 | `control::{Endpoint, Streams, Served, Revoke}` over step 5's `managed::Service`, `managed::input::Service` |
 | Control (exec, signal, inspect) and terminal (attach, TTY) lanes | held for step 6 | — |
 | Log lane; where the endpoint runs and how its key's SHA-256 reaches the controller | held for step 10 | — |
 
@@ -83,9 +83,18 @@ transport from their caller.
 - `a_lane_of_no_kind_is_refused`
 - `a_lanes_refusal_reads_back_as_its_reason`
 
-Guard-removal mutations: `python3 -I mutate.py SRC_ROOT` (six guards: the endpoint's pin of its
-controller, the controller's pin of the microVM, the protocol, access_denied's reading, a lane
-frame's length, a lane's channel).
+Guard-removal mutations: `python3 -I mutate.py SRC_ROOT [NAME_PREFIX]`, run from a checkout of the
+branch with `CARGO_TARGET_DIR` set. Slice 1's six guards: the endpoint's pin of its controller, the
+controller's pin of the microVM, the protocol, access_denied's reading, a lane frame's length, a
+lane's channel. Slice 2's nine, each named with the test that should fail without it: the newer
+connection's `Stale` close of the older, one lane per output and per stdin, a refusal of the lane
+alone rather than its connection, a revoked output's lane reset alone (`Stop::Lane`), a frame
+refused after its input's end stopping only the lane's reading, the connection window's sum, a
+record beside a queued wake keeping its place, and a finished output's lane stopped both ways. The
+last is marked UNCERTAIN: its test opens a lane after the output finishes, but stdin's earlier
+close may return the stream credit that lane needs, so the mutant may live, which would mean no
+test holds that guard. Slice 2's mutations were written and each guard text checked to occur once,
+but never built or run: the person's rule of 2026-11-13 makes mutation runs ROOT's.
 
 ## Results
 
@@ -102,6 +111,35 @@ checked).
 | macOS 26.2 arm64 (adas-mac-studio-2, Darwin 25.2.0) | `cargo test -p shards-remote --lib`; `cargo clippy -p shards-remote --all-targets -- -D warnings` (aarch64-apple-darwin) | 51 passed (the 8 `control::tests` among them; `net::tests::an_interrupted_receive_keeps_serving_commands` is Linux's alone); clean ([log](logs/slice1-macos-arm64.log)) |
 | Windows 11 x86_64 (adacachy's guest, 10.0.26200, MSVC 14.44) | `cargo test -p shards-remote --lib`; `cargo clippy -p shards-remote --all-targets -- -D warnings` | 51 passed (the 8 `control::tests` among them); clean ([log](logs/slice1-windows-x86_64.log)) |
 | macOS arm64 (adas-mac-studio-2), cargo-xwin with Homebrew's LLVM | scripts/lint's Windows arm for the crate changed: `cargo xwin clippy -p shards-remote --all-targets --target aarch64-pc-windows-msvc -- -D warnings` | clean ([log](logs/slice1-windows-aarch64-lint.log)); MSVC's own ARM64 compiler on the Windows guest cannot build aws-lc's C, as scripts/lint's use of clang-cl implies |
+
+Slice 2 (the stdio lanes' service; this record's next commit), Linux x86_64 (adacachy, rustc
+1.98.1), its source over origin/main `455f8cd1a`: `cargo test -p shards-remote --lib` 62 passed
+(17 `control::tests`, 8 of them the lanes' over UDP on loopback; step 5's `managed` tests and
+the new `a_record_submitted_beside_a_queued_wake_is_kept_for_its_turn` among them);
+`cargo test -p shards-remote --test loopback` 17 passed; `cargo clippy -p shards-remote
+--all-targets -- -D warnings` clean; the daemon's and api-run's tests of step 5's endpoints,
+`cargo test -p shards --bin shards -- managed api_run` (`SHARDS_HELPERS=skip`, placeholder guest
+binaries), 35 passed. One loopback run of the 17 failed once on the loaded host
+(`what_a_command_of_a_connection_gone_writes_reaches_no_other`, its 60 s deadline), then passed
+three runs of the change and three of the base each: D180's, not this change's.
+Slice 1's merged tree (`455f8cd1a`) also passed on macOS arm64 (adas-mac-studio-3): 51 passed,
+clippy clean.
+
+Slice 2's merged tree (`6fcef62bb`, whose Rust is `c9630c6b4`'s), each run on a cold clone with a
+target directory of its own, removed after:
+
+| Host | Ran | Result |
+| --- | --- | --- |
+| Linux x86_64 (adacachy2, CachyOS 7.3.3, rustc 1.98.1, zig 0.16.0) | `cargo test -p shards-remote --lib`, `--test loopback`; `cargo fmt --all --check`; clippy for x86_64 gnu and musl and aarch64 musl | 62 passed (17 `control::tests`), 17 passed, fmt clean, clippy clean ([log](logs/slice2-linux-x86_64.log)) |
+| Linux x86_64 (adacachy, CachyOS 7.2.9, rustc 1.98.1, zig 0.17.0) | clippy for aarch64-unknown-linux-gnu (not installed on adacachy2) | clean ([log](logs/slice2-linux-aarch64-gnu-lint.log)) |
+| macOS 26.5.2 arm64 (adalundhe-macbook-pro, M5 Max) | `cargo test -p shards-remote --lib`, `--test loopback` | 61 passed (`net::tests::an_interrupted_receive_keeps_serving_commands` is Linux's alone), 17 passed ([log](logs/slice2-macos-arm64.log)) |
+| macOS 26.2 arm64 (adas-mac-studio-2, M4 Max) | clippy for aarch64-apple-darwin; `cargo xwin clippy` for aarch64- and x86_64-pc-windows-msvc | clean, clean, clean ([log](logs/slice2-macos-lint.log)) |
+| Windows 11 x86_64 (adacachy's guest, 10.0.26200, MSVC 14.44, rustc 1.98.1) | `cargo test -p shards-remote --lib`, `--test loopback`; native clippy | 61 passed, 17 passed, clean ([log](logs/slice2-windows-x86_64.log)) |
+
+Every clippy above is `SHARDS_HELPERS=skip cargo clippy -p shards-remote -p shards --all-targets
+--target T -- -D warnings` (shards is the only crate that depends on shards-remote), with
+placeholder guest binaries (`SHARDS_INIT_BINARY`, `SHARDS_SERVER_BINARY`), which slice 2 does not
+touch, and scripts/lint's C toolchain for each target: all seven targets are clean.
 
 The first run of `mutate.py` reported its kills by exit status alone; the harness now counts a
 mutant killed only where its one test ran and failed, and prints the failure, and the log is
@@ -126,8 +164,10 @@ that second run's.
 ## Owed
 
 - Slice 1's light tests on aarch64 Linux and aarch64 Windows (linted only): no such host ran them (no native arm64 Linux or Windows runner; Docker Desktop's arm64 Linux is owed with slice 2's UDP tests).
-- The lanes' service on the driver, stdio lanes served from step 5's slots, and its loopback
-  tests over UDP (next slice).
-- Exec, signal, inspect, attach and TTY lanes on step 6; the log lane and the arm on step 10.
+- Slice 2's guard-removal mutations, ROOT's: `python3 -I mutate.py SRC_ROOT` from a checkout of
+  main once slice 2 is on it (all 15, slice 1's six again with them). The finished output's stop
+  is UNCERTAIN (above).
+- Slice 2's light tests on aarch64 Linux and aarch64 Windows (linted only), as slice 1's.
+- The plan of the rest is kiln plan `01a1d2c733ea7731bb3204cad78bc94d`: the controller's side of the stdio lanes (attach is step 5's subscriptions, so these lanes are attach's), the endpoint where step 10 puts it, exec lanes on step 6's member exec, member signal and inspect, a member's own terminal, the log lane.
 - ROOT's: every real-VM run, R14's costs (handshake CPU, per-VM memory, allocations), the
   adversarial campaign (floods, slow readers, hostile frames).

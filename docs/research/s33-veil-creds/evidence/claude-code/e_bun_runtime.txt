@@ -1,0 +1,51 @@
+# Binary searches: Bun runtime identification. BIN = $B = linux-x64 claude 2.1.311 (sha256 86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada), never executed. Output bytes outside printable ASCII replaced by '.' (tr).
+# GG = /opt/homebrew/bin/ggrep (GNU grep 3.12)
+## command: LC_ALL=C $GG -a -o -b -E "Bun v1\.[0-9]+\.[0-9]+[^\"]{0,40}" "$B" | LC_ALL=C tr -c "[:print:]
+" "." | sort -t: -k2 | uniq -c -f0 | head -20
+   1 18215968:Bun v1.4.4 (0ae49f8b6) Linux x64
+   1 1414792:Bun v1.4.4 (Linux x64)..failed to parse package.js
+## exit/pipe-status: 0
+
+## command: LC_ALL=C $GG -a -o -b -E "\-\-\-\- Bun! \-\-\-\-" "$B" | head -5
+ggrep: warning: stray \ before -
+ggrep: warning: stray \ before -
+ggrep: warning: stray \ before -
+ggrep: warning: stray \ before -
+ggrep: warning: stray \ before -
+ggrep: warning: stray \ before -
+ggrep: warning: stray \ before -
+1322241:---- Bun! ----
+293717291:---- Bun! ----
+## exit/pipe-status: 0
+
+## command: LC_ALL=C $GG -a -o -b -E "oh no: Bun has crashed[^\"]{0,60}" "$B" | LC_ALL=C tr -c "[:print:]
+" "." | head -3
+## exit/pipe-status: 0
+
+## command: LC_ALL=C $GG -a -o -b -E "/\\$bunfs/root/[A-Za-z0-9._/-]{1,60}" "$B" | head -20
+18969131:/$bunfs/root/bun-buildIoExecutableTooLargeMalformedHttpResponse
+116433332:/$bunfs/root/chunk-01tpy03e.js
+116433372:/$bunfs/root/chunk-qjwh0nsc.js
+116433412:/$bunfs/root/chunk-tkghgh7a.js
+116433452:/$bunfs/root/chunk-1vqehj1g.js
+116433492:/$bunfs/root/chunk-yntf37b3.js
+116433532:/$bunfs/root/chunk-6aj7e2w2.js
+116433572:/$bunfs/root/chunk-hm6bxhse.js
+116441200:/$bunfs/root/src/plugins/functionHooks/hooks-worker/hooks-worker.js
+116441640:/$bunfs/root/chunk-13n6ym4h.js
+116441832:/$bunfs/root/chunk-y82j7pmq.js
+116441964:/$bunfs/root/chunk-ew7mq8ne.js
+116442108:/$bunfs/root/chunk-8vxz8y6j.js
+116442256:/$bunfs/root/chunk-bhgabmpn.js
+116442500:/$bunfs/root/chunk-667k10m7.js
+116442764:/$bunfs/root/chunk-96khkk2t.js
+116442896:/$bunfs/root/chunk-ejnqr3hh.js
+116443092:/$bunfs/root/chunk-sdx83qnx.js
+116443132:/$bunfs/root/chunk-yy3trty4.js
+116443260:/$bunfs/root/chunk-pm99vf3d.js
+## exit/pipe-status: 0
+
+## command: LC_ALL=C $GG -a -o -b -E "B:/~BUN/root/[A-Za-z0-9._/-]{1,60}" "$B" | head -5
+18969025:B:/~BUN/root/internal
+## exit/pipe-status: 0
+

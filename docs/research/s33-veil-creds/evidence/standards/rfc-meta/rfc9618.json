@@ -1,0 +1,30 @@
+{
+  "draft": "draft-ietf-lamps-x509-policy-graph-05",
+  "doc_id": "RFC9618",
+  "title": "Updates to X.509 Policy Validation",
+  "authors": [
+    "D. Benjamin"
+  ],
+  "format": [
+    "XML",
+    "TEXT",
+    "HTML",
+    "PDF"
+  ],
+  "page_count": "19",
+  "pub_status": "PROPOSED STANDARD",
+  "status": "PROPOSED STANDARD",
+  "source": "Limited Additional Mechanisms for PKIX and SMIME",
+  "abstract": "This document updates RFC 5280 to replace the algorithm for X.509 policy validation with an equivalent, more efficient algorithm.  The original algorithm built a structure that scaled exponentially in the worst case, leaving implementations vulnerable to denial-of-service attacks.",
+  "pub_date": "August 2024",
+  "keywords": [],
+  "obsoletes": [],
+  "obsoleted_by": [],
+  "updates": [
+    "RFC5280"
+  ],
+  "updated_by": [],
+  "see_also": [],
+  "doi": "10.17487/RFC9618",
+  "errata_url": "https://www.rfc-editor.org/errata/rfc9618"
+}

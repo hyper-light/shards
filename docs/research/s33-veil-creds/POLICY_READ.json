@@ -1,0 +1,14 @@
+{
+  "policy_revision": "origin/main 1145bd3f282489fec6e73b40888fbec8e26e5204",
+  "development_rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "agents_md_sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+  "development_evidence_sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+  "role": "goal agent for kiln goal #63 (8f474b45c7cd86559e0566f22f9d0c33), working its steps itself as implementer under ROOT (the Agent tool's concurrency cap refused a child)",
+  "task": "Plan step 33 of kiln plan 01a1cd8e862e7169a074db3d5fa33f3d; step 1 of the goal's plan 01a1d2b88be57304b972761e2a5c6781: the credential contract (typed grants by reference) and D242",
+  "owned_paths": ["crates/api/src (shards-api image wire + ImageSpec)", "crates/shards/src/api_run.rs and crates/shards/tests/{api_image,nesting}.rs (test constructors only)", "docs/design/architecture.md (D242)", "docs/research/s33-veil-creds"],
+  "scope": "types, a pure SNI/Host/grant decision and the spec's validation, with unit tests; not the CA, the injector, the leases or the broker (later steps); real-VM runs are ROOT's",
+  "briefs_read": ["/tmp/g121-shot/goal-agent-brief.md", "/tmp/g121-shot/brief-common.md"],
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/s33-veil-creds",
+  "branch": "p/s33-veil-creds",
+  "continues": "the stopped step-33 agent 01a1d1f9f5147608a763f9113e859a7a's uncommitted work (its readback was at origin/main 99d88fccf, the same hashes)"
+}

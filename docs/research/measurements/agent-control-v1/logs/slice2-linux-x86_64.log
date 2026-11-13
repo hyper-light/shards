@@ -1,0 +1,37 @@
+# kiln run r1054 on adacachy2 (CachyOS, Linux 7.3.3-1-cachyos, 32 cores, load 3.25), merged HEAD 6fcef62bb
+# (Rust identical to c9630c6b4), a cold target directory of its own (~/g121-tmp/s11-slice2, removed after);
+# rustc 1.98.1 (48a229cea 2026-09-01), zig 0.16.0. Excerpt: result lines, control::tests' lines and clippy's
+# exit codes; the run's whole output is r1054's.
+== test lib: cargo test -p shards-remote --lib
+test control::tests::a_close_reads_as_its_cause ... ok
+test control::tests::a_lanes_reading_ends_it_alone_unless_its_controller_broke_its_protocol ... ok
+test control::tests::a_lane_of_no_kind_is_refused ... ok
+test control::tests::a_lanes_refusal_reads_back_as_its_reason ... ok
+test control::tests::step_5s_subscriptions_open_a_members_lanes ... ok
+test control::tests::lanes::its_windows_are_its_streams_own_summed ... ok
+test control::tests::a_peer_of_another_protocol_is_refused ... ok
+test control::tests::an_endpoint_not_the_pinned_vm_is_refused_at_its_handshake ... ok
+test control::tests::a_controller_not_enrolled_is_refused_at_its_handshake ... ok
+test control::tests::an_enrolled_controller_and_its_pinned_vm_connect_on_aes_256_gcm ... ok
+test control::tests::lanes::a_peer_without_the_enrolled_key_reaches_no_lane ... ok
+test control::tests::lanes::a_revoked_stream_ends_its_lane_alone ... ok
+test control::tests::lanes::a_lane_the_endpoint_does_not_serve_is_refused_alone_and_the_others_go_on ... ok
+test control::tests::lanes::a_second_lane_of_a_stream_is_refused_and_the_first_goes_on ... ok
+test control::tests::lanes::an_inputs_own_end_ends_its_lane_and_the_connection_goes_on ... ok
+test control::tests::lanes::a_controllers_lanes_carry_a_members_stdio_exactly_and_end_as_it_ends ... ok
+test control::tests::lanes::the_controllers_newer_connection_supersedes_the_older_and_resumes_at_its_cursor ... ok
+test managed::tests::a_record_submitted_beside_a_queued_wake_is_kept_for_its_turn ... ok
+test result: ok. 62 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.08s
+lib_rc=0
+== test loopback: cargo test -p shards-remote --test loopback
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.57s
+loopback_rc=0
+== fmt: cargo fmt --all --check
+fmt_rc=0
+== clippy: SHARDS_HELPERS=skip SHARDS_INIT_BINARY=SHARDS_SERVER_BINARY=/usr/bin/true, scripts/lint's zig CC/AR per target,
+==         cargo clippy -p shards-remote -p shards --all-targets --target T -- -D warnings
+clippy_rc[x86_64-unknown-linux-gnu]=0
+clippy_rc[x86_64-unknown-linux-musl]=0
+clippy_rc[aarch64-unknown-linux-gnu]=101   (rustup: target not installed on adacachy2; run on adacachy instead: slice2-linux-aarch64-gnu-lint.log)
+clippy_rc[aarch64-unknown-linux-musl]=0
+cleaned=yes

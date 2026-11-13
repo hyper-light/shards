@@ -542,7 +542,11 @@ impl Producer {
                 written: 0,
             };
         }
-        if self.sender.send(Command::Handler(())).is_err() {
+        // A full handoff already holds a wake, whose turn flushes this record too: the wake is
+        // the same unit whoever sent it, and its handler flushes every slot it serves.
+        if let Err(std::sync::mpsc::TrySendError::Disconnected(_)) =
+            self.sender.try_send(Command::Handler(()))
+        {
             let mut state = lock(&self.shared);
             let old = std::mem::replace(
                 &mut state.0,
@@ -565,6 +569,29 @@ impl Producer {
 pub struct Control {
     shared: Arc<Shared>,
     sender: Sender<()>,
+    stop: Stop,
+}
+
+/// What a stream's revocation stops: the driver it alone has (an endpoint of its own), or its
+/// lane alone on an endpoint that serves others too (the agent-control endpoint, D238).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stop {
+    Driver,
+    Lane,
+}
+
+impl Stop {
+    /// Tells the driver of a revocation: its own stop flag, which no full handoff holds up, or
+    /// a wake of its handler, whose turn ends the revoked stream's lane and no other. A full
+    /// handoff already holds such a wake.
+    pub(crate) fn revoke(self, sender: &Sender<()>) {
+        match self {
+            Stop::Driver => sender.request_stop(),
+            Stop::Lane => {
+                let _ = sender.try_send(Command::Handler(()));
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for Control {
@@ -605,7 +632,8 @@ impl Control {
         }
     }
 
-    /// Revocation uses the driver's separate stop flag, even with a full handoff.
+    /// Revocation uses the driver's separate stop flag, even with a full handoff, where the
+    /// driver is this stream's alone ([`Stop`]).
     pub fn abort(&self) {
         {
             let mut state = lock(&self.shared);
@@ -617,7 +645,7 @@ impl Control {
             state.1 = Ending::Aborted;
         }
         self.shared.notify();
-        self.sender.request_stop();
+        self.stop.revoke(&self.sender);
     }
 }
 
@@ -629,7 +657,31 @@ enum Subscription {
     Closed,
 }
 
-struct Service {
+/// Why a subscriber's stream stopped being read: its owner ended its side (FIN), reset it, or
+/// sent what the stream's protocol refuses. An endpoint of one stream closes its connection
+/// for each ([`Gone::reason`]); the agent-control endpoint ends the lane alone for the first
+/// two (D238).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Gone {
+    Ended,
+    Reset,
+    Refused(Reason),
+}
+
+impl Gone {
+    /// The code an endpoint of one stream closes its connection with.
+    pub(crate) fn reason(self) -> Reason {
+        match self {
+            Gone::Ended => Reason::Closed,
+            Gone::Reset => Reason::Protocol,
+            Gone::Refused(reason) => reason,
+        }
+    }
+}
+
+/// One output's subscriber, on one stream at a time: its subscription, the acknowledgments it
+/// reads and the record it writes. The connection it is on is its endpoint's to admit.
+pub(crate) struct Service {
     scope: Scope,
     owner: Fingerprint,
     shared: Arc<Shared>,
@@ -660,20 +712,46 @@ impl std::fmt::Debug for Endpoint {
 /// (RFC 9000 §10.1.2) however long a harness says nothing. The connection takes the lesser
 /// patience (§10.1), which that side's own keep-alive holds whatever the other's.
 fn transport(admitted: Admitted, receive_bytes: usize) -> Result<TransportConfig, Error> {
+    transport_of(
+        &admitted,
+        Windows {
+            stream: receive_bytes,
+            connection: receive_bytes,
+            send: admitted.transport_bytes,
+            streams: 1,
+        },
+    )
+}
+
+/// What a connection holds of its streams: the most its peer sends on one stream and on all
+/// of them before this side reads, the most this side sends unacknowledged, and how many
+/// streams its peer may have open at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Windows {
+    pub(crate) stream: usize,
+    pub(crate) connection: usize,
+    pub(crate) send: u64,
+    pub(crate) streams: u32,
+}
+
+/// The transport of a connection that carries `windows`, held to `admitted`'s patience, its
+/// handshake and no datagrams, as [`transport`] has it for one stream.
+pub(crate) fn transport_of(admitted: &Admitted, windows: Windows) -> Result<TransportConfig, Error> {
     // An idle timeout is whole milliseconds, and 0 is none (RFC 9000 §18.2): a patience under
     // one would hold the connection to no bound, its keep-alive pinging as fast as the host runs.
     if admitted.patience.as_millis() == 0 {
         return Err(Error::Admission(AdmissionError::Patience));
     }
+    let window = |bytes: usize| {
+        VarInt::from_u64(u64::try_from(bytes).map_err(|_| Error::Admission(AdmissionError::Window))?)
+            .map_err(|_| Error::Admission(AdmissionError::Window))
+    };
     let mut transport = TransportConfig::default();
-    let receive =
-        VarInt::from_u64(u64::try_from(receive_bytes).map_err(|_| Error::Admission(AdmissionError::Window))?)
-            .map_err(|_| Error::Admission(AdmissionError::Window))?;
     transport
-        .stream_receive_window(receive)
-        .receive_window(receive)
-        .send_window(admitted.transport_bytes)
-        .max_concurrent_bidi_streams(VarInt::from_u32(1))
+        .stream_receive_window(window(windows.stream)?)
+        .receive_window(window(windows.connection)?)
+        .send_window(windows.send)
+        .max_concurrent_bidi_streams(VarInt::from_u32(windows.streams))
         .max_concurrent_uni_streams(VarInt::from_u32(0))
         .crypto_buffer_size(admitted.handshake_bytes)
         .datagram_receive_buffer_size(None)
@@ -710,38 +788,15 @@ impl Endpoint {
         scope: Scope,
         admitted: Admitted,
     ) -> Result<(Self, Producer, Control), Error> {
-        if admitted.record_bytes == 0
-            || admitted.record_bytes > RECORD_MOST
-            || admitted.transport_bytes == 0
-            || admitted.handshake_bytes == 0
-            || admitted.patience.is_zero()
-            || std::time::Instant::now().checked_add(admitted.patience).is_none()
-        {
-            return Err(Error::Admission(AdmissionError::Capacity));
-        }
-        let bytes = record_buffer(admitted.record_bytes)?;
-        let capacity = bytes.capacity();
+        admissible(&admitted)?;
         let transport = transport(admitted, CONTROL_BYTES)?;
         let mut config = tls::owner_server(identity, owner, transport, ALPN)?;
         config
             .max_incoming(1)
             .incoming_buffer_size(0)
             .incoming_buffer_size_total(0);
-        let shared = Arc::new(Shared {
-            slot: Mutex::new((Slot::Waiting { at: 0, bytes }, Ending::Open)),
-            changed: Condvar::new(),
-            record_bytes: AtomicUsize::new(capacity),
-            waker: Mutex::new(None),
-        });
-        let handler = Service {
-            scope,
-            owner,
-            shared: Arc::clone(&shared),
-            state: Subscription::Listening,
-            control: [0; CONTROL_BYTES],
-            control_len: 0,
-        };
-        let (driver, sender) = Driver::bind_bounded(
+        let handler = Service::new(scope, owner, admitted.record_bytes)?;
+        let (mut driver, sender) = Driver::bind_bounded(
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
             Some(config),
             handler,
@@ -756,11 +811,7 @@ impl Endpoint {
         if matches!(address.port(), 80 | 443) {
             return Err(Error::Admission(AdmissionError::ExcludedPort));
         }
-        let producer = Producer {
-            shared: Arc::clone(&shared),
-            sender: sender.try_clone()?,
-        };
-        let control = Control { shared, sender };
+        let (producer, control) = driver.handler_mut().handles(sender, Stop::Driver)?;
         Ok((
             Self {
                 driver,
@@ -774,9 +825,66 @@ impl Endpoint {
 
     pub fn run(mut self) -> Result<(), Error> {
         let result = self.driver.run();
-        self.driver.handler_mut().state = Subscription::Closed;
-        let shared = &self.driver.handler_mut().shared;
-        let mut state = lock(shared);
+        self.driver.handler_mut().close();
+        result.map_err(Error::Transport)
+    }
+}
+
+/// Whether one stream's admission can hold its protocol: a record of one byte or more and no
+/// more than a frame carries, a window and a handshake to send, and a patience a clock can
+/// reach.
+pub(crate) fn admissible(admitted: &Admitted) -> Result<(), Error> {
+    if admitted.record_bytes == 0
+        || admitted.record_bytes > RECORD_MOST
+        || admitted.transport_bytes == 0
+        || admitted.handshake_bytes == 0
+        || admitted.patience.is_zero()
+        || std::time::Instant::now().checked_add(admitted.patience).is_none()
+    {
+        return Err(Error::Admission(AdmissionError::Capacity));
+    }
+    Ok(())
+}
+
+impl Service {
+    /// The output of `scope`, its one record `record_bytes` at most, subscribed to by `owner`'s
+    /// streams alone.
+    pub(crate) fn new(scope: Scope, owner: Fingerprint, record_bytes: usize) -> Result<Service, Error> {
+        let bytes = record_buffer(record_bytes)?;
+        let capacity = bytes.capacity();
+        Ok(Service {
+            scope,
+            owner,
+            shared: Arc::new(Shared {
+                slot: Mutex::new((Slot::Waiting { at: 0, bytes }, Ending::Open)),
+                changed: Condvar::new(),
+                record_bytes: AtomicUsize::new(capacity),
+                waker: Mutex::new(None),
+            }),
+            state: Subscription::Listening,
+            control: [0; CONTROL_BYTES],
+            control_len: 0,
+        })
+    }
+
+    /// Its producer and its control, waking the driver that serves it through `sender`.
+    pub(crate) fn handles(&self, sender: Sender<()>, stop: Stop) -> Result<(Producer, Control), Error> {
+        let producer = Producer {
+            shared: Arc::clone(&self.shared),
+            sender: sender.try_clone()?,
+        };
+        let control = Control {
+            shared: Arc::clone(&self.shared),
+            sender,
+            stop,
+        };
+        Ok((producer, control))
+    }
+
+    /// Its driver has ended: an output not finished is aborted, its producer and control told.
+    pub(crate) fn close(&mut self) {
+        self.state = Subscription::Closed;
+        let mut state = lock(&self.shared);
         if !matches!(state.0, Slot::Finished(_)) {
             let at = progress(&state.0);
             state.0 = Slot::Aborted {
@@ -785,12 +893,56 @@ impl Endpoint {
             };
         }
         drop(state);
-        shared.notify();
-        result.map_err(Error::Transport)
+        self.shared.notify();
     }
-}
 
-impl Service {
+    pub(crate) fn scope(&self) -> Scope {
+        self.scope
+    }
+
+    /// The stream that subscribes to it now.
+    pub(crate) fn subscriber(&self) -> Option<(ConnKey, StreamId)> {
+        match self.state {
+            Subscription::Subscribed { conn, stream } => Some((conn, stream)),
+            _ => None,
+        }
+    }
+
+    /// Its output was revoked: no stream subscribes to it again.
+    pub(crate) fn aborted(&self) -> bool {
+        matches!(lock(&self.shared).0, Slot::Aborted { .. })
+    }
+
+    /// Its output finished, its last record acknowledged: its subscriber's stream is finished
+    /// at its next flush.
+    pub(crate) fn finished(&self) -> bool {
+        matches!(lock(&self.shared).0, Slot::Finished(_))
+    }
+
+    /// A subscription read by the endpoint its stream came to, which admitted the connection
+    /// (the agent-control endpoint, D238): `(conn, stream)` serves this output from `offset`
+    /// on, as an endpoint of one stream subscribes its owner ([`Service::controls`]).
+    pub(crate) fn lane(
+        &mut self,
+        conn: ConnKey,
+        stream: StreamId,
+        scope: Scope,
+        offset: u64,
+    ) -> Result<(), Reason> {
+        if !matches!(self.state, Subscription::Listening) {
+            return Err(Reason::Scope);
+        }
+        self.check_scope(scope)?;
+        if self.aborted() {
+            return Err(Reason::Closed);
+        }
+        if !self.subscribe(offset) {
+            return Err(Reason::Protocol);
+        }
+        self.state = Subscription::Subscribed { conn, stream };
+        Ok(())
+    }
+
     fn refuse(&mut self, io: &mut Io<'_>, conn: ConnKey) {
         self.refuse_reason(io, conn, Reason::Protocol);
     }
@@ -813,7 +965,9 @@ impl Service {
         Ok(())
     }
 
-    fn disconnect(&mut self) {
+    /// Its subscriber's stream is gone: the record it was sent is kept whole for the next
+    /// subscription to the same cursor.
+    pub(crate) fn disconnect(&mut self) {
         self.state = Subscription::Listening;
         self.control_len = 0;
         let mut state = lock(&self.shared);
@@ -845,37 +999,35 @@ impl Service {
     }
 
     fn readable(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) {
+        match self.read(io, conn, stream) {
+            Ok(()) => self.flush(io),
+            Err(gone) => self.refuse_reason(io, conn, gone.reason()),
+        }
+    }
+
+    /// Reads what its subscriber sent: its subscription, then its acknowledgments, as far as
+    /// they have come.
+    pub(crate) fn read(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) -> Result<(), Gone> {
         loop {
             let room = CONTROL_BYTES.saturating_sub(self.control_len);
-            let read = io.read_within(conn, stream, room);
-            let (bytes, ended) = match read {
+            let (bytes, ended) = match io.read_within(conn, stream, room) {
                 Ok(Read::Bytes(bytes)) => (bytes, false),
                 Ok(Read::End(bytes)) => (bytes, true),
-                Ok(Read::Blocked) => break,
-                Ok(Read::Reset) | Err(_) => {
-                    self.refuse(io, conn);
-                    return;
-                }
+                Ok(Read::Blocked) => return Ok(()),
+                Ok(Read::Reset) => return Err(Gone::Reset),
+                Err(_) => return Err(Gone::Refused(Reason::Protocol)),
             };
-            let Some(target) = self
+            let target = self
                 .control
                 .get_mut(self.control_len..self.control_len.saturating_add(bytes.len()))
-            else {
-                self.refuse(io, conn);
-                return;
-            };
+                .ok_or(Gone::Refused(Reason::Protocol))?;
             target.copy_from_slice(&bytes);
             self.control_len = self.control_len.saturating_add(bytes.len());
-            if let Err(reason) = self.controls(io, conn, stream) {
-                self.refuse_reason(io, conn, reason);
-                return;
-            }
+            self.controls(io, conn, stream).map_err(Gone::Refused)?;
             if ended {
-                self.refuse_reason(io, conn, Reason::Closed);
-                return;
+                return Err(Gone::Ended);
             }
         }
-        self.flush(io);
     }
 
     fn controls(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) -> Result<(), Reason> {
@@ -949,7 +1101,7 @@ impl Service {
         }
     }
 
-    fn flush(&mut self, io: &mut Io<'_>) {
+    pub(crate) fn flush(&mut self, io: &mut Io<'_>) {
         let Subscription::Subscribed { conn, stream } = self.state else {
             return;
         };
@@ -1227,6 +1379,32 @@ mod tests {
             progress(&state.0),
             Progress {
                 accepted: 2,
+                consumed: 0
+            }
+        );
+    }
+
+    /// A record submitted while a wake is queued already keeps its place: that wake's turn
+    /// flushes it, as the handler flushes whatever its streams hold, so a full handoff is no
+    /// refusal of the record (the agent-control endpoint's streams share one, D238).
+    #[test]
+    fn a_record_submitted_beside_a_queued_wake_is_kept_for_its_turn() {
+        let (mut endpoint, producer, control) = native_endpoint();
+        assert!(endpoint.driver.handler_mut().subscribe(0));
+        control.sender.try_send(Command::Handler(())).unwrap();
+        producer.submit(vec![1, 2, 3]).unwrap();
+        assert!(matches!(
+            lock(&control.shared).0,
+            Slot::Record {
+                start: 0,
+                written: 0,
+                ..
+            }
+        ));
+        assert_eq!(
+            control.progress(),
+            Progress {
+                accepted: 3,
                 consumed: 0
             }
         );
