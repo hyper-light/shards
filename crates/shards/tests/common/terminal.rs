@@ -7,11 +7,9 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::{as_tests_run, guest_init, kernel, shards};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The user's terminal: a pty whose peer is a shell's controlling terminal, the session's
 /// leader, which runs the client in its foreground group as a login shell would, so that
@@ -193,15 +191,22 @@ impl Terminal {
             && (a.c_lflag & !libc::PENDIN) == (b.c_lflag & !libc::PENDIN)
             && a.c_cc == b.c_cc;
         // The shell's exit waits for its terminal's output to drain (ttywait, above), so
-        // the master is read meanwhile.
+        // the master is read meanwhile: a wait judged as `wait_for`'s, its answer the
+        // shell's end.
         self.type_in(b"\n");
-        let deadline = Instant::now() + TIMEOUT;
+        let kind = super::WaitKind::at(std::panic::Location::caller());
+        let mut wait = super::Wait::begin(kind, self.shell.id(), Some(&self.home), "its shell's exit");
         let mut buf = [0u8; 4096];
         while self.shell.try_wait().unwrap().is_none() {
-            assert!(Instant::now() < deadline, "the shell did not exit");
-            let _ = self.master.read(&mut buf);
-            std::thread::sleep(Duration::from_millis(5));
+            let shown = matches!(self.master.read(&mut buf), Ok(n) if n > 0);
+            if let Err(stall) = wait.look(shown) {
+                panic!("the shell did not exit: {}", wait.refused(&stall));
+            }
+            if !shown {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
+        wait.answered();
         (shown, status.trim().parse().unwrap(), restored)
     }
 }

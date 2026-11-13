@@ -10753,7 +10753,7 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   - R03, the literals: none of the waits' bounds is left. The old `TIMEOUT`, `STREAMING` and
     `PATIENCE` arguments to these waits go (acg.rs', boot.rs', guest_time.rs', hotplug.rs',
     restore.rs', run.rs', snapshot.rs', engine.rs' `TIMEOUT` consts with them; vsock.rs',
-    confined.rs', managed_lifecycle.rs' and plug.rs' stay for their other, own claims).
+    confined.rs', managed_lifecycle.rs' and plug.rs' went in part 3, below).
     Two remain and bound nothing. Two polls of a client's end (`Vm::wait_end`'s and
     terminal.rs' 5 ms) are no bound, only how soon an end with no event is seen. The least
     nonzero socket timeout is skipped: a look due now looks without reading.
@@ -10779,6 +10779,85 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     party is all of this test's own VM processes, so a stop of another test's counts as its
     hold. Owed (ROOT):
     the E2E files that use them, listed in the slice's report.
+- **Part 3: the last fixed waits** (#77, W6's slice 2b, 2026-11-13; the person's ruling and
+  R03 as above). The E2E tests' waits that still had a bound of their own are judged as the
+  rest are: past the slowest answer of their kind, they go on while progress shows, and fail
+  after a whole window without; cold, their party's liveness alone; a host's hold held.
+  - *New parties and waits in tests/common.* `Party::started` (with `Patience::started`)
+    follows every process this test's process started and what descends from them: the run
+    hosts shards-api's `ImageShards` starts, their VM processes, and the host's own work
+    before its VM exists. `processes()` leaves out the `ps` that lists them, which is the
+    test process's child as it lists. `judged(party, asked, stop, call)` runs a call that
+    blocks until its answer or its run's end on a scoped thread, its return both its answer
+    and its liveness; a refusal calls `stop`, which ends the call, and says the wait's
+    account. On it: `booted` (`boot_stoppable` given `Duration::MAX`, a `BootStop` its stop)
+    and `ask` (a guest's call given `Duration::MAX`, the guest's `stop` its stop).
+    `Following` reads any `Timed` stream, the vsock socket's and TCP's, and
+    `Following::of_home` puts the home's daemon in its party, for ports it publishes.
+    `client_output(cmd, home)` replaces `output_within(cmd, timeout)`: a client of shards'
+    (docker, Compose) or a host's tool is a judged wait on it and the home's daemon. Its old
+    10 s drain after the client's end and 5 s grace after SIGQUIT are judged too (a stream
+    held open past the end is what came by the judge's look; the exit on SIGQUIT is a wait
+    of its own kind). `said_by` (the diagnostics a stuck test shows: `ps`, `top`, cdb) replaces
+    `said_within`'s 20 s and 120 s. `run_watching` and `run_awaiting` take no bound: the run they
+    watch is judged already. Their 250 ms pace becomes D215's `pause` of a look's own cost.
+  - *The host's own work is a hold, waited out with no bound.* `spawn`'s ETXTBSY retry
+    (another thread's child holding the file until its exec) had a cap of 1000 tries.
+    `until_unserved` (the kernel closing a killed daemon's descriptors) had 10 s.
+    `Oplocked::new` (Defender's handle on a fresh copy) had its caller's `TIMEOUT`. Each now
+    tries until the host is done, paced by `shards_api::pause`.
+  - *The call sites.* The terminals' exit waits and Windows' modes are a `Wait` on the
+    shell's party (terminal.rs, terminal_windows.rs). vsock.rs' 60 s `TIMEOUT` and its 20 s
+    read are `Following` reads, its greeting a `within`. confined.rs' record wait and its
+    20 s `WaitForSingleObject` are `Patience::of(home)`. managed_lifecycle.rs' publications and
+    fault watch are `Patience::of(home)` over its `FileWatch`, its challenge
+    `Following::of_home`. Its guest's `managed-reap` takes no deadline of the host's
+    (crates/testguest): its waits are the host's judged wait on its report, and a refusal
+    shows the report's `.pending` rounds. api_image.rs, member_exec.rs and nesting.rs
+    boot and ask through `booted` and `ask`, read members' channels through `judged`, and poll
+    through `Patience::started`. context.rs' engine reads are `Following::of_home` on Unix;
+    on Windows the pipe is read as it is, and its daemon closes it as it ends. Its signal
+    watchdog, ssh-agent socket and run ID are `Wait`s on their processes. context_client.rs'
+    daemon is in-process, so its clients' waits are `Patience::started`, and its Windows
+    console's waits are `Wait`s on its program. compose.rs', buildx.rs' and engine.rs'
+    `CLIENT` (600 s) go with `client_output`. isolation.rs' and build.rs' `run_awaiting`
+    arguments go too (one of 600 s). login.rs' pull, its notice and its helper's pid are
+    `Wait`s on the client alone, not its home: `pull` runs in its client, and an idle daemon's
+    CPU would hide a pull held on a helper that never answers. Its helpers' ends are a
+    `Patience`. plug.rs' agent's file and saved.rs' exec retry are `Patience::of(home)`.
+    saved.rs' wait on the rounds after a restore was a window of `TIMEOUT` plus two rounds,
+    moved on by each round or host fault; it is a `Patience` too, whose party's CPU is the
+    faulting and whose daemon's words are the rounds.
+  - *Values that are no wait, derived.* The fake lessor's lease life is the longest the
+    wire carries (a u64 of nanoseconds, shards-api's session.rs), as far as the host's clock
+    reaches. nesting.rs' budget a run meets is half the reach of the guest's clock its
+    deadline is held on (init's readiness.rs: an i64 of CLOCK_BOOTTIME nanoseconds). The
+    half leaves as much room for the guest's uptime and its host's delay as for its ready.
+    api_image.rs' refusals of a deadline asked without the grant ask one of zero, as any
+    length is refused alike. context_client.rs' 500 ms sleep "well into its handshake" goes: the claim holds for an
+    end at any point before the machine answers, and the client's file shows it has begun.
+  - Left as they are, being no wait. api_image.rs' 2 s window of a rate's hold is its
+    measurement's window (its bound derives from the period). harness_bringup.rs' `NO_CLOCK`
+    is `u64::MAX`, no clock at all. The polls' own 5 ms and 2 ms bound nothing.
+  - Red at 95b653fb2 (tests/harness.rs `red_a_judged_call_goes_on_while_its_party_works`, on
+    adas-mac-studio.local, macOS arm64): api_image.rs' `read_within` shape, a channel read
+    at its test's bound scaled to 100 ms, cut a call on a stand-in busy for a second. Green:
+    `a_judged_call_goes_on_while_its_party_works`, two rounds held to the stand-in's end
+    through `judged`, the second judged on what the first taught.
+  - What would falsify it: a `judged` call refused while what this test started ran. Or a
+    `client_output` refused while its client or its home's daemon worked. Or a host's hold
+    (ETXTBSY, a killed daemon's descriptors, a scanner's handle) cut.
+  - The gaps. `Party::started` is every child of the test process, so another test's run
+    host in the same binary counts as progress, as `Own`'s VM processes do. context.rs'
+    reads follow the laptop's daemon, not the machine it relays to. A cold `said_by` on a
+    hung daemon holds the failure it adds to until its CI job's limit, as any cold wait does.
+  - Owed: the waits in the rest of the E2E files, the next part: containers.rs, daemon.rs,
+    build.rs' own `TIMEOUT`, managed_output.rs and its parts, managed_cleanup.rs, moved.rs,
+    warm.rs, budget.rs, slates_fs.rs and build_windows.rs. Some of them assert that a thing
+    does not happen: warm.rs' `ends`, a stdout's end within a second, and saved.rs' pipe full
+    for a second. A judged wait cannot refuse those while their microVM idles, since its CPU
+    is progress. They need a decision of their own, not a judge. ROOT owes the real-VM runs of
+    the files this part touched.
 
 **The storm's watch, by the host's word (audit of picked constants, 2026-11-09).** The test
 guest's storm said its main thread stood still after 15 s and took its host's stream for

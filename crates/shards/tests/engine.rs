@@ -30,10 +30,6 @@ use serde_json::{Value, json};
 #[cfg(windows)]
 use shards_ipc::Stream as UnixStream;
 
-/// A client's call past this is taken for hung, and fails its test with what it said
-/// (`common::output_within`).
-const CLIENT: Duration = Duration::from_secs(600);
-
 /// `shards ARGS` in `home`, whose runs boot the test kernel and init.
 fn shards_in(home: &Path, args: &[&str]) -> Run {
     let (kernel, init) = (kernel(), guest_init());
@@ -2170,7 +2166,7 @@ fn the_docker_cli_checkpoints_and_restores_microvms() {
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = docker_host(&home);
     let docker = |args: &[&str]| {
-        let out = common::output_within(
+        let out = common::client_output(
             std::process::Command::new(&docker)
                 .args(args)
                 .env("DOCKER_HOST", &host)
@@ -2179,7 +2175,7 @@ fn the_docker_cli_checkpoints_and_restores_microvms() {
                 .env_remove("DOCKER_CONTEXT")
                 .env("DOCKER_CLI_HINTS", "false")
                 .stdin(std::process::Stdio::null()),
-            CLIENT,
+            Some(&*home),
         );
         (
             out.status.code(),
@@ -2249,7 +2245,7 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = docker_host(&home);
     let docker_with = |args: &[&str], set: &[(&str, &str)]| {
-        let out = common::output_within(
+        let out = common::client_output(
             std::process::Command::new(&docker)
                 .args(args)
                 .env("DOCKER_HOST", &host)
@@ -2259,7 +2255,7 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
                 .env("DOCKER_CLI_HINTS", "false")
                 .envs(set.iter().copied())
                 .stdin(std::process::Stdio::null()),
-            CLIENT,
+            Some(&*home),
         );
         (
             out.status.code(),
@@ -4090,11 +4086,11 @@ fn the_docker_clis_use_api_socket_is_the_microvms_own_engine() {
     };
     // A runner's docker CLI may be older than the flag (docker/cli
     // cli/command/container/create.go): what it sends is what is tested, where it has it.
-    let help = common::output_within(
+    let help = common::client_output(
         std::process::Command::new(&docker)
             .args(["run", "--help"])
             .stdin(std::process::Stdio::null()),
-        CLIENT,
+        None,
     );
     if !String::from_utf8_lossy(&help.stdout).contains("--use-api-socket") {
         eprintln!("SKIP: this docker CLI has no --use-api-socket");
@@ -4116,7 +4112,7 @@ fn the_docker_clis_use_api_socket_is_the_microvms_own_engine() {
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = docker_host(&home);
     let docker = |args: &[&str]| {
-        let out = common::output_within(
+        let out = common::client_output(
             std::process::Command::new(&docker)
                 .args(args)
                 .env("DOCKER_HOST", &host)
@@ -4126,7 +4122,7 @@ fn the_docker_clis_use_api_socket_is_the_microvms_own_engine() {
                 .env("DOCKER_CLI_HINTS", "false")
                 .env("DOCKER_CLI_EXPERIMENTAL", "enabled")
                 .stdin(std::process::Stdio::null()),
-            CLIENT,
+            Some(&*home),
         );
         (
             out.status.code(),

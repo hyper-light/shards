@@ -8024,7 +8024,7 @@ impl Gated {
     fn new(name: &str) -> Gated {
         let dir = TempDir::new(name);
         std::fs::copy(guest_init(), dir.join("init")).unwrap();
-        let held = common::Oplocked::new(&dir.join("init"), TIMEOUT);
+        let held = common::Oplocked::new(&dir.join("init"));
         Gated {
             held: std::cell::RefCell::new(Some(held)),
             dir,
@@ -19170,7 +19170,7 @@ fn google(listener: std::net::TcpListener, seen: std::sync::mpsc::Sender<GoogleR
 fn unified_log(category: &str, count: usize) -> Vec<(String, String)> {
     let deadline = Instant::now() + TIMEOUT;
     loop {
-        let out = common::output_within(
+        let out = common::client_output(
             std::process::Command::new("/usr/bin/log").args([
                 "show",
                 "--last",
@@ -19180,7 +19180,7 @@ fn unified_log(category: &str, count: usize) -> Vec<(String, String)> {
                 "--predicate",
                 &format!("subsystem == \"shards\" AND category == \"{category}\""),
             ]),
-            TIMEOUT,
+            None,
         );
         let entries: Vec<(String, String)> = String::from_utf8_lossy(&out.stdout)
             .lines()

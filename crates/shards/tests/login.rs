@@ -11,15 +11,11 @@
 
 mod common;
 
+use base64::Engine as _;
+use common::{Patience, TempDir, Wait, WaitKind, guest_init, kernel, run_shards_env};
 use std::io::Write as _;
 use std::path::Path;
 use std::process::Stdio;
-use std::time::Duration;
-
-use base64::Engine as _;
-use common::{TempDir, guest_init, kernel, run_shards_env};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The `PATH` each command here is given: `home`'s empty directory, where no credential
 /// helper is found, so that what a login keeps is kept in the test's config and never in
@@ -193,12 +189,16 @@ fn a_credential_helper_that_never_answers_holds_only_what_needs_its_answer() {
     let stuck = no_helpers(&home).join(format!("docker-credential-stuck{}", std::env::consts::EXE_SUFFIX));
     common::program_copy(shards_testdir::helper().unwrap(), &stuck);
     let recorded = stuck.with_extension("pids");
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    // Each wait here is judged as the tests' waits are (`common::Wait`, `Patience`), its kind
+    // its call site: a client held on a helper that never answers makes no progress, and is
+    // refused past the slowest answer of its kind.
     let ends = |asked: &[i32], what: &str| {
+        let mut patience = Patience::of(&home);
         while !asked.iter().all(|&p| gone(p)) {
-            assert!(std::time::Instant::now() < deadline, "{what}: {asked:?}");
-            std::thread::sleep(Duration::from_millis(20));
+            assert!(patience.holds(), "{what}: {asked:?}");
+            std::thread::sleep(patience.next_look());
         }
+        patience.done();
     };
     // A registry that asks for nothing: pulled, never waiting on the helper, and the helper
     // ended with it (one killed so soon it recorded nothing is gone too).
@@ -216,15 +216,21 @@ fn a_credential_helper_that_never_answers_holds_only_what_needs_its_answer() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    let kind = WaitKind::at(std::panic::Location::caller());
+    let mut wait = Wait::begin(kind, pull.id(), None, "the pull");
     let pulled = loop {
         if let Some(status) = pull.try_wait().unwrap() {
+            wait.answered();
             break status;
         }
-        if std::time::Instant::now() > deadline {
+        if let Err(stall) = wait.look(false) {
             let _ = pull.kill();
-            panic!("the pull waited on a helper whose answer its registry never asked for");
+            panic!(
+                "the pull waited on a helper whose answer its registry never asked for: {}",
+                wait.refused(&stall)
+            );
         }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(wait.next_look());
     };
     let out = pull.wait_with_output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -267,32 +273,43 @@ fn a_credential_helper_that_never_answers_holds_only_what_needs_its_answer() {
         }
     });
     let mut said: Vec<String> = Vec::new();
+    let kind = WaitKind::at(std::panic::Location::caller());
+    let mut wait = Wait::begin(kind, client.id(), None, "the pull's notice");
     while !said.contains(&notice) {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        match rx.recv_timeout(left) {
-            Ok(line) => said.push(line),
-            Err(_) => panic!("never said {notice:?}: {said:?}"),
+        let came = match rx.recv_timeout(wait.next_look()) {
+            Ok(line) => {
+                said.push(line);
+                true
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
+            Err(e) => panic!("never said {notice:?} ({e}): {said:?}"),
+        };
+        if let Err(stall) = wait.look(came) {
+            panic!("never said {notice:?}: {}: {said:?}", wait.refused(&stall));
         }
     }
+    wait.answered();
     // The registry asked, and the helper it waits on runs.
     assert!(
         repos.lock().unwrap().log.iter().any(|l| l.starts_with("401 ")),
         "the registry challenged"
     );
     // Its pid, once it has come to record it.
+    let kind = WaitKind::at(std::panic::Location::caller());
+    let mut wait = Wait::begin(kind, client.id(), None, "the helper's pid");
     let waiting = loop {
         let waiting: Vec<i32> = pids(&recorded)
             .into_iter()
             .filter(|p| !asked.contains(p))
             .collect();
         if !waiting.is_empty() {
+            wait.answered();
             break waiting;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the helper it waits on never ran"
-        );
-        std::thread::sleep(Duration::from_millis(20));
+        if let Err(stall) = wait.look(false) {
+            panic!("the helper it waits on never ran: {}", wait.refused(&stall));
+        }
+        std::thread::sleep(wait.next_look());
     };
     assert!(
         waiting.iter().all(|&p| !gone(p)),

@@ -35,11 +35,18 @@ mod common;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use common::{Artifact, Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
+use common::{
+    Artifact, Patience, Run, TempDir, ask, booted, cannot_run_vms, guest_init, kernel, run_shards_env, served,
+};
 
-const TIMEOUT: Duration = Duration::from_secs(180);
+/// A budget every run meets: half the reach of the guest's clock its deadline is held on
+/// (CLOCK_BOOTTIME's i64 of nanoseconds, init's readiness.rs `deadline`), which leaves as
+/// much room for the guest's uptime and its host's delay as for its ready past its boot.
+fn met() -> Duration {
+    Duration::from_nanos(i64::MAX.unsigned_abs() / 2)
+}
 
 /// What a run asks to be given the grant with, beside a tmpfs at `/run` for runc's state
 /// and its boxes' bundles (D234's own example).
@@ -418,7 +425,7 @@ fn a_granted_workloads_readiness_reaches_the_host() {
             .filter_map(|l| l.split(' ').nth(2).map(str::to_string))
             .collect()
     };
-    let begun = Instant::now();
+    let mut patience = Patience::of(&home.dir);
     let told = loop {
         let until = now();
         let events = home.shards(
@@ -437,13 +444,10 @@ fn a_granted_workloads_readiness_reaches_the_host() {
         if told.iter().any(|a| a == "ready") {
             break told;
         }
-        assert!(
-            begun.elapsed() < TIMEOUT,
-            "no ready event in {TIMEOUT:?}: {}",
-            shown(&events)
-        );
-        std::thread::sleep(Duration::from_millis(200));
+        assert!(patience.holds(), "no ready event: {}", shown(&events));
+        std::thread::sleep(patience.next_look());
     };
+    patience.done();
     assert!(!told.iter().any(|a| a == "ready-by-passed"), "{told:?}");
     let logs = home.shards(&["read", "logs"], &["nesting-ready"]);
     said(
@@ -477,7 +481,7 @@ fn host_env(home: &Home) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
 /// the budget's conversion and passthrough, and READY's relay to the run host.
 #[test]
 fn a_deadline_given_through_shards_api_is_met_or_said_passed() {
-    use shards_api::image::{ImageShards, ImageSpec, Images as _, Narrowing, Ready};
+    use shards_api::image::{ImageShards, ImageSpec, Narrowing, Ready};
     if cannot_run_vms() {
         eprintln!("SKIP: this host cannot run VMs");
         return;
@@ -510,13 +514,16 @@ fn a_deadline_given_through_shards_api_is_met_or_said_passed() {
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
     };
-    let guest = ImageShards::new().boot(&spec(TIMEOUT), TIMEOUT).unwrap();
-    assert_eq!(guest.wait_ready(None, TIMEOUT).unwrap(), Some(Ready::OnTime));
+    let guest = booted(&ImageShards::new(), &spec(met())).unwrap();
+    assert_eq!(
+        ask(&*guest, |g| g.wait_ready(None, Duration::MAX)).unwrap(),
+        Some(Ready::OnTime)
+    );
     drop(guest);
-    let guest = ImageShards::new().boot(&spec(Duration::ZERO), TIMEOUT).unwrap();
-    let passed = guest.wait_ready(None, TIMEOUT).unwrap();
+    let guest = booted(&ImageShards::new(), &spec(Duration::ZERO)).unwrap();
+    let passed = ask(&*guest, |g| g.wait_ready(None, Duration::MAX)).unwrap();
     assert!(matches!(passed, Some(Ready::Passed(_))), "{passed:?}");
-    let late = guest.wait_ready(passed, TIMEOUT).unwrap();
+    let late = ask(&*guest, |g| g.wait_ready(passed, Duration::MAX)).unwrap();
     assert!(matches!(late, Some(Ready::Late(_))), "{late:?}");
 }
 
@@ -674,7 +681,7 @@ fn a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller() {
     use std::num::NonZeroU16;
 
     use shards_api::control::{Controller, Ended, Fault, Identity, Reason, SocketAdmission, Subscriptions};
-    use shards_api::image::{ControlAsk, ImageShards, ImageSpec, Images as _, Narrowing, Ready, SocketGrant};
+    use shards_api::image::{ControlAsk, ImageShards, ImageSpec, Narrowing, Ready, SocketGrant};
     if cannot_run_vms() {
         eprintln!("SKIP: this host cannot run VMs");
         return;
@@ -716,9 +723,12 @@ fn a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller() {
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
     };
-    let guest = ImageShards::new().boot(&spec, TIMEOUT).unwrap();
+    let guest = booted(&ImageShards::new(), &spec).unwrap();
     // READY=1 comes once every socket listens: no lane below races its bind.
-    assert_eq!(guest.wait_ready(None, TIMEOUT).unwrap(), Some(Ready::OnTime));
+    assert_eq!(
+        ask(&*guest, |g| g.wait_ready(None, Duration::MAX)).unwrap(),
+        Some(Ready::OnTime)
+    );
     let at = *guest.control().expect("the run's agent-control endpoint");
     assert!(at.address.ip().is_loopback(), "{:?}", at.address);
     let (controller, dialed) = Controller::dial(
@@ -782,7 +792,7 @@ fn a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller() {
 /// cut (testguest's `cut.sock`), more than three of the admitted windows.
 fn over_lanes(home: &str, case: impl FnOnce(&shards_api::control::Sockets, &[u8])) {
     use shards_api::control::{Controller, Identity, SocketAdmission, Subscriptions};
-    use shards_api::image::{ControlAsk, ImageShards, ImageSpec, Images as _, Narrowing, Ready, SocketGrant};
+    use shards_api::image::{ControlAsk, ImageShards, ImageSpec, Narrowing, Ready, SocketGrant};
     let home = Home::new(home);
     home.nesting_image();
     let hex = Identity::generate().unwrap();
@@ -822,9 +832,12 @@ fn over_lanes(home: &str, case: impl FnOnce(&shards_api::control::Sockets, &[u8]
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
     };
-    let guest = ImageShards::new().boot(&spec, TIMEOUT).unwrap();
+    let guest = booted(&ImageShards::new(), &spec).unwrap();
     // READY=1 comes once every socket listens: no lane below races its bind.
-    assert_eq!(guest.wait_ready(None, TIMEOUT).unwrap(), Some(Ready::OnTime));
+    assert_eq!(
+        ask(&*guest, |g| g.wait_ready(None, Duration::MAX)).unwrap(),
+        Some(Ready::OnTime)
+    );
     let Some(&at) = guest.control() else {
         panic!("no agent-control endpoint for the run")
     };
@@ -952,7 +965,7 @@ fn a_nested_workloads_half_close_ends_its_way_in_order_while_the_controllers_goe
 #[test]
 fn an_orchestrators_run_binds_its_own_agent_control_endpoint() {
     use shards_api::control::{Controller, Ended, Fault, Identity, SocketAdmission, Subscriptions};
-    use shards_api::image::{ControlAsk, ImageShards, ImageSpec, Images as _, Narrowing, SocketGrant};
+    use shards_api::image::{ControlAsk, ImageShards, ImageSpec, Narrowing, SocketGrant};
     if cannot_run_vms() {
         eprintln!("SKIP: this host cannot run VMs");
         return;
@@ -985,7 +998,7 @@ fn an_orchestrators_run_binds_its_own_agent_control_endpoint() {
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
         };
-        ImageShards::new().boot(&spec, TIMEOUT).unwrap()
+        booted(&ImageShards::new(), &spec).unwrap()
     };
     let ask = || {
         Some(ControlAsk {

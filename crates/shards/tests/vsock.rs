@@ -18,11 +18,10 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
 
-use common::{TempDir, Vm, cannot_run_vms, cannot_snapshot, echo, kernel, test_guest, vsock_connect, within};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
+use common::{
+    Following, TempDir, Vm, cannot_run_vms, cannot_snapshot, echo, kernel, test_guest, vsock_connect, within,
+};
 const ECHO_PORT: u32 = 1234;
 
 fn guest_args(mode: &str, vsock: &Path) -> Vec<std::ffi::OsString> {
@@ -46,7 +45,8 @@ fn os(args: &[std::ffi::OsString]) -> Vec<&std::ffi::OsStr> {
 }
 
 /// Boots the `vsock` guest, serves its connection to host port 5000, and waits until it
-/// listens.
+/// listens: its greeting read as a guest's stream is ([`Following`]), and waited for while
+/// its guest goes on ([`within`]).
 fn boot_echo_guest(dir: &Path) -> (Vm, PathBuf) {
     let sock = dir.join("v.sock");
     let host = UnixListener::bind(dir.join("v.sock_5000")).unwrap();
@@ -56,18 +56,19 @@ fn boot_echo_guest(dir: &Path) -> (Vm, PathBuf) {
     thread::spawn(move || {
         let result = (|| {
             let (mut s, _) = host.accept().map_err(|e| e.to_string())?;
-            s.set_read_timeout(Some(TIMEOUT)).map_err(|e| e.to_string())?;
             let mut line = String::new();
-            BufReader::new(&s)
-                .read_line(&mut line)
-                .map_err(|e| e.to_string())?;
+            let mut greeting = BufReader::new(Following::of(&s, None));
+            greeting.read_line(&mut line).map_err(|e| e.to_string())?;
+            greeting.get_mut().answered();
             s.write_all(b"hello from the host\n").map_err(|e| e.to_string())?;
             Ok::<String, String>(line)
         })();
         let _ = tx.send(result);
     });
     vm.wait_for("SHARDS-TEST READY");
-    let greeting = rx.recv_timeout(TIMEOUT).unwrap().unwrap();
+    let greeting = within("the guest's greeting", &vm, move || rx.recv())
+        .unwrap()
+        .unwrap();
     assert_eq!(greeting, "hello from the guest\n");
     (vm, sock)
 }
@@ -106,11 +107,10 @@ fn refused_ports_and_bad_handshakes_close_the_host_socket() {
             "a port nobody listens on was accepted"
         );
         let mut s = UnixStream::connect(&sock).unwrap();
-        s.set_read_timeout(Some(TIMEOUT)).unwrap();
         s.write_all(b"HELLO 1234\n").unwrap();
         let mut rest = Vec::new();
         assert_eq!(
-            s.read_to_end(&mut rest).unwrap(),
+            Following::of(&s, None).read_to_end(&mut rest).unwrap(),
             0,
             "a bad handshake got {rest:?}"
         );
@@ -174,8 +174,7 @@ fn greet_once(sock: &Path) -> thread::JoinHandle<String> {
     let host = UnixListener::bind(path).unwrap();
     thread::spawn(move || {
         let (s, _) = host.accept().unwrap();
-        s.set_read_timeout(Some(TIMEOUT)).unwrap();
-        let mut reader = BufReader::new(&s);
+        let mut reader = BufReader::new(Following::of(&s, None));
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         (&s).write_all(b"hello from the host\n").unwrap();
@@ -241,14 +240,16 @@ fn a_guest_socket_with_less_buffer_than_the_window_streams_whole() {
     vm.wait_for("SHARDS-TEST READY");
     within("a stream from a small guest buffer", &vm, move || {
         let bytes = 1 << 20;
-        let mut s = bench_open(&sock, b'T', bytes);
-        // Whole in a moment once credited; a stall waits for credit that never comes.
-        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let s = bench_open(&sock, b'T', bytes);
+        // A stall waits for credit that never comes: its bytes stop, and its read is
+        // refused past the slowest whole stream of its kind ([`Following`]).
+        let mut stream = Following::of(&s, None);
         let mut buf = vec![0u8; 64 << 10];
-        read_bytes(&mut s, &mut buf, bytes);
+        read_bytes(&mut stream, &mut buf, bytes);
+        stream.answered();
         s.shutdown(std::net::Shutdown::Write).unwrap();
         let mut rest = Vec::new();
-        s.read_to_end(&mut rest).unwrap();
+        Following::of(&s, None).read_to_end(&mut rest).unwrap();
         assert!(rest.is_empty(), "{} bytes past the stream", rest.len());
     });
 }
@@ -263,8 +264,8 @@ fn bench_open(sock: &Path, op: u8, bytes: u64) -> UnixStream {
     s
 }
 
-/// Reads `bytes` bytes of `s` through `buf`, failing where a read waits past its timeout.
-fn read_bytes(s: &mut UnixStream, buf: &mut [u8], bytes: u64) {
+/// Reads `bytes` bytes of `s` through `buf`, failing where its read is refused.
+fn read_bytes(s: &mut impl Read, buf: &mut [u8], bytes: u64) {
     let mut left = bytes;
     while left > 0 {
         let n = (buf.len() as u64).min(left) as usize;
