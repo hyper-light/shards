@@ -6480,13 +6480,14 @@ daemon/managed.rs), and goal 75's `unix::link()`; and a relay whose engine clien
 its handshake waits on a daemon never reached is let go as that daemon answers or this one
 stops, not as its client leaves, as its client's input is read no further than its first
 chunk before the daemon's flow control lets it (a quiet managed connection's vanished owner
-is the same case). And a host's start runs on the daemon's driver (server.rs, `Host::start`),
-which answers nothing meanwhile: a start longer than a client's probe timeout and window ends
-that client's connection, every other client's waits held up with it. The tests' commands'
-program, built by cargo at its first start, did so to every test that started one first
-(`tests/loopback.rs` builds it before its daemon serves); the daemon's own starts' times are
-unmeasured (ROOT's), and starting off the driver is owed with them. Tested, each test red
-before its code: `tls::tests` (what is known of a
+is the same case). A host's start runs on a worker of its own (server.rs `start_apart`,
+`Event::Started`), apart from the driver, which acknowledges every client's packets
+meanwhile: what the client sends after its request, and on the control streams that steer the
+command, is read once the start has ended, its flow control holding it back. On the driver, a
+start longer than a client's probe timeout and window ended that client's connection and held
+up every other client's acknowledgements: the tests' commands' program, built by cargo at its
+first start, did so to every test that started one first (`tests/loopback.rs` builds it
+before its daemon serves, all the same). Tested, each test red before its code: `tls::tests` (what is known of a
 peer follows what its path showed), `net::tests` (a handshake held to its deadline or probing
 on, its silences measured; a send's window, its run-out with progress and its death without;
 a wait judged no sooner than its probe timeout; what its handshake sent no wait; the keep-alive
@@ -6497,8 +6498,10 @@ daemon and address alone, kept only where it changed, removed with its context),
 way; an enrolled client's silent command living with no keep-alive; no daemon answering
 probed until its caller gives up; a hang-up ending a command whose daemon never answered; a
 closed port refusing its client at once; a daemon reached before given up past its slowest
-handshake; and the relays' backpressure as before: 8 MiB crossing whole, a command that reads
-no stdin holding up no other).
+handshake; a slow start holding up no other client, one start held while another client's
+command is answered whole, red with the start on the driver, that command unanswered past the
+test's deadline; and the relays' backpressure as before: 8 MiB crossing whole, a command that
+reads no stdin holding up no other).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
@@ -26066,10 +26069,12 @@ through it (Hex step 39), so every one of Hex's starts paid a boot.
   - **Saved**, where none is. It boots with `--snapshot-dir` at a name of its process's alone;
     once its VM is ready its record is written (`run::Origin`) and the save becomes the
     template, unless another run's got there first (`run::settle`). A save whose VM is never
-    ready makes no template, whatever it wrote: it is removed. (The daemon's `warm_for` settles
-    whatever its `cold` left, ready or not.) What is at the template's name and is no snapshot
-    (a removal cut short) is removed first, or it would keep every save from becoming the
-    template.
+    ready makes no template, whatever it wrote: it is removed (`run::settle_boot`, the daemon's
+    `warm_for` too, which until then settled whatever its `cold` left, ready or not: a VM that
+    saved its snapshot and then failed before `READY` became the template, recordless;
+    `only_a_ready_boots_save_becomes_the_template`, red first). What is at the template's name
+    and is no snapshot (a removal cut short) is removed first, or it would keep every save from
+    becoming the template.
   - **Replaced**, where its template does not restore: its VM ends, or says anything else,
     before it is ready, or its template cannot be read. The template is removed with its
     record, and the run boots saving another.
