@@ -512,6 +512,13 @@ impl Opened {
     }
 }
 
+/// Writes all of `buf` to a slot's line: a named pipe tells its writer of no room before a
+/// write, so a write it cannot take waits in WriteFile, and `waits` is told none (owed: a
+/// signal of a named pipe's outbound room; D185, PM M549).
+pub fn write_all_waiting(to: &Pipe, buf: &[u8], _waits: impl FnMut(super::Wait)) -> io::Result<()> {
+    (&*to).write_all(buf)
+}
+
 /// Ends a slot's wait from another thread ([`Slot::stopper`]), through the slot's own event:
 /// nothing is written where a client writes.
 #[derive(Debug)]
