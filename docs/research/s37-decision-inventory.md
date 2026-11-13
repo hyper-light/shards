@@ -7,7 +7,7 @@ whose it is. ROOT's final pass after step 34 checks this table again.
 - **Read at:** first pass, Shards main `e7825cb32` (checked again at `dc7d36014`), kiln main
   `d6ffa45d8`, Hex main `d84730ee`, 2026-11-12 about 15:45 PST; second pass (section 4), Shards
   main `1145bd3f2`, kiln main `e86ec22c6`, Hex main `106c7b94`, 2026-11-12 about 18:40 PST, then
-  each landing after it as section 4 lists (last: Shards `38a99c2d4`, kiln `fe9c17c7d`, Hex
+  each landing after it as section 4 lists (last: Shards `31662d5d2`, kiln `fe9c17c7d`, Hex
   `cf2d6c32`); the plan at version 11 and ROOT's goal stack throughout. Branches not on main are named as such and
   count as nothing landed.
 - **Recorded:** the repository and file, then the section. "arch" is Shards'
@@ -151,10 +151,19 @@ what landed between the first pass and the "Read at" revisions:
   and recorded in D238 (`8710cb12a`, `d5bc8a3d0`, via `a22d060b5`); Hex steps 4 and 12 as they
   landed on Hex main (`325b01cf`; rows P1, P2, A7, 2, 4, 12, 15) and Hex's index brought past
   them (Hex `cf2d6c32`); step 6's slice 1 (`de4897668`; row 6, and D240's pointer to it); step
-  38's real-VM test's red and fix (`38a99c2d4`; row 38).
+  38's real-VM test's red and fix (`38a99c2d4`; row 38); cold migration's slice 1 (`4a79f7f93`;
+  section 5).
 
 Still unrecorded, each with its owner: step 33's D-entry (step 33); step 13's kiln side
 (kiln's Load Balancing agent); step 16's kiln record (`p/s16-vendor-v1`); step 10's runs that
 may reopen it (ROOT: WHP, KVM's memory at more rounds, a loaded run); step 6's later slices (D240
 holds slice 1); step 11's later slices (D238 holds slices 1 and 2); what kiln's other uses of a
-moved microVM's key do (row 11c, step 18's); cold migration's D176 part 6 (`p/cold-migrate-v1`).
+moved microVM's key do (row 11c, step 18's); cold migration's later slices (D176 part 6, section 5).
+
+## 5. Beside the plan
+
+Goal 67's own list names one goal that is no step of the plan's, whose record row 11c relies on.
+
+| Goal | Decision | Recorded | Evidence | Status |
+|---|---|---|---|---|
+| Roadmap 7a, cold migration (ROOT's goal `01a1664e`) | A running microVM saved and restored on another machine, with its CPU baseline, its files, its image by digest, its shared volumes and its connections redialed; a move refused, typed, before anything moves | arch D176 "Moved to another machine" (part 6), "Refused before anything moves"; `docs/research/measurements/migrate/README.md` | linked: migrate (slice 1's light gate on Linux x86_64: its unit tests, and mutants M1 to M3 each failing its test) | slice 1 on main (`a9cf3b94c`, `6fc973d13`, via `4a79f7f93`): a move's refusals typed, a microVM of another hypervisor refused before anything moves; its later slices building in its own plan, its two-host E2E ROOT's to run; ROOT's decision on a moved microVM's key is in D238 (row 11c) |
