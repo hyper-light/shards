@@ -77,8 +77,11 @@ given for that run alone. Moves are the daemon's runs'; the daemon gives no netw
   from 15 on since be6656f17 (main's own commit since makes the same fix).
 - Run r505, head 59ef4c0b0 (merged with main 5a49f7a5a: goal 75 took version 16 and D247's period 17, so the leases take
   18): shards-net 12, shards-api `image::` 45, shards `api_run::` 26, shards-ipc 1 passed; the four crates' clippy clean.
-- Run r522, head 61b353fe5 (merged with main e0cc059c7), the tree that lands: shards-net 12, shards-api `image::` 45,
-  shards `api_run::` 26, shards-ipc 1 passed; the four crates' clippy, `--all-targets -- -D warnings`, clean.
+- Run r522, head 61b353fe5 (merged with main e0cc059c7): shards-net 12, shards-api `image::` 45, shards `api_run::` 26,
+  shards-ipc 1 passed; the four crates' clippy clean.
+- Run r543, head 0a5b70481 (merged with main 9b9da26c7, whose M546 ended `netproc::GRACE`: `net_gone` reaps through
+  `netproc::reap(child, &live.ends)`), the tree that lands: shards-net 12, shards-api `image::` 45, shards `api_run::` 26,
+  shards-ipc 1 passed; the four crates' clippy, `--all-targets -- -D warnings`, clean.
 - Between r282 and r301 the runner's disk was full (116 MiB free; this lane's directory was 6.1 GB of it, other lanes'
   far more); another lane's cleanup freed 87 GiB before r301, and nothing of others' was touched here.
 
