@@ -1771,6 +1771,128 @@ fn a_process_frozen_past_every_window_keeps_its_connections() {
     assert_eq!(out.bytes().len(), 400 << 10);
 }
 
+/// What a client sends a command that reads it slowly crosses whole, as a moved microVM's import
+/// does, its files written as they come: the daemon's flow control holds the client back while
+/// the command reads (RFC 9000 §4.1), and each credit it grants as the command reads on is a send
+/// its liveness waits on (`net::Liveness::note`), answered as the client sends on. Its stdin is
+/// several times what the daemon's stream window (quinn-proto's 1.25 MB) holds.
+#[test]
+fn a_slow_readers_stdin_crosses_whole() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let size = 8usize << 20;
+    let (status, out, _) = run(laptop, d.remote, &["drip", "2"], input(&vec![7; size])).get();
+    assert_eq!(status, Ok(0));
+    assert_eq!(String::from_utf8_lossy(&out), format!("{size}\n"));
+}
+
+/// A client frozen mid-import past every window its daemon learned, its process stopped as a
+/// loaded host deschedules one (ROOT's HVF run of moved.rs's shared volume at ea6f4b53b, load1
+/// about 44: `shards move`'s import "closed by peer: unanswered past the slowest answer seen"),
+/// keeps its connection, and its import crosses whole: the client streams to a command that reads
+/// slowly, so that its daemon reads on through the freeze and grants credit, sends its liveness
+/// waits on. The client is a process of its own, this test's binary again, so that its daemon is
+/// not frozen with it, as `a_process_frozen_past_every_window_keeps_its_connections`' is. Red at
+/// 476f77d7b (kiln r619, adas-mac-studio.local-2): "the connection to 127.0.0.1:49844 ended:
+/// closed by peer: unanswered past the slowest answer seen (code 0)", the daemon's `Look::Dead`;
+/// green once a stall is a run-out that follows the peer's liveness (ROOT's ruling A).
+#[cfg(unix)]
+#[test]
+fn a_client_frozen_mid_import_past_its_daemons_window_keeps_its_connection() {
+    const CLIENT: &str = "SHARDS_TEST_FROZEN_CLIENT";
+    /// What the client sends: many times its daemon's stream window, so that its import goes on
+    /// through the freeze.
+    const SIZE: usize = 16 << 20;
+    if let Some(dir) = std::env::var_os(CLIENT) {
+        let dir = std::path::PathBuf::from(dir);
+        let laptop = leak(Identity::load_or_create(&dir.join("laptop")).unwrap());
+        let daemon = Invitation::parse(&std::fs::read_to_string(dir.join("daemon")).unwrap()).unwrap();
+        let remote = Remote {
+            address: daemon.address,
+            daemon: daemon.daemon,
+            known: tls::Known::Never,
+        };
+        let request = Request {
+            args: vec![b"drip".to_vec(), b"2".to_vec()],
+            env: Vec::new(),
+            terminal: None,
+        };
+        let out = Captured::default();
+        let (ran, seen) = client::exec_with(
+            laptop,
+            remote,
+            request,
+            input(&vec![7; SIZE]),
+            out.clone(),
+            std::io::sink(),
+            |_| {},
+            |_| {},
+            |_| true,
+            |_| {},
+        );
+        let ran = ran.map_err(|e| e.to_string());
+        println!("ran {ran:?} {}", String::from_utf8_lossy(&out.bytes()).trim());
+        println!("saw {seen:?}");
+        return;
+    }
+    let dir = TempDir::new("remote-frozen").unwrap();
+    let laptop = Identity::load_or_create(&dir.path().join("laptop")).unwrap();
+    let daemon_id = leak(Identity::generate().unwrap());
+    let mut d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let at = Invitation::new("daemon", d.remote.address, daemon_id.fingerprint()).unwrap();
+    std::fs::write(dir.path().join("daemon"), at.text()).unwrap();
+    let child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_client_frozen_mid_import_past_its_daemons_window_keeps_its_connection",
+            "--nocapture",
+        ])
+        .env(CLIENT, dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let (tx, ended) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    let began = Instant::now();
+    d.seen.saw(&Seen::Started("drip 2".into()));
+    let started = began.elapsed();
+    // 100 ms of its import, its daemon's first sends answered and its window learned; then
+    // frozen 200 ms, longer than any window here, and than kiln's freezes (124 ms). A shell
+    // of its own resumes it, whatever becomes of this test meanwhile.
+    std::thread::sleep(Duration::from_millis(100));
+    let frozen = Command::new("sh")
+        .arg("-c")
+        .arg(format!("kill -STOP {pid}; sleep 0.2; kill -CONT {pid}"))
+        .status()
+        .unwrap();
+    assert!(frozen.success());
+    let resumed = began.elapsed();
+    let output = ended.recv_timeout(DEADLINE).unwrap().unwrap();
+    let said = String::from_utf8_lossy(&output.stdout);
+    eprintln!(
+        "started {started:?}, resumed {resumed:?}, ended {:?}",
+        began.elapsed()
+    );
+    assert!(
+        said.contains(&format!("ran Ok(Ok(0)) {SIZE}\n")),
+        "{said}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// A command whose client leaves its stream, resetting it or reading no more of it, is hung
 /// up, and its state let go.
 #[test]
