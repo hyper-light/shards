@@ -1095,6 +1095,86 @@ mod tests {
         assert!(request(&twice).is_ok());
     }
 
+    /// Do: ask runs whose credential grant's reference, placeholder or hosts, or whose sign-in
+    /// grant's name, hosts, access token's reference or placeholders, are as long as the
+    /// network process's wire carries one (a two-byte length: shards-net's `NET_CREDENTIALS`
+    /// and `NET_SIGN_INS`), and one longer. Expect: each at the bound asked; each past it
+    /// refused here, by field, naming the field and never echoing its bytes, where before the
+    /// run host found it after the request had crossed.
+    #[test]
+    fn a_grants_fields_past_the_network_process_wire_are_refused_by_field() {
+        let most = usize::from(u16::MAX);
+        let host = || String::from("api.anthropic.com");
+        let base = || {
+            let mut s = spec();
+            s.credentials = vec![CredentialGrant {
+                reference: "anthropic/claude-max".into(),
+                toward: vec![host()],
+                placeholder: PLACEHOLDER.into(),
+            }];
+            s.sign_ins = vec![wire::SignInGrant {
+                sign_in: "ada/claude".into(),
+                cli: wire::Cli::ClaudeCode,
+                toward: vec![host()],
+                captured: Some(wire::Captured {
+                    access: "ada/claude/access".into(),
+                    access_placeholder: "kiln-placeholder-access-0123".into(),
+                    refresh_placeholder: Some("kiln-placeholder-refresh-4567".into()),
+                }),
+            }];
+            s.lessor = lessor();
+            s
+        };
+        assert!(request(&base()).is_ok());
+        type Set = fn(&mut ImageSpec, usize);
+        let fields: [(&str, &str, Set); 8] = [
+            ("a credential grant", "reference", |s, n| {
+                s.credentials[0].reference = "r".repeat(n)
+            }),
+            ("a credential grant", "placeholder", |s, n| {
+                s.credentials[0].placeholder = "p".repeat(n)
+            }),
+            ("a credential grant", "hosts", |s, n| {
+                s.credentials[0].toward = vec!["api.anthropic.com".into(); n]
+            }),
+            ("a sign-in grant", "name", |s, n| s.sign_ins[0].sign_in = "s".repeat(n)),
+            ("a sign-in grant", "hosts", |s, n| {
+                s.sign_ins[0].toward = vec!["api.anthropic.com".into(); n]
+            }),
+            ("a sign-in grant", "access token's reference", |s, n| {
+                if let Some(c) = s.sign_ins[0].captured.as_mut() {
+                    c.access = "a".repeat(n);
+                }
+            }),
+            ("a sign-in grant", "access token's placeholder", |s, n| {
+                if let Some(c) = s.sign_ins[0].captured.as_mut() {
+                    c.access_placeholder = "c".repeat(n);
+                }
+            }),
+            ("a sign-in grant", "refresh token's placeholder", |s, n| {
+                if let Some(c) = s.sign_ins[0].captured.as_mut() {
+                    c.refresh_placeholder = Some("f".repeat(n));
+                }
+            }),
+        ];
+        for (what, field, set) in fields {
+            let mut at = base();
+            set(&mut at, most);
+            assert!(request(&at).is_ok(), "{what}'s {field} at {most} was refused");
+            let mut past = base();
+            set(&mut past, most + 1);
+            match request(&past) {
+                Err(ImageRefusal::Spec { what: w, why }) => {
+                    assert_eq!(w, what, "{field}: {why}");
+                    assert!(why.contains(field), "{what}'s {field}: {why}");
+                    assert!(why.len() < 300, "{what}'s {field}: its refusal echoed its bytes");
+                }
+                Err(other) => panic!("{what}'s {field} past {most}: {other:?}"),
+                Ok(_) => panic!("{what}'s {field} past {most} was asked"),
+            }
+        }
+    }
+
     /// Do: ask a run with credential grants and no lessor, with one, and a run with neither
     /// grants nor lessor, and one with a lessor and no grants. Expect: the first refused by
     /// field, before anything starts, as its grants could never be filled (D242); the others
