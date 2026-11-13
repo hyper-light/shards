@@ -23,7 +23,7 @@
 //! as the run's host asks, and every lease it gave is released as the run ends.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 mod pool;
@@ -291,6 +291,66 @@ pub trait Images: Send + Sync {
     /// past it, the run's host is killed and its run refused with what it last said. It is
     /// the caller's until it drops, which ends it.
     fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal>;
+    /// [`boot`](Self::boot), ended by `stop` (D231's stop of a boot under way): a
+    /// [`BootStop::stop`] from any thread while it boots kills the run's host and every
+    /// process it started, and the boot returns [`ImageRefusal::Ended`]`(`[`RunEnd::Stopped`]`)`
+    /// once they are gone; a stop that came before is the same, booting nothing. A stop that
+    /// comes after the boot has returned is no longer the boot's: the guest's own
+    /// [`stop`](ImageGuest::stop) ends its run.
+    ///
+    /// By default, for an implementor with no run host to end mid-boot, the stop is honoured
+    /// as the boot returns: its guest stopped, and `Ended(Stopped)` returned.
+    fn boot_stoppable(
+        &self,
+        spec: &ImageSpec,
+        patience: Duration,
+        stop: &BootStop,
+    ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        if stop.is_stopped() {
+            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+        }
+        let guest = self.boot(spec, patience)?;
+        if stop.is_stopped() {
+            let _ = guest.stop();
+            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+        }
+        Ok(guest)
+    }
+}
+
+/// A stop for a boot under way ([`Images::boot_stoppable`], D231): its caller's, given to the
+/// boot by reference and stopped from any other thread. Once stopped it stays stopped.
+#[derive(Debug, Default)]
+pub struct BootStop(Mutex<Stopping>);
+
+/// A [`BootStop`]'s state (R04).
+#[derive(Debug, Default)]
+enum Stopping {
+    /// Not stopped, and no boot holds a run host here.
+    #[default]
+    Armed,
+    /// Stopped: terminal.
+    Stopped,
+}
+
+impl BootStop {
+    pub fn new() -> BootStop {
+        BootStop::default()
+    }
+
+    /// Stops the boot under way, or the next one given it. Never refused; once is enough.
+    pub fn stop(&self) {
+        *self.state() = Stopping::Stopped;
+    }
+
+    /// Whether it has been stopped.
+    pub fn is_stopped(&self) -> bool {
+        matches!(*self.state(), Stopping::Stopped)
+    }
+
+    fn state(&self) -> MutexGuard<'_, Stopping> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 /// A booted image. Dropping it ends it.
@@ -439,7 +499,12 @@ impl Images for ImageShards {
     fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
         crate::backend().map_err(no_backend)?;
         let request = request(spec)?;
-        Ok(Box::new(session::Session::start(spec, &request, patience)?))
+        Ok(Box::new(session::Session::start(
+            spec,
+            &request,
+            patience,
+            &BootStop::new(),
+        )?))
     }
 }
 
