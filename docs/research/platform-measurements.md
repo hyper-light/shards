@@ -22194,6 +22194,62 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R11 | Windows x86_64 only, where the failure was. Windows arm64 runs no VM tests. Linux's and macOS's CI results for this test were not tallied. |
   | R15, R16 | No agents started. jupiter's trees, targets and logs from this lane are removed after landing. |
 
+### M539. CI's queue: runs that newer pushes had made moot kept main's runs waiting for hours
+
+- **Question.** Main's CI runs waited hours to start. What filled the queue? Would a
+  concurrency group per workflow and ref drain it without losing a result anyone reads?
+- **Method.** `measurements/ci-queue`:
+  - `open-runs.sh` lists every open run with its workflow, branch and commit, and says why it
+    is moot: a newer run of its workflow and branch is open, its commit is on main, or its
+    branch is gone;
+  - `open-2026-11-13T0233Z.tsv` is the queue at 02:33Z, `cancelled-2026-11-13.tsv` the runs
+    cancelled that morning, and `main-runs-job-starts.tsv` when the jobs of main's last two
+    runs started (GitHub's runs and jobs APIs).
+- **Found.**
+  - At 02:30Z, 148 runs were open: 140 queued, and 7 running for 4 to 5 h. 124 were moot: 103
+    had a newer run of the same workflow and branch, and 21 were on branches whose head was
+    on main. ROOT cancelled them; the API lists 120 of them.
+  - At 02:38Z, 14 more were cancelled: 12 on branches deleted after landing or withdrawal,
+    and 2 running for commits already on main.
+  - Main's runs pushed at 20:59Z and 21:02Z (cc439a2a7, 7eea109ac) started their first job
+    2 h 33 min and 2 h 46 min after the push, and their last 4 h 59 min and 5 h 14 min after.
+  - Only three workflows had queued runs at 02:33Z: CI (16), slates fs (8) and net costs (1).
+    Their push paths cover most of the tree. Each of the other 33 runs only when its own
+    files change, and none was queued.
+  - 32 of those 33 list their own file in their push paths. Changing them would start each
+    once on a branch and again on main.
+- **Decision.** CI, slates fs and net costs each get a concurrency group per workflow and ref.
+  GitHub cancels a run waiting in a group when a newer run joins it. `cancel-in-progress`
+  also cancels the run under way (docs.github.com, "Control the concurrency of workflows
+  and jobs").
+  - On a branch or a pull request, the next push's run cancels the one before.
+  - On main, the run under way finishes. Only the newest push's run waits.
+  - A run dispatched by hand gets a group of its own, keyed by its run ID. No push cancels
+    or replaces a measurement someone asked for.
+  - The other 33 workflows are unchanged: they don't fill the queue, and changing them would
+    start 32 measurement runs twice. release.yml runs on `v*` tags, which never supersede one
+    another, and a release must not be cancelled while it publishes.
+- **Checked.** actionlint 1.7.12 passes the three files. A mutant with `github.evnt_name` in
+  the group fails (`property "evnt_name" is not defined`). `scripts/check-development-policy`
+  passes.
+- **Owed.** The effect on main, ROOT's to watch: a waiting run of main that a newer push
+  replaces should end cancelled, with GitHub's notice that a higher priority waiting request
+  exists.
+- **Rules** (policy df2acf47, role implementer; CI configuration and records):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01, R04, R06, R12, R13 | No Rust changed. Three workflows each gain one block. |
+  | R02 | GitHub's concurrency docs and the measured queue. The 33 unchanged workflows and release.yml, with why. |
+  | R03 | No number introduced. A group is the workflow and the ref, or the run ID. |
+  | R05 | The wait was GitHub's queue. The groups end it where cancelling by hand did once. |
+  | R07 | ci.yml says why. The other two point to it. |
+  | R08, R14 | Queue waits measured above. Runner minutes not measured. |
+  | R09 | The queue was seen live, kept in the snapshots. |
+  | R10 | Before: the snapshots. After: owed above. Mutant: the actionlint typo. |
+  | R11 | Every leg of the three workflows is in its workflow's group. |
+  | R15, R16 | No agents started. 14 runs cancelled by this lane, listed with ROOT's in `cancelled-2026-11-13.tsv`. |
+
 ### M540. Where agent control ends its TLS, in the guest or at a host endpoint: 32 microVMs on HVF and KVM (D238, plan step 10; WHP owed)
 
 - **Question.** Plan step 10 (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d) asks where a
