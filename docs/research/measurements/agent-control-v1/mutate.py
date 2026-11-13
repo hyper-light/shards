@@ -17,6 +17,8 @@ import time
 
 CONTROL = "crates/remote/src/control.rs"
 TLS = "crates/remote/src/tls.rs"
+MANAGED = "crates/remote/src/managed.rs"
+INPUT = "crates/remote/src/managed/input.rs"
 
 # (name, file, guard as written, guard removed, test filter)
 MUTATIONS = [
@@ -61,6 +63,78 @@ MUTATIONS = [
         "        kind::STDERR => Stdio::Stderr,\n        _ => return Err(Reason::Protocol),",
         "        _ => Stdio::Stderr,",
         "control::tests::a_lane_of_no_kind_is_refused",
+    ),
+    # slice 2 (c9630c6b4)
+    (
+        "the controller's newer connection closes the older, Stale",
+        CONTROL,
+        'while let Some(old) = self.conns.pop() {',
+        'while let Some(old) = None::<ConnKey> {',
+        'control::tests::lanes::the_controllers_newer_connection_supersedes_the_older_and_resumes_at_its_cursor',
+    ),
+    # slice 2 (c9630c6b4)
+    (
+        'an output holds one lane',
+        MANAGED,
+        '        if !matches!(self.state, Subscription::Listening) {\n            return Err(Reason::Scope);\n        }\n        self.check_scope(scope)?;',
+        '        self.check_scope(scope)?;',
+        'control::tests::lanes::a_second_lane_of_a_stream_is_refused_and_the_first_goes_on',
+    ),
+    # slice 2 (c9630c6b4)
+    (
+        'a stdin holds one lane',
+        INPUT,
+        '        if !matches!(self.state, Subscription::Listening) {\n            return Err(Reason::Scope);\n        }\n        if self.revoked() {',
+        '        if self.revoked() {',
+        'control::tests::lanes::a_second_lane_of_a_stream_is_refused_and_the_first_goes_on',
+    ),
+    # slice 2 (c9630c6b4)
+    (
+        'a lane not served is refused alone, not its connection',
+        CONTROL,
+        '                Err(reason) => self.refuse_lane(io, conn, stream, reason),\n            },',
+        '                Err(reason) => self.refuse_connection(io, conn, reason),\n            },',
+        'control::tests::lanes::a_lane_the_endpoint_does_not_serve_is_refused_alone_and_the_others_go_on',
+    ),
+    # slice 2 (c9630c6b4)
+    (
+        'a revoked output ends its lane alone, not the driver',
+        CONTROL,
+        'outputs.push(output.handles(sender.try_clone()?, Stop::Lane)?);',
+        'outputs.push(output.handles(sender.try_clone()?, Stop::Driver)?);',
+        'control::tests::lanes::a_revoked_stream_ends_its_lane_alone',
+    ),
+    # slice 2 (c9630c6b4)
+    (
+        "a frame refused after its input's end only stops the lane's reading",
+        CONTROL,
+        'Ok(()) | Err(Gone::Refused(_)) if over => After::Over,',
+        'Ok(()) if over => After::Over,',
+        'control::tests::a_lanes_reading_ends_it_alone_unless_its_controller_broke_its_protocol',
+    ),
+    # slice 2 (c9630c6b4)
+    (
+        "the connection's window is its lanes' summed",
+        CONTROL,
+        'windows.connection = windows.connection.checked_add(receive).ok_or_else(window)?;',
+        'windows.connection = windows.connection.max(receive);',
+        'control::tests::lanes::its_windows_are_its_streams_own_summed',
+    ),
+    # slice 2 (c9630c6b4)
+    (
+        'a record beside a queued wake keeps its place',
+        MANAGED,
+        'if let Err(std::sync::mpsc::TrySendError::Disconnected(_)) =\n            self.sender.try_send(Command::Handler(()))',
+        'if let Err(_) =\n            self.sender.try_send(Command::Handler(()))',
+        'managed::tests::a_record_submitted_beside_a_queued_wake_is_kept_for_its_turn',
+    ),
+    # slice 2 (c9630c6b4)
+    (
+        "a finished output's lane is stopped both ways (UNCERTAIN: its test may not hold it)",
+        CONTROL,
+        '                output.disconnect();\n                io.stop(conn, stream);\n            }\n        }\n        for input in &mut self.inputs {',
+        '                output.disconnect();\n            }\n        }\n        for input in &mut self.inputs {',
+        'control::tests::lanes::a_controllers_lanes_carry_a_members_stdio_exactly_and_end_as_it_ends',
     ),
 ]
 

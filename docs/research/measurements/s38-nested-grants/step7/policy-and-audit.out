@@ -1,0 +1,45 @@
+$ git archive 6a721f4ab40339cc7036f285d3615473d1b4b929 | tar -x -C <a new temporary directory>; then, in it: python3 -I scripts/check-development-policy; python3 -I docs/research/measurements/s38-nested-grants/literal-audit.py
+host Darwin 25.4.0 arm64, Python 3.9.6, at 2026-11-13T03:04:55Z
+Development policy checks passed; evidence/coordinator review is still required.
+policy_exit=0
+derived   init
+derived   PIPE_BUF
+derived   the deadline
+derived   fs.nr_open
+derived   the GPUs' identities
+derived   WORKLOAD_READY = 7
+derived   run kind 49
+derived   ipc kind 90
+derived   /run/shards/notify
+derived   /run/shards/gpus
+derived   0444
+derived   NESTING
+derived   nesting=true
+derived   nesting
+derived   ready-by=
+derived   gpus=
+derived   NOTIFY_SOCKET
+derived   READY=1
+derived   SHARDS_READY_BY
+derived   CAP_SYS_ADMIN (21)
+derived   CAP_NET_ADMIN (12)
+derived   the controllers
+derived   notify socket mode 0666
+derived   READY's 9-byte payload
+derived   init's `notify` entry and tag `N`
+derived   NR_OPEN_MAX 2147483584
+derived   ready_by
+derived   the run's events
+derived   /run/shards 0755
+derived   credentials buffer 32
+derived   notify queue
+derived   to_client::READY = 23
+derived   VERSION 2
+derived   the request's ready-by section
+derived   wait_ready
+own      marker 7: held by the grant's WORKLOAD_READY
+own      run kind 49: held by the grant's READY
+own      ipc kind 90: held by the grant's WORKLOAD_READY
+own      image wire kind 23: held by the grant's READY
+planned 35, underived or unplanned 0
+audit_exit=0

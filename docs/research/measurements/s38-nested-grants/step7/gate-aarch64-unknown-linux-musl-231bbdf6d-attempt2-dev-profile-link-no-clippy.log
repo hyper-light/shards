@@ -1,0 +1,13 @@
+$ git archive 231bbdf6dfb2ce45ad93df48bfe0971245453669 | kiln run -q --on adalundhe-macbook-pro --no-sync --stdin -- bash s38-docs-gate.sh aarch64-unknown-linux-musl
+/var/folders/_d/fszg5z8d4sl9swbfn6hdnyg80000gn/T//zig-aarch64-macos-0.16.0.tar.xz: OK
+host Darwin 25.5.0 arm64, rustc 1.98.1 (48a229cea 2026-09-01), zig 0.16.0, target aarch64-unknown-linux-musl, at 2026-11-13T02:43:36Z
+nesting_no_run_exit=101
+error: linking with `rust-lld` failed: exit status: 1
+error: could not compile `shards` (bin "shards") due to 1 previous error
+clippy_nesting_exit=1
+error: the 'cargo-clippy' binary, normally provided by the 'clippy' component, is not applicable to the '1.98.1-aarch64-apple-darwin' toolchain
+error: the 'cargo-clippy' binary, normally provided by the 'clippy' component, is not applicable to the '1.98.1-aarch64-apple-darwin' toolchain
+fmt_exit=0
+finished at 2026-11-13T02:57:33Z, 2 failed
+removed /Users/ada.lundhe/g121-tmp/s38-docs-aarch64-unknown-linux-musl
+kiln_exit=2
