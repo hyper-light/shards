@@ -229,6 +229,20 @@ impl std::fmt::Display for Failure {
     }
 }
 impl std::error::Error for Failure {}
+impl Failure {
+    /// Whether it is a connection's end, its peer's (its VM's, as its run ends): its end of
+    /// file, a pipe its peer closed, a reset; none of the daemon's own failures.
+    pub(super) fn ended(&self) -> bool {
+        match self {
+            Self::Closed => true,
+            Self::Transport(e) => matches!(
+                e.kind(),
+                io::ErrorKind::ConnectionReset | io::ErrorKind::NotConnected
+            ),
+            _ => false,
+        }
+    }
+}
 impl From<Admission> for Failure {
     fn from(reason: Admission) -> Self {
         Self::Admission(reason)
@@ -1247,9 +1261,17 @@ impl Outputs {
 
 impl<D: Disk> Daemon<D> {
     /// The daemon's end of run `id`'s managed capture failed as `e` says (`what`: its credits
-    /// or its records): logged, as yet.
+    /// or its records). A connection's end ([`Failure::ended`]) is its VM's, as its run ends,
+    /// and logged alone: its run's end is its VM's to say. Any other is the daemon's own
+    /// failure, which leaves the run's members no way on: logged, and the run stopped as it
+    /// stops, so that no run waits for its `STOP` on a failure its daemon saw (D258).
     pub(super) fn capture_failed(&self, id: &str, what: &str, e: &Failure) {
-        log(format!("container {id}: {what}: {e}"));
+        if e.ended() {
+            log(format!("container {id}: {what}: {e}"));
+            return;
+        }
+        log(format!("container {id}: {what} failed, which stops it: {e}"));
+        self.stop_for_failure(id);
     }
 
     #[allow(clippy::too_many_arguments)]
