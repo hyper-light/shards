@@ -8257,9 +8257,20 @@ user's host as Docker's.
   network process; it now waits one slice. The cost: a network process stuck on nothing of
   its own is ended 10 s or more after its VM, where it was 1 s; one that exits as its links
   close, as each does, ends the wait at once. The waits that took that second as their
-  basis keep it, their own basis owed (R03): the VM process's wait for its network
-  process's unpublish (warm.rs). Init's relay drain (hostbind.rs `DRAIN`) follows its
-  relays' peers since (D124, PM M556).
+  basis no longer keep it: init's relay drain (hostbind.rs `DRAIN`) follows its relays' peers
+  (D124, PM M556), and the VM process's waits follow their parties (below).
+- **The VM process's waits follow their parties' liveness, and the daemon judges** (ROOT's
+  (A), 2026-11-13; each was a second, picked): confined, it sees nothing of its network
+  process's or its daemon's progress, so its run's end waits for the guest's frames to be in
+  the ring (`TxFlush::flush(None)`, whose worker answers every flush as it ends), for its
+  ports' closing (`UNPUBLISH`) while its network process lives, and for a port of the host's
+  let go (`HOST_RELEASE`) while its daemon's connection lives. It tells the daemon it waits on
+  its network process (`UNPUBLISHING`), which follows that process from then on its helper
+  slice, as one whose VM has gone (`follow_unpublish`), ends it where it goes on with nothing
+  for a slice, which ends the VM's wait, and follows it no more once it answered
+  (`PORTS_FREE`). Red at 6c3cb7137, each with the second: a flush answered 1.5 s on, an
+  unpublish and a host port's release answered 1.5 s on, each given up on; and a network
+  process its VM waited on, doing nothing, never ended.
 - **The daemon's asks of a network process are followed too** (ROOT, 2026-11-13; it was
   `PUBLISH_PATIENCE`, the same second, picked): a published port, a peer, a network's names
   (`networks::ask_net`, `Asks`), and a run's on the host's network (`HostNet`), each wait for
