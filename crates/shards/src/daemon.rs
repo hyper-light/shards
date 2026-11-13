@@ -4155,6 +4155,8 @@ impl<D: Disk> Daemon<D> {
                             size: k.size,
                             files: k.files,
                         }),
+                        // Its members' rotated segments compressed as its own are (D162, D240).
+                        compress: kept.is_some_and(|k| k.compress),
                         to,
                     },
                     agent_control,

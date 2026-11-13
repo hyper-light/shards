@@ -61,6 +61,64 @@ REDS = [
      NET + ["signin::tests::no_token_or_placeholder_prints"]),
 ]
 
+# Slice 2a: the injector takes a sign-in's tokens outside and answers its refresh and revocation there.
+DNS = ["cargo", "test", "-p", "shards-dns", "--lib", "--", "--exact"]
+INJECT = "crates/net/src/inject.rs"
+NETLIB = "crates/net/src/lib.rs"
+LEASE = "crates/net/src/lease.rs"
+CREDENTIAL = "crates/dns/src/credential.rs"
+SIGN_IN_TEST = NET + ["inject::tests::a_sign_in_is_taken_outside_and_its_refresh_and_revocation_answered_there"]
+REDS += [
+    ("2a inject: a sign-in's response read whole before any of it goes (the real tokens through)", INJECT,
+     "if self.sign_in.is_some() && !tunnel && !interim && framing != Framing::Length(0) {", "if false {",
+     SIGN_IN_TEST),
+    ("2a inject: a refresh answered outside, never sent on", INJECT,
+     "            signin::Ask::Pass => return Ok(Outside::Pass),",
+     "            signin::Ask::Pass | signin::Ask::Refresh(_) => return Ok(Outside::Pass),",
+     SIGN_IN_TEST),
+    ("2a inject: a revocation answered here, never sent on", INJECT,
+     "            signin::Ask::Pass => return Ok(Outside::Pass),",
+     "            signin::Ask::Pass | signin::Ask::Revoke(_) => return Ok(Outside::Pass),",
+     SIGN_IN_TEST),
+    ("2a inject: a refresh's answer given placeholders (the rotated tokens through)", INJECT,
+     ".write_all(&signin::refreshed(&written))", ".write_all(&signin::refreshed(&body))",
+     SIGN_IN_TEST),
+    ("2a inject: a sign-in's request asks identity coding", INJECT,
+     "edits.extend(identity(&head, &fields));", "",
+     SIGN_IN_TEST),
+    ("2a inject: no value toward an endpoint that mints a key", INJECT,
+     "if mints(run, &reference, &host, &target) {", "if false {",
+     NET + ["inject::tests::a_sign_ins_token_never_goes_to_the_endpoint_that_mints_a_key"]),
+    ("2a net: a capture grants its access token", NETLIB,
+     "c.grants.push(captured.grant(&grant.toward));", "",
+     SIGN_IN_TEST),
+    ("2a net: a refreshed token's held lease let go", NETLIB,
+     "                c.leases.forget(&captured.access);\n", "",
+     SIGN_IN_TEST),
+    ("2a lease: a rotated value's ask under way kept", LEASE,
+     "if matches!(self.each.get(reference), Some(Lease::Held { .. })) {", "if true {",
+     NET + ["lease::tests::a_captured_credential_is_granted_and_a_rotated_ones_held_lease_let_go"]),
+    ("2a signin: refreshes of one sign-in ask once", SIGNIN,
+     "Asking::Refresh { index: i, waiting } if *i == index => Some(waiting),",
+     "Asking::Refresh { waiting, .. } if false => Some(waiting),",
+     NET + ["inject::tests::refreshes_of_one_sign_in_at_once_ask_once"]),
+    ("2a signin: one sign-in of a CLI a run", SIGNIN,
+     "            || grants.iter().any(|g| g.cli == cli || g.sign_in == sign_in)\n", "",
+     NET + ["signin::tests::sign_in_grants_ride_their_message_and_a_cli_has_one"]),
+    ("2a signin: a capture's placeholders checked", SIGNIN,
+     "        if token(&c.access_placeholder)\n            && token(&c.refresh_placeholder)\n"
+     "            && c.access_placeholder != c.refresh_placeholder\n",
+     "        if true\n",
+     NET + ["signin::tests::a_captures_placeholders_that_are_no_tokens_or_anothers_are_declined"]),
+    ("2a signin: a refresh's answer never prints its tokens", SIGNIN,
+     '.field("result", &result.as_ref().map(|body| body.len()))',
+     '.field("result", &result.as_ref().map(|body| String::from_utf8_lossy(body)))',
+     NET + ["signin::tests::a_sign_ins_words_round_trip_and_print_no_token"]),
+    ("2a dns: a sign-in's refresh placeholder one credential's alone", CREDENTIAL,
+     ".find(|g| g.placeholder == c.refresh_placeholder)", ".find(|_| false)",
+     DNS + ["credential::tests::a_sign_ins_placeholders_are_tokens_and_one_credentials_alone"]),
+]
+
 KEEP = re.compile(r"^(test result|test .* FAILED|thread '.*' .*panicked at|error(\[|:))")
 
 
