@@ -92,8 +92,15 @@ impl<C> Sender<C> {
         Ok(())
     }
 
+    /// Where its waker is bound: the one socket each of its clones holds again, told apart
+    /// from every other socket by its own address.
+    pub fn waker_addr(&self) -> Result<SocketAddr, Error> {
+        self.waker
+            .local_addr()
+            .map_err(|e| Error::new(format!("the driver's waker: {e}")))
+    }
+
     /// Idempotent owner revocation does not wait behind queued data.
-    pub fn request_stop(&self) {
         self.stopping.store(true, Ordering::Release);
         let _ = self.waker.send_to(&[0], self.to);
     }

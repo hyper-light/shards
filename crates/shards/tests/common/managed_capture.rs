@@ -260,10 +260,6 @@ pub(super) struct Held {
     pub(super) inode: u64,
 }
 
-/// One observer at a time takes its waker's identity: a clone of its sender duplicates the
-/// waker, and the duplicate must be told from another observer's.
-#[cfg(target_os = "linux")]
-static CLONING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// This process's sockets: each inode with the descriptors that hold it.
 #[cfg(target_os = "linux")]
@@ -310,44 +306,34 @@ fn udp_sockets() -> Vec<(std::net::SocketAddrV4, u64)> {
 }
 
 /// An observer's two sockets (crates/remote/src/net.rs, bind_with_limits), each by its own
-/// mark, whatever other tests of the process open meanwhile: the endpoint's, by the address
-/// it is bound to; the waker's, as the one socket a clone of the sender duplicates.
+/// address, whatever other tests of the process open meanwhile: the endpoint's, and its
+/// waker's, which every clone of its sender holds again. Told apart by what changed as its
+/// sender was cloned, another test's sockets made in that window were taken for its waker
+/// (CI's arm64 musl run 43347049202: three such).
 #[cfg(target_os = "linux")]
 fn observer_sockets(endpoint: SocketAddr, sender: &Sender<Ask>) -> Vec<Held> {
-    let held = |inode: u64, fds: &BTreeMap<u64, Vec<i32>>| Held {
+    let waker = sender.waker_addr().unwrap();
+    let bound = |address: SocketAddr| {
+        let SocketAddr::V4(at) = address else {
+            panic!("an IPv4 observer socket: {address}");
+        };
+        let found: Vec<_> = udp_sockets()
+            .into_iter()
+            .filter(|(local, _)| *local == at)
+            .map(|(_, inode)| inode)
+            .collect();
+        let [inode] = found[..] else {
+            panic!("one UDP socket at the observer's {at}: {found:?}");
+        };
+        inode
+    };
+    let (endpoint, waker) = (bound(endpoint), bound(waker));
+    let fds = sockets();
+    let held = |inode: u64| Held {
         fd: fds[&inode][0],
         inode,
     };
-    let SocketAddr::V4(at) = endpoint else {
-        panic!("an IPv4 observer endpoint: {endpoint}");
-    };
-    let bound: Vec<_> = udp_sockets()
-        .into_iter()
-        .filter(|(local, _)| *local == at)
-        .map(|(_, inode)| inode)
-        .collect();
-    let [endpoint] = bound[..] else {
-        panic!("one UDP socket at the observer's endpoint {at}: {bound:?}");
-    };
-    let cloning = CLONING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let before = sockets();
-    let clone = sender.try_clone().unwrap();
-    let after = sockets();
-    drop((clone, cloning));
-    let loopback: Vec<_> = udp_sockets()
-        .into_iter()
-        .filter(|(local, _)| *local.ip() == std::net::Ipv4Addr::LOCALHOST)
-        .map(|(_, inode)| inode)
-        .collect();
-    let duplicated: Vec<_> = after
-        .iter()
-        .filter(|(inode, fds)| loopback.contains(inode) && fds.len() > before.get(inode).map_or(0, Vec::len))
-        .map(|(inode, _)| *inode)
-        .collect();
-    let [waker] = duplicated[..] else {
-        panic!("one waker duplicated by the sender's clone: {duplicated:?}");
-    };
-    vec![held(endpoint, &before), held(waker, &before)]
+    vec![held(endpoint), held(waker)]
 }
 
 /// Which of `held` are not yet returned: still behind a descriptor of this process, or
