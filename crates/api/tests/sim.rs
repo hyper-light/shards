@@ -75,7 +75,8 @@ fn guest(host: &SimHost) -> End {
     End::Stopped
 }
 
-/// Every case of the conformance suite passes against the simulator (D215).
+/// Every case of the conformance suite passes against the simulator (D215), whose waits that
+/// follow a VM process follow liveness alone: it has none.
 #[test]
 fn the_simulator_conforms() {
     let guests = SimGuests::new(guest);
@@ -85,7 +86,6 @@ fn the_simulator_conforms() {
         port: ECHO,
         unserved: UNSERVED,
         powering_off: spec("shards_test=kmsg"),
-        patience: NO_CLOCK,
     })
     .unwrap();
 }
@@ -503,48 +503,6 @@ exit 3"#
             held,
             "the refusal came only once the child holding shards' output had gone"
         );
-    }
-
-    /// Measures how long past its patience an unserved connect's refusal comes, the
-    /// client's (a shards that never binds its socket) and the simulator's, for
-    /// `conformance::OVERSHOOT`: `SHARDS_API_OVERSHOOT_N` runs of each, printed as n, p50,
-    /// p90, p99 and max (docs/research/measurements/shards-api-overshoot/run.sh).
-    #[test]
-    #[ignore = "a measurement, run by its harness"]
-    fn overshoot_of_an_unserved_connect() {
-        let n: usize = std::env::var("SHARDS_API_OVERSHOOT_N")
-            .ok()
-            .and_then(|n| n.parse().ok())
-            .unwrap_or(300);
-        let patience = conformance::UNSERVED_PATIENCE;
-        let dir = shards_testdir::TempDir::new("api-over").unwrap();
-        let bin = stand_in(&dir, "exec sleep 1000");
-        let client = Shards
-            .boot(&GuestSpec {
-                binary: Some(bin),
-                ..spec("")
-            })
-            .unwrap();
-        let sims = SimGuests::new(guest);
-        let sim = sims.boot(&spec("shards_test=echo")).unwrap();
-        for (what, g) in [("client", &client), ("sim", &sim)] {
-            let mut over: Vec<Duration> = (0..n)
-                .map(|_| {
-                    let start = Instant::now();
-                    assert!(g.connect(UNSERVED, patience).is_err());
-                    start.elapsed().saturating_sub(patience)
-                })
-                .collect();
-            over.sort();
-            let q = |p: usize| over[(n - 1) * p / 100];
-            println!(
-                "overshoot {what}: n={n} p50={:?} p90={:?} p99={:?} max={:?}",
-                q(50),
-                q(90),
-                q(99),
-                over[n - 1]
-            );
-        }
     }
 
     /// Measures the waits this file's tests make, each kind on a thread of its own as the

@@ -195,6 +195,7 @@ impl Ring {
         {
             return Err(Refusal::Malformed);
         }
+        let slot = abi::slot_len(offer.ring);
         let mut at = 0u64;
         let (mut control, mut to_host, mut to_guest) = (None, Vec::new(), Vec::new());
         for e in &offer.extents {
@@ -204,8 +205,13 @@ impl Ring {
             let len = usize::try_from(e.len).map_err(|_| Refusal::NotRam)?;
             let host = memory.host_ptr(e.gpa, len).map_err(|_| Refusal::NotRam)?;
             // The slot's bytes this extent holds, cut at the control page's and the rings'
-            // boundaries.
-            let end = at.checked_add(e.len).ok_or(Refusal::Malformed)?;
+            // boundaries. None past the slot's end: no region holds them, and cutting them
+            // there would never end. `Offer::parse` passes no such offer; what a guest named
+            // is checked here all the same, whoever parsed it.
+            let end = at
+                .checked_add(e.len)
+                .filter(|&end| end <= slot)
+                .ok_or(Refusal::Malformed)?;
             let mut piece = at;
             while piece < end {
                 let (region_start, region_end) = if piece < abi::CONTROL {
@@ -240,7 +246,7 @@ impl Ring {
             at = end;
         }
         let (control, control_gpa) = control.ok_or(Refusal::Malformed)?;
-        if at != abi::slot_len(offer.ring) {
+        if at != slot {
             return Err(Refusal::Malformed);
         }
         let pinned: Vec<(u64, u64)> = offer.extents.iter().map(|e| (e.gpa, e.len)).collect();
@@ -590,6 +596,27 @@ mod tests {
             1
         );
         assert_eq!(ring.pinned(), abi::slot_len(RING));
+    }
+
+    /// An offer longer than its slot is refused, nothing pinned: past the slot's end no region
+    /// holds its bytes, and the device's cutting of them never ended, filling its memory with
+    /// empty runs (ring-pins-v1/review.md, F1).
+    #[test]
+    fn an_offer_longer_than_its_slot_is_refused() {
+        let memory = memory();
+        let mut a_page_more = whole(2 << 20);
+        a_page_more.extents[0].len += abi::PAGE;
+        let mut a_page_past = scattered(4 << 20, 2);
+        a_page_past.extents.push(Extent {
+            gpa: 32 << 20,
+            len: abi::PAGE,
+        });
+        for longer in [a_page_more, a_page_past] {
+            assert_eq!(Ring::attach(&memory, &longer).unwrap_err(), Refusal::Malformed);
+            for e in &longer.extents {
+                assert!(!memory.pinned(e.gpa, e.len));
+            }
+        }
     }
 
     #[test]
