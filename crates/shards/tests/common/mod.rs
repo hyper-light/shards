@@ -5151,7 +5151,10 @@ pub fn noise(path: &Path, mib: usize) {
 
 /// The pipe a test tells its daemon its host is short of memory through
 /// (`SHARDS_PRESSURE`, D188), each line a word: a FIFO on Unix, a named pipe on Windows,
-/// there before the daemon opens it as it starts.
+/// there before the daemon opens it as it starts. One never said keeps a daemon from its
+/// host's own word (engine_ring.rs's shrinking room). Each is its own, as many at once as a
+/// test process's tests make: a named pipe of one instance, named by the process alone,
+/// would refuse a second.
 pub struct Told {
     pub path: std::ffi::OsString,
     #[cfg(windows)]
@@ -5177,7 +5180,9 @@ impl Told {
             use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
             use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, PIPE_TYPE_BYTE, PIPE_WAIT};
             let _ = home;
-            let pipe = format!(r"\\.\pipe\shards-test-pressure-{}", std::process::id());
+            static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let pipe = format!(r"\\.\pipe\shards-test-pressure-{}-{n}", std::process::id());
             let name: Vec<u16> = pipe.encode_utf16().chain(Some(0)).collect();
             // SAFETY: a NUL-terminated name and plain arguments.
             let server = unsafe {
