@@ -36,118 +36,82 @@ fn progressed() {
     PROGRESS.fetch_add(1, Ordering::Relaxed);
 }
 
-/// When this process's first wait began, and the slowest run any wait here has seen end (a
-/// command's, a join's): the first counted from then, so that the process's cold start (the
-/// helper's build, the first daemon's bind, the first handshake) is in it. A run is the slowest
-/// thing these tests wait on, each other wait one of its steps: a bind's or a frame's answer
-/// teaches nothing, as a window that short would fail the silent steps of a run (a handshake, a
-/// spawn), which say nothing as they go.
-static ANSWERS: Mutex<(Option<Instant>, Option<Duration>)> = Mutex::new((None, None));
-
-fn answers() -> std::sync::MutexGuard<'static, (Option<Instant>, Option<Duration>)> {
-    ANSWERS.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// A wait judged by what it waits on (R03), with no deadline of its own: within the slowest run
-/// this process has seen end ([`ANSWERS`]), and past it for as long as the tests' subjects
-/// progress ([`PROGRESS`]); failed once a whole such window has passed with nothing seen. Its
-/// window is learned here, on this host, under its load: a slow host's runs widen it. Cold,
-/// before any run here has ended, the window is as long as this process has waited since its
-/// first wait began, so that no wait fails before one run has shown how long runs take; a
-/// process none of whose runs ever ends is ended by its job's limit. Progress is the process's,
-/// not one test's: a test that hangs while others progress fails once they are quiet.
+/// A wait judged by what it waits on (R03), with no deadline of its own: by its subjects'
+/// transports, as net.rs judges its own waits ([`net::View`]: the datagrams their drivers heard,
+/// and the window their connections were judged by, learned from their own answers, no sooner
+/// than their probe timeouts, and cold their handshakes' window), and by what the tests see them
+/// do ([`PROGRESS`]). It goes on while either moves, and fails once the longest window its views
+/// show has passed whole with neither, a window no shorter than a silence its waiter makes
+/// itself (`floor`). Before any of its views shows a window (its driver has yet to look at a
+/// connection), or where it has none (a bind, on no connection), it looks again after as long
+/// as it has waited.
 struct Patience {
     began: Instant,
-    /// A silence its waiter makes itself, which its window is never shorter than.
     floor: Duration,
-    seen: u64,
-    /// When its wait last saw progress, or began.
+    views: Vec<net::View>,
+    /// What had moved as it last looked: [`PROGRESS`], and its views' datagrams heard.
+    moved: (u64, u64),
+    /// When it last saw anything move, or began.
     heard: Instant,
-    /// What it waits for is a run's end, which teaches the window ([`ANSWERS`]).
-    teaches: bool,
 }
 
 impl Patience {
-    /// A wait or a daemon begins: the process's cold start counts from its first.
-    fn begin() {
-        answers().0.get_or_insert_with(Instant::now);
-    }
-
-    fn new() -> Patience {
-        Patience::begin();
+    fn on(views: &[&net::View]) -> Patience {
         let now = Instant::now();
-        Patience {
+        let views: Vec<net::View> = views.iter().map(|v| (*v).clone()).collect();
+        let mut patience = Patience {
             began: now,
             floor: Duration::ZERO,
-            teaches: false,
-            seen: PROGRESS.load(Ordering::Relaxed),
+            views,
+            moved: (0, 0),
             heard: now,
-        }
+        };
+        patience.moved = patience.now_moved();
+        patience
     }
 
-    /// The slowest run seen to end; cold, as long as this process has waited.
-    fn learned() -> Duration {
-        match *answers() {
-            (_, Some(slowest)) => slowest,
-            (Some(first), None) => first.elapsed(),
-            (None, None) => Duration::ZERO,
-        }
+    fn now_moved(&self) -> (u64, u64) {
+        let heard = self
+            .views
+            .iter()
+            .map(net::View::heard)
+            .fold(0u64, u64::saturating_add);
+        (PROGRESS.load(Ordering::Relaxed), heard)
     }
 
-    fn window(&self) -> Duration {
-        Patience::learned().max(self.floor)
+    /// The longest window its views show, no shorter than its floor; none before one shows any.
+    fn window(&self) -> Option<Duration> {
+        let shown = self.views.iter().filter_map(net::View::window).max();
+        shown.map(|w| w.max(self.floor))
     }
 
-    /// How long to wait before looking again: none once a whole window has passed since its
-    /// wait last saw progress.
+    /// How long to wait before looking again: none once a whole window has passed since it
+    /// last saw anything move.
     fn left(&mut self) -> Option<Duration> {
-        let now = PROGRESS.load(Ordering::Relaxed);
-        if now != self.seen {
-            self.seen = now;
+        let moved = self.now_moved();
+        if moved != self.moved {
+            self.moved = moved;
             self.heard = Instant::now();
         }
-        self.window()
-            .checked_sub(self.heard.elapsed())
-            .filter(|left| !left.is_zero())
+        match self.window() {
+            None => Some(self.began.elapsed().max(self.floor)),
+            Some(window) => window.checked_sub(self.heard.elapsed()).filter(|l| !l.is_zero()),
+        }
     }
 
     /// Why it failed, `what` not come.
     fn out(&self, what: &str) -> String {
         format!(
-            "{what}: nothing seen for a whole window ({:?}, the slowest run here), {:?} in",
-            self.window(),
+            "{what}: nothing heard or seen for a whole window ({:?}, its transport's), {:?} in",
+            self.window().unwrap_or_default(),
             self.began.elapsed()
         )
     }
-
-    /// What it waited for came: a run's end teaches the window how long it took, the first
-    /// from the process's first wait's beginning.
-    fn answered(&self) {
-        if !self.teaches {
-            return;
-        }
-        let mut answers = answers();
-        let took = match *answers {
-            (Some(first), None) => first.elapsed(),
-            _ => self.began.elapsed(),
-        };
-        answers.1 = Some(answers.1.map_or(took, |slowest| slowest.max(took)));
-    }
 }
 
-/// What `rx` gives, a step of a run, waited for with [`Patience`]: `what`, said if it never
-/// comes.
-fn patiently<T>(rx: &mpsc::Receiver<T>, what: &str) -> T {
-    waited(rx, what, Patience::new())
-}
-
-/// What `rx` gives, a run's end, which teaches the window, waited for through a silence of
-/// `floor` its waiter makes itself.
-fn run_end<T>(rx: &mpsc::Receiver<T>, what: &str, floor: Duration) -> T {
-    let mut patience = Patience::new();
-    patience.floor = floor;
-    patience.teaches = true;
-    waited(rx, what, patience)
+/// What `rx` gives, waited for with [`Patience`] on `views`: `what`, said if it never comes.
+fn patiently<T>(rx: &mpsc::Receiver<T>, views: &[&net::View], what: &str) -> T {
+    waited(rx, what, Patience::on(views))
 }
 
 fn waited<T>(rx: &mpsc::Receiver<T>, what: &str, mut patience: Patience) -> T {
@@ -156,10 +120,7 @@ fn waited<T>(rx: &mpsc::Receiver<T>, what: &str, mut patience: Patience) -> T {
             panic!("{}", patience.out(what));
         };
         match rx.recv_timeout(left) {
-            Ok(value) => {
-                patience.answered();
-                return value;
-            }
+            Ok(value) => return value,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 panic!(
@@ -533,12 +494,14 @@ impl Alone {
 struct Watch {
     rx: mpsc::Receiver<Seen>,
     seen: Vec<Seen>,
+    /// The daemon's driver's ([`Patience`]).
+    view: net::View,
 }
 
 impl Watch {
     /// Waits until the machine has seen `what`.
     fn saw(&mut self, what: &Seen) {
-        let mut patience = Patience::new();
+        let mut patience = Patience::on(&[&self.view]);
         while !self.seen.contains(what) {
             let Some(left) = patience.left() else {
                 panic!(
@@ -555,7 +518,6 @@ impl Watch {
                 }
             }
         }
-        patience.answered();
     }
 
     /// What the machine has seen by now.
@@ -573,6 +535,13 @@ struct Daemon {
     remote: Remote,
     stopper: Stopper,
     seen: Watch,
+}
+
+impl Daemon {
+    /// Its driver's ([`net::View`]).
+    fn view(&self) -> net::View {
+        self.stopper.view()
+    }
 }
 
 impl Drop for Daemon {
@@ -614,7 +583,6 @@ fn daemon_of(
     // The commands' program, built before the daemon serves: its first start would build it
     // (cargo, seconds) on the daemon's driver, which answers nothing meanwhile, and a client
     // whose send goes unanswered a whole window past its probe timeout is let go (D180).
-    Patience::begin();
     shards_testdir::helper().unwrap();
     let (seen, rx) = mpsc::channel();
     let machine = Machine {
@@ -637,7 +605,8 @@ fn daemon_of(
             },
         );
     });
-    let (address, stopper) = patiently(&bound, "the daemon's bind");
+    let (address, stopper) = patiently(&bound, &[], "the daemon's bind");
+    let view = stopper.view();
     Daemon {
         remote: Remote {
             address,
@@ -645,7 +614,11 @@ fn daemon_of(
             known: tls::Known::Never,
         },
         stopper,
-        seen: Watch { rx, seen: Vec::new() },
+        seen: Watch {
+            rx,
+            seen: Vec::new(),
+            view,
+        },
     }
 }
 
@@ -717,6 +690,7 @@ fn run_steered(
 ) -> Pending<Ran> {
     let args: Vec<Vec<u8>> = args.iter().map(|a| a.as_bytes().to_vec()).collect();
     let (tx, rx) = mpsc::channel();
+    let (viewed, view) = mpsc::channel();
     std::thread::spawn(move || {
         let (out, err) = (Captured::default(), Captured::default());
         let request = Request {
@@ -729,23 +703,41 @@ fn run_steered(
                 let _ = steered.send(controls);
             }
         };
-        let status = client::exec(identity, remote, request, stdin, out.clone(), err.clone(), steer).unwrap();
-        let _ = tx.send((status, out.bytes(), err.bytes()));
+        let (status, _) = client::exec_with(
+            identity,
+            remote,
+            request,
+            stdin,
+            out.clone(),
+            err.clone(),
+            steer,
+            |_| {},
+            |_| true,
+            |_| {},
+            |hang_up: client::HangUp| {
+                let _ = viewed.send(hang_up.view());
+            },
+        );
+        let _ = tx.send((status.unwrap(), out.bytes(), err.bytes()));
     });
-    Pending(rx)
+    Pending(rx, view)
 }
 
-/// What a thread of a test will give.
-struct Pending<T>(mpsc::Receiver<T>);
+/// What a thread of a test's run will give, and its connection's driver's view, once made.
+struct Pending<T>(mpsc::Receiver<T>, mpsc::Receiver<net::View>);
 
 impl<T> Pending<T> {
     fn get(self) -> T {
-        run_end(&self.0, "its command's end", Duration::ZERO)
+        self.get_through(Duration::ZERO)
     }
 
     /// [`Pending::get`] of a command silent `silence` long by design.
     fn get_through(self, silence: Duration) -> T {
-        run_end(&self.0, "its command's end", silence)
+        // Given as its run begins, before its connection is made: none where its run failed first.
+        let view = self.1.recv().ok();
+        let mut patience = Patience::on(&view.iter().collect::<Vec<_>>());
+        patience.floor = silence;
+        waited(&self.0, "its command's end", patience)
     }
 }
 
@@ -901,7 +893,7 @@ fn a_streams_last_frames_and_its_end_come_at_once_and_are_all_taken() {
         let _ = tx.send((driver.local().unwrap(), sender));
         let _ = driver.run();
     });
-    let (address, sender) = patiently(&bound, "the daemon's bind");
+    let (address, sender) = patiently(&bound, &[], "the daemon's bind");
     let _stops = Stops(sender);
     let remote = Remote {
         address,
@@ -990,7 +982,7 @@ fn a_client_asked_to_send_no_more_stdin_waits_for_its_answer() {
         let _ = tx.send((driver.local().unwrap(), sender));
         let _ = driver.run();
     });
-    let (address, sender) = patiently(&bound, "the daemon's bind");
+    let (address, sender) = patiently(&bound, &[], "the daemon's bind");
     let remote = Remote {
         address,
         daemon: daemon_id.fingerprint(),
@@ -998,7 +990,7 @@ fn a_client_asked_to_send_no_more_stdin_waits_for_its_answer() {
     };
     let endless: Option<Box<dyn Read + Send>> = Some(Box::new(std::io::repeat(b'y')));
     let later = run(laptop, remote, &["anything"], endless);
-    let (conn, stream) = patiently(&asked, "the daemon's ask");
+    let (conn, stream) = patiently(&asked, &[&sender.view()], "the daemon's ask");
     // Its client sends stdin on meanwhile, to a stream stopped.
     std::thread::sleep(Duration::from_millis(200));
     sender.send(net::Command::Handler((conn, stream))).unwrap();
@@ -1028,7 +1020,7 @@ fn what_steers_a_command_passes_its_stdin_waiting_for_room() {
     let endless: Option<Box<dyn Read + Send>> = Some(Box::new(std::io::repeat(b'y')));
     let (steered, controls) = mpsc::channel();
     let later = run_steered(laptop, d.remote, &["await", go], endless, Some(steered));
-    let controls = patiently(&controls, "what steers the command");
+    let controls = patiently(&controls, &[&d.view()], "what steers the command");
     d.seen.saw(&Seen::Started(what.clone()));
     // Long enough for its pipe, and the daemon's room for its stdin, to fill.
     std::thread::sleep(Duration::from_millis(300));
@@ -1272,7 +1264,7 @@ impl RawClient {
             let _ = tx.send(sender);
             let _ = driver.run();
         });
-        let ask = patiently(&made, "the raw client's driver");
+        let ask = patiently(&made, &[], "the raw client's driver");
         ask.send(net::Command::Handler(Ask::Connect(remote.address)))
             .unwrap();
         let client = RawClient { ask, heard, stops };
@@ -1283,7 +1275,7 @@ impl RawClient {
     }
 
     fn next(&self) -> Heard {
-        patiently(&self.heard, "what the raw client hears next")
+        patiently(&self.heard, &[&self.ask.view()], "what the raw client hears next")
     }
 
     /// Opens a stream with `bytes` on it; its id.
@@ -1297,7 +1289,7 @@ impl RawClient {
         self.ask
             .send(net::Command::Handler(Ask::Open(bytes, finish, told)))
             .unwrap();
-        patiently(&id, "the stream opened")
+        patiently(&id, &[&self.ask.view()], "the stream opened")
     }
 
     fn ask(&self, ask: Ask) {
@@ -1306,7 +1298,7 @@ impl RawClient {
 
     /// Waits until the daemon has asked it to send no more of `stream`.
     fn stopped(&self, stream: StreamId) {
-        while patiently(&self.stops, &format!("{stream} stopped")) != stream {}
+        while patiently(&self.stops, &[&self.ask.view()], &format!("{stream} stopped")) != stream {}
     }
 }
 
@@ -1317,15 +1309,14 @@ impl Drop for RawClient {
 }
 
 /// Waits until `path` is there.
-fn until_there(path: &std::path::Path) {
-    let mut patience = Patience::new();
+fn until_there(path: &std::path::Path, view: &net::View) {
+    let mut patience = Patience::on(&[view]);
     while !path.exists() {
         let Some(left) = patience.left() else {
             panic!("{}", patience.out(&format!("{} there", path.display())));
         };
         std::thread::sleep(left.min(Duration::from_millis(10)));
     }
-    patience.answered();
 }
 
 /// A command refused after it started is told apart from one refused before it, which says
@@ -1532,7 +1523,7 @@ fn a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer() {
     // Gone without a word: a later attempt takes its place.
     held.ask(Ask::Vanish);
     // Each refusal is no progress of the newcomer's: refused through a whole window, it fails.
-    let mut patience = Patience::new();
+    let mut patience = Patience::on(&[&d.view()]);
     let mut attempts = 0;
     let newcomer = loop {
         attempts += 1;
@@ -1548,7 +1539,6 @@ fn a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer() {
             }
         }
     };
-    patience.answered();
     let mut named = Vec::new();
     frame::put(&mut named, Tag::Controls, &96u64.to_be_bytes()).unwrap();
     let stream = newcomer.open(named);
@@ -1659,7 +1649,7 @@ fn a_slow_join_holds_up_no_other_client() {
     let (status, out, _) = run(laptop, d.remote, &["say", "quick", "x", "0"], None).get();
     assert_eq!((status, out), (Ok(0), b"quick\n".to_vec()));
     release.send(()).unwrap();
-    assert_eq!(run_end(&joined, "the join", Duration::ZERO).unwrap(), Ok(()));
+    assert_eq!(patiently(&joined, &[&d.view()], "the join").unwrap(), Ok(()));
 }
 
 /// A machine's verdict on a key runs apart from the daemon's driver too, which acknowledges
@@ -1710,7 +1700,7 @@ fn a_slow_verdict_holds_up_no_other_client() {
     assert_eq!((status, out), (Ok(0), b"quick\n".to_vec()));
     release.send(()).unwrap();
     assert_eq!(
-        run_end(&refused, "the refusal", Duration::ZERO),
+        patiently(&refused, &[&d.view()], "the refusal"),
         Ok(Err(server::NOT_ENROLLED.to_string()))
     );
 }
@@ -1744,7 +1734,7 @@ fn a_daemon_slow_to_answer_a_fresh_client_is_waited_for() {
         let _ = tx.send((driver.local().unwrap(), sender));
         let _ = driver.run();
     });
-    let (address, sender) = patiently(&bound, "the daemon's bind");
+    let (address, sender) = patiently(&bound, &[], "the daemon's bind");
     let _stops = Stops(sender);
     let remote = Remote {
         address,
@@ -1776,7 +1766,7 @@ fn an_enrolled_clients_silent_command_lives_with_no_keep_alive() {
 /// `give_up` says to: its answer, every probe told, and what its connection saw.
 fn asked(
     remote: Remote,
-    mut give_up: impl FnMut(client::Unanswered) -> bool,
+    mut give_up: impl FnMut(client::Unanswered, Option<&net::View>) -> bool,
 ) -> (
     Result<Result<i32, String>, Error>,
     Vec<client::Unanswered>,
@@ -1789,6 +1779,7 @@ fn asked(
         terminal: None,
     };
     let mut told = Vec::new();
+    let view = std::cell::OnceCell::new();
     let (ran, seen) = client::exec_with(
         laptop,
         remote,
@@ -1800,10 +1791,12 @@ fn asked(
         |_| {},
         |unanswered| {
             told.push(unanswered);
-            !give_up(unanswered)
+            !give_up(unanswered, view.get())
         },
         |_| {},
-        |_| {},
+        |hang_up: client::HangUp| {
+            let _ = view.set(hang_up.view());
+        },
     );
     (ran, told, seen)
 }
@@ -1820,7 +1813,7 @@ fn no_daemon_answering_is_probed_until_its_caller_gives_up() {
         daemon: Identity::generate().unwrap().fingerprint(),
         known: tls::Known::Never,
     };
-    let (ran, told, seen) = asked(remote, |u| u.probes >= 3);
+    let (ran, told, seen) = asked(remote, |u, _| u.probes >= 3);
     let said = ran.unwrap_err().to_string();
     assert!(said.contains("no shards daemon answered"), "{said}");
     assert!(told.len() >= 2, "{told:?}");
@@ -1906,8 +1899,14 @@ fn a_closed_port_refuses_its_client_at_once() {
         daemon: Identity::generate().unwrap().fingerprint(),
         known: tls::Known::Never,
     };
-    let mut patience = Patience::new();
-    let (ran, _, seen) = asked(remote, |_| patience.left().is_none());
+    // Given up once its own connection's patience is out ([`Patience`]), made at its first probe.
+    let mut patience: Option<Patience> = None;
+    let (ran, _, seen) = asked(remote, |_, view| {
+        patience
+            .get_or_insert_with(|| Patience::on(&view.into_iter().collect::<Vec<_>>()))
+            .left()
+            .is_none()
+    });
     // Refused, not given up: a caller's giving up says "no shards daemon answered".
     let said = ran.unwrap_err().to_string();
     assert!(said.contains("refused"), "{said}");
@@ -1938,7 +1937,7 @@ fn a_daemon_reached_before_that_answers_nothing_runs_out_and_is_probed_on() {
     let start = Instant::now();
     // Its caller gives up at the first probe told past twice its slowest handshake: well past
     // its run-out, which comes a probe timeout and its slowest handshake in.
-    let (ran, _, seen) = asked(remote, |u| u.waited >= path.handshake * 2);
+    let (ran, _, seen) = asked(remote, |u, _| u.waited >= path.handshake * 2);
     let took = start.elapsed();
     let said = ran.unwrap_err().to_string();
     assert!(said.contains("no shards daemon answered"), "{said}");
@@ -2224,7 +2223,7 @@ fn a_process_frozen_past_every_window_keeps_its_connections() {
         .status()
         .unwrap();
     assert!(frozen.success());
-    let ran = run_end(&ended, "the trickled command's end", Duration::ZERO);
+    let ran = patiently(&ended, &[&d.view()], "the trickled command's end");
     assert_eq!(ran, Ok(Ok(0)));
     assert_eq!(out.bytes().len(), 400 << 10);
 }
@@ -2343,7 +2342,7 @@ fn a_client_frozen_mid_import_past_its_daemons_window_keeps_its_connection() {
     d.seen.saw(&Seen::Unheard("laptop".into()));
     let told = began.elapsed();
     drop(frozen);
-    let output = run_end(&ended, "the frozen client's end", Duration::ZERO);
+    let output = patiently(&ended, &[&d.view()], "the frozen client's end");
     let said = String::from_utf8_lossy(&output.stdout);
     let stalls = d
         .seen
@@ -2412,7 +2411,7 @@ fn what_a_command_of_a_connection_gone_writes_reaches_no_other() {
         let raw = RawClient::new(laptop, d.remote);
         let outlives: Vec<&str> = ["outlives-hangup"].into_iter().chain(stale).collect();
         raw.open(exec(&outlives));
-        until_there(&ready);
+        until_there(&ready, &d.view());
         raw.ask(Ask::Close);
     }
     d.seen.saw(&Seen::HungUp(stale.join(" ")));
