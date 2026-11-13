@@ -54,8 +54,10 @@ const SWEEP: Duration = Duration::from_secs(60);
 ///   however slowly the answer goes as a whole. What the FIFO takes at once waits on no
 ///   client and teaches nothing. Before any take, the daemon follows the client alone:
 ///   its end, its FIFO's. On Windows a named pipe says nothing of its room before a write,
-///   so no take is seen there, and a closed daemon follows its clients' ends alone (PM
-///   M549). It was twice the longest a piece took, at least TCP's R2 (100 s).
+///   so its answer goes in parts no larger than its line's outbound quota, and a part whose
+///   write pends is the take, from its pend to its completion (`slots::named`; D185). It was
+///   twice the longest a piece took, at least TCP's R2 (100 s); and on Windows, no take,
+///   a closed daemon holding a client that took nothing until it ended (PM M549).
 #[derive(Debug, Default)]
 pub(crate) struct Seen {
     /// The slowest a request's rest was read whole in, from its first byte, of those its

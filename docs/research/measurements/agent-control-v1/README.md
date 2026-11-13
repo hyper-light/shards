@@ -294,3 +294,123 @@ limit saying the record's failed write first (no word of it since).
   member that has ended. Its macOS, Windows and aarch64 runs with it; the slice's guard
   mutations (`member_spec`'s refusal, `EXEC_TOLD`'s `STARTED`, the pump's buffer before its
   record), R15 excluding them from an implementer.
+
+## Goal 58's steps 5 and 6: members' own lanes
+
+Kiln plan `01a1d2c733ea7731bb3204cad78bc94d`, items 5 and 6: "the controller signals a member and
+reads its state and end; refusals typed", and "a harness's own terminal UI driven over the
+lanes with resize". D238's "Members' own lanes", "The controller's members" and "The daemon's
+member host" record what was built; D244's daemon's run is amended.
+
+### Identity
+
+| | |
+|---|---|
+| Policy | origin/main `e74cee6b7`, read again after the 15:06Z restart at `dc7f45bc6` (same hashes): `AGENTS.md` `f66d304c…`, `docs/development-rules.md` `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`, `docs/development-evidence.md` `61613a24…`; role implementer, a child of goal 58's agent (`a5cbff00b30d2e4f0`), POLICY_READ sent to ROOT |
+| Source | branch `p/s11-members-v1`, based on origin/main `845d7eb93`; WIP commits squashed at landing (below) |
+| Owned | `crates/remote/src/{frame.rs,control.rs,control/exec.rs,control/drive.rs}`'s member lanes; `crates/shards/src/daemon/managed/members.rs` and its hooks in `managed.rs`, `managed/execs.rs`, `daemon.rs`; abi's `builtin::SIGNAL` and `members::signal_args`; init's `SIGNAL` built-in (`run.rs`, `managed.rs`'s two accessors), agreed with goal 75's agent (no run or IPC kind, nothing in its signal-connection dispatch) |
+| Numbers | frame tags `Member` 8, `Running` 43, `Steered` 44; `Unsteered` 19 to 22; `builtin::SIGNAL` 22, `SIGNAL_ENDED` 3, `SIGNAL_UNKNOWN` 2 (reservations.md); no D, no image channel version, no run or IPC kind |
+
+### Decision (R02, R03, R05, R12)
+
+- *Signal by init's built-in*, not a run kind of its own (goal 58's agent approved,
+  2026-11-13): D244's `RESIZE` built-in sizes a member's terminal already, so both steers share
+  one host path (`members::run_builtin`) and one init path (its built-in dispatch); no run or IPC
+  kind, nothing in the VM process. The kept alternative, a `MEMBER_SIGNAL` on the signal
+  connection answered on the workload connection, is cheaper per signal and is the one to
+  measure against (owed, below).
+- *Its target*: the member's command, PID 2 under its reaper, as an OCI runtime's kill signals
+  its container's process (runtime-spec runtime.md, "kill"). Not the reaper: from init's
+  namespace a signal reaches a namespace's init only for a handler it has (pid_namespaces(7)),
+  and the reaper (init managed.rs `reaper`) is sealed with SIGCHLD's alone, its seccomp filter
+  allowing no signal call of its own.
+- *Race-free*: each candidate is opened as its `/proc/PID` directory, its status read through it
+  and its signal sent with pidfd_send_signal(2) on it, which takes such a directory
+  (pidfd_send_signal(2), "a file descriptor that refers to a process ... obtained by opening a
+  /proc/pid directory"); a path descriptor (`O_PATH`) would not do, as `fdget` skips one. The
+  candidates are the member's cgroup's (`cgroup.procs`, cgroup v2), on every guest kernel members
+  need, not `/proc/PID/task/TID/children` (CONFIG_PROC_CHILDREN, which shards' kernels have but a
+  guest kernel a person configures (D28) need not).
+- *Answers per steer*: OCI's kill of a container that does not run must fail (runtime.md), which
+  Hex's member `signal` maps onto (`Awaits(MemberSignal)`), and R04 asks init's typed refusal to
+  reach its caller; an exec's steers stay told taken, unchanged.
+- *Ends as they come*: `member-ends` asked of a run with agent control, its init's
+  `MEMBER_ENDED` (already relayed by its VM process) kept in the run's end table, a condvar its
+  lanes wait on (R05: an event, no probe).
+- *No constant chosen* (R03): every new number is the protocol's own next (tags, codes, the
+  built-in) or a cited bound (ESRCH, ENOENT, NSIG, PID 2); every charge is measured as an exec's is.
+
+### States and refusals (R01, R04, R06, R07, R13)
+
+The endpoint's lane: `Asking`, `Pending`, `Running` (each steer handed, then awaited, then its
+answer staged), `Exited` (told once no steer awaits its answer), `Told`. Its frames are staged
+only as the one before has gone whole. Refusals typed at each layer: the lane's (`Reason`), the
+host's (`Unstarted::Capacity`/`Failed`), each steer's (`Unsteered::Ended`/`Terminal`/`Capacity`/
+`Failed`), init's exit by kind (`SIGNAL_ENDED`, `SIGNAL_UNKNOWN`). No `unwrap`, `expect`, index
+or unchecked arithmetic in production code; clippy with the workspace's denied lints.
+
+### Found and fixed (R09, R10)
+
+`exec_turn` staged an exec's `Exit` over its `Started` where both came in one turn (a silent exec
+whose outputs finished at once), which its controller took for a broken protocol. Reproduced
+before the fix with the test alone on main (`an_exec_that_starts_and_exits_at_once_is_told_both_in_order`
+on `f2f4517ba`, which is `845d7eb93` and that test): `left: Exit(0)`, `right: Started(0)`, 1 of 1
+failed (adas-mac-studio-3.local, macOS 26.2 arm64, rustc 1.98.1; [log](logs/members-red-macos-arm64.log)).
+Green with the fix (below). A second liveness defect, of this slice's own and found before it
+landed: a member's exit due once its last answer had gone was not staged until another event woke
+the endpoint (the controller's test waited on it unbounded); fixed by staging each next frame as
+the one before goes whole, held by `a_members_lane_tells_it_runs_answers_each_steer_and_tells_its_end`.
+
+### Light tests and results
+
+Each on the merged tree `e8f578800` (`8bb81584d` and `991d741e9` merged with origin/main
+`740fa3726`), from a clone of a `git bundle` of the branch over `845d7eb93`, in a target directory
+of this lane's own:
+
+| Host | Commands | Result |
+|---|---|---|
+| adas-mac-studio-3.local, macOS 26.2 arm64, rustc 1.98.1 | `cargo test -p shards-remote --lib control`; `cargo clippy -p shards-remote --all-targets -- -D warnings`; `cargo clippy -p shards --all-targets -- -D warnings`; `cargo test -p shards --bin shards -- daemon::managed`; `cargo test -p shards --bin shards -- every_entry_the_composers_spell` | 54 passed; clean; clean; 41 passed, 6 ignored (ROOT's native fixtures); 1 passed ([log](logs/members-macos-arm64.log)) |
+| adacachy2, Linux x86_64, rustc 1.98.1, `x86_64-unknown-linux-musl`, nice 10 | `cargo test -p shards-init --target … member_signal_tests`; `cargo test -p shards-abi --target … members`; `cargo clippy -p shards-init -p shards-abi --target … --all-targets -- -D warnings` | 4 passed (the namespace test ran: util-linux 2.42.4, unprivileged user namespaces on); 18 passed; clean ([log](logs/members-linux-x86_64-musl.log)) |
+
+Red before green: [members-red-macos-arm64.log](logs/members-red-macos-arm64.log), above. rustfmt
+clean on every file changed.
+
+### R01–R16 (this slice)
+
+| Rule | Evidence / gap |
+| --- | --- |
+| R01 | No panic path in production code; clippy with the workspace's denied lints on macOS arm64 (shards-remote, shards) and Linux musl (shards-init, shards-abi). |
+| R02 | D238's "The signal's alternatives"; OCI runtime-spec runtime.md ("kill"), pid_namespaces(7), pidfd_send_signal(2), proc(5) `NSpid`, cgroup-v2 `cgroup.procs`, Hex's shards-image-class.md §2 (`Awaits(MemberSignal)`). |
+| R03 | No chosen constant: protocol numbers next in their own sequences; ESRCH, ENOENT, NSIG, PID 2 cited; charges measured (D238's literals). |
+| R04 | Lane stages and every refusal typed (`Unsteered`, `Unstarted`, `Reason`, init's exits by kind); callers match variants. |
+| R05 | One new module (the daemon's member host) at the existing exec seam; the end table is an event (a condvar its lanes wait on), no probe, no cache. |
+| R06, R07, R13 | A member's lane is the exec lane's machinery with one optional `Steering`; comments carry sources and invariants. |
+| R08, R14 | No performance claim; the built-in exec per steer is unmeasured, owed to ROOT. |
+| R09, R10 | The exec lane's `Started` overwritten: reproduced red, green after (above). The member's late exit: a defect of this slice's own, before it landed, held by its test. Guard mutations: ROOT's (below). |
+| R11, R12 | One implementation for every target (Rust over D180's driver; init's Linux code for both guest architectures); tested on macOS arm64 and Linux x86_64 musl; the rest of the seven targets owed to CI on main. |
+| R15 | Implementer: light tests only, no real VM. |
+| R16 | Build output under `~/g121-tmp/s11-members` on each runner, removed after landing. |
+
+### Owed
+
+- ROOT's real-VM runs (the run's endpoint over a real microVM), in `crates/shards/tests/managed_output.rs`
+  beside the exec host's owed run: a run with `--annotation shards.control=true` and
+  `--annotation shards.output=harness:NAME`, its controller dialed at the metadata's `control` and
+  `vm` lines; `Execs::member` of the harness (`Member::Running`), `MemberSteering::signal(15)`
+  taken and the harness's end read from `MemberEnd::wait` (143 for a command that dies of it, or its
+  own status); a member whose command has ended refused `Ended`; on Linux KVM, macOS HVF and WHP.
+- ROOT's real-VM terminal run (step 6's acceptance): `--annotation shards.terminal=harness:NAME`
+  with `shards.stdin` and `shards.output` naming it; a resize over its lane, then `stty size` typed
+  into its terminal and read back from its stdout; a terminal UI's redraw at the new size.
+- R14: the built-in exec per steer, against a signal on the signal connection (the alternative
+  kept): n, p50/p90/p99/max of a signal's answer and a resize's, from the controller's side.
+- Guard mutations, ROOT's: the endpoint's one steer in flight (`Steering::ready`), the staging
+  of each next frame as the one before goes (`exec_turn`'s loop), the answer before the exit
+  (`stage`'s `awaiting`), init's PPid and NSpid checks (`command_state`), its zombie, its
+  `/proc` directory as the pidfd (the test's PID 3 sibling holds the target), and the daemon's
+  `member-ends` ask.
+- api-run (D252): its endpoint admits no exec, so no member lane yet; Hex's `MemberSignal` over
+  an orchestrator's run needs api-run to host member lanes with this host (goal 75's, or this
+  goal's next).
+- Hex and kiln: shards-remote's `control::Fault` gains `Unsteered`; a re-vendored caller that
+  matches `Fault` exhaustively must add the arm.

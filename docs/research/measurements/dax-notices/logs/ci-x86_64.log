@@ -1,0 +1,76 @@
+# containers.rs a_volumes_large_files_go_through_its_dax_window on CI's x86_64 runners (ci.yml on main),
+# before and after D235's notices (c654d53a3). Excerpts of each job's log (gh api .../jobs/ID/logs),
+# colours and timestamps stripped. PM M550.
+
+== d35c4cf79 run 43303460342 job 131480418603 (x86_64-unknown-linux-gnu, ubuntu-24.04)
+test a_volumes_large_files_go_through_its_dax_window ... ok
+
+== d35c4cf79 run 43303460342 job 131480418748 (x86_64-pc-windows-msvc, windows-2022)
+test a_volumes_large_files_go_through_its_dax_window ... ok
+
+== 1145bd3f2 run 43347049202 job 131628813601 (x86_64-unknown-linux-gnu, ubuntu-24.04)
+test a_volumes_large_files_go_through_its_dax_window ... FAILED
+---- a_volumes_large_files_go_through_its_dax_window stdout ----
+
+thread 'a_volumes_large_files_go_through_its_dax_window' (122725) panicked at crates/shards/tests/containers.rs:1959:5:
+assertion `left == right` failed
+  left: "dax /v/pages no\n"
+ right: "dax /v/pages yes\n"
+
+failures:
+    a_volumes_large_files_go_through_its_dax_window
+
+test result: FAILED. 153 passed; 1 failed; 10 ignored; 0 measured; 0 filtered out; finished in 403.05s
+
+== 1145bd3f2 run 43347049202 job 131628813177 (x86_64-pc-windows-msvc, windows-2022)
+test a_volumes_large_files_go_through_its_dax_window ... FAILED
+---- a_volumes_large_files_go_through_its_dax_window stdout ----
+
+thread 'a_volumes_large_files_go_through_its_dax_window' (1300) panicked at crates\shards\tests\containers.rs:2057:5:
+status Some(0) after 237.8767ms
+--- stdout
+<4>[    3.044461] WARNING: CPU: 2 PID: 657 at fs/dax.c:415 dax_folio_put.isra.0+0x118/0x130
+kmsg fs/dax.c 1
+
+--- stderr
+
+== f5c0c8b04 run 43435318858 job 131918781479 (x86_64-unknown-linux-gnu, ubuntu-24.04)
+test a_volumes_large_files_go_through_its_dax_window ... FAILED
+---- a_volumes_large_files_go_through_its_dax_window stdout ----
+
+thread 'a_volumes_large_files_go_through_its_dax_window' (130659) panicked at crates/shards/tests/containers.rs:1941:5:
+assertion `left == right` failed: status Some(1) after 43.763206ms
+--- stdout
+
+--- stderr
+hold:/v/held:3145728:/v/held-go: failed to fill whole buffer
+
+  left: ""
+ right: "hold /v/held 3145728 0\n"
+
+== f5c0c8b04 run 43435318858 job 131918781677 (x86_64-unknown-linux-musl, ubuntu-24.04)
+test a_volumes_large_files_go_through_its_dax_window ... FAILED
+---- a_volumes_large_files_go_through_its_dax_window stdout ----
+
+thread 'a_volumes_large_files_go_through_its_dax_window' (91041) panicked at crates/shards/tests/containers.rs:1941:5:
+assertion `left == right` failed: status Some(1) after 48.827492ms
+--- stdout
+
+--- stderr
+hold:/v/held:3145728:/v/held-go: failed to fill whole buffer
+
+  left: ""
+ right: "hold /v/held 3145728 0\n"
+
+== f5c0c8b04 run 43435318858 job 131918781490 (x86_64-pc-windows-msvc, windows-2022)
+test a_volumes_large_files_go_through_its_dax_window ... FAILED
+---- a_volumes_large_files_go_through_its_dax_window stdout ----
+
+thread 'a_volumes_large_files_go_through_its_dax_window' (1472) panicked at crates\shards\tests\containers.rs:2057:5:
+status Some(0) after 24.7165ms
+--- stdout
+<4>[    3.408285] WARNING: CPU: 3 PID: 659 at fs/dax.c:415 dax_folio_put.isra.0+0x118/0x130
+kmsg fs/dax.c 1
+
+--- stderr
+

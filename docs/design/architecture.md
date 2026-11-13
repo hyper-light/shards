@@ -7790,9 +7790,31 @@ process.
     than the slowest take seen. One that reads, however slowly, ends each wait as it reads.
   - *Its cold start*: before any take, a client holds a closed daemon until it ends (its
     FIFO's end).
-  - *Windows*: a named pipe says nothing of its room before a write, so its writes wait in
-    WriteFile and no take is seen; a closed daemon follows its clients' ends alone there
-    (owed: a signal of a named pipe's outbound room).
+  - *Windows*: a named pipe says nothing of its room before a write, and
+    `NtQueryInformationFile`'s `FilePipeLocalInformation` is no room either: its
+    `WriteQuotaAvailable` is the outbound quota less what is charged to it (ReactOS npfs,
+    `drivers/filesystems/npfs/fileinfo.c` `NpQueryPipeLocalInfo`), which a read the client
+    has pending is charged too (`read.c` `NpCommonRead` queues it `Buffered`, of its whole
+    length, and `datasup.c` `NpAddDataQueueEntry` charges a buffered entry what the quota has
+    free), and which a stalled write takes as the client frees it (`datasup.c`
+    `NpCompleteStalledWrites`): a client waiting in a read of a quota or more, as a frame's
+    payload is read, shows none, though a write would go at once into its read; and while a
+    write of the daemon's waits, it stays none however the client reads. Cygwin met the
+    first: "WriteQuotaAvailable is unreliable ... if a pipe read is currently pending,
+    WriteQuotaAvailable on the write side is decremented by the number of bytes the read
+    side is requesting" (`winsup/cygwin/select.cc` `pipe_data_available`, which works round
+    it by setting the pipe nonblocking for a moment); and Wine reports its whole quota,
+    unreduced ("FIXME: Needs to be reduced by ReadDataAvailable at the other end",
+    `server/named_pipe.c` `pipe_end_get_file_info`). What says room is the write's own pend:
+    an overlapped WriteFile that its pipe holds whole, or hands to a pending read, finishes at
+    once, and one it cannot pends until the client has taken enough (npfs above; Wine's
+    `reselect_write_queue` completes a pending write once the reader's unread bytes fit its
+    buffer). So an answer is written in parts no larger than its line's outbound quota
+    (GetNamedPipeInfo's out buffer size, `LINE_BUFFER`), each waiting on the client for no
+    more than a quota's worth of its reading: a part that finishes at once teaches nothing,
+    and one that pends is a take, from its pend (`ERROR_IO_PENDING`, `pipe::write_telling`)
+    to its completion (ROOT, 2026-11-13). WriteQuotaAvailable is no measure of a client's
+    room; it was a closed daemon following its clients' ends alone there, no take seen.
   - It was twice the longest a piece of 64 KiB took, at least TCP's R2 (100 s, RFC 1122
     §4.2.3.5).
   A slot whose answer's last word is its client's holds it no more: the word is in its FIFO
@@ -8765,7 +8787,11 @@ stores.
   goes through FUSE: below 64 KiB a mapping's round trip to the share process and host
   mmap cost a first read more than it saves, and a 4 KiB file's mapping held 23 to 28 KiB
   more of its VM's memory than FUSE's page. Linux on arm64 is unmeasured: no host here
-  runs KVM on it. FUSE_INIT says the host's page size (map_alignment).
+  runs KVM on it. FUSE_INIT says the host's page size (map_alignment). The guest's kernel
+  decides a file's DAX as it makes the file's inode (fs/fuse/dax.c `fuse_dax_inode_init`)
+  and, told another later, lets the inode go once unused (`fuse_dax_dontcache`): a file the
+  host makes while its guest runs, looked up by its notice (D235) before it is 1 MiB long,
+  goes through FUSE until its inode is made again (PM M550).
 - On Linux each of a VM's windows (its shares' and its join share's) is no longer than
   lets every range of them be mapped at once within the host's `vm.max_map_count`
   (`share_window_bound_mib`): a range of a file shorter than it takes two of its VM
@@ -8789,15 +8815,24 @@ stores.
   gives zeros there, and a vCPU that spun there runs on. HVF's abort and arm64 KVM's
   EFAULT have the window follow the file at once. Until the guest asks the file's size
   again it reads zeros there, as through FUSE it may read stale bytes from its page cache.
+  A cut beneath a directory its share watches is a notice (D235): the guest's init touches
+  the file, and the SETATTR's reply tells its kernel the size, so that a reader there reads
+  zeros only until the notice lands, and then the file's end; a file moved out of the share
+  and then cut is told as its name goes, its cut never, and its guest reads zeros there
+  until it asks (PM M550).
 - An OPEN of a file the window maps, and a CREATE that opens one there already, is told
   to keep what the guest has of it (FOPEN_KEEP_CACHE): Linux drops a file's cached pages at
   each open, and for a mapped file those are DAX entries its processes may still map, which
   it lets go of first and unmaps after, its 2 MiB pages' counts going wrong, and every build
   of the benchmark's cargo workload ended in SIGBUS (M274). A mapped file has no page cache
   of the guest's to go stale. A size change another process makes, seen in the file's
-  attributes, takes the same path in the guest kernel, which shards' kernel's patch 0007
-  closes (resources/kernel/patches): a DAX file's entries left to its layouts' own
-  breaking.
+  attributes or in the reply to a SETATTR that sets no size (each notice's touch, D235),
+  takes the same path in the guest kernel, which shards' kernel's patch 0007 closes
+  (resources/kernel/patches): a DAX file's entries left to its layouts' own breaking. The
+  SETATTR's is closed from the kernel inputs 54fba99afaee on, whose release and pin are owed:
+  until then a notice of a size change to a file a guest process maps in 2 MiB pages lets
+  go of entries the process still maps, `fs/dax.c:415 dax_folio_put` in its guest's log
+  (PM M550).
 - A mapping is charged its file's bytes in its range against the microVM's I/O limits
   (D178) as it is made, once its file's size says them: a 5,000-byte file's range 5,000
   bytes, not the range's 2 MiB, which every file's last range was charged before, and a
@@ -24115,6 +24150,13 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
   - *Echoes:* on Linux and Windows the share process's own writes for the guest are watched
     too, each told back as one `IN_MODIFY` more (macOS's `IgnoreSelf` leaves them out), as
     Docker's osxfs delivers "some events multiple times".
+  - *A DAX file's guest* (D189, PM M550): a touch's SETATTR reply tells the guest's kernel
+    the file's size as the host has it, so a reader past a host's cut reads the file's end
+    once the notice lands; the kernel dropped a DAX file's entries there unbroken
+    (`fuse_do_setattr`) until shards' patch 0007 covered it (kernel inputs 54fba99afaee,
+    release and pin owed); and a file the host is still writing, looked up by its notice
+    before it is 1 MiB long, is no DAX file until its guest makes its inode again (owed:
+    weighed with how a notice tells of a name the guest has not looked up).
   - *Linux's instances:* one inotify instance a share process (a run that shares any
     directory, and each plug), of the user's 128 by default, of which a desktop's programs
     held 101 (PM M257); a share process given none tells nothing, and says so in its log.
@@ -24282,7 +24324,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, and each end's word on its TLS built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -24426,7 +24468,8 @@ the microVM's identity, who is refused, and what a lane says. The control lane (
 inspect) and the terminal lane (attach, TTY) wait on step 6's member exec, attach and TTY. Step
 10 has decided for the host (above). The endpoint runs in the daemon and holds each microVM's
 own key, and the key's SHA-256 reaches the controller in the run's managed metadata. The log
-lane, which also waited on step 10, is step 11's to build.
+lane, which also waited on step 10, is step 11's to build. Exec lanes and members' own lanes
+(signal, inspect, a terminal's size) are built now, below.
 
 *The connection.* QUIC over D180's driver and TLS (`net.rs`, `tls.rs`): TLS 1.3 alone, D239's
 provider (TLS13_AES_256_GCM_SHA384 alone, the hybrid ML-KEM groups), early data off, on an
@@ -24711,6 +24754,93 @@ it, on a thread of its own:
   nothing it does waits on a controller that has gone. Its streams' controls are held until its
   steering closes.
 
+*Members' own lanes* (goal 58's steps 5 and 6; `control::exec::Kind::Member`). A member itself
+is a lane of its own, carrying its state, its end and its steering as an exec's lane carries an
+exec's, and making no stream: the member's own are step 5's already.
+- *The ask*: the lane's first frame is `Member`, the scope alone. It is refused as an exec's ask
+  is: by an endpoint that admits no exec, for another run (`Scope`) or generation (`Stale`), or
+  for a member it serves no stream of (`Scope`). One host serves both kinds of lane: the endpoint
+  hands it an `exec::MemberStart` on `Served::members`.
+- *Its state*: once the run has started, the host says the member runs, and the lane is told
+  `Running`, naming the member. A member that ended before the ask is told its `Exit` at once.
+  A lane the host serves none of is told why (`Unstarted`: `Capacity` where the run's budget has
+  no room for the lane, else `Failed`).
+- *Its steering, each steer answered*: a signal (`1..=NSIG`) or a resize, D180's frames as an
+  exec's are, one in flight. The endpoint reads the next once the last is answered (`Steered`:
+  0, or a typed `Unsteered`: `Ended` where the member's command has ended, `Terminal` for a
+  resize of a member with no terminal of its own, `Capacity`, `Failed`). An exec's steers are
+  told taken; a member's are answered. OCI's kill of a container that does not run must fail
+  (runtime-spec runtime.md, "kill"), and Hex's `signal` of a member maps onto that (Hex
+  `docs/design/shards-image-class.md` §2, `Awaits(MemberSignal)`); init refuses such a signal
+  typed, and the refusal reaches the controller.
+- *Its end, as it comes*: `Exit`, with the member's status, once its init says its population
+  has ended (D231's `MEMBER_ENDED`). It is told only after any steer its host was handed has
+  been answered. The member's life is its run's: a lane let go (its exit told, or its
+  connection gone) closes its host's steering and ends nothing.
+- *A lane's frames, in order* (exec lanes too): each told frame is staged only once the one
+  before it has gone whole, and the next one due is staged at once (a member's answer, then its
+  exit, which nothing else would wake the endpoint for). Before this, an exec whose host said
+  `Started` and then `Exited` within one of the endpoint's turns, its outputs finished with
+  nothing written, had its `Started` overwritten by its `Exit`, which its controller took for a
+  broken protocol. Reproduced red on main `845d7eb93` with the test alone
+  (`an_exec_that_starts_and_exits_at_once_is_told_both_in_order`: `Exit(0)` where `Started(0)`
+  was due, adas-mac-studio-3.local, macOS arm64), green after.
+
+*The controller's members* (`Execs::member`, `Member`, `MemberControl`). `Execs::member` gives
+`Member::Running(MemberControl { steering, end })`, or `Member::Ended(status)` for a member that
+ended before its lane asked, or a fault, typed. Steering and end are separate handles, so that a
+caller can wait for the end on one thread and steer from another.
+`MemberSteering::signal` refuses a signal outside `1..=NSIG` before sending it; it and `resize`
+each wait for the answer, with `Fault::Unsteered` for a refusal and `Unsteered::Ended` for every
+steer once the end has come. `MemberEnd::wait` gives the member's status.
+
+*The daemon's member host* (`daemon/managed/members.rs`).
+- *Its ends*: a run that asks for agent control asks `member-ends` (abi `run::members::ENDS`,
+  in D257's registry), so its init says each member's end. Its VM process already relays
+  `MEMBER_ENDED` (D231, warm.rs `member_ended`). The daemon keeps each end in the run's end table
+  (`members::Ends`), whose condvar wakes every lane waiting on it: an end is told as it comes, and
+  no lane polls for it. The run's end closes the table, and every wait with it.
+- *Its lanes*: each lane gets a thread of its own once its run has started (`await_start`). It
+  is charged to the run's budget while it is open: its windows at the endpoint
+  (`exec::member_lane_bytes`) and its record here. It is told the member's end at once where the
+  member has ended, else `Running`. A thread of its own takes its steering before `Running` is
+  told, so that no steer goes unanswered.
+- *Its steering*: `Ended` for a member whose end has been told, `Terminal` for a resize of a member
+  with no terminal of its own. Otherwise a steer is one of init's built-ins: `SIGNAL` with the
+  member and the signal, or D244's `RESIZE` with the member and its size. Each runs as the
+  daemon's own built-ins do (`hand_exec`, no client's exec and no exec event, `EXEC_TOLD`), once
+  the run has started and never while it is paused. While it runs it is charged for what it
+  holds, measured as an exec's is (its connection's queues at both ends, and its pipes), and
+  refused `Capacity` where the budget has no room. Its answer comes from its exit: 0 is taken,
+  `SIGNAL_ENDED` is `Ended`, anything else `Failed`, with init's words logged.
+- *A member's own terminal* (D244, goal 58's step 6): `shards.terminal=KIND:NAME,...` names the
+  members given one, each one that runs a program, once, as `shards.stdin` names inputs. It
+  needs `shards.control=true`, since its size comes only over the member's lane; without it the
+  run is refused, typed. The run's setup gives each such member `member-terminal=N`: init holds
+  its master, shows it as the member's stdout channel, types its owner's stdin into it
+  (`shards.stdin`), and sizes it as the lane's resize asks.
+- *Init's `SIGNAL`* (abi `run::builtin::SIGNAL`): init signals the member's command, PID 2 under
+  its reaper, not the reaper itself. From init's namespace a signal reaches a namespace's init
+  only for a handler it has (pid_namespaces(7)), and the reaper is sealed with SIGCHLD's alone;
+  an OCI runtime's kill likewise signals its container's process. Init finds the command among
+  the member's cgroup's processes (`cgroup.procs`). Each is opened as its `/proc/PID`
+  directory, through which its status is read (proc(5): `PPid` the reaper, `NSpid` its PID and 2
+  in the reaper's namespace), and which pidfd_send_signal(2) takes. So the process checked is
+  the one signalled, whatever PIDs are reused in between. A command found a zombie has ended.
+  Refusals exit by kind, as `DEVICE_BUSY` types DEVICE's exit: `SIGNAL_ENDED` (ESRCH's number)
+  where the member's command has ended or init runs it no more, `SIGNAL_UNKNOWN` (ENOENT's) for
+  a member that never started, and 1 for anything else.
+- *Its cost, unmeasured*: one built-in exec per steer (a connection to the VM process, the
+  guest's dial of `EXEC_PORT`, a fork of init's). Signals and resizes come at a person's or an
+  orchestrator's pace; their real-VM cost is owed to ROOT (R14).
+
+*The signal's alternatives* (R02). (a) A run-protocol kind of its own, a member's signal on the
+signal connection answered on the workload connection, through an IPC kind its VM process
+relays: cheaper per signal, but a second path beside D244's `RESIZE` built-in for the other
+steer, and changes in three processes. (b) Init's built-in, decided (goal 58's agent,
+2026-11-13): one host path and one init path for both steers (R12), no run or IPC kind, and
+nothing in the VM process or init's signal-connection dispatch.
+
 *Each end's word on its TLS* (ROOT, 2026-11-13: step 34 checks every link's negotiated suite
 from both its ends). The controller opens one lane on each connection whose first frame is
 `Control`, its tag alone; the endpoint answers `Negotiated`, the cipher suite and the key
@@ -24773,6 +24903,43 @@ a guest's refusal is typed by its class; a pipe's buffer is measured or bounded
 `STARTED`, or `EXEC_UNSTARTED` with its guest's class and words before its end, and one not told
 hears neither.
 
+Members' own lanes, tested in `crates/remote` (`control::tests::lanes`, over loopback):
+- a member's lane is told the member runs, naming it;
+- each steer reaches its host in turn and is answered, a refusal typed;
+- an end its host says while a steer awaits its answer is told after that answer, then the lane
+  ends and its host's steering with it;
+- asks for another member, generation or run are refused alone, typed;
+- a member that ended before is told its end at once, and one its host serves none of is told
+  why;
+- an endpoint that runs no exec refuses a member's lane `Scope`, and a lane gone with its
+  connection closes its steering;
+- through the controller, `Execs::member` drives all of it: a signal no guest has is refused
+  before it is sent, and every steer after the end is refused `Ended`;
+- an exec that starts and exits in one turn is told both, in order (red on main first, above).
+
+The codecs (`control::exec::tests`): a member's ask, `Running` and each `Steered` read back; an
+answer of no code is refused; the codes are apart from an exec's and a lane's; and a member's
+lane's windows are its own alone.
+
+In the daemon (`daemon::managed::tests`), the member host runs through the run's endpoint and
+the production controller, with a stand-in VM process. The lane is told the member runs and is
+charged while open. A signal goes as `SIGNAL` with the member and the signal, its setup and user
+empty: taken at exit 0, refused `Ended` at `SIGNAL_ENDED`. A resize of a member with no terminal
+is refused `Terminal`, handing nothing. The end is told as `MEMBER_ENDED` says it, and every
+steer after is refused `Ended`. A member ended before is told so, a lane the budget has no room
+for is refused `Capacity`, and every charge is given back. `shards.terminal` names members as
+`shards.stdin` does. `members::tests`: the end table tells a waiter, keeps an end for a later
+ask, ends a wait at the run's end or as its lane goes, and refuses a second end or a member the
+run lacks.
+
+abi (`members::tests::a_signal_says_its_member_and_number`) and init (`run::member_signal_tests`):
+- a member's command is known by its status, and a zombie has ended;
+- refusals exit by kind;
+- a member that never started, or arguments that are no signal, are refused;
+- on a real user and PID namespace that unshare(1) makes unprivileged, its init's child of PID 2
+  is found among its processes and signalled alone while its sibling of PID 3 runs on, and none
+  is found once it has ended.
+
 Record:
 [agent-control-v1](../research/measurements/agent-control-v1/README.md).
 
@@ -24814,6 +24981,13 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | `EXEC_TOLD` 4; `EXEC_UNSTARTED` 96 | `EXEC_RUN`'s flag after `EXEC_DETACHED` 2; the IPC's kind after `RATED` 95 (D247) |
 | An exec's charge | what it holds, each part measured (its records and buffers, its lanes' windows, its connection's queues, Linux's and Windows' pipes) or its kernel's own bound (macOS's pipes, `BIG_PIPE_SIZE` 64 KiB, xnu-12377.101.15 bsd/sys/pipe.h l. 80) |
 | SIGHUP 1; EPIPE 32, EIO 5 | Linux's (include/uapi/asm-generic/signal.h; errno-base.h), as the guest takes them |
+| Frame tags `Member` 8, `Running` 43, `Steered` 44 | this protocol's own, after `Mcp` 7 (D254) and `Cut` 42 (D176) |
+| `Unsteered` 19, 20, 21, 22 | this protocol's own, after `Unstarted`'s 16 to 18 |
+| A member's lane's windows: its stream and the next ask's, one steer read, one frame told | an exec's lane's own (`exec::lane_added`), as it makes no stream |
+| One steer in flight, each answered | as step 5 has one record in flight |
+| `builtin::SIGNAL` 22 | the next after `RESIZE` 21 (D244) |
+| `SIGNAL_ENDED` 3, `SIGNAL_UNKNOWN` 2 | ESRCH's and ENOENT's numbers (include/uapi/asm-generic/errno-base.h), as `DEVICE_BUSY` is EBUSY's |
+| PID 2 | the first process a namespace's init forks: the member's command (init managed.rs `ACTOR`) |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 
@@ -25634,8 +25808,9 @@ typing into it and sizing it, as `docker run -it` gives a container's command. s
 - *Its size at start.* 0 by 0, as the kernel makes a pty: no size is chosen (R03). Its owner
   sizes it once it knows its own screen's.
 
-**Not built.** A daemon's run asks no member a terminal of its own: no caller needs one yet;
-step 11's terminal lane takes the same entry and built-in where it does.
+**A daemon's run** (D238, goal 58's step 6): `shards.terminal=KIND:NAME` gives a member a
+terminal of its own, the same entry, with `shards.control=true`, and its resize is a steer of
+the member's own lane, run as the same built-in.
 
 **Literals** (none chosen):
 
