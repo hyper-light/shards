@@ -1890,9 +1890,12 @@ mod hosted {
                 .map(|a| a.receivers.as_slice())
                 .unwrap_or_default();
             let published = super::published(&bound, receivers, &plan.members)?;
+            // The period its VM's governor holds a rate over: this build's hold's, which the
+            // VM process it carries holds by (D36, D247).
             let started = wire::Started {
                 members: plan.members.clone(),
                 published,
+                rate_period: shards_vmm::vm::hold_period(),
             }
             .encode()
             .map_err(|e| boot(e.to_string()))?;

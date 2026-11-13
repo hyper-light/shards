@@ -3981,7 +3981,7 @@ the first.
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
-| `PERIOD` (vm/hold.rs) | 100 ms | 100 ms, cited | kernel/sched/sched.h l. 445-447 (`default_bw_period_us`), Linux 1590cf03 |
+| `PERIOD` (`HOLD_PERIOD`, vm/mod.rs) | 100 ms | 100 ms, an upstream default; its derivation decided and owed ("Its period", below) | kernel/sched/sched.h l. 445-447 (`default_bw_period_us`), Linux 1590cf03 |
 | `BUSY` (vm/hold.rs) | 10 ms | none: `(allowed - used) / vcpus`; a group's, the lesser of that and `room_lasts` | the vCPUs' own count; the group's charged rate (`GroupCpu::charge`) |
 | `SOONEST` (vm/hold.rs) | 1 ms | 1 ms, cited | kernel/sched/core.c l. 10054 (`min_bw_quota_period_us`); kernel/sched/fair.c l. 7179 (`min_cfs_rq_runtime`); Documentation/scheduler/sched-bwc.rst l. 94-95, 179-186 |
 | the machine's busy mark (vm/hold.rs `govern`) | `used * 2 >= share` | `busy_next(before, used, share)`: `used + (used - before) >= share` | the machine's own last two periods |
@@ -3994,6 +3994,36 @@ need a host whose CPUs the test threads get: run through
 E2E on each hypervisor, a group of machines held on a loaded host, and how far past their
 share machines that go from steady to busy run under each mark (the old and the derived),
 measured.
+
+**Its period** (2026-11-13, R03: decided by ROOT, built once measured). `PERIOD` is CFS's
+default period (kernel/sched/sched.h l. 444-447, `default_bw_period_us`), an upstream
+default, which R03 holds insufficient alone.
+- sched-bwc.rst gives the period as a tradeoff its operator makes (l. 210-234: a longer
+  period for burst capacity, a shorter for a consistent latency). On Windows, where
+  GetThreadTimes charges whole 15.625 ms ticks (PM M294), a hold whose share of a 100 ms
+  period is under its vCPUs' count of ticks is never resolved within a period: 4 vCPUs held
+  under 625 milli-CPU are held on average alone.
+- *Decided.* A hold's period is the shortest one in which the governor resolves its share:
+  P = vcpus × g / share. The share is in CPUs (the rate over `MILLI_PER_CPU`). g is the
+  greater of the governor's measured soonest wake and the measured resolution of the vCPU
+  threads' clock (`platform::ThreadClock`). Cold start: g is the soonest wake until each is
+  measured.
+  - No clamp: CFS's 1 ms and 1 s bounds (core.c l. 10053-10054) are its operator's range,
+    not this governor's limits. P ≥ g already holds wherever the share is at most the vCPUs.
+  - An orchestrator derives its window from whatever the run reports (D247's
+    `rate_period`), so it follows the change when it comes.
+- *Owed to ROOT before it is built* (R14): the cost of a kick on each backend (HVF, KVM
+  x86-64 and arm64, WHP x86-64 and arm64). A period kicks every vCPU once at most, so shorter
+  periods kick more: 4 vCPUs at 2000 milli-CPU would hold over about 2g, where today they
+  hold over 100 ms.
+  - Measure on each backend a machine of 1, 4 and the host's vCPUs, every vCPU spinning in
+    its guest. Hold it at rates whose derived periods run from g to 100 ms, and at today's
+    100 ms beside each, interleaved.
+  - Read, n times a point: the kicks a second; the VM process's CPU time past its vCPUs'
+    guest time (the governor's and the kicks' own cost); each vCPU's exits; the guest's
+    progress (its spin count); and the guest time past the rate over a window. Report
+    p50/p90/p99/max, with host, OS and revision.
+  - Until then the period stays 100 ms, and no code of the derivation is written.
 
 ### D38's and D197's virtio-fs frames: FUSE's own structures
 
@@ -24966,6 +24996,20 @@ move it: Hex had no rate for a Shards image VM but stopping its process.
   the link closes.
 - *One ask.* The client's room and rate are one numbered ask (`session::Asked`), each held while
   it is awaited, and no longer.
+- *Its period* (2026-11-13, channel version 15, the Hex lead's ask for plan step 14).
+  `ImageGuest::rate_period()` is the period the run's VM's governor holds a rate over. Hex's
+  learner derives its window from it (Hex `learned-charge.md` C1) and copies no 100 ms of its
+  own.
+  - The run host tells it as the run starts, in `STARTED` (`Started::rate_period`,
+    nanoseconds after every field before; none is refused as no period). It reads it from its
+    own build's hold (`shards_vmm::vm::hold_period`), which the VM process it carries holds by
+    (D36).
+  - It is no shards-api constant: a client of one version beside a host of another hears the
+    host's. So the period D191 derives once measured (D191's hold, "Its period") reaches an
+    orchestrator as it is, per run, with no client change. A period that came to move with
+    each rate would ride `RATED` as well.
+  - Requests of versions 13 and 14 (whose 14 types a vCPU's unread time alone) are refused
+    by their versions, so no orchestrator waits on a period its host never tells.
 
 **Literals.** `MILLI_PER_CPU` (1000, `vm`): the unit, a CPU's time in thousandths, as
 Kubernetes counts CPU, no finer than `1m` ("Resource Management for Pods and Containers", CPU
@@ -24996,6 +25040,13 @@ ROOT's: `api_image.rs` `the_orchestrators_rate_holds_its_run_to_it` (a one-vCPU 
 spinning, held to a quarter CPU, runs its guest within a quarter of the time passing and a
 period's share; its vCPU's whole CPU holds nothing; none lifts it), `cargo test --profile
 test-release -p shards --test api_image the_orchestrators_rate_holds_its_run_to_it`.
+
+Its period (light, version 15): `image::wire`'s `a_runs_rate_period_reads_back_as_its_host_said_it`
+(a nanosecond to a u64's most, its eight bytes last; none and past a u64 refused), `STARTED`'s
+round trip and versions 13 and 14 refused. Owed (ROOT): its two guard-removal mutants (a period
+of none read back, version 14 taken), and the real-VM test above, which now reads the run's
+period, checks it is its build's hold's, and holds the run to two periods past a quarter
+where it took 100 ms as known.
 
 **Owed.** The real-VM test on KVM, HVF and WHP (ROOT); the seven guard-removal mutants above,
 these light tests on Linux and Windows, and `scripts/lint` on the 7 targets (ROOT). Hex's
