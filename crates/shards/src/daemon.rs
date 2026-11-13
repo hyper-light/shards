@@ -66,12 +66,13 @@ mod info;
 mod inspect;
 mod inspect_doc;
 mod layers;
+pub(crate) use layers::LayerFile;
 mod load;
 mod logs;
 mod managed;
 mod metrics;
 mod moves;
-pub(crate) use moves::Refused;
+pub(crate) use moves::{Refused, home_baseline};
 mod network;
 mod networks;
 mod packed;
@@ -1144,7 +1145,7 @@ fn pool_of<'s>(state: &'s mut State, key: &PoolKey, rootfs: &Path, stamp: Option
 }
 
 /// `rootfs` as the VM saving a template records it: resolved, links and all.
-fn resolved(rootfs: &Path) -> PathBuf {
+pub(crate) fn resolved(rootfs: &Path) -> PathBuf {
     std::fs::canonicalize(rootfs).unwrap_or_else(|_| rootfs.to_path_buf())
 }
 
@@ -7794,14 +7795,10 @@ impl<D: Disk> Daemon<D> {
         // A run given a GPU boots the pinned GPU kernel in the GPU's VM process
         // (D144), and restores a template of its own, saved before its guest made anything
         // of the GPU's, which its host driver would hold (D150).
-        let gpu_guest = prepared.gpu.as_ref().map(|kernel| crate::guest::Guest {
-            kernel: kernel.clone(),
-            init: guest.init.clone(),
-            kernel_digest: crate::kernel::KERNEL_GPU
-                .map(|k| format!("sha256:{}", k.sha256))
-                .unwrap_or_default(),
-            init_digest: guest.init_digest.clone(),
-        });
+        let gpu_guest = prepared
+            .gpu
+            .as_deref()
+            .map(|kernel| crate::run::gpu_guest(guest, kernel));
         let guest = gpu_guest.as_ref().unwrap_or(guest);
         let mut cfg = Config::new(guest.kernel.clone(), Some(guest.init.clone()));
         on_network(&mut cfg);
@@ -10934,13 +10931,16 @@ mod tests {
     /// A closed daemon's slots hold it while each client takes what it is given: one read
     /// late is still whole, as a stepping-aside daemon's RESTART must reach its client
     /// (cut off by its exit before its slot passed it on, x86_64 CI); and a client that
-    /// takes nothing holds it no longer than a request's time from the start of the piece
-    /// it leaves untaken, so that a stopped client keeps no daemon from exiting (PM M261).
+    /// takes nothing holds it no longer than the slowest take seen, from when its answer's
+    /// writer began waiting on it, so that a stopped client keeps no daemon from exiting (PM
+    /// M261, M549). Unix's: a named pipe says nothing of its room before a write, so on
+    /// Windows a closed daemon follows its clients' ends alone.
+    #[cfg(unix)]
     #[test]
     fn a_closed_daemon_waits_for_its_clients_to_take_their_answers() {
         use shards_ipc::slots as s;
         let t = Test::new("la");
-        lock(&t.daemon.seen).least = Duration::from_millis(500);
+        lock(&t.daemon.seen).taken(Duration::from_millis(500));
         t.run(|t| {
             t.t.daemon
                 .serve_slots(t.threads, s::Requests::open(&t.home).unwrap());
@@ -10970,7 +10970,7 @@ mod tests {
             let never = ask();
             t.until("its answers were not being written", |d| {
                 d.busy.load(Ordering::SeqCst) == 0
-                    && lock(&d.live).values().filter(|l| l.writing.is_some()).count() == 2
+                    && lock(&d.live).values().filter(|l| l.waiting.is_some()).count() == 2
             });
             t.daemon.close();
             assert!(t.daemon.slots_hold().0, "closed, held by no answer being written");
@@ -10998,13 +10998,13 @@ mod tests {
             drop(late);
             let since = lock(&t.daemon.live)
                 .values()
-                .find_map(|l| l.writing)
+                .find_map(|l| l.waiting)
                 .expect("its write");
             t.until("a client that takes nothing held its closed daemon", |d| {
                 !d.slots_hold().0
             });
             assert!(
-                since.elapsed() >= lock(&t.daemon.seen).answer_wait(),
+                since.elapsed() >= lock(&t.daemon.seen).answer_wait().unwrap(),
                 "{:?}",
                 since.elapsed()
             );
@@ -11023,22 +11023,24 @@ mod tests {
     /// nothing. Let go of a request's time after the close, the daemon exited as the run's
     /// end came, before its slot passed on the EXIT the run's VM wrote, and the run's client
     /// said its microVM stopped before its command ended (125: budget E2E 40162744975's a,
-    /// `a_daemon_ending_its_runs_is_waited_for`, PM M331). Its client's piece left untaken
-    /// lets go of it as before.
+    /// `a_daemon_ending_its_runs_is_waited_for`, PM M331). Its client leaving its answer
+    /// untaken lets go of it once the slowest take seen has passed, no more: before, twice
+    /// the longest piece, at least TCP's R2, 100 s (PM M549). Unix's, as the test above.
+    #[cfg(unix)]
     #[test]
     fn a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear() {
         let t = Test::new("sp");
-        lock(&t.daemon.seen).least = Duration::from_millis(200);
+        lock(&t.daemon.seen).taken(Duration::from_millis(200));
         t.run(|t| {
             let living = slots::Living::new(&t.daemon, 0);
             living.passed();
             t.daemon.close();
-            std::thread::sleep(lock(&t.daemon.seen).answer_wait() * 3);
+            std::thread::sleep(lock(&t.daemon.seen).answer_wait().unwrap() * 3);
             assert!(
                 t.daemon.slots_hold().0,
                 "a slot whose request went on let go of with its answer still to come"
             );
-            // An answer its client leaves untaken lets go of it a request's time in.
+            // An answer its client leaves untaken lets go of it the slowest take in.
             let (client, ours) = shards_ipc::slots::joined().unwrap();
             let answer = vec![b'x'; 1 << 20];
             std::thread::scope(|s| {
@@ -11054,16 +11056,44 @@ mod tests {
         });
     }
 
+    /// Before any take has been seen, a closed daemon follows a client that takes nothing of
+    /// its answer by its end alone (PM M549): held, with no time it lets go at, until the
+    /// client ends, and its writer's write fails then. Unix's, as the tests above.
+    #[cfg(unix)]
+    #[test]
+    fn a_closed_daemon_with_no_take_seen_holds_a_client_until_it_ends() {
+        let t = Test::new("cold");
+        t.run(|t| {
+            let living = slots::Living::new(&t.daemon, 0);
+            living.passed();
+            t.daemon.close();
+            let (client, ours) = shards_ipc::slots::joined().unwrap();
+            let answer = vec![b'x'; 1 << 20];
+            std::thread::scope(|s| {
+                let writer = s.spawn(|| living.answer(&ours, kind::ERR, &answer));
+                t.until("its writer did not wait on its client", |d| {
+                    lock(&d.live).values().any(|l| l.waiting.is_some())
+                });
+                assert_eq!(lock(&t.daemon.seen).answer_wait(), None);
+                assert_eq!(t.daemon.slots_hold(), (true, None), "let go of with no take seen");
+                drop(client);
+                assert!(writer.join().unwrap().is_err());
+            });
+            drop(living);
+            assert!(lock(&t.daemon.live).is_empty());
+        });
+    }
+
     /// A closed daemon's slot holds it while its client takes a long answer slowly, though
-    /// all of it takes that client far past a request's time: each piece it takes is a step
-    /// on. Timed from the whole answer's write, its client was let go of a request's time
-    /// in, still reading, and the daemon would have exited mid-answer.
+    /// all of it takes that client far past the slowest take: each room it makes is a take.
+    /// Timed from the whole answer's write, its client would be let go of, still reading,
+    /// and the daemon would exit mid-answer.
     #[test]
     fn a_closed_daemon_waits_for_a_client_taking_its_answer_slowly() {
         let t = Test::new("sl");
-        // The wait each piece has, many times what one takes this client: a host at a load
-        // of 31 slowed its reads fourfold, and a piece of 64 KiB missed 500 ms.
-        lock(&t.daemon.seen).least = Duration::from_secs(3);
+        // The slowest take seen, many times what one takes this client: a host at a load of
+        // 31 slowed its reads fourfold.
+        lock(&t.daemon.seen).taken(Duration::from_secs(3));
         t.run(|t| {
             let living = slots::Living::new(&t.daemon, 0);
             t.daemon.close();
@@ -11095,7 +11125,7 @@ mod tests {
                 written.unwrap();
                 assert_eq!(taken, answer.len() + 5);
                 assert!(
-                    t0.elapsed() > lock(&t.daemon.seen).answer_wait(),
+                    t0.elapsed() > lock(&t.daemon.seen).answer_wait().unwrap(),
                     "{:?}",
                     t0.elapsed()
                 );
@@ -11639,7 +11669,7 @@ mod tests {
     /// While none of a request's rest has come, it is waited for as long as the slowest
     /// rest seen whole (D185, PM M545): none before any, the client's end alone then; a
     /// slower rest raises it, a faster one leaves it. A client that takes nothing of its
-    /// answer is waited for twice the longest one took a piece in, RFC 1122's R2 at least.
+    /// answer is waited for as long as the slowest take seen, none before any (PM M549).
     #[test]
     fn a_requests_wait_is_learned_from_its_clients() {
         let mut seen = slots::Seen::default();
@@ -11649,7 +11679,10 @@ mod tests {
         seen.whole(Duration::from_secs(3));
         seen.whole(Duration::from_micros(40));
         assert_eq!(seen.request_stall(), Some(Duration::from_secs(3)));
-        assert_eq!(seen.answer_wait(), Duration::from_secs(100));
+        assert_eq!(seen.answer_wait(), None);
+        seen.taken(Duration::from_millis(240));
+        seen.taken(Duration::from_millis(60));
+        assert_eq!(seen.answer_wait(), Some(Duration::from_millis(240)));
     }
 
     /// A client no descriptor is left for is refused with the listener's spare: accepted with

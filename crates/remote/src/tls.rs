@@ -19,7 +19,7 @@ use hyper_quic::rustls::server::AlwaysResolvesServerRawPublicKeys;
 use hyper_quic::rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use hyper_quic::rustls::sign::CertifiedKey;
 use hyper_quic::rustls::{self, CertificateError, DigitallySignedStruct, DistinguishedName, SignatureScheme};
-use hyper_quic::{ClientConfig, IdleTimeout, ServerConfig, TransportConfig, VarInt};
+use hyper_quic::{ClientConfig, ServerConfig, TransportConfig, VarInt};
 
 use crate::Error;
 use crate::identity::{self, Fingerprint, Identity};
@@ -27,67 +27,94 @@ use crate::identity::{self, Fingerprint, Identity};
 /// The application protocol a shards connection speaks (RFC 7301).
 pub const ALPN: &[u8] = b"shards/1";
 
-/// What a connection's handshake starts from: the smoothed round trip its peer was last
-/// measured at, as its caller keeps it, or none, for a peer never measured (RFC 9002 §6.2.2:
-/// "Resumed connections over the same network MAY use the previous connection's final smoothed
-/// RTT value as the resumed connection's initial RTT").
+/// What this side knows of a peer from its connections before (R04), as its caller keeps it (a
+/// file per peer in the home): nothing, for a peer never reached, or what its path has shown.
+/// No figure of shards' own stands in for what a path has not shown (the person's ruling,
+/// 2026-11-13): a cold start, and every wait after a run-out, follows the peer's liveness and
+/// progress, and after that a wait's bound is the slowest answer seen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Rtt {
-    /// A peer never measured: RFC 9002 §6.2.2's kInitialRtt, "When no previous RTT is
-    /// available, the initial RTT SHOULD be set to 333 milliseconds".
-    Unmeasured,
-    /// The smoothed RTT (RFC 9002 §5.3) the last connection to this peer ended with.
-    Measured(Duration),
+pub enum Known {
+    /// Never reached: its handshake starts from RFC 9002 §6.2.2's 333 ms ("When no previous RTT
+    /// is available, the initial RTT SHOULD be set to 333 milliseconds") and has no deadline.
+    Never,
+    /// Reached, its last waits answered: its next handshake starts from its path's RTT and is
+    /// given up past the slowest handshake seen from it.
+    Reached(Path),
+    /// A wait of its last connection ran out: its next handshake starts from its path's RTT and
+    /// has no deadline, as a peer never reached's, until a handshake ends again.
+    RanOut(Path),
 }
 
-impl Rtt {
-    const UNMEASURED: Duration = Duration::from_millis(333);
+/// What a peer's path has shown over its connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Path {
+    /// The smoothed RTT its last connection ended with (RFC 9002 §5.3), which the next starts
+    /// from (§6.2.2: "Resumed connections over the same network MAY use the previous
+    /// connection's final smoothed RTT value as the resumed connection's initial RTT").
+    pub rtt: Duration,
+    /// The slowest handshake seen from it, from the first packet to its handshake's end.
+    pub handshake: Duration,
+    /// The slowest answer seen on it: the longest a send of this side's waited for the peer to
+    /// acknowledge any of it.
+    pub answer: Duration,
+    /// The shortest silence after which a connection on it was found dead, its next send
+    /// unanswered (a middlebox's state lost, or the peer gone): none until one was.
+    pub lost: Option<Duration>,
+}
 
-    /// The RTT QUIC's loss recovery starts the handshake from (its `initial_rtt`).
-    pub fn initial(self) -> Duration {
+impl Known {
+    const NEVER_RTT: Duration = Duration::from_millis(333);
+
+    /// What its path has shown, where it was reached.
+    pub fn path(self) -> Option<Path> {
         match self {
-            Rtt::Unmeasured => Self::UNMEASURED,
-            Rtt::Measured(rtt) => rtt,
+            Known::Never => None,
+            Known::Reached(path) | Known::RanOut(path) => Some(path),
         }
     }
 
-    /// The handshake's first probe timeout: the RTT, and four times its variation, which is
-    /// half the RTT before any sample, with no acknowledgment delay in the handshake's packet
-    /// spaces (RFC 9002 §5.3, §6.2.1): three times the RTT, 1 s for a peer never measured, "as
-    /// recommended for TCP's initial RTO" (§6.2.2). Below half a millisecond the timer's
-    /// granularity rounds it up (kGranularity, §6.1.2), which [`unanswered`]'s floor covers.
-    pub fn first_probe(self) -> Duration {
-        self.initial().saturating_mul(3)
+    /// The RTT QUIC's loss recovery starts the handshake from (its `initial_rtt`).
+    pub fn initial_rtt(self) -> Duration {
+        self.path().map_or(Self::NEVER_RTT, |path| path.rtt)
     }
 
-    /// How long a handshake goes unanswered before its peer is taken for absent:
-    /// [`unanswered`] from its first probe timeout, 15 s for a peer never measured.
-    pub fn handshake_bound(self) -> Duration {
-        unanswered(self.first_probe())
+    /// How long its handshake is waited for: the slowest seen from it, where its last waits
+    /// were answered; else for as long as its caller waits, as its probing goes on.
+    pub fn handshake_deadline(self) -> Option<Duration> {
+        match self {
+            Known::Reached(path) => Some(path.handshake),
+            Known::Never | Known::RanOut(_) => None,
+        }
     }
-}
 
-/// RFC 6298 §2.4's least retransmission timeout: "Whenever RTO is computed, if it is less than
-/// 1 second, then the RTO SHOULD be rounded up to 1 second", as "a large minimum RTO is needed to
-/// keep TCP conservative and avoid unnecessary retransmissions" (its [AP99], Allman and Paxson,
-/// SIGCOMM 1999): an answer a stalled host sends late is not taken for none.
-const RTO_LEAST: Duration = Duration::from_secs(1);
-
-/// The timeouts until RFC 1122 §4.2.3.5's R1, "at least 3 retransmissions, at the current
-/// RTO", each timeout twice the last (RFC 6298 §5.5, RFC 9002 §6.2.1's backoff): the first and
-/// its three doublings, as Linux counts R1 (`tcp_retries1` 3; net/ipv4/tcp_timer.c,
-/// `tcp_model_timeout`, `((2 << boundary) - 1) * rto_base`).
-const R1_TIMEOUTS: u32 = (2 << 3) - 1;
-
-/// How long a peer that answers nothing is waited for, from the probe timeout `pto` its
-/// connection runs on: until R1, when TCP "SHOULD inform the application of the delivery
-/// problem", and an application "can close the connection (i.e., give up on the open attempt)
-/// sooner" than R2's minutes (RFC 1122 §4.2.3.5), its timeout no shorter than [`RTO_LEAST`]. A
-/// handshake is waited for so ([`Rtt::handshake_bound`]), and a stranger for its join, from its
-/// own connection's probe timeout once its handshake measured it (server.rs). A restarted
-/// daemon is told sooner, by its stateless reset (RFC 9000 §10.3).
-pub fn unanswered(pto: Duration) -> Duration {
-    pto.max(RTO_LEAST).saturating_mul(R1_TIMEOUTS)
+    /// What is known after a connection that saw `seen`: a handshake that ended and the slowest
+    /// answer it waited for raise the path's; the silence after which it was found dead, the
+    /// shortest such; its RTT, the last; a run-out, marked. A connection whose handshake never
+    /// ended leaves what was known, but for a run-out past the slowest handshake.
+    pub fn after(self, seen: &crate::net::Seen) -> Known {
+        let Some(handshake) = seen.handshake else {
+            return match (self, seen.ran_out) {
+                (Known::Reached(path), true) => Known::RanOut(path),
+                (known, _) => known,
+            };
+        };
+        let before = self.path();
+        let lost = match (before.and_then(|p| p.lost), seen.lost) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let path = Path {
+            rtt: seen.rtt,
+            handshake: before.map_or(handshake, |p| p.handshake.max(handshake)),
+            answer: before.map_or(seen.answer, |p| p.answer.max(seen.answer)),
+            lost,
+        };
+        if seen.ran_out {
+            Known::RanOut(path)
+        } else {
+            Known::Reached(path)
+        }
+    }
 }
 
 /// Longest an established connection goes unheard before it is taken for dead: its
@@ -180,28 +207,24 @@ pub(crate) fn keep_alive(bound: Duration) -> Duration {
     bound / 4
 }
 
-/// The transport both sides run: idle after [`QUIET`] unheard, kept alive at a quarter of it
-/// ([`keep_alive`], 25 s), as RFC 9000 §10.1.2 has an endpoint that awaits its peer's answer
-/// send PINGs to defer its peer's idle timeout, more often than the 30 s it finds "necessary to
-/// prevent the majority of middleboxes from losing state for UDP flows" (its [GATEWAY],
-/// Hätönen et al., IMC 2010). A peer of an earlier build held to a shorter bound keeps the
-/// connection alive by its own keep-alive, at a quarter of its own. Its handshake starts from
-/// `rtt` ([`Rtt::initial`]) and is held to [`Rtt::handshake_bound`] by its driver (net.rs). Only
-/// the streams the protocol has, bidirectional ones a client opens, a command or a join each.
-/// A peer may open no stream the other would not read (RFC 9000 §4.6), whose bytes its side
-/// would hold: none one way, and none of a client's. A daemon's clients may have quinn-proto's
-/// 100 open at once.
-fn transport(serves: bool, rtt: Rtt) -> Result<TransportConfig, Error> {
+/// The transport both sides of a context's link run: no idle timeout of its own (RFC 9000
+/// §10.1, §18.2: 0 is none) and no keep-alive of QUIC's, as its driver checks the peer's
+/// liveness at use, by the slowest answer the path has shown, and keeps it alive only where the
+/// path or the peer's own idle timer has shown it must (net.rs, `Liveness`); its handshake
+/// starts from what is known of the peer ([`Known::initial_rtt`]). Only the streams the
+/// protocol has, bidirectional ones a client opens, a command or a join each. A peer may open
+/// no stream the other would not read (RFC 9000 §4.6), whose bytes its side would hold: none one
+/// way, and none of a client's. A daemon's clients may have quinn-proto's 100 open at once.
+fn transport(serves: bool, known: Known) -> TransportConfig {
     let mut transport = TransportConfig::default();
-    let idle = IdleTimeout::try_from(QUIET).map_err(|_| Error::new("an idle bound QUIC cannot carry"))?;
-    transport.max_idle_timeout(Some(idle));
-    transport.keep_alive_interval(Some(keep_alive(QUIET)));
-    transport.initial_rtt(rtt.initial());
+    transport.max_idle_timeout(None);
+    transport.keep_alive_interval(None);
+    transport.initial_rtt(known.initial_rtt());
     transport.max_concurrent_uni_streams(VarInt::from_u32(0));
     if !serves {
         transport.max_concurrent_bidi_streams(VarInt::from_u32(0));
     }
-    Ok(transport)
+    transport
 }
 
 /// A raw public key's signature over a TLS 1.3 handshake, by the provider's algorithms.
@@ -221,13 +244,7 @@ fn verify_signature(
 /// The server side, which a daemon listening for clients accepts connections under: a client's
 /// round trip is not known before its handshake, which starts from a peer never measured's.
 pub fn server(identity: &Identity) -> Result<ServerConfig, Error> {
-    server_under(
-        provider(),
-        identity,
-        None,
-        transport(true, Rtt::Unmeasured)?,
-        ALPN,
-    )
+    server_under(provider(), identity, None, transport(true, Known::Never), ALPN)
 }
 
 pub(crate) fn owner_server(
@@ -261,9 +278,9 @@ fn server_under(
 }
 
 /// The client side, which connects to the daemon whose key's SHA-256 is `daemon`, its
-/// handshake starting from `rtt`, the daemon's as last measured.
-pub fn client(identity: &Identity, daemon: Fingerprint, rtt: Rtt) -> Result<ClientConfig, Error> {
-    client_under(provider(), identity, daemon, transport(false, rtt)?, ALPN)
+/// handshake starting from what is known of it.
+pub fn client(identity: &Identity, daemon: Fingerprint, known: Known) -> Result<ClientConfig, Error> {
+    client_under(provider(), identity, daemon, transport(false, known), ALPN)
 }
 
 pub(crate) fn client_with(
@@ -459,20 +476,14 @@ mod tests {
             other,
             &home,
             daemon.fingerprint(),
-            transport(false, Rtt::Unmeasured).unwrap(),
+            transport(false, Known::Never),
             ALPN,
         );
         let to_ours = connect(server(&daemon).unwrap(), theirs.unwrap());
-        let theirs = server_under(
-            other,
-            &daemon,
-            None,
-            transport(true, Rtt::Unmeasured).unwrap(),
-            ALPN,
-        );
+        let theirs = server_under(other, &daemon, None, transport(true, Known::Never), ALPN);
         let from_ours = connect(
             theirs.unwrap(),
-            client(&home, daemon.fingerprint(), Rtt::Unmeasured).unwrap(),
+            client(&home, daemon.fingerprint(), Known::Never).unwrap(),
         );
         [to_ours, from_ours]
     }
@@ -521,46 +532,71 @@ mod tests {
         let home = Identity::generate().unwrap();
         let context = connect(
             server(&daemon).unwrap(),
-            client(&home, daemon.fingerprint(), Rtt::Unmeasured).unwrap(),
+            client(&home, daemon.fingerprint(), Known::Never).unwrap(),
         );
         let alpn = crate::managed::ALPN;
-        let owner = owner_server(
-            &daemon,
-            home.fingerprint(),
-            transport(true, Rtt::Unmeasured).unwrap(),
-            alpn,
-        );
-        let subscriber = client_with(
-            &home,
-            daemon.fingerprint(),
-            transport(false, Rtt::Unmeasured).unwrap(),
-            alpn,
-        );
+        let owner = owner_server(&daemon, home.fingerprint(), transport(true, Known::Never), alpn);
+        let subscriber = client_with(&home, daemon.fingerprint(), transport(false, Known::Never), alpn);
         let managed = connect(owner.unwrap(), subscriber.unwrap());
         assert_aes_256_gcm(&context);
         assert_aes_256_gcm(&managed);
     }
 
-    /// A handshake is waited for until RFC 1122's R1 at its first probe timeout, that timeout
-    /// no shorter than RFC 6298's 1 s: 15 s for a peer never measured (333 ms, a first probe
-    /// timeout of 999 ms) and for any measured faster; longer only for a peer whose probe
-    /// timeout is longer than 1 s. Kept alive under the 30 s RFC 9000 §10.1.2 cites, three
-    /// keep-alives within its idle bound.
+    /// What a home knows of a peer (the person's ruling, 2026-11-13): a peer never reached
+    /// starts its handshake from RFC 9002's 333 ms with no deadline; one reached, from its path's
+    /// last RTT, given up past the slowest handshake seen from it; after a run-out, with no
+    /// deadline again. A connection raises the slowest handshake and answer, keeps the shortest
+    /// silence found dead and takes its last RTT; one whose handshake never ended leaves what
+    /// was known, but marks a run-out past the slowest handshake.
     #[test]
-    fn a_handshake_is_waited_for_until_r1_at_its_probe_timeout() {
-        assert_eq!(Rtt::Unmeasured.initial(), Duration::from_millis(333));
-        assert_eq!(Rtt::Unmeasured.first_probe(), Duration::from_millis(999));
-        assert_eq!(Rtt::Unmeasured.handshake_bound(), Duration::from_secs(15));
-        let lan = Rtt::Measured(Duration::from_micros(80));
-        assert_eq!(lan.initial(), Duration::from_micros(80));
-        assert_eq!(lan.handshake_bound(), Duration::from_secs(15));
-        let far = Rtt::Measured(Duration::from_millis(600));
-        assert_eq!(far.handshake_bound(), Duration::from_millis(600 * 3 * 15));
-        assert_eq!(unanswered(Duration::ZERO), Duration::from_secs(15));
-        assert_eq!(unanswered(Duration::MAX), Duration::MAX);
-        assert_eq!(keep_alive(QUIET), Duration::from_secs(25));
-        assert!(keep_alive(QUIET) < Duration::from_secs(30));
-        assert!(keep_alive(QUIET) * 3 < QUIET);
+    fn what_is_known_of_a_peer_follows_what_its_path_showed() {
+        let ms = Duration::from_millis;
+        assert_eq!(Known::Never.initial_rtt(), ms(333));
+        assert_eq!(Known::Never.handshake_deadline(), None);
+        let seen = |handshake, answer, lost, ran_out| crate::net::Seen {
+            rtt: ms(20),
+            handshake,
+            answer,
+            lost,
+            ran_out,
+            ..crate::net::Seen::default()
+        };
+        let first = Known::Never.after(&seen(Some(ms(40)), ms(30), None, false));
+        let path = Path {
+            rtt: ms(20),
+            handshake: ms(40),
+            answer: ms(30),
+            lost: None,
+        };
+        assert_eq!(first, Known::Reached(path));
+        assert_eq!(first.initial_rtt(), ms(20));
+        assert_eq!(first.handshake_deadline(), Some(ms(40)));
+        // A faster handshake and answer leave the slowest; a silence found dead is kept.
+        let second = first.after(&seen(Some(ms(10)), ms(5), Some(ms(90_000)), true));
+        let lost = Path {
+            lost: Some(ms(90_000)),
+            ..path
+        };
+        assert_eq!(second, Known::RanOut(lost));
+        assert_eq!(second.handshake_deadline(), None);
+        // The next that ends raises them, keeps the shorter silence, and is reached again.
+        let third = second.after(&seen(Some(ms(70)), ms(60), Some(ms(120_000)), false));
+        let raised = Path {
+            handshake: ms(70),
+            answer: ms(60),
+            ..lost
+        };
+        assert_eq!(third, Known::Reached(raised));
+        // A handshake never ended: nothing learned, but a run-out past the slowest is marked.
+        assert_eq!(third.after(&seen(None, Duration::ZERO, None, false)), third);
+        assert_eq!(
+            third.after(&seen(None, Duration::ZERO, None, true)),
+            Known::RanOut(raised)
+        );
+        assert_eq!(
+            Known::Never.after(&seen(None, Duration::ZERO, None, true)),
+            Known::Never
+        );
     }
 
     /// A negotiation is the provider's only for TLS13_AES_256_GCM_SHA384, by IANA's code, and
