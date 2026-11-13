@@ -128,3 +128,134 @@ Causes, each reproduced live before its fix:
   is thread-local, so another test's allocations cannot trip it, but they compare
   `/proc/self/fd` counts before and after, which another test thread's descriptors change.
   The reproduction (alone, serially, and on the base revision) is recorded in the report.
+
+## Review (plan step 2, goal 52's step 4)
+
+Reviewer: goal 52's agent (role implementer), 2026-11-13, at origin/main 039f5019c. Policy at that revision:
+AGENTS.md f66d304c…6266db41, docs/development-rules.md df2acf47…38368fb63, docs/development-evidence.md
+61613a24…68fb63. It reviews the lane's 16 commits on main: 7c69cfd46 405a2ddd7 8fb70a6f7 d1f21886d f6f9a008d
+4ef075fd4 31b3f106b 86f3c87b2 74cb24706 686514aa0 f6051bc93 72317ade0 e5830745e f62150ef6, and the Windows host
+731b5e54f and 53277586c.
+
+Method: the production code of the files the lane wrote, read against R01-R16, with targeted reads. That's api_run.rs
+1-2914, image.rs 1-497, image/session.rs 1-1120, image/wire.rs 1-2006, abi run.rs 1-1001 and run/members.rs 1-576,
+and init staged.rs 1-203; their test modules follow. It also covers the 431 lines the commits added to shared files
+(init run, domains and managed; ipc; vm_run, warm, spec, daemon, main and cli/mod; testguest). Scans looked for what
+clippy's panic denials don't catch: `assert!`, panicking std calls, arithmetic, casts, literals, clocks, sleeps and
+caches.
+
+### Findings
+
+- **R01: no defect.**
+  - Every frame read (api_run.rs `records`, wire.rs `read_frame`) goes through `shards_abi::run::parse_header`, which
+    refuses a length past `MAX_PAYLOAD` before `try_reserve_exact`.
+  - The one unchecked subtraction (`feed.room -= n`) follows its bound check.
+  - `swap_remove` and `insert` take indexes from `position` and `binary_search`.
+  - The casts widen, or encode enum tags and small records.
+  - Every `assert!` is in a test module.
+- **R03: none new.** The values are protocol tags and ports, Linux's `PATH_MAX`/`NAME_MAX` and exec bound
+  (`MAX_PAYLOAD`), the permission bits, and the existing `CHUNK` reused as the client's read-ahead. The daemon's
+  `DEFAULT_LOGS` is `disk::log_retention`'s.
+  - Waits are the caller's timeout (`Duration::MAX` for none) or the request's `ready_by`.
+  - A clock out of range is refused `Boot` (this host's) and a budget past a u64 `Request` (the caller's), as each
+    is.
+- **R04: typed end to end by cause, no defect.**
+  - The run host's `No(Cause, _)` (Request 22 sites, Image 12, Widening 5, Boot 13) crosses as `wire::Refused`, and
+    the client maps it one to one to `ImageRefusal` (session.rs 740-754).
+  - Hex, its one caller outside tests, maps each variant to a typed refusal of its own (hex-runtime
+    `guest/image.rs` 181-226, Hex 65ef204f), carrying the text as its `why` too.
+  - Within `Boot` the part (network, share, launch, the VM's last words) is text. No caller tells those apart, and
+    none models retry, so a finer type would be an interface without a caller (R05). It's recorded as a design
+    question, not a defect.
+- **R05: no defect.** No sleep, poll or cache in the lane's production code. The client's waits are a condvar
+  bounded by the caller's own timeout (session.rs 274-295), and the run host's are facts (`READY`, `TAKEN`, exits,
+  channel ends).
+- **R12: the third launch copy, the gap evidenced (not folded here).** Three functions start a VM process with its
+  network process:
+
+  | Launch | Unix | Windows |
+  |---|---|---|
+  | daemon.rs `start` | 8382-8535 | 8544-8728 |
+  | build/builder.rs `launch` | 569-645 | 653-740 |
+  | api_run.rs `launch` | 1125-1238 | 1240-1384 |
+
+  That's about 345 lines on Unix and 418 on Windows doing one job.
+  - The daemon's and the run host's Unix launches share one descriptor layout: the link at 3, macOS's grants at 4,
+    the ring's `VM_FDS` and `VM_RELEASE_FD`, with `--grants 4`, `--net` and `--net-release`.
+    - The daemon adds its spawner group (D183), `--layer`/`--layer-cloned` and the GPU's binary.
+    - The run host adds its share processes.
+  - The builder's layout differs: grants at 3, `--attach` at 4, its `SAID_TO` pipe, no release descriptor.
+  - On Windows all three make the VM suspended in an AppContainer, give handles by name and start the network
+    process on it.
+  - The seam is one launch, for example `netproc::launch_vm` taking a descriptor plan (link, grants, attach, said-to,
+    network side) and the spawner group, used by the daemon and the run host first (one layout), then the builder.
+  - It isn't folded here because no unit test reaches any of the three. A fold is proven only by every backend's
+    real runs of each caller: api_image.rs; a daemon run (the cold start of every run, D26); the builder's
+    (tests/build.rs). Those are HVF, KVM x86_64, KVM arm64 (L1) and WHP x86_64, with R14's cold-start costs before
+    and after. Its Windows half compiles on no host this step may use. Owed to ROOT as its own slice.
+- **`taken::linux` (the record's Open item): not a D231 defect.**
+  - The three failing tests are taken::linux's descriptor-counting reader tests. 037866828 (Hex vendor patch 0030)
+    runs each one alone.
+  - Its message names this failure ("`cargo test -p shards-api` failed on the integration base"), with red, green and
+    guard removal in 30 runs each.
+  - It is on main, and step 1 reviewed it. It is in none of the lane's tested revisions: base 82083f27, 75c36864f and
+    4ef075fd4 lack it (`git merge-base --is-ancestor`). 31b3f106b, which wrote the note, has it.
+- **CI's api_image failures at d35c4cf79 (run 43303460342): each is the Windows host's absence.**
+  - Six tests failed: `a_published_ingress_port_reaches_its_member`, `a_share_at_a_granted_volume_reaches_the_harness`,
+    `staged_credentials_reach_the_harness_and_its_output_and_end_come_back`, `stats_read_the_run_and_a_member`,
+    `stop_ends_the_run_at_once` and `what_the_image_does_not_grant_is_refused_before_boot`.
+  - All six failed on the x86_64 Windows jobs alone (windows-2025-vs2026 and windows-2022). Five failed on
+    `Unsupported { what: "the run host", why: "an orchestrator's run on Windows … is owed (D231)" }`. The sixth's
+    `ImageRefusal::Image` match failed, consistent with that same refusal coming first.
+  - d35c4cf79 doesn't contain 731b5e54f, the Windows host, which ran 6 of 6 on jupiter (above). None is left
+    unexplained by it. A run on a main that has it is owed (below).
+- **p/runtime-image-boot-win: superseded, and its local branch deleted.**
+  - Every feature of its two WIP commits (e1be4007c, 25868ba5f) is on main.
+  - Their `LogRetention::keeps` landed as `RunHead::keeps_its_log` (ipc lib.rs 2096, warm.rs 405, 686514aa0).
+  - `origin/p/runtime-image-boot-win` remains on GitHub. Deleting it is a push, ROOT's.
+
+No code defect was found, so this review lands no code.
+
+### Light gates on main (this review)
+
+These ran on adas-mac-studio.local (macOS 26.2 arm64, rustc 1.98.1) at main 039f5019c, as kiln run r231, with
+`SHARDS_HELPERS=skip` and placeholder init and server binaries.
+
+| Command | Result |
+|---|---|
+| `cargo test -p shards-abi --lib run::` | 33 passed |
+| `cargo test -p shards-api --lib image` | 35 passed |
+| `cargo test -p shards-ipc --lib every_message_kind` | 1 passed |
+| `cargo test -p shards --bin shards api_run` | 17 passed |
+| `cargo clippy -p shards-abi -p shards-api -p shards-ipc -p shards --all-targets -- -D warnings` | clean |
+
+Not run here: shards-init's tests (a guest crate, whose macOS build is a stub), and Linux and Windows (owed below).
+
+### R01-R16 accounting (review)
+
+- R01, R03, R04, R05: as above.
+- R02: the decision record's sources stand.
+- R06: api_run.rs's `hosted` module is about 2,200 lines. The other two launch copies would go with the R12 fold.
+- R07: comments state sources and invariants.
+- R09 and R10: no defect is claimed, so there's no fix to pair. The two open items are explained by evidence already
+  on main (037866828; the jupiter run at 731b5e54f).
+- R11: Windows arm64 is unbuilt and unrun, and KVM arm64 is unrun (record §4). Both are unverified.
+- R12: the gap above, owed.
+- R13: no redundant layer found besides R12's.
+- R14 and R15: no measurement; implementer scope.
+- R16: none.
+
+### Owed to ROOT (exact runs)
+
+1. `cargo test --profile test-release -p shards --test api_image -- --test-threads 1` at the landed main, on HVF
+   (adalundhe-macbook-pro, through docs/research/measurements/macos-sched/launchd-run.sh), KVM x86_64 (adacachy2),
+   KVM arm64 (boot.rs's L1 path, `SHARDS_L1_TESTS=api_image`) and WHP x86_64 (jupiter). On WHP that's the run that
+   confirms d35c4cf79's six are gone.
+2. nesting.rs's image tests (`cargo test --profile test-release -p shards --test nesting`) on the same backends.
+3. The light gates this review couldn't run on its one host:
+   - `cargo test -p shards-init -- staged stats_scope` and the guest crates' musl clippy (Linux);
+   - the lane's unit tests and clippy on Linux x86_64 and Windows x86_64;
+   - `scripts/lint`.
+4. R12's fold, as its own slice, with the runs above, a daemon run, the builder's tests and R14's cold start before
+   and after.
+5. Unverified, no host: WHP arm64.

@@ -22730,6 +22730,27 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   `NoBackend`, by name. Windows on arm64 is WHP's, the VMM's `hv::whp_arm64` (D209): the
   API names the backend the VMM builds on each host, and a host whose hypervisor runs no
   guest says so as its VM process starts (`check_host`).
+- *An envelope* (2026-11-13, for Hex's reservations, kiln plan step 14):
+  `envelope(arch, vcpus, memory_mib)` is the least spec shards-vmm boots on a guest of
+  `arch` that holds the ask: at least one vCPU, and its memory rounded up to the VMM's unit
+  and to at least `min_memory_mib(arch)`. Where that memory's bytes pass what a u64 holds,
+  it is refused `Bounds` (`memory_mib`). `check` takes a spec exactly where the spec is its
+  own envelope: one rule from one source, so a caller rounds an ask without restating
+  shards' numbers.
+  - Its literals are shards-vmm's own, restated with their sources: the unit, 2 MiB
+    (`ram_bytes` in `vm/aarch64.rs`, `ram_ranges` in `vm/x86_64.rs`, which boot an even
+    number of MiB alone); the least, 64 MiB on arm64 and 128 on x86-64 (`MIN_MEMORY_MIB`
+    there); and the most, 2^44 - 2 MiB, the last even MiB whose bytes fit the u64 those
+    functions count a guest's memory in (`checked_mul(MIB)`).
+  - The unit's derivation is recorded nowhere, neither in a comment nor in a D-entry, since
+    the VMM's first boot (c2622c656, 2026-09-28): it is owed there, under R03. The least's is
+    its comment (a kernel, its bss and early allocations, and on arm64 its DTB window).
+  - Tested (light): lib's `an_envelope_rounds_up_to_the_unit_and_the_least`,
+    `an_envelope_past_what_a_u64_holds_is_refused` and
+    `check_and_envelope_agree_on_every_case` (each architecture's rule, at every bound and
+    one past it), beside `bounds_are_refused_by_name`. Owed (ROOT): five guard-removal
+    mutants, each of which must fail its test: the unit, the least, the u64 bound, the one
+    vCPU, and `check`'s comparison with the envelope.
 - *A guest's socket directory* is the client's alone (0700), named apart from its pid,
   short enough to bind (else /tmp on Unix; refused by name on Windows), and removed with
   the guest.
@@ -22866,6 +22887,13 @@ Windows arm64: unbuilt (jupiter has no C compiler for it: aws-lc-sys needs clang
 host here runs WHP on arm64 (GitHub's windows-11-arm has no hypervisor platform, PM M172;
 nested Windows 11 arm64 on an M-series Mac gets no partition, D209); the run host's resident,
 CPU and kernel cost per microVM against the daemon's per run and Firecracker's (R14).
+
+**Review (plan step 2, goal 52's step 4).** The lane's 16 commits, read against R01-R16, have
+no code defect. Refusals are typed by cause end to end, through Hex's mapping of them. Its
+Open `taken::linux` failures are 037866828's (already on main). Main CI's six api_image failures
+at d35c4cf79 were each the Windows host's absence, which 731b5e54f added. R12's third launch copy
+stays owed as a slice of its own, with every backend's runs and R14's cold start. The review is
+in runtime-image-boot-v1/README.md, "Review (plan step 2)".
 
 **What would falsify it.** A run host costing more per microVM than the daemon per run (then
 one host per orchestrator); an orchestrator needing to link the VMM; credentials a member
