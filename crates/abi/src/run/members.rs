@@ -73,6 +73,11 @@ pub enum Error {
     SecondMember,
     /// A second terminal for one member ([`TERMINAL_KEY`]).
     SecondTerminal,
+    /// A second MCP bridge for one member (`run::mcp::MEMBER_KEY`, D254).
+    SecondMcp,
+    /// An MCP token that is not the token's bytes in lowercase hex, or a second one
+    /// (`run::mcp::TOKEN_KEY`, D254).
+    McpToken,
     /// A terminal's size that is not its rows and columns, each a decimal u16.
     Size,
     /// An argument holding a NUL, which no command line exec'd holds (execve(2)'s strings
@@ -95,6 +100,8 @@ impl core::fmt::Display for Error {
             Error::Shape => "an entry missing a field",
             Error::SecondMember => "a second member for one exec",
             Error::SecondTerminal => "a second terminal for one member",
+            Error::SecondMcp => "a second MCP bridge for one member",
+            Error::McpToken => "an MCP token that is not its bytes in lowercase hex, or a second one",
             Error::Size => "a terminal size that is not its rows and columns in decimal u16s",
             Error::Argument => "an argument holding a NUL",
             Error::Signal => "a signal that is no Linux signal's number, 1 to 64 in decimal",
@@ -600,7 +607,7 @@ fn split_once(bytes: &[u8], at: u8) -> Option<(&[u8], &[u8])> {
     Some((bytes.get(..i)?, bytes.get(i + 1..)?))
 }
 
-fn decimal(text: &[u8]) -> Result<u32, Error> {
+pub(super) fn decimal(text: &[u8]) -> Result<u32, Error> {
     // No sign, no leading zero but "0" itself, digits alone: one spelling for each index.
     let canonical = match text {
         [] => false,
@@ -631,7 +638,7 @@ fn octal(text: &[u8]) -> Result<u32, Error> {
     Ok(mode)
 }
 
-fn push_decimal(out: &mut Vec<u8>, n: u32) {
+pub(super) fn push_decimal(out: &mut Vec<u8>, n: u32) {
     let mut digits = [0u8; 10];
     let mut at = digits.len();
     let mut n = n;

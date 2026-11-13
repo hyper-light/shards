@@ -134,18 +134,17 @@ pub fn encode_policy(ports: &Ports, named: &[(String, u16)], dns_all: bool) -> V
 }
 
 /// A run's credential grant as its network process holds it (D242): a credential named by
-/// reference (a secret's path in the orchestrator's store, never a value) and the hosts it
-/// may be filled in toward, each a DNS name, lowered.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Grant {
-    pub reference: String,
-    pub toward: Vec<String>,
-}
+/// reference (a secret's path in the orchestrator's store, never a value), the hosts it may be
+/// filled in toward, each a DNS name, lowered, and the placeholder that stands for it in a
+/// request; shards-dns's, which the orchestrator's side checks and carries too.
+pub use shards_dns::credential::CredentialGrant as Grant;
 
 /// `NET_CREDENTIALS`'s payload: each grant as its reference's length (two bytes, network
 /// order) and the reference, its hosts' count (two bytes) and each host as its length's
-/// byte and the name. None where a reference passes 65535 bytes, or a name 255, which no DNS
-/// name does (RFC 1035 §2.3.4, 255) and no store's reference (kiln-seams' NAME_MAX, 512).
+/// byte and the name, then its placeholder's length (two bytes) and the placeholder. None
+/// where a reference or a placeholder passes 65535 bytes, or a name 255, which no DNS name
+/// does (RFC 1035 §2.3.4, 255), no store's reference (kiln-seams' NAME_MAX, 512), and no
+/// placeholder of kiln's broker (81 bytes: its marker and 256 random bits in hex).
 pub fn encode_grants(grants: &[Grant]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     for g in grants {
@@ -156,6 +155,8 @@ pub fn encode_grants(grants: &[Grant]) -> Option<Vec<u8>> {
             out.push(u8::try_from(host.len()).ok()?);
             out.extend_from_slice(host.as_bytes());
         }
+        out.extend_from_slice(&u16::try_from(g.placeholder.len()).ok()?.to_be_bytes());
+        out.extend_from_slice(g.placeholder.as_bytes());
     }
     Some(out)
 }
@@ -163,6 +164,7 @@ pub fn encode_grants(grants: &[Grant]) -> Option<Vec<u8>> {
 /// What [`encode_grants`] wrote; None for a malformed payload, or one of a grant toward no
 /// host, which could never be filled.
 pub fn decode_grants(mut bytes: &[u8]) -> Option<Vec<Grant>> {
+    let text = |b: &[u8]| String::from_utf8(b.to_vec()).ok();
     let mut grants = Vec::new();
     while !bytes.is_empty() {
         let (len, rest) = bytes.split_first_chunk::<2>()?;
@@ -172,15 +174,18 @@ pub fn decode_grants(mut bytes: &[u8]) -> Option<Vec<Grant>> {
         for _ in 0..u16::from_be_bytes(*count) {
             let (&len, after) = rest.split_first()?;
             let (name, after) = after.split_at_checked(usize::from(len))?;
-            toward.push(String::from_utf8(name.to_vec()).ok()?);
+            toward.push(text(name)?);
             rest = after;
         }
         if toward.is_empty() {
             return None;
         }
+        let (len, rest) = rest.split_first_chunk::<2>()?;
+        let (placeholder, rest) = rest.split_at_checked(usize::from(u16::from_be_bytes(*len)))?;
         grants.push(Grant {
-            reference: String::from_utf8(reference.to_vec()).ok()?,
+            reference: text(reference)?,
             toward,
+            placeholder: text(placeholder)?,
         });
         bytes = rest;
     }
@@ -1349,7 +1354,8 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
         } else if m.kind == shards_ipc::kind::NET_CREDENTIALS {
             // The run's credential grants (D242), once, after its policy: each host one its
             // egress grants name (D236), checked again here as its run host checked it
-            // (D109), as a grant toward a host the run cannot reach could never be filled.
+            // (D109), as a grant toward a host the run cannot reach could never be filled;
+            // each placeholder a token, and one credential's alone.
             let Some(grants) = decode_grants(&m.payload) else {
                 return Err(malformed());
             };
@@ -1361,6 +1367,7 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             if stack.credentials.is_some()
                 || grants.is_empty()
                 || !grants.iter().flat_map(|g| &g.toward).all(|h| reached(h))
+                || dns::credential::check(&grants).is_err()
             {
                 return Err(malformed());
             }
@@ -2719,38 +2726,48 @@ impl<'r> Stack<'r> {
 mod tests {
     use super::*;
 
-    /// The run's credential grants ride `NET_CREDENTIALS` by reference, never a value, and
-    /// read back as written; a grant toward no host, which could never be filled, a payload
-    /// cut short, and a name no DNS name is long enough to be are refused.
+    /// The run's credential grants ride `NET_CREDENTIALS` by reference, never a value, each
+    /// with its placeholder, and read back as written; a grant toward no host, which could
+    /// never be filled, a payload cut short, a name no DNS name is long enough to be and a
+    /// placeholder past its length's two bytes are refused.
     #[test]
     fn credential_grants_round_trip() {
         let grants = vec![
             Grant {
                 reference: "anthropic/claude-max".into(),
                 toward: vec!["api.anthropic.com".into(), "platform.claude.com".into()],
+                placeholder: "kiln-placeholder-0a".into(),
             },
             Grant {
                 reference: "openai/chatgpt".into(),
                 toward: vec!["chatgpt.com".into()],
+                placeholder: "kiln-placeholder-1b".into(),
             },
         ];
         let bytes = encode_grants(&grants).unwrap();
-        assert_eq!(decode_grants(&bytes), Some(grants));
+        assert_eq!(decode_grants(&bytes), Some(grants.clone()));
         assert_eq!(
             decode_grants(&bytes[..bytes.len() - 1]),
             None,
-            "a host cut short was read"
+            "a placeholder cut short was read"
         );
         assert_eq!(decode_grants(&bytes[..3]), None, "a reference cut short was read");
         let toward_none = encode_grants(&[Grant {
             reference: "x".into(),
             toward: Vec::new(),
+            placeholder: "p".into(),
         }])
         .unwrap();
         assert_eq!(decode_grants(&toward_none), None);
         let long = Grant {
             reference: "x".into(),
             toward: vec!["a".repeat(256)],
+            placeholder: "p".into(),
+        };
+        assert_eq!(encode_grants(&[long]), None);
+        let long = Grant {
+            placeholder: "p".repeat(65536),
+            ..grants[0].clone()
         };
         assert_eq!(encode_grants(&[long]), None);
     }
@@ -3637,6 +3654,7 @@ mod tests {
             grants: vec![Grant {
                 reference: CLAUDE.into(),
                 toward: vec!["api.anthropic.com".into()],
+                placeholder: "kiln-placeholder-0a".into(),
             }],
             ca: ca::Ca::new(ca::Key::generate().unwrap(), &["api.anthropic.com"]).unwrap(),
             leases: lease::Leases::new(vec![CLAUDE.into(), "openai/chatgpt".into()]),
@@ -3680,6 +3698,60 @@ mod tests {
             None,
             "held past its run's end"
         );
+    }
+
+    /// The run's credential grants are taken with each placeholder checked again, as its run
+    /// host checked them (D109). Do: send grants whose placeholder is no token, then two
+    /// credentials sharing one, then one credential granted twice with one. Expect: the
+    /// first two refused, the control broken and nothing taken; the last answered with the
+    /// run's CA.
+    #[cfg(unix)]
+    #[test]
+    fn credential_grants_are_taken_with_their_placeholders_checked() {
+        use std::os::unix::net::UnixStream;
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut stack = stack(
+            Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
+            region.producer(1, pr),
+        );
+        let (host, ours) = UnixStream::pair().unwrap();
+        let grant = |reference: &str, placeholder: &str| Grant {
+            reference: reference.into(),
+            toward: vec!["api.anthropic.com".into()],
+            placeholder: placeholder.into(),
+        };
+        let message = |grants: &[Grant]| shards_ipc::Message {
+            kind: shards_ipc::kind::NET_CREDENTIALS,
+            payload: encode_grants(grants).unwrap(),
+            fds: Vec::new(),
+        };
+        for refused in [
+            vec![grant("anthropic/claude-max", "two words")],
+            vec![
+                grant("anthropic/claude-max", "p"),
+                grant("anthropic/console", "p"),
+            ],
+        ] {
+            stack.credential_key = Some(ca::Key::generate().unwrap());
+            assert!(
+                answer_other(&mut stack, &ours, &message(&refused)).is_err(),
+                "{refused:?} taken"
+            );
+            assert!(stack.credentials.is_none());
+        }
+        stack.credential_key = Some(ca::Key::generate().unwrap());
+        let twice = [
+            grant("anthropic/claude-max", "p"),
+            grant("anthropic/claude-max", "p"),
+        ];
+        assert!(answer_other(&mut stack, &ours, &message(&twice)).is_ok());
+        let answer = shards_ipc::recv_by(&host, Instant::now() + Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert_eq!(answer.kind, shards_ipc::kind::NET_CREDENTIALS);
+        assert_eq!(answer.payload, stack.credentials.as_ref().unwrap().ca.der());
     }
 
     /// An initial sequence number is its connection's and its secret's alone, plus its

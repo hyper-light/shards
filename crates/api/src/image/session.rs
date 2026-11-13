@@ -827,34 +827,10 @@ impl Session {
         begun.started(request, patience).map_err(|(refused, _)| refused)
     }
 
-    /// A pipe for each running member's channels, and the thread that fills it as its
-    /// bytes come, granting the host room for as many more as it took.
+    /// Its running members' outputs ([`pumped`]).
     fn pump_outputs(&self) -> Result<(), ImageRefusal> {
-        let mut outputs = lock(&self.outputs);
-        for m in self.members.iter().filter(|m| m.runs) {
-            for channel in [Channel::Stdout, Channel::Stderr] {
-                let (reader, writer) = io::pipe().map_err(|e| ImageRefusal::Os {
-                    what: "a member's pipe",
-                    kind: e.kind(),
-                })?;
-                outputs.insert((m.index, channel), reader);
-                let shared = self.shared.clone();
-                let member = m.index;
-                std::thread::Builder::new()
-                    .name("shards-api-member".into())
-                    .spawn(move || pump(&shared, member, channel, writer))
-                    .map_err(|e| ImageRefusal::Os {
-                        what: "a member's pump",
-                        kind: e.kind(),
-                    })?;
-                self.shared
-                    .credit(member, channel, AHEAD)
-                    .map_err(|e| ImageRefusal::Os {
-                        what: "the run host's credit",
-                        kind: e.kind(),
-                    })?;
-            }
-        }
+        let pumped = pumped(&self.shared, &self.members)?;
+        lock(&self.outputs).extend(pumped);
         Ok(())
     }
 
@@ -907,6 +883,40 @@ impl Session {
             .find(|m| m.kind == member.kind && m.name == member.name)
             .ok_or_else(|| ImageRefusal::Image(format!("{member:?}: the image declares no such member")))
     }
+}
+
+/// A member's channel, by its index, and the pipe its bytes come out of ([`pumped`]).
+type Pumped = ((u32, Channel), io::PipeReader);
+
+/// A pipe for each of `members`' running members' channels, and the thread that fills it as
+/// its bytes come, the host granted room for its first [`AHEAD`] bytes and for as many more as
+/// each part took ([`pump`]). A credit that cannot go is no refusal: the host's channel is
+/// closed, as the run's end closes it (`read_answers`), or broken, and the run started all the
+/// same, its end its session's to tell (`State::end_seen`), as `pump` takes its own credits'
+/// (WHP at 3a05bc3f1: a template's run of `exit 3`, restored, ended before its first credit
+/// went, and its boot was refused `BrokenPipe`).
+fn pumped(shared: &Arc<Shared>, members: &[MemberInfo]) -> Result<Vec<Pumped>, ImageRefusal> {
+    let mut outputs = Vec::new();
+    for m in members.iter().filter(|m| m.runs) {
+        for channel in [Channel::Stdout, Channel::Stderr] {
+            let (reader, writer) = io::pipe().map_err(|e| ImageRefusal::Os {
+                what: "a member's pipe",
+                kind: e.kind(),
+            })?;
+            outputs.push(((m.index, channel), reader));
+            let pumping = shared.clone();
+            let member = m.index;
+            std::thread::Builder::new()
+                .name("shards-api-member".into())
+                .spawn(move || pump(&pumping, member, channel, writer))
+                .map_err(|e| ImageRefusal::Os {
+                    what: "a member's pump",
+                    kind: e.kind(),
+                })?;
+            let _ = shared.credit(member, channel, AHEAD);
+        }
+    }
+    Ok(outputs)
 }
 
 /// Moves member `member`'s `channel` into `writer` as its bytes come, and grants the host
@@ -1676,6 +1686,32 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), [&before[..], &after[..]].concat());
         let kept: Vec<u8> = lock(&shared.state).said.iter().copied().collect();
         assert_eq!(kept, after[after.len() - said_kept()..]);
+    }
+
+    /// Do pump the outputs of a run whose end came before them, its host's channel closed by
+    /// it, as a run that ends at once has (WHP at 3a05bc3f1: a template's run of `exit 3`,
+    /// restored, ended before its first credit went). Expect: a pipe for each channel of each
+    /// running member alone, each ending as the run has, and no refusal: the run started, and
+    /// its end is the session's to tell, never a boot refused `BrokenPipe`.
+    #[test]
+    fn a_run_ended_before_its_first_credit_still_has_its_outputs() {
+        let shared = Arc::new(shared());
+        lock(&shared.state).end = Some(RunEnd::Exited(3));
+        let member = |index, runs| MemberInfo {
+            index,
+            kind: wire::MemberKind::Harness,
+            name: format!("m{index}"),
+            runs,
+        };
+        let outputs = pumped(&shared, &[member(1, true), member(2, false)]).unwrap();
+        let channels: Vec<(u32, Channel)> = outputs.iter().map(|(key, _)| *key).collect();
+        assert_eq!(channels, [(1, Channel::Stdout), (1, Channel::Stderr)]);
+        for (key, mut reader) in outputs {
+            let mut rest = Vec::new();
+            reader.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty(), "{key:?}");
+        }
+        assert_eq!(lock(&shared.state).end_seen(), Some(RunEnd::Exited(3)));
     }
 
     /// Do see a run's host gone without its run's end, as `wait_for` sees it, then stop the

@@ -726,6 +726,10 @@ impl Muxer {
                 let h = self.handshakes.swap_remove(i);
                 match &self.rate {
                     Some(to) => {
+                        // Out of the muxer's waits, to be written blocking by its owner.
+                        if let Err(e) = super::poll::release(h.stream.raw_socket()) {
+                            debug!("vsock: a rate's dial kept in the muxer's waits: {e}");
+                        }
                         if to.send((h.stream, milli)).is_err() {
                             debug!("vsock: a rate no one takes any more; its dial closed");
                         }
@@ -1177,6 +1181,50 @@ mod tests {
                     .is_err_and(|e| e.kind() == io::ErrorKind::ConnectionReset),
             "{end:?}"
         );
+    }
+
+    /// A rate's dial, read through the muxer's own waits as its device's thread makes them,
+    /// is handed out able to block: on Windows a wait's WSAEventSelect held its socket
+    /// non-blocking, so its owner's set_nonblocking(false) failed WSAEINVAL, its answer was
+    /// never written, and its client read the dial closed unanswered (CI run 43435318858,
+    /// boot.rs's a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket on
+    /// windows-2022).
+    #[test]
+    fn a_rates_dial_is_handed_out_able_to_block() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-rate-wait").unwrap();
+        let dir = dir_guard.join("v");
+        let (rates, rated) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            rate: Some(rates),
+            ..VsockHost::at(dir.clone())
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        let mut poller = super::super::poll::Poller::new().unwrap();
+        let mut client = UnixStream::connect(&dir).unwrap();
+        client.write_all(b"RATE 250\n").unwrap();
+        // The device's loop: what the muxer asks waited on, then what came handed to it.
+        let mut handed = None;
+        for _ in 0..8 {
+            let mut interests = Vec::new();
+            m.interests(&mut interests);
+            let mut ready = Vec::new();
+            poller
+                .wait(&interests, Some(Duration::from_millis(250)), &mut ready)
+                .unwrap();
+            m.on_events(&ready);
+            if let Ok(dial) = rated.try_recv() {
+                handed = Some(dial);
+                break;
+            }
+        }
+        let (mut asked, milli) = handed.expect("the rate's dial never reached its owner");
+        assert_eq!(milli, 250);
+        asked.set_nonblocking(false).unwrap();
+        asked.write_all(b"RATED 250 100000000\n").unwrap();
+        drop(asked);
+        let mut answer = String::new();
+        client.read_to_string(&mut answer).unwrap();
+        assert_eq!(answer, "RATED 250 100000000\n");
     }
 
     /// The handshake's bounds are its own words': `CONNECT 0\n` the shortest line, and

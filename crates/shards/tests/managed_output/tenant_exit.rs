@@ -439,7 +439,7 @@ fn member_normal_exit_preserves_sibling_and_main_progress() {
         }))
     });
     let stopped = fixture.shutdown(cleanup_until);
-    inputs.write("teardown.json",&json!({"owner_stop_and_observer_join":{"completed":stopped.is_ok(),"error":stopped.as_ref().err()},"protocol_completed":result.is_ok(),"private_run_cleanup_completed":matches!(&removed,Some(Ok(_))),"observer_sockets":fixture.observer_sockets.iter().map(|socket|json!({"fd":socket.fd,"inode":socket.inode})).collect::<Vec<_>>(),"host_exit_reaping_kernel_return":"Unverified; coordinator held-watches/independent cleanup campaign owed"}));
+    inputs.write("teardown.json",&json!({"owner_stop_and_observer_join":{"completed":stopped.is_ok(),"error":stopped.as_ref().err()},"protocol_completed":result.is_ok(),"private_run_cleanup_completed":matches!(&removed,Some(Ok(_))),"observer_sockets":fixture.sockets_record(),"host_exit_reaping_kernel_return":"Unverified; coordinator held-watches/independent cleanup campaign owed"}));
     if let Err(error) = result {
         std::panic::resume_unwind(error);
     }

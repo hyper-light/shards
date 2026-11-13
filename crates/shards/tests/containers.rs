@@ -3487,10 +3487,11 @@ fn a_groups_job_holds_its_microvms_to_its_memory_max() {
 /// of the home, its budget files `max`, the group's `memory.current` its VM processes'
 /// footprints; with its `memory.high` written short of what it holds, what it read of a
 /// host directory through FUSE (D197 on Windows), told so and asked to give back what it
-/// holds cold, its group within its budget again; and, on macOS, a microVM of the group that
-/// holds past its `memory.max` with nothing to give back stopped, OOM-killed, as a cgroup's
-/// OOM killer kills within it. On Windows the group's job holds its VM processes to its
-/// `memory.max` by what they commit (`a_groups_job_holds_its_microvms_to_its_memory_max`).
+/// holds cold, its group within its budget again; and, on macOS, a microVM of the group with
+/// no swap that holds past its `memory.max` with nothing to give back stopped, OOM-killed,
+/// as a cgroup's OOM killer kills within it. On Windows the group's job holds its VM
+/// processes to its `memory.max` by what they commit
+/// (`a_groups_job_holds_its_microvms_to_its_memory_max`).
 #[test]
 fn a_microvm_under_a_group_is_held_to_its_budget() {
     if !cfg!(any(target_os = "macos", windows)) || cannot_run_vms() {
@@ -3569,22 +3570,52 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
         said().contains("within its budget of") && current() <= high
     });
     if cfg!(target_os = "macos") {
-        // Past its memory.max, which a microVM that holds 768 MiB its guest uses takes it
-        // past, with nothing to give back.
+        // Past its memory.max, which a microVM whose guest uses 768 MiB and may swap none of
+        // it (`--memory-swap` its memory, D159) takes it past, with nothing to give back. One
+        // that may swap, as much again as its memory by default, is held within its room by
+        // its guest, which swaps what passes it to a file of its host's, whose pages its VM
+        // process's footprint leaves out (XNU's phys_footprint counts anonymous memory, and
+        // what the compressor holds of it, alone): its group within memory.max, it runs on.
         std::fs::write(group.join("memory.high"), "max\n").unwrap();
-        std::fs::write(group.join("memory.max"), format!("{}\n", current() + (512 << 20))).unwrap();
+        let max = current() + (512 << 20);
+        std::fs::write(group.join("memory.max"), format!("{max}\n")).unwrap();
         let args = run_args(
             &image,
-            &["-d", "--name", "hog", "--cgroup-parent", "agents", "-m", "1g"],
+            &[
+                "-d",
+                "--name",
+                "hog",
+                "--cgroup-parent",
+                "agents",
+                "-m",
+                "1g",
+                "--memory-swap",
+                "1g",
+            ],
             &["alloc-hold", "768", "600"],
         );
         let hog = shards(&args.iter().map(String::as_str).collect::<Vec<_>>());
         assert_eq!(hog.status, Some(0), "{hog}");
+        // Said as the daemon stops it. Where it never is: what its group held as its last
+        // pass wrote it, and how long ago, beside what its guests run.
+        let mut patience = Patience::of(&home, TIMEOUT);
+        while !said().contains("past its memory.max") {
+            assert!(
+                patience.holds(),
+                "its group held {} bytes, written {:?} ago, under a memory.max of {max}, and stopped none:{}",
+                current(),
+                std::fs::metadata(group.join("memory.current"))
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok()),
+                common::guests_processes(&home)
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let waited = shards(&["wait", "hog"]);
         assert_eq!(waited.stdout.trim(), "137", "{waited}\n{}", said());
         let oom = shards(&["inspect", "-f", "{{.State.OOMKilled}}", "hog"]);
         assert_eq!(oom.stdout.trim(), "true", "{oom}");
-        assert!(said().contains("past its memory.max"), "{}", said());
     }
     // The other runs on: what it held it gave back, and held no more.
     let ps = shards(&["ps", "-q", "--filter", "name=held"]);

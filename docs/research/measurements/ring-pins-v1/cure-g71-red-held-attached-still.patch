@@ -1,0 +1,13 @@
+diff --git a/crates/shards/tests/engine_ring.rs b/crates/shards/tests/engine_ring.rs
+index dac817f9a..2d033062e 100644
+--- a/crates/shards/tests/engine_ring.rs
++++ b/crates/shards/tests/engine_ring.rs
+@@ -547,7 +547,7 @@ fn held_open(home: &Path, image: &str) -> std::thread::JoinHandle<Run> {
+ /// each let go: the device's word that it did, which its log keeps whatever came of the ring
+ /// since.
+ fn held_attached(r: &Rings, before: u64) -> bool {
+-    r.attached > before
++    r.attached > before && r.attached > r.let_go
+ }
+ 
+ /// The device's word, as its caller begins to ask for the held connection's slot, that
