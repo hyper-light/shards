@@ -24396,22 +24396,51 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
     (`POSIX_SPAWN_SETSID`), and shards-api's every kill of a host (a stop, its patience, its
     pools, a `stop` whose host cannot be asked) is SIGKILL to that group: its VM, network and
     share processes are its children in it (api-run starts none detached), so none outlives
-    it, not even a VM booting that has not yet looked at its link. On Windows the host
-    alone is ended, and its job, whose last handle it holds with
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, ends them as it ends (D141, D197). A terminal's
-    signals to the orchestrator's process group no longer reach its run hosts; a run still
-    ends with its orchestrator, its stdin closing.
+    it, not even a VM booting that has not yet looked at its link. On Windows the run host
+    is made in a job of shards-api's own (`shards_ipc::spawn_grouped`, its group), nested
+    under any job the orchestrator is in; the host's own job (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    D141, D197) and the VM's confined Job nest under it ("Nested Jobs", Windows 8 and later:
+    a child process is associated with every job in its parent's chain), and as the group's
+    job sets no JOB_OBJECT_LIMIT_BREAKAWAY_OK, nothing the host starts leaves it. Every kill
+    of a host is `kill_group`: each process in the group's job held first (OpenProcess,
+    checked as still the job's by IsProcessInJob, so a freed and reused ID is never waited
+    on), then TerminateJobObject, which ends the job's nested jobs' processes too, and those
+    made between the two held after. A terminal's signals to the orchestrator's process group
+    no longer reach its run hosts; a run still ends with its orchestrator, its stdin closing.
   - *Followed, not timed* (D215, D217): the boot returns once the host has exited and been
     reaped, its answers ended, and its diagnostics' pipe closed by every process holding it,
-    the VM, network and share processes among them, as their stderr.
+    the VM, network and share processes among them, as their stderr. On Windows that pipe's
+    end says nothing of its holders' ends: a process closes its handles as it exits, before
+    its handle is signalled, and TerminateJobObject, "as if TerminateProcess were called for
+    each process", "initiates termination and returns immediately"; to "be sure the process
+    has terminated", its handle is waited on (TerminateProcess's documentation). WHP at
+    21c59efa7 (jupiter, Windows 11 x86_64): the stand-in's stop returned `Ended(Stopped)`
+    after 0.02 s with its VM's handle not yet signalled, though its pipe had ended (`the VM
+    in its run host's job outlived the boot's stop`). So first `Child::end_group` follows
+    the group: rounds of TerminateJobObject, holding each process in the job not held yet,
+    and waiting on every handle held, until a round holds none new and the job's
+    ActiveProcesses (JOBOBJECT_BASIC_ACCOUNTING_INFORMATION) is 0. No literal: each round
+    waits on processes whose termination has begun, the progress D215 judges by, and goes
+    again only where a process joined the job meanwhile. A process it cannot open or ask
+    about is refused `Os` ("the stopped run's processes"), never reported `Stopped`. What is
+    left: a process made into the job after `kill_group`'s second hold that had exited by
+    `end_group`'s first is counted out of ActiveProcesses but never held, so its handle's
+    signal is not waited on; Windows offers no handle-based list of a job's processes, and
+    its completion port's JOB_OBJECT_MSG_NEW_PROCESS is not guaranteed delivery
+    (JOBOBJECT_ASSOCIATE_COMPLETION_PORT), so neither closes it.
   - *Tested* (unit, stand-in run hosts, `image::session`'s tests): one that starts a VM of its
     own that never looks at its host and never says its run started, stopped mid-boot,
     returns `Ended(Stopped)` well within its bound, its host and that VM gone; one never
     answering is refused as before (`Boot`, not started within its patience); one stopped
     first ends `Stopped`. Red on 83db267f2 (each boot waited out its bound, the VM outlived
-    it), green with the stop. **Owed** (ROOT): a stop mid-boot of a real microVM on KVM,
-    Hypervisor.framework and WHP (`crates/shards/tests/api_image.rs`), with no VM, network
-    or share process left; the Windows stand-in (the unit tests are Unix's).
+    it), green with the stop. The Windows stand-in
+    (`a_stop_mid_boot_ends_the_boot_its_host_and_the_vm_of_its_job`, a test binary that is
+    its own run host and VM) was red on WHP at 21c59efa7, as above; `shards_ipc`'s
+    `a_groups_end_follows_every_process_of_it_to_its_end` holds `end_group` to a grouped
+    cmd and the ping it starts. The real-VM twin
+    (`a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run`) passed 1/1 on WHP,
+    HVF and KVM. **Owed** (ROOT): both Windows tests on WHP with `end_group`, and the
+    real-VM twin (`crates/shards/tests/api_image.rs`) again on WHP with the host grouped.
 - *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
   the members start.
 - *Its end* (`RunEnd`): `Exited` with the status its own command or `ATTEND`'s holder ended
