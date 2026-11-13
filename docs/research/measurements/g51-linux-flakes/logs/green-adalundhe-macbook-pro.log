@@ -40,3 +40,16 @@ $ cargo clippy -p shards --test boot -- -D warnings
 -> exit 0
 # (macOS's own clippy did not run: this Mac's 1.98.1 toolchain has no clippy component,
 # and adding one to a shared runner's toolchain was not this lane's to do.)
+
+# The merged tree (origin/main 6366cfe0b + this lane's taken.rs, blob 465a1ef88fa4), the same
+# runner, in a scratch git worktree of its synced copy, 2026-11-13T04:21Z:
+== macOS: cargo test -p shards-api --lib attach_
+test client::tests::attach_takes_back_a_guest_whose_handle_was_lost ... ok
+test client::tests::attach_takes_back_a_guest_whose_client_crashed ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 99 filtered out; finished in 0.44s
+== Linux arm64 (Docker Desktop): cargo test -p shards-api --lib -- taken:: attach_
+test taken::tests::a_process_reaped_after_it_was_held_has_exited ... ok
+test client::tests::attach_takes_back_a_guest_whose_handle_was_lost ... ok
+test client::tests::attach_takes_back_a_guest_whose_client_crashed ... ok
+test result: ok. 12 passed; 0 failed; 5 ignored; 0 measured; 100 filtered out; finished in 0.03s
+== cargo clippy -p shards-api --all-targets -- -D warnings (Linux arm64): exit 0
