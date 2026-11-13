@@ -23723,7 +23723,7 @@ test asserts against. A client an agent runs that offers no AES-256-GCM by defau
 then be refused: OpenSSL 3.6.4 and 4.1.0 and Node.js 24.14.1 offer it first, and Go and
 rustls's aws-lc-rs offer it (D60).
 
-### D240. A member's stdio, terminal and environment, as a harness is driven (stdin, stdout and stderr built: plan step 5; environment, home and working directory built: step 7; exec, attach and a terminal building: step 6; real-VM runs owed)
+### D240. A member's stdio, terminal and environment, as a harness is driven (stdin, stdout and stderr built: plan step 5; environment, home and working directory built: step 7; exec, attach and a terminal built: step 6, D243 and D244; real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs a harness as a HARNESS member under
 shards-init (D54, D59) and drives it as kiln drives one on a host: over its stdio (Claude
@@ -23768,12 +23768,12 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   made them"). The record of step 7's four items:
   [s7-home-workdir](../research/measurements/s7-home-workdir/README.md).
 
-**Building: exec, attach and a terminal** (step 6; G24). Decided by the plan: an exec into a
+**Built: exec, attach and a terminal** (step 6; G24). Decided by the plan: an exec into a
 member runs as its uid and under its confinement (its namespaces, Landlock, seccomp, no
 capabilities, `no_new_privs`); attach reaches its stdio; a TTY of its own can be resized, on
 the terminal lane (D238); nothing crosses into another member. How it is built is step 6's
-implementer's, reviewed by ROOT. A command run in a member is built (D243); until a member's
-own terminal is, shards-api refuses it `Unsupported` (`crates/api/src/image.rs`). What it
+implementer's, reviewed by ROOT. A command run in a member is built (D243), and a member's own
+terminal, shown, typed into and sized by its owner (D244). What it
 builds on is on main: the run's signal link,
 whose states are explicit (D16; [signal-link](../research/measurements/signal-link/README.md)), and the
 exec port's admission under contention (D16, "An exec's connection"). Slice 1 is on main
@@ -24123,8 +24123,78 @@ end of their TLS (D238). So there is no separate shards-api exec (ROOT, 2026-11-
 `MemberExec` is the control lane's. A member's own stdio is attached through step 5's streams
 (D240).
 
-**Building.** A member's own terminal (`MemberSpec::terminal`, refused `Unsupported` until
-then).
+**A member's own terminal** is D244's.
+
+### D244. A member's own terminal: its stdio a pty whose master init holds, shown as its stdout, typed into through its stdin, sized by its owner (built: plan step 6, an orchestrator's runs; real-VM runs owed)
+
+**Why.** Plan step 6 (G24, D240): kiln shows a harness's own screen and its sign-in, so a
+member must be able to run on a terminal of its own, its owner reading what it shows,
+typing into it and sizing it, as `docker run -it` gives a container's command. shards-api's
+`MemberSpec::terminal` asked for one and was refused `Unsupported` until this.
+
+**Alternatives** (R02):
+- Docker's: runc makes the pty in the container (libcontainer/console_linux.go) and hands its
+  master over a console socket to containerd's shim, which copies it to the attached
+  client's streams; a resize is TIOCSWINSZ on that master (moby daemon/resize.go
+  `ContainerResize`; containerd's shim `Resize`), as D243's exec's is.
+- A devpts instance of the member's own: a member's `/dev` holds no `pts` (D59), and one
+  would add a mount and its device rules to every member for a peer it can be handed.
+- Decided: init's devpts, the peer opened through the master (TIOCGPTPEER) and given to the
+  member's uid, as D243's exec terminal; the master init's.
+
+**Decided and built.**
+- *Asked at create.* `member-terminal=N` (abi `run::members::TERMINAL_KEY`), one for a member
+  at most, refused for a member that starts no program, as an input is. shards-api's
+  `MemberSpec::terminal` rides the channel's `MemberStage::terminal` (version 11) to the run
+  host, which refuses it for a member the image does not declare, one of files alone, or one
+  asked twice, and gives the guest the entry.
+- *Its stdio.* The member's command's process (PID 2 under its reaper) makes itself a session
+  leader (setsid(2)) and the terminal its controlling terminal (TIOCSCTTY), then takes the
+  terminal's other end as its stdin, stdout and stderr. Init lets go of its own copy of that
+  end, so the terminal hangs up as the member's last process lets go of it.
+- *Shown.* Init reads the master as the member's stdout channel (`capture::Pipe::master`):
+  what the terminal shows, exactly, credited as any channel. Its end is the kernel's EIO once
+  the terminal's last other end has closed (drivers/tty/n_tty.c, `n_tty_read`,
+  `TTY_OTHER_CLOSED`), never an abort. Its stderr channel ends at once: nothing writes it.
+- *Typed into.* Where its stdin is its owner's too (`MemberSpec::stdin`), init writes the
+  owner's bytes to the master (`input::Input::terminal`), as keys typed, reading the
+  connection a frame's worth at a time (`run::HEADER` + `run::CHUNK`, the most a `STDIN` frame
+  carries, where a pipe's own size bounds a pipe's). The owner's end leaves the terminal
+  open, as a typist leaving does; the terminal hanging up ends the input (POLLHUP, as a
+  pipe's reader going is POLLERR).
+- *Sized.* `ImageGuest::resize(member, rows, cols)` is the channel's `RESIZE`, answered
+  `RESIZED` by its ask's id; refused as `ImageRefusal::Spec` for a member its spec gave no
+  terminal and as `ImageRefusal::Terminal` in its init's words. The run host runs init's
+  `builtin::RESIZE` (21) with the member's index, rows and columns: TIOCSWINSZ on the master,
+  a 0 in either leaving it as it is, as an exec's terminal is (run.rs `resize`; runc's
+  setupConsole), and the kernel tells the terminal's foreground process group SIGWINCH.
+- *Its size at start.* 0 by 0, as the kernel makes a pty: no size is chosen (R03). Its owner
+  sizes it once it knows its own screen's.
+
+**Not built.** A daemon's run asks no member a terminal of its own: no caller needs one yet;
+step 11's terminal lane takes the same entry and built-in where it does.
+
+**Literals** (none chosen):
+
+| Literal | Source |
+|---|---|
+| `member-terminal=` | this wire's own, beside D231's `member-*=` entries |
+| `builtin::RESIZE` 21 | the next after `NOTICE` 20 |
+| the channel's version 11 | ROOT's reservation (9 and 10 are other lanes') |
+| `to_host::RESIZE` 11, `to_client::RESIZED` 28 | the next of each |
+| `run::HEADER` + `run::CHUNK` | one `STDIN` frame's bound |
+| 0 by 0 | the kernel's size of a new pty |
+
+**Tests.** Unit: abi `members::tests::a_member_has_one_terminal_at_most` and
+`a_resize_says_its_member_and_size`; init `capture::tests::a_terminals_master_ends_its_channel_as_its_last_other_end_closes`
+and `input::tests::a_terminals_input_is_typed_into_it_and_its_hangup_ends_it`, on real ptys;
+shards-api `wire::tests::resizes_and_their_answers_read_back_as_said` and the request's
+version tests, `session::tests::a_resizes_answer_is_kept_for_its_awaited_ask_alone`, and
+`what_the_guest_refuses_is_refused_first` (the terminal rides the request); the run host's
+`a_terminal_is_a_running_members_once`. Real VMs, ROOT's (`cargo test -p shards --profile
+test-release --test member_exec`): `a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner`
+and `a_harness_on_a_terminal_of_its_own_reads_what_its_owner_types`. Record:
+[member-exec-tty-v1](../research/measurements/member-exec-tty-v1/README.md).
 
 ### D245. A CPU baseline: the CPU every machine a home moves among gives a guest, told each microVM it starts (decided; built on Hypervisor.framework, KVM arm64 and KVM x86-64; on WHP x86-64 its CPU checked at a move, its baseline researched, not built; real-VM runs owed)
 
