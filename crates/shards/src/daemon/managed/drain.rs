@@ -100,6 +100,10 @@ pub(super) struct Drain {
     capacity: usize,
     kept: Mutex<Kept>,
     changed: Condvar,
+    /// Each drained member's end, by its declared index: set once each of its channels has
+    /// ended, or the run's capture has, all it wrote kept; what a log lane that follows its
+    /// log waits on beside the log's own changes (D238).
+    ends: Vec<Option<shards_ipc::Latch>>,
 }
 
 impl Drain {
@@ -168,6 +172,16 @@ impl Drain {
         for label in labels {
             names.push(label.clone());
         }
+        let mut ends = Vec::new();
+        ends.try_reserve_exact(labels.len()).map_err(io::Error::other)?;
+        for member in 0..labels.len() {
+            let drained = u32::try_from(member).is_ok_and(|m| members.contains(&m));
+            ends.push(if drained {
+                Some(shards_ipc::Latch::new()?)
+            } else {
+                None
+            });
+        }
         Ok(Drain {
             run: run.to_path_buf(),
             labels: names,
@@ -180,7 +194,36 @@ impl Drain {
                 closed: false,
             }),
             changed: Condvar::new(),
+            ends,
         })
+    }
+
+    /// Member `member`'s end ([`Drain::ends`]), another handle to it: none for a member it does
+    /// not drain.
+    pub(super) fn end_of(&self, member: u32) -> Option<io::Result<shards_ipc::Latch>> {
+        let at = usize::try_from(member).ok()?;
+        self.ends.get(at)?.as_ref().map(shards_ipc::Latch::try_clone)
+    }
+
+    /// Sets the end of each drained member whose channels have all ended, or of every one once
+    /// the run's capture has.
+    fn tell_ends(&self, kept: &Kept) {
+        for (member, end) in self.ends.iter().enumerate() {
+            let Some(end) = end else {
+                continue;
+            };
+            let open = u32::try_from(member).is_ok_and(|member| {
+                [Channel::Stdout, Channel::Stderr].into_iter().any(|channel| {
+                    route_index(member, channel)
+                        .ok()
+                        .and_then(|route| kept.streams.get(route).copied().flatten())
+                        .is_some_and(|stream| stream == Stream::Open)
+                })
+            });
+            if kept.closed || !open {
+                end.set();
+            }
+        }
     }
 
     /// Whether the daemon reads credit route `index` itself.
@@ -227,6 +270,7 @@ impl Drain {
         };
         if let (Some(end), Some(slot)) = (end, kept.streams.get_mut(route)) {
             *slot = Some(end);
+            self.tell_ends(&kept);
         }
         kept.changes = kept.changes.wrapping_add(1);
         drop(kept);
@@ -245,6 +289,7 @@ impl Drain {
                 *stream = Stream::Aborted(errno);
             }
         }
+        self.tell_ends(&kept);
         kept.changes = kept.changes.wrapping_add(1);
         drop(kept);
         self.changed.notify_all();
@@ -258,6 +303,7 @@ impl Drain {
             return;
         }
         kept.closed = true;
+        self.tell_ends(&kept);
         for (member, writer) in kept.logs.iter().enumerate() {
             if let Some(writer) = writer
                 && writer.lost() > 0

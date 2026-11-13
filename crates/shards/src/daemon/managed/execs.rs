@@ -52,19 +52,24 @@ pub(super) type Launch<'a> =
 
 /// Hosts each exec `starts` brings, on a thread of its own, until the endpoint that brings them
 /// has ended and so has every exec it brought: each charged to `charge`, its streams admitted
-/// as `admissions` says, started through `launch`.
+/// as `admissions` says, started through `launch`; a log lane read from the run's logs
+/// (`logs`, log_lanes.rs).
 pub(super) fn host(
     starts: &mpsc::Receiver<Start>,
     admissions: exec::Admissions,
     charge: &Charge,
     launch: &Launch<'_>,
+    logs: &super::log_lanes::Logs<'_>,
 ) {
     std::thread::scope(|scope| {
         while let Ok(start) = starts.recv() {
             let (number, replies) = (start.exec, start.replies.try_clone());
             let spawned = std::thread::Builder::new()
                 .name("agent-exec".into())
-                .spawn_scoped(scope, move || serve(start, admissions, charge, launch));
+                .spawn_scoped(scope, move || match start.ask.kind {
+                    exec::Kind::Log(_) => super::log_lanes::serve(start, logs, admissions, charge),
+                    _ => serve(start, admissions, charge, launch),
+                });
             if let Err(e) = spawned {
                 log(format!("agent-control exec {number}: its thread: {e}"));
                 if let Ok(replies) = replies {
@@ -469,7 +474,7 @@ fn serve(start: Start, admissions: exec::Admissions, charge: &Charge, launch: &L
         exec::Kind::Member => {
             return refuse(Unstarted::Failed, "a member's own lane, which no exec serves");
         }
-        // A log lane is read from the run's logs, which no exec of its microVM's does.
+        // A log lane is the log host's (log_lanes.rs), which `host` hands it.
         exec::Kind::Log(_) => {
             return refuse(Unstarted::Failed, "a log lane, which no exec serves");
         }

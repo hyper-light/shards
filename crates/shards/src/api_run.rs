@@ -4679,8 +4679,8 @@ mod hosted {
                 assert_eq!(save(&live, &to("s1")), Ok(()));
                 let saved = dir.path().join("s1");
                 assert!(shards_vmm::snapshot::exists(&saved));
-                let generation = std::fs::read_to_string(saved.join("current")).unwrap();
-                let memory = std::fs::read(saved.join(generation.trim()).join("memory")).unwrap();
+                let generation = shards_vmm::snapshot::generation(&saved).unwrap();
+                let memory = std::fs::read(generation.join("memory")).unwrap();
                 assert_eq!(memory, b"its guest's memory");
                 assert_eq!(
                     save(&live, &to("s3")),
