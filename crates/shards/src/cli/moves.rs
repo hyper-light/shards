@@ -381,7 +381,11 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
             Taken(err_tx),
         );
         let asked = match ran {
-            Ok(Ok(status)) => Ok(Ok((u8::try_from(status).unwrap_or(1), taken(&out_rx), taken(&err_rx)))),
+            Ok(Ok(status)) => Ok(Ok((
+                u8::try_from(status).unwrap_or(1),
+                taken(&out_rx),
+                taken(&err_rx),
+            ))),
             Ok(Err(refused)) => Ok(Err(format!("{to}: {refused}"))),
             Err(e) => Err(format!("{to}: {e}")),
         };
@@ -725,7 +729,10 @@ mod tests {
             let mut asks = 0;
             let mut ask = || {
                 asks += 1;
-                (asked.clone(), seen(Some(Instant::now()), Duration::ZERO, Duration::ZERO))
+                (
+                    asked.clone(),
+                    seen(Some(Instant::now()), Duration::ZERO, Duration::ZERO),
+                )
             };
             assert_eq!(running_there(&mut ask, heard), says);
             assert_eq!(asks, 1);
@@ -811,7 +818,10 @@ mod tests {
         };
         assert_eq!(running_there(&mut ask, heard), None);
         assert!(asks >= 2);
-        assert!(heard_at.unwrap().elapsed() > slowest, "not known only past its slowest answer");
+        assert!(
+            heard_at.unwrap().elapsed() > slowest,
+            "not known only past its slowest answer"
+        );
 
         let mut asks = 0;
         let mut ask = || {
@@ -852,10 +862,14 @@ mod tests {
             ("Heard", body("impl Heard {")),
         ] {
             let code = code.replace("Ok(Ok((0, out, _)))", "");
-            assert!(
-                !code.chars().any(|c| c.is_ascii_digit()),
-                "{what} holds a figure of its own:\n{code}"
-            );
+            // A number's first digit follows no letter, digit or underscore (`utf8` is a name).
+            let mut before = ' ';
+            let number = code.chars().any(|c| {
+                let starts = c.is_ascii_digit() && !(before.is_alphanumeric() || before == '_');
+                before = c;
+                starts
+            });
+            assert!(!number, "{what} holds a figure of its own:\n{code}");
         }
     }
 
