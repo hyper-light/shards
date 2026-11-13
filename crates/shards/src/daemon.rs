@@ -4089,10 +4089,20 @@ impl<D: Disk> Daemon<D> {
                     &agentfile.managed_labels,
                     &agentfile.active_members,
                 )?;
-                Ok((inputs, owned, managed::control_asked(&run.annotations)?))
+                let terminals = managed::terminal_members(
+                    &run.annotations,
+                    &agentfile.managed_labels,
+                    &agentfile.active_members,
+                )?;
+                Ok((
+                    inputs,
+                    owned,
+                    terminals,
+                    managed::control_asked(&run.annotations)?,
+                ))
             })
             .map_err(managed::Failure::Refused)
-            .and_then(|(inputs, owned, agent_control)| {
+            .and_then(|(inputs, owned, terminals, agent_control)| {
                 // What the daemon reads of the members it is shown an attached client on its
                 // stderr, as an agent's output always was (D59); a detached run's is kept
                 // alone.
@@ -4110,6 +4120,7 @@ impl<D: Disk> Daemon<D> {
                         active: &agentfile.active_members,
                         inputs: &inputs,
                         owned: &owned,
+                        terminals: &terminals,
                     },
                     managed::Shown {
                         retention: kept.map(|k| LogRetention {
@@ -5876,6 +5887,12 @@ impl<D: Disk> Daemon<D> {
                 kind::PIDS => self.pids_refused(id, &m.payload),
                 kind::WORKLOAD_READY => self.workload_ready(id, &m.payload),
                 kind::PROCESS => self.keep_processes(id, &m.payload),
+                // A member's end (D231), for its own lanes of the run's agent control (D238).
+                kind::MEMBER_ENDED => {
+                    if let Err(e) = self.managed.member_ended(id, &m.payload) {
+                        log(format!("container {id}: a member's end: {e}"));
+                    }
+                }
                 kind::MANAGED_ABORT => {
                     if let Err(e) = self.managed.abort_member(id, &m.payload) {
                         log(format!("container {id}: invalid managed abort: {e}"));

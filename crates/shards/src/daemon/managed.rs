@@ -2,6 +2,7 @@
 
 mod drain;
 mod execs;
+mod members;
 #[cfg(test)]
 mod terminal_order_tests;
 
@@ -136,6 +137,29 @@ fn named_members(
     Ok(members)
 }
 
+/// The run's annotation naming the members given a terminal of their own (D244, goal 58's
+/// step 6), each `KIND:NAME` as [`STDIN_ANNOTATION`] names them: its stdio a terminal whose
+/// master init holds, shown as its stdout, typed into through its stdin where its owner writes
+/// that, and sized over its own lane of the run's agent-control endpoint, which it needs
+/// ([`CONTROL_ANNOTATION`]).
+pub(super) const TERMINAL_ANNOTATION: &str = "shards.terminal";
+
+/// The members a run's annotations give a terminal of their own ([`TERMINAL_ANNOTATION`]), as
+/// [`input_members`] names them: none where the run names none.
+pub(super) fn terminal_members(
+    annotations: &[String],
+    labels: &[String],
+    active: &[u32],
+) -> Result<Vec<u32>, String> {
+    named_members(
+        annotations,
+        TERMINAL_ANNOTATION,
+        "on a terminal of its own",
+        labels,
+        active,
+    )
+}
+
 /// The run's annotation asking for its agent-control endpoint (D238, plan step 11): `true`
 /// serves every managed stream of the run as a lane of one endpoint of the microVM's own key, in
 /// place of step 5's endpoint per stream, which `false`, or no such annotation, keeps. shards'
@@ -223,13 +247,15 @@ impl From<io::Error> for Failure {
 }
 
 /// A run's members as its capture takes them, each list by declared index, ascending: those
-/// that run a program (`active`), those whose stdin their owner writes (`inputs`), and those
-/// whose output their owner reads (`owned`; the daemon reads the rest itself).
+/// that run a program (`active`), those whose stdin their owner writes (`inputs`), those whose
+/// output their owner reads (`owned`; the daemon reads the rest itself), and those on a
+/// terminal of their own (`terminals`, D244).
 #[derive(Clone, Copy)]
 pub(super) struct Members<'a> {
     pub active: &'a [u32],
     pub inputs: &'a [u32],
     pub owned: &'a [u32],
+    pub terminals: &'a [u32],
 }
 
 /// Where what the daemon reads of its members is kept and shown: kept in their logs as the
@@ -604,6 +630,8 @@ struct Owner {
     stream: Stream,
     credits: Arc<Credits>,
     charge: Arc<Charge>,
+    /// Each member's end as its init tells it (`MEMBER_ENDED`), for its own lanes (D238).
+    ends: Arc<members::Ends>,
 }
 
 /// A run's agent-control endpoint as its owner holds it: where it is bound, and what ends it.
@@ -663,6 +691,7 @@ impl Owner {
         if let Some(agent) = &self.agent {
             agent.revoke.revoke();
         }
+        self.ends.close();
         self.credits.close();
         shards_ipc::end(&self.stream);
         if let Some(drain) = &self.drain {
@@ -1165,6 +1194,18 @@ impl Outputs {
         }
     }
 
+    /// A member's end, as its init told it (`MEMBER_ENDED`, D231): kept in its run's end table
+    /// and told its lanes (D238).
+    pub(super) fn member_ended(&self, id: &str, bytes: &[u8]) -> io::Result<()> {
+        let ended = run::members::Ended::decode(bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a malformed member end"))?;
+        let owner = match lock(&self.runs).get(id) {
+            Some(Entry::Serving(owner)) => Arc::clone(owner),
+            _ => return Err(io::Error::other("managed run is not registered")),
+        };
+        owner.ends.told(ended.member, ended.status)
+    }
+
     /// A member's input's end, as its init told it (`MANAGED_INPUT_ENDED`): its owner told,
     /// and its connection ended here too.
     pub(super) fn input_ended(&self, id: &str, bytes: &[u8]) -> io::Result<()> {
@@ -1242,7 +1283,22 @@ impl<D: Disk> Daemon<D> {
             active,
             inputs,
             owned,
+            terminals,
         } = members;
+        // A member's own terminal is sized over its own lane of the run's endpoint alone.
+        if !terminals.is_empty() && !agent_control {
+            return Err(Failure::Refused(format!(
+                "--annotation {TERMINAL_ANNOTATION}: a terminal of a member's own is sized over the run's \
+                 agent control, which --annotation {CONTROL_ANNOTATION}=true asks for"
+            )));
+        }
+        if terminals.windows(2).any(|w| w.first() >= w.get(1))
+            || terminals.iter().any(|m| !active.contains(m))
+        {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "invalid trusted terminal member plan").into(),
+            );
+        }
         let members = u32::try_from(labels.len()).map_err(io::Error::other)?;
         let count = labels
             .len()
@@ -1390,6 +1446,7 @@ impl<D: Disk> Daemon<D> {
                 inputs: served_inputs,
                 revoke,
                 execs: starts,
+                members: member_lanes,
                 // A daemon's run asks no socket lane (D251): its endpoint refuses each.
                 sockets: _,
             } = served;
@@ -1404,7 +1461,12 @@ impl<D: Disk> Daemon<D> {
             for ((scope, _), (relay, control)) in input_lanes.into_iter().zip(served_inputs) {
                 staged_inputs.push((scope, endpoint.address, None, relay, control));
             }
-            agent = Some((endpoint, revoke, starts.map(|starts| (starts, exec_admitted))));
+            agent = Some((
+                endpoint,
+                revoke,
+                starts.map(|starts| (starts, exec_admitted)),
+                member_lanes,
+            ));
         } else {
             for &member in owned {
                 for channel in [Channel::Stdout, Channel::Stderr] {
@@ -1616,19 +1678,23 @@ impl<D: Disk> Daemon<D> {
                 .ok_or_else(|| io::Error::other("input member index"))? = Some(Arc::clone(&input));
             input_workers.push((endpoint, relay, input));
         }
-        let (agent, agent_endpoint, agent_execs) = match agent {
-            Some((endpoint, revoke, execs)) => (
+        let (agent, agent_endpoint, agent_execs, agent_members) = match agent {
+            Some((endpoint, revoke, execs, members)) => (
                 Some(Agent {
                     address: endpoint.address,
                     revoke,
                 }),
                 Some(endpoint),
                 execs,
+                members,
             ),
-            None => (None, None, None),
+            None => (None, None, None, None),
         };
-        // Each exec the run's owner asks for is charged to the run's budget as it starts.
+        // Each exec the run's owner asks for is charged to the run's budget as it starts, as is
+        // each lane to a member itself while it is open.
         let agent_execs = agent_execs.map(|(starts, admissions)| (starts, admissions, Arc::clone(&charge)));
+        let ends = Arc::new(members::Ends::new(labels.len())?);
+        let agent_members = agent_members.map(|lanes| (lanes, Arc::clone(&charge), Arc::clone(&ends)));
         let owner = Arc::new(Owner {
             outputs,
             inputs: input_slots,
@@ -1637,6 +1703,7 @@ impl<D: Disk> Daemon<D> {
             stream,
             credits,
             charge,
+            ends,
         });
         let labels = copy_labels(labels)?;
         let producers = Arc::new(producers);
@@ -1726,6 +1793,32 @@ impl<D: Disk> Daemon<D> {
                     );
                 })?;
         }
+        // Its members' own lanes (D238), served until the endpoint that brings them ends.
+        if let Some((lanes, member_charge, member_ends)) = agent_members {
+            let run_id = id.to_owned();
+            let mut sized = Vec::new();
+            sized
+                .try_reserve_exact(terminals.len())
+                .map_err(io::Error::other)?;
+            sized.extend_from_slice(terminals);
+            std::thread::Builder::new()
+                .name("agent-members".into())
+                .spawn_scoped(threads, move || {
+                    members::host(
+                        &lanes,
+                        &members::Hosting {
+                            ends: &member_ends,
+                            terminals: &sized,
+                            charge: &member_charge,
+                            started: &|| {
+                                self.await_start(&run_id);
+                                self.running(&run_id)
+                            },
+                            builtin: &|spec, stdio, theirs| self.launch_builtin(&run_id, spec, stdio, theirs),
+                        },
+                    );
+                })?;
+        }
         let writer_owner = Arc::clone(&owner);
         let writer_producers = Arc::clone(&producers);
         std::thread::Builder::new()
@@ -1748,6 +1841,15 @@ impl<D: Disk> Daemon<D> {
         setup.try_reserve(3).map_err(io::Error::other)?;
         setup.push(format!("managed-capacity={}", run::MAX_PAYLOAD).into_bytes());
         setup.push(format!("managed-members={members}").into_bytes());
+        // Each member's end told as it comes, for its own lanes (D238); and each member given a
+        // terminal of its own (D244).
+        setup
+            .try_reserve(usize::from(agent_control).saturating_add(terminals.len()))
+            .map_err(io::Error::other)?;
+        if agent_control {
+            setup.push(run::members::ENDS.to_vec());
+        }
+        setup.extend(terminals.iter().map(|&member| run::members::terminal(member)));
         let mut activation = Vec::new();
         activation
             .try_reserve_exact(
@@ -1802,6 +1904,23 @@ impl<D: Disk> Daemon<D> {
             .into());
         }
         Ok(peer)
+    }
+
+    /// Runs one of init's built-ins in run `id`'s microVM for one of its members' own lanes
+    /// (D238): once the run has started, not while it is paused, handed to its VM process as the
+    /// daemon's own built-ins are, told (`EXEC_TOLD`) and no client's exec.
+    fn launch_builtin(
+        &self,
+        id: &str,
+        spec: &run::Spec,
+        stdio: [shards_ipc::fd::BorrowedFd<'_>; 3],
+        theirs: &Stream,
+    ) -> io::Result<()> {
+        self.await_start(id);
+        if lock(&self.paused).contains(id) {
+            return Err(io::Error::other("its microVM is paused"));
+        }
+        self.hand_exec(id, spec, None, shards_ipc::EXEC_TOLD, stdio, theirs)
     }
 
     /// Starts an agent-control exec in run `id`'s microVM (D238): once the run has started,
@@ -3019,6 +3138,155 @@ mod tests {
         assert_eq!(*lock(&charge.bytes), 0, "an exec's charge outlived it");
     }
 
+    /// What a run's member host hands its VM process (`Daemon::launch_builtin`): the built-in's
+    /// spec, its client's end of its connection, and its stdin, stdout and stderr.
+    type Built = (run::Spec, Stream, [shards_ipc::fd::OwnedFd; 3]);
+
+    /// The run's member host (D238): through the run's agent-control endpoint its owner's
+    /// controller controls member 0, told it runs and its lane charged while it is open; a
+    /// signal goes to its VM process as init's SIGNAL built-in with the member and the signal,
+    /// no client's exec, and is taken where it exits 0 and refused `Ended` where it exits
+    /// SIGNAL_ENDED; a resize of a member with no terminal of its own is refused `Terminal`,
+    /// handing nothing; its end comes as its init tells it, after which every steer is refused
+    /// `Ended`. Member 1, which ended before its lane asked, is told so; a lane the budget has no
+    /// room for is refused `Capacity`; and every charge is given back.
+    #[test]
+    fn a_runs_member_host_tells_a_members_state_steers_it_and_tells_its_end() {
+        use shards_remote::control::exec::{Unstarted, Unsteered};
+        use shards_remote::control::{Controller, Fault, Member, MemberControl, Subscriptions};
+        // A bound on what comes at once or never.
+        const AT_ONCE: std::time::Duration = std::time::Duration::from_secs(5);
+        let owner = identity::Identity::generate().unwrap();
+        let scope = |member| Scope {
+            run: RunId([3; 32]),
+            generation: 1,
+            member,
+            channel: Channel::Stdout,
+        };
+        let out = admitted(64);
+        let admissions = exec_admitted();
+        let (endpoint, served) = bind_agent(
+            owner.fingerprint(),
+            &[(scope(0), out), (scope(1), out)],
+            &[],
+            admissions,
+        )
+        .unwrap();
+        let (vm, address) = (endpoint.fingerprint, endpoint.address);
+        let control::Served {
+            revoke,
+            members: lanes,
+            ..
+        } = served;
+        let lanes = lanes.unwrap();
+        let serving = std::thread::spawn(move || endpoint.run());
+        let budget = Arc::new(Mutex::new(Some(0)));
+        let charge = Charge::reserve(&budget, 0).unwrap();
+        let ends = members::Ends::new(2).unwrap();
+        ends.told(1, 0).unwrap();
+        let (hand, handed) = std::sync::mpsc::channel::<Built>();
+        let built = std::sync::atomic::AtomicUsize::new(0);
+        let builtin = |spec: &run::Spec,
+                       stdio: [shards_ipc::fd::BorrowedFd<'_>; 3],
+                       theirs: &Stream|
+         -> io::Result<()> {
+            built.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let [stdin, stdout, stderr] = stdio;
+            let fds = [
+                stdin.try_clone_to_owned()?,
+                stdout.try_clone_to_owned()?,
+                stderr.try_clone_to_owned()?,
+            ];
+            hand.send((spec.clone(), theirs.try_clone()?, fds))
+                .map_err(io::Error::other)
+        };
+        std::thread::scope(|s| {
+            let hosting = members::Hosting {
+                ends: &ends,
+                terminals: &[],
+                charge: &charge,
+                started: &|| true,
+                builtin: &builtin,
+            };
+            let host = s.spawn(move || members::host(&lanes, &hosting));
+            // Its VM process: the first SIGNAL it is handed exits 0, the second SIGNAL_ENDED.
+            let process = s.spawn(move || {
+                for status in [0, run::builtin::SIGNAL_ENDED] {
+                    let (spec, conn, stdio) = handed.recv_timeout(AT_ONCE).unwrap();
+                    assert_eq!(spec.builtin, run::builtin::SIGNAL);
+                    assert_eq!(spec.argv, run::members::signal_args(0, 15));
+                    assert!(spec.setup.is_empty() && spec.user.is_empty());
+                    drop(stdio);
+                    shards_ipc::send(&conn, shards_ipc::kind::STARTED, &[], &[]).unwrap();
+                    shards_ipc::send(&conn, shards_ipc::kind::EXIT, &[status], &[]).unwrap();
+                }
+            });
+            let (controller, dialed) = Controller::dial(
+                &owner,
+                vm,
+                address,
+                Subscriptions {
+                    outputs: &[(scope(0), out, 0), (scope(1), out, 0)],
+                    inputs: &[],
+                    execs: Some(admissions),
+                    sockets: None,
+                },
+            )
+            .unwrap();
+            let driver = s.spawn(move || controller.run());
+            let execs = dialed.execs.as_ref().unwrap();
+            let Member::Running(MemberControl {
+                mut steering,
+                mut end,
+            }) = execs.member(0).unwrap()
+            else {
+                panic!("member 0 runs");
+            };
+            assert!(*lock(&charge.bytes) > 0, "a member's lane open is charged");
+            assert_eq!(steering.signal(15), Ok(()));
+            assert_eq!(steering.signal(15), Err(Fault::Unsteered(Unsteered::Ended)));
+            assert_eq!(
+                steering.resize(run::Size { rows: 24, cols: 80 }),
+                Err(Fault::Unsteered(Unsteered::Terminal))
+            );
+            process.join().unwrap();
+            ends.told(0, 143).unwrap();
+            assert_eq!(end.wait(), Ok(143));
+            assert_eq!(steering.signal(9), Err(Fault::Unsteered(Unsteered::Ended)));
+            assert!(matches!(execs.member(1), Ok(Member::Ended(0))));
+            *lock(&budget) = Some(u64::MAX);
+            assert_eq!(
+                execs.member(0).map(|_| ()),
+                Err(Fault::Unstarted(Unstarted::Capacity))
+            );
+            revoke.revoke();
+            serving.join().unwrap().unwrap();
+            host.join().unwrap();
+            let _ = driver.join();
+        });
+        assert_eq!(
+            built.into_inner(),
+            2,
+            "a steer refused here reached its VM process"
+        );
+        assert_eq!(*lock(&charge.bytes), 0, "a member's lane's charge outlived it");
+    }
+
+    /// A run's annotation gives members a terminal of their own by kind and name, as it gives
+    /// them an input: each one that runs a program, once.
+    #[test]
+    fn terminal_members_are_named_as_inputs_are() {
+        let labels: Vec<String> = vec!["agent files".into(), "harness driver".into()];
+        let active = [1];
+        let named =
+            |value: &str| terminal_members(&[format!("{TERMINAL_ANNOTATION}={value}")], &labels, &active);
+        assert_eq!(terminal_members(&[], &labels, &active), Ok(Vec::new()));
+        assert_eq!(named("harness:driver"), Ok(vec![1]));
+        for refused in ["agent:files", "harness:nobody", "harness:driver,harness:driver"] {
+            assert!(named(refused).is_err(), "{refused}");
+        }
+    }
+
     /// The run's annotation names its input members by kind and name, each one that runs a
     /// program, once; a member it does not name has none. Docker's last value of a key wins.
     #[test]
@@ -3631,6 +3899,7 @@ mod tests {
             stream,
             credits,
             charge,
+            ends: Arc::new(members::Ends::new(1).unwrap()),
         };
         // Many credits' worth of each channel, more than a pipe holds.
         let rounds = 64;
@@ -3770,6 +4039,7 @@ mod tests {
             stream,
             credits,
             charge: Arc::clone(&charge),
+            ends: Arc::new(members::Ends::new(1).unwrap()),
         };
         let (subscriber, sender) = shards_remote::net::Driver::bind_bounded(
             "127.0.0.1:0".parse().unwrap(),

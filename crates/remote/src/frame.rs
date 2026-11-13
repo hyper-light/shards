@@ -37,6 +37,9 @@ pub enum Tag {
     /// harness makes to its MCP bridge, as an exec lane takes its exec
     /// (`control::exec::Kind::Mcp`).
     Mcp = 7,
+    /// Controller, on an agent-control endpoint (D238): control a member itself, its state,
+    /// its end and its steering, on a lane as an exec's (`control::exec::Kind::Member`).
+    Member = 8,
     /// Client: bytes of the command's stdin.
     Stdin = 16,
     /// Client: the end of the command's stdin.
@@ -75,6 +78,12 @@ pub enum Tag {
     /// why (UTF-8): it may have run, all or some of it, as [`Refused`](Tag::Refused)'s never
     /// did (D176 part 6).
     Cut = 42,
+    /// Agent-control endpoint, on a member's lane (D238): the member runs, its index (four
+    /// bytes, big endian).
+    Running = 43,
+    /// Agent-control endpoint, on a member's lane (D238): its last steer taken (0), or
+    /// refused, typed (`control::exec::Unsteered`, four bytes, big endian).
+    Steered = 44,
 }
 
 impl Tag {
@@ -87,6 +96,7 @@ impl Tag {
             5 => Tag::UnixConnect,
             6 => Tag::Control,
             7 => Tag::Mcp,
+            8 => Tag::Member,
             16 => Tag::Stdin,
             17 => Tag::StdinEnd,
             18 => Tag::Resize,
@@ -102,6 +112,8 @@ impl Tag {
             40 => Tag::Connected,
             41 => Tag::Unreached,
             42 => Tag::Cut,
+            43 => Tag::Running,
+            44 => Tag::Steered,
             _ => return None,
         })
     }
