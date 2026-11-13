@@ -397,6 +397,8 @@ pub(super) struct Session {
     host: Arc<shards_ipc::Child>,
     members: Vec<MemberInfo>,
     published: Vec<wire::Bound>,
+    /// Where its agent-control endpoint is bound (D252), where it asked for one.
+    control: Option<wire::ControlAt>,
     outputs: Mutex<HashMap<(u32, Channel), io::PipeReader>>,
     /// Its command has the nesting grant (D234): its spec asked for it, and its host, which
     /// refuses a grant it cannot give, started it.
@@ -522,6 +524,14 @@ impl Session {
                 }
             }
         }
+        // Its endpoint told exactly where one was asked for (D252): a host that binds none for
+        // a run that asked, or one for a run that did not, broke the channel's contract.
+        if request.control.is_some() != started.control.is_some() {
+            end_it(&shared);
+            return Err(ImageRefusal::Host(
+                "the run host's start told an agent-control endpoint other than the run asked".into(),
+            ));
+        }
         // Each member whose terminal its spec asked for (D244), by its index likewise.
         let terminals = request
             .members
@@ -540,6 +550,7 @@ impl Session {
             host,
             members: started.members,
             published: started.published,
+            control: started.control,
             outputs: Mutex::new(HashMap::new()),
             nesting: request.nesting,
             terminals,
@@ -910,6 +921,10 @@ impl ImageGuest for Session {
 
     fn published(&self) -> &[wire::Bound] {
         &self.published
+    }
+
+    fn control(&self) -> Option<&wire::ControlAt> {
+        self.control.as_ref()
     }
 
     fn take_output(&self, member: &MemberName, channel: Channel) -> Result<io::PipeReader, ImageRefusal> {

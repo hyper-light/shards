@@ -13,6 +13,8 @@ sha2 = "0.11"
 shards-abi = { path = "../abi" }
 shards-dns = { path = "../dns" }
 shards-ipc = { path = "../ipc" }
+# The controller of a run's agent-control endpoint (D238, D252): Shards' own, re-exported.
+shards-remote = { path = "../remote" }
 triomphe = { version = "=0.1.17", default-features = false, features = ["std", "unsize"] }
 unsize = "=1.1.0"
 
