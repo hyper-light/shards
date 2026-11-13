@@ -1995,6 +1995,9 @@ mod hosted {
                     address: endpoint.address,
                     vm: endpoint.fingerprint,
                 }),
+                // The period its VM's governor holds a rate over: this build's hold's, which
+                // the VM process it carries holds by (D36, D247).
+                rate_period: shards_vmm::vm::hold_period(),
             }
             .encode()
             .map_err(|e| boot(e.to_string()))?;
@@ -2264,7 +2267,7 @@ mod hosted {
         #[cfg(windows)]
         let lane = {
             drop(fds);
-            (|| {
+            (|| -> Result<_, String> {
                 let (ours, theirs) = handed_pair().map_err(|e| e.to_string())?;
                 let shared = theirs.share().map_err(|e| e.to_string())?;
                 shards_ipc::send(&lock(&live.link), kind::LANE_HELD, &held, &[shared.as_fd()])
