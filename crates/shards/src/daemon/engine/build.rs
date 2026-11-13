@@ -397,7 +397,7 @@ impl<D: Disk> Daemon<D> {
                     }
                     watched = false;
                 } else if !said_ready {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    super::super::slept(std::time::Duration::from_millis(100));
                 }
             }
             #[cfg(unix)]

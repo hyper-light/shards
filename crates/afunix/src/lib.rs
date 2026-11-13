@@ -17,11 +17,12 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use windows_sys::Win32::Networking::WinSock::{
-    AF_UNIX, FIONBIO, FROM_PROTOCOL_INFO, INVALID_SOCKET, POLLRDNORM, POLLWRNORM, SD_BOTH, SD_RECEIVE,
-    SD_SEND, SO_ERROR, SO_RCVBUF, SO_SNDBUF, SOCK_STREAM, SOCKADDR_UN, SOCKET, SOL_SOCKET, SOMAXCONN,
-    WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED, WSABUF, WSADATA, WSADuplicateSocketW, WSAEWOULDBLOCK,
-    WSAGetLastError, WSAPOLLFD, WSAPROTOCOL_INFOW, WSAPoll, WSARecv, WSASend, WSASocketW, WSAStartup, accept,
-    bind, closesocket, connect, getpeername, getsockopt, ioctlsocket, listen, recv, send, shutdown,
+    AF_UNIX, FIONBIO, FROM_PROTOCOL_INFO, INVALID_SOCKET, LINGER, POLLRDNORM, POLLWRNORM, SD_BOTH,
+    SD_RECEIVE, SD_SEND, SO_ERROR, SO_LINGER, SO_RCVBUF, SO_SNDBUF, SOCK_STREAM, SOCKADDR_UN, SOCKET,
+    SOL_SOCKET, SOMAXCONN, WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED, WSABUF, WSADATA,
+    WSADuplicateSocketW, WSAEWOULDBLOCK, WSAGetLastError, WSAPOLLFD, WSAPROTOCOL_INFOW, WSAPoll, WSARecv,
+    WSASend, WSASocketW, WSAStartup, accept, bind, closesocket, connect, getpeername, getsockopt,
+    ioctlsocket, listen, recv, send, setsockopt, shutdown,
 };
 
 /// A buffer size Winsock reported, `what` naming it: zero or less is an error, not a size.
@@ -537,6 +538,33 @@ impl UnixStream {
         Ok(())
     }
 
+    /// Makes its close reset the connection (SO_LINGER {on, 0}: closesocket's hard close,
+    /// learn.microsoft.com "closesocket function"), so that its peer reads WSAECONNRESET
+    /// rather than end-of-stream: an abort, where a plain close with nothing of its peer's
+    /// unread reads as an end in order (PM M358). The connection resets as its last handle
+    /// closes.
+    pub fn close_resets(&self) -> io::Result<()> {
+        let linger = LINGER {
+            l_onoff: 1,
+            l_linger: 0,
+        };
+        let len = i32::try_from(std::mem::size_of::<LINGER>()).map_err(io::Error::other)?;
+        // SAFETY: a LINGER of ours, its length given, on a socket this value owns.
+        if unsafe {
+            setsockopt(
+                self.socket.0,
+                SOL_SOCKET,
+                SO_LINGER,
+                (&raw const linger).cast(),
+                len,
+            )
+        } != 0
+        {
+            return Err(last());
+        }
+        Ok(())
+    }
+
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         let how = match how {
             Shutdown::Read => SD_RECEIVE,
@@ -842,6 +870,30 @@ mod tests {
         (&b).write_all(b"back").unwrap();
         (&a).read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"back");
+    }
+
+    /// A close with nothing of its peer's unread reads at the peer as end-of-stream (PM
+    /// M358's first row, its writes not shut down here); one made to reset
+    /// ([`UnixStream::close_resets`]) reads as a reset, whatever the peer had read (D251's
+    /// cut).
+    #[test]
+    fn a_close_made_to_reset_reads_as_a_reset_where_a_plain_one_ends_in_order() {
+        let mut buf = [0u8; 16];
+        let (a, b) = UnixStream::pair().unwrap();
+        (&a).write_all(b"said").unwrap();
+        (&b).read_exact(&mut buf[..4]).unwrap();
+        drop(a);
+        assert_eq!((&b).read(&mut buf).unwrap(), 0, "a plain close");
+        let (a, b) = UnixStream::pair().unwrap();
+        (&a).write_all(b"said").unwrap();
+        (&b).read_exact(&mut buf[..4]).unwrap();
+        a.close_resets().unwrap();
+        drop(a);
+        assert_eq!(
+            (&b).read(&mut buf).map_err(|e| e.kind()),
+            Err(io::ErrorKind::ConnectionReset),
+            "a close made to reset"
+        );
     }
 
     /// A connection shared by its protocol info is the same connection, and a clone of it
