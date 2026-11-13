@@ -25913,7 +25913,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2, the sign-ins' wiring and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; HTTP/2 in the injector's connections, the sign-ins' wiring and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -26618,8 +26618,96 @@ record docs/research/s33-veil-creds/STEP8.md).
 - *Owed.* The run host's relay of `NET_SIGN_INS` and `NET_SIGN_IN` to its orchestrator, the image channel's next
   version and `Lessor` grown (this slice's second part); kiln's broker answering them (step 8's third slice).
 
-**Owed (later slices of step 33, this plan's steps 7, 8 and 10).** The injector that
-fills HTTP/2 headers (step 7); the sign-in profiles' wiring (step 8's second slice: the network
+**Built: step 7's first slice, HTTP/2's layer** (`crates/net/src/http2.rs`, `crates/net/src/hpack.rs`; kiln plan
+01a1d2b88be57304b972761e2a5c6781 step 7; research f10, f22, f41, f42, f58, f67; record
+docs/research/s33-veil-creds/STEP7.md). Pure functions and state the injector's connections drive (the second
+slice), wired into none yet: the injector still offers `http/1.1` alone.
+- *Our own frame codec and HPACK, no new crate (R02; docs/research/s33-veil-creds/scripts/step7-h2-survey.sh, its
+  output evidence/step7/h2-survey.txt).* An intermediary MUST NOT re-encode a field sent never indexed into an indexed
+  form (RFC 7541 §7.1.3, f42), so its decoder has to say how each field came and its encoder has to write it so.
+  Considered: `h2` 0.4.20 (hyperium, released 2026-10-06), whose decoder drops the flag (`// TODO: Track that this
+  should never be indexed`, src/hpack/decoder.rs:240) and keeps its HPACK private (`mod hpack;`); it is an endpoint
+  over tokio's `AsyncRead`/`AsyncWrite` where the injector holds no socket and reads no clock, carries chosen limits
+  (a 400 KiB send buffer, 100 empty DATA frames, a header list's "abuse multiplier" of 4, lists of 16 MiB; R03), has
+  four RustSec advisories, each a denial of service, three of them fixed by a chosen count (remote resets, local
+  resets, empty DATA frames), and adds 9 crates new to the lockfile
+  (19 in its tree: tokio, tokio-util, http, futures-core and futures-sink among them) to the confined network
+  process. `loona-hpack` 0.4.3 (fluke-hpack's successor): its decoder hands a name and a value alone ("if we were
+  also a proxy we would need to make sure not to change the representation received here. We don't care about this
+  for now", decoder.rs:422), and its encoder always indexes. `hpack` 0.3.0: unmaintained (RUSTSEC-2023-0084), its
+  decoder panicking on input (RUSTSEC-2023-0085). `httlib-hpack` 0.1.3 keeps the flag both ways but has had no
+  release since 2020-11-17 (its repository last pushed 2021-10-10) and slices its input unchecked (`&buf[total..]`,
+  `buf[total - 1]`). Go's x/net hpack (`HeaderField.Sensitive`, set from a never-indexed literal and never indexed
+  by its encoder) and nghttp2 (`NGHTTP2_NV_FLAG_NO_INDEX`: "the receiver must not index this name/value pair when
+  forwarding it to the next hop") keep it, as this does; neither is Rust (FFI, and C built for seven targets). So
+  the codec is the RFCs' own: its static table and Huffman code generated from RFC 7541's text
+  (scripts/step7-hpack-tables.py), and its tests holding them to that text and the codec to Appendix C's examples,
+  byte for byte.
+- *Each hop its own (RFC 9113 §4.3.1, §6.9).* `http2::Hop` is the injector's end of one connection: its peer's
+  settings, each side's windows, the credit it owes, and an `hpack::Decoder` and `hpack::Encoder` of its own. A
+  request's block is decoded with the guest's hop's decoder and encoded with the host's hop's encoder; no encoded byte
+  of one hop reaches the other, and an index into one table names nothing in the other.
+- *The rewrite (`http2::request`, `Go::encode`).* A request's fields are held to RFC 9113 §8.2.1's field validation,
+  §8.2.2's connection-specific fields and §8.3.1's pseudo-header fields, as an origin holds them (a gateway is one);
+  one that fails is `Malformed`, a stream error PROTOCOL_ERROR, never sent on. Its host is its `:authority`, else its
+  `Host`, a `Host` naming another being malformed (§8.3.1), read as the HTTP/1.1 path reads one
+  (`inject::authority_host`, now shared, R12). `decide` with no token first, `Misdirected` a 421 on that stream alone;
+  then each `Authorization: Bearer` and `x-api-key` token, read by `inject::token_in` (shared too): `With(reference)`
+  makes a `Filled` (the field, where its token lies, the reference) for its caller to lease. `Go::encode` writes each
+  value in its placeholder's place once every lease is held, else nothing, the encoder untouched. Every credential
+  field, filled or not, is encoded never indexed and its value as its octets, as Appendix B's code lengths vary by
+  character; every other field as it came, indexed where the host's hop's own table holds it. A field the guest
+  indexed, its placeholder too, is read from the guest's hop's table, so no index of it reaches the host. Blocks,
+  decoded values and a table's evicted values are wiped as they go.
+- *Frames (RFC 9113 §4).* `frame` reads one whole frame, one past this side's SETTINGS_MAX_FRAME_SIZE refused
+  FRAME_SIZE_ERROR (§4.2). `Block` takes a HEADERS frame's fragment (its padding and priority off, §6.2) and its
+  CONTINUATIONs on its stream alone (§4.3, §6.10); any other frame between is PROTOCOL_ERROR, and a block past what
+  its caller holds ENHANCE_YOUR_CALM (§10.5), as a block not decoded leaves the connection's compression unknown
+  (§4.3). A block whose fields add up past its caller's bound is decoded whole all the same, its fields dropped
+  (`Decoded::TooLarge`): it "MUST be processed to ensure a consistent connection state" (§10.5.1). `headers` writes a
+  block as HEADERS then CONTINUATIONs, none past the peer's SETTINGS_MAX_FRAME_SIZE.
+- *Flow control (§6.9), no number chosen.* Sending: a stream's window starts at the peer's
+  SETTINGS_INITIAL_WINDOW_SIZE and the connection's at 65,535 (§6.9.2); a change of the setting moves every open
+  stream's by the difference, perhaps below zero; a WINDOW_UPDATE grows one, an increment of none PROTOCOL_ERROR and
+  past 2^31−1 FLOW_CONTROL_ERROR (the stream's or the connection's). `send_data` sends no more than both windows' room
+  in frames no longer than the peer's SETTINGS_MAX_FRAME_SIZE and holds the rest; an empty END_STREAM goes whatever
+  they hold (§6.9.1). Receiving: this side grants what it holds (`Holds`, its caller's, from the connection's
+  `TO_HOST` and `TO_GUEST`), a window being "a measure of the buffering capacity of the receiver" (§6.9.1), said in
+  its first SETTINGS and a WINDOW_UPDATE growing the connection's (`Hop::preface`) and in force once the peer
+  acknowledges it, the initial windows holding until then (§6.9.3); DATA past it is FLOW_CONTROL_ERROR. Credit goes
+  back as the peer's octets leave this side, once a frame's worth or half the window is owed, whichever is less: RFC
+  9113 §6.9.1's advice after RFC 1122 §4.2.3.3 (its Fr of ½), so that the peer always has room and no update is of a
+  few octets.
+- *Tables' sizes (RFC 7541 §4.2, §6.3).* A decoder's limit is this side's SETTINGS_HEADER_TABLE_SIZE, the protocol's
+  4,096 until it says another, lowered once acknowledged; a size update past it, after a field, or missing where the
+  limit was lowered under the table is refused. An encoder's table follows its peer's SETTINGS_HEADER_TABLE_SIZE up to
+  what this side lets the other hop's peer keep, so that one hop's table costs no more than the other's, and says its
+  size at its next block's start, the least first where it shrank in between.
+- *Literals.* None chosen. RFC 9113's: the preface (§3.4), a frame's 9-octet header (§4.1), frame types and flags
+  (§6), error codes (§7), the settings' identifiers, initial values and ranges (§6.5.2, §6.9: 4,096; 65,535; 2^14 to
+  2^24−1; 2^31−1); RFC 8441's `:protocol`. RFC 7541's: an entry's 32 octets (§4.1), the representations' prefixes
+  (§5, §6), the static table and Huffman code (Appendices A, B). RFC 1122's ½. What a hop holds is its caller's.
+- *Tests (macOS arm64, adas-mac-studio.local; STEP7.md).* `cargo test -p shards-net --lib -- hpack:: http2:: inject::` red at the
+  tests' commit (8c7db1498, the layer stubbed: 11 failed, 15 passed, every http2 and hpack test failing but the
+  tables' and `Debug`'s) and green at the layer's (b1e41f7d9: 26 passed, 2 ignored, step 10 part B's measurement).
+  `http2::`: the four the slice asked for (a block holding a placeholder comes out with the value and its Authorization
+  never indexed, twice on one connection and across CONTINUATIONs; an ungranted host's block passes as it came, no
+  lease asked; each hop's table its own across three blocks, the host's of 128 octets where the guest's is 4,096;
+  flow control holding a sender past its peer's window: a stream's, one made negative by a lowered setting, the
+  connection's, the frame size), and a `:authority` not the SNI misdirected, a `Host` not the `:authority` and an
+  uppercase name malformed, a peer past this side's window refused and credit given back. `hpack::`: the tables
+  against RFC 7541's text; Appendix C decoded (C.2 to C.6) and C.4 and C.6 encoded byte for byte; a never-indexed
+  field kept so and out of every table; malformed blocks refused, typed; a block past its bound decoded whole; no
+  value in `Debug`. inject.rs' 13 pass over the shared `token_in` and `authority_host`. `cargo clippy -p shards-net
+  --all-targets -- -D warnings` clean for aarch64-apple-darwin, x86_64-unknown-linux-gnu (zig) and
+  x86_64-pc-windows-msvc (xwin).
+- *Owed.* The second slice (STEP7.md lists its steps): the injector's connections speaking HTTP/2 through this
+  layer, the guest's ALPN offer deciding each connection's protocol, the echo mask over DATA and response fields,
+  streams parked on a lease each alone, and a light integration test over real TLS. ROOT: CI's matrix on main, and the
+  real-VM runs of step 10.
+
+**Owed (later slices of step 33, this plan's steps 7, 8 and 10).** HTTP/2 in the injector's
+connections, its ALPN offer with it (step 7's second slice); the sign-in profiles' wiring (step 8's second slice: the network
 process telling its run host of a capture, a refresh and a revocation, the run host its
 orchestrator, the injector capturing and answering outside) and kiln's broker answering them
 (its third); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
