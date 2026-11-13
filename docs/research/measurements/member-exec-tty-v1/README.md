@@ -98,9 +98,10 @@ D243.
 
 ### Light results
 
-At 634d7f22d, this slice merged with main (the person's rule of 2026-11-13: focused tests,
-init's on Linux, where alone it runs, the rest on one host; ROOT's host rule moved them off
-adacachy). An earlier round at bb88be4c8 on adacachy, before the last merge, passed the same.
+On this slice merged with main (the person's rule of 2026-11-13: focused tests, init's on
+Linux, where alone it runs, the rest on one host; ROOT's host rule moved them off adacachy):
+init's at 634d7f22d, whose init and abi differ from the landed tree's in comments alone, the
+rest at 22a710c6a. An earlier round at bb88be4c8 on adacachy passed the same.
 
 | host | what ran | result |
 | --- | --- | --- |
