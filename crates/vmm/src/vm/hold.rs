@@ -9,10 +9,12 @@
 //! charges ([`GroupCpu`]): a second governor charges its vCPUs' time to it and holds them
 //! while the group runs past it.
 
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use super::MILLI_PER_CPU;
 use super::group::GroupCpu;
 use crate::platform::ThreadClock;
 use crate::sync::{lock, wait, wait_timeout};
@@ -48,8 +50,9 @@ pub(super) struct Hold {
 
 #[derive(Debug, Default)]
 struct State {
-    /// The CPUs whose time the vCPUs may use together; 0 for no hold.
-    cpus: u32,
+    /// The CPU time the vCPUs may use together, in milli-CPU ([`MILLI_PER_CPU`]); 0 for no
+    /// hold.
+    milli: u64,
     /// Bumped by each new limit, which begins a period of its own.
     generation: u64,
     /// Held by its share until its period ends, as the governor said as it held them: a
@@ -85,14 +88,23 @@ impl Hold {
         Ok(())
     }
 
-    /// The vCPUs may use `cpus` CPUs' time of the host's together, from now; 0, or as
-    /// many as there are vCPUs, lets them be.
-    pub(super) fn set(&self, cpus: u32) {
+    /// The vCPUs may use `milli` milli-CPU of the host's time together, from now; 0, or as
+    /// much as every vCPU's whole CPU, lets them be. Returns what it holds them to: none
+    /// where it lets them be.
+    pub(super) fn set(&self, milli: u64) -> Option<NonZeroU64> {
         let mut s = lock(&self.state);
-        s.cpus = cpus;
+        s.milli = milli;
         s.generation = s.generation.wrapping_add(1);
         drop(s);
         self.changed.notify_all();
+        self.holds(milli)
+    }
+
+    /// What a hold of `milli` holds these vCPUs to: none for 0, or for as much as every
+    /// vCPU's whole CPU, which they can use no more of.
+    fn holds(&self, milli: u64) -> Option<NonZeroU64> {
+        let vcpus = u64::try_from(self.clocks.len()).unwrap_or(u64::MAX).max(1);
+        NonZeroU64::new(milli).filter(|m| m.get() < vcpus.saturating_mul(MILLI_PER_CPU))
     }
 
     /// On a vCPU's thread, before it enters its guest: waits while the vCPUs are held,
@@ -254,16 +266,18 @@ impl Hold {
         let mut start = Instant::now();
         let mut last = None;
         loop {
-            let (cpus, generation) = {
+            let (milli, generation) = {
                 let mut s = lock(&self.state);
-                // As many CPUs as vCPUs is no hold: they can use no more.
-                while !s.ended && (s.cpus == 0 || u64::from(s.cpus) >= vcpus) {
+                // Every vCPU's whole CPU is no hold: they can use no more.
+                let mut held = self.holds(s.milli);
+                while !s.ended && held.is_none() {
                     s = wait(&self.changed, s);
+                    held = self.holds(s.milli);
                 }
-                if s.ended {
-                    return;
+                match held {
+                    Some(milli) if !s.ended => (milli, s.generation),
+                    _ => return,
                 }
-                (s.cpus, s.generation)
             };
             // Periods follow one another on the clock, as late as the governor wakes; a
             // new limit, or a governor fallen a period behind, begins them again now.
@@ -273,7 +287,7 @@ impl Hold {
             }
             last = Some(generation);
             let base = self.used();
-            let share = u64::from(cpus).saturating_mul(period);
+            let share = share_of(milli, period);
             let allowed = share.saturating_sub(debt);
             let mut holding = false;
             let mut changed = false;
@@ -420,6 +434,13 @@ fn room_lasts(before: (u64, u64), now: (u64, u64), room: u64) -> Option<Duration
     Some(Duration::from_nanos(u64::try_from(left).unwrap_or(u64::MAX)))
 }
 
+/// A period's share of `period` nanoseconds at `milli` milli-CPU, exact to the nanosecond
+/// below: `milli` thousandths of the period, as many CPUs' worth of it as `milli` holds.
+fn share_of(milli: NonZeroU64, period: u64) -> u64 {
+    let share = u128::from(milli.get()).saturating_mul(u128::from(period)) / u128::from(MILLI_PER_CPU);
+    u64::try_from(share).unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -489,12 +510,41 @@ mod tests {
         })
     }
 
+    /// A rate's share of a period is that many thousandths of it, exact to the nanosecond
+    /// below (D242): a whole CPU's, the period itself, as D191's whole CPUs had; a CPU and
+    /// a half's, a period and a half; the least rate's, a thousandth; past what a u64 holds,
+    /// the most it holds.
+    #[test]
+    fn a_rates_share_is_its_thousandths_of_the_period() {
+        let period = u64::try_from(PERIOD.as_nanos()).unwrap();
+        let milli = |m| NonZeroU64::new(m).unwrap();
+        assert_eq!(share_of(milli(MILLI_PER_CPU), period), period);
+        assert_eq!(share_of(milli(3 * MILLI_PER_CPU), period), 3 * period);
+        assert_eq!(share_of(milli(1500), period), period + period / 2);
+        assert_eq!(share_of(milli(1), period), period / MILLI_PER_CPU);
+        assert_eq!(share_of(milli(1), MILLI_PER_CPU - 1), 0);
+        assert_eq!(share_of(milli(u64::MAX), u64::MAX), u64::MAX);
+    }
+
+    /// A hold holds its vCPUs to a rate below every vCPU's whole CPU, and lets them be at
+    /// none and at every vCPU's whole CPU or more (D242), as D191's whole CPUs did.
+    #[test]
+    fn a_hold_holds_a_rate_below_its_vcpus_alone() {
+        let hold = Hold::new(2);
+        assert_eq!(hold.set(0), None);
+        assert_eq!(hold.set(1), NonZeroU64::new(1));
+        assert_eq!(hold.set(1500), NonZeroU64::new(1500));
+        assert_eq!(hold.set(2 * MILLI_PER_CPU - 1), NonZeroU64::new(2 * MILLI_PER_CPU - 1));
+        assert_eq!(hold.set(2 * MILLI_PER_CPU), None);
+        assert_eq!(hold.set(u64::MAX), None);
+    }
+
     /// Three threads held to one CPU use no more of it than the time passing, but what a
     /// period may overrun, and are let go each period: they run a share of it.
     #[test]
     fn threads_held_use_no_more_than_their_share() {
         let hold = Hold::new(3);
-        hold.set(1);
+        hold.set(MILLI_PER_CPU);
         let (used, wall) = spin(&hold, 3, Duration::from_secs(1));
         // One CPU's time over the window, a period's share more where the window and the
         // periods do not line up, and what three may overrun before they are held, their
@@ -655,7 +705,7 @@ mod tests {
     #[test]
     fn a_hold_of_every_cpu_holds_nothing() {
         let hold = Hold::new(2);
-        hold.set(2);
+        assert_eq!(hold.set(2 * MILLI_PER_CPU), None);
         let (used, _) = spin(&hold, 2, Duration::from_millis(300));
         assert!(!hold.held.load(Ordering::Acquire));
         // Whatever the host gave them: nothing held them.

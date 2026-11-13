@@ -1015,13 +1015,14 @@ fn function(
     Err(vm::passthrough_refused())
 }
 
-/// Holds this VM's vCPUs together to `cpus` CPUs' time of the host's, its run's CPU
-/// limits updated (`CPUS`, D191).
-pub fn hold_cpus(cpus: u32) -> Result<(), String> {
+/// Holds this VM's vCPUs together to `milli` milli-CPU of the host's time, its run's CPU
+/// limits updated (`CPUS`, D191) or its orchestrator's rate (`RATE`, D242): what it holds
+/// them to, none where it lets them be.
+pub fn hold_rate(milli: u64) -> Result<Option<std::num::NonZeroU64>, String> {
     RUNNING
         .get()
         .ok_or("the microVM has not started")?
-        .hold_cpus(cpus)
+        .hold_rate(milli)
 }
 
 /// What each of this VM's vCPUs has run of its guest, by index, read now, and what those it
@@ -2046,7 +2047,9 @@ fn serve_workload(
                             // The CPUs its vCPUs are held to (D191), before its guest
                             // hears of the run: what its workload may use whatever its
                             // guest does.
-                            stopper.hold_cpus(request.cpus).inspect_err(|e| report(e))?;
+                            stopper
+                                .hold_rate(u64::from(request.cpus).saturating_mul(vm::MILLI_PER_CPU))
+                                .inspect_err(|e| report(e))?;
                             // Its group's CPU budget too (D183), which every microVM of
                             // the group charges, before its guest hears of the run.
                             if let Some(file) = request.group {

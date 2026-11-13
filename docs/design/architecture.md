@@ -23550,6 +23550,77 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
+### D242. An orchestrator's rate: D191's hold told through its run's host, in milli-CPU (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 14: Hex caps each microVM it runs at
+its water-filled share of its fleet's CPU budget each window, in milli-CPU, at least the
+kernel's least quota (Hex `docs/design/learned-charge.md` C4, `charge::Node::rates`,
+`hex_api::MIN_CPU_MILLI`). On Linux its VM's cgroup holds it (`cpu.max`); on macOS and Windows
+it has only caps of a whole process (a native helper's control rate, a job's hard cap), which
+stop a VMM's device threads with its vCPUs. An image an orchestrator boots (D231) is held by
+D191's hold only as its RUN head says, its vCPUs' whole count, and shards-api had no call to
+move it: Hex had no rate for a Shards image VM but stopping its process.
+
+**Decided.**
+- *The call.* `ImageGuest::rate(rate, patience)`: the CPU time the run's vCPUs may use of the
+  host's together, in milli-CPU, or none for no hold. The run host tells its VM (`RATE`, its
+  number and the rate) on the VM's link, on a thread of its own as a room is; the VM sets its
+  hold and answers (`RATED`): what it holds the vCPUs to, nothing where it lets them be (no
+  rate, or every vCPU's whole CPU or more), or why not (`ImageRefusal::Rate`: the microVM not
+  started, its governor's thread not made). A VM holds what it is told or nothing, so its run
+  host takes any other word as a broken one, never a hold.
+- *The hold in milli-CPU.* D191's hold takes its rate in milli-CPU where it took whole CPUs: a
+  period's share is `rate × PERIOD / MILLI_PER_CPU`, exact to the nanosecond below (in u128),
+  no hold at none or at every vCPU's whole CPU. The daemon's own holds, the RUN head's `cpus`
+  and `CPUS`, stay whole CPUs on their link and are held at a thousand milli-CPU each, so its
+  runs are held exactly as before. The governor, its period and its reads are D191's:
+  the hold holds the whole guest, its kernel's threads and interrupts among it, as `cpu.max`
+  holds a VM's cgroup on Linux, while the VMM's device threads go on.
+- *Not the guest's cgroup.* The rate is the orchestrator's cap of what its microVM uses of the
+  host, the guest's kernel included; the workload's own limits inside it stay its run's (D191's
+  `cpuset.cpus` and `cpu.max`), so the call writes no cgroup.
+- *The channel.* Version 8: `RATE` 11 and `RATED` 28, after every kind before. The rate is one
+  u64, 0 for no hold, so no rate of nothing can be said (that is a pause, D191's). A host of
+  version 7 ends a run at a frame it has no kind for, so a pair that differs refuses the run at
+  create. On the VM's link `RATE` 94 and `RATED` 95 (shards_ipc), answered as `GUEST_TIME` is,
+  matched by number with the run host's other asks, and none awaited once the link closes.
+- *One ask.* The client's room and rate are one numbered ask (`session::Asked`), each held while
+  it is awaited, and no longer.
+
+**Literals.** `MILLI_PER_CPU` (1000, `vm`): the unit, a CPU's time in thousandths, as
+Kubernetes counts CPU, no finer than `1m` ("Resource Management for Pods and Containers", CPU
+resource units), and as Hex charges and caps a microVM (`hex_api::MIN_CPU_MILLI`): a unit, not
+a tuning. `PERIOD` and `SOONEST` stay D191's, cited to CFS (sched-bwc.rst l. 94-95; kernel
+sched). The kinds are the next free numbers.
+
+**Cold start** (R03). Nothing here is learned or estimated. The rate is the orchestrator's
+learned number (Hex's water-filled share each window), told as it moves; until it tells one, the
+run's vCPUs are held as its RUN head said (an image run's: by none), the microVM's vCPUs its
+ceiling, the envelope the person made the ceiling. A rate below what one read of the governor
+resolves (`SOONEST`, 1 ms of a period for each vCPU) is held on average: what a period overran
+comes off the next ones (D191).
+
+**Tested** (light): vmm `hold`'s `a_rates_share_is_its_thousandths_of_the_period` and
+`a_hold_holds_a_rate_below_its_vcpus_alone`, and its tests before, at whole CPUs in milli-CPU;
+`image::wire`'s `rates_and_their_answers_read_back_as_said` and version 7 refused;
+`image::session`'s `a_rates_answer_is_kept_for_its_awaited_ask_alone` and
+`a_rate_no_host_hears_is_refused_and_leaves_no_ask` (the room's too, through the one ask);
+`api_run`'s `a_rates_answer_reads_as_it_was_asked`; `warm`'s
+`a_rate_ask_reads_its_number_and_rate_alone`: each guard red without it, green with it. Real
+VMs, ROOT's: `api_image.rs` `the_orchestrators_rate_holds_its_run_to_it` (a one-vCPU run
+spinning, held to a quarter CPU, runs its guest within a quarter of the time passing and a
+period's share; its vCPU's whole CPU holds nothing; none lifts it), `cargo test --profile
+test-release -p shards --test api_image the_orchestrators_rate_holds_its_run_to_it`.
+
+**Owed.** The real-VM test on KVM, HVF and WHP (ROOT). Hex's adoption: its re-vendor of Shards
+past D241 and this, then its learner telling each Shards image VM its rate each window (kiln
+plan step 14). How far past its rate a VM runs at each rate and vCPU count, measured, as D191
+owes for its marks.
+
+**What would falsify it.** A run held to a rate whose guest time over a window passes the rate
+by more than a period's share and its vCPUs' overrun; a daemon run, its whole CPUs held in
+milli-CPU, held otherwise than before (D191's tests).
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
