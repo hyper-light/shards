@@ -24022,7 +24022,7 @@ harness-codex-signed-in, harness-claude-signed-in) moved to destinations once ru
 grants `--dns` and `--egress=443/tcp` today, any host on 443 (H2), and its hosts come from that
 run's resolver answers, not the records' host mentions, which include help-text URLs.
 
-**Review (plan step 2):** [harness-bringup-v2/review.md](../research/measurements/harness-bringup-v2/review.md) (F1–F8 fixed: the leak check's chosen numbers, the real-VM test's and bringup.sh's clocks and polls, `sleep 600`, H1's stale text, R10's no-tool check on the recorded turns, fetch.sh's signature verdict, cosign's pin and arm64's builds; the real-VM runs and fetch.sh's real fetch owed to ROOT).
+**Review (plan step 2):** [harness-bringup-v2/review.md](../research/measurements/harness-bringup-v2/review.md) (F1–F9 fixed: the leak check's chosen numbers, the real-VM test's and bringup.sh's clocks and polls, `sleep 600`, H1's stale text, R10's no-tool check on the recorded turns, fetch.sh's signature verdict, cosign's pin and arm64's builds, settle's one-swap write-back, signed-in.sh on macOS and the probe's own modes on Windows (F9); the real-VM runs and fetch.sh's real fetch owed to ROOT).
 
 **What would falsify it.** A provider whose clients reach it at addresses its names never
 answer (then address ranges as grants); a member that must reach one port by name beside
