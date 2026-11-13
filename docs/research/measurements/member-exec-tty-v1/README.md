@@ -81,3 +81,89 @@ alone. This slice's test reads the harness's stdout as its owner does, through s
 - R11/R12: guest code, the same for every host; HVF run here, the rest owed above.
 - R15: implementer's light runs only; the real-VM suites are ROOT's.
 - R16: nothing reclaimed.
+
+## Slice 2: a command run in a member (D241)
+
+`shards exec vm --for NAME VM CMD [ARG...]` runs CMD in the agent or harness NAME of the
+microVM's image, confined exactly as that member is. The daemon resolves NAME to the member's
+declared index and sends the run protocol's existing exec with one setup entry,
+`in-member=N`. Init (`enter.rs`) is born into the member's PID namespace and its cgroup
+(clone3 `CLONE_INTO_CGROUP`, held to its `pids.max`), enters its other namespaces from a
+pidfd of its command, and confines itself through `domains::confine` with the member's kept
+`Confinement`, the same function the member's own first process runs. Its stdio is pipes,
+or a pty whose peer comes from TIOCGPTPEER, given to the member's uid, resized by the
+existing `EXEC_RESIZE`. What stops it is typed: `members::Refusal` under
+`exec_failed::MEMBER`, said with `docker exec`'s statuses. Design, alternatives and literals:
+D241.
+
+### Light results
+
+| host | revision | what ran | result |
+| --- | --- | --- | --- |
+| Linux x86_64 (adacachy, CachyOS 7.2.9, rustc 1.98.1) | 60361411d (the squashed tree's code) | `cargo test -p shards-init` | 235 passed, 1 ignored (the five `enter::tests` among them) |
+| the same | 51227851d | `cargo test -p shards-abi -p shards-ipc -p shards-cmdline` | all pass (abi `members::tests` 13 of them) |
+| the same | 51227851d | `cargo test -p shards --bin shards -- devices:: spec:: commands:: workload::` | 22 passed (`a_member_exec_takes_nothing_its_member_has_not`, `a_member_is_found_by_its_name`, `a_member_commands_variables_go_as_given_for_init_to_lay_over_its_members` among them) |
+| the same | 51227851d | `cargo clippy -p shards-init -p shards-abi -p shards-ipc -p shards-cmdline -p shards-testguest --all-targets --target x86_64-unknown-linux-musl -- -D warnings` | clean |
+
+### Guards removed (R10)
+
+Each guard this slice adds, removed alone, fails the unit test named; each test passes with
+it in place (adacachy, the revisions above).
+
+| | guard | removed by | test that fails |
+| --- | --- | --- | --- |
+| M1 | the daemon refuses `--privileged` | `if exec.privileged` made false | `daemon::commands::tests::a_member_exec_takes_nothing_its_member_has_not` |
+| M2 | the daemon refuses `--user` | `if !exec.user.is_empty()` made false | the same |
+| M3 | none of the microVM's variables under a member's command's | `if o.member` made false | `spec::tests::a_member_commands_variables_go_as_given_for_init_to_lay_over_its_members` |
+| M4 | one member for one exec | the second `in-member=` let through | `run::members::tests::an_exec_names_one_member` |
+| M5 | no exec names `SHARDS_DOMAIN` | its comparison taken out of `over` | `enter::tests::an_exec_cannot_set_what_init_sets_or_nothing` |
+| M6 | init refuses a user of the command's own | `if !spec.user.is_empty()` made false | `enter::tests::a_member_command_takes_nothing_its_member_has_not` |
+| M7 | init refuses any other setup entry | the `EXEC_KEY` check made false | the same |
+| M8 | a stdio end's owner, or why not | `own`'s fchown result ignored | `enter::tests::a_stdio_end_given_to_another_uid_says_whether_it_was` |
+| M9 | a terminal's peer's owner, or why not | `terminal`'s fchown result ignored | `enter::tests::a_terminal_is_of_its_size_and_its_peer_the_members` |
+| M10 | a terminal's size as asked | its TIOCSWINSZ skipped | the same |
+
+M8 and M9 hold as the tests run, as a user other than root (euid 1000 on adacachy): fchown(2)
+to another uid is refused EPERM, and the functions say so. Run as root, the tests take the
+other arm, where fchown succeeds.
+
+### Run it (ROOT's legs)
+
+    cargo test -p shards --profile test-release --test member_exec
+
+`a_command_run_in_a_member_is_confined_as_the_member_is` (its uid and gid and no group, its
+member's PID namespace, name, capabilities and `no_new_privs`, signals, Landlock on files and
+TCP, seccomp, cgroup and network; another member's files by path, by symlink and by hard
+link refused; nothing of init's held; the other member entered as itself),
+`what_a_member_has_not_is_refused_to_a_command_run_in_it` (no such member, `-u`,
+`--privileged`, a program its `PATH` does not hold) and
+`a_command_run_in_a_member_has_a_terminal_that_resizes`, beside slice 1's
+`a_member_starts_with_every_signal_at_its_default`. Owed, ROOT's: all four on KVM x86_64,
+KVM arm64 (the nested L1 path), HVF and WHP; shards-init's unit tests on arm64 Linux.
+
+### R01–R16, slice 2
+
+- R01: no panic path in production code: errors returned and typed (`enter::Failed`,
+  `members::Refusal`, `devices::NoMember`, `commands::MemberExec`); slices by `get`, the
+  child's report by pattern; clippy's denied lints on every target linted.
+- R02: runc v1.5.1 and crun 1.31 read at their sources for joining a container; Docker's
+  exec resize (moby, containerd); setns(2), clone(2), cgroup-v2's PID controller,
+  landlock(7), TIOCGPTPEER(2const), pid_namespaces(7) (D241, and kiln research
+  01a1d2be234e7711a389f3e1d52731db).
+- R03: no chosen number: wire codes and statuses, each with its source in D241's Literals.
+- R04: refusals typed end to end, each with its cause; no new lifecycle state, the member's
+  own ending ends the command (pid_namespaces(7)).
+- R05/R12/R13: the member's start and a command in it share `confine` and `Confinement`, a
+  command shares `born_in` with the run's execs, and the exec takes the run protocol's
+  existing frames; no new channel or manager.
+- R06/R07: `enter::start` refuses in order, then one child that execs or reports a step;
+  comments carry the kernel's and the runtimes' facts.
+- R08/R14: no performance claim; a command in a member costs one clone3, one setns and the
+  member's confinement steps, unmeasured here.
+- R09: a feature, not a defect: no defect to reproduce.
+- R10: above, every guard removed fails its test; the real-VM tests are ROOT's.
+- R11: init's code is Linux's, the same in every guest; the host's is linted on all seven
+  targets; the real-VM legs owed above.
+- R15: implementer's light runs only.
+- R16: build output under `~/g121-tmp/s6-exec-tty` (adacachy) and `~/s6-exec-tty-lint`
+  (macOS), removed when the step ends.
