@@ -27513,8 +27513,8 @@ lease answered 503").
     - Clippy (`-D warnings`, all targets) is clean on aarch64-apple-darwin, x86_64-unknown-linux-gnu (zig) and
       x86_64-pc-windows-msvc (xwin), for shards-verify, shards-dns, shards-net, shards-net-process, shards-api and
       shards.
-    - shards-api's `upstream_roots`, `a_grants_fields`, `image::wire::tests` and `image::tests`: see the landing
-      report.
+    - shards-api's `upstream_roots`, `a_grants_fields`, `image::wire::tests` and `image::tests`: 38 of 38 at
+      fd61d46da and on the tree merged with main 3b3c6e019 (b6e6f4b9c); fmt clean.
 - *Owed.* ROOT runs the three api_image injector tests on KVM, HVF and WHP (the first runs on HVF and WHP), and CI's
   matrix on main.
 
