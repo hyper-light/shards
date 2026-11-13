@@ -4188,16 +4188,16 @@ fn a_paused_microvms_unpause_waits_for_no_exec_on_its_way() {
     assert_eq!(exit(&mut run, &home), Some(137));
 }
 
-/// A run booted from the test kernel and an init built to take a signal frame of
-/// `LOSES_SIGNALS_ON` for a malformed one (common::lossy_init): its client, its command's
-/// first line read.
-fn start_lossy(home: &Path, image: &str, options: &[&str]) -> Child {
+/// A run booted from the test kernel and `init`, an init built for tests to lose its signal
+/// connection or never make it (common::lossy_init, common::undialing_init): its client, its
+/// command's first line read.
+fn start_with(home: &Path, image: &str, options: &[&str], init: &Path) -> Child {
     let mut child = common::interruptible(
         common::command()
             .args(run_args(image, options, &["sleep"]))
             .env("SHARDS_HOME", home)
             .env("SHARDS_KERNEL", kernel())
-            .env("SHARDS_INIT", common::lossy_init())
+            .env("SHARDS_INIT", init)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null()),
@@ -4212,9 +4212,12 @@ fn start_lossy(home: &Path, image: &str, options: &[&str]) -> Child {
     child
 }
 
-/// Waits for `home`'s daemon log to say a loss of a workload's control `count` times (D16).
-fn lost_said(home: &Path, count: usize) {
-    let said = "the guest's signal connection is lost: the guest closed it before its end";
+/// What a VM process's log says as its guest's signal connection closes unsaid (D16).
+const CLOSED_UNSAID: &str = "the guest's signal connection is lost: the guest closed it before its end";
+
+/// Waits for `home`'s daemon log to say a loss of a workload's control, `said`, `count` times
+/// (D16).
+fn lost_said(home: &Path, said: &str, count: usize) {
     let deadline = Instant::now() + TIMEOUT;
     loop {
         let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
@@ -4235,20 +4238,17 @@ fn a_lost_signal_connection_fails_execs_and_kills_at_once() {
     let Some((home, image)) = home("containers-lost-link") else {
         return;
     };
-    let mut run = start_lossy(&home, &image, &["--name", "lost"]);
+    let mut run = start_with(&home, &image, &["--name", "lost"], common::lossy_init());
     let shards = |args: &[&str]| shards_in(&home, args);
     assert_eq!(
         shards(&["kill", "-s", common::LOSES_SIGNALS_ON, "lost"]).status,
         Some(0)
     );
-    lost_said(&home, 1);
+    lost_said(&home, CLOSED_UNSAID, 1);
     let exec = shards(&["exec", "lost", "/bin/testguest", "exit", "0"]);
     assert_eq!(
         (exec.status, exec.stderr.as_str()),
-        (
-            Some(1),
-            "shards: the guest's signal connection is lost: the guest closed it before its end\n"
-        ),
+        (Some(1), format!("shards: {CLOSED_UNSAID}\n").as_str()),
         "{exec}"
     );
     let t = Instant::now();
@@ -4262,12 +4262,12 @@ fn a_lost_signal_connection_fails_execs_and_kills_at_once() {
         "its microVM ended otherwise, in {waited:?}: {log}"
     );
     // Its daemon gone: its VM ends at once, its stop signal and SIGKILL reaching nothing.
-    let mut gone = start_lossy(&home, &image, &["--name", "gone"]);
+    let mut gone = start_with(&home, &image, &["--name", "gone"], common::lossy_init());
     assert_eq!(
         shards(&["kill", "-s", common::LOSES_SIGNALS_ON, "gone"]).status,
         Some(0)
     );
-    lost_said(&home, 2);
+    lost_said(&home, CLOSED_UNSAID, 2);
     let vm: i32 = shards(&["inspect", "-f", "{{.State.Pid}}", "gone"])
         .stdout
         .trim()
@@ -4288,6 +4288,38 @@ fn a_lost_signal_connection_fails_execs_and_kills_at_once() {
     }
     let _ = gone.kill();
     let _ = gone.wait();
+}
+
+/// A run's guest that cannot make its signal connection, its dial refused (an init built to
+/// dial a port its run's connection has taken: common::undialing_init), says so on the run's
+/// connection, and its host loses its workload's control at once: an exec fails at once with
+/// why, and a SIGKILL ends its microVM at once, as no signal reaches its command. Before, an
+/// exec waited for the run's end, and a kill for its daemon's fallback (D16).
+#[test]
+fn a_signal_connection_never_made_fails_execs_and_kills_at_once() {
+    let Some((home, image)) = home("containers-undialed") else {
+        return;
+    };
+    let mut run = start_with(&home, &image, &["--name", "undialed"], common::undialing_init());
+    // ECONNRESET's number, Linux's for a connect its peer resets.
+    let lost = "the guest's signal connection is lost: the guest could not dial it (Linux errno 104)";
+    let exec = shards_in(&home, &["exec", "undialed", "/bin/testguest", "exit", "0"]);
+    let t = Instant::now();
+    assert_eq!(shards_in(&home, &["kill", "undialed"]).status, Some(0));
+    let ended = exit(&mut run, &home);
+    let killed = t.elapsed();
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    // Each looked at, whatever another shows, so that a failure shows them all.
+    assert_eq!(
+        (
+            exec.status,
+            exec.stderr.as_str(),
+            log.contains("SIGKILL for its command, which no signal reaches"),
+            log.matches(lost).count()
+        ),
+        (Some(1), format!("shards: {lost}\n").as_str(), true, 1),
+        "the exec: {exec}; the kill ended its run ({ended:?}) in {killed:?}: {log}"
+    );
 }
 
 /// A run's normal end, its guest saying its relay's end last on the signal connection

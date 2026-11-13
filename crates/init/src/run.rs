@@ -208,8 +208,9 @@ pub fn main(device: &str, template: bool) -> ! {
     let _ = crate::linux::control_write(control::MARKER, marker::CONNECTED);
     // Before the workload exists: the host takes one connection on each of its ports, so
     // a workload that dials one finds it taken (AGENTFILE_ARCH.md §9.7). Without blocking:
-    // the relay finishes the connection while the workload runs.
-    let signals = dial(run::SIGNAL_PORT, false).ok();
+    // the relay finishes the connection while the workload runs, and tells the host if it
+    // cannot be made.
+    let signals = dial(signal_port(), false);
     let started = standby.and_then(|standby| {
         let (spec, standby) = receive(&conn, standby)?;
         MEMBER_ENDS.store(
@@ -242,7 +243,7 @@ pub fn main(device: &str, template: bool) -> ! {
                 domains.iter().map(|d| (d.id, d.label.as_str())),
             )?;
             if workload.capture.is_some() {
-                if signals.is_none() {
+                if signals.is_err() {
                     return Err("managed output has no independent control connection".into());
                 }
                 let active = run::managed::active(&spec.setup)
@@ -2223,12 +2224,22 @@ fn loses_signals_on() -> Option<u32> {
     option_env!("SHARDS_TEST_LOSE_SIGNALS_ON").and_then(|n| n.parse().ok())
 }
 
+/// The port init dials for its signal connection: [`run::SIGNAL_PORT`], or in an init built
+/// for tests, the one its build's `SHARDS_TEST_SIGNAL_PORT` names, which its host's E2E tests
+/// name to have that dial refused (tests/containers.rs, D16).
+fn signal_port() -> u32 {
+    option_env!("SHARDS_TEST_SIGNAL_PORT")
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(run::SIGNAL_PORT)
+}
+
 /// Says the relay's end, last, on the signal connection `signals` ([`kind::SIGNALS_END`]):
 /// nothing reads it from now on, and the host tells the run's end by it from the
 /// connection's loss (D16). A connect still under way, as a run can end before its first
-/// poll finishes it, is waited for: the kernel ends one within its connect timeout (Linux 6.18
-/// net/vmw_vsock/af_vsock.c l. 136, 1509, 1652), and sends nothing on it before (l. 2075).
-/// Its frame takes room nothing else takes by now, the managed control's having ended.
+/// poll finishes it, is waited for: the host answers its request, with the connection or a
+/// reset (shards-vmm's vsock muxer, `guest_connect`), and the dial's timeout is past any
+/// answer ([`dial`]). Its frame takes room nothing else takes by now, the managed control's
+/// having ended.
 fn say_signals_end(signals: &File, connected: bool) {
     let fd = signals.as_raw_fd();
     if !connected {
@@ -4735,6 +4746,17 @@ fn exec_failed(failures: &mut Outbox, id: u32, why: &str) {
     ]);
 }
 
+/// Tells the host that init could not make its signal connection, `e` why: its
+/// [`kind::SIGNALS_UNDIALED`] frame, into `held`, as [`exec_failed`] holds its own. Until it
+/// hears that, the host waits for the dial, holding what it has for the workload's control,
+/// and every exec, for it (D16).
+fn signals_undialed(held: &mut Outbox, e: &io::Error) {
+    held.extend(&[
+        &run::header(kind::SIGNALS_UNDIALED, 4),
+        &e.raw_os_error().unwrap_or(0).to_be_bytes(),
+    ]);
+}
+
 /// Sends the workload's writable layer on `conn` from a child of init's, as the host asks
 /// once it has the workload's end while joiners of its network go on (D119):
 /// its pid, init's loop serving them meanwhile. Where no child can be had, init sends it
@@ -4881,7 +4903,7 @@ impl Workload {
     /// as the host asks, while the joiners go on. And the host's connection, which a save of
     /// the run may have it dial again (D176): the microVM saved goes quiet for the save, and
     /// a microVM restored from it dials the host anew, with the tokens the save gave.
-    fn relay(mut self, conn: File, mut signals: Option<File>) -> (Result<u32, Failure>, bool, File) {
+    fn relay(mut self, conn: File, signals: io::Result<File>) -> (Result<u32, Failure>, bool, File) {
         let mut conn = conn;
         let mut host = Some(conn.as_raw_fd());
         for fd in [host, self.stdin.as_ref().map(AsRawFd::as_raw_fd)]
@@ -4896,10 +4918,19 @@ impl Workload {
         let mut to_stdin = Outbox::default();
         let mut stdin_eof = false;
         let mut to_host = Outbox::default();
-        // What the host is yet to hear of execs that have no connection (EXEC_FAILED), held
-        // while a cut is not open: a save (D176) carries none of them to the microVM restored
-        // from it, whose host never asked for those execs, and gives its own the same ids.
-        let mut exec_failures = Outbox::default();
+        // What the host is yet to hear that no save carries (D176), held while a cut is not
+        // open: execs that have no connection (EXEC_FAILED), which the host of a microVM
+        // restored from the save never asked for, giving its own the same ids; and a signal
+        // connection that could not be made (SIGNALS_UNDIALED), which such a microVM dials
+        // again, by the save's token.
+        let mut uncarried = Outbox::default();
+        let mut signals = match signals {
+            Ok(signals) => Some(signals),
+            Err(e) => {
+                signals_undialed(&mut uncarried, &e);
+                None
+            }
+        };
         let mut status: Option<u32> = None;
         let mut execs: Vec<Exec> = Vec::new();
         let mut buf = vec![0u8; CHUNK];
@@ -5056,12 +5087,12 @@ impl Workload {
             // (flakes plan step 3, PM M328).
             if host.is_none() {
                 to_host.clear();
-                exec_failures.clear();
+                uncarried.clear();
                 cut = Cut::Open;
             }
-            if cut.open() && !exec_failures.is_empty() {
-                to_host.extend(&[exec_failures.pending()]);
-                exec_failures.clear();
+            if cut.open() && !uncarried.is_empty() {
+                to_host.extend(&[uncarried.pending()]);
+                uncarried.clear();
             }
             for e in &mut execs {
                 if e.link.conn().is_none() {
@@ -5541,7 +5572,10 @@ impl Workload {
                         if !signals_connected {
                             match connect_result(fd) {
                                 Ok(()) => signals_connected = true,
-                                Err(_) => signals = None,
+                                Err(e) => {
+                                    signals = None;
+                                    signals_undialed(&mut uncarried, &e);
+                                }
                             }
                             continue;
                         }
@@ -5611,7 +5645,7 @@ impl Workload {
                                             }
                                             // Said where the host hears it, which otherwise
                                             // waits for the exec's connection (review 8.8).
-                                            Err(Some((id, why))) => exec_failed(&mut exec_failures, id, &why),
+                                            Err(Some((id, why))) => exec_failed(&mut uncarried, id, &why),
                                             Err(None) => {}
                                         },
                                         kind::EXEC_SIGNAL => {
@@ -5747,9 +5781,7 @@ impl Workload {
                             continue;
                         };
                         match part {
-                            Part::Conn => {
-                                e.on_conn(p.revents, &mut buf, &mut exec_failures, born, generation)
-                            }
+                            Part::Conn => e.on_conn(p.revents, &mut buf, &mut uncarried, born, generation),
                             Part::Stdin => feed(&mut e.stdin, &mut e.to_stdin),
                             Part::Stdout => drain_into(&mut e.stdout, kind::STDOUT, &mut buf, &mut e.to_conn),
                             Part::Stderr => drain_into(&mut e.stderr, kind::STDERR, &mut buf, &mut e.to_conn),
@@ -5773,7 +5805,7 @@ impl Workload {
                     e.link = Link::Gone;
                     e.stdin_eof = true;
                 }
-                exec_failures.clear();
+                uncarried.clear();
                 match tokens.take().map(|t| redial(&t)) {
                     Some(Ok((run, signal))) => {
                         conn = run;
@@ -6730,6 +6762,29 @@ mod signals_end_tests {
     #[test]
     fn an_init_built_for_runs_takes_no_signal_for_a_malformed_frame() {
         assert_eq!(loses_signals_on(), None);
+    }
+
+    /// An init built without the tests' other knob (`SHARDS_TEST_SIGNAL_PORT`), as every one
+    /// but theirs is, dials the signal port.
+    #[test]
+    fn an_init_built_for_runs_dials_the_signal_port() {
+        assert_eq!(signal_port(), run::SIGNAL_PORT);
+    }
+
+    /// A signal connection init could not make is told the host after what waited to be told
+    /// before it, in a frame of its own: Linux's errno for why, 0 for an error with none.
+    #[test]
+    fn a_signal_connection_not_made_is_told_with_its_errno() {
+        let mut held = Outbox::default();
+        exec_failed(&mut held, 7, "gone");
+        let before = held.len();
+        signals_undialed(&mut held, &io::Error::from_raw_os_error(libc::ECONNRESET));
+        signals_undialed(&mut held, &io::Error::other("no errno"));
+        let frame = |errno: i32| [&run::header(kind::SIGNALS_UNDIALED, 4)[..], &errno.to_be_bytes()].concat();
+        assert_eq!(
+            held.pending().get(before..),
+            Some(&[frame(104), frame(0)].concat()[..])
+        );
     }
 }
 

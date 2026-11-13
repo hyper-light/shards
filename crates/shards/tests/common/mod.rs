@@ -521,6 +521,23 @@ pub fn lossy_init() -> &'static Path {
     })
 }
 
+/// shards-init built to dial, for its signal connection, the run's port, which the run's own
+/// connection has taken already: its host refuses that dial, as it refuses any second dial of
+/// a port it serves once (AGENTFILE_ARCH.md §9.7). A guest that cannot make its signal
+/// connection, as tests provoke one (D16).
+pub fn undialing_init() -> &'static Path {
+    static U: OnceLock<PathBuf> = OnceLock::new();
+    U.get_or_init(|| {
+        let port = shards_abi::run::PORT.to_string();
+        guest_binary_in(
+            "shards-init",
+            "shards-init",
+            "target/guest-undialing",
+            &[("SHARDS_TEST_SIGNAL_PORT", &port)],
+        )
+    })
+}
+
 /// Builds guest package `package`'s binary `name` into `target_dir` with `env` added.
 fn guest_binary_in(package: &str, name: &str, target_dir: &str, env: &[(&str, &str)]) -> PathBuf {
     guest_binary_with(package, name, target_dir, "guest", env)

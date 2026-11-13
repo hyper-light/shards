@@ -455,26 +455,30 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     `a_runs_end_says_no_lost_signal_connection` (no loss said at a run's end, a joiner's
     included) and `what_a_restoring_microvm_is_sent_goes_on_its_guests_dial` (D176: execs
     sent as the restore begins each run).
-  - **Not built yet: a guest that never dials.** Where init cannot make its signal
-    connection (its socket refused it, or the host's muxer refused the dial for want of a
-    socket pair, `serve` in vsock/muxer.rs), it says nothing, and the host's link waits for
-    the dial: frames are held, bounded as above, and an exec waits for a connection its
-    held frame never asked for, until its run ends (measured: an exec asked of a run whose
-    guest never dialed still waited after 20 s, and failed only as the run's end closed the
-    exec port, "the container's process ended before the command started",
-    docs/research/measurements/signal-link). A SIGKILL is held too: `kill` ends the run
-    by the daemon's fallback, its VM killed after a teardown slice, and a VM whose daemon
-    has gone keeps its command until it ends. The design: init says so on the run
-    connection, a frame of its own (`SIGNALS_UNDIALED`, guest to host, why in words), as
-    soon as its dial or its connect's result fails, and the host's relay of that
-    connection, during the command and past its end (`beyond`, for joiners), loses the link
-    with it (`lose`): frames refused, execs failed, kills ending the microVM, as for any
-    loss. The frame is held while a cut is not open, and dropped as a restore is found, as
-    `exec_failures` are: a save would carry it into a copy whose host never waited for that
+  - **A guest that cannot dial says so.** Where init cannot make its signal connection (its
+    socket refused it, or its host reset its dial, as the host's muxer resets one it has no
+    connection slot or socket pair for, `guest_connect` in vsock/muxer.rs), it says so on the
+    run connection (`SIGNALS_UNDIALED`, Linux's errno for why, typed as the quiesce refusal's
+    is), and the host's relay of that connection, during the command and past its end
+    (`beyond`, for joiners), loses the link with it (`lose`): frames refused, execs failed
+    ("the guest's signal connection is lost: the guest could not dial it (Linux errno
+    104)"), kills ending the microVM, as for any loss. Before, nothing said it, and the
+    host's link waited for the dial: an exec asked of such a run still waited after 20 s and
+    failed only as the run's end closed the exec port ("the container's process ended before
+    the command started"), and `kill` ended the run only by the daemon's fallback, its VM
+    killed after a teardown slice; a VM whose daemon had gone kept its command until it
+    ended. The frame is held while a cut is not open, and dropped as a restore is found, as
+    `EXEC_FAILED`s are: a save would carry it into a copy whose host never waited for that
     dial, and whose guest dials again by the save's token (D176). Alternatives: a deadline
     on the host's wait for the dial (none is set by time: a slow guest's dial is no loss);
     the muxer telling the signal port of a dial it refused (it sees one cause, and init's
-    own failure to make the socket sends it nothing). Its restore path wants a real guest.
+    own failure to make the socket sends it nothing). Held on real microVMs by
+    `a_signal_connection_never_made_fails_execs_and_kills_at_once` (an init built to dial a
+    port its run's connection has taken, which its host refuses: `common::undialing_init`;
+    red before, the exec still waiting after 60 s and the kill the fallback's), and by a
+    unit test, each mutation-checked (docs/research/measurements/signal-link). Its held
+    path, a dial found failed during a save's cut, needs a save asked before the relay's
+    first look at the dial: no test provokes it.
   - Through the daemon, a signal that arrives once the run's record is made, before the
     command runs, waits for it (D26). `run --kernel`, whose process is the VM, ends as that
     signal would end it. dockerd instead drops a signal sent before its container starts

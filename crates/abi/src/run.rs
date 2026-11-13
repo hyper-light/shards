@@ -201,6 +201,12 @@ pub mod kind {
     /// The input itself comes host to guest on the member's own connection, as [`STDIN`]
     /// frames, an empty one its owner's end.
     pub const MANAGED_INPUT_ENDED: u8 = 51;
+    /// Guest to host, on the workload's connection: init could not make its signal
+    /// connection ([`SIGNAL_PORT`](super::SIGNAL_PORT)), its socket refused or its dial
+    /// reset; Linux's errno for why, a big-endian i32 (0 where none was given). The host
+    /// loses the connection with it (D16), what it held for that dial refused, and execs
+    /// that wait for it failed.
+    pub const SIGNALS_UNDIALED: u8 = 52;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its

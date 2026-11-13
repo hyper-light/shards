@@ -107,6 +107,10 @@ pub enum Lost {
     /// A send on it, a read of it, or a copy of it to read failed: the error's kind, and
     /// the OS's code where there was one.
     Failed { kind: io::ErrorKind, os: Option<i32> },
+    /// Its guest could not make it, and said so on the run's connection
+    /// ([`kind::SIGNALS_UNDIALED`]): Linux's errno for why, which this host's own codes
+    /// may not share.
+    Undialed { errno: i32 },
 }
 
 impl Lost {
@@ -126,6 +130,7 @@ impl std::fmt::Display for Lost {
             Self::Untaken => f.write_str("its restored guest's dial could not be taken"),
             Self::Failed { os: Some(code), .. } => write!(f, "{}", io::Error::from_raw_os_error(code)),
             Self::Failed { kind, os: None } => write!(f, "{}", io::Error::from(kind)),
+            Self::Undialed { errno } => write!(f, "the guest could not dial it (Linux errno {errno})"),
         }
     }
 }
@@ -909,7 +914,7 @@ pub fn serve(
         readiness,
         host_net,
     };
-    let status = relay(&mut reader, timing, log.as_mut(), started, records);
+    let status = relay(&mut reader, to, timing, log.as_mut(), started, records);
     // A save waiting for the guest to go quiet waits no more: its command has ended.
     quiescing().end();
     QUIET.notify_all();
@@ -937,6 +942,8 @@ pub fn serve(
             exec_failed(payload);
             true
         }
+        // The signal connection its joiners' execs wait on, which its guest could not make.
+        kind::SIGNALS_UNDIALED => undialed(payload).map(|lost| lose(to, lost)).is_some(),
         _ => false,
     };
     // A microVM that stays keeps its files, as they are now its command has ended:
@@ -1007,12 +1014,14 @@ fn end_guest(conn: &UnixStream) {
 /// and stays out of the log: `logs` holds what the command wrote.
 fn relay(
     conn: &mut io::BufReader<shards_ipc::Polled<&UnixStream>>,
+    to: &ToGuest,
     timing: &Timing,
     log: Option<&mut Logger>,
     started: Option<&(dyn Fn() + Sync)>,
     records: RunRecords<'_>,
 ) -> Result<Ended, String> {
-    let (ended, lost, dropped) = with_sink(log, |sink| relay_frames(conn, timing, sink, started, records))?;
+    let (ended, lost, dropped) =
+        with_sink(log, |sink| relay_frames(conn, to, timing, sink, started, records))?;
     ended.map(|e| Ended { lost, dropped, ..e })
 }
 
@@ -1027,9 +1036,11 @@ struct RunRecords<'a> {
 }
 
 /// [`relay`]'s frames, its output kept through `log`; what its log lost is said by
-/// [`with_sink`].
+/// [`with_sink`]. Its guest's word that it could not make its signal connection loses that
+/// connection, through `to`.
 fn relay_frames(
     conn: &mut io::BufReader<shards_ipc::Polled<&UnixStream>>,
+    to: &ToGuest,
     timing: &Timing,
     mut log: Option<&mut Sink<'_>>,
     started: Option<&(dyn Fn() + Sync)>,
@@ -1081,6 +1092,12 @@ fn relay_frames(
             }
             kind::SYSTEM_ERR => not_run = Some(String::from_utf8_lossy(payload).into_owned()),
             kind::EXEC_FAILED => exec_failed(payload),
+            // What waits for the guest's dial of the signal port, and every exec that waits
+            // on that connection, waits no more: the dial failed (D16).
+            kind::SIGNALS_UNDIALED => lose(
+                to,
+                undialed(payload).ok_or("the guest sent a malformed failure of its signal dial")?,
+            ),
             // All the guest held is here, the save it was asked for waits on it (D176).
             kind::QUIESCED => {
                 quiescing().quiet();
@@ -1148,6 +1165,15 @@ fn relay_frames(
             _ => return Err(format!("the guest sent an unknown frame kind {which}")),
         }
     }
+}
+
+/// The loss a [`kind::SIGNALS_UNDIALED`] frame says, its `payload` Linux's errno; none for a
+/// malformed one.
+fn undialed(payload: &[u8]) -> Option<Lost> {
+    let errno = <[u8; 4]>::try_from(payload).ok()?;
+    Some(Lost::Undialed {
+        errno: i32::from_be_bytes(errno),
+    })
 }
 
 /// Writes all of `bytes` to this process's descriptor `fd` as it is now: standard output
@@ -3284,42 +3310,50 @@ mod tests {
     #[test]
     fn a_runs_readiness_is_handed_on_as_it_comes() {
         use run::nesting::Ready;
-        let frame = |which: u8, payload: &[u8]| {
-            let mut f = run::header(which, u32::try_from(payload.len()).unwrap()).to_vec();
-            f.extend_from_slice(payload);
-            f
-        };
+        static TO: ToGuest = ToGuest::new(Signals::new());
         let heard = Mutex::new(Vec::new());
         let readiness = |payload: &[u8]| heard.lock().unwrap().push(payload.to_vec());
-        let relayed = |frames: &[Vec<u8>]| {
-            let (mut guest, host) = UnixStream::pair().unwrap();
-            for f in frames {
-                guest.write_all(f).unwrap();
-            }
-            drop(guest);
-            let mut reader = io::BufReader::new(shards_ipc::Polled(&host));
-            let records = RunRecords {
-                processes: None,
-                members: None,
-                readiness: Some(&readiness),
-                host_net: None,
-            };
-            relay(&mut reader, &Timing::new(), None, None, records)
+        let records = RunRecords {
+            processes: None,
+            members: None,
+            readiness: Some(&readiness),
+            host_net: None,
         };
         let moves = [Ready::Passed(3).encode(), Ready::Late(5).encode()];
-        let ended = relayed(&[
+        let said = [
             frame(kind::READY, &moves[0]),
             frame(kind::READY, &moves[1]),
             frame(kind::EXIT, &0u32.to_be_bytes()),
-        ])
-        .unwrap();
+        ];
+        let ended = relayed(&TO, &said, records).unwrap();
         assert_eq!(ended.status, 0);
         assert_eq!(*heard.lock().unwrap(), moves.map(|m| m.to_vec()));
-        let broken = relayed(&[frame(kind::READY, &[0; 9])]);
+        let broken = relayed(&TO, &[frame(kind::READY, &[0; 9])], records);
         assert_eq!(
             broken.err().as_deref(),
             Some("the guest sent a malformed readiness")
         );
+    }
+
+    /// A frame of kind `which` that carries `payload`.
+    fn frame(which: u8, payload: &[u8]) -> Vec<u8> {
+        [
+            &run::header(which, u32::try_from(payload.len()).unwrap())[..],
+            payload,
+        ]
+        .concat()
+    }
+
+    /// What [`relay`] makes of `frames` on the run's connection, its guest closing the
+    /// connection after them, its signals' link `to`'s and its records `records`'.
+    fn relayed(to: &ToGuest, frames: &[Vec<u8>], records: RunRecords<'_>) -> Result<Ended, String> {
+        let (mut guest, host) = UnixStream::pair().unwrap();
+        for f in frames {
+            guest.write_all(f).unwrap();
+        }
+        drop(guest);
+        let mut reader = io::BufReader::new(shards_ipc::Polled(&host));
+        relay(&mut reader, to, &Timing::new(), None, None, records)
     }
 
     /// An exec's request as the daemon brings it, its stdio the null device's.
@@ -3715,6 +3749,50 @@ mod tests {
         assert!(
             why.starts_with("the guest's signal connection is lost: "),
             "{why}"
+        );
+    }
+
+    /// A guest that cannot make its signal connection says so on the run's connection, and
+    /// its host loses that connection at once: an exec that waits for the dial fails with
+    /// why, and every frame from then on is refused, a SIGKILL's among them, so that a kill
+    /// ends its microVM (D16). Before, nothing said it, and such an exec waited for the
+    /// run's end (docs/research/measurements/signal-link). One said malformed breaks the
+    /// run's protocol.
+    #[test]
+    fn a_guest_that_cannot_dial_its_signal_connection_loses_it_at_once() {
+        static TO: ToGuest = ToGuest::new(Signals::new());
+        let (_serial, _port, _acceptor) = exec_port_test();
+        let none = RunRecords {
+            processes: None,
+            members: None,
+            readiness: None,
+            host_net: None,
+        };
+        will_run(&TO);
+        let heard = exec_ends(&TO);
+        // Its frame waits for the dial.
+        while !matches!(&lock(&TO).link, Link::Awaiting(p) if !p.0.is_empty()) {
+            std::thread::yield_now();
+        }
+        let econnreset = 104;
+        let said = [
+            frame(kind::SIGNALS_UNDIALED, &i32::to_be_bytes(econnreset)),
+            frame(kind::EXIT, &0u32.to_be_bytes()),
+        ];
+        assert_eq!(relayed(&TO, &said, none).unwrap().status, 0);
+        let lost = Unsent::Lost(Lost::Undialed { errno: econnreset });
+        assert_eq!(failure(&heard), lost.to_string());
+        assert_eq!(signal_guest(&TO, 9), Err(lost));
+        hellos::close();
+        assert_eq!(
+            lost.to_string(),
+            "the guest's signal connection is lost: the guest could not dial it (Linux errno 104)"
+        );
+        assert_eq!(
+            relayed(&TO, &[frame(kind::SIGNALS_UNDIALED, &[0; 3])], none)
+                .err()
+                .as_deref(),
+            Some("the guest sent a malformed failure of its signal dial")
         );
     }
 
