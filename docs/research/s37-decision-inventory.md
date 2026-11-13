@@ -7,7 +7,7 @@ whose it is. ROOT's final pass after step 34 checks this table again.
 - **Read at:** first pass, Shards main `e7825cb32` (checked again at `dc7d36014`), kiln main
   `d6ffa45d8`, Hex main `d84730ee`, 2026-11-12 about 15:45 PST; second pass (section 4), Shards
   main `1145bd3f2`, kiln main `e86ec22c6`, Hex main `106c7b94`, 2026-11-12 about 18:40 PST, then
-  each landing after it as section 4 lists (last: Shards `628de209b`, kiln `402b7e4c9`, Hex
+  each landing after it as section 4 lists (last: Shards `20e83eb99`, kiln `408e885fa`, Hex
   `b22f603c`); the plan at version 11 and ROOT's goal stack throughout. Branches not on main are named as such and
   count as nothing landed.
 - **Recorded:** the repository and file, then the section. "arch" is Shards'
@@ -106,7 +106,7 @@ whose it is. ROOT's final pass after step 34 checks this table again.
 | 33 | Credentials in Veil's shape: named by reference, never carried, filled in at the VM's egress only where the TLS name, the request's host and a grant agree; leases the run's identity's | arch D242; `docs/research/s33-veil-creds` (`STEP1.md`; kiln research `01a1d2b88be57304bf6b081fe46832e0`) | linked: STEP1.md (light tests on macOS arm64, each of the slice's five guards removed failing its test) | step 1, the contract, on main (`485fe0c21`): `CredentialGrant`, `wire::decide` and its typed `Fill`, on the run channel's version 8 and `ImageSpec`; steps 2 to 9 building (step 33's plan `01a1d2b88be57304b972761e2a5c6781`: the per-VM CA, the injector, grants through the run host, kiln's broker, Hex's wiring, sign-in profiles, each harness's trust survey); CI's matrix on main, the real-VM runs and the no-value-in-the-VM proof owed (ROOT, its step 10) |
 | 34 | Real Codex and Claude Code driven by kiln over hyper-quic on three host OSes | — | — | owed (ROOT) |
 | 35 | Every harness through kiln's UI and API | kiln `docs/research/s35-every-harness` | in record: Amp's and Devin's pinned builds, asked kiln's ACP initialize alone, say they take a conversation up again and kiln's MCP over HTTP (kiln `cd224213c`) | owed (ROOT) |
-| 36 | Hundreds of harness microVMs across the fleet, with chaos | kiln `bench/fleet/README.md` (its drivers, what it measures, every number's derivation) | in record: its light tests' records (`bench/fleet/records/2026-11-12-adacachy-light-{1,2}`) | the harness and its direct driver on kiln main (`b82b865aa`, `c28878d05`, `5e9254453`, `43abe0dfe`, via `e86ec22c6`), on Windows too and with each host's Shards release build of `e82b9403b` recorded (`3e137784b`); its `hex` and `kiln` drivers owed with steps 12 to 15, 17 and 32 (its "Owed"); the runs at density, on every host, with chaos, and their numbers owed (ROOT) |
+| 36 | Hundreds of harness microVMs across the fleet, with chaos | kiln `bench/fleet/README.md` (its drivers, what it measures, every number's derivation) | in record: its light tests' records (`bench/fleet/records/2026-11-12-adacachy-light-{1,2}`) | the harness and its direct driver on kiln main (`b82b865aa`, `c28878d05`, `5e9254453`, `43abe0dfe`, via `e86ec22c6`), on Windows too and with each host's Shards release build of `e82b9403b` recorded (`3e137784b`); its `hex` driver built, microVMs placed by a Hex scheduler of the run's own (`408e885fa`), its live run, the room from Hex's capacity view and chaos on peers' tunnels owed; its `kiln` driver owed with steps 17 and 32 (its "Owed"); the runs at density, on every host, with chaos, and their numbers owed (ROOT) |
 | 37 | This inventory and the records of section 4 | this file | — | ROOT's final pass after step 34 |
 | 38 | One designated workload's nested runtime grant, checked at build and at run | arch D234; `nesting-grant-decision-v1.md` | linked: s38-nested-grants | decided and built; GPUs by D234's `gpus=` (ROOT, 2026-11-12; `57b5080a3`), not yet sent by any run; its real-VM test (`tests/nesting.rs`) red on CI's KVM x86_64 for two defects of the test's own (its images' commands not root, its shards-api case's program unnamed), fixed at `231bbdf6d` (D234 at `6a721f4ab`, via `38a99c2d4`), its green owed; real-VM E2E, mutations, arm64 filter tests, 7-target lint and build-ab owed (ROOT) |
 | 39 | Hex's node under shards-init; the hex-guest PID 1 retired after conformance | Hex `shards-image-class.md` §7 | — | open: needs steps 11 and 38; Hex ROOT's, with ROOT measuring start latency and memory |
@@ -157,7 +157,7 @@ what landed between the first pass and the "Read at" revisions:
   first evidence in kiln (`cd224213c`; row 35); D242, step 33's contract (`485fe0c21`; rows P8, 33, 11c);
   step 36's harness on Windows (kiln `3e137784b`; row 36); step 11's controller side (`a8eee1382`;
   rows P5, A2, 11); step 6's slice 2 and ROOT's decision it records (`628de209b`; rows 6, 6a, A2),
-  with Hex's index naming both (Hex `b22f603c`).
+  with Hex's index naming both (Hex `b22f603c`); step 36's `hex` driver (kiln `408e885fa`; row 36).
 
 Still unrecorded, each with its owner: step 33's later steps (D242 holds step 1's contract); step 13's kiln side
 (kiln's Load Balancing agent); step 16's kiln record (`p/s16-vendor-v1`); step 10's runs that
