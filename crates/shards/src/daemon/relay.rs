@@ -469,17 +469,35 @@ impl<D: Disk> Daemon<D> {
                     answered: false,
                     said: said_tx,
                 };
-                // Hung up as the daemon stops, which ends its client's connection here.
-                let steered = |controls| self.engine.hold_relayed(number, controls, &self.stopping);
-                let ran = shards_remote::client::exec(
+                // Its handshake and waits start from what the home knows of the machine's path,
+                // and what the connection saw is kept for the next (D180). A machine never
+                // reached is waited for with no deadline of shards' own, each probe logged, and
+                // the relay hung up from its start as the daemon stops, which ends its client's
+                // connection here.
+                let before = crate::context::known(&self.home, &context);
+                let told = |unanswered: shards_remote::client::Unanswered| {
+                    log(format!(
+                        "context {}: no answer yet from {}: {} probes over {:.1?}",
+                        context.name, context.address, unanswered.probes, unanswered.waited
+                    ));
+                    true
+                };
+                let held = |hang_up| self.engine.hold_relayed(number, hang_up, &self.stopping);
+                let (ran, seen) = shards_remote::client::exec_with(
                     &identity,
-                    context.remote(),
+                    context.remote(before),
                     request,
                     Some(Box::new(read)),
                     answering,
                     io::sink(),
-                    steered,
+                    |_| {},
+                    |_| {},
+                    told,
+                    held,
                 );
+                if let Err(e) = crate::context::keep(&self.home, &context, before, &seen) {
+                    log(format!("context {}: {e}", context.name));
+                }
                 let said: Vec<Said> = said.try_iter().collect();
                 let why = match ran {
                     Ok(Ok(_)) => None,

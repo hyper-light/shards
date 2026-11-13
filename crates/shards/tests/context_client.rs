@@ -112,6 +112,10 @@ impl Host for Machine {
     fn invited(&self) -> usize {
         0
     }
+
+    fn handshakes(&self) -> usize {
+        usize::MAX
+    }
 }
 
 /// The test's daemon, on loopback, stopped as it drops.
@@ -168,7 +172,7 @@ fn daemon(laptop: &Path) -> Daemon {
     let remote = Remote {
         address,
         daemon: ours.fingerprint(),
-        rtt: shards_remote::tls::Rtt::Unmeasured,
+        known: shards_remote::tls::Known::Never,
     };
     std::fs::create_dir_all(laptop.join("contexts")).unwrap();
     std::fs::write(

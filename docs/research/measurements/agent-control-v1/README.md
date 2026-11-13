@@ -218,6 +218,25 @@ rustfmt clean. Red before: the same `control::` run on the ask code as it was hu
 test, its binary waiting 13 minutes at 0.45 s of CPU (an ask the endpoint's first read took
 whole, never read on: D254, "Built"), until its processes were ended.
 
+D180's link timing under the person's ruling of 2026-11-13 (D180, "Its values derived": what a
+home knows of each daemon's path, `tls::Known`, kept per context; a cold start with no deadline,
+its probes told; liveness at use, no sooner than the probe timeout; keep-alives only where a
+path lost a connection to silence or a peer negotiated an idle timeout, hyper-quic patch Q30;
+strangers' places and handshake slots with no deadline), over origin/main `e0cc059c7`,
+adas-mac-studio-3.local (macOS 26.2 arm64, rustc 1.98.1), `SHARDS_HELPERS=skip`: `cargo test -p
+shards-remote --lib` `control::` 44, `tls::` 7, `frame::` 2, `net::` 6, `managed::` 30 passed;
+`cargo test -p shards-remote --test loopback` 19 passed; `cargo test -p shards --bin shards --
+daemon::managed context:: client_binds::` 53 passed, 6 ignored; `cargo test -p shards --test
+context_client` 6 passed, 1 ignored; `cargo clippy -p shards-remote -p shards --all-targets --
+-D warnings` clean; rustfmt clean. Red before, each run with prints of each death (not kept):
+10 of the loopback tests' 19 taken for dead on a send 28.9 ms unanswered (a window of 26.9 ms
+from a 1.9 ms handshake and 25 ms of the daemon's max_ack_delay; its probe timeout 30.7 ms),
+then, with waits judged no sooner than the probe timeout, 8 still, the daemon's driver silent
+from its handshake's end: its first start built the tests' helper with cargo, on the driver;
+then one, a resize never served, the client's wake datagrams dropped by its socket aimed at
+the daemon (two sockets waited on since); and `context_client`'s save cut short by a file size
+limit saying the record's failed write first (no word of it since).
+
 ## R01–R16
 
 | Rule | Evidence / gap |
@@ -256,9 +275,15 @@ whole, never read on: D254, "Built"), until its processes were ended.
   missing stderr, and the whole ask's read of no room (`read_exec`).
 - D180's values: quinn-proto's stream and connection windows, its send window and the 100
   streams a daemon's client may open are left as hyper-quic sets them (D180, "Its values
-  derived"); the per-peer RTT kept in the home (`Rtt::Measured`) is the next slice, every caller
-  passing `Rtt::Unmeasured` until it lands. Guard mutations, ROOT's: the R1 count, the RTO
-  floor, the reader's credit at an empty queue, the one-slot queue (none deadlocks).
+  derived"). The same liveness for step 5's and D238's endpoints, which still admit `QUIET`
+  (this goal's next slice, ROOT's call C), goal 75's `unix::link()` with it; a relay's engine
+  client gone mid-handshake seen as it goes; a daemon's starts off its driver, with their times
+  measured on the real daemon (ROOT's); the handshake slots' memory term. hyper-quic's patch
+  Q30 is on hyper-raft's branch `p/negotiated-idle-v1` (b51afe30, one commit over 233b7fce,
+  Shards' pin before), for ROOT to take to hyper-raft's main. Guard mutations, ROOT's: the
+  probe-timeout floor, the handshake's counts at its end, the first flight told as no probe,
+  the wake socket, the record's address check, the reader's credit at an empty queue, the
+  one-slot queue (none deadlocks).
 - The exec host's real-VM run, ROOT's: no E2E drives a run's agent-control endpoint yet. Its place
   is `crates/shards/tests/managed_output.rs` (Linux; a submodule beside `member_stdin.rs`): a run
   started with `--annotation shards.control=true`, its controller dialed at the metadata's

@@ -249,6 +249,38 @@ fn a_resize_reaches_the_command() {
     assert_eq!((status, restored), (0, true));
 }
 
+/// An exec's terminal follows its client's as a run's does: sized as the client's as it
+/// starts, and resized as the client's is, as `docker exec -it` resizes its exec's pty.
+#[test]
+fn an_execs_terminal_follows_its_clients() {
+    let Some((home, image)) = home("tty-exec-resize") else {
+        return;
+    };
+    let held = shards_in(
+        &home,
+        &[
+            "run", "vm", "-d", "--pull", "never", "--name", "resized", &image, "sleep",
+        ],
+    );
+    assert_eq!(held.status, Some(0), "{}", held.stderr);
+    let mut term = Terminal::run(
+        &home,
+        &["exec", "vm", "-it", "resized", "/bin/testguest", "tty", "winch"],
+        24,
+        80,
+    );
+    let shown = term.wait_for("ready\r\n");
+    assert!(shown.contains("size 24 80\r\n"), "{shown}");
+    term.resize(40, 120);
+    term.wait_for("resized 40 120\r\n");
+    let (_, status, restored) = term.exit();
+    assert_eq!((status, restored), (0, true));
+    assert_eq!(
+        shards_in(&home, &["remove", "vm", "-f", "resized"]).status,
+        Some(0)
+    );
+}
+
 #[test]
 fn ctrl_c_interrupts_and_the_detach_keys_leave_it_running() {
     let Some((home, image)) = home("tty-keys") else {
