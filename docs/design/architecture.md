@@ -2918,8 +2918,13 @@ gone with the VM. So a microVM that stays (not `--rm`) keeps it on the host:
   the daemon's count of its writes, then renamed over it, its own file removed on any
   error. One name for every writer (`request.new`, the first fix) broke under two writers at
   once (660 to 840 of 2,000 renames found no file); a count needs no random source, as one
-  daemon holds a home (`take_lock`). Not synced, as for every microVM's record (D27). The
-  record, with its red, green and mutations:
+  daemon holds a home (`take_lock`). Not synced, as for every microVM's record (D27). A
+  home's first `engine-id`, which clients may each make at once on threads of their own, is
+  linked as the record rather than renamed over it (`keep_first`: `hard_link` fails where
+  another kept one first, link(2)'s EEXIST, CreateHardLinkW's ERROR_ALREADY_EXISTS). So
+  each caller takes the one kept, where by rename 200 of 200 rounds of 14 callers took an ID
+  the home did not keep (request-sites-v1/review.md). The record, with its red, green and
+  mutations:
   [request-sites-v1](../research/measurements/request-sites-v1/README.md), after
   [audit-fix-request-v1](../research/measurements/audit-fix-request-v1/README.md).
 - **A start refused before it starts** leaves the microVM as it was: nothing of a
@@ -6976,7 +6981,7 @@ throughput both ways, small requests no slower, on every host.
 | Room for pins | With a budget: init's hold (`plug::cap`) less what the run holds (`memory.current`, the slots among it) and its working room (`plug::working_room`, D188, PM M309/M321, of the CPUs online as read); with none: `MemAvailable` (free pages less the zones' high watermarks and reserves, with reclaimable cache) less the working room. Read as each slot is made. |
 | Idle slots owed a told room | The working room less the room told, where positive. |
 | Fixed-buffer table | Twice the relay's `RLIMIT_NOFILE` over 3 (a stream's client, vsock and wake descriptors; two slots while it swaps), within io_uring's 16,384 (`IORING_MAX_REG_BUFFERS`). |
-| Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2 | Protocol constants. |
+| Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2; the owner's cue to its own device after an offer, `CUE` 0x00 (host-side) | Protocol constants. |
 | Offer extents at most (4 KiB + 2 S) / 4 KiB | A slot's pages, none merged. |
 
 The pins E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back
@@ -6990,6 +6995,8 @@ supported target lints clean (r15, r16). Owed to ROOT: correctness and hostile-o
 pins E2E on WHP arm64, and on WHP x86_64 past that bound; and throughput, small-request
 latency (paced and back to back), connection setup with its slot's making, a ring's ramp, CPU
 and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
+
+**Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2-F4 owed to ROOT with their reds and commands).
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
@@ -7809,9 +7816,24 @@ user's host as Docker's.
   slice. A killed VM process is followed the same way, its host freeing it, before its end
   is given up on. A joiner's VM is its provider's, which runs the provider's command too:
   a joiner is held to one slice, then sent SIGKILL again, as before.
+- **A network or share process is followed the same way** (2026-11-13, PM M546; the
+  person's ruling: a wait follows the party's liveness and progress, then the slowest
+  answer seen). Once its VM has gone and its spawner holds nothing of it, it goes as its
+  VM's links close, which wakes its reaper (`netproc::reap`; for a daemon's run, the
+  followers' loop). It is looked at once a slice has passed, waited on for another while it
+  runs or frees what it holds, and ended only once it has done neither for a slice. Its own
+  end is kept as the host's; one its reaper made is not. It was `netproc::GRACE`, a second,
+  picked, and the daemon's port check (`in_use`) waited twice that for an ended run's
+  network process; it now waits one slice. The cost: a network process stuck on nothing of
+  its own is ended 10 s or more after its VM, where it was 1 s; one that exits as its links
+  close, as each does, ends the wait at once. The waits that took that second as their
+  basis keep it, their own basis owed (R03): init's relay drain (hostbind.rs `DRAIN`), the
+  daemon's `PUBLISH_PATIENCE`, and the VM process's wait for its network process's
+  unpublish (warm.rs).
 - **The slice is the host's own.** Each end heard is kept in the home (`ends`: `teardown
-  MS`, `exit MS`, the slowest of each this home's daemons have heard, written whole and
-  renamed over), and a slice is the slowest of its kind there, so that a host whose guests
+  MS`, `exit MS` and `helper MS`, the slowest of each this home's processes have heard: its
+  daemon and its runs' hosts keep one record, each end put with what it holds then, written
+  whole and renamed over), and a slice is the slowest of its kind there, so that a host whose guests
   stall on its disk for 9 s before they end (PM M419) gives its teardowns that long, and
   never less than the window over which `Progress` tells a microVM that runs from one
   that runs nothing (`IDLE_VM_CPU`'s 10 s), which a home with no record yet takes alone:
@@ -7832,8 +7854,12 @@ user's host as Docker's.
 
 **Tested.** Unit tests (daemon/ends.rs): a home with no record gives each end the least
 slice; each slower end heard is kept, in the home too, and read back by the next daemon; a
-record it cannot read is none; an end is followed while its VM process runs, a joiner's
-never. On real microVMs, tests/containers.rs `a_kills_end_is_kept_as_this_hosts_in_its_home`:
+record it cannot read is none; a home's processes keep one record, neither's slower end
+lost to the other's write, and a record that cannot be kept is said; an end is followed
+while its VM process runs, a joiner's never. netproc.rs
+`a_helper_is_waited_on_while_it_goes_on_with_its_end`: a busy helper is waited on past five
+slices and its end kept, a sleeping one ended at its first look and nothing kept; the
+daemon's `a_network_process_is_ended_once_it_goes_on_no_more_and_the_ports_freed`. On real microVMs, tests/containers.rs `a_kills_end_is_kept_as_this_hosts_in_its_home`:
 a kill's end kept in the home, its VM not killed under it; the stop, kill, pause and
 daemon-stop tests as before. Measured: PM M480 to M482, which validate the method (every
 teardown and freeze measured ends while it is followed) and are no figure of it.
@@ -12301,9 +12327,53 @@ peer", each going on here as it should. What changed for them:
   of `QUIET`). A connection takes the lesser of the two sides' bounds, so both machines need
   this build. No other deadline is on the stream's
   path: the CLI's pipes and the daemons' reads and writes block as the link lets them
-  (cli/moves.rs, daemon/moves.rs, daemon/remote.rs `copy_step`); `running_there`'s
-  minute of asking whether a restore with no answer runs there (twelve asks, 5 s apart) is
-  after the stream, and leaves the microVM held here, saved, saying so, never in two places.
+  (cli/moves.rs, daemon/moves.rs, daemon/remote.rs `copy_step`); asking whether a restore
+  with no answer runs there (below) is after the stream, and leaves the microVM held here,
+  saved, saying so, never in two places.
+- **Whether it runs there, its restore unanswered** (cli/moves.rs `running_there`; R03,
+  2026-11-13). A restore there whose answer never came may have run, so the move asks the
+  other machine whether the microVM runs (`inspect`) until it says: running, the move goes
+  on; not, and gone there once removed, it goes on here; else not known, held here, saved,
+  saying how to settle it. It asked twelve times, 5 s apart, figures of no derivation. How
+  long and how often it asks are now that machine's own, as this move heard it, with no
+  figure of shards':
+  - *How long*: while that machine shows it is there. An ask that heard it, though
+    unanswered (a connection it closed, its daemon stopping), is followed by another, however
+    many; one that heard nothing too, until that machine has gone unheard (`Seen::heard`,
+    the latest of its connections') longer than the longest it went unheard in this move and
+    was heard again (`Seen::longest_silence`, the most of any connection the move made there:
+    `ready`, the image's `load`, the import, the restore, these asks): its slowest answer.
+    Not known then. A connection ends at `QUIET` unheard, so that answer is less, and the
+    asking is never more patient than the link. The first ask goes out whatever that
+    machine's silence, the wait after the restore's run-out following liveness alone, each
+    ask held to the link's own bounds (its handshake's, then `QUIET`). The cold start, a move
+    that heard nothing of that machine (none reaches this step, `ready` and the import having
+    answered), ends at its first ask that hears nothing.
+  - *A refusal* (`Answer::Refused`, typed on the wire): not known at once. That machine heard
+    the ask and declined it (a client it no longer enrolls, a command it could not start);
+    asking again asks it to decline again, nothing learned of when it would not, and a
+    machine heard at each ask would be asked for ever.
+  - *How often*: each ask begins a round trip after the last began, at least: the link's, as
+    the connection that last heard that machine estimated it (RFC 9002 §5), the least time an
+    answer takes. An ask that heard nothing took its handshake's bound already, and one heard
+    a round trip, so only one that failed here, before the link, waits.
+  - *Its values' edges*: never heard, the silence is unbounded; the comparisons saturate
+    (`Instant::elapsed`, `saturating_sub`), with no arithmetic to overflow. They are that
+    machine's own showing, through connections authenticated both ways (D180): it can make a
+    move ask longer, only while it is heard and never past `QUIET` of silence, and never make
+    it take for an answer what it did not answer; not known keeps the copy held here. How long
+    the asking runs on the links measured above is not measured: none of their moves left a
+    restore unanswered.
+
+  Held by cli/moves.rs's `a_move_learns_the_other_machines_slowest_answer_from_every_connection`,
+  `the_other_machines_first_answer_says`, `a_machine_unanswered_is_asked_again_until_it_answers`,
+  `a_machine_silent_past_its_slowest_answer_is_not_known` and
+  `the_wait_takes_its_figures_from_the_link_alone` (asks a round trip apart; no number in its
+  source but an answer's exit status), and net.rs's `Liveness::last_heard` in
+  `a_connection_lives_while_it_is_heard_and_its_handshake_alone_is_held_to_its_bound`. Every
+  move between two machines takes in each connection's `Seen` so
+  (`a_microvm_moves_to_another_host_saved_and_live`, tests/moved.rs); no test leaves a restore
+  unanswered, a fault case owed.
 - **What a move sends**, cold: the move's stream (`Writer`), its plan, then its directory
   but its other snapshots and its kept layer, its snapshot's state, memory, layer and swap
   among it; its volumes; and the files its snapshot restores against that the other machine
@@ -22827,14 +22897,15 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   (r115). Not run: these checks on Linux or Windows, boot.rs's real-VM tests (ROOT's),
   scripts/lint, and any guard-removal mutation.
 
-  What remains timed is the suite's and the crate's unit tests', twice the slowest
-  recorded run on the host class (`shards_api::record`:
-  `conformance::PATIENCE`, an unserved port's `OVERSHOOT`; PM M463, M464, M515). It goes
-  with the API's waits, which ROOT decided follow the guest's VM process: a wait goes on
-  while that process advances (its CPU time each quiet period, as the daemon's
-  `Wait::WhileRuns`), refuses a stall typed, and takes the slowest answer seen on the host
-  as the point past which a stall fails (owed, plan step 2's review). An attach of a guest
-  whose first client reaps it as it is held is refused `Exited` (PM M541).
+  The last bounds of that kind, the suite's and the crate's unit tests', twice the slowest
+  run recorded on the host class (`shards_api::record`: `conformance::PATIENCE`,
+  `UNSERVED_PATIENCE`, an unserved port's `OVERSHOOT`; PM M463, M464, M515), went with the
+  waits that follow the guest's VM process (below), which the suite now waits with. The one
+  patience it still gives, an unserved port's, is this host's own: what one refused single
+  attempt there took (`connect_once_before`), the refusal coming at it, never before. How
+  late past it the refusal may come has no bound: a bound on it would be a multiple of some
+  time of this host's, a number of ours. An attach of a guest whose first client reaps it as
+  it is held is refused `Exited` (PM M541).
 - On Windows a guest's process is the `shards` that booted its VM, which holds the VM in a
   Job that ends with it (D141); it outlives a client that crashes or loses its guest, so
   `attach` takes it back as on Unix (parity step 14): held by a handle of its own with query,
@@ -22842,6 +22913,105 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   handle's GetProcessTimes creation time, its end waited on and made through it
   (TerminateProcess), which ends its Job and so its VM. Where Windows refused this before, the
   refusal was no limit of its API.
+- Waits that follow the guest's VM process (`Guest::connect_while_runs`,
+  `Guest::wait_while_runs`; ROOT's decision of 2026-11-13; `crates/api/src/progress.rs`): a
+  wait for a guest's answer goes on while its VM process runs, and is refused, typed, when it
+  stalls. They are opt-in: `connect`, `connect_before`, `connect_once_before` and `wait_for`
+  keep their meaning, so Hex's calls do too.
+  - *Learned per kind, in the client's process.* `Awaited::Boot` (an `OK` from a guest none
+    of whose connects was answered yet: its boot to its first listener), `Awaited::Connect`
+    (an `OK` from a guest that has answered one) and `Awaited::End` (its end) are kept
+    apart, in memory (`progress::RECORDS`), never in source:
+    - W*, the slowest answer seen, from a wait's start to its answer;
+    - R*, the least CPU rate at which a VM process still answered: its CPU over that wait's
+      wall time, kept as the (cpu, wall) pair and compared by cross-multiplication in u128
+      of nanoseconds saturated at u64's most (584 years), so no product overflows.
+    - Only the guest's own answers teach: an `OK`, and an end that was not this client's
+      stop. A refusal teaches nothing, and neither does a wait no nanosecond long, which has
+      no rate.
+    - Boot is kept apart from Connect because a boot works through gaps (its timers, its
+      devices) longer than a listening guest takes to answer: a W* learned from connects to
+      running guests (a client that attaches first) would judge a boot by theirs.
+  - *The judge.* Past W* from its start, a wait looks at its VM process once each W*. A look
+    that finds it ran no CPU at all since the look before refuses the wait,
+    `Refusal::Stalled(Stall)`: how far into the wait, the time looked over, R* and W*, kept in
+    nanoseconds (each past u64's, 584 years, its most). Five `Duration`s in the variant
+    enlarged every `Result<_, Refusal>`: a test's tuple of two of them crossed clippy's
+    `result_large_err` (crates/api/tests/sim.rs, this lane's second run).
+    - A host under load slows a VM process but never stops it, so one that ran nothing for
+      as long as the slowest answer took is stopped, deadlocked or frozen.
+    - R* is in the refusal for diagnosis only, never a bound. ROOT's first design refused a
+      look below R*, which would refuse a boot merely slowed by its host's load: the very
+      failure R03 ends (ROOT, 2026-11-13, at this lane's report).
+    - A look at a process whose exit is under way (a zombie; on Windows, a process of its
+      tree that exited since) judges nothing. Its end is the wait's answer, and wins over a
+      refusal it races.
+    - A stalled guest is not stopped: it stays its caller's.
+  - *Cold start.* Before its kind's first answer (`Shards::seen(kind)` is `Seen::Cold`), a
+    wait follows liveness alone, the VM process's end. So does a wait that began cold and
+    finds the record learned meanwhile.
+    - The gap: a guest whose VM runs but never answers its first call is ended only by its
+      caller. `Guest::stop` from a thread of its own ends a connect as `Ended(Stopped)` and a
+      wait as `End::Stopped`.
+    - `Shards::seen` tells a caller when its first call needs a cancel of its own.
+  - *Its contract, and its gap.* It is for a wait in which the VM works toward its answer (a
+    boot to its listener, a workload to its end).
+    - A guest that idles before it answers (on a timer, an input) runs nothing and is
+      refused. Such a guest is asked with `connect` and `wait_for`.
+    - A guest that spins without answering keeps its VM process running and is never judged
+      stalled: the limit the daemon's `Wait::WhileRuns` has too.
+  - *Its readers* link no VMM (this entry's falsifier is a client that has to).
+    - Linux: the process's CPU clock (clock_getcpuclockid(3), clock_gettime(2)). It gives
+      its threads' run time in nanoseconds as the scheduler keeps it
+      (kernel/time/posix-cpu-timers.c, `cpu_clock_sample_group`). It is read between two
+      reads of the process's start and state (`/proc/<pid>/stat` fields 22 and 3), so a pid
+      another process got in between shows.
+      - ROOT first named `/proc/<pid>/stat`'s utime and stime (fields 14 and 15). Those
+        count clock ticks (USER_HZ, 100 a second), in which an answer within two ticks
+        shows no CPU at all.
+    - macOS: proc_pid_rusage (RUSAGE_INFO_V0): its threads' user and system times in Mach
+      absolute-time units, converted by mach_timebase_info(3).
+      - The same call gives its start (a pid given to another process shows) and its exit
+        time.
+      - It reads a zombie too, so the watcher reads a VM process's last CPU before it reaps
+        it.
+      - XNU fills those times from `recount_task_times`, as it fills PROC_PIDTASKINFO's,
+        which shards-vmm's `platform::process_usage` reads (`rusage_times_are_task_info_times`
+        holds the two equal).
+      - The reader duplicates shards-vmm's (R12) because the client links no VMM.
+    - Unix, both: the child shards-api starts execs into the VM process, so its pid is the
+      VM's; a guest taken back is read by its identity's pid and start.
+    - Windows: the child is `shards`, and the VM process is its child in shards' own Job
+      (D141), so the reader holds that `shards` and every descendant.
+      - Descendants come from a Toolhelp32 snapshot (CreateToolhelp32Snapshot with
+        TH32CS_SNAPPROCESS; Process32FirstW/NextW's `th32ParentProcessID`).
+      - A process is kept only where it started no earlier than its listed parent
+        (GetProcessTimes' creation time). This is PM M528's rule: a pid is reused once its
+        process has gone.
+      - Each is held by a handle of its own (OpenProcess with
+        PROCESS_QUERY_LIMITED_INFORMATION and SYNCHRONIZE), which keeps its times readable
+        after it exits. One gone since the snapshot (ERROR_INVALID_PARAMETER) or not this
+        user's (ERROR_ACCESS_DENIED) is no process of the tree.
+      - GetProcessTimes' kernel and user times (FILETIME, 100 ns units, summed over its
+        threads) feed the record.
+      - QueryProcessCycleTime's count of the cycles its threads used tells whether they ran:
+        GetProcessTimes documents no resolution for its times.
+      - Not a nested Job, which ROOT approved first: a Job counts only processes created
+        after the child joins it; std starts no child suspended, so none can join before it
+        runs (`ChildExt::main_thread_handle`, which resuming one would need, is unstable);
+        and a guest taken back is in no Job of ours.
+    - A read that fails while the process lives is a typed refusal, never a silent "no
+      progress". It is `Refusal::Process` with its operation (`CpuClock`, `ProcPidRusage`,
+      `MachTimebase`, `Snapshot`, `ListProcesses`, `OpenProcess`, `GetProcessTimes`,
+      `CycleTime`, `WaitForExit` or `DuplicateHandle`) and code. A process that has gone
+      since is its end, which is the wait's.
+  - *Other implementors*: the trait's defaults follow liveness alone, as a cold record does
+    (`connect(port, Duration::MAX)`, `wait_for(Duration::MAX)`). So do the simulator, which
+    has no VM process, and `ManagedGuest`, whose native owner holds its process.
+  - *Its literals*: 10^9 nanoseconds a second, a timespec's bound (POSIX <time.h>); 100,
+    FILETIME's nanoseconds (GetProcessTimes); a zero-time wait (WaitForSingleObject, 0),
+    which is a look, not a wait. Nothing else: W*, R* and every time judged are this
+    process's own.
 - `stop` kills the VM's process at once: the VMM has no host-to-guest power-off
   (vm/runtime.rs), so the page cache a guest held is lost, and a clean stop is the
   client's (ask the guest to sync and power off, `wait_for` its `PowerOff`).
@@ -22900,14 +23070,54 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   bytes, and the connection goes on after; a clone is the same connection; its
   `buffer_sizes` are the OS's; and a write to a peer that has gone fails `EPIPE`, never
   raising SIGPIPE.
+- *A wait that follows its VM process* returns at the guest's answer or end, as the
+  no-clock form does. It refuses `Stalled` where its VM process ran nothing for a whole W* of
+  its kind, once that kind has an answer, and never judges before. It learns its kind from
+  the guest's own answers alone, and refuses typed a read that fails while the process lives.
 - *The simulator* meets every case of the same conformance suite.
 
-**Evidence.** PM M515 (an unserved port's refusal past its patience), M463 (the waits
-the bounds hold), M464 (what a refused dial costs, the pacing's `c`); the conformance
-suite and E2E on HVF.
+**Evidence.** PM M515 (an unserved port's refusal past its patience), M463 (what the waits
+cost), M464 (what a refused dial costs, the pacing's `c`); the conformance suite and E2E on
+HVF; and the waits' own unit tests (`progress::tests`, client.rs's stand-in tests), with
+their runs below.
 
-**What would falsify it.** A conforming client that needs to link the VMM; a host class
-whose runs are slower than its record (a new record, not a raised bound).
+**Part B's runs** (goal 52's child, 2026-11-13). They ran on adalundhe-macbook-pro (macOS on
+arm64, rustc 1.98.1), through kiln run, on a clone of each tree with `SHARDS_HELPERS=skip`
+and placeholder init and server binaries:
+- `cargo test -p shards-api`;
+- `cargo clippy -p shards-api -p shards --all-targets -- -D warnings`.
+
+Results:
+- At 831854804 with the predecessor's reused tests (r243), the new tests passed: progress's
+  five, and the four stand-in tests (a VM process that runs nothing refused `Stalled`; one
+  that spins waited for to its answer and end; a cold record never judging; answers teaching
+  their kind). The reused tests were red:
+  - `single_attempt_to_a_silent_listener_is_refused_by_its_deadline` and
+    `a_write_to_a_peer_that_stops_reading_ends_at_its_timeout` failed;
+  - `borrowed_tests::withheld_reply_expires_before_fixture_release` and
+    `dribbled_reply_does_not_renew_deadline` hung, stopped after 24 minutes.
+  The cause: `kept_wait` is microseconds where the streams keep a timeout to its
+  nanosecond, too short for a dial and its CONNECT, and `while_runs::answer` looked at a
+  blocked thread that often.
+- After those fixes (r349): the lib's tests 113 passed and 5 ignored, tests/allocations.rs 1
+  passed, tests/real.rs 1 ignored, tests/sim.rs 17 passed and 1 ignored. Clippy failed
+  `result_large_err` at tests/sim.rs, which `Stall` fixed.
+- On the merged tree, 2593305f0 (origin/main 94be8818b and this lane; r375): the lib's 116
+  passed and 5 ignored, the rest the same; clippy clean.
+- Guard-removal mutations, each test run once:
+  - M1, the stall verdict removed: `a_vm_process_that_runs_nothing_is_refused_stalled_once_its_kind_has_an_answer`
+    failed, its boot's connect waiting to the stand-in's end, `Some(Ended(PowerOff))`.
+  - M2, an expired finite retry let through to the unbounded handshake:
+    `finite_owned_retry_expiry_cannot_start_an_unbounded_handshake` failed, counting a late
+    dial (1, not 0).
+
+Not run: these on Linux and Windows (Linux's CPU clock reader, Windows' process tree, the
+Windows report test; CI's matrix); boot.rs's real-VM tests on HVF, KVM x86_64, KVM arm64 (L1)
+and WHP (ROOT's); scripts/lint.
+
+**What would falsify it.** A conforming client that needs to link the VMM. A VM process that
+ran no CPU for a whole W* of its kind and would still have answered: a working guest
+refused.
 
 ### D231. An image booted for an orchestrator: a run of its own, hosted by one `shards` process (decided; building)
 

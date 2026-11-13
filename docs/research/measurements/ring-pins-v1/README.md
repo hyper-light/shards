@@ -133,3 +133,8 @@ runs the pin and unpin calls themselves on the runner's kernel.
 | R14 | No profiling or benchmark (ROOT's). |
 | R15 | Implementer's light tests, and the real-VM E2E ROOT gave this work (r13, r16) through a run-only agent on jupiter for WHP; measurements owed. Merged to main on the person's explicit instruction, which supersedes R15's "do not merge themselves"; the owed checks above stay owed. |
 | R16 | Nothing of anyone else's deleted. This work's scratch on adacachy and kiln-a094a12d (~/g121-tmp/ring-pins-* and ringe2e*: target directories, clones, bundles, logs), on jupiter (the agent's clone, target and logs) and on this Mac (target directories, a transfer repository, scratch logs) removed as it ends. The Mac's disk filled while r1-r5 ran (not from this work's writes); ROOT reclaimed it; this round kept it above 30 GiB free. |
+
+## Review (plan step 2)
+
+The coordinator's review of this lane, its findings (F1 fixed in b81d707a9; F2, F3 and F4 owed), its
+R01-R16 account and the real-VM runs owed: [review.md](review.md).

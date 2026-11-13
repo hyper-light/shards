@@ -154,8 +154,10 @@ pub fn adopt_release(socket: shards_vmm::platform::UnixStream) -> Result<(), Str
 /// Has the network process close the run's published ports, and waits until it has, so
 /// that they are free once the run's end is told: a script's next run of the same port
 /// finds it free (`run --rm -p 80 …; run -p 80 …`). A network
-/// process that does not answer within a second is ended with the VM, as the daemon ends
-/// one past its grace (`netproc::GRACE`), and frees them then.
+/// process that does not answer within a second is ended with the VM, and frees them then,
+/// as the daemon follows one to its end (`netproc::reap`). That second was the one a
+/// network process was given to end (`netproc::GRACE`, until PM M546); its own basis is owed
+/// (R03).
 ///
 /// First, what the guest sent before its command ended goes into the network process's
 /// ring, which it takes before UNPUBLISH: a datagram a command sends just before it exits

@@ -537,20 +537,20 @@ mod tests {
     }
 
     /// A write to a peer that stops reading fails at its timeout, having moved what the
-    /// socket took, rather than blocking for ever: waited on while it runs, however late its
-    /// host runs it (D215; review B3).
+    /// socket took, rather than blocking for ever: its writer's answer waited for as the fact
+    /// it is, however late its host runs it (D215; review B3).
     #[test]
     fn a_write_to_a_peer_that_stops_reading_ends_at_its_timeout() {
-        // An input: any timeout shows it kept.
-        let timeout = crate::conformance::UNSERVED_PATIENCE;
+        // The least wait this host's streams keep, measured: any kept timeout shows it.
+        let timeout = while_runs::kept_wait();
         let (mut a, _b) = pair().unwrap();
         Stream::set_write_timeout(&a, Some(timeout)).unwrap();
         // An input: more than any socket's buffer holds (macOS's 8 KiB, Linux's wmem_max), so
-        // the peer's not reading is what stops it. Made before the write's thread begins, so
-        // its beginning is the write's.
+        // the peer's not reading is what stops it.
         let big = vec![7u8; 64 << 20];
-        let (worker, rx) = while_runs::on_a_thread(move || a.write_all(&big).map_err(|e| e.kind()));
-        let wrote = while_runs::answer(&rx, worker, timeout);
+        let wrote = std::thread::spawn(move || a.write_all(&big).map_err(|e| e.kind()))
+            .join()
+            .unwrap();
         // Winsock may take the whole buffer from a non-blocking send (jupiter took 64 MiB);
         // what the write may not do is block past its timeout.
         assert!(
@@ -610,25 +610,23 @@ mod tests {
     }
 
     /// Two clones reading one byte: one reads it, the other fails at its timeout rather
-    /// than blocking after a poll said the byte was there; each waited on while it runs
-    /// (D215; review B3).
+    /// than blocking after a poll said the byte was there; each reader's answer waited for as
+    /// the fact it is (D215; review B3).
     #[test]
     fn a_read_a_clone_raced_ends_at_its_timeout() {
-        // An input: any timeout shows it kept.
-        let timeout = crate::conformance::UNSERVED_PATIENCE;
+        // The least wait this host's streams keep, measured: any kept timeout shows it.
+        let timeout = while_runs::kept_wait();
         let (a, mut b) = pair().unwrap();
         Stream::set_read_timeout(&a, Some(timeout)).unwrap();
+        // The byte first: each reader's poll finds it there, and one of them takes it.
+        b.write_all(b"x").unwrap();
         let readers: Vec<_> = (0..2)
             .map(|_| {
                 let mut reader = Stream::try_clone(&a).unwrap();
-                while_runs::on_a_thread(move || reader.read(&mut [0u8; 1]).map_err(|e| e.kind()))
+                std::thread::spawn(move || reader.read(&mut [0u8; 1]).map_err(|e| e.kind()))
             })
             .collect();
-        b.write_all(b"x").unwrap();
-        let mut got: Vec<_> = readers
-            .iter()
-            .map(|(worker, rx)| while_runs::answer(rx, *worker, timeout))
-            .collect();
+        let mut got: Vec<_> = readers.into_iter().map(|r| r.join().unwrap()).collect();
         got.sort_by_key(|r| r.is_err());
         assert_eq!(got[0], Ok(1));
         assert!(
