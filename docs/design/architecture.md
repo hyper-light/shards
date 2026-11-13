@@ -24042,7 +24042,7 @@ api-run`) checks each grant against the run's egress grants, refusing one toward
 toward a host they do not reach (`shards_net::reaches`: a destination they name, or any host
 on a TCP port they open; `Cause::Request`). It starts the network process with
 `--credentials` and, after `NET_POLICY`, sends it the grants by reference
-(`NET_CREDENTIALS`, kind 94; `shards_net::encode_grants`). The network process checks them
+(`NET_CREDENTIALS`, kind 96; `shards_net::encode_grants`). The network process checks them
 again against its policy (D109), once, and answers the run's CA's certificate (DER). The run
 host logs its SHA-256 and holds it for the members' trust (the next slice). shards-api's
 check refuses a grant toward no host as well.
@@ -24065,9 +24065,10 @@ check refuses a grant toward no host as well.
   from 1950 came back `BadEncoding`. The second is RFC 5280's value of no well-defined end
   (§4.1.2.5). No clock a guest may read falls outside the range, and the key, which dies with
   the process, bounds the life of what it signs instead of a date.
-- *Literals.* Kind 94 is a sequence number. The grants' length fields, two bytes for a
-  reference and one for a host, hold every reference a store names (kiln-seams `NAME_MAX`,
-  512) and every DNS name (255, RFC 1035 §2.3.4); a longer one is refused, typed. P-256,
+- *Literals.* Kind 96 is a sequence number (94 and 95 went first to D247's `RATE` and
+  `RATED`). The grants' length fields, two bytes for a reference and one for a host, hold
+  every reference a store names (kiln-seams `NAME_MAX`, 512) and every DNS name (255, RFC
+  1035 §2.3.4); a longer one is refused, typed. P-256,
   `pathLenConstraint` 0 and the validity bounds are as cited above. No learned value enters
   this slice.
 - *Tests (macOS arm64).* `shards_net::ca`: a leaf holds for a granted host alone, refused for
