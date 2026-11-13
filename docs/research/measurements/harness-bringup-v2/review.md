@@ -195,38 +195,69 @@ each merged tree (`~/g121-tmp/s2-8-slice-b-merged.log`, `-merged2.log`): 6 passe
 | MB: the harness's exit taken whatever its PID | red, both runs: the follow ended at child 1741's exit |
 | this slice's again | both runs passed |
 
+### F8. fetch.sh's verification (O1 to O3, owed at first): fixed
+
+These three were first recorded as owed. Goal 52's agent, by ROOT's word, then gave the cure
+to this step, offline and with no download, in `8bccab8ad`.
+
+- **O1. fetch.sh trusted the cosign its release served (R10 for its verification).** Lines
+  65–72 at `ecd19d38c` fetched `cosign-linux-amd64` and `cosign_checksums.txt` from the same
+  release and checked one against the other, so the verifier's identity rested on that release
+  alone. The Codex archives and bundles were pinned in the script. Now cosign is checked
+  against its pin before it runs: GitHub's own digest of the asset (`gh api
+  repos/sigstore/cosign/releases/tags/v3.1.4`, read 2026-11-13), the same as the release's
+  `cosign_checksums.txt` and, for linux-amd64, as v1's `fetch/fetched.json`
+  (`424e2c97…bbfa`).
+- **O2. fetch.sh took a signature GnuPG doesn't call good (R10).** Lines 112–121 accepted any
+  `VALIDSIG` whose primary-key fingerprint was Anthropic's. GnuPG writes `VALIDSIG` whenever a
+  signature verifies (`!rc`), beside `EXPSIG`, `EXPKEYSIG` or `REVKEYSIG` as well as `GOODSIG`
+  (gnupg `g10/mainproc.c` at master `ab9c746e9`, `check_sig_and_print`: lines 2363–2372 choose
+  BADSIG, EXPSIG, EXPKEYSIG, REVKEYSIG or GOODSIG, 2581–2594 write VALIDSIG, 2712–2723 write
+  ERRSIG and NO_PUBKEY). gpg itself exits 0 for an expired or a revoked key's signature (the
+  recordings below), so main's script accepted both; it stopped at gpg's exit 1 for an expired
+  signature, a bad one and one it couldn't check, with no word of why. Now `verdict` takes
+  only a `GOODSIG` whose key ID ends a `VALIDSIG` of the pinned key, and refuses each other way
+  a signature checks with its own exit and words: 10 BADSIG, 11 ERRSIG, 12 EXPSIG, 13
+  EXPKEYSIG, 14 REVKEYSIG, 15 no good signature by the pinned key. gpg's own exit no longer
+  decides.
+- **O3. fetch.sh fetched x86_64 alone (R11).** It now takes the guest's architecture (amd64 or
+  arm64, OCI's names; by default the host's, as a guest's is). arm64's Codex archives and
+  bundles are pinned beside amd64's, each GitHub's digest of the asset (`gh api
+  repos/openai/codex/releases/tags/rust-v0.167.2`, read 2026-11-13). Claude Code's
+  `linux-arm64-musl` comes from its signed manifest, as `linux-x64-musl`'s does (both in v1's
+  committed `fetch/manifest.json`). It runs the cosign for its own host, each pinned: Linux
+  amd64, Linux arm64, macOS arm64. Intel Mac is refused. Its digests and sizes no longer need
+  GNU's tools (`sha256sum` or `shasum`, `wc -c`).
+
+`fetch-test.sh` holds it to recorded data. GnuPG's statuses are eight real recordings
+(`fetch-test/*.status`): `record.sh` made seven of them with throwaway keys in `.invalid`, gpg
+2.5.20, and `goodsig.status` is v1's record of Anthropic's own manifest. They were recorded on
+adas-macbook-pro-2, this session's own Mac and the one machine here with gpg (Homebrew's), in a
+GnuPG home of their own that was removed after; no runner has gpg. The releases' digests are recorded in `fetch-test/*.assets`,
+and a stand-in curl serves a cosign that is not sigstore's, with a checksums file that names
+it. On the runner (`~/g121-tmp/s2-8-slice-d.log`; bash 3.2):
+
+| Check | Result |
+|---|---|
+| `bash -n` of fetch.sh, fetch-test.sh, record.sh | clean |
+| `fetch-test.sh` | all pass: goodsig and goodsig-throwaway 0; badsig 10, errsig 11, expsig 12, expkeysig 13, revkeysig 14, other-key 15, each in its words; pins; cosign-first |
+| red: main's signature rule (`VALIDSIG` of the key alone) as `verdict` | expsig, expkeysig, revkeysig taken (0); badsig, errsig, other-key refused untyped (1) |
+| red: no arm64 build | pins: "arm64: no build" |
+| red: main's own fetch.sh (`ecd19d38c`), cosign-first | it took the stand-in's cosign and asked for Codex's archive next (3 URLs, exit 22) |
+| M-O2a: any good signature taken, whatever its key | other-key taken (0, not 15) |
+| M-O2b: REVKEYSIG not refused by name | revkeysig refused as 15, not 14 |
+| M-O3: arm64's Codex archive pinned to amd64's digest | pins: "pinned 8246e846…, its release's digest ed81fa2c…" |
+| M-O1: cosign run without its pin checked | cosign-first: it asked for Codex's archive next |
+| `fetch-test.sh` again | all pass |
+
+The real fetch and verify of both architectures, on Linux and on macOS, is owed to ROOT below.
+
 ### Owed, with their evidence (not fixed here)
 
-These need what this step's one runner lacks (gpg, a Linux host, ~700 MB of the publishers'
-downloads, a real VM), or a decision that isn't this step's. The child brief's rule is to
-record such a finding with its evidence and its exact command, not to fix it blind (R09).
+These need what this step's one runner lacks (a Linux host, a real VM), or a decision that
+isn't this step's. The child brief's rule is to record such a finding with its evidence and its
+exact command, not to fix it blind (R09).
 
-- **O1. fetch.sh trusts the cosign the release serves (R10 for its verification).** Lines
-  65–72 fetch `cosign-linux-amd64` and `cosign_checksums.txt` from the same release and check
-  one against the other, so the verifier's identity rests on that release alone. The Codex
-  archives and bundles, by contrast, are pinned in the script (lines 37–41). The value to pin
-  is on record: v1's `fetch/fetched.json` has `424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa`,
-  which GitHub's own digest of the asset matches (`gh api
-  repos/sigstore/cosign/releases/tags/v3.1.4`, read 2026-11-13; it also lists
-  `cosign-linux-arm64` `ade83b7a…dad2` and `cosign-darwin-arm64` `9f9b8cd5…d3a4`). The four Codex
-  pins match GitHub's digests too.
-- **O2. fetch.sh takes a signature GnuPG doesn't call good (R10).** Lines 112–121 accept any
-  `VALIDSIG` whose primary-key fingerprint is Anthropic's. GnuPG writes `VALIDSIG` whenever the
-  signature verifies (`!rc`), beside `EXPSIG`, `EXPKEYSIG` or `REVKEYSIG` as well as `GOODSIG`
-  (gnupg `g10/mainproc.c` at master `ab9c746e9`, lines 2363–2372 and 2581–2594). So a manifest
-  signed by an expired or revoked key, or carrying an expired signature, passes; Anthropic's
-  documented check reads "Good signature". The cure is to require `GOODSIG` beside the
-  fingerprinted `VALIDSIG`. Live reproduction (gpg on a Linux host): a throwaway key signs a
-  file, `gpg --gen-revoke` revokes it and the revocation is imported, then `gpg --status-fd 1
-  --verify` shows `REVKEYSIG` and `VALIDSIG`, which lines 117–121's awk accepts.
-- **O3. fetch.sh fetches x86_64 alone (R11).** The ignored cases need the publisher's build for
-  the guest's architecture: arm64 on macOS (HVF) and on Linux arm64 (L1). Both publishers ship
-  them: Codex `rust-v0.167.2`'s `codex-aarch64-unknown-linux-musl.tar.gz`
-  (`ed81fa2c…4add`, its bundle `cd67e2bc…88b2`) and `codex-code-mode-host-aarch64-…` (`3c8843f1…82ce`,
-  bundle `95bef991…d344`), from GitHub's digests; Claude Code 2.1.322's `linux-arm64-musl`
-  (`b8a07ebb…c40c`), in the signed manifest v1 committed (`fetch/manifest.json`). fetch.sh
-  also runs on Linux alone (`sha256sum`, `stat -c`, `cosign-linux-amd64`): until it takes an
-  architecture, the arm64 builds are fetched and checked by hand on a Linux host, and copied.
 - **O4. signed-in.sh runs on Linux alone (R11, R12).** Its private copy goes on the user's
   tmpfs (`$XDG_RUNTIME_DIR`, else `/run/user/$UID`, line 42) and it names the file system with
   GNU `stat -f -c %T` (line 45). On macOS there is no such directory, so `mktemp` fails and the
@@ -268,15 +299,15 @@ show where the harnesses connect.
 | Rule | Account |
 |---|---|
 | R01 | No production code in this lane. The test may panic. `no_clock` panics with the platform's name where an `Instant` can't hold the far instant: every supported platform's can (std's `Instant` is a `Timespec` on Unix and a `Duration` on Windows). |
-| R02 | No architecture decided. Sources: D215 (the no-clock idiom), D123 (`watch processes`), RFC 9000 §10.1, busybox `edca770d11`, Alpine's package index, GnuPG's `mainproc.c`, GitHub's release digests, v1's records. |
+| R02 | No architecture decided. Sources: D215 (the no-clock idiom), D123 (`watch processes`), RFC 9000 §10.1, busybox `edca770d11`, Alpine's package index, GnuPG's `mainproc.c`, GitHub's release digests and sigstore's checksums file, v1's records. |
 | R03 | F1 to F5 removed every chosen number in the lane's test and scripts: `WITHIN`, the 200 ms and 2 s polls, the 300 s deadline, `sleep 600`, the 16/24/8 of the leak check. What stays is derived: the leak run (one longer than a provider shows of a key, from v1's record), `NO_CLOCK` (u64's bound, D215's idiom), H1's silences (`QUIET ± QUIET/4`, the transport's own; O7). |
-| R04 | No state machine added. The follow ends at one of three named facts; settle's outcomes are named in its output (unchanged, format only, refresh written back, conflict). |
+| R04 | No state machine added. The follow ends at one of three named facts; settle's outcomes are named in its output (unchanged, format only, refresh written back, conflict); fetch.sh's signature refusals are typed by GnuPG's own statuses, an exit and words each (F8). |
 | R05 | Waits: the 200 ms and 2 s polls of the record became a follow of its change stream (F3, F5); every other wait ends at its fact (F2). No cache. Abstractions: two check functions serve the real cases and the light tests; `follow` and `followed_far_enough` serve one caller each, the second also the light test. |
 | R06, R07, R13 | Small functions; comments carry sources and derivations. H1's stale "red" text corrected (F6). |
 | R08, R14 | No performance claim. |
-| R09 | F1 reproduced red by the new self-test against main's script; F5 by the stand-in test against `ecd19d38c`'s `bringup.sh` (its 300 s deadline). F2 to F4 remove literals, so their red is the literal at `ecd19d38c`, not a run. O1 to O6 were not reproduced, for the reasons given. A clock cure slice B made without reproducing it is taken back (F5's correction). |
-| R10 | Each fix red, green, and red with its guard removed, each one focused test (F1: three; F3/F7: five; F5: one). The harnesses are committed (`credentials_test.py`, `bringup-test.sh`, the light tests). |
-| R11 | Light checks on macOS arm64 only (`bringup.sh` under its stand-in there, with the host's `date` too). Linux and Windows clippy of the test target, and the cases on every backend, are owed below. |
+| R09 | F1 reproduced red by the new self-test against main's script; F5 by the stand-in test against `ecd19d38c`'s `bringup.sh` (its 300 s deadline). F2 to F4 remove literals, so their red is the literal at `ecd19d38c`, not a run. F8's O1 to O3 reproduced red by fetch-test.sh against main's rule, its arm64 gap and its own fetch.sh; O4 to O6 were not reproduced, for the reasons given. A clock cure slice B made without reproducing it is taken back (F5's correction). |
+| R10 | Each fix red, green, and red with its guard removed, each one focused test (F1: three; F3/F7: five; F5: one; F8: four). The harnesses are committed (`credentials_test.py`, `bringup-test.sh`, `fetch-test.sh` and its recordings, the light tests). |
+| R11 | Light checks on macOS arm64 only (`bringup.sh` under its stand-in there, with the host's `date` too; `fetch-test.sh` with bash 3.2). fetch.sh now fetches arm64's builds and runs on macOS arm64 and Linux arm64 too (F8). Linux and Windows clippy of the test target, and the cases on every backend, are owed below. |
 | R12 | Nothing platform-specific added. |
 | R15 | Implementer: light tests on one runner; landed fast-forward as ROOT directs. |
 | R16 | The runner's `~/g121-tmp/s2-8-src`, `-py`, `-target` and `-logs` are removed at the step's end. |
@@ -285,8 +316,9 @@ show where the harnesses connect.
 
 All on adas-mac-studio-3.local (macOS 26.2, arm64), through the step's carrier:
 `python3 -I …/credentials_test.py`; `cargo test -p shards --test harness_bringup`;
-`bash …/bringup-test.sh`; `cargo fmt -p shards -- --check`; `cargo clippy -p shards
---all-targets -- -D warnings`. Results are in F1 and slice B's tables. Not run: anything on
+`bash …/bringup-test.sh`; `bash …/fetch-test.sh`; `cargo fmt -p shards -- --check`; `cargo
+clippy -p shards --all-targets -- -D warnings`. Results are in F1's, F8's and the slices' tables. fetch-test's
+GnuPG recordings were made on adas-macbook-pro-2, the one machine with gpg (F8). Not run: anything on
 Linux or Windows, any real VM, scripts/lint, scripts/check-development-policy, and any vendor
 CLI.
 
@@ -296,7 +328,9 @@ CLI.
 |---|---|
 | `037fa7322`, merge `4e53fcdfe` | F1: the leak check, `credentials_test.py`, this record begun |
 | `da5c744b8`, merges `fe816ed63`, `29dde4f4c` | F2 to F7: the test and `bringup.sh` without a clock, the follow, `sleep infinity`, H1's text, R10's light tests, `bringup-test.sh` |
-| this commit | this record's rest; D236's list of examples and its pointer here; v1's and v2's READMEs pointed here; `bringup.sh`'s `step` as it was (F5's correction); `bringup-test.sh` runs the script with the host's `date` too |
+| `73e9f1b42`, merges `23fd1813e`, `a57047fe3` | this record's rest; D236's list of examples and its pointer here; v1's and v2's READMEs pointed here; `bringup.sh`'s `step` as it was (F5's correction); `bringup-test.sh` runs the script with the host's `date` too |
+| `8bccab8ad` | F8: fetch.sh's O1 to O3, `fetch-test.sh` and its recordings |
+| this commit | F8 here, O1 to O3 moved from owed |
 
 ## Owed to ROOT
 
@@ -334,5 +368,6 @@ Each command runs from a checkout at or after this record's landing.
   CC) and Windows x86_64 (`cargo xwin clippy -p shards --all-targets --target
   x86_64-pc-windows-msvc -- -D warnings`); `scripts/check-development-policy`; `scripts/lint`.
   The runner has no zig or cargo-xwin. CI on main runs the matrix.
-- **O1 to O3's cures in fetch.sh**, with a Linux run that fetches and verifies both
-  architectures, and O2's reproduction first.
+- **fetch.sh's real fetch and verify (F8)** of both architectures: `fetch.sh OUTDIR amd64` and
+  `fetch.sh OUTDIR arm64` on a Linux host and on macOS arm64, with gpg, each leaving
+  `fetched.json`.

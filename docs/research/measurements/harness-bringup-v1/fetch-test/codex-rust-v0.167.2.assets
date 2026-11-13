@@ -1,0 +1,9 @@
+# GitHub's digest of each asset of openai/codex's release rust-v0.167.2: gh api repos/openai/codex/releases/tags/rust-v0.167.2 --jq '.assets[] | "\(.name) \(.digest)"', read 2026-11-13; the musl assets fetch.sh takes
+codex-aarch64-unknown-linux-musl.sigstore cd67e2bcbbf43b1e08e41bf58a69c747732454f047c452d8826068133a0088b2
+codex-aarch64-unknown-linux-musl.tar.gz ed81fa2c7d209689af061b6f305ed554218de92a1c2c4019142b28f66fa64add
+codex-code-mode-host-aarch64-unknown-linux-musl.sigstore 95bef991dba93be803225a71d9814b2af5c2e95a4152df53d7efdc18112bd344
+codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz 3c8843f105cb75a267e05057fc841cdf4a00ff4a68510c0f9f7eb8fb129f82ce
+codex-code-mode-host-x86_64-unknown-linux-musl.sigstore 81100cd9c570b5e35503429a2b33e97c5f5b8658cdae03a8b3f06ee865a7c322
+codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz 189475a654d82ca776e08dfef22734106d3e5b2cf21da6e84ec3d974d02c39a6
+codex-x86_64-unknown-linux-musl.sigstore eb5bd5e042a0c57b405340720b67a728e5d3ce43b1e5033819facfabd7131c3f
+codex-x86_64-unknown-linux-musl.tar.gz 8246e846c550ea21197fcc4067bc270dca895e94ea42ed6a282e6f4e0125b15f
