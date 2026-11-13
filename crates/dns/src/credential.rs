@@ -183,13 +183,14 @@ pub struct SignInGrant {
 
 /// What a sign-in's capture gave (D242, step 8): its access token's reference in the
 /// orchestrator's store and the placeholder that stands for it, and its refresh token's
-/// placeholder, which a refresh or a revocation names and nothing fills. Holding a placeholder
-/// is the capability, so none prints.
+/// placeholder, which a refresh or a revocation names and nothing fills: none where its token
+/// response gave no refresh token, so that no placeholder stands for a token that is not, and its
+/// CLI, holding none, asks no refresh. Holding a placeholder is the capability, so none prints.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Captured {
     pub access: String,
     pub access_placeholder: String,
-    pub refresh_placeholder: String,
+    pub refresh_placeholder: Option<String>,
 }
 
 impl fmt::Debug for SignInGrant {
@@ -214,7 +215,10 @@ impl fmt::Debug for Captured {
             )
             .field(
                 "refresh_placeholder",
-                &format_args!("{} bytes", self.refresh_placeholder.len()),
+                &self
+                    .refresh_placeholder
+                    .as_ref()
+                    .map(|p| format!("{} bytes", p.len())),
             )
             .finish()
     }
@@ -244,20 +248,22 @@ pub fn check_sign_ins(grants: &[CredentialGrant], sign_ins: &[SignInGrant]) -> R
     );
     check(&all)?;
     for (i, s) in sign_ins.iter().enumerate() {
-        let Some(c) = &s.captured else { continue };
-        if !placeholder(&c.refresh_placeholder) {
+        let Some(refresh) = s.captured.as_ref().and_then(|c| c.refresh_placeholder.as_ref()) else {
+            continue;
+        };
+        if !placeholder(refresh) {
             return Err(Refused::NotAToken(s.sign_in.clone()));
         }
         let shared = all
             .iter()
-            .find(|g| g.placeholder == c.refresh_placeholder)
+            .find(|g| g.placeholder == *refresh)
             .map(|g| g.reference.clone())
             .or_else(|| {
                 sign_ins
                     .iter()
                     .take(i)
                     .filter_map(|o| o.captured.as_ref().map(|oc| (o, oc)))
-                    .find(|(_, oc)| oc.refresh_placeholder == c.refresh_placeholder)
+                    .find(|(_, oc)| oc.refresh_placeholder.as_ref() == Some(refresh))
                     .map(|(o, _)| o.sign_in.clone())
             });
         if let Some(other) = shared {
@@ -424,7 +430,7 @@ mod tests {
         let captured = Captured {
             access: "sign-ins/c/access".into(),
             access_placeholder: CLAUDE.into(),
-            refresh_placeholder: CODEX.into(),
+            refresh_placeholder: Some(CODEX.into()),
         };
         let sign_in = SignInGrant {
             sign_in: "c".into(),
@@ -433,6 +439,15 @@ mod tests {
             captured: Some(captured.clone()),
         };
         assert_eq!(check_sign_ins(&[], std::slice::from_ref(&sign_in)), Ok(()));
+        // A capture that gave no refresh token holds no placeholder for one.
+        let unrefreshed = SignInGrant {
+            captured: Some(Captured {
+                refresh_placeholder: None,
+                ..captured.clone()
+            }),
+            ..sign_in.clone()
+        };
+        assert_eq!(check_sign_ins(&[], &[unrefreshed]), Ok(()));
         for placeholder in [CLAUDE, CODEX] {
             let grant = CredentialGrant {
                 reference: "openai/chatgpt".into(),
@@ -449,7 +464,7 @@ mod tests {
         }
         let bad = SignInGrant {
             captured: Some(Captured {
-                refresh_placeholder: "a b".into(),
+                refresh_placeholder: Some("a b".into()),
                 ..captured.clone()
             }),
             ..sign_in.clone()

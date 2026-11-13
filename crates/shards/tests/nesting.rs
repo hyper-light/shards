@@ -23,6 +23,10 @@
 //! - the workload's device program, attached BPF_F_ALLOW_MULTI: `a_granted_runs_boxes_
 //!   reach_its_gpu_as_their_rules_and_its_own_say` (box `beyond`);
 //! - AF_VSOCK still refused: `a_granted_workload_still_reaches_no_host_port_over_vsock`.
+//! - D251's cut through the guest's legs, init's hang-up probe and the vsock muxer's `Cut`:
+//!   `a_nested_workloads_socket_cut_mid_stream_resets_its_lane_at_the_controller` (`Ok(0)`
+//!   where `ConnectionReset` is due); a half-close taken for a cut by either:
+//!   `a_nested_workloads_half_close_ends_its_way_in_order_while_the_controllers_goes_on`.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
@@ -503,6 +507,7 @@ fn a_deadline_given_through_shards_api_is_met_or_said_passed() {
         ready_by: Some(ready_by),
         control: None,
         gpu_devices: Vec::new(),
+        sign_ins: Vec::new(),
     };
     let guest = ImageShards::new().boot(&spec(TIMEOUT), TIMEOUT).unwrap();
     assert_eq!(guest.wait_ready(None, TIMEOUT).unwrap(), Some(Ready::OnTime));
@@ -707,6 +712,7 @@ fn a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller() {
             }),
         }),
         gpu_devices: Vec::new(),
+        sign_ins: Vec::new(),
     };
     let guest = ImageShards::new().boot(&spec, TIMEOUT).unwrap();
     // READY=1 comes once every socket listens: no lane below races its bind.
@@ -768,6 +774,167 @@ fn a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller() {
     let _ = driver.join().unwrap();
 }
 
+/// D251's cut through a real microVM's legs (*Its cut through the guest's legs*): runs
+/// testguest's `nesting ends` with its socket directory granted to an orchestrator's key, dials
+/// the run's endpoint, and gives `case` the run's lanes and the bytes the workload reads to its
+/// cut (testguest's `cut.sock`), more than three of the admitted windows.
+fn over_lanes(home: &str, case: impl FnOnce(&shards_api::control::Sockets, &[u8])) {
+    use shards_api::control::{Controller, Identity, SocketAdmission, Subscriptions};
+    use shards_api::image::{ControlAsk, ImageShards, ImageSpec, Images as _, Narrowing, Ready, SocketGrant};
+    let home = Home::new(home);
+    home.nesting_image();
+    let hex = Identity::generate().unwrap();
+    // The orchestrator's admission (R03: its numbers): a lane to an end and one to its `.said`
+    // open at once, and the window of case (f).
+    let (lanes, window) = (2u32, 64 * 1024u32);
+    let sent: Vec<u8> = (0..=255u8).cycle().take(3 * window as usize + 1).collect();
+    let command = ["/bin/testguest", "nesting", "ends", "/run/hex/channel"]
+        .into_iter()
+        .map(String::from)
+        .chain([sent.len().to_string()])
+        .collect();
+    let spec = ImageSpec {
+        image: "nesting:1".into(),
+        vcpus: 1,
+        memory_mib: 512,
+        command: Some(command),
+        members: Vec::new(),
+        publish: Vec::new(),
+        egress: Narrowing::default(),
+        credentials: Vec::new(),
+        lessor: None,
+        shares: Vec::new(),
+        binary: Some(common::shards().to_path_buf()),
+        env: host_env(&home),
+        nesting: true,
+        ready_by: None,
+        control: Some(ControlAsk {
+            controller: hex.fingerprint(),
+            sockets: Some(SocketGrant {
+                dir: "/run/hex/channel".into(),
+                lanes,
+                window,
+            }),
+        }),
+        gpu_devices: Vec::new(),
+        sign_ins: Vec::new(),
+    };
+    let guest = ImageShards::new().boot(&spec, TIMEOUT).unwrap();
+    // READY=1 comes once every socket listens: no lane below races its bind.
+    assert_eq!(guest.wait_ready(None, TIMEOUT).unwrap(), Some(Ready::OnTime));
+    let Some(&at) = guest.control() else {
+        panic!("no agent-control endpoint for the run")
+    };
+    let (controller, dialed) = Controller::dial(
+        &hex,
+        at.vm,
+        at.address,
+        Subscriptions {
+            outputs: &[],
+            inputs: &[],
+            execs: None,
+            sockets: Some(SocketAdmission { lanes, window }),
+        },
+    )
+    .unwrap();
+    let driver = std::thread::spawn(move || controller.run());
+    let Some(sockets) = &dialed.sockets else {
+        panic!("no socket lanes for the subscription")
+    };
+    case(sockets, &sent);
+    guest.stop().unwrap();
+    let _ = driver.join().unwrap();
+}
+
+/// What reached the workload over the end `said` tells of (testguest's `NAME.said`): the
+/// controller's half-close first, so that the workload's close after it ends the lane in order.
+fn told(sockets: &shards_api::control::Sockets, said: &str) -> Vec<u8> {
+    use std::io::Read as _;
+    let mut lane = sockets.connect(said).unwrap();
+    lane.shutdown_write().unwrap();
+    let mut got = Vec::new();
+    lane.read_to_end(&mut got).unwrap();
+    got
+}
+
+/// D251's cut, mid-stream, through init's relay, the VM process's vsock muxer and the endpoint
+/// (Windows: `warm.rs`'s `pass` too): the workload reads all its controller sends, answers, and
+/// closes its socket while the controller's way is still open. The controller reads
+/// `ConnectionReset`, never `Ok(0)`, after no byte but a prefix of the answer (a cut promises
+/// none before it), and its write after the cut is refused the same. Guards: init's hang-up probe
+/// (`ClientCut`), the muxer's `Cut`, and the endpoint's.
+#[test]
+fn a_nested_workloads_socket_cut_mid_stream_resets_its_lane_at_the_controller() {
+    use std::io::{ErrorKind, Read as _, Write as _};
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    over_lanes("nesting-f-cut", |sockets, sent| {
+        let mut lane = sockets.connect("cut.sock").unwrap();
+        // All the workload reads, and no half-close: the controller's way stays open.
+        lane.write_all(sent).unwrap();
+        let mut rest = Vec::new();
+        assert_eq!(
+            lane.read_to_end(&mut rest).map_err(|e| e.kind()),
+            Err(ErrorKind::ConnectionReset),
+            "a socket cut short read as its end in order"
+        );
+        let mut answer = b"cut.sock\n".to_vec();
+        answer.extend(sent.iter().rev());
+        assert!(
+            answer.starts_with(&rest),
+            "{} bytes read before the cut are no prefix of the workload's answer",
+            rest.len()
+        );
+        assert_eq!(
+            lane.write_all(b"after").map_err(|e| e.kind()),
+            Err(ErrorKind::ConnectionReset),
+            "a write after the cut"
+        );
+        let read = told(sockets, "cut.said");
+        assert!(
+            read == sent,
+            "the workload read {} bytes before its close, not the {} sent: {:?}",
+            read.len(),
+            sent.len(),
+            String::from_utf8_lossy(read.get(..64).unwrap_or(&read))
+        );
+    });
+}
+
+/// The cut's twin: the workload half-closes its way (SHUT_WR) and keeps reading. The controller
+/// reads its bytes, then `Ok(0)` in order, never a reset, and every byte it writes after reaches
+/// the workload, to its own half-close. Guards: the same legs' half-close, kept beside the cut.
+#[test]
+fn a_nested_workloads_half_close_ends_its_way_in_order_while_the_controllers_goes_on() {
+    use std::io::{Read as _, Write as _};
+    if cannot_run_vms() {
+        eprintln!("SKIP: this host cannot run VMs");
+        return;
+    }
+    over_lanes("nesting-f-half", |sockets, sent| {
+        let mut lane = sockets.connect("half.sock").unwrap();
+        let mut said = Vec::new();
+        assert_eq!(
+            lane.read_to_end(&mut said).map_err(|e| e.kind()),
+            Ok(b"half.sock\n".len()),
+            "a half-close read as a cut"
+        );
+        assert_eq!(said, b"half.sock\n");
+        lane.write_all(sent).unwrap();
+        lane.shutdown_write().unwrap();
+        let read = told(sockets, "half.said");
+        assert!(
+            read == sent,
+            "the workload read {} bytes after its half-close, not the {} sent: {:?}",
+            read.len(),
+            sent.len(),
+            String::from_utf8_lossy(read.get(..64).unwrap_or(&read))
+        );
+    });
+}
+
 /// Case (g), D252 (Hex's step 39 acceptance): an orchestrator's run is bound an agent-control
 /// endpoint of its own, its key the run's own and its controller the orchestrator's key alone.
 /// - **The orchestrator dials it**, on loopback, its link TLS13_AES_256_GCM_SHA384 at both
@@ -812,6 +979,7 @@ fn an_orchestrators_run_binds_its_own_agent_control_endpoint() {
             ready_by: None,
             control,
             gpu_devices: Vec::new(),
+            sign_ins: Vec::new(),
         };
         ImageShards::new().boot(&spec, TIMEOUT).unwrap()
     };

@@ -168,18 +168,22 @@ fn loose(path: &str) -> String {
 }
 
 /// A sign-in's placeholders, as its capture gave them: what its CLI holds in its tokens'
-/// places. Holding one is the capability, so none prints.
+/// places, none for a refresh token its token response did not give. Holding one is the
+/// capability, so none prints.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Placeholders {
     pub access: String,
-    pub refresh: String,
+    pub refresh: Option<String>,
 }
 
 impl fmt::Debug for Placeholders {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Placeholders")
             .field("access", &format_args!("{} bytes", self.access.len()))
-            .field("refresh", &format_args!("{} bytes", self.refresh.len()))
+            .field(
+                "refresh",
+                &self.refresh.as_ref().map(|r| format!("{} bytes", r.len())),
+            )
             .finish()
     }
 }
@@ -241,7 +245,7 @@ pub fn ask(profile: &Profile, request: &Request<'_>, signins: &[&Placeholders]) 
         }
         return signins
             .iter()
-            .position(|s| same(s.refresh.as_bytes(), &token))
+            .position(|s| s.refresh.as_ref().is_some_and(|r| same(r.as_bytes(), &token)))
             .map_or(Ask::Pass, Ask::Refresh);
     }
     if at == profile.revoke.path {
@@ -250,7 +254,10 @@ pub fn ask(profile: &Profile, request: &Request<'_>, signins: &[&Placeholders]) 
         };
         return signins
             .iter()
-            .position(|s| same(s.refresh.as_bytes(), &token) || same(s.access.as_bytes(), &token))
+            .position(|s| {
+                s.refresh.as_ref().is_some_and(|r| same(r.as_bytes(), &token))
+                    || same(s.access.as_bytes(), &token)
+            })
             .map_or(Ask::Pass, Ask::Revoke);
     }
     Ask::Pass
@@ -428,7 +435,7 @@ fn response_fields(head: &[u8]) -> Option<Vec<Field>> {
 }
 
 /// A token response's tokens (RFC 6749 §5.1; OpenID Connect Core §3.1.3.3's `id_token`), each
-/// held wiped where it was read, and the access token's life.
+/// held wiped where it was read, the access token's life, and the scope granted.
 #[derive(Default)]
 pub struct Tokens {
     pub access: Option<Token>,
@@ -437,6 +444,10 @@ pub struct Tokens {
     /// Its `expires_in`: the access token's life in seconds (RFC 6749 §5.1), where it is one
     /// whole number.
     pub expires_in: Option<u64>,
+    /// Its `scope`: the scope its access token was granted (RFC 6749 §5.1, §3.3), where it is
+    /// one string. No credential: what a CLI's own file records beside its tokens (Claude
+    /// Code's `scopes`), which its orchestrator stages into a later run's.
+    pub scope: Option<String>,
 }
 
 impl fmt::Debug for Tokens {
@@ -446,6 +457,7 @@ impl fmt::Debug for Tokens {
             .field("refresh", &self.refresh.is_some())
             .field("id", &self.id.is_some())
             .field("expires_in", &self.expires_in)
+            .field("scope", &self.scope)
             .finish()
     }
 }
@@ -466,6 +478,7 @@ const ACCESS: &[u8] = b"access_token";
 const REFRESH: &[u8] = b"refresh_token";
 const ID: &[u8] = b"id_token";
 const EXPIRES_IN: &[u8] = b"expires_in";
+const SCOPE: &[u8] = b"scope";
 
 /// What a response from a sign-in's token host carries, read from its whole body, as it came
 /// (identity-coded, its chunks joined): none where it names no token (an error, a device
@@ -484,6 +497,11 @@ pub fn read(body: &[u8]) -> Result<Option<Tokens>, Refusal> {
             tokens.expires_in = tokens
                 .expires_in
                 .or_else(|| seconds(body.get(m.value.clone()).unwrap_or_default()));
+            continue;
+        }
+        if m.depth == 1 && m.string && m.name.as_slice() == SCOPE && tokens.scope.is_none() {
+            let scope = unescape(body, &m.value).map_err(|NotJson| Refusal::NotJson)?;
+            tokens.scope = String::from_utf8(scope.to_vec()).ok();
             continue;
         }
         let slot = match m.name.as_slice() {
@@ -545,7 +563,9 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 /// drops, so that no buffer let go of as it grows holds a part of a token.
 pub fn write(body: &[u8], tokens: &Tokens, with: &Placeholders) -> Result<Zeroizing<Vec<u8>>, Refusal> {
     // A b64token holds no quote, backslash or control, so a JSON string holds it as it is.
-    if !credential::placeholder(&with.access) || !credential::placeholder(&with.refresh) {
+    if !credential::placeholder(&with.access)
+        || with.refresh.as_ref().is_some_and(|r| !credential::placeholder(r))
+    {
         return Err(Refusal::NoPlaceholder);
     }
     let mut edits: Vec<(Range<usize>, Zeroizing<Vec<u8>>)> = Vec::new();
@@ -553,7 +573,9 @@ pub fn write(body: &[u8], tokens: &Tokens, with: &Placeholders) -> Result<Zeroiz
         edits.push((t.at.clone(), quoted(with.access.as_bytes())));
     }
     if let Some(t) = &tokens.refresh {
-        edits.push((t.at.clone(), quoted(with.refresh.as_bytes())));
+        // A refresh token no placeholder stands for never reaches the guest.
+        let refresh = with.refresh.as_ref().ok_or(Refusal::NoPlaceholder)?;
+        edits.push((t.at.clone(), quoted(refresh.as_bytes())));
     }
     if let Some(t) = &tokens.id {
         edits.push((t.at.clone(), quoted(&inert(&t.value)?)));
@@ -993,6 +1015,22 @@ impl<'a> Read<'a> {
         String::from_utf8(self.sized::<2>()?.to_vec()).ok()
     }
 
+    /// What [`put_captured`] wrote.
+    fn captured(&mut self) -> Option<Captured> {
+        let access = self.text()?;
+        let access_placeholder = self.text()?;
+        let refresh_placeholder = match self.byte()? {
+            0 => None,
+            1 => Some(self.text()?),
+            _ => return None,
+        };
+        Some(Captured {
+            access,
+            access_placeholder,
+            refresh_placeholder,
+        })
+    }
+
     /// A value, copied once into a buffer that wipes it as it drops.
     fn secret(&mut self) -> Option<Zeroizing<Vec<u8>>> {
         Some(Zeroizing::new(self.sized::<4>()?.to_vec()))
@@ -1006,9 +1044,10 @@ impl<'a> Read<'a> {
 /// `NET_SIGN_INS`'s payload: each grant as its sign-in's name (a two-byte length, network order,
 /// and the name), its CLI's code (a byte), its hosts' count (two bytes) and each host (its
 /// length's byte and the name), then 1 where an earlier capture gave it placeholders, which
-/// follow (its access token's reference, that token's placeholder and its refresh token's, each
-/// a two-byte length and its bytes), else 0. None where a length passes its field, which the
-/// bounds `encode_grants` (lib.rs) cites leave room for.
+/// follow (its access token's reference and that token's placeholder, each a two-byte length and
+/// its bytes, then 1 and its refresh token's placeholder alike, or 0 where it has none), else 0.
+/// None where a length passes its field, which the bounds `encode_grants` (lib.rs) cites leave
+/// room for.
 pub fn encode_grants(grants: &[SignInGrant]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     for g in grants {
@@ -1021,14 +1060,28 @@ pub fn encode_grants(grants: &[SignInGrant]) -> Option<Vec<u8>> {
         match &g.captured {
             Some(c) => {
                 out.push(1);
-                put::<2>(&mut out, c.access.as_bytes())?;
-                put::<2>(&mut out, c.access_placeholder.as_bytes())?;
-                put::<2>(&mut out, c.refresh_placeholder.as_bytes())?;
+                put_captured(&mut out, c)?;
             }
             None => out.push(0),
         }
     }
     Some(out)
+}
+
+/// A capture's reference and placeholders, as [`encode_grants`] and [`Answered`] write them.
+fn put_captured(out: &mut Vec<u8>, c: &Captured) -> Option<()> {
+    put::<2>(out, c.access.as_bytes())?;
+    put::<2>(out, c.access_placeholder.as_bytes())?;
+    match &c.refresh_placeholder {
+        Some(refresh) => {
+            out.push(1);
+            put::<2>(out, refresh.as_bytes())
+        }
+        None => {
+            out.push(0);
+            Some(())
+        }
+    }
 }
 
 /// What [`encode_grants`] wrote; none for a malformed payload, a CLI no profile serves, a grant
@@ -1046,11 +1099,7 @@ pub fn decode_grants(bytes: &[u8]) -> Option<Vec<SignInGrant>> {
         }
         let captured = match r.byte()? {
             0 => None,
-            1 => Some(Captured {
-                access: r.text()?,
-                access_placeholder: r.text()?,
-                refresh_placeholder: r.text()?,
-            }),
+            1 => Some(r.captured()?),
             _ => return None,
         };
         if sign_in.is_empty()
@@ -1070,13 +1119,19 @@ pub fn decode_grants(bytes: &[u8]) -> Option<Vec<SignInGrant>> {
 }
 
 /// A sign-in's tokens as its capture took them (D242, step 8), each wiped as it drops: what the
-/// network process tells its run host for the orchestrator's broker to keep. Its ID token is not
-/// among them: nothing outside uses one, and it is made inert where it was read ([`write`]).
+/// network process tells its run host for the orchestrator's broker to keep. Its ID token rides
+/// inert alone ([`inert`], as its CLI is given it), no credential: the identity its CLI's own file
+/// records (Codex's `auth.json` parses it for its account), which its orchestrator stages into a
+/// later run's; the real one stays nowhere.
 pub struct Taken {
     pub access: Zeroizing<Vec<u8>>,
     pub refresh: Option<Zeroizing<Vec<u8>>>,
     /// The access token's life in seconds, where its response said (RFC 6749 §5.1).
     pub expires_in: Option<u64>,
+    /// Its ID token made inert, where its response had one.
+    pub id_token: Option<Zeroizing<Vec<u8>>>,
+    /// The scope its access token was granted, where its response said (RFC 6749 §5.1).
+    pub scope: Option<String>,
 }
 
 impl fmt::Debug for Taken {
@@ -1085,17 +1140,22 @@ impl fmt::Debug for Taken {
             .field("access", &format_args!("{} bytes", self.access.len()))
             .field("refresh", &self.refresh.as_ref().map(|r| r.len()))
             .field("expires_in", &self.expires_in)
+            .field("id_token", &self.id_token.as_ref().map(|t| t.len()))
+            .field("scope", &self.scope)
             .finish()
     }
 }
 
 impl Taken {
-    /// The tokens [`read`] found, copied once each.
-    pub fn of(tokens: &Tokens) -> Option<Taken> {
-        Some(Taken {
-            access: Zeroizing::new(tokens.access.as_ref()?.value.to_vec()),
+    /// The tokens [`read`] found, copied once each, its ID token made inert: refused where it
+    /// has no access token, or an ID token that is no JWT.
+    pub fn of(tokens: &Tokens) -> Result<Taken, Refusal> {
+        Ok(Taken {
+            access: Zeroizing::new(tokens.access.as_ref().ok_or(Refusal::NoToken)?.value.to_vec()),
             refresh: tokens.refresh.as_ref().map(|t| Zeroizing::new(t.value.to_vec())),
             expires_in: tokens.expires_in,
+            id_token: tokens.id.as_ref().map(|t| inert(&t.value)).transpose()?,
+            scope: tokens.scope.clone(),
         })
     }
 }
@@ -1182,12 +1242,16 @@ impl Told {
         match self {
             Told::Capture { id, sign_in, taken } => {
                 let refresh = taken.refresh.as_ref().map_or(0, |r| r.len().saturating_add(4));
+                let id_token = taken.id_token.as_ref().map_or(0, |t| t.len().saturating_add(4));
+                let scope = taken.scope.as_ref().map_or(0, |s| s.len().saturating_add(2));
                 out.reserve_exact(
                     sign_in
                         .len()
                         .saturating_add(taken.access.len())
                         .saturating_add(refresh)
-                        .saturating_add(25),
+                        .saturating_add(id_token)
+                        .saturating_add(scope)
+                        .saturating_add(27),
                 );
                 out.push(WORD_CAPTURE);
                 out.extend_from_slice(&id.to_be_bytes());
@@ -1204,6 +1268,20 @@ impl Told {
                     Some(s) => {
                         out.push(1);
                         out.extend_from_slice(&s.to_be_bytes());
+                    }
+                    None => out.push(0),
+                }
+                match &taken.id_token {
+                    Some(t) => {
+                        out.push(1);
+                        put::<4>(&mut out, t)?;
+                    }
+                    None => out.push(0),
+                }
+                match &taken.scope {
+                    Some(s) => {
+                        out.push(1);
+                        put::<2>(&mut out, s.as_bytes())?;
                     }
                     None => out.push(0),
                 }
@@ -1239,6 +1317,16 @@ impl Told {
                     1 => Some(r.number::<8>()?),
                     _ => return None,
                 };
+                let id_token = match r.byte()? {
+                    0 => None,
+                    1 => Some(r.secret()?),
+                    _ => return None,
+                };
+                let scope = match r.byte()? {
+                    0 => None,
+                    1 => Some(r.text()?),
+                    _ => return None,
+                };
                 Told::Capture {
                     id,
                     sign_in,
@@ -1246,6 +1334,8 @@ impl Told {
                         access,
                         refresh,
                         expires_in,
+                        id_token,
+                        scope,
                     },
                 }
             }
@@ -1301,9 +1391,7 @@ impl Answered {
                 match result {
                     Ok(c) => {
                         out.push(0);
-                        put::<2>(&mut out, c.access.as_bytes())?;
-                        put::<2>(&mut out, c.access_placeholder.as_bytes())?;
-                        put::<2>(&mut out, c.refresh_placeholder.as_bytes())?;
+                        put_captured(&mut out, c)?;
                     }
                     Err(declined) => {
                         out.push(1);
@@ -1342,11 +1430,7 @@ impl Answered {
         let answered = match (tag, ok) {
             (WORD_CAPTURE, true) => Answered::Captured {
                 id,
-                result: Ok(Captured {
-                    access: r.text()?,
-                    access_placeholder: r.text()?,
-                    refresh_placeholder: r.text()?,
-                }),
+                result: Ok(r.captured()?),
             },
             (WORD_REFRESH, true) => Answered::Refreshed {
                 id,
@@ -1607,13 +1691,14 @@ impl SignIns {
                     .enumerate()
                     .filter(|(i, _)| *i != index)
                     .filter_map(|(_, g)| g.captured.as_ref())
-                    .map(|o| o.refresh_placeholder.as_str()),
+                    .filter_map(|o| o.refresh_placeholder.as_deref()),
             )
             .collect();
         let token = |p: &str| credential::placeholder(p) && !others.contains(&p);
         if token(&c.access_placeholder)
-            && token(&c.refresh_placeholder)
-            && c.access_placeholder != c.refresh_placeholder
+            && c.refresh_placeholder
+                .as_deref()
+                .is_none_or(|r| token(r) && r != c.access_placeholder)
         {
             Ok(c)
         } else {
@@ -1688,7 +1773,7 @@ mod tests {
     fn placeholders() -> Placeholders {
         Placeholders {
             access: ACCESS_PLACEHOLDER.into(),
-            refresh: REFRESH_PLACEHOLDER.into(),
+            refresh: Some(REFRESH_PLACEHOLDER.into()),
         }
     }
 
@@ -1845,7 +1930,7 @@ mod tests {
         for bad in ["", "a\"b", "a\\b", "a b"] {
             let with = Placeholders {
                 access: bad.into(),
-                refresh: REFRESH_PLACEHOLDER.into(),
+                refresh: Some(REFRESH_PLACEHOLDER.into()),
             };
             assert_eq!(
                 write(body.as_bytes(), &tokens, &with).err(),
@@ -1908,7 +1993,7 @@ mod tests {
     fn a_refresh_carrying_a_sign_ins_placeholder_is_answered_outside() {
         let other = Placeholders {
             access: "kiln-placeholder-aa".into(),
-            refresh: "kiln-placeholder-bb".into(),
+            refresh: Some("kiln-placeholder-bb".into()),
         };
         let mine = placeholders();
         let signins = [&other, &mine];
@@ -2090,7 +2175,7 @@ mod tests {
             captured: captured.then(|| Captured {
                 access: "sign-ins/claude/acct-1/access".into(),
                 access_placeholder: ACCESS_PLACEHOLDER.into(),
-                refresh_placeholder: REFRESH_PLACEHOLDER.into(),
+                refresh_placeholder: Some(REFRESH_PLACEHOLDER.into()),
             }),
         }
     }
@@ -2100,6 +2185,8 @@ mod tests {
             access: Zeroizing::new(ACCESS.as_bytes().to_vec()),
             refresh: Some(Zeroizing::new(REFRESH.as_bytes().to_vec())),
             expires_in: Some(28800),
+            id_token: Some(Zeroizing::new(b"eyJh.eyJw.shards-placeholder".to_vec())),
+            scope: Some("user:inference user:profile".into()),
         }
     }
 
@@ -2300,7 +2387,7 @@ mod tests {
             let c = Captured {
                 access: "a".into(),
                 access_placeholder: access.into(),
-                refresh_placeholder: refresh.into(),
+                refresh_placeholder: Some(refresh.into()),
             };
             let answer = Answered::Captured { id, result: Ok(c) };
             assert_eq!(
@@ -2310,5 +2397,58 @@ mod tests {
             assert!(matches!(s.take(1), Some(Answer::Declined(Declined::Denied(_)))));
             assert!(s.grants[0].captured.is_none());
         }
+    }
+
+    /// A capture carries what its CLI's own file records beside its tokens, none a credential,
+    /// and a sign-in whose response gave no refresh token holds no placeholder for one (D242,
+    /// step 8, ROOT's asks). Do: take Codex's response's tokens, and Claude Code's; send a
+    /// capture's word; write a response with a refresh token for a sign-in with no refresh
+    /// placeholder, and one without; ask a refresh of such a sign-in. Expect: the ID token taken
+    /// inert alone, its signature gone, and the scope as it came, both through the word; the
+    /// refresh token with nothing to stand for it refused, never passed; the response without one
+    /// written; the refresh passed, nothing of the run's in it.
+    #[test]
+    fn a_capture_carries_its_inert_id_token_and_scope_and_a_sign_in_may_hold_no_refresh_placeholder() {
+        let codex = codex_body();
+        let taken = Taken::of(&read(codex.as_bytes()).unwrap().unwrap()).unwrap();
+        let inert = format!("{ID_HEADER}.{ID_PAYLOAD}.shards-placeholder");
+        assert_eq!(
+            taken.id_token.as_deref().map(Vec::as_slice),
+            Some(inert.as_bytes())
+        );
+        assert!(!holds(taken.id_token.as_ref().unwrap(), ID_SIGNATURE));
+        let claude = claude_body();
+        let taken = Taken::of(&read(claude.as_bytes()).unwrap().unwrap()).unwrap();
+        assert_eq!(taken.scope.as_deref(), Some("user:inference user:profile"));
+        assert!(taken.id_token.is_none());
+        let told = Told::Capture {
+            id: 3,
+            sign_in: "codex/acct-2".into(),
+            taken: Taken::of(&read(codex.as_bytes()).unwrap().unwrap()).unwrap(),
+        };
+        let Some(Told::Capture { taken, .. }) = Told::decode(&told.encode().unwrap()) else {
+            panic!("no capture read back")
+        };
+        assert_eq!(
+            taken.id_token.as_deref().map(Vec::as_slice),
+            Some(inert.as_bytes())
+        );
+        assert_eq!(taken.scope, None);
+        let unrefreshed = Placeholders {
+            access: ACCESS_PLACEHOLDER.into(),
+            refresh: None,
+        };
+        let tokens = read(claude.as_bytes()).unwrap().unwrap();
+        assert!(matches!(
+            write(claude.as_bytes(), &tokens, &unrefreshed),
+            Err(Refusal::NoPlaceholder)
+        ));
+        let bare = format!(r#"{{"access_token":"{ACCESS}","expires_in":28800}}"#);
+        let tokens = read(bare.as_bytes()).unwrap().unwrap();
+        let written = write(bare.as_bytes(), &tokens, &unrefreshed).unwrap();
+        assert!(holds(&written, ACCESS_PLACEHOLDER) && !holds(&written, ACCESS));
+        let body = format!(r#"{{"grant_type":"refresh_token","refresh_token":"{REFRESH_PLACEHOLDER}"}}"#);
+        let asked = request("platform.claude.com", "/v1/oauth/token", JSON, &body);
+        assert_eq!(ask(&CLAUDE_CODE, &asked, &[&unrefreshed]), Ask::Pass);
     }
 }

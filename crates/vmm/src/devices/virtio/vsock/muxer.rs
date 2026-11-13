@@ -1611,14 +1611,10 @@ mod tests {
         assert_eq!(arrived.try_iter().count(), 3);
     }
 
-    /// What the guest sent before it ended a connection is the host's to read whole, then
-    /// end-of-stream, though the host had sent data the guest took none of and writes again
-    /// after the guest's end, as an exec's stdin's end can come after a command that ended
-    /// at once: on Windows a socket closed while its peer may still read loses the peer what
-    /// it had not read (PM M358), so the muxer holds its end until the host ends its own.
-    #[test]
-    fn what_the_guest_sent_before_its_end_is_read_whole_whatever_the_host_writes() {
-        use super::super::packet::shutdown;
+    /// A muxer with one guest connection to host port 54 that has sent `SAID`, the host's
+    /// end of it having written data the guest took none of: the muxer, the host's end and
+    /// the guest's memory.
+    fn spoken() -> (Muxer, crate::platform::UnixStream, GuestMemory) {
         let (sender, arrived) = std::sync::mpsc::channel();
         let host = VsockHost {
             path: None,
@@ -1632,28 +1628,36 @@ mod tests {
         assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RESPONSE));
         let mut theirs = arrived.try_recv().unwrap();
         theirs.write_all(b"stdin").unwrap();
-        let said = b"the command's output, then its exit status";
-        mem.access().unwrap().write(0x8000_0000, said).unwrap();
+        mem.access().unwrap().write(0x8000_0000, SAID).unwrap();
         let output = Span {
             gpa: 0x8000_0000,
-            ptr: mem.host_ptr(0x8000_0000, said.len()).unwrap(),
-            len: said.len(),
+            ptr: mem.host_ptr(0x8000_0000, SAID.len()).unwrap(),
+            len: SAID.len(),
         };
         let rw = Header {
             op: op::RW,
-            len: said.len() as u32,
+            len: SAID.len() as u32,
             ..request(54, 49_152)
         };
         m.on_guest_packet(&rw, &[output], &mem);
+        (m, theirs, mem)
+    }
+
+    const SAID: &[u8] = b"the command's output, then its exit status";
+
+    /// The guest's SHUTDOWN with `flags` on [`spoken`]'s connection.
+    fn guest_shuts(m: &mut Muxer, flags: u32, mem: &GuestMemory) {
         let ended = Header {
             op: op::SHUTDOWN,
-            flags: shutdown::RCV | shutdown::SEND,
+            flags,
             ..request(54, 49_152)
         };
-        m.on_guest_packet(&ended, &[], &mem);
-        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RST));
-        assert!(m.conns.is_empty(), "the guest's connection is over");
-        let _ = theirs.write_all(b" and more");
+        m.on_guest_packet(&ended, &[], mem);
+    }
+
+    /// What `theirs` reads until it ends: its bytes, and the error that ended it, none for
+    /// end-of-stream.
+    fn read_out(theirs: &mut crate::platform::UnixStream) -> (Vec<u8>, Option<io::ErrorKind>) {
         let mut got = Vec::new();
         let mut buf = [0u8; 256];
         let end = loop {
@@ -1663,7 +1667,27 @@ mod tests {
                 Err(e) => break Some(e.kind()),
             }
         };
-        assert_eq!(got, said, "what the guest sent, whole");
+        (got, end)
+    }
+
+    /// What the guest sent before it ended a connection in order (its writes' end, then its
+    /// close, as init's run connection ends: run.rs `shutdown_and_wait`) is the host's to
+    /// read whole, then end-of-stream, though the host had sent data the guest took none of
+    /// and writes again after the guest's end, as an exec's stdin's end can come after a
+    /// command that ended at once: on Windows a socket closed while its peer may still read
+    /// loses the peer what it had not read (PM M358), so the muxer holds its end until the
+    /// host ends its own.
+    #[test]
+    fn what_the_guest_sent_before_its_end_is_read_whole_whatever_the_host_writes() {
+        use super::super::packet::shutdown;
+        let (mut m, mut theirs, mem) = spoken();
+        guest_shuts(&mut m, shutdown::SEND, &mem);
+        guest_shuts(&mut m, shutdown::RCV | shutdown::SEND, &mem);
+        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RST));
+        assert!(m.conns.is_empty(), "the guest's connection is over");
+        let _ = theirs.write_all(b" and more");
+        let (got, end) = read_out(&mut theirs);
+        assert_eq!(got, SAID, "what the guest sent, whole");
         // End-of-stream; on Linux, whose muxer closed its end holding what the host sent
         // unread, a reset after it (unix_release_sock).
         assert!(
@@ -1689,6 +1713,62 @@ mod tests {
             assert_eq!(ready.len(), 1);
             m.on_events(&ready);
             assert!(m.lingering.is_empty(), "let go once the host's end is gone");
+        }
+    }
+
+    /// A guest that ends its connection both ways at once while its host still sends (its
+    /// relay's workload gone mid-stream, D251's cut) has the host's socket closed with no end
+    /// of its writes first: the host reads no end until the connection has gone, then finds
+    /// it hung up (POLLHUP, PM M559), as a cut, never a half-close it could take for the
+    /// guest's writes' end alone. On Windows the socket closes at once, held for nothing.
+    #[test]
+    fn a_guest_gone_both_ways_while_its_host_sends_is_no_half_close() {
+        use super::super::packet::shutdown;
+        let (mut m, mut theirs, mem) = spoken();
+        guest_shuts(&mut m, shutdown::RCV | shutdown::SEND, &mem);
+        #[cfg(unix)]
+        {
+            theirs.set_nonblocking(true).unwrap();
+            let (got, end) = read_out(&mut theirs);
+            assert_eq!(got, SAID, "what the guest sent, whole");
+            assert_eq!(
+                end,
+                Some(io::ErrorKind::WouldBlock),
+                "no end before the connection goes"
+            );
+            theirs.set_nonblocking(false).unwrap();
+        }
+        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RST));
+        assert!(m.conns.is_empty(), "the guest's connection is over");
+        #[cfg(unix)]
+        {
+            let (got, end) = read_out(&mut theirs);
+            assert!(got.is_empty(), "{got:?}");
+            // End-of-stream; on Linux, whose muxer closed its end holding what the host sent
+            // unread, a reset (unix_release_sock).
+            assert!(
+                end.is_none() || cfg!(target_os = "linux") && end == Some(io::ErrorKind::ConnectionReset),
+                "{end:?}"
+            );
+            let mut fd = libc::pollfd {
+                fd: std::os::fd::AsRawFd::as_raw_fd(&theirs),
+                events: libc::POLLOUT,
+                revents: 0,
+            };
+            // SAFETY: one pollfd of a socket this test holds; a timeout of 0 waits for none.
+            assert!(unsafe { libc::poll(&raw mut fd, 1, 0) } >= 0);
+            assert_ne!(fd.revents & (libc::POLLHUP | libc::POLLERR), 0, "hung up");
+        }
+        #[cfg(windows)]
+        {
+            assert!(
+                m.lingering.is_empty(),
+                "a cut holds the host's socket for nothing"
+            );
+            // A socket closed without its writes shut down, holding what its peer sent
+            // unread, reads as a reset (PM M358).
+            let (_, end) = read_out(&mut theirs);
+            assert_eq!(end, Some(io::ErrorKind::ConnectionReset));
         }
     }
 

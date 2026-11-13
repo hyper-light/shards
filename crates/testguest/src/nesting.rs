@@ -56,6 +56,13 @@ pub fn nesting(args: &[String]) -> i32 {
         "exit" => exit_leaving_a_box(arg(1).parse().unwrap_or(1)),
         "hold" => hold(),
         "listen" => listen(arg(1), args.get(2..).unwrap_or_default()),
+        "ends" => match arg(2).parse() {
+            Ok(len) => ends(arg(1), len),
+            Err(_) => {
+                let _ = writeln!(io::stderr(), "nesting ends: no length {:?}", arg(2));
+                2
+            }
+        },
         other => {
             let _ = writeln!(io::stderr(), "nesting: no case {other:?}");
             2
@@ -613,15 +620,12 @@ fn listen(dir: &str, names: &[String]) -> i32 {
             }
         }
     }
-    let Some(socket) = std::env::var_os("NOTIFY_SOCKET") else {
-        say("notify none");
+    let Some(sent) = tell_ready() else {
         return 1;
     };
-    let sent = std::os::unix::net::UnixDatagram::unbound().and_then(|s| s.send_to(b"READY=1", &socket));
     say(&format!(
-        "listening {} in {dir}; sent READY=1: {}",
-        names.join(" "),
-        sent.map_or_else(|e| errno(&e), |n| format!("{n} bytes"))
+        "listening {} in {dir}; sent READY=1: {sent}",
+        names.join(" ")
     ));
     for (name, listener) in listeners {
         std::thread::spawn(move || {
@@ -649,6 +653,104 @@ fn listen(dir: &str, names: &[String]) -> i32 {
         });
     }
     hold()
+}
+
+/// Tells the run's readiness socket `READY=1`, as sd_notify(3) does, and what the send
+/// answered; none where the run gave no socket, which it says.
+fn tell_ready() -> Option<String> {
+    let Some(socket) = std::env::var_os("NOTIFY_SOCKET") else {
+        say("notify none");
+        return None;
+    };
+    let sent = std::os::unix::net::UnixDatagram::unbound().and_then(|s| s.send_to(b"READY=1", &socket));
+    Some(sent.map_or_else(|e| errno(&e), |n| format!("{n} bytes")))
+}
+
+/// `nesting ends DIR LEN` (D251's cut through the guest's legs, for tests/nesting.rs): the
+/// workload's two ends of a socket, each beside a `.said` socket that tells the host what
+/// reached the workload over it. It binds them in `dir`, then says READY=1.
+/// - `cut.sock`: reads exactly `len` bytes, all its controller sends, writes back its name, a
+///   newline and them reversed, and closes, its controller's way still open: a cut.
+/// - `half.sock`: writes its name and a newline, half-closes (SHUT_WR), and reads to its
+///   controller's end.
+/// - `NAME.said`: each connection is written what NAME's next connection read (or its errno),
+///   half-closed, and read to its end before it closes, so that it ends in order.
+fn ends(dir: &str, len: usize) -> i32 {
+    use std::os::unix::net::{UnixListener, UnixStream};
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        say(&format!("mkdir {dir}: {}", errno(&e)));
+        return 1;
+    }
+    let bind = |name: &str| {
+        UnixListener::bind(Path::new(dir).join(name)).map_err(|e| say(&format!("bind {name}: {}", errno(&e))))
+    };
+    let (Ok(cut), Ok(cut_said), Ok(half), Ok(half_said)) = (
+        bind("cut.sock"),
+        bind("cut.said"),
+        bind("half.sock"),
+        bind("half.said"),
+    ) else {
+        return 1;
+    };
+    let cut_end = move |mut conn: UnixStream| -> io::Result<Vec<u8>> {
+        let mut got = vec![0; len];
+        conn.read_exact(&mut got)?;
+        let mut back = b"cut.sock\n".to_vec();
+        back.extend(got.iter().rev());
+        conn.write_all(&back)?;
+        // Closed as it drops, its controller's way still open.
+        Ok(got)
+    };
+    let half_end = |mut conn: UnixStream| -> io::Result<Vec<u8>> {
+        conn.write_all(b"half.sock\n")?;
+        conn.shutdown(std::net::Shutdown::Write)?;
+        let mut got = Vec::new();
+        conn.read_to_end(&mut got)?;
+        Ok(got)
+    };
+    serve_end("cut.sock", cut, cut_said, cut_end);
+    serve_end("half.sock", half, half_said, half_end);
+    let Some(sent) = tell_ready() else {
+        return 1;
+    };
+    say(&format!("ends of {len} bytes in {dir}; sent READY=1: {sent}"));
+    hold()
+}
+
+/// Serves `listener`'s connections one at a time with `end`, and `said`'s, each with what the
+/// next of `end`'s read.
+fn serve_end(
+    name: &'static str,
+    listener: std::os::unix::net::UnixListener,
+    said: std::os::unix::net::UnixListener,
+    end: impl Fn(std::os::unix::net::UnixStream) -> io::Result<Vec<u8>> + Send + 'static,
+) {
+    let (reads, read) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(conn) = conn else { continue };
+            let got = end(conn).unwrap_or_else(|e| errno(&e).into_bytes());
+            say(&format!("{name}: read {}", got.len()));
+            if reads.send(got).is_err() {
+                return;
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        for conn in said.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let Ok(got) = read.recv() else { return };
+            let mut rest = Vec::new();
+            let told = conn
+                .write_all(&got)
+                .and_then(|()| conn.shutdown(std::net::Shutdown::Write))
+                .and_then(|()| conn.read_to_end(&mut rest));
+            say(&format!(
+                "{name}: told {}",
+                told.map_or_else(|e| errno(&e), |_| got.len().to_string())
+            ));
+        }
+    });
 }
 
 fn hold() -> i32 {
