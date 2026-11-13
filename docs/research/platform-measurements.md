@@ -19693,6 +19693,16 @@ revision before comparing a changed API/implementation.
   at what a real session of logman's default buffers takes; these numbers are its check,
   not a constant of shards'. On jupiter it ended at 8,040 bytes, as found above (the tree of
   this entry's commit, 2026-11-08).
+- **2026-11-13.** On CI's three Windows runners (4 vCPUs each; main cc439a2a7 and
+  7eea109ac) the test's session of logman's default pool dropped one of its events with
+  ERROR_NOT_ENOUGH_MEMORY (8), which EventWriteString says when filled buffers wait on a
+  slow disk and none is free: an answer about the disk, not the event's size. ETW keeps
+  buffers by processor ("ETW buffers are associated with a processor", Logging Mode
+  Constants), at least two each, and splits no event across buffers (EVENT_TRACE_PROPERTIES),
+  so a session of one buffer for each event written and one for each processor, which the
+  events may leave unfilled (`-nb`, the processors `GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)`),
+  has one free for every event, flushed or not; jupiter's 32 processors gave the default
+  pool room enough for the run above.
 
 ### M493. How long a dial of OpenSSH for Windows' agent waits for its pipe (D51)
 

@@ -4569,7 +4569,12 @@ microVMs, from a git daemon and from smart HTTP served by git's own upload-pack.
   4095. The walk keeps the trees open on a stack of its own, a chain is followed in a loop,
   and the walk refuses what git refuses (`trees_nest_as_deep_as_git_checks_out_and_no_deeper`:
   2048 levels walked on a 256 KiB thread and 2049 refused, as git's read-tree takes and
-  refuses the same trees).
+  refuses the same trees). The host's git is asked at 2048 only where its own
+  core.maxTreeDepth reaches it: Git for Windows' MSVC and arm64 clang builds stop at 512
+  and 1280, as their stacks hold no deeper (git v2.56.0 git-compat-util.h:594-616,
+  `DEFAULT_MAX_ALLOWED_TREE_DEPTH`), and held to 2048, CI's arm64 git (2.56.0.windows.4)
+  died of STATUS_STACK_OVERFLOW (0xC00000FD) instead of answering; there the walk alone is
+  checked, and the test says so.
 
   | Literal | Was | Now | Source |
   |---|---|---|---|
@@ -7012,7 +7017,7 @@ throughput both ways, small requests no slower, on every host.
 | `MAX_RING` 2 MiB | The largest power of two each turn of which one `readv`/`writev` reaches whole, its pages each apart: a turn of S bytes from any offset spans S/4096 + 1 pages, within 1,024 iovecs (Linux `UIO_MAXIOV`, macOS `IOV_MAX`): 513 for 2 MiB, 1,025 for 4 MiB. |
 | Control page, 4 KiB; fields 128 bytes apart | The smallest page of every supported guest; Apple silicon's 128-byte line (hw.cachelinesize), x86's paired-line prefetch. |
 | Slots in use | No count: one a stream (two while it swaps), within the room. |
-| Room for pins | With a budget: init's hold (`plug::cap`) less what the run holds (`memory.current`, the slots among it) and its working room (`plug::working_room`, D188, PM M309/M321, of the CPUs online as read); with none: `MemAvailable` (free pages less the zones' high watermarks and reserves, with reclaimable cache) less the working room. Read as each slot is made. |
+| Room for pins | With a budget: init's hold (`plug::cap`) less what the run holds (`memory.current`, the slots among it) and its working room (`plug::working_room`, D188, PM M309/M321, of the CPUs online as read); with none: `MemAvailable` (free pages less the zones' high watermarks and reserves, with reclaimable cache) less the working room. Read as each slot is reserved, under the same hold of the relay's pool lock as its reservation: read and reserved apart, a slot another stream made between the two was counted by neither, and streams that started at once pinned past the room (review F3). |
 | Idle slots owed a told room | The working room less the room told, where positive. |
 | Fixed-buffer table | Twice the relay's `RLIMIT_NOFILE` over 3 (a stream's client, vsock and wake descriptors; two slots while it swaps), within io_uring's 16,384 (`IORING_MAX_REG_BUFFERS`). |
 | Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2; the owner's cue to its own device after an offer, `CUE` 0x00 (host-side) | Protocol constants. |
@@ -7030,7 +7035,7 @@ pins E2E on WHP arm64, and on WHP x86_64 past that bound; and throughput, small-
 latency (paced and back to back), connection setup with its slot's making, a ring's ramp, CPU
 and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
 
-**Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2-F4 owed to ROOT with their reds and commands).
+**Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2 fixed by ROOT, a6edfb8e9; F3 cured, 6557c8597, and F4, a2c887eeb: its "Cures, F3 and F4", with the real-VM runs F4 owes; F5, a failed slot's room given back without moving `room_gen`, cured: its "Cures, F5").
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
@@ -16406,7 +16411,16 @@ download.
     listening to the asking instead of asleep: an answer cut by its wait is overdue
     (`Error::is_overdue`) and asked again at once, at the moment the pause would have
     ended, and one that comes meanwhile is taken. A stalled download already resumes at
-    once once it brought bytes (fetch.rs).
+    once once it brought bytes (fetch.rs). The cut is its read's own stop, the socket's
+    timeout set to what is left of the wait or the wait's deadline (http.rs `read_head`),
+    as a silence's is (`Silenced::timed_out`), never the time `Instant` says passed: a
+    system wait "can be anywhere between one and two ticks" of a timeout between them
+    (Microsoft Learn, Wait Functions), so ends before its time by the clock, and on CI's
+    arm64 Windows (main cc439a2a7) a first cut so ended went uncounted, its asking again
+    paused and its wait not doubled: 3 asks where 2 were due, in 4.47 s from the test's
+    start, the 1.25 s + a pause + 1.25 + 1.5 s an uncounted cut takes and not the 5.25 s
+    a second cut would (`a_paths_answers_are_waited_for_as_long_as_it_shows`;
+    `a_read_its_wait_stops_is_overdue_by_the_stop_itself`).
   - **At least a second** (RFC 6298 §2.4's least timeout, which keeps it conservative
     against what its samples do not show; RFC 6298 cites Allman and Paxson, SIGCOMM
     1999: a large minimum avoids spurious retransmissions). Without it, this crate's
