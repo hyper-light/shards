@@ -22730,6 +22730,27 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   `NoBackend`, by name. Windows on arm64 is WHP's, the VMM's `hv::whp_arm64` (D209): the
   API names the backend the VMM builds on each host, and a host whose hypervisor runs no
   guest says so as its VM process starts (`check_host`).
+- *An envelope* (2026-11-13, for Hex's reservations, kiln plan step 14):
+  `envelope(arch, vcpus, memory_mib)` is the least spec shards-vmm boots on a guest of
+  `arch` that holds the ask: at least one vCPU, and its memory rounded up to the VMM's unit
+  and to at least `min_memory_mib(arch)`. Where that memory's bytes pass what a u64 holds,
+  it is refused `Bounds` (`memory_mib`). `check` takes a spec exactly where the spec is its
+  own envelope: one rule from one source, so a caller rounds an ask without restating
+  shards' numbers.
+  - Its literals are shards-vmm's own, restated with their sources: the unit, 2 MiB
+    (`ram_bytes` in `vm/aarch64.rs`, `ram_ranges` in `vm/x86_64.rs`, which boot an even
+    number of MiB alone); the least, 64 MiB on arm64 and 128 on x86-64 (`MIN_MEMORY_MIB`
+    there); and the most, 2^44 - 2 MiB, the last even MiB whose bytes fit the u64 those
+    functions count a guest's memory in (`checked_mul(MIB)`).
+  - The unit's derivation is recorded nowhere, neither in a comment nor in a D-entry, since
+    the VMM's first boot (c2622c656, 2026-09-28): it is owed there, under R03. The least's is
+    its comment (a kernel, its bss and early allocations, and on arm64 its DTB window).
+  - Tested (light): lib's `an_envelope_rounds_up_to_the_unit_and_the_least`,
+    `an_envelope_past_what_a_u64_holds_is_refused` and
+    `check_and_envelope_agree_on_every_case` (each architecture's rule, at every bound and
+    one past it), beside `bounds_are_refused_by_name`. Owed (ROOT): five guard-removal
+    mutants, each of which must fail its test: the unit, the least, the u64 bound, the one
+    vCPU, and `check`'s comparison with the envelope.
 - *A guest's socket directory* is the client's alone (0700), named apart from its pid,
   short enough to bind (else /tmp on Unix; refused by name on Windows), and removed with
   the guest.
