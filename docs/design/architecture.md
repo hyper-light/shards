@@ -7611,9 +7611,11 @@ process.
   again.
   - *Its progress* is room it makes: its answer is written as its FIFO takes it, a write
     that does not wait (`slots::write_all_waiting`), and only where the FIFO takes none of
-    what is left is its client waited on, until it reads some: in poll(2) for POLLOUT, or,
-    where no more than PIPE_BUF is left, in the write itself, which goes whole (POSIX
-    write(2)), as macOS's FIFOs say POLLOUT with less than that free (PM M549). Each such
+    what is left is its client waited on, until it reads some: for its FIFO's room
+    (`await_fifo_room`: select(2) on macOS, where poll(2) slept through a reader's end,
+    poll(2) elsewhere), or, where no more than PIPE_BUF is left, in the write itself, which
+    goes whole (POSIX write(2)), as macOS's FIFOs say POLLOUT with less than that free (PM
+    M549). Each such
     wait that ends is a take; what the FIFO takes at once waits on no client and teaches
     nothing.
   - *Its bound*: a closed daemon lets go of a client whose writer has waited on it longer

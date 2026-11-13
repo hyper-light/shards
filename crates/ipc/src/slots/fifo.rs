@@ -140,27 +140,10 @@ fn write_now(to: &File, buf: &[u8]) -> io::Result<Option<usize>> {
 }
 
 /// Waits until the FIFO `to` has room for some of what is left, however long its reader
-/// takes to make it (poll(2)'s POLLOUT); its reader's end ends the wait too, and the write
-/// that follows fails.
+/// takes to make it ([`crate::await_fifo_room`]); its reader's end ends the wait too, and the
+/// write that follows fails.
 fn await_room(to: &File) -> io::Result<()> {
-    let mut pfd = libc::pollfd {
-        fd: to.as_raw_fd(),
-        events: libc::POLLOUT,
-        revents: 0,
-    };
-    loop {
-        // SAFETY: poll(2) of one pollfd, of a descriptor `to` holds open.
-        match unsafe { libc::poll(&mut pfd, 1, -1) } {
-            -1 => {
-                let e = io::Error::last_os_error();
-                if e.kind() != io::ErrorKind::Interrupted {
-                    return Err(e);
-                }
-            }
-            0 => {}
-            _ => return Ok(()),
-        }
-    }
+    crate::await_fifo_room(to.as_fd())
 }
 
 /// What reads a slot's FIFO as [`read_some`] does, for `read_exact`, `read_to_end` and

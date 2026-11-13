@@ -6,7 +6,7 @@
 //! other's.
 
 use std::collections::HashMap;
-use std::io::{self, Write};
+use std::io;
 #[cfg(unix)]
 use std::os::fd::AsRawFd as _;
 use std::sync::atomic::Ordering;
