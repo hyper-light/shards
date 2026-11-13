@@ -2,8 +2,11 @@
 //! whose TLS names a host a credential grant names has the guest's TLS ended here, under a leaf
 //! the run's CA mints for that name as its ClientHello comes (as mitmproxy and gondolin mint
 //! theirs, f34), and the host's made from here and verified as the registry's client verifies
-//! (f20); both are TLS 1.3 under TLS_AES_256_GCM_SHA384 alone (f21). Between them the injector
-//! is an HTTP/1.1 gateway (RFC 9110 §3.7): each request's head is read whole, its credential
+//! (f20); both are TLS 1.3 under TLS_AES_256_GCM_SHA384 alone (f21). The guest's ClientHello is
+//! held while the host's TLS is made offering what the guest offered of HTTP/1.1 and HTTP/2, and
+//! the guest's accepted with the protocol the host chose (f41), so both hops speak one. Over
+//! HTTP/2 the injector is an end of each hop (`H2`, http2.rs; step 7). Over HTTP/1.1 it
+//! is a gateway (RFC 9110 §3.7): each request's head is read whole, its credential
 //! fields' placeholders filled in where [`credential::decide`] says (f56, f65), a request for
 //! another host refused 421 (RFC 9110 §7.4, f44), and its body passed on as it comes, never
 //! read for a placeholder (f27); each response comes back as it came, but for the values filled
@@ -16,7 +19,7 @@
 //! asked as a request first needs it; a request whose lease is asked is parked, and the lease's
 //! answer resumes its flow.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io::{self, BufRead, Write};
 use std::ops::Range;
@@ -32,6 +35,8 @@ use zeroize::Zeroizing;
 
 use crate::Credentials;
 use crate::dns::credential::{self, Fill};
+use crate::hpack;
+use crate::http2::{self, Code, End, Scope};
 use crate::lease::{self, Asked};
 use crate::ring::Ring;
 use crate::signin::{self, Cli};
@@ -58,12 +63,14 @@ static PROVIDER: LazyLock<Arc<CryptoProvider>> = LazyLock::new(|| {
     })
 });
 
-/// The one application protocol each side offers (RFC 7301): the injector speaks HTTP/1.1
-/// alone, so a guest offering only another is refused at its handshake.
+/// The application protocols the injector speaks (RFC 7301): HTTP/1.1, and HTTP/2 over TLS
+/// (RFC 9113 §3.2). A guest offering neither is refused at its handshake.
 const HTTP_1_1: &[u8] = b"http/1.1";
+const H2: &[u8] = b"h2";
 
 /// The host's side of an injected flow's TLS (D242): verified as the registry's client
-/// verifies (D19, f20), offering HTTP/1.1 alone, and resuming no session, as a session kept is
+/// verifies (D19, f20), offering, flow by flow, what the guest offered of the protocols the
+/// injector speaks (HTTP/1.1 where it offered none), and resuming no session, as a session kept is
 /// a cache nothing measured (R05). Made as the network process starts, before it confines
 /// itself, as on Linux the verifier reads the system's roots then (shards-verify).
 #[derive(Debug, Clone)]
@@ -87,9 +94,9 @@ impl Upstream {
     }
 }
 
-/// The guest's side for a flow to `name`'s host: the leaf the run's CA mints for it, HTTP/1.1
-/// alone, no session kept and no ticket sent (R05).
-fn guest_config(cert: Vec<u8>, key: Vec<u8>) -> Result<Arc<ServerConfig>, rustls::Error> {
+/// The guest's side for a flow to `name`'s host: the leaf the run's CA mints for it, `alpn`
+/// alone (the protocol its host chose), no session kept and no ticket sent (R05).
+fn guest_config(cert: Vec<u8>, key: Vec<u8>, alpn: &[u8]) -> Result<Arc<ServerConfig>, rustls::Error> {
     let mut config = ServerConfig::builder_with_provider(PROVIDER.clone())
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .with_no_client_auth()
@@ -97,7 +104,7 @@ fn guest_config(cert: Vec<u8>, key: Vec<u8>) -> Result<Arc<ServerConfig>, rustls
             vec![CertificateDer::from(cert)],
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)),
         )?;
-    config.alpn_protocols = vec![HTTP_1_1.to_vec()];
+    config.alpn_protocols = vec![alpn.to_vec()];
     config.session_storage = Arc::new(NoServerSessionStorage {});
     config.send_tls13_tickets = 0;
     Ok(Arc::new(config))
@@ -234,7 +241,9 @@ impl fmt::Debug for Flow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self.state {
             State::Hello { .. } => "Flow(Hello)",
+            State::Opening(_) => "Flow(Opening)",
             State::Ended(_) => "Flow(Ended)",
+            State::H2(_) => "Flow(H2)",
             State::Gone => "Flow(Gone)",
         })
     }
@@ -246,8 +255,12 @@ enum State {
     /// bound (64 KiB, `MAX_HANDSHAKE_SIZE`), which RFC 8446 §4 lets a receiver set below its
     /// 2^24 bytes; one past it is no ClientHello this side reads, and passes.
     Hello { acceptor: Box<Acceptor>, seen: Vec<u8> },
-    /// A granted host's: the guest's TLS ended here, the host's made from here.
+    /// A granted host's, its ClientHello held while the host's TLS is made (f41).
+    Opening(Box<Opening>),
+    /// A granted host's over HTTP/1.1: the guest's TLS ended here, the host's made from here.
     Ended(Box<Ended>),
+    /// A granted host's over HTTP/2 (RFC 9113), both hops: the injector an end of each.
+    H2(Box<H2>),
     /// Let go of, its connection carrying the rest.
     Gone,
 }
@@ -273,7 +286,9 @@ impl Flow {
     pub fn held(&self) -> usize {
         match &self.state {
             State::Hello { seen, .. } => seen.len(),
+            State::Opening(o) => o.early.len(),
             State::Ended(e) => e.held(),
+            State::H2(h) => h.held(),
             State::Gone => 0,
         }
     }
@@ -282,7 +297,12 @@ impl Flow {
     pub fn from_guest(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         match &mut self.state {
             State::Hello { .. } => self.hello(bytes, run, q),
+            State::Opening(o) => {
+                o.early.extend_from_slice(bytes);
+                Said::Going
+            }
             State::Ended(e) => e.guest_bytes(bytes, run, q),
+            State::H2(h) => h.guest_bytes(bytes, run, q),
             State::Gone => Said::Going,
         }
     }
@@ -292,7 +312,13 @@ impl Flow {
     pub fn from_host(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         match &mut self.state {
             State::Hello { .. } => self.pass(),
+            State::Opening(o) => match o.host_bytes(bytes, q) {
+                Ok(false) => Said::Going,
+                Ok(true) => self.open(None, run, q),
+                Err(why) => self.open(Some(why), run, q),
+            },
             State::Ended(e) => e.host_bytes(bytes, run, q),
+            State::H2(h) => h.host_bytes(bytes, run, q),
             State::Gone => Said::Going,
         }
     }
@@ -301,7 +327,15 @@ impl Flow {
     pub fn guest_ended(&mut self, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         match &mut self.state {
             State::Hello { .. } => self.pass(),
+            State::Opening(o) => {
+                o.host.send_close_notify();
+                match send(&mut o.host, q.to_host) {
+                    Ok(()) => Said::Close,
+                    Err(_) => Said::Reset,
+                }
+            }
             State::Ended(e) => e.guest_ended(run, q),
+            State::H2(h) => h.close(q),
             State::Gone => Said::Going,
         }
     }
@@ -310,7 +344,9 @@ impl Flow {
     pub fn host_ended(&mut self, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         match &mut self.state {
             State::Hello { .. } => self.pass(),
+            State::Opening(_) => self.open(Some("the host ended before its TLS was made".into()), run, q),
             State::Ended(e) => e.host_ended(run, q),
+            State::H2(h) => h.host_failed("the host ended".into(), run, q),
             State::Gone => Said::Going,
         }
     }
@@ -319,7 +355,8 @@ impl Flow {
     pub fn resume(&mut self, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         match &mut self.state {
             State::Ended(e) => e.serve(run, q),
-            State::Hello { .. } | State::Gone => Said::Going,
+            State::H2(h) => h.serve(run, q),
+            State::Hello { .. } | State::Opening(_) | State::Gone => Said::Going,
         }
     }
 
@@ -368,18 +405,179 @@ impl Flow {
         if !granted {
             return self.pass();
         }
-        let ended = match Ended::new(&sni, accepted, rest, run, q) {
-            Ok(ended) => ended,
+        let offered = accepted
+            .client_hello()
+            .alpn()
+            .map(|a| a.map(<[u8]>::to_vec).collect::<Vec<_>>());
+        match Opening::new(&sni, accepted, rest, offered, run, q) {
+            Ok(opening) => {
+                self.state = State::Opening(Box::new(opening));
+                Said::Going
+            }
             Err(said) => {
                 self.state = State::Gone;
+                said
+            }
+        }
+    }
+
+    /// The host's TLS made, or failed: the guest's accepted speaking the protocol the host chose
+    /// (HTTP/1.1 where it chose none, RFC 7301 §3.2), or, where the host failed, the guest's own
+    /// first choice, so that its requests are answered 502 in it.
+    fn open(&mut self, failed: Option<String>, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        let State::Opening(opening) = std::mem::replace(&mut self.state, State::Gone) else {
+            return Said::Going;
+        };
+        let Opening {
+            sni,
+            accepted,
+            early,
+            mut host,
+            offered,
+        } = *opening;
+        let h2 = match &failed {
+            None => host.alpn_protocol() == Some(H2),
+            Some(why) => {
+                say(&sni, format_args!("the host's TLS failed: {why}"));
+                offered.first().is_some_and(|p| p == H2)
+            }
+        };
+        let guest = match accept(&sni, accepted, if h2 { H2 } else { HTTP_1_1 }, run, q) {
+            Ok(guest) => guest,
+            Err(said) => {
+                host.send_close_notify();
+                let _ = send(&mut host, q.to_host);
                 return said;
             }
         };
-        self.state = State::Ended(Box::new(ended));
-        let State::Ended(e) = &mut self.state else {
-            return Said::Reset;
+        if h2 {
+            let mut e = H2::new(sni, guest, host, failed);
+            if let Err(said) = e.take_guest(&early, q) {
+                return said;
+            }
+            self.state = State::H2(Box::new(e));
+        } else {
+            let sign_in = run.credentials.sign_ins.at_token_host(&sni);
+            let mut e = Ended::new(sni, guest, host, sign_in, failed);
+            if let Err(said) = e.take_guest(&early, q) {
+                return said;
+            }
+            self.state = State::Ended(Box::new(e));
+        }
+        self.resume(run, q)
+    }
+}
+
+/// The guest's TLS accepted under a leaf for `sni`, speaking `alpn`; refused with its alert.
+fn accept(
+    sni: &str,
+    accepted: rustls::server::Accepted,
+    alpn: &[u8],
+    run: &mut Run<'_>,
+    q: &mut Queues<'_>,
+) -> Result<ServerConnection, Said> {
+    let (cert, key) = run.credentials.ca.leaf(sni).map_err(|e| {
+        say(sni, format_args!("no leaf: {e}"));
+        Said::Reset
+    })?;
+    let config = guest_config(cert, key, alpn).map_err(|e| {
+        say(sni, format_args!("no TLS of the guest's: {e}"));
+        Said::Reset
+    })?;
+    match accepted.into_connection(config) {
+        Ok(mut guest) => {
+            // Its queues are the connection's, whose window bounds them; rustls's own bound
+            // would only hold back what the window already lets come.
+            guest.set_buffer_limit(None);
+            Ok(guest)
+        }
+        Err((e, mut alert)) => {
+            say(sni, format_args!("the guest's TLS refused: {e}"));
+            Err(match alert.write_all(&mut Onto(&mut *q.to_guest)) {
+                Ok(()) => Said::Close,
+                Err(_) => Said::Reset,
+            })
+        }
+    }
+}
+
+/// A granted host's flow while the host's TLS is made (D242, f41): the guest's ClientHello held,
+/// and the guest's bytes after it, until the host has chosen among the protocols the guest
+/// offered. A request waits for the host's TLS in any case, so holding the guest's costs it none.
+struct Opening {
+    sni: String,
+    accepted: rustls::server::Accepted,
+    early: Vec<u8>,
+    host: ClientConnection,
+    /// What the guest offered of what the injector speaks, in its order of preference.
+    offered: Vec<Vec<u8>>,
+}
+
+impl Opening {
+    /// The host's TLS begun, offering what the guest offered (`offered`, none where it sent no
+    /// ALPN) of what the injector speaks; a sign-in's token host HTTP/1.1 alone, as its tokens are
+    /// read from HTTP/1.1's messages (step 8). A guest offering none of it is refused at its
+    /// handshake (RFC 7301 §3.2), no host's TLS begun.
+    fn new(
+        sni: &str,
+        accepted: rustls::server::Accepted,
+        rest: &[u8],
+        offered: Option<Vec<Vec<u8>>>,
+        run: &mut Run<'_>,
+        q: &mut Queues<'_>,
+    ) -> Result<Opening, Said> {
+        let token_host = run.credentials.sign_ins.at_token_host(sni).is_some();
+        let offered: Vec<Vec<u8>> = match offered {
+            None => vec![HTTP_1_1.to_vec()],
+            Some(all) => all
+                .into_iter()
+                .filter(|p| p == HTTP_1_1 || (p == H2 && !token_host))
+                .collect(),
         };
-        e.serve(run, q)
+        // A guest whose ClientHello says plainly that this side cannot serve it, no protocol or no
+        // suite in common (RFC 7301 §3.2, RFC 8446 §4.1.1), is refused at once, no host's TLS
+        // begun for it.
+        let suites = accepted.client_hello().cipher_suites().to_vec();
+        let suite = PROVIDER.cipher_suites.iter().any(|s| suites.contains(&s.suite()));
+        if offered.is_empty() || !suite {
+            return Err(match accept(sni, accepted, HTTP_1_1, run, q) {
+                Ok(_) => Said::Reset,
+                Err(said) => said,
+            });
+        }
+        let name = ServerName::try_from(sni.to_string()).map_err(|_| Said::Reset)?;
+        let config = run.credentials.upstream.0.clone();
+        let mut host = ClientConnection::new_with_alpn(config, name, offered.clone()).map_err(|e| {
+            say(sni, format_args!("no TLS of the host's: {e}"));
+            Said::Reset
+        })?;
+        host.set_buffer_limit(None);
+        send(&mut host, q.to_host).map_err(|_| Said::Reset)?;
+        Ok(Opening {
+            sni: sni.to_string(),
+            accepted,
+            early: rest.to_vec(),
+            host,
+            offered,
+        })
+    }
+
+    /// The host's TLS bytes: whether its handshake is done, or why it failed.
+    fn host_bytes(&mut self, bytes: &[u8], q: &mut Queues<'_>) -> Result<bool, String> {
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            match self.host.read_tls(&mut rest) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) => return Err(e.to_string()),
+            }
+            if let Err(e) = self.host.process_new_packets() {
+                let _ = send(&mut self.host, q.to_host);
+                return Err(e.to_string());
+            }
+        }
+        send(&mut self.host, q.to_host).map_err(|e| e.to_string())?;
+        Ok(!self.host.is_handshaking())
     }
 }
 
@@ -1232,44 +1430,17 @@ struct Ended {
 }
 
 impl Ended {
-    /// The guest's TLS ended under a leaf for `sni`, its ClientHello `accepted` and the bytes
-    /// after it `rest`; the host's begun.
+    /// Its guest's TLS accepted under a leaf for `sni` and its host's made (`failed`, where it
+    /// failed); `sign_in` the sign-in whose token host it is, where it is one.
     fn new(
-        sni: &str,
-        accepted: rustls::server::Accepted,
-        rest: &[u8],
-        run: &mut Run<'_>,
-        q: &mut Queues<'_>,
-    ) -> Result<Ended, Said> {
-        let (cert, key) = run.credentials.ca.leaf(sni).map_err(|e| {
-            say(sni, format_args!("no leaf: {e}"));
-            Said::Reset
-        })?;
-        let config = guest_config(cert, key).map_err(|e| {
-            say(sni, format_args!("no TLS of the guest's: {e}"));
-            Said::Reset
-        })?;
-        let mut guest = match accepted.into_connection(config) {
-            Ok(guest) => guest,
-            Err((e, mut alert)) => {
-                say(sni, format_args!("the guest's TLS refused: {e}"));
-                return Err(match alert.write_all(&mut Onto(&mut *q.to_guest)) {
-                    Ok(()) => Said::Close,
-                    Err(_) => Said::Reset,
-                });
-            }
-        };
-        let name = ServerName::try_from(sni.to_string()).map_err(|_| Said::Reset)?;
-        let mut host = ClientConnection::new(run.credentials.upstream.0.clone(), name).map_err(|e| {
-            say(sni, format_args!("no TLS of the host's: {e}"));
-            Said::Reset
-        })?;
-        // Their queues are the connection's, whose window bounds them; rustls's own bounds
-        // would only hold back what the window already lets come.
-        guest.set_buffer_limit(None);
-        host.set_buffer_limit(None);
-        let mut e = Ended {
-            sni: sni.to_string(),
+        sni: String,
+        guest: ServerConnection,
+        host: ClientConnection,
+        sign_in: Option<Cli>,
+        failed: Option<String>,
+    ) -> Ended {
+        Ended {
+            sni,
             guest,
             host,
             pending: Vec::new(),
@@ -1278,13 +1449,11 @@ impl Ended {
             owed: None,
             answered: false,
             mask: Mask::default(),
-            failed: None,
-            sign_in: run.credentials.sign_ins.at_token_host(sni),
+            failed,
+            sign_in,
             refused: None,
             host_closed: false,
-        };
-        e.take_guest(rest, q)?;
-        Ok(e)
+        }
     }
 
     fn held(&self) -> usize {
@@ -2066,6 +2235,1289 @@ impl Ended {
         if matches!(self.request, Request::Sent) {
             self.request = Request::Head;
         }
+    }
+}
+
+/// Where one hop of an HTTP/2 flow stands (R04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// The client preface's octets awaited (§3.4): the guest's alone.
+    Preface,
+    /// The peer's first frame awaited, which is its SETTINGS (§3.4).
+    Settings,
+    Open,
+    /// A GOAWAY sent or received (§6.8): no new stream on it, and the flow ends once its
+    /// streams have.
+    Away,
+}
+
+/// A stream's state on one hop as RFC 9113 §5.1 has it, from the injector's end. Idle is a
+/// stream not yet in the map (the guest's) or not yet sent (the host's); push's reserved states
+/// never come, push being off (§8.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamState {
+    Open,
+    HalfClosedLocal,
+    HalfClosedRemote,
+    Closed,
+}
+
+impl StreamState {
+    /// This end sent END_STREAM.
+    fn sent_end(self) -> StreamState {
+        match self {
+            StreamState::Open => StreamState::HalfClosedLocal,
+            StreamState::HalfClosedRemote | StreamState::Closed => StreamState::Closed,
+            StreamState::HalfClosedLocal => StreamState::HalfClosedLocal,
+        }
+    }
+
+    /// The peer sent END_STREAM.
+    fn received_end(self) -> StreamState {
+        match self {
+            StreamState::Open => StreamState::HalfClosedRemote,
+            StreamState::HalfClosedLocal | StreamState::Closed => StreamState::Closed,
+            StreamState::HalfClosedRemote => StreamState::HalfClosedRemote,
+        }
+    }
+
+    /// The peer may still send on it.
+    fn receiving(self) -> bool {
+        matches!(self, StreamState::Open | StreamState::HalfClosedLocal)
+    }
+
+    /// This end may still send on it.
+    fn sending(self) -> bool {
+        matches!(self, StreamState::Open | StreamState::HalfClosedRemote)
+    }
+}
+
+/// A request's way to the host (R04).
+enum Upward {
+    /// Decoded, waiting for its leases or for room among the host's streams
+    /// (SETTINGS_MAX_CONCURRENT_STREAMS, §5.1.2).
+    Parked(Box<http2::Go>),
+    /// Its HEADERS sent on the host's stream `id`, which stands at `state`.
+    Sent { id: u32, state: StreamState },
+    /// Answered here and never sent: what the guest sends on it is dropped.
+    Answered,
+}
+
+/// What ends one direction's message once its DATA has gone (§8.1): END_STREAM, or a trailer
+/// section, encoded as it goes, as each hop's blocks are decoded in the order they are sent
+/// (§4.3).
+enum Last {
+    End,
+    Trailers(Vec<hpack::Field>),
+}
+
+/// Where a stream's response stands (§8.1): its final head awaited, informational ones passed
+/// on; or its body coming, after which a field block is its trailers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Down {
+    Head,
+    Body,
+}
+
+/// One of the guest's streams: its state on the guest's hop, its request's way to the host,
+/// each direction's DATA held while the next hop's windows are spent, and the values filled into
+/// its request, masked in its response.
+struct Stream {
+    guest: StreamState,
+    up: Upward,
+    up_data: Vec<u8>,
+    up_last: Option<Last>,
+    down: Down,
+    down_data: Vec<u8>,
+    down_last: Option<Last>,
+    mask: Mask,
+}
+
+impl Stream {
+    fn new(end_stream: bool) -> Stream {
+        Stream {
+            guest: if end_stream {
+                StreamState::HalfClosedRemote
+            } else {
+                StreamState::Open
+            },
+            up: Upward::Answered,
+            up_data: Vec::new(),
+            up_last: end_stream.then_some(Last::End),
+            down: Down::Head,
+            down_data: Vec::new(),
+            down_last: None,
+            mask: Mask::default(),
+        }
+    }
+
+    /// What it holds of the guest's: its request's fields while parked, its DATA and trailers.
+    fn held(&self) -> usize {
+        let fields = |f: &[hpack::Field]| f.iter().map(hpack::Field::size).sum::<usize>();
+        let parked = match &self.up {
+            Upward::Parked(go) => fields(&go.fields),
+            _ => 0,
+        };
+        let trailers = match &self.up_last {
+            Some(Last::Trailers(f)) => fields(f),
+            _ => 0,
+        };
+        parked.saturating_add(trailers).saturating_add(self.up_data.len())
+    }
+}
+
+/// Which hop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Which {
+    Guest,
+    Host,
+}
+
+/// A stream error (§5.4.2).
+fn stream_error(stream: u32, code: Code, why: &'static str) -> http2::Error {
+    http2::Error {
+        scope: Scope::Stream(stream),
+        code,
+        why,
+    }
+}
+
+/// A PING (§6.7): answered on its own hop.
+fn ping(head: http2::Head, payload: &[u8], out: &mut Vec<u8>) -> Result<(), http2::Error> {
+    if head.stream != 0 {
+        return Err(http2::connection(Code::Protocol, "a PING on a stream"));
+    }
+    if payload.len() != 8 {
+        return Err(http2::connection(Code::FrameSize, "a PING not of eight octets"));
+    }
+    if head.flags & http2::ACK == 0 {
+        http2::ping_ack(payload, out);
+    }
+    Ok(())
+}
+
+/// `value`, a field's, its echoes of the values `mask` masks replaced.
+fn masked(mask: &mut Mask, value: &[u8], run: &Run<'_>) -> Zeroizing<Vec<u8>> {
+    let mut out = Zeroizing::new(Vec::with_capacity(value.len()));
+    let _ = mask.push(value, true, run, &mut |b| {
+        out.extend_from_slice(b);
+        Ok(())
+    });
+    let _ = mask.end_message(&mut |b| {
+        out.extend_from_slice(b);
+        Ok(())
+    });
+    out
+}
+
+/// What this side holds of a hop's peer's DATA (`http2::Holds`): `n`, what its connection holds
+/// that way (tcp.rs' `TO_HOST`, `TO_GUEST`), within a window's 2^31-1 (§6.9.1).
+fn holds(n: usize) -> http2::Holds {
+    let n = u32::try_from(n).unwrap_or(u32::MAX).min(http2::MOST_STREAM);
+    http2::Holds {
+        stream: n,
+        connection: n,
+    }
+}
+
+/// A granted host's flow over HTTP/2 (RFC 9113; D242, step 7): the guest's TLS ended here and
+/// the host's made from here, the injector an end of each hop, each with its own settings,
+/// windows and field compression (§4.3.1, §6.9). Each request's block is decoded on the guest's
+/// hop, filled in, and encoded anew on the host's; each response's decoded on the host's hop,
+/// its echoes masked, and encoded anew on the guest's. Host stream ids are given in the order
+/// requests go, so that a request parked on its lease holds back no other (§5.1.1).
+struct H2 {
+    sni: String,
+    guest: ServerConnection,
+    host: ClientConnection,
+    guest_hop: http2::Hop,
+    host_hop: http2::Hop,
+    guest_phase: Phase,
+    host_phase: Phase,
+    /// Each side's plaintext not yet framed.
+    from_guest: Vec<u8>,
+    from_host: Zeroizing<Vec<u8>>,
+    /// A field block coming from each, until its END_HEADERS (§6.10).
+    guest_block: Option<http2::Block>,
+    host_block: Option<http2::Block>,
+    /// The guest's streams by its ids, and the last it opened (§5.1.1).
+    streams: BTreeMap<u32, Stream>,
+    last_guest: u32,
+    /// The guest's stream each host stream carries, and the host stream id to be sent next.
+    by_host: BTreeMap<u32, u32>,
+    next_host: u32,
+    /// Each hop's frames, to go.
+    to_guest: Vec<u8>,
+    to_host: Zeroizing<Vec<u8>>,
+    /// Why the host's side failed: each request not yet sent is answered 502.
+    failed: Option<String>,
+}
+
+impl H2 {
+    fn new(sni: String, guest: ServerConnection, host: ClientConnection, failed: Option<String>) -> H2 {
+        // What each decoder lets its peer's table be: the protocol's initial size, which this
+        // side never changes (§6.5.2), so that no encoder's table is larger than the other hop's.
+        let table = http2::Settings::INITIAL.header_table_size as usize;
+        let mut h = H2 {
+            sni,
+            guest,
+            host,
+            guest_hop: http2::Hop::new(holds(crate::tcp::TO_HOST), table),
+            host_hop: http2::Hop::new(holds(crate::tcp::TO_GUEST), table),
+            guest_phase: Phase::Preface,
+            host_phase: if failed.is_some() {
+                Phase::Away
+            } else {
+                Phase::Settings
+            },
+            from_guest: Vec::new(),
+            from_host: Zeroizing::new(Vec::new()),
+            guest_block: None,
+            host_block: None,
+            streams: BTreeMap::new(),
+            last_guest: 0,
+            by_host: BTreeMap::new(),
+            next_host: 1,
+            to_guest: Vec::new(),
+            to_host: Zeroizing::new(Vec::new()),
+            failed,
+        };
+        h.guest_hop.preface(End::Server, &mut h.to_guest);
+        if h.failed.is_none() {
+            h.host_hop.preface(End::Client, &mut h.to_host);
+        }
+        h
+    }
+
+    /// What it holds of the guest's bytes: its plaintext not yet framed, a block coming, and
+    /// each stream's.
+    fn held(&self) -> usize {
+        self.streams.values().fold(
+            self.from_guest
+                .len()
+                .saturating_add(self.guest_block.as_ref().map_or(0, http2::Block::held)),
+            |n, s| n.saturating_add(s.held()),
+        )
+    }
+
+    /// The guest's TLS bytes into its connection, its plaintext into `from_guest`; its TLS's
+    /// failure answered with its alert, the flow closing.
+    fn take_guest(&mut self, bytes: &[u8], q: &mut Queues<'_>) -> Result<(), Said> {
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let read = self.guest.read_tls(&mut rest);
+            let processed = read.as_ref().ok().map(|_| self.guest.process_new_packets());
+            let why = match (read, processed) {
+                (Ok(0), _) | (Ok(_), None) => break,
+                (Ok(_), Some(Ok(_))) => None,
+                (Err(e), _) => Some(e.to_string()),
+                (Ok(_), Some(Err(e))) => Some(e.to_string()),
+            };
+            if let Some(why) = why {
+                say(&self.sni, format_args!("the guest's TLS failed: {why}"));
+                self.host.send_close_notify();
+                return Err(
+                    match (send(&mut self.guest, q.to_guest), send(&mut self.host, q.to_host)) {
+                        (Ok(()), Ok(())) => Said::Close,
+                        _ => Said::Reset,
+                    },
+                );
+            }
+            if plain(&mut self.guest, &mut self.from_guest) {
+                // Its close_notify: it opens no stream more.
+                self.guest_phase = Phase::Away;
+            }
+        }
+        Ok(())
+    }
+
+    fn guest_bytes(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        if let Err(said) = self.take_guest(bytes, q) {
+            return said;
+        }
+        self.serve(run, q)
+    }
+
+    /// The host's TLS bytes, its plaintext into `from_host`.
+    fn host_bytes(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        if self.failed.is_some() {
+            return self.serve(run, q);
+        }
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let read = self.host.read_tls(&mut rest);
+            let processed = read.as_ref().ok().map(|_| self.host.process_new_packets());
+            match (read, processed) {
+                (Ok(0), _) | (Ok(_), None) => break,
+                (Ok(_), Some(Ok(_))) => {}
+                (Err(e), _) => return self.host_failed(e.to_string(), run, q),
+                (Ok(_), Some(Err(e))) => return self.host_failed(e.to_string(), run, q),
+            }
+            // Its plaintext taken as each record is, as rustls holds no more than its own bound;
+            // its close_notify read once its frames before it are (`serve`).
+            if plain(&mut self.host, &mut self.from_host) {
+                break;
+            }
+        }
+        self.serve(run, q)
+    }
+
+    /// The host's side has failed or ended: each stream whose response has not begun is
+    /// answered 502, one whose response has is reset, and the guest told the connection goes
+    /// (§6.8), as no request can reach the host.
+    fn host_failed(&mut self, why: String, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        say(&self.sni, format_args!("the host's side ended: {why}"));
+        let _ = send(&mut self.host, q.to_host);
+        self.failed = Some(why.clone());
+        self.host_phase = Phase::Away;
+        let sent: Vec<(u32, Option<u32>, Down)> = self
+            .streams
+            .iter()
+            .filter_map(|(&gid, s)| match s.up {
+                Upward::Sent { id, state } => Some((gid, (!state.receiving()).then_some(id), s.down)),
+                _ => None,
+            })
+            .collect();
+        for (gid, ended, down) in sent {
+            match (ended, down) {
+                // Its response whole: it goes on to the guest, its request no further (§8.1).
+                (Some(id), _) => {
+                    self.by_host.remove(&id);
+                    self.host_hop.close(id);
+                    if let Some(s) = self.streams.get_mut(&gid) {
+                        s.up = Upward::Answered;
+                        self.guest_hop.released(gid, s.up_data.len(), &mut self.to_guest);
+                        s.up_data.clear();
+                        s.up_last = None;
+                    }
+                }
+                (None, Down::Head) => self.answer(gid, Refusal::Upstream(why.clone())),
+                (None, Down::Body) => self.reset(Which::Guest, gid, Code::Internal),
+            }
+        }
+        self.go_away_guest(Code::NoError);
+        self.serve(run, q)
+    }
+
+    /// Takes each side's frames, moves each stream as far as it goes, and sends what each hop
+    /// is to have; the connection ends once a hop has gone away and its streams have ended.
+    fn serve(&mut self, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        let closed = self.failed.is_none() && plain(&mut self.host, &mut self.from_host);
+        if let Err((which, e)) = self
+            .frames(Which::Guest, run)
+            .and_then(|()| self.frames(Which::Host, run))
+        {
+            return self.fail(which, e, q);
+        }
+        if closed {
+            return self.host_failed("the host ended its TLS".into(), run, q);
+        }
+        let ids: Vec<u32> = self.streams.keys().copied().collect();
+        for gid in ids {
+            self.go(gid, run);
+            self.flush_up(gid);
+            self.flush_down(gid);
+            self.reap(gid);
+        }
+        if self.streams.is_empty() && self.guest_phase == Phase::Away {
+            return self.close(q);
+        }
+        self.flush(q)
+    }
+
+    /// Each hop's frames to `to_guest` and `to_host`, and the TLS records each side is to have.
+    fn flush(&mut self, q: &mut Queues<'_>) -> Said {
+        let guest = self.guest.writer().write_all(&self.to_guest);
+        self.to_guest.clear();
+        let host = if self.failed.is_none() {
+            self.host.writer().write_all(&self.to_host)
+        } else {
+            Ok(())
+        };
+        self.to_host.clear();
+        match (
+            guest,
+            host,
+            send(&mut self.guest, q.to_guest),
+            send(&mut self.host, q.to_host),
+        ) {
+            (Ok(()), Ok(()), Ok(()), Ok(())) => Said::Going,
+            _ => Said::Reset,
+        }
+    }
+
+    /// Ends the flow: what each hop is to have, then each side's TLS.
+    fn close(&mut self, q: &mut Queues<'_>) -> Said {
+        if self.flush(q) == Said::Reset {
+            return Said::Reset;
+        }
+        self.guest.send_close_notify();
+        self.host.send_close_notify();
+        match (send(&mut self.guest, q.to_guest), send(&mut self.host, q.to_host)) {
+            (Ok(()), Ok(())) => Said::Close,
+            _ => Said::Reset,
+        }
+    }
+
+    /// A connection error (§5.4.1): a GOAWAY with its code to the hop that erred, the other told
+    /// the connection goes, and the flow ends.
+    fn fail(&mut self, which: Which, e: http2::Error, q: &mut Queues<'_>) -> Said {
+        say(
+            &self.sni,
+            format_args!("the {which:?}'s HTTP/2 failed ({:?}): {}", e.code, e.why),
+        );
+        match which {
+            Which::Guest => {
+                http2::goaway(self.last_guest, e.code as u32, &mut self.to_guest);
+                if self.failed.is_none() {
+                    http2::goaway(0, Code::NoError as u32, &mut self.to_host);
+                }
+            }
+            Which::Host => {
+                http2::goaway(0, e.code as u32, &mut self.to_host);
+                http2::goaway(self.last_guest, Code::Internal as u32, &mut self.to_guest);
+            }
+        }
+        self.close(q)
+    }
+
+    /// Tells the guest the connection goes, its streams up to its last taken (§6.8).
+    fn go_away_guest(&mut self, code: Code) {
+        if self.guest_phase != Phase::Away {
+            http2::goaway(self.last_guest, code as u32, &mut self.to_guest);
+            self.guest_phase = Phase::Away;
+        }
+    }
+
+    /// Every whole frame `which` sent; a stream error resets its stream, a connection error is
+    /// the caller's.
+    fn frames(&mut self, which: Which, run: &mut Run<'_>) -> Result<(), (Which, http2::Error)> {
+        if which == Which::Host && self.failed.is_some() {
+            self.from_host.clear();
+            return Ok(());
+        }
+        if which == Which::Guest && self.guest_phase == Phase::Preface {
+            let n = http2::PREFACE.len().min(self.from_guest.len());
+            if self.from_guest.get(..n) != http2::PREFACE.get(..n) {
+                return Err((
+                    which,
+                    http2::connection(Code::Protocol, "no HTTP/2 client preface"),
+                ));
+            }
+            if n < http2::PREFACE.len() {
+                return Ok(());
+            }
+            self.from_guest.drain(..n);
+            self.guest_phase = Phase::Settings;
+        }
+        let most = http2::Settings::INITIAL.max_frame_size;
+        let mut at = 0usize;
+        loop {
+            let buf: &[u8] = match which {
+                Which::Guest => &self.from_guest,
+                Which::Host => &self.from_host,
+            };
+            let rest = buf.get(at..).unwrap_or_default();
+            let Some((head, payload)) = http2::frame(rest, most).map_err(|e| (which, e))? else {
+                break;
+            };
+            let payload = Zeroizing::new(payload.to_vec());
+            at = at.saturating_add(http2::HEAD).saturating_add(payload.len());
+            let done = match which {
+                Which::Guest => self.guest_frame(head, &payload, run),
+                Which::Host => self.host_frame(head, &payload, run),
+            };
+            match done {
+                Ok(()) => {}
+                Err(http2::Error {
+                    scope: Scope::Stream(id),
+                    code,
+                    why,
+                }) => {
+                    say(
+                        &self.sni,
+                        format_args!("{which:?} stream {id} reset ({code:?}): {why}"),
+                    );
+                    self.reset(which, id, code);
+                }
+                Err(e) => return Err((which, e)),
+            }
+        }
+        let buf = match which {
+            Which::Guest => &mut self.from_guest,
+            Which::Host => &mut *self.from_host,
+        };
+        buf.drain(..at.min(buf.len()));
+        Ok(())
+    }
+
+    /// A stream ended by an error on `which`'s hop (its id there): reset there with `code`, and
+    /// on the other hop with CANCEL toward the host or INTERNAL_ERROR toward the guest.
+    fn reset(&mut self, which: Which, id: u32, code: Code) {
+        let gid = match which {
+            Which::Guest => Some(id),
+            Which::Host => self.by_host.get(&id).copied(),
+        };
+        let stream = gid.and_then(|gid| Some((gid, self.streams.remove(&gid)?)));
+        if let Some((gid, s)) = stream {
+            let (to_guest, to_host) = match which {
+                Which::Guest => (code, Code::Cancel),
+                Which::Host => (Code::Internal, code),
+            };
+            let host_open = matches!(s.up, Upward::Sent { state, .. } if state != StreamState::Closed);
+            let host_id = match s.up {
+                Upward::Sent { id, .. } => Some(id),
+                _ => None,
+            };
+            self.forget(gid, &s);
+            if s.guest != StreamState::Closed {
+                http2::rst_stream(gid, to_guest as u32, &mut self.to_guest);
+            }
+            if let (true, Some(h)) = (host_open && self.failed.is_none(), host_id) {
+                http2::rst_stream(h, to_host as u32, &mut self.to_host);
+            }
+        } else {
+            let out = match which {
+                Which::Guest => &mut self.to_guest,
+                Which::Host => &mut *self.to_host,
+            };
+            http2::rst_stream(id, code as u32, out);
+        }
+    }
+
+    /// A stream let go of: what it held given back to its peers' windows, and each hop's state
+    /// of it dropped.
+    fn forget(&mut self, gid: u32, s: &Stream) {
+        self.guest_hop.released(gid, s.up_data.len(), &mut self.to_guest);
+        self.guest_hop.close(gid);
+        if let Upward::Sent { id, .. } = s.up {
+            self.host_hop.released(id, s.down_data.len(), &mut self.to_host);
+            self.host_hop.close(id);
+            self.by_host.remove(&id);
+        }
+    }
+
+    /// The guest's stream `gid` refused, never processed, which its client may retry (§8.7).
+    fn refuse_stream(&mut self, gid: u32) {
+        if let Some(s) = self.streams.remove(&gid) {
+            self.forget(gid, &s);
+        }
+        http2::rst_stream(gid, Code::RefusedStream as u32, &mut self.to_guest);
+    }
+
+    /// A stream ended on both hops is let go of.
+    fn reap(&mut self, gid: u32) {
+        let done = self.streams.get(&gid).is_some_and(|s| {
+            s.guest == StreamState::Closed
+                && !matches!(s.up, Upward::Sent { state, .. } if state != StreamState::Closed)
+        });
+        if done && let Some(s) = self.streams.remove(&gid) {
+            self.forget(gid, &s);
+        }
+    }
+
+    fn guest_frame(
+        &mut self,
+        head: http2::Head,
+        payload: &[u8],
+        run: &mut Run<'_>,
+    ) -> Result<(), http2::Error> {
+        if let Some(mut block) = self.guest_block.take() {
+            let most = crate::tcp::TO_HOST.saturating_sub(self.held());
+            if block.continued(head, payload, most)? {
+                return self.request_block(block, run);
+            }
+            self.guest_block = Some(block);
+            return Ok(());
+        }
+        if self.guest_phase == Phase::Settings {
+            if head.kind != http2::SETTINGS || head.flags & http2::ACK != 0 {
+                return Err(http2::connection(
+                    Code::Protocol,
+                    "the guest's preface not followed by its SETTINGS",
+                ));
+            }
+            self.guest_phase = Phase::Open;
+        }
+        match head.kind {
+            http2::SETTINGS => self.guest_hop.settings(head, payload, &mut self.to_guest),
+            http2::WINDOW_UPDATE => self.window_update(Which::Guest, head, payload),
+            http2::PING => ping(head, payload, &mut self.to_guest),
+            http2::HEADERS => {
+                let (block, whole) = http2::Block::headers(head, payload)?;
+                if whole {
+                    return self.request_block(block, run);
+                }
+                self.guest_block = Some(block);
+                Ok(())
+            }
+            http2::CONTINUATION => Err(http2::connection(Code::Protocol, "a CONTINUATION after no block")),
+            http2::DATA => self.guest_data(head, payload),
+            http2::RST_STREAM => self.guest_rst(head, payload),
+            http2::GOAWAY => {
+                if head.stream != 0 || payload.len() < 8 {
+                    return Err(http2::connection(Code::Protocol, "a GOAWAY on a stream or short"));
+                }
+                self.guest_phase = Phase::Away;
+                Ok(())
+            }
+            http2::PUSH_PROMISE => Err(http2::connection(
+                Code::Protocol,
+                "a PUSH_PROMISE from a client (§8.4)",
+            )),
+            // PRIORITY is deprecated (§5.3.2) and every other type unknown here (§5.5).
+            _ => Ok(()),
+        }
+    }
+
+    /// A WINDOW_UPDATE on `which`'s hop; one on a stream let go of is passed over, its window
+    /// gone with it (§6.9).
+    fn window_update(&mut self, which: Which, head: http2::Head, payload: &[u8]) -> Result<(), http2::Error> {
+        let (hop, known) = match which {
+            Which::Guest => (&mut self.guest_hop, self.streams.contains_key(&head.stream)),
+            Which::Host => (&mut self.host_hop, self.by_host.contains_key(&head.stream)),
+        };
+        if head.stream != 0 && !known {
+            return if payload.len() == 4 {
+                Ok(())
+            } else {
+                Err(http2::connection(
+                    Code::FrameSize,
+                    "a WINDOW_UPDATE not of four octets",
+                ))
+            };
+        }
+        hop.window_update(head, payload)
+    }
+
+    fn guest_data(&mut self, head: http2::Head, payload: &[u8]) -> Result<(), http2::Error> {
+        if head.stream == 0 {
+            return Err(http2::connection(Code::Protocol, "DATA on stream 0"));
+        }
+        self.guest_hop.received(head)?;
+        let data = http2::data(head, payload)?;
+        let length = head.length as usize;
+        let Some(s) = self.streams.get_mut(&head.stream) else {
+            if head.stream > self.last_guest {
+                return Err(http2::connection(Code::Protocol, "DATA on an idle stream"));
+            }
+            // A stream let go of here: its DATA dropped, its credit given back.
+            self.guest_hop.released(head.stream, length, &mut self.to_guest);
+            self.guest_hop.close(head.stream);
+            return Ok(());
+        };
+        if !s.guest.receiving() {
+            return Err(stream_error(
+                head.stream,
+                Code::StreamClosed,
+                "DATA after its END_STREAM",
+            ));
+        }
+        let end = head.flags & http2::END_STREAM != 0;
+        if end {
+            s.guest = s.guest.received_end();
+        }
+        let mut dropped = length.saturating_sub(data.len());
+        if matches!(s.up, Upward::Answered) {
+            dropped = length;
+        } else {
+            s.up_data.extend_from_slice(data);
+            if end {
+                s.up_last = Some(Last::End);
+            }
+        }
+        self.guest_hop.released(head.stream, dropped, &mut self.to_guest);
+        Ok(())
+    }
+
+    fn guest_rst(&mut self, head: http2::Head, payload: &[u8]) -> Result<(), http2::Error> {
+        let (true, Some(code)) = (
+            head.stream != 0,
+            http2::word(payload, 0).filter(|_| payload.len() == 4),
+        ) else {
+            return Err(http2::connection(
+                Code::FrameSize,
+                "a RST_STREAM on stream 0 or not of four octets",
+            ));
+        };
+        if head.stream > self.last_guest {
+            return Err(http2::connection(
+                Code::Protocol,
+                "a RST_STREAM on an idle stream",
+            ));
+        }
+        if let Some(s) = self.streams.remove(&head.stream) {
+            self.forget(head.stream, &s);
+            if let Upward::Sent { id, state } = s.up
+                && state != StreamState::Closed
+                && self.failed.is_none()
+            {
+                http2::rst_stream(id, code, &mut self.to_host);
+            }
+        }
+        Ok(())
+    }
+
+    /// A request's block, or its trailers (§8.1): a new stream's request held to RFC 9113 and
+    /// decided by `http2::request`, answered here where it is refused, parked otherwise; its
+    /// decoded list past what the connection holds less what it holds already answered 431,
+    /// the block decoded all the same (§10.5.1).
+    fn request_block(&mut self, block: http2::Block, run: &mut Run<'_>) -> Result<(), http2::Error> {
+        let gid = block.stream;
+        let most = crate::tcp::TO_HOST.saturating_sub(self.held());
+        let decoded = block.decode(&mut self.guest_hop.decoder, most)?;
+        if let Some(s) = self.streams.get_mut(&gid) {
+            if !s.guest.receiving() {
+                return Err(stream_error(
+                    gid,
+                    Code::StreamClosed,
+                    "a field block after its END_STREAM",
+                ));
+            }
+            if !block.end_stream {
+                return Err(stream_error(
+                    gid,
+                    Code::Protocol,
+                    "a trailer section without END_STREAM",
+                ));
+            }
+            let hpack::Decoded::Fields(fields) = decoded else {
+                return Err(stream_error(
+                    gid,
+                    Code::EnhanceYourCalm,
+                    "a trailer section past what the connection holds",
+                ));
+            };
+            s.guest = s.guest.received_end();
+            if !matches!(s.up, Upward::Answered) {
+                s.up_last = Some(Last::Trailers(fields));
+            }
+            return Ok(());
+        }
+        if gid.is_multiple_of(2) || gid <= self.last_guest {
+            return Err(http2::connection(
+                Code::Protocol,
+                "a stream the guest cannot open (§5.1.1)",
+            ));
+        }
+        self.last_guest = gid;
+        if self.guest_phase == Phase::Away {
+            http2::rst_stream(gid, Code::RefusedStream as u32, &mut self.to_guest);
+            return Ok(());
+        }
+        self.streams.insert(gid, Stream::new(block.end_stream));
+        let fields = match decoded {
+            hpack::Decoded::TooLarge => {
+                self.answer(gid, Refusal::TooLarge);
+                return Ok(());
+            }
+            hpack::Decoded::Fields(fields) => fields,
+        };
+        let go = match http2::request(fields, &run.credentials.grants, &self.sni) {
+            http2::Request::Malformed(why) => return Err(stream_error(gid, Code::Protocol, why)),
+            http2::Request::Misdirected { host } => {
+                let sni = self.sni.clone();
+                self.answer(gid, Refusal::Misdirected { sni, host });
+                return Ok(());
+            }
+            http2::Request::Go(go) => go,
+        };
+        let path = go
+            .fields
+            .iter()
+            .find(|f| f.name == b":path")
+            .map(|f| String::from_utf8_lossy(&f.value).into_owned())
+            .unwrap_or_default();
+        if go.fills.iter().any(|f| mints(run, &f.reference, &go.host, &path)) {
+            self.answer(gid, Refusal::Mints { host: go.host });
+            return Ok(());
+        }
+        if let Some(s) = self.streams.get_mut(&gid) {
+            s.up = Upward::Parked(Box::new(go));
+        }
+        Ok(())
+    }
+
+    /// The guest's stream `gid` answered here with `refusal`'s status and text, its request
+    /// never sent on (or no more), what it held of the guest's let go.
+    fn answer(&mut self, gid: u32, refusal: Refusal) {
+        let (status, _) = refusal.status();
+        say(
+            &self.sni,
+            format_args!("stream {gid} answered {status}: {refusal}"),
+        );
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return;
+        };
+        if let Upward::Sent { id, .. } = s.up {
+            self.by_host.remove(&id);
+            self.host_hop.close(id);
+        }
+        let body = format!("shards: {refusal}\n").into_bytes();
+        let fields = [
+            hpack::Field::new(
+                b":status",
+                status.to_string().as_bytes(),
+                hpack::Indexing::Incremental,
+            ),
+            hpack::Field::new(
+                b"content-type",
+                b"text/plain; charset=utf-8",
+                hpack::Indexing::Incremental,
+            ),
+            hpack::Field::new(
+                b"content-length",
+                body.len().to_string().as_bytes(),
+                hpack::Indexing::Incremental,
+            ),
+        ];
+        let mut block = Vec::new();
+        self.guest_hop.encoder.encode(&fields, &mut block);
+        http2::headers(
+            gid,
+            &block,
+            false,
+            self.guest_hop.peer.max_frame_size,
+            &mut self.to_guest,
+        );
+        self.guest_hop.released(gid, s.up_data.len(), &mut self.to_guest);
+        s.up_data.clear();
+        s.up_last = None;
+        s.up = Upward::Answered;
+        s.down = Down::Body;
+        s.down_data = body;
+        s.down_last = Some(Last::End);
+    }
+
+    /// A parked request goes once each value it carries is leased and the host has room for
+    /// another stream: encoded on the host's hop on the next host stream, each fill audited;
+    /// answered 503 where a lease is refused, 502 where the host's side failed, and refused
+    /// (§8.7) where the host has gone away.
+    fn go(&mut self, gid: u32, run: &mut Run<'_>) {
+        let Some(Upward::Parked(go)) = self.streams.get(&gid).map(|s| &s.up) else {
+            return;
+        };
+        let references: Vec<String> = go.references().into_iter().map(str::to_string).collect();
+        if let Some(why) = self.failed.clone() {
+            return self.answer(gid, Refusal::Upstream(why));
+        }
+        if self.host_phase == Phase::Away {
+            return self.refuse_stream(gid);
+        }
+        let mut waiting = false;
+        for reference in references {
+            match run.credentials.leases.ask(&reference, run.waiter, run.now) {
+                Asked::Held(_) => {}
+                Asked::Waiting => waiting = true,
+                Asked::Refused(why) => return self.answer(gid, Refusal::Unleased { reference, why }),
+            }
+        }
+        let open = self
+            .streams
+            .values()
+            .filter(|s| matches!(s.up, Upward::Sent { state, .. } if state != StreamState::Closed))
+            .count();
+        let room = self
+            .host_hop
+            .peer
+            .max_concurrent_streams
+            .is_none_or(|most| open < most as usize);
+        if waiting || !room {
+            return;
+        }
+        let id = self.next_host;
+        if id > http2::MOST_STREAM {
+            // The host's stream ids spent (§5.1.1): a new connection is the guest's to make.
+            return self.refuse_stream(gid);
+        }
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return;
+        };
+        let Upward::Parked(go) = std::mem::replace(&mut s.up, Upward::Answered) else {
+            return;
+        };
+        let leases = &run.credentials.leases;
+        let Some(block) = go.encode(&mut self.host_hop.encoder, |r| leases.held(r, run.now)) else {
+            let reference = go
+                .references()
+                .first()
+                .map_or_else(String::new, |r| r.to_string());
+            let why = lease::Refusal::Lapsed;
+            return self.answer(gid, Refusal::Unleased { reference, why });
+        };
+        let end = !s.guest.receiving() && s.up_data.is_empty() && matches!(s.up_last, Some(Last::End));
+        if end {
+            s.up_last = None;
+        }
+        http2::headers(
+            id,
+            &block,
+            end,
+            self.host_hop.peer.max_frame_size,
+            &mut self.to_host,
+        );
+        drop(block);
+        self.next_host = id.saturating_add(2);
+        let at = SystemTime::now();
+        s.mask.filled.clear();
+        for fill in &go.fills {
+            if !s.mask.filled.iter().any(|(r, _)| r == &fill.reference) {
+                run.audit.push(Audit {
+                    host: go.host.clone(),
+                    reference: fill.reference.clone(),
+                    what: Did::Filled,
+                    at,
+                });
+                s.mask.filled.push((fill.reference.clone(), 0));
+            }
+        }
+        s.up = Upward::Sent {
+            id,
+            state: if end {
+                StreamState::HalfClosedLocal
+            } else {
+                StreamState::Open
+            },
+        };
+        self.by_host.insert(id, gid);
+    }
+
+    /// The guest's DATA held for a sent request, to the host as its windows let it, then its
+    /// END_STREAM or trailers; each octet sent given back to the guest's window.
+    fn flush_up(&mut self, gid: u32) {
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return;
+        };
+        let Upward::Sent { id, state } = &mut s.up else {
+            return;
+        };
+        if !state.sending() || (s.up_data.is_empty() && s.up_last.is_none()) {
+            return;
+        }
+        let end = matches!(s.up_last, Some(Last::End));
+        let n = self.host_hop.send_data(*id, &s.up_data, end, &mut self.to_host);
+        s.up_data.drain(..n.min(s.up_data.len()));
+        self.guest_hop.released(gid, n, &mut self.to_guest);
+        if !s.up_data.is_empty() {
+            return;
+        }
+        match s.up_last.take() {
+            Some(Last::End) => *state = state.sent_end(),
+            Some(Last::Trailers(fields)) => {
+                let mut block = Zeroizing::new(Vec::new());
+                self.host_hop.encoder.encode(&fields, &mut block);
+                http2::headers(
+                    *id,
+                    &block,
+                    true,
+                    self.host_hop.peer.max_frame_size,
+                    &mut self.to_host,
+                );
+                *state = state.sent_end();
+            }
+            None => {}
+        }
+    }
+
+    /// A stream's response DATA held, to the guest as its windows let it, then its END_STREAM
+    /// or trailers; each octet sent given back to the host's window. A response answered here
+    /// before its request ended ends the stream (§8.1: RST_STREAM NO_ERROR).
+    fn flush_down(&mut self, gid: u32) {
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return;
+        };
+        if !s.guest.sending() || (s.down_data.is_empty() && s.down_last.is_none()) {
+            return;
+        }
+        let end = matches!(s.down_last, Some(Last::End));
+        let n = self
+            .guest_hop
+            .send_data(gid, &s.down_data, end, &mut self.to_guest);
+        s.down_data.drain(..n.min(s.down_data.len()));
+        if let Upward::Sent { id, .. } = s.up {
+            self.host_hop.released(id, n, &mut self.to_host);
+        }
+        if !s.down_data.is_empty() {
+            return;
+        }
+        match s.down_last.take() {
+            Some(Last::End) => {}
+            Some(Last::Trailers(fields)) => {
+                let mut block = Vec::new();
+                self.guest_hop.encoder.encode(&fields, &mut block);
+                http2::headers(
+                    gid,
+                    &block,
+                    true,
+                    self.guest_hop.peer.max_frame_size,
+                    &mut self.to_guest,
+                );
+            }
+            None => return,
+        }
+        s.guest = s.guest.sent_end();
+        if matches!(s.up, Upward::Answered) && s.guest.receiving() {
+            http2::rst_stream(gid, Code::NoError as u32, &mut self.to_guest);
+            s.guest = StreamState::Closed;
+        }
+    }
+
+    fn host_frame(
+        &mut self,
+        head: http2::Head,
+        payload: &[u8],
+        run: &mut Run<'_>,
+    ) -> Result<(), http2::Error> {
+        if let Some(mut block) = self.host_block.take() {
+            if block.continued(head, payload, crate::tcp::TO_GUEST)? {
+                return self.response_block(block, run);
+            }
+            self.host_block = Some(block);
+            return Ok(());
+        }
+        if self.host_phase == Phase::Settings {
+            if head.kind != http2::SETTINGS || head.flags & http2::ACK != 0 {
+                return Err(http2::connection(
+                    Code::Protocol,
+                    "the host's preface is no SETTINGS",
+                ));
+            }
+            self.host_phase = Phase::Open;
+        }
+        match head.kind {
+            http2::SETTINGS => self.host_hop.settings(head, payload, &mut self.to_host),
+            http2::WINDOW_UPDATE => self.window_update(Which::Host, head, payload),
+            http2::PING => ping(head, payload, &mut self.to_host),
+            http2::HEADERS => {
+                let (block, whole) = http2::Block::headers(head, payload)?;
+                if whole {
+                    return self.response_block(block, run);
+                }
+                self.host_block = Some(block);
+                Ok(())
+            }
+            http2::CONTINUATION => Err(http2::connection(Code::Protocol, "a CONTINUATION after no block")),
+            http2::DATA => self.host_data(head, payload, run),
+            http2::RST_STREAM => self.host_rst(head, payload),
+            http2::GOAWAY => self.host_goaway(head, payload),
+            http2::PUSH_PROMISE => Err(http2::connection(
+                Code::Protocol,
+                "a PUSH_PROMISE with push off (§8.4)",
+            )),
+            // PRIORITY is deprecated (§5.3.2) and every other type unknown here (§5.5).
+            _ => Ok(()),
+        }
+    }
+
+    /// The host's stream `hid`'s guest stream, where it is still carried: none for one let go
+    /// of; an idle stream's is a connection error (§5.1).
+    fn carried(&self, hid: u32) -> Result<Option<u32>, http2::Error> {
+        if hid.is_multiple_of(2) || hid >= self.next_host {
+            return Err(http2::connection(
+                Code::Protocol,
+                "a frame on a stream the injector never opened",
+            ));
+        }
+        Ok(self.by_host.get(&hid).copied())
+    }
+
+    /// A response's block (§8.1), or its trailers: decoded on the host's hop, its echoes masked,
+    /// and encoded on the guest's, in order with every other block that hop is sent.
+    fn response_block(&mut self, block: http2::Block, run: &mut Run<'_>) -> Result<(), http2::Error> {
+        let hid = block.stream;
+        let decoded = block.decode(&mut self.host_hop.decoder, crate::tcp::TO_GUEST)?;
+        let Some(gid) = self.carried(hid)? else {
+            return Ok(());
+        };
+        let Some(s) = self.streams.get_mut(&gid) else {
+            return Ok(());
+        };
+        let Upward::Sent { state, .. } = &mut s.up else {
+            return Ok(());
+        };
+        if !state.receiving() {
+            return Err(stream_error(
+                hid,
+                Code::StreamClosed,
+                "a field block after its END_STREAM",
+            ));
+        }
+        let hpack::Decoded::Fields(mut fields) = decoded else {
+            return Err(stream_error(
+                hid,
+                Code::Internal,
+                "a response's fields past what the connection holds",
+            ));
+        };
+        let trailers = s.down == Down::Body;
+        if trailers && !block.end_stream {
+            return Err(stream_error(
+                hid,
+                Code::Protocol,
+                "a trailer section without END_STREAM",
+            ));
+        }
+        if block.end_stream {
+            *state = state.received_end();
+        }
+        if trailers {
+            let Stream { mask, down_data, .. } = &mut *s;
+            let _ = mask.end_message(&mut |b| {
+                down_data.extend_from_slice(b);
+                Ok(())
+            });
+        }
+        for f in &mut fields {
+            f.value = masked(&mut s.mask, &f.value, run);
+        }
+        if trailers {
+            s.down_last = Some(Last::Trailers(fields));
+            return Ok(());
+        }
+        let informational = fields
+            .iter()
+            .find(|f| f.name == b":status")
+            .is_some_and(|f| f.value.first() == Some(&b'1'));
+        if !informational {
+            s.down = Down::Body;
+        }
+        if !s.guest.sending() {
+            return Ok(());
+        }
+        let mut out = Vec::new();
+        self.guest_hop.encoder.encode(&fields, &mut out);
+        http2::headers(
+            gid,
+            &out,
+            block.end_stream,
+            self.guest_hop.peer.max_frame_size,
+            &mut self.to_guest,
+        );
+        if block.end_stream {
+            s.guest = s.guest.sent_end();
+        }
+        Ok(())
+    }
+
+    fn host_data(
+        &mut self,
+        head: http2::Head,
+        payload: &[u8],
+        run: &mut Run<'_>,
+    ) -> Result<(), http2::Error> {
+        if head.stream == 0 {
+            return Err(http2::connection(Code::Protocol, "DATA on stream 0"));
+        }
+        self.host_hop.received(head)?;
+        let data = http2::data(head, payload)?;
+        let length = head.length as usize;
+        let carried = self.carried(head.stream)?;
+        let Some(s) = carried.and_then(|gid| self.streams.get_mut(&gid)) else {
+            // A stream let go of here: its DATA dropped, its credit given back.
+            self.host_hop.released(head.stream, length, &mut self.to_host);
+            self.host_hop.close(head.stream);
+            return Ok(());
+        };
+        let Upward::Sent { state, .. } = &mut s.up else {
+            return Ok(());
+        };
+        if !state.receiving() {
+            return Err(stream_error(
+                head.stream,
+                Code::StreamClosed,
+                "DATA after its END_STREAM",
+            ));
+        }
+        if s.down == Down::Head {
+            return Err(stream_error(
+                head.stream,
+                Code::Protocol,
+                "DATA before a response's head",
+            ));
+        }
+        let end = head.flags & http2::END_STREAM != 0;
+        if end {
+            *state = state.received_end();
+        }
+        let mut dropped = length.saturating_sub(data.len());
+        if s.guest.sending() {
+            let Stream {
+                mask,
+                down_data,
+                down_last,
+                ..
+            } = &mut *s;
+            let mut out = |b: &[u8]| {
+                down_data.extend_from_slice(b);
+                Ok(())
+            };
+            let _ = mask.push(data, true, run, &mut out);
+            if end {
+                let _ = mask.end_message(&mut out);
+                *down_last = Some(Last::End);
+            }
+        } else {
+            dropped = length;
+        }
+        self.host_hop.released(head.stream, dropped, &mut self.to_host);
+        Ok(())
+    }
+
+    fn host_rst(&mut self, head: http2::Head, payload: &[u8]) -> Result<(), http2::Error> {
+        let (true, Some(code)) = (
+            head.stream != 0,
+            http2::word(payload, 0).filter(|_| payload.len() == 4),
+        ) else {
+            return Err(http2::connection(
+                Code::FrameSize,
+                "a RST_STREAM on stream 0 or not of four octets",
+            ));
+        };
+        if let Some(gid) = self.carried(head.stream)?
+            && let Some(s) = self.streams.remove(&gid)
+        {
+            self.forget(gid, &s);
+            if s.guest != StreamState::Closed {
+                http2::rst_stream(gid, code, &mut self.to_guest);
+            }
+        }
+        self.host_hop.close(head.stream);
+        Ok(())
+    }
+
+    /// The host's GOAWAY (§6.8): the streams it will not process, and those not yet sent, refused
+    /// to the guest, which may retry them (§8.7); the guest told the connection goes, with the
+    /// host's code.
+    fn host_goaway(&mut self, head: http2::Head, payload: &[u8]) -> Result<(), http2::Error> {
+        let (true, Some(last), Some(code)) = (
+            head.stream == 0,
+            http2::word(payload, 0).map(|l| l & http2::MOST_STREAM),
+            http2::word(payload, 4),
+        ) else {
+            return Err(http2::connection(
+                Code::FrameSize,
+                "a GOAWAY on a stream or short",
+            ));
+        };
+        self.host_phase = Phase::Away;
+        let refused: Vec<u32> = self
+            .streams
+            .iter()
+            .filter(|(_, s)| match s.up {
+                Upward::Sent { id, .. } => id > last,
+                Upward::Parked(_) => true,
+                Upward::Answered => false,
+            })
+            .map(|(&gid, _)| gid)
+            .collect();
+        for gid in refused {
+            self.refuse_stream(gid);
+        }
+        if self.guest_phase != Phase::Away {
+            http2::goaway(self.last_guest, code, &mut self.to_guest);
+            self.guest_phase = Phase::Away;
+        }
+        Ok(())
     }
 }
 
@@ -3437,7 +4889,6 @@ mod tests {
     /// gives credit back for DATA as it reads it, and holds its peer to its windows.
     struct Peer {
         hop: http2::Hop,
-        end: End,
         inbox: Vec<u8>,
         preface: bool,
         block: Option<http2::Block>,
@@ -3453,7 +4904,6 @@ mod tests {
             hop.preface(end, &mut out);
             Peer {
                 hop,
-                end,
                 inbox: Vec::new(),
                 preface: end == End::Client,
                 block: None,
@@ -3506,7 +4956,8 @@ mod tests {
                 http2::DATA => {
                     self.hop.received(head).unwrap();
                     let bytes = http2::data(head, payload).unwrap().to_vec();
-                    self.hop.released(head.stream, head.length as usize, &mut self.out);
+                    self.hop
+                        .released(head.stream, head.length as usize, &mut self.out);
                     self.events.push(Event::Data {
                         stream: head.stream,
                         bytes,
@@ -3566,26 +5017,53 @@ mod tests {
             std::mem::take(&mut self.out)
         }
 
-        /// A stream's response: its final head's fields, its data, and whether it ended.
-        fn response(&self, stream: u32) -> (Vec<(Vec<u8>, Vec<u8>)>, Vec<u8>, bool) {
+        /// Each RST_STREAM (its stream and code) and GOAWAY (its last stream and code) it read.
+        fn ends(&self) -> Vec<(&'static str, u32, u32)> {
+            self.events
+                .iter()
+                .filter_map(|e| match *e {
+                    Event::Rst { stream, code } => Some(("RST_STREAM", stream, code)),
+                    Event::GoAway { last, code } => Some(("GOAWAY", last, code)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// A stream's response: its head's fields, its data, and whether it ended.
+        fn response(&self, stream: u32) -> Got {
             let (mut fields, mut data, mut ended) = (Vec::new(), Vec::new(), false);
             for e in &self.events {
                 match e {
-                    Event::Headers { stream: s, fields: f, end } if *s == stream => {
+                    Event::Headers {
+                        stream: s,
+                        fields: f,
+                        end,
+                    } if *s == stream => {
                         if fields.is_empty() {
                             fields = f.iter().map(|f| (f.name.clone(), f.value.to_vec())).collect();
                         }
                         ended |= end;
                     }
-                    Event::Data { stream: s, bytes, end } if *s == stream => {
+                    Event::Data {
+                        stream: s,
+                        bytes,
+                        end,
+                    } if *s == stream => {
                         data.extend_from_slice(bytes);
                         ended |= end;
                     }
                     _ => {}
                 }
             }
-            (fields, data, ended)
+            Got { fields, data, ended }
         }
+    }
+
+    /// What an HTTP/2 end in a test read of a stream's response.
+    struct Got {
+        fields: Vec<(Vec<u8>, Vec<u8>)>,
+        data: Vec<u8>,
+        ended: bool,
     }
 
     fn field(name: &str, value: &[u8]) -> hpack::Field {
@@ -3593,7 +5071,10 @@ mod tests {
     }
 
     fn value_of<'f>(fields: &'f [(Vec<u8>, Vec<u8>)], name: &str) -> Option<&'f [u8]> {
-        fields.iter().find(|(n, _)| n == name.as_bytes()).map(|(_, v)| &v[..])
+        fields
+            .iter()
+            .find(|(n, _)| n == name.as_bytes())
+            .map(|(_, v)| &v[..])
     }
 
     /// What the HTTP/2 test host had of a request: its fields as its decoder read them, how each
@@ -3681,7 +5162,12 @@ mod tests {
 
     /// A request's fields as a guest sends them, its Authorization indexed, as RFC 7541 §7.1.3
     /// lets a client.
-    fn h2_request(method: &str, authority: &str, path: &str, authorization: Option<&str>) -> Vec<hpack::Field> {
+    fn h2_request(
+        method: &str,
+        authority: &str,
+        path: &str,
+        authorization: Option<&str>,
+    ) -> Vec<hpack::Field> {
         let mut fields = vec![
             field(":method", method.as_bytes()),
             field(":scheme", b"https"),
@@ -3705,7 +5191,11 @@ mod tests {
     ) {
         let deadline = Instant::now() + Duration::from_secs(30);
         while !done(peer) {
-            assert!(Instant::now() < deadline, "no end: the guest read {:?}", peer.events);
+            assert!(
+                Instant::now() < deadline,
+                "no end: the guest read {:?}",
+                peer.events
+            );
             let out = peer.take_out();
             if !out.is_empty() {
                 bench.guest.writer().write_all(&out).unwrap();
@@ -3754,39 +5244,88 @@ mod tests {
         let mut seen = Vec::new();
         let bearer = format!("Bearer {PLACEHOLDER}");
         let body: Vec<u8> = (0..1u32 << 20).map(|i| (i % 251) as u8).collect();
-        peer.send_headers(1, &h2_request("POST", GRANTED, "/v1/messages", Some(&bearer)), false);
+        peer.send_headers(
+            1,
+            &h2_request("POST", GRANTED, "/v1/messages", Some(&bearer)),
+            false,
+        );
         peer.send_data(1, b"hello", true);
         peer.send_headers(3, &h2_request("PUT", GRANTED, "/upload", None), false);
         peer.send_data(3, &body, true);
         h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, |p| {
-            p.response(1).2 && p.response(3).2
+            p.response(1).ended && p.response(3).ended
         });
-        assert_eq!(bench.guest.alpn_protocol(), Some(&b"h2"[..]), "the guest was not served HTTP/2");
-        let mut arrived: Vec<H2Had> = (0..2).map(|_| had.recv_timeout(Duration::from_secs(10)).unwrap()).collect();
+        assert_eq!(
+            bench.guest.alpn_protocol(),
+            Some(&b"h2"[..]),
+            "the guest was not served HTTP/2"
+        );
+        let mut arrived: Vec<H2Had> = (0..2)
+            .map(|_| had.recv_timeout(Duration::from_secs(10)).unwrap())
+            .collect();
         arrived.sort_by_key(|h| h.body.len());
-        let auth = arrived[0].fields.iter().find(|f| f.name == b"authorization").unwrap();
+        let auth = arrived[0]
+            .fields
+            .iter()
+            .find(|f| f.name == b"authorization")
+            .unwrap();
         assert_eq!(&auth.value[..], &[b"Bearer ", VALUE].concat()[..]);
-        assert_eq!(auth.indexing, Indexing::Never, "the credential was not sent never indexed");
+        assert_eq!(
+            auth.indexing,
+            Indexing::Never,
+            "the credential was not sent never indexed"
+        );
         assert_eq!(arrived[0].body, b"hello");
         assert!(arrived[1].body == body, "the large body changed on its way");
         let masked = [b"Bearer ", &echo_mask()[..]].concat();
-        let (fields, data, _) = peer.response(1);
+        let Got { fields, data, .. } = peer.response(1);
         assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
-        assert_eq!(value_of(&fields, "x-echo"), Some(&masked[..]), "the echo in a field was not masked");
-        assert_eq!(data, [&masked[..], b"\nhello"].concat(), "the echo in DATA was not masked");
-        let (_, data, _) = peer.response(3);
-        assert!(data == [b"\n", &body[..]].concat(), "the large body came back changed");
+        assert_eq!(
+            value_of(&fields, "x-echo"),
+            Some(&masked[..]),
+            "the echo in a field was not masked"
+        );
+        assert_eq!(
+            data,
+            [&masked[..], b"\nhello"].concat(),
+            "the echo in DATA was not masked"
+        );
+        let Got { fields, data, .. } = peer.response(3);
+        let sent = [b"\n", &body[..]].concat();
+        let differs = data.iter().zip(&sent).position(|(a, b)| a != b);
+        assert!(
+            data == sent,
+            "the large body came back changed: {} octets of {}, first differing at {differs:?}: {:?} {:?}",
+            data.len(),
+            sent.len(),
+            value_of(&fields, ":status").map(String::from_utf8_lossy),
+            String::from_utf8_lossy(&data[..data.len().min(120)])
+        );
         assert!(!holds(&seen, VALUE), "the value reached the guest");
         // The same connection's next stream: its value in no table of either hop.
         peer.send_headers(5, &h2_request("GET", GRANTED, "/v1/models", Some(&bearer)), true);
-        h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, |p| p.response(5).2);
+        h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, |p| {
+            p.response(5).ended
+        });
         let five = had.recv_timeout(Duration::from_secs(10)).unwrap();
         let auth = five.fields.iter().find(|f| f.name == b"authorization").unwrap();
-        assert_eq!((&auth.value[..], auth.indexing), (&[b"Bearer ", VALUE].concat()[..], Indexing::Never));
+        assert_eq!(
+            (&auth.value[..], auth.indexing),
+            (&[b"Bearer ", VALUE].concat()[..], Indexing::Never)
+        );
         assert!(!holds(&seen, VALUE), "the value reached the guest");
-        assert!(credentials.leases.asks().is_empty(), "a held lease was asked again");
+        assert!(
+            credentials.leases.asks().is_empty(),
+            "a held lease was asked again"
+        );
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
         assert_eq!(bench.audit.len(), 2, "{:?}", bench.audit);
-        assert!(bench.audit.iter().all(|a| (a.host.as_str(), a.reference.as_str(), a.what) == (GRANTED, CLAUDE, Did::Filled)));
+        assert!(
+            bench
+                .audit
+                .iter()
+                .all(|a| (a.host.as_str(), a.reference.as_str(), a.what) == (GRANTED, CLAUDE, Did::Filled))
+        );
     }
 
     /// Do: on one HTTP/2 connection to the granted host, stream 1 for another host (granted
@@ -3804,19 +5343,30 @@ mod tests {
         peer.send_headers(1, &h2_request("GET", OTHER, "/", Some(&bearer)), true);
         peer.send_headers(3, &h2_request("GET", GRANTED, "/v1/models", None), true);
         h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, |p| {
-            p.response(1).2 && p.response(3).2
+            p.response(1).ended && p.response(3).ended
         });
         assert_eq!(bench.guest.alpn_protocol(), Some(&b"h2"[..]));
-        let (fields, data, _) = peer.response(1);
+        let Got { fields, data, .. } = peer.response(1);
         assert_eq!(value_of(&fields, ":status"), Some(&b"421"[..]));
-        assert!(String::from_utf8_lossy(&data).contains("RFC 9110 §7.4"), "{data:?}");
-        let (fields, _, _) = peer.response(3);
+        assert!(
+            String::from_utf8_lossy(&data).contains("RFC 9110 §7.4"),
+            "{data:?}"
+        );
+        let Got { fields, .. } = peer.response(3);
         assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
         let one = had.recv_timeout(Duration::from_secs(10)).unwrap();
-        assert!(one.fields.iter().any(|f| f.name == b":path" && &f.value[..] == b"/v1/models"));
-        assert!(had.recv_timeout(Duration::from_millis(200)).is_err(), "a misdirected stream reached the host");
+        assert!(
+            one.fields
+                .iter()
+                .any(|f| f.name == b":path" && &f.value[..] == b"/v1/models")
+        );
+        assert!(
+            had.recv_timeout(Duration::from_millis(200)).is_err(),
+            "a misdirected stream reached the host"
+        );
         assert!(credentials.leases.asks().is_empty() && bench.audit.is_empty());
         assert!(!bench.closed, "the connection ended with its 421");
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
     }
 
     /// Do: a guest offering `h2` and `http/1.1` sends a granted host that speaks HTTP/1.1 alone

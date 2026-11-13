@@ -554,7 +554,11 @@ pub fn goaway(last: u32, code: u32, out: &mut Vec<u8>) {
         flags: 0,
         stream: 0,
     };
-    put(out, head, &[(last & MOST_STREAM).to_be_bytes(), code.to_be_bytes()].concat());
+    put(
+        out,
+        head,
+        &[(last & MOST_STREAM).to_be_bytes(), code.to_be_bytes()].concat(),
+    );
 }
 
 /// A PING's ACK, its payload as it came (§6.7), onto `out`.
