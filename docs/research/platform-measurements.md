@@ -22593,16 +22593,34 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     hold no client of it.
   - The run log's writer moved to `log_writer.rs`, which both binaries compile: the VM
     process writes the run's log with it, and the daemon a member's (R12).
-- **Checked** (one host, adalundhe-macbook-pro, macOS arm64): the credit path through the
-  real credit worker and bridge, with the test as the VM and no subscriber
-  (`a_drained_channel_is_credited_again_as_soon_as_its_record_is_kept`); the drain's keeping,
-  viewing and restart tests (`daemon::managed::drain::tests`); the run log's tests in the VM
-  process; clippy for both crates. Its red is CI's (the runs above).
+- **Merged with agent control** (D238, step 11, which landed meanwhile): a run's owner
+  reads the members `shards.output` names through its own endpoints or through its run's
+  agent-control lanes alike, as the lanes serve the members `shards.stdin` names an input;
+  the daemon drains the rest. Before, the lanes served every active member.
+- **A hang in the first run of its own test.** On adalundhe-macbook-pro
+  `a_drained_channel_is_credited_again_as_soon_as_its_record_is_kept` ran 21 minutes at 0%
+  CPU until stopped. `sample` showed the credit worker in `Credits::next`, the bridge in
+  `read_exact`, and the test's scope parked. Run alone with `--nocapture`, it said
+  `managed.rs:2485: Err(Payload)`: the test sized a data record's header by encoding an
+  empty `Data` record, which the ABI refuses (`Record::encoded_len`). The panic then left
+  the scope waiting on threads whose VM side the test still held. The room is now the
+  credit less `run::managed::HEADER`, and a failing play drops its VM side and closes the
+  credit queue as it unwinds, so a failure is told rather than hung.
+- **Checked** (one host, adas-mac-studio.local, macOS arm64, on the merged tree):
+  `cargo test -p shards --bin shards -- daemon::managed workload::tests::a_log
+  workload::tests::a_logger workload::tests::a_non_blocking_log` (33 passed, 6 ignored as
+  ROOT's native fixtures), including the credit path through the real credit worker and
+  bridge with the test as the VM and no subscriber, and the drain's keeping, viewing and
+  restart tests; `cargo test -p shards-vm-process -- workload::tests::a_log
+  workload::tests::a_logger workload::tests::a_non_blocking_log` (3 passed); `cargo clippy
+  -p shards -p shards-vm-process --all-targets -- -D warnings` for aarch64-apple-darwin, and
+  for x86_64-pc-windows-msvc through cargo-xwin. Its red is CI's (the runs above).
 - **Owed** (ROOT): `tests/build.rs`, `isolation.rs`, `managed_lifecycle.rs`,
   `managed_output.rs` and `harness_bringup.rs` on KVM, HVF and WHP; a `shards logs` that
   shows a run's members (their logs are kept, not yet read by `logs`); a later `attach`
   shown its members; an owner's channel that waits on no subscriber either (served from the
-  member's log; its credit still waits on its owner).
+  member's log; its credit still waits on its owner); a run asking for agent control, with
+  and without `shards.output`, its unnamed members drained (D238).
 - **Rules** (policy df2acf47, role implementer):
 
   | rule | proof, result, gap |
@@ -22616,4 +22634,4 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R08, R14 | Not measured: the drain's write is the run log's own path. |
   | R09, R10 | Red: CI's runs above. Green: the focused tests above. No mutation run (the person's rule). |
   | R11 | Written for every OS; tested on macOS arm64 alone. CI covers the rest. |
-  | R15, R16 | No agents started; the target directory on adalundhe-macbook-pro is removed after. |
+  | R15, R16 | No agents started; the target directories on adalundhe-macbook-pro and adas-mac-studio.local are removed after. |
