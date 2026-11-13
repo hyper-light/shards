@@ -4065,6 +4065,109 @@ mod tests {
         assert_eq!(answer.payload, stack.credentials.as_ref().unwrap().ca.der());
     }
 
+    /// The run's upstream roots (D242), carried ahead of its grants on `NET_CREDENTIALS`, are
+    /// what its injector trusts beside the host's own: a host whose certificate a test's root
+    /// signs is verified where the run names that root, and refused where it names none; a
+    /// root that is no certificate breaks the run host's contract, and nothing is taken.
+    #[cfg(unix)]
+    #[test]
+    fn a_runs_upstream_roots_are_what_its_injector_trusts_beside_the_hosts() {
+        use std::os::unix::net::UnixStream;
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut stack = stack(
+            Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
+            region.producer(1, pr),
+        );
+        let (_host, ours) = UnixStream::pair().unwrap();
+        const HOST: &str = "api.anthropic.com";
+        let grants = [Grant {
+            reference: "anthropic/claude-max".into(),
+            toward: vec![HOST.into()],
+            placeholder: "kiln-placeholder-0a".into(),
+        }];
+        let root = inject::tests::root("a corporate proxy's root");
+        let roots = [root.der().to_vec()];
+        let payload = encode_credentials(&roots, &grants).unwrap();
+        assert_eq!(
+            decode_credentials(&payload),
+            Some((vec![root.der().clone()], grants.to_vec()))
+        );
+        let message = |payload: Vec<u8>| shards_ipc::Message {
+            kind: shards_ipc::kind::NET_CREDENTIALS,
+            payload,
+            fds: Vec::new(),
+        };
+        let malformed = encode_credentials(&[vec![0x30, 0x03, 0x01, 0x02, 0x03]], &grants).unwrap();
+        stack.prepared = Some(Prepared::new().unwrap());
+        assert!(answer_other(&mut stack, &ours, &message(malformed)).is_err());
+        assert!(stack.credentials.is_none());
+        let host = || inject::tests::leaf_config(&root, &[HOST]);
+        stack.prepared = Some(Prepared::new().unwrap());
+        assert!(answer_other(&mut stack, &ours, &message(payload)).is_ok());
+        let named = &stack.credentials.take().unwrap().upstream;
+        assert_eq!(inject::tests::handshake(named, host(), HOST), Ok(()));
+        stack.prepared = Some(Prepared::new().unwrap());
+        let none = encode_credentials(&[], &grants).unwrap();
+        assert!(answer_other(&mut stack, &ours, &message(none)).is_ok());
+        let unnamed = &stack.credentials.take().unwrap().upstream;
+        assert!(inject::tests::handshake(unnamed, host(), HOST).is_err());
+    }
+
+    /// A network process takes no trust from its environment (D242): `SSL_CERT_FILE` and
+    /// `SSL_CERT_DIR` naming a test's root, as a run's environment could once name one, add
+    /// nothing to what its injector trusts, which is the host's own roots, read as the
+    /// process starts ([`Prepared`]), and the run's (`NET_CREDENTIALS`) alone. Run again in a
+    /// process of its own, whose environment names them; there, the same host is verified
+    /// once the run names the root.
+    #[test]
+    fn the_environment_adds_no_root_to_the_injector() {
+        const CHILD: &str = "SHARDS_NET_TEST_ENVIRONMENT_TRUST";
+        const HOST: &str = "api.example.test";
+        if let Some(dir) = std::env::var_os(CHILD) {
+            let dir = std::path::Path::new(&dir);
+            let root = rustls::pki_types::CertificateDer::from(std::fs::read(dir.join("root.der")).unwrap());
+            let cert = rustls::pki_types::CertificateDer::from(std::fs::read(dir.join("leaf.der")).unwrap());
+            let key = std::fs::read(dir.join("leaf.key")).unwrap();
+            assert!(std::env::var_os("SSL_CERT_FILE").is_some());
+            let prepared = Prepared::new().unwrap();
+            let host = || inject::tests::serving(cert.clone(), key.clone());
+            let environment = inject::Upstream::new(&prepared.platform, Vec::new()).unwrap();
+            assert!(
+                inject::tests::handshake(&environment, host(), HOST).is_err(),
+                "the injector trusted a root its environment named"
+            );
+            let named = inject::Upstream::new(&prepared.platform, vec![root]).unwrap();
+            assert_eq!(inject::tests::handshake(&named, host(), HOST), Ok(()));
+            return;
+        }
+        let dir = shards_testdir::TempDir::new("net-env-trust").unwrap();
+        let root = inject::tests::root("a root the environment names");
+        let (cert, key) = inject::tests::leaf(&root, &[HOST]);
+        std::fs::write(dir.path().join("root.der"), root.der()).unwrap();
+        std::fs::write(dir.path().join("leaf.der"), &cert).unwrap();
+        std::fs::write(dir.path().join("leaf.key"), key).unwrap();
+        let pems = dir.path().join("pems");
+        std::fs::create_dir(&pems).unwrap();
+        std::fs::write(pems.join("root.pem"), root.pem()).unwrap();
+        let ran = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "tests::the_environment_adds_no_root_to_the_injector",
+                "--exact",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(CHILD, dir.path())
+            .env("SSL_CERT_FILE", pems.join("root.pem"))
+            .env("SSL_CERT_DIR", &pems)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&ran.stdout).into_owned() + &String::from_utf8_lossy(&ran.stderr);
+        assert!(ran.status.success(), "{said}");
+        assert!(said.contains("1 passed"), "{said}");
+    }
+
     /// An initial sequence number is its connection's and its secret's alone, plus its
     /// clock: another connection, or another process's secret, gives another, and the
     /// clock adds to it (RFC 6528 §3, review 2.31).

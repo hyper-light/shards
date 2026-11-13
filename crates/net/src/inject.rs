@@ -4025,6 +4025,28 @@ pub(crate) mod tests {
         p
     }
 
+    /// `upstream`'s handshake, in memory, with a host serving `server` as `name`: what the
+    /// injector's host side makes of that host's certificate.
+    pub(crate) fn handshake(upstream: &Upstream, server: Arc<ServerConfig>, name: &str) -> Result<(), rustls::Error> {
+        let name = ServerName::try_from(name.to_string()).unwrap();
+        let mut client = ClientConnection::new(upstream.0.clone(), name)?;
+        let mut host = ServerConnection::new(server)?;
+        while client.is_handshaking() || host.is_handshaking() {
+            let mut sent = Vec::new();
+            client.write_tls(&mut sent).unwrap();
+            host.read_tls(&mut sent.as_slice()).unwrap();
+            host.process_new_packets()?;
+            let mut answered = Vec::new();
+            host.write_tls(&mut answered).unwrap();
+            if sent.is_empty() && answered.is_empty() {
+                return Err(rustls::Error::General("the handshake stalled".into()));
+            }
+            client.read_tls(&mut answered.as_slice()).unwrap();
+            client.process_new_packets()?;
+        }
+        Ok(())
+    }
+
     /// A test root, which the injector's host side is given to trust as a host's.
     pub(crate) fn root(name: &str) -> CertifiedIssuer<'static, KeyPair> {
         let mut p = params(&[]);
@@ -4041,20 +4063,28 @@ pub(crate) mod tests {
 
     /// A test server's TLS, any suite: a leaf for `names` that `root` signs.
     pub(crate) fn leaf_config(root: &CertifiedIssuer<'static, KeyPair>, names: &[&str]) -> Arc<ServerConfig> {
+        let (cert, key) = leaf(root, names);
+        serving(cert, key)
+    }
+
+    /// A leaf for `names` that `root` signs, and its key (PKCS #8).
+    pub(crate) fn leaf(root: &CertifiedIssuer<'static, KeyPair>, names: &[&str]) -> (CertificateDer<'static>, Vec<u8>) {
         let mut p = params(names);
         p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         p.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         let key = KeyPair::generate().unwrap();
         let cert = p.signed_by(&key, root).unwrap();
+        (cert.der().clone(), key.serialize_der())
+    }
+
+    /// A test server's TLS, any suite, serving `cert` with `key` (PKCS #8).
+    pub(crate) fn serving(cert: CertificateDer<'static>, key: Vec<u8>) -> Arc<ServerConfig> {
         Arc::new(
             ServerConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
                 .with_safe_default_protocol_versions()
                 .unwrap()
                 .with_no_client_auth()
-                .with_single_cert(
-                    vec![cert.der().clone()],
-                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
-                )
+                .with_single_cert(vec![cert], PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key)))
                 .unwrap(),
         )
     }

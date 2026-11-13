@@ -39,6 +39,8 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }
+# Test roots, DER and PEM, for a run's upstream roots (D242).
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
 
 [lints]
 workspace = true

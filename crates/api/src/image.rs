@@ -999,6 +999,7 @@ mod tests {
             control: None,
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
+            upstream_roots: Vec::new(),
         }
     }
 
@@ -1198,6 +1199,66 @@ mod tests {
                 Ok(_) => panic!("{what}'s {field} past {most} was asked"),
             }
         }
+    }
+
+    /// The run's upstream roots (D242): certificates, DER or PEM (a bundle's, any text between
+    /// its sections), each a root the orchestrator names for its injected flows alone, checked
+    /// here as the network process's wire carries them (`NET_CREDENTIALS`: each DER behind two
+    /// bytes of length, their count behind two more). Expect: a DER and a bundle of two taken,
+    /// each certificate in order; bytes that are no certificate, a PEM of none, one whose
+    /// section is no base64, one of a key, a root past the wire's bound and one root past its
+    /// count each refused by field.
+    #[test]
+    fn a_runs_upstream_roots_are_certificates_the_network_process_wire_carries() {
+        let ca = |extension: usize| {
+            let mut p = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+            p.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            if extension > 0 {
+                p.custom_extensions = vec![rcgen::CustomExtension::from_oid_content(
+                    &[1, 3, 6, 1, 4, 1, 55555, 1],
+                    vec![0; extension],
+                )];
+            }
+            p.self_signed(&rcgen::KeyPair::generate().unwrap()).unwrap()
+        };
+        let (a, b) = (ca(0), ca(0));
+        let mut s = spec();
+        s.upstream_roots = vec![
+            UpstreamRoot::Der(a.der().to_vec()),
+            UpstreamRoot::Pem(format!("a proxy's bundle\n{}between\n{}", a.pem(), b.pem())),
+        ];
+        assert_eq!(
+            request(&s).unwrap().upstream_roots,
+            vec![a.der().to_vec(), a.der().to_vec(), b.der().to_vec()]
+        );
+        let refused = |roots: Vec<UpstreamRoot>| {
+            let mut s = spec();
+            s.upstream_roots = roots;
+            let Err(ImageRefusal::Spec { what, why }) = request(&s) else {
+                panic!("taken");
+            };
+            assert_eq!(what, "an upstream root");
+            why
+        };
+        let unparsed = "-----BEGIN CERTIFICATE-----\nnot base64\n-----END CERTIFICATE-----\n";
+        for bad in [
+            UpstreamRoot::Der(vec![0x30, 0x03, 0x01, 0x02, 0x03]),
+            UpstreamRoot::Der(Vec::new()),
+            UpstreamRoot::Pem("no certificate here".into()),
+            UpstreamRoot::Pem(format!("{}{unparsed}", a.pem())),
+            UpstreamRoot::Pem(format!("{}{}", a.pem(), rcgen::KeyPair::generate().unwrap().serialize_pem())),
+        ] {
+            refused(vec![bad]);
+        }
+        let most = usize::from(u16::MAX);
+        let big = ca(most);
+        assert!(big.der().len() > most);
+        let why = refused(vec![UpstreamRoot::Der(big.der().to_vec())]);
+        assert!(why.contains(&most.to_string()), "{why}");
+        let why = refused(vec![UpstreamRoot::Der(a.der().to_vec()); most + 1]);
+        assert!(why.contains(&(most + 1).to_string()), "{why}");
+        s.upstream_roots = vec![UpstreamRoot::Der(a.der().to_vec()); most];
+        assert_eq!(request(&s).unwrap().upstream_roots.len(), most);
     }
 
     /// Do: ask a run with credential grants and no lessor, with one, and a run with neither
