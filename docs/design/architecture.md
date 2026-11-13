@@ -6322,8 +6322,9 @@ has an idle timeout or a keep-alive, so a quiet subscription lives however long 
 says nothing (`a_quiet_subscription_lives_with_no_idle_timeout_or_keep_alive`); a vanished
 owner's next send stalls, told, and its place is kept until a restarted owner contends for
 its endpoint's one place: each connection holding one is then asked for an answer (a PING,
-net.rs), and its place goes to the contender's next attempt once that goes unanswered and
-stalled (`a_vanished_owners_place_goes_to_its_successor_as_it_dials`; ROOT's ruling A, below);
+net.rs), and its place goes to the contender's next attempt once that goes unanswered past
+the holder's probe timeout (`a_vanished_owners_place_goes_to_its_successor_as_it_dials`;
+ROOT's ruling A and its ruling on #72, below);
 and no `Admitted::patience` or
 `DriverLimits::handshake_patience` is admitted, a handshake waiting as long as its probing
 goes on, its caller's to end.
@@ -6432,8 +6433,8 @@ while the socket holds back an earlier one, and its endpoint is told it drained
 faster resource recovery", at the cost it names: a late packet of its peer's is answered by a
 stateless reset (§10.3), which ends the connection for that peer as its close would. An open
 connection, its handshake's or established, keeps its place: a vanished owner's is freed only
-as its successor contends for it and it has not answered the PING an earlier attempt sent it
-(`Driver::reclaim`, below), its successor refused and dialing again meanwhile; a stranger's
+as its successor contends for it and it has not answered, within its probe timeout, the PING
+an earlier attempt sent it (`Driver::reclaim`, below), its successor refused and dialing again meanwhile; a stranger's
 handshake in flight holds it too. Every bounded endpoint shares the driver, so an
 output endpoint's observer resubscribing after its close is taken at once, and so is the
 agent-control endpoint's third connection while the older drains (D238's `CONNECTIONS`). No
@@ -6567,17 +6568,35 @@ replaced by:
   waits on its output, as that one does, and a client that closes its connection still hangs
   its commands up (`Controls::hang_up`). A stall still unanswered as its connection ends is the
   path's lost silence (`Liveness::lost`: the silence before the send that stalled); one its
-  answer ended is the peer's slowness, and records none. What bounds a bounded endpoint's
-  resources is the reclaim as a newcomer contends (`Driver::reclaim`): it asks each holder
-  for an answer (a PING) and refuses the newcomer, and at a later attempt lets go of the
-  holder unheard longest of those that have not answered that PING and are stalled, its
-  handler told as QUIC's `TimedOut`; a holder that answers, however late, keeps its place,
-  and newcomers dialing again put off no judgement, as an ask still unanswered stands
-  (`Liveness::ask`). A daemon's listener for contexts holds no such bound on established
-  connections: a vanished client's is kept, probed at QUIC's backoff, until the daemon stops
-  (owed: whether the descriptors `Host::handshakes` counts should bound them too). A holder
-  whose path never showed an answer (gone within its first exchange) has no window and never
-  stalls, so no newcomer takes its place: the cold start's rule. No wait is
+  answer ended is the peer's slowness, and records none. What bounds a driver's resources is
+  the reclaim as a newcomer contends (`Driver::reclaim`): it asks each established holder for
+  an answer (a PING) and refuses the newcomer, and at a later attempt lets go of the holder
+  unheard longest of those that have not answered that PING within their own probe timeout
+  (`Liveness::unanswering`), its handler told as QUIC's `TimedOut`; a holder that answers,
+  however late, keeps its place, and newcomers dialing again put off no judgement, as an ask
+  still unanswered stands (`Liveness::ask`). ROOT's ruling on #72 (2026-11-13): under
+  contention a holder is judged by its liveness, warm or cold, stalled or not. Before, a
+  holder had to be stalled as well, and one whose path never showed an answer (an owner gone
+  before its handshake's last frames were acknowledged) has no window and never stalls, so its
+  successor was refused 9 times over 31 s and would have been for good
+  (`a_cold_holder_unheard_past_its_probe_timeout_gives_its_place_to_a_newcomer`, red so at
+  40d9af947). The probe timeout is RFC 9002 §6.2.1's, as its transport computes it with no
+  backoff (`Connection::probe_timeout`: the smoothed RTT, four times its variation, the
+  peer's `max_ack_delay`), the time within which a live peer acknowledges an ack-eliciting
+  PING (RFC 9000 §13.2.1); cold, it is the handshake's RTT samples' (RFC 9002 §5.3), and
+  before any sample the initial RTT's (§6.2.2), so no value of shards' own enters it. Its
+  failure is typed: a live peer whose acknowledgement comes later than that, on a host that
+  descheduled it, loses its place to a contender, its handler told `TimedOut`, and its owner
+  dials again, where the contender would otherwise wait on it for good; the driver's own
+  absence moves the ask on with its other instants (`Liveness::absent`), so it holds no peer
+  to its own stall. The places are the owner's: a bounded endpoint's admitted connections,
+  and a daemon's listener for contexts, which held no bound on established connections (a
+  vanished client's kept until the daemon stopped), as many connections, handshakes and
+  established alike, as its descriptors (`Driver::hold_connections`, `Host::handshakes`:
+  `platform::descriptor_limit`, as each connection served may hold a command and its stdio,
+  so no more could each be served one; red with no bound,
+  `a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer`). Owed, as for
+  handshakes: the memory a connection holds, measured, as its second term. No wait is
   judged sooner than QUIC's own loss recovery judges its send, at its probe timeout (§6.2.1,
   the smoothed RTT, four times its variation and the peer's `max_ack_delay`;
   `Connection::probe_timeout`, hyper-quic's patch Q7): a run-out is past the window and that
@@ -6685,8 +6704,8 @@ their owners and controllers, goal 75's `unix::link()` among them, follow the sa
 (ROOT's call C): their admissions carry no patience, their bounded drivers no handshake
 deadline, their transports no idle timeout or keep-alive, `tls::QUIET` and its quarter gone;
 an endpoint whose one place a newcomer contends for asks each connection holding one for an
-answer (a PING), and a later attempt takes the place of one that has not answered it and is
-stalled (`Driver::reclaim`, above). A relay whose
+answer (a PING), and a later attempt takes the place of one that has not answered it within
+its probe timeout (`Driver::reclaim`, above). A relay whose
 engine client leaves while its handshake waits on a daemon never reached is let go at its
 next probe, its client's connection seen ended there (relay.rs `gone`: recv(2) with MSG_PEEK
 and MSG_DONTWAIT, which takes nothing and leaves the reader's descriptor blocking; on Windows,
@@ -6710,8 +6729,11 @@ on, its silences measured; a handshake run out a whole window unheard past its p
 going on with no window, red with its window kept, one heard living on past both, red with its
 window a deadline from its start; a send's window,
 its run-out with progress and its stall without, told once and followed with no window until
-its answer, the slowest from then on, red with the stall its death; a stalled holder unheard
-since a newcomer asked giving way, judged afresh; a bounded endpoint's stalled holder giving
+its answer, the slowest from then on, red with the stall its death; a holder unheard past its
+probe timeout since a newcomer asked giving way, warm or cold, one heard since keeping its
+place, red with the stall a condition; a cold holder over the real transport giving its place
+to a newcomer's later attempt, red with its successor refused at every attempt; a bounded
+endpoint's stalled holder giving
 its place to a newcomer and one that answers keeping it, over the real transport, red with the
 stall its death and with no reclaim; a cold wait following its peer however long
 its first answer takes; a wait judged no sooner than its probe timeout; a wait judged on the
@@ -6721,7 +6743,8 @@ early by the window and none while a send waits; a handshake past its slots taki
 unanswered place), `context::tests` (a daemon's path read back for its
 daemon and address alone, kept only where it changed, removed with its context),
 `tests/loopback.rs` (a machine holding as many strangers as invitations, the oldest giving
-way; an enrolled client's silent command living with no keep-alive; no daemon answering
+way; a listener at its bound refusing a newcomer, keeping a holder that answers, and giving a
+vanished client's place to a later attempt, red with no bound; an enrolled client's silent command living with no keep-alive; no daemon answering
 probed until its caller gives up; a hang-up ending a command whose daemon never answered; a
 closed port refusing its client at once, its caller giving up past the test's deadline, red on
 Linux with a send's refusal let go; a daemon reached before that answers nothing running out

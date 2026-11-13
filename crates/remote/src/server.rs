@@ -68,9 +68,12 @@ pub trait Host: Send + Sync {
     /// How many invitations the machine holds open: as many clients it has not enrolled may
     /// be connected at once, to join, as an invitation enrolls one client.
     fn invited(&self) -> usize;
-    /// How many handshakes of keys not yet known the machine holds at once: its own resources'
-    /// bound, past which the oldest unanswered is given up for the newest (the person's ruling,
-    /// 2026-11-13).
+    /// How many connections the machine holds at once, its own resources' bound (at the daemon,
+    /// the process's descriptors, as each connection served may hold a command and its stdio):
+    /// handshakes of keys not yet known, past which the oldest unanswered is given up for the
+    /// newest (the person's ruling, 2026-11-13), and connections of every kind, past which a
+    /// newcomer is refused and takes the place of a holder that does not answer the PING it was
+    /// sent within its probe timeout (ROOT's ruling on #72, `net::Driver::hold_connections`).
     fn handshakes(&self) -> usize;
     /// A peer at `at` went `unheard` past the window its path has shown, a send of the daemon's
     /// unanswered (`net::RanOut::Stalled`): told once a stall, for the machine's log, as its
@@ -1006,6 +1009,7 @@ pub fn serve<H: Host>(
         // a peer never reached, its handshake waited for as long as its probing goes on.
         let (mut driver, sender) = Driver::bind(at, Some(config), server, tls::Known::Never)?;
         driver.hold_handshakes(slots);
+        driver.hold_connections(slots);
         driver.handler_mut().sender = Some(sender.try_clone()?);
         ready(driver.local()?, Stopper(sender));
         driver.run()

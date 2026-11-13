@@ -333,7 +333,8 @@ pub struct Liveness {
     /// The datagrams sent as its first look, or its last probe told, found them.
     probes: u64,
     /// When a newcomer that found its driver's places taken asked it for an answer (a PING), the
-    /// first such ask it has not answered since ([`Liveness::ask`]).
+    /// first such ask it has not answered since ([`Liveness::ask`]), judged by its probe timeout
+    /// ([`Liveness::unanswering`]).
     asked: Option<Instant>,
     /// A stalled send's answer came this long after it was sent, not yet told
     /// ([`Look::Answered`]).
@@ -679,10 +680,14 @@ impl Liveness {
     }
 
     /// Whether a newcomer may take its place at `now` ([`Driver::reclaim`]): unheard since an
-    /// earlier newcomer asked it for an answer, and stalled ([`Liveness::stalled`]), a whole
-    /// window with no progress past its probe timeout. One that answers, however late, keeps it.
+    /// earlier newcomer asked it for an answer, past its own probe timeout (RFC 9002 §6.2.1: its
+    /// smoothed RTT, four times its variation and its peer's `max_ack_delay`, within which a
+    /// live peer acknowledges the PING), warm or cold, stalled or not (ROOT's ruling on #72: a
+    /// cold holder, whose path showed no answer, has no window and never stalls, and was never
+    /// given up). One heard since the ask, however late, keeps it.
     pub fn unanswering(&self, now: Instant) -> bool {
-        !self.answered_ask() && self.stalled(now)
+        self.asked
+            .is_some_and(|asked| !self.answered_ask() && now.saturating_duration_since(asked) > self.pto)
     }
 
     /// The silence after which a send of its stalled and is still unanswered, its path maybe
@@ -1029,6 +1034,10 @@ pub struct Driver<H: Handler> {
     /// The handshakes it holds at once from peers not yet known, its owner's resources' bound
     /// ([`Driver::hold_handshakes`]): past it, the oldest unanswered is given up for the newest.
     slots: Option<usize>,
+    /// The connections it holds at once, its owner's resources' bound: a bounded driver's
+    /// admitted connections, or what [`Driver::hold_connections`] says. Past it a newcomer is
+    /// refused, and takes the place of a holder that does not answer ([`Driver::reclaim`]).
+    places: Option<usize>,
     out: VecDeque<(SocketAddr, Vec<u8>)>,
 }
 
@@ -1142,6 +1151,7 @@ impl<H: Handler> Driver<H> {
                 refusal: false,
                 wake,
                 slots: None,
+                places: limits.map(|limits| limits.connections),
                 out: VecDeque::new(),
             },
             Sender {
@@ -1170,6 +1180,14 @@ impl<H: Handler> Driver<H> {
     /// that comes past it takes the place of the oldest still unanswered, which is given up.
     pub fn hold_handshakes(&mut self, slots: usize) {
         self.slots = Some(slots);
+    }
+
+    /// Holds `places` connections at once, handshakes and established alike, the bound its
+    /// owner's own resources set (ROOT's ruling on #72): a newcomer past it is refused, each
+    /// established holder asked for an answer (a PING), and a later attempt takes the place of
+    /// one that has not answered it within its probe timeout ([`Driver::reclaim`]).
+    pub fn hold_connections(&mut self, places: usize) {
+        self.places = Some(places);
     }
 
     /// The address the socket serves on.
@@ -1448,20 +1466,19 @@ impl<H: Handler> Driver<H> {
         let mut response = Vec::new();
         match self.endpoint.handle(now, from, None, None, bytes, &mut response) {
             Some(DatagramEvent::NewConnection(incoming)) => {
-                if let Some(limits) = self.limits
+                if let Some(places) = self.places
                     && !self.stopping
                 {
-                    self.free_closed(now, limits.connections)?;
-                    if self.conns.len() >= limits.connections && self.reclaim(now) {
-                        self.free_closed(now, limits.connections)?;
+                    self.free_closed(now, places)?;
+                    if self.conns.len() >= places && self.reclaim(now) {
+                        self.free_closed(now, places)?;
                     }
                 }
-                if self.stopping || self.limits.is_some_and(|l| self.conns.len() >= l.connections) {
-                    // Its places still taken, each open connection holding one is asked for an
-                    // answer (a PING): one whose peer does not answer stalls, a whole window
-                    // unanswered past its probe timeout, and its place goes to a newcomer's next
-                    // attempt ([`Driver::reclaim`]); one that answers, however late, keeps it.
-                    // This one is refused.
+                if self.stopping || self.places.is_some_and(|places| self.conns.len() >= places) {
+                    // Its places still taken, each established connection holding one is asked
+                    // for an answer (a PING): one whose peer does not answer it within its probe
+                    // timeout gives its place to a newcomer's later attempt ([`Driver::reclaim`]);
+                    // one that answers, however late, keeps it. This one is refused.
                     if !self.stopping {
                         for conn in self.conns.values_mut() {
                             if conn.connected && !conn.quic.is_closed() {
@@ -1576,12 +1593,12 @@ impl<H: Handler> Driver<H> {
     }
 
     /// A newcomer finds every place taken: of the established connections holding them, the one
-    /// unheard longest of those that have not answered the PING an earlier newcomer sent them
-    /// and are stalled ([`Liveness::unanswering`]) is let go for it, its handler told as QUIC
-    /// tells a peer unheard past its bound (RFC 9000 §10.1), for a handler that types its ends;
-    /// whether one was. A stall alone ends no connection (ROOT's ruling A): one is let go only
-    /// as a newcomer needs its place, so that a bounded endpoint's resources stay its owner's
-    /// admission, and a holder that answers, however late, keeps its place.
+    /// unheard longest of those that have not answered, within their probe timeout, the PING an
+    /// earlier newcomer sent them ([`Liveness::unanswering`]) is let go for it, its handler told
+    /// as QUIC tells a peer unheard past its bound (RFC 9000 §10.1), for a handler that types its
+    /// ends; whether one was. A stall alone ends no connection (ROOT's ruling A): one is let go
+    /// only as a newcomer needs its place, so that a driver's resources stay its owner's bound
+    /// ([`Driver::hold_connections`]), and a holder that answers, however late, keeps its place.
     fn reclaim(&mut self, now: Instant) -> bool {
         let Some(key) = self
             .conns
@@ -1593,16 +1610,12 @@ impl<H: Handler> Driver<H> {
             return false;
         };
         let (mut io, handler) = self.io(now);
-        io.close(
-            key,
-            0,
-            "unanswered past the slowest answer seen, its place needed",
-        );
+        io.close(key, 0, "unanswered past its probe timeout, its place needed");
         handler.cause(key, &ConnectionError::TimedOut);
         handler.lost(
             &mut io,
             key,
-            "no answer within the slowest answer seen on its path, its place needed by a newcomer",
+            "no answer to a newcomer's PING within its probe timeout, its place needed by the newcomer",
             None,
         );
         self.client = io.client;
@@ -2542,10 +2555,10 @@ mod tests {
     /// A stall is judged afresh as a newcomer needs a place (`Liveness::stalled`): a send
     /// unanswered a whole window past its probe timeout is stalled, told or not; one whose peer
     /// was heard since is not, whatever was told, until a whole window passes unheard again;
-    /// cold, with no window, none is. A holder gives its place to a newcomer only once it has
-    /// not answered the PING an earlier newcomer sent it and is stalled
-    /// (`Liveness::unanswering`); a later newcomer's ask puts off no judgement of an earlier one
-    /// still unanswered, and one answered is asked again.
+    /// cold, with no window, none is. A holder gives its place to a newcomer once it has not
+    /// answered, within its probe timeout, the PING an earlier newcomer sent it
+    /// (`Liveness::unanswering`), stalled or not, cold too; a later newcomer's ask puts off no
+    /// judgement of an earlier one still unanswered, and one answered is asked again.
     #[test]
     fn a_stalled_holder_unheard_since_a_newcomer_asked_gives_way() {
         let t0 = Instant::now();
@@ -2568,7 +2581,11 @@ mod tests {
         );
         assert!(matches!(l.look(t0 + ms(19), 1, 0), Look::Stalled { .. }));
         l.ask(t0 + ms(20));
-        assert!(l.unanswering(t0 + ms(21)), "unheard since asked, and stalled");
+        assert!(!l.unanswering(t0 + ms(21)), "asked within its probe timeout");
+        assert!(
+            l.unanswering(t0 + ms(31)),
+            "unheard past its probe timeout since asked"
+        );
         l.ask(t0 + ms(25));
         assert_eq!(l.asked, Some(t0 + ms(20)), "the ask unanswered stands");
         l.heard(t0 + ms(30));
@@ -2580,7 +2597,8 @@ mod tests {
         assert!(l.stalled(t0 + ms(38)), "and unheard a whole window again");
         l.ask(t0 + ms(40));
         assert_eq!(l.asked, Some(t0 + ms(40)), "asked again");
-        assert!(l.unanswering(t0 + ms(41)));
+        assert!(!l.unanswering(t0 + ms(41)));
+        assert!(l.unanswering(t0 + ms(51)));
         let mut cold = Liveness::new(t0, None, Duration::ZERO);
         cold.heard(t0);
         cold.connected(t0, 0, 0);
@@ -2588,7 +2606,10 @@ mod tests {
         assert_eq!(cold.look(t0, 1, 0), Look::Fine);
         cold.ask(t0);
         assert!(!cold.stalled(t0 + ms(100_000)), "cold: no window to judge by");
-        assert!(!cold.unanswering(t0 + ms(100_000)));
+        assert!(
+            cold.unanswering(t0 + ms(100_000)),
+            "cold, unheard since asked: judged by its liveness all the same"
+        );
     }
 
     /// What its handshake sent, answered as it ends, is no send waiting: a wait begun for it
