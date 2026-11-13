@@ -15,6 +15,20 @@ const RUNC: &str = "/usr/local/bin/runc";
 /// host test's bound on the whole run (tests/nesting.rs `TIMEOUT`, 180 s), so that its
 /// answer comes back within that bound.
 const RUNC_MOST: Duration = Duration::from_secs(60);
+
+/// runc, as this stand-in nested runtime runs it for its boxes: without the grant's
+/// `NOTIFY_SOCKET` (D234), which runc takes for its own supervisor's and proxies for its
+/// container (runc v1.5.2 notify_socket.go): it then waits for the box to say `READY=1`,
+/// `run --detach` until the box says it or ends, `run` until it says it, as it watches its
+/// own pid there, before it reaps the box (signals.go, `forward`). No box here says it, so
+/// every runc case hung on real VMs (HVF at 27ed7cccd, Linux CI at 8a50a9742). A process
+/// handed `NOTIFY_SOCKET` keeps it from the children that do not answer for its readiness
+/// (sd_notify(3), `unset_environment`).
+fn runc() -> Command {
+    let mut runc = Command::new(RUNC);
+    runc.env_remove("NOTIFY_SOCKET");
+    runc
+}
 /// runc's state, in the run's own `/run`, a tmpfs the run asks for (`--tmpfs /run`).
 const STATE: &str = "/run/runc";
 /// Each box's bundle, and the one root every box is given, read-only.
@@ -121,7 +135,7 @@ fn run_box(id: &str, args: &[&str], resources: &str, devices: &str) -> Option<i3
             return None;
         }
     };
-    let ran = Command::new(RUNC)
+    let ran = runc()
         .args(["--root", STATE, "run", "--keep", "--no-new-keyring", "--bundle"])
         .arg(&dir)
         .arg(id)
@@ -214,7 +228,7 @@ fn event(id: &str, file: &str, key: &str) {
 }
 
 fn delete(id: &str) {
-    let _ = Command::new(RUNC)
+    let _ = runc()
         .args(["--root", STATE, "delete", "--force", id])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -479,7 +493,7 @@ fn exit_leaving_a_box(code: i32) -> i32 {
     // as it should, its goroutines' stacks among it ([`bounded`]).
     let said = format!("{BUNDLES}/held.runc-stderr");
     let started = std::fs::File::create(&said).and_then(|stderr| {
-        Command::new(RUNC)
+        runc()
             .args(["--root", STATE, "run", "--detach", "--no-new-keyring", "--bundle"])
             .arg(&dir)
             .arg("held")
@@ -495,7 +509,7 @@ fn exit_leaving_a_box(code: i32) -> i32 {
             say(&format!("box held runc: {line}"));
         }
     }
-    let state = Command::new(RUNC)
+    let state = runc()
         .args(["--root", STATE, "state", "held"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
