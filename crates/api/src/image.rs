@@ -1137,7 +1137,9 @@ mod tests {
             ("a credential grant", "hosts", |s, n| {
                 s.credentials[0].toward = vec!["api.anthropic.com".into(); n]
             }),
-            ("a sign-in grant", "name", |s, n| s.sign_ins[0].sign_in = "s".repeat(n)),
+            ("a sign-in grant", "name", |s, n| {
+                s.sign_ins[0].sign_in = "s".repeat(n)
+            }),
             ("a sign-in grant", "hosts", |s, n| {
                 s.sign_ins[0].toward = vec!["api.anthropic.com".into(); n]
             }),

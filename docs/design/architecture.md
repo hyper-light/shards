@@ -26667,6 +26667,26 @@ stands (above, "Who"), so it must know which placeholder stands for which creden
   give both one). shards-api refuses the spec, the run host the request (`Cause::Request`), and
   the network process the grants, its control broken (D109). A grant's `Debug` shows its
   placeholder's length alone.
+- *Bounded by the wire that carries it* (found by Hex's lead, Hex goal 12: a placeholder past
+  65535 bytes was asked by shards-api's `request()`, whose image channel carries a string behind
+  a u32, and refused only on the run host, `api_run`'s `credentials()`, in an untyped
+  `Cause::Request` text that named the reference and hosts alone). The network process's wire
+  carries a credential grant's reference, its hosts' count and its placeholder each behind a
+  two-byte length (`shards_net::encode_grants`, `NET_CREDENTIALS`), and a sign-in grant's name,
+  hosts' count, access token's reference and both placeholders alike
+  (`shards_net::signin::encode_grants`, `NET_SIGN_INS`); a host behind one byte, which
+  `host_name`'s 253 (RFC 1035 §2.3.4) already holds. `shards_dns::credential::WIRE_MOST`,
+  `u16::MAX`, names that bound, and `check` and `check_sign_ins` hold each such field to it
+  before any other check, refused as `Refused::TooLong { field, place, len }` (`Field` names the
+  field, typed; the grant told by its place and the field by its length, never its bytes, as a
+  placeholder is a capability and a field past the bound is any size). shards-api renders it as
+  `ImageRefusal::Spec` for "a credential grant" or "a sign-in grant", so a caller learns it by
+  field before the request crosses; the run host and the network process hold the same check
+  (D109). Literal: `u16::MAX`, the wire's two-byte length, a format bound (R03); no learned value
+  and no cold start. Hex adds no bound of its own and checks a placeholder as a `b64token`.
+  Test: `image`'s `a_grants_fields_past_the_network_process_wire_are_refused_by_field`, each of
+  the eight fields at 65535 asked and at 65536 refused by field (red at 01c0fce8e, before the
+  bound).
 - *The decision's home: shards-dns* (`shards_dns::credential`: the grant, `Fill`, `decide`,
   with their tests). shards-api and shards-net both depend on shards-dns already, Hex vendors it
   already (its six-crate API workspace: abi, afunix, api, dns, ipc, testdir), and it holds the
