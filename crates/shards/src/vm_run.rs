@@ -2398,21 +2398,28 @@ fn start_reported(
         None => vm::start(cfg),
         Some((scope, writer)) => {
             let mut writer = Some(writer);
-            let mut report = |probe| {
-                let mut to = writer
-                    .take()
-                    .ok_or_else(|| shards_abi::gpu::GpuProbeError::Scope.to_string())?;
-                let frame = shards_abi::gpu::GpuReport { scope, probe }
-                    .encode()
-                    .map_err(|why| why.to_string())?;
-                to.write_all(frame.as_bytes()).map_err(|why| why.to_string())?;
-                // This sole VMM writer closes before any guest vCPU starts.
-                drop(to);
-                Ok(())
-            };
-            vm::start_gpu_report(cfg, &mut report)
+            vm::start_gpu_report(cfg, &mut |probe| write_report(&mut writer, scope, probe))
         }
     }
+}
+
+/// A managed boot's report (D232, D233), written once by its sole writer: the selection's
+/// frame, scoped to its launch, and the writer closed, before any guest vCPU starts. Taken
+/// again, it is refused as taken.
+fn write_report(
+    writer: &mut Option<impl Write>,
+    scope: [u8; 16],
+    probe: shards_abi::gpu::GpuProbe,
+) -> Result<(), String> {
+    let mut to = writer
+        .take()
+        .ok_or_else(|| shards_abi::gpu::GpuProbeError::ReportTaken.to_string())?;
+    let frame = shards_abi::gpu::GpuReport { scope, probe }
+        .encode()
+        .map_err(|why| why.to_string())?;
+    to.write_all(frame.as_bytes()).map_err(|why| why.to_string())?;
+    drop(to);
+    Ok(())
 }
 
 /// A host whose microVMs take no snapshots, arm64 KVM's (D154), says so before a VM starts
@@ -3388,6 +3395,34 @@ mod managed_report_tests {
             )
             .is_err()
         );
+    }
+
+    /// D232: a managed boot's report is written once, by its one writer, and taken again
+    /// says it was taken (`ReportTaken`), not that its frame's scope differs (`Scope`).
+    #[test]
+    fn a_report_written_once_is_refused_as_taken() {
+        use shards_abi::gpu::{GpuProbe, GpuProbeError, GpuReport, ResolvedGpu};
+        let physical = vm::gpu_selection::PhysicalGpu::MetalRegistry(7);
+        let probe = || GpuProbe {
+            devices: vec![ResolvedGpu {
+                physical,
+                uuid: [1; 16],
+                pci: None,
+                luid: Some(7u64.to_be_bytes()),
+                name: None,
+                device_local_bytes: None,
+            }],
+            host_visible_bytes: 4096,
+        };
+        let mut frame = Vec::new();
+        let mut writer = Some(&mut frame);
+        write_report(&mut writer, [3; 16], probe()).unwrap();
+        assert_eq!(
+            write_report(&mut writer, [3; 16], probe()),
+            Err(GpuProbeError::ReportTaken.to_string())
+        );
+        let written = GpuReport::parse(std::str::from_utf8(&frame).unwrap(), [3; 16], &[physical]).unwrap();
+        assert_eq!(written.probe, probe());
     }
 
     #[test]
