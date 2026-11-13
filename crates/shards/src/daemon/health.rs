@@ -483,6 +483,51 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         Ok(await_exit(&ours, wait))
     }
 
+    /// Starts the NOTICE built-in of the guest of the run whose inbox is `inbox`, which the
+    /// caller holds (D235): its stdin `pipe`, on which a share process tells what its host
+    /// changes, its output the daemon's log; the connection its end is told on, to be held
+    /// while it runs. Sent as [`send_exec`](Self::send_exec) sends an exec, through the
+    /// inbox itself.
+    pub(super) fn notice_exec(
+        &self,
+        inbox: &mut super::Inbox,
+        pipe: shards_ipc::fd::OwnedFd,
+    ) -> std::io::Result<shards_ipc::Stream> {
+        let spec = shards_abi::run::Spec {
+            builtin: shards_abi::run::builtin::NOTICE,
+            ..Default::default()
+        };
+        let (ours, theirs) = shards_ipc::Stream::pair()?;
+        let held = theirs.try_clone()?;
+        let handed = shards_ipc::handed(&theirs)?;
+        let number = self.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut payload = Vec::with_capacity(9 + spec.encoded_len().unwrap_or(0));
+        payload.extend_from_slice(&number.to_be_bytes());
+        payload.push(shards_ipc::EXEC_INTERACTIVE);
+        spec.encode_into(&mut payload);
+        inbox.execs_in_flight.push((number, held));
+        let log = std::io::stderr();
+        let fds = [handed.as_fd(), pipe.as_fd(), log.as_fd(), log.as_fd()];
+        if let Err(e) = inbox.socket.send(shards_ipc::kind::EXEC_RUN, &payload, &fds) {
+            inbox.execs_in_flight.retain(|(n, _)| *n != number);
+            return Err(e);
+        }
+        Ok(ours)
+    }
+
+    /// [`notice_exec`](Self::notice_exec) of running microVM `id`, its connection held
+    /// with its run: a share plugged into it as it runs (D235).
+    pub(super) fn notice_into(&self, id: &str, pipe: shards_ipc::fd::OwnedFd) -> std::io::Result<()> {
+        let inbox = match lock(&self.runs).get(id) {
+            Some(RunState::Tracked(run)) => run.inbox.clone(),
+            _ => return Err(std::io::Error::other("the container is not running")),
+        };
+        let mut inbox = lock(&inbox);
+        let told = self.notice_exec(&mut inbox, pipe)?;
+        inbox.notices.push(told);
+        Ok(())
+    }
+
     /// Sends microVM `id`'s VM an exec of `spec` with `stdio`, logging its events if
     /// it is a command (`argv`); returns the connection its end is told on.
     fn send_exec(

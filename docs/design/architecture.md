@@ -7760,9 +7760,9 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
 - **A budget falling short waits for its host's give-back** (PM M467): where a give-back
   of the host's pressure is under way in the microVM, the budget's own asks once it has
   ended, its room read again; and its word says what its host's pressure had it give back
-  and ask to unplug since the word before, which the host's own word says once a minute
-  at most: a budget set just after the host had taken what it held cold found nothing to
-  give back, and its word said nothing given back.
+  and ask to unplug since the word before, which the host's own word says only as its
+  pressure begins and as it doubles (below): a budget set just after the host had taken
+  what it held cold found nothing to give back, and its word said nothing given back.
 - **Ring pins come out of the room** (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d:
   "Everything a VM holds, ring pins included, comes out of that room"). An engine ring's
   slots are guest RAM its guest's kernel pins for the host to reach (D230). Init's relay
@@ -7953,7 +7953,14 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   min watermarks, its guest's kernel throttling its own reclaim and its grower, woken
   only at the hold, plugging none: 5 of 384 past128 reads in the DAX budget job, and none
   of 288 since.
-- **Said in the daemon's log** at most once a minute, with what was given back since.
+- **Said in the daemon's log** with what was given back since, at no fixed while
+  (`pressure::Saying`): as a pressure begins, then each time it has gone on as long again
+  as it had when last said, one pressure window at the least, so that a pressure that goes
+  on for a time t is said about log2(t / window) times, its lines farther apart the longer
+  it goes on, as a doubling search past what is known has them (Baeza-Yates, Culberson and
+  Rawlins, "Searching in the plane", Inf. Comput. 106(2), 1993). A pressure that goes on is
+  heard once a window, so a word after a whole window with none begins another, said at
+  once. Before 0bc518367 it was once a minute, a while no measurement set.
 - **Idle, it costs nothing**: with no microVM running it waits for one, hearing no
   pressure meanwhile, whose trigger fires each window while the host stays short (on a CI
   runner short of memory it woke an idle daemon's thread every 2 s: job 118535098642);
@@ -7967,14 +7974,19 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   each `memory.high` and `memory.max` up its chain), and at each asks every builder on its
   give-back port (`build::GIVE_PORT`, build/give.rs) to give back what it holds cold of its
   files and what it holds plugged past twice what its build uses (init's `RECLAIM` and
-  unplug, as a run's), then tells each its share of the room the budget leaves (`ROOM`),
+  unplug, as a run's: what it keeps is counted as a run's, `shrink_run`, so a builder whose
+  grower asked for memory or had memory come within the pressure window keeps all it has,
+  PM M466), then tells each its share of the room the budget leaves (`ROOM`),
   counted as a run's is, which its guest holds the build within. A builder is told that
   room as it starts, before its first step; every builder is asked at once, one ask out
-  to each at a time, and one with no answer within 10 s is counted unanswered and asked
-  again only once it has answered, a late answer counted as it comes (a builder its host
-  throttled answered in 9 s and more, PM M350); what they gave back is said on the
-  build's plain output once a minute at most, as the daemon's log says its microVMs'
-  (`give::PATIENCE`, `SAY_EVERY`). While a budget holds the
+  to each at a time, its answer waited for until the next word can come, a pressure window
+  (`give::PATIENCE`, the window its host's pressure is measured over and a pressure that
+  goes on is heard again after, `platform::PRESSURE_WINDOW`), so that a pass never holds
+  up the next word's; one not come by then is counted unanswered, looked for once a window
+  after (`give::late`) and counted as it comes, and its builder asked again only once it
+  has answered (a builder its host throttled answered in 9 s and more, PM M350). What they
+  gave back is said on the build's plain output as the daemon's log says its microVMs'
+  (`pressure::Saying`, above). While a budget holds the
   build, its builders are told its room again each pressure window where it changed, and
   given a word of pressure where it is short: a guest holds its build within what it was
   last told past what the build used then, and what its host gets back of it outside the
@@ -8019,8 +8031,9 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   charge by what its builder held cold told its guest it was short by them besides, which
   holds its build at what it uses (init's `ROOM`): builds of 10 s took 246 to 622 s
   (573e4bf8). The harness now holds each build to its held arms' own peak in that count
-  less what its builder held cold, so that every held build is pressed; measured at the
-  commit that has it (PM M442).
+  less what its builder held cold, so that every held build is pressed. That, the room as
+  charged, the window's keep (PM M466) and the saying above are not yet measured: owed at
+  the commit that has them (PM M442, its last item).
   Before the writer (2d168658), held builds on CI's runners were 0.4 to 16 s slower in the
   steps that write to the host's disk, which the memory controller holds to the budget's
   share of dirty pages (`balance_dirty_pages`): the builder, held within room it never
@@ -15862,7 +15875,8 @@ given the rest as its build needs it, up to what it may have.
   can leave the kernel short with memory free (memory-hotplug.rst, "ZONE_MOVABLE Sizing
   Considerations"). At its build's word that its host is short of memory, a builder gives
   back what it holds cold of its files and the blocks it holds plugged past twice what its
-  build uses where its kernel holds none of a block, and holds its build within the room
+  build uses where its kernel holds none of a block (none where it grew within its host's
+  pressure window, as a run keeps them: PM M466), and holds its build within the room
   a budget over the build leaves it, told again each pressure window where it changed
   (D188's builders): under a budget short of its peak by what its builder held cold, an
   apt build's builder gave back up to 202 MiB of its files a build and unplugged up to
@@ -15871,7 +15885,8 @@ given the rest as its build needs it, up to what it may have.
   beyond its rounds' spread in 32 of 33 host and build pairs, the other 0.1 s longer as it
   read again what its budget took of its own files' page cache; since its caches are read
   and written outside the budget, by its writer (d9c42120), in all 27 pairs of eight of
-  CI's runners and Fedora (PM M442). The build's
+  CI's runners and Fedora (PM M442); what has changed since is owed its measurement (D188's
+  builders). The build's
   process asks, not the daemon: a builder is its build's, not a run of the daemon's.
 - **What the kernel sized by the memory it booted with** is raised to what it sizes by all
   of it, so that a step sees what it saw in a builder booted with all its memory: the
@@ -17710,7 +17725,7 @@ Tested (E2E; each guard mutation-checked, the mutant built and run, killed unles
 - **Unmeasured until PM M146 and M147:** the start path's cost of the command's PID
   namespace, and of `--init`'s reaper, forked as such a run starts.
 
-### D234. A nested runtime's grant: one run's command makes boxes in its own microVM (decided; built; its real-VM runs owed)
+### D234. A nested runtime's grant: one run's command makes boxes in its own microVM (decided; built; its real-VM test, red on CI's KVM x86_64 for two defects of its own, fixed; its green and other runs owed)
 
 **Why.** Hex runs its node as a Shards guest's own PID 1 (D215's direct boot, no
 Agentfile). That PID 1 mounts the node's file systems, gives the node its descriptor limit,
@@ -17765,6 +17780,10 @@ The research, every finding graded with its sources:
     (f6).
   - **CAP_SYS_ADMIN and CAP_NET_ADMIN**, beside Docker's default set (f10). These cover its
     boxes' namespaces, mounts and pivot_root, their loopback, and their device programs.
+    Like every run's capabilities (D42), they are the command's while it runs as root. A
+    command whose user is another keeps only their bounding set across its execve, with no
+    file or ambient capabilities (capabilities(7)), so a runtime there runs rootless. A
+    nested runtime's image therefore runs its command as root, as CI's red run below shows.
   - **Docker's default filter, resolved for those capabilities, with `pivot_root` added**
     (f16), and without D121's mount filter (f17). The capabilities open `bpf` and
     `perf_event_open` there, as Docker's profile opens them for CAP_SYS_ADMIN. Everything
@@ -17965,18 +17984,45 @@ it, and stopping the run is the caller's decision.
 - shards-api's `nesting` and `ready_by`, the deadline made on the run host, its typed
   refusals, and `wait_ready` (step 6, 93ce2e26a and 0d63d6bf2);
 - the real-VM test, `crates/shards/tests/nesting.rs`, with runc 1.5.2 as the stand-in
-  nested runtime (step 5).
+  nested runtime (step 5), and the fix of the two defects its first runs showed (231bbdf6d,
+  below).
 
 Not built:
 - `gpus=`. No run carries a D232 selection that its VM process binds: the daemon's run
   has `--gpus` alone, and shards-api's image spec has no `gpu_devices`. So no run sends
   the entry, and none has `/run/shards/gpus`, until a run's own GPU selection is built.
+  This still holds on main at 1145bd3f2.
 - How late a `ready` was, on its event: the daemon's log says it, and the run host's
   `Ready::Late`. No event attribute is named for it.
 
+**The real-VM test's first runs: CI's, red.** CI's x86_64 Linux jobs boot real guests on
+KVM. The two main runs read that reached `tests/nesting.rs` ran it red: 3 passed, 6
+failed, 1 ignored, at 83f0549ad (run 43303186680, job 131479475824, gnu) and at d35c4cf79
+(run 43303460342, jobs 131480418603, gnu, and 131480418606, musl). The six other main runs
+read for it timed out at 56 minutes before reaching it (the record's step7/ci-runs.txt). The
+defects were the test's own:
+- Its images came from the served test image, whose user is `app`. So their commands held
+  none of the grant's capabilities (above), and runc ran rootless: "rootless container
+  requires user namespaces", a mount refused EPERM, and the subtree root's files EACCES
+  where nsdelegate's EPERM was meant.
+- Its shards-api case named its command without its program. shards-api's command is the
+  whole argv, as api-run gives the run an empty entrypoint, and so it ended at once with
+  128.
+
+What the red runs did show, on KVM x86_64: the granted command sits in its leaf
+(`workload cgroup /init`); its READY reaches the host; and it still reaches no host port
+over vsock. 231bbdf6d makes every image the test builds run as root, and names the
+shards-api case's program. Its compile and clippy are checked on x86_64 Linux, and CI on
+main builds the other targets. Its green is not shown: no VM has run it since. macOS CI runs
+none of the test, every
+case returning at "Hypervisor.framework is unavailable". The CI logs are in the record's
+step7/.
+
 **Evidence owed** (ROOT):
-- the real-VM E2E (`crates/shards/tests/nesting.rs`, plan step 5) on KVM x86_64, nested
-  arm64 KVM, HVF with its GPU, and WHP, through `shards run vm` and through shards-api;
+- the real-VM E2E (`crates/shards/tests/nesting.rs`, plan step 5): its green at 231bbdf6d
+  or later on KVM x86_64 (CI's next main run that reaches it, or ROOT's own), and its runs
+  on nested arm64 KVM, HVF with its GPU, and WHP, through `shards run vm` and through
+  shards-api;
 - mutations of its guards, which its header lists with the test each fails;
 - the daemon's filter tests on arm64, whose syscall numbers are checked against the
   kernel's headers but have not run there;
@@ -19848,6 +19894,12 @@ Measured differences, kept:
 - Rule indices with more than 8 distinct refs or keys range over Go's larger maps in
   hash order, which can't be reproduced. Lookups there may list rules in another of the
   orders OPA could take.
+- A number whose text would take more to write than the evaluation can hold is refused
+  (`number too large to write: …`, below). OPA writes it, in minutes to hours and
+  gigabytes, or ends as its memory runs out (`bits.lsh` past it: `makeslice`). Up to the
+  bound, OPA's answer, byte for byte (M537).
+- Go reads a number past its exponents (1e646456993 on) as ±Inf, which OPA writes as
+  `+Inf`; shards refuses it ("exponent overflow"), making no infinities.
 
 Hostile policies. A policy may be anyone's (a remote context's, D111), so the engine is
 held to more than OPA's answers:
@@ -19888,7 +19940,7 @@ held to more than OPA's answers:
   `number.rs`'s tests hold the leading digits and the shortest decimal to the exact
   decimals, and the bounds to the powers they bound. M524's Open (`floor`, `ceil`, `round`
   and integer formatting of such a number, whose answer is all of an integer's digits;
-  numbers past 1e536870938 refused where Go reads them) is closed below (M526).
+  numbers past 1e536870938 refused where Go reads them) is closed below (M526, M537).
 - The rewrite of local variables walked as OPA's does, and OPA's way is exponential:
   rewriteEveryStatement (ast/compile.go) rewrites a statement's body, then walks the
   whole statement again (rewriteDeclaredVarsInExpr), whose walk rewrites each
@@ -19945,31 +19997,96 @@ held to more than OPA's answers:
     failed (M524's Open). A 5^n past Go's exponents is +Inf, and z over it zero, so
     `-1e-1000000000` reads as -0. The parser says "number too big" for a literal Go reads
     as ±Inf, as OPA's does.
-  - An exact integer whose MantExp is past 10^5 (`number::MAX_EXPONENT`) is not made: its
-    decimal is all its digits, a num-bigint conversion growing faster than their count
-    (near n^1.8 here), where the text above writes leading digits and zeros. `floor`,
-    `ceil`, `round`, `rem`, `bits.*`, `numbers.range*`, `format_int` and `units.parse*`
-    fail with "number too big", the error OPA's parser gives such a literal
-    (`ast/parser.go` `parseNumber`, v1.14.1); `time.*` keep OPA's "timestamp too big".
-    The bound is OPA's own on a number in Rego source, set for this cost
-    (golang/go#11068), so no builtin makes an integer a policy could not write. At it,
-    `ceil` and `round` answer in about 80 ms. Past it OPA's cost grows with the
-    exponent's value: 41.7 s for `ceil(1e3000000)`, 10.4 s for the fuzzer's
-    `ceil(266000000e2028020)`; ASan's fuzzer passed 2 GB on such integers (M524's Open).
-    Alternatives: Go's big.Float range (MaxExp 2^31: integers of 646 million digits, hours
-    in OPA and here); Go's big.Rat limits (10^7 bits: 23 s for one conversion here); a
-    conversion lean in memory (M524's Open), which bounds memory but not the time a
-    number's size asks. The difference from OPA: OPA writes those integers, in time
-    growing with the exponent's value, or panics (`bits.lsh` past its memory,
-    `makeslice`); shards refuses them. `bits.lsh`'s chosen limit of 2^32 bits gives way
-    to the same bound.
+  - An exact integer was capped here at a MantExp of 10^5 (`number::MAX_EXPONENT`,
+    "number too big" from `floor`, `ceil`, `round`, `rem`, `bits.*`, `numbers.range*`,
+    `format_int` and `units.parse*`; ci-rego's 944f16220, merged at 5e53d5e3a). That
+    cap is superseded (M537, the next bullet): 10^5 is OPA's parser's limit on Rego
+    source literals, not on numbers from input or data, whose integers OPA does write
+    (`ceil(266000000e2028020)` in 10.4 s, the fuzzer's `abs` in 63.4 s and 447 MB). A
+    cap on outputs changed answers OPA gives, on an upstream constant with no basis in
+    shards' resources (R03). Every digit is now written as far as the evaluation can
+    hold them, and refused past that by name. `number::MAX_EXPONENT` bounds the parser's
+    literals alone, as OPA's does; `time.*` keep OPA's "timestamp too big".
   - `numbers.range` stays unbounded, as OPA's. The fuzz target asks it for at most one
     number per byte of its input.
+- An integer's every digit, and what writing a number may hold (M537; `digits.rs`).
+  `floor`, `ceil`, `round` and `format_int` of a float past its halves answer all of its
+  integer's digits, as do `rem`, `bits.*`, `numbers.range*` and `units.parse*` of such
+  numbers. Go's `Text` made the integer's decimal and both neighbours' whole: three
+  num-bigint conversions of the fuzzer's 96.9-Mbit integer, whose Burnikel-Ziegler
+  division clones its operands at each level, ASan's fuzzer past 2 GB (M524's Open).
+  - One conversion: an integer whose precision holds it whole is its own shortest
+    decimal, as no other integer lies within half an ulp of it, and no decimal of as
+    few digits but an integer.
+  - Lean: Brent and Zimmermann's FastIntegerInput (Modern Computer Arithmetic, 2010,
+    §1.7.2, algorithm 1.25) computing in base 10^19 on the 64-bit limbs. A block of
+    2^(k+1) limbs is its upper half times T[k] = 2^(64·2^k), plus its lower half.
+    Products with an operand past `SCHOOL` (163) limbs are cyclic convolutions by
+    number-theoretic transforms modulo the three largest primes c·2^32 + 1 below 2^62
+    (transforms to 2^32 points; their product, past 2^185, exceeds any coefficient of
+    such a transform), joined by Garner's algorithm; Möller and Granlund's reciprocal
+    divides by 10^19. One scratch, made once for the largest transform, serves every
+    product. Blocks of zero or one bits cost no product: the integers here are a
+    mantissa times a power of two, or a few of them joined. `SCHOOL` is the least size
+    past which the transforms measured cheaper at every size, s by s and s by 64·s, on
+    both hosts: 73 on arm64 macOS, 164 on x86_64 Linux (M537).
+  - The converter writes every size. num-bigint's `to_str_radix` measured the cheaper
+    for most dense random integers below 44,842 limbs on macOS (the converter the
+    cheaper at every size from there), and to 2^19 limbs at least on x86_64, whose `div`
+    instruction it divides by a limb with. It was not taken there: its division clones
+    its operands at each level, which this decision rules out, and where it wrote below
+    2^20 limbs, 56 of the 108 integers `tests/text_memory.rs` holds to the bound passed
+    the bound as it then stood (the larger of the two phases below), by up to 18%. For
+    the integers builtins write, sparse, the converter is the cheaper: `floor(1e10000000)`
+    0.49 s here, 5.9 s through num-bigint, on one Mac (M537).
+  - The bound. No budget bounds an evaluation: OPA's sets none, buildx's none, and
+    this record's evaluation none. So the bound is the evaluation's own memory,
+    `funcs::Context::holdable`. The policy layer sets it, as each query starts, to
+    `build::holdable()`: what the host has available, its memory where it says not
+    (Linux's MemAvailable, macOS's `kern.memorystatus_level` of its memory, Windows'
+    `ullAvailPhys`). The daemon bounds a read it cannot size beforehand by the same
+    measure. The fuzz targets set it to libFuzzer's `-rss_limit_mb` (2048 by default, as
+    CI passes it), less the process's peak RSS, which libFuzzer holds to that limit,
+    less AddressSanitizer's quarantine (`quarantine_size_mb`, 256 MiB by default), and
+    less its shadow, a byte for every 8 (`fuzz_targets/holdable.rs`).
+  - What writing takes, against it: `digits::need(bits)`, an upper bound on every byte a
+    write allocates, each vector by its capacity. While converting: the powers T[k], the
+    value's limbs three times (the parts held, a product of them, and what the
+    allocator keeps of a chain's freed results), a copy of the largest power for a block
+    of ones, and the scratch at 4.5 words a point. Then, on top of those, as an allocator
+    may keep what the conversion gave back (macOS's did: 170.1 MiB of physical footprint
+    for the fuzzer's number, against 131.5 MiB, the larger of the two phases), the text
+    and its caller's copy (`Rc<str>` from a String). `tests/text_memory.rs` counts every
+    allocation through a global allocator, at 108 integers dense, sparse and of ones
+    about each level's size: each peak within 0.65 of the bound on macOS arm64, and the
+    test, which holds each to the bound, passed on x86_64 Linux too. Whole calls, one a
+    process (`text/run.sh`), decimal writes from 10^6 digits to Go's last finite power
+    of ten, the process's parse and the harness's JSON copy of the answer counted, past
+    its start: macOS's physical footprint 0.64 to 0.96 of the bound, Linux's resident
+    0.57 to 0.67. A float's text from its leading digits (`abs` and the arithmetic) takes
+    twice its length; `format_int` in bases 2, 8 and 16 twice its length (the text, reserved
+    exactly, and its copy); `bits.*` and `numbers.range*` need and their operands' limbs,
+    refused before those are made; `number::int`, its limbs. What a caller makes of an
+    answer afterwards (a JSON copy of it) is the caller's.
+  - Past the bound, refused, typed (`number::Error::Unholdable`) and named:
+    `number too large to write: the text of a N-bit number takes M bytes to make, more
+    than the L bytes this evaluation can hold`, an eval_builtin_error of the builtin.
+    No answer is cut short, and none is made past what the evaluation can hold.
+  - Byte for byte OPA's (`scripts/rego/generate numbers`, OPA v1.14.1, Go 1.26.1): 131
+    builtin calls on numbers of up to the fuzzer's 29 million digits, among them
+    floor, ceil, round, format_int, bits, rem and units, and 73 readings, Go's
+    `Text('p', 0)`, across Go's finite exponents. 1e536870939 through 1e646456992 read as
+    Go reads them (ci-rego's `pow5` above). The fuzzer's number through `floor`: 1.7 s
+    and 170 MiB on macOS arm64 (M4 Max), 4.9 s and 111 MiB on x86_64 Linux (i9-14900HX);
+    Go's `Text` of it took 63.4 s and 447 MB (M524, an M5 Max). `floor` of Go's largest
+    finite power of ten, 646,456,993 digits: 76 s and 4.2 GiB on macOS, 205 s and 2.9 GiB
+    on Linux (M537).
 - Left: a rule whose local-variable rewrite errs is rewritten OPA's way, so an
   erroring rule of `every` statements and comprehensions alternating takes OPA's time.
-  Evaluation asks no bound of a policy, as OPA's does not (`numbers.range` over any
-  span); a build's policies run in its own process, which Ctrl-C ends, as buildx's end
-  with its build's context.
+  Evaluation asks no bound of a policy's time, as OPA's does not (`numbers.range` over
+  any span); its memory bounds what writing a number may hold (above). A build's
+  policies run in its own process, which Ctrl-C ends, as buildx's end with its build's
+  context.
 
 ### D97. OSI artifacts of several platforms: an index
 
@@ -22702,7 +22819,7 @@ says; the report pipe on a Windows host; the seven-target lint.
 **What would falsify it.** A client that needs shards to own its VM processes after all (then
 D215's spawn alone).
 
-### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's; case handling and host edits' notices owed; real-VM validation owed)
+### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's, names that differ in case alone on case-insensitive hosts, host edits' notices to the guest's inotify; real-VM validation owed on WHP and arm64 KVM)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 8: kiln reads a session's diffs,
 HEAD and checkpoints on the host at the session's own path, so a member (an agent or
@@ -22788,6 +22905,139 @@ second unplug `Unknown`. HVF, WHP and arm64 KVM are owed (ROOT's).
 `/tmp`) is no root's: the domain's own scratch is there. A path beneath a root through a
 symlink of the image's beneath it is refused. The directories made for a plug's mount point
 stay, empty and root's, once it is unplugged.
+
+**Names that differ in case alone, on a case-insensitive host.** A host's file system that
+folds case (macOS's APFS by default, an NTFS directory of a Windows host's own) finds a file
+by any case of its name, and a share's server asks it by the guest's name (fstatat(2),
+NtCreateFile), so the guest finds `foo` where the host keeps `Foo`, creates nothing over it
+(EEXIST) and reads and writes the one file, as the host does.
+- *Reproduced* (R09; tests/plug.rs `a_shares_names_are_its_hosts_case_and_all`, the same
+  steps on the host and through a share, each result compared): on macOS APFS (HVF, the Mac
+  Studio, `a2096f8ef`), after `rename Foo Bar` the guest's `stat foo` and `stat FOO` said ok
+  where the host said NotFound. The guest's kernel keeps a name for each case it looked the
+  file up by, each trusted for the second the server gives it (`VALID_S`; fs/fuse/dir.c
+  `fuse_dentry_revalidate`), and a rename or removal through one leaves the others. On
+  adacachy's KVM (Linux, which tells case apart) the same steps agree.
+- *Decided:* a name the host found by another case or Unicode form of it is trusted for no
+  time (its entry's validity 0), so that each use of it asks the host again; the name the
+  host keeps, for its second, as before (server.rs `name_valid`). The name kept is asked of
+  the host: macOS's getattrlist(2) `ATTR_CMN_NAME`, as Libc's realpath(3) asks each
+  component's case; Windows' FileNormalizedNameInfo, which also says an 8.3 short name's
+  long one. A Linux host is asked nothing: its names are found as given, and a directory it
+  folds the case of (`chattr +F` on ext4, f2fs or tmpfs) is not handled, its variants
+  trusted for their second. The cost, a call more for each LOOKUP on macOS and Windows, is
+  unmeasured (ROOT's, R14).
+- *Green:* the same test on HVF at `6de3842ac`; its mutation (every name trusted its
+  second again) fails as the reproduction did.
+- *A rename of a name's case alone* (`mv foo Foo`) changes nothing, and says it is done: the
+  Linux VFS takes a rename whose two names are one inode as done without asking any file
+  system (fs/namei.c `vfs_rename`, `if (source == target) return 0;`, torvalds/linux master
+  of 2026-11), and Linux's own case-insensitive file systems do the same (measured on
+  adacachy, Linux 7.2.9, a tmpfs mounted `-o casefold` and a directory `+F`: `rename("foo",
+  "Foo")` returns 0 and `ls` says `foo`; a directory's alike). Alternatives:
+  - *An inode of its own for each case of a name*, as 9p's uncached modes give each lookup
+    one (fs/9p/vfs_inode_dotl.c, `v9fs_get_new_inode_from_fid`), by which WSL2's `/mnt/c`
+    renames a name's case: the rename would reach the host, at the cost of two inodes of
+    one file in the guest whose page caches, locks and inotify watches are each their own.
+    Not taken.
+  - *Another case not found* (ENOENT): the rename's target would be new and reach the host,
+    but `stat FOO`, `open FOO` and every program that names a file by another case would
+    fail where the host finds it. Not taken.
+  - Decided: the guest's rename is Linux's own, as its case-insensitive file systems' are;
+    a name's case is changed by two renames through another name (`mv foo tmp && mv tmp
+    Foo`), as on ext4's casefold. The test holds host and guest alike to Linux's rule
+    (testguest case.rs `renamed`).
+
+**Host edits wake the guest's inotify (notices).** Linux's virtio-fs driver negotiates no
+feature and has no notification queue (fs/fuse/virtio_fs.c, its `feature_table` empty;
+virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server notifies
+(`FUSE_NOTIFY_INVAL_*`) tells fsnotify nothing: a host's edit wakes no watch in the guest.
+- *Alternatives.*
+  - *Lima's `mountInotify`* (Lima 0.21 and later, experimental): its host agent watches,
+    and its guest agent sets each file's times through the mount (pkg/guestagent
+    guestagent_linux.go `HandleInotify`, `os.Chtimes`): a write of the host's files, of
+    writable mounts alone, and nothing for a file the host removed (lima-vm.io/docs/config/
+    mount, "Inotify events are not triggered when files are removed from host").
+  - *Docker Desktop's osxfs*: FSEvents mapped to inotify within its own file system ("Move
+    events trigger IN_DELETE on the source of the rename and IN_MODIFY on the destination
+    ... Some events may be delivered multiple times", docs osxfs.md): its own guest kernel's.
+  - *A notification queue in the guest's driver*: a kernel patch no stock kernel has, never
+    the base of a fix (version-agnostic, the person's rule).
+  - *The guest polling its shares*: a cost each period whatever changed (R05). Not taken.
+- *Decided.* The host is watched by its share process, each host's own way
+  (vmm `fs/notices.rs`):
+  - *Linux:* an inotify watch of each directory the guest holds, made as the guest looks it
+    up and let go of as it forgets it (server.rs `watch_dir`, `unwatch_dir`), all of the
+    process's one instance (`platform::watch_named`; PM M257): what the guest never looked
+    at is watched nothing of, and a watch is one of its user's (`max_user_watches`).
+  - *macOS:* one FSEvents stream of its shares' roots (shards-apple `fsevents`, CoreServices
+    bound when first used), file events, the changes the process itself makes for the guest
+    left out (`IgnoreSelf`), told at once (latency 0, `NoDefer`).
+  - *Windows:* ReadDirectoryChangesW of each root and all beneath it, 64 KiB a read, the
+    most it takes over a network (its documentation's).
+  - Where the whole tree is watched (macOS, Windows), a change is told only where the guest
+    holds its directory (`Server::holds_dir`). Each path waits once however often it
+    changes, at most 16384 (Linux's default `max_queued_events`, past which a guest's own
+    watcher would hear only that it lost events); past them, its nearest waiting directory
+    or its share's root stands for it, once a share.
+  - *Told on a pipe straight to the guest:* records `TAG\0PATH\0` (`shards_abi::run::
+    notice`), TAG the share's virtio-fs tag (`shards share --notices TAGS`), from the share
+    process to the stdin of the guest's `NOTICE` built-in, which the daemon and `shards
+    api-run` start as the run starts (`STARTED`) and for each plug once it is mounted. No
+    thread of theirs reads it.
+  - *The built-in* (init notice.rs) is init's root as filesystem group
+    `shards_abi::NOTICE_ID`, the first ID past every in-VM server's (`SERVER_FIRST_ID` and
+    `PID_MAX_LIMIT`). It mounts each tag a notice names, attached nowhere (fsopen(2),
+    fsmount(2)): the same file system as the guest's own mounts of the tag (virtio_fs.c
+    `virtio_fs_test_super`), whose inodes inotify watches whichever mount set them; let go
+    of after each batch, so that none outlives its device's unplug. For each path it walks
+    the directories, following no symlink, and touches the file: its modification time
+    asked set to now, its access time left (utimensat(2) `UTIME_OMIT`, `UTIME_NOW`), which
+    the kernel tells as `IN_MODIFY` to the file's watchers and its directory's
+    (include/linux/fsnotify.h `fsnotify_change`: the modification time alone is
+    `FS_MODIFY`). A file the host removed: its name looked up again (an exclusive create,
+    which revalidates whatever the kernel trusts, `LOOKUP_EXCL`), then its directory
+    touched (`IN_MODIFY|IN_ISDIR`).
+  - *The server* takes a request of the guest's root as group `NOTICE_ID` for a notice: a
+    SETATTR is answered with the node's attributes as the host has them, nothing set, a
+    read-only share's too; what only looks is answered; anything else is refused (EACCES),
+    so that a notice changes nothing on the host.
+  - *Default deny:* a notice is told through its share's own tag, and only a workload or a
+    member that has that share mounted holds its inodes and hears the touch; init's own
+    mount is attached nowhere. A read-only plug into the workload is read-only by its mount
+    alone, its file system writable as every other share's (setup.rs, domains.rs and a
+    member's plug already were), so that the notice's mount can touch it.
+- *Verified* (light tests, the change's own): unit, server.rs
+  `a_notice_changes_nothing_on_the_host`, `a_name_found_by_another_case_is_trusted_for_no_time`,
+  `a_directory_is_held_while_the_guest_knows_it`, `the_hosts_changes_where_the_guest_looks_are_noticed`
+  (Linux); notices.rs `changes_are_told_once_and_within_bounds`,
+  `the_hosts_changes_are_told_where_the_guest_looks` (each host's watcher, a change made by
+  another process); shards-abi's records; init's `notices_are_told_whole_across_reads`;
+  shards-apple's `a_change_beneath_is_told_by_its_path`; share.rs's flags. Real VMs, tests/plug.rs
+  `a_host_edit_wakes_a_watch_in_the_guest` (a bind, a read-only bind and a plugged volume:
+  the host's new file `IN_MODIFY f`, its removal `IN_MODIFY|IN_ISDIR` of the directory, the
+  host's files as it left them): adacachy's KVM and the Mac Studio's HVF. Mutation: with no
+  request taken for a notice, the removed file's revalidation, an exclusive create no longer
+  refused, made the file again on the host (`/rw: [.../rw/f]`), and the test fails.
+  docs/research/measurements/s8-notices.
+- *Known limits.*
+  - *What a watcher hears:* a host's new, written or changed file is `IN_MODIFY` of its
+    name; a removal, `IN_MODIFY` of its directory; a move, the new name's and the old
+    directory's. Never `IN_CREATE`, `IN_DELETE` or `IN_MOVED_*`, which the guest's kernel
+    tells only of its own changes.
+  - *Echoes:* on Linux and Windows the share process's own writes for the guest are watched
+    too, each told back as one `IN_MODIFY` more (macOS's `IgnoreSelf` leaves them out), as
+    Docker's osxfs delivers "some events multiple times".
+  - *Linux's instances:* one inotify instance a share process (a run that shares any
+    directory, and each plug), of the user's 128 by default, of which a desktop's programs
+    held 101 (PM M257); a share process given none tells nothing, and says so in its log.
+  - *Not told:* a join share's volumes (D119), a direct boot's shares (`run vm --kernel …
+    --share`, whose PID 1 may be no shards-init), a client's relayed directory (D228), a
+    share another server serves (`--slates-fs-fd`).
+  - A guest process of the root user and group `NOTICE_ID` has its own requests of a share
+    refused (EACCES) but SETATTR's, which change nothing.
+  - Its latency, host edit to guest watcher, is ROOT's to measure
+    (docs/research/measurements/s8-notices/run.sh, tests/plug.rs `notices_latency`).
 
 ### D236. A network's destinations: a member reaches the hosts its grants name, the host itself at one port (built; real-VM validation owed)
 
@@ -22940,7 +23190,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends open, plan step 10, ROOT's; its endpoint building, step 11)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals and stdio lanes built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -22964,42 +23214,324 @@ an orchestrator's (D231), and vsock carries everything between a host and its gu
   for each member's stdin, stdout and stderr (D240); logs.
 - *Identity:* the VM's own key, made where its TLS ends and never moved. It is enrolled with
   its controller's CA by a CSR, as Hex's nodes enroll with kiln's (hex-quic.md Q6), or pinned
-  as D180's raw keys are. That key, not the host process kiln sees, is the agent to kiln's git
-  signing, credential helpers and MCP tokens (step 18), and the identity a run's credential
-  leases are issued to (step 33).
+  as D180's raw keys are; step 11 pinned it ("The microVM's identity", below). That key, not
+  the host process kiln sees, is the agent to kiln's git signing, credential helpers and MCP
+  tokens (step 18), and the identity a run's credential leases are issued to (step 33).
 
-**Open: where its TLS ends** (plan step 10). ROOT decides, from measurements on Linux, macOS
-and Windows hosts at fleet density (R02, R14):
-- *In the guest:* each microVM is a QUIC peer with its own key, reached through its run's
-  network process (shards-net) and virtio-net. The host carries only ciphertext.
-- *At the host:* one endpoint (the managed owner endpoint over D180's QUIC, as today) carries
-  each stream on to its microVM over vsock, which never leaves the machine.
+**Where its TLS ends: at the host** (plan step 10). It was decided from ROOT's runs on HVF and
+KVM (PM M540), and ROOT approved it to stand until WHP, KVM's memory at more rounds and a loaded
+run are in. The two candidates, measured at fleet density (R02, R14):
+- *In the guest* (arm g): each microVM is a QUIC peer with its own key, reached through its
+  run's network process (shards-net) and virtio-net. The host carries only ciphertext.
+- *At the host* (arm h): one endpoint (the managed owner endpoint over D180's QUIC, as today)
+  carries each stream on to its microVM over vsock, which never leaves the machine.
 
-The harness is committed: [control-end](../research/measurements/control-end/README.md)
-(d9caccfe8 to 4bf2fe812). For each arm against its own baseline (g and g0 in the guest, h and
-h0 at the host) it measures per-VM idle memory, handshake CPU at density under the hybrid
-ML-KEM groups, the round trip and stream throughput, as n, p50, p90, p99 and max. Its record
-says what each vehicle allows. Only a daemon's run gets a network process and published ports
-(arm g). Only a direct boot gives the host a vsock socket to dial, as Docker's default seccomp
-profile, which shards-init gives a run's command, refuses `socket(AF_VSOCK)` (crates/seccomp
-`oracle.rs`); so arm h's guest program stands in for init's relay, and its endpoint for the
-daemon's. No numbers are recorded yet. ROOT runs it, writes the PM entry, and completes this
-decision with them.
+The harness is [control-end](../research/measurements/control-end/README.md) (d9caccfe8 to
+4bf2fe812). It measures each arm against its own baseline (g and g0 in the guest, h and h0 at
+the host): per-VM idle memory, handshake CPU at density under the hybrid ML-KEM groups, the
+round trip and stream throughput, as n, p50, p90, p99 and max. Its record says what each
+vehicle allows:
+- Only a daemon's run gets a network process and published ports (arm g).
+- Only a direct boot gives the host a vsock socket to dial. Docker's default seccomp profile,
+  which shards-init gives a run's command, refuses `socket(AF_VSOCK)` (crates/seccomp
+  `oracle.rs`). So arm h's guest program stands in for init's relay, and its endpoint for the
+  daemon's.
 
-**Building: the endpoint** (plan step 11). It serves the lanes above to a peer holding the
-enrolled or pinned identity, and nothing to any other. The plan's other callers of it:
+ROOT ran it at 66113379c, 32 microVMs and 5 rounds an arm, on HVF (adas-mac-studio.local, Apple
+M4 Max, macOS 26.2) and on KVM (adacachy, AMD Ryzen 9 9950X3D2, Linux 7.2.9). PM M540 has the
+numbers, and the harness's `results/` keeps ROOT's summaries. The p50s the decision rests on:
+
+| p50 | HVF g | HVF h | KVM g | KVM h |
+|---|---|---|---|---|
+| Memory per microVM over its baseline, idle and connected | +1817 KiB | +302 KiB | −192.0 KiB | +2541.8 KiB |
+| Host CPU per microVM, first handshake | 3231 µs | 1590 µs | 11829.4 µs | 1568.2 µs |
+| Host CPU per microVM, reconnect | 1573 µs | 936 µs | 4712.1 µs | 1440.5 µs |
+| Round trip, 64 B (its p99) | 435 µs (4572) | 1505 µs (8658) | 269.1 µs (2312.2) | 586.4 µs (3912.4) |
+| Download and upload, one stream (MiB/s) | 300.6 and 320 | 326.6 and 273 | 91.4 and 163.7 | 372.2 and 347.6 |
+
+*Decided: at the host (arm h), on what each microVM costs a host at fleet density*, the question
+step 10 asks first. Wherever the two hosts resolve it, the host endpoint costs less:
+- *CPU per handshake*, on both hosts: 2.0× less on HVF and 7.5× less on KVM for a microVM's
+  first handshake, and 1.7× and 3.3× less for a reconnect. Every microVM of a host reconnects at
+  once when its controller restarts. In the guest arm the VM process carries most of the cost:
+  on KVM, 10961.8 of 11829.4 µs.
+- *Memory per microVM* over its vehicle: 1515 KiB less on HVF. On KVM the arms' differences
+  (−192.0 and +2541.8 KiB) lie inside their rounds' spread, 1516.0 to 4915.1 KiB from p50 to
+  max, so KVM's memory is unresolved.
+- *Inside every microVM*: arm h's relay is smaller than a TLS endpoint, by 342 and 378 KiB of
+  Pss and 196 and 188 KiB of anonymous memory.
+- *Throughput*: on KVM arm h moves 4.1× arm g's download and 2.1× its upload. On HVF the arms are
+  within 17% of each other either way.
+
+The round trip goes to arm g on both hosts, and is recorded beside the decision. It is 3.5×
+shorter on HVF and 2.2× on KVM at p50, and 1.9× and 1.7× at p99. Arm h's number includes the
+stand-in endpoint's thread handoffs: the driver to a vsock writer, and a vsock reader back to the
+driver. The harness records them as that stand-in's cost, not necessarily the daemon endpoint's
+(its README's Limits). Step 11's endpoint is to be measured with the same harness against arm g's
+numbers here (owed, ROOT's).
+
+*The directive's scope* (ROOT's ruling, 2026-11-13, so the person is not asked). The person
+wrote (2026-11-11): "we'll primarily be controlling agents via networking … hyper-quic … all
+such communications should be AESGCM256 bidirectional encrypted". That covers every network hop
+of control. Under arm h the only network hop, the controller's to the endpoint, is
+TLS13_AES_256_GCM_SHA384, held from both ends (D239). The endpoint's AF_UNIX and vsock leg to
+its microVM never leaves the host, like every other host-local IPC shards has ("Control that
+crosses no TLS", below).
+
+*The trust boundary.* Under arm h, the host's endpoint, in its daemon, holds every microVM's
+control in plaintext. The host is already trusted with each guest's memory, through its VMM.
+
+*Identity.* The harness's endpoint used one key for every microVM. Production gives each
+microVM its own identity, held by the endpoint. Step 33 issues a run's credential leases to the
+run's identity, the SHA-256 of this key, and needs no more of it (step 33's plan, kiln plan
+01a1d2b88be57304b972761e2a5c6781, steps 4 and 5). It relies on three things, which this entry
+keeps:
+- one key per run, made after the run's restore and never shared by runs restored from one
+  template, since a lease keyed to a shared fingerprint would cross runs;
+- the fingerprint, known to the orchestrator before the run's first lease ask on each host;
+- the fingerprint, unchanged while the run stays on one host. A move makes a new key at its
+  destination, and step 33's leases follow it, released at the source and asked anew under the
+  new fingerprint ("A moved microVM's key", below).
+
+So, for step 11:
+- The endpoint runs in the daemon, on D180's QUIC beside the managed owner endpoint, under its
+  own protocol (`shards-control/1`).
+- It makes each run's key after the run's restore. The key is never in guest memory, so no
+  template carries one.
+- The key's SHA-256 reaches the controller and the orchestrator in the run's managed metadata,
+  as the managed endpoints' `server` fingerprint does (the microVM's identity, point 2, below).
+- Step 11 serves each microVM from an endpoint of its own, bound where its caller says ("The
+  stdio lanes' service", below). A controller dials that microVM's endpoint and meets its key
+  there. Where the daemon binds each endpoint is step 11's to build.
+- Each lane reaches its microVM over vsock, as a host reaches a guest's service in Firecracker:
+  an AF_UNIX connection to the VMM, then `CONNECT PORT` (Firecracker edb60617, `docs/vsock.md`,
+  "Host-Initiated Connections"). Inside the microVM, shards-init's relay carries it on. The
+  harness's guest program stood in for that relay.
+
+*What reopens it.* ROOT runs WHP (jupiter, with the harness README's command), KVM at more
+rounds, and a loaded run (`--spin`) on each host: step 10 asks for its numbers under load, and
+both runs added none. A result that flips the comparison reopens this decision:
+- WHP measuring arm g at or below arm h in host CPU per handshake;
+- WHP measuring arm h above arm g in memory per microVM over its baseline, outside its rounds'
+  spread;
+- KVM's memory resolving in arm g's favour;
+- a loaded run reversing a comparison the unloaded ones resolved.
+
+One thing is not a condition, and is unmeasured: why arm g's guest on KVM spends about 10× the
+controller's CPU on the same handshake (5149 against 503 µs at p50). HVF's host CPU, 2.0× in
+arm h's favour, points the same way.
+
+**Building: the endpoint** (plan step 11, `shards_remote::control`). It serves the lanes above
+to a peer holding the enrolled or pinned identity, and nothing to any other. The plan's other
+callers of it:
 - Hex's member operations, which Hex refuses typed until it exists (Hex's
   `docs/design/shards-image-class.md` §8: `MemberExec`, `MemberSignal`);
 - step 38's nested runtime, whose channel to its host it is (D234);
 - step 39's node of Hex, run under shards-init.
 
-**Open: control that crosses no TLS.** The CLI's request slots (D185), the Engine API's
-`engine.sock` (D170) and a host's vsock to its guests carry control within one machine, with
-no TLS to narrow. Step 3 left whether the directive reaches them to Ada and ROOT
-([aes256-only-v1](../research/measurements/aes256-only-v1/evidence.json), `tls_configs`). Step
-10's decision settles the guest's leg; the rest is theirs to decide.
+Until step 10 decided, only what both arms share was built (ROOT, 2026-11-12): the connection,
+the microVM's identity, who is refused, and what a lane says. The control lane (exec, signal,
+inspect) and the terminal lane (attach, TTY) wait on step 6's member exec, attach and TTY. Step
+10 has decided for the host (above). The endpoint runs in the daemon and holds each microVM's
+own key, and the key's SHA-256 reaches the controller in the run's managed metadata. The log
+lane, which also waited on step 10, is step 11's to build.
 
-**Literals.** None yet.
+*The connection.* QUIC over D180's driver and TLS (`net.rs`, `tls.rs`): TLS 1.3 alone, D239's
+provider (TLS13_AES_256_GCM_SHA384 alone, the hybrid ML-KEM groups), early data off, on an
+application protocol of its own, `shards-control/1` (RFC 7301), which a context's endpoint and
+the managed output's refuse, as it refuses theirs. The endpoint is the server and the controller
+its client in both arms, as the controller dials. Every lane is a bidirectional stream the
+controller opens; the endpoint opens none.
+
+*The wire: hyper-quic under D180's driver, not hyper-raft's hyper-transport crate.* The crate
+(classes, exchanges and lanes over hyper-quic, which kiln's `crates/kiln/src/net.rs` and Hex's
+`hex-quic` take) carries messages: its lanes are one-way streams that last as long as their
+connection, and its exchanges need their bodies' lengths before they are sent (hyper-raft
+233b7fce `lane.rs`; `Endpoint::open`'s `body: Option<u64>`). Hex built a connection protocol of
+its own over them for byte streams of no known length, a program's stdout among them (Open,
+Accept, End, Reset and Credit frames, and a Welcome, as a TLS 1.3 client counts itself
+connected before its server has verified it, RFC 8446 §4.4.4: Hex's `docs/design/hex-quic.md`
+Q3 at d84730ee). A member's stdin, stdout and stderr are such streams, and a QUIC stream is one
+already: its end (FIN), its abort (RESET_STREAM, STOP_SENDING) and its own flow control (RFC
+9000 §2, §3, §4.1), which D180's driver and step 5's endpoints use now, and which ROOT's
+step-10 harness measures in both arms. Hex and kiln take Shards' crates (Hex vendors
+shards-api; kiln vendors Shards, plan step 16), so a controller's side is Shards' code
+(`control::controller`), not a second implementation of this wire.
+
+*The microVM's identity: its own key, pinned (decided).* The plan left it open: "enrolled with
+the controller's CA by CSR, or pinned as D180's raw keys are; the key never travels".
+- Enrolled by CSR. kiln's agents: "Agents generate their key locally and send only a CSR; the
+  server signs it after checking the enrollment token. Private keys never cross the network"
+  (kiln d6ffa45d `crates/kiln/src/pki.rs`). Hex's nodes: a PKCS #10 request (RFC 2986) under
+  ECDSA P-384, admitted with the grant kiln issued for that name, once (hex-quic.md Q6).
+  Kubernetes' kubelets: a "limited usage token" authenticates a CSR, approved by the controller
+  manager or a person, renewed "when it is close to expiry" (kubelet TLS bootstrapping,
+  kubernetes.io).
+- Pinned. D180's homes: an Ed25519 key (RFC 8032) presented as a raw public key (RFC 7250), each
+  side pinning the other's SHA-256. WireGuard's peers "are identified strictly by their public
+  key", which they "exchange … through some unspecified mechanism" (Donenfeld, NDSS 2017, §2
+  and §1).
+
+What decides it:
+1. *What vouches for a key.* With no remote attestation, only the party that started a
+   microVM can say a key is that microVM's. A CA signs a CSR because a grant came with it, and
+   the grant reached the microVM from its launcher; a controller pins a key because the launcher
+   reported it. RFC 7250 §6: "Without a secure binding between identifier and key, the protocol
+   will be vulnerable to man-in-the-middle attacks. This document assumes that such binding can
+   be made out-of-band", and "Using pre-configured keys is another out-of-band method for
+   authenticating raw public keys". The binding comes from one channel either way; a
+   certificate restates it, signed, so that a party that did not start the microVM can check it
+   without asking whoever did.
+2. *What enters the microVM.* A CSR's grant is a secret inside it (step 33: no credential value
+   anywhere in the VM) unless the request leaves through the host, and a path from the microVM
+   to the CA is a grant default deny gives no one. A pin needs nothing inside: the key's SHA-256
+   leaves through the host that started the microVM, as the managed endpoints' `server`
+   fingerprint does now (the run's managed metadata, `daemon/managed.rs`).
+3. *Lifetime and revocation.* A certificate has a validity window (RFC 5280 §4.1.2.5) that a
+   run must outlive or renew mid-run. A pin lives as long as its holder keeps it and ends as it
+   is removed, as a D180 client's enrollment ends (`shards remove client`). kiln refuses its own
+   agents by their keys' SHA-256 in any case (`ServerBook::revoked_keys`, kiln d6ffa45d
+   `net.rs`).
+4. *Clocks.* A certificate's checks read the verifier's wall clock. A guest's is set from its
+   host at boot and after each restore ("Wall clock", above), so either arm could check one; a
+   pin has nothing to check.
+5. *Code and bytes.* Pins are built and tested (`identity.rs`; `tls.rs` `Pinned`, `AnyClient`),
+   and a handshake's Certificate message carries the key's 44-byte SubjectPublicKeyInfo (RFC
+   8410 §4). A CSR needs its encoding (rcgen, which shards-server carries into the guest
+   already), WebPKI's path validation (hyper-tls) and a chain in every handshake.
+6. *The controllers.* kiln's and Hex's own QUIC links verify certificates under kiln's CA and
+   take no raw key; both reach this endpoint through Shards' crates, whose verifiers pin.
+
+So the microVM's identity is an Ed25519 key made where TLS ends (`Identity::generate`, the
+operating system's random numbers through aws-lc-rs), held only there, its SHA-256 its name.
+The controller pins it, and the endpoint takes only the controller's key, enrolled as the run
+starts. That fingerprint is the identity that replaces kiln's peer-process one: every lane of a
+connection it authenticated is that microVM's (step 18's git signing, credential helpers and MCP
+tokens; step 33's leases). Two rules follow:
+- *A key per run, never a template's.* A key made before a template is saved would be every run
+  restored from it (D25), so the endpoint makes its key after its run's restore.
+- *A moved microVM's key* (decided by ROOT, 2026-11-13). In arm g the key would be in guest
+  memory, which a saved and moved microVM's memory carries (D176), and its pin would move with
+  it. At the host, which step 10 chose, the key is the host endpoint's, and the key never
+  travels (the plan). So a move makes a new key at the destination, after the restore there,
+  as at any run's start. Its controller pins the new key, whose SHA-256 reaches it in the run's
+  managed metadata, as at a run's start.
+  - Step 33's leases follow the move: they are released at the source, as at any run's end
+    there, and asked anew under the new fingerprint. Leases are asked just in time, so nothing
+    is carried. The orchestrator must have the destination key's SHA-256 before the
+    destination's first lease ask, as for a fresh run (step 33's owner agreed, 2026-11-13).
+  - What kiln's other uses of the key (step 18) do at a move is step 18's.
+
+Falsified by a party that did not start the microVM having to verify it without its launcher (a
+fleet peer, a third service), or a controller that cannot take Shards' code. Then the
+controller's CA certifies this same key from a CSR the endpoint signs where the key is (RFC 8410
+makes Ed25519 an X.509 key): a certificate is added and the identity kept, the key's SHA-256
+naming the microVM either way.
+
+*Who reaches it.* Each side refuses any other key at the handshake with TLS's access_denied ("A
+valid certificate or PSK was received, but when access control was applied, the sender decided
+not to proceed with negotiation", RFC 8446 §6.2), which rustls raises for this crate's verifiers'
+`ApplicationVerificationFailure` (hyper-tls `error.rs`). "A server MUST NOT process incoming
+1-RTT protected packets before the TLS handshake is complete" (RFC 9001 §5.7): a controller of
+another key opens no stream the endpoint reads, and the endpoint's handler is told of no
+connection of it. How a connection ended is typed (`control::Ended`, read from QUIC's codes;
+callers match it, never its words), with which side said so:
+
+| `Ended` | QUIC's code | Cause |
+|---|---|---|
+| `NotEnrolled(by)` | CRYPTO_ERROR 0x131 | access_denied (49): a key not enrolled or not pinned |
+| `Handshake(by)` | CRYPTO_ERROR 0x128 | handshake_failure (40): no suite, group or signature in common (D239) |
+| `Protocol(by)` | CRYPTO_ERROR 0x178 | no_application_protocol (120): a peer of another protocol |
+| `Closed(by, reason)` | an application close | one of `managed::Reason`'s codes |
+| `Silent` | — | its peer unheard for its idle timeout (RFC 9000 §10.1) |
+| `Local`, `Transport(by)` | — | closed here; any other code, a reset, a version |
+
+*Its lanes.* A lane's first frame names it (`control::lane`), and the endpoint reads no more of
+a lane before it knows what it is (`LANE_MOST`). A member's stdin, stdout and stderr lanes open
+with step 5's own subscriptions, byte for byte (`managed::subscribe`,
+`managed::input::subscribe`: the run, its generation, the member, the channel, the offset), and
+carry step 5's frames after them, so the endpoint serves step 5's streams as they are: one
+record in flight each way, cursors resumed, ends and aborts typed. A lane the endpoint will not
+serve is refused alone, a `Refused` frame of `managed::Reason`'s code then the lane's end, and
+the connection and its other lanes go on.
+
+*The stdio lanes' service* (`control::Endpoint`). One endpoint per microVM, bound at the address
+its caller gives, serves the member streams its caller names (`control::Streams`), each with the
+admission its caller would give step 5's endpoint of one stream (`managed::Admitted`), and hands
+back each stream's producer or relay and its control, as step 5's endpoints do, and a `Revoke`
+that ends it. Step 5's services are the lanes' (`managed::Service`, `managed::input::Service`):
+one implementation of each stream's protocol, its records, cursors, ends and aborts, whether an
+endpoint serves one stream or many. States and rules:
+- *A lane:* `Opening` while its first frame comes; then subscribed to its stream (step 5's
+  states), or `Refusing` while its refusal frame goes. One lane holds a stream: a second is
+  refused `Scope`, as step 5 refuses a second owner. A lane done (its output finished, its last
+  record acknowledged; its input's end told) is finished, its controller's side stopped
+  (STOP_SENDING, RFC 9000 §3.5) so that the stream closes and its credit returns (§4.6), and
+  its stream waits for the next subscription, which a finished output answers at once.
+- *Its ends:* its controller's FIN or reset ends the lane alone, its record kept for the next
+  subscription to the same cursor; a stream revoked (`managed::Control::abort`) resets its lane
+  alone, waking the endpoint rather than stopping its driver (`managed::Stop::Lane`); a frame
+  the stream's protocol refuses closes the connection with the refusal's code, as step 5's
+  endpoints close their owner's, except a frame that raced its input's end, which only stops
+  the lane's reading (`control::after`).
+- *Its connections:* the controller's newest is its own. A newer one's handshake closes the
+  older (`Reason::Stale`), whose lanes leave their streams for the newer's, which go on at their
+  cursors: a record sent and never acknowledged comes again.
+- *Wakes:* a stream's producer, relay or control wakes the endpoint with one unit command, and
+  a full handoff is a wake already queued, whose turn serves every stream; so a producer's
+  record beside a queued wake keeps its place (`managed::Producer::submit`, which treated a full
+  handoff as its driver gone).
+
+The transport's every value is its streams' (R03; the person, 2026-11-13: "we do not tolerate
+arbitrary constants"): each lane's windows as its endpoint of one stream bounds them, summed for
+the connection, the largest per stream; what the endpoint sends unacknowledged, each stream's
+admitted window and a refusal frame for each stream the controller may open; one stream each;
+the connection's patience the least its streams admitted (D180's `QUIET` where the daemon
+admits it, a quarter of it the keep-alive), and its handshake and datagram buffers the most.
+D180's driver tells a handler when its peer allows more streams (`Handler::available`), so that
+a controller opens a lane as the endpoint's limit allows.
+
+Tested in `crates/remote` (`control::tests`, over the in-process exchange of `lib.rs`'s
+handshake tests): the enrolled controller and its pinned microVM connect,
+TLS13_AES_256_GCM_SHA384 and `shards-control/1` at both ends, each holding the other's key; a
+controller of another key is refused at its handshake, `NotEnrolled` at both ends, the endpoint
+never connected; an endpoint of another key than the pinned one is refused by its controller,
+typed at both ends; a context's client is refused for its protocol; codes read back as their
+causes; step 5's three subscriptions open their lanes, nothing taken before a frame is whole;
+lanes of no kind, length or channel refused; a lane's refusal read back. Over the real transport
+on loopback (`control::tests::lanes`): member 0's stdin, stdout and stderr as three lanes of one
+connection, bytes no text holds exact both ways, the stdin's end told and the output's finish
+ending its lane; a stranger's key reaches no stream; lanes of another member, generation, run or
+kind refused alone, typed, while a served lane works; a second lane of a stream refused; a newer
+connection superseding the older and resuming its unacknowledged record; a revoked stream's lane
+reset alone; an input's own end ending its lane, a late frame let go; the windows its streams'
+sums. Record:
+[agent-control-v1](../research/measurements/agent-control-v1/README.md).
+
+**Control that crosses no TLS** (ROOT's ruling, 2026-11-13). The CLI's request slots (D185),
+the Engine API's `engine.sock` (D170) and a host's vsock to its guests carry control within one
+machine, with no TLS to narrow. Step 3 left whether the directive reaches them to Ada and ROOT
+([aes256-only-v1](../research/measurements/aes256-only-v1/evidence.json), `tls_configs`). ROOT
+ruled from the person's own words ("The directive's scope", above): the directive covers every
+network hop of control, and these never leave the host. That includes the leg step 10's host
+endpoint adds, its AF_UNIX and vsock to each microVM.
+
+**Literals** (step 11's endpoint; none chosen, each a protocol's or step 5's). No window,
+buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
+`control::controller` take their transport from their caller.
+
+| Literal | Source |
+|---|---|
+| ALPN `shards-control/1` | its own protocol's name (RFC 7301), apart from a context's (`shards/1`) and the managed output's |
+| A key: Ed25519 | D180's identity (RFC 8032), the only kind the verifiers take (`identity::is_ed25519`) |
+| A microVM's name: 32 bytes | the SHA-256 of its key's SubjectPublicKeyInfo (FIPS 180-4) |
+| `LANE_MOST` 58 | step 5's subscription: a frame's head (5), the run (32), its generation (8), the member (4), the channel (1), the offset (8) |
+| `REFUSED_BYTES` 9 | a frame's head (5) and a u32 code |
+| A lane's refusal, 1 to 5 | `managed::Reason` (Protocol, Scope, Stale, Closed, Auth), as step 5's endpoints close with them |
+| Channels 0, 1, 2 | the run protocol's stdin, stdout and stderr (abi `run::kind`) |
+| `CONNECTIONS` 2 | its controller's connection and the one that replaces it; the older closes at the newer's handshake and is held until its close drains (RFC 9000 §10.2) |
+| One command slot | a wake is one unit whose turn serves every stream; a full handoff is a wake queued |
+| Windows, streams | each stream's own (above): its endpoint of one stream's windows, summed; one stream per lane |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 
@@ -23061,7 +23593,8 @@ on the seven targets with the whole workspace's tests; the real-VM E2E of each l
 (`tests/context.rs`, `tests/managed_output/`, the in-VM server's
 `the_in_vm_server_knows_each_agent` and `tests/mcp.rs`); the suite asserted on every link of a
 real session (plan step 34); what AES-256-GCM costs an in-VM server client that negotiated
-another suite before. Open, Ada's and ROOT's: control that crosses no TLS (D238).
+another suite before. Control that crosses no TLS never leaves the host and is outside the
+directive, which covers every network hop of control (ROOT's ruling, D238).
 
 **Literals.** None new: the suite is the one the directive names.
 
@@ -23122,7 +23655,12 @@ the terminal lane (D238); nothing crosses into another member. How it is built i
 implementer's, reviewed by ROOT. Until it is, shards-api refuses a member's terminal
 `Unsupported` (`crates/api/src/image.rs`). What it builds on is on main: the run's signal link,
 whose states are explicit (D16; [signal-link](../research/measurements/signal-link/README.md)), and the
-exec port's admission under contention (D16, "An exec's connection").
+exec port's admission under contention (D16, "An exec's connection"). Slice 1 is on main
+(`78fc1c8f5`, `532ad27c5`): a member starts with every signal's disposition at its default and its
+mask empty, as an exec's child already did (init `defaults::signals`, which both now call), since
+execve(2) keeps an ignored signal ignored and init's runtime ignores SIGPIPE; reproduced, fixed and
+its guard mutated live on HVF ([member-exec-tty-v1](../research/measurements/member-exec-tty-v1/README.md)),
+its real-VM test (`tests/member_exec.rs`) on KVM x86_64, WHP and arm64 KVM owed (ROOT).
 
 **Owed** (ROOT). Step 5's real-VM E2E (`tests/managed_output.rs`'s `member_stdin`,
 `tests/api_image.rs`'s `a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end`)

@@ -72,7 +72,7 @@ pub fn api() -> Result<&'static Api, String> {
     API.get_or_init(load).as_ref().map_err(Clone::clone)
 }
 
-fn open(path: &CStr) -> Result<*mut c_void, String> {
+pub(crate) fn open(path: &CStr) -> Result<*mut c_void, String> {
     // SAFETY: a NUL-terminated path; the handle is kept for the process's life.
     let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
     if handle.is_null() {
@@ -90,7 +90,7 @@ fn open(path: &CStr) -> Result<*mut c_void, String> {
     Ok(handle)
 }
 
-fn symbol(handle: *mut c_void, name: &CStr) -> Result<*mut c_void, String> {
+pub(crate) fn symbol(handle: *mut c_void, name: &CStr) -> Result<*mut c_void, String> {
     // SAFETY: a live handle and a NUL-terminated name.
     let at = unsafe { libc::dlsym(handle, name.as_ptr() as *const c_char) };
     if at.is_null() {
@@ -104,7 +104,7 @@ fn symbol(handle: *mut c_void, name: &CStr) -> Result<*mut c_void, String> {
 /// # Safety
 ///
 /// `at` is a function whose C signature is `F`'s.
-unsafe fn function<F: Copy>(at: *mut c_void) -> F {
+pub(crate) unsafe fn function<F: Copy>(at: *mut c_void) -> F {
     const { assert!(size_of::<F>() == size_of::<*mut c_void>()) };
     // SAFETY: as the caller promises, and of a pointer's size, checked above.
     unsafe { std::mem::transmute_copy::<*mut c_void, F>(&at) }

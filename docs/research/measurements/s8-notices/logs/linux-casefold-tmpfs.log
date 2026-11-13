@@ -1,0 +1,16 @@
+# adacachy (Linux 7.2.9-2-cachyos, x86_64): a case-only rename on Linux's own case-insensitive
+# tmpfs, in a user and mount namespace of the test's.
+# uname -r; mkdir -p /tmp/s8p2-cf && unshare -rm sh -c '
+#   set -x; mount -t tmpfs -o casefold tmpfs /tmp/s8p2-cf || exit 1
+#   mkdir /tmp/s8p2-cf/d && chattr +F /tmp/s8p2-cf/d && lsattr -d /tmp/s8p2-cf/d; cd /tmp/s8p2-cf/d
+#   echo hi > foo; python3 -c "import os; os.rename(\"foo\", \"Foo\"); print(\"rename ok\")"; ls
+#   python3 -c "import os; print(os.stat(\"FOO\").st_ino == os.stat(\"foo\").st_ino)"
+#   mkdir Dir; python3 -c "import os; os.rename(\"Dir\", \"dIR\"); print(\"rename dir ok\")"; ls'
+7.2.9-2-cachyos
+-----------------F---- /tmp/s8p2-cf/d
+rename ok
+foo
+True
+rename dir ok
+Dir
+foo

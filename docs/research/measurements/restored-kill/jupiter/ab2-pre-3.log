@@ -1,0 +1,6 @@
+=== exec: Some(0) "exec-out\n" "exec-err\n"
+=== rm -f: Some(0) in 828.0236ms
+shards daemon 147556: the default bridge is 172.18.0.0/16
+shards daemon 147556: serving C:\Users\corph\AppData\Local\Temp\shards-tests\119172\eng-cp-19 through C:\Users\corph\AppData\Local\Temp\shards-tests\119172\eng-cp-19\requests, with up to 16777216 descriptors open
+shards daemon 147556: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+

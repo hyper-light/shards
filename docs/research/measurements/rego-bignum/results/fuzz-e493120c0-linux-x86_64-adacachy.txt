@@ -1,0 +1,37 @@
+# PM M537: fuzz.sh 300 at e493120c0 (carrier patch 62bcd355c1998945 on dc7d36014), adacachy,
+# shared (load 58 to 121 on 32 threads), nightly-2026-09-05 and the pinned 1.98.1 (which
+# builds cargo-fuzz, as CI) under /tmp; cargo's build lines left out.
+applied: 62bcd355c1998945 on dc7d360
+tools: 15 s; load: load average: 120.63, 102.70, 83.58
+host adacachy, Linux 7.2.9-2-cachyos x86_64, 32 cores, dc7d360, 2026-11-13T00:24:58Z; cargo-fuzz 0.13.1; rustc 1.100.0-nightly (0ed41eb41 2026-09-04)
+fuzz build: 77 s
+replay oom-2c3031fca23d849e4c554a649402e0be76035321: exit 0, Executed oom-2c3031fca23d849e4c554a649402e0be76035321 in 1157 ms, maxrss=480.5MiB
+replay oom-2f44b671f03f4747c5bfd562ead26e99b33f6d99: exit 0, Executed oom-2f44b671f03f4747c5bfd562ead26e99b33f6d99 in 0 ms, maxrss=55.3MiB
+replay oom-36ae0bf37f861e2c1c0a53790963b4d52e20913c: exit 0, Executed oom-36ae0bf37f861e2c1c0a53790963b4d52e20913c in 1 ms, maxrss=58.5MiB
+replay oom-4b431d4a9980bfc277352f46ea1c9d70669ec749: exit 0, Executed oom-4b431d4a9980bfc277352f46ea1c9d70669ec749 in 240 ms, maxrss=149.2MiB
+replay oom-56d2aa9c9126ae5b1404f8e4ac124e9bc19850b8: exit 0, Executed oom-56d2aa9c9126ae5b1404f8e4ac124e9bc19850b8 in 658 ms, maxrss=74.8MiB
+replay oom-b34d25a1ec612a7b3653f2119ee9c1c030311995: exit 0, Executed oom-b34d25a1ec612a7b3653f2119ee9c1c030311995 in 82 ms, maxrss=89.2MiB
+replay oom-b6644dc21fe88fed2b6fedf9c1ccc3f2413f56f2: exit 0, Executed oom-b6644dc21fe88fed2b6fedf9c1ccc3f2413f56f2 in 1 ms, maxrss=57.0MiB
+replay oom-c427225dc3cb87dfa8f80f3a903e006ecf5d9271: exit 0, Executed oom-c427225dc3cb87dfa8f80f3a903e006ecf5d9271 in 0 ms, maxrss=57.2MiB
+replay oom-e381e7bcec6803c4740f098b8a69a5e05e1fc362: exit 0, Executed oom-e381e7bcec6803c4740f098b8a69a5e05e1fc362 in 0 ms, maxrss=50.8MiB
+replay seed-abs-max: exit 0, Executed seed-abs-max in 7358 ms, maxrss=1282.3MiB
+replay seed-ceil: exit 0, Executed seed-ceil in 14582 ms, maxrss=291.7MiB
+replay seed-floor: exit 0, Executed seed-floor in 14568 ms, maxrss=293.8MiB
+replay seed-floor-max: exit 0, Executed seed-floor-max in 0 ms, maxrss=57.3MiB
+replay seed-format_int-10: exit 0, Executed seed-format_int-10 in 14908 ms, maxrss=328.0MiB
+replay seed-format_int-2: exit 0, Executed seed-format_int-2 in 2608 ms, maxrss=498.0MiB
+replay seed-round: exit 0, Executed seed-round in 15031 ms, maxrss=287.2MiB
+replay slow-unit-9672ac8d2f8a968b4c6bbbac5c5ab8e5b0358805: exit 0, Executed slow-unit-9672ac8d2f8a968b4c6bbbac5c5ab8e5b0358805 in 701 ms, maxrss=59.5MiB
+rego-builtins, 300 s: exit 0, Done 3172 runs in 313 second(s); rss: 1323Mb
+Slowest unit: 14 s:
+artifact_prefix='/tmp/rb2-fuzz/artifacts/'; Test unit written to /tmp/rb2-fuzz/artifacts/slow-unit-38df566349939e32dea25d0b4a3152e9a9a3c609
+Slowest unit: 17 s:
+artifact_prefix='/tmp/rb2-fuzz/artifacts/'; Test unit written to /tmp/rb2-fuzz/artifacts/slow-unit-f8b1c5141d4345f59abbf3b707012ba24d9cc472
+Slowest unit: 21 s:
+artifact_prefix='/tmp/rb2-fuzz/artifacts/'; Test unit written to /tmp/rb2-fuzz/artifacts/slow-unit-ad1f577260f903e0143fb89f9e96a0cd862f68e1
+slow-unit-38df566349939e32dea25d0b4a3152e9a9a3c609: Y2VpbApbDTgwMDAwMDAwMDAwZTAwMDI5MTc0NjgwXQk=
+slow-unit-ad1f577260f903e0143fb89f9e96a0cd862f68e1: Zmxvb3IKWw04MDAwMDAwOTAwMGUwMDAyOTE3NDY4MF0J
+slow-unit-f8b1c5141d4345f59abbf3b707012ba24d9cc472: Y2VpbApbDTgwMDA0MDAwMDAwZTAwMDI5MTc0NjgwXQk=
+rego, 60 s: exit 0, Done 191735 runs in 61 second(s)
+done 2026-11-13T00:33:43Z
+load after: load average: 58.11, 60.95, 70.22

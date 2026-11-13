@@ -123,6 +123,26 @@ pub fn take_ids(groups: &[libc::gid_t], gid: libc::gid_t, uid: libc::uid_t) -> b
     }
 }
 
+/// Gives every signal its default disposition and blocks none, as a new process has them
+/// (signal(7)), whatever init ignores or blocks: execve(2) keeps an ignored signal ignored
+/// and the mask as it was, and Rust's runtime ignores SIGPIPE in init before main (std
+/// `reset_sigpipe`, `sigpipe::DEFAULT`). A signal whose disposition cannot change keeps
+/// its default: SIGKILL and SIGSTOP, and the three musl keeps for itself (32 to 34), which
+/// its sigaction refuses. Whether the mask was set. Async-signal-safe: sigaction(2) and
+/// sigprocmask(2) alone, for a child of `clone`.
+pub fn signals() -> bool {
+    for sig in 1..=shards_abi::run::NSIG as libc::c_int {
+        // SAFETY: signal(2) setting a disposition; one it cannot set it refuses.
+        unsafe { libc::signal(sig, libc::SIG_DFL) };
+    }
+    // SAFETY: an empty set on this stack, then the mask set to it.
+    unsafe {
+        let mut none: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&raw mut none);
+        libc::sigprocmask(libc::SIG_SETMASK, &raw const none, std::ptr::null_mut()) == 0
+    }
+}
+
 /// Sets a resource limit (prlimit(2) of the caller), not through musl's setrlimit, which
 /// applies it as `take_ids` says its ID calls do; whether it could.
 pub fn rlimit(resource: libc::c_int, cur: libc::rlim_t, max: libc::rlim_t) -> bool {
@@ -163,4 +183,49 @@ pub fn limits() {
     set(libc::RLIMIT_NOFILE, 1_048_576, 1_048_576);
     set(libc::RLIMIT_NPROC, libc::RLIM_INFINITY, libc::RLIM_INFINITY);
     set(libc::RLIMIT_MEMLOCK, libc::RLIM_INFINITY, libc::RLIM_INFINITY);
+}
+
+#[cfg(test)]
+mod tests {
+    /// A child of a process that ignores SIGPIPE (as Rust's runtime leaves this test's and
+    /// init's), ignores another signal and blocks one has every signal at its default and
+    /// none blocked once [`super::signals`] has run: what it says on its exit status, a bit
+    /// for each that is not so.
+    #[test]
+    fn signals_are_a_new_processs_whatever_its_parent_ignored_or_blocked() {
+        // SAFETY: fork(2); the child calls async-signal-safe functions alone, then _exit(2).
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork: {}", std::io::Error::last_os_error());
+        if pid == 0 {
+            // SAFETY: async-signal-safe calls on sets and actions on this stack, then
+            // _exit(2), in the child alone.
+            unsafe {
+                libc::signal(libc::SIGUSR2, libc::SIG_IGN);
+                let mut usr1: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&raw mut usr1);
+                libc::sigaddset(&raw mut usr1, libc::SIGUSR1);
+                libc::sigprocmask(libc::SIG_BLOCK, &raw const usr1, std::ptr::null_mut());
+                let set = super::signals();
+                let mut ignored = false;
+                for sig in 1..=shards_abi::run::NSIG as libc::c_int {
+                    let mut old: libc::sigaction = std::mem::zeroed();
+                    ignored |= libc::sigaction(sig, std::ptr::null(), &raw mut old) == 0
+                        && old.sa_sigaction == libc::SIG_IGN;
+                }
+                let mut mask: libc::sigset_t = std::mem::zeroed();
+                libc::sigprocmask(libc::SIG_SETMASK, std::ptr::null(), &raw mut mask);
+                let blocked = libc::sigismember(&raw const mask, libc::SIGUSR1) == 1;
+                libc::_exit(i32::from(!set) | i32::from(ignored) << 1 | i32::from(blocked) << 2)
+            }
+        }
+        let mut status = 0;
+        // SAFETY: waitpid(2) of this test's own child.
+        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status), "the child ended by signal: {status:#x}");
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "1: the mask was not set; 2: a signal is still ignored; 4: SIGUSR1 is still blocked"
+        );
+    }
 }

@@ -1,0 +1,12 @@
+=== exec: Some(0) "exec-out\n" "exec-err\n"
+=== rm -f: Some(0) in 11.0810394s
+shards daemon 154644: the default bridge is 172.18.0.0/16
+shards daemon 154644: serving C:\Users\corph\AppData\Local\Temp\shards-tests\89800\eng-cp-7 through C:\Users\corph\AppData\Local\Temp\shards-tests\89800\eng-cp-7\requests, with up to 16777216 descriptors open
+shards daemon 154644: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+shards daemon 154644: VM 62896: not ready in 10s: its CPU time 1500 ms in user mode and 1203 ms in the kernel, its working set 49320 KiB, 12456 page faults; its 11 threads: waiting (WrAlertByThreadId), waiting (WrQueue), waiting (WrQueue), waiting (UserRequest), waiting (WrQueue), running, waiting (UserRequest), ready, ready, ready, waiting (WrAlertByThreadId); the host's memory 73986 MiB available of 126615 MiB
+shards daemon 154644: VM 62896: not ready in 20s: its CPU time 4390 ms in user mode and 1484 ms in the kernel, its working set 50556 KiB, 12765 page faults; its 11 threads: waiting (WrAlertByThreadId), waiting (WrQueue), waiting (WrQueue), waiting (UserRequest), waiting (WrQueue), waiting (UserRequest), ready, waiting (UserRequest), ready, waiting (UserRequest), waiting (WrAlertByThreadId); the host's memory 73403 MiB available of 126615 MiB
+shards daemon 154644: VM 62896: not ready in 30s: its CPU time 5609 ms in user mode and 1921 ms in the kernel, its working set 237796 KiB, 60296 page faults; its 17 threads: waiting (WrAlertByThreadId), waiting (UserRequest), ready, waiting (UserRequest), ready, ready, ready, waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (UserRequest), waiting (UserRequest); the host's memory 72252 MiB available of 126615 MiB
+[62896   49613079us WARN] the guest's signal connection is lost: the guest closed it before its end: its workload takes no more signals, terminal sizes, answers or execs, its command going on; execs that waited and failed with it: 0
+shards daemon 154644: container 3945cac9061bf5ab1187d96d8671f1ac83dd59682eb193307e26c735b6e8a055: its command not ended 10s after it was signalled, its microVM gone on with nothing of its end for 10s: its microVM killed
+shards daemon 154644: VM 91884 ended before its command did
+

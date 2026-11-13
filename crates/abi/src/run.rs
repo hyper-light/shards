@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 pub mod managed;
 pub mod members;
 pub mod nesting;
+pub mod notice;
 pub mod plug;
 pub mod quiesce;
 
@@ -717,6 +718,13 @@ pub mod builtin {
     /// command of the image's runs, and the microVM holds as for [`HOLD`], but the image's
     /// agents and harnesses start; the run ends as it is stopped.
     pub const ATTEND: u8 = 19;
+    /// What its host saw change in the directories it shares, told to the guest's own
+    /// inotify (D235): read from stdin until it closes, each a [`notice`](super::notice)
+    /// record, `TAG\0PATH\0`, PATH within the share whose virtio-fs tag is TAG. Each named
+    /// file is touched through a mount of TAG of the built-in's own, as
+    /// [`NOTICE_ID`](crate::NOTICE_ID), which its server answers without changing anything;
+    /// one gone, its directory.
+    pub const NOTICE: u8 = 20;
 
     /// [`STATS`]'s one argument, whose cgroup it reads (D231): none for the workload's, as
     /// `stats` reads it; [`RUN`](stats::RUN) for the run's, its command's and every

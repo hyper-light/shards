@@ -55,8 +55,9 @@ impl BuiltinError {
 }
 
 /// What a builtin call may read beyond its operands (OPA's `BuiltinContext`): the
-/// query's time, its seed for random numbers, and caches that live for one query.
-#[derive(Debug, Default)]
+/// query's time, its seed for random numbers, caches that live for one query, and the
+/// memory the evaluation can hold.
+#[derive(Debug)]
 pub struct Context {
     /// Nanoseconds since the epoch, fixed for the query (`time.now_ns`).
     pub time_ns: i64,
@@ -68,6 +69,25 @@ pub struct Context {
     /// Where more seed comes from once `seed` is read: the system's random source, as
     /// OPA's default Seed is crypto/rand's Reader; none for a seed given whole.
     pub fill: Option<Fill>,
+    /// The bytes the evaluation can hold, as its caller measured them when the query
+    /// started (crates/shards' `build::holdable`: what the host has available): a
+    /// number whose text would take more to write is refused, not made (D98's
+    /// number-text bound). Unbounded where the caller says nothing, as `holdable` is
+    /// where the host says nothing.
+    pub holdable: u64,
+}
+
+impl Default for Context {
+    fn default() -> Context {
+        Context {
+            time_ns: 0,
+            seed: Vec::new(),
+            seed_at: 0,
+            cache: HashMap::new(),
+            fill: None,
+            holdable: u64::MAX,
+        }
+    }
 }
 
 /// What fills a buffer with random bytes, or says why it could not.

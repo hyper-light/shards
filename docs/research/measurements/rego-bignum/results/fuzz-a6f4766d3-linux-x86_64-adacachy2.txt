@@ -1,0 +1,25 @@
+The first five-minute fuzz, as kiln returned it (the carrier's fuzz.sh of the time, at
+a6f4766d3: SCHOOL 24, before the scratch and the summed bound). Its replays did not run:
+the host has no GNU time (fixed since: fuzz.sh times them with ptime.py).
+
+/dev/nvme0n1p2  1.9T  1.8T   55G  98% /home
+tmpfs            30G  1.8G   29G   6% /tmp
+no GNU time
+applied: 502d25eeac017540 on 41e5a0943; changed: 24
+host adacachy2, Linux 7.3.3-1-cachyos x86_64, 32 cores, 2026-11-12T22:35:57Z; cargo-fuzz 0.13.1; rustc 1.100.0-nightly (0ed41eb41 2026-09-04)
+fuzz build: 45 s
+rego-builtins, 300 s: exit 0, Done 4636 runs in 342 second(s); rss: 1335Mb
+Slowest unit: 13 s:
+artifact_prefix='/tmp/rb2-fuzz/artifacts/'; Test unit written to /tmp/rb2-fuzz/artifacts/slow-unit-38df566349939e32dea25d0b4a3152e9a9a3c609
+Slowest unit: 16 s:
+artifact_prefix='/tmp/rb2-fuzz/artifacts/'; Test unit written to /tmp/rb2-fuzz/artifacts/slow-unit-d4907bfc1d15b3ef0f1aa47ece36c4eb164fbab1
+Slowest unit: 21 s:
+artifact_prefix='/tmp/rb2-fuzz/artifacts/'; Test unit written to /tmp/rb2-fuzz/artifacts/slow-unit-8f1216e3cede4bcba0a7546ae076412783d7a46d
+Slowest unit: 43 s:
+artifact_prefix='/tmp/rb2-fuzz/artifacts/'; Test unit written to /tmp/rb2-fuzz/artifacts/slow-unit-0887b5a1e06d569c711cd44037c4c17ec962c94c
+slow-unit-0887b5a1e06d569c711cd44037c4c17ec962c94c: cm91bmQKWw04MDAwMDAwMDAwMGUwMDA0OTE3NDY4MF0J
+slow-unit-38df566349939e32dea25d0b4a3152e9a9a3c609: Y2VpbApbDTgwMDAwMDAwMDAwZTAwMDI5MTc0NjgwXQk=
+slow-unit-8f1216e3cede4bcba0a7546ae076412783d7a46d: cm91bmQKWw04MDAwMDI3NTgwOGUwMDAyOTE3NDY4MF0J
+slow-unit-d4907bfc1d15b3ef0f1aa47ece36c4eb164fbab1: cm91bmQKWw04MDAwMDU1MTYxNWUwMDAyOTE3NDY4MF0J
+rego, 60 s: exit 0, Done 219546 runs in 61 second(s)
+done 2026-11-12T22:43:25Z

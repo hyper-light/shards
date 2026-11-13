@@ -1,0 +1,23 @@
+Fri Nov 13 01:11:28 AM UTC 2026
+2a3b623565016b8636b885eb49fb79bd015c9525
+the endpoint takes only its enrolled controller's key: killed=True restored_green=True
+    mutant:   1.2s | running 1 test | test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s | error: test failed, to rerun pass `-p shards-remote --lib` | thread 'control::tests::a_controller_not_enrolled_is_refused_at_its_handshake' (2934470) panicked at crates/remote/src/control.rs:286:9:
+    restored: 0.6s | running 1 test | test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+the controller takes only the microVM's pinned key: killed=True restored_green=True
+    mutant:   0.7s | running 1 test | test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s | error: test failed, to rerun pass `-p shards-remote --lib` | thread 'control::tests::an_endpoint_not_the_pinned_vm_is_refused_at_its_handshake' (2935324) panicked at crates/remote/src/control.rs:301:9:
+    restored: 0.5s | running 1 test | test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+the control connection is its own protocol: killed=True restored_green=True
+    mutant:   0.5s | running 1 test | test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s | error: test failed, to rerun pass `-p shards-remote --lib` | thread 'control::tests::a_peer_of_another_protocol_is_refused' (2936470) panicked at crates/remote/src/control.rs:315:9:
+    restored: 0.5s | running 1 test | test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+access_denied reads as a key not enrolled: killed=True restored_green=True
+    mutant:   0.4s | running 1 test | test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s | error: test failed, to rerun pass `-p shards-remote --lib` | thread 'control::tests::a_controller_not_enrolled_is_refused_at_its_handshake' (2937450) panicked at crates/remote/src/control.rs:287:9: |   left: Transport(This) |  right: NotEnrolled(This)
+    restored: 0.5s | running 1 test | test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+a lane's first frame is a subscription's length: killed=True restored_green=True
+    mutant:   0.5s | running 1 test | test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s | error: test failed, to rerun pass `-p shards-remote --lib` | thread 'control::tests::a_lane_of_no_kind_is_refused' (2945300) panicked at crates/remote/src/control.rs:437:9: |   left: Ok(None) |  right: Err(Protocol)
+    restored: 0.5s | running 1 test | test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+a lane is of a member's stdin, stdout or stderr: killed=True restored_green=True
+    mutant:   0.4s | running 1 test | test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s | error: test failed, to rerun pass `-p shards-remote --lib` | thread 'control::tests::a_lane_of_no_kind_is_refused' (2948054) panicked at crates/remote/src/control.rs:433:9: |   left: Ok(Some((Stdio { run: RunId([7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), generation: 3, member: 2, stream: Stderr, offset: 0 }, 58))) |  right: Err(Protocol)
+    restored: 0.5s | running 1 test | test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+exit 0
+Fri Nov 13 01:11:34 AM UTC 2026
+MUTATE_DONE

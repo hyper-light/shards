@@ -1,0 +1,17 @@
+
+
+
+== 2a3b623 Plan step 11: the agent-control endpoint's connection, its microVM's pinned key and its lanes' first frames (D238) 2026-11-13T09:16:32.1175502Z 10.0.26200.0
+== cargo test -p shards-remote --lib exit 0
+test control::tests::a_close_reads_as_its_cause ... ok
+test control::tests::a_lane_of_no_kind_is_refused ... ok
+test control::tests::a_lanes_refusal_reads_back_as_its_reason ... ok
+test control::tests::step_5s_subscriptions_open_a_members_lanes ... ok
+test control::tests::a_peer_of_another_protocol_is_refused ... ok
+test control::tests::a_controller_not_enrolled_is_refused_at_its_handshake ... ok
+test control::tests::an_endpoint_not_the_pinned_vm_is_refused_at_its_handshake ... ok
+test control::tests::an_enrolled_controller_and_its_pinned_vm_connect_on_aes_256_gcm ... ok
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.06s
+== cargo clippy -p shards-remote --all-targets exit 0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 09s
+== done 2026-11-13T09:19:13.7627062Z status 0
