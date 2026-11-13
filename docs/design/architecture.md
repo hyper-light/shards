@@ -22612,6 +22612,13 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   slowest boot and refusal (PM M541), and ROOT decided on 2026-11-13 that these bounds are
   learned where they run (docs/research/s37-decision-inventory.md, row 2). An attach of a
   guest whose first client reaps it as it is held is refused `Exited` (PM M541).
+- On Windows a guest's process is the `shards` that booted its VM, which holds the VM in a
+  Job that ends with it (D141); it outlives a client that crashes or loses its guest, so
+  `attach` takes it back as on Unix (parity step 14): held by a handle of its own with query,
+  synchronize and terminate rights, which keeps its pid its own while held, its start that
+  handle's GetProcessTimes creation time, its end waited on and made through it
+  (TerminateProcess), which ends its Job and so its VM. Where Windows refused this before, the
+  refusal was no limit of its API.
 - `stop` kills the VM's process at once: the VMM has no host-to-guest power-off
   (vm/runtime.rs), so the page cache a guest held is lost, and a clean stop is the
   client's (ask the guest to sync and power off, `wait_for` its `PowerOff`).
