@@ -98,17 +98,21 @@ D241.
 
 ### Light results
 
-| host | revision | what ran | result |
-| --- | --- | --- | --- |
-| Linux x86_64 (adacachy, CachyOS 7.2.9, rustc 1.98.1) | 60361411d (the squashed tree's code) | `cargo test -p shards-init` | 235 passed, 1 ignored (the five `enter::tests` among them) |
-| the same | 51227851d | `cargo test -p shards-abi -p shards-ipc -p shards-cmdline` | all pass (abi `members::tests` 13 of them) |
-| the same | 51227851d | `cargo test -p shards --bin shards -- devices:: spec:: commands:: workload::` | 22 passed (`a_member_exec_takes_nothing_its_member_has_not`, `a_member_is_found_by_its_name`, `a_member_commands_variables_go_as_given_for_init_to_lay_over_its_members` among them) |
-| the same | 51227851d | `cargo clippy -p shards-init -p shards-abi -p shards-ipc -p shards-cmdline -p shards-testguest --all-targets --target x86_64-unknown-linux-musl -- -D warnings` | clean |
+One host, as the person's rule of 2026-11-13 has it: Linux x86_64 (adacachy, CachyOS 7.2.9,
+rustc 1.98.1), at bb88be4c8, the tree that lands.
+
+| what ran | result |
+| --- | --- |
+| `cargo fmt --all --check` | clean |
+| `cargo clippy -p shards-init -p shards-abi -p shards-ipc -p shards-cmdline -p shards-testguest -p shards --all-targets -- -D warnings` | clean (tests/member_exec.rs's real-VM tests among what it compiled) |
+| `cargo test -p shards-init` | 235 passed, 1 ignored (the five `enter::tests` among them) |
+| `cargo test -p shards-abi -p shards-ipc -p shards-cmdline` | all pass (abi's `members::tests` among them) |
+| `cargo test -p shards --bin shards -- devices:: spec:: commands:: workload::` | 22 passed (`a_member_exec_takes_nothing_its_member_has_not`, `a_member_is_found_by_its_name`, `a_member_commands_variables_go_as_given_for_init_to_lay_over_its_members` among them) |
 
 ### Guards removed (R10)
 
 Each guard this slice adds, removed alone, fails the unit test named; each test passes with
-it in place (adacachy, the revisions above).
+it in place (adacachy, against this slice's code before its commits were squashed).
 
 | | guard | removed by | test that fails |
 | --- | --- | --- | --- |
