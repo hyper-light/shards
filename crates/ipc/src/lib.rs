@@ -349,6 +349,13 @@ pub mod kind {
     /// (shards_net::encode_grants), after its `NET_POLICY`, once; answered with the same kind
     /// and the run's CA's certificate (DER), made for those hosts alone.
     pub const NET_CREDENTIALS: u8 = 97;
+    /// Network process ⇄ its run host: a credential's lease (D242). The network process asks
+    /// it just in time, by reference, as a flow first needs its value: the ask's id (4
+    /// bytes, big-endian), then the reference (shards_net::lease::encode_ask). Its run host
+    /// answers with the same kind, by that id: how long the lease lives and the value, or why
+    /// not, typed (shards_net::lease::encode_answer). Asked only where the run has credential
+    /// grants (`NET_CREDENTIALS`), of a run host that relays it to its orchestrator.
+    pub const NET_LEASE: u8 = 100;
     /// Daemon → a running microVM's VM process: a run joins its network (D119). Its number
     /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
     /// own connection to the daemon, on which the joiner's run goes as a warm VM's does

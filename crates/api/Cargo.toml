@@ -17,6 +17,8 @@ shards-ipc = { path = "../ipc" }
 shards-remote = { path = "../remote" }
 triomphe = { version = "=0.1.17", default-features = false, features = ["std", "unsize"] }
 unsize = "=1.1.0"
+# A credential's bytes wiped as they drop (D242), as shards wipes its own (google.rs).
+zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
