@@ -231,6 +231,12 @@ Windows through cargo-xwin, then `cargo test`.
   through `Opened`, so both endpoints read in `opened`, as Shards' own server does; a daemon
   run's command is PID 1 of its own PID namespace, so the guest program takes PID 1's role only
   when its kernel's command line names a mode (`control_end=`).
+- The measurements, ROOT's, are PM M540: HVF r411 on adas-mac-studio.local and KVM on
+  adacachy, 32 microVMs and 5 rounds each, the harness at 66113379c. ROOT's summaries are in
+  `results/` as ROOT wrote them: `hvf-r411-summary.md` (p50s, and the round trip's p99),
+  `kvm-adacachy-summary-table.md` (n, p50, p90, p99 and max) and `kvm-adacachy-head.txt` (the
+  host and the knobs). The raw `summary.txt` and `records.jsonl` are still on those hosts.
+  WHP's run is owed. D238 records the decision.
 
 ## Limits
 

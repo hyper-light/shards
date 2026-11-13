@@ -1,0 +1,11 @@
+# adacachy (CachyOS, Linux 7.2.9), merged HEAD 6fcef62bb; scripts/lint's aarch64-unknown-linux-gnu arm for the crates the change reaches:
+# SHARDS_HELPERS=skip SHARDS_INIT_BINARY=SHARDS_SERVER_BINARY=/usr/bin/true CC/AR=scripts/zig-cc,zig-ar ZIG_TARGET=aarch64-linux-gnu cargo clippy -p shards-remote -p shards --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
+head=6fcef62bb1310cefb55b7b15a1a52b6e9529f745
+host=adacachy Linux 7.2.9-2-cachyos load=63.07 69.38 66.36
+rustc 1.98.1 (48a229cea 2026-09-01)
+0.17.0
+aarch64-apple-darwin aarch64-pc-windows-msvc aarch64-unknown-linux-gnu aarch64-unknown-linux-musl x86_64-pc-windows-msvc x86_64-unknown-linux-gnu x86_64-unknown-linux-musl 
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 49.85s
+clippy_rc[aarch64-unknown-linux-gnu]=0
+cleaned=yes
+exit=0
