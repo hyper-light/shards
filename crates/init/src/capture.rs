@@ -966,6 +966,28 @@ mod tests {
         assert!(pipe.fd().is_none());
     }
 
+    /// Waits until a read of `pipe` finds bytes or its end, never EAGAIN: readable, or hung
+    /// up as its every writer has closed it, which follows the writers alone, with no clock.
+    /// A parallel test's fork (allocation_refusal_keeps_its_resource_cause starts this binary
+    /// again) holds a copy of every descriptor until its exec closes them (O_CLOEXEC); a read
+    /// meanwhile found the pipe empty and not yet ended, so no record came and `receive`
+    /// waited without end (a 17-minute hang in a parallel run on adacachy2).
+    fn readable(pipe: &Pipe) {
+        let mut ready = libc::pollfd {
+            fd: pipe.fd().unwrap(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            // SAFETY: poll(2) of one pollfd on this stack, the pipe's read end.
+            match unsafe { libc::poll(&raw mut ready, 1, -1) } {
+                1.. => return,
+                _ if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => {}
+                n => panic!("poll: {n}: {}", io::Error::last_os_error()),
+            }
+        }
+    }
+
     #[test]
     fn native_pipes_preserve_binary_channels_offsets_and_actual_eof() {
         let payload = b"\0\xff\x80\n\x1b[2Jno-newline";
@@ -982,6 +1004,7 @@ mod tests {
             let bytes = receive(&mut capture, &mut peer);
             assert_eq!(Record::decode(&bytes).unwrap().event, Event::Open(label));
             grant(&mut capture, &mut peer, 0, channel, capacity);
+            readable(&pipe);
             capture.read(0, channel, &mut pipe).unwrap();
             let bytes = receive(&mut capture, &mut peer);
             assert_eq!(
@@ -994,6 +1017,7 @@ mod tests {
                 }
             );
             grant(&mut capture, &mut peer, 0, channel, capacity);
+            readable(&pipe);
             capture.read(0, channel, &mut pipe).unwrap();
             let bytes = receive(&mut capture, &mut peer);
             assert_eq!(
