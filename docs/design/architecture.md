@@ -6513,7 +6513,7 @@ replaced by:
   no deadline. A machine holds as many connections of clients it has not enrolled as it holds
   open invitations, none while it holds none, and where every place is taken, a newer stranger
   takes the place of the one that has held it longest without joining, which is let go
-  (server.rs `connected`).
+  (server.rs `judged`), once the machine has said whom its key is.
 - *Handshakes held at once* (none before): a daemon holds as many handshakes from keys not yet
   known as its descriptors allow (`Host::handshakes`: the process's limit,
   `platform::descriptor_limit`, as each connection served may hold a command and its stdio),
@@ -6595,10 +6595,15 @@ next probe, its client's connection seen ended there (relay.rs `gone`: recv(2) w
 and MSG_DONTWAIT, which takes nothing and leaves the reader's descriptor blocking; on Windows,
 PeekNamedPipe's broken pipe), as its client's input is read no further than its first chunk
 before the daemon's flow control lets it. A host's start runs on a worker of its own (server.rs `start_apart`,
-`Event::Started`), and so does a join (`join_apart`, `Event::Joined`), whose record a host
-syncs to disk, apart from the driver, which acknowledges every client's packets
-meanwhile: what the client sends after its request, and on the control streams that steer the
-command, is read once the start has ended, its flow control holding it back. On the driver, a
+`Event::Started`), and so do a join (`join_apart`, `Event::Joined`), whose record a host
+syncs to disk, and the machine's verdict on a key as its handshake ends (`judge_apart`,
+`Event::Judged`: the client it enrolled under it, or how many invitations it holds), whose
+files it reads, apart from the driver, which acknowledges every client's packets meanwhile;
+nothing a peer sends is read before its verdict. On the driver, a verdict read from a disk
+under load held up every other client's handshakes and acknowledgements as each handshake
+ended, a moving machine's import among them (the reading of moved.rs's live move failing on HVF
+at dc7f45bc6; its next run there is this change's check). What the client sends after its
+request, and on the control streams that steer the command, is read once the start has ended, its flow control holding it back. On the driver, a
 start longer than a client's probe timeout and window ended that client's connection and held
 up every other client's acknowledgements: the tests' commands' program, built by cargo at its
 first start, did so to every test that started one first (`tests/loopback.rs` builds it
@@ -6622,9 +6627,11 @@ handshake, unheard; a daemon reached before slower to shake hands than ever, by 
 slowest but within a probe timeout, answered, a relay holding what it sends back, red with the
 slowest handshake a deadline; a process frozen 200 ms (SIGSTOP) while a command trickles
 through it keeping its connections, red with no absence taken; a daemon slow to answer a fresh
-client waited for, red with its handshake seeding the window; a slow start, and a slow join, holding up no other client, red
-with each on the driver; and the relays' backpressure as before: 8 MiB crossing whole, a
-command that reads no stdin holding up no other).
+client waited for (a stand-in's driver held in its handler), red with its handshake seeding the
+window; a slow start, a slow join and a slow verdict on one key holding up no other client, the
+stranger refused once its verdict is let go, red with each on the driver; and the relays'
+backpressure as before: 8 MiB crossing whole, a command that reads no stdin holding up no
+other).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
