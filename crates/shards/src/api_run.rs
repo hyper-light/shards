@@ -3025,7 +3025,7 @@ mod hosted {
             {
                 let started = std::thread::Builder::new()
                     .name("api-run output".into())
-                    .spawn_scoped(scope, move || records(live, reading));
+                    .spawn_scoped(scope, move || records(live, reading, &launched.vm));
                 if let Err(e) = started {
                     let _ = writeln!(io::stderr(), "shards api-run: its members' output: {e}");
                 }
@@ -3668,8 +3668,10 @@ mod hosted {
     }
 
     /// Reads the run's managed output until it ends: each member's bytes to the
-    /// orchestrator within its room, its channel's end, each record's credit renewed.
-    fn records(live: &Live<'_>, mut capture: Stream) {
+    /// orchestrator within its room, its channel's end, each record's credit renewed. `vm`,
+    /// the run's VM: nothing of it, as yet.
+    fn records(live: &Live<'_>, mut capture: Stream, vm: &shards_ipc::Child) {
+        let _ = vm;
         loop {
             let mut header = [0u8; protocol::HEADER];
             if capture.read_exact(&mut header).is_err() {
@@ -4237,6 +4239,70 @@ mod hosted {
             assert_eq!(*lock(&live.asks_end), None);
             assert!(lock(&live.flows).ungranted);
             let _ = vm.wait();
+        }
+
+        /// Do have a run's VM bring its managed output a frame its host cannot take, here one
+        /// of no record's kind; and end that output at a frame's start, as a VM does as its
+        /// run ends. Expect: the first to end the run's asks failed in its words, its VM killed
+        /// for it, so that no run waits for its `STOP` on a failure its host saw (D258); the
+        /// second to end nothing of the run, whose end is its VM's to say.
+        #[test]
+        fn members_output_its_host_cannot_take_ends_its_run_failed_saying_why() {
+            for refused in [true, false] {
+                let dir = shards_testdir::TempDir::new("api-records").unwrap();
+                let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+                let (capture, its_vms) = Stream::pair().unwrap();
+                let (link, _vm_link) = Stream::pair().unwrap();
+                let live = Live {
+                    answers: &answers,
+                    ends: Ends::kept_in(dir.path()),
+                    flows: Mutex::new(Flows::default()),
+                    feeds: Mutex::new(HashMap::new()),
+                    fed: std::sync::Condvar::new(),
+                    capture: None,
+                    link: Mutex::new(link),
+                    held: Mutex::new(Some(HashMap::new())),
+                    asks_end: Mutex::new(None),
+                    next_exec: std::sync::atomic::AtomicU64::new(0),
+                    home: dir.path(),
+                    members: &[],
+                    roots: &[],
+                    devices: Mutex::new(Some(Vec::new())),
+                    guest_times: Mutex::new(Some(Vec::new())),
+                    rates: Mutex::new(Some(Vec::new())),
+                    lanes: Mutex::new(Some(HashMap::new())),
+                    next_lane: std::sync::atomic::AtomicU64::new(0),
+                    plugged: Mutex::new(HashMap::new()),
+                    notices_due: Mutex::new(None),
+                    notices: Mutex::new(Vec::new()),
+                    leasing: None,
+                };
+                let args = [OsStr::new("-c"), OsStr::new("sleep 30")];
+                let vm = shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap();
+                if refused {
+                    (&its_vms)
+                        .write_all(&protocol::header(protocol::kind::STDOUT, 0))
+                        .unwrap();
+                } else {
+                    drop(its_vms);
+                }
+                records(&live, capture, &vm);
+                if refused {
+                    assert_eq!(
+                        *lock(&live.asks_end),
+                        Some(super::super::AsksEnd::Failed(format!(
+                            "its VM's members' output broke: a frame of kind {}, no record's",
+                            protocol::kind::STDOUT
+                        )))
+                    );
+                    assert_eq!(vm.wait().unwrap(), 128 + libc::SIGKILL);
+                } else {
+                    assert_eq!(*lock(&live.asks_end), None);
+                    assert_eq!(vm.try_wait(), None, "its VM, killed for an end of its own");
+                    let _ = vm.kill(libc::SIGKILL);
+                    let _ = vm.wait();
+                }
+            }
         }
 
         /// A run's share process ends as its run ends, by its own going: [`Shares::end`]
