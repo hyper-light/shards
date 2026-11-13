@@ -52,7 +52,7 @@ test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; 
 == red-held-attached-still exit 101: the_held_connections_wait_reads_a_word_its_log_keeps FAILED (engine_ring.rs:1018)
 == api-pause exit 0 (1 passed); clippy exit 0
 
-== kiln run r327, at b97d37664 (the reworked commit 3c93f59e9 merged with origin/main d9f759025): landed
+== kiln run r327, at b97d37664 (the reworked commit 3c93f59e9 merged with origin/main d9f759025)
 == green (16:23:31Z) exit 0 (16:24:31Z)
 test the_held_connections_wait_reads_a_word_its_log_keeps ... ok
 test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... ok
@@ -88,3 +88,27 @@ test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; 
 test client::tests::a_pause_weighs_the_dials_cost_against_lateness ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 0.00s
 == clippy (16:24:41Z) exit 0 (16:25:00Z)
+
+== kiln run r341, at 4130e0725 (main moved: b97d37664 and the record's commit c0472af14 merged with
+   origin/main b87c0ce19): landed
+== green (16:27:25Z) exit 0 (16:28:53Z)
+test the_held_connections_wait_reads_a_word_its_log_keeps ... ok
+test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... ok
+test a_settle_of_a_kind_seen_goes_on_past_w_star_while_its_slots_are_freed ... ok
+test a_settle_of_a_kind_seen_is_refused_a_whole_w_star_after_its_last_freed_slot ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.37s
+== red-main-window (16:28:53Z) exit 101 (16:29:01Z)
+test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... FAILED (engine_ring.rs:903:13)
+  left: Err(Stalled { now: 21, want: 0, stall: Stall { waited: 220651625, over: 220651625, least: [0, 176722000], slowest: 176722000 } })
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.29s
+== red-sizes-shared (16:29:01Z) exit 101 (16:29:07Z)
+test a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered ... FAILED (engine_ring.rs:900:13)
+  left: Err(Stalled { now: 21, want: 0, stall: Stall { waited: 12757333, over: 12757333, least: [0, 6010875], slowest: 12263833 } })
+test a_settle_of_a_kind_seen_goes_on_past_w_star_while_its_slots_are_freed ... FAILED (engine_ring.rs:968:56, its lookup of its record by kind)
+test a_settle_of_a_kind_seen_is_refused_a_whole_w_star_after_its_last_freed_slot ... FAILED (engine_ring.rs:935:56, likewise)
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.11s
+== red-held-attached-still (16:29:07Z) exit 101 (16:29:12Z)
+test the_held_connections_wait_reads_a_word_its_log_keeps ... FAILED (engine_ring.rs:1023:5, assert!(held_attached(&r, 3)))
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.36s
+== api-pause (16:29:12Z) exit 0 (16:29:19Z): test client::tests::a_pause_weighs_the_dials_cost_against_lateness ... ok (1 passed; 165 filtered out)
+== clippy (16:29:19Z) exit 0 (16:29:42Z)

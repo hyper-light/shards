@@ -490,8 +490,10 @@ waits. Neither shows a defect of the ring.
 
 Each red is a patch of the cure's own code restoring one old rule, the same unit tests run on it. The
 unit tests take no VM: the settle is fed the looks of ROOT's HVF run, and the log's parser and the held
-wait are fed the CI run's lines. At the landed merge b97d37664 ([r23](logs/r23-g71-settle-held-light.txt),
-[cure-g71-light.sh](cure-g71-light.sh), kiln run r327):
+wait are fed the CI run's lines. At the merge b97d37664 ([r23](logs/r23-g71-settle-held-light.txt),
+[cure-g71-light.sh](cure-g71-light.sh), kiln run r327), and the same again, red for the same reasons, at
+the landed merge with main b87c0ce19, 4130e0725 (r341: main's window refused at 220.65 ms, the sizes shared
+at 12.76 ms, W* 12.26 ms):
 
 | Run | Code | Result |
 |---|---|---|
