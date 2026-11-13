@@ -1278,9 +1278,9 @@ fn storm() -> Result<(), String> {
 /// Watches the storm's main thread from its snapshot on, by the count it adds to at each
 /// step and each look at what it waits for, a look a second, beside the bytes the host's
 /// stream carries through the echo ([`ECHOED`]); each watcher learns both paces from its
-/// own looks ([`Watch`]). Once the count has stood still for more looks than it ever stood
-/// still for before (its own pace, as this host runs it: on a loaded or nested host its
-/// steps take seconds), a watcher says so in a line ([`standing_still`]), once for each
+/// own looks ([`shards_testguest::stall::Watch`]). Once the count has stood still for more
+/// looks than it ever stood still for before (its own pace, as this host runs it: on a
+/// loaded or nested host its steps take seconds), a watcher says so in a line ([`standing_still`]), once for each
 /// beat it stands still at, which the host, waiting on something new, hears. Once, besides,
 /// the echo has carried nothing for more looks than it ever went without while it carried,
 /// the stand is a stall and the kernel says all it can of it ([`stood_still`]), once. What
