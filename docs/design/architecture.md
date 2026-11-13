@@ -23462,6 +23462,22 @@ Results:
   - M2, an expired finite retry let through to the unbounded handshake:
     `finite_owned_retry_expiry_cannot_start_an_unbounded_handshake` failed, counting a late
     dial (1, not 0).
+- CI at f5c0c8b04, aarch64 Windows, two of the lib's tests failed (cured on main by the
+  lane after):
+  - `borrowed_tests::dribbled_reply_does_not_renew_deadline`: Windows' dial waits for its
+    connection to complete, to its deadline, and says that deadline's end as TimedOut
+    (`shards_afunix`), which `handshake_until` typed as the dial's own failure
+    (`Io { phase: Dial }`), where each later step's deadline is typed `Expired` by the clock
+    after the step. So an attempt whose dial outlasted its patience, the least wait the
+    streams keep (`kept_wait`, WSAPoll's millisecond or more), was taken for its end rather
+    than asked again with more. A dial its deadline passed in is `Expired { phase: Dial }`.
+  - `physical::report::windows::tests::pending_private_read_keeps_cells_until_positive_cancel_completion`:
+    its deadline, `Instant::now().checked_add(kept_wait())`, took its now before the
+    measure, so it was past as `frame` began; and `frame` judged its deadline before it
+    issued a read, so none was left pending. `frame` judges its deadline where a read waits
+    (`await_read`), a read always under way by then, and the test's deadline is taken after
+    the measure.
+
 Not run: these on Linux and Windows (Linux's CPU clock reader, Windows' process tree, the
 Windows report test; CI's matrix); boot.rs's real-VM tests on HVF, KVM x86_64, KVM arm64 (L1)
 and WHP (ROOT's); scripts/lint.
