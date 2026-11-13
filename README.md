@@ -76,7 +76,8 @@ chmod +x shards-$os-$arch && mv shards-$os-$arch ~/.local/bin/shards
 ```
 
 On Linux, `shards-linux-amd64-musl` and `shards-linux-arm64-musl` are static, for any
-distribution; on Windows, download `shards-windows-amd64.exe`. Or build it from source with
+distribution; on Windows, download `shards-windows-amd64.exe` or `shards-windows-arm64.exe`.
+Or build it from source with
 Rust 1.98 (pinned by the toolchain file):
 
 ```sh
@@ -330,12 +331,12 @@ saved here and resumed there where it was, its image, files and volumes with it;
 
 ## Where things stand
 
-| | Today (2026-11-07) |
+| | Today (2026-11-12) |
 |---|---|
 | MicroVMs on Apple silicon Macs, x86_64 and arm64 Linux, and x86_64 Windows | Work: booted directly and made from images, repeated runs served from warm copies |
 | MicroVMs on arm64 Windows | Booted, saved and restored, through the Windows Hypervisor Platform; tested on an emulated host only, its full test suite not yet passed |
 | Snapshots, and saving a running microVM whole | Every host above |
-| Moving a running microVM to another machine | Saved and resumed there, on every host; live on macOS, x86_64 Linux and x86_64 Windows, built on arm64 Linux and arm64 Windows. Tested between two homes on one machine |
+| Moving a running microVM to another machine | Saved and resumed there, on every host; live on macOS, x86_64 Linux and x86_64 Windows, built on arm64 Linux and arm64 Windows. Tested between two Linux machines and between two homes on one machine; machines whose CPUs differ move microVMs through a CPU baseline (`shards configure cpu`), built on macOS and Linux |
 | Disks, folders and volumes plugged into a running microVM, disks grown | macOS, Linux and Windows; a host's PCI device plugged in on Linux, tested nested with a test device |
 | Images, Dockerfiles and Agentfiles | Pulled, pushed and built, every `RUN` step in a microVM of the build's own, for other CPUs too under emulation |
 | Many agents in one microVM, each in its own domain | Works, from an Agentfile: each agent's own processes, files, networks and devices, and nothing it isn't granted |
@@ -364,7 +365,7 @@ the microVMs running from it: `shards stop vm ubuntu` stops each.
 | `shards create vm IMAGE [COMMAND]` | Make a microVM without starting it |
 | `shards attach vm NAME` | Join your terminal to a running microVM's command; ctrl-p ctrl-q leaves it running |
 | `shards start vm NAME` · `shards restart vm NAME` | Start a stopped microVM again, its files as it left them; stop one and start it again |
-| `shards exec vm NAME COMMAND` | Run a command in a running microVM |
+| `shards exec vm NAME COMMAND` | Run a command in a running microVM; `--for MEMBER` runs it inside one of its agents or harnesses, confined as that member is |
 | `shards stop vm NAME` · `shards kill vm NAME` | Stop a microVM: its stop signal, then SIGKILL once its grace is up; or kill it |
 | `shards pause vm NAME` · `shards unpause vm NAME` | Freeze a microVM where it is, every vCPU and device, at no CPU; let it run on |
 | `shards wait vm NAME` | Wait for a microVM to stop, and print its command's exit status |
@@ -382,6 +383,7 @@ the microVMs running from it: `shards stop vm ubuntu` stops each.
 | `shards read logs NAME` · `shards watch logs NAME` | What a microVM's command printed; what it prints, as it prints it |
 | `shards read processes NAME` · `shards watch processes NAME` | The processes a microVM's agents started and ended, each whole, as the kernel saw them; as they come |
 | `shards read ports NAME` | Which of a microVM's agents each published port reaches; for what its own engine made, who reaches each port it declares or listens on, and what would declare one it listens on that none reaches |
+| `shards read metrics NAME` | A microVM's metrics as an OpenTelemetry request (OTLP JSON): CPU, memory, tasks and block I/O of its run, its workload and each agent and harness, read when you ask |
 | `shards read changes NAME` | What a microVM changed of its image's files |
 | `shards watch vms [NAME...]` · `shards watch system` | What microVMs take of your machine, live; what happens to microVMs and images, as it happens |
 | `shards copy vm NAME:PATH PATH` · `shards copy vm PATH NAME:PATH` | Copy files out of a microVM, or into one |
@@ -401,8 +403,10 @@ the microVMs running from it: `shards stop vm ubuntu` stops each.
 | `shards run daemon` · `shards stop daemon` | The daemon that serves runs from warm microVMs, which the first run starts; end it and its runs. It keeps up to `SHARDS_POOL` microVMs ready for each image you run (default 2), and none once the image has gone unused for `SHARDS_POOL_KEEP` seconds (default 600) |
 | `shards configure guest --kernel FILE --init FILE` | Choose the kernel and shards-init runs boot, in place of shards' own |
 | `shards configure disk [--build-cache-max N%\|SIZE] [--log-history SIZE] ...` | How much of your disk shards keeps: what the build cache always keeps, the most it keeps, and the disk it leaves free (`--build-cache-reserve`, `--build-cache-max`, `--build-cache-free`; 10%, 80% and 20% of the disk by default), and the most a run's log keeps of its newest output (`--log-history`, 1 GiB by default). A change takes at the next build or run. Alone, it shows each setting; `--reset` brings back the defaults |
+| `shards configure cpu --baseline CONTEXT[,CONTEXT...]` · `shards inspect cpu` | The CPU each microVM this home starts is told: what this machine and each context's machine all have, so that its microVMs move among them; `--none` takes it away |
 | `shards run daemon --listen ADDR:PORT` | Let machines you invite run shards on this one, over QUIC on UDP `ADDR:PORT`: run it where the microVMs should run, such as a Linux machine with a GPU. Nothing is reachable until you invite a machine, and it reaches only what you could do here with shards |
 | `shards invite client --name NAME --output FILE` | An invitation, a file only you can read, which lets one machine join this one as `NAME`, within an hour. `shards list invitations`, `shards remove invitation NAME`, `shards list clients` and `shards remove client NAME` show and withdraw them |
+| `shards grant client NAME --dir PATH[:ro] --device NAME --gpus` · `shards revoke client NAME ...` · `shards inspect client NAME` | Let a client reach folders, devices or GPUs of this machine's, none of which it reaches until then; take them back; show them. A client's own binds are its own folders, served from its machine |
 | `shards create context NAME --invite-file FILE` | Join the machine that invited you. Then `shards --context NAME ACTION THING` runs on that machine, its output and exit status yours, and `shards use context NAME` makes it the one every command runs on; `default` is this one. Its microVMs, images and volumes are that machine's; your logins, environment, terminal and files stay yours: builds send your context and only what changed since the last, your build's secrets cross in memory alone, its outputs come back to your files, `--ssh` reaches your agent here, `copy vm` copies to and from your machine (from Linux and macOS), and `--cidfile` is written here. Tools that speak the Engine API reach it too, through the `Engine` file `shards inspect context NAME` shows |
 | `shards run vm --kernel FILE [options]` | Boot a kernel directly in a microVM of its own |
 | `shards restore vm DIR [--hold]` | Start a copy of the microVM saved in `DIR`; `--hold` preloads it and waits for a line on stdin |
