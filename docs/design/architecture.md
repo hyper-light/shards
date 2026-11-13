@@ -24668,6 +24668,41 @@ api_image` on HVF and WHP; Hex's image_real on macOS and Windows once Hex vendor
 **What would falsify it.** A run host that holds a descriptor or handle of its orchestrator's
 it was not given (then `shards_ipc::spawn` leaks to every child shards starts, D26).
 
+### D249. An orchestrator's run whose command never started ends failed, in its VM's words (built; real-VM validation owed)
+
+**Why.** A run's `DONE` (warm.rs `finish`, `joined_finish`) carries the command's status and,
+where the command never started, why not: the words dockerd says for it, after the code dockerd
+gives such a run (`start_failed`). The daemon reads both (daemon.rs `run_ended`): the words
+for the run's client, the code its client exits with. D231's run host read the status alone
+(api_run.rs `follow`, `DONE`'s first byte), so a run whose command never started ended
+`RunEnd::Exited` with that code, as a command that ran and exited with it does, and the VM's
+words were lost. Hex's image_real found a run's exit wrong on a real KVM node (HEX-IMG-3,
+`/bin/sh -c 'exit 3'`, where `shards run --rm --network none` of the same image and command
+exits 3; the Hex lead's notes, 2026-11-13).
+
+**Decided.** `api_run::run_end(failed, done)`: the link's failure first; a `DONE` of a status
+alone is `Exited(status)`; a status followed by words is `Failed("its command never started
+(status N): WORDS")`; no `DONE` is a failure, as before. The words are the mark: warm.rs
+writes them only for a command that never ran (`not_run`), and the daemon takes them where
+its run never started. No wire change: `RunEnd::Failed` is "its VM, its host or its guest
+failed". Whether HEX-IMG-3's command started is not known here: if it did not, its run now
+fails saying why, and that cause is its own fix.
+
+**Literals.** None.
+
+**Tests** (unit, one macOS arm64 host).
+`api_run::tests::a_command_that_never_started_ends_its_run_failed_saying_why`. Red/green on
+adas-mac-studio.local (Darwin 25.2.0 arm64, rustc 1.98.1), `cargo test -p shards --bin shards
+-- api_run::`: with the run's end composed as `follow` composed it (`DONE`'s first byte alone),
+14 passed and that test failed ("a command that never started ended its run as Exited(128)");
+as built, 15 passed. Clippy for shards, all targets, `-D warnings`: clean.
+
+**Evidence owed** (ROOT, real VMs). Hex's image_real (HEX-IMG-3) on KVM once Hex vendors this,
+and `cargo test -p shards --profile test-release --test api_image` on a KVM host.
+
+**What would falsify it.** A run whose command started ending `Failed` for its `DONE`, or one
+whose command never started ending `Exited`.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM

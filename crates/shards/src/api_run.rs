@@ -659,6 +659,27 @@ fn held_of(room: Option<i64>, out: &[u8]) -> Result<Option<u64>, String> {
     }
 }
 
+/// How a run ended, from its VM's link (D249): why the link failed, else its `DONE`. That is
+/// the command's status and, where the command never started, why not, in the words the
+/// daemon reads there too (warm.rs `finish`, daemon.rs `run_ended`). Such a run failed, in
+/// its VM's words: the status alone, the code dockerd gives a run whose command never
+/// started, would read as the command's own exit.
+fn run_end(failed: Option<String>, done: Option<&[u8]>) -> wire::RunEnd {
+    if let Some(why) = failed {
+        return wire::RunEnd::Failed(why);
+    }
+    match done.and_then(<[u8]>::split_first) {
+        Some((status, said)) if !said.is_empty() => wire::RunEnd::Failed(format!(
+            "its command never started (status {status}): {}",
+            String::from_utf8_lossy(said)
+        )),
+        Some((status, _)) => wire::RunEnd::Exited(u32::from(*status)),
+        None => wire::RunEnd::Failed(
+            "the VM ended without its run's end; its last words are on this host's stderr".into(),
+        ),
+    }
+}
+
 mod hosted {
     use std::collections::HashMap;
     use std::ffi::{OsStr, OsString};
@@ -1947,9 +1968,9 @@ mod hosted {
 
     /// Reads the VM's link until it closes: each member's end and the command's readiness
     /// to the orchestrator as they come (`super::relayed`), each exec's client end let go of
-    /// as the VM takes it, the run's status from its `DONE`.
+    /// as the VM takes it, the run's end from its `DONE` (`super::run_end`).
     fn follow(live: &Live<'_>, link: &Stream) -> RunEnd {
-        let mut status = None;
+        let mut done = None;
         let failed = loop {
             let m = match shards_ipc::recv(link) {
                 Ok(Some(m)) => m,
@@ -1957,7 +1978,7 @@ mod hosted {
                 Err(e) => break Some(format!("the VM's link: {e}")),
             };
             if m.kind == kind::DONE {
-                status = m.payload.first().copied();
+                done = Some(m.payload);
             } else if m.kind == kind::STARTED {
                 // Its guest told what its host changes in its shares from now on (D235).
                 if let Some(pipe) = lock(&live.notices_due).take() {
@@ -2001,15 +2022,7 @@ mod hosted {
         for member in members {
             end_input(live, member);
         }
-        if let Some(why) = failed {
-            return RunEnd::Failed(why);
-        }
-        match status {
-            Some(s) => RunEnd::Exited(u32::from(s)),
-            None => RunEnd::Failed(
-                "the VM ended without its run's end; its last words are on this host's stderr".into(),
-            ),
-        }
+        super::run_end(failed, done.as_deref())
     }
 
     /// The orchestrator's asks, until its channel closes: credit, stats, stop. A channel
@@ -2886,6 +2899,29 @@ mod tests {
 
     fn members() -> Vec<wire::MemberInfo> {
         members_of(&["agent helper".into(), "harness codex".into()], &[1])
+    }
+
+    /// Do end a run with a `DONE` of a status alone, of a status and the words of a command
+    /// that never started (warm.rs `finish`), after a broken link, and with none. Expect: the
+    /// status as the run's exit; a failure saying the command never started, its status and
+    /// the VM's words, never that status as an exit; the link's failure; a failure.
+    #[test]
+    fn a_command_that_never_started_ends_its_run_failed_saying_why() {
+        assert_eq!(run_end(None, Some(&[3])), wire::RunEnd::Exited(3));
+        assert_eq!(run_end(None, Some(&[0])), wire::RunEnd::Exited(0));
+        let never = b"\x80exec: \"/bin/sh\": operation not permitted";
+        match run_end(None, Some(never)) {
+            wire::RunEnd::Failed(why) => assert_eq!(
+                why,
+                "its command never started (status 128): exec: \"/bin/sh\": operation not permitted"
+            ),
+            other => panic!("a command that never started ended its run as {other:?}"),
+        }
+        assert_eq!(
+            run_end(Some("the VM's link: reset".into()), Some(&[3])),
+            wire::RunEnd::Failed("the VM's link: reset".into())
+        );
+        assert!(matches!(run_end(None, None), wire::RunEnd::Failed(_)));
     }
 
     /// Labels become members by their declared index; only an active one runs.
