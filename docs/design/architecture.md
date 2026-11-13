@@ -22653,8 +22653,29 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   bounds are gone: they give the suite no clock and wait on facts (a stand-in's end told
   through a FIFO, a holder of shards' output still running as the refusal comes), and
   boot.rs's deadline for a direct boot is this host's own boot of the test guest to its
-  answer, measured just before. What remains timed is the suite's and the crate's unit
-  tests', twice the slowest recorded run on the host class (`shards_api::record`:
+  answer, measured just before. Part A's own checks (e93bb4d45, landed by merge 831854804;
+  goal 52's agent, 2026-11-13) ran on adas-mac-studio.local (macOS 26.2 on arm64, rustc
+  1.98.1), on a clone of each tree, with `SHARDS_HELPERS=skip` and placeholder init and
+  server binaries:
+  - `cargo test -p shards-api`;
+  - `cargo clippy -p shards-api -p shards --all-targets -- -D warnings`.
+
+  Results:
+  - At e93bb4d45's tree (kiln run r101): the lib's tests 102 passed and 5 ignored,
+    tests/allocations.rs 1 passed, tests/real.rs 1 ignored, tests/sim.rs 17 passed and 2
+    ignored; clippy clean.
+  - At 831854804's tree (r115): the lib's 105 passed and 5 ignored, the rest the same;
+    clippy clean.
+  - The first draft (r85) failed sim's `client::gpu_probe_protocol_requires_exact_completed_receipt`
+    (sim.rs:313) and clippy (three `unwrap_used` in boot.rs). Both were fixed before
+    e93bb4d45.
+
+  The logs are that runner's ~/g121-tmp/s2-logs/a-*.log (r85), a2-*.log (r101) and a3-*.log
+  (r115). Not run: these checks on Linux or Windows, boot.rs's real-VM tests (ROOT's),
+  scripts/lint, and any guard-removal mutation.
+
+  What remains timed is the suite's and the crate's unit tests', twice the slowest
+  recorded run on the host class (`shards_api::record`:
   `conformance::PATIENCE`, an unserved port's `OVERSHOOT`; PM M463, M464, M515). It goes
   with the API's waits, which ROOT decided follow the guest's VM process: a wait goes on
   while that process advances (its CPU time each quiet period, as the daemon's
