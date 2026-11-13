@@ -23279,8 +23279,10 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   request's credentials travel. The run host prepares the run with the daemon's own
   functions (`run::prepare`, `volumes::open_for`, `setup::setup`, `security_setup`,
   `domain_seccomp`, `guest::server_device`, managed capture admission, the egress policy),
-  starts the VM process cold in its warm mode with its network process through the launch
-  the daemon and the builder start theirs by (launch.rs), and plays the daemon's side of the
+  starts the VM process in its warm mode with its network process through the launch the
+  daemon and the builder start theirs by (launch.rs), restoring its image's template where one
+  is saved and booting saving it where not, its microVM the daemon's runs' shape (D253), and
+  plays the daemon's side of the
   warm link for that one run (`READY`, `RUN`, `TAKEN`, `STOP_ORDER` of SIGKILL so that the
   run ends with its host, the run's messages, execs). It owns the run's managed output (P3)
   and relays each member's channels and end to the orchestrator. Its channel closing ends
@@ -23359,8 +23361,9 @@ and share processes as it ends, however it ends, where Unix has `STOP_ORDER`'s S
 process confined in an AppContainer made suspended, its link, grants, null device and network
 handed by name, its network process started on the suspended VM, each share's stream a byte
 pair handed after `RUN` (D197). **Owed:** Windows arm64's build and its WHP runs (below), a
-member's terminal, DAX windows for its shares, templates and pools, shares added
-while running, `attach` after the owner's crash, and a simulator.
+member's terminal, pools (D253's second part; DAX windows for its shares and templates came
+with D253's first), shares added while running, `attach` after the owner's crash, and a
+simulator.
 
 **Tested** (real VMs, `crates/shards/tests/api_image.rs`, 2026-11-12): 6 of 6 on Linux x86_64
 KVM (Fedora 44, at 5333c2747, main), macOS arm64 HVF (an M5 Max, macOS 26.5.2) and Windows
@@ -25808,13 +25811,13 @@ endpoints bind.
 - An endpoint outliving its run.
 - A grant shards-api takes and init refuses, or the other way round.
 
-### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (in progress: the shared shape and words built; the run host's templates and shards-api's pools owed)
+### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (templates built; shards-api's pools owed; real-VM runs owed)
 
-**Why.** An orchestrator's run (D231) boots its microVM cold every time, where a daemon's run
+**Why.** An orchestrator's run (D231) booted its microVM cold every time, where a daemon's run
 restores its image's template (D25) and takes a warm VM from its pool (D26). Hex boots its node
-through it (Hex step 39), so every one of Hex's starts pays a boot.
+through it (Hex step 39), so every one of Hex's starts paid a boot.
 
-**Decided so far.**
+**Decided.**
 - *One shape.* Every microVM a run boots has one shape beside its guest, the daemon's and a run
   host's alike, so that a template's name (`run::template`) means one machine whichever
   process saved it:
@@ -25823,22 +25826,70 @@ through it (Hex step 39), so every one of Hex's starts pays a boot.
     emulator's devices, shares and their DAX windows, PCI slots, bridge;
   - `run::boot_args` is `cold`'s words;
   - `run::restore_args` (with `run::Backings`) is `plan_refill`'s;
+  - `run::gpu_guest` is the GPU's guest, with the GPU kernel (D144);
   - the share window's setting is `daemon::share_window_mib`, out of `settings`.
 
-  The daemon calls each of them, its words unchanged. `a_runs_microvm_is_shaped_alike_wherever_it_boots`,
-  `a_boots_words_are_its_configs` and `a_restores_words_are_its_templates` pin them.
+  The daemon calls each of them, its words unchanged. The run host calls them too, so its
+  microVM now has what a daemon run's has and it had not: a join disk and share, a writable
+  layer's file (D190), swap and share windows, memory to plug, the CPU baseline and another
+  CPU's emulator (D179). Its own `vm_args` is gone. Its memory to plug is there and none of it
+  is plugged: its request asks no most past what it boots with (`RunHead::plug` none), so an
+  orchestrator's memory ask stays the run's whole, as before.
+- *The GPUs a run names* (D232) are in its template's key where it names any, as its snapshot
+  keeps the selection and its restores rejoin it (format 29): a template saved on one
+  selection is none of another's. The keys of those that name none are as they were.
+  `boot_args` gives each in `--gpu-device`'s grammar after `--gpu`.
+- *How a run starts* (`api_run.rs`, `started`), as the daemon's `warm_for` starts one:
+  - **Restored**, where its template is saved. Its files are held open as its VM restores it,
+    and for the run's life (`snapshot::hold`).
+  - **Saved**, where none is. It boots with `--snapshot-dir` at a name of its process's alone;
+    once its VM is ready its record is written (`run::Origin`) and the save becomes the
+    template, unless another run's got there first (`run::settle`). A save whose VM is never
+    ready makes no template, whatever it wrote: it is removed. (The daemon's `warm_for` settles
+    whatever its `cold` left, ready or not.) What is at the template's name and is no snapshot
+    (a removal cut short) is removed first, or it would keep every save from becoming the
+    template.
+  - **Replaced**, where its template does not restore: its VM ends, or says anything else,
+    before it is ready, or its template cannot be read. The template is removed with its
+    record, and the run boots saving another.
+  - A VM that cannot be launched at all is the host's failure. Saving again would not mend
+    it, so the template stays and the run fails.
+  - **Booted**, where it has no template: a guest its caller gave (as the daemon's runs of one
+    have none), or a host whose hypervisor restores no snapshot (`vm::restores_here`, PM
+    M345).
+
+  Its orchestrator hears which (`ImageGuest::started_from`, `wire::StartedFrom`, image channel
+  version 19). The run's per-run secrets, its agent-control key above all (D252), are made
+  after its VM is ready, so no template carries them.
 - *One demand rule.* D26's rule for how many warm VMs a pool keeps (the largest burst within an
   RFC 6298 refill window, within the keep-alive) is `shards_api::demand`, moved from the daemon,
   never copied. The daemon's pools keep theirs by it, and an orchestrator's will too.
 
-**Owed** (the next slices; then ROOT's real-VM runs):
-- The run host takes this shape, its words from these functions rather than its own: a join
-  disk and share, a writable layer's file, swap and share windows, memory to plug, the CPU
-  baseline. It restores its image's template, or boots and saves it, through the one VM
-  launch (R12; goal 52's step 10).
-- A template that fails to restore is removed, the run boots, and its orchestrator is told so,
-  typed. Its files are held open for the run's life.
-- shards-api keeps warm run hosts per template, sized by `shards_api::demand`.
+**Literals.** None of its own. The rule removes a template at one failed restore where the
+daemon's pools remove one at three (`MAX_FAILURES`): a run host makes one VM, and a wrong
+removal costs that run's boot alone.
+
+**Tested** (unit, stand-ins, no VM):
+- `a_runs_microvm_is_shaped_alike_wherever_it_boots`, `a_boots_words_are_its_configs` and
+  `a_restores_words_are_its_templates`: the shared shape and words.
+- `an_orchestrators_runs_microvm_is_the_daemons_for_the_same_inputs`: the run host's words and
+  template name are the daemon's; the GPU's guest; the selection in the key and the words; no
+  template for a given guest, or on a host that restores none.
+- `a_runs_template_restores_where_saved_else_its_boot_saves_it`,
+  `a_template_that_does_not_restore_is_replaced_and_the_run_told_so`,
+  `a_boot_that_fails_leaves_no_save_and_another_runs_save_wins` and
+  `a_name_holding_no_snapshot_is_cleared_for_the_save`: the start's ways.
+- `how_a_run_started_reads_back_as_its_host_said_it`: the channel.
+
+**Owed** (ROOT, real VMs): `api_image.rs`'s
+`an_images_next_run_restores_the_template_its_first_saved` (Saved, Restored, Replaced after its
+snapshot's state is emptied, Restored, and Booted for a given guest) on HVF, KVM x86_64 and
+WHP; every other `api_image.rs` case, now on the daemon's shape; a daemon run and template
+restore on each OS, since 4a moved the daemon's words; R14's start latency, restored against
+cold.
+
+**Owed** (the next slice): shards-api keeps warm run hosts per template, sized by
+`shards_api::demand`.
 
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller; the member's listener and bridge, the run hosts' pairing, kiln's side and every real-VM run owed)
 
