@@ -132,6 +132,22 @@ fn waited<T>(rx: &mpsc::Receiver<T>, what: &str, mut patience: Patience) -> T {
     }
 }
 
+/// Waits until `view`'s driver has learned a window from a connection's answers
+/// ([`net::View::learned`]), with [`Patience`] on it. Nothing tells of it as it comes, so it
+/// looks again after as long as it has waited (as [`Patience`] does before a window shows).
+fn learned(view: &net::View) -> Duration {
+    let mut patience = Patience::on(&[view]);
+    loop {
+        if let Some(window) = view.learned() {
+            return window;
+        }
+        let Some(left) = patience.left() else {
+            panic!("{}", patience.out("a window learned"));
+        };
+        std::thread::sleep(left.min(patience.began.elapsed()));
+    }
+}
+
 /// Where a machine says what it saw, each saying progress ([`PROGRESS`]).
 #[derive(Clone)]
 struct Saw(mpsc::Sender<Seen>);
@@ -1095,7 +1111,7 @@ fn a_command_that_reads_no_stdin_holds_up_no_other() {
 #[cfg(target_vendor = "apple")]
 #[test]
 fn a_command_holds_no_descriptor_it_was_not_given() {
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::fd::{FromRawFd, OwnedFd};
     let daemon_id = leak(Identity::generate().unwrap());
     let laptop = leak(Identity::generate().unwrap());
     let mut d = daemon(
@@ -1114,39 +1130,52 @@ fn a_command_holds_no_descriptor_it_was_not_given() {
     let held = run(laptop, d.remote, &["await", go], None);
     d.seen.saw(&Seen::Started(format!("await {go}")));
     drop(write);
-    // SAFETY: fcntl(2) and read(2) on a descriptor this test owns, into a local buffer.
-    let (flags, n, errno) = unsafe {
-        let flags = libc::fcntl(read.as_raw_fd(), libc::F_GETFL);
-        libc::fcntl(read.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
-        let mut byte = 0u8;
-        let n = libc::read(read.as_raw_fd(), (&raw mut byte).cast(), 1);
-        (flags, n, std::io::Error::last_os_error())
+    // Its end comes while every command still runs, `await` held: a command that held the pipe
+    // would hold it until it ended. A spawn in flight as the end was dropped may hold it for a
+    // moment (in ROOT's loops of 498f63f15 a read at once found it held in 42 of 50 suites and
+    // none of 6 runs alone, and `lsof` just after found it held nowhere), so its end is waited
+    // for, not looked for at once.
+    let (tx, end) = mpsc::channel();
+    let began = Instant::now();
+    std::thread::spawn(move || {
+        let mut byte = [0u8; 1];
+        let _ = tx.send(
+            std::fs::File::from(read)
+                .read(&mut byte)
+                .map_err(|e| e.to_string()),
+        );
+    });
+    let mut patience = Patience::on(&[&d.view()]);
+    let read = loop {
+        if let Some(left) = patience.left() {
+            match end.recv_timeout(left) {
+                Ok(read) => break read,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!("the pipe's reader ended"),
+            }
+        }
+        // Who else may hold it: this process's children now.
+        let me = std::process::id().to_string();
+        let ps = Command::new("ps")
+            .args(["-A", "-o", "pid=,ppid=,etime=,command="])
+            .output();
+        let children: Vec<String> = ps
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.split_whitespace().nth(1) == Some(me.as_str()))
+            .map(str::to_string)
+            .collect();
+        panic!(
+            "{}; this process's children: {children:#?}",
+            patience.out("the pipe's end")
+        );
     };
-    assert!(flags >= 0);
-    // Who else may hold it, as the read found it held: this process's children then.
-    let me = std::process::id().to_string();
-    let children = (n != 0)
-        .then(|| {
-            Command::new("ps")
-                .args(["-A", "-o", "pid=,ppid=,etime=,command="])
-                .output()
-                .map(|o| {
-                    String::from_utf8_lossy(&o.stdout)
-                        .lines()
-                        .filter(|l| l.split_whitespace().nth(1) == Some(me.as_str()))
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                })
-        })
-        .transpose()
-        .unwrap();
+    eprintln!("the pipe's end came {:?} after it was dropped", began.elapsed());
     std::fs::write(go, b"").unwrap();
     let (status, _, _) = held.get();
     assert_eq!(status, Ok(0));
-    assert_eq!(
-        n, 0,
-        "the pipe's end held: {errno}; this process's children: {children:#?}"
-    );
+    assert_eq!(read, Ok(0));
 }
 
 /// What a raw client hears.
@@ -2341,8 +2370,14 @@ fn a_client_frozen_mid_import_past_its_daemons_window_keeps_its_connection() {
     let began = Instant::now();
     d.seen.saw(&Seen::Started("drip 2".into()));
     let started = began.elapsed();
-    // Frozen once its import is under way, its daemon's first sends answered and its window
-    // learned, and held frozen until its daemon has told it unheard past that window: a send of
+    // Frozen once its import is under way and its daemon's window learned from its first sends'
+    // answers: a connection still cold has no window, its daemon's sends followed for as long as
+    // they take and never told stalled (`net::Liveness::look`), so that one frozen as its command
+    // started was never told (ROOT's loop of 498f63f15, adas-mac-studio.local: "nothing heard or seen for a
+    // whole window (7.168s …)", its cold bound, seven of a backed-off 1.024 s probe timeout).
+    let window = learned(&d.view());
+    let learned_at = began.elapsed();
+    // Held frozen until its daemon has told it unheard past that window: a send of
     // the daemon's (the credit it grants as `drip` reads on) waited through the freeze, which a
     // freeze of a fixed length met only now and then (main at 8bfa6150e passed a 200 ms one at
     // load 7, kiln r714). Resumed as the guard drops, whatever becomes of this test meanwhile.
@@ -2374,7 +2409,7 @@ fn a_client_frozen_mid_import_past_its_daemons_window_keeps_its_connection() {
         .filter(|seen| matches!(seen, Seen::Unheard(_)))
         .count();
     eprintln!(
-        "started {started:?}, stopped {stopped_at:?}, its stall told {told:?}, ended {:?}; stalls told: {stalls}",
+        "started {started:?}, window {window:?} learned {learned_at:?}, stopped {stopped_at:?}, its stall told {told:?}, ended {:?}; stalls told: {stalls}",
         began.elapsed()
     );
     assert!(

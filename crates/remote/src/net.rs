@@ -41,8 +41,10 @@ pub enum Command<C> {
 /// judge a wait on it by, as the driver judges its own ([`Liveness`]): the datagrams it has taken
 /// in from peers, and the longest window any of its connections has been judged by, each no
 /// sooner than its probe timeout (RFC 9002 §6.2.1) and, cold, before any answer was seen on its
-/// path, its handshake's window of [`COLD_PROBE_TIMEOUTS`] probe timeouts ([`Liveness::bound`]).
-/// None before the driver has looked at a connection.
+/// path, its handshake's window of [`COLD_PROBE_TIMEOUTS`] probe timeouts ([`Liveness::bound`]);
+/// and apart from it the longest window learned from its connections' answers
+/// ([`Liveness::window`]), without which none of its sends is ever judged stalled. Each is none
+/// before the driver has looked at a connection.
 #[derive(Debug, Clone, Default)]
 pub struct View(Arc<Viewed>);
 
@@ -51,6 +53,8 @@ struct Viewed {
     heard: AtomicU64,
     /// Nanoseconds, saturated; zero before any connection was looked at.
     window: AtomicU64,
+    /// Nanoseconds, saturated; zero before any connection's window was learned.
+    learned: AtomicU64,
 }
 
 impl View {
@@ -62,18 +66,33 @@ impl View {
     /// The longest window its driver's connections have been judged by: none before it has
     /// looked at one.
     pub fn window(&self) -> Option<Duration> {
-        let nanos = self.0.window.load(Ordering::Relaxed);
-        (nanos != 0).then(|| Duration::from_nanos(nanos))
+        nonzero(self.0.window.load(Ordering::Relaxed))
+    }
+
+    /// The longest window learned from its driver's connections' answers: none while each is
+    /// cold, its sends then followed for as long as they take, never told stalled
+    /// ([`Liveness::look`]).
+    pub fn learned(&self) -> Option<Duration> {
+        nonzero(self.0.learned.load(Ordering::Relaxed))
     }
 
     fn heard_one(&self) {
         self.0.heard.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn judged_by(&self, window: Duration) {
-        let nanos = u64::try_from(window.as_nanos()).unwrap_or(u64::MAX);
-        self.0.window.fetch_max(nanos, Ordering::Relaxed);
+    fn judged_by(&self, liveness: &Liveness) {
+        let nanos = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
+        self.0
+            .window
+            .fetch_max(nanos(liveness.bound()), Ordering::Relaxed);
+        if let Some(learned) = liveness.window() {
+            self.0.learned.fetch_max(nanos(learned), Ordering::Relaxed);
+        }
     }
+}
+
+fn nonzero(nanos: u64) -> Option<Duration> {
+    (nanos != 0).then(|| Duration::from_nanos(nanos))
 }
 
 /// Where another thread sends the driver [`Command`]s, waking it.
@@ -1841,7 +1860,7 @@ impl<H: Handler> Driver<H> {
             if !conn.connected {
                 conn.liveness.peer_ack_delay(conn.quic.peer_max_ack_delay());
             }
-            self.view.judged_by(conn.liveness.bound());
+            self.view.judged_by(&conn.liveness);
             let stats = conn.quic.stats();
             if let Some((probes, waited)) = conn.liveness.unanswered(now, stats.udp_tx.datagrams) {
                 let (mut io, handler) = self.io(now);
