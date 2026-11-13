@@ -45,8 +45,10 @@ pub use shards_abi::run::nesting::Ready;
 /// ([`Started::rate_period`], D191, D247), so that its orchestrator derives its window from
 /// the run's own period, never from a number of its own; 18, each member's run-time arguments
 /// ([`MemberStage::args`], D256), so that a side that passes none starts no member without
-/// the flags its orchestrator asked.
-pub const VERSION: u8 = 18;
+/// the flags its orchestrator asked; 19, how the run's microVM started ([`Started::from`],
+/// D253): from its image's template, booted saving one, or booted where its template did not
+/// restore, so that its orchestrator hears a template replaced.
+pub const VERSION: u8 = 19;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -483,6 +485,23 @@ pub struct Started {
     /// holds one: on the channel in nanoseconds, never none; appended in
     /// version 17.
     pub rate_period: std::time::Duration,
+    /// How its microVM started (D253); appended in version 19.
+    pub from: StartedFrom,
+}
+
+/// How a run's microVM came to be ready (D253), as its run host started it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartedFrom {
+    /// Booted, with no template to restore or save: a guest its caller gave, or a host whose
+    /// hypervisor restores no snapshot.
+    Booted = 0,
+    /// Booted, saving its image's template on the way, none being saved.
+    Saved = 1,
+    /// Restored from its image's template.
+    Restored = 2,
+    /// Booted, saving another, its image's template having failed to restore: that one
+    /// removed.
+    Replaced = 3,
 }
 
 /// Why the run host will not run it, typed by what failed: the client maps each to its
@@ -1162,6 +1181,19 @@ fn channel(tag: u8) -> Result<Channel, WireError> {
     }
 }
 
+fn started_from(tag: u8) -> Result<StartedFrom, WireError> {
+    match tag {
+        0 => Ok(StartedFrom::Booted),
+        1 => Ok(StartedFrom::Saved),
+        2 => Ok(StartedFrom::Restored),
+        3 => Ok(StartedFrom::Replaced),
+        tag => Err(WireError::Tag {
+            what: "how a run started",
+            tag,
+        }),
+    }
+}
+
 fn proto(tag: u8) -> Result<Proto, WireError> {
     match tag {
         6 => Ok(Proto::Tcp),
@@ -1663,6 +1695,8 @@ impl Started {
         }
         // The rate's period, appended in version 17 (D247).
         w.u64(u64::try_from(self.rate_period.as_nanos()).map_err(|_| WireError::TooLong)?);
+        // How its microVM started, appended in version 19 (D253).
+        w.u8(self.from as u8);
         w.done()
     }
 
@@ -1723,12 +1757,14 @@ impl Started {
                 what: "a rate period",
                 tag: 0,
             })?;
+        let from = started_from(r.u8()?)?;
         r.end()?;
         Ok(Started {
             members,
             published,
             control,
             rate_period,
+            from,
         })
     }
 }
@@ -2532,6 +2568,7 @@ mod tests {
             ],
             control: None,
             rate_period: std::time::Duration::from_millis(100),
+            from: StartedFrom::Saved,
         };
         assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
         let bytes = started.encode().unwrap();
@@ -3216,6 +3253,7 @@ mod tests {
             published: Vec::new(),
             control: None,
             rate_period,
+            from: StartedFrom::Booted,
         };
         for period in [
             Duration::from_nanos(1),
@@ -3224,13 +3262,13 @@ mod tests {
         ] {
             let said = started(period);
             let bytes = said.encode().unwrap();
-            let last = bytes.get(bytes.len() - 8..).unwrap();
+            let last = bytes.get(bytes.len() - 9..bytes.len() - 1).unwrap();
             assert_eq!(last, u64::try_from(period.as_nanos()).unwrap().to_be_bytes());
             assert_eq!(Started::decode(&bytes).unwrap(), said);
         }
         let mut none = started(Duration::from_millis(100)).encode().unwrap();
-        let at = none.len() - 8;
-        none.get_mut(at..).unwrap().fill(0);
+        let at = none.len() - 9;
+        none.get_mut(at..at + 8).unwrap().fill(0);
         assert_eq!(
             Started::decode(&none),
             Err(WireError::Tag {
@@ -3243,6 +3281,45 @@ mod tests {
             Err(WireError::TooLong)
         );
         assert_eq!(started(Duration::MAX).encode(), Err(WireError::TooLong));
+    }
+
+    /// How a run's microVM started (D253) reads back as its host said it, its byte last; a
+    /// byte that names no way is refused, as a host of a later version's would be read.
+    #[test]
+    fn how_a_run_started_reads_back_as_its_host_said_it() {
+        const {
+            assert!(
+                VERSION >= 19,
+                "the channel's version 19 carries how a run started"
+            )
+        };
+        for from in [
+            StartedFrom::Booted,
+            StartedFrom::Saved,
+            StartedFrom::Restored,
+            StartedFrom::Replaced,
+        ] {
+            let said = Started {
+                members: Vec::new(),
+                published: Vec::new(),
+                control: None,
+                rate_period: std::time::Duration::from_millis(100),
+                from,
+            };
+            let mut bytes = said.encode().unwrap();
+            assert_eq!(bytes.last(), Some(&(from as u8)));
+            assert_eq!(Started::decode(&bytes).unwrap(), said);
+            if let Some(last) = bytes.last_mut() {
+                *last = 4;
+            }
+            assert_eq!(
+                Started::decode(&bytes),
+                Err(WireError::Tag {
+                    what: "how a run started",
+                    tag: 4
+                })
+            );
+        }
     }
 
     /// The run's stats carry what its microVM costs its host and what its vCPUs ran of its
@@ -3434,6 +3511,7 @@ mod tests {
                 published: Vec::new(),
                 control,
                 rate_period: std::time::Duration::from_millis(100),
+                from: StartedFrom::Restored,
             };
             assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
         }
