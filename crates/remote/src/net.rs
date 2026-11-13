@@ -211,6 +211,9 @@ pub trait Handler {
     fn lost(&mut self, io: &mut Io<'_>, conn: ConnKey, why: &str, code: Option<u64>);
     /// Another thread's command.
     fn command(&mut self, io: &mut Io<'_>, command: Self::Command);
+    /// The peer allows more of the streams this side opens (MAX_STREAMS, RFC 9000 §4.6): one
+    /// that could not be opened before may be now. Nothing, for a handler that opens none.
+    fn available(&mut self, _io: &mut Io<'_>, _conn: ConnKey) {}
     /// Whether the driver may end, once it has sent what it holds: a client's, once its
     /// command has ended and it has closed its connection, whose peer is then told so (a
     /// closing endpoint need only have sent its CONNECTION_CLOSE, RFC 9000 §10.2).
@@ -921,6 +924,11 @@ impl<H: Handler> Driver<H> {
                 let (mut io, handler) = self.io(now);
                 io.reset(key, id);
                 handler.stopped(&mut io, key, id);
+                self.client = io.client;
+            }
+            Event::Stream(StreamEvent::Available { dir: Dir::Bi }) => {
+                let (mut io, handler) = self.io(now);
+                handler.available(&mut io, key);
                 self.client = io.client;
             }
             Event::Stream(StreamEvent::Readable { id }) => {

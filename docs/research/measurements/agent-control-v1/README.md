@@ -29,7 +29,7 @@ speculative abstraction (R05).
 | The microVM's identity: its own Ed25519 key, pinned both ways (decided over CSR enrollment, R02) | built, slice 1 | D238; `control::{endpoint, controller}` over `identity.rs`, `tls.rs` |
 | An unenrolled peer refused, typed | built, slice 1 | `control::{Ended, ended}` |
 | A lane's first frame; a lane's refusal | built, slice 1 | `control::{lane, refused, read_refused}` |
-| The lanes' service: stdio lanes on step 5's streams | next slice | — |
+| The lanes' service: stdio lanes on step 5's streams, one connection of the controller's at a time | built, slice 2 | `control::{Endpoint, Streams, Served, Revoke}` over step 5's `managed::Service`, `managed::input::Service` |
 | Control (exec, signal, inspect) and terminal (attach, TTY) lanes | held for step 6 | — |
 | Log lane; where the endpoint runs and how its key's SHA-256 reaches the controller | held for step 10 | — |
 
@@ -103,6 +103,19 @@ checked).
 | Windows 11 x86_64 (adacachy's guest, 10.0.26200, MSVC 14.44) | `cargo test -p shards-remote --lib`; `cargo clippy -p shards-remote --all-targets -- -D warnings` | 51 passed (the 8 `control::tests` among them); clean ([log](logs/slice1-windows-x86_64.log)) |
 | macOS arm64 (adas-mac-studio-2), cargo-xwin with Homebrew's LLVM | scripts/lint's Windows arm for the crate changed: `cargo xwin clippy -p shards-remote --all-targets --target aarch64-pc-windows-msvc -- -D warnings` | clean ([log](logs/slice1-windows-aarch64-lint.log)); MSVC's own ARM64 compiler on the Windows guest cannot build aws-lc's C, as scripts/lint's use of clang-cl implies |
 
+Slice 2 (the stdio lanes' service; this record's next commit), Linux x86_64 (adacachy, rustc
+1.98.1), its source over origin/main `455f8cd1a`: `cargo test -p shards-remote --lib` 62 passed
+(17 `control::tests`, 8 of them the lanes' over UDP on loopback; step 5's `managed` tests and
+the new `a_record_submitted_beside_a_queued_wake_is_kept_for_its_turn` among them);
+`cargo test -p shards-remote --test loopback` 17 passed; `cargo clippy -p shards-remote
+--all-targets -- -D warnings` clean; the daemon's and api-run's tests of step 5's endpoints,
+`cargo test -p shards --bin shards -- managed api_run` (`SHARDS_HELPERS=skip`, placeholder guest
+binaries), 35 passed. One loopback run of the 17 failed once on the loaded host
+(`what_a_command_of_a_connection_gone_writes_reaches_no_other`, its 60 s deadline), then passed
+three runs of the change and three of the base each: D180's, not this change's.
+Slice 1's merged tree (`455f8cd1a`) also passed on macOS arm64 (adas-mac-studio-3): 51 passed,
+clippy clean.
+
 The first run of `mutate.py` reported its kills by exit status alone; the harness now counts a
 mutant killed only where its one test ran and failed, and prints the failure, and the log is
 that second run's.
@@ -126,8 +139,13 @@ that second run's.
 ## Owed
 
 - Slice 1's light tests on aarch64 Linux and aarch64 Windows (linted only): no such host ran them (no native arm64 Linux or Windows runner; Docker Desktop's arm64 Linux is owed with slice 2's UDP tests).
-- The lanes' service on the driver, stdio lanes served from step 5's slots, and its loopback
-  tests over UDP (next slice).
+- Slice 2's guard-removal mutations, and its light tests on macOS, Windows and arm64: ROOT's
+  order of 2026-11-13 stopped every run beyond the touched crate's unit tests and the landing's
+  clippy. Guards a mutation should remove: the newer connection's superseding close, one lane
+  per stream (output and input), a refusal alone rather than the connection's, a revoked
+  stream's lane reset alone (`Stop::Lane`), a finished lane's stop, a record beside a queued
+  wake kept, a refused frame after its input's end letting the lane's reading go, the windows'
+  sums.
 - Exec, signal, inspect, attach and TTY lanes on step 6; the log lane and the arm on step 10.
 - ROOT's: every real-VM run, R14's costs (handshake CPU, per-VM memory, allocations), the
   adversarial campaign (floods, slow readers, hostile frames).

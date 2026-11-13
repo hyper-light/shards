@@ -23123,7 +23123,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends open, plan step 10, ROOT's; its endpoint building, step 11: its connection, refusals and lanes' first frames built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends open, plan step 10, ROOT's; its endpoint building, step 11: its connection, refusals and stdio lanes built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -23293,14 +23293,57 @@ record in flight each way, cursors resumed, ends and aborts typed. A lane the en
 serve is refused alone, a `Refused` frame of `managed::Reason`'s code then the lane's end, and
 the connection and its other lanes go on.
 
+*The stdio lanes' service* (`control::Endpoint`). One endpoint per microVM, bound at the address
+its caller gives, serves the member streams its caller names (`control::Streams`), each with the
+admission its caller would give step 5's endpoint of one stream (`managed::Admitted`), and hands
+back each stream's producer or relay and its control, as step 5's endpoints do, and a `Revoke`
+that ends it. Step 5's services are the lanes' (`managed::Service`, `managed::input::Service`):
+one implementation of each stream's protocol, its records, cursors, ends and aborts, whether an
+endpoint serves one stream or many. States and rules:
+- *A lane:* `Opening` while its first frame comes; then subscribed to its stream (step 5's
+  states), or `Refusing` while its refusal frame goes. One lane holds a stream: a second is
+  refused `Scope`, as step 5 refuses a second owner. A lane done (its output finished, its last
+  record acknowledged; its input's end told) is finished, its controller's side stopped
+  (STOP_SENDING, RFC 9000 §3.5) so that the stream closes and its credit returns (§4.6), and
+  its stream waits for the next subscription, which a finished output answers at once.
+- *Its ends:* its controller's FIN or reset ends the lane alone, its record kept for the next
+  subscription to the same cursor; a stream revoked (`managed::Control::abort`) resets its lane
+  alone, waking the endpoint rather than stopping its driver (`managed::Stop::Lane`); a frame
+  the stream's protocol refuses closes the connection with the refusal's code, as step 5's
+  endpoints close their owner's, except a frame that raced its input's end, which only stops
+  the lane's reading (`control::after`).
+- *Its connections:* the controller's newest is its own. A newer one's handshake closes the
+  older (`Reason::Stale`), whose lanes leave their streams for the newer's, which go on at their
+  cursors: a record sent and never acknowledged comes again.
+- *Wakes:* a stream's producer, relay or control wakes the endpoint with one unit command, and
+  a full handoff is a wake already queued, whose turn serves every stream; so a producer's
+  record beside a queued wake keeps its place (`managed::Producer::submit`, which treated a full
+  handoff as its driver gone).
+
+The transport's every value is its streams' (R03; the person, 2026-11-13: "we do not tolerate
+arbitrary constants"): each lane's windows as its endpoint of one stream bounds them, summed for
+the connection, the largest per stream; what the endpoint sends unacknowledged, each stream's
+admitted window and a refusal frame for each stream the controller may open; one stream each;
+the connection's patience the least its streams admitted (D180's `QUIET` where the daemon
+admits it, a quarter of it the keep-alive), and its handshake and datagram buffers the most.
+D180's driver tells a handler when its peer allows more streams (`Handler::available`), so that
+a controller opens a lane as the endpoint's limit allows.
+
 Tested in `crates/remote` (`control::tests`, over the in-process exchange of `lib.rs`'s
-handshake tests): the enrolled controller and its pinned microVM connect, TLS13_AES_256_GCM_SHA384
-and `shards-control/1` at both ends, each holding the other's key; a controller of another key is
-refused at its handshake, `NotEnrolled` at both ends, the endpoint never connected; an endpoint
-of another key than the pinned one is refused by its controller, typed at both ends; a context's
-client is refused for its protocol; codes read back as their causes; step 5's three
-subscriptions open their lanes, nothing taken before a frame is whole; lanes of no kind, length
-or channel refused; a lane's refusal read back. Record:
+handshake tests): the enrolled controller and its pinned microVM connect,
+TLS13_AES_256_GCM_SHA384 and `shards-control/1` at both ends, each holding the other's key; a
+controller of another key is refused at its handshake, `NotEnrolled` at both ends, the endpoint
+never connected; an endpoint of another key than the pinned one is refused by its controller,
+typed at both ends; a context's client is refused for its protocol; codes read back as their
+causes; step 5's three subscriptions open their lanes, nothing taken before a frame is whole;
+lanes of no kind, length or channel refused; a lane's refusal read back. Over the real transport
+on loopback (`control::tests::lanes`): member 0's stdin, stdout and stderr as three lanes of one
+connection, bytes no text holds exact both ways, the stdin's end told and the output's finish
+ending its lane; a stranger's key reaches no stream; lanes of another member, generation, run or
+kind refused alone, typed, while a served lane works; a second lane of a stream refused; a newer
+connection superseding the older and resuming its unacknowledged record; a revoked stream's lane
+reset alone; an input's own end ending its lane, a late frame let go; the windows its streams'
+sums. Record:
 [agent-control-v1](../research/measurements/agent-control-v1/README.md).
 
 **Open: control that crosses no TLS.** The CLI's request slots (D185), the Engine API's
@@ -23322,6 +23365,9 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | `REFUSED_BYTES` 9 | a frame's head (5) and a u32 code |
 | A lane's refusal, 1 to 5 | `managed::Reason` (Protocol, Scope, Stale, Closed, Auth), as step 5's endpoints close with them |
 | Channels 0, 1, 2 | the run protocol's stdin, stdout and stderr (abi `run::kind`) |
+| `CONNECTIONS` 2 | its controller's connection and the one that replaces it; the older closes at the newer's handshake and is held until its close drains (RFC 9000 §10.2) |
+| One command slot | a wake is one unit whose turn serves every stream; a full handoff is a wake queued |
+| Windows, streams | each stream's own (above): its endpoint of one stream's windows, summed; one stream per lane |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 
