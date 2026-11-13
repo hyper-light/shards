@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use common::{
     Patience, TempDir, cannot_pool, cannot_run_vms, home_with, processes_with, run_shards_env, served,
 };
+use shards_vmm::devices::virtio::fs::headroom::reads_room;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -281,11 +282,13 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
     // short, PM M314), its guest's way to the share warmed by a small file's read. Then a
     // budget short of what the slice holds and the inactive page cache its kernel keeps
     // beside the files it maps (memory.stat's `file_mapped`, as many as the mapped under a
-    // GiB of them, mm/vmscan.c `inactive_is_low`), by a mebibyte, as the daemon counts a
-    // budget's room (daemon/budget.rs), read once the slice's statistics have caught up
-    // with its counter, which a microVM just ended leaves them behind (they counted 1.1 GB
-    // of one a second after it ended, PM M309): no more anonymous and file memory than it
-    // holds.
+    // GiB of them, mm/vmscan.c `inactive_is_low`) and the room its host's own reads need
+    // below it (its kernel's charge ahead on each of its CPUs, a share's request and its
+    // read-ahead: `reads_room`, which the daemon leaves out of every room it tells), by a
+    // mebibyte, as the daemon counts a budget's room (daemon/budget.rs), read once the
+    // slice's statistics have caught up with its counter, which a microVM just ended leaves
+    // them behind (they counted 1.1 GB of one a second after it ended, PM M309): no more
+    // anonymous and file memory than it holds.
     let _ = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     let pool_of_none: [(&str, &OsStr); 3] = [env[0], env[1], ("SHARDS_POOL", "0".as_ref())];
     budget("infinity");
@@ -348,7 +351,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_o
             .saturating_sub(stat_of(&stat, "shmem"));
         let gb = (mapped * 2) >> 30;
         let ratio = if gb == 0 { 1 } else { (gb * 10).isqrt() };
-        (current.saturating_sub(unmapped) + mapped / ratio).saturating_sub(1 << 20)
+        (current.saturating_sub(unmapped) + mapped / ratio + reads_room()).saturating_sub(1 << 20)
     };
     let id = started.stdout.trim().to_string();
     let held_least = || {
