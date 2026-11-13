@@ -1097,9 +1097,20 @@ mod tests {
         ("agentfile.rs", &[]),
     ];
 
-    /// A source file's text but its test modules (each `#[cfg(test)]` before a `mod NAME {`,
-    /// to its closing brace at its indent; a test module of a file of its own, `mod NAME;`,
-    /// is that file's) and its comments.
+    /// Whether attribute `line` builds what it gates in tests alone: `#[cfg(test)]`, or an
+    /// `all(…)` naming `test`; never an `any(…)`, which a build of the binary meets too.
+    fn test_only(line: &str) -> bool {
+        let line = line.trim_start();
+        line == "#[cfg(test)]"
+            || (line.starts_with("#[cfg(all(")
+                && line
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .any(|w| w == "test"))
+    }
+
+    /// A source file's text but its test modules (each attribute [`test_only`] before a `mod
+    /// NAME {`, to its closing brace at its indent; a test module of a file of its own, `mod
+    /// NAME;`, is that file's) and its comments.
     fn production(text: &str) -> String {
         let lines: Vec<&str> = text.lines().collect();
         let mut kept = Vec::new();
@@ -1109,7 +1120,7 @@ mod tests {
             let indent = line
                 .get(..line.len() - line.trim_start().len())
                 .unwrap_or_default();
-            let opens = line.trim_start() == "#[cfg(test)]"
+            let opens = test_only(line)
                 && lines
                     .iter()
                     .skip(i + 1)
