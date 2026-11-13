@@ -37,6 +37,11 @@ pub struct Demand {
     rttvar: Duration,
 }
 
+/// How long a pool keeps its VMs once idle unless its owner says: as AWS keeps an idle
+/// function, 10 minutes (Shahrad et al., "Serverless in the Wild", USENIX ATC 2020, §1). The
+/// daemon's pools' (D26) and an orchestrator's (D253).
+pub const KEEP: Duration = Duration::from_secs(600);
+
 /// The refill window before any refill has been timed: RFC 6298's initial RTO (§2.1). A
 /// pool's first refill is timed as it begins, so this counts little more than the claims
 /// that begin it.

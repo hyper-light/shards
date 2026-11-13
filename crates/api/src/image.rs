@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod pool;
 mod session;
 pub mod wire;
 
@@ -417,6 +418,42 @@ impl Images for ImageShards {
         crate::backend().map_err(no_backend)?;
         let request = request(spec)?;
         Ok(Box::new(session::Session::start(spec, &request, patience)?))
+    }
+}
+
+/// The images the `shards` binary boots, each run on a warm run host of its pool where one
+/// is ready (D253's pools, D26 through shards-api): a run host started ahead of its run, its
+/// microVM restored from its image's template and ready, waiting for the run's request, as
+/// the daemon's warm VMs wait for theirs. A pool is the runs of one microVM, alike in all but
+/// their members' stages, deadline and control ask ([`wire::Request::exemplar`]); each keeps
+/// the largest burst of its runs within one refill window while in use, at least one, and
+/// none once idle past its keep-alive (`shards_api::demand`, the daemon's own rule). Nothing
+/// is warm until a pool's first run, which starts a host of its own, as [`ImageShards`]
+/// would. Dropping it ends every warm host.
+#[derive(Debug)]
+pub struct ImagePools(pool::Pooling<session::ShardsHosts>);
+
+impl ImagePools {
+    /// D26's keep-alive, which the daemon's pools keep: as AWS keeps an idle function, 10
+    /// minutes (Shahrad et al., "Serverless in the Wild", USENIX ATC 2020, §1).
+    pub const KEEP: Duration = crate::demand::KEEP;
+
+    /// Pools that all together keep at most `most` warm run hosts, the orchestrator's bound,
+    /// each pool keeping its hosts `keep` once idle ([`KEEP`](Self::KEEP) is D26's).
+    pub fn new(most: usize, keep: Duration) -> Result<ImagePools, ImageRefusal> {
+        Ok(ImagePools(pool::Pooling::new(session::ShardsHosts, most, keep)?))
+    }
+}
+
+impl Images for ImagePools {
+    fn backend(&self) -> Result<crate::Backend, ImageRefusal> {
+        crate::backend().map_err(no_backend)
+    }
+
+    fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        crate::backend().map_err(no_backend)?;
+        let request = request(spec)?;
+        self.0.boot(spec, &request, patience)
     }
 }
 

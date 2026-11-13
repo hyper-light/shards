@@ -8090,17 +8090,22 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   - *Literals*: none. W*, R* and every window are this daemon's own; their durations
     saturate at u64's nanoseconds (D215); a look due now is made, never a read with a zero
     timeout.
-  - *Gaps*, owed to ROOT's runs and decisions:
-    - A cold kind's wait on a microVM whose init never answers holds its thread, and a
-      metrics read its client, until that microVM ends: audit-fix-host-v1's finding 4, now
-      only before the kind's first answer (`metrics_whose_microvm_runs_nothing_are_ended`
-      teaches its record first).
-    - Linux puts a task over its cgroup's `memory.high` to sleep up to
-      `MEMCG_MAX_HIGH_DELAY_JIFFIES` (2 s) at each return to user space (mm/memcontrol.c,
-      `mem_cgroup_handle_over_high`), and a loaded host's scheduler can keep a runnable
-      process off its CPUs for longer than a short W*. A microVM all of whose threads so wait
-      for a whole W* is ended though its host only slowed it. This is not measured: the
-      budget E2E under a `memory.high` (tests/budget.rs, tests/containers.rs) holds it.
+  - *A cold kind follows liveness* (ROOT's ruling, 2026-11-13). Before its kind's first
+    answer, a wait on a microVM whose init never answers holds its thread, and a metrics
+    read its client, until that microVM ends: audit-fix-host-v1's finding 4, now only
+    before the kind's first answer (`metrics_whose_microvm_runs_nothing_are_ended` teaches
+    its record first). Its progress is shown typed meanwhile: a client's wait by the
+    listener's word of what its microVM runs (D209), and an end by its `Cut`.
+  - *A microVM its host holds is live* (ROOT's ruling, 2026-11-13; D215's judge, `Found::Held`).
+    Linux puts a task over its cgroup's `memory.high` to sleep up to
+    `MEMCG_MAX_HIGH_DELAY_JIFFIES` (2 s) at each return to user space (mm/memcontrol.c,
+    `mem_cgroup_handle_over_high`), and a loaded host's scheduler can keep a runnable
+    process off its CPUs for longer than a short W*: a microVM all of whose threads so wait
+    for a whole W* ran nothing of its own fault. A look that finds no CPU refuses now only
+    where its host was not the reason: none of its threads runnable or waiting on its host's
+    memory, nor (Linux) its cgroup's CPU or memory pressure grown; and a microVM stopped or
+    frozen is refused whatever else shows. The evidence is D215's readers'. Not measured
+    here: the budget E2E under a `memory.high` (tests/budget.rs, tests/containers.rs) holds it.
   - Tested (light), health.rs: `a_cold_wait_follows_its_microvm_while_it_lives`,
     `a_microvm_that_runs_at_any_rate_is_waited_for` (a fiftieth of a CPU, below the idle
     rate), `an_exec_is_ended_once_its_microvm_runs_nothing_for_a_whole_w_star`,
@@ -23222,8 +23227,25 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
     nanoseconds (each past u64's, 584 years, its most). Five `Duration`s in the variant
     enlarged every `Result<_, Refusal>`: a test's tuple of two of them crossed clippy's
     `result_large_err` (crates/api/tests/sim.rs, this lane's second run).
-    - A host under load slows a VM process but never stops it, so one that ran nothing for
-      as long as the slowest answer took is stopped, deadlocked or frozen.
+    - A host under load slows a VM process, and may hold it from running for a while, but
+      a VM process that ran nothing for as long as the slowest answer took, its host not
+      the reason, is stopped, deadlocked or frozen. So a look that finds no CPU since the
+      look before refuses only where the host was not the reason (`Found::Held` is no
+      refusal; ROOT's ruling, 2026-11-13): none of its threads runnable (Linux `R`, macOS
+      `TH_STATE_RUNNING`, Windows ready, running, standby or transition) or waiting on its
+      host's memory (macOS `TH_STATE_UNINTERRUPTIBLE`, which macOS keeps no pressure record
+      of; Windows' KWAIT_REASON FreePage, PageIn, PoolAllocation and their Wr forms); nor, on
+      Linux, its cgroup's CPU or memory pressure grown since the look before (cpu.pressure's
+      and memory.pressure's `some` totals, Documentation/accounting/psi.rst; a task held over
+      `memory.high` is a memory stall, mm/memcontrol.c). One stopped or frozen is refused
+      whatever else shows: Linux's leader `T` or `t` or a frozen cgroup (`cgroup.events`),
+      macOS's `SSTOP`, Windows' every thread suspended. Read where each OS keeps it, with no
+      privilege: `/proc/<pid>/task/*/stat` and the process's cgroup v2 files (the root's
+      pressure is `/proc/pressure`); libproc's `PROC_PIDTBSDINFO`, `PROC_PIDLISTTHREADS` and
+      `PROC_PIDTHREADINFO`, which need no task port (`task_threads` would, and `task_for_pid`
+      is refused for a hardened process not built to allow it); NtQuerySystemInformation's
+      SystemProcessInformation records, each thread's state and wait reason. What cannot be
+      read shows nothing, and that look is judged by its CPU alone.
     - R* is in the refusal for diagnosis only, never a bound. ROOT's first design refused a
       look below R*, which would refuse a boot merely slowed by its host's load: the very
       failure R03 ends (ROOT, 2026-11-13, at this lane's report).
@@ -23297,7 +23319,20 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
     The readers also follow a process by its pid alone (`Followed::of_pid`: its start read
     with it, and on Windows the process and what descends from it). shards-api's `Follow`
     is the two together. The daemon's waits on its microVMs' own answers are judged by it
-    (D188, `Wait::WhileRuns`), with records of their own.
+    (D188, `Wait::WhileRuns`), with records of their own. A wait judged from outside, whose
+    party cannot be looked at (a writer blocked in its write, the daemon's `slots_hold`),
+    asks `Record::stalled(since, now)`: none while its kind is cold or less than W* has
+    passed since its last progress, else the stall.
+  - Tested (light), host starvation and the outside judge: judge.rs's
+    `a_party_its_host_holds_is_live_not_stalled` and
+    `a_wait_judged_from_outside_is_stalled_a_whole_w_star_after_its_last_progress`;
+    progress.rs's `a_process_its_host_holds_is_held_and_a_stopped_one_still` (the decision,
+    each OS's evidence), `a_stopped_process_is_seen_stopped_and_refused` (a SIGSTOPped
+    child, seen stopped and refused) and `a_spinning_process_is_seen_runnable` (Unix). Red
+    at 7d5118297 with the rule by CPU alone (the hold read and ignored, `Record::stalled` a
+    stub; adas-mac-studio.local, macOS 26.2 arm64): `Still` where `Held` was due for the
+    throttled stand-in, and no stall where one was due; the readers' own tests passed then
+    too, macOS's libproc reading a child's threads with no task port.
   - *Its literals*: 10^9 nanoseconds a second, a timespec's bound (POSIX <time.h>); 100,
     FILETIME's nanoseconds (GetProcessTimes); a zero-time wait (WaitForSingleObject, 0),
     which is a look, not a wait. Nothing else: W*, R* and every time judged are this
@@ -26068,7 +26103,7 @@ endpoints bind.
 - An endpoint outliving its run.
 - A grant shards-api takes and init refuses, or the other way round.
 
-### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (templates built; shards-api's pools owed; real-VM runs owed)
+### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; real-VM runs owed)
 
 **Why.** An orchestrator's run (D231) booted its microVM cold every time, where a daemon's run
 restores its image's template (D25) and takes a warm VM from its pool (D26). Hex boots its node
@@ -26147,8 +26182,48 @@ WHP; every other `api_image.rs` case, now on the daemon's shape; a daemon run an
 restore on each OS, since 4a moved the daemon's words; R14's start latency, restored against
 cold.
 
-**Owed** (the next slice): shards-api keeps warm run hosts per template, sized by
-`shards_api::demand`.
+**Decided: pools** (`shards_api::image::ImagePools`, plan step 5). The orchestrator owns each
+microVM's life (D231), so its pools live in its process, with shards-api:
+- *A warm run host* is `shards api-run` started with `WARM` (image channel version 21: `WARM`
+  14, `WARMED` 32, `Cause::Unfit` 5, `StartedFrom::Warm` 4) and a run's exemplar
+  (`wire::Request::exemplar`): the request with its members' stages, its deadline and its
+  control ask taken out, so it carries none of a run's secrets. It makes the microVM's part of
+  a run (`shape`: the image prepared, the network chosen, the volumes open, the microVM
+  composed), restores or saves its template and starts its VM, then says `WARMED`. When its run
+  comes (`CREATE`), it makes the run's own part (`plan`: the members' stages, the ports bound,
+  the nesting grant, the setup) and serves it as any run, said `Warm` (`StartedFrom::Warm`).
+- A run whose exemplar is not the host's is refused `Unfit` (`Cause::Unfit`), and its
+  orchestrator's pool gives it a host of its own. The split follows the daemon's warm path:
+  what the VM is before its run, what the run is with its `RUN`. Per-run identity, the
+  agent-control key (D252), is made after the take.
+- *A pool* is the runs of one microVM: one exemplar, one run host program and environment.
+  `boot` takes a ready warm host of its run's pool, else starts a host of its own, as
+  `ImageShards` does; either way the pool counts the run, and its end as its guest drops.
+- *Its size* is D26's, by the one rule (`shards_api::demand`, moved from the daemon). That is
+  the largest burst of its runs within one refill window, an RFC 6298 retransmission timeout
+  of its warm hosts' starts as timed from spawn to `WARMED`, at least one while in use, and
+  none once idle past the keep-alive. All pools together hold at most the orchestrator's
+  bound (`ImagePools::new(most, keep)`), its number, never ours.
+- *The keep-alive* is the orchestrator's, `ImagePools::KEEP` D26's cited one (moved to
+  `shards_api::demand::KEEP`, the daemon's `DEFAULT_KEEP` too).
+- *Cold start:* nothing is warm until a pool's first run, which starts a host of its own while
+  its pool starts one ahead. The first window is RFC 6298's initial RTO, as the daemon's
+  pools' is.
+- *A warm start that fails* is no warm host: its pool starts no more until its next run.
+- *The pools' thread* hands out warm hosts, starts more, each start awaited on a thread of its
+  own, and ends those past a pool's target or keep-alive. Dropping the pools ends every warm
+  host and kills every starting one.
+
+**Tested** (unit, a simulated run host): `a_pools_first_run_starts_its_own_host_and_the_next_takes_a_warm_one`,
+`a_warm_host_that_does_not_fit_or_start_leaves_its_run_a_host_of_its_own`,
+`a_pool_keeps_its_burst_within_the_bound_and_its_owner_ends_them_all`,
+`a_pools_warm_hosts_end_past_its_keep_alive`; the channel's warm words
+(`a_warm_hosts_exemplar_keeps_all_but_a_runs_own`); the daemon's pools by the moved rule, their
+tests unchanged.
+
+**Owed** (ROOT, real VMs): `api_image.rs`'s `an_images_next_run_takes_a_warm_host_of_its_pool`
+on HVF, KVM x86_64 and WHP; R14's start of a warm run against a restored one, the warm host's
+resident memory, and its start's time from `WARMED`.
 
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller; the member's listener and bridge, the run hosts' pairing, kiln's side and every real-VM run owed)
 
