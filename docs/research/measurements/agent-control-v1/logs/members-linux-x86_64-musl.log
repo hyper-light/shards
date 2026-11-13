@@ -1,0 +1,21 @@
+# Green on the merged tree: adacachy2, Linux x86_64 (32 CPUs), rustc 1.98.1, target
+# x86_64-unknown-linux-musl, 2026-11-13 ~16:00Z, nice -n 10, a cold CARGO_TARGET_DIR of this lane's.
+# Revision e8f578800 (8bb81584d and 991d741e9 merged with origin/main 740fa3726). util-linux 2.42.4's
+# unshare, unprivileged user namespaces on (max_user_namespaces 503368): the namespace test ran.
+# Commands: cargo test -p shards-init --target x86_64-unknown-linux-musl member_signal_tests -- --nocapture;
+# cargo test -p shards-abi --target x86_64-unknown-linux-musl members;
+# cargo clippy -p shards-init -p shards-abi --target x86_64-unknown-linux-musl --all-targets -- -D warnings
+### init
+running 4 tests
+test run::member_signal_tests::a_signal_refused_exits_by_its_kind ... ok
+test run::member_signal_tests::a_signal_for_no_member_or_of_no_signal_is_refused ... ok
+test run::member_signal_tests::a_members_command_is_its_reapers_child_of_pid_2 ... ok
+test run::member_signal_tests::a_namespaces_command_is_found_and_signalled_alone ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 255 filtered out; finished in 0.02s
+### abi
+running 18 tests (run::members::tests and run::managed::tests::input_members_are_active_ascending_and_each_has_one_token)
+test run::members::tests::a_signal_says_its_member_and_number ... ok
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 64 filtered out; finished in 0.00s
+### clippy (shards-init, shards-abi, --all-targets, -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.11s

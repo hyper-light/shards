@@ -1,0 +1,130 @@
+mode=red HEAD=845d7eb93baca5527289763b0d1ef196a4e521e3 origin/main=d5afadbc8ed9f5c7ed5dcedee7a7a88da7300efe
+ M crates/server/src/server.rs
+host=adacachy2 Linux 7.3.3-1-cachyos x86_64 rustc 1.98.1 (48a229cea 2026-09-01) zig 0.16.0 df: /dev/nvme2n1p2  1.9T  1.7T  198G  90% /home
+--- cargo test -p shards-server --locked --target x86_64-unknown-linux-gnu -j 8 -- broker hand refus program --nocapture
+   Compiling libc v0.2.189
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling pkg-config v0.3.34
+   Compiling fs_extra v1.3.0
+   Compiling dunce v1.0.5
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/g121-tmp/g71-hand/src/vendor/aws-lc-rs)
+   Compiling zeroize v1.9.0
+   Compiling powerfmt v0.2.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling time-core v0.1.9
+   Compiling num-conv v0.2.2
+   Compiling allocator-api2 v0.2.21
+   Compiling deranged v0.5.8
+   Compiling equivalent v1.0.2
+   Compiling foldhash v0.2.0
+   Compiling untrusted v0.9.0
+   Compiling base64 v0.23.1
+   Compiling rustls v0.23.46
+   Compiling subtle v2.6.1
+   Compiling hashbrown v0.17.1
+   Compiling once_cell v1.21.4
+   Compiling pem v4.0.0
+   Compiling time v0.3.55
+   Compiling jobserver v0.1.35
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/g121-tmp/g71-hand/src/crates/testdir)
+   Compiling cc v1.5.1
+   Compiling yasna v0.6.0
+   Compiling cmake v0.1.58
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/g121-tmp/g71-hand/src/vendor/aws-lc-sys)
+   Compiling rquickjs-sys v0.14.0 (/home/adalundhe/g121-tmp/g71-hand/src/vendor/rquickjs-sys)
+   Compiling rquickjs-core v0.14.0
+   Compiling rquickjs v0.14.0
+   Compiling rustls-webpki v0.103.16
+   Compiling rcgen v0.14.10
+   Compiling shards-server v0.1.0 (/home/adalundhe/g121-tmp/g71-hand/src/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.53s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/g71-hand/target/x86_64-unknown-linux-gnu/debug/deps/shards_server-2a4c15e13cf6acd9)
+
+running 33 tests
+REFUSAL_FALLBACK format=Program path=refused literal=true outcome=Some("refused") effect=Some("not_started") reply={"error":"refused before any effect; its response is unavailable","broker":{"outcome":"refused","effect":{"kind":"not_started"},"cause":{"kind":"response_capacity"}}}
+REFUSAL_FALLBACK format=Program path=display_refusal literal=true outcome=Some("refused") effect=Some("not_started") reply={"error":"refused before any effect; its response is unavailable","broker":{"outcome":"refused","effect":{"kind":"not_started"},"cause":{"kind":"response_capacity"}}}
+REFUSAL_FALLBACK format=Mcp path=refused literal=true outcome=Some("refused") effect=Some("not_started") reply={"content":[{"type":"text","text":"refused before any effect; its response is unavailable"}],"isError":true,"structuredContent":{"outcome":"refused","effect":{"kind":"not_started"},"cause":{"kind":"response_capacity"}}}
+REFUSAL_FALLBACK format=Mcp path=display_refusal literal=true outcome=Some("refused") effect=Some("not_started") reply={"content":[{"type":"text","text":"refused before any effect; its response is unavailable"}],"isError":true,"structuredContent":{"outcome":"refused","effect":{"kind":"not_started"},"cause":{"kind":"response_capacity"}}}
+HAND_GROWN limit=212943 outcome=Completed effect=KernelAccepted { bytes: 1305 }
+HAND_GROWN limit=16 outcome=Failed(Refusal { phase: Executing, reason: TooLong }) effect=NotStarted
+HAND_RESERVATION channel_most=212960 file_bytes=10 packet_len=26 reserved_at_admission=16 capacity_after_read=27
+actual_refusal_display_allocations=0 formatted=true
+start_refused=true worker_released=false owned_programs=0
+refused_allocation=1 attempts=1 typed_result=Err(Capacity) tracked=0
+refused_allocation=2 attempts=2 typed_result=Err(Capacity) tracked=0
+refused_allocation=3 attempts=3 typed_result=Err(Capacity) tracked=0
+refused_allocation=4 attempts=4 typed_result=Err(Capacity) tracked=0
+test broker::tests::a_refusal_without_storage_says_it_was_refused ... ok
+test broker::tests::a_file_longer_than_its_size_says_is_handed_as_before ... ok
+test broker::tests::broker_completion_consumes_only_the_owned_request_once ... ok
+test broker::tests::a_small_hand_reserves_what_its_file_holds ... ok
+test broker::tests::broker_local_send_failure_preserves_cause_without_reusing_identity ... ok
+test broker::tests::broker_rejects_bad_arguments_ownership_and_exhausted_identity_before_send ... ok
+test broker::tests::broker_required_durable_refuses_before_opening_or_sending ... ok
+test broker::tests::broker_reservation_precedes_actual_send_and_retains_local_receipt ... ok
+test server::tests::a_program_is_reserved_before_its_helper_receives_authority ... ok
+test broker::tests::broker_prebuilt_error_capacity_covers_actual_escaped_completion ... ok
+test server::tests::a_typed_program_refusal_formats_without_requesting_storage ... ok
+test server::tests::a_refused_native_release_does_not_reuse_its_issued_identity ... ok
+test server::tests::an_expired_program_is_refused_before_native_release ... ok
+test server::tests::an_exhausted_program_identity_cannot_release_another_worker ... ok
+refused_allocation=5 attempts=5 typed_result=Err(Frame(Capacity)) tracked=0
+test server::tests::each_refused_program_allocation_precedes_native_worker_release ... ok
+test server::tests::a_programs_call_is_its_callers ... ok
+test sandbox::tests::a_worker_is_ended_for_a_call_its_filter_refuses ... ok
+HAND_REFUSED path="/tmp/key" reply=Object([("content", Array([Object([("type", String("text")), ("text", String("the checked scratch file could not be read (OS Some(40))"))])])), ("isError", Bool(true)), ("structuredContent", Object([("principal", String("agent t")), ("peer", String("harness h")), ("operation", String("hand_request")), ("request", Number("1")), ("outcome", String("failed")), ("effect", Object([("kind", String("not_started"))])), ("phase", String("executing")), ("cause", Object([("kind", String("file_io")), ("os_code", Number("40"))]))]))])
+BROKER_EXHAUSTED last=18446744073709551615 actual_packet_id=None caller_reply={"error":"request IDs for agent peer are exhausted","broker":{"principal":"agent t","peer":"agent peer","operation":null,"request":null,"outcome":"refused","effect":{"kind":"not_started"},"phase":"authorized","cause":{"kind":"identity_exhausted"}}}
+HAND_REFUSED path="/tmp/pipe" reply=Object([("content", Array([Object([("type", String("text")), ("text", String("a handed file must be a regular scratch file"))])])), ("isError", Bool(true)), ("structuredContent", Object([("principal", String("agent t")), ("peer", String("harness h")), ("operation", String("hand_request")), ("request", Number("2")), ("outcome", String("failed")), ("effect", Object([("kind", String("not_started"))])), (test server::tests::broker_exhausted_caller_identity_refuses_before_packet ... "phase", okString(
+"executing")), ("cause", Object([("kind", String("file_kind"))]))]))])
+test server::tests::earlier_revisions_and_what_every_revision_refuses ... ok
+test server::tests::a_client_limited_to_chacha20_poly1305_is_refused ... ok
+test server::tests::a_client_limited_to_aes_128_gcm_is_refused ... ok
+HAND_REFUSED path="/tmp/d" reply=Object([("content", Array([Object([("type", String("text")), ("text", String("a handed file must be a regular scratch file"))])])), ("isError", Bool(true)), ("structuredContent", Object([("principal", String("agent t")), ("peer", String("harness h")), ("operation", String("hand_request")), ("request", Number("3")), ("outcome", String("failed")), ("effect", Object([("kind", String("not_started"))])), ("phase", String("executing")), ("cause", Object([("kind", String("file_kind"))]))]))])
+test server::tests::what_the_current_revision_refuses ... ok
+HAND_REFUSED path="/tmp/sock" reply=Object([("content", Array([Object([("type", String("text")), ("text", String("the checked scratch file could not be read (OS Some(6))"))])])), ("isError", Bool(true)), ("structuredContent", Object([("principal", String("agent t")), ("peer", String("harness h")), ("operation", String("hand_request")), ("request", Number("4")), ("outcome", String("failed")), ("effect", Object([("kind", String("not_started"))])), ("phase", String("executing")), ("cause", Object([("kind", String("file_io")), ("os_code", Number("6"))]))]))])
+HAND_REFUSED path="/tmp/big" reply=Object([("content"test server::tests::requests_past_their_bounds_are_refused ... , Array(ok[Object(
+[("type", String("text")), ("text", String("the message or file exceeds harness h's admitted channel size"))])])), ("isError", Bool(true)), ("structuredContent", Object([("principal", String("agent t")), ("peer", String("harness h")), ("operation", String("hand_request")), ("request", Number("5")), ("outcome", String("failed")), (test server::tests::only_a_regular_file_of_the_scratch_is_handed ... "effectok
+", Object([("kind", String("not_started"))])), ("phase", String("executing")), ("cause", Object([("kind", String("too_long"))]))]))])
+test server::tests::headers_that_differ_from_their_body_are_refused ... ok
+test sandbox::tests::a_program_calls_its_tools_over_its_socket ... ok
+HAND_REFUSED path="/tmp/../etc/passwd" reply=Object([("content", Array([Object([("type", String("text")), ("text", String("the checked scratch file could not be read (OS Some(18))"))])])), ("isError", Bool(true)), ("structuredContent", Object([("principal", String("agent t")), ("peer", String("harness h")), ("operation", String("hand_request")), ("request", Number("6")), ("outcome", String("failed")), ("effect", Object([("kind", String("not_started"))])), ("phase", String("executing")), ("cause", Object([("kind", String("file_io")), ("os_code", Number("18"))]))]))])
+BROKER_RECEIPT thrown=Ok("[\"agent a may not send agent c requests\",{\"principal\":\"agent a\",\"peer\":\"agent c\",\"operation\":null,\"request\":null,\"outcome\":\"refused\",\"effect\":{\"kind\":\"not_started\"},\"phase\":\"validated\",\"cause\":{\"kind\":\"grant\"}}]")
+BROKER_CALLER program_id=1 http_id=2 hand_id=3 answer_id=9 duplicate=no_packet malformed=no_packet exhausted=no_packet local_kernel_acceptance_only=true
+HAND_REFUSED path="/etc/passwd" reply=Object([("content", Array([Object([("type", String("text")), ("text", String("a handed file must be beneath the caller's /tmp scratch"))])])), ("isError", Bool(true)), ("structuredContent", Object([("principal", String("agent t")), ("peer", String("harness h")), ("operation", Null), ("request", Null), ("outcome", String("refused")), ("effect", Object([("kind", String("not_started"))])), ("phase", String("authorized")), ("cause", Object([("kind", String("path"))]))]))])
+HAND_REFUSED path="/tmp/a\0b" reply=Object([("content", Array([Object([("type", String("text")), ("text", String("a handed file path contains NUL"))])])), ("isError", Bool(true)), ("structuredContent", Object([("principal", String("agent t")), ("peer", String("harness h")test server::tests::broker_http_and_program_callers_share_the_actual_peer_admission ... )ok, 
+("operation", Null), ("request", Null), ("outcome", String("refused")), ("effect", Object([("kind", String("not_started"))])), ("phase", String("authorized")), ("cause", Object([("kind", String("path_nul"))]))]))])
+HAND_REFUSED path="/tmp/out.txt" reply=Object([("content", Array([Object([("type", String("text")), ("text", String("{\"id\":7}"))])])), ("isError", Bool(false)), ("structuredContent", Object([("principal", String("agent t")), ("peer", String("harness h")), ("operation", String("hand_request")), ("request", Number("7")), ("outcome", String("completed")), ("effect", Object([("kind", String("kernel_accepted")), ("bytes", Number("23"))])), ("phase", String("terminal")), ("cause", Null)]))])
+HAND_REFUSED path="/tmp/status" reply=Object([("content", Array([Object([("type", String("text")), ("text", String("the message or file exceeds harness h's admitted channel size"))])])), ("isError", Bool(true)), ("structuredContent", Object([("principal", String("agent t")), ("peer", String("harness h")), ("operation", String("hand_request")), ("request", Number("8")), ("outcome", String("failed")), ("effect", Object([("kind", String("not_started"))])), ("phase", String("executing")), ("cause", Object([("kind", String("too_long"))]))]))])
+HAND_REFUSED path="/tmp/out.txt" reply=Object([("content", Array([Object([("type", String("text")), ("text", String("its caller has no scratch, /tmp, to hand files from"))])])), ("isError", Bool(true)), ("structuredContent", Object([("principal", String("agent t")), ("peer", String("harness h")), ("operation", Null), ("request", Null), ("outcome", String("refused")), ("effect", Object([("kind", String("not_started"))])), ("phase", String("validated")), ("cause", Object([("kind", String("no_scratch"))]))]))])
+
+thread 'server::tests::a_refused_hand_names_its_file_and_why' (3961089) panicked at crates/server/src/server.rs:2362:9:
+"/tmp/key": got (true, Some("the checked scratch file could not be read (OS Some(40))"), Some(Object([("kind", String("file_io")), ("os_code", Number("40"))]))), want "/tmp/key is a symbolic link, or lies past one: a file handed across is a regular file of the caller's scratch" Object([("kind", String("file_io")), ("os_code", Number("40"))])
+"/tmp/pipe": got (true, Some("a handed file must be a regular scratch file"), Some(Object([("kind", String("file_kind"))]))), want "/tmp/pipe is a FIFO, not a regular file" Object([("kind", String("file_kind")), ("file", String("fifo"))])
+"/tmp/d": got (true, Some("a handed file must be a regular scratch file"), Some(Object([("kind", String("file_kind"))]))), want "/tmp/d is a directory, not a regular file" Object([("kind", String("file_kind")), ("file", String("directory"))])
+"/tmp/sock": got (true, Some("the checked scratch file could not be read (OS Some(6))"), Some(Object([("kind", String("file_io")), ("os_code", Number("6"))]))), want "/tmp/sock is a socket, not a regular file" Object([("kind", String("file_io")), ("os_code", Number("6"))])
+"/tmp/big": got (true, Some("the message or file exceeds harness h's admitted channel size"), Some(Object([("kind", String("too_long"))]))), want "/tmp/big is 212947 bytes, more than the 212946 a file handed across holds" Object([("kind", String("file_too_large")), ("size", Number("212947")), ("most", Number("212946"))])
+"/tmp/../etc/passwd": got (true, Some("the checked scratch file could not be read (OS Some(18))"), Some(Object([("kind", String("file_io")), ("os_code", Number("18"))]))), want "/tmp/../etc/passwd lies past the caller's scratch" Object([("kind", String("file_io")), ("os_code", Number("18"))])
+"/etc/passwd": got (true, Some("a handed file must be beneath the caller's /tmp scratch"), Some(Object([("kind", String("path"))]))), want "/etc/passwd is not in /tmp, the scratch files are handed from" Object([("kind", String("path"))])
+"/tmp/a\0b": got (true, Some("a handed file path contains NUL"), Some(Object([("kind", String("path_nul"))]))), want "/tmp/a\0b holds a NUL" Object([("kind", String("path_nul"))])
+"/tmp/status": got (true, Some("the message or file exceeds harness h's admitted channel size"), Some(Object([("kind", String("too_long"))]))), want "/tmp/status grew past the 16 bytes a file handed across holds" Object([("kind", String("file_grew")), ("most", Number("16"))])
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test server::tests::a_refused_hand_names_its_file_and_why ... FAILED
+BROKER_RECEIPT returned=Ok("[{\"id\":1},{\"principal\":\"agent a\",\"peer\":\"agent b\",\"operation\":\"send\",\"request\":1,\"outcome\":\"completed\",\"effect\":{\"kind\":\"kernel_accepted\",\"bytes\":10},\"phase\":\"terminal\",\"cause\":null}]")
+test sandbox::tests::a_programs_broker_results_keep_their_receipt ... ok
+LOST_STOP_GONE program=1 program_frame_read=true control_messages_filling=278 program_let_go=true drained=278 stops=[1]
+test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... ok
+test sandbox::tests::what_a_program_came_to ... ok
+test sandbox::tests::a_refused_call_is_thrown ... ok
+CONNECTION_CLOSE program=1 program_frame_read=true worker_done_written=true client_read=Ok(162) answer_bytes=162 stops=[]
+test server::tests::a_program_answers_a_request_that_closes_its_connection ... ok
+
+failures:
+
+failures:
+    server::tests::a_refused_hand_names_its_file_and_why
+
+test result: FAILED. 32 passed; 1 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.11s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+test_gnu_exit=101

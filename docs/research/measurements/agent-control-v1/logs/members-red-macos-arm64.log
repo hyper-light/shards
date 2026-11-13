@@ -1,0 +1,28 @@
+# Red before the fix (R09): adas-mac-studio-3.local (hostname Adas-Mac-Studio-4.local), macOS 26.2 arm64,
+# rustc 1.98.1, 2026-11-13 ~15:36Z. Revision f2f4517babac440522b86dbc3ccb5e6d5c93acf7 = origin/main
+# 845d7eb93 plus the test alone (crates/remote/src/control.rs). CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip.
+# Command: cargo test -p shards-remote --lib an_exec_that_starts_and_exits_at_once
+# aws-lc-sys's build chatter left out.
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 19.18s
+     Running unittests src/lib.rs (target/debug/deps/shards_remote-0c466c59a2f7bb8c)
+
+running 1 test
+test control::tests::lanes::an_exec_that_starts_and_exits_at_once_is_told_both_in_order ... FAILED
+
+failures:
+
+---- control::tests::lanes::an_exec_that_starts_and_exits_at_once_is_told_both_in_order stdout ----
+
+thread 'control::tests::lanes::an_exec_that_starts_and_exits_at_once_is_told_both_in_order' (14286167) panicked at crates/remote/src/control.rs:2588:13:
+assertion `left == right` failed
+  left: Exit(0)
+ right: Started(0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    control::tests::lanes::an_exec_that_starts_and_exits_at_once_is_told_both_in_order
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 95 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p shards-remote --lib`

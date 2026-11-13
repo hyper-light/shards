@@ -1,0 +1,144 @@
+diff --git a/crates/server/src/server.rs b/crates/server/src/server.rs
+index b06b1313c..0946eba1f 100644
+--- a/crates/server/src/server.rs
++++ b/crates/server/src/server.rs
+@@ -2229,6 +2229,139 @@ mod tests {
+         );
+     }
+ 
++    /// What `hand` refuses, its server says as D139 words it, naming the path its caller
++    /// named and why, and types the cause with what those words name: the OS's code, the
++    /// file's kind, its size and the most a message to its peer holds of it. The files are
++    /// planted as `a_harness_is_handed_files_and_no_link_fifo_or_giant` plants them, with a
++    /// directory, a socket, a file that grows past the most as it is read, a NUL and no
++    /// scratch beside them; the regular file is still handed.
++    #[test]
++    fn a_refused_hand_names_its_file_and_why() {
++        let mut p = prepare_for_test();
++        let tmp = shards_testdir::TempDir::new("hand-why").unwrap();
++        std::fs::write(tmp.join("out.txt"), "hello").unwrap();
++        std::os::unix::fs::symlink("/run/shards/key.pem", tmp.join("key")).unwrap();
++        let fifo = std::ffi::CString::new(tmp.join("pipe").to_str().unwrap()).unwrap();
++        // SAFETY: mkfifo(3) of a NUL-terminated path.
++        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
++        std::fs::create_dir(tmp.join("d")).unwrap();
++        let _socket = std::os::unix::net::UnixListener::bind(tmp.join("sock")).unwrap();
++        let (mine, _theirs) = control_pair();
++        let message = message_most(&mine).unwrap();
++        let most = message - MESSAGE_HEAD - file_head("big");
++        std::fs::write(tmp.join("big"), vec![b'b'; most + 1]).unwrap();
++        p.scratch = Some(OwnedFd::from(std::fs::File::open(&*tmp).unwrap()));
++        let mut peers = [Peer {
++            label: "harness h".into(),
++            most: message,
++            fd: mine,
++            send: true,
++            answer: true,
++            held: None,
++            sent: vec![],
++            last: 0,
++            asked: vec![],
++            gone: false,
++        }];
++        // The words and the cause its MCP answer gives, or what is wrong with it.
++        let hand = |p: &Prepared, peers: &mut [Peer], path: &str| {
++            let args =
++                json::parse(format!(r#"{{"to":"harness h","path":{}}}"#, quote(path)).as_bytes()).unwrap();
++            let Some(Dispatched::Effect(reply)) = call(p, peers, "hand", Some(&args), broker::Format::Mcp)
++            else {
++                panic!("hand is no effect");
++            };
++            let reply = json::parse(reply.as_bytes()).unwrap();
++            let words = reply.get("content").map(Value::array).and_then(<[Value]>::first);
++            let words = words.and_then(|c| c.get("text")).and_then(Value::str);
++            let cause = reply.get("structuredContent").and_then(|m| m.get("cause"));
++            eprintln!("HAND_REFUSED path={path:?} reply={reply:?}");
++            (
++                reply.get("isError") == Some(&Value::Bool(true)),
++                words.map(str::to_string),
++                cause.cloned(),
++            )
++        };
++        let cause = |text: &str| json::parse(text.as_bytes()).unwrap();
++        let mut wrong = Vec::new();
++        let mut expect =
++            |path: &str, got: (bool, Option<String>, Option<Value>), words: String, want: Value| {
++                if got != (true, Some(words.clone()), Some(want.clone())) {
++                    wrong.push(format!("{path:?}: got {got:?}, want {words:?} {want:?}"));
++                }
++            };
++        for (path, words, want) in [
++            (
++                "/tmp/key",
++                "/tmp/key is a symbolic link, or lies past one: a file handed across is a regular file of the caller's scratch".to_string(),
++                cause(&format!(r#"{{"kind":"file_io","os_code":{}}}"#, libc::ELOOP)),
++            ),
++            (
++                "/tmp/pipe",
++                "/tmp/pipe is a FIFO, not a regular file".to_string(),
++                cause(r#"{"kind":"file_kind","file":"fifo"}"#),
++            ),
++            (
++                "/tmp/d",
++                "/tmp/d is a directory, not a regular file".to_string(),
++                cause(r#"{"kind":"file_kind","file":"directory"}"#),
++            ),
++            (
++                "/tmp/sock",
++                "/tmp/sock is a socket, not a regular file".to_string(),
++                cause(&format!(r#"{{"kind":"file_io","os_code":{}}}"#, libc::ENXIO)),
++            ),
++            (
++                "/tmp/big",
++                format!(
++                    "/tmp/big is {} bytes, more than the {most} a file handed across holds",
++                    most + 1
++                ),
++                cause(&format!(
++                    r#"{{"kind":"file_too_large","size":{},"most":{most}}}"#,
++                    most + 1
++                )),
++            ),
++            (
++                "/tmp/../etc/passwd",
++                "/tmp/../etc/passwd lies past the caller's scratch".to_string(),
++                cause(&format!(r#"{{"kind":"file_io","os_code":{}}}"#, libc::EXDEV)),
++            ),
++            (
++                "/etc/passwd",
++                "/etc/passwd is not in /tmp, the scratch files are handed from".to_string(),
++                cause(r#"{"kind":"path"}"#),
++            ),
++            (
++                "/tmp/a\0b",
++                "/tmp/a\0b holds a NUL".to_string(),
++                cause(r#"{"kind":"path_nul"}"#),
++            ),
++        ] {
++            expect(path, hand(&p, &mut peers, path), words, want);
++        }
++        let (refused, words, _) = hand(&p, &mut peers, "/tmp/out.txt");
++        assert!(!refused && words.is_some_and(|w| w.starts_with(r#"{"id":"#)));
++        // A file longer than its size says (procfs says 0 bytes of each) grows past the most
++        // a message holds of it as it is read.
++        p.scratch = Some(OwnedFd::from(std::fs::File::open("/proc/self").unwrap()));
++        peers[0].most = MESSAGE_HEAD + file_head("status") + 16;
++        expect(
++            "/tmp/status",
++            hand(&p, &mut peers, "/tmp/status"),
++            "/tmp/status grew past the 16 bytes a file handed across holds".to_string(),
++            cause(r#"{"kind":"file_grew","most":16}"#),
++        );
++        p.scratch = None;
++        expect(
++            "/tmp/out.txt",
++            hand(&p, &mut peers, "/tmp/out.txt"),
++            "its caller has no scratch, /tmp, to hand files from".to_string(),
++            cause(r#"{"kind":"no_scratch"}"#),
++        );
++        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
++    }
++
+     #[test]
+     fn strings_are_quoted_as_json_writes_them() {
+         assert_eq!(quote("a\"b\\c\n"), r#""a\"b\\c\u000a""#);
