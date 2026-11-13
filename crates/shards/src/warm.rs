@@ -2528,7 +2528,7 @@ mod tests {
     #[cfg(unix)]
     mod mcp {
         use super::*;
-        use std::io::{Read as _, Write as _};
+        use std::io::Read as _;
 
         /// Closed: its far end reads its end, nothing of it unread there.
         fn closed(mut relay: GuestConn) {
