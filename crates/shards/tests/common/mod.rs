@@ -3643,7 +3643,7 @@ fn hub_seed(reference: &str, timeout: Duration) -> (Vec<u8>, Vec<Vec<u8>>) {
     let home = workspace().join("target/artifacts/hub");
     shards_vmm::platform::create_private_dir(&home).unwrap();
     let _seeding = shards_image::store::Locked::exclusive(&home.join("seeding.lock")).unwrap();
-    if let Some(seed) = hub_held(&home, &pinned) {
+    if let Ok(seed) = hub_held(&home, &pinned) {
         return seed;
     }
     let ctx = TempDir::new("hub-seed");
@@ -3661,24 +3661,31 @@ fn hub_seed(reference: &str, timeout: Duration) -> (Vec<u8>, Vec<Vec<u8>>) {
         home.display(),
         built.stderr
     );
-    hub_held(&home, &pinned)
-        .unwrap_or_else(|| panic!("{reference}: not held whole in {} once pulled", home.display()))
+    hub_held(&home, &pinned).unwrap_or_else(|missing| panic!("{reference}, pulled once: {missing}"))
 }
 
-/// What `home`'s store holds of `pinned`, whole: none where a part is missing or is not
-/// what its digest says.
-fn hub_held(home: &Path, pinned: &shards_image::reference::Reference) -> Option<(Vec<u8>, Vec<Vec<u8>>)> {
-    let store = shards_image::store::Store::open(&home.join("images")).ok()?;
-    let digest = pinned.digest.as_ref()?.to_string();
-    if store.resolved(&pinned.to_string()).ok()??.to_string() != digest {
-        return None;
+/// What `home`'s store holds of `pinned`, whole; where it does not, what is missing.
+pub fn hub_held(
+    home: &Path,
+    pinned: &shards_image::reference::Reference,
+) -> Result<(Vec<u8>, Vec<Vec<u8>>), String> {
+    let missing = |what: String| move || format!("{pinned}: {what}");
+    let store = shards_image::store::Store::open(&home.join("images")).map_err(|e| e.to_string())?;
+    let digest = pinned
+        .digest
+        .as_ref()
+        .ok_or_else(missing("pinned by no digest".into()))?
+        .to_string();
+    let resolved = store.resolved(&pinned.to_string()).map_err(|e| e.to_string())?;
+    if resolved.map(|d| d.to_string()) != Some(digest.clone()) {
+        return Err(missing(format!("no record of {} names it", home.display()))());
     }
     let read = |d: &str| {
         let bytes = std::fs::read(store.blob_path(&shards_image::reference::Digest::parse(d).ok()?)).ok()?;
         (sha256_digest(&bytes) == d).then_some(bytes)
     };
-    let top = read(&digest)?;
-    let doc: serde_json::Value = serde_json::from_slice(&top).ok()?;
+    let top = read(&digest).ok_or_else(missing("its document is not held".into()))?;
+    let doc: serde_json::Value = serde_json::from_slice(&top).map_err(|e| e.to_string())?;
     // An index's manifests that its pull fetched, which the registry serves among the blobs;
     // a lone manifest is the document itself.
     let listed = doc["manifests"].as_array();
@@ -3690,19 +3697,23 @@ fn hub_held(home: &Path, pinned: &shards_image::reference::Reference) -> Option<
         None => vec![top.clone()],
     };
     if manifests.is_empty() {
-        return None;
+        return Err(missing("no manifest of it is held".into())());
     }
     let mut blobs = Vec::new();
     for manifest in manifests {
-        let parsed: serde_json::Value = serde_json::from_slice(&manifest).ok()?;
-        for part in std::iter::once(&parsed["config"]).chain(parsed["layers"].as_array()?) {
-            blobs.push(read(part["digest"].as_str()?)?);
+        let parsed: serde_json::Value = serde_json::from_slice(&manifest).map_err(|e| e.to_string())?;
+        let layers = parsed["layers"]
+            .as_array()
+            .ok_or_else(missing("a manifest with no layers".into()))?;
+        for part in std::iter::once(&parsed["config"]).chain(layers) {
+            let d = part["digest"].as_str().unwrap_or_default();
+            blobs.push(read(d).ok_or_else(missing(format!("{d} is not held")))?);
         }
         if listed.is_some() {
             blobs.push(manifest);
         }
     }
-    Some((top, blobs))
+    Ok((top, blobs))
 }
 
 /// A running `shards` whose output lines arrive on a channel, killed when dropped.

@@ -354,6 +354,49 @@ fn a_hosts_daemon_json_reaches_no_test() {
     assert_eq!(built.status, Some(0), "{built}");
 }
 
+/// The tests' seed of a remote image (`common::hub_held`) holds a manifest an index it pulled
+/// lists, which a test may pin alone: on an x86_64 host images.rs's x86-64 level test pins
+/// alpine:3.22's amd64 manifest, whose index containers.rs's seed holds, and the seed's build
+/// of it found it held (D78) and pulled nothing, so no record named it (KVM at ea6f4b53b: "not
+/// held whole ... once pulled"). Here an index is pulled as the seed pulls one; its
+/// platform's manifest, then the index, are what the seed serves of each. No VM: a build of a
+/// base alone runs no step.
+#[test]
+fn a_seed_holds_the_manifests_its_index_pulled() {
+    let (index, blobs) = common::test_index();
+    let (port, _) = common::registry(index.clone(), blobs);
+    let at = |digest: &str| {
+        shards_image::reference::Reference::parse(&format!("127.0.0.1:{port}/test/image@{digest}")).unwrap()
+    };
+    let home = TempDir::new("seed-held");
+    let ctx = TempDir::new("seed-held-ctx");
+    std::fs::write(
+        ctx.join("Dockerfile"),
+        format!("FROM {}\n", at(&sha256_digest(&index))),
+    )
+    .unwrap();
+    let built = run_shards_env(
+        &["build"],
+        &[ctx.as_os_str()],
+        &[("SHARDS_HOME", home.as_os_str())],
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{built}");
+    let (manifest, parts) = test_image();
+    let (top, served) =
+        common::hub_held(&home, &at(&sha256_digest(&manifest))).unwrap_or_else(|missing| panic!("{missing}"));
+    assert!(
+        top == manifest && served == parts,
+        "the manifest, then its config and layer"
+    );
+    let (top, served) =
+        common::hub_held(&home, &at(&sha256_digest(&index))).unwrap_or_else(|missing| panic!("{missing}"));
+    assert!(
+        top == index && served.contains(&manifest),
+        "the index, its manifest among its parts"
+    );
+}
+
 /// `pull --output-agentfile` writes the Agentfile of the image it pulled once it is
 /// through, as `make agentfile` writes one: into a directory as its `Agentfile`, where
 /// `shards build DIR` finds one, or to the file named; of the platform pulled. A pull that
