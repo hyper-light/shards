@@ -851,17 +851,24 @@ impl Told {
 }
 
 /// How the orchestrator's asks of a run ended (D231): its `STOP`; or the run failed as they
-/// were served, for the reason given.
+/// were served, for the reason given: its channel ended without `STOP` (its owner gone), or
+/// broke (a frame this host cannot read, or an ask that breaks its contract), or what an ask
+/// needed failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AsksEnd {
     Stopped,
     Failed(String),
 }
 
-/// The run's end: as its VM said it (`vm`; `said`, its `DONE` came), or as its
-/// orchestrator's asks ended it ([`AsksEnd`]).
-fn ended_by(asks: Option<&AsksEnd>, vm: wire::RunEnd, _said: bool) -> wire::RunEnd {
-    if asks.is_some() { wire::RunEnd::Stopped } else { vm }
+/// The run's end: as its VM said it (`vm`; `said`, its `DONE` came), whatever its asks did
+/// meanwhile; else as its orchestrator's asks ended it ([`AsksEnd`]), its VM killed for them,
+/// which leaves it no end of its own to say.
+fn ended_by(asks: Option<&AsksEnd>, vm: wire::RunEnd, said: bool) -> wire::RunEnd {
+    match asks {
+        Some(AsksEnd::Stopped) if !said => wire::RunEnd::Stopped,
+        Some(AsksEnd::Failed(why)) if !said => wire::RunEnd::Failed(why.clone()),
+        _ => vm,
+    }
 }
 
 /// An orchestrator's ask, as its frame reads (D231).
@@ -883,26 +890,36 @@ enum Ask {
 fn read_ask(read: io::Result<Option<(u8, Vec<u8>)>>) -> Result<Ask, AsksEnd> {
     match read {
         Ok(Some((which, payload))) => judged(which, payload),
-        Ok(None) | Err(_) => Err(AsksEnd::Stopped),
+        Ok(None) => Err(AsksEnd::Failed(
+            "its orchestrator's channel ended without STOP".into(),
+        )),
+        Err(e) => Err(broke(format_args!("{e}"))),
     }
 }
 
-/// The ask frame `which` carries, or how it ends the asks.
+/// The run failed as its orchestrator broke its channel, as `why` says.
+fn broke(why: std::fmt::Arguments<'_>) -> AsksEnd {
+    AsksEnd::Failed(format!("its orchestrator's channel broke: {why}"))
+}
+
+/// The ask frame `which` carries, or how it ends the asks: `STOP`; or a payload its kind does
+/// not read, or a kind that is no ask, which breaks the channel.
 fn judged(which: u8, payload: Vec<u8>) -> Result<Ask, AsksEnd> {
-    let ask = match which {
-        wire::to_host::CREDIT => wire::Credit::decode(&payload).map(Ask::Credit),
-        wire::to_host::INPUT => wire::Input::decode(&payload).map(Ask::Input),
-        wire::to_host::INPUT_END => wire::InputEnd::decode(&payload).map(Ask::InputEnd),
-        wire::to_host::LEASED => Ok(Ask::Leased(zeroize::Zeroizing::new(payload))),
-        wire::to_host::STATS => wire::StatsAsk::decode(&payload).map(Ask::Stats),
-        wire::to_host::ROOM => wire::RoomAsk::decode(&payload).map(Ask::Room),
-        wire::to_host::RATE => wire::RateAsk::decode(&payload).map(Ask::Rate),
-        wire::to_host::RESIZE => wire::ResizeAsk::decode(&payload).map(Ask::Resize),
-        wire::to_host::PLUG => wire::PlugAsk::decode(&payload).map(Ask::Plug),
-        wire::to_host::UNPLUG => wire::UnplugAsk::decode(&payload).map(Ask::Unplug),
-        _ => return Err(AsksEnd::Stopped),
+    let (what, ask) = match which {
+        wire::to_host::STOP => return Err(AsksEnd::Stopped),
+        wire::to_host::CREDIT => ("CREDIT", wire::Credit::decode(&payload).map(Ask::Credit)),
+        wire::to_host::INPUT => ("INPUT", wire::Input::decode(&payload).map(Ask::Input)),
+        wire::to_host::INPUT_END => ("INPUT_END", wire::InputEnd::decode(&payload).map(Ask::InputEnd)),
+        wire::to_host::LEASED => ("LEASED", Ok(Ask::Leased(zeroize::Zeroizing::new(payload)))),
+        wire::to_host::STATS => ("STATS", wire::StatsAsk::decode(&payload).map(Ask::Stats)),
+        wire::to_host::ROOM => ("ROOM", wire::RoomAsk::decode(&payload).map(Ask::Room)),
+        wire::to_host::RATE => ("RATE", wire::RateAsk::decode(&payload).map(Ask::Rate)),
+        wire::to_host::RESIZE => ("RESIZE", wire::ResizeAsk::decode(&payload).map(Ask::Resize)),
+        wire::to_host::PLUG => ("PLUG", wire::PlugAsk::decode(&payload).map(Ask::Plug)),
+        wire::to_host::UNPLUG => ("UNPLUG", wire::UnplugAsk::decode(&payload).map(Ask::Unplug)),
+        other => return Err(broke(format_args!("a frame of kind {other}, which is no ask"))),
     };
-    ask.map_err(|_| AsksEnd::Stopped)
+    ask.map_err(|e| broke(format_args!("a malformed {what}: {e}")))
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -2935,7 +2952,6 @@ mod hosted {
                 });
             if following.is_err() {
                 // Nothing would say its end: the run is ended now, and said so.
-                *lock(&live.asks_end) = Some(super::AsksEnd::Stopped);
                 let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
                 lock(&live.held).take();
                 let end = RunEnd::Failed("the run host could not follow its VM".into());
@@ -3154,9 +3170,10 @@ mod hosted {
         (told.end(failed), said)
     }
 
-    /// The orchestrator's asks, until its channel closes: credit, stats, stop. A channel
-    /// closed without `STOP` is its owner gone, which ends the run as `STOP` does; one
-    /// closed after the run's end is its owner having heard it.
+    /// The orchestrator's asks, until its channel closes: credit, stats, stop. `STOP` ends
+    /// the run `Stopped`; its channel closed without one (its owner gone), or broken, ends it
+    /// failed, saying why, as an ask whose need fails does ([`super::AsksEnd`]); one closed
+    /// after the run's end is its owner having heard it.
     fn asks<'scope, 'env>(
         live: &'env Live<'env>,
         mut input: io::Stdin,
@@ -3169,6 +3186,9 @@ mod hosted {
                 break end;
             }
         };
+        if let super::AsksEnd::Failed(why) = &ended {
+            super::say(format_args!("its asks ended: {why}"));
+        }
         *lock(&live.asks_end) = Some(ended);
         let _ = vm.kill(shards_ipc::signal::SIGKILL);
     }
@@ -3187,23 +3207,25 @@ mod hosted {
                 let mut flows = lock(&live.flows);
                 let room = flows.room.entry(key).or_insert(0);
                 *room = room.saturating_add(credit.bytes);
-                if live.flush(&mut flows, key).is_err() || live.grant(&mut flows, key).is_err() {
-                    return Err(AsksEnd::Stopped);
-                }
+                live.flush(&mut flows, key)
+                    .map_err(|e| AsksEnd::Failed(format!("its answers to its orchestrator: {e}")))?;
+                live.grant(&mut flows, key)
+                    .map_err(|e| AsksEnd::Failed(format!("its members' output's credit to its VM: {e}")))?;
             }
-            Ask::Input(given) => input_given(live, given).map_err(|()| AsksEnd::Stopped)?,
-            Ask::InputEnd(end) => input_end(live, end).map_err(|()| AsksEnd::Stopped)?,
+            Ask::Input(given) => {
+                input_given(live, given).map_err(|why| super::broke(format_args!("{why}")))?
+            }
+            Ask::InputEnd(end) => input_end(live, end).map_err(|why| super::broke(format_args!("{why}")))?,
             // A lease the orchestrator answered (D242), relayed to the network process
             // that asked it; the frame's copy of a value wiped as it goes. One of a run
             // with no grants, or to no ask, breaks the channel.
             Ask::Leased(payload) => {
                 let Some(leasing) = &live.leasing else {
-                    return Err(AsksEnd::Stopped);
+                    return Err(super::broke(format_args!(
+                        "a lease's answer, of a run that asks none"
+                    )));
                 };
-                if let Err(e) = super::leased(leasing, &payload) {
-                    super::say(format_args!("its orchestrator broke its channel: {e}"));
-                    return Err(AsksEnd::Stopped);
-                }
+                super::leased(leasing, &payload).map_err(|e| super::broke(format_args!("{e}")))?;
             }
             // On a thread of its own: an exec its guest is slow to answer holds up no
             // credit and no stop.
@@ -3386,13 +3408,24 @@ mod hosted {
     }
 
     /// The orchestrator's bytes for a member's stdin, within the room it was given: queued
-    /// for its writer. Past its room, or for a member with no input, its contract is broken.
-    fn input_given(live: &Live<'_>, given: wire::Input) -> Result<(), ()> {
+    /// for its writer. Past its room, after its end, or for a member with no input, its
+    /// contract is broken, as said.
+    fn input_given(live: &Live<'_>, given: wire::Input) -> Result<(), String> {
+        let member = given.member;
         let mut feeds = lock(&live.feeds);
-        let feed = feeds.get_mut(&given.member).ok_or(())?;
-        let n = u64::try_from(given.bytes.len()).map_err(|_| ())?;
-        if n > feed.room || feed.end.is_some() {
-            return Err(());
+        let feed = feeds
+            .get_mut(&member)
+            .ok_or_else(|| format!("an INPUT for member {member}, whose stdin its run did not ask for"))?;
+        let n =
+            u64::try_from(given.bytes.len()).map_err(|_| format!("member {member}'s INPUT has no length"))?;
+        if n > feed.room {
+            return Err(format!(
+                "member {member}'s INPUT of {n} bytes, past the {} its room holds",
+                feed.room
+            ));
+        }
+        if feed.end.is_some() {
+            return Err(format!("member {member}'s INPUT after its end"));
         }
         feed.room -= n;
         if !feed.ended && n > 0 {
@@ -3405,11 +3438,14 @@ mod hosted {
 
     /// The orchestrator's end of a member's stdin, or its abort, which ends its connection at
     /// once, so that a writer held by a member that does not read lets go.
-    fn input_end(live: &Live<'_>, end: wire::InputEnd) -> Result<(), ()> {
+    fn input_end(live: &Live<'_>, end: wire::InputEnd) -> Result<(), String> {
+        let member = end.member;
         let mut feeds = lock(&live.feeds);
-        let feed = feeds.get_mut(&end.member).ok_or(())?;
+        let feed = feeds.get_mut(&member).ok_or_else(|| {
+            format!("an INPUT_END for member {member}, whose stdin its run did not ask for")
+        })?;
         if feed.end.replace(end.end).is_some() {
-            return Err(());
+            return Err(format!("member {member}'s input ended twice"));
         }
         if matches!(end.end, wire::StreamEnd::Aborted(_)) {
             feed.queued.clear();
