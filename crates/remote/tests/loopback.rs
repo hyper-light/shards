@@ -135,6 +135,7 @@ fn waited<T>(rx: &mpsc::Receiver<T>, what: &str, mut patience: Patience) -> T {
 /// Waits until `view`'s driver has learned a window from a connection's answers
 /// ([`net::View::learned`]), with [`Patience`] on it. Nothing tells of it as it comes, so it
 /// looks again after as long as it has waited (as [`Patience`] does before a window shows).
+#[cfg(unix)]
 fn learned(view: &net::View) -> Duration {
     let mut patience = Patience::on(&[view]);
     loop {
