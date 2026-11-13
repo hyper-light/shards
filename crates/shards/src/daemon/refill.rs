@@ -196,7 +196,7 @@ impl<D: Disk> Daemon<D> {
             "restore".into(),
             dir.into(),
             "--warm".into(),
-            super::VM_LINK.into(),
+            crate::launch::LINK.into(),
         ];
         if let Some(rootfs) = &pool.rootfs {
             let mut backing = rootfs.as_os_str().to_os_string();
