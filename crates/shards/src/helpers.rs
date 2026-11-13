@@ -454,15 +454,16 @@ mod tests {
         assert_eq!(beside(&exe).unwrap(), root.to_path_buf());
         let mut names = names(&root);
         names.retain(|n| !n.starts_with('.'));
+        // The three alone, in the listing's order: on Windows `shards-net.exe` sorts before
+        // `shards.exe`, as `-` comes before `.`.
         let exe_suffix = std::env::consts::EXE_SUFFIX;
-        assert_eq!(
-            names,
-            [
-                format!("shards{exe_suffix}"),
-                format!("shards-net{exe_suffix}"),
-                format!("shards-vm{exe_suffix}")
-            ]
-        );
+        let mut alone = [
+            format!("shards{exe_suffix}"),
+            format!("shards-net{exe_suffix}"),
+            format!("shards-vm{exe_suffix}"),
+        ];
+        alone.sort();
+        assert_eq!(names, alone);
     }
 
     #[test]
