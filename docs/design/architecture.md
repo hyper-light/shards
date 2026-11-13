@@ -17139,12 +17139,20 @@ download.
   trouble has lasted so far (full jitter: the time lost past its end at most what it had
   lasted, and a crowd's askings not back together), at least what `Retry-After` names
   (RFC 9110 §10.2.3), with no count: a gateway's many quick failures are ridden out as a
-  timeout's few slow ones, for as long. The budget is twice the longest trouble the path
-  has passed (a doubling search past what is known, Baeza-Yates, Culberson and Rawlins,
-  "Searching in the plane", Inf. Comput. 106(2), 1993), and never less than the 100 s
-  TCP itself retransmits to a peer that does not answer before it gives up (RFC 1122
-  §4.2.3.5, R2): all a path that has passed none is given. A wait named past the budget,
-  or a trouble past it, is said as the registry's failure. A 500, which RFC 9110 §15.6.1
+  timeout's few slow ones, for as long. The budget is the longest trouble the path has
+  passed (`Paths::budget`, PM M558), by the person's rule: "The cold start, and every
+  wait after a run-out, follows the party's liveness and progress. After that the bound is
+  the slowest answer seen." A path that has passed none rides one out while it lasts, as
+  one does whose last trouble ran out, until a trouble passes, whose length is then the
+  bound; a run-out teaches nothing (`Trouble::over`). A wait named past the budget, or a
+  trouble past it, is said as the registry's failure. Before (11-09 to 11-13), twice the
+  longest (a doubling search, Baeza-Yates, Culberson and Rawlins 1993), each give-up
+  taught as a trouble passed, and never less than R2's 100 s (RFC 1122 §4.2.3.5): R2 is
+  how long TCP itself retransmits to a peer that does not answer before it ends the
+  connection, an end the host's own TCP already gives each connection (Linux's
+  `tcp_retries2`, past R2) and the trouble's next asking finds, so a floor of shards' own
+  added none of the protocol's. A trouble of a server that answers its failures (a
+  gateway's 503s) has no protocol bound at all: its path's own longest is the one. A 500, which RFC 9110 §15.6.1
   does not say passes, is asked again once, and a repeat is the request's own answer.
   A cancel ends a wait at once.
 - **Kept in the home, by path**: what each path showed (its slowest answer and slowest
@@ -17191,8 +17199,7 @@ download.
   | 1 s before any wait, and a pace's least | `patience::FIRST` | RFC 6298 §2.1, §2.4 |
   | ×2 a timeout in a row | `backed_off` | RFC 6298 §5.5 |
   | answers, silences, connects, handshakes each learned | `Wait`, `Paths::timeout`, `Paths::answer`, `Paths::silence` | each over its own times |
-  | budget: 2 × the longest trouble passed | `Shown::budget` | doubling search (Baeza-Yates, Culberson and Rawlins 1993) |
-  | budget at least 100 s | `patience::R2` | RFC 1122 §4.2.3.5, R2 |
+  | budget: the longest trouble passed; none before any, or after a run-out until one passes | `Paths::budget`, `Paths::trouble_ran_out`, `Trouble::wait` | the person's rule (2026-11-13); a run-out teaches nothing; TCP's own R2 ends dead connections already (RFC 1122 §4.2.3.5) |
   | a random share of the trouble so far | `Trouble` | full jitter, bounded by the trouble's own length |
   | at least `Retry-After` | `Trouble` | RFC 9110 §10.2.3 |
   | 502, 503, 504, 408 pass; a 500 asked once more | `Trouble` | RFC 9110 §15.5.9, §15.6.1, §15.6.3 to §15.6.5 |

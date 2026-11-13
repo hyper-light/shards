@@ -23539,3 +23539,37 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | Red with the old rule back, green after: above. |
   | R11, R12 | The judge and its process source shared; Unix's and Windows' `exits_by` each the smallest adapter; macOS arm64 run, Linux and Windows owed to CI. |
   | R15, R16 | Implementer; the carrier's checkouts and targets on adas-mac-studio-3.local and adas-mac-studio.local are removed after landing. |
+
+### M558. A registry's trouble is ridden out no longer than the longest its path passed (D222)
+
+- **Question.** D222's trouble budget was twice the longest trouble the path had passed, at
+  least R2's 100 s (RFC 1122 §4.2.3.5). The person ruled on 2026-11-13: no ×2; "The cold
+  start, and every wait after a run-out, follows the party's liveness and progress. After
+  that the bound is the slowest answer seen." Does R2 bound a trouble, and what does?
+- **Found** (from the code, and RFC 1122). R2 is how long TCP retransmits to a peer that does
+  not answer before it ends the connection, which the host's own TCP already does for each
+  connection (`tcp_retries2` on Linux, past R2): a dead peer's asking ends so, and the
+  trouble's next asking finds it. A server that answers its failures (a gateway's 503s) is
+  bounded by no protocol. And a trouble given up on was taught as one passed
+  (`Trouble::over` at the give-up), its length the next budget's half: the doubling search
+  learned from its own cut.
+- **Decision.** The budget is the path's longest trouble passed (`Paths::budget`); none
+  before any, or after a trouble ran out until one passes (`Paths::trouble_ran_out`), whose
+  troubles are ridden out while they last, their pauses each a random share of how long they
+  have lasted, a cancel ending them. A run-out teaches nothing (`Trouble::over`). The ×2 and
+  `R2` go.
+- **Tests.** registry.rs `a_trouble_is_ridden_out_no_longer_than_the_longest_its_path_passed`
+  (503s for 1.5 s on a path that passed 0.3 s: its 503 is the answer past 0.3 s; the next
+  trouble ridden out to its 200, its length then the longest); patience.rs
+  `a_path_learns_its_waits` (none, the longest, a run-out none until one passes); the
+  trouble tests as before, within their moment.
+- **Checked** (adas-mac-studio-3.local, macOS 26.2 arm64, `CARGO_INCREMENTAL=0`): the new test
+  red on main's code (f421a2fc9: `200` where `503` was due, the 100 s floor riding past the
+  1.5 s trouble), green after (2cfa144fd), with the patience, trouble, cancel, stuck-layer
+  and auth tests, 31 passed; `cargo clippy -p shards-registry --all-targets -- -D warnings`
+  clean.
+- **Owed.** CI's Linux and Windows. ROOT's: real pulls on every backend.
+- **Rules** (policy df2acf47, role implementer): R01 no panic added; R02, R03 the person's
+  rule and RFC 1122 read, the ×2 and the floor gone; R04 `Out` and the trouble's `ran_out`;
+  R09, R10 red on main's code, green after; R11 cross-platform code, macOS run; R15, R16
+  implementer, its target removed after landing.
