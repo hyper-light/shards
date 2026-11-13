@@ -312,6 +312,45 @@ pub(crate) fn write_telling(handle: HANDLE, buf: &[u8], pended: impl FnOnce()) -
     })
 }
 
+/// Whether the pipe whose end is `handle` is connected still: its local information's
+/// `NamedPipeState` (NtQueryInformationFile's `FilePipeLocalInformation`), which turns from
+/// `FILE_PIPE_CONNECTED_STATE` as its other end closes (npfs keeps one state for both ends:
+/// ReactOS's `NpSetClosingPipeState`). A write that pended on its reader and then finished
+/// may have finished as that reader went: Windows completes it so, its data dropped, and fails
+/// the next with ERROR_NO_DATA (Windows 11 build 26200, PM M553), so its finish is a take only
+/// where this says connected after it.
+pub(crate) fn connected_now(handle: HANDLE) -> io::Result<bool> {
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_PIPE_CONNECTED_STATE, FILE_PIPE_LOCAL_INFORMATION, FilePipeLocalInformation,
+        NtQueryInformationFile,
+    };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+    let mut info = FILE_PIPE_LOCAL_INFORMATION::default();
+    // SAFETY: an IO_STATUS_BLOCK is plain data (a status or pointer, and a count), which the
+    // call fills; zero is a valid one.
+    let mut status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+    let size = u32::try_from(size_of::<FILE_PIPE_LOCAL_INFORMATION>())
+        .map_err(|_| io::Error::other("a pipe's local information past a u32"))?;
+    // SAFETY: a pipe's end this process holds, and a FILE_PIPE_LOCAL_INFORMATION and an
+    // IO_STATUS_BLOCK of ours for the call to fill, of their own sizes.
+    let got = unsafe {
+        NtQueryInformationFile(
+            handle,
+            &raw mut status,
+            (&raw mut info).cast(),
+            size,
+            FilePipeLocalInformation,
+        )
+    };
+    if got < 0 {
+        // SAFETY: no pointers; an NTSTATUS as Win32 says it.
+        let e = error(unsafe { windows_sys::Win32::Foundation::RtlNtStatusToDosError(got) });
+        // A pipe its other end has left may say so by failing the query too.
+        return if ended(&e) { Ok(false) } else { Err(e) };
+    }
+    Ok(info.NamedPipeState == FILE_PIPE_CONNECTED_STATE)
+}
+
 /// What the pipe whose end is `handle` holds of that end's writes before one waits on its
 /// reader: its outbound quota, the buffer its instance was made with (GetNamedPipeInfo's out
 /// buffer size; `LINE_BUFFER` each way for a slot's line); none where it says none.
