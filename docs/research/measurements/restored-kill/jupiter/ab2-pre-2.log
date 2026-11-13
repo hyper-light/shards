@@ -1,0 +1,9 @@
+=== exec: Some(0) "exec-out\n" "exec-err\n"
+=== rm -f: Some(0) in 8.131451s
+shards daemon 100120: the default bridge is 172.18.0.0/16
+shards daemon 100120: serving C:\Users\corph\AppData\Local\Temp\shards-tests\91800\eng-cp-24 through C:\Users\corph\AppData\Local\Temp\shards-tests\91800\eng-cp-24\requests, with up to 16777216 descriptors open
+shards daemon 100120: watching the host's memory pressure: the system's low memory notification (CreateMemoryResourceNotification), said again every 2 s while it lasts
+shards daemon 100120: VM 95772: not ready in 12s: its CPU time 2093 ms in user mode and 812 ms in the kernel, its working set 45696 KiB, 11543 page faults; its 11 threads: waiting (WrAlertByThreadId), waiting (WrQueue), waiting (WrQueue), waiting (WrQueue), waiting (UserRequest), ready, ready, ready, ready, ready, waiting (WrAlertByThreadId); the host's memory 79417 MiB available of 126615 MiB
+shards daemon 100120: VM 95772: not ready in 26s: its CPU time 5093 ms in user mode and 1250 ms in the kernel, its working set 238188 KiB, 60400 page faults; its 20 threads: waiting (WrAlertByThreadId), waiting (WrQueue), waiting (WrQueue), waiting (WrQueue), waiting (UserRequest), ready, ready, ready, ready, ready, waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (WrAlertByThreadId), waiting (UserRequest), waiting (UserRequest); the host's memory 80249 MiB available of 126615 MiB
+shards daemon 100120: container 28b6ceb54a9a5c7f22e0dc85d50a0b2e99d4475eb04c92ab60d8aa042e93a0a0: VM 91504 runs as its client waits: its CPU time 1093 ms (+203 ms in 10s), 48222 page faults (+1143)
+

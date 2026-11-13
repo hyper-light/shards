@@ -22142,3 +22142,54 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | The ASan OOM of floor/ceil/round/format_int reproduced in M524; the fixed calls' memory and time above; raw logs in `results/`. |
   | R11, R12 | One implementation. Tests: macOS arm64, Linux x86_64 (the i9; the Ryzen at a6f4766d3). Lint: all seven targets. Owed: Windows, Linux arm64 and musl test runs. |
   | R15, R16 | No agents started. adacachy2's full /home untouched (its tmpfs used); the i9's read-only /home untouched (its /tmp used); adacachy's toolchains, cargo-fuzz and targets under its /tmp, its user's rustup untouched; scratch under ~/.cache/rb2 on the Mac Studios and /tmp on the Linux hosts. |
+
+### M538. CI's one `rm -f` timeout on Windows: a restored run's SIGKILL that never reached its command, the signal link's bug not shown to be the cause
+
+- **Question.** `engine.rs`'s `the_docker_cli_checkpoints_and_restores_microvms` timed out
+  once in its last `rm -f` (job 131325553441, c01aeb941, windows-2025-vs2026). Was that the
+  signal link's lost SIGKILL, fixed at 3607aad11 (main since 1c349a632)? If so, the D217
+  change on `p/win-ci-green-teardown-wip` (3f5698f5a) stays unmerged.
+- **Method.** `measurements/restored-kill`:
+  - the failing run's `daemon.log`, its home's one log;
+  - `tally.sh`, the test's result in each completed x86_64 Windows job on main's last 200
+    commits (`ci/tally.tsv`);
+  - a jupiter A/B, aeac12d67 against 9e5e5f8ea, `engine.rs` whole held to 4 CPUs, alternate
+    rounds, with measurement-only patches that keep `daemon.log` and time `rm -f` (`jupiter/`).
+- **Found.**
+  - CI's restored machine ran 109 to 375 ms of CPU every 10 s for 600 s after the SIGKILL,
+    above an idle microVM's 63 ms. So D217 followed it to the client's deadline: its counter
+    was never ended.
+  - Before the fix, three host paths dropped a restored run's frames silently, its SIGKILL
+    included: a dial it could not take, a queued frame's failed send, and a later failed
+    send. Each is now a typed loss that stops the machine. They logged nothing, so the
+    failing log can show none of them.
+  - CI before the fix: windows-2025 failed 1 of 28, windows-2022 0 of 30. 80 jobs never
+    reached `engine.rs`. After the fix: no results yet, as all 60 jobs were queued at
+    2026-11-13 01:10Z.
+  - jupiter: 8 of 8 passed before the fix and 7 of 7 after (`rm -f` 0.10 to 13.1 s).
+  - After the fix, 4 of 7 runs logged a loss on the checkpointed original. This is inferred,
+    not seen: no run logged `kill_command`'s "no signal reaches" at `rm -f`.
+  - One run after the fix (with an exec into the restored machine first) left its command
+    unended for 10 s after the SIGKILL, its VM below idle CPU, until D217 killed it (11.1 s,
+    passed).
+- **Reading.** Consistent, not shown. CI's symptom is what each of the fixed paths does, but
+  the failure is rare, never seen on jupiter, and not yet run on CI after the fix. Main
+  still holds a restored run's frames, with no time bound, for a dial that never comes (D16,
+  D176), and that would look the same. Not closed as the signal link's bug. D217's change
+  stays unmerged, since nothing fails on main.
+- **Owed.**
+  - After-fix windows-2025 runs (`tally.sh 3` as CI's queue drains): about 83 without a
+    failure to say the rate fell at 95% (27/28 to the 83rd power is 0.049).
+  - The exec run's restored machine: its console and logs were not kept.
+  - The original's loss warning at its save, for the signal link's owner.
+- **Rules** (policy df2acf47, role implementer; records only, no code):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01, R04, R05, R06, R07, R12, R13 | No code changed. |
+  | R02, R03 | Not a decision; no value introduced. |
+  | R08, R14 | Nothing measured for speed or resources. |
+  | R09 | Not reproduced: jupiter 0 of 15, and CI's after-fix runs owed. Nothing fixed here. |
+  | R10 | The raw logs, patches, scripts and tally are in `measurements/restored-kill`. |
+  | R11 | Windows x86_64 only, where the failure was. Windows arm64 runs no VM tests. Linux's and macOS's CI results for this test were not tallied. |
+  | R15, R16 | No agents started. jupiter's trees, targets and logs from this lane are removed after landing. |
