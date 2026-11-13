@@ -5,7 +5,8 @@
 //! owner reads it (D180): booted for an orchestrator through shards-api's `ImageShards` and
 //! this build's `shards api-run` (D231), as a daemon's run hands a member's output to its
 //! owner's endpoint alone, never to the run's own stderr. A command run in a member with
-//! `shards exec vm --for` says the same on the exec's own stdout.
+//! `shards exec vm --for` says the same on the exec's own stdout. A member on a terminal of
+//! its own (D244) is read, sized and typed into as its owner does.
 
 #![allow(
     clippy::unwrap_used,
@@ -82,6 +83,12 @@ fn build(home: &TempDir, tag: &str, options: &[&str]) {
 
 /// `image` booted from `home` with its harness running as the image declares it.
 fn boot(home: &TempDir, image: &str) -> Box<dyn ImageGuest> {
+    boot_member(home, image, false, false)
+}
+
+/// `image` booted from `home`, its harness given a terminal of its own and its stdin as
+/// asked (D244).
+fn boot_member(home: &TempDir, image: &str, terminal: bool, stdin: bool) -> Box<dyn ImageGuest> {
     let spec = ImageSpec {
         image: image.into(),
         vcpus: 1,
@@ -92,8 +99,8 @@ fn boot(home: &TempDir, image: &str) -> Box<dyn ImageGuest> {
             env: Vec::new(),
             files: Vec::new(),
             workdir: None,
-            stdin: false,
-            terminal: false,
+            stdin,
+            terminal,
         }],
         publish: Vec::new(),
         egress: Narrowing::default(),
@@ -393,4 +400,95 @@ fn a_command_run_in_a_member_has_a_terminal_that_resizes() {
     let (_, status, restored) = term.exit();
     assert_eq!((status, restored), (0, true));
     let _ = shards_in(&home, &["remove", "vm", "-f", "mx-tty"]);
+}
+
+/// The lines the harness's terminal shows on its stdout, each as it comes, without the
+/// carriage return a terminal's line discipline puts before its newline (termios(3),
+/// ONLCR).
+fn terminal_lines(guest: &dyn ImageGuest) -> std::sync::mpsc::Receiver<String> {
+    let pipe = guest.take_output(&codex(), Channel::Stdout).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(pipe).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line.trim_end_matches('\r').to_string()).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+/// The lines `lines` gives up to the first that begins with `last`, that one included.
+fn until(lines: &std::sync::mpsc::Receiver<String>, last: &str) -> Vec<String> {
+    let mut said = Vec::new();
+    loop {
+        let line = lines
+            .recv_timeout(TIMEOUT)
+            .unwrap_or_else(|e| panic!("no {last:?} in time ({e}) after:\n{}", said.join("\n")));
+        let done = line.starts_with(last);
+        said.push(line);
+        if done {
+            return said;
+        }
+    }
+}
+
+/// A harness whose spec asks for a terminal of its own (plan step 6, D244): its stdin,
+/// stdout and stderr are that terminal, its session's controlling terminal with it in the
+/// foreground, 0 by 0 as the kernel makes one. Its owner reads what the terminal shows as
+/// its stdout, its stderr ending at once, and sizes it, which the harness hears as SIGWINCH.
+#[test]
+fn a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("mx-term-home");
+    build(&home, "mx-term:1", &["tty", "winch"]);
+    let guest = boot_member(&home, "mx-term:1", true, false);
+    let mut stderr = guest.take_output(&codex(), Channel::Stderr).unwrap();
+    let mut rest = Vec::new();
+    std::io::Read::read_to_end(&mut stderr, &mut rest).unwrap();
+    assert!(rest.is_empty(), "its stderr is its terminal: {rest:?}");
+    let lines = terminal_lines(&*guest);
+    let said = until(&lines, "ready");
+    for want in [
+        "stdin tty true",
+        "stdout tty true",
+        "stderr tty true",
+        "controlling true",
+        "foreground true",
+        "size 0 0",
+    ] {
+        assert!(said.iter().any(|l| l == want), "no {want:?} in {said:?}");
+    }
+    guest.resize(&codex(), 40, 120, TIMEOUT).unwrap();
+    let said = until(&lines, "resized");
+    assert_eq!(said.last().map(String::as_str), Some("resized 40 120"));
+    guest.stop().unwrap();
+    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+}
+
+/// What a harness's owner writes to its stdin is typed into its terminal (D244): the
+/// terminal echoes the line, and the harness reads it as typed.
+#[test]
+fn a_harness_on_a_terminal_of_its_own_reads_what_its_owner_types() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("mx-keys-home");
+    build(&home, "mx-keys:1", &["tty", "read"]);
+    let guest = boot_member(&home, "mx-keys:1", true, true);
+    let lines = terminal_lines(&*guest);
+    until(&lines, "ready");
+    let mut keys = guest.take_input(&codex()).unwrap();
+    std::io::Write::write_all(&mut keys, b"hello\n").unwrap();
+    let said = until(&lines, "read ");
+    assert_eq!(said.last().map(String::as_str), Some("read hello"));
+    assert!(
+        said.iter().any(|l| l == "hello"),
+        "the terminal echoes what is typed: {said:?}"
+    );
+    guest.stop().unwrap();
+    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
 }
