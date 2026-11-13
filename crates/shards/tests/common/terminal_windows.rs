@@ -35,10 +35,8 @@ pub struct Terminal {
     /// pseudo console drew of its own.
     raw: String,
     dir: super::TempDir,
-    /// What its home's daemon has said, for a wait past its deadline ([`super::Said`]).
-    said: super::Said,
-    /// Its home, whose microVMs' processes a wait past its deadline shows
-    /// ([`super::guests_processes`]).
+    /// Its home, whose daemon a wait follows with its shell ([`super::Party`]), and whose
+    /// microVMs' processes a refused wait shows ([`super::guests_processes`]).
     home: std::path::PathBuf,
 }
 
@@ -66,6 +64,13 @@ struct Child {
 }
 
 impl Child {
+    /// Its process's ID.
+    fn id(&self) -> u32 {
+        use std::os::windows::io::AsRawHandle as _;
+        // SAFETY: a process handle this test holds.
+        unsafe { windows_sys::Win32::System::Threading::GetProcessId(self.process.as_raw_handle()) }
+    }
+
     fn exited(&self) -> Option<u32> {
         use std::os::windows::io::AsRawHandle as _;
         use windows_sys::Win32::Foundation::STILL_ACTIVE;
@@ -222,7 +227,6 @@ impl Terminal {
             pending: String::new(),
             raw: String::new(),
             dir,
-            said: super::Said::of(home),
             home: home.to_path_buf(),
         }
     }
@@ -271,21 +275,22 @@ fn text_of(raw: &str) -> (String, &str) {
 impl Terminal {
     /// Reads what the terminal shows until `text` has appeared since the last wait, and
     /// returns everything read since then, its escape sequences taken out ([`text_of`]):
-    /// failing past [`TIMEOUT`] once its home's daemon says nothing ([`super::Said`]).
+    /// a wait judged as [`super::run_command`]'s is ([`super::Wait`]), its kind its call
+    /// site, its party the shell and what it runs and its home's daemon, what the console
+    /// shows its output.
+    #[track_caller]
     pub fn wait_for(&mut self, text: &str) -> String {
-        let deadline = Instant::now() + TIMEOUT;
+        let kind = super::WaitKind::at(std::panic::Location::caller());
+        let mut wait = super::Wait::begin(kind, self.shell.id(), Some(&self.home), text);
         loop {
             if let Some(at) = self.seen.find(text) {
+                wait.answered();
                 let upto = at + text.len();
                 return self.seen.drain(..upto).collect();
             }
-            let left = deadline.saturating_duration_since(Instant::now());
-            let wait = if left.is_zero() {
-                Duration::from_millis(100)
-            } else {
-                left.min(Duration::from_millis(100))
-            };
-            match self.shown.recv_timeout(wait) {
+            let shown = self.shown.recv_timeout(wait.next_look());
+            let came = shown.is_ok();
+            match shown {
                 Ok(bytes) => {
                     self.keep(&bytes);
                     let raw = std::mem::take(&mut self.pending) + &String::from_utf8_lossy(&bytes);
@@ -300,12 +305,21 @@ impl Terminal {
                     }
                     self.pending = rest.to_string();
                 }
-                Err(_) => assert!(
-                    Instant::now() < deadline || self.said.lately(),
-                    "{text:?} did not come; the terminal showed {:?}{}",
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                // Its output has ended: nothing more comes.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!(
+                    "{text:?} did not come before the console's output ended; it showed {:?}{}",
                     self.seen,
                     super::guests_processes(&self.home)
                 ),
+            }
+            if let Err(stall) = wait.look(came) {
+                panic!(
+                    "{text:?} did not come: {}\nthe terminal showed {:?}{}",
+                    wait.refused(&stall),
+                    self.seen,
+                    super::guests_processes(&self.home)
+                );
             }
         }
     }

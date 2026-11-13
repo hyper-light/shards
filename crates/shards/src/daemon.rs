@@ -11398,10 +11398,9 @@ mod tests {
 
     /// A run's microVM is looked at for its progress while its own client waits on it, an
     /// attached run's, until it ends; a detached run's, whose client has gone, is not. Each
-    /// look is due within READY_STALL, a sixth of the time a test's client gives a daemon
-    /// that says nothing (`common::DAEMON_QUIET`, READY_TIMEOUT): a microVM that runs its
-    /// workload is said to six times before its client would give up on it. A played VM, a
-    /// sleep, runs nothing, and is said nothing of.
+    /// look is due within READY_STALL, a sixth of READY_TIMEOUT: a microVM that runs its
+    /// workload is said to six times before the daemon would give up on its start. A played
+    /// VM, a sleep, runs nothing, and is said nothing of.
     #[test]
     fn a_microvm_is_followed_while_a_client_waits_on_it() {
         let t = Test::new("followed");
@@ -12958,13 +12957,18 @@ mod tests {
                 drop(asked);
                 t.until("its answer taken", |d| !d.watching.giving(&answers));
             };
-            // What the daemon learns of a give-back's answer, from its own answers alone.
-            for _ in 0..2 {
+            // What the daemon learns of a give-back's answer, from its own answers alone: pass
+            // after pass until one has taught it. This stand-in answers as it reads the ask, so
+            // its answer can be there before the daemon's wait begins (`exec_followed` spawns
+            // its output's reader first), and such a pass teaches nothing (D222, health.rs
+            // `await_exit`): two passes, both beaten so, left it cold (CI 43496145972, x86_64
+            // gnu and musl, Windows arm64).
+            let slowest = loop {
+                if let shards_api::Seen::Learned { slowest, .. } = t.t.daemon.answers.reclaim.seen() {
+                    break slowest;
+                }
                 t.t.daemon.give_back_cold(t.threads);
                 answered(t);
-            }
-            let shards_api::Seen::Learned { slowest, .. } = t.t.daemon.answers.reclaim.seen() else {
-                panic!("no give-back's answer learned from two answered");
             };
             let (stalled, _stalled, vm) = running(t, "stalled");
             let t0 = Instant::now();

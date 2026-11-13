@@ -15,8 +15,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use common::{
-    DAEMON_QUIET, Patience, TempDir, cannot_pool, cannot_run_vms, home_with, processes_with, run_shards_env,
-    served,
+    Patience, TempDir, cannot_pool, cannot_run_vms, home_with, processes_with, run_shards_env, served,
 };
 use shards_vmm::devices::virtio::fs::headroom::reads_room;
 
@@ -564,7 +563,7 @@ enum Phase {
 /// they come, judged by `record` ([`Record`]). Before its first mark it is waited on for the
 /// slowest start seen, and past it for as long as its daemon or a microVM shows progress
 /// ([`Patience`], judged as D215's judge judges a wait, its first mark its answer) or the
-/// slice `cgroup` has been held by its host within [`DAEMON_QUIET`] ([`stalled`]); from its first mark, for the slowest read seen, and past that looked at
+/// slice `cgroup` has been held by its host since the look before ([`stalled`]); from its first mark, for the slowest read seen, and past that looked at
 /// once each window as long, each having to read what the slowest MiB seen keeps over it
 /// ([`Record::judging`]); with nothing seen yet, until it ends. Each look past the slowest
 /// read seen says the slice `cgroup`'s state on stderr. Refused, its command is ended and
@@ -634,8 +633,8 @@ fn judge(
 ) -> Result<Followed, Stalled> {
     // Its start's wait, taught its answer by the first mark.
     let mut patience = Some(Patience::of(home));
-    // The slice's stall total when last looked at, and when it last grew: a hold.
-    let mut stalls = (stalled(cgroup), None::<Instant>);
+    // The slice's stall total when last looked at: grown since, its host's hold.
+    let mut stalls = stalled(cgroup);
     let mut phase = Phase::Starting { looked: None };
     let (mut marks, mut stdout, mut stderr) = (Vec::new(), String::new(), String::new());
     let (mut status, mut closed) = (None::<Option<i32>>, 0);
@@ -717,12 +716,8 @@ fn judge(
             Phase::Starting { looked } => {
                 let progresses = patience.as_mut().is_some_and(Patience::holds);
                 let now = stalled(cgroup);
-                if now > stalls.0 {
-                    stalls = (now, Some(at));
-                }
-                let held = stalls
-                    .1
-                    .is_some_and(|t| at.saturating_duration_since(t) < DAEMON_QUIET);
+                let held = now > stalls;
+                stalls = now;
                 if !progresses && !held {
                     return Err(Stalled::Unstarted {
                         waited: at.saturating_duration_since(began),
@@ -857,17 +852,17 @@ fn a_read_is_judged_by_the_pace_of_the_reads_held_to_none() {
     drop(tell);
 }
 
-/// A start slower than the slowest seen is refused only once a whole slice of its microVMs
-/// has shown no progress (R03: past the bound, a wait goes on while progress shows, and is
-/// refused only after a whole window with none), and a host's hold of its slice counts as
-/// held. adacachy2 at 8bfa6150e and 9d2da923d refused a read under the budget 97.49 ms after
+/// A start slower than the slowest seen is refused only once a whole window past the slowest
+/// start its patience has seen (`Patience`'s W*) has shown no progress of its party (R03:
+/// past the bound, a wait goes on while progress shows, and is refused only after a whole
+/// window with none), and a host's hold of its slice counts as held. adacachy2 at 8bfa6150e and 9d2da923d refused a read under the budget 97.49 ms after
 /// its command began, the third look of 32.44 ms, the slowest start seen, while its daemon's
-/// warm microVMs had not been looked at once ([`common::Ran`] judges each over a slice) and
+/// warm microVMs had not been looked at once (`common::Ran`, then, judged each over a slice) and
 /// its slice was at its `memory.high` (4345 `high` events). Do: a stand-in VM process under
 /// this test's, idle, and a start of 500 ms against a slowest seen of 30 ms; then a start of
 /// as long in a slice whose tasks stall on memory, as PSI counts them, no microVM to follow;
 /// then a start that never comes, the stand-in idle. Expect: the first two followed to their
-/// ends, the third refused, past a whole slice.
+/// ends, the third refused, past the slowest start the first two taught.
 #[test]
 fn a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold() {
     let home = TempDir::new("budget-start");
@@ -927,7 +922,8 @@ fn a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold() {
     let _vm = StandIn::under(&home);
     let (tell, heard) = mpsc::channel::<Heard>();
     match judge(&heard, Instant::now(), &home, &seen, &home.join("no-slice")) {
-        Err(Stalled::Unstarted { waited, .. }) => assert!(waited >= common::PROGRESS_SLICE, "{waited:?}"),
+        // Its patience's kind taught by the two starts above, each its first mark's answer.
+        Err(Stalled::Unstarted { waited, .. }) => assert!(waited >= start, "{waited:?}"),
         Err(other) => panic!("refused otherwise: {other}"),
         Ok(_) => panic!("not refused"),
     }

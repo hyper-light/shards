@@ -12,11 +12,9 @@ use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::{TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, workload_image};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The host's wall clock, in nanoseconds since the Unix epoch.
 fn now_ns() -> u128 {
@@ -94,22 +92,17 @@ fn shards_with(args: &[&OsStr], stdin: &[u8]) -> Output {
         err.read_to_string(&mut s).unwrap();
         s
     });
-    // Within TIMEOUT, or past it while its VM process runs (D209): `run --kernel` is it on
+    // While its VM process runs (D209, `common::Heard::running`): `run --kernel` is it on
     // Unix, and starts it on Windows.
-    let start = Instant::now();
-    let mut ran = common::Ran::of(child.id());
+    let mut heard = common::Heard::running(child.id());
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {
+            heard.answered();
             break st;
         }
-        // Asked each pass, so that each slice of its VM process's is judged as it comes.
-        let running = ran.lately();
-        if start.elapsed() > TIMEOUT && !running {
+        if let Err(refused) = heard.look(true) {
             let _ = child.kill();
-            panic!(
-                "shards did not exit within {TIMEOUT:?}, nor its VM process run for {:?} after",
-                common::DAEMON_QUIET
-            );
+            panic!("shards did not exit: {refused}");
         }
         std::thread::sleep(Duration::from_millis(2));
     };
@@ -509,20 +502,21 @@ fn signaled_ignoring(image: &Path, command: &[&str], signals: &[Signal], ignorin
         .spawn()
         .unwrap();
     // A regression fails the test instead of hanging it: its child, only reaped after
-    // `done`, ended outright once past TIMEOUT its VM process has run nothing for
-    // DAEMON_QUIET (D209).
+    // `done`, ended outright once its wait is refused, its VM process having run nothing over
+    // a whole window past the slowest such run seen (D209, `common::Heard::running`).
     let pid = i32::try_from(child.id()).unwrap();
-    let mut ran = common::Ran::of(child.id());
+    let vm = child.id();
     let (done, watch) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
-        let start = Instant::now();
+        let mut heard = common::Heard::running(vm);
         loop {
-            // Asked each pass, so that each slice of its VM process's is judged as it comes.
-            let running = ran.lately();
-            match watch.recv_timeout(Duration::from_secs(1)) {
-                Ok(()) => return,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if start.elapsed() < TIMEOUT || running => {}
-                // Past its patience, or the test gone without saying it is done.
+            match watch.recv_timeout(heard.next_look()) {
+                Ok(()) => {
+                    heard.answered();
+                    return;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if heard.look(true).is_ok() => {}
+                // Refused, or the test gone without saying it is done.
                 Err(_) => {
                     common::kill_now(pid);
                     return;

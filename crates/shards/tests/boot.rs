@@ -15,7 +15,6 @@ use common::{
     test_guest, vm_run,
 };
 
-const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
 /// Kernel log lines that show the machine as each architecture's firmware describes it.
 fn machine_lines() -> Vec<String> {
@@ -288,11 +287,10 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
     std::thread::spawn(move || {
         let _ = tx.send(running.wait());
     });
-    match common::machine_ended(&handle, &rx, TIMEOUT) {
-        Some(reason) => assert_eq!(reason, ExitReason::Reset),
-        None => panic!(
-            "two vCPUs did not reach their end in {TIMEOUT:?} in this process, nor said anything new for {:?} after: {}",
-            common::DAEMON_QUIET,
+    match common::machine_ended(&handle, &rx) {
+        Ok(reason) => assert_eq!(reason, ExitReason::Reset),
+        Err(refused) => panic!(
+            "two vCPUs did not reach their end in this process: {refused}\n{}",
             String::from_utf8_lossy(&handle.console_said().lines)
         ),
     }
@@ -325,10 +323,10 @@ fn boots_the_hosts_maximum_vcpu_count() {
     let up = max.min(configured);
     let plural = if up == 1 { "" } else { "s" };
     let brought = format!("smp: Brought up 1 node, {up} CPU{plural}");
-    // A count other than the one asked for fails at once, with what the guest said. Past
-    // TIMEOUT while it says something new: of more vCPUs than its host has CPUs, its VM
-    // process's CPU time counts only before its first line (`Heard::of`).
-    let said = vm.wait_for_any_within(&["smp: Brought up"], TIMEOUT, None);
+    // A count other than the one asked for fails at once, with what the guest said. While it
+    // says something new: of more vCPUs than its host has CPUs, its VM process's CPU time
+    // counts only before its first line (`Heard::streaming`).
+    let said = vm.wait_for_any_streamed(&["smp: Brought up"], None);
     vm.kill();
     let seen = vm.seen.join("\n");
     assert!(said.contains(&brought), "{seen}");
@@ -1359,26 +1357,25 @@ fn a_guest_grows_and_gives_back_its_memory() {
             }
         }
     });
-    let start = std::time::Instant::now();
     let mut said = String::new();
-    // Within TIMEOUT of its start, or past it while its guest says something new or its VM
-    // process runs (D209): on an arm64 Windows host nested under QEMU's TCG its kernel was
-    // still onlining the gigabyte it asked for as the test's minute ran out (the parity
-    // plan's step 10), and says nothing as it does. One of neither for DAEMON_QUIET fails.
-    let mut heard = common::Heard::running(front);
-    let mut until = |heard: &mut common::Heard<'_>, marker: &str| -> String {
+    // While its guest says something new or its VM process runs (D209,
+    // `common::Heard::running`, each wait's kind its call site): on an arm64 Windows host
+    // nested under QEMU's TCG its kernel was still onlining the gigabyte it asked for as the
+    // test's minute ran out (the parity plan's step 10), and says nothing as it does.
+    let mut until = |mut heard: common::Heard<'_>, marker: &str| -> String {
         loop {
-            // Asked each pass, so that each slice of its VM process's is judged as it comes.
-            let progressing = heard.lately(true);
-            let line = match lines.recv_timeout(Duration::from_secs(1)) {
+            let line = match lines.recv_timeout(heard.next_look()) {
                 Ok(line) => line,
-                Err(Timeout) if start.elapsed() < TIMEOUT || progressing => continue,
+                Err(Timeout) => {
+                    if let Err(refused) = heard.look(true) {
+                        let _ = child.kill();
+                        panic!("no {marker:?}: {refused}\n{said}");
+                    }
+                    continue;
+                }
                 Err(_) => {
                     let _ = child.kill();
-                    panic!(
-                        "no {marker:?} within {TIMEOUT:?}, nor anything new from its guest nor CPU time of its VM process's for {:?} after:\n{said}",
-                        common::DAEMON_QUIET
-                    );
+                    panic!("no {marker:?} before its output ended:\n{said}");
                 }
             };
             heard.said(!said.lines().any(|l| l == line));
@@ -1389,11 +1386,14 @@ fn a_guest_grows_and_gives_back_its_memory() {
                 panic!("{said}");
             }
             if let Some((_, rest)) = line.split_once(marker) {
+                heard.answered();
                 return rest.trim().to_string();
             }
         }
     };
-    let plugged_ms: u64 = until(&mut heard, "SHARDS-TEST PLUGGED").parse().unwrap();
+    let plugged_ms: u64 = until(common::Heard::running(front), "SHARDS-TEST PLUGGED")
+        .parse()
+        .unwrap();
     #[cfg(unix)]
     let pid = front;
     #[cfg(windows)]
@@ -1405,28 +1405,35 @@ fn a_guest_grows_and_gives_back_its_memory() {
     let footprint = || shards_vmm::platform::process_usage(pid).unwrap().footprint;
     let full = footprint();
     stdin.write_all(b"\n").unwrap();
-    let unplugged_ms: u64 = until(&mut heard, "SHARDS-TEST UNPLUGGED").parse().unwrap();
+    let unplugged_ms: u64 = until(common::Heard::running(front), "SHARDS-TEST UNPLUGGED")
+        .parse()
+        .unwrap();
     // The guest's kernel counts a memory block gone from MemTotal as it takes it offline,
     // before it asks the device to unplug it (drivers/virtio/virtio_mem.c,
     // virtio_mem_sbm_unplug_sb_online: virtio_mem_fake_offline, then
     // virtio_mem_sbm_unplug_sb): as the guest says it gave all back, its last block, 128
     // MiB, may still be the host's to give back, as it was on windows-2025 (964 MiB, then
     // 196). What it gives back stays given back until the guest is answered, so the
-    // footprint is read until it has fallen, or the test's time is up and it has neither
-    // fallen further nor its VM process run for DAEMON_QUIET: a fall is its progress.
+    // footprint is read until it has fallen, or its wait is refused, it having neither
+    // fallen further nor its VM process run over a whole window past the slowest fall of
+    // its kind seen: a fall is its progress.
     let mut least = full;
+    let mut heard = common::Heard::running(front);
     let given_back = loop {
         let now = footprint();
         heard.said(now < least);
         least = least.min(now);
-        let progressing = heard.lately(true);
-        if full.saturating_sub(now) >= 768 << 20 || (start.elapsed() >= TIMEOUT && !progressing) {
+        if full.saturating_sub(now) >= 768 << 20 {
+            heard.answered();
+            break now;
+        }
+        if heard.look(true).is_err() {
             break now;
         }
         std::thread::sleep(Duration::from_millis(10));
     };
     stdin.write_all(b"\n").unwrap();
-    until(&mut heard, "SHARDS-TEST PASS");
+    until(common::Heard::running(front), "SHARDS-TEST PASS");
     eprintln!(
         "1 GiB plugged in {plugged_ms} ms, unplugged in {unplugged_ms} ms; the VM process held {} MiB, then {} MiB",
         full >> 20,
@@ -2190,8 +2197,11 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
 /// where the window and the periods do not line up, and what its vCPU overruns before the
 /// governor reads, at the window's two ends) and what its VMM's own threads used past its
 /// vCPU's whole CPU over a window unheld just before. Its vCPU's whole CPU holds nothing, and
-/// none lifts its hold; each answer says the period its build's hold holds over. A guest
-/// booted without `--host-managed` closes the ask unanswered.
+/// none lifts its hold; each answer says the period its build's hold holds over. Its use
+/// (D260, `USE`, as `ManagedGuest::host_use` asks it), sampled twice a window apart once let
+/// be: its one vCPU's guest time and its VM process's own use, every part read, its vCPU's
+/// grown by no more than the time between the asks and its process's CPU holding it. A guest
+/// booted without `--host-managed` closes either ask unanswered.
 #[test]
 fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
     use shards_abi::rate::{Answer, ask, read_answer};
@@ -2306,6 +2316,43 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
             "{said}"
         );
     }
+    let used = |socket: &std::path::Path| {
+        let mut s = shards_vmm::platform::UnixStream::connect(socket).unwrap();
+        s.write_all(shards_abi::rate::USE_ASK).unwrap();
+        let mut answer = Vec::new();
+        s.read_to_end(&mut answer).unwrap();
+        answer
+    };
+    let read = |answer: &[u8]| {
+        let u = shards_abi::rate::read_used(answer).unwrap();
+        (u.guest.unwrap(), u.host.unwrap())
+    };
+    let first_asked = Instant::now();
+    let first = used(&socket);
+    std::thread::sleep(Duration::from_secs(2));
+    let second = used(&socket);
+    let span = u64::try_from(first_asked.elapsed().as_nanos()).unwrap();
+    let ((g1, h1), (g2, h2)) = (read(&first), read(&second));
+    for g in [&g1, &g2] {
+        assert_eq!(g.vcpus.len(), 1, "{g:?}");
+        assert!(g.vcpus.iter().all(|v| v.unread.is_none()), "{g:?}");
+    }
+    let grew = g2.total_ns() - g1.total_ns();
+    assert!(
+        grew <= span,
+        "its one vCPU ran {grew} ns of its guest in {span} ns"
+    );
+    assert!(
+        grew >= span / 20,
+        "its spinning vCPU ran {grew} ns of its guest in {span} ns, let be"
+    );
+    assert!(h2.cpu_ns >= h1.cpu_ns, "{h1:?} then {h2:?}");
+    assert!(
+        h2.cpu_ns >= g2.total_ns(),
+        "its VM process's {} ns of CPU, read after its vCPU's {} ns of guest time",
+        h2.cpu_ns,
+        g2.total_ns()
+    );
     let _ = child.kill();
     let _ = child.wait();
     let plain_socket = dir.join("u");
@@ -2315,6 +2362,10 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
         asked(&plain_socket, 250),
         None,
         "a guest not booted --host-managed"
+    );
+    assert!(
+        used(&plain_socket).is_empty(),
+        "a guest not booted --host-managed told its use"
     );
     let _ = plain.kill();
     let _ = plain.wait();

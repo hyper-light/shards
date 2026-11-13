@@ -1897,7 +1897,7 @@ fn lists_removed_by_hand_are_made_again_for_the_next_client() {
 #[test]
 fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
     let home = TempDir::new("daemon-unread");
-    let daemon = start_daemon(&home);
+    start_daemon(&home);
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_LOCAL_STORE", "none".as_ref()),
@@ -1949,29 +1949,15 @@ fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
     let cut = inspect(&cut);
     let whole = inspect(&["big"]);
     // Each has the volume in its hands, and stops reading as it waits on its full pipe:
-    // within TIMEOUT, or past it for as long as the daemon works on the answers, its
-    // seconds of work each costing more than an idle daemon's
-    // (idle_followers_cost_nothing_and_end_with_their_container's 30 ms). Step 10's arm64
-    // Windows host under QEMU's TCG showed a client nothing in a minute (FullReal04); a
-    // daemon that does nothing for DAEMON_QUIET fails it as before.
+    // waited on as its daemon works on the answers (`Patience`, D209), as step 10's arm64
+    // Windows host under QEMU's TCG showed a client nothing in a minute (FullReal04).
     for (who, out) in [("cut", &cut.1), ("whole", &whole.1)] {
-        let deadline = Instant::now() + TIMEOUT;
-        let (mut spent, mut looked, mut worked) = (cpu_time(daemon), Instant::now(), Instant::now());
+        let mut patience = common::Patience::of(&home);
         while waiting_in(out) == 0 {
-            if looked.elapsed() >= Duration::from_secs(1) {
-                let now = cpu_time(daemon);
-                if now.saturating_sub(spent) >= Duration::from_millis(30) {
-                    worked = Instant::now();
-                }
-                (spent, looked) = (now, Instant::now());
-            }
-            assert!(
-                Instant::now() < deadline || worked.elapsed() < common::DAEMON_QUIET,
-                "the {who} client showed nothing, its daemon idle for {:?}: {spent:?} of CPU in all",
-                worked.elapsed()
-            );
+            assert!(patience.holds(), "the {who} client showed nothing");
             std::thread::sleep(Duration::from_millis(5));
         }
+        patience.done();
     }
     let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
@@ -3335,25 +3321,25 @@ fn idle_followers_cost_nothing_and_end_with_their_container() {
         });
     }
     drop(shown);
-    // Within TIMEOUT, or past it while they still come, each within DAEMON_QUIET of the
-    // last: a host under load takes a while to start a hundred.
+    // Each waited on as its daemon and their microVMs work (`Patience`, D209): a host under
+    // load takes a while to start a hundred.
     let began = Instant::now();
     for n in 0..followers.len() {
-        let waited = Instant::now();
+        let mut patience = common::Patience::of(&home);
         loop {
-            match heard.recv_timeout(Duration::from_secs(1)) {
+            match heard.recv_timeout(patience.next_look()) {
                 Ok(()) => break,
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     panic!("followers ended with {n} of 100 served")
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => assert!(
-                    began.elapsed() < TIMEOUT || waited.elapsed() < common::DAEMON_QUIET,
-                    "{n} of 100 followers served in {:?}, none in the last {:?}",
-                    began.elapsed(),
-                    waited.elapsed()
+                    patience.holds(),
+                    "{n} of 100 followers served in {:?}",
+                    began.elapsed()
                 ),
             }
         }
+        patience.done();
     }
     // What each does past what it shows (its watch, its wait) done: a second of the
     // daemon's that costs next to nothing, as no follower that looks for output on a timer

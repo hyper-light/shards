@@ -119,7 +119,7 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
     );
     let stopped = run_shards_env(&["stop", "vm"], &["-t", "0", "tenant-fault"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    vm.wait_exit_following(TIMEOUT);
+    vm.wait_exit_following();
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn repeated_orphan_crashes_are_reaped_while_a_mixed_neighbor_progresses() {
     challenge_healthy(&env, &healthy, port);
     let stopped = run_shards_env(&["stop", "vm"], &["-t", "0", "tenant-fault"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    vm.wait_exit_following(TIMEOUT);
+    vm.wait_exit_following();
 }
 
 fn published(directory: &std::path::Path, name: &str, within: Duration) -> Vec<u8> {

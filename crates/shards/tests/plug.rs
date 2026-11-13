@@ -254,8 +254,6 @@ fn a_host_edit_wakes_a_watch_in_the_guest() {
     if cannot_run_vms() {
         return;
     }
-    /// Test patience, a loaded host's: never a runtime policy.
-    const PATIENCE: Duration = Duration::from_secs(60);
     let (image, _) = served();
     let home = TempDir::new("notice");
     let env = [
@@ -290,12 +288,12 @@ fn a_host_edit_wakes_a_watch_in_the_guest() {
     let vm_env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
     for (dir, at) in dirs.iter().zip(["/rw", "/ro", "/plugged"]) {
         let mut watch = Vm::spawn_env(&["exec", "noticed", "/bin/testguest", "inotify", at], &vm_env);
-        watch.wait_for("inotify ready", PATIENCE);
+        watch.wait_for("inotify ready");
         std::fs::write(dir.join("f"), "host").unwrap();
-        watch.wait_for("inotify IN_MODIFY f", PATIENCE);
+        watch.wait_for("inotify IN_MODIFY f");
         assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "host", "{at}");
         std::fs::remove_file(dir.join("f")).unwrap();
-        watch.wait_for("inotify IN_MODIFY|IN_ISDIR ", PATIENCE);
+        watch.wait_for("inotify IN_MODIFY|IN_ISDIR ");
         watch.kill();
         let left: Vec<_> = std::fs::read_dir(dir).unwrap().collect();
         assert!(left.is_empty(), "{at}: {left:?}");
@@ -315,7 +313,6 @@ fn notices_latency() {
     if cannot_run_vms() {
         return;
     }
-    const PATIENCE: Duration = Duration::from_secs(60);
     let samples: usize = std::env::var("SHARDS_NOTICE_SAMPLES")
         .ok()
         .and_then(|n| n.parse().ok())
@@ -337,13 +334,13 @@ fn notices_latency() {
     assert_eq!(r.status, Some(0), "{}", r.stderr);
     let vm_env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
     let mut watch = Vm::spawn_env(&["exec", "lat", "/bin/testguest", "inotify", "/w"], &vm_env);
-    watch.wait_for("inotify ready", PATIENCE);
+    watch.wait_for("inotify ready");
     let mut took = Vec::with_capacity(samples);
     for i in 0..samples + 10 {
         let name = format!("f{i}");
         let start = std::time::Instant::now();
         std::fs::write(files.join(&name), "x").unwrap();
-        watch.wait_for(&format!("inotify IN_MODIFY {name}"), PATIENCE);
+        watch.wait_for(&format!("inotify IN_MODIFY {name}"));
         if i >= 10 {
             took.push(start.elapsed().as_secs_f64() * 1e3);
         }
