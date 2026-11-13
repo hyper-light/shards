@@ -50,7 +50,7 @@ mod proc_allocation;
 
 pub use client::{
     ConfiguredShards, ManagedGuest, Shards, attach_managed, boot_managed, connect_borrowed, connect_prepared,
-    prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at,
+    pause, prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at,
 };
 pub use judge::{Found, Judge, Rate, Record, Seen, Stall};
 pub use native::{ImageIdentity, NativeBoot, NativeImages, NativeStartup, verify_native_image};
