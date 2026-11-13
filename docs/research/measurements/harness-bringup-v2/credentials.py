@@ -63,15 +63,22 @@ def save_state(private, state):
     os.replace(state_path(private) + ".new", state_path(private))
 
 
-def secrets(value, name=""):
+def named_secrets(value, name=""):
+    """Each secret of `value` with the name it is held under (the leak scan of plan step 33
+    reports a find by that name, never by value)."""
     if isinstance(value, dict):
         for key, item in value.items():
-            yield from secrets(item, key)
+            yield from named_secrets(item, key)
     elif isinstance(value, list):
         for item in value:
-            yield from secrets(item, name)
+            yield from named_secrets(item, name)
     elif isinstance(value, str) and value and SECRET_NAME.search(name):
-        yield value
+        yield name, value
+
+
+def secrets(value, name=""):
+    for _, found in named_secrets(value, name):
+        yield found
 
 
 def validity(document):

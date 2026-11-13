@@ -22691,8 +22691,8 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   -p shards -p shards-vm-process --all-targets -- -D warnings` for aarch64-apple-darwin, and
   for x86_64-pc-windows-msvc through cargo-xwin. Its red is CI's (the runs above).
 - **Owed** (ROOT): `tests/build.rs`, `isolation.rs`, `managed_lifecycle.rs`,
-  `managed_output.rs` and `harness_bringup.rs` on KVM, HVF and WHP; a `shards logs` that
-  shows a run's members (their logs are kept, not yet read by `logs`); a later `attach`
+  `managed_output.rs` and `harness_bringup.rs` on KVM, HVF and WHP; ~~a `shards logs` that
+  shows a run's members~~ (built, "Lost at the run's end" below); a later `attach`
   shown its members; an owner's channel that waits on no subscriber either (served from the
   member's log; its credit still waits on its owner); a run asking for agent control, with
   and without `shards.output`, its unnamed members drained (D238).
@@ -22710,6 +22710,134 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | Red: CI's runs above. Green: the focused tests above. No mutation run (the person's rule). |
   | R11 | Written for every OS; tested on macOS arm64 alone. CI covers the rest. |
   | R15, R16 | No agents started; the target directories on adalundhe-macbook-pro and adas-mac-studio.local are removed after. |
+
+#### Lost at the run's end (goal 71's CI clusters 3 and 4, 2026-11-13)
+
+- **Question.** With the drain above in place, why do attached runs show their agents'
+  reports cut mid-line, and a detached run's `shards logs` none of them?
+  - CI run 43435318858 at f5c0c8b04, x86_64 gnu and musl: `build.rs`'s
+    `agents_run_in_their_domains`, `a_remote_mcp_server_is_a_grant_of_that_server_alone`,
+    `agentfile_volumes_reach_whom_they_are_for` and `mcp_servers_are_offered_to_those_in_scope`
+    end their agents' lines at `[agent a] conf`, `[agent b] confined caps eff=00` or
+    `[agent main] confined caps ... bnd=000000000000000`, then nothing more. Cut points
+    differ from run to run (61, 94, 110 and 189 bytes of a report).
+  - ROOT's KVM x86_64 run at 237f3ebe7 on adacachy2: `an_agent_reaches_no_socket_of_the_runs_own`
+    at `[agent x] confined uid=200000 gid=200000 grou`.
+  - ROOT's HVF run at dc7f45bc6: 13 of `build.rs` against KVM's 5. Each misses an agent's
+    later lines after its first two.
+  - `an_engines_member_reaches_no_farther_than_the_command_beside_agents` polls
+    `shards logs beside` (a detached run) and sees only its command's `ready`.
+  - `supplied_member_output_does_not_rewrite_the_main_protocol` finds the members' lines
+    among its client's stderr, where it wanted main's alone.
+- **Found** (from source, held to the logs above):
+  - *init aborted every member's output as the command ended.* Its relay, once the command's
+    status came, aborted each member's pipes (`domain.stdout.abort()`, run.rs) and dropped
+    the capture's connection, a record in flight with it. The run's end kills the members,
+    and their pipes still held what they wrote.
+    - A member's output reaches the daemon one credited record at a time, and its first
+      windows are the run's record capacity: the record's 16-byte head and the longest label,
+      so 7 to 11 bytes of output each. The window climbs from there (D226).
+    - So an agent's report, written in one write just before it names itself
+      `confined-ready`, was still mostly in its pipe when the host saw it ready (`shards top`
+      every 250 ms), signalled the command, and the run ended. The cut falls wherever the
+      host's pace leaves it, which is why HVF, whose credit round trips are slower, lost more.
+  - *the daemon cut the capture at its stream's end and at the run's DONE.*
+    `Owner::abort` closed the credit queue, dropping a record captured and not yet kept, and
+    closed the drain, so the viewer finished early. DONE comes on the VM's link, while the
+    last records come on the capture's own stream, so the abort shut that stream before its
+    bridge had read them.
+  - *Not lost elsewhere.*
+    - The client's end. A slot's client (D185) copies its stdout and stderr FIFOs to their
+      ends, and joins those copies before it says its timing and exits
+      (cli/client.rs, `serve`). The viewer holds a copy of the client's stderr FIFO until it
+      returns, so its lines come before the client's end, and a client that has gone holds
+      nothing (EPIPE).
+    - A missed wakeup. `Drain::show` reads `changes` under its mutex.
+    - A writer's buffer. log_writer.rs writes each record and its entry before the drain
+      tells its viewer.
+  - *`logs` read the run's own log alone* (M543's owed item).
+- **Decision.**
+  - *The members' output goes to its end.*
+    - The daemon names the members it drains in the run's setup: `managed-drained=`, decimal
+      indices (`shards_abi::run::managed::DRAINED_KEY`, registered in D257's `KEYS`).
+    - As the run ends, init aborts only the other members' output, whose credit is their
+      owner's and may never come. It reads the drained members' pipes to their ends, which
+      the run's end brings as it kills them.
+    - It lets the capture go once each such channel has ended and nothing of it is in flight,
+      and says the run's end only after that.
+    - A capture that fails after the command has ended ends that drain, not the run: the
+      command's status stands.
+  - *The daemon keeps what the capture brings, to its end.*
+    - The run's end (`Outputs::end`) ends what owners read, as before.
+    - The capture itself goes on to its own end. Its stream's end or failure cuts it
+      (`Owner::cut`): the credit queue's `Ending` keeps what came of drained channels and
+      grants nothing more.
+    - The credit worker makes every keep, so it closes the drain after its last.
+    - The run's end (its waiters, `logs -f`, a `--rm` run's removal, a restart) is told after
+      the capture's. Its states are explicit: `Told` is `Capturing`, `Held` or `Captured`.
+    - A credit the VM can no longer take ends only what the daemon sends. A read side shut
+      would drop what the socket holds unread (XNU's `soshutdownlock_final`, `sorflush`).
+      That credit is the VM's end of the capture, so it fails nothing. D258's
+      `capture_failed` still judges what the credit worker and the bridge return: the VM's
+      end of the stream stops no run, and a failure of the daemon's own stops it.
+    - Nothing waits on the viewer.
+  - *The viewer writes each line in one write*, so a client's own stderr comes between its
+    members' lines, never within one.
+  - *`shards read logs` shows the members.* Each member's kept lines come on stderr after
+    `[label] `, as an attached client is shown them, after the run's own output, which stays
+    its command's. Members come in their declared order.
+    - `-f` follows every log until the run's end, which comes once their logs are whole.
+    - `--tail N` gives each log's last N lines, and `-t` puts each line's time before its
+      label.
+    - A member's label is kept beside its log (`members/<index>/label`).
+  - `supplied_member_output_does_not_rewrite_the_main_protocol` is held to this record's
+    contract. Its stdout is exactly main's JSON-RPC, and main's stderr bytes are whole. Each
+    other stderr line is one of its members' shown lines after its label, the tails the
+    run's end cut short included, and the timing line is last.
+- **Literals.** No new tunable. The setup entry's reservation is a u32's widest decimal and
+  its comma per member (`u32::MAX.ilog10() + 2`). A shown line's buffer is its label, its
+  piece and `[] \n`. No timer or deadline.
+- **Checked** on one host: adacachy2, Linux x86_64, glibc, rustc 1.98.1, debug test profile,
+  `SHARDS_HELPERS=skip` and stand-in guest binaries, as no test here boots a guest.
+  - *Red*, on main b6cb15f6e with the new tests alone added (the `Owner` literal less the
+    field main lacks).
+    - `a_runs_end_lets_its_capture_keep_what_comes_after_it` fails: its VM's next record
+      meets `BrokenPipe`, as the run's end ended the capture's stream.
+    - `logs_show_each_members_kept_lines_after_its_label` fails: its stderr is `err\n`, the
+      run's own, and none of its member's.
+  - *Green*, on the merged tree 763c3bd63:
+    - `cargo test -p shards-abi --lib -- drained run::setup`: 4 passed.
+    - `cargo test -p shards-init -- capture:: setup::tests`: 16 passed.
+    - `cargo test -p shards --bin shards -- daemon::managed daemon::tests::logs_
+      daemon::commands::tests daemon::processes setup::tests`: 71 passed, 6 ignored (ROOT's
+      native fixtures). Among them, the new `a_runs_end_lets_its_capture_keep_what_comes_after_it`,
+      `a_capture_cut_short_keeps_all_it_brought`,
+      `a_runs_end_waits_for_its_members_logs_and_never_for_its_viewer`,
+      `a_viewer_writes_each_line_at_once`, `a_runs_member_logs_are_found_with_their_labels`
+      and `logs_show_each_members_kept_lines_after_its_label`, and D257's census.
+    - `cargo clippy -p shards-abi -p shards --all-targets -- -D warnings` and `cargo clippy
+      -p shards-init --all-targets --target x86_64-unknown-linux-musl -- -D warnings`: clean.
+- **Owed** (ROOT).
+  - The real VMs: `build.rs`'s agent tests, (c) among them, on KVM x86_64, HVF, WHP and
+    arm64 KVM (L1). (c) is the one test changed. The command is in goal 71's report.
+  - The cost of the run's end: it now waits for the drained members' pipes' tails, which
+    their credit windows' cold start (the record capacity: 7 to 11 bytes of output) makes
+    slow (R08, R14).
+  - Windows and macOS builds: written for them, built and tested here on Linux alone.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap, index or panic in the new production code. Sizes are checked or saturating, and a shown line with no room ends what is shown. |
+  | R02 | The cause read from source and held to the CI and ROOT logs above. The client's order from cli/client.rs. The read side kept open from XNU's `sorflush`. Keys from D257's registry. |
+  | R03 | No tunable. The setup entry's room is a u32's widest decimal and its comma. No timer: `logs -f`'s only one is the existing `UNWATCHED`, for a log with no watch. |
+  | R04 | Explicit states. `Told`: Capturing, Held, Captured. `QueueLife`: Open, Ending, Closed. In init, a drained channel ends with its End or Aborted, every other one aborted. |
+  | R05 | The run's end is told by the credit worker's own end, not a probe. `logs -f` waits on its logs' watches and on the run's end. The members' log stays the one record. |
+  | R06, R07, R13 | Small functions (`run_credits`, `run_bridge`, `Owner::cut`, `Owner::end_run`, `LogSource`). Comments say why. |
+  | R08, R14 | Not measured: see Owed. |
+  | R09, R10 | Red: CI's and ROOT's runs above, and the two unit tests on main. Green: the runs above. No mutation run (the person's rule). |
+  | R11, R12 | Written once, behind `shards_ipc`'s `Stream` and `platform::FileWatch`. Tested on Linux x86_64 alone. CI covers the rest. |
+  | R15, R16 | No agents started. adacachy2's `~/g121-tmp/g71-shown` is removed after. |
 
 ### M544. An orchestrator's share process waited for with its door still held, and a harness that ended with its run (D231)
 
@@ -23369,6 +23497,13 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   - On the merged tree (8e3568e75 over main 740fa3726, r156): 169 passed; clippy clean for
     aarch64-apple-darwin, and for x86_64-pc-windows-msvc through cargo-xwin with `shards`
     (r450, at a1cb7dd64).
+- **Fixed after landing** (2026-11-13): a body whose bytes all came with its head, read at
+  once, was taken for a silence of 0 µs, and the path's next request set a socket timeout of
+  zero, which std refuses: "cannot set a 0 duration timeout" on every second pull from the
+  E2E tests' local registry on KVM (ROOT, adacachy2, at d54bca98e). A wait shorter than the
+  record's µs is no sample, a kept 0 is none, and a dial at its deadline's instant starts no
+  zero `connect_timeout` (D222). Red on main's code, green after:
+  `a_wait_of_nothing_is_no_sample_and_no_bound`.
 - **Owed.** CI's: Linux and Windows (where a system wait's early end is the own-stop rule's
   reason) and arm64 Linux. ROOT's: real pulls and pushes on every backend (api_image.rs,
   containers.rs), where a fresh home's first pull now runs out on a few answers a path's
@@ -23532,3 +23667,37 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | Red with the old rule back, green after: above. |
   | R11, R12 | The judge and its process source shared; Unix's and Windows' `exits_by` each the smallest adapter; macOS arm64 run, Linux and Windows owed to CI. |
   | R15, R16 | Implementer; the carrier's checkouts and targets on adas-mac-studio-3.local and adas-mac-studio.local are removed after landing. |
+
+### M558. A registry's trouble is ridden out no longer than the longest its path passed (D222)
+
+- **Question.** D222's trouble budget was twice the longest trouble the path had passed, at
+  least R2's 100 s (RFC 1122 §4.2.3.5). The person ruled on 2026-11-13: no ×2; "The cold
+  start, and every wait after a run-out, follows the party's liveness and progress. After
+  that the bound is the slowest answer seen." Does R2 bound a trouble, and what does?
+- **Found** (from the code, and RFC 1122). R2 is how long TCP retransmits to a peer that does
+  not answer before it ends the connection, which the host's own TCP already does for each
+  connection (`tcp_retries2` on Linux, past R2): a dead peer's asking ends so, and the
+  trouble's next asking finds it. A server that answers its failures (a gateway's 503s) is
+  bounded by no protocol. And a trouble given up on was taught as one passed
+  (`Trouble::over` at the give-up), its length the next budget's half: the doubling search
+  learned from its own cut.
+- **Decision.** The budget is the path's longest trouble passed (`Paths::budget`); none
+  before any, or after a trouble ran out until one passes (`Paths::trouble_ran_out`), whose
+  troubles are ridden out while they last, their pauses each a random share of how long they
+  have lasted, a cancel ending them. A run-out teaches nothing (`Trouble::over`). The ×2 and
+  `R2` go.
+- **Tests.** registry.rs `a_trouble_is_ridden_out_no_longer_than_the_longest_its_path_passed`
+  (503s for 1.5 s on a path that passed 0.3 s: its 503 is the answer past 0.3 s; the next
+  trouble ridden out to its 200, its length then the longest); patience.rs
+  `a_path_learns_its_waits` (none, the longest, a run-out none until one passes); the
+  trouble tests as before, within their moment.
+- **Checked** (adas-mac-studio-3.local, macOS 26.2 arm64, `CARGO_INCREMENTAL=0`): the new test
+  red on main's code (f421a2fc9: `200` where `503` was due, the 100 s floor riding past the
+  1.5 s trouble), green after (2cfa144fd), with the patience, trouble, cancel, stuck-layer
+  and auth tests, 31 passed; `cargo clippy -p shards-registry --all-targets -- -D warnings`
+  clean.
+- **Owed.** CI's Linux and Windows. ROOT's: real pulls on every backend.
+- **Rules** (policy df2acf47, role implementer): R01 no panic added; R02, R03 the person's
+  rule and RFC 1122 read, the ×2 and the floor gone; R04 `Out` and the trouble's `ran_out`;
+  R09, R10 red on main's code, green after; R11 cross-platform code, macOS run; R15, R16
+  implementer, its target removed after landing.

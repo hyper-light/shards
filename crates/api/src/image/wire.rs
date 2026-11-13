@@ -55,8 +55,10 @@ pub use shards_abi::run::nesting::Ready;
 /// [`StartedFrom::Warm`]; D253's pools), so that a side that keeps none is never asked to;
 /// 22, each credential grant's placeholder ([`CredentialGrant::placeholder`], D242), what
 /// stands for its credential in a request, so that the run's injector fills a value in where
-/// its own placeholder stands and nowhere else.
-pub const VERSION: u8 = 22;
+/// its own placeholder stands and nowhere else; 23, the run's microVM saved whole for its
+/// owner ([`to_host::SAVE`], answered [`to_client::SAVED`]; D259), so that a side that saves
+/// none refuses the run as it is asked, before any save is.
+pub const VERSION: u8 = 23;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -93,6 +95,9 @@ pub mod to_host {
     /// exemplar ([`Request::exemplar`](super::Request::exemplar), D253's pools), its microVM
     /// started for runs of it and waiting, `WARMED`, for one, whose `CREATE` follows.
     pub const WARM: u8 = 14;
+    /// A [`SaveAsk`](super::SaveAsk): the run's microVM saved whole into a directory its
+    /// owner names (D259).
+    pub const SAVE: u8 = 15;
 }
 
 /// What the run host sends.
@@ -136,6 +141,8 @@ pub mod to_client {
     /// How a warm run host's microVM started ([`StartedFrom`](super::StartedFrom), its one
     /// byte): it is ready, and waits for its run's `CREATE` (D253's pools).
     pub const WARMED: u8 = 32;
+    /// [`SaveAnswer`](super::SaveAnswer): a save's outcome, by its ask's id (D259).
+    pub const SAVED: u8 = 33;
 }
 
 /// Why a payload could not be read or written.
@@ -852,6 +859,52 @@ fn plug_refusal(tag: u8) -> Result<PlugRefusal, WireError> {
 pub struct PlugAnswer {
     pub id: u32,
     pub result: Result<(), (PlugRefusal, String)>,
+}
+
+/// The run's microVM saved whole into directory `to`, which the save makes (D259): absolute,
+/// beneath the run's home, beneath no directory its guest reaches, and nothing there yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveAsk {
+    pub id: u32,
+    /// Absolute, UTF-8: the directory the save makes.
+    pub to: String,
+}
+
+/// Why a save was refused, by what refused it (D259).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveRefusal {
+    /// Where it was to be written is not its owner's to name: not absolute, outside the run's
+    /// home, beneath a directory its guest reaches, or something there already.
+    Destination = 0,
+    /// The run is in no state to save: a save of it under way, or its microVM gone.
+    State = 1,
+    /// This host's microVMs take no snapshots (`shards_vmm::vm::SNAPSHOTS`).
+    Unsupported = 2,
+    /// It was not made, in the words of what failed: its VM's (what its snapshot cannot keep
+    /// whole, its guest not going quiet) or its files' writing.
+    Failed = 3,
+}
+
+fn save_refusal(tag: u8) -> Result<SaveRefusal, WireError> {
+    Ok(match tag {
+        0 => SaveRefusal::Destination,
+        1 => SaveRefusal::State,
+        2 => SaveRefusal::Unsupported,
+        3 => SaveRefusal::Failed,
+        tag => {
+            return Err(WireError::Tag {
+                what: "a save's refusal",
+                tag,
+            });
+        }
+    })
+}
+
+/// A save's outcome, by its ask's id: saved, or refused and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveAnswer {
+    pub id: u32,
+    pub result: Result<(), (SaveRefusal, String)>,
 }
 
 /// How the run ended.
@@ -1696,6 +1749,59 @@ impl PlugAnswer {
     }
 }
 
+impl SaveAsk {
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.text(&self.to)?;
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<SaveAsk, WireError> {
+        let mut r = Reader(payload);
+        let ask = SaveAsk {
+            id: r.u32()?,
+            to: r.text()?,
+        };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl SaveAnswer {
+    /// Its id, then 0, or 1, its refusal's tag and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(()) => w.u8(0),
+            Err((cause, why)) => {
+                w.u8(1);
+                w.u8(*cause as u8);
+                w.text(why)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<SaveAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(()),
+            1 => Err((save_refusal(r.u8()?)?, r.text()?)),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a save's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(SaveAnswer { id, result })
+    }
+}
+
 impl StatsAsk {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
@@ -2468,6 +2574,46 @@ mod tests {
             PlugAnswer::decode(&[0, 0, 0, 9, 2]),
             Err(WireError::Tag { .. })
         ));
+    }
+
+    /// A save's ask and its answer come back as they went, each refusal by its tag (D259); a
+    /// truncated, trailing or unknown-tagged one is refused, never a default.
+    #[test]
+    fn saves_round_trip_and_bad_ones_are_refused() {
+        let ask = SaveAsk {
+            id: 7,
+            to: "/Users/u/Library/Application Support/shards/saves/s1".into(),
+        };
+        let bytes = ask.encode().unwrap();
+        assert_eq!(SaveAsk::decode(&bytes).unwrap(), ask);
+        assert_eq!(SaveAsk::decode(&bytes[..bytes.len() - 1]), Err(WireError::Short));
+        assert_eq!(
+            SaveAsk::decode(&[bytes.as_slice(), &[0]].concat()),
+            Err(WireError::Trailing)
+        );
+        assert_eq!(
+            SaveAsk::decode(&[0, 0, 0, 7, 0, 0, 0, 1, 0xff]),
+            Err(WireError::Text)
+        );
+        for result in [
+            Ok(()),
+            Err((SaveRefusal::Destination, "outside the run's home".to_string())),
+            Err((SaveRefusal::State, String::new())),
+            Err((SaveRefusal::Unsupported, String::new())),
+            Err((SaveRefusal::Failed, "its guest did not go quiet".into())),
+        ] {
+            let answer = SaveAnswer { id: 9, result };
+            assert_eq!(SaveAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
+        }
+        assert!(matches!(
+            SaveAnswer::decode(&[0, 0, 0, 9, 1, 4, 0, 0, 0, 0]),
+            Err(WireError::Tag { .. })
+        ));
+        assert!(matches!(
+            SaveAnswer::decode(&[0, 0, 0, 9, 2]),
+            Err(WireError::Tag { .. })
+        ));
+        assert_eq!(SaveAnswer::decode(&[0, 0, 0, 9, 0, 0]), Err(WireError::Trailing));
     }
 
     /// A credential's value never prints: a [`Secret`]'s `Debug` says only its length, and

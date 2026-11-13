@@ -59,6 +59,57 @@ REDS = [
      NET + ["tests::credential_grants_are_taken_with_their_placeholders_checked"]),
 ]
 
+# Slice 2: the injector (crates/net/src/inject.rs) and its handoff (tcp.rs).
+INJECT = "crates/net/src/inject.rs"
+TCP = "crates/net/src/tcp.rs"
+REDS += [
+    ("inject: a Host that is not the SNI answered 421", INJECT,
+     "        if credential::decide(grants, &self.sni, &host, None) == Fill::Misdirected {",
+     "        if false {",
+     NET + ["inject::tests::a_request_for_a_host_that_is_not_the_sni_is_answered_421"]),
+    ("inject: only a granted name's TLS is ended", INJECT,
+     "        if !granted {\n            return self.pass();\n        }\n", "",
+     NET + ["inject::tests::a_placeholder_toward_an_ungranted_host_carries_no_credential"]),
+    ("inject: a value filled where decide says (a fill regardless of host)", INJECT,
+     "            if let Fill::With(reference) = credential::decide(grants, &self.sni, &host, Some(token)) {",
+     "            if let Some(reference) = grants.iter().find(|g| g.placeholder == token).map(|g| g.reference.clone()) {",
+     NET + ["inject::tests::a_placeholder_toward_an_ungranted_host_carries_no_credential"]),
+    ("inject: a request waits for its lease", INJECT,
+     "                Asked::Waiting => waiting = true,", "                Asked::Waiting => {}",
+     NET + ["inject::tests::a_granted_hosts_request_carries_the_value_and_its_echo_comes_back_masked"]),
+    ("inject: an echo of the value masked", INJECT,
+     "        if self.filled.is_empty() && self.queue.is_empty() {", "        if true {",
+     NET + ["inject::tests::a_granted_hosts_request_carries_the_value_and_its_echo_comes_back_masked"]),
+    ("inject: a body streams, held by nothing", INJECT,
+     "            Request::Body(mut framing) => {",
+     "            Request::Body(framing) if self.pending.len() < (1 << 20) => {\n"
+     "                self.request = Request::Body(framing);\n                Ok(false)\n            }\n"
+     "            Request::Body(mut framing) => {",
+     NET + ["inject::tests::a_large_body_streams_through_unchanged_under_backpressure"]),
+    ("inject: hop-by-hop fields cut", INJECT,
+     "    edits.sort_by_key(|(r, _)| r.start);\n    edits\n}", "    edits.clear();\n    edits\n}",
+     NET + ["inject::tests::hop_by_hop_fields_go_and_the_rest_stays"]),
+    ("inject: Transfer-Encoding beside Content-Length refused", INJECT,
+     "        if !lengths.is_empty() {\n            return Err(Refusal::Malformed(",
+     "        if false {\n            return Err(Refusal::Malformed(",
+     NET + ["inject::tests::a_requests_framing_is_read_strictly"]),
+    ("inject: a head's lines in CRLF alone", INJECT,
+     "        b'\\r' => bytes.get(i + 1).is_none_or(|&n| n == b'\\n'),", "        b'\\r' => true,",
+     NET + ["inject::tests::a_heads_lines_end_in_crlf_alone"]),
+    ("inject: no control in a chunk's extensions", INJECT,
+     "        || ext.iter().any(|&b| (b < 0x20 && b != b'\\t') || b == 0x7f)", "        || false",
+     NET + ["inject::tests::chunked_bodies_are_read_strictly"]),
+    ("inject: AES-256-GCM alone on the guest's side", INJECT,
+     "        cipher_suites: vec![aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384],",
+     "        cipher_suites: vec![\n            aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384,\n"
+     "            aws_lc_rs::cipher_suite::TLS13_AES_128_GCM_SHA256,\n        ],",
+     NET + ["inject::tests::a_guest_offering_no_aes_256_gcm_is_refused"]),
+    ("tcp: what the injector holds out of the window", TCP,
+     "        let injector = self.inject.as_ref().map_or(0, |f| f.held());",
+     "        let injector = 0;",
+     NET + ["tcp::tests::the_injector_passes_an_ungranted_flow_and_ends_a_granted_ones_tls"]),
+]
+
 KEEP = re.compile(r"^(test result|test .* FAILED|thread '.*' .*panicked at|error(\[|:))")
 
 

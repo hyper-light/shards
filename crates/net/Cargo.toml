@@ -20,6 +20,12 @@ rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs"
 time = { version = "0.3.55", default-features = false }
 # A credential's value wiped as its lease ends (D242), as shards wipes its own (google.rs).
 zeroize = "1"
+# The injector's TLS, both ways (D242): rustls over AWS-LC, as shards-server serves its own.
+rustls = { version = "0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
+# Its host's side verified as the registry's client verifies (D19, D242).
+shards-verify = { path = "../verify" }
+# HTTP/1.1 heads read where they lie (RFC 9112), as the registry's client reads them.
+httparse = "1.10.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -36,5 +42,4 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-rustls = { version = "0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
 shards-testdir = { path = "../testdir" }

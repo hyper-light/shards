@@ -211,6 +211,10 @@ pub struct Capture {
     capacity: usize,
     state: State,
     credits: Vec<[CreditState; 2]>,
+    /// Each member by its index: whether the host reads its output as it comes (D240's drain,
+    /// [`managed::DRAINED_KEY`]), so that what its pipes hold as the run ends goes to their
+    /// ends.
+    drains: Vec<bool>,
     incoming: [u8; run::HEADER + managed::CREDIT_LEN],
     received: usize,
     outgoing: Vec<u8>,
@@ -284,6 +288,20 @@ fn invalid(why: managed::Error) -> Failure {
     Failure::Protocol(why)
 }
 
+/// Each of a run's `count` members by its index: whether its setup names it among those the
+/// host drains ([`managed::drained`], which holds each to an active member's).
+fn drained_members(setup: &[Vec<u8>], count: usize) -> Result<Vec<bool>, String> {
+    let mut drains = Vec::new();
+    drains.try_reserve_exact(count).map_err(|e| e.to_string())?;
+    drains.resize(count, false);
+    for member in managed::drained(setup).map_err(|e| e.to_string())? {
+        *drains
+            .get_mut(usize::try_from(member).map_err(|e| e.to_string())?)
+            .ok_or("managed drain exceeds member bound")? = true;
+    }
+    Ok(drains)
+}
+
 impl Capture {
     pub fn prepare(
         setup: &[Vec<u8>],
@@ -338,6 +356,7 @@ impl Capture {
                 .ok_or("managed activation exceeds member bound")?;
             *slot = [CreditState::Waiting; 2];
         }
+        let drains = drained_members(setup, count)?;
         let conn =
             crate::run::dial(run::EXEC_PORT, false).map_err(|e| format!("managed output connection: {e}"))?;
         let mut hello = [0; run::HEADER + run::TOKEN];
@@ -354,6 +373,7 @@ impl Capture {
                 written: 0,
             },
             credits,
+            drains,
             incoming: [0; run::HEADER + managed::CREDIT_LEN],
             received: 0,
             outgoing: Vec::new(),
@@ -364,6 +384,16 @@ impl Capture {
 
     pub fn fd(&self) -> RawFd {
         self.conn.as_raw_fd()
+    }
+
+    /// Whether the host reads member `member`'s output as it comes (D240's drain): as the run
+    /// ends, its pipes are read to their ends rather than aborted.
+    pub fn drains(&self, member: u32) -> bool {
+        usize::try_from(member)
+            .ok()
+            .and_then(|at| self.drains.get(at))
+            .copied()
+            .unwrap_or(false)
     }
     pub fn events(&self) -> libc::c_short {
         match self.state {
@@ -739,6 +769,7 @@ mod tests {
             capacity,
             state: State::Running(Output::Idle),
             credits: vec![[CreditState::Waiting; 2]; active],
+            drains: vec![false; active],
             incoming: [0; run::HEADER + managed::CREDIT_LEN],
             received: 0,
             outgoing: Vec::new(),
@@ -819,6 +850,28 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success(), "allocation refusal result: {status}");
+    }
+
+    /// The members a run's setup names as the host's to drain (D240) are those a capture
+    /// reads to their ends as the run ends; any other is not, nor one past the run's members.
+    #[test]
+    fn the_members_the_host_drains_are_its_setups() {
+        let setup = vec![
+            b"managed-members=3".to_vec(),
+            [managed::ACTIVE_KEY, &0u32.to_be_bytes(), &2u32.to_be_bytes()].concat(),
+            [managed::DRAINED_KEY, b"2"].concat(),
+        ];
+        assert_eq!(drained_members(&setup, 3).unwrap(), [false, false, true]);
+        let (mut capture, _peer) = fixture(3, managed::HEADER + size_of::<i32>());
+        capture.drains = drained_members(&setup, 3).unwrap();
+        assert!(capture.drains(2) && !capture.drains(0) && !capture.drains(1) && !capture.drains(3));
+        // None named, none drained: the run's end aborts every member's output, as an
+        // orchestrator's runs' (whose every member's output its owner reads).
+        assert_eq!(drained_members(&setup[..2], 3).unwrap(), [false; 3]);
+        // A member not active is refused, as one the host could never credit.
+        let mut idle = setup.clone();
+        idle[2] = [managed::DRAINED_KEY, b"1"].concat();
+        assert!(drained_members(&idle, 3).is_err());
     }
 
     #[test]
@@ -913,6 +966,28 @@ mod tests {
         assert!(pipe.fd().is_none());
     }
 
+    /// Waits until a read of `pipe` finds bytes or its end, never EAGAIN: readable, or hung
+    /// up as its every writer has closed it, which follows the writers alone, with no clock.
+    /// A parallel test's fork (allocation_refusal_keeps_its_resource_cause starts this binary
+    /// again) holds a copy of every descriptor until its exec closes them (O_CLOEXEC); a read
+    /// meanwhile found the pipe empty and not yet ended, so no record came and `receive`
+    /// waited without end (a 17-minute hang in a parallel run on adacachy2).
+    fn readable(pipe: &Pipe) {
+        let mut ready = libc::pollfd {
+            fd: pipe.fd().unwrap(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            // SAFETY: poll(2) of one pollfd on this stack, the pipe's read end.
+            match unsafe { libc::poll(&raw mut ready, 1, -1) } {
+                1.. => return,
+                _ if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => {}
+                n => panic!("poll: {n}: {}", io::Error::last_os_error()),
+            }
+        }
+    }
+
     #[test]
     fn native_pipes_preserve_binary_channels_offsets_and_actual_eof() {
         let payload = b"\0\xff\x80\n\x1b[2Jno-newline";
@@ -929,6 +1004,7 @@ mod tests {
             let bytes = receive(&mut capture, &mut peer);
             assert_eq!(Record::decode(&bytes).unwrap().event, Event::Open(label));
             grant(&mut capture, &mut peer, 0, channel, capacity);
+            readable(&pipe);
             capture.read(0, channel, &mut pipe).unwrap();
             let bytes = receive(&mut capture, &mut peer);
             assert_eq!(
@@ -941,6 +1017,7 @@ mod tests {
                 }
             );
             grant(&mut capture, &mut peer, 0, channel, capacity);
+            readable(&pipe);
             capture.read(0, channel, &mut pipe).unwrap();
             let bytes = receive(&mut capture, &mut peer);
             assert_eq!(

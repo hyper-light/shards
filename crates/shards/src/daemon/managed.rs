@@ -6,6 +6,8 @@ mod members;
 #[cfg(test)]
 mod terminal_order_tests;
 
+pub(super) use drain::member_logs;
+
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read as _, Seek as _, Write as _};
@@ -297,6 +299,18 @@ impl Default for Outputs {
 enum Entry {
     Preparing,
     Serving(Arc<Owner>),
+}
+
+/// An ended run's managed scope, whose capture may still be keeping its members' last
+/// records ([`Outputs::end`]).
+pub(super) struct RunEnd(Arc<Owner>);
+
+impl RunEnd {
+    /// The run's end, `ended`: to be told now where its capture has ended, else told by its
+    /// credit worker once it has.
+    pub(super) fn tell_after(&self, ended: super::Ended) -> Option<super::Ended> {
+        self.0.tell_after(ended)
+    }
 }
 
 struct Charge {
@@ -646,6 +660,20 @@ struct Owner {
     charge: Arc<Charge>,
     /// Each member's end as its init tells it (`MEMBER_ENDED`), for its own lanes (D238).
     ends: Arc<members::Ends>,
+    /// Whether its capture has ended, and the run's end it holds until it has.
+    told: Mutex<Told>,
+}
+
+/// How a run's end waits on its capture (D240): told once every record its capture brought is
+/// kept, so that what its end brings (its waiters, `logs -f`, its removal, its restart) finds
+/// its members' logs whole. Nothing here waits on a reader of them.
+enum Told {
+    /// Its credit worker is keeping what comes.
+    Capturing,
+    /// The run has ended, and its end waits for the capture's.
+    Held(super::Ended),
+    /// Its capture has ended: the run's end is told as it comes.
+    Captured,
 }
 
 /// A run's agent-control endpoint as its owner holds it: where it is bound, and what ends it.
@@ -702,15 +730,37 @@ fn exec_admissions(output: Admitted, input: Admitted) -> io::Result<control::exe
 
 impl Owner {
     fn abort(&self) {
-        if let Some(agent) = &self.agent {
-            agent.revoke.revoke();
-        }
-        self.ends.close();
         self.credits.close();
         shards_ipc::end(&self.stream);
         if let Some(drain) = &self.drain {
             drain.close();
         }
+        self.end_owned();
+    }
+
+    /// The run has ended (its DONE, or its VM's end): what owners read through their
+    /// endpoints and lanes ends with it, as its inputs do. What the daemon drains goes on to
+    /// the end its capture brings, as its last records may still be on their way: they come
+    /// on the capture's own stream, the run's end on its VM's link.
+    fn end_run(&self) {
+        self.end_owned();
+    }
+
+    /// Its capture ended before its channels did (its stream's end, or a failure of it), once
+    /// nothing more is read of it: what owners read ends aborted; what came of the drained
+    /// channels is kept, and then its credit worker ends ([`Credits::end`]).
+    fn cut(&self) {
+        self.end_owned();
+        self.credits
+            .end(|index| self.drain.as_ref().is_some_and(|drain| drain.drains(index)));
+        shards_ipc::end(&self.stream);
+    }
+
+    fn end_owned(&self) {
+        if let Some(agent) = &self.agent {
+            agent.revoke.revoke();
+        }
+        self.ends.close();
         for output in self.outputs.iter().flatten() {
             output.abort();
         }
@@ -718,6 +768,25 @@ impl Owner {
             input.record();
             input.control.abort();
             input.close();
+        }
+    }
+
+    /// The run has ended with `ended`: to be told now where its capture has ended, else held
+    /// for it ([`Told`]).
+    fn tell_after(&self, ended: super::Ended) -> Option<super::Ended> {
+        let mut told = lock(&self.told);
+        if matches!(*told, Told::Capturing) {
+            *told = Told::Held(ended);
+            return None;
+        }
+        Some(ended)
+    }
+
+    /// Its capture has ended, every record it brought kept: the run's end it held, if any.
+    fn captured(&self) -> Option<super::Ended> {
+        match std::mem::replace(&mut *lock(&self.told), Told::Captured) {
+            Told::Held(ended) => Some(ended),
+            Told::Capturing | Told::Captured => None,
         }
     }
 }
@@ -921,6 +990,9 @@ enum CreditSlot {
 
 enum QueueLife {
     Open,
+    /// Its capture brings nothing more: what it brought of the drained channels is still
+    /// kept, and nothing more is granted (D240).
+    Ending,
     Closed,
 }
 struct Queue {
@@ -956,6 +1028,24 @@ impl Credits {
         state.life = QueueLife::Closed;
         for slot in &mut state.slots {
             *slot = CreditSlot::Ended;
+        }
+        self.changed.notify_all();
+    }
+
+    /// Its capture brings nothing more: each record it brought of a channel `kept` says the
+    /// daemon keeps itself waits still to be kept; every other slot ends, a credit being
+    /// granted among them, which then goes nowhere.
+    fn end(&self, kept: impl Fn(usize) -> bool) {
+        let mut state = lock(&self.state);
+        if !matches!(state.life, QueueLife::Open) {
+            return;
+        }
+        state.life = QueueLife::Ending;
+        for (index, slot) in state.slots.iter_mut().enumerate() {
+            let waits = kept(index) && matches!(slot, CreditSlot::Captured(..));
+            if !waits && !matches!(slot, CreditSlot::Inactive) {
+                *slot = CreditSlot::Ended;
+            }
         }
         self.changed.notify_all();
     }
@@ -1032,6 +1122,11 @@ impl Credits {
             {
                 return Ok(None);
             }
+            // An ending capture's last records are kept, and nothing more is granted.
+            let ending = matches!(state.life, QueueLife::Ending);
+            if ending && !state.slots.iter().any(|s| matches!(s, CreditSlot::Captured(..))) {
+                return Ok(None);
+            }
             let len = state.slots.len();
             if len == 0 {
                 return Err(io::Error::new(
@@ -1052,7 +1147,8 @@ impl Credits {
                 if !matches!(
                     slot,
                     CreditSlot::Waiting | CreditSlot::Captured(..) | CreditSlot::Draining
-                ) {
+                ) || (ending && !matches!(slot, CreditSlot::Captured(..)))
+                {
                     continue;
                 }
                 // Observation releases Shared before an action leaves this credit
@@ -1242,10 +1338,26 @@ impl Outputs {
         Ok(())
     }
 
-    pub(super) fn end(&self, id: &str) {
+    /// Run `id`'s scope goes now, whole: its run did not start, or its scope could not be
+    /// made.
+    pub(super) fn abort(&self, id: &str) {
         let removed = lock(&self.runs).remove(id);
         if let Some(Entry::Serving(owner)) = removed {
             owner.abort();
+        }
+    }
+
+    /// Run `id` has ended (its DONE, or its VM's end): what its owners read ends, and what the
+    /// daemon drains of its members goes on to its capture's own end, which its end is then
+    /// told after ([`RunEnd::tell_after`]). None for a run with no managed scope.
+    pub(super) fn end(&self, id: &str) -> Option<RunEnd> {
+        let removed = lock(&self.runs).remove(id);
+        match removed {
+            Some(Entry::Serving(owner)) => {
+                owner.end_run();
+                Some(RunEnd(owner))
+            }
+            Some(Entry::Preparing) | None => None,
         }
     }
 
@@ -1290,7 +1402,7 @@ impl<D: Disk> Daemon<D> {
         let result =
             self.start_managed_capture(threads, id, client, labels, members, shown, agent_control, setup);
         if result.is_err() {
-            self.managed.end(id);
+            self.managed.abort(id);
         }
         result
     }
@@ -1732,6 +1844,7 @@ impl<D: Disk> Daemon<D> {
             credits,
             charge,
             ends,
+            told: Mutex::new(Told::Capturing),
         });
         let labels = copy_labels(labels)?;
         let producers = Arc::new(producers);
@@ -1853,17 +1966,19 @@ impl<D: Disk> Daemon<D> {
         std::thread::Builder::new()
             .name("managed-credit".into())
             .spawn_scoped(threads, move || {
-                if let Err(e) = send_credits(writing, &writer_owner, &writer_producers) {
-                    writer_owner.abort();
+                let (failed, ended) = run_credits(writing, &writer_owner, &writer_producers);
+                if let Some(e) = failed {
                     self.capture_failed(&credited, "its members' output's credits", &e);
+                }
+                if let Some(ended) = ended {
+                    self.end_after_relays(&credited, ended);
                 }
             })?;
         let reader_owner = Arc::clone(&owner);
         std::thread::Builder::new()
             .name("managed-capture".into())
             .spawn_scoped(threads, move || {
-                if let Err(e) = bridge(reading, &reader_owner, &labels, states) {
-                    reader_owner.abort();
+                if let Some(e) = run_bridge(reading, &reader_owner, &labels, states) {
                     self.capture_failed(&captured, "its members' output", &e);
                 }
             })?;
@@ -1920,6 +2035,11 @@ impl<D: Disk> Daemon<D> {
             setup.try_reserve(1).map_err(io::Error::other)?;
             setup.push(named);
         }
+        // The members it drains, whose pipes init reads to their ends as the run ends.
+        if let Some(drain) = &owner.drain {
+            setup.try_reserve(1).map_err(io::Error::other)?;
+            setup.push(drained_entry(drain.members())?);
+        }
         if owner
             .outputs
             .iter()
@@ -1972,6 +2092,27 @@ impl<D: Disk> Daemon<D> {
     }
 }
 
+/// The setup entry naming the members the daemon drains (`run::managed::DRAINED_KEY`): their
+/// indices, ascending, in decimal.
+fn drained_entry(members: &[u32]) -> io::Result<Vec<u8>> {
+    let mut entry = Vec::new();
+    // Each index's decimal digits at their widest, and its comma.
+    let most = members
+        .len()
+        .checked_mul(u32::MAX.ilog10() as usize + 2)
+        .and_then(|n| n.checked_add(run::managed::DRAINED_KEY.len()))
+        .ok_or_else(|| io::Error::other("drained member list overflow"))?;
+    entry.try_reserve_exact(most).map_err(io::Error::other)?;
+    entry.extend_from_slice(run::managed::DRAINED_KEY);
+    for (n, member) in members.iter().enumerate() {
+        if n > 0 {
+            entry.push(b',');
+        }
+        write!(entry, "{member}")?;
+    }
+    Ok(entry)
+}
+
 fn copy_labels(labels: &[String]) -> io::Result<Vec<String>> {
     let mut out = Vec::new();
     out.try_reserve_exact(labels.len()).map_err(io::Error::other)?;
@@ -1982,6 +2123,37 @@ fn copy_labels(labels: &[String]) -> io::Result<Vec<String>> {
         out.push(copy);
     }
     Ok(out)
+}
+
+/// A capture's credit worker, as the daemon runs it ([`send_credits`]): every keep is its, so
+/// once it has ended its drain's logs are whole (D240), and its viewer shows them to their
+/// end. How it failed, for its daemon to judge (`capture_failed`, D258), and the run's end its
+/// capture held, to be told now.
+fn run_credits(
+    stream: Stream,
+    owner: &Owner,
+    producers: &[Option<Arc<Producer>>],
+) -> (Option<Failure>, Option<super::Ended>) {
+    let failed = send_credits(stream, owner, producers).err();
+    if failed.is_some() {
+        owner.abort();
+    }
+    if let Some(drain) = &owner.drain {
+        drain.close();
+    }
+    (failed, owner.captured())
+}
+
+/// A capture's bridge, as the daemon runs it ([`bridge`]): where its stream ends before its
+/// channels do, or fails, nothing more is read of it, and its capture is cut ([`Owner::cut`]).
+/// How it failed, for its daemon to judge (`capture_failed`, D258): its VM's end of the stream,
+/// as its run ends, among them.
+fn run_bridge(stream: Stream, owner: &Owner, labels: &[String], states: Vec<StreamState>) -> Option<Failure> {
+    let failed = bridge(stream, owner, labels, states).err();
+    if failed.is_some() {
+        owner.cut();
+    }
+    failed
 }
 
 fn send_credits(
@@ -2022,7 +2194,7 @@ fn send_credits(
                     };
                 }
                 let (member, channel) = route_of(index)?;
-                send_credit(&mut stream, member, channel, capacity)?;
+                credit_or_end(&mut stream, member, channel, capacity);
             }
             Action::Submit(index, bytes, after) if drained.covers(index) => {
                 let drain = owner
@@ -2070,7 +2242,7 @@ fn send_credits(
                         bytes,
                     };
                 }
-                send_credit(&mut stream, output.scope.member, output.scope.channel, capacity)?;
+                credit_or_end(&mut stream, output.scope.member, output.scope.channel, capacity);
             }
             Action::Submit(index, bytes, after) => {
                 if let Some(output) = owner.outputs.get(index).and_then(Option::as_ref) {
@@ -2129,6 +2301,17 @@ fn send_credits(
         }
     }
     Ok(())
+}
+
+/// [`send_credit`], where a credit its VM can no longer take ends what the daemon sends it, and
+/// nothing more: what it sent before it went is still read to its end by the capture's bridge,
+/// which then ends the capture ([`Owner::cut`]). Its reads are not ended here: on macOS a
+/// socket's read side shut drops what it holds unread (XNU bsd/kern/uipc_socket.c,
+/// `soshutdownlock_final`'s `sorflush`).
+fn credit_or_end(stream: &mut Stream, member: u32, channel: Channel, capacity: usize) {
+    if send_credit(stream, member, channel, capacity).is_err() {
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+    }
 }
 
 /// Credits `capacity` bytes of member `member`'s `channel` to its VM.
@@ -3929,6 +4112,7 @@ mod tests {
             credits,
             charge,
             ends: Arc::new(members::Ends::new(1).unwrap()),
+            told: Mutex::new(Told::Capturing),
         };
         // Many credits' worth of each channel, more than a pipe holds.
         let rounds = 64;
@@ -3991,6 +4175,304 @@ mod tests {
             kept == written,
             "the member's log keeps its channels' bytes whole and apart"
         );
+    }
+
+    /// A run of one member, `agent main`, whose output the daemon drains, as its capture's
+    /// threads find it: the drain, kept in `run`, the owner, and the VM's end of its stream.
+    #[cfg(unix)]
+    fn drained_run(run: &Path) -> (Arc<drain::Drain>, Arc<Owner>, Stream, [Stream; 2]) {
+        let labels: Vec<String> = vec!["agent main".into()];
+        let capacity = record_capacity(&labels, &[0]).unwrap();
+        let keep = LogRetention {
+            size: 1 << 20,
+            files: 2,
+        };
+        let drain = Arc::new(drain::Drain::open(run, &labels, &[0], Some(keep), capacity).unwrap());
+        let credits = Arc::new(Credits {
+            state: Mutex::new(Queue {
+                slots: vec![CreditSlot::Waiting, CreditSlot::Waiting],
+                next: 0,
+                life: QueueLife::Open,
+            }),
+            changed: Condvar::new(),
+        });
+        let (stream, peer) = Stream::pair().unwrap();
+        peer.set_read_timeout(Some(PATIENCE)).unwrap();
+        let sides = [stream.try_clone().unwrap(), stream.try_clone().unwrap()];
+        let owner = Arc::new(Owner {
+            outputs: vec![None, None],
+            inputs: vec![None],
+            drain: Some(Arc::clone(&drain)),
+            agent: None,
+            stream,
+            credits,
+            charge: Arc::new(Charge {
+                budget: Arc::new(Mutex::new(Some(0))),
+                bytes: Mutex::new(0),
+            }),
+            ends: Arc::new(members::Ends::new(1).unwrap()),
+            told: Mutex::new(Told::Capturing),
+        });
+        (drain, owner, peer, sides)
+    }
+
+    /// Plays a drained run's VM: answers each credit with the next record of its channel,
+    /// `stdout`'s or `stderr`'s, each its frame, until both lists are spent; `before(channel,
+    /// n)` before the `n`th record of a channel's (from 0) is sent. A credit for a channel
+    /// whose list is spent goes unanswered.
+    #[cfg(unix)]
+    fn play(
+        peer: &Stream,
+        stdout: &[Event<'_>],
+        stderr: &[Event<'_>],
+        before: &mut dyn FnMut(Channel, usize),
+    ) {
+        let mut vm = peer.try_clone().unwrap();
+        let lists = [stdout, stderr];
+        let (mut sent, mut offsets) = ([0usize; 2], [0u64; 2]);
+        while sent[0] < stdout.len() || sent[1] < stderr.len() {
+            let granted = credit(peer).expect("a drained channel's next credit");
+            let at = route_index(0, granted.channel).unwrap();
+            let Some(&event) = lists[at].get(sent[at]) else {
+                continue;
+            };
+            before(granted.channel, sent[at]);
+            let record = encoded(0, granted.channel, offsets[at], event);
+            if let Event::Data(bytes) = event {
+                offsets[at] += bytes.len() as u64;
+            }
+            vm.write_all(&run::header(run::kind::MANAGED, record.len() as u32))
+                .unwrap();
+            vm.write_all(&record).unwrap();
+            sent[at] += 1;
+        }
+    }
+
+    /// What member 0's log in `run` keeps of each channel, its bytes whole.
+    #[cfg(unix)]
+    fn kept_in(run: &Path) -> [Vec<u8>; 2] {
+        let log = crate::daemon::logs::LogFile::open(&drain::member_dir(run, 0)).unwrap();
+        let mut kept: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
+        let mut reader = crate::daemon::logs::Reader::new();
+        let mut each = |p: crate::daemon::logs::Piece<'_>| {
+            kept[usize::from(p.stream == crate::spec::LOG_STDERR)].extend_from_slice(p.bytes);
+            Ok(true)
+        };
+        reader.read(&log, &mut each).unwrap();
+        reader.finish(&mut each).unwrap();
+        kept
+    }
+
+    /// Aborts a capture as its test fails within its threads' scope: its credit queue closed,
+    /// the daemon's end of its stream ended (so its bridge's read ends, though the test's VM
+    /// end is held past the scope) and its drain closed (so its viewer ends), so that the
+    /// failure is told, never waited on by the scope's threads.
+    #[cfg(unix)]
+    struct AbortedOnPanic<'a>(&'a Owner);
+    #[cfg(unix)]
+    impl Drop for AbortedOnPanic<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                self.0.abort();
+            }
+        }
+    }
+
+    /// Do: a run whose one member the daemon drains, its VM played: the member's stdout
+    /// opened and a line of it sent and kept; then the run's end (its DONE, `Outputs::end`);
+    /// then the rest of its stdout and the ends of both its channels, as they come on the
+    /// capture's own stream after its VM has told its run's end on its link. Expect each
+    /// credit to come all the same, the member's log to keep every byte, and a viewer to show
+    /// both lines: the run's end ends no capture whose records are on their way (D240).
+    /// Before, it ended the capture's stream at once, and the rest of the member's output was
+    /// lost: CI's agents' reports cut mid-line (`[agent a] conf`, PM M543).
+    #[cfg(unix)]
+    #[test]
+    fn a_runs_end_lets_its_capture_keep_what_comes_after_it() {
+        let run = shards_testdir::TempDir::new("drained-end").unwrap();
+        let (drain, owner, peer, [writing, reading]) = drained_run(&run);
+        let outputs = Outputs::default();
+        lock(&outputs.runs).insert("run".into(), Entry::Serving(Arc::clone(&owner)));
+        let labels: Vec<String> = vec!["agent main".into()];
+        let (credited, bridged, shown) = std::thread::scope(|threads| {
+            let (owned, labels) = (&*owner, &labels);
+            let crediting = threads.spawn(move || send_credits(writing, owned, &[]));
+            let bridging = threads.spawn(move || bridge(reading, owned, labels, vec![StreamState::New; 2]));
+            let viewing = threads.spawn(|| {
+                let mut to = Vec::new();
+                drain.show(&mut to);
+                to
+            });
+            let _aborted = AbortedOnPanic(owned);
+            let (stdout, stderr) = (
+                [
+                    Event::Open("agent main"),
+                    Event::Data(b"first\n"),
+                    Event::Data(b"second\n"),
+                    Event::End,
+                ],
+                [Event::Open("agent main"), Event::End],
+            );
+            // The run's end comes once its first line is kept (its stdout credited again),
+            // before the rest is sent.
+            let mut ended = false;
+            play(&peer, &stdout, &stderr, &mut |channel, n| {
+                if channel == Channel::Stdout && n == 2 {
+                    let _ = outputs.end("run");
+                    ended = true;
+                }
+            });
+            assert!(ended, "the run's end came within the play");
+            (
+                crediting.join().unwrap(),
+                bridging.join().unwrap(),
+                viewing.join().unwrap(),
+            )
+        });
+        credited.unwrap();
+        bridged.unwrap();
+        assert_eq!(kept_in(&run), [b"first\nsecond\n".to_vec(), Vec::new()]);
+        assert_eq!(
+            String::from_utf8(shown).unwrap(),
+            "[agent main] first\n[agent main] second\n"
+        );
+    }
+
+    /// Do: a drained run's VM sends its member's stdout opened, a line and half of the
+    /// next, and its stderr opened, then goes, its stream ended though neither channel has.
+    /// Expect what it sent kept whole, the line cut short shown ended, and the capture's credit
+    /// worker and bridge, as the daemon runs them, to end with nothing told: the capture is
+    /// cut (`Owner::cut`), and its credit worker keeps what came before its drain ends.
+    #[cfg(unix)]
+    #[test]
+    fn a_capture_cut_short_keeps_all_it_brought() {
+        let run = shards_testdir::TempDir::new("drained-cut").unwrap();
+        let (drain, owner, peer, [writing, reading]) = drained_run(&run);
+        let labels: Vec<String> = vec!["agent main".into()];
+        let (told, shown) = std::thread::scope(|threads| {
+            let (owned, labels) = (&*owner, &labels);
+            let crediting = threads.spawn(move || run_credits(writing, owned, &[]));
+            let bridging =
+                threads.spawn(move || run_bridge(reading, owned, labels, vec![StreamState::New; 2]));
+            let viewing = threads.spawn(|| {
+                let mut to = Vec::new();
+                drain.show(&mut to);
+                to
+            });
+            let _aborted = AbortedOnPanic(owned);
+            play(
+                &peer,
+                &[
+                    Event::Open("agent main"),
+                    Event::Data(b"first\n"),
+                    Event::Data(b"hal"),
+                ],
+                &[Event::Open("agent main")],
+                &mut |_, _| {},
+            );
+            // Its VM gone, its end of the stream with it.
+            drop(peer);
+            let cut = bridging.join().unwrap();
+            assert!(
+                cut.is_some_and(|e| e.ended()),
+                "its bridge says its VM's end of the stream, which stops no run (D258)"
+            );
+            (crediting.join().unwrap(), viewing.join().unwrap())
+        });
+        let (failed, told) = told;
+        assert!(failed.is_none(), "its credit worker ends as its capture does");
+        assert!(told.is_none(), "no run's end was held");
+        assert_eq!(kept_in(&run), [b"first\nhal".to_vec(), Vec::new()]);
+        assert_eq!(
+            String::from_utf8(shown).unwrap(),
+            "[agent main] first\n[agent main] hal\n"
+        );
+    }
+
+    /// A viewer's client that reads nothing: each write waits until it is let go.
+    #[cfg(unix)]
+    struct Stalled(std::sync::mpsc::Receiver<()>, Vec<u8>);
+    #[cfg(unix)]
+    impl io::Write for Stalled {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            // Its sender's drop lets every write go, at once.
+            let _ = self.0.recv();
+            self.1.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Do: a drained run whose attached client takes nothing of what it is shown (its
+    /// viewer's every write waits), its run's end told while its capture still keeps, then the
+    /// member's lines and ends. Expect every credit to come and every record to be kept, the
+    /// run's end held (`RunEnd::tell_after`) until the capture's credit worker has made its
+    /// last keep, and then given back by it, while the viewer still waits; and the viewer, let
+    /// go at last, to show every line. Nothing waits on what is shown (M543), and the run's end
+    /// waits on its members' logs alone.
+    #[cfg(unix)]
+    #[test]
+    fn a_runs_end_waits_for_its_members_logs_and_never_for_its_viewer() {
+        let run = shards_testdir::TempDir::new("drained-held").unwrap();
+        let (drain, owner, peer, [writing, reading]) = drained_run(&run);
+        let outputs = Outputs::default();
+        lock(&outputs.runs).insert("run".into(), Entry::Serving(Arc::clone(&owner)));
+        let labels: Vec<String> = vec!["agent main".into()];
+        let ended = |status| super::super::Ended {
+            pid: 1,
+            started: true,
+            status,
+            said: None,
+            saved: None,
+            detached: None,
+            named: false,
+        };
+        let (go, held) = std::sync::mpsc::channel::<()>();
+        let (told, shown) = std::thread::scope(|threads| {
+            let (owned, labels) = (&*owner, &labels);
+            let (gave, given) = std::sync::mpsc::channel();
+            threads.spawn(move || gave.send(run_credits(writing, owned, &[])));
+            threads.spawn(move || run_bridge(reading, owned, labels, vec![StreamState::New; 2]));
+            let viewing = threads.spawn(|| {
+                let mut to = Stalled(held, Vec::new());
+                drain.show(&mut to);
+                to.1
+            });
+            // A failure lets the viewer go, so that the scope ends.
+            let go = Some(go);
+            let _aborted = AbortedOnPanic(owned);
+            let capturing = outputs.end("run").expect("a managed scope");
+            assert!(
+                capturing.tell_after(ended(7)).is_none(),
+                "the run's end waits for its capture's"
+            );
+            play(
+                &peer,
+                &[Event::Open("agent main"), Event::Data(b"said\n"), Event::End],
+                &[Event::Open("agent main"), Event::End],
+                &mut |_, _| {},
+            );
+            let told = given
+                .recv_timeout(PATIENCE)
+                .expect("the credit worker ends while its viewer still waits");
+            drop(go);
+            (told, viewing.join().unwrap())
+        });
+        let (failed, told) = told;
+        assert!(failed.is_none(), "its credit worker ends as its capture does");
+        assert_eq!(
+            told.map(|e| e.status),
+            Some(7),
+            "the run's end it held is given back"
+        );
+        assert!(
+            RunEnd(Arc::clone(&owner)).tell_after(ended(8)).is_some(),
+            "an end told after its capture's goes at once"
+        );
+        assert_eq!(kept_in(&run), [b"said\n".to_vec(), Vec::new()]);
+        assert_eq!(String::from_utf8(shown).unwrap(), "[agent main] said\n");
     }
 
     /// A capture whose window climbed to its most is credited within one endpoint record,
@@ -4069,6 +4551,7 @@ mod tests {
             credits,
             charge: Arc::clone(&charge),
             ends: Arc::new(members::Ends::new(1).unwrap()),
+            told: Mutex::new(Told::Capturing),
         };
         let (subscriber, sender) = shards_remote::net::Driver::bind_bounded(
             "127.0.0.1:0".parse().unwrap(),

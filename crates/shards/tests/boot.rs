@@ -2269,16 +2269,32 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
             .spawn()
             .unwrap()
     };
-    // Its socket is there once its VM process has made its device, for as long as it runs.
+    // Its socket accepts once its VM process has made its device and listens. On macOS and
+    // Windows its spawner binds the path first and a client is refused until the VM listens
+    // (grant_answer.rs `bound`), so the path's being there says nothing: a dial that connects
+    // does. Waited for while its VM process lives, each dial paced as shards-api paces its
+    // own (`shards_api::pause`), with no clock of the test's (WHP at 0a3dde0db: a dial as the
+    // path appeared was refused, WSAECONNREFUSED).
     let listening = |socket: &std::path::Path, child: &mut std::process::Child| {
-        let start = Instant::now();
-        while !socket.exists() {
+        let began = Instant::now();
+        loop {
+            let dialed = Instant::now();
+            if socket.exists() {
+                match shards_vmm::platform::UnixStream::connect(socket) {
+                    Ok(_) => return,
+                    Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {}
+                    Err(e) => panic!("dialing {}: {e}", socket.display()),
+                }
+            }
             assert!(
                 child.try_wait().unwrap().is_none(),
                 "its VM ended before it listened"
             );
-            assert!(start.elapsed() < TIMEOUT, "no socket in {TIMEOUT:?}");
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(shards_api::pause(
+                dialed.elapsed(),
+                began.elapsed(),
+                Duration::MAX,
+            ));
         }
     };
     // One ask, and the line its VM answers before it closes the ask: none where it closes it

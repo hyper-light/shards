@@ -4,8 +4,6 @@
 use std::fmt;
 use std::io;
 
-#[cfg(target_os = "macos")]
-mod apple;
 pub mod auth;
 pub mod certs;
 mod climb;

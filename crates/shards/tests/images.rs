@@ -248,10 +248,9 @@ fn a_pulls_platform_defaults_to_the_default_platforms() {
 }
 
 /// A registry off loopback that speaks plain HTTP is pulled from once Docker's daemon
-/// configuration names it insecure (D194), as dockerd pulls from one: the rootless
-/// engine's daemon.json, under `XDG_CONFIG_HOME` (the native one's on Windows, under
-/// `PROGRAMDATA`). Not named, it is asked in HTTPS alone, and its plain answer is the
-/// pull's failure.
+/// configuration names it insecure (D194), as dockerd pulls from one: the daemon.json
+/// `SHARDS_DAEMON_JSON` names, the test's own, as `dockerd --config-file` names one. Not
+/// named, it is asked in HTTPS alone, and its plain answer is the pull's failure.
 #[test]
 fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
     let Some(ip) = common::routable_v4() else {
@@ -262,11 +261,11 @@ fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
     let (port, _) = common::registry_at(ip.into(), manifest, blobs);
     let image = format!("{ip}:{port}/test/image:v1");
     let home = TempDir::new("insecure");
-    let config = home.join("config");
+    let file = home.join("daemon.json");
+    std::fs::write(&file, "{}").unwrap();
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
-        ("XDG_CONFIG_HOME", config.as_os_str()),
-        ("PROGRAMDATA", config.as_os_str()),
+        ("SHARDS_DAEMON_JSON", file.as_os_str()),
     ];
     let unnamed = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
     assert_ne!(unnamed.status, Some(0), "{unnamed}");
@@ -276,12 +275,6 @@ fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
             .contains("server gave HTTP response to HTTPS client"),
         "{unnamed}"
     );
-    let file = if cfg!(windows) {
-        config.join("docker").join("config").join("daemon.json")
-    } else {
-        config.join("docker").join("daemon.json")
-    };
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, format!(r#"{{"insecure-registries": ["{ip}:{port}"]}}"#)).unwrap();
     let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
     assert_eq!(pulled.status, Some(0), "{pulled}");
@@ -298,20 +291,15 @@ fn a_registry_daemon_json_names_insecure_is_pulled_from_in_plain_http() {
 /// Docker Hub's mirrors (D194): a pull of a Docker Hub repository asks the mirror Docker's
 /// daemon configuration names first, as dockerd does, and an image the mirror holds is
 /// the one pulled: the test image, at a Docker Hub name it is not at, served by a
-/// registry on loopback. Its digest is the test image's, which Docker Hub has not.
+/// registry on loopback, named in the daemon.json `SHARDS_DAEMON_JSON` names. Its digest is
+/// the test image's, which Docker Hub has not.
 #[test]
 fn a_mirror_daemon_json_names_serves_docker_hubs_pull() {
     let (manifest, blobs) = test_image();
     let digest = sha256_digest(&manifest);
     let (port, served) = common::registry(manifest, blobs);
     let home = TempDir::new("mirror");
-    let config = home.join("config");
-    let file = if cfg!(windows) {
-        config.join("docker").join("config").join("daemon.json")
-    } else {
-        config.join("docker").join("daemon.json")
-    };
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let file = home.join("daemon.json");
     std::fs::write(
         &file,
         format!(r#"{{"registry-mirrors": ["http://127.0.0.1:{port}"]}}"#),
@@ -319,8 +307,7 @@ fn a_mirror_daemon_json_names_serves_docker_hubs_pull() {
     .unwrap();
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
-        ("XDG_CONFIG_HOME", config.as_os_str()),
-        ("PROGRAMDATA", config.as_os_str()),
+        ("SHARDS_DAEMON_JSON", file.as_os_str()),
     ];
     let pulled = run_shards_env(&["pull"], &["-q", "test/image:v1"], &env, TIMEOUT);
     assert_eq!(pulled.status, Some(0), "{pulled}");
@@ -336,6 +323,109 @@ fn a_mirror_daemon_json_names_serves_docker_hubs_pull() {
     assert!(digests.stdout.contains(&digest), "{digests}");
     let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
+}
+
+/// A test's `shards` reads the tests' own daemon.json (`common::as_tests_run`), never the
+/// host's (D194): a host's file, standing in here as the rootless engine's (under
+/// `XDG_CONFIG_HOME`; the native one's on Windows, under `PROGRAMDATA`), holds what dockerd
+/// would not start with, which fails every pull that reads it, and a build of the test image
+/// from the tests' own registry reads none of it. No VM: a build of a base alone runs no
+/// step.
+#[test]
+fn a_hosts_daemon_json_reaches_no_test() {
+    let (image, _) = served();
+    let home = TempDir::new("host-daemon-json");
+    let config = home.join("config");
+    let file = if cfg!(windows) {
+        config.join("docker").join("config").join("daemon.json")
+    } else {
+        config.join("docker").join("daemon.json")
+    };
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, r#"{"registry-mirrors": ["no scheme"]}"#).unwrap();
+    let ctx = TempDir::new("host-daemon-json-ctx");
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\n")).unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("XDG_CONFIG_HOME", config.as_os_str()),
+        ("PROGRAMDATA", config.as_os_str()),
+    ];
+    let built = run_shards_env(&["build"], &[ctx.as_os_str()], &env, TIMEOUT);
+    assert_eq!(built.status, Some(0), "{built}");
+}
+
+/// A test's `shards` reads the tests' own certs.d (`common::as_tests_run`), never the host's
+/// (D23): a host's, standing in here as the rootless engine's (under `XDG_CONFIG_HOME`; the
+/// native one's on Windows, under `PROGRAMDATA`), holds for the tests' own registry a client
+/// key with no certificate, which dockerd refuses and which fails every pull that reads it,
+/// and a build from that registry reads none of it. No VM: a build of a base alone runs no
+/// step.
+#[test]
+fn a_hosts_certs_d_reaches_no_test() {
+    let (image, _) = served();
+    let host = image.split('/').next().unwrap();
+    let home = TempDir::new("host-certs-d");
+    let config = home.join("config");
+    let certs = config.join("docker").join("certs.d");
+    let dir = if cfg!(windows) {
+        certs.join(host.replace(':', ""))
+    } else {
+        certs.join(host)
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("client.key"), "").unwrap();
+    let ctx = TempDir::new("host-certs-d-ctx");
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\n")).unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("XDG_CONFIG_HOME", config.as_os_str()),
+        ("PROGRAMDATA", config.as_os_str()),
+    ];
+    let built = run_shards_env(&["build"], &[ctx.as_os_str()], &env, TIMEOUT);
+    assert_eq!(built.status, Some(0), "{built}");
+}
+
+/// The tests' seed of a remote image (`common::hub_held`) holds a manifest an index it pulled
+/// lists, which a test may pin alone: on an x86_64 host images.rs's x86-64 level test pins
+/// alpine:3.22's amd64 manifest, whose index containers.rs's seed holds, and the seed's build
+/// of it found it held (D78) and pulled nothing, so no record named it (KVM at ea6f4b53b: "not
+/// held whole ... once pulled"). Here an index is pulled as the seed pulls one; its
+/// platform's manifest, then the index, are what the seed serves of each. No VM: a build of a
+/// base alone runs no step.
+#[test]
+fn a_seed_holds_the_manifests_its_index_pulled() {
+    let (index, blobs) = common::test_index();
+    let (port, _) = common::registry(index.clone(), blobs);
+    let at = |digest: &str| {
+        shards_image::reference::Reference::parse(&format!("127.0.0.1:{port}/test/image@{digest}")).unwrap()
+    };
+    let home = TempDir::new("seed-held");
+    let ctx = TempDir::new("seed-held-ctx");
+    std::fs::write(
+        ctx.join("Dockerfile"),
+        format!("FROM {}\n", at(&sha256_digest(&index))),
+    )
+    .unwrap();
+    let built = run_shards_env(
+        &["build"],
+        &[ctx.as_os_str()],
+        &[("SHARDS_HOME", home.as_os_str())],
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{built}");
+    let (manifest, parts) = test_image();
+    let (top, served) =
+        common::hub_held(&home, &at(&sha256_digest(&manifest))).unwrap_or_else(|missing| panic!("{missing}"));
+    assert!(
+        top == manifest && served == parts,
+        "the manifest, then its config and layer"
+    );
+    let (top, served) =
+        common::hub_held(&home, &at(&sha256_digest(&index))).unwrap_or_else(|missing| panic!("{missing}"));
+    assert!(
+        top == index && served.contains(&manifest),
+        "the index, its manifest among its parts"
+    );
 }
 
 /// `pull --output-agentfile` writes the Agentfile of the image it pulled once it is

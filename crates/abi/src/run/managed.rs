@@ -74,6 +74,46 @@ pub fn inputs(setup: &[Vec<u8>]) -> Result<Option<&[[u8; size_of::<u32>()]]>, Er
     Ok(Some(ids))
 }
 
+/// The members whose output the host reads as it comes, whatever reads it after (D240's
+/// drain): each one's index in decimal, comma-separated, ascending, each an active member's
+/// ([`ACTIVE_KEY`]). As the run ends, init sends what their pipes hold, to their ends, before
+/// it says the run's end. Every other member's output ends with the run, aborted: its credit
+/// is its owner's, which may never come. Text, as [`MEMBERS_KEY`]'s is: the command's
+/// standby applies every entry, and refuses one that is not UTF-8 unless it skips its key
+/// (init's `setup::apply`).
+pub const DRAINED_KEY: &[u8] = b"managed-drained=";
+
+/// The members [`DRAINED_KEY`] names, ascending: none where it is absent; refused where it
+/// repeats, is empty, is not in ascending order, is not digits, or names a member that is
+/// not active.
+pub fn drained(setup: &[Vec<u8>]) -> Result<Vec<u32>, Error> {
+    let mut entries = setup.iter().filter_map(|e| e.strip_prefix(DRAINED_KEY));
+    let Some(bytes) = entries.next() else {
+        return Ok(Vec::new());
+    };
+    if entries.next().is_some() {
+        return Err(Error::Member);
+    }
+    let active = active(setup)?.ok_or(Error::Member)?;
+    let text = core::str::from_utf8(bytes).map_err(|_| Error::Member)?;
+    let mut drained: Vec<u32> = Vec::new();
+    // Ascending active members, so no more than there are active.
+    drained
+        .try_reserve_exact(active.len())
+        .map_err(|_| Error::Capacity)?;
+    for word in text.split(',') {
+        if word.is_empty() || !word.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(Error::Member);
+        }
+        let member = word.parse::<u32>().map_err(|_| Error::Member)?;
+        if drained.last().is_some_and(|&p| p >= member) || !active.contains(&member.to_be_bytes()) {
+            return Err(Error::Member);
+        }
+        drained.push(member);
+    }
+    Ok(drained)
+}
+
 /// One [`INPUT_TOKEN_KEY`] entry: the member and its token.
 pub fn input_token(entry: &[u8]) -> Result<Option<(u32, [u8; super::TOKEN])>, Error> {
     let Some(bytes) = entry.strip_prefix(INPUT_TOKEN_KEY) else {
@@ -570,6 +610,47 @@ mod tests {
         );
         let invalid = [ACTIVE_KEY, &2u32.to_be_bytes(), &2u32.to_be_bytes()].concat();
         assert!(super::active(&[b"managed-members=3".to_vec(), invalid]).is_err());
+    }
+
+    /// The members the host drains are named once, ascending, digits alone, each active.
+    #[test]
+    fn drained_members_are_named_once_ascending_and_active() {
+        let active = [
+            ACTIVE_KEY,
+            &0u32.to_be_bytes(),
+            &2u32.to_be_bytes(),
+            &5u32.to_be_bytes(),
+        ]
+        .concat();
+        let base = alloc::vec![b"managed-members=6".to_vec(), active];
+        let with = |named: &[u8]| {
+            let mut setup = base.clone();
+            setup.push([DRAINED_KEY, named].concat());
+            setup
+        };
+        assert_eq!(drained(&base), Ok(Vec::new()));
+        assert_eq!(drained(&with(b"0,5")), Ok(alloc::vec![0, 5]));
+        assert_eq!(drained(&with(b"2")), Ok(alloc::vec![2]));
+        for bad in [
+            &b""[..],
+            b"1",
+            b"5,0",
+            b"0,0",
+            b"0,",
+            b",0",
+            b"+0",
+            b" 0",
+            b"x",
+            b"0,99999999999",
+            b"\xff",
+        ] {
+            assert_eq!(drained(&with(bad)), Err(Error::Member), "{bad:?}");
+        }
+        let mut twice = with(b"0");
+        twice.push([DRAINED_KEY, b"2"].concat());
+        assert_eq!(drained(&twice), Err(Error::Member));
+        // None without the active members it names.
+        assert_eq!(drained(&[[DRAINED_KEY, b"0"].concat()]), Err(Error::Member));
     }
 
     fn input_setup(inputs: &[u32], tokens: &[(u32, u8)]) -> Vec<Vec<u8>> {

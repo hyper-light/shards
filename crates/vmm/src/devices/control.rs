@@ -229,6 +229,7 @@ impl MmioDevice for Control {
             control::SWAP if data.len() == 8 => self.swap.get().map_or(0, |w| w.len()),
             control::LAYER if data.len() == 8 => self.layer.get().map_or(0, |&(_, gpa)| gpa),
             control::LAYER_SWAP => u64::from(self.layer().is_some_and(|l| l.swapped())),
+            control::FOOTPRINT if data.len() == 8 => shards_ipc::footprint().unwrap_or(0),
             _ => 0,
         };
         put_le(data, value);
@@ -386,6 +387,20 @@ mod tests {
         assert_eq!(half, [0; 4]);
         c.write(control::HOTPLUG_REQUEST, &u64::MAX.to_le_bytes());
         assert_eq!(read(&c, control::HOTPLUG_REQUEST), 48 * BLOCK);
+    }
+
+    /// The VM process's own footprint reads whole, in one 64-bit access, as its host counts it
+    /// when read (D183): what this process holds, never nothing; a half of it, nothing.
+    #[test]
+    fn the_guest_reads_its_vm_process_footprint() {
+        let c = Control::default();
+        let mut word = [0u8; 8];
+        c.read(control::FOOTPRINT, &mut word);
+        let read = u64::from_le_bytes(word);
+        assert!(read > 0, "{read}");
+        let mut half = [0u8; 4];
+        c.read(control::FOOTPRINT, &mut half);
+        assert_eq!(half, [0; 4]);
     }
 
     /// The MAC the VMM was given reads whole, in one 64-bit access, its first octet lowest;
