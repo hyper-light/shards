@@ -2439,6 +2439,8 @@ mod hosted {
         granted: HashMap<(u32, Channel), bool>,
         /// The channel has ended.
         ended: HashMap<(u32, Channel), bool>,
+        /// A grant its VM could not take has been said (`take`): once a run.
+        ungranted: bool,
     }
 
     /// A member's stdin, which its orchestrator writes (plan step 5): its guest's input
@@ -3334,8 +3336,17 @@ mod hosted {
                 *room = room.saturating_add(credit.bytes);
                 live.flush(&mut flows, key)
                     .map_err(|e| AsksEnd::Failed(format!("its answers to its orchestrator: {e}")))?;
-                live.grant(&mut flows, key)
-                    .map_err(|e| AsksEnd::Failed(format!("its members' output's credit to its VM: {e}")))?;
+                // Room its VM can take no more of is its VM ending, or ended, its managed
+                // output closed before its `DONE` can be: its end is the run's, which `follow`
+                // tells, and ending its asks here would kill it before it says that end (WHP
+                // at 3a05bc3f1: a template's run of `exit 3` ended before its orchestrator's
+                // first credit came). Said once on its stderr, which shows why a run whose
+                // output stops while its VM runs on stopped; its `STOP` still ends that run.
+                if let Err(e) = live.grant(&mut flows, key)
+                    && !std::mem::replace(&mut flows.ungranted, true)
+                {
+                    super::say(format_args!("its VM takes no more of its members' output: {e}"));
+                }
             }
             Ask::Input(given) => {
                 input_given(live, given).map_err(|why| super::broke(format_args!("{why}")))?
@@ -4176,6 +4187,57 @@ mod hosted {
     #[allow(clippy::unwrap_used)]
     mod tests {
         use super::*;
+
+        /// Do give room to a run whose VM takes no more of its managed output, its end of it
+        /// closed as at its end, as an orchestrator's first credit can come after a run that
+        /// ends at once (WHP at 3a05bc3f1: a template's run of `exit 3`). Expect: the ask
+        /// served, the asks going on, and no end of the asks' making, which would kill the VM
+        /// before its `DONE` and end the run failed in the credit's words.
+        #[test]
+        fn room_its_vm_takes_no_more_of_leaves_its_end_to_its_vm() {
+            let dir = shards_testdir::TempDir::new("api-credit").unwrap();
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (capture, its_vms) = Stream::pair().unwrap();
+            drop(its_vms);
+            let (link, _vm_link) = Stream::pair().unwrap();
+            let live = Live {
+                answers: &answers,
+                ends: Ends::kept_in(dir.path()),
+                flows: Mutex::new(Flows::default()),
+                feeds: Mutex::new(HashMap::new()),
+                fed: std::sync::Condvar::new(),
+                capture: Some(Mutex::new(capture)),
+                link: Mutex::new(link),
+                held: Mutex::new(Some(HashMap::new())),
+                asks_end: Mutex::new(None),
+                next_exec: std::sync::atomic::AtomicU64::new(0),
+                home: dir.path(),
+                members: &[],
+                roots: &[],
+                devices: Mutex::new(Some(Vec::new())),
+                guest_times: Mutex::new(Some(Vec::new())),
+                rates: Mutex::new(Some(Vec::new())),
+                lanes: Mutex::new(Some(HashMap::new())),
+                next_lane: std::sync::atomic::AtomicU64::new(0),
+                plugged: Mutex::new(HashMap::new()),
+                notices_due: Mutex::new(None),
+                notices: Mutex::new(Vec::new()),
+                leasing: None,
+            };
+            let args = [OsStr::new("-c"), OsStr::new("exit 0")];
+            let vm = shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap();
+            let credit = wire::Credit {
+                member: 0,
+                channel: Channel::Stdout,
+                bytes: 4096,
+            };
+            let taken =
+                std::thread::scope(|scope| take(&live, super::super::Ask::Credit(credit), &vm, scope));
+            assert_eq!(taken, Ok(()));
+            assert_eq!(*lock(&live.asks_end), None);
+            assert!(lock(&live.flows).ungranted);
+            let _ = vm.wait();
+        }
 
         /// A run's share process ends as its run ends, by its own going: [`Shares::end`]
         /// lets go of its door before it waits, and the process, which goes once its
