@@ -12446,6 +12446,72 @@ mod tests {
         });
     }
 
+    /// A group's member is held as of the footprint its room was read with (D183): told the
+    /// footprint its VM process held as the daemon read its room, its guest holds it at what
+    /// it used then and that room (`room_now`), whenever the word comes. So it grows into its
+    /// room once whether it grew before its footprint was read or after, before its word
+    /// came, and its group stays within its memory.max either way. Held at what it uses as
+    /// the word comes and that room, as a room told alone is, one that grew between the two
+    /// counts its growth twice: red so. Here a member of 400 MiB beside one of 300, under 1000,
+    /// grows to 600 after its room is read, and is then read again: each room holds it to 700.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_members_room_holds_as_of_the_footprint_it_was_read_with() {
+        let t = Test::new("group-room");
+        t.run(|t| {
+            let mib = |n: u64| n << 20;
+            let dir = groups::made(&t.daemon.home, "g").unwrap();
+            for file in ["memory.high", "memory.max"] {
+                std::fs::write(dir.join(file), format!("{}\n", mib(1000))).unwrap();
+            }
+            t.t.daemon.start_groups(t.threads);
+            let (_, _b_run, b_vm, _) = running_under(t, "beside", "g", mib(300));
+            let (_, _a_run, a_vm, a_pid) = running_under(t, "grows", "g", mib(400));
+            let _ends = Ends {
+                held: None,
+                vms: vec![(&a_vm, 0), (&b_vm, 0)],
+            };
+            // What its guest holds it to, once told its room `m`, as its init holds one: past
+            // what it uses as the word comes, its footprint `now` then, the room as of it
+            // where the word says the footprint it was read with, else the room as said.
+            let reach = |m: shards_ipc::Message, now: u64| -> u64 {
+                let spec = m
+                    .payload
+                    .get(9..)
+                    .and_then(shards_abi::run::Spec::decode)
+                    .unwrap();
+                assert_eq!(spec.builtin, shards_abi::run::builtin::ROOM);
+                let word = |i: usize| std::str::from_utf8(&spec.argv[i]).unwrap().to_string();
+                let room: i64 = word(0).parse().unwrap();
+                let held = match spec.argv.len() {
+                    1 => room,
+                    _ => shards_abi::run::room_now(room, word(1).parse().unwrap(), now).unwrap(),
+                };
+                // Answered, its descriptors let go of: its output ends, and so its exec.
+                answer_exec(&m, b"0", 0);
+                drop(m);
+                now.saturating_add_signed(held)
+            };
+            let done = AtomicBool::new(false);
+            std::thread::scope(|s| {
+                let _done = Done(&done);
+                s.spawn(|| answering(&b_vm, &done));
+                // Its room read as it held 400 MiB; it grows to 600 before the word comes.
+                let first = heard_whole(&a_vm);
+                t.daemon.groups.play(a_pid, mib(600));
+                let grew_after = reach(first, mib(600));
+                // Its room read again, as it holds 600 MiB.
+                let next = heard_whole(&a_vm);
+                let grew_before = reach(next, mib(600));
+                assert_eq!(
+                    (grew_after >> 20, grew_before >> 20),
+                    (700, 700),
+                    "held past 700 MiB, its group past its memory.max of 1000 with the other's 300"
+                );
+            });
+        });
+    }
+
     /// How many messages the daemon sends a warm VM before it lets go of its socket.
     fn heard_nothing(vm: &UnixStream) -> usize {
         let mut n = 0;
