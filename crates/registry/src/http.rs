@@ -1603,7 +1603,11 @@ fn dial(
         if let Some(cancel) = cancel {
             cancel.check()?;
         }
-        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+        // Past its deadline, or at it: connect_timeout refuses a zero wait.
+        let Some(left) = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+        else {
             break;
         };
         let reply = Reply::new(tx.clone(), cancel);

@@ -23369,6 +23369,13 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   - On the merged tree (8e3568e75 over main 740fa3726, r156): 169 passed; clippy clean for
     aarch64-apple-darwin, and for x86_64-pc-windows-msvc through cargo-xwin with `shards`
     (r450, at a1cb7dd64).
+- **Fixed after landing** (2026-11-13): a body whose bytes all came with its head, read at
+  once, was taken for a silence of 0 µs, and the path's next request set a socket timeout of
+  zero, which std refuses: "cannot set a 0 duration timeout" on every second pull from the
+  E2E tests' local registry on KVM (ROOT, adacachy2, at d54bca98e). A wait shorter than the
+  record's µs is no sample, a kept 0 is none, and a dial at its deadline's instant starts no
+  zero `connect_timeout` (D222). Red on main's code, green after:
+  `a_wait_of_nothing_is_no_sample_and_no_bound`.
 - **Owed.** CI's: Linux and Windows (where a system wait's early end is the own-stop rule's
   reason) and arm64 Linux. ROOT's: real pulls and pushes on every backend (api_image.rs,
   containers.rs), where a fresh home's first pull now runs out on a few answers a path's
