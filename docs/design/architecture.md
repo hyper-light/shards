@@ -7882,7 +7882,12 @@ descriptors.
   given none, takes a shared lock of that file where there is one, and so returns once the
   daemon that stops has let go of its home, whatever its slot said; where there is none
   and the daemon it asked still holds the home (`daemon.pid`, `shards_ipc::Named`), it asks
-  again after that answer, within `RESTARTS`. No serving daemon holds that file (a starting
+  again after that answer, where that daemon is another than the one it last asked again,
+  by its ID and start (`Named`): the same one answering again as itself, nothing changed, is
+  no progress, and the stop fails naming it (`NotStopped::Untaken`), where a count of asks
+  bounded it first (`RESTARTS`, `slots::OFFERED` + 2, derived for one takeover's RESTARTs and
+  no basis for asking one daemon again; ROOT's R03 ruling, 2026-11-13). Each ask follows an
+  answer, never a clock. No serving daemon holds that file (a starting
   one removes a dead one's), so a stop never waits on a next daemon's lock of the home, as
   one blocked on `daemon.lock` could once a successor polling `take_lock` took it first;
   nor on a process's ID, whose exit Linux watches only from 5.3 (pidfd_open(2)). It is
@@ -7890,7 +7895,10 @@ descriptors.
   locks would refuse. Held by `a_stop_returns_once_its_daemon_has_let_go_of_its_home`
   (cli/client.rs: a stand-in daemon, this process, holding the home's lock and, closed,
   `STOPPING_LOCK`, serving real slots: a session ended early, a RESTART from a closed
-  daemon, no slot, a RESTART from one serving on), red before; and on real VMs by
+  daemon, no slot, a RESTART from one serving on), red before;
+  `a_stop_its_daemon_answers_again_as_itself_without_taking_it_fails_naming_it` (a stand-in
+  that answers every stop RESTART as itself: asked twice, then named; red before, asked four
+  times); and on real VMs by
   `a_stop_while_another_stops_its_daemon_waits_for_its_home_let_go_of` (tests/daemon.rs).
 - **Whose end a run's client heard** (PM M530). A run's, an exec's and an attach's slot
   passes on what its VM says, so the slot ends both where the VM's connection closes with no

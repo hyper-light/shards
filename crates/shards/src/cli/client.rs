@@ -1170,7 +1170,11 @@ enum NotStopped {
 /// directory.
 fn stop_at(here: &Path, home: &Path) -> Result<(), NotStopped> {
     use shards_ipc::{Named, slots};
-    for _ in 0..RESTARTS {
+    // The daemon whose answer last sent this stop round again, by its ID and start (`Named`):
+    // the one progress there is to go by, as a daemon answers the same until something about
+    // it changes. None yet.
+    let mut again: Option<Named> = None;
+    loop {
         let client = match slots::take(here, 0) {
             Ok(slots::Taken::Slot(client)) => client,
             // No slot offered: a daemon that has closed, waited for until it has let go of
@@ -1217,14 +1221,18 @@ fn stop_at(here: &Path, home: &Path) -> Result<(), NotStopped> {
             return Ok(());
         }
         // None closed: the daemon asked has exited, or holds its home still, serving on, the
-        // request not taken; asked again, after its answer, as long as RESTARTS allows.
-        if asked.is_some_and(|asked| asked.lives() && Named::read(&here.join(shards_ipc::PID)) == Some(asked))
-        {
-            continue;
+        // stop not taken. Asked again, after its answer, where that daemon is another than the
+        // one last asked again; the same one, as itself, would answer the same for ever.
+        let Some(asked) =
+            asked.filter(|asked| asked.lives() && Named::read(&here.join(shards_ipc::PID)) == Some(*asked))
+        else {
+            return Ok(());
+        };
+        if again == Some(asked) {
+            return Err(NotStopped::Untaken(asked));
         }
-        return Ok(());
+        again = Some(asked);
     }
-    Err(NotStopped::Failed("the daemon kept asking for a restart".into()))
 }
 
 /// Waits until a daemon of the home `here` names that has closed, and ends its runs, has let
