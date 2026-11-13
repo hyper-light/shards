@@ -830,7 +830,21 @@ fn inject_ca(r: &Root, ca: &[u8]) -> io::Result<Option<Injected>> {
         return Ok(None);
     }
     let der = proxyca::first_certificate(ca).ok_or_else(|| err(proxyca::NO_CERTIFICATE))?;
-    let mut found = None;
+    let Some(path) = find_bundle(r)? else {
+        return Ok(None);
+    };
+    let (original, st) = read_bundle(r, &path)?;
+    if proxyca::contains(&original, &der) {
+        return Ok(None);
+    }
+    write_bundle(r, &path, &proxyca::appended(&original, ca), &st)?;
+    Ok(Some(Injected { path, der }))
+}
+
+/// The first of the root's trust bundles that is a regular file ([`proxyca::BUNDLES`],
+/// `linuxSystemCertFiles`), found as fs.RootPath finds each, in the root: its path there,
+/// resolved. None where the root has none.
+pub(crate) fn find_bundle(r: &Root) -> io::Result<Option<Vec<u8>>> {
     for name in proxyca::BUNDLES {
         let path = r.resolve(name, false).map_err(|e| {
             err(format!(
@@ -843,19 +857,10 @@ fn inject_ca(r: &Root, ca: &[u8]) -> io::Result<Option<Injected>> {
             .and_then(|fd| fstat(&fd))
             .is_ok_and(|st| st.st_mode & libc::S_IFMT == libc::S_IFREG);
         if regular {
-            found = Some(path);
-            break;
+            return Ok(Some(path));
         }
     }
-    let Some(path) = found else {
-        return Ok(None);
-    };
-    let (original, st) = read_bundle(r, &path)?;
-    if proxyca::contains(&original, &der) {
-        return Ok(None);
-    }
-    write_bundle(r, &path, &proxyca::appended(&original, ca), &st)?;
-    Ok(Some(Injected { path, der }))
+    Ok(None)
 }
 
 fn fstat(fd: &OwnedFd) -> io::Result<libc::stat> {
@@ -871,7 +876,7 @@ fn fstat(fd: &OwnedFd) -> io::Result<libc::stat> {
 /// readCertBundle: the bundle at `path` of the root, a regular file of at most
 /// [`proxyca::MOST`] bytes, and its stat. Opened without blocking, so a FIFO there is refused,
 /// never waited on.
-fn read_bundle(r: &Root, path: &[u8]) -> io::Result<(Vec<u8>, libc::stat)> {
+pub(crate) fn read_bundle(r: &Root, path: &[u8]) -> io::Result<(Vec<u8>, libc::stat)> {
     let shown = String::from_utf8_lossy(path);
     let fd = r.open_at(path, libc::O_RDONLY | libc::O_NONBLOCK)?;
     let st = fstat(&fd)?;

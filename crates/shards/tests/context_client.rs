@@ -168,6 +168,7 @@ fn daemon(laptop: &Path) -> Daemon {
     let remote = Remote {
         address,
         daemon: ours.fingerprint(),
+        rtt: shards_remote::tls::Rtt::Unmeasured,
     };
     std::fs::create_dir_all(laptop.join("contexts")).unwrap();
     std::fs::write(

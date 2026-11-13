@@ -16,15 +16,13 @@ use crate::invite::{self, Invitation};
 use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Seen, Sender};
 use crate::{Error, server, tls};
 
-/// How many bytes of a stream's frames wait unsent before its reader waits too: a QUIC
-/// stream's own receive window upstream, which the connection's flow control then keeps.
-const HIGH_WATER: usize = 1 << 20;
-
-/// Where the daemon is: its address, and its key's SHA-256.
+/// Where the daemon is: its address, its key's SHA-256, and the round trip it was last
+/// measured at, which its handshake starts from ([`tls::Rtt`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Remote {
     pub address: SocketAddr,
     pub daemon: Fingerprint,
+    pub rtt: tls::Rtt,
 }
 
 enum Ask {
@@ -155,7 +153,9 @@ impl Client<'_> {
                 }
             }
         }
-        if self.starved && self.pending.len() < HIGH_WATER {
+        // Its reader reads on once the transport has taken all it read: the daemon's flow
+        // control (RFC 9000 §4.1) is stdin's only read-ahead.
+        if self.starved && self.pending.is_empty() {
             self.starved = false;
             if let Some(credit) = &self.credit {
                 let _ = credit.try_send(());
@@ -433,7 +433,7 @@ impl Handler for Client<'_> {
                 None => format!(
                     "no shards daemon answered at {} within {:?} ({why}): is it listening there (shards run daemon --listen ADDR:PORT)?",
                     self.remote.address,
-                    tls::IDLE
+                    self.remote.rtt.handshake_bound()
                 ),
                 Some(_) => format!("the connection to {} ended: {why}", self.remote.address),
             });
@@ -486,7 +486,7 @@ fn writer<'scope>(
     mut out: impl Write + Send + 'static,
     sender: Sender<Event>,
 ) -> Result<mpsc::SyncSender<Vec<u8>>, Error> {
-    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(4);
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(server::QUEUED_CHUNKS);
     std::thread::Builder::new()
         .name("remote-out".into())
         .spawn_scoped(scope, move || {
@@ -584,9 +584,11 @@ pub fn exec_seen(
 /// Joins the daemon `invitation` names, as the home whose identity is `identity`: Ok once
 /// the daemon has enrolled it, or the daemon's reason for refusing.
 pub fn join(identity: &Identity, invitation: &Invitation) -> Result<Result<(), String>, Error> {
+    // A daemon joined is one this home has never reached.
     let remote = Remote {
         address: invitation.address,
         daemon: invitation.daemon,
+        rtt: tls::Rtt::Unmeasured,
     };
     let ask = Ask::Join {
         name: invitation.name.clone(),
@@ -625,7 +627,7 @@ fn run(
     made: Option<Made<'_>>,
     seen: &mut Seen,
 ) -> Result<Answer, Error> {
-    let config = tls::client(identity, remote.daemon)?;
+    let config = tls::client(identity, remote.daemon, remote.rtt)?;
     let any: SocketAddr = if remote.address.is_ipv4() {
         SocketAddr::from(([0, 0, 0, 0], 0))
     } else {
@@ -659,7 +661,7 @@ fn run(
             done: false,
             seen: Seen::default(),
         };
-        let (mut driver, sender) = Driver::bind(any, None, client)?;
+        let (mut driver, sender) = Driver::bind(any, None, client, remote.rtt.handshake_bound())?;
         if let Some((stdout, stderr)) = outputs {
             let handler = &mut driver_handler(&mut driver);
             handler.stdout = Some(writer(scope, stdout, sender.try_clone()?)?);
@@ -674,7 +676,7 @@ fn run(
             std::thread::Builder::new()
                 .name("remote-in".into())
                 .spawn(move || {
-                    let mut buffer = vec![0u8; 64 << 10];
+                    let mut buffer = vec![0u8; server::READ_MOST];
                     while credit_rx.recv().is_ok() {
                         match stdin.read(&mut buffer) {
                             Ok(0) | Err(_) => {

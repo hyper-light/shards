@@ -248,7 +248,13 @@ fn document(id: &str, name: &str, now: &Sample, before: Option<&Sample>) -> Valu
         let vcpus = t.vcpus.iter().map(|v| {
             let mut vcpu = json!({ "index": v.index, "guest_ns": v.guest_ns });
             if let (Some(why), Some(o)) = (&v.unread, vcpu.as_object_mut()) {
-                o.insert("unread".into(), why.as_str().into());
+                // Why it went unread, typed for readers to match (R04): its cause, its code where
+                // its hypervisor or OS gave one, and its words to show.
+                let mut unread = json!({ "cause": why.cause(), "why": why.to_string() });
+                if let (Some(code), Some(u)) = (why.code(), unread.as_object_mut()) {
+                    u.insert("code".into(), code.into());
+                }
+                o.insert("unread".into(), unread);
             }
             vcpu
         });
@@ -327,7 +333,12 @@ mod tests {
                     VcpuTime {
                         index: 2,
                         guest_ns: 3_000,
-                        unread: Some("gone".into()),
+                        unread: Some(shards_abi::guest_time::Unread::Gone),
+                    },
+                    VcpuTime {
+                        index: 3,
+                        guest_ns: 0,
+                        unread: Some(shards_abi::guest_time::Unread::WhpCounters(-2147024891)),
                     },
                 ],
                 departed_ns: 1_500,
@@ -339,10 +350,18 @@ mod tests {
         let m = &d["microvm"];
         assert_eq!(m["cpu_ns"], 10_000);
         assert_eq!(m["guest_ns"], 8_500);
+        assert_eq!(
+            m["vcpus"][2]["unread"],
+            json!({ "cause": "whp-counters", "code": -2147024891, "why": "WHvGetVirtualProcessorCounters failed: HRESULT 0x80070005" })
+        );
         assert_eq!(m["departed_guest_ns"], 1_500);
         assert_eq!(
             m["vcpus"],
-            json!([{ "index": 0, "guest_ns": 4_000 }, { "index": 2, "guest_ns": 3_000, "unread": "gone" }])
+            json!([
+                { "index": 0, "guest_ns": 4_000 },
+                { "index": 2, "guest_ns": 3_000, "unread": { "cause": "gone", "why": "its vCPU has gone" } },
+                m["vcpus"][2].clone()
+            ])
         );
         assert_eq!(
             m["cpu_ns"].as_u64().unwrap() - m["guest_ns"].as_u64().unwrap(),

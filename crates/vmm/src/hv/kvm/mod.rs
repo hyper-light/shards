@@ -807,21 +807,19 @@ impl Drop for Vcpu {
 pub struct GuestClock(Arc<Mutex<Option<Thread>>>);
 
 impl GuestClock {
-    /// The nanoseconds its vCPU has run its guest; an error once the vCPU has gone.
-    pub fn read(&self) -> Result<u64> {
+    /// The nanoseconds its vCPU has run its guest; or why not, typed: gone once the vCPU has
+    /// gone, else its thread's stat's errno (none for a line not parsed).
+    pub fn read(&self) -> std::result::Result<u64, shards_abi::guest_time::Unread> {
         let thread = *lock(&self.0);
-        let tid = thread.map(|t| t.tid).ok_or_else(|| Error::Call {
-            op: "reading its guest time",
-            error: "its vCPU has gone".into(),
-        })?;
-        crate::platform::thread_guest_ns(tid).map_err(call("reading its vCPU thread's guest time"))
+        let tid = thread.map(|t| t.tid).ok_or(shards_abi::guest_time::Unread::Gone)?;
+        crate::platform::thread_guest_ns(tid).map_err(|e| shards_abi::guest_time::Unread::ThreadStat(e.raw_os_error()))
     }
 }
 
 impl Vcpu {
     /// Its guest's run time, for any thread to read.
-    pub fn guest_clock(&self) -> Result<GuestClock> {
-        Ok(GuestClock(self.thread.clone()))
+    pub fn guest_clock(&self) -> GuestClock {
+        GuestClock(self.thread.clone())
     }
 }
 
