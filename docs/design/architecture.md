@@ -10552,6 +10552,58 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   above it. Not caught: a run that never answers keeps its cold start, and its heartbeats count
   by liveness, as a wait begun before its kind's first answer does; and a workload that, silent,
   works below every rate its run answered at is taken for idle.
+- **A command's wait has no bound of its caller's** (2026-11-13, goal 71's slice W6; the
+  person's ruling of that day, as D180's values and D215 record it: "No record seeds. The
+  cold start, and every wait after a run-out, follows the party's liveness and progress.
+  After that the bound is the slowest answer seen. No ×2."). Found on WHP (jupiter): chain A
+  at 0a3dde0db cut daemon.rs' six stop tests at their first run's 60 s (its pull done,
+  "Status: Downloaded newer image" said, its microVM `Created`, a template-saving cold boot
+  six at once, the daemon saying nothing), and chain B at 8cc1f6673 cut api_image's and
+  build.rs' builds at their 120 s while they worked, both as kiln's headroom guard suspended
+  the runner's processes to pace them (its `paced` record listing them, kiln's writes cut to
+  6 MB/s). `common::run_command`, and with it every wrapper (`run_shards`, `run_shards_env`,
+  `run_shards_env_in`, `run_shards_in`, `vm_run` and the helpers that only passed a timeout
+  on: `home_with`, `restarts_cross_at`, `hub`, `hubless`, `hub_bases`, containers.rs'
+  `shards_in` and `run_in`, which their `_within` twins fold into), takes no timeout:
+  - *Its kind* is its call site (`#[track_caller]` through the wrappers), whose record,
+    D215's (`shards_api::Record`: W*, the slowest answer, from the wait's start to its
+    client's own end; R*, a refusal's diagnosis, never its bound), the test process keeps in
+    memory and under `target/judge-records/<os>-<arch>-<logical CPUs>/<call site>`, read
+    back by the next run on the host (ROOT: a record learned on the host is data, not a
+    seed; every runner of one CI image shares its key, so a cached target keeps CI warm).
+    Each answer is taught in, merged with what another process kept, and written whole and
+    renamed into place; a keep that fails is the next answer's to make.
+  - *Cold* (no answer of its kind on this host), it follows its client's liveness alone:
+    it waits while the client lives. *Learned*, it is looked at each W* past its start
+    (`shards_api::Judge`, shared) and fails only at a look that finds its party made no
+    progress at all since the look before, its host not holding it. Its party is the
+    command's output, its home's daemon's words (`Said`), and the processes of its client's
+    tree and of its daemon's tree (spawner, VM, network and share processes), each read by
+    D215's `shards_api::Watch`: any CPU, or an end under way, is progress; a thread runnable
+    on no CPU or stalled on memory, and a process stopped or suspended (`Watch::stopped`,
+    which D215's look still finds `Still`), is its host's hold.
+  - Its streams are read to their end within the same wait: one another process holds past
+    the client, which a look finds doing nothing of its own past W*, is said held open.
+    A test's own chosen end (`run_until`, boot.rs' leftovers test) stays its own.
+  - Its looks between the judge's are paced by D215's `sqrt(2 c w)` (`shards_api::pause`,
+    `c` a look's own cost), so that each live wait's account (call site, command, party,
+    last progress and how long ago, its host's hold, its record) is current: a refusal
+    says it, and SIGINT or SIGTERM (CI's job limit, a ^C) or Windows' console control
+    event has the test process say every live wait's account on stderr before it ends
+    (`dump_live_waits`; Unix through a self-pipe written by an async-signal-safe handler,
+    then the signal's default action raised again; Windows by `SetConsoleCtrlHandler`).
+  Held by tests/harness.rs's stand-ins: `a_command_is_waited_on_while_it_works`, red with
+  the fix removed on adas-mac-studio.local (macOS arm64) and adacachy2 (Linux x86_64), a
+  stand-in busy 1 s cut at its caller's 100 ms; and
+  `a_stopped_process_is_its_hosts_hold_and_not_refused`, green, which with `Watch::stopped`'s
+  arm removed stayed green on both: D215's readers found the stopped stand-in held already
+  there (a thread uninterruptible on macOS, its cgroup's pressure grown on a loaded Linux
+  host), so the arm decides only where a suspension is all a look sees, Windows' suspended
+  threads (jupiter's guard): its red is owed on WHP.
+  The gap: a cold wait whose client hangs alive runs to its CI job's limit, its account
+  said then. Owed to the next slice: `Patience`'s own timeout and `DAEMON_QUIET`'s other
+  users (`Said::lately`, `Ran`, `Heard`, guests' streams, `STREAM_QUIET` told to guests),
+  and shards-api's `found()` taking a stopped process for held in production's waits too.
 - **A test's own waits on pools and microVMs follow them too** (M424). daemon.rs' rerun at
   b57cad27 failed 7 of 38, each a wait of the test's own past a fixed minute (a pool
   filled, a restored run's VM up) while its daemon's log showed templates saved, 264 MiB
@@ -24396,22 +24448,51 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
     (`POSIX_SPAWN_SETSID`), and shards-api's every kill of a host (a stop, its patience, its
     pools, a `stop` whose host cannot be asked) is SIGKILL to that group: its VM, network and
     share processes are its children in it (api-run starts none detached), so none outlives
-    it, not even a VM booting that has not yet looked at its link. On Windows the host
-    alone is ended, and its job, whose last handle it holds with
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, ends them as it ends (D141, D197). A terminal's
-    signals to the orchestrator's process group no longer reach its run hosts; a run still
-    ends with its orchestrator, its stdin closing.
+    it, not even a VM booting that has not yet looked at its link. On Windows the run host
+    is made in a job of shards-api's own (`shards_ipc::spawn_grouped`, its group), nested
+    under any job the orchestrator is in; the host's own job (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    D141, D197) and the VM's confined Job nest under it ("Nested Jobs", Windows 8 and later:
+    a child process is associated with every job in its parent's chain), and as the group's
+    job sets no JOB_OBJECT_LIMIT_BREAKAWAY_OK, nothing the host starts leaves it. Every kill
+    of a host is `kill_group`: each process in the group's job held first (OpenProcess,
+    checked as still the job's by IsProcessInJob, so a freed and reused ID is never waited
+    on), then TerminateJobObject, which ends the job's nested jobs' processes too, and those
+    made between the two held after. A terminal's signals to the orchestrator's process group
+    no longer reach its run hosts; a run still ends with its orchestrator, its stdin closing.
   - *Followed, not timed* (D215, D217): the boot returns once the host has exited and been
     reaped, its answers ended, and its diagnostics' pipe closed by every process holding it,
-    the VM, network and share processes among them, as their stderr.
+    the VM, network and share processes among them, as their stderr. On Windows that pipe's
+    end says nothing of its holders' ends: a process closes its handles as it exits, before
+    its handle is signalled, and TerminateJobObject, "as if TerminateProcess were called for
+    each process", "initiates termination and returns immediately"; to "be sure the process
+    has terminated", its handle is waited on (TerminateProcess's documentation). WHP at
+    21c59efa7 (jupiter, Windows 11 x86_64): the stand-in's stop returned `Ended(Stopped)`
+    after 0.02 s with its VM's handle not yet signalled, though its pipe had ended (`the VM
+    in its run host's job outlived the boot's stop`). So first `Child::end_group` follows
+    the group: rounds of TerminateJobObject, holding each process in the job not held yet,
+    and waiting on every handle held, until a round holds none new and the job's
+    ActiveProcesses (JOBOBJECT_BASIC_ACCOUNTING_INFORMATION) is 0. No literal: each round
+    waits on processes whose termination has begun, the progress D215 judges by, and goes
+    again only where a process joined the job meanwhile. A process it cannot open or ask
+    about is refused `Os` ("the stopped run's processes"), never reported `Stopped`. What is
+    left: a process made into the job after `kill_group`'s second hold that had exited by
+    `end_group`'s first is counted out of ActiveProcesses but never held, so its handle's
+    signal is not waited on; Windows offers no handle-based list of a job's processes, and
+    its completion port's JOB_OBJECT_MSG_NEW_PROCESS is not guaranteed delivery
+    (JOBOBJECT_ASSOCIATE_COMPLETION_PORT), so neither closes it.
   - *Tested* (unit, stand-in run hosts, `image::session`'s tests): one that starts a VM of its
     own that never looks at its host and never says its run started, stopped mid-boot,
     returns `Ended(Stopped)` well within its bound, its host and that VM gone; one never
     answering is refused as before (`Boot`, not started within its patience); one stopped
     first ends `Stopped`. Red on 83db267f2 (each boot waited out its bound, the VM outlived
-    it), green with the stop. **Owed** (ROOT): a stop mid-boot of a real microVM on KVM,
-    Hypervisor.framework and WHP (`crates/shards/tests/api_image.rs`), with no VM, network
-    or share process left; the Windows stand-in (the unit tests are Unix's).
+    it), green with the stop. The Windows stand-in
+    (`a_stop_mid_boot_ends_the_boot_its_host_and_the_vm_of_its_job`, a test binary that is
+    its own run host and VM) was red on WHP at 21c59efa7, as above; `shards_ipc`'s
+    `a_groups_end_follows_every_process_of_it_to_its_end` holds `end_group` to a grouped
+    cmd and the ping it starts. The real-VM twin
+    (`a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run`) passed 1/1 on WHP,
+    HVF and KVM. **Owed** (ROOT): both Windows tests on WHP with `end_group`, and the
+    real-VM twin (`crates/shards/tests/api_image.rs`) again on WHP with the host grouped.
 - *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
   the members start.
 - *Its end* (`RunEnd`): `Exited` with the status its own command or `ATTEND`'s holder ended
@@ -25359,7 +25440,17 @@ has taken the pinned key, as many at once as the endpoint's stream limit allows;
 `Handler::available`. Each lane's handle is step 5's client of its stream:
 - *An output* (`control::Output`): `next_record` gives its records in order. Asking for the next
   acknowledges the one before, since step 5 acknowledges a record only once its owner has it
-  whole. `Got::Finished` comes once the output has finished.
+  whole. `Got::Finished` comes once the output has finished. The admission its endpoint
+  announced (the run's metadata `capacity`) is where its records start, not their bound: the
+  endpoint grows a stream's record as the daemon's learner asks (`managed::Producer::admit`,
+  QUIC's window as it was), so a lane reads a record up to the managed wire's own bound, one
+  frame's (`managed::RECORD_MOST`, `frame::MAX_FRAME` less the record's offset), its buffer
+  reserved at the admitted record and grown, fallibly, to what comes; one past that bound
+  breaks the protocol. A lane that held the first admission as its bound closed the connection
+  `Protocol` once an owned output's record grew (ROOT's KVM run of `log_lanes`, 2026-11-13;
+  `control::tests::lanes::a_record_grown_past_the_admitted_one_is_had_whole`). What an owned
+  output's records carry is the guest's capture record whole (`run::managed::Record`), which
+  its owner decodes.
 - *A stdin* (`control::Input`): `write` sends one record within the endpoint's room and returns once
   it is taken. The driver checks each taken against the protocol: it falls where the record ends,
   or, the first after a subscription, at or past its cursor, which counts the bytes an earlier

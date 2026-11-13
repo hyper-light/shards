@@ -9,13 +9,10 @@ mod common;
 
 use std::ffi::OsStr;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use common::{
     TempDir, cannot_run_vms, guest_init, kernel, kernel_artifact, run_shards_env, serve_file, served,
 };
-
-const TIMEOUT: Duration = Duration::from_secs(120);
 
 #[test]
 fn runs_boot_the_default_guest_fetched_and_checked_on_first_need() {
@@ -32,7 +29,7 @@ fn runs_boot_the_default_guest_fetched_and_checked_on_first_need() {
     ];
     let pinned = kernel_artifact().sha256;
 
-    let first = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    let first = run_shards_env(&["run"], &[image.as_str()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", first.stdout, first.stderr);
     assert_eq!(first.status, Some(0), "{shown}");
     assert!(first.stderr.contains(&format!("from {url}")), "{shown}");
@@ -52,7 +49,7 @@ fn runs_boot_the_default_guest_fetched_and_checked_on_first_need() {
     let init_digest = common::sha256_digest(&init);
     let init_hex = init_digest.strip_prefix("sha256:").unwrap();
     assert_eq!(std::fs::read(stored(init_hex)).unwrap(), init);
-    let shown = run_shards_env(&["guest"], &[] as &[&str], &env, TIMEOUT);
+    let shown = run_shards_env(&["guest"], &[] as &[&str], &env);
     assert_eq!(
         shown.stdout,
         format!("kernel sha256:{pinned} (default)\ninit   {init_digest} (default)\n")
@@ -60,11 +57,11 @@ fn runs_boot_the_default_guest_fetched_and_checked_on_first_need() {
 
     // Stored: the next run fetches nothing.
     let asked = requests.load(Ordering::SeqCst);
-    let second = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env, TIMEOUT);
+    let second = run_shards_env(&["run"], &["--pull", "never", image.as_str()], &env);
     assert_eq!(second.status, Some(0), "{}", second.stderr);
     assert!(!second.stderr.contains("Downloading"), "{}", second.stderr);
     assert_eq!(requests.load(Ordering::SeqCst), asked);
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 }
 
@@ -93,7 +90,7 @@ fn a_download_that_is_not_the_pinned_kernel_is_kept_nowhere() {
             ("SHARDS_HOME", home.as_os_str()),
             ("SHARDS_KERNEL_URL", OsStr::new(&url)),
         ];
-        let run = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+        let run = run_shards_env(&["run"], &[image.as_str()], &env);
         let shown = format!("{case}\n--- stdout\n{}\n--- stderr\n{}", run.stdout, run.stderr);
         assert_ne!(run.status, Some(0), "{shown}");
         assert!(run.stderr.contains(why), "{shown}");
@@ -112,7 +109,7 @@ fn a_download_that_is_not_the_pinned_kernel_is_kept_nowhere() {
             .filter(|name| !name.starts_with("sha256-") || name.ends_with(kernel_artifact().sha256))
             .collect();
         assert!(kept.is_empty(), "{case}: {kept:?}");
-        let _ = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+        let _ = run_shards_env(&["daemon"], &["stop"], &env);
     }
 }
 
@@ -130,7 +127,7 @@ fn an_init_built_for_another_shards_gets_no_workload() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", common::foreign_init().as_os_str()),
     ];
-    let run = run_shards_env(&["run"], &[image.as_str()], &env, TIMEOUT);
+    let run = run_shards_env(&["run"], &[image.as_str()], &env);
     let shown = format!("--- stdout\n{}\n--- stderr\n{}", run.stdout, run.stderr);
     assert_eq!(run.status, Some(125), "{shown}");
     let why = format!(
@@ -139,6 +136,6 @@ fn an_init_built_for_another_shards_gets_no_workload() {
     );
     assert!(run.stderr.contains(&why), "{shown}");
     assert!(!run.stdout.lines().any(|l| l.starts_with("uid ")), "{shown}");
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{}", stopped.stderr);
 }

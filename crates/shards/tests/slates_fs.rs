@@ -296,7 +296,7 @@ fn a_microvm_mounts_reads_and_writes_a_volume_the_slates_daemon_serves() {
         id.clone(),
         format!("-- shards run {flag} {end}"),
     ];
-    let run = run_command(vm, &asked, TIMEOUT);
+    let run = run_command(vm, &asked);
     assert_eq!(run.status, Some(0), "{run}");
     assert!(
         run.stdout.contains("SHARDS-TEST PASS"),
@@ -357,7 +357,7 @@ fn without_a_dax_window_the_guest_finds_no_dax_and_its_map_check_fails() {
         id.clone(),
         format!("-- shards run {flag} {end} (no --share-window)"),
     ];
-    let run = run_command(vm, &asked, TIMEOUT);
+    let run = run_command(vm, &asked);
     // The guest gives its verdict on the console and powers off either way, so the VM ends well; the verdict is the line.
     assert_eq!(run.status, Some(0), "{run}");
     assert!(
@@ -534,7 +534,7 @@ struct Removed<'a> {
 #[cfg(unix)]
 impl Drop for Removed<'_> {
     fn drop(&mut self) {
-        let _ = run_shards_env(&[], &["rm", "-f", MOUNTED_VM], self.env, TIMEOUT);
+        let _ = run_shards_env(&[], &["rm", "-f", MOUNTED_VM], self.env);
     }
 }
 
@@ -575,7 +575,7 @@ fn a_microvm_maps_a_slates_mount_file_through_its_own_dax_window() {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_SHARE_WINDOW_MIB", SHARE_WINDOW_MIB.as_ref()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let (image, _) = served();
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");

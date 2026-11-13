@@ -39,7 +39,7 @@ fn shards_in(home: &Path, args: &[&str]) -> Run {
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
     ];
-    run_shards_env(&[], args, &env, TIMEOUT)
+    run_shards_env(&[], args, &env)
 }
 
 /// A home whose daemon listens for another machine's clients, stopped as this drops.
@@ -125,7 +125,7 @@ fn move_timed(here: &Path, name: &str, to: &str) -> Run {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_MOVE_TIMES", OsStr::new("1")),
     ];
-    run_shards_env(&[], &["move", "vm", name, to], &env, TIMEOUT)
+    run_shards_env(&[], &["move", "vm", name, to], &env)
 }
 
 /// Of the files a timed move's snapshot restores against, how many it sent, and of how many.
@@ -637,7 +637,7 @@ fn move_live_to(here: &Path, name: &str, to: &str) -> (Run, Option<u64>) {
         ("SHARDS_INIT", init.as_os_str()),
         ("SHARDS_MOVE_TIMES", OsStr::new("1")),
     ];
-    let moved = run_shards_env(&[], &["move", "vm", "--live", name, to], &env, TIMEOUT);
+    let moved = run_shards_env(&[], &["move", "vm", "--live", name, to], &env);
     let downtime = moved.stderr.lines().find_map(|l| {
         l.strip_prefix("move: downtime ")?
             .strip_suffix(" us")?
@@ -850,7 +850,7 @@ fn a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it() {
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
     ];
-    let moved = run_shards_env(&[], &["move", "vm", "told", "lab"], &timed, TIMEOUT);
+    let moved = run_shards_env(&[], &["move", "vm", "told", "lab"], &timed);
     assert_eq!(moved.status, Some(0), "{moved}");
     assert_eq!(cpu(&there, "told"), told);
     assert_eq!(shards_in(&there, &["rm", "-f", "told"]).status, Some(0));
@@ -944,7 +944,7 @@ fn an_x86_cpu_baseline_is_all_its_guest_finds_and_goes_with_it() {
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
     ];
-    let moved = run_shards_env(&[], &["move", "vm", "told", "lab"], &timed, TIMEOUT);
+    let moved = run_shards_env(&[], &["move", "vm", "told", "lab"], &timed);
     assert_eq!(moved.status, Some(0), "{moved}");
     assert_eq!(cpu(&there, "told"), told);
     assert_eq!(shards_in(&there, &["rm", "-f", "told"]).status, Some(0));

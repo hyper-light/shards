@@ -72,12 +72,7 @@ fn build(home: &TempDir, tag: &str, options: &[&str]) {
         format!("FROM {image}\nHARNESS codex FROM ./harness.tar\n"),
     )
     .unwrap();
-    let built = run_shards_env(
-        &["build", "image"],
-        &["-t", tag, ctx.to_str().unwrap()],
-        &env,
-        TIMEOUT,
-    );
+    let built = run_shards_env(&["build", "image"], &["-t", tag, ctx.to_str().unwrap()], &env);
     assert_eq!(built.status, Some(0), "{}", built.stderr);
 }
 
@@ -176,7 +171,7 @@ fn shards_in(home: &TempDir, args: &[&str]) -> Run {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    run_shards_env(&[], args, &env, TIMEOUT)
+    run_shards_env(&[], args, &env)
 }
 
 /// Runs, detached as `name`, an image whose agent `other` (member 0, uid 200000) holds a

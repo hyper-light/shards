@@ -151,7 +151,9 @@ impl Home {
         Home { home, owner }
     }
 
-    fn command(&self, args: &[&str], until: Instant) -> common::Run {
+    /// `shards ARGS` in its home, waited on as long as it goes on (`common::run_command`):
+    /// `_until`, its case's end, bounds it no more.
+    fn command(&self, args: &[&str], _until: Instant) -> common::Run {
         common::run_shards_env(
             &[],
             args,
@@ -160,7 +162,6 @@ impl Home {
                 ("SHARDS_KERNEL", common::kernel().as_os_str()),
                 ("SHARDS_INIT", common::guest_init().as_os_str()),
             ],
-            until.saturating_duration_since(Instant::now()),
         )
     }
 
@@ -293,16 +294,30 @@ fn controlled<T>(
     })
 }
 
-/// An output read to its end: every byte, each record at the offset its last left.
+/// An owned output read to its end: its data's bytes. Its endpoint carries the guest's capture
+/// records whole (`run::managed::Record`, as every owned output's reader decodes them), each at
+/// the wire offset its last left, held to its stream's transitions, the last its end.
 fn drained(mut output: Output) -> Vec<u8> {
+    let mut wire = 0u64;
+    let mut state = StreamState::New;
     let mut bytes = Vec::new();
     loop {
         match output.next_record() {
             Ok(Got::Record { at, bytes: record }) => {
-                assert_eq!(at, bytes.len() as u64, "an owned output's record out of place");
-                bytes.extend_from_slice(&record);
+                assert_eq!(at, wire, "an owned output's record out of place");
+                wire += record.len() as u64;
+                let record = Record::decode(&record).unwrap();
+                state.accept(record).unwrap();
+                match record.event {
+                    CaptureEvent::Data(data) => bytes.extend_from_slice(data),
+                    CaptureEvent::Open(_) | CaptureEvent::End => {}
+                    CaptureEvent::Aborted(errno) => panic!("an owned output aborted: errno {errno}"),
+                }
             }
-            Ok(Got::Finished) => return bytes,
+            Ok(Got::Finished) => {
+                assert!(state.terminal(), "an owned output finished before its end record");
+                return bytes;
+            }
             Err(fault) => panic!("an owned output ended without its end: {fault:?}"),
         }
     }

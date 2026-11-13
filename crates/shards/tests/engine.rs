@@ -43,7 +43,7 @@ fn shards_in(home: &Path, args: &[&str]) -> Run {
         ("SHARDS_KERNEL", kernel.as_os_str()),
         ("SHARDS_INIT", init.as_os_str()),
     ];
-    run_shards_env(&[], args, &env, TIMEOUT)
+    run_shards_env(&[], args, &env)
 }
 
 /// A home whose daemon runs, the test image pulled into it: `shards pull` starts the
@@ -76,9 +76,9 @@ fn home_with_guest(name: &str) -> Option<(TempDir, String)> {
         "--init".as_ref(),
         init.as_os_str(),
     ];
-    let recorded = run_shards_env(&["guest"], &args, &env, TIMEOUT);
+    let recorded = run_shards_env(&["guest"], &args, &env);
     assert_eq!(recorded.status, Some(0), "{}", recorded.stderr);
-    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env, TIMEOUT);
+    let pulled = run_shards_env(&["pull"], &["-q", image.as_str()], &env);
     assert_eq!(pulled.status, Some(0), "{}", pulled.stderr);
     Some((home, image))
 }
@@ -2700,7 +2700,7 @@ fn a_microvms_own_engine_runs_binds_execs_and_pulls() {
             ("SHARDS_KERNEL", kernel.as_os_str()),
             ("SHARDS_INIT", init.as_os_str()),
         ];
-        run_shards_env(&[], args, &env, TIMEOUT)
+        run_shards_env(&[], args, &env)
     };
     let ran = with_creds(&[
         "run",

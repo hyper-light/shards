@@ -511,9 +511,13 @@ fn start_host(program: &Path, args: &[&OsStr], env: &[(OsString, OsString)]) -> 
     };
     // On Unix it leads a session and a process group of its own, which `kill` ends whole; a
     // terminal's signals to this process's group no longer reach it, and its run ends with
-    // this process all the same, its stdin closing. On Windows `detach` would take it out of
-    // this process's job, so it is not asked.
-    let process = shards_ipc::spawn_with(&found, args, &ends, cfg!(unix), &set).map_err(boot)?;
+    // this process all the same, its stdin closing. On Windows it is made in a job of its own,
+    // nested under this process's, which holds every process it starts and which `kill` ends
+    // whole: `detach` would take it out of this process's job, so it is not asked.
+    #[cfg(unix)]
+    let process = shards_ipc::spawn_with(&found, args, &ends, true, &set).map_err(boot)?;
+    #[cfg(windows)]
+    let process = shards_ipc::spawn_grouped(&found, args, &ends, &set).map_err(boot)?;
     // The host holds its ends now; this process's go, so that each pipe ends with it.
     drop((child_in, child_out, child_err));
     Ok(Host {
@@ -552,8 +556,9 @@ fn on_path(program: &Path) -> io::Result<PathBuf> {
 
 /// Kills the host at once, and every process it started, unless it is reaped: on Unix its
 /// process group, which it leads (`start_host`), and which its VM, network and share
-/// processes are in (api_run.rs starts each in it); on Windows the host alone, whose job,
-/// whose last handle it holds, ends them as it ends (D141, D197).
+/// processes are in (api_run.rs starts each in it); on Windows its group's job, which they
+/// are made in, nested in the host's own (D141, D197), each of them held to be followed to
+/// its end (`shards_ipc::Child::end_group`, D231).
 pub(super) fn kill(host: &shards_ipc::Child) {
     let _ = host.kill_group(shards_ipc::signal::SIGKILL);
 }
@@ -764,6 +769,19 @@ impl Begun {
         });
         if stop.release() {
             end_it(&shared);
+            // On Windows every process of the host's group followed to its end, its handle
+            // signalled: a process closes its handles, its diagnostics' among them, as it exits,
+            // before its handle is signalled, so their end below says nothing of it (D231).
+            #[cfg(windows)]
+            if let Err(e) = host.end_group() {
+                return Err((
+                    ImageRefusal::Os {
+                        what: "the stopped run's processes",
+                        kind: e.kind(),
+                    },
+                    false,
+                ));
+            }
             // Followed to its end, never timed (D215, D217): the host exited and reaped by its
             // watcher, its answers ended, and its diagnostics, which the VM, network and share
             // processes it started hold as their stderr, closed by every one of them.

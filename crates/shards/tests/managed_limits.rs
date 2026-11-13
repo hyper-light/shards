@@ -145,12 +145,11 @@ fn tree(rows: &[Process], held: u32) -> Process {
 
 struct Run<'a> {
     env: &'a [(&'a str, &'a std::ffi::OsStr)],
-    patience: Duration,
     running: bool,
 }
 impl Run<'_> {
     fn command(&self, words: &[&str]) -> common::Run {
-        run_shards_env(&[], words, self.env, self.patience)
+        run_shards_env(&[], words, self.env)
     }
     fn snapshot(&self, phase: &str, budget: Budget, held: u32) -> Process {
         let result = self.command(&["top", "managed-limits", "-o", "pid,ppid,uid,nlwp"]);
@@ -342,7 +341,6 @@ fn campaign(end_at: EndAt) {
     ];
     let mut run = Run {
         env: &env,
-        patience,
         running: false,
     };
     for (kind, name, options) in [
