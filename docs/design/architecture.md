@@ -23231,6 +23231,25 @@ reboots, driver updates or hot plug; a device's own identity does.
   name and host-visible memory (`shards_abi::gpu::probe`, versioned; `Guests::probe_gpu`
   reads it); a managed launch's VM process writes the same report, framed with its launch's
   scope, to its client's private pipe before the guest runs (`--gpu-report`, D233).
+- *Refusals* (goal 52's review, R04). A selection the renderer serves none of is refused
+  typed, never as text alone (`shards_abi::gpu::GpuRefusal`):
+  - the join's reason (`JoinError`, moved from shards-vmm's `gpu_selection` to shards-abi and
+    re-exported where it was): missing, ambiguous, aliased, the rest of the join's reasons;
+  - no memory the host can map;
+  - the renderer's refusal of the exact filter, with its code.
+  Its record, the line `shards-gpu-refusal 1` and the reason's, is a probe's answer on stdout
+  (the probe then fails, exit 1), and a managed boot's report in place of its receipt, in the
+  same scoped `shards-vmm-gpu 1` frame, written before the boot fails of it. shards-api reads
+  either as `GpuProbeError::Refused`, which is certain: a receipt it cannot read (`Syntax`)
+  leaves the selection unknown. A report pipe closed unwritten is `Unreported`; it read as
+  `Syntax`, a malformed receipt.
+- *Refusals, old and new.*
+  - An older client reads a newer VM process's refusal frame as malformed, as it read the
+    unwritten pipe, and a refused probe as the guest's failed end, as before: the exit stays 1,
+    and a probe's end carries none of its output.
+  - A newer client reads an older VM process's unwritten pipe as `Unreported`, and its failed
+    probe as the guest's end, as before.
+  - `GpuProbeError` gains `Refused` and `Unreported`, which exhaustive matches must add.
 - *Snapshots.* Format 29 keeps the selection, rejoined as a snapshot restores; 28 reads.
 - *The driver held.* The renderer keeps the host's Vulkan loader and an instance for its life
   (`HeldDriver`): unheld, each context loaded the driver anew, and NVIDIA's static-TLS
@@ -23254,7 +23273,9 @@ checks). Moving to them changes the C patches, which only a renderer build and a
 check: owed to ROOT, with `MAX_PHYSICAL_GPUS` following in the same change.
 `GPU_NAME_BYTES`, 256: Vulkan's `VK_MAX_PHYSICAL_DEVICE_NAME_SIZE`. The probe's byte bounds
 are its encoding's longest lines for the count, the count as wide as `MAX_PHYSICAL_GPUS`
-(`probe.rs`, derived from it). Snapshot format 29.
+(`probe.rs`, derived from it); a refusal's record and frame are bounded by the receipt and the
+report of one GPU (`probe_bytes(1)`, `report_bytes(1)`), the fewest any selection's reader
+admits. Snapshot format 29.
 
 **Windows on arm64 (plan step 2's step 3; Hex's one vendored change, upstreamed).** `gpu_target`
 takes `aarch64-pc-windows-msvc`, and scripts/gpu-libs builds the renderer, libepoxy and the
@@ -23302,9 +23323,17 @@ context); GPUs Vulkan cannot tell apart by UUID.
 commit read against R01–R16. Fixed (d7c9938ec, d27cd59b0): a receipt's count bounded by its
 bytes before anything is reserved for it; restore's own valued flags in the VM-flag grammar
 (`spec::RESTORE_VALUED`), so that a value is no flag there; the held driver in `Venus`'s
-`Send` safety; `Properties`' size checked as it compiles. Owed to ROOT: the figure's
-derivation above, selection refusals typed across the VM process's boundary, and the real-GPU
-runs.
+`Send` safety; `Properties`' size checked as it compiles. The review's owed defects, fixed by
+goal 52 (each test red on the code as it was, green after, red again with its guard removed):
+- a managed boot's report writer, taken again, says `ReportTaken`, not `Scope` (cb8b92f1b);
+- `--gpu-device`'s selection checked whole once its flags are read, where it was copied and
+  sorted after every flag, with the same refusals (cfc504f25);
+- said.rs reads a restore's words with restore's grammar, as d27cd59b0 made the VM-flag readers
+  do (5a377965a);
+- Windows' `imports_host_memory` takes its driver's count fallibly and each extension name
+  within its array (`fixed_name`, 2aabfeb7d);
+- refusals typed across the VM process's boundary (*Refusals* above).
+Owed to ROOT: the figure's derivation above, and the real-GPU runs.
 
 ### D233. A client that contains its own VM processes launches them through its native owner (built; real-VM validation owed)
 
