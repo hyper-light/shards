@@ -356,7 +356,8 @@ fn plug_at(ram: u64) -> u64 {
     (layout::MMIO_GAP_END + ram.saturating_sub(layout::MMIO_GAP)).next_multiple_of(GIB)
 }
 
-/// Guest RAM of `memory_mib`, around the MMIO gap.
+/// Guest RAM of `memory_mib`, around the MMIO gap: an even number of MiB, whole large
+/// pages (Intel SDM Vol. 3A §4.5), as arm64's DTB needs on its side (D29, "Its size").
 fn ram_ranges(memory_mib: u64) -> Result<(u64, Vec<(u64, usize)>), String> {
     if memory_mib < MIN_MEMORY_MIB || !memory_mib.is_multiple_of(2) {
         return Err(format!(

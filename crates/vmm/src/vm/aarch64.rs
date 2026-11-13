@@ -404,6 +404,9 @@ fn ipa_bits(end: u64) -> Result<u32, String> {
         })
 }
 
+/// RAM of `memory_mib`, in bytes: whole 2 MiB blocks, so that the DTB in RAM's last
+/// `FDT_MAX` lies in one block of RAM, as the boot protocol maps it in blocks of up to
+/// 2 MiB (booting.rst §2; D29, "Its size").
 fn ram_bytes(memory_mib: u64) -> Result<u64, String> {
     if memory_mib < MIN_MEMORY_MIB || !memory_mib.is_multiple_of(2) {
         return Err(format!(

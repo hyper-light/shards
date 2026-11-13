@@ -245,7 +245,7 @@ SPIs of the GICv2m frame the VMM keeps (D154).
 | A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214), plugged into a run's workload too, as a user not root, by group and by device node (D214, at 8928fbe4) | refused: its APIs assign no PCI function, Virtualization's one passthrough a USB device's (D154, PM M403) | at its start, given the VM's kernel: built where the hypervisor assigns devices (Discrete Device Assignment, D154, d3029698), its E2E waiting on a Windows Server host that assigns one; refused with the hypervisor's own answer where it assigns none (PM M401, M402). A workload's, at its start or plugged in behind the guest's IOMMU: refused with WHP's limit, no I/O address space of the guest's (D154). Plugged in outside the IOMMU (D214's VMM path): refused, Windows documenting a function given a VM as it starts alone (`WHP_NO_PLUG`, D214) |
 | A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
 | Moved to another machine, saved (D176 part 6) | yes, between two homes of one machine (PM M460; CI's runners, migrate-e2e.yml), and from adacachy2 to adacachy (PM M497); each carried item's test of another machine (7a's step 5) owed, both ways | yes, nested, between two homes: tests/moved.rs's saved moves (D154's L1 harness); no two hosts here | yes between two homes (PM M462), its CPU baseline (D245, PM M497); between two Macs, a CPU lacking a feature refused at `ready` (PM M460); with a baseline, and the tests of another machine, owed | yes between two homes, a volume's guest owners moved as its guest sees them (`server::guest`): tests/moved.rs on CI's windows-2025 and on jupiter; to KVM, refused as another hypervisor's (7a's step 5), owed |
-| Moved live (D176 part 7) | yes, between two homes of one machine (PM M461; CI's runners, migrate-e2e.yml); between two machines built, not yet run | yes, nested, between two homes: each writable slot's dirty bitmap (`KVM_GET_DIRTY_LOG`), which takes the ITS's writes too; tests/moved.rs's live moves (D154's L1 harness) | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone; between two Macs not yet run | yes between two homes, by WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`): tests/moved.rs's live tests on CI's windows-2025 (CI 42329593544 at 51a709e9, e0ed0673) and on jupiter, windows-2022 restoring no snapshot (PM M345); between two machines built, not yet run |
+| Moved live (D176 part 7) | yes, between two homes of one machine (PM M461; CI's runners, migrate-e2e.yml), and from adacachy2 to adacachy on one wired network: 20 live moves, 40 of 40 with the cold ones moved and every count once there, each running nowhere p50 207,740 µs, max 345,251 µs, and tests/moved.rs's two tests of another machine passing across the two (PM M497); the other way not measured, adacachy2's firewall taking no free UDP port from the LAN (PM M497) | yes, nested, between two homes: each writable slot's dirty bitmap (`KVM_GET_DIRTY_LOG`), which takes the ITS's writes too; tests/moved.rs's live moves (D154's L1 harness) | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone; between two Macs not yet run | yes between two homes, by WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`): tests/moved.rs's live tests on CI's windows-2025 (CI 42329593544 at 51a709e9, e0ed0673) and on jupiter, windows-2022 restoring no snapshot (PM M345); between two machines built, not yet run |
 | Contexts, both sides, the machine's listener, enrollments and relays (D180) | yes | yes | yes | yes (part 3k) |
 | Keyless signing, its SPIFFE provider (D126) | yes | yes | yes | yes, by the Workload API's named pipe |
 | `--platform` for one platform's microVM, other CPUs' images emulated (D179) | yes | yes | yes | yes |
@@ -2076,6 +2076,63 @@ devices. The code is `crates/vmm/src/memory.rs`.
   The initrd sits at the top of low RAM, beside what the guest kernel takes there from
   the top down, as Firecracker and QEMU place it. arm64's boot is unmeasured. A run's
   restore maps its memory file, on small pages.
+- **Its size: whole 2 MiB blocks, an even number of MiB** (`ram_bytes` in
+  `vm/aarch64.rs`, `ram_ranges` in `vm/x86_64.rs`, since c2622c656 and 4dd27991d). Its
+  derivation was recorded on 2026-11-13 (R03), once shards-api's `envelope` came to expose
+  the unit (D215).
+  - *arm64* (HVF, KVM and WHP alike) derives it from its boot protocol. The VMM writes the
+    DTB in RAM's last `FDT_MAX` (`fdt_addr = DRAM_BASE + ram - FDT_MAX` in `vm/aarch64.rs`'s
+    `build_reported`), the most a DTB may be: 2 MiB (booting.rst §2 l. 53-54;
+    `MAX_FDT_SIZE`, arch/arm64/include/asm/boot.h l. 13). The kernel maps the DTB "cacheable
+    using blocks of up to 2 megabytes", so no 2M region it is mapped in may need other
+    attributes (booting.rst l. 54-56).
+  - Before Linux 6.4, `fixmap_remap_fdt` mapped the DTB in whole `SWAPPER_BLOCK_SIZE`
+    blocks (2 MiB with 4 KiB pages), from its address rounded down to its end rounded up
+    (arch/arm64/mm/fixmap.c l. 162-178 at 414c109bdf49^; 414c109bdf49 made it
+    page-granular, v6.4-rc1). Linux 7.2's `map_fdt` maps [dtb, dtb + 2 MiB)
+    (arch/arm64/kernel/pi/map_kernel.c l. 200-215). A managed guest boots its caller's own
+    kernel, of any version (D215).
+  - With `DRAM_BASE` on a 2 MiB boundary (0x8000_0000, arch/aarch64/mod.rs), RAM of whole
+    2 MiB blocks puts the DTB's window on one block of RAM: its last. RAM ending 1 MiB into
+    a block would have a kernel before 6.4 map a DTB longer than 1 MiB in a block half
+    past RAM's end. That half is the hole before the next GiB boundary, where memory to
+    plug and pmem start.
+  - *x86-64* has no requirement of its own: none was found. Its boot puts nothing in a
+    2 MiB window at RAM's top. The e820 map takes any page-aligned size (`boot::e820`). The
+    boot's identity map spans [0, 1 GiB) in 2 MiB pages whatever RAM is
+    (`boot::write_boot_state`). The initrd sits page-aligned at RAM's top
+    (`boot::place_initrd`). KVM asks a slot's size and addresses to be page-aligned alone
+    (virt/kvm/kvm_main.c l. 2015-2021). The rule came with the x86-64 machine (4dd27991d)
+    in arm64's words.
+  - What a RAM end short of a 2 MiB boundary would cost x86-64 is huge mappings of that
+    last part, unmeasured. KVM maps no large page over a slot's partial last huge page
+    (arch/x86/kvm/x86.c l. 13555-13556, `disallow_lpage`). The VMM puts no region's last
+    span short of a huge page on THP (`memory::huge_runs`). The guest reports free memory
+    in whole pageblocks, 2 MiB with 4 KiB pages (include/linux/pageblock-flags.h l. 60-66;
+    D151).
+  - Decided for x86-64 (ROOT, 2026-11-13): 2 MiB stays, as its large page (a PDE that
+    maps a 2-MByte page, Intel SDM Vol. 3A §4.5), the unit those three mechanisms work in.
+    One unit on both architectures keeps shards-api's `envelope` the same for every
+    caller; taking x86-64 to the MiB would split it by architecture for a cost nothing has
+    measured. Should the tail's cost measure nil, the MiB is weighed again with that data.
+  - Owed to ROOT, the tail's cost on x86-64 KVM: two boots of one kernel, at 2N MiB and
+    2N + 1 MiB (the latter in a build that takes an odd MiB), n of each interleaved. Read
+    the 4 KiB and 2 MiB mappings KVM made (its `pages_4k` and `pages_2m` VM statistics),
+    the VM process's `AnonHugePages` (smaps), and what the guest reported free (D151's
+    count) after one fill and free of its RAM. Report the difference in each, with
+    p50/p90/p99/max of a boot to its PID 1 and of the fill.
+  - The least memory each architecture boots in, 64 MiB on arm64 and 128 on x86-64
+    (`MIN_MEMORY_MIB`), rests on its comment alone (a kernel, its bss and early
+    allocations, and on arm64 the DTB's window); no record measures it.
+  - Owed to ROOT, that measurement, on each backend (HVF and KVM arm64, through the L1
+    path where no host has KVM, and KVM and WHP x86-64): boot shards' pinned kernel with
+    shards-init at 1 vCPU and at the host's count (per-CPU allocations grow with vCPUs),
+    from today's floor down in 2 MiB steps, 20 boots a step. The least memory is the
+    smallest step at which every boot reaches `marker::INIT_STARTED`; record it with the
+    kernel's own `Memory:` line (available, reserved) at that step. A floor taken from it
+    is a derivation of the kernel and the vCPU count, not a constant.
+
+  Linux citations are at 1590cf03 (7.2-rc4) unless a revision is named.
 - **Tests:** `memory::tests` (copies at every alignment of either side to 64 bytes and
   lengths through 200, each way against bytes read alone; copies of 16 and 64 KiB;
   threads taking turns, a nested access refused, ranges in any order, a reused file; the
@@ -22784,6 +22841,29 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   `NoBackend`, by name. Windows on arm64 is WHP's, the VMM's `hv::whp_arm64` (D209): the
   API names the backend the VMM builds on each host, and a host whose hypervisor runs no
   guest says so as its VM process starts (`check_host`).
+- *An envelope* (2026-11-13, for Hex's reservations, kiln plan step 14):
+  `envelope(arch, vcpus, memory_mib)` is the least spec shards-vmm boots on a guest of
+  `arch` that holds the ask: at least one vCPU, and its memory rounded up to the VMM's unit
+  and to at least `min_memory_mib(arch)`. Where that memory's bytes pass what a u64 holds,
+  it is refused `Bounds` (`memory_mib`). `check` takes a spec exactly where the spec is its
+  own envelope: one rule from one source, so a caller rounds an ask without restating
+  shards' numbers.
+  - Its literals are shards-vmm's own, restated with their sources: the unit, 2 MiB
+    (`ram_bytes` in `vm/aarch64.rs`, `ram_ranges` in `vm/x86_64.rs`, which boot an even
+    number of MiB alone); the least, 64 MiB on arm64 and 128 on x86-64 (`MIN_MEMORY_MIB`
+    there); and the most, 2^44 - 2 MiB, the last even MiB whose bytes fit the u64 those
+    functions count a guest's memory in (`checked_mul(MIB)`).
+  - The unit's derivation is D29's ("Its size"). On arm64 it comes from the boot protocol:
+    the DTB at RAM's top lies in one 2 MiB block of RAM. On x86-64, which needs none of
+    its own, it is kept as its large page (ROOT, 2026-11-13), and what an odd tail would
+    cost is owed as a measurement. The least rests on its comment (a kernel, its bss and
+    early allocations, and on arm64 its DTB window); its measurement is owed too (D29).
+  - Tested (light): lib's `an_envelope_rounds_up_to_the_unit_and_the_least`,
+    `an_envelope_past_what_a_u64_holds_is_refused` and
+    `check_and_envelope_agree_on_every_case` (each architecture's rule, at every bound and
+    one past it), beside `bounds_are_refused_by_name`. Owed (ROOT): five guard-removal
+    mutants, each of which must fail its test: the unit, the least, the u64 bound, the one
+    vCPU, and `check`'s comparison with the envelope.
 - *A guest's socket directory* is the client's alone (0700), named apart from its pid,
   short enough to bind (else /tmp on Unix; refused by name on Windows), and removed with
   the guest.
@@ -22920,6 +23000,13 @@ Windows arm64: unbuilt (jupiter has no C compiler for it: aws-lc-sys needs clang
 host here runs WHP on arm64 (GitHub's windows-11-arm has no hypervisor platform, PM M172;
 nested Windows 11 arm64 on an M-series Mac gets no partition, D209); the run host's resident,
 CPU and kernel cost per microVM against the daemon's per run and Firecracker's (R14).
+
+**Review (plan step 2, goal 52's step 4).** The lane's 16 commits, read against R01-R16, have
+no code defect. Refusals are typed by cause end to end, through Hex's mapping of them. Its
+Open `taken::linux` failures are 037866828's (already on main). Main CI's six api_image failures
+at d35c4cf79 were each the Windows host's absence, which 731b5e54f added. R12's third launch copy
+stays owed as a slice of its own, with every backend's runs and R14's cold start. The review is
+in runtime-image-boot-v1/README.md, "Review (plan step 2)".
 
 **What would falsify it.** A run host costing more per microVM than the daemon per run (then
 one host per orchestrator); an orchestrator needing to link the VMM; credentials a member
@@ -24228,7 +24315,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process built, step 2's first slice; the granted members' trust, the leases, the injector, the broker and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; the leases, the injector, the broker and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -24353,10 +24440,67 @@ check refuses a grant toward no host as well.
 - *Owed (ROOT).* A run with a credential grant on KVM x86_64, under the seccomp filter: its
   network process makes its CA and serves, not ended by SIGSYS, and the run host logs the
   CA's SHA-256. The cost of the key at the network process's start, measured (unmeasured
-  here). The CA reaching the granted members' trust is the next slice.
+  here). The CA reaching the granted members' trust is the second slice, below.
 
-**Owed (later slices of step 33, this plan's steps 2–10).** The per-VM CA in the network
-process and the granted members' trust (step 2); the injector that terminates TLS and fills
+**Built: step 2's second slice, the granted members' trust.** Once the network process
+answers the run's grants with its CA's certificate, the run host adds two kinds of setup
+entry to the run it hands its VM (`shards_abi::run::trust`): `run-ca=`, the certificate in
+PEM (RFC 7468), once, and `run-ca-host=`, each host the grants name, once. The spec is
+checked again (`spec::fits`), as it grew after it was built. init checks both again (D109):
+the certificate a PEM certificate (`proxyca::first_certificate`), each host a host's lowered
+name as shards-api checks it (`shards_dns::host_name`, never loopback's); a certificate
+without hosts, hosts without one, or a second certificate is refused, typed
+(`run::trust::Error`, init's `trust::Refused`).
+- *Who.* A member is granted where its link reaches a host the grants name past the
+  microVM, by name or on any TCP port: `shards_net::reaches`, which holds the whole run to
+  its members' grants, held here member by member from init's own plan of each member's
+  link (its `named` and `egress`, after D246's holding apart). A member that reaches none is
+  given nothing: its bundle, environment and mounts stay its image's. A run with no grant
+  sends no entry, and init lays nothing.
+- *What.* The image's own trust bundle, the first of BuildKit's `linuxSystemCertFiles`
+  (`proxyca::BUNDLES`) that is a regular file, found and read in the image as a build step's
+  is (build.rs `find_bundle` and `read_bundle`, now shared: symlinks resolved in the image, at
+  most `proxyca::MOST`, a FIFO refused), with the CA appended between marker lines that name
+  it (`# shards run CA (D242) begin` and `end`), so that a member reading its bundle sees
+  whose CA it holds (the change explicit, never silent: G18). The kiln harness images' is
+  Debian trixie's `/etc/ssl/certs/ca-certificates.crt`. Made once for the run, it is laid
+  for each granted member read-only over the bundle, as its `/etc/hosts` and
+  `/etc/resolv.conf` are (written in its scratch, bound over, remounted read-only, unlinked);
+  the image's file is never written. Then `NODE_EXTRA_CA_CERTS` (Node's and Bun's added
+  certificates, which Claude Code reads), `SSL_CERT_FILE` (OpenSSL's file, which
+  rustls-native-certs reads too) and `CODEX_CA_CERTIFICATE` (Codex's own) name the bundle.
+- *Refused, never replaced.* A granted member whose environment (its image's, its config's or
+  its stager's) names another file in one of those variables: a file of roots of its own,
+  which this never replaces (one naming the bundle itself stays). A granted member whose
+  image has no `/tmp`, where its bundle is written to be laid. An image with no bundle at
+  all. Each refuses the run before its member starts, in words naming it.
+- *Literals.* 64, the characters of a PEM line (RFC 7468 §2: "exactly 64 characters except for
+  the final line"); 6, TCP's protocol number (RFC 9293; IANA's protocol numbers), as a link's
+  egress names TCP. The marker lines are names. No learned value enters this slice.
+- *Tests (macOS arm64, and arm64 Linux in Docker on the same Mac; STEP2.md).*
+  `shards_abi::run::trust`: the entries read back as written, a host named twice kept once,
+  none without a grant; a second certificate, one without hosts or hosts without one, and an
+  empty or NUL-holding one refused. init's `trust`: a run without grants has no CA; a
+  certificate holding none and hosts that are no host's lowered name (`Chatgpt.com`,
+  `localhost`, `a.localhost`, `10.0.0.1`, `a..b`, `-a.com`) refused; a member granted by a
+  granted host's name, in any case and on any port, or by any TCP port, never by another name,
+  by UDP alone or with no link; the composed bundle every byte of the image's, then the CA
+  between its markers; the variables naming the bundle, one already naming it kept, one naming
+  another file refused and never replaced; on Linux, the bundle found through an absolute
+  symlink in the image, never the host's, the image's file left as it was, and an image with
+  none refused. build.rs's CA-injection tests pass unchanged over the shared `find_bundle`.
+  `api_run`: the CA goes to the guest in PEM of 64-character lines, which rustls' own PEM
+  reader reads back to the DER, each host once. Each guard removed in turn fails its test:
+  any name granting a member, a member's own roots replaced, the bundle without the image's
+  roots, a second certificate taken, PEM lines of 65.
+- *Owed (ROOT).* A run with a credential grant on KVM, HVF and WHP: its granted member reads
+  the run's CA at the end of its `/etc/ssl/certs/ca-certificates.crt`, read-only, and the
+  three variables name it; an ungranted member of the same run reads its image's bundle,
+  unchanged, and none of the three. The cost of `NODE_EXTRA_CA_CERTS` naming a whole bundle to
+  Claude Code (its added roots read at start, and the request-body compression it turns off,
+  plan step 33's finding f70), measured against a run without the CA.
+
+**Owed (later slices of step 33, this plan's steps 2–10).** The injector that terminates TLS and fills
 HTTP/1.1 then HTTP/2 headers (steps 3, 7); the grants through the run host and the just-in-
 time fetch and release (step 4); kiln's broker over kiln-seams' `Secrets` with per-run
 leases, single-flight refresh and sign-in capture outside the VM (step 5); Hex wiring the

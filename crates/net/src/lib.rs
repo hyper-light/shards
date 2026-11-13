@@ -986,22 +986,32 @@ impl Control {
     }
 }
 
+/// What the network process has on Windows that it needs nowhere else: its VM's process,
+/// whose end is the VM's going (Windows' doorbells are events, which don't hang up), and the
+/// dialer through which goes what its AppContainer keeps it from.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct Contained {
+    pub vm: std::os::windows::io::OwnedHandle,
+    pub dialer: Option<Dialer>,
+}
+
 /// Serves the guest on `region`'s rings until the VM goes, ringing `wake_peer` and sleeping
-/// on `wake_me`: on Unix the VM goes as its doorbell hangs up; on Windows, whose doorbells
-/// are events, as its process (`vm`) ends, and what its AppContainer keeps it from goes
-/// through `dialer`. Published ports come and go on `controls`, each of whom [`Control`]
-/// says; their messages are taken as each comes whole, so that one cut short holds up
-/// nothing.
+/// on `wake_me`: on Unix the VM goes as its doorbell hangs up; on Windows as its process
+/// ends, what its AppContainer keeps it from going through its dialer ([`Contained`]).
+/// Published ports come and go on `controls`, each of whom [`Control`] says; their messages
+/// are taken as each comes whole, so that one cut short holds up nothing.
 pub fn serve(
     region: Handle,
     wake_me: shards_netring::Bell,
     wake_peer: shards_netring::Bell,
-    #[cfg(windows)] vm: std::os::windows::io::OwnedHandle,
-    #[cfg(windows)] dialer: Option<Dialer>,
+    #[cfg(windows)] contained: Contained,
     cfg: Config,
     credential_key: Option<ca::Key>,
     controls: Vec<(Control, UnixStream)>,
 ) -> io::Result<()> {
+    #[cfg(windows)]
+    let Contained { vm, dialer } = contained;
     // Each control socket keeps its place, a token's index, until it hangs up.
     let mut controls: Vec<Option<(Control, UnixStream, shards_ipc::Incoming)>> = controls
         .into_iter()
