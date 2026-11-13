@@ -325,6 +325,55 @@ fn removed_there(there: &AskThere<'_>, name: &str) -> bool {
     matches!(there(argv(&["inspect", "-f", "{{.Id}}", name]), None), Ok((s, _, _)) if s != 0)
 }
 
+/// What a move's restore on the other machine came to (step 4), as the move acts on it.
+#[derive(Debug, PartialEq, Eq)]
+enum Resumed {
+    /// It runs there.
+    There,
+    /// It runs nowhere there, what was made there of it removed: it goes on here, why said.
+    Here(String),
+    /// Whether it runs there is not known, why said: held here, saved, until it is.
+    NotKnown(String),
+}
+
+/// What step 4 came to for microVM `name` on the other machine (`to`), its restore there
+/// having come to `restore`, kept typed: refused, by its own failure or at that machine's
+/// daemon's gate, which never ran it, what was made there of it removed through `there`;
+/// unanswered, asked through `inspect` whether it runs there ([`running_there`]), from what
+/// this move has `heard` of that machine.
+fn resumed(
+    restore: Asked,
+    there: &AskThere<'_>,
+    inspect: &mut dyn FnMut() -> (Asked, Seen),
+    heard: Heard,
+    to: &str,
+    name: &str,
+) -> Resumed {
+    let argv = |a: &[&str]| a.iter().map(|s| (*s).to_string()).collect::<Vec<String>>();
+    match restore {
+        Ok(Ok((0, _, _))) => Resumed::There,
+        // Refused there, by its restore's own failure or at that machine's daemon's gate
+        // before it ran (a client it no longer enrolls, a command it could not start): what
+        // was made there of it goes, and it goes on here.
+        Ok(Ok(r)) => {
+            let _ = there(argv(&["rm", "-f", name]), None);
+            Resumed::Here(format!("{to}: {}", said("its restore", &r)))
+        }
+        Ok(Err(refused)) => {
+            let _ = there(argv(&["rm", "-f", name]), None);
+            Resumed::Here(refused)
+        }
+        // No answer: it may run there. Asked again until the other machine says; never
+        // run in both places, nor in neither, where it cannot.
+        Err(e) => match running_there(inspect, heard) {
+            Some(true) => Resumed::There,
+            // Not running there, and seen gone: it goes on here alone.
+            Some(false) if removed_there(there, name) => Resumed::Here(e),
+            _ => Resumed::NotKnown(e),
+        },
+    }
+}
+
 /// What a move's stream carried and what its connection saw of the link, as its log says it
 /// (docs/research/measurements/migrate/two-hosts.sh reads it): the stream's bytes as the
 /// export wrote them, and as they were sent where it was packed; the bytes of UDP the
@@ -405,11 +454,16 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     // What this move has heard of the other machine, each step's connection taken in: locked,
     // as the image's load and the import are asked on threads of their own.
     let heard = Mutex::new(Heard::default());
+    // A step there, its answer kept typed (`Asked`), what its connection saw taken in.
+    let asked_there = |argv: Vec<String>, stdin: Option<Box<dyn Read + Send>>| -> (Asked, Seen) {
+        let (asked, seen) = exec(argv, stdin, &mut |_| true);
+        heard.lock().unwrap_or_else(PoisonError::into_inner).saw(&seen);
+        (asked, seen)
+    };
     // A step there, a refusal and no answer alike its error.
     let there_seen =
         |argv: Vec<String>, stdin: Option<Box<dyn Read + Send>>| -> (Result<There, String>, Seen) {
-            let (asked, seen) = exec(argv, stdin, &mut |_| true);
-            heard.lock().unwrap_or_else(PoisonError::into_inner).saw(&seen);
+            let (asked, seen) = asked_there(argv, stdin);
             (asked.flatten(), seen)
         };
     let there = |argv: Vec<String>, stdin: Option<Box<dyn Read + Send>>| there_seen(argv, stdin).0;
@@ -602,36 +656,23 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     }
 
     // 4. Resumed there, where it was saved.
-    let resumed = there(step(&["restore", name, &plan.snapshot]), None);
-    match resumed {
-        Ok((0, _, _)) => {}
-        // Refused there: what was made there of it goes, and it goes on here.
-        Ok(r) => {
-            let _ = there(step(&["rm", "-f", name]), None);
-            return Err(back_here(format!("{to}: {}", said("its restore", &r))));
-        }
-        // No answer: it may run there. Asked again until the other machine says; never
-        // run in both places, nor in neither, where it cannot.
-        Err(e) => {
-            let so_far = *heard.lock().unwrap_or_else(PoisonError::into_inner);
-            // An ask that hears nothing gives up as that machine goes silent past this move's
-            // slowest answer ([`Heard::silent`]), as a daemon whose last wait ran out has no
-            // handshake deadline of its own (D180).
-            let mut inspect = || {
-                let argv = step(&["inspect", "-f", "{{.State.Running}}", name]);
-                exec(argv, None, &mut |_| !so_far.silent())
-            };
-            match running_there(&mut inspect, so_far) {
-                Some(true) => {}
-                // Not running there, and seen gone: it goes on here alone.
-                Some(false) if removed_there(&there, name) => return Err(back_here(e)),
-                _ => {
-                    return Err(format!(
-                        "{e}; whether {name} runs on {to} is not known: {}, saved, is held here until it is (shards --context {to} ps -a; then shards rm -f {name}, here or there)",
-                        if held { "it" } else { "its copy" }
-                    ));
-                }
-            }
+    let (restore, _) = asked_there(step(&["restore", name, &plan.snapshot]), None);
+    let so_far = *heard.lock().unwrap_or_else(PoisonError::into_inner);
+    // An ask that hears nothing gives up as that machine goes silent past this move's slowest
+    // answer ([`Heard::silent`]), as a daemon whose last wait ran out has no handshake deadline
+    // of its own (D180).
+    let mut inspect = || {
+        let argv = step(&["inspect", "-f", "{{.State.Running}}", name]);
+        exec(argv, None, &mut |_| !so_far.silent())
+    };
+    match resumed(restore, &there, &mut inspect, so_far, to, name) {
+        Resumed::There => {}
+        Resumed::Here(why) => return Err(back_here(why)),
+        Resumed::NotKnown(e) => {
+            return Err(format!(
+                "{e}; whether {name} runs on {to} is not known: {}, saved, is held here until it is (shards --context {to} ps -a; then shards rm -f {name}, here or there)",
+                if held { "it" } else { "its copy" }
+            ));
         }
     }
     times.step("resumed there");
@@ -917,5 +958,87 @@ mod tests {
             unready("its check", &(1, Vec::new(), Vec::new())),
             "its check failed"
         );
+    }
+
+    /// A restore the other machine's daemon refuses at its gate (`Answer::Refused`, typed on
+    /// the wire) never ran there: what was made there of it goes, and it goes on here, as a
+    /// restore that failed there does, nothing asked of whether it runs there; never "not
+    /// known". A restore that ran is followed as before: done, it runs there; failed, it goes
+    /// on here; unanswered, it is asked about (D176 part 6). `there` is the other machine's
+    /// daemon, standing in, and records what it is asked.
+    #[test]
+    fn a_restore_refused_at_the_other_daemons_gate_goes_on_here() {
+        let words = |argv: &[&str]| argv.iter().map(|a| (*a).to_string()).collect::<Vec<String>>();
+        let asked = Mutex::new(Vec::new());
+        let there = |argv: Vec<String>, _: Option<Box<dyn Read + Send>>| -> Result<There, String> {
+            let gone = argv.first().map(String::as_str) == Some("inspect");
+            asked.lock().unwrap().push(argv);
+            // Asked of after its removal, it is gone.
+            Ok((u8::from(gone), Vec::new(), Vec::new()))
+        };
+        let refusal = "there: this machine has not enrolled you: join it by an invitation first";
+        let inspected = std::cell::Cell::new(0);
+        let mut inspect = || {
+            inspected.set(inspected.get() + 1);
+            (Ok(Err(refusal.to_string())), Seen::default())
+        };
+        let restored = resumed(
+            Ok(Err(refusal.to_string())),
+            &there,
+            &mut inspect,
+            Heard::default(),
+            "there",
+            "web",
+        );
+        assert_eq!(restored, Resumed::Here(refusal.to_string()));
+        assert_eq!(*asked.lock().unwrap(), vec![words(&["rm", "-f", "web"])]);
+        assert_eq!(
+            inspected.get(),
+            0,
+            "a refused restore asks nothing of whether it runs there"
+        );
+
+        asked.lock().unwrap().clear();
+        let failed = Ok(Ok((
+            1,
+            Vec::new(),
+            b"shards: its snapshot is not here\n".to_vec(),
+        )));
+        let restored = resumed(failed, &there, &mut inspect, Heard::default(), "there", "web");
+        assert_eq!(
+            restored,
+            Resumed::Here("there: its snapshot is not here".to_string())
+        );
+        assert_eq!(*asked.lock().unwrap(), vec![words(&["rm", "-f", "web"])]);
+
+        asked.lock().unwrap().clear();
+        let done = Ok(Ok((0, Vec::new(), Vec::new())));
+        let restored = resumed(done, &there, &mut inspect, Heard::default(), "there", "web");
+        assert_eq!(restored, Resumed::There);
+        assert!(asked.lock().unwrap().is_empty());
+
+        // Unanswered, it may run there: asked, and found not running and removed, it goes on
+        // here; found running, it runs there.
+        let mut not_running = || (running(false), Seen::default());
+        let restored = resumed(
+            unanswered(),
+            &there,
+            &mut not_running,
+            Heard::default(),
+            "there",
+            "web",
+        );
+        assert_eq!(restored, Resumed::Here(unanswered().unwrap_err()));
+        assert_eq!(
+            *asked.lock().unwrap(),
+            vec![
+                words(&["rm", "-f", "web"]),
+                words(&["inspect", "-f", "{{.Id}}", "web"])
+            ]
+        );
+        let mut runs = || (running(true), Seen::default());
+        let restored = resumed(unanswered(), &there, &mut runs, Heard::default(), "there", "web");
+        assert_eq!(restored, Resumed::There);
+        assert_eq!(inspected.get(), 0);
     }
 }

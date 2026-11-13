@@ -2035,28 +2035,60 @@ fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
 }
 
 /// What a client that never ended shows before it is killed: its home's runs as its daemon
-/// has them (`ps -a`), whether the daemon took its run at all; and on Windows its threads'
-/// stacks and its daemon's, where this host has Microsoft's console debugger (cdb, the
-/// Windows SDK's Debugging Tools), attached without stopping them (`-pv`).
+/// has them (`ps -a`), whether the daemon took its run at all, and what each running one's
+/// guest runs ([`guests_processes`]); and on Windows its threads' stacks and its daemon's,
+/// where this host has Microsoft's console debugger (cdb, the Windows SDK's Debugging
+/// Tools), attached without stopping them (`-pv`).
 fn stuck(pid: u32, home: Option<&Path>) -> String {
     stacks_of(&[("its client", pid)], home)
 }
 
-/// [`stuck`]'s view of processes `pids`, each named, as a test that found one of them stuck
-/// shows them: its home's runs, and on Windows their stacks and its daemon's.
-pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
-    // What `cmd` said by `timeout`; a word that it said nothing where it never ended, so
-    // that the failure this adds to is never lost to one of its own.
-    let said_by = |cmd: &mut Command, timeout: Duration| match std::panic::catch_unwind(
-        std::panic::AssertUnwindSafe(|| output_within(cmd, timeout)),
-    ) {
+/// What `cmd` said by `timeout`, its stdout then its stderr; a word that it said nothing
+/// where it never ended, so that the failure this adds to is never lost to one of its own.
+fn said_within(cmd: &mut Command, timeout: Duration) -> String {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| output_within(cmd, timeout))) {
         Ok(out) => format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         ),
         Err(_) => format!("(it did not end within {timeout:?})"),
-    };
+    }
+}
+
+/// What each microVM running in `home` runs, as `top` lays its processes out (init's dump
+/// of the guest's `/proc`), with each one's state and the kernel function it waits in
+/// (`stat`, `wchan`): where in its guest a client that never ended, or a command that said
+/// nothing more, is held.
+pub fn guests_processes(home: &Path) -> String {
+    let mut ids = command();
+    ids.args(["ps", "-q", "--no-trunc"])
+        .env("SHARDS_HOME", home)
+        .stdin(Stdio::null());
+    let listed = said_within(&mut ids, Duration::from_secs(20));
+    let mut said = String::new();
+    for id in listed
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        let mut top = command();
+        top.args(["top", id, "-o", "pid,ppid,stat,wchan:32,args"])
+            .env("SHARDS_HOME", home)
+            .stdin(Stdio::null());
+        said.push_str(&format!(
+            "\n--- the processes of its microVM {}\n{}",
+            id.get(..12).unwrap_or(id),
+            said_within(&mut top, Duration::from_secs(20))
+        ));
+    }
+    said
+}
+
+/// [`stuck`]'s view of processes `pids`, each named, as a test that found one of them stuck
+/// shows them: its home's runs and their guests' processes, and on Windows their stacks and
+/// its daemon's.
+pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
     let mut said = String::new();
     if let Some(home) = home {
         let mut ps = command();
@@ -2065,8 +2097,9 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
             .stdin(Stdio::null());
         said.push_str(&format!(
             "\n--- ps -a in its home\n{}",
-            said_by(&mut ps, Duration::from_secs(20))
+            said_within(&mut ps, Duration::from_secs(20))
         ));
+        said.push_str(&guests_processes(home));
         // What its daemon said last, of its runs and their groups' budgets: a run held or
         // stopped says why there alone.
         let log = std::fs::read(home.join("daemon.log")).unwrap_or_default();
@@ -2107,7 +2140,7 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
                     .stdin(Stdio::null());
                 said.push_str(&format!(
                     "\n--- {who} ({pid}): its threads' stacks (cdb)\n{}",
-                    said_by(&mut stacks, Duration::from_secs(120))
+                    said_within(&mut stacks, Duration::from_secs(120))
                 ));
             }
         } else {

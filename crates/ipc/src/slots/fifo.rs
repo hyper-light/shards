@@ -53,10 +53,10 @@ fn nonblocking(file: &File) -> bool {
     flags >= 0 && flags & libc::O_NONBLOCK != 0
 }
 
-/// What reads a slot's `say` until a deadline, and no longer once `ended` is readable: a
-/// request's reader, which neither a client that stops writing nor its daemon's end of its
-/// clients waits on for ever. Its errors: `TimedOut` past the deadline, `ConnectionAborted`
-/// once ended.
+/// What reads a slot's `say` for a request's rest, and no longer once `ended` is readable:
+/// until `deadline` while nothing of the rest has come, and from the rest's first byte on
+/// until its client ends, the FIFO's end ([`Opened::request_within`]). Its errors:
+/// `TimedOut` past the deadline, `ConnectionAborted` once ended.
 struct Within<'a> {
     file: &'a File,
     ended: Option<&'a crate::Latch>,
@@ -80,7 +80,12 @@ impl Read for Within<'_> {
         loop {
             match (&mut &*self.file).read(buf) {
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                got => return got,
+                got => {
+                    if matches!(got, Ok(n) if n > 0) {
+                        self.deadline = None;
+                    }
+                    return got;
+                }
             }
         }
     }
@@ -464,11 +469,14 @@ impl Opened {
         })
     }
 
-    /// The rest of the client's request, whole within `timeout` of now where one is given,
-    /// and waited for no longer once `ended` is set (its daemon ending its clients).
+    /// The rest of the client's request, waited for while its client goes on with it: cut
+    /// ([`Requested::Late`]) where none of it has come `stall` from now, one being given, and
+    /// once some has, until it is whole or its client ends, a request larger than a FIFO
+    /// holds coming in parts, each as its reader makes room and its writer is next run (D185);
+    /// and no longer once `ended` is set (its daemon ending its clients).
     pub fn request_within(
         self,
-        timeout: Option<Duration>,
+        stall: Option<Duration>,
         ended: Option<&crate::Latch>,
     ) -> io::Result<Requested> {
         let session = self.session;
@@ -476,7 +484,7 @@ impl Opened {
             let mut from = Within {
                 file: &session.say,
                 ended,
-                deadline: timeout.and_then(|t| Instant::now().checked_add(t)),
+                deadline: stall.and_then(|t| Instant::now().checked_add(t)),
             };
             (|| -> io::Result<Option<(Vec<u8>, Frame)>> {
                 let mut count = [0u8; 1];
@@ -1234,5 +1242,69 @@ mod tests {
             let _ = cut.wait();
             assert!(waited.join().unwrap().is_none(), "a request cut short was taken");
         });
+    }
+
+    /// A request's rest is waited for while its client goes on with it (D185): a client
+    /// that sends nothing past its first byte is cut once `stall` has passed; one whose rest
+    /// has begun is waited for past `stall`, until its request is whole, as one larger than
+    /// a FIFO holds comes in parts; and with no stall, a client that sends nothing more is
+    /// waited for until it ends. Before, a deadline from the first byte cut the second too.
+    #[test]
+    fn a_requests_rest_is_waited_for_while_its_client_goes_on() {
+        let stall = Duration::from_millis(100);
+        let home = home("slot-stall");
+        let mut requests = Requests::open(&home).unwrap();
+        // Slot after slot: its client's writes, then what came of its rest, and when.
+        let mut rest_of = |stall: Option<Duration>, writes: &dyn Fn(&Client)| {
+            let slot = requests.make(false).unwrap();
+            requests.offer(slot.number(), false).unwrap();
+            std::thread::scope(|s| {
+                let served = s.spawn(move || {
+                    let Waited::Opened(opened) = slot.wait().unwrap() else {
+                        panic!("no client opened the slot");
+                    };
+                    let t0 = Instant::now();
+                    let got = opened.request_within(stall, None).unwrap();
+                    (got, t0.elapsed())
+                });
+                let Taken::Slot(client) = take(&home, 0).unwrap() else {
+                    panic!("no slot");
+                };
+                writes(&client);
+                drop(client);
+                served.join().unwrap()
+            })
+        };
+        // Its first byte alone: cut once its stall has passed, its client still there.
+        let (got, took) = rest_of(Some(stall), &|c| {
+            (&c.say).write_all(&[0]).unwrap();
+            std::thread::sleep(stall * 3);
+        });
+        assert!(matches!(got, Requested::Late(_)), "{got:?}");
+        assert!(took >= stall && took < stall * 3, "{took:?}");
+        // Its rest begun, then a pause past its stall, then the rest: whole.
+        let (got, took) = rest_of(Some(stall), &|c| {
+            (&c.say).write_all(&[0, 0]).unwrap();
+            std::thread::sleep(stall * 3);
+            write_frame(&c.say, 7, b"ps").unwrap();
+        });
+        let Requested::Asked(asked) = got else {
+            panic!("a request whose rest had begun was not taken whole: {got:?}");
+        };
+        assert_eq!(
+            asked.request,
+            Frame {
+                kind: 7,
+                payload: b"ps".to_vec()
+            }
+        );
+        assert!(took >= stall * 3, "{took:?}");
+        // No stall: its first byte alone is waited on until its client ends.
+        let (got, took) = rest_of(None, &|c| {
+            (&c.say).write_all(&[0]).unwrap();
+            std::thread::sleep(stall * 3);
+        });
+        assert!(matches!(got, Requested::Gone), "{got:?}");
+        assert!(took >= stall * 3, "{took:?}");
     }
 }

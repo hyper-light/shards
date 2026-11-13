@@ -31,7 +31,9 @@ use std::time::{Duration, Instant};
 mod client;
 pub mod conformance;
 pub mod control;
+pub mod demand;
 pub mod image;
+mod judge;
 mod native;
 pub mod physical;
 mod progress;
@@ -50,9 +52,10 @@ pub use client::{
     ConfiguredShards, ManagedGuest, Shards, attach_managed, boot_managed, connect_borrowed, connect_prepared,
     prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at,
 };
+pub use judge::{Found, Judge, Rate, Record, Seen, Stall};
 pub use native::{ImageIdentity, NativeBoot, NativeImages, NativeStartup, verify_native_image};
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
-pub use progress::{Awaited, Rate, Seen, Stall};
+pub use progress::{Awaited, Follow, Followed, Unfollowed};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -19,7 +19,7 @@ mod common;
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use common::{Patience, Run, TempDir, Told, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
@@ -285,22 +285,66 @@ fn pinned(home: &Path, name: &str) -> u64 {
     value("nr_foll_pin_acquired").saturating_sub(value("nr_foll_pin_released"))
 }
 
-/// Waits until `name`'s guest pins `want` pages again: the relay unpins a slot once it has heard
-/// its device let go and passed on what the slot held, which a reading after a stream's end may
-/// come before. A slot never freed keeps its pages pinned: the test fails at its own deadline,
-/// `TIMEOUT`, saying `what`.
-fn settled(home: &Path, name: &str, want: u64, what: &str) {
-    let start = std::time::Instant::now();
+/// A settle refused: the guest's pins stopped falling short of the count it waits for.
+struct Stalled {
+    /// Pages pinned at the look that judged it, and the count it waits for.
+    now: u64,
+    want: u64,
+    /// How long it had waited, and the time since the judging look before, over which its
+    /// pins fell no lower.
+    waited: Duration,
+    over: Duration,
+    /// Its window: how long the ring took at the work whose slots it waits for.
+    window: Duration,
+}
+
+impl std::fmt::Display for Stalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} pages pinned, not {}, after {:?}: none released over the last {:?}, its window {:?}",
+            self.now, self.want, self.waited, self.over, self.window
+        )
+    }
+}
+
+/// Waits until `name`'s guest pins `want` pages again, following the ring's progress (D215's
+/// shape): the relay unpins a slot once it has heard its device let go and passed on what the
+/// slot held, which a reading after a stream's end may come before, and each slot it frees
+/// lowers the guest's pins. Its window is as long as the ring took at the work whose slots it
+/// waits for, from that work's start (`began`) to this wait's: past it from the wait's first
+/// look, it judges once each window, and a window over which the pins fell no lower is a slot
+/// never freed, refused `Stalled`. No settle is cold: each follows work the ring did, timed as
+/// it ran. Its looks are execs into the microVM, each paced by its answer.
+fn settled(home: &Path, name: &str, want: u64, began: Instant) -> Result<(), Stalled> {
+    let start = Instant::now();
+    let window = start.saturating_duration_since(began);
+    let mut lowest = u64::MAX;
+    // The judging look before: when, and the lowest the pins had come to by it.
+    let mut judged: Option<(Instant, u64)> = None;
     loop {
         let now = pinned(home, name);
         if now == want {
-            return;
+            return Ok(());
         }
-        assert!(
-            start.elapsed() < TIMEOUT,
-            "{what}: {now} pages pinned after {TIMEOUT:?}, not {want}"
-        );
-        std::thread::sleep(Duration::from_millis(50));
+        lowest = lowest.min(now);
+        let at = Instant::now();
+        match judged {
+            None => judged = Some((at, lowest)),
+            Some((then, low)) if at.saturating_duration_since(then) >= window => {
+                if lowest >= low {
+                    return Err(Stalled {
+                        now,
+                        want,
+                        waited: at.saturating_duration_since(start),
+                        over: at.saturating_duration_since(then),
+                        window,
+                    });
+                }
+                judged = Some((at, lowest));
+            }
+            Some(_) => {}
+        }
     }
 }
 
@@ -415,16 +459,15 @@ fn an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends() {
             "{cpus} vCPUs: an idle engine's microVM pins pages its run without the socket does not"
         );
         assert_eq!(rings(&home).attached, 0, "{cpus} vCPUs: a ring before any stream");
+        let began = Instant::now();
         emitter(&home, &image, 4 << 20);
         await_rings(&home, "the setup's rings let go", |r| {
             r.attached > 0 && r.let_go == r.attached
         });
-        settled(
-            &home,
-            "prov",
-            idle,
-            &format!("{cpus} vCPUs: the setup's slots freed"),
-        );
+        if let Err(stalled) = settled(&home, "prov", idle, began) {
+            panic!("{cpus} vCPUs: the setup's slots freed: {stalled}");
+        }
+        let began = Instant::now();
         for (said, at_once) in streams(&home, cpus, &bytes).iter().zip([cpus, 2 * cpus]) {
             assert_eq!(said.status, Some(0), "{said}");
             assert_eq!(said.stdout.trim(), format!("streams {at_once} {bytes}"), "{said}");
@@ -432,12 +475,9 @@ fn an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends() {
         await_rings(&home, "every stream's ring let go", |r| r.let_go == r.attached);
         let r = rings(&home);
         assert_eq!(r.unpinned, r.pinned, "{cpus} vCPUs: {r:?}");
-        settled(
-            &home,
-            "prov",
-            idle,
-            &format!("{cpus} vCPUs: every stream's slot freed"),
-        );
+        if let Err(stalled) = settled(&home, "prov", idle, began) {
+            panic!("{cpus} vCPUs: every stream's slot freed: {stalled}");
+        }
         eprintln!(
             "{cpus} vCPUs: {} rings attached and let go, {} bytes pinned and unpinned; {idle} pages pinned again",
             r.attached, r.pinned

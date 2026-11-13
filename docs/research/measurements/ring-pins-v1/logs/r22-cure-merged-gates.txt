@@ -1,0 +1,55 @@
+# ring-pins-v1's review, Cures, F3 and F4: the light gates rerun on the merged tree before landing,
+# origin/main 5b91d43de5c6011af4cdbd1a4e4b6f9691ff90f3 (which had changed crates/abi and init's
+# hostbind.rs since 15215d729) with this lane's commits merged in (merge abdc66854: 6557c8597, a2c887eeb,
+# 788066485), applied as one patch (the carrier's merged.patch, `git diff origin/main HEAD`; git apply's
+# whitespace warnings are the committed patches' blank context lines). The same carrier, target
+# directories and toolchain as r20 and r21 (rustc 1.98.1). 2026-11-13, kiln runs r556 and r557. Lines of
+# cargo's own building left out.
+######## adacachy2 (Linux 7.3.3-1-cachyos x86_64): shards-init's ring tests and lints (r556)
+== Linux 7.3.3-1-cachyos x86_64 at 5b91d43d + merged.patch:  M crates/init/src/ring.rs  M crates/shards/tests/engine_ring.rs  M docs/design/architecture.md  M docs/research/measurements/ring-pins-v1/review.md ?? docs/research/measurements/ring-pins-v1/cure-f3-rates.patch ?? docs/research/measurements/ring-pins-v1/cure-f3-red.patch ?? docs/research/measurements/ring-pins-v1/cure-f3-split.patch ?? docs/research/measurements/ring-pins-v1/logs/r20-cure-f3-at-once.txt ?? docs/research/measurements/ring-pins-v1/logs/r21-cure-f4-settle-lint.txt
+rustc 1.98.1 (48a229cea 2026-09-01)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.58s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/s2-ring-f3/target/debug/deps/shards_init-0839c1075913f5ee)
+running 22 tests
+shards-init: engine ring: no word of its device; its 12288 bytes stay pinned
+shards-init: engine ring refused: InUse
+test ring::tests::a_host_byte_no_device_says_is_no_word_of_the_slot ... ok
+test ring::tests::a_stream_learns_the_rings_it_needs ... ok
+test ring::tests::a_fresh_slot_is_reset_before_its_offer ... ok
+test ring::tests::a_told_room_owes_what_it_is_short_of_the_working_room ... ok
+test ring::tests::a_slots_pins_count_to_the_instances_maker_and_go_with_its_entry ... ok
+test ring::tests::a_word_wakes_the_idle_streams ... ok
+test ring::tests::a_slot_with_no_word_of_its_device_stays_pinned ... ok
+test ring::tests::the_supply_leaves_pins_what_the_run_does_not_need ... ok
+test ring::tests::init_says_nothing_to_a_relay_that_made_no_slot ... ok
+test ring::tests::the_relay_joins_a_leaf_of_the_runs_cgroup ... ok
+test ring::tests::the_devices_detach_is_read_and_nothing_past_it ... ok
+test ring::tests::the_table_holds_as_many_slots_as_the_descriptors_let_streams_hold ... ok
+test ring::tests::a_refused_slot_is_freed_and_the_connection_goes_on_plain ... ok
+test ring::tests::the_room_asks_idle_streams_alone_and_a_give_back_asks_them_all ... ok
+test ring::tests::a_stream_past_the_room_goes_over_plain_vsock ... ok
+test ring::tests::a_stream_starts_where_the_last_one_ended ... ok
+test ring::tests::bytes_cross_whole_and_every_slot_is_freed_after_its_detach ... ok
+test ring::tests::the_relay_frees_a_slot_only_after_the_devices_detach ... ok
+test ring::tests::a_swap_past_belief_frees_its_new_slot_only_after_the_devices_detach ... ok
+test ring::tests::with_no_budget_pins_are_bounded_by_the_available_memory ... ok
+test ring::tests::concurrent_streams_each_have_a_slot_and_free_it ... ok
+test ring::tests::streams_started_at_once_pin_no_more_than_their_room ... ok
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 227 filtered out; finished in 6.25s
+test exit 0
+== clippy
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.31s
+clippy exit 0
+== clippy --target x86_64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.41s
+clippy exit 0
+== clippy --target aarch64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.35s
+clippy exit 0
+######## adas-mac-studio-3 (macOS 26.2 arm64): engine_ring's lint (r557)
+== Darwin 25.2.0 arm64 at 5b91d43d + merged.patch:  (as above)
+rustc 1.98.1 (48a229cea 2026-09-01)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.66s
+clippy exit 0
+(11 crates checked again, the engine_ring test target among them)
+######## this checkout: cargo fmt -p shards-init -p shards -- --check on the merged tree: clean
