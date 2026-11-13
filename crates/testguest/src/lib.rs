@@ -5,6 +5,7 @@
 
 pub mod case;
 pub mod limits;
+pub mod stall;
 
 /// The byte at `offset` of a disk filled with pattern `salt`: varies with every byte
 /// and every sector, so misplaced, torn, or stale transfers are all detected.

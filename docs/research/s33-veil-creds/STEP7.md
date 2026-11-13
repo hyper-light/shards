@@ -195,7 +195,8 @@ crates/net/src`. Touch the file after restoring it.
 - ~~A sign-in's token host over HTTP/2~~: built (#74 steps 7 and 8, 3ad5e9d3a): a token host is offered what its
   guest offered, and step 8's token handling runs per stream. Its record is STEP8.md's "A sign-in's token host over
   HTTP/2".
-- Not covered by a light test here: 503 (a refused lease), 403 (`mints`), 431, a host's GOAWAY and RST_STREAM carried,
+- ~~503 (a refused lease)~~: covered, and its livelock fixed, below ("A refused lease answered 503").
+- Not covered by a light test here: 403 (`mints`), 431, a host's GOAWAY and RST_STREAM carried,
   and SETTINGS_MAX_CONCURRENT_STREAMS holding a stream back. Each is a code path in `H2`, typed and bounded, and none
   is exercised yet.
 - ROOT:
@@ -204,3 +205,62 @@ crates/net/src`. Touch the file after restoring it.
   - The real-VM runs: an api run with a credential grant toward a host that speaks HTTP/2 (a harness whose client
     offers `h2`, or `curl --http2` in the guest), on KVM, HVF and WHP, under step 10's leak scan, with the audit lines
     of each fill.
+
+# A refused lease answered 503, on its stream or connection
+
+Kiln goal "#74 credentials" (plan step 33), step 7. Role: implementer for ROOT (g121). Policy read at origin/main
+7491a957e: AGENTS.md sha256 f66d304c…, docs/development-rules.md df2acf47…, docs/development-evidence.md 61613a24…,
+and /tmp/g121-shot/brief-common.md. Worktree `s33-lease-refused`, branch `p/s33-lease-refused-v1`, on main 503c96677.
+Its decision is D242's "Built: a refused lease answered on what asked it, step 7".
+
+## Defect
+
+A refused lease reached `Leases` as a `Resumed` with an `Err` outcome. lib.rs' `resume_flows` kept the waiter alone,
+`Leases::answered` had dropped the lease, and the resumed flow asked again: `H2::go` (HTTP/2) and `Ended::go`
+(HTTP/1.1) alike, a new ask each time the broker refused, never answered 503. Found by the HTTP/2 coverage lane (kiln
+run r963 ran past kiln's hour); its red test is e418b65c3, carried into this slice's red commit.
+
+## Change
+
+- `lease::refused`: the refusals among `Leases::resumed` of the asks one flow waited on, by reference.
+- `inject::Run::resumed`: the run a resumed flow is served with, those refusals in its `refused`. `resume_flows` and
+  the test benches' `Bench::resume` both build it.
+- `inject::Run::ask`: a reference refused in this resume answered with its refusal, else `Leases::ask`. `Ended::go` and
+  `H2::go` call it, and answer its `Asked::Refused` as before: `Unleased`, 503.
+- Nothing is kept past the resume: a later request asks anew. No timer, no constant.
+
+## Tests
+
+One host: adas-mac-studio.local (Adas-Mac-Studio-3.local), macOS arm64, through the carrier /tmp/s33lr-carrier
+(`run.sh` clones the repo blobless into `~/g121-tmp/s33-lease-refused`, fetches the bundle;
+`CARGO_TARGET_DIR=~/g121-tmp/s33-lease-refused/target`, `CARGO_INCREMENTAL=0`). The command is
+`cargo test -p shards-net --profile test-release --lib -- inject:: lease:: signin::`.
+
+- **Red, at 853456f78**, kiln run r1122: 58 passed, 2 failed, 2 ignored.
+  - `an_h2_stream_whose_lease_is_refused_is_answered_503_while_another_completes`: "a refused lease was asked again:
+    its stream was never answered".
+  - `a_request_whose_lease_is_refused_is_answered_503_and_a_later_one_asks_anew`: "a refused lease was asked again:
+    its request was never answered". The HTTP/1.1 path had the same livelock.
+- **Green, at 310cbf3b7** (main fe06f5ab6 merged), kiln run r1139: 61 passed, 0 failed, 2 ignored.
+- **On the way**: r1122's green did not build (ab.rs, included by path, named no `refused`); r1138 failed
+  `a_resume_carries_each_flows_refusals_to_it` alone, its helper `the_ask` holding one ask where the test made two (the
+  test fixed in 310cbf3b7; both 503 tests passed there).
+- **Clippy** `-p shards-net --all-targets -- -D warnings`: aarch64-apple-darwin, x86_64-unknown-linux-gnu
+  (`CC_x86_64_unknown_linux_gnu=scripts/zig-cc`) and x86_64-pc-windows-msvc (`cargo xwin clippy`), clean.
+
+## Guard-removal mutations (ROOT's to run; each must fail the tests named)
+
+Run each on the green tree with `cargo test -p shards-net --profile test-release --lib -- inject:: lease::`, then
+`git checkout -- crates/net/src` and touch the file.
+
+1. The refusal not answered from the resume. Fails both 503 tests ("a refused lease was asked again"):
+   `perl -0pi -e 's/if let Some\(\(_, why\)\) = self\.refused\.iter\(\)\.find\(\|\(r, _\)\| r == reference\) \{/if let Some((_, why)) = self.refused.iter().find(|_| false) {/' crates/net/src/inject.rs`
+2. The resume carrying no refusal. Fails both 503 tests and `a_resume_carries_each_flows_refusals_to_it`:
+   `perl -0pi -e 's/for r in resumed\.iter\(\)\.filter\(\|r\| r\.waiter == waiter\)/for r in resumed.iter().filter(|_| false)/' crates/net/src/lease.rs`
+3. `Run::resumed` dropping what `lease::refused` gave (the `resume_flows` path). Fails both 503 tests:
+   `perl -0pi -e 's/refused: lease::refused\(resumed, waiter\),/refused: { let _ = resumed; Vec::new() },/' crates/net/src/inject.rs`
+
+## Owed
+
+- ROOT: CI's 8-target matrix on main; the mutations above; a real-VM run whose broker refuses a granted lease (an api
+  run on KVM, HVF and WHP), its guest answered 503 once, over HTTP/1.1 and HTTP/2.

@@ -2665,7 +2665,9 @@ mod tests {
 
         /// An exec its host says started and exited before the endpoint's next turn, its
         /// outputs finished with nothing written, is told `Started` and then its `Exit`, in
-        /// order: no frame of a lane is staged over one that has not gone whole.
+        /// order: no frame of a lane is staged over one that has not gone whole. Its outputs,
+        /// which have no record to wait on, are kept for the lanes its controller opens on
+        /// `Started`, each told its end, and only then is its exit told.
         #[test]
         fn an_exec_that_starts_and_exits_at_once_is_told_both_in_order() {
             let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
@@ -2694,6 +2696,10 @@ mod tests {
             replies.tell(exec::Reply::Started);
             replies.tell(exec::Reply::Exited(0));
             assert_eq!(live.take(0, told), exec::Told::Started(0));
+            live.open(1, &managed::subscribe(exec_scope(Channel::Stdout), 0));
+            live.open(2, &managed::subscribe(exec_scope(Channel::Stderr), 0));
+            assert_eq!(live.end(1), Heard::End(1));
+            assert_eq!(live.end(2), Heard::End(2));
             assert_eq!(live.take(0, told), exec::Told::Exit(0));
             assert_eq!(live.end(0), Heard::End(0));
             assert_eq!(
@@ -3645,6 +3651,64 @@ mod tests {
             assert_eq!(dropped.next_record(), Ok(Logged::Record(kept[0].clone())));
             drop(dropped);
             assert_eq!(host.join().unwrap(), [false, false, false, false, false, true]);
+        }
+
+        /// A log lane that has nothing to read (asked from past every record kept, unfollowed)
+        /// ends `Finished`: its host finishes its output and exits before its controller's
+        /// stdout lane has come, and the endpoint keeps that output for it until its end has
+        /// been told it, rather than letting it go and refusing the lane `Scope` (#72, the real
+        /// VM's log_lanes.rs "a lane past its log's end").
+        #[test]
+        fn a_log_lane_with_nothing_to_read_finishes_and_is_not_refused() {
+            use exec::{LogChannels, LogCursor, LogPos, LogRecord, LogSource};
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let (serving, starts) = Serving::with_execs(&vm, kiln.fingerprint());
+            let (outputs, inputs) = all(0);
+            let (dialed, _driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                    execs: Some(exec::Admissions {
+                        output: out_admitted(),
+                        input: in_admitted(),
+                    }),
+                    sockets: None,
+                },
+            );
+            let execs = dialed.execs.as_ref().unwrap();
+            let pos = LogPos {
+                seq: 1,
+                no: 0,
+                byte: 0,
+            };
+            let kept = vec![LogRecord::Output {
+                channel: Channel::Stdout,
+                pos,
+                at: 11,
+                bytes: b"line one\n".to_vec(),
+            }];
+            let end = pos.after(9).unwrap();
+            let past = LogCursor {
+                stdout: Some(end),
+                stderr: Some(end),
+            };
+            // Each source the run keeps, the command's and a member's.
+            let sources = [LogSource::Command, LogSource::Member(0)];
+            let served = kept.clone();
+            let host = std::thread::spawn(move || {
+                (0..sources.len())
+                    .map(|_| log_stand_in(starts.recv_timeout(PATIENCE).unwrap(), &served, 1, None))
+                    .collect::<Vec<_>>()
+            });
+            for source in sources {
+                let mut lane = execs.log(source, LogChannels::BOTH, past, false).unwrap();
+                assert_eq!(lane.next_record(), Ok(Logged::Finished), "{source:?}");
+                assert_eq!(lane.cursor(), past, "{source:?}");
+            }
+            assert_eq!(host.join().unwrap(), [false, false]);
         }
 
         /// What a controller was granted as it dialed is named as Shards names its lanes (goal

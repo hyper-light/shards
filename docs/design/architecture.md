@@ -8505,7 +8505,8 @@ user's host as Docker's.
   or the daemon's own stop, its VM process is looked at after a slice and each slice after,
   and waited on while it goes on with its end: it ran any CPU at all, held less than it did
   (its host freeing it), or its host held it from running (D215's readers,
-  `shards_api::Watch`: a thread runnable or waiting on memory, a cgroup's pressure grown),
+  `shards_api::Watch`: a thread runnable or waiting on memory, its threads' run-queue wait
+  or its own cgroup's pressure grown),
   which is no stall of its own. Its VM is killed only once it did none of these for a whole
   slice, or is stopped or frozen. It was PM M357's idle CPU (`Progress`, 63 ms in 10 s),
   which ended a teardown that ran slower than an idle microVM (red at 2b89e8504:
@@ -10602,7 +10603,8 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   threads (jupiter's guard): its red is owed on WHP.
   The gap: a cold wait whose client hangs alive runs to its CI job's limit, its account
   said then. Owed to the next slices: `DAEMON_QUIET`'s other
-  users (`Said::lately`, `Ran`, `Heard`, guests' streams, `STREAM_QUIET` told to guests),
+  users (`Said::lately`, `Ran`, `Heard`, guests' streams; `STREAM_QUIET` told to guests is
+  gone, #77, below),
   and shards-api's `found()` taking a stopped process for held in production's waits too.
 - **A test's own waits on pools and microVMs follow them too** (M424). daemon.rs' rerun at
   b57cad27 failed 7 of 38, each a wait of the test's own past a fixed minute (a pool
@@ -10648,8 +10650,9 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     tests' own claims beside them (`each_ends`' pace, daemon.rs' unpatient 5 s probe) stay.
   - Red at 3e9723c64 (tests/harness.rs `a_patient_wait_goes_on_while_its_party_works`): a
     stand-in busy for a second, named its home's daemon, cut by `Patience::of(home, 100 ms)`
-    0.1 s in, as `Ran` followed only VM processes under the daemon. Green after: both rounds
-    held to the stand-in's end, the second's kind learned from the first's `done()`.
+    156 ms in on adas-mac-studio.local (macOS arm64, kiln r1140), as `Ran` followed only VM
+    processes under the daemon. Green at 1361742b3 there (r1154): both rounds held to the
+    stand-in's end, the second's kind learned from the first's `done()`; harness.rs 6 passed.
   - The gap: a wait on a state another party brings after the home's daemon has gone
     (containers.rs' `placed_under_slices`: the systemd scope removed after `stop daemon`)
     has its liveness end at once and gets its look after alone.
@@ -10665,8 +10668,8 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   (`common::Heard`): a line it has not printed before, or bytes more of the stream the test
   carries through it; its microVM's CPU time (`Ran`) only before its first line, while it
   starts. The storm's guest waits on its host as the host waits on it: for its stream's
-  8 MiB past a snapshot and for the host's word at its end, while the echo carries bytes
-  within a minute (`STREAM_QUIET`), never a fixed minute. No wall clock bounds a storm: at
+  8 MiB past a snapshot and for the host's word at its end with no bound of its own: the
+  host's reads and waits above judge a stream that stops (#77, below). No wall clock bounds a storm: at
   the rate that host streamed, 196,608 bytes in 120 s (1,638.4 B/s), the busy machine's
   restores carry 13 MiB (1 MiB before its snapshot, a whole 4 MiB round in each of three
   restores), 8,320 s, and the machine that goes on 12 MiB (1 MiB before, 8 MiB after and
@@ -10699,11 +10702,45 @@ beat.
 | Literal | Was | Now | Source |
 |---|---|---|---|
 | `STOOD_STILL` (testguest linux.rs) | 15 s | the longest the main thread stood still before | its watchers' looks |
-| `STREAM_QUIET` (testguest linux.rs) | 60 s, a copy | the host's `DAEMON_QUIET`, told | tests/common `DAEMON_QUIET` |
+| `STREAM_QUIET` (testguest linux.rs) | 60 s, a copy | the host's `DAEMON_QUIET`, told; since #77 none: no guest bound on the stream, and the account at both paces past | `stall::Watch`'s looks |
 | `AWAIT_MOST` (testdir shards-testhelper.rs) | 300 s | none: waits while its test's directory is | `TempDir`, removed as its test ends, failed or killed |
 
 Owed: the storm suites (tests/snapshot.rs) on KVM, Hypervisor.framework and the nested arm64
 Windows host, and the remote and build tests that run the helper's `await`.
+
+**The storm's quiet, learned in the guest (#77, 2026-11-13).** The told quiet was still the
+host's fixed minute, copied into the guest (R03). It decided three things, now each from
+the run itself, and the guest is told no quiet (`shards_quiet_ms` and `host_quiet` are gone):
+
+- **The stream after a snapshot and the host's word at the end** wait with no bound of the
+  guest's own (`waiting`, then a blocking `vsock_accept`), as the storm's other waits
+  already did. The host is the one judge of a stream that stops: it reads each byte within
+  its own quiet (`common::Following`) and waits on its guest while it says something new or
+  carries bytes (`Heard`), and ends the microVM when it gives up. The guest says the bytes
+  echoed since the snapshot as it waits, a line that changes only as they do, so a stopped
+  stream gives the host no new line.
+- **The kernel's account of a stalled main thread** (`stall::Watch`, testguest's library,
+  one per watcher) is given once the main thread has stood still for more of a watcher's
+  looks than it ever did before it moved on, and the echo has carried nothing for more
+  looks than it ever went without while it carried: D215's rule, past its own bound a wait
+  goes on while progress shows (the stream's bytes) and fails only after a whole window
+  without any (the stream's own longest gap). M427's 26 and 56 s stand-stills at a clock
+  check, with the stream carrying, are no stall; the account at the copied minute could
+  have held CPU 0 as M427's at 15 s did.
+- **Cold start, typed** (`Count::longest`): the main thread's pace starts at no
+  stand-still, so each stand past it is said, one cheap line a beat (`Verdict::PastItsPace`);
+  the echo's starts unlearned (`None`), so until it has carried a byte since the watch began
+  (a restore whose host has not streamed again yet) no stall is found and the host's own
+  reads say where its stream stopped. Counts saturate; the look is a second, the watchers'
+  sampling, which sets the rule's grain and no bound.
+
+Held by `stall.rs`' unit tests (red at daa598a12, the told minute; green with the learned
+rule): `a_slow_main_thread_while_the_stream_carries_is_no_stall` (M427's shape),
+`a_stall_is_both_past_their_pace` and `a_stream_not_yet_carried_makes_no_stall`. The gap: a
+main thread stuck for good while the stream goes on carrying gets its `PastItsPace` line and
+no account (the copied minute gave one), and the host, its stream carrying, waits on it
+(`Heard::of`) to its job's limit. Owed (ROOT): the storm suites (tests/snapshot.rs) on KVM,
+Hypervisor.framework and the nested arm64 Windows host.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
@@ -24146,13 +24183,40 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       `TH_STATE_RUNNING`, Windows ready, running, standby or transition) or waiting on its
       host's memory (macOS `TH_STATE_UNINTERRUPTIBLE`, which macOS keeps no pressure record
       of; Windows' KWAIT_REASON FreePage, PageIn, PoolAllocation and their Wr forms); nor, on
-      Linux, its cgroup's CPU or memory pressure grown since the look before (cpu.pressure's
-      and memory.pressure's `some` totals, Documentation/accounting/psi.rst; a task held over
-      `memory.high` is a memory stall, mm/memcontrol.c). One stopped or frozen is refused
-      whatever else shows: Linux's leader `T` or `t` or a frozen cgroup (`cgroup.events`),
-      macOS's `SSTOP`, Windows' every thread suspended. Read where each OS keeps it, with no
-      privilege: `/proc/<pid>/task/*/stat` and the process's cgroup v2 files (the root's
-      pressure is `/proc/pressure`); libproc's `PROC_PIDTBSDINFO`, `PROC_PIDLISTTHREADS` and
+      Linux, its threads' wait for a CPU grown since the look before (each thread's
+      `/proc/<pid>/task/<tid>/schedstat` `run_delay`, summed, Documentation/scheduler/
+      sched-stats.rst), nor its own cgroup's CPU or memory pressure (cpu.pressure's and
+      memory.pressure's `some` totals, Documentation/accounting/psi.rst; a task held over
+      `memory.high` is a memory stall, mm/memcontrol.c).
+      - A hold counts only where it is the process's own (ROOT, 2026-11-13). A cgroup's
+        pressure is read only where its `cgroup.procs` is this process alone, as a daemon's
+        VM process in its slice (D209); a shared cgroup's, the root's (`/proc/pressure`, the
+        host's) among them, is its neighbours' wait too. Main's judge had read any: in CI a
+        followed process shares the test runner's cgroup, or a container's namespace root
+        whose pressure is the host's, so a `/bin/sleep 60` beside busy tests was found
+        `Held` at every look and waited on for ever (main's CI at 5af644eab, run
+        43474661701: ends.rs's `an_end_goes_on_at_any_rate_and_not_asleep_or_stopped` on
+        three Linux targets, and daemon waits that never ended on Alpine; red at 790320602,
+        `a_sleeper_is_still_whatever_its_cgroups_others_wait_for`, two spinners pinned to
+        one CPU beside the sleeper).
+      - The kernel adds a thread's wait to `run_delay` as it reaches a CPU or leaves the
+        queue (Linux 7.2 kernel/sched/stats.h `sched_info_arrive`, `sched_info_dequeue`), so
+        a thread that waited the whole time between two looks shows by its `R` sample
+        instead. A kernel built without CONFIG_SCHED_INFO keeps no schedstat, and one where
+        `sched_info_on()` is false reads it as zeros (fs/proc/base.c): `Queued::Unread`, and
+        its looks are judged by CPU and the `R` sample alone. No number is chosen: growth is
+        any nanosecond.
+      - So a sleeping (`S`) process with no wait of its own grown is still, whatever its
+        neighbours do; one stopped or frozen is refused whatever else shows, the CPU its stop
+        ran included (a stop signal wakes a sleeper to stop itself, kernel/signal.c
+        `do_signal_stop`: ends.rs's stopped teardown went on at ba81cd9d2, red at b665a2e61,
+        `a_process_stopped_since_the_look_before_is_still_though_its_stop_ran_it`): Linux's
+        leader `T` or `t` or a frozen cgroup (`cgroup.events`), macOS's `SSTOP`, Windows'
+        every thread suspended. Only an end under way outranks a stop. macOS and Windows read each thread of the followed process (or,
+        on Windows, of its tree) alone, no group's, and are unchanged.
+      Read where each OS keeps it, with no
+      privilege: `/proc/<pid>/task/*/stat`, `/proc/<pid>/task/*/schedstat` and the process's
+      cgroup v2 files; libproc's `PROC_PIDTBSDINFO`, `PROC_PIDLISTTHREADS` and
       `PROC_PIDTHREADINFO`, which need no task port (`task_threads` would, and `task_for_pid`
       is refused for a hardened process not built to allow it); NtQuerySystemInformation's
       SystemProcessInformation records, each thread's state and wait reason. What cannot be
@@ -25555,8 +25619,12 @@ member's are, so one stdio protocol carries both. The pieces:
 - *Its steering*: after `Started`, the lane carries the controller's resizes and signals (D180's
   `Resize` and `Signal` frames, a signal `1..=NSIG`), one in flight to the host at a time, as
   step 5 has one record in flight.
-- *Its end*: its exit is told only once its outputs have finished, every record consumed, so no
-  tail is cut. Its steering channel stays open until the endpoint lets the exec go. A host keeps
+- *Its end*: its exit is told only once its outputs have finished, every record consumed and
+  their end (the FIN) told their controller's lane, so no tail is cut. An output that finished
+  before its lane came (a log lane with nothing to read, which has no record to wait on) is kept
+  until that lane is told its end: let go at its finish, the lane that came after found no
+  output and was refused `Scope` (managed.rs `End`, ROOT's HVF run of log_lanes.rs at edca0b3f6).
+  Its steering channel stays open until the endpoint lets the exec go. A host keeps
   each stream's control until then, because a control dropped revokes its stream.
 - *Its connection*: an exec belongs to the connection that asked for it. That connection gone,
   or the lane stopped, hangs the exec up: its steering is dropped, its streams are let go.
@@ -25841,8 +25909,11 @@ host: every record from the oldest kept, exact and at its place, a long output i
 lane's room; a later lane from inside a record reading its rest alone, the other channel's place
 kept; a place older than the oldest refused `Rotated`, naming it; a member the run has not
 refused `Unknown`; a followed lane reading what comes as it comes and ending at its source's end;
-a lane let go before its end letting its host go. Red first: with the endpoint refusing the log of
-a member it serves no stream of, `Refused(Scope)` where `Unlogged(Unknown)` was due.
+a lane let go before its end letting its host go; a lane with nothing to read, of the command and
+of a member, finishing. Red first: with the endpoint refusing the log of
+a member it serves no stream of, `Refused(Scope)` where `Unlogged(Unknown)` was due; and with an
+exec let go once its outputs finished, before its controller's lane was told their end, the lane
+with nothing to read refused `Scope`.
 
 *The daemon's log host* (`daemon/managed/log_lanes.rs`). The run's exec host hands each log lane
 to it, on a thread of its own:
@@ -26696,7 +26767,8 @@ docs/research/s33-veil-creds/STEP3.md).
   (`Leases::ask`, the connection's token its waiter); held, it is filled in now; asked, the
   request is parked (`Request::Parked`, R04) and its flow resumed by the answer
   (`Stack::resume_flows`, which with `ask_run_host` runs until no flow resumes and nothing more is
-  asked); refused, the guest is answered 503 naming the refusal. The head goes out as it came but
+  asked); refused, the guest is answered 503 naming the refusal (a refusal of the ask it waited on carried to it as
+  it resumes, below). The head goes out as it came but
   for its placeholders and its hop-by-hop fields, written once into a buffer made to its length,
   wiped as it drops. A body is never read for a placeholder (f27) and streams as it comes.
 - *Hop-by-hop fields (RFC 9110 §7.6.1).* Each field a connection option names, with the option,
@@ -27130,7 +27202,8 @@ record docs/research/s33-veil-creds/STEP7.md).
   held given back to its peers' windows.
 - *Requests* go through `http2::request`. `Misdirected` is answered 421 on its stream alone, and `Malformed` gets a
   RST_STREAM PROTOCOL_ERROR. `Go` asks each reference of `Leases::ask` with the connection's waiter, the stream parked
-  until `Leases::resumed` resumes the flow, then encodes on the host's hop (`Go::encode`) as its HEADERS go. Each fill is
+  until `Leases::resumed` resumes the flow (a refusal carried with it, below), then encodes on the host's hop
+  (`Go::encode`) as its HEADERS go. Each fill is
   audited (`Did::Filled`). A refused or lapsed lease is answered 503, an endpoint that mints a key in the clear 403
   (`mints`), and a host gone 502. Answers carry the HTTP/1.1 path's statuses and texts (`Refusal`). A response answered
   before its request ended ends the stream with RST_STREAM NO_ERROR (§8.1).
@@ -27214,6 +27287,35 @@ docs/research/s33-veil-creds/STEP7.md and STEP8.md).
 - *Owed.* ROOT: CI's matrix on main; the guard-removal mutations in STEP8.md; the real-VM runs (a sign-in's CLI over
   HTTP/2 in a microVM, under step 10's leak scan). A flow that ends with an ask under way leaves its answer in
   `SignIns` until the run's end, for HTTP/1.1 as for HTTP/2 (each stream let go of forgets its own).
+
+**Built: a refused lease answered on what asked it, step 7** (`crates/net/src/lib.rs` `resume_flows`,
+`crates/net/src/lease.rs` `refused`, `crates/net/src/inject.rs` `Run::resumed` and `Run::ask`; STEP7.md's "A refused
+lease answered 503").
+- *The defect (R09).* A refusal reached `Leases` as a `Resumed` whose outcome `resume_flows` dropped, keeping its
+  waiter alone; `Leases::answered` had removed the lease, so the resumed flow asked again, a new ask went out, the
+  broker refused it again, and so on: a livelock, the request never answered. Seen live by the HTTP/2 coverage lane
+  (kiln run r963, adas-mac-studio.local: its test ran past kiln's hour). Reproduced here by two light tests that fail
+  at the second ask, one on each path: HTTP/2's `H2::go` and HTTP/1.1's `Ended::go` ask alike on resume.
+- *Decision.* The refusal travels with the resume, to the flow that asked. `lease::refused` picks the refusals of the
+  asks a flow waited on out of `Leases::resumed`; `resume_flows` serves the flow with them (`Run::resumed`, `Run`'s
+  `refused`); `Run::ask`, which both paths call in place of `Leases::ask`, answers an ask of a refused reference with
+  its refusal, and each path answers that as it answers any `Asked::Refused`: `Unleased`, 503 naming it, on its stream
+  alone for HTTP/2, with `Connection: close` for HTTP/1.1. Every stream of a connection that waited on the refused ask
+  is answered by it.
+  - Refused: `Leases` keeping each refusal for its asker until taken. A lease's waiters are flows, not requests:
+    a refusal kept past its resume (its stream reset while it waited, its flow gone) would answer a later request's
+    ask, a ban rather than an answer, and would need a let-go at each end of a flow and stream, as `SignIns` has
+    (`forget`, `gone`). Carried with the resume, it lives for that resume's pass alone and nothing is kept.
+- *A refusal answers its own ask alone.* A later request, on that connection or another, asks anew, as `Leases`' own
+  refusals have always held nothing (`a_refusal_reaches_its_flows_typed_and_holds_nothing`).
+- *Literals.* None: no timer, no retry bound, no count. The loop ends because a refused ask is answered.
+- *Tests (macOS arm64, adas-mac-studio.local; STEP7.md).* `an_h2_stream_whose_lease_is_refused_is_answered_503_while_another_completes`,
+  `a_request_whose_lease_is_refused_is_answered_503_and_a_later_one_asks_anew` and
+  `a_resume_carries_each_flows_refusals_to_it`: red at 853456f78 (58 passed, 2 failed, each at its second ask), green
+  at 310cbf3b7 (61 passed, 0 failed, 2 ignored); clippy of shards-net clean on aarch64-apple-darwin, x86_64-unknown-linux-gnu and
+  x86_64-pc-windows-msvc.
+- *Owed.* ROOT: CI's matrix on main; the guard-removal mutations in STEP7.md; a real-VM run with a credential grant
+  whose broker refuses its lease (an api run on KVM, HVF and WHP, the guest answered 503 once, on HTTP/1.1 and HTTP/2).
 
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
 the network process telling its run host of a capture, a refresh and a revocation, the run host its

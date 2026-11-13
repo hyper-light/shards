@@ -412,11 +412,8 @@ mod storm {
             sock.as_os_str().to_owned(),
             "--cmdline".into(),
             format!(
-                "console=ttyS0 quiet panic=-1 shards_test=storm shards_vda_bytes={RO_BYTES} shards_vdb_bytes={RW_BYTES} shards_storm_ms={} shards_quiet_ms={}",
+                "console=ttyS0 quiet panic=-1 shards_test=storm shards_vda_bytes={RO_BYTES} shards_vdb_bytes={RW_BYTES} shards_storm_ms={}",
                 std::env::var("SHARDS_STORM_MS").unwrap_or_else(|_| "0".into()),
-                // The host's own quiet, which the guest's waits are (the test guest's
-                // `host_quiet`).
-                common::DAEMON_QUIET.as_millis()
             )
             .into(),
             "--snapshot-dir".into(),
@@ -523,7 +520,8 @@ mod storm {
     /// The most a host takes is what it is held to, however slowly it runs them: 64 vCPUs
     /// on the nested arm64 Windows host's 4 TCG CPUs left woken threads unrun for 15 s
     /// before any snapshot, and lost no interrupt (M427); the guest's watchdog gives the
-    /// kernel's account of a stall only once it has lasted `STREAM_QUIET`.
+    /// kernel's account of a stall only once its main thread and the stream through its
+    /// echo have both stood still past their own pace (the test guest's `stall::Watch`).
     fn storm_cpus() -> Vec<u32> {
         let max = shards_vmm::vm::max_vcpus().unwrap().min(common::kernel_nr_cpus());
         if let Ok(only) = std::env::var("SHARDS_STORM_CPUS") {
