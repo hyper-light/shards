@@ -12046,16 +12046,20 @@ other's but what the move sends, and what the other takes by content:
   bound to the old key are revoked at the move and reissued to the new, by the broker, which
   alone says which key is current. What the move does: its plan names the run's key where it
   ran (`Plan::key`); the machine moved to keeps it as the key replaced (the run's
-  `key-replaced`); `move step key NAME [ASKED]` answers the run's key there and the one
-  replaced (`key`, `replaces`: 64 lowercase hex digits, or null) and, asked under the
-  replaced key, refuses typed (`Refused::KeyReplaced { asked, current }`, whose fields step
-  33's lease refusal takes); and `shards move vm` prints the microVM's name, then, where
+  `key-replaced`, a fingerprint alone: none where the plan names none, nor what an earlier
+  move kept in the directory sent); `move step key NAME [ASKED]` answers the run's key
+  there and the one replaced (`key`, `replaces`: 64 lowercase hex digits, or null) and,
+  asked under the replaced key, refuses typed (`Refused::KeyReplaced { asked, current }`,
+  whose fields step 33's lease refusal takes); and `shards move vm` prints the microVM's
+  name, then, where
   either is known, `{"name", "context", "key", "replaces"}` on a line of its own, for its
   controller to pin the new key and its broker to reissue its leases. Today a run with a
   managed scope is refused before anything moves (below), as a restore does not take a
   managed scope; the key side runs once one does, its restore making a new key and writing
   `vm` anew (D238). Held by
-  `a_lease_under_the_key_a_move_replaced_is_refused_and_the_run_names_its_own` (moves.rs).
+  `a_lease_under_the_key_a_move_replaced_is_refused_and_the_run_names_its_own` (moves.rs)
+  and `a_managed_runs_move_and_a_lease_under_its_replaced_key_are_refused_typed` (daemon.rs,
+  the daemon's own `key` step).
 - **Refused before anything moves, by what refuses it** (R04). The machine moved to answers
   `ready` with a `Refused` (daemon/moves.rs) as JSON on stdout, beside its words on
   stderr, which a mover of an earlier build prints as before; this build's mover reads it
@@ -12070,15 +12074,17 @@ other's but what the move sends, and what the other takes by content:
   features its guest may have used that this CPU lacks, by name; its ID, its name or a
   volume of its name here already; a bind's host path absent; a port it publishes that this
   machine cannot bind. Where the microVM runs, before it is saved: a run with a managed
-  scope (`Refused::Managed`), which a restore does not take yet, so that a cold move's save
-  left it stopped here, its resume refused too. A plan of an earlier build
+  scope (`Refused::Managed`), which a restore does not take yet: a cold move's save would
+  leave it stopped here, its resume refused too. A plan of an earlier build
   names no hypervisor, and is taken as before. Held by
   `a_microvm_of_another_hypervisor_is_refused_before_anything_moves` and
   `a_refusal_is_typed_on_the_wire_and_says_what_it_said` (moves.rs),
-  `a_move_of_another_hypervisors_microvm_is_refused_typed` (daemon.rs, the daemon's own
-  step) and `a_refusal_is_said_from_its_type_and_else_in_the_steps_words` (cli/moves.rs);
-  mutation-checked: without the hypervisor's check, `ready` took such a plan and answered
-  what this machine lacked of it (docs/research/measurements/migrate/README.md).
+  `a_move_of_another_hypervisors_microvm_is_refused_typed` and
+  `a_managed_runs_move_and_a_lease_under_its_replaced_key_are_refused_typed` (daemon.rs, the
+  daemon's own steps) and `a_refusal_is_said_from_its_type_and_else_in_the_steps_words`
+  (cli/moves.rs); mutation-checked: without the hypervisor's check, `ready` took such a
+  plan and answered what this machine lacked of it
+  (docs/research/measurements/migrate/README.md).
 
 What fails before it runs there leaves it here as it was, resumed from the snapshot it
 was saved as, and what was made of it there removed: a move the other machine refuses

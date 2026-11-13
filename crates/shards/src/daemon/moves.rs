@@ -357,10 +357,11 @@ pub(crate) struct Needs {
     pub unpacks: Vec<String>,
 }
 
-/// Why a machine refuses a microVM moved to it, before anything of it moves: its `ready`
-/// step's answer, as JSON on stdout beside its words on stderr, so that the mover matches
-/// what was refused (cli/moves.rs `Refused`) and a client of an earlier build still reads
-/// why.
+/// Why a move is refused before anything of its microVM moves (the `ready` step's answer on
+/// the machine moved to, the `save` or `plan` step's where it runs), or a lease asked under
+/// the key a move replaced (the `key` step's): as JSON on stdout beside its words on
+/// stderr, so that the mover matches what was refused (cli/moves.rs `unready`) and a client
+/// of an earlier build still reads why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "refused", rename_all = "kebab-case")]
 pub(crate) enum Refused {
@@ -478,6 +479,12 @@ fn key_refused(name: &str, asked: &str, replaced: Option<&str>, current: Option<
         asked: asked.to_string(),
         current: current.map(str::to_string),
     })
+}
+
+/// The run's own key, in lowercase hex, as the managed metadata in its directory `own` names
+/// it: none for a run without one.
+fn run_key(own: &Path) -> Option<String> {
+    super::managed::vm_key(own).map(|k| shards_remote::identity::hex(&k))
 }
 
 /// What `lacks`, of this build's architecture, refuses of microVM `name`'s CPU baseline.
@@ -1312,9 +1319,7 @@ impl<D: Disk> Daemon<D> {
         }
         self.await_start(&id);
         if !self.running(&id) {
-            return Err(format!(
-                "{reference} is not running: a live move moves a running microVM"
-            ));
+            return Err(format!("{reference} is not running: a live move moves a running microVM").into());
         }
         let c = lock(&self.containers)
             .get(&id)
@@ -1363,6 +1368,9 @@ impl<D: Disk> Daemon<D> {
             shards_cmdline::format::rfc3339_at(now, 0).replace(':', "-")
         );
         let (published, network) = self.published_of(&c);
+        // The run's directory, in a statement of its own: the containers' lock taken in a
+        // field of the plan would be held to the plan's end, across the fields after it.
+        let own = lock(&self.containers).dir(&c.id);
         let plan = Plan {
             id: c.id.clone(),
             name: c.name.clone(),
@@ -1378,11 +1386,11 @@ impl<D: Disk> Daemon<D> {
             binds,
             cpu: host_cpu(),
             guest: self.boots_stored_guest(&c.id),
-            baseline: read_baseline(&lock(&self.containers).dir(&c.id).join(RUN_BASELINE)),
+            baseline: read_baseline(&own.join(RUN_BASELINE)),
             cpu_identity: self.exact_cpu(),
             published,
             network,
-            key: self.run_key(&c.id),
+            key: run_key(&own),
         };
         serde_json::to_string(&plan).map_err(|e| Unready::Failed(e.to_string()))
     }
@@ -1596,6 +1604,8 @@ impl<D: Disk> Daemon<D> {
         volumes.sort();
         volumes.dedup();
         let (published, network) = self.published_of(&c);
+        // As in `move_plan`: the run's directory, in a statement of its own.
+        let own = lock(&self.containers).dir(id);
         Ok(Plan {
             id: c.id.clone(),
             name: c.name.clone(),
@@ -1611,11 +1621,11 @@ impl<D: Disk> Daemon<D> {
             binds,
             cpu: host_cpu(),
             guest: self.boots_stored_guest(id),
-            baseline: read_baseline(&lock(&self.containers).dir(id).join(RUN_BASELINE)),
+            baseline: read_baseline(&own.join(RUN_BASELINE)),
             cpu_identity: self.exact_cpu(),
             published,
             network,
-            key: self.run_key(id),
+            key: run_key(&own),
         })
     }
 
@@ -1680,12 +1690,6 @@ impl<D: Disk> Daemon<D> {
         super::managed::has_scope(&dir).then_some(Refused::Managed { name })
     }
 
-    /// Container `id`'s run's own key, as its managed metadata names it, in lowercase hex.
-    fn run_key(&self, id: &str) -> Option<String> {
-        let dir = lock(&self.containers).dir(id);
-        super::managed::vm_key(&dir).map(|k| shards_remote::identity::hex(&k))
-    }
-
     /// `key NAME [ASKED]`, on the machine a microVM moved to (D176 part 6): its run's own key
     /// and the key its move replaced, as JSON (`key`, `replaces`: lowercase hex, or null);
     /// given ASKED, the fingerprint a lease is asked under, refused typed where it is the
@@ -1697,8 +1701,9 @@ impl<D: Disk> Daemon<D> {
             other => return Err(format!("key: {other:?}").into()),
         };
         let id = self.resolve(name)?;
-        let current = self.run_key(&id);
-        let replaced = std::fs::read_to_string(lock(&self.containers).dir(&id).join(KEY_REPLACED))
+        let own = lock(&self.containers).dir(&id);
+        let current = run_key(&own);
+        let replaced = std::fs::read_to_string(own.join(KEY_REPLACED))
             .ok()
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty());
@@ -2080,10 +2085,20 @@ impl<D: Disk> Daemon<D> {
         c.saved = Some(plan.snapshot.clone());
         c.moved = true;
         // The key its run had where it ran: its run makes one of its own here after its
-        // restore (D238), and no lease is served under the old (`key_refused`).
-        if let Some(key) = &plan.key {
-            let kept = staged_dir.join(KEY_REPLACED);
-            std::fs::write(&kept, key).map_err(|e| at(&kept, &e))?;
+        // restore (D238), and no lease is served under the old (`key_refused`). Kept as a
+        // key's fingerprint alone, and none an earlier move kept in the directory sent.
+        let kept = staged_dir.join(KEY_REPLACED);
+        match plan.key.as_deref().and_then(crate::context::unhex32) {
+            Some(key) => {
+                std::fs::write(&kept, shards_remote::identity::hex(&key)).map_err(|e| at(&kept, &e))?
+            }
+            None => {
+                if let Err(e) = std::fs::remove_file(&kept)
+                    && e.kind() != io::ErrorKind::NotFound
+                {
+                    return Err(at(&kept, &e));
+                }
+            }
         }
         c.ports.clear();
         // Its request names its image by the digest it was made of, which this machine
