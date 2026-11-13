@@ -8403,6 +8403,7 @@ impl<D: Disk> Daemon<D> {
                     mac,
                     bridge,
                     group,
+                    false,
                 )?)
             }
             None => None,
@@ -8561,7 +8562,12 @@ impl<D: Disk> Daemon<D> {
         let network = match &net {
             Some(mac) => {
                 let bridge = self.bridge.as_ref().ok_or(shards_net::bridge::NO_SUBNET)?;
-                Some(crate::netproc::prepare(shards_net::Policy::DenyAll, mac, bridge)?)
+                Some(crate::netproc::prepare(
+                    shards_net::Policy::DenyAll,
+                    mac,
+                    bridge,
+                    false,
+                )?)
             }
             None => None,
         };

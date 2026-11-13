@@ -386,6 +386,48 @@ fn egress(
     Ok(Some(shards_net::encode_policy(&ports, &named, dns)))
 }
 
+/// The run's credential grants for its network process (D242), by reference and never a
+/// value: each toward one host at least, and each host one its egress grants reach (D236),
+/// as a grant that could never be filled is refused, not kept silently; the network process
+/// checks them again as it takes them (D109). None where the run has none.
+fn credentials(grants: &[wire::CredentialGrant], egress: Option<&[u8]>) -> Result<Option<Vec<u8>>, No> {
+    if grants.is_empty() {
+        return Ok(None);
+    }
+    let (ports, named, _) = egress.and_then(shards_net::decode_policy).unwrap_or_default();
+    let mut held = Vec::with_capacity(grants.len());
+    for g in grants {
+        if g.toward.is_empty() {
+            return Err(No(
+                Cause::Request,
+                format!(
+                    "credential {}: a grant toward no host could never be filled",
+                    g.reference
+                ),
+            ));
+        }
+        if let Some(host) = g.toward.iter().find(|h| !shards_net::reaches(&ports, &named, h)) {
+            return Err(No(
+                Cause::Request,
+                format!(
+                    "credential {} toward {host}: none of the run's egress grants reaches it (D236), so it could never be filled",
+                    g.reference
+                ),
+            ));
+        }
+        held.push(shards_net::Grant {
+            reference: g.reference.clone(),
+            toward: g.toward.clone(),
+        });
+    }
+    shards_net::encode_grants(&held).map(Some).ok_or_else(|| {
+        No(
+            Cause::Request,
+            "the run's credential grants: a reference past 65535 bytes, or a host past 255".into(),
+        )
+    })
+}
+
 /// Each member held to its reach of the names kept, where the request holds its members
 /// apart (`Narrowing::members`, version 12, D246). A member reaches each destination and
 /// remote MCP server kept that it reaches by name (`Agentfile::named`): its init lets it out
@@ -693,6 +735,9 @@ mod hosted {
         members: Vec<wire::MemberInfo>,
         listeners: Vec<publish::Listener>,
         egress: Option<Vec<u8>>,
+        /// Its credential grants as its network process takes them (`NET_CREDENTIALS`), where
+        /// it has any.
+        credentials: Option<Vec<u8>>,
         dirs: Vec<(OwnedFd, bool, OsString)>,
         /// The anonymous volumes its `VOLUME`s made, removed as it ends (`--rm`'s).
         made: Vec<String>,
@@ -818,6 +863,7 @@ mod hosted {
         let terminals = super::terminals(request, &members)?;
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
         let egress = super::network(agentfile.as_ref(), request, &mut run)?;
+        let credentials = super::credentials(&request.credentials, egress.as_deref())?;
         let nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
         let bridge = if run.network == "bridge" {
             Some(
@@ -952,6 +998,7 @@ mod hosted {
             members,
             listeners: bound.listeners,
             egress,
+            credentials,
             dirs: opened.dirs,
             made,
             bridge,
@@ -1082,8 +1129,14 @@ mod hosted {
         let (net, side) = match &plan.bridge {
             Some(bridge) => {
                 let mac = shards_net::random_mac().map_err(|e| boot(format!("a guest's MAC: {e}")))?;
-                let (child, side) =
-                    crate::netproc::start(shards_net::Policy::DenyAll, &mac, bridge, None).map_err(boot)?;
+                let (child, side) = crate::netproc::start(
+                    shards_net::Policy::DenyAll,
+                    &mac,
+                    bridge,
+                    None,
+                    plan.credentials.is_some(),
+                )
+                .map_err(boot)?;
                 (Some((child, mac)), Some(side))
             }
             None => (None, None),
@@ -1195,8 +1248,13 @@ mod hosted {
         let network = match &plan.bridge {
             Some(bridge) => {
                 let mac = shards_net::random_mac().map_err(|e| boot(format!("a guest's MAC: {e}")))?;
-                let (ready, side) =
-                    crate::netproc::prepare(shards_net::Policy::DenyAll, &mac, bridge).map_err(boot)?;
+                let (ready, side) = crate::netproc::prepare(
+                    shards_net::Policy::DenyAll,
+                    &mac,
+                    bridge,
+                    plan.credentials.is_some(),
+                )
+                .map_err(boot)?;
                 Some((mac, ready, side))
             }
             None => None,
@@ -1446,7 +1504,8 @@ mod hosted {
         net: &crate::netproc::Control,
         listeners: &[publish::Listener],
         egress: Option<&[u8]>,
-    ) -> Result<(), String> {
+        credentials: Option<&[u8]>,
+    ) -> Result<Option<Vec<u8>>, String> {
         let mut asked = Vec::new();
         for batch in listeners.chunks(shards_ipc::MAX_FDS) {
             let ports: Vec<u8> = batch
@@ -1474,7 +1533,19 @@ mod hosted {
                 Err(e) => return Err(format!("{what}: the network process: {e}")),
             }
         }
-        Ok(())
+        // The run's credential grants (D242), once its policy is taken, which the network
+        // process checks them against: answered with the run's CA's certificate, made for
+        // their hosts alone.
+        let Some(grants) = credentials else {
+            return Ok(None);
+        };
+        crate::netproc::send(net, kind::NET_CREDENTIALS, grants, &[])
+            .map_err(|e| format!("credential grants: {e}"))?;
+        match crate::netproc::recv(net) {
+            Ok(Some(m)) if m.kind == kind::NET_CREDENTIALS && !m.payload.is_empty() => Ok(Some(m.payload)),
+            Ok(_) => Err("credential grants: the network process did not take them".into()),
+            Err(e) => Err(format!("credential grants: the network process: {e}")),
+        }
     }
 
     /// The run's managed output, owned here: each active member channel's credit and what
@@ -1732,7 +1803,20 @@ mod hosted {
         let due = launched.shares.as_mut().and_then(|s| s.notices.take());
         let served = (|| -> Result<(), No> {
             if let Some((_, control)) = &launched.net {
-                tell_net(control, &plan.listeners, plan.egress.as_deref()).map_err(boot)?;
+                let ca = tell_net(
+                    control,
+                    &plan.listeners,
+                    plan.egress.as_deref(),
+                    plan.credentials.as_deref(),
+                )
+                .map_err(boot)?;
+                if let Some(der) = &ca {
+                    let digest = <sha2::Sha256 as sha2::Digest>::digest(der);
+                    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+                    super::say(format_args!(
+                        "its credential grants taken; its CA's SHA-256 {hex}"
+                    ));
+                }
             }
             let (client, client_theirs) =
                 handed_pair().map_err(|e| boot(format!("the run's client: {e}")))?;
@@ -3120,6 +3204,48 @@ mod tests {
             ..wire::Narrowing::default()
         };
         assert!(matches!(egress(None, &asked), Err(No(Cause::Widening, _))));
+    }
+
+    /// The run's credential grants reach its network process by reference alone, each
+    /// toward a host its egress grants reach (D242, D236); a grant toward a host past them,
+    /// or toward none, could never be filled and is refused before anything starts, and a
+    /// run with none sends none (R10: each refusal's test fails without it).
+    #[test]
+    fn credential_grants_reach_the_network_process_by_reference() {
+        let grant = |reference: &str, toward: &[&str]| wire::CredentialGrant {
+            reference: reference.into(),
+            toward: toward.iter().map(|h| (*h).to_string()).collect(),
+        };
+        let named = shards_net::encode_policy(
+            &shards_net::Ports::default(),
+            &[("api.anthropic.com".into(), 443)],
+            false,
+        );
+        assert_eq!(credentials(&[], Some(&named)).ok().unwrap(), None);
+        let sent = credentials(
+            &[grant("anthropic/claude-max", &["api.anthropic.com"])],
+            Some(&named),
+        )
+        .ok()
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            shards_net::decode_grants(&sent),
+            Some(vec![shards_net::Grant {
+                reference: "anthropic/claude-max".into(),
+                toward: vec!["api.anthropic.com".into()],
+            }])
+        );
+        for refused in [
+            credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&named)),
+            credentials(&[grant("anthropic/claude-max", &[])], Some(&named)),
+            credentials(&[grant("anthropic/claude-max", &["api.anthropic.com"])], None),
+        ] {
+            assert!(matches!(refused, Err(No(Cause::Request, _))));
+        }
+        // A TCP port granted reaches every host on it.
+        let any443 = shards_net::encode_policy(&shards_net::Ports::parse("443/tcp").unwrap(), &[], false);
+        assert!(credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&any443)).is_ok());
     }
 
     /// Each member held to its reach of the names kept (D246). Do: keep a destination that
