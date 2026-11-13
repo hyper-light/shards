@@ -23189,7 +23189,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes and their controller built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller and the daemon's endpoint per run built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -23519,6 +23519,28 @@ admissions, summed over its lanes as the endpoint sums its own:
 - no stream the endpoint may open;
 - one command slot per lane, since each handle has one ask in flight.
 
+*Where the daemon binds it* (`daemon/managed.rs`, `bind_agent`). A run asks for its agent-control
+endpoint with the annotation `shards.control=true`, as it names its stdin members with
+`shards.stdin` (step 5). Docker keeps a key's last value, and any value but `true` or `false` is
+refused by name. Such a run's managed scope binds one endpoint instead of step 5's endpoint per
+stream:
+- *Its key*: made for this run as its scope begins, and held by the endpoint alone. Managed
+  scopes are neither restored nor joined ("managed output scopes cannot yet be restored or
+  joined"), so the key is never a template's, and it is never in guest memory.
+- *What it serves*: the run's streams, with the admissions step 5's endpoints take for them, its
+  owner's key alone (the run's enrolled client, step 5's owner), bound on loopback as step 5's
+  endpoints are.
+- *What it feeds*: each stream's producer, relay and control go into the same credits, bridge and
+  relays that step 5's endpoints feed. One driver thread runs the endpoint; as it ends, every
+  stream of the run ends with it, as a stream's own endpoint ends its stream.
+- *How it ends*: the run's scope ending revokes it (`Owner::abort`).
+- *What a controller reads*: the run's managed metadata gains `control ADDRESS` and `vm
+  SHA256-HEX` in place of a line per stream, and `shards port` lists `agent-control/udp`.
+
+Other runs keep step 5's endpoints, so nothing landed changes until a run asks. The budget the
+scope reserves is step 5's for every stream. It holds the one endpoint, whose handshake and
+datagram buffers are one connection's, not one per stream.
+
 Tested in `crates/remote` (`control::tests`, over the in-process exchange of `lib.rs`'s
 handshake tests): the enrolled controller and its pinned microVM connect,
 TLS13_AES_256_GCM_SHA384 and `shards-control/1` at both ends, each holding the other's key; a
@@ -23541,6 +23563,11 @@ sums. Through the controller over loopback:
 - a newer dial superseding the older (`Stale`) and resuming at its cursors;
 - a revoked output and an aborted stdin each ending alone, and a hangup ending the rest (`Local`);
 - its windows its lanes' sums.
+
+In the daemon (`daemon::managed::tests`): the annotation asked for by its last value, any value
+but `true` or `false` refused; a run's endpoint of a key its own, two runs two keys, serving
+its owner alone, whose controller reads a member's record through it while a stranger's ends
+`NotEnrolled`.
 
 Record:
 [agent-control-v1](../research/measurements/agent-control-v1/README.md).
