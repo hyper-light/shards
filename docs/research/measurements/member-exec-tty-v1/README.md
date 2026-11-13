@@ -145,7 +145,7 @@ KVM arm64 (the nested L1 path), HVF and WHP; shards-init's unit tests on arm64 L
 
 - R01: no panic path in production code: errors returned and typed (`enter::Failed`,
   `members::Refusal`, `devices::NoMember`, `commands::MemberExec`); slices by `get`, the
-  child's report by pattern; clippy's denied lints on every target linted.
+  child's report by pattern; clippy's denied lints on the host below.
 - R02: runc v1.5.1 and crun 1.31 read at their sources for joining a container; Docker's
   exec resize (moby, containerd); setns(2), clone(2), cgroup-v2's PID controller,
   landlock(7), TIOCGPTPEER(2const), pid_namespaces(7) (D241, and kiln research
@@ -162,8 +162,8 @@ KVM arm64 (the nested L1 path), HVF and WHP; shards-init's unit tests on arm64 L
   member's confinement steps, unmeasured here.
 - R09: a feature, not a defect: no defect to reproduce.
 - R10: above, every guard removed fails its test; the real-VM tests are ROOT's.
-- R11: init's code is Linux's, the same in every guest; the host's is linted on all seven
-  targets; the real-VM legs owed above.
+- R11: init's code is Linux's, the same in every guest. Tested and linted on one host, as
+  the person's rule of 2026-11-13 has it (Linux x86_64, adacachy); CI on main runs the
+  eight-target matrix, ROOT's to watch; the real-VM legs owed above.
 - R15: implementer's light runs only.
-- R16: build output under `~/g121-tmp/s6-exec-tty` (adacachy) and `~/s6-exec-tty-lint`
-  (macOS), removed when the step ends.
+- R16: build output under `~/g121-tmp/s6-exec-tty` (adacachy), removed when the step ends.
