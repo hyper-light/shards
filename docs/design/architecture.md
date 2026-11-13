@@ -23950,10 +23950,10 @@ move it: Hex had no rate for a Shards image VM but stopping its process.
 - *Not the guest's cgroup.* The rate is the orchestrator's cap of what its microVM uses of the
   host, the guest's kernel included; the workload's own limits inside it stay its run's (D191's
   `cpuset.cpus` and `cpu.max`), so the call writes no cgroup.
-- *The channel.* Version 8: `RATE` 11 and `RATED` 28, after every kind before. The rate is one
-  u64, 0 for no hold, so no rate of nothing can be said (that is a pause, D191's). A host of
-  version 7 ends a run at a frame it has no kind for, so a pair that differs refuses the run at
-  create. On the VM's link `RATE` 94 and `RATED` 95 (shards_ipc), answered as `GUEST_TIME` is,
+- *The channel.* Version 10 (8 is D242's credentials, 9 members' reach's): `RATE` 11 and
+  `RATED` 28, after every kind before. The rate is one u64, 0 for no hold, so no rate of nothing
+  can be said (that is a pause, D191's). A host of an earlier version ends a run at a frame it
+  has no kind for, so a pair that differs refuses the run at create. On the VM's link `RATE` 94 and `RATED` 95 (shards_ipc), answered as `GUEST_TIME` is,
   matched by number with the run host's other asks, and none awaited once the link closes.
 - *One ask.* The client's room and rate are one numbered ask (`session::Asked`), each held while
   it is awaited, and no longer.
@@ -23973,7 +23973,7 @@ comes off the next ones (D191).
 
 **Tested** (light): vmm `hold`'s `a_rates_share_is_its_thousandths_of_the_period` and
 `a_hold_holds_a_rate_below_its_vcpus_alone`, and its tests before, at whole CPUs in milli-CPU;
-`image::wire`'s `rates_and_their_answers_read_back_as_said` and version 7 refused;
+`image::wire`'s `rates_and_their_answers_read_back_as_said` and versions 8 and 9 refused;
 `image::session`'s `a_rates_answer_is_kept_for_its_awaited_ask_alone` and
 `a_rate_no_host_hears_is_refused_and_leaves_no_ask` (the room's too, through the one ask);
 `api_run`'s `a_rates_answer_reads_as_it_was_asked`; `warm`'s
