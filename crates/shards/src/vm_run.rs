@@ -3434,7 +3434,7 @@ fn last_said(said: &[u8], report: shards_abi::bounds::ConsoleReport) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod rate_tests {
-    use super::{rate_answer, serve_rates};
+    use super::{rate_answer, serve_rates, use_answer};
     use shards_abi::rate::{Answer, read_answer};
     use std::io::Read as _;
     use std::num::NonZeroU64;
