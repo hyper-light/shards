@@ -285,6 +285,7 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
             managed: None,
             managed_ports: Vec::new(),
             report_cleanup: ReportCleanup::Complete,
+            rate_period: None,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -427,6 +428,7 @@ fn launch(
             managed: None,
             managed_ports: Vec::new(),
             report_cleanup: ReportCleanup::Complete,
+            rate_period: None,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -833,6 +835,9 @@ struct State {
     managed: Option<Result<crate::ManagedEnd, Refusal>>,
     managed_ports: Vec<u32>,
     report_cleanup: ReportCleanup,
+    /// The period a managed guest's governor holds a rate over, as its VM process said it
+    /// with its last rate's answer (D255); none until one.
+    rate_period: Option<Duration>,
 }
 
 #[derive(Debug)]
@@ -1602,6 +1607,7 @@ fn managed_shared(
             managed: None,
             managed_ports: Vec::new(),
             report_cleanup,
+            rate_period: None,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -1880,6 +1886,70 @@ impl ManagedGuest {
         })
     }
 
+    /// The CPU rate its VM's governor holds its vCPUs to together (D191, D255), in milli-CPU
+    /// of the host's time, as an image run's (`ImageGuest::rate`, D247): once a period's share
+    /// is spent, every vCPU is held out of its guest until the period ends, whatever its guest
+    /// does, and what a period overran comes off the next ones. None lifts the hold, the
+    /// guest's vCPUs its ceiling.
+    ///
+    /// Asked on its vsock socket (`RATE`, `shards_abi::rate`), which a dial of this host's
+    /// reaches and its guest never does. Answers what its vCPUs are held to, none where
+    /// nothing holds them (no rate, or every vCPU's whole CPU or more), waiting at most
+    /// `patience` (`Duration::MAX`: until it answers or the guest ends), and keeps the period
+    /// its governor holds over ([`rate_period`](Self::rate_period)). Refused as
+    /// [`Refusal::Rate`] in its VM process's words; [`Refusal::Unsupported`] where that
+    /// process takes no rate (one not booted `--host-managed`, or a shards before D255) or
+    /// does not answer within `patience`; [`Refusal::ManagedIo`] where its socket fails; and
+    /// [`Refusal::Ended`] once the guest has ended.
+    pub fn rate(
+        &self,
+        rate: Option<std::num::NonZeroU64>,
+        patience: Duration,
+    ) -> Result<Option<std::num::NonZeroU64>, Refusal> {
+        let gone = || {
+            self.end(&mut lock(&self.shared.state))
+                .map(|end| end.map(Refusal::Ended))
+        };
+        if let Some(ended) = gone()? {
+            return Err(ended);
+        }
+        let deadline = (patience != Duration::MAX)
+            .then(|| Instant::now().checked_add(patience))
+            .flatten();
+        let asked = rate.map_or(0, std::num::NonZeroU64::get);
+        let line = match rate_exchange(&self.process.identity()?.vsock, asked, deadline, patience) {
+            Ok(line) => line,
+            // Its process gone as it was asked: its end, which says why.
+            Err(refused) => return Err(gone()?.unwrap_or(refused)),
+        };
+        let (held, period_ns) = held_of(rate, shards_abi::rate::read_answer(&line))?;
+        lock(&self.shared.state).rate_period = Some(Duration::from_nanos(period_ns.get()));
+        Ok(held)
+    }
+
+    /// The period its VM's governor holds a [`rate`](Self::rate) over (D191, D255), as its VM
+    /// process said it with its last rate's answer, so that its caller derives its window from
+    /// the guest's own period and copies no number: none until a rate has been answered.
+    pub fn rate_period(&self) -> Option<Duration> {
+        lock(&self.shared.state).rate_period
+    }
+
+    /// The room a budget leaves the guest, as an image run's (`ImageGuest::room`, D188, D241):
+    /// refused, as nothing holds a managed guest within one (D255). D188's room is held inside
+    /// its guest by shards-init's `ROOM` built-in, and a managed guest runs its caller's own
+    /// PID 1, not shards-init; its guest's own kernel alone may drop its page cache, which its
+    /// host may not take without its guest reading it back (PM M309). Its caller holds its
+    /// guest's memory through its own PID 1, or its host's limits of the guest's process.
+    pub fn room(&self, _room: Option<i64>, _patience: Duration) -> Result<Option<u64>, Refusal> {
+        Err(Refusal::Unsupported {
+            what: "room",
+            why: managed_words(format_args!(
+                "a managed guest runs its caller's own PID 1, and D188's room is held inside \
+                 the guest by shards-init's ROOM built-in, which it does not run (D255)"
+            ))?,
+        })
+    }
+
     fn end(&self, state: &mut State) -> Result<Option<End>, Refusal> {
         let Some(result) = state.managed.as_mut() else {
             return Ok(None);
@@ -2027,6 +2097,106 @@ impl Drop for ManagedGuest {
             // A failed stop cannot release the native owner's canonical record.
             let _ = self.process.stop();
         }
+    }
+}
+
+/// One rate asked of the VM process listening at `vsock`, and its answer's line, its newline
+/// last (D255, `shards_abi::rate`): one dial, its ask, then the line read a byte at a time to
+/// its newline or the longest answer, each within `deadline` (none: no clock), its caller's
+/// `patience`.
+fn rate_exchange(
+    vsock: &Path,
+    milli: u64,
+    deadline: Option<Instant>,
+    patience: Duration,
+) -> Result<Vec<u8>, Refusal> {
+    let failed = |operation| {
+        move |e: io::Error| Refusal::ManagedIo {
+            operation,
+            kind: e.kind(),
+            code: e.raw_os_error(),
+        }
+    };
+    let late = || {
+        managed_words(format_args!("no answer within {patience:?}"))
+            .map(|why| Refusal::Unsupported { what: "rate", why })
+    };
+    let left = || match deadline {
+        None => Ok(None),
+        Some(at) => match at.saturating_duration_since(Instant::now()) {
+            left if left.is_zero() => Err(late().unwrap_or_else(|refused| refused)),
+            left => Ok(Some(left)),
+        },
+    };
+    let timed_out = |e: &io::Error| e.kind() == io::ErrorKind::WouldBlock;
+    let mut s = stream::connect_until(vsock, deadline).map_err(failed("rate's dial"))?;
+    Stream::set_write_timeout(&s, left()?).map_err(failed("rate's ask"))?;
+    if let Err(e) = s.write_all(shards_abi::rate::ask(milli).as_bytes()) {
+        return Err(if timed_out(&e) {
+            late()?
+        } else {
+            failed("rate's ask")(e)
+        });
+    }
+    let mut line = Vec::new();
+    loop {
+        Stream::set_read_timeout(&s, left()?).map_err(failed("rate's answer"))?;
+        let mut byte = [0u8; 1];
+        match s.read(&mut byte) {
+            Ok(0) => {
+                return Err(Refusal::Unsupported {
+                    what: "rate",
+                    why: managed_words(format_args!(
+                        "its VM process closed the ask unanswered: it takes no rate from its \
+                         host's clients (one not booted --host-managed, or a shards before D255)"
+                    ))?,
+                });
+            }
+            Ok(_) => {
+                line.try_reserve(1).map_err(|_| Refusal::Allocation {
+                    what: "a rate's answer",
+                })?;
+                line.extend_from_slice(&byte);
+                if byte == [b'\n'] {
+                    return Ok(line);
+                }
+                if line.len() >= shards_abi::rate::ANSWER_MOST {
+                    return Err(Refusal::Rate(managed_words(format_args!(
+                        "its VM process answered past the longest answer, no line"
+                    ))?));
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) if timed_out(&e) => return Err(late()?),
+            Err(e) => return Err(failed("rate's answer")(e)),
+        }
+    }
+}
+
+/// A managed guest's refusal's words, allocated as its path allocates: fallibly.
+fn managed_words(args: std::fmt::Arguments<'_>) -> Result<String, Refusal> {
+    message(args).map_err(|()| Refusal::Allocation {
+        what: "a managed guest's refusal's words",
+    })
+}
+
+/// What a rate `asked` holds the guest's vCPUs to, as its VM process answered (D255): the
+/// rate asked, or none where it lets them be, and its governor's period. A VM holds what it
+/// is told or nothing (D247), so any other rate is a broken answer, never a hold.
+fn held_of(
+    asked: Option<std::num::NonZeroU64>,
+    answer: Result<shards_abi::rate::Answer<'_>, shards_abi::rate::Broken>,
+) -> Result<(Option<std::num::NonZeroU64>, std::num::NonZeroU64), Refusal> {
+    use shards_abi::rate::Answer;
+    match answer {
+        Ok(Answer::Held { milli, period_ns }) if milli.is_none() || milli == asked => Ok((milli, period_ns)),
+        Ok(Answer::Held { milli, .. }) => Err(Refusal::Rate(managed_words(format_args!(
+            "its VM process held its vCPUs to {milli:?} milli-CPU, asked {asked:?}"
+        ))?)),
+        Ok(Answer::Refused(why)) => Err(Refusal::Rate(managed_words(format_args!("{why}"))?)),
+        Err(broken) => Err(Refusal::Rate(managed_words(format_args!(
+            "its VM process answered {broken}"
+        ))?)),
     }
 }
 
@@ -2363,7 +2533,15 @@ mod tests {
         // this test's directory, which on Windows is its drive's (`/model` is not absolute there).
         let here = std::env::current_dir().unwrap();
         let root = here.ancestors().last().unwrap();
-        let socket = root.join("model").join("native").join("v");
+        managed_model_at(coordinate_stop, root.join("model").join("native").join("v"))
+    }
+    /// [`managed_model`] whose vsock socket is `socket`, which a test may listen at.
+    fn managed_model_at(
+        coordinate_stop: bool,
+        socket: PathBuf,
+    ) -> (ManagedGuest, triomphe::Arc<ModelNative>) {
+        let here = std::env::current_dir().unwrap();
+        let root = here.ancestors().last().unwrap();
         let plan = prepare_boot(&spec(), &root.join("model").join("never-executed"), &socket, 0).unwrap();
         let native = triomphe::Arc::try_new(ModelNative {
             identity: Identity {
@@ -2379,6 +2557,135 @@ mod tests {
         .unwrap();
         let guest = boot_managed(plan, &mut ModelLauncher(native.clone())).unwrap();
         (guest, native)
+    }
+
+    /// A listener at `path` for a stand-in of a managed guest's VM process, as each OS binds
+    /// one.
+    #[cfg(unix)]
+    fn rate_listener(path: &Path) -> std::os::unix::net::UnixListener {
+        std::os::unix::net::UnixListener::bind(path).unwrap()
+    }
+    #[cfg(windows)]
+    fn rate_listener(path: &Path) -> shards_afunix::UnixListener {
+        shards_afunix::UnixListener::bind(path).unwrap()
+    }
+
+    /// A stand-in VM process at `path` (D255): for each of `answers` in turn, takes one dial,
+    /// reads its ask's line and answers it, or closes it unanswered (none); gives back the
+    /// asks' lines.
+    fn rate_stand_in(
+        path: &Path,
+        answers: Vec<Option<&'static [u8]>>,
+    ) -> std::thread::JoinHandle<Vec<Vec<u8>>> {
+        use std::io::{Read as _, Write as _};
+        let listener = rate_listener(path);
+        std::thread::spawn(move || {
+            let mut asks = Vec::new();
+            for answer in answers {
+                let (mut dial, _) = listener.accept().unwrap();
+                let mut line = Vec::new();
+                let mut byte = [0u8; 1];
+                while line.last() != Some(&b'\n') {
+                    assert_eq!(dial.read(&mut byte).unwrap(), 1, "an ask's whole line");
+                    line.push(byte[0]);
+                }
+                asks.push(line);
+                if let Some(answer) = answer {
+                    dial.write_all(answer).unwrap();
+                }
+            }
+            asks
+        })
+    }
+
+    /// D255: a managed guest's rate is asked on its vsock socket, `RATE <milli>`, and held as
+    /// its VM process answers: the rate asked, or none, its period kept; a refusal in its
+    /// words; a rate other than asked, or an answer none of the protocol's, refused and never
+    /// a hold; an ask closed unanswered, a VM process that takes no rate.
+    #[test]
+    fn a_managed_guests_rate_is_asked_on_its_socket_and_held_as_answered() {
+        let dir = shards_testdir::TempDir::new("api-rate").unwrap();
+        let socket = dir.join("v");
+        let quarter = std::num::NonZeroU64::new(250);
+        let stand_in = rate_stand_in(
+            &socket,
+            vec![
+                Some(b"RATED 250 100000000\n"),
+                Some(b"RATED 0 7\n"),
+                Some(b"REFUSED the microVM has not started\n"),
+                Some(b"RATED 300 1\n"),
+                Some(b"OK 5\n"),
+                None,
+            ],
+        );
+        let (guest, _native) = managed_model_at(false, socket);
+        assert_eq!(guest.rate_period(), None, "no rate answered yet");
+        assert_eq!(guest.rate(quarter, Duration::MAX), Ok(quarter));
+        assert_eq!(guest.rate_period(), Some(Duration::from_millis(100)));
+        assert_eq!(guest.rate(None, Duration::MAX), Ok(None));
+        assert_eq!(guest.rate_period(), Some(Duration::from_nanos(7)));
+        assert_eq!(
+            guest.rate(quarter, Duration::MAX),
+            Err(Refusal::Rate("the microVM has not started".into()))
+        );
+        for broken in ["held to another", "none of the protocol's"] {
+            assert!(
+                matches!(guest.rate(quarter, Duration::MAX), Err(Refusal::Rate(_))),
+                "{broken}"
+            );
+        }
+        assert_eq!(
+            guest.rate_period(),
+            Some(Duration::from_nanos(7)),
+            "kept from its last hold"
+        );
+        assert!(matches!(
+            guest.rate(quarter, Duration::MAX),
+            Err(Refusal::Unsupported { what: "rate", .. })
+        ));
+        let asks = stand_in.join().unwrap();
+        let mut expected = vec![b"RATE 250\n".to_vec(); asks.len()];
+        expected[1] = b"RATE 0\n".to_vec();
+        assert_eq!(asks, expected);
+    }
+
+    /// D255: a rate its VM process does not answer within its caller's patience is refused
+    /// as unanswered, typed.
+    #[test]
+    fn a_managed_rate_unanswered_within_its_patience_is_refused() {
+        let dir = shards_testdir::TempDir::new("api-rate-late").unwrap();
+        let socket = dir.join("v");
+        let listener = rate_listener(&socket);
+        let (guest, _native) = managed_model_at(false, socket);
+        let asked = guest.rate(
+            std::num::NonZeroU64::new(250),
+            crate::conformance::UNSERVED_PATIENCE,
+        );
+        assert!(
+            matches!(&asked, Err(Refusal::Unsupported { what: "rate", why }) if why.starts_with("no answer within")),
+            "{asked:?}"
+        );
+        drop(listener);
+    }
+
+    /// D255: a managed guest's room is refused, typed, as nothing holds a managed guest
+    /// within one; and once the guest has ended, its rate is its end, asking nothing.
+    #[test]
+    fn a_managed_guests_room_is_refused_and_an_ended_ones_rate_is_its_end() {
+        let (guest, native) = managed_model(false);
+        assert!(matches!(
+            guest.room(Some(64 << 20), Duration::MAX),
+            Err(Refusal::Unsupported { what: "room", .. })
+        ));
+        native.publish(crate::TerminalScope::Released);
+        assert_eq!(
+            guest.wait_for(crate::conformance::PATIENCE.get()).unwrap(),
+            Some(End::PowerOff)
+        );
+        assert_eq!(
+            guest.rate(std::num::NonZeroU64::new(250), Duration::MAX),
+            Err(Refusal::Ended(End::PowerOff))
+        );
     }
 
     /// D215, D233: helper scope and handle ownership remain live after
