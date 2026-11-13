@@ -18,6 +18,7 @@ use zeroize::Zeroizing;
 
 use crate::dns::credential::{self, CredentialGrant, Fill};
 use crate::hpack::{self, Field, Indexing};
+use crate::inject::{authority_host, token_in};
 
 /// The client's connection preface (§3.4).
 pub const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
@@ -284,28 +285,100 @@ impl Hop {
     /// holds other than the initial window on a stream, then a WINDOW_UPDATE growing the
     /// connection's from its initial 65,535 to what it holds, which only that frame can.
     pub fn preface(&self, out: &mut Vec<u8>) {
-        let _ = out;
+        let mut settings = Vec::new();
+        if self.holds.stream != INITIAL_WINDOW {
+            settings.extend_from_slice(&0x4u16.to_be_bytes());
+            settings.extend_from_slice(&self.holds.stream.to_be_bytes());
+        }
+        put(
+            out,
+            Head {
+                length: settings.len() as u32,
+                kind: SETTINGS,
+                flags: 0,
+                stream: 0,
+            },
+            &settings,
+        );
+        if let Some(by) = self
+            .holds
+            .connection
+            .checked_sub(INITIAL_WINDOW)
+            .filter(|&by| by > 0)
+        {
+            put(
+                out,
+                Head {
+                    length: 4,
+                    kind: WINDOW_UPDATE,
+                    flags: 0,
+                    stream: 0,
+                },
+                &by.to_be_bytes(),
+            );
+        }
     }
 
     /// The peer's SETTINGS frame (§6.5): an ACK of this side's puts its window in force; else its parameters
     /// applied to what this side sends (each stream's window, §6.9.2; the encoder's table, RFC
     /// 7541 §4.2; frames' length) and its ACK written onto `out` (§6.5.3).
     pub fn settings(&mut self, head: Head, payload: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
-        let _ = (head, payload, out);
+        if head.stream != 0 {
+            return Err(connection(Code::Protocol, "a SETTINGS frame on a stream"));
+        }
+        if head.flags & ACK != 0 {
+            if !payload.is_empty() {
+                return Err(connection(Code::FrameSize, "a SETTINGS ACK with a payload"));
+            }
+            return self.recv.set_initial(self.holds.stream);
+        }
+        let mut peer = self.peer;
+        peer.apply(payload)?;
+        self.send.set_initial(peer.initial_window_size)?;
+        if peer.header_table_size != self.peer.header_table_size {
+            self.encoder.set_limit(peer.header_table_size as usize);
+        }
+        self.peer = peer;
+        put(
+            out,
+            Head {
+                length: 0,
+                kind: SETTINGS,
+                flags: ACK,
+                stream: 0,
+            },
+            &[],
+        );
         Ok(())
     }
 
     /// The peer's WINDOW_UPDATE (§6.9): four octets, an increment of at least one.
     pub fn window_update(&mut self, head: Head, payload: &[u8]) -> Result<(), Error> {
-        let _ = (head, payload);
-        Ok(())
+        let &[a, b, c, d] = payload else {
+            return Err(connection(Code::FrameSize, "a WINDOW_UPDATE not of four octets"));
+        };
+        let by = u32::from_be_bytes([a, b, c, d]) & MOST_STREAM;
+        if by == 0 {
+            return Err(Error {
+                scope: if head.stream == 0 {
+                    Scope::Connection
+                } else {
+                    Scope::Stream(head.stream)
+                },
+                code: Code::Protocol,
+                why: "a WINDOW_UPDATE of no increment",
+            });
+        }
+        self.send.grow(head.stream, by)
     }
 
     /// How much DATA this side may send on `stream` in one frame now: no more than either
     /// window's room, nor the peer's SETTINGS_MAX_FRAME_SIZE (§4.2, §6.9.1).
     pub fn sendable(&self, stream: u32) -> usize {
-        let _ = stream;
-        0
+        let room = self.send.connection.min(self.send.stream(stream)).max(0);
+        usize::try_from(room)
+            .unwrap_or(0)
+            .min(self.peer.max_frame_size as usize)
     }
 
     /// DATA frames on `stream` onto `out`, as much of `bytes` as the peer's windows let go now;
@@ -313,14 +386,48 @@ impl Hop {
     /// of `bytes` where `end`, on an empty frame where none are left, which no window holds back
     /// (§6.9.1).
     pub fn send_data(&mut self, stream: u32, bytes: &[u8], end: bool, out: &mut Vec<u8>) -> usize {
-        let _ = (stream, bytes, end, out);
-        0
+        let mut sent = 0;
+        loop {
+            let rest = bytes.get(sent..).unwrap_or_default();
+            let n = self.sendable(stream).min(rest.len());
+            if n == 0 && !(rest.is_empty() && end) {
+                return sent;
+            }
+            let last = n == rest.len() && end;
+            let flags = if last { END_STREAM } else { 0 };
+            put(
+                out,
+                Head {
+                    length: n as u32,
+                    kind: DATA,
+                    flags,
+                    stream,
+                },
+                rest.get(..n).unwrap_or_default(),
+            );
+            self.send.take(stream, n);
+            sent += n;
+            if last || sent == bytes.len() {
+                return sent;
+            }
+        }
     }
 
     /// The peer's DATA frame, its whole payload counted, padding too (§6.9.1): past what this
     /// side granted is FLOW_CONTROL_ERROR, the connection's or the stream's.
     pub fn received(&mut self, head: Head) -> Result<(), Error> {
-        let _ = head;
+        let n = i64::from(head.length);
+        if n > self.recv.connection {
+            return Err(connection(Code::FlowControl, "DATA past the connection's window"));
+        }
+        if n > self.recv.stream(head.stream) {
+            return Err(Error {
+                scope: Scope::Stream(head.stream),
+                code: Code::FlowControl,
+                why: "DATA past the stream's window",
+            });
+        }
+        self.recv.take(head.stream, head.length as usize);
         Ok(())
     }
 
@@ -329,7 +436,39 @@ impl Hop {
     /// worth or half the window is owed, whichever is less, as RFC 9113 §6.9.1 advises after RFC
     /// 1122 §4.2.3.3, so that the peer always has room and no update is of a few octets.
     pub fn released(&mut self, stream: u32, n: usize, out: &mut Vec<u8>) {
-        let _ = (stream, n, out);
+        let n = u32::try_from(n).unwrap_or(u32::MAX);
+        let frame = self.peer_frame();
+        let owed = self.owed.1.entry(stream).or_insert(0);
+        *owed = owed.saturating_add(n);
+        if *owed >= frame.min(self.holds.stream / 2) {
+            let by = std::mem::take(owed);
+            let _ = self.recv.grow(stream, by);
+            put(
+                out,
+                Head {
+                    length: 4,
+                    kind: WINDOW_UPDATE,
+                    flags: 0,
+                    stream,
+                },
+                &by.to_be_bytes(),
+            );
+        }
+        self.owed.0 = self.owed.0.saturating_add(n);
+        if self.owed.0 >= frame.min(self.holds.connection / 2) {
+            let by = std::mem::take(&mut self.owed.0);
+            let _ = self.recv.grow(0, by);
+            put(
+                out,
+                Head {
+                    length: 4,
+                    kind: WINDOW_UPDATE,
+                    flags: 0,
+                    stream: 0,
+                },
+                &by.to_be_bytes(),
+            );
+        }
     }
 
     /// The most a frame of the peer's carries: this side's SETTINGS_MAX_FRAME_SIZE, which it
@@ -478,12 +617,117 @@ pub struct Filled {
     pub reference: String,
 }
 
+/// The request pseudo-header fields (§8.3.1), and RFC 8441's `:protocol` (§4).
+const PSEUDO: [&[u8]; 5] = [b":method", b":scheme", b":authority", b":path", b":protocol"];
+/// The fields HTTP/2 has no use of (§8.2.2).
+const CONNECTION_SPECIFIC: [&[u8]; 5] = [
+    b"connection",
+    b"proxy-connection",
+    b"keep-alive",
+    b"transfer-encoding",
+    b"upgrade",
+];
+
 /// A request's decoded `fields`, held to RFC 9113 §8.2 and §8.3.1 as an origin holds them (a
 /// gateway is one, RFC 9110 §3.7), and what `decide` says of each credential field's token for
 /// `grants` on a flow whose TLS named `sni`.
 pub fn request(fields: Vec<Field>, grants: &[CredentialGrant], sni: &str) -> Request {
-    let _ = (fields, grants, sni);
-    Request::Malformed("not built yet")
+    if let Err(why) = well_formed(&fields) {
+        return Request::Malformed(why);
+    }
+    let one = |name: &[u8]| {
+        let mut all = fields.iter().filter(move |f| f.name == name);
+        (all.next(), all.next())
+    };
+    let host = match (one(b":authority"), one(b"host")) {
+        ((Some(_), Some(_)), _) => return Request::Malformed("two :authority fields"),
+        (_, (Some(_), Some(_))) => return Request::Malformed("two Host fields"),
+        ((Some(a), None), (Some(h), None)) if !a.value.eq_ignore_ascii_case(&h.value) => {
+            return Request::Malformed("a Host that is not the :authority");
+        }
+        ((Some(f), None), _) | (_, (Some(f), None)) => f,
+        _ => return Request::Malformed("a request that names no host"),
+    };
+    let Some(host) = std::str::from_utf8(&host.value).ok().and_then(authority_host) else {
+        return Request::Malformed("a request's host is no host");
+    };
+    if credential::decide(grants, sni, &host, None) == Fill::Misdirected {
+        return Request::Misdirected { host };
+    }
+    let mut fills = Vec::new();
+    for (i, field) in fields.iter().enumerate() {
+        let Some(token) = token_in(&field.name, &field.value) else {
+            continue;
+        };
+        let Some(placeholder) = field
+            .value
+            .get(token.clone())
+            .and_then(|t| std::str::from_utf8(t).ok())
+        else {
+            continue;
+        };
+        if let Fill::With(reference) = credential::decide(grants, sni, &host, Some(placeholder)) {
+            fills.push(Filled {
+                field: i,
+                token,
+                reference,
+            });
+        }
+    }
+    Request::Go(Go { fields, host, fills })
+}
+
+/// RFC 9113 §8.2.1's least validation, §8.2.2's connection-specific fields, and §8.3.1's
+/// pseudo-header fields: known ones, each once, before every other field.
+fn well_formed(fields: &[Field]) -> Result<(), &'static str> {
+    let mut regular = false;
+    let mut seen: Vec<&[u8]> = Vec::new();
+    for f in fields {
+        let pseudo = f.name.first() == Some(&b':');
+        let name = if pseudo {
+            f.name.get(1..).unwrap_or_default()
+        } else {
+            &f.name[..]
+        };
+        if name.is_empty()
+            || name
+                .iter()
+                .any(|&b| b <= 0x20 || b.is_ascii_uppercase() || b >= 0x7f || b == b':')
+        {
+            return Err("a field name HTTP/2 forbids");
+        }
+        if f.value.iter().any(|&b| matches!(b, 0 | b'\n' | b'\r'))
+            || f.value.first().is_some_and(|&b| b == b' ' || b == b'\t')
+            || f.value.last().is_some_and(|&b| b == b' ' || b == b'\t')
+        {
+            return Err("a field value HTTP/2 forbids");
+        }
+        if pseudo {
+            if regular || !PSEUDO.contains(&&f.name[..]) || seen.contains(&&f.name[..]) {
+                return Err("a pseudo-header field out of place, unknown or twice");
+            }
+            seen.push(&f.name);
+        } else {
+            regular = true;
+            if CONNECTION_SPECIFIC.contains(&&f.name[..]) || (f.name == b"te" && &f.value[..] != b"trailers")
+            {
+                return Err("a connection-specific field");
+            }
+        }
+    }
+    let connect = fields
+        .iter()
+        .any(|f| f.name == b":method" && &f.value[..] == b"CONNECT");
+    let has = |n: &[u8]| seen.contains(&n);
+    let complete = has(b":method")
+        && if connect && !has(b":protocol") {
+            !has(b":scheme") && !has(b":path") && has(b":authority")
+        } else {
+            has(b":scheme") && has(b":path")
+        };
+    complete
+        .then_some(())
+        .ok_or("a request without its pseudo-header fields")
 }
 
 impl Go {
@@ -507,8 +751,26 @@ impl Go {
         encoder: &mut hpack::Encoder,
         value: impl Fn(&str) -> Option<&'v [u8]>,
     ) -> Option<Zeroizing<Vec<u8>>> {
-        let _ = (encoder, value);
-        None
+        let mut fields = self.fields.clone();
+        for fill in &self.fills {
+            let value = value(&fill.reference)?;
+            let field = fields.get_mut(fill.field)?;
+            let mut filled =
+                Zeroizing::new(Vec::with_capacity(field.value.len().saturating_add(value.len())));
+            filled.extend_from_slice(field.value.get(..fill.token.start)?);
+            filled.extend_from_slice(value);
+            filled.extend_from_slice(field.value.get(fill.token.end..)?);
+            field.value = filled;
+        }
+        for field in &mut fields {
+            // The fields `token_in` reads a credential from, filled or not.
+            if matches!(&field.name[..], b"authorization" | b"x-api-key") {
+                field.indexing = Indexing::Never;
+            }
+        }
+        let mut block = Zeroizing::new(Vec::new());
+        encoder.encode(&fields, &mut block);
+        Some(block)
     }
 }
 

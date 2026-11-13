@@ -207,8 +207,66 @@ impl Decoder {
     /// `block`'s fields, decoded whole; none kept where they add up past `most` octets as RFC
     /// 9113 §6.5.2 counts a header list.
     pub fn decode(&mut self, block: &[u8], most: usize) -> Result<Decoded, Error> {
-        let _ = (block, most);
-        Ok(Decoded::Fields(Vec::new()))
+        let mut at = 0;
+        let mut fields = Vec::new();
+        let mut total = 0usize;
+        let mut over = false;
+        let mut first = true;
+        while let Some(&b) = block.get(at) {
+            if b & 0xe0 == 0x20 {
+                // A dynamic table size update, only where a block begins (§4.2, §6.3).
+                let max = integer(block, &mut at, 5)?;
+                if !first || max > self.limit {
+                    return Err(Error::SizeUpdate);
+                }
+                self.table.resize(max);
+                continue;
+            }
+            if first && self.table.max > self.limit {
+                return Err(Error::SizeUpdate);
+            }
+            first = false;
+            let field = if b & 0x80 != 0 {
+                let index = integer(block, &mut at, 7)?;
+                let (name, value) = self.table.get(index).ok_or(Error::Index)?;
+                total = total.saturating_add(size(name, value));
+                (total <= most && !over).then(|| Field::new(name, value, Indexing::Incremental))
+            } else {
+                let (prefix, indexing) = match b & 0xf0 {
+                    0x00 => (4, Indexing::Without),
+                    0x10 => (4, Indexing::Never),
+                    _ => (6, Indexing::Incremental),
+                };
+                let index = integer(block, &mut at, prefix)?;
+                let name = match index {
+                    0 => std::mem::take(&mut *string(block, &mut at)?),
+                    i => self.table.get(i).ok_or(Error::Index)?.0.to_vec(),
+                };
+                let value = string(block, &mut at)?;
+                total = total.saturating_add(size(&name, &value));
+                let field = Field {
+                    name,
+                    value,
+                    indexing,
+                };
+                if indexing == Indexing::Incremental {
+                    self.table.insert(field.name.clone(), field.value.clone());
+                }
+                (total <= most && !over).then_some(field)
+            };
+            match field {
+                Some(field) => fields.push(field),
+                None => {
+                    over = true;
+                    fields.clear();
+                }
+            }
+        }
+        Ok(if over {
+            Decoded::TooLarge
+        } else {
+            Decoded::Fields(fields)
+        })
     }
 }
 
@@ -250,7 +308,18 @@ impl Encoder {
     /// length says nothing of its characters (Huffman's codes differ in length, Appendix B); any
     /// other value Huffman-coded where that is no longer, as RFC 7541's own examples are (C.4, C.6).
     pub fn encode(&mut self, fields: &[Field], out: &mut Vec<u8>) {
-        let _ = (fields, out);
+        if let Some((least, last)) = self.sizes.take() {
+            for size in [least, last] {
+                put_integer(out, 0x20, 5, size);
+                self.table.resize(size);
+                if least == last {
+                    break;
+                }
+            }
+        }
+        for field in fields {
+            self.field(field, out);
+        }
     }
 
     fn field(&mut self, field: &Field, out: &mut Vec<u8>) {
@@ -283,12 +352,43 @@ impl Encoder {
 
 /// An integer of an `n`-bit prefix (§5.1), from `at`.
 fn integer(block: &[u8], at: &mut usize, n: u32) -> Result<usize, Error> {
-    let _ = (block, at, n);
-    Err(Error::Truncated)
+    let mask = (1u8 << n).wrapping_sub(1);
+    let first = *block.get(*at).ok_or(Error::Truncated)? & mask;
+    *at = at.saturating_add(1);
+    if first < mask {
+        return Ok(usize::from(first));
+    }
+    let mut value = u64::from(first);
+    let mut shift = 0u32;
+    loop {
+        let b = *block.get(*at).ok_or(Error::Truncated)?;
+        *at = at.saturating_add(1);
+        let low = u64::from(b & 0x7f);
+        let add = low
+            .checked_shl(shift)
+            .filter(|a| a.checked_shr(shift) == Some(low))
+            .ok_or(Error::Integer)?;
+        value = value.checked_add(add).ok_or(Error::Integer)?;
+        if b & 0x80 == 0 {
+            return usize::try_from(value).map_err(|_| Error::Integer);
+        }
+        shift = shift.saturating_add(7);
+    }
 }
 
 fn put_integer(out: &mut Vec<u8>, pattern: u8, n: u32, value: usize) {
-    let _ = (out, pattern, n, value);
+    let mask = (1u8 << n).wrapping_sub(1);
+    if value < usize::from(mask) {
+        out.push(pattern | value as u8);
+        return;
+    }
+    out.push(pattern | mask);
+    let mut rest = value - usize::from(mask);
+    while rest >= 0x80 {
+        out.push((rest & 0x7f) as u8 | 0x80);
+        rest >>= 7;
+    }
+    out.push(rest as u8);
 }
 
 /// A string literal (§5.2), from `at`, wiped as it drops.
