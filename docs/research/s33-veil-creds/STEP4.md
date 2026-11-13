@@ -34,7 +34,7 @@ from origin/main 8479be870, fast-forwarded to 72cdfbf06 before any edit. The des
   whatever that process does). `Answers` takes any writer, for tests.
 - `zeroize` (already in the lockfile) for shards-net and shards-api; `lessor: None` in the three E2E specs.
 
-## The identity decision (for ROOT to confirm)
+## The identity decision (confirmed by ROOT after the landing)
 
 A lease is asked under the run's own key where it has one, and by its channel where it has none; no key is made for
 leases alone. Evidence: D238's key is made where an agent-control endpoint binds, by the daemon (`daemon/managed.rs`
@@ -123,6 +123,29 @@ of 120 s are the tests' bound on what should come at once (`BOUND`, as `crates/s
 And one red that was a defect, not a removal: r244's `a_lease_the_run_was_not_granted_breaks_the_channel` (above),
 green since 5dd06d453.
 
+## The cure: the run host's channel wiped (ROOT, after the landing)
+
+ROOT confirmed the identity decision and asked that the copy of a lease answer std's `Stdin` kept in the run host's
+buffer be removed, red first. The run host now reads its channel into a buffer of its own (`api_run::Channel` over
+`wire::read_frame_into`, on which `read_frame` is built: its own descriptor of fd 0, or handle, read unbuffered, each frame
+read exactly, so nothing past a frame is read with it), and each frame is wiped there as it is let go of
+(`api_run::Frame`'s drop, a frame cut short as well): between frames the buffer is all zeros. The request's buffer is
+let go of after the request (`Channel::shed`). On Windows the answer to the network process is written as it lies,
+header then payload (`shards_ipc::write_message_parts`, its header shared with `write_message`), where
+`write_message`'s frame `Vec` was a copy left unwiped. Kernel pipe and socket buffers stay a residual: no call of a
+process's clears them.
+
+Run r840 on adas-mac-studio.local (macOS arm64), cold target, `CARGO_INCREMENTAL=0`, the tree merged with main
+e72239dd3 (`cure.sh` in the carrier; the guard's removal is the 17th entry of `scripts/step4-reds.py`):
+- red before the wipe, at dd0c1e784 (the channel, the test, no wipe):
+  `api_run::tests::a_leased_frame_leaves_nothing_of_its_value_in_the_channels_buffer` FAILED at api_run.rs:4938, the
+  lease's value left in the run host's buffer;
+- green with it, at 97cf4e5a7: 1 passed;
+- red with the wipe removed (`Frame`'s drop emptied): FAILED at api_run.rs:4955, the same assertion;
+- the tree restored (0 files changed), then shards-net 12, shards-api `image::` 49, shards `api_run::` 33, shards-ipc 1
+  passed; the four crates' clippy, `--all-targets -- -D warnings`, clean. `write_message_parts`' own test (that it writes
+  what `write_message` does, byte for byte) is Windows' and runs on CI's Windows runners.
+
 ## Not tested here
 
 - That a dropped `Secret`, `Zeroizing` value or wiped message holds zeros: zeroize's own guarantee (zeroize 1.9.0,
@@ -137,4 +160,5 @@ green since 5dd06d453.
   released at the run's exit, at `STOP` and at its orchestrator's channel closing, its diagnostics saying each by
   reference and id, and no value in them. Nothing in a run asks until the injector (step 3) calls `Leases::ask`.
 - Hex's vendored shards-api takes `ImageSpec::lessor` (step 6), and its `Lessor` is kiln's broker (step 5).
-- The daemon's runs have no grants: their lease relay, and a move's release there, are owed with them.
+- The daemon's runs have no credential grants: their lease relay, and a move's release there, are owed by the first
+  change that gives a daemon's run grants, which none of this plan's ten steps does.

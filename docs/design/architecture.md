@@ -25137,11 +25137,18 @@ docs/research/s33-veil-creds/STEP4.md.
   type holding a value prints it: `Secret` its length, `lease::Asked` and `lease::Leases` neither.
 - *Wiping.* `Secret` zeroizes its bytes as it drops; the network process holds a value in
   `Zeroizing`; the copies of a frame that carries one are wiped once sent or taken (the
-  orchestrator's `LEASED` payload, the run host's read of it and the `NET_LEASE` it sends, the
-  network process's received message), each value appended last and whole, so that no buffer
-  let go of as one grows holds a part of it. Not wiped: kernel pipe and socket buffers, std's
-  `Stdin` buffer in the run host (later frames overwrite it), and the memory of a process
-  killed before its drop.
+  orchestrator's `LEASED` payload, the `NET_LEASE` the run host sends, the network process's
+  received message), each value appended last and whole, so that no buffer let go of as one
+  grows holds a part of it. The run host reads its channel into a buffer of its own
+  (`api_run::Channel` over `wire::read_frame_into`: its own descriptor of stdin, or handle,
+  read unbuffered, each frame read exactly), never through std's `Stdin`, whose buffer read
+  ahead and kept each frame until later ones overwrote it. Each frame is wiped in that buffer
+  as it is let go of (`api_run::Frame`'s drop, a frame cut short as well), so between frames
+  it is all zeros: a lease's value, a staged credential and a member's typed input alike. On
+  Windows the answer to the network process is written as it lies, its header and then its
+  payload (`shards_ipc::write_message_parts`), where `write_message`'s frame was a copy. Not
+  wiped: kernel pipe and socket buffers, which no call of a process's clears, and the memory
+  of a process killed before its drop.
 - *Literals.* Kind 100, the run channel's kinds 13 (`LEASED`), 30 (`LEASE`) and 31
   (`RELEASED`) and its version 20 are sequence numbers (98 and 99 went first to D251's
   `LANE_OPEN` and `LANE_HELD`; 14 to 19, to guest-cpu-time-v1's typed unread time, D252's
@@ -25171,13 +25178,17 @@ docs/research/s33-veil-creds/STEP4.md.
   where its start told one, under none where it told none. `image`: grants without a lessor
   refused. `api_run`: the ledger's states; the relay end to end over a socket and pipes, the
   network process's real lease client with a simulated orchestrator, at three kinds of end; an
-  answer to no ask breaking the channel; the audit's lines.
+  answer to no ask breaking the channel; the audit's lines; a `LEASED` frame read through the
+  run host's channel leaving not one byte other than zero in its buffer once let go of, its
+  next frame read whole (red before the wipe and with it removed, STEP4.md).
 - *Owed (ROOT).* A real run with a credential grant through `shards api-run` (KVM x86_64, HVF,
   WHP): the lease asked on first use and released at each end, with the run host's diagnostics
   saying each and no value. That needs the injector (step 3), the first caller of
   `Leases::ask`; until it lands, nothing in a run asks. Hex's vendored shards-api takes
-  `ImageSpec::lessor` (step 6). The daemon's runs have no grants, so their lease relay and a
-  move's release there are owed with them.
+  `ImageSpec::lessor` (step 6). The daemon's runs have no credential grants: their lease relay
+  and a move's release there are owed by the first change that gives a daemon's run grants,
+  which none of this plan's ten steps does (each run here is an orchestrator's, through
+  `shards api-run`).
 
 **Owed (later slices of step 33, this plan's steps 3 and 5–10).** The injector that
 terminates TLS and fills HTTP/1.1 then HTTP/2 headers (steps 3, 7); kiln's broker over
