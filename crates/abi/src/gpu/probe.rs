@@ -9,8 +9,28 @@ const IDENTITY_HEADER: &str = "shards-gpu-selection 2";
 const IDENTITY_LINE_BYTES: usize =
     "metal:ffffffffffffffff\tffffffffffffffffffffffffffffffff\tpci:ffffffff:ff:1f.7\tffffffffffffffff\n"
         .len();
-const FIXED_BYTES: usize =
-    "shards-gpu-selection 3\nhost-visible 18446744073709551615\ndevices 65536\nend\n".len();
+/// The receipt's lines but its devices', each at its longest: the host-visible bytes a u64's
+/// digits, the device count [`MAX_PHYSICAL_GPUS`]'s.
+const FIXED_BYTES: usize = HEADER.len()
+    + "\nhost-visible ".len()
+    + decimal_digits(u64::MAX as u128)
+    + "\ndevices ".len()
+    + decimal_digits(MAX_PHYSICAL_GPUS as u128)
+    + "\nend\n".len();
+/// The fewest bytes a device line takes: its Vulkan UUID's hex digits, the one field every
+/// line has at a fixed width, and its end. A receipt holds no more devices than its own
+/// bytes hold lines of these, which bounds a count before anything is reserved for it.
+const DEVICE_LINE_LEAST: usize = 2 * core::mem::size_of::<[u8; 16]>() + "\n".len();
+
+/// The decimal digits `n` is written with.
+const fn decimal_digits(mut n: u128) -> usize {
+    let mut digits = 1;
+    while n >= 10 {
+        n /= 10;
+        digits += 1;
+    }
+    digits
+}
 
 /// Vulkan's VK_MAX_PHYSICAL_DEVICE_NAME_SIZE includes the UTF-8 string's NUL.
 pub const GPU_NAME_BYTES: usize = 256;
@@ -403,6 +423,9 @@ impl GpuProbe {
         if expected.is_some_and(|expected| count != expected) {
             return Err(GpuProbeError::Count);
         }
+        if count > text.len() / DEVICE_LINE_LEAST {
+            return Err(GpuProbeError::Syntax);
+        }
         let mut devices = Vec::new();
         devices
             .try_reserve_exact(count)
@@ -494,7 +517,7 @@ impl core::error::Error for GpuProbeError {}
 )]
 mod tests {
     use super::*;
-    use alloc::{format, vec};
+    use alloc::{format, string::ToString, vec};
 
     #[test]
     fn managed_report_binds_native_scope_and_exact_set_without_console_authority() {
@@ -555,7 +578,7 @@ mod tests {
             text.replace("shards-vmm-gpu 1", "shards-vmm-gpu 2"),
             text.replace(&"03".repeat(16), &format!("+{}", "3".repeat(31))),
             text.replace(&"03".repeat(16), &"00".repeat(16)),
-            text.replace("devices 1", "devices 65536"),
+            text.replace("devices 1", &format!("devices {MAX_PHYSICAL_GPUS}")),
             format!("{text}{text}"),
             format!("{text}trailing\n"),
         ] {
@@ -595,7 +618,7 @@ mod tests {
         }
         for bad in [
             text.replace("devices 1", "devices +1"),
-            text.replace("devices 1", "devices 65537"),
+            text.replace("devices 1", &format!("devices {}", MAX_PHYSICAL_GPUS + 1)),
             text.replace("host-visible 4096", "host-visible 0"),
             text.replace(
                 "07070707070707070707070707070707",
@@ -640,6 +663,38 @@ mod tests {
         let old = unknown.replace(HEADER, IDENTITY_HEADER).replace("\t-\t-\n", "\n");
         assert_eq!(GpuProbe::parse(&old).unwrap(), probe);
         assert!(encoded.len() <= probe_bytes(1).unwrap());
+    }
+
+    /// D232: a receipt's byte bound is its longest encoding exactly: each device line with
+    /// every field at its widest, and the device count as wide as `MAX_PHYSICAL_GPUS`, the
+    /// widest count the bound allows for, which a smaller count's narrower digits fall short of.
+    #[test]
+    fn the_byte_bound_is_the_longest_encoding_of_its_count() {
+        let widest = |i: u8| {
+            let id = u64::MAX - u64::from(i);
+            ResolvedGpu {
+                physical: PhysicalGpu::MetalRegistry(id),
+                uuid: [0xff - i; 16],
+                pci: Some(PhysicalGpu::Pci {
+                    domain: u32::MAX,
+                    bus: u8::MAX,
+                    device: 31,
+                    function: 7,
+                }),
+                luid: Some(id.to_be_bytes()),
+                name: Some(GpuName::new("widest").unwrap()),
+                device_local_bytes: Some(u64::MAX),
+            }
+        };
+        for count in [1u8, 10] {
+            let probe = GpuProbe {
+                devices: (0..count).map(widest).collect(),
+                host_visible_bytes: u64::MAX,
+            };
+            let text = probe.encode().unwrap();
+            let narrower = MAX_PHYSICAL_GPUS.to_string().len() - count.to_string().len();
+            assert_eq!(text.len() + narrower, probe_bytes(usize::from(count)).unwrap());
+        }
     }
 
     #[test]

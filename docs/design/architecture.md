@@ -244,7 +244,7 @@ SPIs of the GICv2m frame the VMM keeps (D154).
 | Devices plugged into a running microVM, disks grown (D214) | yes | yes (nested, its MSIs through the GIC's ITS) | yes | yes: in the VMM, its shared directory over a duplex pipe (tests/hotplug.rs), and through the CLI a disk and a volume, its share process's stream given the VM as a run's are (tests/plug.rs), on CI's windows-2025 and windows-2022 and on jupiter |
 | A host's PCI function given a microVM, at its start or plugged in (D154, D214) | built, VFIO; not yet tested on hardware, no x86_64 host here having a function to spare (D214's Not yet) | yes, nested, on QEMU's edu function (D154, D214), plugged into a run's workload too, as a user not root, by group and by device node (D214, at 8928fbe4) | refused: its APIs assign no PCI function, Virtualization's one passthrough a USB device's (D154, PM M403) | at its start, given the VM's kernel: built where the hypervisor assigns devices (Discrete Device Assignment, D154, d3029698), its E2E waiting on a Windows Server host that assigns one; refused with the hypervisor's own answer where it assigns none (PM M401, M402). A workload's, at its start or plugged in behind the guest's IOMMU: refused with WHP's limit, no I/O address space of the guest's (D154). Plugged in outside the IOMMU (D214's VMM path): refused, Windows documenting a function given a VM as it starts alone (`WHP_NO_PLUG`, D214) |
 | A running microVM saved whole, and resumed (D176 parts 1-5) | yes | yes | yes | yes |
-| Moved to another machine, saved (D176 part 6) | yes, between two homes of one machine (PM M460; CI's runners, migrate-e2e.yml); between two machines built, not yet run | yes, nested, between two homes: tests/moved.rs's saved moves (D154's L1 harness) | built, its CPU checked as macOS names its features (PM M460); measured on KVM x86_64 alone; between two Macs not yet run | yes between two homes, a volume's guest owners moved as its guest sees them (`server::guest`): tests/moved.rs on CI's windows-2025 and on jupiter; between two machines built, not yet run |
+| Moved to another machine, saved (D176 part 6) | yes, between two homes of one machine (PM M460; CI's runners, migrate-e2e.yml), and from adacachy2 to adacachy (PM M497); each carried item's test of another machine (7a's step 5) owed, both ways | yes, nested, between two homes: tests/moved.rs's saved moves (D154's L1 harness); no two hosts here | yes between two homes (PM M462), its CPU baseline (D245, PM M497); between two Macs, a CPU lacking a feature refused at `ready` (PM M460); with a baseline, and the tests of another machine, owed | yes between two homes, a volume's guest owners moved as its guest sees them (`server::guest`): tests/moved.rs on CI's windows-2025 and on jupiter; to KVM, refused as another hypervisor's (7a's step 5), owed |
 | Moved live (D176 part 7) | yes, between two homes of one machine (PM M461; CI's runners, migrate-e2e.yml); between two machines built, not yet run | yes, nested, between two homes: each writable slot's dirty bitmap (`KVM_GET_DIRTY_LOG`), which takes the ITS's writes too; tests/moved.rs's live moves (D154's L1 harness) | built, its guest's writes watched at stage 2 as D25's recorder watches them; measured on KVM x86_64 alone; between two Macs not yet run | yes between two homes, by WHP's dirty page tracking (`WHvQueryGpaRangeDirtyBitmap`): tests/moved.rs's live tests on CI's windows-2025 (CI 42329593544 at 51a709e9, e0ed0673) and on jupiter, windows-2022 restoring no snapshot (PM M345); between two machines built, not yet run |
 | Contexts, both sides, the machine's listener, enrollments and relays (D180) | yes | yes | yes | yes (part 3k) |
 | Keyless signing, its SPIFFE provider (D126) | yes | yes | yes | yes, by the Workload API's named pipe |
@@ -12096,13 +12096,24 @@ appending to a file it holds open in its volume, from the volume's directory: ea
 once there, in order), `a_moved_microvms_log_and_image_go_with_it` (an image no registry
 holds, saved and loaded) and `a_move_refused_leaves_the_microvm_running_here`
 (tests/moved.rs); between two machines (run to another home of the same machine, each
-passing on HVF and KVM, PM M462; across two machines not yet; each skips, saying so,
-where `SHARDS_MOVE_INVITE` names no machine) by `a_microvm_moves_to_another_host_saved_and_live`
+passing on HVF and KVM, PM M462, and across two KVM x86-64 machines, PM M497; each skips,
+saying so, where `SHARDS_MOVE_INVITE` names no machine) by `a_microvm_moves_to_another_host_saved_and_live`
 (tests/moved.rs, to the machine whose invitation `SHARDS_MOVE_INVITE` names: saved, with a
 volume and its image and files going with it, and live, a guest stamping 16 MiB as it moves)
 and `a_volumes_guest_owners_move_with_it` (owners, modes, an attribute, a symlink, a device
 node and a name no Windows name holds, the guest's `tree` of its volume the same there; to
-the `SHARDS_MOVE_INVITE` machine, a Windows one among them, else between two homes), with
+the `SHARDS_MOVE_INVITE` machine, a Windows one among them, else between two homes); each
+item it carries, across two hosts, by
+`a_microvm_moved_to_another_host_keeps_its_cpu_image_files_and_connections` (told the two
+machines' CPU baseline, its guest's CPUs the same there; its image by its digest; the
+snapshot it moved as alone, and no more files sent than it has; an exec and a stop's
+SIGTERM there; a run with no key answered its name alone),
+`a_volume_shared_here_moves_to_another_host_with_one_and_the_other_goes_on_here`,
+`a_moved_microvms_published_port_answers_on_another_host` (at the port the machine moved to
+bound, at its address; on `SHARDS_MOVE_PORT` where given) and
+`a_move_another_host_cannot_take_is_refused_before_anything_moves` (another architecture or
+hypervisor, else a CPU short of its baseline, refused at `ready`, nothing sent, it going on
+here), written, not yet run (7a's step 5); with
 the unit tests of `server::guest`, `server`'s `a_guests_files_show_it_the_same_copied_as_they_move`
 and moves.rs's `a_volumes_files_move_as_its_guest_saw_them`, and to be measured there by
 `docs/research/measurements/migrate/two-hosts.sh` (PM M460 its method).
@@ -12269,6 +12280,19 @@ machine passed across them (PM M497). Not yet measured: the Studios' slow Wi-Fi 
 build (193 kB/s on 2026-11-08, their kiln runners restarting within the hour, each ending
 the listening daemon its run held, PM M462), the levels packing settles at there, and the
 longest silence each connection lived through, which says whether 100 s is enough.
+
+**Where part 6 stands** (roadmap item 7a, 2026-11-13). Built, as above, with each step's
+unit tests and clippy run on one host as it landed; its record, and its account against
+R01-R16, are docs/research/measurements/migrate/README.md. Run on real microVMs: between
+two homes on KVM x86-64 (PM M497), on KVM arm64 in the nested L1 guest (the parity audit's
+row 16), on Hypervisor.framework (PM M462, M497) and on WHP x86-64 (CI's windows-2025 and
+jupiter, rows 14 and 16); between two machines, KVM x86-64 from adacachy2 to adacachy
+(PM M497), and between two Macs the refusals of a CPU lacking a feature (PM M460, M462).
+Owed, the record's run sheet: the tests of another machine for each item a move carries,
+on KVM x86-64 both ways, between two Macs with a baseline, and WHP x86-64 to KVM refused;
+`light-gate.sh`'s mutants M11-M15; the key made anew where a run lands and named in the
+move's answer, once a restore takes a managed scope (D238); between two Linux arm64 KVM
+hosts and from Windows arm64, no machines here.
 
 **Moved live** (part 7, roadmap item 7b). `shards move vm --live NAME CONTEXT` moves it as
 it runs, by pre-copy (Clark et al., "Live Migration of Virtual Machines", NSDI 2005): its
@@ -22880,12 +22904,25 @@ reboots, driver updates or hot plug; a device's own identity does.
   (`HeldDriver`): unheld, each context loaded the driver anew, and NVIDIA's static-TLS
   library could not load at a VM's 19th (Hex's measurement).
 
-**Literals.** `MAX_PHYSICAL_GPUS`, 65,536, a u16's every index: the render server transport's
-own bound on a context's identities (`VIRGL_DEVICE_UUID_MAX_COUNT`, `1 + UINT16_MAX`), which
-bounds that message's payload; it came from Hex's scheduler's u16 device index, and is owed a
-derivation of shards' own (R03). `GPU_NAME_BYTES`, 256: Vulkan's
-`VK_MAX_PHYSICAL_DEVICE_NAME_SIZE`. The probe's byte bounds are its encoding's longest lines
-for the count (`probe.rs`). Snapshot format 29.
+**Literals.** `MAX_PHYSICAL_GPUS`, 65,536: the renderer's patches' bound, `1 + UINT16_MAX`,
+from Hex's scheduler's u16 device index, to which they hold a context's selection
+(`VIRGL_DEVICE_UUID_MAX_COUNT`, physical-transport-*.patch) and, for a selected context, the
+host's Vulkan devices and device groups (`VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT`,
+physical-*.patch). Shards takes no selection its renderer refuses, so its own checks hold the
+same figure (`check_selection`, `probe_bytes`, the join's and `host_visible`'s host counts,
+format 29's reader, `--gpu-device`). Below it a count is bounded by what carries it: a
+receipt's by the device lines its own bytes hold, each at least its UUID's 32 hex digits and
+its end, before anything is reserved for them (`probe.rs`); a snapshot's by its remaining
+bytes (`codec::Reader::seq`); and, once the VM process enumerates the host's GPUs, by those,
+each named once (`selection::resolve`). The figure is still owed its derivation (R03): the
+protocol's own bounds are Vulkan's `uint32_t` counts, for which every patch already
+allocates overflow-checked, and the transport's `uint32_t byte_count` over its 33-byte
+stride (`UINT32_MAX / 33`, 130,150,524, which `virgl_device_selection_payload_size` already
+checks). Moving to them changes the C patches, which only a renderer build and a real GPU can
+check: owed to ROOT, with `MAX_PHYSICAL_GPUS` following in the same change.
+`GPU_NAME_BYTES`, 256: Vulkan's `VK_MAX_PHYSICAL_DEVICE_NAME_SIZE`. The probe's byte bounds
+are its encoding's longest lines for the count, the count as wide as `MAX_PHYSICAL_GPUS`
+(`probe.rs`, derived from it). Snapshot format 29.
 
 **Windows on arm64 (plan step 2's step 3; Hex's one vendored change, upstreamed).** `gpu_target`
 takes `aarch64-pc-windows-msvc`, and scripts/gpu-libs builds the renderer, libepoxy and the
@@ -22928,6 +22965,14 @@ running a Vulkan program 30 times; the seven-target lint.
 
 **What would falsify it.** A driver whose device UUIDs change within a boot (then rejoin per
 context); GPUs Vulkan cannot tell apart by UUID.
+
+**Review (plan step 2), GPU.** docs/research/measurements/hex-upstream-v1/review-gpu.md: each
+commit read against R01–R16. Fixed (d7c9938ec, d27cd59b0): a receipt's count bounded by its
+bytes before anything is reserved for it; restore's own valued flags in the VM-flag grammar
+(`spec::RESTORE_VALUED`), so that a value is no flag there; the held driver in `Venus`'s
+`Send` safety; `Properties`' size checked as it compiles. Owed to ROOT: the figure's
+derivation above, selection refusals typed across the VM process's boundary, and the real-GPU
+runs.
 
 ### D233. A client that contains its own VM processes launches them through its native owner (built; real-VM validation owed)
 
