@@ -377,6 +377,10 @@ fn ram_ranges(memory_mib: u64) -> Result<(u64, Vec<(u64, usize)>), String> {
 /// `gpu`, whether it has a GPU, and its window's length: as its renderer offers, where
 /// `Some(0)`, a boot's; that long, a restore's, where its renderer offers at least as much
 /// (D150, D201).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a boot's CPU baseline (D243) beside the machine's config, which a snapshot keeps without one"
+)]
 fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,

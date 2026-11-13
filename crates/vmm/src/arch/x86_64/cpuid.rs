@@ -838,8 +838,11 @@ mod covers_tests {
             ])
         };
         let (cet, fp8, steal) = (1 << 11, 1 << 4, 1 << 5);
-        let more = host(0x100 | cet, 0x2 | fp8, 0x1_0afb | steal);
-        let less = host(0x100, 0x2, 0x1_0afb);
+        // Some of KVM's paravirtual features (cpuid.rst's flags 0-16), steal time not one.
+        let paravirt = 0x1_4edb;
+        assert_eq!(paravirt & steal, 0);
+        let more = host(0x100 | cet, 0x2 | fp8, paravirt | steal);
+        let less = host(0x100, 0x2, paravirt);
         assert_eq!(more.len(), 4, "identity keeps each leaf: {more:?}");
         assert_eq!(
             covers(&less, &more),
