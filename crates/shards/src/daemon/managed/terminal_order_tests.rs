@@ -85,7 +85,6 @@ impl Fixture {
                 transport_bytes: u64::try_from(capacity + shards_remote::managed::DATA_HEAD).unwrap(),
                 handshake_bytes: HANDSHAKE_BYTES,
                 datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
-                patience: deadline.remaining(),
             },
         )
         .unwrap();

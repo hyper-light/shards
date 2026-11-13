@@ -57,7 +57,6 @@ pub struct DriverLimits {
     pub connections: usize,
     pub command_slots: usize,
     pub queued_datagram_bytes: usize,
-    pub handshake_patience: Duration,
 }
 
 impl<C> std::fmt::Debug for Sender<C> {
@@ -221,7 +220,8 @@ pub trait Handler {
     /// Why a connection ended, as QUIC told it (RFC 9000 §20, RFC 9001 §4.8), just before
     /// [`Handler::lost`] tells of it: for a handler that types its peer's refusals, which
     /// `lost`'s words and application code do not carry. Nothing, by default; a connection
-    /// whose handshake ran out of patience ([`DriverLimits::handshake_patience`]) has none.
+    /// whose handshake ran out past the slowest seen from its peer has none, and one taken for
+    /// dead at use ([`Liveness::look`]) is QUIC's `TimedOut`.
     fn cause(&mut self, _conn: ConnKey, _error: &ConnectionError) {}
     /// A connection whose handshake has not ended sent another probe (RFC 9002 §6.2): `probes`
     /// datagrams in all, `waited` since it began. Its handshake waits on, with no deadline of its
@@ -822,10 +822,6 @@ pub struct Driver<H: Handler> {
     /// The shortest silence after which a connection on its peer's path was found dead: where
     /// there is one, a connection is kept alive within it.
     lost: Option<Duration>,
-    /// Whether it checks each established connection's liveness at use (a context's link, whose
-    /// transport has no idle timer of its own); a bounded driver's owner holds its own to the
-    /// patience it admitted.
-    checked: bool,
     /// The one peer its socket is connected to, where it was aimed ([`Driver::aim`]): an ICMP
     /// port-unreachable then reads as that peer's refusal.
     aimed: Option<SocketAddr>,
@@ -840,13 +836,13 @@ pub struct Driver<H: Handler> {
 }
 
 /// How a driver holds its connections: its handshakes' deadline, the slowest answer they start
-/// from, the silence they are kept alive within, and whether their liveness is checked at use.
+/// from, and the silence they are kept alive within. Every established connection's liveness
+/// is checked at use, its transport having no idle timer of its own.
 #[derive(Debug, Clone, Copy)]
 struct Held {
     handshake: Option<Duration>,
     answer: Duration,
     lost: Option<Duration>,
-    checked: bool,
 }
 
 impl<H: Handler> Driver<H> {
@@ -865,7 +861,6 @@ impl<H: Handler> Driver<H> {
             handshake: known.handshake_deadline(),
             answer: path.map_or(Duration::ZERO, |p| p.answer),
             lost: path.and_then(|p| p.lost),
-            checked: true,
         };
         Self::bind_with_limits(at, server, handler, None, held)
     }
@@ -882,11 +877,13 @@ impl<H: Handler> Driver<H> {
                 "endpoint capacity cannot hold its protocol state and one datagram",
             ));
         }
+        // Its peers are never reached before (a managed endpoint and its owner meet once): their
+        // handshakes wait as long as their probing goes on, and their sends are judged by
+        // liveness at use, as a context's are.
         let held = Held {
-            handshake: Some(limits.handshake_patience),
+            handshake: None,
             answer: Duration::ZERO,
             lost: None,
-            checked: false,
         };
         Self::bind_with_limits(at, server, handler, Some(limits), held)
     }
@@ -944,7 +941,6 @@ impl<H: Handler> Driver<H> {
                 handshake: held.handshake,
                 answer: held.answer,
                 lost: held.lost,
-                checked: held.checked,
                 aimed: None,
                 wake,
                 slots: None,
@@ -1057,8 +1053,10 @@ impl<H: Handler> Driver<H> {
                 Err(e) => return Err(Error::new(format!("the driver's sockets: {e}"))),
             };
             if woken {
-                // Every wake that came: the commands they tell of are the next turn's.
+                // Every wake that came, and the commands they tell of served before what came on
+                // the socket meanwhile, as each was sent before it (one socket's order before).
                 while self.wake.recv_from(&mut datagram).is_ok() {}
+                self.commands_now(Instant::now());
             }
             // A socket aimed at its peer is read whatever its wait said, so that its peer's
             // refusal is read as it comes where the wait does not tell an error (WSAPoll).
@@ -1181,6 +1179,17 @@ impl<H: Handler> Driver<H> {
         match self.endpoint.handle(now, from, None, None, bytes, &mut response) {
             Some(DatagramEvent::NewConnection(incoming)) => {
                 if self.stopping || self.limits.is_some_and(|l| self.conns.len() >= l.connections) {
+                    // Its places taken, each connection holding one is asked for an answer (a
+                    // PING), so that one whose peer is gone is found so at this use of its
+                    // place, a whole window unanswered past its probe timeout, and the place is
+                    // free for a newcomer's next attempt; this one is refused.
+                    if !self.stopping {
+                        for conn in self.conns.values_mut() {
+                            if conn.connected && !conn.quic.is_closed() {
+                                conn.quic.ping();
+                            }
+                        }
+                    }
                     if let Some(transmit) = self.endpoint.refuse(incoming, &mut response) {
                         self.queue_datagram(
                             transmit.destination,
@@ -1308,7 +1317,7 @@ impl<H: Handler> Driver<H> {
                 self.client = io.client;
                 continue;
             }
-            if !self.checked || !conn.connected {
+            if !conn.connected {
                 continue;
             }
             conn.liveness.probe_timeout(conn.quic.probe_timeout());
@@ -1490,7 +1499,7 @@ impl<H: Handler> Driver<H> {
     }
 
     fn next_timer(&mut self) -> Option<Instant> {
-        let (checked, lost) = (self.checked, self.lost);
+        let lost = self.lost;
         self.conns
             .values_mut()
             .filter_map(|c| {
@@ -1498,7 +1507,7 @@ impl<H: Handler> Driver<H> {
                     return c.quic.poll_timeout();
                 }
                 let handshake = c.liveness.due();
-                let (liveness, keep) = match checked && c.connected {
+                let (liveness, keep) = match c.connected {
                     true => (
                         c.liveness.next(),
                         keep_within(lost, c.quic.idle_timeout()).and_then(|k| c.liveness.keep_alive(k)),

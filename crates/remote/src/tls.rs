@@ -117,21 +117,6 @@ impl Known {
     }
 }
 
-/// Longest an established connection goes unheard before it is taken for dead: its
-/// transport's idle timeout (RFC 9000 §10.1, `max_idle_timeout`), which every packet its peer
-/// sends restarts, each acknowledgment of the bytes it carries among them, so that a
-/// connection lives while its peer is heard and ends this long after it last was. TCP's own
-/// floor for giving up on data it sent and has heard nothing of, RFC 1122 §4.2.3.5's R2, "at
-/// least 100 seconds" (Linux waits 924.6 s by default, ip-sysctl `tcp_retries2`): the TCP
-/// beside a move on a 2.4 GHz Wi-Fi link carried its bytes on where this bound at an earlier
-/// build's 10 s lost 2 moves of 20 mid-send, one "timed out" here and one "reset by peer" (its
-/// daemon had let it go first, RFC 9000 §10.3), the link working throughout (D176 part 6). Each
-/// move logs the longest silence its connection lived through (`Seen`), the evidence this
-/// bound is held to. The peer's bound counts too, as a connection takes the lesser of the
-/// two (RFC 9000 §10.1): a daemon of an earlier build ends one at 10 s, held by its own
-/// keep-alive.
-pub const QUIET: Duration = Duration::from_secs(100);
-
 /// The provider of every shards QUIC link, a context's and the managed output's: hyper-quic's
 /// node provider (aws-lc-rs, the hybrid post-quantum groups alone) narrowed to
 /// TLS13_AES_256_GCM_SHA384, as Ada directed on 2026-11-11 ("all such communications should be
@@ -190,21 +175,6 @@ fn certified(identity: &Identity) -> Result<CertifiedKey, Error> {
         vec![CertificateDer::from(identity.spki().to_vec())],
         signing,
     ))
-}
-
-/// How long a connection held to `bound` of silence, its idle timeout (RFC 9000 §10.1), goes
-/// unheard before it sends a keep-alive, a PING for which its peer restarts its own idle timer
-/// (§10.1.2): a quarter of `bound`. §10.1 makes an idle timeout last at least three probe
-/// timeouts, for "multiple probes to be sent and lost, prior to idle timeout"; held to that
-/// rule, `bound` takes three keep-alives, a quarter, a half and three quarters of it after the
-/// last packet either way (quinn-proto restarts the interval at each packet sent or received),
-/// and no more, as unneeded PINGs cost (§10.1.2). A live peer is lost only if all three are, or
-/// a stall of three quarters of `bound` holds either side up; a dead one is let go at most a
-/// quarter of `bound` past it, as only the first packet sent since the last one heard restarts
-/// this side's own timer (§10.1). focal's transport keeps its connections so (../focal
-/// crates/focal-wire transport.rs), and D180's were from the start.
-pub(crate) fn keep_alive(bound: Duration) -> Duration {
-    bound / 4
 }
 
 /// The transport both sides of a context's link run: no idle timeout of its own (RFC 9000

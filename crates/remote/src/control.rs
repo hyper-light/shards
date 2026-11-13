@@ -368,8 +368,8 @@ impl std::fmt::Debug for Endpoint {
 impl Endpoint {
     /// Binds at `at` the endpoint of the microVM whose key is `vm`, which `controller` alone
     /// reaches, serving `streams`. Every value of its transport is its streams' (D238): each
-    /// lane's windows as its endpoint of one stream's, summed, the connection's patience the
-    /// least they admitted and its handshake and datagrams the most.
+    /// lane's windows as its endpoint of one stream's, summed, and its handshake and datagrams
+    /// the most they admitted; its liveness judged at use, as D180's links are.
     pub fn bind(
         vm: &Identity,
         controller: Fingerprint,
@@ -441,7 +441,6 @@ impl Endpoint {
                 // (Lanes::turn): one pending covers them all.
                 command_slots: 1,
                 queued_datagram_bytes: link.datagram_bytes,
-                handshake_patience: link.patience,
             },
         )?;
         let address = driver.local()?;
@@ -539,7 +538,6 @@ fn admitted(streams: Streams<'_>) -> Result<(Admitted, Windows), managed::Error>
             Some(link) => Admitted {
                 handshake_bytes: link.handshake_bytes.max(admitted.handshake_bytes),
                 datagram_bytes: link.datagram_bytes.max(admitted.datagram_bytes),
-                patience: link.patience.min(admitted.patience),
                 ..link
             },
         });
@@ -1102,8 +1100,7 @@ mod tests {
     use super::*;
     use crate::handshake::{Side, connect};
 
-    /// How long a test waits for what it awaits: a patience of its own, shorter than
-    /// [`tls::QUIET`].
+    /// How long a test waits for what it awaits: a patience of its own.
     const PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 
     fn transport(serves: bool) -> TransportConfig {
@@ -1404,7 +1401,6 @@ mod tests {
                 // RFC 8446 §4: a handshake message's uint24 length and its four-byte head.
                 handshake_bytes: (1 << 24) - 1 + 4,
                 datagram_bytes: managed::DATAGRAM_BYTES,
-                patience: PATIENCE,
             }
         }
 
@@ -1692,7 +1688,6 @@ mod tests {
                         connections: 1,
                         command_slots: 16,
                         queued_datagram_bytes: managed::DATAGRAM_BYTES,
-                        handshake_patience: PATIENCE,
                     },
                 )
                 .unwrap();
@@ -2057,14 +2052,11 @@ mod tests {
 
         /// The endpoint's windows are its streams' own: each lane's as its endpoint of one
         /// stream bounds it, summed, the per-stream window the largest; one stream each; a
-        /// refusal's frame for each stream; the least patience and the largest handshake.
+        /// refusal's frame for each stream; the largest handshake.
         #[test]
         fn its_windows_are_its_streams_own_summed() {
             let out = admitted(100, 100 + DATA_HEAD);
-            let slow = Admitted {
-                patience: tls::QUIET,
-                ..admitted(50, input::TAKEN_BYTES)
-            };
+            let slow = admitted(50, input::TAKEN_BYTES);
             let (link, windows) = super::super::admitted(Streams {
                 outputs: &[(output(Channel::Stdout), out), (output(Channel::Stderr), out)],
                 inputs: &[(stdin(), slow)],
@@ -2082,7 +2074,6 @@ mod tests {
                     streams: 3,
                 }
             );
-            assert_eq!(link.patience, PATIENCE);
             assert_eq!(link.handshake_bytes, out.handshake_bytes);
             // An endpoint of no stream still has its control lane (D252): the cited link, and
             // no stream's window; it binds, serving its control lane alone.
@@ -2093,10 +2084,7 @@ mod tests {
                 sockets: None,
             })
             .unwrap();
-            assert_eq!(
-                (bare.handshake_bytes, bare.patience),
-                (unix::HANDSHAKE_MOST, tls::QUIET)
-            );
+            assert_eq!(bare.handshake_bytes, unix::HANDSHAKE_MOST);
             assert_eq!(
                 nothing,
                 Windows {
@@ -3022,14 +3010,11 @@ mod tests {
 
         /// The controller's windows are its lanes' own, from the endpoint's admissions, the
         /// control lane's among them: what the endpoint sends on each before it is read,
-        /// summed; what it sends on each, summed; no stream the endpoint may open; the least
-        /// patience and the largest handshake.
+        /// summed; what it sends on each, summed; no stream the endpoint may open; the largest
+        /// handshake.
         #[test]
         fn the_controllers_windows_are_its_lanes_own_summed() {
-            let slow = Admitted {
-                patience: tls::QUIET,
-                ..admitted(50, input::TAKEN_BYTES)
-            };
+            let slow = admitted(50, input::TAKEN_BYTES);
             let (link, windows) = super::super::drive::windows(Subscriptions {
                 outputs: &[
                     (output(Channel::Stdout), out_admitted(), 0),
@@ -3057,7 +3042,7 @@ mod tests {
                     streams: 0,
                 }
             );
-            assert_eq!(link.patience, PATIENCE);
+            assert_eq!(link.handshake_bytes, slow.handshake_bytes);
             // A controller of no stream still opens its control lane (D252), on the cited link.
             let (bare, control) = super::super::drive::windows(Subscriptions {
                 outputs: &[],
@@ -3066,10 +3051,7 @@ mod tests {
                 sockets: None,
             })
             .unwrap();
-            assert_eq!(
-                (bare.handshake_bytes, bare.patience),
-                (unix::HANDSHAKE_MOST, tls::QUIET)
-            );
+            assert_eq!(bare.handshake_bytes, unix::HANDSHAKE_MOST);
             assert!(control.connection > 0 && control.send > 0, "{control:?}");
         }
     }
