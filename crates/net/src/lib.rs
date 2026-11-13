@@ -16,6 +16,8 @@ mod dial;
 /// The answers its resolver gives a network's members (D46): shards-dns, shared with the
 /// agents' resolver in the guest (D181).
 pub use shards_dns as dns;
+pub mod hpack;
+pub mod http2;
 pub mod inject;
 pub mod lease;
 pub mod pktinfo;
