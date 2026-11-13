@@ -1048,7 +1048,7 @@ pub fn template(
     ) + &pmem(cfg)
         + &plug(cfg)
         + &swap(cfg)
-        + gpu(cfg)
+        + &gpu(cfg)
         + JOIN_SHARE
         + &share_window(cfg)
         + &cpu_baseline(cfg)
@@ -1077,9 +1077,19 @@ fn cpu_baseline(cfg: &Config) -> String {
 /// a join disk: in its key, so that none saved without one is restored as one with it.
 const JOIN_SHARE: &str = "join share\n";
 
-/// A GPU's template (D150), in its key where it has one.
-fn gpu(cfg: &Config) -> &'static str {
-    if cfg.gpu { "gpu\n" } else { "" }
+/// A GPU's template (D150), in its key where it has one, and the host GPUs it renders on where
+/// its run names them (D232), which its snapshot keeps and its restores rejoin: a template
+/// saved on one selection is none of another's. The keys of those that name none stay as
+/// they were.
+fn gpu(cfg: &Config) -> String {
+    if !cfg.gpu {
+        return String::new();
+    }
+    if cfg.gpu_devices.is_empty() {
+        return "gpu\n".into();
+    }
+    let named: Vec<String> = cfg.gpu_devices.iter().map(ToString::to_string).collect();
+    format!("gpu\ngpu devices {}\n", named.join(","))
 }
 
 /// A template's memory to plug (D148), in its key where it has any.
@@ -1124,6 +1134,21 @@ fn shares(cfg: &Config) -> String {
     }
     let _ = cfg;
     String::new()
+}
+
+/// The guest of a run given its GPU: `guest`'s init with the pinned GPU kernel at `kernel`
+/// (D144), keyed by that kernel's digest, whose templates are its own, saved before its guest
+/// made anything of the GPU's, which its host driver would hold (D150): the daemon's runs'
+/// and an orchestrator's alike (D253).
+pub fn gpu_guest(guest: &Guest, kernel: &Path) -> Guest {
+    Guest {
+        kernel: kernel.to_path_buf(),
+        init: guest.init.clone(),
+        kernel_digest: crate::kernel::KERNEL_GPU
+            .map(|k| format!("sha256:{}", k.sha256))
+            .unwrap_or_default(),
+        init_digest: guest.init_digest.clone(),
+    }
 }
 
 /// How a run's microVM is made beside its guest, as every microVM a run boots is made, the
@@ -1247,6 +1272,11 @@ pub fn boot_args(cfg: &Config, rootfs: &Path, save: Option<&Path>, link: &str) -
     }
     if cfg.gpu {
         args.push("--gpu".into());
+    }
+    // The host GPUs it renders on, where its run names them (D232), in `--gpu-device`'s
+    // grammar.
+    for device in &cfg.gpu_devices {
+        args.extend(["--gpu-device".into(), device.to_string().into()]);
     }
     for f in &cfg.vfio {
         let flag = if f.iommu { "--vfio-iommu" } else { "--vfio" };
