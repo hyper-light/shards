@@ -2271,17 +2271,28 @@ mod tests {
         name: &str,
         suites: Option<Vec<rustls::SupportedCipherSuite>>,
     ) -> ClientConnection {
+        guest_offering(trusts, name, suites, &[])
+    }
+
+    /// A guest's TLS client as `guest` makes it, offering the application protocols `alpn`.
+    fn guest_offering(
+        trusts: CertificateDer<'static>,
+        name: &str,
+        suites: Option<Vec<rustls::SupportedCipherSuite>>,
+        alpn: &[&[u8]],
+    ) -> ClientConnection {
         let mut roots = rustls::RootCertStore::empty();
         roots.add(trusts).unwrap();
         let mut provider = aws_lc_rs::default_provider();
         if let Some(suites) = suites {
             provider.cipher_suites = suites;
         }
-        let config = ClientConfig::builder_with_provider(Arc::new(provider))
+        let mut config = ClientConfig::builder_with_provider(Arc::new(provider))
             .with_safe_default_protocol_versions()
             .unwrap()
             .with_root_certificates(roots)
             .with_no_client_auth();
+        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
         let mut c =
             ClientConnection::new(Arc::new(config), ServerName::try_from(name.to_string()).unwrap()).unwrap();
         c.set_buffer_limit(None);
@@ -3388,6 +3399,443 @@ mod tests {
                     .leases
                     .held(&access_reference(), Instant::now())
                     .is_none()
+        );
+    }
+
+    // HTTP/2 through the injector (#74 step 7 slice (b)): a guest and a host that speak it, each
+    // an end written over http2.rs and hpack.rs, as no HTTP/2 crate is in the tree.
+
+    use crate::hpack::{self, Indexing};
+    use crate::http2::{self, End, Holds};
+    use std::collections::BTreeMap;
+
+    /// What an HTTP/2 end in a test read.
+    #[derive(Debug)]
+    enum Event {
+        Headers {
+            stream: u32,
+            fields: Vec<hpack::Field>,
+            end: bool,
+        },
+        Data {
+            stream: u32,
+            bytes: Vec<u8>,
+            end: bool,
+        },
+        Rst {
+            stream: u32,
+            code: u32,
+        },
+        GoAway {
+            last: u32,
+            code: u32,
+        },
+    }
+
+    /// One end of an HTTP/2 connection: its hop, what it has read and not framed, a block being
+    /// read, the DATA it is to send as its peer's windows let it, and what it has to write. It
+    /// gives credit back for DATA as it reads it, and holds its peer to its windows.
+    struct Peer {
+        hop: http2::Hop,
+        end: End,
+        inbox: Vec<u8>,
+        preface: bool,
+        block: Option<http2::Block>,
+        sending: BTreeMap<u32, (Vec<u8>, bool)>,
+        out: Vec<u8>,
+        events: Vec<Event>,
+    }
+
+    impl Peer {
+        fn new(end: End, holds: Holds) -> Peer {
+            let hop = http2::Hop::new(holds, 4096);
+            let mut out = Vec::new();
+            hop.preface(end, &mut out);
+            Peer {
+                hop,
+                end,
+                inbox: Vec::new(),
+                preface: end == End::Client,
+                block: None,
+                sending: BTreeMap::new(),
+                out,
+                events: Vec::new(),
+            }
+        }
+
+        fn feed(&mut self, bytes: &[u8]) {
+            self.inbox.extend_from_slice(bytes);
+            if !self.preface {
+                if self.inbox.len() < http2::PREFACE.len() {
+                    return;
+                }
+                assert!(self.inbox.starts_with(http2::PREFACE), "no client preface");
+                self.inbox.drain(..http2::PREFACE.len());
+                self.preface = true;
+            }
+            let most = http2::Settings::INITIAL.max_frame_size;
+            while let Some((head, payload)) = http2::frame(&self.inbox, most).unwrap() {
+                let payload = payload.to_vec();
+                self.inbox.drain(..http2::HEAD + payload.len());
+                self.frame(head, &payload);
+            }
+            self.pump();
+        }
+
+        fn frame(&mut self, head: http2::Head, payload: &[u8]) {
+            if let Some(mut block) = self.block.take() {
+                if block.continued(head, payload, usize::MAX).unwrap() {
+                    self.decoded(block);
+                } else {
+                    self.block = Some(block);
+                }
+                return;
+            }
+            match head.kind {
+                http2::SETTINGS => self.hop.settings(head, payload, &mut self.out).unwrap(),
+                http2::WINDOW_UPDATE => self.hop.window_update(head, payload).unwrap(),
+                http2::PING if head.flags & http2::ACK == 0 => http2::ping_ack(payload, &mut self.out),
+                http2::HEADERS => {
+                    let (block, whole) = http2::Block::headers(head, payload).unwrap();
+                    if whole {
+                        self.decoded(block);
+                    } else {
+                        self.block = Some(block);
+                    }
+                }
+                http2::DATA => {
+                    self.hop.received(head).unwrap();
+                    let bytes = http2::data(head, payload).unwrap().to_vec();
+                    self.hop.released(head.stream, head.length as usize, &mut self.out);
+                    self.events.push(Event::Data {
+                        stream: head.stream,
+                        bytes,
+                        end: head.flags & http2::END_STREAM != 0,
+                    });
+                }
+                http2::RST_STREAM => self.events.push(Event::Rst {
+                    stream: head.stream,
+                    code: http2::word(payload, 0).unwrap(),
+                }),
+                http2::GOAWAY => self.events.push(Event::GoAway {
+                    last: http2::word(payload, 0).unwrap(),
+                    code: http2::word(payload, 4).unwrap(),
+                }),
+                http2::PUSH_PROMISE => panic!("a push, with push off"),
+                _ => {}
+            }
+        }
+
+        fn decoded(&mut self, block: http2::Block) {
+            let fields = match block.decode(&mut self.hop.decoder, usize::MAX).unwrap() {
+                hpack::Decoded::Fields(f) => f,
+                other => panic!("{other:?}"),
+            };
+            self.events.push(Event::Headers {
+                stream: block.stream,
+                fields,
+                end: block.end_stream,
+            });
+        }
+
+        fn send_headers(&mut self, stream: u32, fields: &[hpack::Field], end: bool) {
+            let mut block = Vec::new();
+            self.hop.encoder.encode(fields, &mut block);
+            http2::headers(stream, &block, end, self.hop.peer.max_frame_size, &mut self.out);
+        }
+
+        fn send_data(&mut self, stream: u32, bytes: &[u8], end: bool) {
+            let entry = self.sending.entry(stream).or_default();
+            entry.0.extend_from_slice(bytes);
+            entry.1 |= end;
+            self.pump();
+        }
+
+        fn pump(&mut self) {
+            let streams: Vec<u32> = self.sending.keys().copied().collect();
+            for stream in streams {
+                let (bytes, end) = self.sending.remove(&stream).unwrap();
+                let n = self.hop.send_data(stream, &bytes, end, &mut self.out);
+                if n < bytes.len() {
+                    self.sending.insert(stream, (bytes[n..].to_vec(), end));
+                }
+            }
+        }
+
+        fn take_out(&mut self) -> Vec<u8> {
+            std::mem::take(&mut self.out)
+        }
+
+        /// A stream's response: its final head's fields, its data, and whether it ended.
+        fn response(&self, stream: u32) -> (Vec<(Vec<u8>, Vec<u8>)>, Vec<u8>, bool) {
+            let (mut fields, mut data, mut ended) = (Vec::new(), Vec::new(), false);
+            for e in &self.events {
+                match e {
+                    Event::Headers { stream: s, fields: f, end } if *s == stream => {
+                        if fields.is_empty() {
+                            fields = f.iter().map(|f| (f.name.clone(), f.value.to_vec())).collect();
+                        }
+                        ended |= end;
+                    }
+                    Event::Data { stream: s, bytes, end } if *s == stream => {
+                        data.extend_from_slice(bytes);
+                        ended |= end;
+                    }
+                    _ => {}
+                }
+            }
+            (fields, data, ended)
+        }
+    }
+
+    fn field(name: &str, value: &[u8]) -> hpack::Field {
+        hpack::Field::new(name.as_bytes(), value, Indexing::Incremental)
+    }
+
+    fn value_of<'f>(fields: &'f [(Vec<u8>, Vec<u8>)], name: &str) -> Option<&'f [u8]> {
+        fields.iter().find(|(n, _)| n == name.as_bytes()).map(|(_, v)| &v[..])
+    }
+
+    /// What the HTTP/2 test host had of a request: its fields as its decoder read them, how each
+    /// was sent too, and its body.
+    struct H2Had {
+        fields: Vec<hpack::Field>,
+        body: Vec<u8>,
+    }
+
+    /// The test host's windows: small, so that a large body meets them on each stream and on the
+    /// connection.
+    const HOST_HOLDS: Holds = Holds {
+        stream: 4096,
+        connection: 65_535,
+    };
+
+    /// An HTTPS server speaking HTTP/2 alone (ALPN `h2`), its windows `HOST_HOLDS`, answering
+    /// each request once it has ended: `:status` 200, an `x-echo` of its Authorization, and DATA
+    /// of its Authorization, a newline and its body; telling the test what it had.
+    fn h2_host(root: &CertifiedIssuer<'static, KeyPair>) -> (SocketAddr, mpsc::Receiver<H2Had>) {
+        let mut config = (*leaf_config(root, &[GRANTED, OTHER])).clone();
+        config.alpn_protocols = vec![b"h2".to_vec()];
+        let config = Arc::new(config);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for tcp in listener.incoming() {
+                let Ok(tcp) = tcp else { return };
+                let (config, tx) = (config.clone(), tx.clone());
+                std::thread::spawn(move || h2_answer(config, tcp, tx));
+            }
+        });
+        (addr, rx)
+    }
+
+    fn h2_answer(config: Arc<ServerConfig>, tcp: TcpStream, tx: mpsc::Sender<H2Had>) {
+        let mut tls = rustls::StreamOwned::new(ServerConnection::new(config).unwrap(), tcp);
+        let mut peer = Peer::new(End::Server, HOST_HOLDS);
+        let mut requests: BTreeMap<u32, (Vec<hpack::Field>, Vec<u8>)> = BTreeMap::new();
+        let mut buf = vec![0u8; 64 << 10];
+        loop {
+            let out = peer.take_out();
+            if !out.is_empty() && (tls.write_all(&out).is_err() || tls.flush().is_err()) {
+                return;
+            }
+            let n = match tls.read(&mut buf) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            peer.feed(&buf[..n]);
+            for event in std::mem::take(&mut peer.events) {
+                let (stream, end) = match event {
+                    Event::Headers { stream, fields, end } => {
+                        requests.entry(stream).or_default().0 = fields;
+                        (stream, end)
+                    }
+                    Event::Data { stream, bytes, end } => {
+                        requests.entry(stream).or_default().1.extend_from_slice(&bytes);
+                        (stream, end)
+                    }
+                    _ => continue,
+                };
+                if !end {
+                    continue;
+                }
+                let (fields, body) = requests.remove(&stream).unwrap();
+                let auth = fields
+                    .iter()
+                    .find(|f| f.name == b"authorization")
+                    .map(|f| f.value.to_vec())
+                    .unwrap_or_default();
+                peer.send_headers(stream, &[field(":status", b"200"), field("x-echo", &auth)], false);
+                peer.send_data(stream, &[&auth[..], b"\n", &body].concat(), true);
+                let _ = tx.send(H2Had { fields, body });
+            }
+        }
+    }
+
+    /// The guest's windows: small too, so that a large response meets them.
+    const GUEST_HOLDS: Holds = Holds {
+        stream: 8192,
+        connection: 65_535,
+    };
+
+    /// A request's fields as a guest sends them, its Authorization indexed, as RFC 7541 §7.1.3
+    /// lets a client.
+    fn h2_request(method: &str, authority: &str, path: &str, authorization: Option<&str>) -> Vec<hpack::Field> {
+        let mut fields = vec![
+            field(":method", method.as_bytes()),
+            field(":scheme", b"https"),
+            field(":authority", authority.as_bytes()),
+            field(":path", path.as_bytes()),
+        ];
+        if let Some(a) = authorization {
+            fields.push(field("authorization", a.as_bytes()));
+        }
+        fields
+    }
+
+    /// Turns the bench with an HTTP/2 guest until `done`, every byte the guest read kept in
+    /// `seen`, leases answered as they are asked.
+    fn h2_until(
+        bench: &mut Bench,
+        peer: &mut Peer,
+        seen: &mut Vec<u8>,
+        credentials: &mut Credentials,
+        done: impl Fn(&Peer) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done(peer) {
+            assert!(Instant::now() < deadline, "no end: the guest read {:?}", peer.events);
+            let out = peer.take_out();
+            if !out.is_empty() {
+                bench.guest.writer().write_all(&out).unwrap();
+            }
+            let moved = bench.turn(credentials);
+            if !bench.got.is_empty() {
+                let got = std::mem::take(&mut bench.got);
+                seen.extend_from_slice(&got);
+                peer.feed(&got);
+            }
+            if lease_all(credentials) > 0 {
+                for r in credentials.leases.resumed() {
+                    assert_eq!(r.waiter, bench.waiter);
+                }
+                bench.step(credentials, None, |f, run, q| f.resume(run, q));
+            } else if !moved {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    fn h2_bench(credentials: &Credentials, addr: SocketAddr) -> (Bench, Peer) {
+        let guest = guest_offering(
+            credentials.ca.der().to_vec().into(),
+            GRANTED,
+            None,
+            &[b"h2", b"http/1.1"],
+        );
+        (Bench::new(guest, addr), Peer::new(End::Client, GUEST_HOLDS))
+    }
+
+    /// Do: a guest offering `h2` and `http/1.1` sends a host speaking HTTP/2 alone, on one
+    /// connection, stream 1 with the credential's placeholder as a bearer token (indexed, as the
+    /// guest's encoder chose) and stream 3 at once with a body of 1 MiB and no credential, both
+    /// hops' windows small; then stream 5 with the placeholder again. Expect: HTTP/2 on both hops;
+    /// stream 1 arriving with the value in its Authorization, sent never indexed (RFC 7541
+    /// §7.1.3), its echo in a field and in DATA back to the guest masked with the placeholder's
+    /// bytes, the value never reaching the guest; stream 3's body arriving and coming back as it
+    /// was sent; stream 5 never indexed again; one lease asked and each fill audited.
+    #[test]
+    fn an_h2_guests_granted_stream_arrives_filled_never_indexed_and_its_echo_comes_back_masked() {
+        let root = root("shards test root");
+        let (addr, had) = h2_host(&root);
+        let mut credentials = credentials(&root);
+        let (mut bench, mut peer) = h2_bench(&credentials, addr);
+        let mut seen = Vec::new();
+        let bearer = format!("Bearer {PLACEHOLDER}");
+        let body: Vec<u8> = (0..1u32 << 20).map(|i| (i % 251) as u8).collect();
+        peer.send_headers(1, &h2_request("POST", GRANTED, "/v1/messages", Some(&bearer)), false);
+        peer.send_data(1, b"hello", true);
+        peer.send_headers(3, &h2_request("PUT", GRANTED, "/upload", None), false);
+        peer.send_data(3, &body, true);
+        h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, |p| {
+            p.response(1).2 && p.response(3).2
+        });
+        assert_eq!(bench.guest.alpn_protocol(), Some(&b"h2"[..]), "the guest was not served HTTP/2");
+        let mut arrived: Vec<H2Had> = (0..2).map(|_| had.recv_timeout(Duration::from_secs(10)).unwrap()).collect();
+        arrived.sort_by_key(|h| h.body.len());
+        let auth = arrived[0].fields.iter().find(|f| f.name == b"authorization").unwrap();
+        assert_eq!(&auth.value[..], &[b"Bearer ", VALUE].concat()[..]);
+        assert_eq!(auth.indexing, Indexing::Never, "the credential was not sent never indexed");
+        assert_eq!(arrived[0].body, b"hello");
+        assert!(arrived[1].body == body, "the large body changed on its way");
+        let masked = [b"Bearer ", &echo_mask()[..]].concat();
+        let (fields, data, _) = peer.response(1);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        assert_eq!(value_of(&fields, "x-echo"), Some(&masked[..]), "the echo in a field was not masked");
+        assert_eq!(data, [&masked[..], b"\nhello"].concat(), "the echo in DATA was not masked");
+        let (_, data, _) = peer.response(3);
+        assert!(data == [b"\n", &body[..]].concat(), "the large body came back changed");
+        assert!(!holds(&seen, VALUE), "the value reached the guest");
+        // The same connection's next stream: its value in no table of either hop.
+        peer.send_headers(5, &h2_request("GET", GRANTED, "/v1/models", Some(&bearer)), true);
+        h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, |p| p.response(5).2);
+        let five = had.recv_timeout(Duration::from_secs(10)).unwrap();
+        let auth = five.fields.iter().find(|f| f.name == b"authorization").unwrap();
+        assert_eq!((&auth.value[..], auth.indexing), (&[b"Bearer ", VALUE].concat()[..], Indexing::Never));
+        assert!(!holds(&seen, VALUE), "the value reached the guest");
+        assert!(credentials.leases.asks().is_empty(), "a held lease was asked again");
+        assert_eq!(bench.audit.len(), 2, "{:?}", bench.audit);
+        assert!(bench.audit.iter().all(|a| (a.host.as_str(), a.reference.as_str(), a.what) == (GRANTED, CLAUDE, Did::Filled)));
+    }
+
+    /// Do: on one HTTP/2 connection to the granted host, stream 1 for another host (granted
+    /// another credential) carrying the placeholder, and stream 3 for the granted host. Expect:
+    /// stream 1 answered 421 by the injector on that stream alone, nothing of it reaching the host
+    /// and nothing leased; stream 3 answered by the host on the same connection (RFC 9110 §7.4).
+    #[test]
+    fn an_h2_stream_for_another_host_is_answered_421_while_another_completes() {
+        let root = root("shards test root");
+        let (addr, had) = h2_host(&root);
+        let mut credentials = credentials(&root);
+        let (mut bench, mut peer) = h2_bench(&credentials, addr);
+        let mut seen = Vec::new();
+        let bearer = format!("Bearer {PLACEHOLDER}");
+        peer.send_headers(1, &h2_request("GET", OTHER, "/", Some(&bearer)), true);
+        peer.send_headers(3, &h2_request("GET", GRANTED, "/v1/models", None), true);
+        h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, |p| {
+            p.response(1).2 && p.response(3).2
+        });
+        assert_eq!(bench.guest.alpn_protocol(), Some(&b"h2"[..]));
+        let (fields, data, _) = peer.response(1);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"421"[..]));
+        assert!(String::from_utf8_lossy(&data).contains("RFC 9110 §7.4"), "{data:?}");
+        let (fields, _, _) = peer.response(3);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        let one = had.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(one.fields.iter().any(|f| f.name == b":path" && &f.value[..] == b"/v1/models"));
+        assert!(had.recv_timeout(Duration::from_millis(200)).is_err(), "a misdirected stream reached the host");
+        assert!(credentials.leases.asks().is_empty() && bench.audit.is_empty());
+        assert!(!bench.closed, "the connection ended with its 421");
+    }
+
+    /// Do: a guest offering `h2` and `http/1.1` sends a granted host that speaks HTTP/1.1 alone
+    /// (no ALPN) a request with the placeholder. Expect: the guest served HTTP/1.1, its request
+    /// arriving filled as any HTTP/1.1 request's.
+    #[test]
+    fn a_guest_offering_h2_to_an_http_1_1_host_is_served_http_1_1() {
+        let root = root("shards test root");
+        let (addr, had) = echo(echo_config(&root), false);
+        let mut credentials = credentials(&root);
+        let (mut bench, _) = h2_bench(&credentials, addr);
+        let request =
+            format!("GET / HTTP/1.1\r\nHost: {GRANTED}\r\nx-api-key: {PLACEHOLDER}\r\n\r\n").into_bytes();
+        bench.guest.writer().write_all(&request).unwrap();
+        bench.until(&mut credentials, true, |b| whole(&b.got));
+        assert_eq!(bench.guest.alpn_protocol(), Some(&b"http/1.1"[..]));
+        assert_eq!(
+            had.recv_timeout(Duration::from_secs(10)).unwrap().request,
+            swapped(&request, PLACEHOLDER.as_bytes(), VALUE)
         );
     }
 }

@@ -8,8 +8,8 @@
 //! one hop's encoded bytes reaches the other. Every bound here is the protocol's (§4.2, §6.5.2,
 //! §6.9) or a value its caller derives from what it holds; none is chosen here (R03).
 //!
-//! Like inject.rs it holds no socket and reads no clock. Its caller, the injector's connection,
-//! is the next slice.
+//! Like inject.rs it holds no socket and reads no clock. Its caller is inject.rs' `H2`, an
+//! injected flow whose two hops chose `h2` (RFC 7301, RFC 9113 §3.2).
 
 use std::collections::BTreeMap;
 use std::ops::{Range, RangeInclusive};
@@ -28,7 +28,11 @@ pub const HEAD: usize = 9;
 // Frame types (§6) and their flags.
 pub const DATA: u8 = 0x0;
 pub const HEADERS: u8 = 0x1;
+pub const RST_STREAM: u8 = 0x3;
 pub const SETTINGS: u8 = 0x4;
+pub const PUSH_PROMISE: u8 = 0x5;
+pub const PING: u8 = 0x6;
+pub const GOAWAY: u8 = 0x7;
 pub const WINDOW_UPDATE: u8 = 0x8;
 pub const CONTINUATION: u8 = 0x9;
 pub const END_STREAM: u8 = 0x1;
@@ -47,9 +51,14 @@ const FRAME_SIZES: RangeInclusive<u32> = (1 << 14)..=(1 << 24) - 1;
 /// An error code (§7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Code {
+    NoError = 0x0,
     Protocol = 0x1,
+    Internal = 0x2,
     FlowControl = 0x3,
+    StreamClosed = 0x5,
     FrameSize = 0x6,
+    RefusedStream = 0x7,
+    Cancel = 0x8,
     Compression = 0x9,
     EnhanceYourCalm = 0xb,
 }
@@ -69,7 +78,7 @@ pub struct Error {
     pub why: &'static str,
 }
 
-fn connection(code: Code, why: &'static str) -> Error {
+pub fn connection(code: Code, why: &'static str) -> Error {
     Error {
         scope: Scope::Connection,
         code,
@@ -95,7 +104,7 @@ impl Head {
 }
 
 /// A stream identifier's 31 bits; the reserved bit is ignored as it is read (§4.1).
-const MOST_STREAM: u32 = (1 << 31) - 1;
+pub const MOST_STREAM: u32 = (1 << 31) - 1;
 
 /// The first whole frame of `bytes`: its header and payload, none until it is whole. One longer
 /// than `most`, this side's SETTINGS_MAX_FRAME_SIZE, is a connection error FRAME_SIZE_ERROR (§4.2).
@@ -125,6 +134,9 @@ pub struct Settings {
     pub header_table_size: u32,
     pub initial_window_size: u32,
     pub max_frame_size: u32,
+    /// SETTINGS_MAX_CONCURRENT_STREAMS: none until the peer says one, "initially, there is no
+    /// limit" (§6.5.2).
+    pub max_concurrent_streams: Option<u32>,
 }
 
 impl Settings {
@@ -132,6 +144,7 @@ impl Settings {
         header_table_size: 4096,
         initial_window_size: INITIAL_WINDOW,
         max_frame_size: 1 << 14,
+        max_concurrent_streams: None,
     };
 
     /// A SETTINGS frame's parameters, each six octets, applied in order (§6.5.1); one unknown,
@@ -148,6 +161,7 @@ impl Settings {
             match u16::from_be_bytes([i0, i1]) {
                 0x1 => self.header_table_size = value,
                 0x2 if value > 1 => return Err(connection(Code::Protocol, "SETTINGS_ENABLE_PUSH past 1")),
+                0x3 => self.max_concurrent_streams = Some(value),
                 0x4 if i64::from(value) > MOST_WINDOW => {
                     return Err(connection(
                         Code::FlowControl,
@@ -242,6 +256,15 @@ pub struct Holds {
     pub connection: u32,
 }
 
+/// Which end of a hop this side is (§3.4): the client sends the connection preface's octets
+/// first, and with them turns server push off (§6.5.2, SETTINGS_ENABLE_PUSH 0), as the injector
+/// passes no pushed response on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum End {
+    Client,
+    Server,
+}
+
 /// One hop of an injected HTTP/2 flow, the injector one end of it: what its peer says of itself,
 /// each side's windows, the credit this side owes back, and the field compression each way, none
 /// of it shared with the other hop (§4.3.1, §6.9).
@@ -281,11 +304,17 @@ impl Hop {
         }
     }
 
-    /// What this side says first (§3.4, §6.5, §6.9.2): its SETTINGS_INITIAL_WINDOW_SIZE where it
-    /// holds other than the initial window on a stream, then a WINDOW_UPDATE growing the
-    /// connection's from its initial 65,535 to what it holds, which only that frame can.
-    pub fn preface(&self, out: &mut Vec<u8>) {
+    /// What this side says first (§3.4, §6.5, §6.9.2): as the client, the preface's octets and
+    /// SETTINGS_ENABLE_PUSH 0; its SETTINGS_INITIAL_WINDOW_SIZE where it holds other than the
+    /// initial window on a stream, then a WINDOW_UPDATE growing the connection's from its initial
+    /// 65,535 to what it holds, which only that frame can.
+    pub fn preface(&self, end: End, out: &mut Vec<u8>) {
         let mut settings = Vec::new();
+        if end == End::Client {
+            out.extend_from_slice(PREFACE);
+            settings.extend_from_slice(&0x2u16.to_be_bytes());
+            settings.extend_from_slice(&0u32.to_be_bytes());
+        }
         if self.holds.stream != INITIAL_WINDOW {
             settings.extend_from_slice(&0x4u16.to_be_bytes());
             settings.extend_from_slice(&self.holds.stream.to_be_bytes());
@@ -490,6 +519,64 @@ fn put(out: &mut Vec<u8>, head: Head, payload: &[u8]) {
     out.extend_from_slice(payload);
 }
 
+/// A DATA frame's data, its padding taken off (§6.1): padding of the whole payload or more is a
+/// connection error PROTOCOL_ERROR.
+pub fn data(head: Head, payload: &[u8]) -> Result<&[u8], Error> {
+    if head.flags & PADDED == 0 {
+        return Ok(payload);
+    }
+    let (&pad, rest) = payload
+        .split_first()
+        .ok_or(connection(Code::FrameSize, "a padded DATA frame of no length"))?;
+    rest.len()
+        .checked_sub(usize::from(pad))
+        .and_then(|end| rest.get(..end))
+        .ok_or(connection(Code::Protocol, "padding past a DATA frame's data"))
+}
+
+/// A RST_STREAM ending `stream` with `code` (§6.4), onto `out`.
+pub fn rst_stream(stream: u32, code: u32, out: &mut Vec<u8>) {
+    let head = Head {
+        length: 4,
+        kind: RST_STREAM,
+        flags: 0,
+        stream,
+    };
+    put(out, head, &code.to_be_bytes());
+}
+
+/// A GOAWAY naming `last`, the last stream of the peer's this side processed or may, and `code`
+/// (§6.8), onto `out`.
+pub fn goaway(last: u32, code: u32, out: &mut Vec<u8>) {
+    let head = Head {
+        length: 8,
+        kind: GOAWAY,
+        flags: 0,
+        stream: 0,
+    };
+    put(out, head, &[(last & MOST_STREAM).to_be_bytes(), code.to_be_bytes()].concat());
+}
+
+/// A PING's ACK, its payload as it came (§6.7), onto `out`.
+pub fn ping_ack(payload: &[u8], out: &mut Vec<u8>) {
+    let head = Head {
+        length: 8,
+        kind: PING,
+        flags: ACK,
+        stream: 0,
+    };
+    put(out, head, payload);
+}
+
+/// A frame payload's first four octets as a number: RST_STREAM's error code (§6.4), GOAWAY's
+/// last stream (its reserved bit cleared) and error code (§6.8).
+pub fn word(payload: &[u8], at: usize) -> Option<u32> {
+    let &[a, b, c, d] = payload.get(at..at.checked_add(4)?)? else {
+        return None;
+    };
+    Some(u32::from_be_bytes([a, b, c, d]))
+}
+
 /// A field block as its frames come (§4.3, §6.2, §6.10): a HEADERS frame's fragment, then its
 /// CONTINUATIONs, on its stream alone, until END_HEADERS. Wiped as it drops.
 #[derive(Debug)]
@@ -532,6 +619,11 @@ impl Block {
             fragment: Zeroizing::new(fragment.to_vec()),
         };
         Ok((block, head.flags & END_HEADERS != 0))
+    }
+
+    /// The octets of its fragments held.
+    pub fn held(&self) -> usize {
+        self.fragment.len()
     }
 
     /// A frame after an unfinished block's: a CONTINUATION on its stream (§6.10), else a
@@ -1121,7 +1213,7 @@ mod tests {
         };
         let mut hop = Hop::new(granted, 4096);
         let mut out = Vec::new();
-        hop.preface(&mut out);
+        hop.preface(End::Server, &mut out);
         assert_eq!(frames(&out), [(SETTINGS, 0, 0, 6), (WINDOW_UPDATE, 0, 0, 4)]);
         assert!(holds(&out, &settings(&[(0x4, 40_000)])));
         assert!(holds(&out, &(100_000u32 - 65_535).to_be_bytes()));
