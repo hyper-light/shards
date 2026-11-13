@@ -43,8 +43,8 @@ pub mod exec;
 pub mod unix;
 pub use crate::tls::Negotiated;
 pub use drive::{
-    Controller, Dialed, Exec, ExecControl, Execs, Fault, Got, Hangup, Input, Link, Linked, McpConnection,
-    Output, Socket, SocketReader, SocketWriter, Sockets, Subscriptions,
+    Controller, Dialed, Exec, ExecControl, Execs, Fault, Got, Granted, Hangup, Input, Link, Linked,
+    McpConnection, Output, Socket, SocketReader, SocketWriter, Sockets, Subscriptions,
 };
 pub use unix::Admission as SocketAdmission;
 
@@ -2973,6 +2973,31 @@ mod tests {
                     bytes: b"twice".to_vec()
                 }
             );
+        }
+
+        /// What a controller was granted as it dialed is named as Shards names its lanes (goal
+        /// 60's `lanes`): its control lane, then each subscription's stream in its order; an
+        /// exec's, a socket's and an MCP bridge's names where they are granted.
+        #[test]
+        fn a_dials_lanes_are_named_as_granted() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let serving = Serving::bind(&vm, kiln.fingerprint());
+            let (outputs, inputs) = all(0);
+            let (dialed, _driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                    execs: None,
+                    sockets: None,
+                },
+            );
+            let names: Vec<String> = dialed.lanes().iter().map(Granted::name).collect();
+            assert_eq!(names, ["control", "stdout:0", "stderr:0", "stdin:0"]);
+            let others = [Granted::Execs, Granted::Sockets, Granted::Mcp(2)].map(|g| g.name());
+            assert_eq!(others, ["exec", "socket", "mcp:2"]);
         }
 
         /// A revoked output ends its lane alone, `Revoked`; an aborted stdin ends with its

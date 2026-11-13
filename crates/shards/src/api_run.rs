@@ -81,6 +81,11 @@ fn host(answers: &Answers) -> Result<(), No> {
         Ok(Some((wire::to_host::CREATE, payload))) => {
             wire::Request::decode(&payload).map_err(|e| No(Cause::Request, e.to_string()))?
         }
+        // A warm host's exemplar (D253's pools): its run comes once its microVM is ready.
+        Ok(Some((wire::to_host::WARM, payload))) => {
+            let exemplar = wire::Request::decode(&payload).map_err(|e| No(Cause::Request, e.to_string()))?;
+            return hosted::warm(answers, &exemplar, input);
+        }
         Ok(Some((kind, _))) => {
             return Err(No(
                 Cause::Request,
@@ -1378,7 +1383,9 @@ mod hosted {
         input: io::Stdin,
     ) -> Result<(), No> {
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
-        let plan = plan(request, ready_by, &home)?;
+        let shaped = shape(request, &home)?;
+        let made = shaped.made.clone();
+        let plan = plan(request, ready_by, shaped).inspect_err(|_| end(&home, None, &made))?;
         launch_and_serve(answers, input, &home, plan)
     }
 
@@ -1456,8 +1463,29 @@ mod hosted {
         }
     }
 
-    fn plan(request: &wire::Request, ready_by: Option<u64>, home: &Path) -> Result<Plan, No> {
-        let mut run = as_run(request, ready_by);
+    /// What a run's microVM is made of, made before it starts (D253): its image prepared, its
+    /// network chosen and its volumes open, its microVM composed. All of it a warm run host
+    /// makes of its exemplar before its run asks (D253's pools), from what alone the runs of
+    /// one microVM share (`wire::Request::exemplar`): never a member's stages, the run's
+    /// deadline or its control ask.
+    struct Shaped {
+        run: shards_ipc::Run,
+        prepared: crate::run::Prepared,
+        agentfile: Option<crate::agentfile::Agentfile>,
+        labels: Vec<String>,
+        active: Vec<u32>,
+        egress: Option<Vec<u8>>,
+        credentials: Option<Vec<u8>>,
+        bridge: Option<shards_net::bridge::Bridge>,
+        points: Vec<crate::volumes::MountPoint>,
+        opened: crate::volumes::Opened,
+        made: Vec<String>,
+        server: Option<PathBuf>,
+        microvm: super::Microvm,
+    }
+
+    fn shape(request: &wire::Request, home: &Path) -> Result<Shaped, No> {
+        let mut run = as_run(request, None);
         let say = |line: &str| {
             let _ = writeln!(io::stderr(), "{line}");
         };
@@ -1491,19 +1519,9 @@ mod hosted {
                 ),
             ));
         }
-        let members = super::members_of(&labels, &active);
-        let staged = super::staged(request, &members)?;
-        let inputs = super::inputs(request, &members)?;
-        let terminals = super::terminals(request, &members)?;
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
         let egress = super::network(agentfile.as_ref(), request, &mut run)?;
         let credentials = super::credentials(&request.credentials, egress.as_deref())?;
-        let mut nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
-        // The run's GPUs, its command's to read under the grant (D234's `gpus=`), as its VM
-        // process binds them (D232).
-        if let crate::agentfile::Nesting::Granted(grant) = &mut nesting {
-            grant.gpus = request.gpu_devices.clone();
-        }
         let bridge = if run.network == "bridge" {
             Some(
                 shards_net::bridge::elected_here(&mut |note| say(&note))
@@ -1512,15 +1530,6 @@ mod hosted {
         } else {
             None
         };
-        // Its published ports, bound now, as dockerd's allocator binds them (D31).
-        let (bindings, alone) = publish::wanted(&run, &prepared.exposed);
-        if let Some(e) = publish::unsupported(&bindings) {
-            return Err(No(Cause::Request, e));
-        }
-        let bound = publish::bind(&bindings, &alone, None, publish::v6_listenable(), |_, _| {
-            publish::InUse::Host
-        })
-        .map_err(no(Cause::Boot))?;
         // Its volumes: each share at its path as `-v` puts it, given where the image's
         // `VOLUME` there is for a member (D109), each other `VOLUME` a volume of the store.
         let store = crate::volumes::Store::new(home);
@@ -1537,13 +1546,114 @@ mod hosted {
         )
         .map_err(no(Cause::Boot))?;
         let points: Vec<crate::volumes::MountPoint> = points.into_iter().map(|(p, _)| p).collect();
-        let made = points
+        let made: Vec<String> = points
             .iter()
             .filter(|p| p.kind == "volume" && store.get(&p.name).is_some_and(|v| v.anonymous))
             .map(|p| p.name.clone())
             .collect();
-        let opened = crate::volumes::open_for(&points, true, &store, &crate::volumes::Access::default())
-            .map_err(no(Cause::Boot))?;
+        // What it made goes where what follows fails, as `--rm`'s volumes go.
+        let rest = || -> Result<_, No> {
+            let opened = crate::volumes::open_for(&points, true, &store, &crate::volumes::Access::default())
+                .map_err(no(Cause::Boot))?;
+            // The in-VM server's device after its root filesystem, where its image is an
+            // Agentfile's (D60).
+            let server = match &agentfile {
+                Some(_) => Some(crate::guest::server_device(home).map_err(no(Cause::Boot))?),
+                None => None,
+            };
+            // Its microVM, made as every run's is, the daemon's alike, so that its template is
+            // the one a daemon's run of the same shape saves and restores (D253): its size, the
+            // home's CPU baseline (D176 part 6), the host's memory to plug, the in-VM server's
+            // and the emulator's devices, a slot and a DAX window for each share (D38, D189), PCI
+            // slots (D214) and its bridge.
+            let cpu_baseline = crate::daemon::home_baseline(home);
+            let share_window_mib =
+                crate::daemon::share_window_mib(&|line| say(line)).map_err(no(Cause::Boot))?;
+            let shares = u32::try_from(opened.dirs.len())
+                .map_err(|_| No(Cause::Request, "more shares than a microVM counts".into()))?;
+            let shape = crate::run::Shape {
+                size: prepared.size,
+                cpu_baseline: &cpu_baseline,
+                host_memory: crate::build::host_memory(),
+                server: server.as_deref(),
+                emulator: prepared.emulator.as_ref(),
+                shares,
+                share_window_mib,
+                max_map_count: crate::daemon::max_map_count(),
+                pci_slots: crate::daemon::pci_slots(),
+                bridge: bridge.as_ref(),
+            };
+            let microvm = super::microvm(
+                home,
+                &prepared,
+                &shape,
+                &request.gpu_devices,
+                shards_vmm::vm::restores_here(),
+            );
+            if microvm.cfg.init.is_none() {
+                return Err(No(Cause::Boot, "no init to boot".into()));
+            }
+            Ok((opened, server, microvm))
+        };
+        let (opened, server, microvm) = rest().inspect_err(|_| end(home, None, &made))?;
+        Ok(Shaped {
+            run,
+            prepared,
+            agentfile,
+            labels,
+            active,
+            egress,
+            credentials,
+            bridge,
+            points,
+            opened,
+            made,
+            server,
+            microvm,
+        })
+    }
+
+    /// The run `request`, its deadline `ready_by`, of its microVM `shaped`: its members'
+    /// stages, its published ports bound, its nesting grant decided, its setup and spec.
+    fn plan(request: &wire::Request, ready_by: Option<u64>, shaped: Shaped) -> Result<Plan, No> {
+        let Shaped {
+            mut run,
+            mut prepared,
+            agentfile,
+            labels,
+            active,
+            egress,
+            credentials,
+            bridge,
+            points,
+            opened,
+            made,
+            server,
+            microvm,
+        } = shaped;
+        run.ready_by = ready_by;
+        let say = |line: &str| {
+            let _ = writeln!(io::stderr(), "{line}");
+        };
+        let members = super::members_of(&labels, &active);
+        let staged = super::staged(request, &members)?;
+        let inputs = super::inputs(request, &members)?;
+        let terminals = super::terminals(request, &members)?;
+        let mut nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
+        // The run's GPUs, its command's to read under the grant (D234's `gpus=`), as its VM
+        // process binds them (D232).
+        if let crate::agentfile::Nesting::Granted(grant) = &mut nesting {
+            grant.gpus = request.gpu_devices.clone();
+        }
+        // Its published ports, bound now, as dockerd's allocator binds them (D31).
+        let (bindings, alone) = publish::wanted(&run, &prepared.exposed);
+        if let Some(e) = publish::unsupported(&bindings) {
+            return Err(No(Cause::Request, e));
+        }
+        let bound = publish::bind(&bindings, &alone, None, publish::v6_listenable(), |_, _| {
+            publish::InUse::Host
+        })
+        .map_err(no(Cause::Boot))?;
         // Its setup, as the daemon composes a run's (daemon.rs `start`): its mounts, its
         // capabilities beside its domains, its security, its domains' filter, its managed
         // output, what it stages, its members' ends asked for, and its own command or
@@ -1554,43 +1664,6 @@ mod hosted {
         if let Some(a) = agentfile.as_ref().filter(|a| a.domains > 0 && a.uplink) {
             setup.retain(|e| !e.starts_with(b"caps="));
             setup.push(format!("caps={}", a.caps(&run)).into_bytes());
-        }
-        // The in-VM server's device after its root filesystem, where its image is an
-        // Agentfile's (D60).
-        let server = match &agentfile {
-            Some(_) => Some(crate::guest::server_device(home).map_err(no(Cause::Boot))?),
-            None => None,
-        };
-        // Its microVM, made as every run's is, the daemon's alike, so that its template is
-        // the one a daemon's run of the same shape saves and restores (D253): its size, the
-        // home's CPU baseline (D176 part 6), the host's memory to plug, the in-VM server's
-        // and the emulator's devices, a slot and a DAX window for each share (D38, D189), PCI
-        // slots (D214) and its bridge.
-        let cpu_baseline = crate::daemon::home_baseline(home);
-        let share_window_mib = crate::daemon::share_window_mib(&|line| say(line)).map_err(no(Cause::Boot))?;
-        let shares = u32::try_from(opened.dirs.len())
-            .map_err(|_| No(Cause::Request, "more shares than a microVM counts".into()))?;
-        let shape = crate::run::Shape {
-            size: prepared.size,
-            cpu_baseline: &cpu_baseline,
-            host_memory: crate::build::host_memory(),
-            server: server.as_deref(),
-            emulator: prepared.emulator.as_ref(),
-            shares,
-            share_window_mib,
-            max_map_count: crate::daemon::max_map_count(),
-            pci_slots: crate::daemon::pci_slots(),
-            bridge: bridge.as_ref(),
-        };
-        let microvm = super::microvm(
-            home,
-            &prepared,
-            &shape,
-            &request.gpu_devices,
-            shards_vmm::vm::restores_here(),
-        );
-        if microvm.cfg.init.is_none() {
-            return Err(No(Cause::Boot, "no init to boot".into()));
         }
         let version = crate::guest::version_of(&microvm.cfg.kernel).map_err(no(Cause::Boot))?;
         crate::setup::security_setup(&mut setup, &run, version, None, &[], nesting.grant())
@@ -1763,12 +1836,50 @@ mod hosted {
         shards_vmm::platform::open_dir(&at).map_err(|e| format!("{}: {e}", at.display()))
     }
 
+    /// What a run's VM is launched from (`launch`): its microVM and what of the run its
+    /// processes are handed, a run's plan's or its microVM's shape's alike (D253's pools).
+    struct Launch<'a> {
+        prepared: &'a crate::run::Prepared,
+        dirs: &'a [(OwnedFd, bool, OsString)],
+        bridge: Option<&'a shards_net::bridge::Bridge>,
+        /// Whether its network process makes its run's credential grants (D242).
+        credentials: bool,
+        server: Option<&'a Path>,
+        microvm: &'a super::Microvm,
+    }
+
+    impl Plan {
+        fn launch(&self) -> Launch<'_> {
+            Launch {
+                prepared: &self.prepared,
+                dirs: &self.dirs,
+                bridge: self.bridge.as_ref(),
+                credentials: self.credentials.is_some(),
+                server: self.server.as_deref(),
+                microvm: &self.microvm,
+            }
+        }
+    }
+
+    impl Shaped {
+        fn launch(&self) -> Launch<'_> {
+            Launch {
+                prepared: &self.prepared,
+                dirs: &self.opened.dirs,
+                bridge: self.bridge.as_ref(),
+                credentials: self.credentials.is_some(),
+                server: self.server.as_deref(),
+                microvm: &self.microvm,
+            }
+        }
+    }
+
     /// The run's processes, started as the daemon starts a run's VM (launch.rs): its share
     /// process, ended where its VM does not start; then its network process, denying all
     /// until its policy comes, and its VM, the way its template says (D253, `super::started`):
     /// restoring it, or booting and saving it, one that does not restore replaced. On Windows
     /// each is made in a job of this process's that ends them as it ends (D141, D197).
-    fn launch(home: &Path, plan: &Plan) -> Result<Launched, No> {
+    fn launch(home: &Path, plan: &Launch<'_>) -> Result<Launched, No> {
         let boot = |e: String| No(Cause::Boot, e);
         // Made before any process of the run's, and held until each is reaped.
         #[cfg(windows)]
@@ -1778,12 +1889,12 @@ mod hosted {
         let tags = run_tags(plan.dirs.len());
         #[cfg(unix)]
         let shares = (!plan.dirs.is_empty())
-            .then(|| start_shares(home, &plan.dirs, Some(&tags)))
+            .then(|| start_shares(home, plan.dirs, Some(&tags)))
             .transpose()
             .map_err(boot)?;
         #[cfg(windows)]
         let shares = (!plan.dirs.is_empty())
-            .then(|| start_shares(home, &plan.dirs, &job, Some(&tags)))
+            .then(|| start_shares(home, plan.dirs, &job, Some(&tags)))
             .transpose()
             .map_err(boot)?;
         let started = crate::helpers::vm().map_err(boot).and_then(|vm| {
@@ -1824,7 +1935,7 @@ mod hosted {
     /// writable layer's file (D190); its template's record and files (D253).
     struct Host<'a> {
         home: &'a Path,
-        plan: &'a Plan,
+        plan: &'a Launch<'a>,
         vm: &'a Path,
         ends: &'a Ends,
         #[cfg(windows)]
@@ -1850,12 +1961,12 @@ mod hosted {
                     .is_ok_and(|net| net.is_some()),
                 _ => true,
             };
-            let network = match (&plan.bridge, wired) {
+            let network = match (plan.bridge, wired) {
                 (Some(bridge), true) => Some(crate::launch::Network {
                     policy: shards_net::Policy::DenyAll,
                     mac: shards_net::random_mac().map_err(|e| format!("a guest's MAC: {e}"))?,
                     bridge,
-                    credentials: plan.credentials.is_some(),
+                    credentials: plan.credentials,
                 }),
                 _ => None,
             };
@@ -1876,7 +1987,7 @@ mod hosted {
                 super::Way::Restore { dir } => {
                     // Its backing files as the VM saving its template recorded them: resolved.
                     let rootfs = crate::daemon::resolved(rootfs);
-                    let server = plan.server.as_deref().map(crate::daemon::resolved);
+                    let server = plan.server.map(crate::daemon::resolved);
                     let emulator = plan
                         .prepared
                         .emulator
@@ -2390,12 +2501,140 @@ mod hosted {
     }
 
     fn launch_and_serve(answers: &Answers, input: io::Stdin, home: &Path, plan: Plan) -> Result<(), No> {
-        let boot = |e: String| No(Cause::Boot, e);
         super::say(format_args!(
             "prepared {}, {} vCPUs, {} MiB; starting its VM",
             plan.prepared.image_id, plan.prepared.size.0, plan.prepared.size.1
         ));
-        let mut launched = launch(home, &plan)?;
+        let launched = launch(home, &plan.launch())?;
+        serve_launched(answers, input, home, plan, launched)
+    }
+
+    /// A warm run host (D253's pools): its microVM made of `exemplar` and started, and once
+    /// ready said (`WARMED`); then its run, as it comes (`CREATE`), served as any run of this
+    /// process is, its start said `Warm`. A run of another microVM's than its exemplar's is
+    /// refused `Unfit`, for its orchestrator to start a host of its own for it; its channel
+    /// closed first ends it, its pool having let it go.
+    pub(super) fn warm(answers: &Answers, exemplar: &wire::Request, mut input: io::Stdin) -> Result<(), No> {
+        let home = shards_ipc::home().map_err(no(Cause::Boot))?;
+        let shaped = shape(exemplar, &home)?;
+        let launched = match launch(&home, &shaped.launch()) {
+            Ok(launched) => launched,
+            Err(e) => {
+                end(&home, None, &shaped.made);
+                return Err(e);
+            }
+        };
+        super::say(format_args!(
+            "warm, its VM process {} ready ({:?})",
+            launched.vm.id(),
+            launched.from
+        ));
+        // Its run: its request, the same microVM's, and its deadline from now; none where its
+        // pool let it go.
+        let taken = (|| -> Result<Option<(wire::Request, Option<u64>)>, No> {
+            answers
+                .send(wire::to_client::WARMED, &[&wire::warmed(launched.from)])
+                .map_err(|e| No(Cause::Boot, format!("its orchestrator: {e}")))?;
+            let request = match wire::read_frame(&mut input) {
+                Ok(Some((wire::to_host::CREATE, payload))) => {
+                    wire::Request::decode(&payload).map_err(|e| No(Cause::Request, e.to_string()))?
+                }
+                Ok(Some((kind, _))) => {
+                    return Err(No(
+                        Cause::Request,
+                        format!("message kind {kind} before the run's request"),
+                    ));
+                }
+                Ok(None) => return Ok(None),
+                Err(e) => return Err(No(Cause::Request, format!("the request: {e}"))),
+            };
+            if request.exemplar() != *exemplar {
+                return Err(No(
+                    Cause::Unfit,
+                    "its run asks for another microVM than the one it made ready".into(),
+                ));
+            }
+            let ready_by = super::deadline(request.ready_by, std::time::SystemTime::now())?;
+            Ok(Some((request, ready_by)))
+        })();
+        let made = shaped.made.clone();
+        let (request, ready_by) = match taken {
+            Ok(Some(taken)) => taken,
+            Ok(None) => {
+                end(&home, Some(launched), &made);
+                return Ok(());
+            }
+            Err(e) => {
+                end(&home, Some(launched), &made);
+                return Err(e);
+            }
+        };
+        let plan = match plan(&request, ready_by, shaped) {
+            Ok(plan) => plan,
+            Err(e) => {
+                end(&home, Some(launched), &made);
+                return Err(e);
+            }
+        };
+        let mut launched = launched;
+        launched.from = wire::StartedFrom::Warm;
+        serve_launched(answers, input, &home, plan, launched)
+    }
+
+    /// Ends what of a run was made: its processes, `launched` (its VM killed, then each reaped
+    /// once nothing of this process's holds it up, the share process as its connections to
+    /// the VM close, `Shares::end`; on Windows its job let go of last, which ends whatever of
+    /// them is left); and its anonymous volumes `made`, removed as `--rm`'s are.
+    fn end(home: &Path, launched: Option<Launched>, made: &[String]) {
+        if let Some(Launched {
+            vm,
+            link,
+            net,
+            shares,
+            from: _,
+            held,
+            #[cfg(windows)]
+            job,
+        }) = launched
+        {
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+            let _ = vm.wait();
+            drop(link);
+            // Its template's files, held open while its VM ran (D253).
+            drop(held);
+            let record = Ends::kept_in(home);
+            if let Some((child, control)) = net {
+                drop(control);
+                crate::netproc::reap(&child, &record);
+            }
+            if let Some(shares) = shares {
+                shares.end(&record);
+            }
+            #[cfg(windows)]
+            drop(job);
+        }
+        if !made.is_empty() {
+            let store = crate::volumes::Store::new(home);
+            let _held = crate::volumes::lock();
+            for name in made {
+                if let Err(e) = store.remove(name) {
+                    let _ = writeln!(io::stderr(), "shards api-run: its volume {name}: {e}");
+                }
+            }
+        }
+    }
+
+    /// Serves the run `plan` on its VM, `launched`, ready: its network told, its run handed
+    /// over, its start said, and its run served until it ends; then its processes and volumes
+    /// ended.
+    fn serve_launched(
+        answers: &Answers,
+        input: io::Stdin,
+        home: &Path,
+        plan: Plan,
+        mut launched: Launched,
+    ) -> Result<(), No> {
+        let boot = |e: String| No(Cause::Boot, e);
         super::say(format_args!(
             "its VM process {} is ready ({:?})",
             launched.vm.id(),
@@ -2528,40 +2767,7 @@ mod hosted {
         // connections to the VM close (`Shares::end`); on Windows its job let go of last,
         // which ends whatever of them is left; its anonymous volumes removed, as `--rm`'s
         // are.
-        let Launched {
-            vm,
-            link,
-            net,
-            shares,
-            from: _,
-            held,
-            #[cfg(windows)]
-            job,
-        } = launched;
-        let _ = vm.kill(shards_ipc::signal::SIGKILL);
-        let _ = vm.wait();
-        drop(link);
-        // Its template's files, held open while its VM ran (D253).
-        drop(held);
-        let record = Ends::kept_in(home);
-        if let Some((child, control)) = net {
-            drop(control);
-            crate::netproc::reap(&child, &record);
-        }
-        if let Some(shares) = shares {
-            shares.end(&record);
-        }
-        #[cfg(windows)]
-        drop(job);
-        if !plan.made.is_empty() {
-            let store = crate::volumes::Store::new(home);
-            let _held = crate::volumes::lock();
-            for name in &plan.made {
-                if let Err(e) = store.remove(name) {
-                    let _ = writeln!(io::stderr(), "shards api-run: its volume {name}: {e}");
-                }
-            }
-        }
+        end(home, Some(launched), &plan.made);
         served
     }
 
