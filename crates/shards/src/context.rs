@@ -828,6 +828,7 @@ pub(crate) fn exec_with(
             );
         }
         client::Stall::Answered { .. } => STALLED.store(false, std::sync::atomic::Ordering::SeqCst),
+        client::Stall::Unreached { .. } => {}
     };
     let (ran, seen) = client::exec_with(
         identity,

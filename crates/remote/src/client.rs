@@ -50,6 +50,36 @@ pub enum Stall {
     },
     /// Answered at last, `after` the send it stalled on (`net::RanOut::Answered`).
     Answered { after: std::time::Duration },
+    /// Its handshake not ended `waited` since it began, unheard past what its path has shown
+    /// ([`Told`]): `window`, the slowest handshake seen from it, or none on a path with no
+    /// window. Told once a handshake; it goes on for as long as its caller waits.
+    Unreached {
+        waited: std::time::Duration,
+        window: Option<std::time::Duration>,
+    },
+}
+
+/// Whether a handshake that has not ended has been told its caller as a stall (R04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Told {
+    /// Nothing told of it yet.
+    Not,
+    /// Told once ([`Stall::Unreached`]): nothing more of it is.
+    Once,
+}
+
+impl Told {
+    /// A probe of a handshake on a path known as `known`, `waited` since it began: the stall to
+    /// tell, if any. Each probe past its first flight is told.
+    fn probe(&mut self, _known: tls::Known, waited: std::time::Duration) -> Option<Stall> {
+        Some(Stall::Unreached { waited, window: None })
+    }
+
+    /// Its handshake ran out of its path's window, `waited` since it began
+    /// (`RanOut::Handshake`): the stall to tell, if any.
+    fn ran_out(&mut self, _waited: std::time::Duration, _window: std::time::Duration) -> Option<Stall> {
+        None
+    }
 }
 
 /// What is told of a stall ([`Stall`]).
@@ -860,5 +890,74 @@ mod tests {
             cut.to_string(),
             "a frame out of place (Joined), after the command started: it may have run"
         );
+    }
+
+    fn ms(n: u64) -> std::time::Duration {
+        std::time::Duration::from_millis(n)
+    }
+
+    fn us(n: u64) -> std::time::Duration {
+        std::time::Duration::from_micros(n)
+    }
+
+    /// A daemon reached before, whose slowest handshake was 1.7 ms: its handshake's probes
+    /// within that window are told nothing, however many go (ROOT's KVM run at 21a65b459 on a
+    /// loaded adacachy2: "shards: gpu: no answer yet from 127.0.0.1:44476: 4 probes over
+    /// 424.6µs" on a command's stderr); its run-out past the window is told once, and nothing
+    /// after it, its probes going on (D180, ROOT's ruling A).
+    #[test]
+    fn a_handshake_within_its_paths_window_is_told_nothing_and_once_past_it() {
+        let known = tls::Known::Reached(tls::Path {
+            rtt: us(60),
+            handshake: us(1700),
+            answer: us(900),
+            lost: None,
+        });
+        let mut told = Told::Not;
+        for waited in [us(110), us(220), us(424), us(900)] {
+            assert_eq!(told.probe(known, waited), None, "a probe {waited:?} in");
+        }
+        assert_eq!(
+            told.ran_out(ms(31), us(1700)),
+            Some(Stall::Unreached {
+                waited: ms(31),
+                window: Some(us(1700))
+            })
+        );
+        for waited in [ms(40), ms(80), ms(2000)] {
+            assert_eq!(told.probe(known, waited), None, "a probe {waited:?} in, past its run-out");
+        }
+        assert_eq!(told.ran_out(ms(90), us(1700)), None);
+    }
+
+    /// A path with no window, never reached or whose last wait ran out: its handshake is told
+    /// once its probes have gone past the probe timeout RFC 9002 gives a path with no RTT
+    /// sample (`tls::Known::COLD_PTO`), and once only; a marked path's own short RTT, which
+    /// its probes start from, tells nothing sooner.
+    #[test]
+    fn a_handshake_with_no_window_is_told_once_past_the_cold_probe_timeout() {
+        let marked = tls::Known::RanOut(tls::Path {
+            rtt: us(60),
+            handshake: us(1700),
+            answer: us(900),
+            lost: None,
+        });
+        for known in [tls::Known::Never, marked] {
+            let mut told = Told::Not;
+            for waited in [us(424), ms(30), ms(500), ms(998)] {
+                assert_eq!(told.probe(known, waited), None, "{known:?}: a probe {waited:?} in");
+            }
+            assert_eq!(
+                told.probe(known, ms(1000)),
+                Some(Stall::Unreached {
+                    waited: ms(1000),
+                    window: None
+                }),
+                "{known:?}"
+            );
+            for waited in [ms(2000), ms(4000)] {
+                assert_eq!(told.probe(known, waited), None, "{known:?}: a probe {waited:?} in");
+            }
+        }
     }
 }
