@@ -101,9 +101,30 @@ fn codex() -> MemberName {
     MemberName::harness("codex")
 }
 
+/// Where the diagnostics of the run hosts a test boots in `home` are kept whole
+/// (`ImageGuest::keep_diagnostics`), each appended after the last: a `.stderr` of the home's,
+/// which a failing test shows as its home goes (`common::TempDir`).
+fn diagnostics(home: &TempDir) -> std::path::PathBuf {
+    home.join("run-hosts.stderr")
+}
+
+/// `s` booted, its run host's diagnostics kept whole in [`diagnostics`] from its start.
+fn boot(home: &TempDir, s: &ImageSpec) -> Box<dyn ImageGuest> {
+    let guest = ImageShards::new().boot(s, TIMEOUT).unwrap();
+    let kept = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(diagnostics(home))
+        .unwrap();
+    guest.keep_diagnostics(kept).unwrap();
+    guest
+}
+
 /// The harness's end, held to `expected`; where it is not, the run's own end is said beside
 /// it, which tells a run that ended first (`WithRun`) as stopped, failed in its host's words or
-/// exited (CI run 43303186680: `WithRun` where `Exited(3)` was expected, its cause unsaid).
+/// exited (CI run 43303186680: `WithRun` where `Exited(3)` was expected, its cause unsaid),
+/// and the home shows its run hosts' diagnostics, their VMs' among them, as it goes ([`boot`]:
+/// HVF at 2b89e8504, `WithRun` and `Exited(125)`, nothing more said).
 fn assert_ended(guest: &dyn ImageGuest, expected: MemberEnd) {
     let ended = guest.wait_member(&codex(), TIMEOUT).unwrap();
     assert_eq!(
@@ -163,7 +184,7 @@ fn staged_credentials_reach_the_harness_and_its_output_and_end_come_back() {
         terminal: false,
         args: Vec::new(),
     }];
-    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    let guest = boot(&home, &s);
     let members: Vec<(MemberKind, &str, bool)> = guest
         .members()
         .iter()
@@ -331,7 +352,7 @@ fn a_share_at_a_granted_volume_reaches_the_harness() {
         at: "/work".into(),
         read_only: true,
     }];
-    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    let guest = boot(&home, &s);
     let said = String::from_utf8(read_all(&*guest, Channel::Stdout)).unwrap();
     assert_eq!(said, "== /work/hello.txt\nfrom the host\n");
     assert_ended(&*guest, MemberEnd::Exited(0));
@@ -615,7 +636,7 @@ fn a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs() {
         dns: false,
         members: None,
     };
-    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    let guest = boot(&home, &s);
     assert_ended(&*guest, MemberEnd::Exited(0));
     guest.stop().unwrap();
 }
@@ -829,7 +850,7 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
         terminal: false,
         args: Vec::new(),
     }];
-    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    let guest = boot(&home, &s);
     let mut input = Vec::new();
     input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n");
     input.extend_from_slice(b"\0\xff\x80\x1b[2Jno-newline\xc3\x28");
@@ -870,4 +891,71 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
         .unwrap();
     assert!(guest.take_input(&codex()).is_err());
     guest.stop().unwrap();
+}
+
+/// D256: a member's run-time arguments follow its image's command on its command line, each
+/// whole and in its order. The harness, the test guest writing its command line word by word,
+/// each with its NUL, says its program as found in its own `bin`, its image's options, then its
+/// run's `--resume`, `s 1` and an empty one: none split, joined or dropped. An argument holding
+/// a NUL, which no command line exec'd holds, is refused by its place, never its bytes; and
+/// arguments past the channel's bound are refused whole, never cut; each before any run host
+/// starts.
+#[test]
+fn a_members_arguments_follow_its_images_command_in_order() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-args-home");
+    build(&home, "api-args:1", &["argv", "--from-image"], "");
+    let given = |args: Vec<String>| {
+        let mut s = spec(&home, "api-args:1");
+        s.members = vec![MemberSpec {
+            member: codex(),
+            env: Vec::new(),
+            files: Vec::new(),
+            workdir: None,
+            stdin: false,
+            terminal: false,
+            args,
+        }];
+        s
+    };
+    let guest = ImageShards::new()
+        .boot(
+            &given(["--resume", "s 1", ""].map(String::from).to_vec()),
+            TIMEOUT,
+        )
+        .unwrap();
+    let said = read_all(&*guest, Channel::Stdout);
+    let (program, rest) = said.split_at(said.iter().position(|&b| b == 0).unwrap_or(said.len()));
+    assert!(
+        program.starts_with(b"/") && program.ends_with(b"/bin/codex"),
+        "its command line: {:?}",
+        String::from_utf8_lossy(&said)
+    );
+    assert_eq!(
+        rest,
+        b"\0argv\0--from-image\0--resume\0s 1\0\0",
+        "its command line: {:?}",
+        String::from_utf8_lossy(&said)
+    );
+    assert_ended(&*guest, MemberEnd::Exited(0));
+    guest.stop().unwrap();
+    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+    let refused = |s: ImageSpec| match ImageShards::new().boot(&s, TIMEOUT) {
+        Err(e) => e,
+        Ok(_) => panic!("booted"),
+    };
+    match refused(given(["--resume", "s-1\0--model"].map(String::from).to_vec())) {
+        ImageRefusal::Spec { what, why } => {
+            assert_eq!(what, "a member's argument");
+            assert!(why.contains("argument 1") && !why.contains("s-1"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let half = shards_abi::run::MAX_PAYLOAD as usize / 2;
+    assert!(matches!(
+        refused(given(vec!["x".repeat(half), "x".repeat(half)])),
+        ImageRefusal::Spec { what: "the spec", .. }
+    ));
 }

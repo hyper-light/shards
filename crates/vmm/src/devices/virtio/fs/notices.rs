@@ -387,7 +387,14 @@ mod tests {
 
     /// The host's changes beneath a share are told where the guest holds their directory,
     /// and none where it holds none, by each host's own watch; made by another process, as
-    /// FSEvents tells none of this process's own (IgnoreSelf).
+    /// FSEvents tells none of this process's own (IgnoreSelf). On Unix a file moved out of
+    /// the share is told as its name goes, and what then changes it is told nothing: Linux
+    /// tells a directory's watch of the changes made through its own names (fsnotify_parent,
+    /// of the dentry a change went through), and FSEvents tells a file's changes by its path
+    /// now, which a rename moves (a second name outside the share it does not: there it
+    /// told `held/k`, PM M550). containers.rs's DAX test moves a file its guest holds out of
+    /// the share before it cuts it, so that its guest reads past the cut before anything
+    /// tells it the size (D189); Windows refuses that cut wherever the file is (PM M412).
     #[test]
     fn the_hosts_changes_are_told_where_the_guest_looks() {
         use super::super::proto::op;
@@ -397,6 +404,9 @@ mod tests {
         for d in ["held", "unheld"] {
             std::fs::create_dir(root.join(d)).unwrap();
         }
+        // `held/k`, made before anything is watched.
+        #[cfg(unix)]
+        std::fs::write(root.join("held").join("k"), b"k").unwrap();
         #[cfg(windows)]
         let opened: super::super::host::Owned = {
             use std::os::windows::fs::OpenOptionsExt as _;
@@ -449,21 +459,49 @@ mod tests {
         write(&root.join("unheld").join("u"));
         write(&root.join("held").join("h"));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        let mut told: Vec<Vec<u8>> = Vec::new();
-        while !told.iter().any(|p| p == b"held/h") {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            assert!(!left.is_zero(), "held/h not told; told {told:?}");
-            let records = pending.take_within(left).unwrap_or_default();
-            let mut rest = records.as_slice();
-            while let shards_abi::run::notice::Decoded::Record { name, path, rest: r } =
-                shards_abi::run::notice::decode(rest)
-            {
-                assert_eq!(name, b"shards0");
-                told.push(path.to_vec());
-                rest = r;
+        // What is told until `until` is, in order.
+        let told_until = |until: &[u8]| {
+            let mut told: Vec<Vec<u8>> = Vec::new();
+            while !told.iter().any(|p| p == until) {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(
+                    !left.is_zero(),
+                    "{} not told; told {told:?}",
+                    String::from_utf8_lossy(until)
+                );
+                let records = pending.take_within(left).unwrap_or_default();
+                let mut rest = records.as_slice();
+                while let shards_abi::run::notice::Decoded::Record { name, path, rest: r } =
+                    shards_abi::run::notice::decode(rest)
+                {
+                    assert_eq!(name, b"shards0");
+                    told.push(path.to_vec());
+                    rest = r;
+                }
             }
-        }
+            told
+        };
+        let told = told_until(b"held/h");
         assert!(!told.iter().any(|p| p.starts_with(b"unheld/")), "{told:?}");
+        // `k` moved out by another process, told as its name goes; then written where it is
+        // now, and `after` written within the share: each host tells its changes in the order
+        // they come, so that `k`, were its write told, is told by `after`.
+        #[cfg(unix)]
+        {
+            let outside = shards_testdir::TempDir::new("notices-o").unwrap();
+            let moved = std::process::Command::new("/bin/mv")
+                .arg(root.join("held").join("k"))
+                .arg(outside.join("k"))
+                .status();
+            assert!(moved.unwrap().success());
+            write(&root.join("held").join("moved"));
+            let told = told_until(b"held/moved");
+            assert!(told.iter().any(|p| p == b"held/k"), "{told:?}");
+            write(&outside.join("k"));
+            write(&root.join("held").join("after"));
+            let told = told_until(b"held/after");
+            assert!(!told.iter().any(|p| p == b"held/k"), "{told:?}");
+        }
     }
 
     /// A path FSEvents tells is placed beneath the root it is within, and none outside it,

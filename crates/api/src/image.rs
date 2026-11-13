@@ -390,13 +390,20 @@ pub trait ImageGuest: Send + Sync {
     /// there uses it ([`PlugRefusal::Busy`]), then taken off the microVM.
     fn unplug(&self, at: &str, patience: Duration) -> Result<(), ImageRefusal>;
     /// Ends it at once: its VM's process is killed, and [`wait_for`](Self::wait_for) then
-    /// returns [`RunEnd::Stopped`]. Never refused, as a VM left running is a leak. Returns
-    /// once the run's end is told, its VM gone; its host then reaps what it started and
-    /// exits on its own.
+    /// returns [`RunEnd::Stopped`], or the end the run had come to before: its command's, or
+    /// its host's failure, in its words, as `wait_for` saw it. Never refused, as a VM left
+    /// running is a leak. Returns once the run's end is told, its VM gone; its host then
+    /// reaps what it started and exits on its own.
     fn stop(&self) -> Result<(), ImageRefusal>;
     /// Its end, once it has come, waiting at most `timeout` (`Duration::MAX`: until it
     /// comes).
     fn wait_for(&self, timeout: Duration) -> Result<Option<RunEnd>, ImageRefusal>;
+    /// The run host's diagnostics, its VM's among them, written whole to `to` from now on, as
+    /// the host writes them, in place of any file named before, after the last of them kept
+    /// until now: what a refusal or a failed end quotes ([`ImageRefusal::Boot`],
+    /// [`RunEnd::Failed`]) is only their last. A file that stalls holds them up; a part it
+    /// refuses is lost to it alone.
+    fn keep_diagnostics(&self, to: std::fs::File) -> Result<(), ImageRefusal>;
 }
 
 /// The images the `shards` binary boots.
