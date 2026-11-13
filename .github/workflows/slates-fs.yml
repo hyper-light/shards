@@ -34,6 +34,11 @@ env:
   # AWS-LC's x64 assembly from source in both trees (vendor/README.md; slates' ci.yml).
   AWS_LC_SYS_PREBUILT_NASM: "0"
 
+# Runs give way to newer ones, as ci.yml says (PM M539).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
+
 jobs:
   windows:
     runs-on: windows-2025
