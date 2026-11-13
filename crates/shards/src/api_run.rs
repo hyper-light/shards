@@ -623,8 +623,12 @@ fn egress(
 /// token, and one credential's alone, as its orchestrator's side checked them; the network
 /// process checks them again as it takes them (D109). None where the run has none and signs
 /// nothing in (`signs_in`): a run's sign-ins make its CA with its grants, none as they may be.
+/// Its upstream roots (`roots`, each a certificate's DER) ride ahead of them, within what the
+/// network process's wire carries, the only roots its injector trusts beside the host's: none
+/// where it injects nothing.
 fn credentials(
     grants: &[wire::CredentialGrant],
+    roots: &[Vec<u8>],
     egress: Option<&[u8]>,
     signs_in: bool,
 ) -> Result<Option<Vec<u8>>, No> {
@@ -633,6 +637,8 @@ fn credentials(
     }
     shards_net::dns::credential::check(grants)
         .map_err(|refused| No(Cause::Request, format!("credential {refused}")))?;
+    shards_net::dns::credential::check_roots(roots)
+        .map_err(|refused| No(Cause::Request, refused.to_string()))?;
     let (ports, named, _) = egress.and_then(shards_net::decode_policy).unwrap_or_default();
     let mut held = Vec::with_capacity(grants.len());
     for g in grants {
@@ -656,12 +662,14 @@ fn credentials(
         }
         held.push(g.clone());
     }
-    shards_net::encode_grants(&held).map(Some).ok_or_else(|| {
-        No(
-            Cause::Request,
-            "the run's credential grants: a reference past 65535 bytes, or a host past 255".into(),
-        )
-    })
+    shards_net::encode_credentials(roots, &held)
+        .map(Some)
+        .ok_or_else(|| {
+            No(
+                Cause::Request,
+                "the run's credential grants: a reference past 65535 bytes, or a host past 255".into(),
+            )
+        })
 }
 
 /// The run's sign-in grants for its network process (`NET_SIGN_INS`, D242 step 8): each
@@ -723,7 +731,8 @@ const PEM_LINE: usize = 64;
 fn trust(der: &[u8], grants: &[u8], sign_ins: &[wire::SignInGrant]) -> Result<Vec<Vec<u8>>, String> {
     use base64::Engine as _;
     use shards_abi::run::trust as entries;
-    let grants = shards_net::decode_grants(grants).ok_or("the run's credential grants are malformed")?;
+    let (_, grants) =
+        shards_net::decode_credentials(grants).ok_or("the run's credential grants are malformed")?;
     let base64 = base64::engine::general_purpose::STANDARD.encode(der);
     let mut pem = b"-----BEGIN CERTIFICATE-----\n".to_vec();
     for line in base64.as_bytes().chunks(PEM_LINE) {
@@ -2360,7 +2369,12 @@ mod hosted {
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
         let egress = super::network(agentfile.as_ref(), request, &mut run)?;
         let sign_ins = super::sign_ins(&request.sign_ins, &request.credentials, egress.as_deref())?;
-        let credentials = super::credentials(&request.credentials, egress.as_deref(), sign_ins.is_some())?;
+        let credentials = super::credentials(
+            &request.credentials,
+            &request.upstream_roots,
+            egress.as_deref(),
+            sign_ins.is_some(),
+        )?;
         let bridge = if run.network == "bridge" {
             Some(
                 shards_net::bridge::elected_here(&mut |note| say(&note))
@@ -6058,6 +6072,7 @@ mod tests {
             control: None,
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
+            upstream_roots: Vec::new(),
         }
     }
 
@@ -6356,9 +6371,10 @@ mod tests {
             &[("api.anthropic.com".into(), 443)],
             false,
         );
-        assert_eq!(credentials(&[], Some(&named), false).ok().unwrap(), None);
+        assert_eq!(credentials(&[], &[], Some(&named), false).ok().unwrap(), None);
         let sent = credentials(
             &[grant("anthropic/claude-max", &["api.anthropic.com"])],
+            &[],
             Some(&named),
             false,
         )
@@ -6366,7 +6382,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(
-            shards_net::decode_grants(&sent),
+            shards_net::decode_credentials(&sent).map(|(_, grants)| grants),
             Some(vec![shards_net::Grant {
                 reference: "anthropic/claude-max".into(),
                 toward: vec!["api.anthropic.com".into()],
@@ -6380,16 +6396,30 @@ mod tests {
         let mut shared = grant("anthropic/console", &["api.anthropic.com"]);
         shared.placeholder = "kiln-placeholder-anthropic-claude-max".into();
         for refused in [
-            credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&named), false),
-            credentials(&[grant("anthropic/claude-max", &[])], Some(&named), false),
+            credentials(
+                &[grant("openai/chatgpt", &["chatgpt.com"])],
+                &[],
+                Some(&named),
+                false,
+            ),
+            credentials(&[grant("anthropic/claude-max", &[])], &[], Some(&named), false),
             credentials(
                 &[grant("anthropic/claude-max", &["api.anthropic.com"])],
+                &[],
                 None,
                 false,
             ),
-            credentials(&[untoken], Some(&named), false),
+            credentials(&[untoken], &[], Some(&named), false),
             credentials(
                 &[grant("anthropic/claude-max", &["api.anthropic.com"]), shared],
+                &[],
+                Some(&named),
+                false,
+            ),
+            // An upstream root past what the network process's wire carries (D242).
+            credentials(
+                &[grant("anthropic/claude-max", &["api.anthropic.com"])],
+                &[vec![0x30; usize::from(u16::MAX) + 1]],
                 Some(&named),
                 false,
             ),
@@ -6398,7 +6428,15 @@ mod tests {
         }
         // A TCP port granted reaches every host on it.
         let any443 = shards_net::encode_policy(&shards_net::Ports::parse("443/tcp").unwrap(), &[], false);
-        assert!(credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&any443), false).is_ok());
+        assert!(
+            credentials(
+                &[grant("openai/chatgpt", &["chatgpt.com"])],
+                &[],
+                Some(&any443),
+                false
+            )
+            .is_ok()
+        );
     }
 
     /// The run's CA goes to its guest for its members' trust (D242): its certificate in PEM,
@@ -6408,18 +6446,21 @@ mod tests {
     #[test]
     fn credential_grants_ca_goes_to_the_guest_in_pem_with_each_host_once() {
         let der: Vec<u8> = (0..=255u8).cycle().take(700).collect();
-        let grants = shards_net::encode_grants(&[
-            shards_net::Grant {
-                reference: "anthropic/claude-max".into(),
-                toward: vec!["api.anthropic.com".into(), "claude.ai".into()],
-                placeholder: "kiln-placeholder-0a".into(),
-            },
-            shards_net::Grant {
-                reference: "anthropic/console".into(),
-                toward: vec!["api.anthropic.com".into()],
-                placeholder: "kiln-placeholder-1b".into(),
-            },
-        ])
+        let grants = shards_net::encode_credentials(
+            &[],
+            &[
+                shards_net::Grant {
+                    reference: "anthropic/claude-max".into(),
+                    toward: vec!["api.anthropic.com".into(), "claude.ai".into()],
+                    placeholder: "kiln-placeholder-0a".into(),
+                },
+                shards_net::Grant {
+                    reference: "anthropic/console".into(),
+                    toward: vec!["api.anthropic.com".into()],
+                    placeholder: "kiln-placeholder-1b".into(),
+                },
+            ],
+        )
         .unwrap();
         let entries = trust(&der, &grants, &[]).unwrap();
         // Each of a key the run protocol registers (D257), as the guest refuses any other.
@@ -7662,7 +7703,9 @@ mod tests {
                 Vec::new()
             };
             let sign_ins = sign_ins(&asked, &[], Some(&policy)).ok().unwrap();
-            let grants = credentials(&[], Some(&policy), sign_ins.is_some()).ok().unwrap();
+            let grants = credentials(&[], &[], Some(&policy), sign_ins.is_some())
+                .ok()
+                .unwrap();
             let (net, run_host) = UnixStream::pair().unwrap();
             let (ca, told) = std::thread::scope(|s| {
                 let network = s.spawn(|| {
@@ -7700,7 +7743,10 @@ mod tests {
                     shards_net::signin::decode_grants(&told[1].1),
                     Some(vec![signs_in(false)])
                 );
-                assert_eq!(shards_net::decode_grants(&told[2].1), Some(Vec::new()));
+                assert_eq!(
+                    shards_net::decode_credentials(&told[2].1),
+                    Some((Vec::new(), Vec::new()))
+                );
                 assert_eq!(ca, Ok(Some(der.clone())));
                 let entries = trust(&der, &told[2].1, &asked).unwrap();
                 let got = shards_abi::run::trust::of(&entries).unwrap().unwrap();

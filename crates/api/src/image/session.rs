@@ -3201,6 +3201,7 @@ mod tests {
             credentials: Vec::new(),
             lessor: None,
             sign_ins: Vec::new(),
+            upstream_roots: Vec::new(),
             shares: Vec::new(),
             nesting: false,
             ready_by: None,

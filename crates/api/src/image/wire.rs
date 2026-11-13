@@ -62,7 +62,9 @@ pub use shards_abi::run::nesting::Ready;
 /// [`to_client::REFRESH`] and [`to_client::REVOKE`], answered [`to_host::CAPTURED`] and
 /// [`to_host::REFRESHED`]), so that a side that knows no sign-in refuses the run by its version; 25, each member's MCP
 /// bridge ([`MemberStage::mcp`], D254), so that a side that makes none never starts a harness
-/// whose MCP config names one that is not there; 27, a member's end typed
+/// whose MCP config names one that is not there; 26, the run's upstream roots
+/// ([`Request::upstream_roots`], D242), so that a side that knows none never runs an injector
+/// that trusts fewer roots than its orchestrator named; 27, a member's end typed
 /// ([`MemberEnded::end`]: exited, or killed by a signal), so that no side reads a signal as an
 /// exit of 128 plus it.
 pub const VERSION: u8 = 27;
@@ -524,6 +526,9 @@ pub struct Request {
     /// tokens kept outside and its CLI given placeholders. Empty for a run with none. Appended
     /// in version 24.
     pub sign_ins: Vec<SignInGrant>,
+    /// The roots the run's injector trusts beside the host's own, each a certificate's DER
+    /// (D242), for its injected flows alone; empty for the host's alone. Appended in version 26.
+    pub upstream_roots: Vec<Vec<u8>>,
 }
 
 /// What a run's agent-control endpoint takes and serves (D252): the one key it takes, its
@@ -1578,6 +1583,11 @@ impl Request {
         for m in &self.members {
             w.u8(u8::from(m.mcp));
         }
+        // The run's upstream roots, appended in version 26 (D242): their count, then each DER.
+        w.count(self.upstream_roots.len())?;
+        for root in &self.upstream_roots {
+            w.bytes(root)?;
+        }
         w.done()
     }
 
@@ -1789,6 +1799,13 @@ impl Request {
         for m in &mut members {
             m.mcp = r.flag()?;
         }
+        // The run's upstream roots, appended in version 26 (D242): each at least its length's
+        // four bytes.
+        let n = r.count(4)?;
+        let mut upstream_roots = Vec::with_capacity(n);
+        for _ in 0..n {
+            upstream_roots.push(r.bytes()?.to_vec());
+        }
         r.end()?;
         Ok(Request {
             image,
@@ -1805,6 +1822,7 @@ impl Request {
             control,
             gpu_devices,
             sign_ins,
+            upstream_roots,
         })
     }
 }
@@ -3222,6 +3240,7 @@ mod tests {
             control: None,
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
+            upstream_roots: Vec::new(),
         }
     }
 
@@ -3308,20 +3327,21 @@ mod tests {
         .encode()
         .unwrap();
         // ... the control ask's absence (version 15), the GPUs' count (version 16), the
-        // member's arguments' count (version 18), the sign-ins' count (version 24) and the
-        // member's MCP bridge (version 25) last.
+        // member's arguments' count (version 18), the sign-ins' count (version 24), the
+        // member's MCP bridge (version 25) and the upstream roots' count (version 26) last.
         assert_eq!(
-            asked.get(asked.len() - 33..).unwrap(),
+            asked.get(asked.len() - 37..).unwrap(),
             [
                 1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0
+                0, 0, 0, 0, 0, 0
             ],
             "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
              member's working directory (none) and its input, the credential grants' count \
              (zero, version 8), the member's terminal (none, version 11), whether the members \
              are held apart (no, version 12), the control ask (none, version 15), the GPUs' \
              count (zero, version 16), the member's arguments' count (zero, version 18), then \
-             the sign-ins' count (zero, version 24), then its MCP bridge (none, version 25)"
+             the sign-ins' count (zero, version 24), then its MCP bridge (none, version 25), then \
+             the upstream roots' count (zero, version 26)"
         );
         // Destinations kept by name, the host itself among them (D236), and none.
         for destinations in [
@@ -3511,9 +3531,9 @@ mod tests {
         // terminal's flag (version 11) and the members' reach (version 12), that is no flag.
         // One member, so its input is the twentieth byte from the end (the count's four, its
         // terminal's one, the reach's flag, the control ask's, the GPUs' count, its arguments'
-        // count and the sign-ins' count follow it).
+        // count, the sign-ins' count, its MCP bridge and the upstream roots' count follow it).
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 21;
+        let at = bad.len() - 25;
         assert_eq!(
             bad[at], 1,
             "the member's input flag precedes the credentials' count"
@@ -3593,9 +3613,10 @@ mod tests {
             }
         }
         // The reach's flag, before the control ask's, the GPUs' count, the member's arguments'
-        // count and the sign-ins' count where none is held apart.
+        // count, the sign-ins' count, the MCP bridges and the upstream roots' count where none is
+        // held apart.
         let mut flag = held(None).encode().unwrap();
-        let at = flag.len() - 15;
+        let at = flag.len() - 19;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -3609,8 +3630,9 @@ mod tests {
             .encode()
             .unwrap();
         // ... then the control ask's absence (version 15), the GPUs' count (version 16), the
-        // one member's arguments' count (version 18) and the sign-ins' count (version 24).
-        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1);
+        // one member's arguments' count (version 18), the sign-ins' count (version 24), its MCP
+        // bridge (version 25) and the upstream roots' count (version 26).
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1 + 4);
         assert_eq!(kindless[at], MemberKind::Agent as u8);
         kindless[at] = 2;
         assert_eq!(
@@ -3672,15 +3694,15 @@ mod tests {
                 );
             }
         }
-        // The second member's one argument, "ü", last before the sign-ins' count (version 24):
-        // its bytes made no UTF-8.
+        // The second member's one argument, "ü", last before the sign-ins' count (version 24),
+        // the MCP bridges and the upstream roots' count (version 26): its bytes made no UTF-8.
         let mut bad = with(&["--resume"], &["ü"]).encode().unwrap();
-        let at = bad.len() - 2 - 4 - "ü".len();
+        let at = bad.len() - 4 - 2 - 4 - "ü".len();
         bad[at] = 0xff;
         assert_eq!(Request::decode(&bad), Err(WireError::Text));
         // The second member's count, before the sign-ins', said as four billion in no bytes.
         let mut hostile = with(&[], &[]).encode().unwrap();
-        hostile.truncate(hostile.len() - 2 - 4);
+        hostile.truncate(hostile.len() - 4 - 2 - 4);
         let at = hostile.len() - 4;
         hostile[at..].copy_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(Request::decode(&hostile), Err(WireError::Short));
@@ -3809,10 +3831,10 @@ mod tests {
         );
         // The destinations' list, before the member's working directory and input, the
         // credential grants' count, the member's terminal, the members' reach, the control ask,
-        // the GPUs' count, the member's arguments' count and the sign-ins' count: no list of
-        // version 3's and on.
+        // the GPUs' count, the member's arguments' count, the sign-ins' count, its MCP bridge and
+        // the upstream roots' count: no list of version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 23;
+        let at = list.len() - 27;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -4024,11 +4046,11 @@ mod tests {
         };
         assert_eq!(long.encode(), Err(WireError::TooLong));
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 16;
+        let at = bad.len() - 20;
         assert_eq!(
             bad[at], 0,
             "the member's terminal flag precedes the members' reach, the control ask, the GPUs, \
-             its arguments and the sign-ins"
+             its arguments, the sign-ins, its MCP bridge and the upstream roots"
         );
         bad[at] = 2;
         assert_eq!(
@@ -4229,6 +4251,7 @@ mod tests {
             }),
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
+            upstream_roots: Vec::new(),
         };
         let exemplar = full.exemplar();
         assert!(exemplar.members.is_empty() && exemplar.ready_by.is_none() && exemplar.control.is_none());
@@ -4405,6 +4428,7 @@ mod tests {
             control,
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
+            upstream_roots: Vec::new(),
         }
     }
 
@@ -4498,6 +4522,21 @@ mod tests {
         assert_eq!(Request::decode(&twice.encode().unwrap()), Err(WireError::Gpu));
     }
 
+    /// A run's upstream roots (version 26, D242). Expect: each DER read back, in order; a request
+    /// cut anywhere in them refused.
+    #[test]
+    fn a_runs_upstream_roots_cross_the_channel() {
+        let rooted = Request {
+            upstream_roots: vec![vec![0x30, 0x01, 0x02], vec![0x30; 300]],
+            ..request()
+        };
+        let bytes = rooted.encode().unwrap();
+        assert_eq!(Request::decode(&bytes).unwrap(), rooted);
+        for cut in 1..=bytes.len() - request().encode().unwrap().len() {
+            assert!(Request::decode(&bytes[..bytes.len() - cut]).is_err(), "cut {cut}");
+        }
+    }
+
     /// A run's sign-ins and their words (version 24, D242 step 8). Do: carry a sign-in captured
     /// before, with and without a refresh token's placeholder, and one never captured; each word
     /// of a capture (its tokens, its ID token made inert and its scope where it has them), a
@@ -4545,9 +4584,9 @@ mod tests {
             assert!(Request::decode(&bytes[..bytes.len() - cut]).is_err(), "cut {cut}");
         }
         // The second sign-in's CLI, its code after its name, made one no version has; the one
-        // member's MCP bridge's flag (version 25) after it.
+        // member's MCP bridge's flag (version 25) and the upstream roots' count (version 26) after it.
         let mut cli = bytes.clone();
-        let at = cli.len() - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1);
+        let at = cli.len() - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1 + 4);
         assert_eq!(cli[at], Cli::Codex.code());
         cli[at] = 9;
         assert!(matches!(Request::decode(&cli), Err(WireError::Tag { .. })));

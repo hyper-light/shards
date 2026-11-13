@@ -45,6 +45,74 @@ pub fn verifier(
     }
 }
 
+/// The platform's roots, for a verifier made later than they are read ([`verifier_of`]): the
+/// credential injector's (D242), whose network process confines itself as it starts and is given
+/// its run's roots after. On Linux the system's certificates, read as this is made from the
+/// directories openssl-probe knows (`candidate_cert_dirs`), where rustls-platform-verifier finds
+/// them through rustls-native-certs, but never from `SSL_CERT_FILE` or `SSL_CERT_DIR`, which
+/// those read first: no variable of the process's environment adds a root, nor replaces the
+/// system's. A distribution whose bundle lies outside those directories alone (openssl-probe's
+/// OpenELEC and Entware files) gets fewer roots, never more. Elsewhere nothing is read: the OS
+/// is asked as each certificate is verified, and reads no variable.
+#[derive(Debug, Clone, Default)]
+pub struct Platform {
+    #[cfg(target_os = "linux")]
+    roots: Vec<CertificateDer<'static>>,
+}
+
+impl Platform {
+    pub fn read() -> Platform {
+        #[cfg(target_os = "linux")]
+        {
+            let mut roots = Vec::new();
+            for dir in openssl_probe::candidate_cert_dirs() {
+                roots.extend(rustls_native_certs::load_certs_from_paths(None, Some(dir)).certs);
+            }
+            Platform { roots }
+        }
+        #[cfg(not(target_os = "linux"))]
+        Platform {}
+    }
+}
+
+/// A verifier as [`verifier`] makes one, trusting `platform`'s roots and `extra_roots`, none of
+/// them from the environment. On Linux, rustls's WebPKI verifier over them, as
+/// rustls-platform-verifier's is there (its `verification/others.rs`). Elsewhere [`verifier`]'s.
+/// On every host a root of `extra_roots` that is no certificate is refused, as webpki parses a
+/// trust anchor (rustls's `RootCertStore::add`), where macOS's verifier would hold it unread.
+pub fn verifier_of(
+    platform: &Platform,
+    extra_roots: Vec<CertificateDer<'static>>,
+    provider: Arc<CryptoProvider>,
+) -> Result<Arc<dyn ServerCertVerifier>, rustls::Error> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut store = rustls::RootCertStore::empty();
+        for root in extra_roots {
+            store.add(root)?;
+        }
+        store.add_parsable_certificates(platform.roots.iter().cloned());
+        if store.is_empty() {
+            return Ok(Arc::new(Untrusting {
+                why: "No CA certificates were loaded from the system".into(),
+                schemes: provider.signature_verification_algorithms.supported_schemes(),
+            }));
+        }
+        let built = rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(store), provider)
+            .build()
+            .map_err(|e| rustls::Error::Other(rustls::OtherError(Arc::new(e))))?;
+        Ok(built)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let Platform {} = platform;
+        for root in &extra_roots {
+            rustls::RootCertStore::empty().add(root.clone())?;
+        }
+        verifier(extra_roots, provider)
+    }
+}
+
 /// The verifier of a host that trusts no root ([`verifier`]): every certificate refused,
 /// saying `why`.
 #[derive(Debug)]
