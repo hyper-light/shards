@@ -144,6 +144,8 @@ pub(super) struct Answers {
     pub room: Record,
     /// Its run's metrics, read (`METRICS`).
     pub metrics: Record,
+    /// A starting VM's READY (`daemon::ready`).
+    pub ready: Record,
     /// Each of init's builtins its quiet work asks (`exec_answered`: `STAT`, `TOP`,
     /// `STATS`, a member's ports, a network's switch, a layer's size, an update), by its
     /// byte.
@@ -156,6 +158,7 @@ impl Default for Answers {
             reclaim: Record::new(),
             room: Record::new(),
             metrics: Record::new(),
+            ready: Record::new(),
             builtins: Box::new([const { Record::new() }; 256]),
         }
     }
