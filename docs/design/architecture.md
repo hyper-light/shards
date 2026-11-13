@@ -17357,7 +17357,7 @@ progress; D222's estimators).
 | `MAX_PLAN` (daemon/moves.rs) | 16 MiB | `shards_remote::frame::MAX_FRAME` | the `ready` step's request frame (cli/moves.rs) |
 | `MAX_XATTRS` (daemon/moves.rs) | 65536 | `XATTR_LIST_MAX / 6` = 10922 | limits.h l. 17; xattr.h l. 33 (`os2.`); listxattr(2) |
 | `MAX_XATTR` (daemon/moves.rs) | 64 KiB | cited | limits.h l. 16 (and the name's 255, l. 15) |
-| `EMPTIED` (daemon/parents.rs) | 10 s | none: while the leaf's processes run | `platform::IDLE_VM_CPU`, `progressed` (PM M357) |
+| `EMPTIED` (daemon/parents.rs) | 10 s | D215's judge on its record (`EMPTIED`, learned): cold, while the leaf's processes live; past W*, a look each W* (ROOT's (3) slice 4) | the leaf's processes' CPU (`shards_api::Watch`); it was `platform::IDLE_VM_CPU`, `progressed` (PM M357) |
 | `RENEW` (ship/awslogs.rs, ship/gcplogs.rs) | 5 min | `Renewal::margin()`, learned | the requests' own times and expiries |
 | `MOST_WAIT` (ship/fluentd.rs) | 60 s | cited, with its 1.5 | moby v28.5.1 daemon/logger/fluentd/fluentd.go l. 263-277; fluent-logger-golang v1.9.0 fluent/fluent.go l. 34, 36, 496-498 |
 | `ACK_MOST` (ship/fluentd.rs) | 1024 | `ID_LEN` = 24 | the chunk ID sent (16 bytes, RFC 4648 §4); Forward Protocol v1, Response |

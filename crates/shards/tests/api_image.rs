@@ -1066,7 +1066,11 @@ fn a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it() 
     std::fs::write(&not_given, format!(r#"{{"never_token":"{never}"}}"#)).unwrap();
     let env = keys.join("env");
     std::fs::create_dir(&env).unwrap();
-    std::fs::write(env.join("harness-codex"), format!("SHARDS_LEAK_CANARY={in_env}\0")).unwrap();
+    std::fs::write(
+        env.join("harness-codex"),
+        format!("SHARDS_LEAK_CANARY={in_env}\0"),
+    )
+    .unwrap();
     let (code, said) = leak_scan(&given, &[&saved, &env]);
     assert_eq!(code, Some(3), "{said}");
     let memory = memory.display().to_string();
@@ -1077,7 +1081,10 @@ fn a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it() 
             "{name} in the save's memory: {said}"
         );
     }
-    assert!(said.contains("harness-codex offset 19 length 64: a run of given.json:env_token"), "{said}");
+    assert!(
+        said.contains("harness-codex offset 19 length 64: a run of given.json:env_token"),
+        "{said}"
+    );
     // Never given, never found: what else credential-shaped its memory holds is listed (exit 4)
     // and is no secret's.
     let (code, said) = leak_scan(&not_given, &[&saved, &env]);

@@ -267,25 +267,89 @@ impl Parents {
 /// a cgroup namespace's root, a container's own, or a sub-hierarchy an administrator gave
 /// the user, its `cgroup.procs` and directories theirs (cgroup-v2.rst, "Model of
 /// Delegation", "Delegation Containment").
+/// What this daemon has seen of a leaf it placed processes in emptying past its end
+/// ([`emptied`]): W*, none before its first (D215's record).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+static EMPTIED: shards_api::Record = shards_api::Record::new();
+
+/// Waits for a cgroup whose `events` file says it is populated to empty (`populated 0`),
+/// following the processes `procs` lists (only its warm VMs, told to end as the daemon exits,
+/// and its spawner, reaped by then), as D215's judge follows a party: before `record`'s first
+/// emptying, while any of them lives; past W*, looked at each W*, and given up on where a
+/// whole W* shows none of them ran any CPU, its host not the reason. Whether it emptied
+/// (none where `events` is gone, the cgroup with it); its emptying teaches `record`. It was a
+/// window of `IDLE_VM_CPU`'s 10 s, judged by an idle microVM's CPU (ROOT's (3), 2026-11-13).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io::Result<bool> {
+    let mut judge = shards_api::Judge::begin(record);
+    // Each process as it was first seen: its pid, its watch, and what it had run then.
+    let mut watched: Vec<(u32, shards_api::Watch, std::time::Duration)> = Vec::new();
+    let mut ran = std::time::Duration::ZERO;
+    loop {
+        let text = match std::fs::read_to_string(events) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        if text.lines().any(|l| l == "populated 0") {
+            judge.answered(ran);
+            return Ok(true);
+        }
+        let pids: Vec<u32> = std::fs::read_to_string(procs)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect();
+        watched.retain(|(pid, ..)| pids.contains(pid));
+        for pid in pids {
+            if watched.iter().any(|(p, ..)| *p == pid) {
+                continue;
+            }
+            let watch = shards_api::Followed::of_pid(pid)
+                .ok()
+                .flatten()
+                .and_then(|followed| shards_api::Watch::of(followed).ok().flatten());
+            if let Some(watch) = watch {
+                let from = watch.cpu();
+                watched.push((pid, watch, from));
+            }
+        }
+        if judge.due().is_some_and(|due| std::time::Instant::now() >= due) {
+            let mut found = shards_api::Found::Gone;
+            for (_, watch, from) in &mut watched {
+                let look = watch.look().unwrap_or(shards_api::Found::Held);
+                ran = ran.max(watch.cpu().saturating_sub(*from));
+                found = match (found, look) {
+                    (shards_api::Found::Progressed, _) | (_, shards_api::Found::Progressed) => {
+                        shards_api::Found::Progressed
+                    }
+                    (shards_api::Found::Held, _) | (_, shards_api::Found::Held) => shards_api::Found::Held,
+                    (shards_api::Found::Still, _) | (_, shards_api::Found::Still) => shards_api::Found::Still,
+                    _ => shards_api::Found::Gone,
+                };
+            }
+            judge.found(found).map_err(|stall| {
+                std::io::Error::other(format!(
+                    "its processes ran nothing for {:?}, past the slowest a leaf emptied in ({:?})",
+                    stall.over(),
+                    stall.slowest()
+                ))
+            })?;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod delegated {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt as _;
     use std::path::{Path, PathBuf};
-    use std::time::{Duration, Instant};
 
     use super::super::budget::ROOT;
 
     /// The start of every leaf's name, its daemon's PID after it.
     pub(super) const LEAF: &str = "shards-";
-
-    // How long a daemon exiting waits for what was made in a leaf to end before it leaves
-    // it, past its runs' stops (`stop_runs`): only its warm VMs, told to end as it exits,
-    // and the spawner itself, which it has reaped by then. Each is waited for as long as it
-    // runs its end, as a VM's start is (D209): the leaf is left once none of its processes
-    // has run more than an idle microVM does (`platform::progressed`) over a whole window of
-    // `IDLE_VM_CPU`'s, judged each such window.
-    use shards_vmm::platform::{IDLE_VM_CPU, Progress};
 
     /// The directory of the cgroup `path` names: a path from the hierarchy's root, no
     /// component of it `.` or `..`, on a cgroup v2 hierarchy.
@@ -395,48 +459,18 @@ mod delegated {
     }
 
     /// Removes `leaf` once nothing is in it (its `cgroup.events` saying `populated 0`),
-    /// waiting as long as what is in it runs (the note on `IDLE_VM_CPU`'s `use` above).
+    /// waiting while what is in it goes on with its end ([`emptied`](super::emptied)).
     pub(super) fn remove(leaf: &Path) -> std::io::Result<()> {
-        let events = leaf.join("cgroup.events");
-        let window = IDLE_VM_CPU.1;
-        let mut followed: Vec<Progress> = Vec::new();
-        let (mut ran_last, mut judged) = (Instant::now(), Instant::now());
-        loop {
-            let text = match std::fs::read_to_string(&events) {
-                Ok(t) => t,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(e) => return Err(e),
-            };
-            if text.lines().any(|l| l == "populated 0") {
-                return std::fs::remove_dir(leaf);
-            }
-            if followed.is_empty() || judged.elapsed() >= window {
-                judged = Instant::now();
-                // Its processes as they are now, each followed from its first look.
-                let pids: Vec<u32> = std::fs::read_to_string(leaf.join("cgroup.procs"))
-                    .unwrap_or_default()
-                    .lines()
-                    .filter_map(|l| l.trim().parse().ok())
-                    .collect();
-                let mut kept = Vec::with_capacity(pids.len());
-                for pid in pids {
-                    let mut p = match followed.iter().position(|p| p.pid() == pid) {
-                        Some(at) => followed.swap_remove(at),
-                        None => Progress::of(pid),
-                    };
-                    if p.since() >= window && p.look().ran {
-                        ran_last = judged;
-                    }
-                    kept.push(p);
-                }
-                followed = kept;
-                if ran_last.elapsed() >= window {
-                    return Err(std::io::Error::other(format!(
-                        "its processes ran nothing for {window:?} past the daemon's end: left for the next daemon placing beside it"
-                    )));
-                }
-            }
-            std::thread::sleep(Duration::from_millis(10));
+        match super::emptied(
+            &leaf.join("cgroup.events"),
+            &leaf.join("cgroup.procs"),
+            &super::EMPTIED,
+        ) {
+            Ok(true) => std::fs::remove_dir(leaf),
+            Ok(false) => Ok(()),
+            Err(e) => Err(std::io::Error::other(format!(
+                "{e} past the daemon's end: left for the next daemon placing beside it"
+            ))),
         }
     }
 }
@@ -444,6 +478,58 @@ mod delegated {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A leaf's emptying past the daemon's end is waited for while its processes go on with
+    /// their end, and teaches the record (D215's judge): a stand-in leaf whose process runs a
+    /// CPU, emptied 1.5 s on, is waited for and learned; past a learned W*, one whose process
+    /// runs nothing is given up on a whole W* on, said so. Before, a window of `IDLE_VM_CPU`'s
+    /// 10 s judged by an idle microVM's CPU, which learned nothing (ROOT's (3), 2026-11-13).
+    #[cfg(unix)]
+    #[test]
+    fn a_leaf_is_waited_for_while_its_processes_go_on_with_their_end() {
+        use std::time::{Duration, Instant};
+        let leaf = shards_testdir::TempDir::new("leaf").unwrap();
+        let (events, procs) = (leaf.join("cgroup.events"), leaf.join("cgroup.procs"));
+        let child = |script: &str| {
+            std::process::Command::new("/bin/sh")
+                .args(["-c", script])
+                .spawn()
+                .unwrap()
+        };
+        let late = Duration::from_millis(1500);
+        let record = shards_api::Record::new();
+        let mut busy = child("while :; do :; done");
+        std::fs::write(&events, "populated 1\nfrozen 0\n").unwrap();
+        std::fs::write(&procs, format!("{}\n", busy.id())).unwrap();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(late);
+                std::fs::write(&events, "populated 0\nfrozen 0\n").unwrap();
+            });
+            assert!(emptied(&events, &procs, &record).unwrap());
+        });
+        let _ = busy.kill();
+        let _ = busy.wait();
+        assert!(
+            matches!(record.seen(), shards_api::Seen::Learned { slowest, .. } if slowest >= late),
+            "{:?}",
+            record.seen()
+        );
+        // Its W* learned (taught here): a process that runs nothing, given up on past it.
+        let slowest = Duration::from_millis(200);
+        let record = shards_api::Record::new();
+        record.teach(slowest, Duration::from_millis(1));
+        let mut asleep = child("exec /bin/sleep 60");
+        std::thread::sleep(slowest);
+        std::fs::write(&events, "populated 1\nfrozen 0\n").unwrap();
+        std::fs::write(&procs, format!("{}\n", asleep.id())).unwrap();
+        let began = Instant::now();
+        let refused = emptied(&events, &procs, &record).unwrap_err();
+        assert!(began.elapsed() >= slowest, "{:?}", began.elapsed());
+        assert!(refused.to_string().contains("ran nothing for"), "{refused}");
+        let _ = asleep.kill();
+        let _ = asleep.wait();
+    }
 
     #[test]
     fn a_slice_is_named_as_systemd_names_one() {
