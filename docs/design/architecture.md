@@ -982,6 +982,14 @@ A pull resolves, fetches and checks as containerd v2.4.1 does
     `%PROGRAMDATA%\docker\certs.d` (docker/docs `engine/security/certificates.md`).
   - One TLS configuration serves every host of a pull (registry, token realm, CDN): the
     trust its user set for a registry is for the hosts its pulls go to.
+  - Or the one directory `SHARDS_CERTS_D` names, alone, in their place, as
+    `SHARDS_DAEMON_JSON` names one daemon.json (D194), and as there one named must be
+    there (2026-11-13, CI cluster 14). A client sends it to the daemon with the rest of
+    `REGISTRY_ENV`. The tests name their own, empty (tests/common `as_tests_run`): a
+    stand-in host certs.d under `XDG_CONFIG_HOME` holding, for the tests' own registry, a
+    client key with no certificate failed a build from it (red at 60216c106), and reaches no
+    test now (`images`' `a_hosts_certs_d_reaches_no_test`; `certs`'
+    `the_certs_d_named_is_read_alone`).
 - **The store** lives in `$SHARDS_HOME/images`, else in the platform's data directory:
   - `~/Library/Application Support` on macOS, per Apple's guidance;
   - `$XDG_DATA_HOME` or `~/.local/share` elsewhere on Unix;

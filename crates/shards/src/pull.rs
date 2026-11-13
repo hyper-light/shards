@@ -645,13 +645,17 @@ pub(crate) fn short(digest: &str) -> &str {
 mod tests {
     /// The client sends every name a registry is reached by: its proxies' among them, so a
     /// daemon reaches registries through the proxies of the client that asks, and the
-    /// daemon.json it was given (D194).
+    /// daemon.json and certs.d it was given (D194, D23).
     #[test]
     fn clients_send_every_name_registries_are_reached_by() {
         for name in shards_registry::proxy::ENV {
             assert!(shards_ipc::REGISTRY_ENV.contains(&name), "{name}");
         }
-        let named = shards_registry::registries::DAEMON_JSON;
-        assert!(shards_ipc::REGISTRY_ENV.contains(&named), "{named}");
+        for named in [
+            shards_registry::registries::DAEMON_JSON,
+            shards_registry::certs::CERTS_D,
+        ] {
+            assert!(shards_ipc::REGISTRY_ENV.contains(&named), "{named}");
+        }
     }
 }
