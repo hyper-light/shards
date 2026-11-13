@@ -193,6 +193,24 @@ class Settle(unittest.TestCase):
         self.assertIn("CONFLICT", said)
         self.assertEqual(self.original(), on_host)
 
+    def test_a_change_to_the_original_as_it_is_written_back_is_kept(self):
+        refreshed = claude(access="sk-ant-oat01-" + fake("refreshed", 80))
+        self.rewrite(self.copied, refreshed)
+        on_host = claude(access="sk-ant-oat01-" + fake("refreshed on the host", 80))
+        real = credentials.write_back
+
+        def racing(*args):
+            # The host's own refresh lands after settle last read the original, before it writes.
+            self.rewrite(self.p.login, on_host)
+            return real(*args)
+
+        credentials.write_back = racing
+        self.addCleanup(setattr, credentials, "write_back", real)
+        _, said = quietly(credentials.settle, self.p.private)
+        self.assertEqual(self.original(), on_host, said)
+        self.assertIn("CONFLICT", said)
+        self.assertEqual([n for n in os.listdir(self.p.root.name) if n.startswith(".shards-writeback-")], [])
+
     def test_scrub_removes_everything_it_holds(self):
         made = os.path.join(self.p.private, "home", "state")
         os.mkdir(made)

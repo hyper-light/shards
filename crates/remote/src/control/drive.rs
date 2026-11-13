@@ -871,6 +871,71 @@ pub struct Dialed {
     pub sockets: Option<Sockets>,
     pub link: Linked,
     pub hangup: Hangup,
+    /// The lanes it was granted, in the order it dialed them ([`Dialed::lanes`]).
+    granted: Vec<Granted>,
+}
+
+impl Dialed {
+    /// The lanes the controller was granted as it dialed, by Shards' names ([`Granted::name`]):
+    /// its control lane, each member stream its subscriptions named, where execs and socket
+    /// lanes are admitted. What a session's report of its link says (goal 60's `lanes`).
+    pub fn lanes(&self) -> Vec<Granted> {
+        self.granted.clone()
+    }
+}
+
+/// A lane a controller was granted as it dialed ([`Dialed::lanes`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Granted {
+    /// Each end's TLS report (D238's control lane), on every connection.
+    Control,
+    /// Member N's stdout, its stderr, its stdin (step 5's subscriptions).
+    Stdout(u32),
+    Stderr(u32),
+    Stdin(u32),
+    /// Execs may be asked for (D243), and an MCP connection of a member's with them (D254).
+    Execs,
+    /// Socket lanes to the run's own command may be opened (D251).
+    Sockets,
+    /// Member N's MCP bridge (D254), granted where its run asked for one.
+    Mcp(u32),
+}
+
+impl Granted {
+    /// Its name: `control`, `stdout:N`, `stderr:N`, `stdin:N`, `exec`, `socket` or `mcp:N`,
+    /// N the member's index.
+    pub fn name(&self) -> String {
+        match self {
+            Granted::Control => "control".to_string(),
+            Granted::Stdout(member) => format!("stdout:{member}"),
+            Granted::Stderr(member) => format!("stderr:{member}"),
+            Granted::Stdin(member) => format!("stdin:{member}"),
+            Granted::Execs => "exec".to_string(),
+            Granted::Sockets => "socket".to_string(),
+            Granted::Mcp(member) => format!("mcp:{member}"),
+        }
+    }
+}
+
+/// What `subscriptions` grant, in the order the controller dials their lanes.
+fn granted(subscriptions: Subscriptions<'_>) -> Vec<Granted> {
+    let outputs = subscriptions
+        .outputs
+        .iter()
+        .map(|(scope, _, _)| match scope.channel {
+            Channel::Stdout => Granted::Stdout(scope.member),
+            Channel::Stderr => Granted::Stderr(scope.member),
+        });
+    let inputs = subscriptions
+        .inputs
+        .iter()
+        .map(|(scope, _, _)| Granted::Stdin(scope.member));
+    std::iter::once(Granted::Control)
+        .chain(outputs)
+        .chain(inputs)
+        .chain(subscriptions.execs.map(|_| Granted::Execs))
+        .chain(subscriptions.sockets.map(|_| Granted::Sockets))
+        .collect()
 }
 
 /// A controller's connection to one microVM's agent-control endpoint: run its driver on a
@@ -967,7 +1032,6 @@ impl Controller {
                 // A wake is one unit whoever sends it, and its turn reads every ask.
                 command_slots: 1,
                 queued_datagram_bytes: link.datagram_bytes,
-                handshake_patience: link.patience,
             },
         )?;
         driver.handler_mut().wake = Some(sender.try_clone()?);
@@ -1041,6 +1105,7 @@ impl Controller {
                     over: None,
                 },
                 hangup: Hangup { sender },
+                granted: granted(subscriptions),
             },
         ))
     }
@@ -1154,7 +1219,7 @@ fn record_end(frame: &[u8]) -> Option<u64> {
 /// the endpoint sends on a lane before it is read (a whole record or a stdin's word, a refusal
 /// at most otherwise), the largest per lane and all of them summed; what the controller sends
 /// unacknowledged on each, summed; no stream the endpoint may open (it opens none, D238); the
-/// least patience, the largest handshake and datagrams. An exec's lanes add theirs while it
+/// largest handshake and datagrams. An exec's lanes add theirs while it
 /// runs ([`Drive::exec_started`]).
 pub(super) fn windows(subscriptions: Subscriptions<'_>) -> Result<(Admitted, Windows), managed::Error> {
     let window = || managed::Error::Admission(AdmissionError::Window);
@@ -1191,7 +1256,6 @@ pub(super) fn windows(subscriptions: Subscriptions<'_>) -> Result<(Admitted, Win
             Some(link) => Admitted {
                 handshake_bytes: link.handshake_bytes.max(admitted.handshake_bytes),
                 datagram_bytes: link.datagram_bytes.max(admitted.datagram_bytes),
-                patience: link.patience.min(admitted.patience),
                 ..link
             },
         });
@@ -2250,7 +2314,7 @@ impl Handler for Drive {
         if self.conn.is_some_and(|c| c != conn) {
             return;
         }
-        // No cause: its handshake ran out of the endpoint's patience, unheard.
+        // No cause: unheard, its dial ended by its caller (its `Hangup`) or refused.
         let why = self.cause.take().unwrap_or(Ended::Silent);
         self.lose(why);
     }

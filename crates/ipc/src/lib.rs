@@ -349,6 +349,13 @@ pub mod kind {
     /// (shards_net::encode_grants), after its `NET_POLICY`, once; answered with the same kind
     /// and the run's CA's certificate (DER), made for those hosts alone.
     pub const NET_CREDENTIALS: u8 = 97;
+    /// Network process ⇄ its run host: a credential's lease (D242). The network process asks
+    /// it just in time, by reference, as a flow first needs its value: the ask's id (4
+    /// bytes, big-endian), then the reference (shards_net::lease::encode_ask). Its run host
+    /// answers with the same kind, by that id: how long the lease lives and the value, or why
+    /// not, typed (shards_net::lease::encode_answer). Asked only where the run has credential
+    /// grants (`NET_CREDENTIALS`), of a run host that relays it to its orchestrator.
+    pub const NET_LEASE: u8 = 100;
     /// Daemon → a running microVM's VM process: a run joins its network (D119). Its number
     /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
     /// own connection to the daemon, on which the joiner's run goes as a warm VM's does
@@ -610,6 +617,12 @@ pub mod kind {
     /// relays the lane onto, or none for a lane its owner closes. Numbers its owner chose
     /// ([`LANE_OPEN`]) are below 2^63; a VM's own, for lanes its guest begins, at or above.
     pub const LANE_HELD: u8 = 99;
+    /// Warm VM → its daemon or run host, before its `DONE`: it could not serve its run, and
+    /// why, in words (warm.rs `finish`): its guest gone before its command ended, a frame it
+    /// could not read, a spec it could not send. Its `DONE` then carries the status its client
+    /// exits with for it (125, as `docker run` exits for dockerd's own failures), which no
+    /// command gave: the run failed, in these words.
+    pub const UNSERVED: u8 = 101;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the

@@ -367,7 +367,6 @@ impl Observer {
         address: SocketAddr,
         until: Instant,
     ) -> Self {
-        let patience = until.saturating_duration_since(Instant::now());
         let window = metadata.capacity.checked_add(managed::DATA_HEAD).unwrap();
         let admitted = Admitted {
             record_bytes: metadata.capacity,
@@ -375,7 +374,6 @@ impl Observer {
             // RFC 8446 Handshake length: uint24 plus the four-byte handshake header.
             handshake_bytes: (1 << 24) - 1 + 4,
             datagram_bytes: managed::DATAGRAM_BYTES,
-            patience,
         };
         let (event, events) = mpsc::channel();
         let client = Client {
@@ -401,7 +399,6 @@ impl Observer {
                 connections: 1,
                 command_slots: 1,
                 queued_datagram_bytes: admitted.datagram_bytes,
-                handshake_patience: patience,
             },
         )
         .unwrap();
@@ -778,14 +775,12 @@ impl InputWriter {
         offset: u64,
         until: Instant,
     ) -> Result<Self, InputHeard> {
-        let patience = until.saturating_duration_since(Instant::now());
         let admitted = Admitted {
             record_bytes: shards_abi::run::CHUNK,
             transport_bytes: u64::try_from(managed::input::TAKEN_BYTES).unwrap(),
             // RFC 8446 Handshake length: uint24 plus the four-byte handshake header.
             handshake_bytes: (1 << 24) - 1 + 4,
             datagram_bytes: managed::DATAGRAM_BYTES,
-            patience,
         };
         let (heard, hearing) = mpsc::channel();
         let client = InputClient {
@@ -811,7 +806,6 @@ impl InputWriter {
                 connections: 1,
                 command_slots: 4,
                 queued_datagram_bytes: admitted.datagram_bytes,
-                handshake_patience: patience,
             },
         )
         .unwrap();

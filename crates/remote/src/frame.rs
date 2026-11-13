@@ -52,7 +52,8 @@ pub enum Tag {
     Stderr = 33,
     /// Daemon: the command ended, with this status (four bytes, big endian).
     Exit = 34,
-    /// Daemon: the request is refused, said why (UTF-8).
+    /// Daemon: the request is refused before any command of it started, said why (UTF-8):
+    /// nothing of it ran.
     Refused = 35,
     /// Daemon: the join is done: the client is enrolled under the invitation's name.
     Joined = 36,
@@ -70,6 +71,10 @@ pub enum Tag {
     /// Agent-control endpoint, on a socket lane (D251): its host's connect failed, with this
     /// errno (four bytes, big endian); the lane's end follows.
     Unreached = 41,
+    /// Daemon: the command started, and this daemon ended its stream before its end, said
+    /// why (UTF-8): it may have run, all or some of it, as [`Refused`](Tag::Refused)'s never
+    /// did (D176 part 6).
+    Cut = 42,
 }
 
 impl Tag {
@@ -96,6 +101,7 @@ impl Tag {
             39 => Tag::Negotiated,
             40 => Tag::Connected,
             41 => Tag::Unreached,
+            42 => Tag::Cut,
             _ => return None,
         })
     }

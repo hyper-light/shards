@@ -107,7 +107,11 @@ impl HangUp {
 /// What the daemon answered.
 enum Answer {
     Exit(i32),
+    /// Refused before any command of it started: nothing of it ran.
     Refused(String),
+    /// Its command started, and the daemon ended its stream before its end ([`Tag::Cut`]):
+    /// it may have run.
+    Cut(String),
     Joined,
 }
 
@@ -296,6 +300,10 @@ impl Client<'_> {
                             io,
                             Answer::Refused(String::from_utf8_lossy(&payload).into_owned()),
                         );
+                        return;
+                    }
+                    Tag::Cut => {
+                        self.answered(io, Answer::Cut(String::from_utf8_lossy(&payload).into_owned()));
                         return;
                     }
                     Tag::Joined => {
@@ -633,10 +641,15 @@ pub fn exec_with(
     (answer.and_then(exit_of), seen)
 }
 
+/// A command's end: its status, its refusal before it ran, or, cut after it started, no
+/// answer, as a connection lost then is: it may have run (D176 part 6).
 fn exit_of(answer: Answer) -> Result<Result<i32, String>, Error> {
     match answer {
         Answer::Exit(status) => Ok(Ok(status)),
         Answer::Refused(why) => Ok(Err(why)),
+        Answer::Cut(why) => Err(Error::new(format!(
+            "{why}, after the command started: it may have run"
+        ))),
         Answer::Joined => Err(Error::new("the daemon answered a command as a join")),
     }
 }
@@ -660,7 +673,7 @@ pub fn join(identity: &Identity, invitation: &Invitation) -> (Result<Result<(), 
         run(identity, remote, ask, None, None, Hooks::default(), &mut seen).and_then(|answer| match answer {
             Answer::Joined => Ok(Ok(())),
             Answer::Refused(why) => Ok(Err(why)),
-            Answer::Exit(_) => Err(Error::new("the daemon answered a join as a command")),
+            Answer::Exit(_) | Answer::Cut(_) => Err(Error::new("the daemon answered a join as a command")),
         });
     (joined, seen)
 }
@@ -791,4 +804,26 @@ fn run(
 
 fn driver_handler<'d, 'a>(driver: &'d mut Driver<Client<'a>>) -> &'d mut Client<'a> {
     driver.handler_mut()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A command refused before it started is its refusal; one cut after it started is no
+    /// answer, as a lost connection is, for it may have run; its exit is its status (D176
+    /// part 6).
+    #[test]
+    fn a_cut_command_is_unanswered_and_a_refused_one_refused() {
+        assert_eq!(exit_of(Answer::Exit(3)).unwrap(), Ok(3));
+        assert_eq!(
+            exit_of(Answer::Refused("not enrolled".into())).unwrap(),
+            Err("not enrolled".to_string())
+        );
+        let cut = exit_of(Answer::Cut("a frame out of place (Joined)".into())).unwrap_err();
+        assert_eq!(
+            cut.to_string(),
+            "a frame out of place (Joined), after the command started: it may have run"
+        );
+    }
 }

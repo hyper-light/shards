@@ -17,6 +17,8 @@ mode. Every output line is a status, a count or a path: no value, no hash.
 
 import base64
 import calendar
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -185,27 +187,64 @@ def tokens_of(document):
     return sorted(secrets(document))
 
 
-def write_back(src, data, mode):
+def exchange(a, b):
+    """Swaps the files named `a` and `b`, in one step of the kernel's: renamex_np(2)'s
+    RENAME_SWAP on macOS (sys/stdio.h, 0x2; macOS 10.12 on), renameat2(2)'s RENAME_EXCHANGE on
+    Linux (include/uapi/linux/fs.h, 1 << 1; Linux 3.15 on, where the file system takes it), each
+    name relative to the working directory (AT_FDCWD, -100 in include/uapi/linux/fcntl.h, as the
+    names are absolute it is not read). Win32's renames replace a name, never swap two
+    (MoveFileExW, ReplaceFileW): there, and where the C library has no renameat2, ENOSYS."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    first, second = os.fsencode(a), os.fsencode(b)
+    if sys.platform == "darwin":
+        rc = libc.renamex_np(first, second, ctypes.c_uint(0x2))
+    elif sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+        rc = libc.renameat2(ctypes.c_int(-100), first, ctypes.c_int(-100), second, ctypes.c_uint(1 << 1))
+    else:
+        raise OSError(errno.ENOSYS, "this host swaps no two names in one step")
+    if rc != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def write_back(src, data, mode, was_sha256):
+    """Writes `data` over `src`, in the one step that also takes what `src` held then: a new
+    file of `data` and the original swap names ([`exchange`]). A change made to the original
+    after settle last read it is so in what was swapped out, never lost: where that is not the
+    original whose SHA-256 is `was_sha256`, it is swapped back. None where written back, else
+    why not; a third version, written between the two swaps, is kept beside the original."""
     if os.stat(src).st_uid != os.getuid():
         raise PermissionError(f"{src} is not this user's")
     directory = os.path.dirname(src)
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".shards-writeback-")
+    why = None
     try:
         os.fchmod(fd, mode)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, src)
-    except BaseException:
-        if os.path.exists(tmp):
+        exchange(tmp, src)
+        with open(tmp, "rb") as f:
+            was = f.read()
+        if hashlib.sha256(was).hexdigest() != was_sha256:
+            exchange(tmp, src)
+            with open(tmp, "rb") as f:
+                back = f.read()
+            if back != data:
+                why = f"the original changed twice as it was written back: the newest is kept at {tmp}"
+                tmp = None
+            else:
+                why = "the original changed on the host as it was written back"
+    finally:
+        if tmp is not None and os.path.exists(tmp):
             os.unlink(tmp)
-        raise
     dfd = os.open(directory, os.O_DIRECTORY)
     try:
         os.fsync(dfd)
     finally:
         os.close(dfd)
+    return why
 
 
 def settle(private):
@@ -232,9 +271,15 @@ def settle(private):
             print(f"{name}: CONFLICT: the harness refreshed its tokens, and the original changed on "
                   "the host during the run: not written back")
             continue
-        write_back(entry["src"], data, entry["mode"])
-        print(f"{name}: the harness refreshed its tokens in the microVM: written back over the "
-              "original atomically, its mode kept")
+        try:
+            why = write_back(entry["src"], data, entry["mode"], entry["sha256"])
+        except OSError as e:
+            why = f"it could not be written back in one step ({e.strerror})"
+        if why is None:
+            print(f"{name}: the harness refreshed its tokens in the microVM: written back over the "
+                  "original in one step, its mode kept")
+        else:
+            print(f"{name}: CONFLICT: the harness refreshed its tokens, and {why}: not written back")
 
 
 def scrub(private):
