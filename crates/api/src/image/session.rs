@@ -1216,6 +1216,7 @@ mod tests {
             published: Vec::new(),
             control: None,
             rate_period: Duration::from_millis(100),
+            from: wire::StartedFrom::Booted,
         }
         .encode()
         .unwrap();
