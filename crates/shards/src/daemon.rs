@@ -2447,8 +2447,9 @@ impl<D: Disk> Daemon<D> {
     /// long (`shards_vmm::platform::progressed`, PM M357): its CPU time and page faults, and
     /// what each grew by. The durable word by which the wait of a client whose workload its
     /// host runs slowly is told from one on a microVM that runs nothing (D209), which is
-    /// said nothing of, as an idle microVM has nothing to say. How long until the next look
-    /// is due; none where no client waits.
+    /// said nothing of, as an idle microVM has nothing to say: a liveness line, which the
+    /// tests' waits take for no progress of their subject (tests/common `HEARTBEAT` matches
+    /// it). How long until the next look is due; none where no client waits.
     fn log_progress(&self) -> Option<Duration> {
         let inboxes: Vec<(String, Arc<Mutex<Inbox>>)> = lock(&self.runs)
             .iter()
