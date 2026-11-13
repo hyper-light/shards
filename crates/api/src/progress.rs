@@ -254,6 +254,14 @@ impl Watch {
         self.last.cpu
     }
 
+    /// Whether the look before found it stopped or frozen (a stop signal's, a debugger's, a
+    /// suspension's), which [`look`](Self::look) finds `Still`: for a waiter that counts a
+    /// stop its host made as its host's hold, as a test's waits count a kiln runner's
+    /// headroom guard suspending them (ROOT, 2026-11-13).
+    pub fn stopped(&self) -> bool {
+        self.hold.stopped
+    }
+
     /// The CPU time its process's threads have had by now, the look before kept; none where
     /// it has gone or could not be read.
     fn cpu_now(&mut self) -> Option<Duration> {

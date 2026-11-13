@@ -148,3 +148,98 @@ fn a_vm_processes_slices_count_past_its_cold_start_only_above_its_floor() {
         "a silent build step's work"
     );
 }
+
+/// The stand-in a test's wait follows here: this test binary run again for this test alone,
+/// doing what `SHARDS_STAND_IN` says: `exit`, at once; `busy MS`, its CPU busy for MS
+/// milliseconds, then its end; `idle`, nothing at all until its stdin closes.
+#[test]
+#[ignore = "a process of its own for the harness's stand-ins, which run it"]
+fn stand_in() {
+    use std::io::Read as _;
+    let asked = std::env::var("SHARDS_STAND_IN").unwrap_or_default();
+    if let Some(ms) = asked.strip_prefix("busy ").and_then(|ms| ms.parse().ok()) {
+        let until = Instant::now() + Duration::from_millis(ms);
+        let mut spun = 0u64;
+        while Instant::now() < until {
+            spun = std::hint::black_box(spun.wrapping_add(1));
+        }
+    } else if asked == "idle" {
+        let _ = std::io::stdin().read(&mut [0u8; 1]);
+    }
+}
+
+/// [`stand_in`], doing `what`.
+fn stand_in_doing(what: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+    cmd.args(["stand_in", "--exact", "--ignored", "--test-threads=1"])
+        .env("SHARDS_STAND_IN", what);
+    cmd
+}
+
+/// A command that works past the bound its caller gave its wait is waited on while it
+/// works, and not cut at that bound: a wait follows its party's liveness and progress (the
+/// person's ruling of 2026-11-13). api_image's and build.rs's builds on jupiter were cut at
+/// their tests' 120 s while they worked under its headroom guard (WHP chain B, 8cc1f6673),
+/// as a command that is no microVM's was cut at its bound however it worked. Do: run a
+/// stand-in busy past the bound given. Expect: its own end, status 0, past the bound.
+#[test]
+fn a_command_working_past_its_bound_is_waited_on() {
+    let (bound, busy) = (Duration::from_millis(100), Duration::from_secs(1));
+    let asked = ["stand-in".to_string(), format!("busy {}", busy.as_millis())];
+    let run = common::run_command(stand_in_doing(&asked[1]), &asked, bound);
+    assert_eq!(run.status, Some(0), "{run}");
+    assert!(
+        run.elapsed >= busy,
+        "it ended {:?} in, before its work",
+        run.elapsed
+    );
+}
+
+/// A process its host stops or suspends is its host's hold, not its own stall: a wait whose
+/// kind has an answer (W*) does not refuse it at a look past W*, as a kiln runner's
+/// headroom guard suspends a test's processes to pace them (ROOT, 2026-11-13; WHP chain A,
+/// 0a3dde0db: daemon.rs's six stop tests cut while the guard held their daemons and
+/// microVMs). Do: teach the kind its W* by a stand-in's own end; then follow a stand-in
+/// stopped (SIGSTOP; on Windows made with its thread suspended) through two of its judge's
+/// looks past W*. Expect: neither refuses it.
+#[test]
+fn a_stopped_process_is_its_hosts_hold_and_not_refused() {
+    let kind = common::WaitKind::at(std::panic::Location::caller());
+    let mut quick = stand_in_doing("exit")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut taught = common::Wait::begin(kind, quick.id(), None, "a quick stand-in");
+    while quick.try_wait().unwrap().is_none() {
+        taught.look(false).unwrap();
+    }
+    taught.answered();
+    let shards_api::Seen::Learned { slowest, .. } = kind.record().seen() else {
+        panic!("its kind learned nothing of an answer");
+    };
+    let mut stopped = stand_in_doing("idle");
+    stopped
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null());
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(
+        &mut stopped,
+        windows_sys::Win32::System::Threading::CREATE_SUSPENDED,
+    );
+    let mut stopped = stopped.spawn().unwrap();
+    // SAFETY: kill(2) of a child of this test's.
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(i32::try_from(stopped.id()).unwrap(), libc::SIGSTOP);
+    }
+    let mut wait = common::Wait::begin(kind, stopped.id(), None, "a stopped stand-in");
+    let began = Instant::now();
+    // Its judge's first two looks: W* past its start, and W* past that.
+    while began.elapsed() <= slowest.saturating_mul(2) {
+        let judged = wait.look(false);
+        assert!(judged.is_ok(), "{}", wait.account());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let _ = stopped.kill();
+    let _ = stopped.wait();
+}

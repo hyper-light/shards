@@ -1826,16 +1826,19 @@ impl Run {
 }
 
 /// Runs `shards run <args>`, `<args>` starting `--kernel`, killing it (and failing) after `timeout`.
+#[track_caller]
 pub fn vm_run<S: AsRef<std::ffi::OsStr>>(args: &[S], timeout: Duration) -> Run {
     run_shards(&["run"], args, timeout)
 }
 
 /// Runs `shards <command...> <args...>`, killing it (and failing) after `timeout`.
+#[track_caller]
 pub fn run_shards<S: AsRef<std::ffi::OsStr>>(command: &[&str], args: &[S], timeout: Duration) -> Run {
     run_shards_env(command, args, &[], timeout)
 }
 
 /// [`run_shards`], with `env` added to shards' environment.
+#[track_caller]
 pub fn run_shards_env<S: AsRef<std::ffi::OsStr>>(
     command: &[&str],
     args: &[S],
@@ -1953,6 +1956,7 @@ pub fn run_awaiting(
 }
 
 /// [`run_shards_env`], in the working directory `dir`.
+#[track_caller]
 pub fn run_shards_env_in<S: AsRef<std::ffi::OsStr>>(
     dir: &Path,
     command: &[&str],
@@ -1964,6 +1968,7 @@ pub fn run_shards_env_in<S: AsRef<std::ffi::OsStr>>(
 }
 
 /// [`run_shards`], in the working directory `dir`.
+#[track_caller]
 pub fn run_shards_in<S: AsRef<std::ffi::OsStr>>(
     dir: &Path,
     command: &[&str],
@@ -2039,6 +2044,7 @@ pub fn output_within(cmd: &mut Command, timeout: Duration) -> std::process::Outp
     }
 }
 
+#[track_caller]
 fn run_shards_with<S: AsRef<std::ffi::OsStr>>(
     command: &[&str],
     args: &[S],
@@ -2326,6 +2332,12 @@ impl Said {
         self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
     }
 
+    /// Whether the daemon has said something since the call before, read now: a [`Wait`]'s
+    /// look at its party, which its judge paces.
+    pub fn said(&mut self) -> bool {
+        self.said_anew()
+    }
+
     /// Whether the whole lines the log gained since its last read say anything of its
     /// subject, read to the end of the last of them: each but its heartbeat, and that where
     /// its microVM's floor takes it for progress; a log begun again is read from its start.
@@ -2607,28 +2619,32 @@ pub fn processes() -> Vec<(u32, u32, String)> {
 }
 
 /// Runs `cmd` as built, `shards` itself ([`run_shards_with`]) or a program that runs it
-/// (given [`as_tests_run`]'s environment), its output collected; killed, failing the test,
-/// after `timeout`, `asked` naming it then, or, where its home's daemon still says
-/// something then, once it has said nothing for [`DAEMON_QUIET`] ([`Said`]), or where a
-/// microVM of its own still runs then, once none has run for as long ([`Ran`]).
-pub fn run_command(cmd: Command, asked: &[String], timeout: Duration) -> Run {
-    run_ending(cmd, asked, timeout, Leftovers::Ended).unwrap_or_else(|ended| panic!("{}", ended.said))
+/// (given [`as_tests_run`]'s environment), its output collected, for as long as it goes on:
+/// a wait on its party ([`Party`]) judged by its kind's record ([`WaitKind`]: its caller's
+/// call site), as D215's judge judges a wait ([`Wait`]). Its kind cold, it follows its
+/// client's liveness alone; once its kind has an answer, it is looked at each W* past its
+/// start, and the test fails, `asked` naming the command, at a look that finds its party
+/// made no progress at all since the look before, its host not holding it (the person's
+/// ruling of 2026-11-13, D209). `_timeout` is read no more, and goes with every caller's.
+#[track_caller]
+pub fn run_command(cmd: Command, asked: &[String], _timeout: Duration) -> Run {
+    run_ending(cmd, asked, None, Leftovers::Ended).unwrap_or_else(|ended| panic!("{}", ended.said))
 }
 
-/// What a run ended at its deadline leaves of the processes under it ([`end_run`]).
+/// What a run ended at its end or its stall leaves of the processes under it ([`end_run`]).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Leftovers {
-    /// Ended by the harness with it, on Windows: a test that fails at its deadline leaves
-    /// no process, whatever the run started (a daemon among them).
+    /// Ended by the harness with it, on Windows: a test that fails on a stall leaves no
+    /// process, whatever the run started (a daemon among them).
     Ended,
     /// Waited for, as the run's own end should end them: those still running then are
     /// [`Ended::left`], and only then ended by the harness.
     Awaited,
 }
 
-/// A run [`run_until`] ended at its deadline: what it had said and shown ([`stuck`]), the
-/// processes it had started (those under it, each named), and those of them still running
-/// once it was ended and they were waited for.
+/// A run [`run_until`] ended at its end, or one ended on its stall: what it had said and
+/// shown ([`stuck`]), the processes it had started (those under it, each named), and those
+/// of them still running once it was ended and they were waited for.
 pub struct Ended {
     pub said: String,
     pub started: Vec<Process>,
@@ -2638,20 +2654,29 @@ pub struct Ended {
 /// A process by its ID and its executable's name.
 pub type Process = (u32, String);
 
-/// [`run_command`]'s run, ended at its deadline as [`Ended`] says rather than failing the
+/// [`run_command`]'s run, ended at `end` past its start, a time of its test's own (boot.rs:
+/// this host's own time for its guest to answer), as [`Ended`] says rather than failing the
 /// test there, for a test of what an ended run leaves: the processes under it are left to
-/// end as its own end ends them ([`Leftovers::Awaited`]).
-pub fn run_until(cmd: Command, asked: &[String], timeout: Duration) -> Result<Run, Ended> {
-    run_ending(cmd, asked, timeout, Leftovers::Awaited)
+/// end as its own end ends them ([`Leftovers::Awaited`]). Until then its wait is
+/// [`run_command`]'s.
+#[track_caller]
+pub fn run_until(cmd: Command, asked: &[String], end: Duration) -> Result<Run, Ended> {
+    run_ending(cmd, asked, Some(end), Leftovers::Awaited)
 }
 
-/// [`run_until`]'s run, the processes under it at its deadline as `leftovers` says.
+/// [`run_command`]'s wait, ended at `end` where its test gave one ([`run_until`]) or at its
+/// stall, the processes under it then as `leftovers` says. Its output is read to its end, as
+/// long as the wait goes on: a stream another process holds past the client (a VM given the
+/// client's stdio), which the wait finds doing nothing of its own past the slowest answer
+/// of its kind, is said held open, with what came of it.
+#[track_caller]
 fn run_ending(
     mut cmd: Command,
     asked: &[String],
-    timeout: Duration,
+    end: Option<Duration>,
     leftovers: Leftovers,
 ) -> Result<Run, Ended> {
+    let kind = WaitKind::at(std::panic::Location::caller());
     let start = Instant::now();
     // Its home, for what is shown of a run that never ends ([`stuck`]).
     let home: Option<PathBuf> = cmd
@@ -2666,9 +2691,8 @@ fn run_ending(
         .spawn()
         .expect("spawning shards");
     // Read on threads of their own and handed over by channel as it comes, so that a pipe
-    // another process still holds (a VM given the client's stdio) costs the test its
-    // deadline, never a hang, and what came before it is kept: a command that never ends
-    // shows how far it got.
+    // another process still holds (a VM given the client's stdio) never holds the wait, and
+    // what came before it is kept: a command that never ends shows how far it got.
     let collect = |mut r: Box<dyn Read + Send>| {
         let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
         std::thread::spawn(move || {
@@ -2681,87 +2705,630 @@ fn run_ending(
         });
         rx
     };
-    // All it wrote, to its end, after what had come of it (`got`); or what came by the
-    // deadline, where it never ends. Lossily: a step's output is printed as it came, bytes
-    // that are no UTF-8 included, which a strict conversion would drop the whole of.
-    let took = |rx: &std::sync::mpsc::Receiver<Vec<u8>>, mut got: Vec<u8>| {
-        let until = Instant::now()
-            .max(start + timeout)
-            .max(Instant::now() + Duration::from_secs(1));
-        loop {
-            match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
-                Ok(chunk) => got.extend_from_slice(&chunk),
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    break String::from_utf8_lossy(&got).into_owned();
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    break format!(
-                        "{}\n(still held open by another process)",
-                        String::from_utf8_lossy(&got)
-                    );
-                }
-            }
-        }
-    };
     let out = collect(Box::new(child.stdout.take().unwrap()));
     let err = collect(Box::new(child.stderr.take().unwrap()));
-    let (mut out_got, mut err_got) = (Vec::new(), Vec::new());
-    // What came of it since the look before: its run's answers, which teach its microVMs'
-    // floors ([`Floor`]).
-    let came = |rx: &std::sync::mpsc::Receiver<Vec<u8>>, got: &mut Vec<u8>| {
+    // What it wrote, each stream with whether it has ended, its every writer gone.
+    let (mut out_got, mut err_got) = ((Vec::new(), false), (Vec::new(), false));
+    // Whether more came of a stream since the call before.
+    let came = |rx: &std::sync::mpsc::Receiver<Vec<u8>>, got: &mut (Vec<u8>, bool)| {
         let mut came = false;
-        while let Ok(chunk) = rx.try_recv() {
-            got.extend_from_slice(&chunk);
-            came = true;
-        }
-        came
-    };
-    let mut said = home.as_deref().map(Said::of);
-    let mut ran = Ran::of(child.id());
-    let status = loop {
-        if let Some(st) = child.try_wait().unwrap() {
-            break st;
-        }
-        if came(&out, &mut out_got) | came(&err, &mut err_got) {
-            if let Some(said) = said.as_mut() {
-                said.answered();
+        loop {
+            match rx.try_recv() {
+                Ok(chunk) => {
+                    got.0.extend_from_slice(&chunk);
+                    came = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    got.1 = true;
+                    return came;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return came,
             }
-            ran.answered();
         }
-        // Each asked each time, so that it sees when the daemon last said something, and
-        // when a microVM of the client's own last ran.
-        let said_lately = said.as_mut().is_some_and(Said::lately);
-        let ran_lately = ran.lately();
-        if start.elapsed() > timeout && !said_lately && !ran_lately {
+    };
+    // Lossily: a step's output is printed as it came, bytes that are no UTF-8 included,
+    // which a strict conversion would drop the whole of.
+    let text = |got: &(Vec<u8>, bool)| {
+        let said = String::from_utf8_lossy(&got.0).into_owned();
+        if got.1 {
+            said
+        } else {
+            format!("{said}\n(still held open by another process)")
+        }
+    };
+    let mut wait = Wait::begin(kind, child.id(), home.as_deref(), &asked.join(" "));
+    let mut status = None;
+    loop {
+        if status.is_none()
+            && let Some(st) = child.try_wait().unwrap()
+        {
+            // Its client's own end: its kind's answer.
+            wait.answered();
+            status = Some(st);
+        }
+        let output = came(&out, &mut out_got) | came(&err, &mut err_got);
+        if let Some(status) = status.filter(|_| out_got.1 && err_got.1) {
+            break Ok(finished(status, text(&out_got), text(&err_got), start));
+        }
+        if status.is_none()
+            && let Some(end) = end.filter(|end| start.elapsed() >= *end)
+        {
             let seen = stuck(child.id(), home.as_deref());
-            let (started, left) = end_run(&mut child, timeout, leftovers);
+            let (started, left) = end_run(&mut child, end, leftovers);
+            came(&out, &mut out_got);
+            came(&err, &mut err_got);
             return Err(Ended {
                 said: format!(
-                    "{} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}{seen}",
+                    "{} did not exit within {end:?}, its end\n--- stdout\n{}\n--- stderr\n{}{seen}",
                     asked.join(" "),
-                    took(&out, std::mem::take(&mut out_got)),
-                    took(&err, std::mem::take(&mut err_got))
+                    text(&out_got),
+                    text(&err_got)
                 ),
                 started,
                 left,
             });
         }
+        match (wait.look(output), status) {
+            (Ok(()), _) => {}
+            // Its streams' end never came, their holder doing nothing of its own past the
+            // slowest answer of its kind: what came is what it said.
+            (Err(_), Some(status)) => break Ok(finished(status, text(&out_got), text(&err_got), start)),
+            (Err(stall), None) => {
+                let said = wait.refused(&stall);
+                let seen = stuck(child.id(), home.as_deref());
+                let (started, left) = end_run(&mut child, stall.slowest(), leftovers);
+                came(&out, &mut out_got);
+                came(&err, &mut err_got);
+                return Err(Ended {
+                    said: format!(
+                        "{said}\n--- stdout\n{}\n--- stderr\n{}{seen}",
+                        text(&out_got),
+                        text(&err_got)
+                    ),
+                    started,
+                    left,
+                });
+            }
+        }
         std::thread::sleep(Duration::from_millis(2));
-    };
+    }
+}
+
+/// A run that ended with `status`, its streams as they came.
+fn finished(status: std::process::ExitStatus, stdout: String, stderr: String, start: Instant) -> Run {
     #[cfg(unix)]
     let signal = std::os::unix::process::ExitStatusExt::signal(&status);
     #[cfg(not(unix))]
     let signal = None;
-    Ok(Run {
+    Run {
         status: status.code(),
         signal,
-        stdout: took(&out, out_got),
-        stderr: took(&err, err_got),
+        stdout,
+        stderr,
         elapsed: start.elapsed(),
-    })
+    }
 }
 
-/// Ends `child`, a run past its deadline, and gives the processes under it, each named,
+/// A kind of the tests' own waits: the call site that waits ([`run_command`]'s caller,
+/// `#[track_caller]` through its wrappers), with what its answers have taught D215's record:
+/// W*, the slowest, from a wait's start to its client's own end, and R*, the least rate its
+/// party ran at meanwhile, a refusal's diagnosis and never its bound. None on a host until
+/// its first answer there; then kept under `target/judge-records`, by the host and the call
+/// site, so that a later run on the host begins from what it learned (ROOT, 2026-11-13: a
+/// record learned on the host is data, not a seed), and taught again by each answer. The
+/// person's ruling of 2026-11-13 holds each of them: "No record seeds. The cold start, and
+/// every wait after a run-out, follows the party's liveness and progress. After that the
+/// bound is the slowest answer seen. No ×2."
+pub struct WaitKind {
+    site: &'static std::panic::Location<'static>,
+    record: shards_api::Record,
+    file: PathBuf,
+}
+
+impl WaitKind {
+    /// The kind of `site`, its record taught what this host kept of it the first time a wait
+    /// of it begins in this process.
+    pub fn at(site: &'static std::panic::Location<'static>) -> &'static WaitKind {
+        type Site = (&'static str, u32, u32);
+        static KINDS: std::sync::Mutex<std::collections::BTreeMap<Site, &'static WaitKind>> =
+            std::sync::Mutex::new(std::collections::BTreeMap::new());
+        let mut kinds = KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        kinds
+            .entry((site.file(), site.line(), site.column()))
+            .or_insert_with(|| {
+                let name: String = format!("{}-{}-{}", site.file(), site.line(), site.column())
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                let kind: &'static WaitKind = Box::leak(Box::new(WaitKind {
+                    site,
+                    record: shards_api::Record::new(),
+                    file: workspace()
+                        .join("target/judge-records")
+                        .join(host_class())
+                        .join(name),
+                }));
+                kind.learn_kept();
+                kind
+            })
+    }
+
+    /// What its waits have taught it.
+    pub fn record(&self) -> &shards_api::Record {
+        &self.record
+    }
+
+    /// Teaches its record what this host kept of it: R*'s own answer, then W*'s with work no
+    /// rate is below, so that each comes back as it was kept. Nothing where nothing whole is
+    /// kept.
+    fn learn_kept(&self) {
+        let kept = std::fs::read_to_string(&self.file).unwrap_or_default();
+        let ns: Vec<u64> = kept.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+        if let [slowest, cpu, over] = ns[..] {
+            self.record
+                .teach(Duration::from_nanos(over), Duration::from_nanos(cpu));
+            self.record.teach(Duration::from_nanos(slowest), Duration::MAX);
+        }
+    }
+
+    /// Keeps its record on this host: what another process kept of it since taught in
+    /// first, then written whole and renamed into place. A keep that fails is the next
+    /// answer's to make: what this process learned stays in its memory meanwhile.
+    fn keep(&self) {
+        self.learn_kept();
+        let shards_api::Seen::Learned { slowest, least } = self.record.seen() else {
+            return;
+        };
+        let ns = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
+        let (Some(dir), Some(name)) = (self.file.parent(), self.file.file_name()) else {
+            return;
+        };
+        let mut temporary = std::ffi::OsString::from(".");
+        temporary.push(name);
+        temporary.push(format!(".{}", std::process::id()));
+        let temporary = dir.join(temporary);
+        let _ = std::fs::create_dir_all(dir)
+            .and_then(|()| {
+                std::fs::write(
+                    &temporary,
+                    format!("{} {} {}\n", ns(slowest), ns(least.cpu), ns(least.over)),
+                )
+            })
+            .and_then(|()| std::fs::rename(&temporary, &self.file));
+    }
+}
+
+/// This host, as the records of its waits are kept for it ([`WaitKind`]): its OS, its
+/// architecture and its logical CPUs, which tell two machines' own target directories apart
+/// and which every runner of one CI image shares, whose cached target a CI cache restores.
+fn host_class() -> String {
+    format!(
+        "{}-{}-{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        std::thread::available_parallelism().map_or(0, std::num::NonZero::get)
+    )
+}
+
+/// What a wait on a command follows, the ruling's party: what the command prints (its
+/// caller's to tell, [`Wait::look`]), what its home's daemon says ([`Said`]), and the
+/// processes that serve it: its client and what descends from it, and its home's daemon and
+/// what descends from that (its spawner, VM, network and share processes), each followed by
+/// D215's readers (`shards_api::Watch`) from the look that first finds it on.
+pub struct Party {
+    client: u32,
+    home: Option<PathBuf>,
+    said: Option<Said>,
+    watched: std::collections::BTreeMap<u32, shards_api::Watch>,
+}
+
+/// What a look at a party found since the look before ([`Party::look`]).
+pub struct Looked {
+    pub found: shards_api::Found,
+    /// What showed it.
+    pub what: String,
+    /// The CPU its processes ran since the look before.
+    pub cpu: Duration,
+}
+
+impl Party {
+    /// The party of client `client`, whose home is `home` where it has one.
+    pub fn of(client: u32, home: Option<&Path>) -> Party {
+        Party {
+            client,
+            home: home.map(Path::to_path_buf),
+            said: home.map(Said::of),
+            watched: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Its home's daemon now, as its pid file says.
+    fn daemon(&self) -> Option<u32> {
+        let home = self.home.as_ref()?;
+        std::fs::read_to_string(home.join("daemon.pid"))
+            .ok()?
+            .split_ascii_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    }
+
+    /// The processes it is now: its client and its daemon, and on Unix what descends from
+    /// them, from one listing of the system's ([`processes`]); on Windows each of the two is
+    /// followed with what descends from it (shards-api's tree of a process, Toolhelp32).
+    fn members(&self) -> Vec<u32> {
+        let roots: Vec<u32> = std::iter::once(self.client).chain(self.daemon()).collect();
+        #[cfg(windows)]
+        return roots;
+        #[cfg(unix)]
+        {
+            let listed = processes();
+            let mut tree = roots;
+            let mut i = 0;
+            while let Some(&parent) = tree.get(i) {
+                for (pid, ppid, _) in &listed {
+                    if *ppid == parent && !tree.contains(pid) {
+                        tree.push(*pid);
+                    }
+                }
+                i += 1;
+            }
+            tree
+        }
+    }
+
+    /// What it did since the look before: progressed where its daemon said something or a
+    /// process of it ran (D215's look: any CPU at all, or an end under way); else held where
+    /// its host held one from running (runnable on no CPU, stalled on its memory), or
+    /// stopped or suspended one, which D215's look finds `Still` and a test's wait counts as
+    /// its host's hold: a kiln runner's headroom guard suspends a run's processes as it
+    /// paces them (ROOT, 2026-11-13); else still. A process found anew is judged from the
+    /// look after.
+    pub fn look(&mut self) -> Looked {
+        use shards_api::Found;
+        let members = self.members();
+        self.watched.retain(|pid, _| members.contains(pid));
+        let mut looked = Looked {
+            found: Found::Still,
+            what: String::new(),
+            cpu: Duration::ZERO,
+        };
+        if self.said.as_mut().is_some_and(Said::said) {
+            looked.found = Found::Progressed;
+            looked.what = "its daemon said something".into();
+        }
+        for pid in members {
+            let Some(watch) = self.watched.get_mut(&pid) else {
+                let watch = shards_api::Followed::of_pid(pid)
+                    .ok()
+                    .flatten()
+                    .and_then(|followed| shards_api::Watch::of(followed).ok().flatten());
+                if let Some(watch) = watch {
+                    self.watched.insert(pid, watch);
+                }
+                continue;
+            };
+            let before = watch.cpu();
+            let found = watch.look();
+            looked.cpu = looked.cpu.saturating_add(watch.cpu().saturating_sub(before));
+            match found {
+                Ok(Found::Progressed) if looked.found != Found::Progressed => {
+                    looked.found = Found::Progressed;
+                    looked.what = format!("process {pid} ran");
+                }
+                Ok(Found::Held) if looked.found == Found::Still => {
+                    looked.found = Found::Held;
+                    looked.what = format!("its host held process {pid} from running");
+                }
+                Ok(Found::Still) if watch.stopped() && looked.found == Found::Still => {
+                    looked.found = Found::Held;
+                    looked.what = format!("process {pid} stopped or suspended");
+                }
+                _ => {}
+            }
+        }
+        looked
+    }
+
+    /// Who it is, for a wait's account of itself.
+    fn named(&self) -> String {
+        match (&self.home, self.daemon()) {
+            (Some(home), Some(daemon)) => {
+                format!("client {}, daemon {daemon} of {}", self.client, home.display())
+            }
+            (Some(home), None) => format!("client {}, no daemon yet in {}", self.client, home.display()),
+            (None, _) => format!("client {}", self.client),
+        }
+    }
+}
+
+/// A wait of the tests' own on a party ([`Party`]), judged by its kind's record ([`WaitKind`])
+/// as D215's judge judges a wait (`shards_api::Judge`): cold, its party's liveness alone,
+/// which its caller holds (its client's end); learned, looked at each W* past its start and
+/// refused at a look that finds its party made no progress at all since the look before,
+/// its host not holding it. Looked at between those too, paced as D215 paces looks
+/// (`shards_api::pause`: a look's own cost against the wait so far), so that what it last
+/// did is known, for its account of itself at a refusal or as the test process is ended
+/// ([`dump_live_waits`]).
+pub struct Wait {
+    kind: &'static WaitKind,
+    judge: shards_api::Judge<'static>,
+    party: Party,
+    asked: String,
+    began: Instant,
+    /// When the next look is due, before the judge's own.
+    next: Instant,
+    /// What showed progress since the judge's look before, and its host's hold.
+    progressed: Option<String>,
+    held: Option<String>,
+    /// Its last progress, and when.
+    last: (Instant, String),
+    /// Whether its last look found its host holding it, and what showed it.
+    holding: Option<String>,
+    /// Its party's CPU since it began.
+    work: Duration,
+    live: Live,
+}
+
+impl Wait {
+    /// A wait beginning now on client `client`'s party, `asked` naming its command.
+    pub fn begin(kind: &'static WaitKind, client: u32, home: Option<&Path>, asked: &str) -> Wait {
+        let began = Instant::now();
+        Wait {
+            kind,
+            judge: shards_api::Judge::begin(&kind.record),
+            party: Party::of(client, home),
+            asked: asked.to_string(),
+            began,
+            next: began,
+            progressed: None,
+            held: None,
+            last: (began, "its start".into()),
+            holding: None,
+            work: Duration::ZERO,
+            live: Live::new(),
+        }
+    }
+
+    /// Its client ended of its own: its kind's answer, which teaches its record, kept on
+    /// this host.
+    pub fn answered(&mut self) {
+        self.judge.answered(self.work);
+        self.kind.keep();
+    }
+
+    /// Looks at its party where a look is due, `output` whether its command printed since
+    /// the call before: refused where its judge refuses it.
+    pub fn look(&mut self, output: bool) -> Result<(), shards_api::Stall> {
+        use shards_api::Found;
+        let now = Instant::now();
+        if output {
+            self.last = (now, "its output".into());
+            self.progressed.get_or_insert_with(|| "its output".into());
+        }
+        let due = self.judge.due();
+        if now < self.next && due.is_none_or(|due| now < due) {
+            return Ok(());
+        }
+        let looked = self.party.look();
+        self.work = self.work.saturating_add(looked.cpu);
+        self.holding = None;
+        match looked.found {
+            Found::Progressed => {
+                self.last = (now, looked.what.clone());
+                self.progressed.get_or_insert(looked.what);
+            }
+            Found::Held => {
+                self.holding = Some(looked.what.clone());
+                self.held.get_or_insert(looked.what);
+            }
+            Found::Still | Found::Gone => {}
+        }
+        let mut judged = Ok(());
+        if due.is_some_and(|due| now >= due) {
+            judged = self.judge.found(if self.progressed.take().is_some() {
+                Found::Progressed
+            } else if self.held.take().is_some() {
+                Found::Held
+            } else {
+                Found::Still
+            });
+        }
+        self.live.set(self.account());
+        let left = self
+            .judge
+            .due()
+            .map_or(Duration::MAX, |due| due.saturating_duration_since(Instant::now()));
+        self.next = Instant::now() + shards_api::pause(now.elapsed(), self.began.elapsed(), left);
+        judged
+    }
+
+    /// Its account: its call site and command, its party, its last progress, its host's
+    /// hold at its last look, and its kind's record.
+    pub fn account(&self) -> String {
+        let record = match self.kind.record.seen() {
+            shards_api::Seen::Cold => "none yet on this host: its client's liveness alone".to_string(),
+            shards_api::Seen::Learned { slowest, least } => {
+                format!("W* {slowest:?}, R* {:?} of CPU in {:?}", least.cpu, least.over)
+            }
+        };
+        format!(
+            "{}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}",
+            self.kind.site,
+            self.asked,
+            self.party.named(),
+            self.began.elapsed(),
+            self.last.1,
+            self.last.0.elapsed(),
+            self.holding.as_deref().map_or_else(
+                || "its host not holding it".to_string(),
+                |held| format!("held: {held}")
+            ),
+        )
+    }
+
+    /// What a refusal says of it.
+    pub fn refused(&self, stall: &shards_api::Stall) -> String {
+        format!(
+            "{} made no progress for {:?}, past the slowest answer of its kind seen on this host ({:?}), {:?} into its wait\n--- its wait\n{}",
+            self.asked,
+            stall.over(),
+            stall.slowest(),
+            stall.waited(),
+            self.account()
+        )
+    }
+}
+
+/// Each live wait's account as its last look gave it, by a number of its own: what
+/// [`dump_live_waits`] says as the test process is ended.
+static LIVE: std::sync::Mutex<std::collections::BTreeMap<u64, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn live_waits() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<u64, String>> {
+    LIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A wait's place among [`LIVE`]'s, let go of as it ends.
+struct Live(u64);
+
+impl Live {
+    fn new() -> Live {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        dump_at_the_end();
+        Live(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn set(&self, account: String) {
+        live_waits().insert(self.0, account);
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        live_waits().remove(&self.0);
+    }
+}
+
+/// Says each live wait's account on stderr: as the test process is ended by SIGINT or
+/// SIGTERM (CI's job limit, a person's ^C), or by Windows' console control event, so that a
+/// wait that never ends, cold or not, leaves what it knew (ROOT, 2026-11-13).
+fn dump_live_waits(why: &str) {
+    let live = live_waits();
+    let mut said = format!("shards tests: ended by {why}, {} wait(s) under way", live.len());
+    for account in live.values() {
+        said.push_str("\n  ");
+        said.push_str(account);
+    }
+    let _ = writeln!(io::stderr(), "{said}");
+}
+
+/// The write end of the pipe on which [`ended_by`] tells [`dump_at_the_end`]'s thread a
+/// signal came, and the process it is of.
+#[cfg(unix)]
+static TOLD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+#[cfg(unix)]
+static OWNER: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// SIGINT's and SIGTERM's handler: the signal's number written to [`dump_at_the_end`]'s
+/// thread by this process alone (a child between its fork and its exec runs it too), with
+/// getpid(2) and write(2), each async-signal-safe (POSIX.1-2024, XSH 2.4.3).
+#[cfg(unix)]
+extern "C" fn ended_by(signal: libc::c_int) {
+    let to = TOLD.load(Ordering::Relaxed);
+    let byte = u8::try_from(signal).unwrap_or(u8::MAX);
+    // SAFETY: getpid(2), then write(2) of one byte of ours to a descriptor of ours.
+    unsafe {
+        if to >= 0 && libc::getpid() == OWNER.load(Ordering::Relaxed) {
+            libc::write(to, (&raw const byte).cast(), 1);
+        }
+    }
+}
+
+/// Has this process say its live waits as it is ended ([`dump_live_waits`]), once: on Unix a
+/// thread that SIGINT's and SIGTERM's handler wakes, which says them, then gives the signal
+/// its default action and raises it again, so that the process ends as it would have; on
+/// Windows a console control handler that says them and lets the system's own end it.
+#[cfg(unix)]
+fn dump_at_the_end() {
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: pipe(2) into two descriptors of ours.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return;
+        }
+        for fd in fds {
+            // SAFETY: fcntl(2) of a descriptor just made, which no child is given.
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        }
+        let [from, to] = fds;
+        TOLD.store(to, Ordering::SeqCst);
+        // SAFETY: getpid(2).
+        OWNER.store(unsafe { libc::getpid() }, Ordering::SeqCst);
+        let spawned = std::thread::Builder::new()
+            .name("waits at the end".into())
+            .spawn(move || {
+                let mut signal = 0u8;
+                loop {
+                    // SAFETY: read(2) of one byte into a local.
+                    match unsafe { libc::read(from, (&raw mut signal).cast(), 1) } {
+                        1 => break,
+                        -1 if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => {}
+                        _ => return,
+                    }
+                }
+                let signal = libc::c_int::from(signal);
+                dump_live_waits(if signal == libc::SIGINT {
+                    "SIGINT"
+                } else {
+                    "SIGTERM"
+                });
+                // SAFETY: signal(2) back to the default action, then raise(3) of it.
+                unsafe {
+                    libc::signal(signal, libc::SIG_DFL);
+                    libc::raise(signal);
+                }
+            });
+        if spawned.is_err() {
+            return;
+        }
+        for signal in [libc::SIGINT, libc::SIGTERM] {
+            // SAFETY: a sigaction of ours, all its fields set, for a handler that is
+            // async-signal-safe ([`ended_by`]).
+            unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = ended_by as *const () as libc::sighandler_t;
+                action.sa_flags = libc::SA_RESTART;
+                libc::sigemptyset(&raw mut action.sa_mask);
+                libc::sigaction(signal, &raw const action, std::ptr::null_mut());
+            }
+        }
+    });
+}
+
+#[cfg(windows)]
+fn dump_at_the_end() {
+    /// HandlerRoutine: the live waits said, then FALSE, so that the next handler, the
+    /// system's own, ends the process as it would have.
+    unsafe extern "system" fn ended_by(event: u32) -> windows_sys::core::BOOL {
+        dump_live_waits(&format!("console control event {event}"));
+        0
+    }
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        // SAFETY: a handler of this process's own, added to its list for its life.
+        unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(ended_by), 1) };
+    });
+}
+
+/// Ends `child`, a run at its end or its stall, and gives the processes under it, each named,
 /// with any still running `within` after: read from one snapshot while it still runs, so
 /// that each is the run's by its parent. With [`Leftovers::Ended`] the harness ends those
 /// on Windows as it ends the run (on Unix a run's share process ends with its VM, the

@@ -10314,6 +10314,54 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   above it. Not caught: a run that never answers keeps its cold start, and its heartbeats count
   by liveness, as a wait begun before its kind's first answer does; and a workload that, silent,
   works below every rate its run answered at is taken for idle.
+- **A command's wait has no bound of its caller's** (2026-11-13, goal 71's slice W6; the
+  person's ruling of that day, as D180's values and D215 record it: "No record seeds. The
+  cold start, and every wait after a run-out, follows the party's liveness and progress.
+  After that the bound is the slowest answer seen. No ×2."). Found on WHP (jupiter): chain A
+  at 0a3dde0db cut daemon.rs' six stop tests at their first run's 60 s (its pull done,
+  "Status: Downloaded newer image" said, its microVM `Created`, a template-saving cold boot
+  six at once, the daemon saying nothing), and chain B at 8cc1f6673 cut api_image's and
+  build.rs' builds at their 120 s while they worked, both as kiln's headroom guard suspended
+  the runner's processes to pace them (its `paced` record listing them, kiln's writes cut to
+  6 MB/s). `common::run_command`, and with it every wrapper (`run_shards`, `run_shards_env`,
+  `run_shards_env_in`, `run_shards_in`, `vm_run` and the helpers that only passed a timeout
+  on: `home_with`, `restarts_cross_at`, `hub`, `hubless`, `hub_bases`, containers.rs'
+  `shards_in` and `run_in`, which their `_within` twins fold into), takes no timeout:
+  - *Its kind* is its call site (`#[track_caller]` through the wrappers), whose record,
+    D215's (`shards_api::Record`: W*, the slowest answer, from the wait's start to its
+    client's own end; R*, a refusal's diagnosis, never its bound), the test process keeps in
+    memory and under `target/judge-records/<os>-<arch>-<logical CPUs>/<call site>`, read
+    back by the next run on the host (ROOT: a record learned on the host is data, not a
+    seed; every runner of one CI image shares its key, so a cached target keeps CI warm).
+    Each answer is taught in, merged with what another process kept, and written whole and
+    renamed into place; a keep that fails is the next answer's to make.
+  - *Cold* (no answer of its kind on this host), it follows its client's liveness alone:
+    it waits while the client lives. *Learned*, it is looked at each W* past its start
+    (`shards_api::Judge`, shared) and fails only at a look that finds its party made no
+    progress at all since the look before, its host not holding it. Its party is the
+    command's output, its home's daemon's words (`Said`), and the processes of its client's
+    tree and of its daemon's tree (spawner, VM, network and share processes), each read by
+    D215's `shards_api::Watch`: any CPU, or an end under way, is progress; a thread runnable
+    on no CPU or stalled on memory, and a process stopped or suspended (`Watch::stopped`,
+    which D215's look still finds `Still`), is its host's hold.
+  - Its streams are read to their end within the same wait: one another process holds past
+    the client, which a look finds doing nothing of its own past W*, is said held open.
+    A test's own chosen end (`run_until`, boot.rs' leftovers test) stays its own.
+  - Its looks between the judge's are paced by D215's `sqrt(2 c w)` (`shards_api::pause`,
+    `c` a look's own cost), so that each live wait's account (call site, command, party,
+    last progress and how long ago, its host's hold, its record) is current: a refusal
+    says it, and SIGINT or SIGTERM (CI's job limit, a ^C) or Windows' console control
+    event has the test process say every live wait's account on stderr before it ends
+    (`dump_live_waits`; Unix through a self-pipe written by an async-signal-safe handler,
+    then the signal's default action raised again; Windows by `SetConsoleCtrlHandler`).
+  Held by tests/harness.rs's stand-ins, red with the fix removed on adalundhe-macbook-pro
+  (macOS, arm64): `a_command_is_waited_on_while_it_works` (a stand-in busy 1 s, cut at its
+  caller's 100 ms before) and `a_stopped_process_is_its_hosts_hold_and_not_refused` (a
+  stopped stand-in refused at its judge's first look past W* where a stop was still).
+  The gap: a cold wait whose client hangs alive runs to its CI job's limit, its account
+  said then. Owed to the next slice: `Patience`'s own timeout and `DAEMON_QUIET`'s other
+  users (`Said::lately`, `Ran`, `Heard`, guests' streams, `STREAM_QUIET` told to guests),
+  and shards-api's `found()` taking a stopped process for held in production's waits too.
 - **A test's own waits on pools and microVMs follow them too** (M424). daemon.rs' rerun at
   b57cad27 failed 7 of 38, each a wait of the test's own past a fixed minute (a pool
   filled, a restored run's VM up) while its daemon's log showed templates saved, 264 MiB
