@@ -8449,7 +8449,10 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
     (ROOT's (3), 2026-11-13). Each keeps W*, the slowest answer seen from a
     wait's start to its exec's end, and R*, the least CPU rate a microVM still answered at
     (`shards_api::Record`). Only an exec's own end teaches: one the daemon ended teaches
-    nothing.
+    nothing, and neither does one there as its wait begins, read as D185's `Asked::waited`
+    is: it was waited for not at all (D222's wait of nothing), and its W* of next to nothing
+    would have its kind's next asks looked at each microsecond
+    (`an_exit_said_before_its_wait_teaches_nothing`).
   - *Cold start*: before its kind's first answer, a wait follows its microVM's liveness
     alone, to its exec's end or its microVM's.
   - *The judge*: past W* from its start, the wait looks at the microVM's process once each
@@ -10269,10 +10272,16 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   up on where a whole W* shows it ran no CPU, its host not the reason. A claim of a pool whose VM is starting waits for it
   past its minute, its watcher waking it; and a builder's boot is judged so, past
   `BOOT_PATIENCE`'s 30 s. Not caught: a guest that spins before it is ready (a panic
-  resets it, `panic=-1`, which ends its VM). Each slice is logged, the durable evidence by
-  which the tests' clients past their deadlines are waited on while their daemon says
-  something (`common::Said`, within the daemon's `READY_TIMEOUT`), never a guess at the
-  host's speed. `a_starting_vm_progresses_by_more_cpu_than_an_idle_one_takes` holds the
+  resets it, `panic=-1`, which ends its VM). A READY there as its wait begins teaches
+  nothing, as it was waited for not at all (D222's wait of nothing, read as D185's
+  `Asked::waited` is): on macOS the wait begins once the VM has its grants, which a quick
+  restore can end with its READY said, and its W* of next to nothing would have each later
+  start looked at each millisecond (`a_ready_said_before_its_wait_teaches_nothing`). The log
+  says once, as a start first outlasts W*, how far into it it is, to the µs; it said so at
+  each look, a cadence, in whole seconds: "not ready in 0ns" of one under a second (HVF, at
+  5ec3f86cc). A test's client past its deadline is waited on while its daemon says
+  something (`common::Said`): a start past W* is said once, a cold one not at all, the cold
+  start's gap (D215). `a_starting_vm_progresses_by_more_cpu_than_an_idle_one_takes` holds the
   basis to M357, and `a_sleeping_process_runs_nothing_a_boot_does_and_a_busy_one_runs`
   to the host's own process times.
 - **A workload is waited for while it runs** (M424, every host). Five of the suite's cases
