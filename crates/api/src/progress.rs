@@ -1309,7 +1309,8 @@ mod tests {
 
     /// What a look finds of a VM process that ran no CPU since the look before is its host's
     /// doing, or its own: held where its host holds it (a thread runnable on no CPU, or
-    /// waiting on its host's memory; on Linux, its cgroup's pressure grown), which is no stall;
+    /// waiting on its host's memory; on Linux, its threads' run-queue wait or its own cgroup's
+    /// pressure grown), which is no stall;
     /// still where it waits on itself, and where it is stopped or frozen, whatever else shows.
     /// One that ran, or whose end is under way, progressed (ROOT's ruling of 2026-11-13).
     #[test]
@@ -1317,6 +1318,8 @@ mod tests {
         let hold = |runnable, stopped| Hold {
             runnable,
             stopped,
+            #[cfg(target_os = "linux")]
+            queued: Queued::Unread,
             #[cfg(target_os = "linux")]
             pressure: None,
         };
