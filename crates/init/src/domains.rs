@@ -659,6 +659,16 @@ fn executable(d: &Domain, env: &[CString]) -> Result<CString, String> {
         })
 }
 
+/// `d`'s command line (D256): its program as found ([`executable`]), the rest of its config's
+/// `run.command` (its entrypoint's words, then its options), then the run-time arguments its
+/// run stages, in their order; none staged, its config's alone.
+fn command_line<'a>(program: &'a CStr, d: &'a Domain, args: &'a [CString]) -> Vec<&'a CStr> {
+    std::iter::once(program)
+        .chain(d.argv.iter().skip(1).map(CString::as_c_str))
+        .chain(args.iter().map(CString::as_c_str))
+        .collect()
+}
+
 /// Where `home`, a member's `HOME`, lies among the mounts it may write as it starts, each by
 /// its mount point in its view (`points`: its scratch's `/tmp`, a writable volume's as
 /// declared and as it lies in the image): the deepest that is `home` or holds it, by its
@@ -2066,6 +2076,8 @@ pub fn start(
             l.name_in(&mut env).map_err(|e| format!("{}: {e}", d.label))?;
         }
         let argv0 = executable(d, &env)?;
+        // Its run-time arguments (D256): its command line points into them until it execs.
+        let given_args = crate::staged::args(member, setup).map_err(|e| format!("{}: {e}", d.label))?;
         let workdir = crate::staged::workdir(member, setup)
             .map_err(|e| format!("{}: {e}", d.label))?
             .unwrap_or_else(|| d.workdir.clone());
@@ -2172,9 +2184,9 @@ pub fn start(
                 .collect(),
             hostname: CString::new(d.cgroup.as_str())
                 .map_err(|_| format!("{}: a NUL in its name", d.label))?,
-            argv: [argv0.as_ptr()]
+            argv: command_line(&argv0, d, &given_args)
                 .into_iter()
-                .chain(d.argv.iter().skip(1).map(|a| a.as_ptr()))
+                .map(CStr::as_ptr)
                 .chain([std::ptr::null()])
                 .collect(),
             envp: env.iter().map(|a| a.as_ptr()).chain([std::ptr::null()]).collect(),
@@ -3531,6 +3543,39 @@ mod tests {
         );
         let e = found(&["tool"], "PATH=/nowhere".into()).unwrap_err();
         assert!(e.contains("\"tool\" is on no directory of PATH"), "{e}");
+    }
+
+    /// A member's command line (D256): its program as found, the rest of its config's
+    /// `run.command` (its entrypoint's words, then its options), then its run's arguments in
+    /// their order, an empty one among them; none staged, its config's alone, as before.
+    #[test]
+    fn a_members_command_line_is_its_command_then_its_runs_arguments() {
+        let d = domain_at(
+            "/agents/claude",
+            &["claude", "-p", "--output-format", "stream-json"],
+        );
+        let program = CString::new("/usr/local/bin/claude").unwrap();
+        let line = |args: &[CString]| -> Vec<Vec<u8>> {
+            command_line(&program, &d, args)
+                .iter()
+                .map(|a| a.to_bytes().to_vec())
+                .collect()
+        };
+        let own = [
+            &b"/usr/local/bin/claude"[..],
+            b"-p",
+            b"--output-format",
+            b"stream-json",
+        ];
+        assert_eq!(line(&[]), own);
+        let given: Vec<CString> = ["--resume", "s-1", "", "--model"]
+            .iter()
+            .map(|a| CString::new(*a).unwrap())
+            .collect();
+        assert_eq!(
+            line(&given),
+            [&own[..], &[&b"--resume"[..], b"s-1", b"", b"--model"][..]].concat()
+        );
     }
 
     /// The host's entries (volumes.rs, `open`): those for the domains, with their tag,
