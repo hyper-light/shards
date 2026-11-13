@@ -10519,14 +10519,16 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   runs, and given up on a minute after it last ran, as before. Where a microVM is the
   client's own, no daemon's (`shards run vm --kernel`, `shards restore vm`, `shards build image`'s
   builders), the test judges the VM processes under its client itself, by the same basis
-  and slice (`common::Ran`), while they start. Detached runs are not looked at:
+  and slice (`common::Ran`, until W6's slice 2b part 2), while they start. Detached runs are not looked at:
   a busy server run with `-d` logs nothing. Not caught, as of a start: a guest that spins
   for ever, which its CI job's limit ends. `a_microvm_is_followed_while_a_client_waits_on_it`
   holds who is looked at and the slice (a sixth of `READY_TIMEOUT`), and
   `a_busy_process_is_seen_running_with_its_cpu_and_faults` the look on the host's own
   process times.
 - **Amended (2026-11-13, ROOT's R03 rulings): a microVM's heartbeat counts by what it did,
-  as D215's judge judges a wait.** A nesting test whose runc hung waited on its microVM's
+  as D215's judge judges a wait.** Superseded by W6's slice 2b part 2 (#77, below): `Floor`
+  used R*, a refusal's diagnosis, as a bound on progress, and is gone with `Said::lately` and
+  `Ran`; a heartbeat is a daemon line like any other. What it said: A nesting test whose runc hung waited on its microVM's
   heartbeat to Linux CI's 56-minute limit (8a50a9742, run 43391975331), and HVF's past its
   own bound (fafe35efc): the daemon says it each `READY_STALL` while that microVM's CPU runs
   past an idle one's (`progressed`), and a hung runtime's guest's timers run that much
@@ -10602,10 +10604,9 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   host), so the arm decides only where a suspension is all a look sees, Windows' suspended
   threads (jupiter's guard): its red is owed on WHP.
   The gap: a cold wait whose client hangs alive runs to its CI job's limit, its account
-  said then. Owed to the next slices: `DAEMON_QUIET`'s other
-  users (`Said::lately`, `Ran`, `Heard`, guests' streams; `STREAM_QUIET` told to guests is
-  gone, #77, below),
-  and shards-api's `found()` taking a stopped process for held in production's waits too.
+  said then. `DAEMON_QUIET`'s other users (`Said::lately`, `Ran`, `Heard`, guests' streams)
+  were W6's slice 2b part 2 (below); owed still: shards-api's `found()` taking a stopped
+  process for held in production's waits too.
 - **A test's own waits on pools and microVMs follow them too** (M424). daemon.rs' rerun at
   b57cad27 failed 7 of 38, each a wait of the test's own past a fixed minute (a pool
   filled, a restored run's VM up) while its daemon's log showed templates saved, 264 MiB
@@ -10635,8 +10636,8 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   - *Its party* (`common::Party` with no client) is its home's daemon and what descends
     from it, this test's own VM processes (`shards-vm`, `shards-vm-gpu` under the test's
     process: `run --kernel`'s, `restore`'s, warm.rs' warm VM) and theirs, and the daemon's
-    words (`Said`, its heartbeats judged by their floor as before). The test's process
-    itself is no member: its own looks are CPU.
+    words (`Said`: each whole line, its heartbeats among them, since slice 2b part 2). The
+    test's process itself is no member: its own looks are CPU.
   - *Cold*, it follows its party's liveness alone; *learned*, it is looked at each W* past
     its start and refused at a look that finds no progress at all since the look before, its
     host not holding it (a stopped or suspended process held, `Watch::stopped`). Cold or
@@ -10661,19 +10662,19 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   ever, its stream stopped or not, and snapshot.rs' 64-vCPU storm on the arm64 Windows
   host (4 TCG CPUs), waited on while its microVM ran, ran 2 h 16 min, its VM process at
   31,324 CPU-seconds, all four cores busy throughout. A test's reads of a guest's stream
-  (`common::Following`, the vsock echo's and handshakes) wait `DAEMON_QUIET`, a minute,
-  for each next byte, however slowly it comes, and fail a minute after the last, whatever
-  the microVM's CPU does. A wait on a guest's line or its end past the test's deadline
-  (`Vm::wait_for_any_within`, `Vm::wait_exit_within`) follows what the guest itself gives
-  (`common::Heard`): a line it has not printed before, or bytes more of the stream the test
-  carries through it; its microVM's CPU time (`Ran`) only before its first line, while it
-  starts. The storm's guest waits on its host as the host waits on it: for its stream's
-  8 MiB past a snapshot and for the host's word at its end with no bound of its own: the
-  host's reads and waits above judge a stream that stops (#77, below). No wall clock bounds a storm: at
-  the rate that host streamed, 196,608 bytes in 120 s (1,638.4 B/s), the busy machine's
-  restores carry 13 MiB (1 MiB before its snapshot, a whole 4 MiB round in each of three
-  restores), 8,320 s, and the machine that goes on 12 MiB (1 MiB before, 8 MiB after and
-  the rest of their round), 7,680 s, each going on while its bytes come.
+  (`common::Following`: `echo`, `vsock_connect`'s handshake) are a judged wait (below), its
+  bytes its progress and its close its answer, whatever the microVM's CPU does. A wait on a
+  guest's line or its end (`Vm::wait_for_any_streamed`, `Vm::wait_exit_streamed`) follows
+  what the guest itself gives (`common::Heard::streaming`): a line it has not printed
+  before, or bytes more of the stream the test carries through it; its microVM's CPU time
+  only before its first line, while it starts. The storm's guest waits on its host as the
+  host waits on it: for its stream's 8 MiB past a snapshot and for the host's word at its
+  end with no bound of its own: the host's reads and waits above judge a stream that stops
+  (#77, below). No wall clock bounds a storm: at the rate that host streamed, 196,608 bytes
+  in 120 s (1,638.4 B/s), the busy machine's restores carry 13 MiB (1 MiB before its
+  snapshot, a whole 4 MiB round in each of three restores), 8,320 s, and the machine that
+  goes on 12 MiB (1 MiB before, 8 MiB after and the rest of their round), 7,680 s, each going
+  on while its bytes come.
 - **A direct boot's waits follow its guest and its VM process** (every host). boot.rs'
   `a_guest_grows_and_gives_back_its_memory` failed on the arm64 Windows host with no
   `SHARDS-TEST PLUGGED` a minute from the test's start, while its guest, booted in 13 s of
@@ -10681,15 +10682,79 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   its last line), which it says nothing of as it works. A test's own wait on a `run
   --kernel` or `restore` it started (`Vm::wait_for_any`, `Vm::wait_exit_following`,
   vsock.rs' `within`, boot.rs' memory plug, restore.rs' held restore, run.rs' runs and its
-  signal watchdog) holds its deadline, or past it while its guest says a line it has not
-  said before or its VM process runs (`Heard::running`, `Ran`): CPU time counts throughout
-  for a guest of fewer vCPUs than its host has CPUs, whose idle vCPUs take less than an
-  idle microVM; one of more (boot.rs' most vCPUs, the storm) keeps `Heard::of`. A machine
-  of the test's own process (`vm::start`: boot.rs', confined.rs' and acg.rs' in-process
-  boots, hotplug.rs' steps) has no VM process of its own, its vCPUs threads beside the
-  other tests' and the wait's own poll: its waits follow its console alone
-  (`Heard::console`, `common::machine_ended`). Each fails `DAEMON_QUIET` after its last
-  progress, as before.
+  signal watchdog) goes on while its guest says a line it has not said before or its VM
+  process runs (`Heard::running`): CPU time counts throughout for a guest of fewer vCPUs
+  than its host has CPUs, whose idle vCPUs take less than an idle microVM; one of more
+  (boot.rs' most vCPUs, the storm) keeps `Heard::streaming`. A machine of the test's own
+  process (`vm::start`: boot.rs', confined.rs' and acg.rs' in-process boots, hotplug.rs'
+  steps, guest_time.rs) has no VM process of its own, its vCPUs threads beside the other
+  tests' and the wait's own poll: its waits follow its console alone (`Heard::console`,
+  `common::machine_ended`).
+- **The tests' waits on guests, streams and daemons' words are judged too** (#77, W6's slice
+  2b part 2, 2026-11-13; the person's ruling as above and R03: "we do not tolerate arbitrary
+  constants. learned and data-derived values. Period."). `common::DAEMON_QUIET` (60 s, a
+  copy of the daemon's `READY_TIMEOUT`) and `common::PROGRESS_SLICE` (10 s, a copy of its
+  `READY_STALL`) are gone, and with them every caller's bound on these waits: each is a
+  `common::Wait` judged by D215's `shards_api::Judge`, as `run_command`'s and `Patience`'s
+  are. Past the slowest answer seen for its kind, it goes on while progress shows, and fails
+  after a whole window without any.
+  - *Its kind* is its call site, `#[track_caller]` through `Vm::wait_for`,
+    `wait_for_any`, `wait_for_any_streamed`, `wait_exit_following`, `wait_exit_streamed`,
+    `within`, `machine_ended`, `echo`, `vsock_connect`, `Following::of`, the terminals'
+    `wait_for` (terminal.rs, terminal_windows.rs) and hotplug.rs' `until`. Its record is kept
+    under `target/judge-records` as a command's is. The line, end, state or close it waited
+    for is its answer (`Heard::answered`, `Following::answered`), which teaches W*.
+  - *Its party* (`common::Party`, now typed) is one of three kinds of members:
+    `Members::Client` (a VM process or a terminal's shell, with what descends from it and a
+    home's daemon where it has one), `Members::Own` (this test's own VM processes: a
+    `Patience`'s, a stream's) or `Members::Machine` (none: an in-process machine, whose
+    liveness is its caller's `running.wait()`, never `Gone`). Its CPU is read as
+    `Cpu::Progress` (D215's look: any CPU) or `Cpu::Liveness` (a guest past its first line
+    whose vCPUs outnumber its host's CPUs, and a stream's VM processes: CPU is no progress
+    there). In both readings a process D215's look finds `Held` (it ran nothing, its host
+    held it) or stopped or suspended counts as its host's hold. A busy overcommitted guest is
+    `Progressed`, never `Held`, so the storm's spin buys no wait. The words a caller hears
+    (a new line, the stream's bytes, the terminal's output, a console that changed) are its
+    progress, told to `Wait::look`.
+  - *Cold* (no answer of its kind on this host), it follows liveness alone. For a client,
+    that is the client's own end, which its caller sees. For a stream, it reads with no
+    timeout, and the VM process holding its other end closes it as it ends. For a machine,
+    its `running.wait()`. *Learned*, it is looked at each W* past its start. A blocking
+    caller (a channel, a socket read) blocks until its next look (`Wait::next_look`,
+    `Patience::next_look`: D215's `sqrt(2 c w)` pace, or its judge's due).
+  - `Said` reads whole lines alone, each one progress: `Floor`, `HEARTBEAT` and `Ran` are
+    gone (R* is a refusal's diagnosis, never a bound). engine.rs' API reads, daemon.rs'
+    unread-volume and followers' waits are each a `Patience`. budget.rs' start counts its
+    slice's PSI total grown since the look before as its host's hold.
+  - R03, the literals: none of the waits' bounds is left. The old `TIMEOUT`, `STREAMING` and
+    `PATIENCE` arguments to these waits go (acg.rs', boot.rs', guest_time.rs', hotplug.rs',
+    restore.rs', run.rs', snapshot.rs', engine.rs' `TIMEOUT` consts with them; vsock.rs',
+    confined.rs', managed_lifecycle.rs' and plug.rs' stay for their other, own claims).
+    Two remain and bound nothing. Two polls of a client's end (`Vm::wait_end`'s and
+    terminal.rs' 5 ms) are no bound, only how soon an end with no event is seen. The least
+    nonzero socket timeout is skipped: a look due now looks without reading.
+  - Red at 70eba153d (tests/harness.rs `red_a_guest_wait_goes_on_while_its_party_works`, on
+    adas-mac-studio.local, macOS arm64, kiln r1228): `Heard::running` on a stand-in busy
+    for a second, held to a caller's bound of 100 ms, was cut 110.7 ms in. `Ran` judged a VM
+    process only a `PROGRESS_SLICE` after it first found one, and the stand-in is no VM
+    process. Green: `a_guest_wait_goes_on_while_its_party_works`, two rounds held to the
+    stand-in's end, the second's kind learned from the first's;
+    `a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold`, a spinning silent
+    guest refused once learned and a stopped one held through two of its judge's looks; and
+    `a_daemons_whole_lines_are_its_words`. budget.rs'
+    `a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold` (Linux) now
+    holds its refusal past its patience's W* rather than a `PROGRESS_SLICE`.
+  - What would falsify it: a wait refused while its guest printed new lines, carried
+    bytes or (`Cpu::Progress`) ran. Or a stream refused while its VM process was stopped
+    by its host. Or a spinning overcommitted guest that says nothing waited on past two
+    W* windows.
+  - The gaps. A cold wait on a guest that hangs alive runs to its CI job's limit, its
+    account said then (`dump_live_waits`), as a command's does. A waiter stopped with its
+    party (a machine of the test's own process, the whole test process suspended) is no
+    stall on resume: D215's judge counts its own late look as its host's hold. A stream's
+    party is all of this test's own VM processes, so a stop of another test's counts as its
+    hold. Owed (ROOT):
+    the E2E files that use them, listed in the slice's report.
 
 **The storm's watch, by the host's word (audit of picked constants, 2026-11-09).** The test
 guest's storm said its main thread stood still after 15 s and took its host's stream for
@@ -10714,9 +10779,9 @@ the run itself, and the guest is told no quiet (`shards_quiet_ms` and `host_quie
 
 - **The stream after a snapshot and the host's word at the end** wait with no bound of the
   guest's own (`waiting`, then a blocking `vsock_accept`), as the storm's other waits
-  already did. The host is the one judge of a stream that stops: it reads each byte within
-  its own quiet (`common::Following`) and waits on its guest while it says something new or
-  carries bytes (`Heard`), and ends the microVM when it gives up. The guest says the bytes
+  already did. The host is the one judge of a stream that stops: its reads are a judged
+  wait (`common::Following`), and it waits on its guest while it says something new or
+  carries bytes (`Heard::streaming`), and ends the microVM when it gives up. The guest says the bytes
   echoed since the snapshot as it waits, a line that changes only as they do, so a stopped
   stream gives the host no new line.
 - **The kernel's account of a stalled main thread** (`stall::Watch`, testguest's library,
@@ -24170,7 +24235,8 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       devices) longer than a listening guest takes to answer: a W* learned from connects to
       running guests (a client that attaches first) would judge a boot by theirs.
   - *The judge.* Past W* from its start, a wait looks at its VM process once each W*. A look
-    that finds it ran no CPU at all since the look before refuses the wait,
+    that finds it ran no CPU at all over a whole W* since a look last found it progressed or
+    held, the judge's own lateness not counted (below), refuses the wait,
     `Refusal::Stalled(Stall)`: how far into the wait, the time looked over, R* and W*, kept in
     nanoseconds (each past u64's, 584 years, its most). Five `Duration`s in the variant
     enlarged every `Result<_, Refusal>`: a test's tuple of two of them crossed clippy's
@@ -24221,6 +24287,41 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       is refused for a hardened process not built to allow it); NtQuerySystemInformation's
       SystemProcessInformation records, each thread's state and wait reason. What cannot be
       read shows nothing, and that look is judged by its CPU alone.
+    - The judge's own lateness is its host's hold (ROOT's ruling, 2026-11-13, #77). Each look
+      knows when it was meant (W* past the one before was meant, `Judge::meant`: its looks
+      keep D215's schedule, each W* past the wait's start, however late each ran) and when it
+      ran. The time it ran late, from when it was meant (or from the look before, where that
+      ran later still, so no time counts twice) to when it ran, is time its host held its
+      thread: the host held everyone, and that time counts toward no party's window. A
+      party's window runs from the look that last found it progressed or held; a look that
+      finds it still refuses only where that window, less the judge's lateness within it,
+      is a whole W* (`Stall::over` is that free time). A judge held past several looks makes
+      one, its next due at the next W* past the start. Main's judge scheduled each look W*
+      past when the one before ran, which added each look's lateness to the next window:
+      ROOT's HVF run at d513d0a0b (macOS arm64, 18 cores, load 30/31/27) refused a live start,
+      containers.rs `a_runs_log_is_sent_to_gelf_as_its_options_say`, "it ran nothing for
+      101.091209ms, past the slowest start seen (98.915708ms), 202.999ms after it began": its
+      first look ran 101.908 ms in (2.99 ms late) and found progress, its second 202.999 ms
+      in, of whose 101.09 ms 5.17 ms were past the second's meant time (197.83 ms), leaving
+      95.92 ms free, less than W*. Red at 30cf4f42b,
+      `a_look_its_host_held_late_counts_its_lateness_as_held`, the run's own times on an
+      injected look clock (`Judge::found_at`);
+      its twin `a_judge_on_time_refuses_a_stopped_party_at_its_first_look` holds before and
+      after. Cold start: a judged wait's first window runs from its start, so a judge on time
+      or late refuses a party still from its start at its first look, over exactly W* free.
+      No number is chosen: lateness is any nanosecond past a meant time, read on the clock
+      the looks run by; a host that holds the judge a whole W* at every look holds its waits
+      to liveness alone, as a host hold counts as held.
+    - macOS's scheduler counts each thread's time runnable, running or waiting for a CPU
+      (proc_pid_rusage(2) RUSAGE_INFO_V4 `ri_runnable_time`, sys/resource.h, Mach
+      absolute-time units; public, and like the rest no task port). Grown over a time the
+      process ran no CPU, it is a wait for one, as Linux's `run_delay` is (`Queued::Waited`
+      on both, #77): a thread its host held runnable between two looks, but not at either
+      look's sample, reads as held. Measured on adas-macbook-pro-2 (macOS 26, 18 cores, load
+      10 to 38), one second each: `yes`, 1125.1 ms CPU and 1147.9 ms runnable over 1149.2 ms
+      wall; `sleep 5`, 0 and 0; a shell starting `sleep 0.01` in a loop, 5.8 ms CPU and
+      6.2 ms runnable. A thread that is runnable as a look samples it already read as held
+      (`TH_STATE_RUNNING` is running or waiting for a CPU, mach/thread_info.h).
     - R* is in the refusal for diagnosis only, never a bound. ROOT's first design refused a
       look below R*, which would refuse a boot merely slowed by its host's load: the very
       failure R03 ends (ROOT, 2026-11-13, at this lane's report).
@@ -24299,11 +24400,14 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
     asks `Record::stalled(since, now)`: none while its kind is cold or less than W* has
     passed since its last progress, else the stall.
   - Tested (light), host starvation and the outside judge: judge.rs's
-    `a_party_its_host_holds_is_live_not_stalled` and
+    `a_party_its_host_holds_is_live_not_stalled`,
+    `a_look_its_host_held_late_counts_its_lateness_as_held`,
+    `a_judge_held_past_several_looks_looks_once_and_keeps_its_schedule` and
     `a_wait_judged_from_outside_is_stalled_a_whole_w_star_after_its_last_progress`;
     progress.rs's `a_process_its_host_holds_is_held_and_a_stopped_one_still` (the decision,
     each OS's evidence), `a_stopped_process_is_seen_stopped_and_refused` (a SIGSTOPped
-    child, seen stopped and refused) and `a_spinning_process_is_seen_runnable` (Unix). Red
+    child, seen stopped and refused), `a_spinning_process_is_seen_runnable` (Unix) and
+    `a_processs_runnable_time_is_read` (macOS). Red
     at 7d5118297 with the rule by CPU alone (the hold read and ignored, `Record::stalled` a
     stub; adas-mac-studio.local, macOS 26.2 arm64): `Still` where `Held` was due for the
     throttled stand-in, and no stall where one was due; the readers' own tests passed then

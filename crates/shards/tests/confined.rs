@@ -189,7 +189,7 @@ fn the_vm_process_is_confined() {
         "--cmdline".as_ref(),
         "console=ttyS0 quiet shards_test=idle".as_ref(),
     ]);
-    vm.wait_for("SHARDS-TEST READY", TIMEOUT);
+    vm.wait_for("SHARDS-TEST READY");
     let cli = vm.id();
     let process = open(vm_process(cli));
     assert!(in_job(&process), "in a Job");
@@ -360,11 +360,10 @@ fn two_vcpus_boot_to_their_end_with_their_console() {
     std::thread::spawn(move || {
         let _ = tx.send(running.wait());
     });
-    match common::machine_ended(&handle, &rx, TIMEOUT) {
-        Some(reason) => assert_eq!(reason, ExitReason::Reset),
-        None => panic!(
-            "two vCPUs with their console did not reach their end in {TIMEOUT:?} in this process, nor said anything new for {:?} after",
-            common::DAEMON_QUIET
-        ),
+    match common::machine_ended(&handle, &rx) {
+        Ok(reason) => assert_eq!(reason, ExitReason::Reset),
+        Err(refused) => {
+            panic!("two vCPUs with their console did not reach their end in this process: {refused}")
+        }
     }
 }

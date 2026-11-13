@@ -17,16 +17,15 @@ use common::{cannot_run_vms, kernel, test_guest};
 use shards_testdir::TempDir;
 use shards_vmm::vm::{self, Config, Console, ExitReason, Handle};
 
-const TIMEOUT: Duration = Duration::from_secs(60);
 const MIB: u64 = 1 << 20;
 const SALT: u64 = 0x5107;
 
 /// Waits for the guest's console to say `line`, and gives what it said before it since the
-/// last time it was asked: the step's answer. Within TIMEOUT, or past it while its console
-/// says something new within DAEMON_QUIET (`common::Heard::console`: its vCPUs are threads
-/// of this process, whose CPU time is its other tests' and this poll's too).
+/// last time it was asked: the step's answer. While its console says something new
+/// (`common::Heard::console`, its kind its call site: its vCPUs are threads of this process,
+/// whose CPU time is its other tests' and this poll's too).
+#[track_caller]
 fn until(handle: &Handle, line: &str) -> String {
-    let end = Instant::now() + TIMEOUT;
     let mut heard = common::Heard::console();
     let mut before = handle.console_said();
     loop {
@@ -34,14 +33,12 @@ fn until(handle: &Handle, line: &str) -> String {
         heard.said(console != before);
         let said = String::from_utf8_lossy(&console.lines).into_owned();
         if let Some(before) = said.rsplit_once(line).map(|(before, _)| before) {
+            heard.answered();
             return before.to_string();
         }
-        if Instant::now() > end && !heard.lately(true) {
+        if let Err(refused) = heard.look(true) {
             handle.stop();
-            panic!(
-                "the guest did not say {line:?} in {TIMEOUT:?}, nor anything new for {:?} after: {said}",
-                common::DAEMON_QUIET
-            );
+            panic!("the guest did not say {line:?}: {refused}\n{said}");
         }
         before = console;
         std::thread::sleep(Duration::from_millis(1));
@@ -233,12 +230,9 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
     until(&handle, &format!("SHARDS-PLUG WAIT {step}"));
     handle.console_input(b"done\n");
     let said = until(&handle, "SHARDS-TEST PASS");
-    match common::machine_ended(&handle, &rx, TIMEOUT) {
-        Some(reason) => assert_eq!(reason, ExitReason::PowerOff, "{said}"),
-        None => panic!(
-            "the guest did not power off in {TIMEOUT:?}, nor said anything new for {:?} after",
-            common::DAEMON_QUIET
-        ),
+    match common::machine_ended(&handle, &rx) {
+        Ok(reason) => assert_eq!(reason, ExitReason::PowerOff, "{said}"),
+        Err(refused) => panic!("the guest did not power off: {refused}"),
     }
     // What a PCI bus with slots and nothing on it costs a boot: from its vCPUs' release to
     // its PID 1's first word, booted alternately with four slots and with no bus.

@@ -35,6 +35,8 @@ impl Deadline {
         }
     }
 
+    /// `operation` must answer WouldBlock rather than wait (a non-blocking descriptor):
+    /// it runs before the poll, so a call that blocks is beyond the deadline and the cancel.
     pub(crate) fn io<T>(
         &self,
         fd: RawFd,

@@ -11398,10 +11398,9 @@ mod tests {
 
     /// A run's microVM is looked at for its progress while its own client waits on it, an
     /// attached run's, until it ends; a detached run's, whose client has gone, is not. Each
-    /// look is due within READY_STALL, a sixth of the time a test's client gives a daemon
-    /// that says nothing (`common::DAEMON_QUIET`, READY_TIMEOUT): a microVM that runs its
-    /// workload is said to six times before its client would give up on it. A played VM, a
-    /// sleep, runs nothing, and is said nothing of.
+    /// look is due within READY_STALL, a sixth of READY_TIMEOUT: a microVM that runs its
+    /// workload is said to six times before the daemon would give up on its start. A played
+    /// VM, a sleep, runs nothing, and is said nothing of.
     #[test]
     fn a_microvm_is_followed_while_a_client_waits_on_it() {
         let t = Test::new("followed");

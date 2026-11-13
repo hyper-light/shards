@@ -23,8 +23,6 @@ use std::time::Duration;
 use common::{TempDir, Vm, cannot_run_vms, cannot_snapshot, echo, kernel, test_guest, vsock_connect, within};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
-/// The most a test's streams take, past which it fails saying what its VM said.
-const STREAMING: Duration = Duration::from_secs(300);
 const ECHO_PORT: u32 = 1234;
 
 fn guest_args(mode: &str, vsock: &Path) -> Vec<std::ffi::OsString> {
@@ -68,7 +66,7 @@ fn boot_echo_guest(dir: &Path) -> (Vm, PathBuf) {
         })();
         let _ = tx.send(result);
     });
-    vm.wait_for("SHARDS-TEST READY", TIMEOUT);
+    vm.wait_for("SHARDS-TEST READY");
     let greeting = rx.recv_timeout(TIMEOUT).unwrap().unwrap();
     assert_eq!(greeting, "hello from the guest\n");
     (vm, sock)
@@ -82,7 +80,7 @@ fn host_and_guest_connect_both_ways_and_stream_in_parallel() {
     let dir = TempDir::new("vsock-both");
     let (vm, sock) = boot_echo_guest(&dir);
     // Eight streams at once, each far past every credit window and socket buffer.
-    within("eight streams through the echo", STREAMING, &vm, move || {
+    within("eight streams through the echo", &vm, move || {
         let streams: Vec<_> = (0..8u64)
             .map(|salt| {
                 let sock = sock.clone();
@@ -102,9 +100,9 @@ fn refused_ports_and_bad_handshakes_close_the_host_socket() {
     }
     let dir = TempDir::new("vsock-refuse");
     let (vm, sock) = boot_echo_guest(&dir);
-    within("refusals, then an echo", STREAMING, &vm, move || {
+    within("refusals, then an echo", &vm, move || {
         assert!(
-            vsock_connect(&sock, 4321, TIMEOUT).is_err(),
+            vsock_connect(&sock, 4321).is_err(),
             "a port nobody listens on was accepted"
         );
         let mut s = UnixStream::connect(&sock).unwrap();
@@ -132,7 +130,7 @@ fn restored_copies_listen_on_their_own_sockets() {
     args.extend(["--snapshot-dir".into(), snap.clone().into()]);
     let mut original = Vm::spawn(&os(&args));
     assert_eq!(
-        original.wait_exit_following(TIMEOUT),
+        original.wait_exit_following(),
         Some(0),
         "{}",
         original.seen.join("\n")
@@ -150,8 +148,8 @@ fn restored_copies_listen_on_their_own_sockets() {
     };
     let (mut a, sock_a) = restore("a.sock");
     let (mut b, sock_b) = restore("b.sock");
-    a.wait_for("SHARDS-TEST READY", TIMEOUT);
-    b.wait_for("SHARDS-TEST READY", TIMEOUT);
+    a.wait_for("SHARDS-TEST READY");
+    b.wait_for("SHARDS-TEST READY");
     let (ta, tb) = (
         thread::spawn(move || echo(&sock_a, ECHO_PORT, 1, 4 << 20, None).unwrap()),
         thread::spawn(move || echo(&sock_b, ECHO_PORT, 2, 4 << 20, None).unwrap()),
@@ -160,7 +158,7 @@ fn restored_copies_listen_on_their_own_sockets() {
     tb.join().unwrap();
 
     let mut bare = Vm::spawn(&["restore".as_ref(), snap.as_os_str()]);
-    assert_eq!(bare.wait_exit_following(TIMEOUT), Some(1));
+    assert_eq!(bare.wait_exit_following(), Some(1));
     assert!(
         bare.seen.iter().any(|l| l.contains("--vsock")),
         "{}",
@@ -202,7 +200,7 @@ fn restored_copies_find_held_connections_closed() {
     args.extend(["--snapshot-dir".into(), snap.clone().into()]);
     let mut original = Vm::spawn(&os(&args));
     assert_eq!(
-        original.wait_exit_following(TIMEOUT),
+        original.wait_exit_following(),
         Some(0),
         "{}",
         original.seen.join("\n")
@@ -218,7 +216,7 @@ fn restored_copies_find_held_connections_closed() {
             "--vsock".as_ref(),
             sock.as_os_str(),
         ]);
-        copy.wait_for("SHARDS-TEST READY", TIMEOUT);
+        copy.wait_for("SHARDS-TEST READY");
         assert_eq!(greeted.join().unwrap(), "hello from the guest\n");
         echo(&sock, ECHO_PORT, salt, 1 << 20, None).unwrap();
     }
@@ -240,8 +238,8 @@ fn a_guest_socket_with_less_buffer_than_the_window_streams_whole() {
     let dir = TempDir::new("vsock-small");
     let sock = dir.join("v.sock");
     let mut vm = Vm::spawn(&os(&guest_args("vsock_bench", &sock)));
-    vm.wait_for("SHARDS-TEST READY", TIMEOUT);
-    within("a stream from a small guest buffer", STREAMING, &vm, move || {
+    vm.wait_for("SHARDS-TEST READY");
+    within("a stream from a small guest buffer", &vm, move || {
         let bytes = 1 << 20;
         let mut s = bench_open(&sock, b'T', bytes);
         // Whole in a moment once credited; a stall waits for credit that never comes.
@@ -257,7 +255,7 @@ fn a_guest_socket_with_less_buffer_than_the_window_streams_whole() {
 
 /// A connection to the test guest's `vsock_bench`, asking for `op` of `bytes` bytes.
 fn bench_open(sock: &Path, op: u8, bytes: u64) -> UnixStream {
-    let mut s = vsock_connect(sock, BENCH_PORT, TIMEOUT).unwrap();
+    let mut s = vsock_connect(sock, BENCH_PORT).unwrap();
     let mut head = [0u8; 9];
     head[0] = op;
     head[1..].copy_from_slice(&bytes.to_le_bytes());

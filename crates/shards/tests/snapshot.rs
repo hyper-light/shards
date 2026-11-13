@@ -10,7 +10,6 @@ use std::time::Duration;
 use common::{Run, cannot_run_vms, cannot_snapshot, kernel, run_shards, run_shards_in, test_guest};
 use shards_testguest::fill;
 
-const TIMEOUT: Duration = Duration::from_secs(120);
 const RO_SALT: u64 = 1;
 const RO_BYTES: usize = 4 << 20;
 const RESUMED: u32 = 2;
@@ -367,7 +366,7 @@ mod storm {
     use std::time::Duration;
 
     use super::common::{self, Vm, echo};
-    use super::{RO_BYTES, Scratch, TIMEOUT, cannot_run_vms, cannot_snapshot, kernel, test_guest};
+    use super::{RO_BYTES, Scratch, cannot_run_vms, cannot_snapshot, kernel, test_guest};
 
     /// The writable disk of a storm: 256 records of 4 KiB.
     const RW_BYTES: usize = 1 << 20;
@@ -429,10 +428,11 @@ mod storm {
     /// Streams rounds of 4 MiB through the echo of the VM at `sock` until `stop`, from when
     /// it answers, counting what comes back in `carried`; returns each round's result.
     ///
-    /// No wall clock bounds a storm: each read of a round waits a minute for its next byte
-    /// ([`common::Following`]), and each wait on its guest past `TIMEOUT` a minute for its
-    /// next new line or byte of the stream ([`Vm::wait_exit_within`]), so a stream that
-    /// stops fails a minute after its last byte, and one that goes on is waited for. At the
+    /// No wall clock bounds a storm: each round's reads are a wait judged by its kind's
+    /// slowest round seen ([`common::Following`]), and each wait on its guest by its next new
+    /// line or byte of the stream ([`Vm::wait_exit_streamed`]), so a stream that stops fails
+    /// a whole window past the slowest of its kind after its last byte, and one that goes on
+    /// is waited for (D209). At the
     /// slowest rate measured, 196,608 bytes in 120 s (1,638.4 B/s: 64 vCPUs on an arm64
     /// Windows host nested under QEMU's TCG on 4 CPUs, the parity plan's step 10), a busy
     /// machine's restores carry 13 MiB, 1 MiB before its snapshot (the guest's own wait) and
@@ -474,18 +474,18 @@ mod storm {
         carried: &AtomicU64,
     ) -> Rounds {
         // As long as its guest gets on with its storm, saying something new or carrying the
-        // stream: 64 vCPUs on a host of 4 TCG CPUs ran past TIMEOUT (the parity plan's step
-        // 10).
-        let line = vm.wait_for_any_within(&["storm checked", "SHARDS-TEST FAIL"], TIMEOUT, Some(carried));
+        // stream: 64 vCPUs on a host of 4 TCG CPUs ran past two minutes (the parity plan's
+        // step 10).
+        let line = vm.wait_for_any_streamed(&["storm checked", "SHARDS-TEST FAIL"], Some(carried));
         stop.store(true, Ordering::Relaxed);
         let rounds = streamer.join().unwrap();
         assert!(line.contains("storm checked"), "{}", vm.seen.join("\n"));
         // Connected, then a byte: the guest waits for it, so it lives until the host has
         // read its OK.
-        let told = common::vsock_connect(sock, DONE_PORT, common::DAEMON_QUIET)
+        let told = common::vsock_connect(sock, DONE_PORT)
             .and_then(|mut s| s.write_all(b"\n").map_err(|e| e.to_string()));
         if let Err(e) = told {
-            vm.wait_exit_within(TIMEOUT, None);
+            vm.wait_exit_streamed(None);
             panic!("telling the guest it may finish: {e}\n{}", vm.seen.join("\n"));
         }
         rounds
@@ -550,7 +550,7 @@ mod storm {
             let carried = Arc::new(AtomicU64::new(0));
             let mut original = Vm::spawn(&storm_args(&s, cpus, &sock, "stop"));
             let streamer = stream(sock.clone(), stop.clone(), carried.clone());
-            let code = original.wait_exit_within(TIMEOUT, Some(&carried));
+            let code = original.wait_exit_streamed(Some(&carried));
             // Its stream breaks where it stopped, at the snapshot.
             stop.store(true, Ordering::Relaxed);
             drop(streamer.join().unwrap());
@@ -573,7 +573,7 @@ mod storm {
                 ]);
                 let streamer = stream(sock.clone(), stop.clone(), carried.clone());
                 let rounds = storm_done(&mut copy, &sock, &stop, streamer, &carried);
-                let code = copy.wait_exit_within(TIMEOUT, Some(&carried));
+                let code = copy.wait_exit_streamed(Some(&carried));
                 let what = format!("{cpus} vCPUs, restore {i}");
                 let said = copy.seen.join("\n");
                 assert_eq!(code, Some(0), "{what}: {said}");
@@ -602,7 +602,7 @@ mod storm {
             let mut vm = Vm::spawn(&storm_args(&s, cpus, &sock, "resume"));
             let streamer = stream(sock.clone(), stop.clone(), carried.clone());
             let rounds = storm_done(&mut vm, &sock, &stop, streamer, &carried);
-            let code = vm.wait_exit_within(TIMEOUT, Some(&carried));
+            let code = vm.wait_exit_streamed(Some(&carried));
             let said = vm.seen.join("\n");
             assert_eq!(code, Some(0), "{cpus} vCPUs: {said}");
             assert!(said.contains("SHARDS-TEST PASS"), "{cpus} vCPUs: {said}");
