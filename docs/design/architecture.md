@@ -6867,7 +6867,7 @@ throughput both ways, small requests no slower, on every host.
 | Room for pins | With a budget: init's hold (`plug::cap`) less what the run holds (`memory.current`, the slots among it) and its working room (`plug::working_room`, D188, PM M309/M321, of the CPUs online as read); with none: `MemAvailable` (free pages less the zones' high watermarks and reserves, with reclaimable cache) less the working room. Read as each slot is made. |
 | Idle slots owed a told room | The working room less the room told, where positive. |
 | Fixed-buffer table | Twice the relay's `RLIMIT_NOFILE` over 3 (a stream's client, vsock and wake descriptors; two slots while it swaps), within io_uring's 16,384 (`IORING_MAX_REG_BUFFERS`). |
-| Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2 | Protocol constants. |
+| Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2; the owner's cue to its own device after an offer, `CUE` 0x00 (host-side) | Protocol constants. |
 | Offer extents at most (4 KiB + 2 S) / 4 KiB | A slot's pages, none merged. |
 
 The pins E2E of section 16 (idle microVMs pin nothing, pins go as streams end, a give-back
@@ -6881,6 +6881,8 @@ supported target lints clean (r15, r16). Owed to ROOT: correctness and hostile-o
 pins E2E on WHP arm64, and on WHP x86_64 past that bound; and throughput, small-request
 latency (paced and back to back), connection setup with its slot's making, a ring's ramp, CPU
 and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
+
+**Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2-F4 owed to ROOT with their reds and commands).
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
