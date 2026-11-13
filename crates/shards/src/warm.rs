@@ -2402,6 +2402,76 @@ fn open_lane(owner: &UnixStream, to: &'static ToGuest, number: [u8; 8], name: Ve
 mod tests {
     use super::*;
 
+    /// A side [`pass`] reads: its bytes, then how it ends (`Ok(0)`, its writes' end, or an
+    /// error).
+    #[cfg(windows)]
+    struct Side(std::cell::RefCell<Vec<io::Result<Vec<u8>>>>);
+
+    #[cfg(windows)]
+    impl io::Read for &Side {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let mut said = self.0.borrow_mut();
+            if said.is_empty() {
+                return Ok(0);
+            }
+            let bytes = said.remove(0)?;
+            buf[..bytes.len()].copy_from_slice(&bytes);
+            Ok(bytes.len())
+        }
+    }
+
+    /// A side [`pass`] writes: what it took, and how its writes ended.
+    #[cfg(windows)]
+    #[derive(Default)]
+    struct Taken(std::cell::RefCell<(Vec<u8>, Vec<&'static str>)>);
+
+    #[cfg(windows)]
+    impl Write for &Taken {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.borrow_mut().0.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// What `pass` makes of a side that says `said`: the bytes the other side took and how
+    /// its writes were ended.
+    #[cfg(windows)]
+    fn passed(said: Vec<io::Result<Vec<u8>>>) -> (Vec<u8>, Vec<&'static str>) {
+        let from = Side(std::cell::RefCell::new(said));
+        let to = Taken::default();
+        pass(
+            &from,
+            &to,
+            |to| {
+                to.0.borrow_mut().1.push("half-closed");
+                Ok(())
+            },
+            |to| to.0.borrow_mut().1.push("ended both ways"),
+            |_| panic!("refused"),
+        );
+        to.0.into_inner()
+    }
+
+    /// A guest connection whose read fails (WSAECONNRESET: its muxer closed it with no end
+    /// of its writes first, D251's cut, PM M358) ends the owner's pipe both ways, never its
+    /// writes alone; one whose read ends (its writes' end) still half-closes it.
+    #[cfg(windows)]
+    #[test]
+    fn a_read_that_fails_ends_the_other_side_both_ways() {
+        let reset = || io::Error::from(io::ErrorKind::ConnectionReset);
+        assert_eq!(
+            passed(vec![Ok(b"said".to_vec()), Err(reset())]),
+            (b"said".to_vec(), vec!["ended both ways"])
+        );
+        assert_eq!(
+            passed(vec![Ok(b"said".to_vec())]),
+            (b"said".to_vec(), vec!["half-closed"])
+        );
+    }
+
     /// A run's ports' closing is waited for while its network process lives, however long
     /// its answer takes (a second and a half here), its daemon told it waits first
     /// (`UNPUBLISHING`); a network process that goes ends the wait, unanswered. Before, the VM
