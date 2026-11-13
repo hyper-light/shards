@@ -5,11 +5,16 @@
 //! shown it as it is kept, each line after its member's label as D59 shows an agent's output,
 //! on that client's stderr alone: the run's own stdout, stderr and log stay its command's.
 //!
+//! It keeps every member's log, owned or not (D240): the log is the run's. A drained channel's
+//! records are kept here as they come; an owned channel's as its capture brings them, before
+//! its owner is given them ([`Drain::keep`]).
+//!
 //! A member's log is `members/<index>` in its run's directory, its two channels as a run's log
 //! keeps a command's stdout and stderr (spec.rs, `LOG_STDOUT`), as long and as many segments
-//! as the run's own log keeps (segments.rs), its member's label beside it for `shards read
-//! logs` ([`member_logs`]); a run that keeps no log (`--log-driver none`) keeps none of its
-//! members' either, and is shown nothing of them.
+//! as the run's own log keeps (segments.rs), its rotated segments compressed where the run's
+//! own are (D162), its member's label beside it for `shards read logs` ([`member_logs`]); and
+//! all of them with the command's within the run's one log cap (cap.rs). A run that keeps no
+//! log (`--log-driver none`) keeps none of its members' either, and is shown nothing of them.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -19,7 +24,7 @@ use std::time::Instant;
 use shards_abi::run::managed::{Channel, Event, Record};
 use shards_vmm::platform;
 
-use super::{Charge, capture_quantum, route_index};
+use super::{Charge, cap, capture_quantum, route_index};
 use crate::daemon::logs::{LogFile, Piece, Reader};
 use crate::daemon::{lock, log, newest_log};
 use crate::log_writer::Writer;
@@ -36,9 +41,9 @@ pub(super) fn member_dir(run: &Path, member: u32) -> PathBuf {
     run.join(MEMBERS).join(member.to_string())
 }
 
-/// The logs of the run whose directory is `run` that its drain keeps, by its members'
-/// declared index, each with its member's label: none where it drained none.
-pub(in crate::daemon) fn member_logs(run: &Path) -> io::Result<Vec<(String, LogFile)>> {
+/// The members whose logs are in the run whose directory is `run`, by declared index: none
+/// where it kept none.
+pub(in crate::daemon) fn member_dirs(run: &Path) -> io::Result<Vec<(u32, PathBuf)>> {
     let mut members: Vec<u32> = match std::fs::read_dir(run.join(MEMBERS)) {
         Ok(entries) => entries
             .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
@@ -47,6 +52,20 @@ pub(in crate::daemon) fn member_logs(run: &Path) -> io::Result<Vec<(String, LogF
         Err(e) => return Err(e),
     };
     members.sort_unstable();
+    let mut dirs = Vec::new();
+    dirs.try_reserve_exact(members.len()).map_err(io::Error::other)?;
+    dirs.extend(
+        members
+            .into_iter()
+            .map(|member| (member, member_dir(run, member))),
+    );
+    Ok(dirs)
+}
+
+/// The logs of the run whose directory is `run` that its keeper keeps, owned or not, by its
+/// members' declared index, each with its member's label: none where it kept none.
+pub(in crate::daemon) fn member_logs(run: &Path) -> io::Result<Vec<(String, LogFile)>> {
+    let members: Vec<u32> = member_dirs(run)?.into_iter().map(|(member, _)| member).collect();
     let mut logs = Vec::new();
     logs.try_reserve_exact(members.len()).map_err(io::Error::other)?;
     for member in members {
@@ -75,48 +94,101 @@ enum Stream {
 }
 
 struct Kept {
-    /// Each drained member's log, by its declared index: none for one an owner reads, or
-    /// where the run keeps no log.
+    /// Each kept member's log, by its declared index: none where the run keeps no log.
     logs: Vec<Option<Writer>>,
-    /// Each channel's stream, by its credit route ([`route_index`]): none for one not drained.
+    /// Each channel's stream, by its credit route ([`route_index`]): none for one not kept.
     streams: Vec<Option<Stream>>,
     /// How often anything was kept or ended: what a viewer waits on to change.
     changes: u64,
     /// The run's capture has ended: nothing more comes.
     closed: bool,
+    /// The run's one log cap, where it keeps its logs.
+    cap: Option<Cap>,
+    /// Members' segments rotated as they filled, to be compressed (D162): those since they were
+    /// last taken ([`Drain::rotated`]), where the run's own log's are.
+    rotated: Vec<(u32, u64)>,
 }
 
 impl Kept {
-    fn ended(&self) -> bool {
-        self.closed || self.streams.iter().flatten().all(|s| *s != Stream::Open)
+    /// Whether each of `members`' channels has ended, or the run's capture has.
+    fn ended(&self, members: &[u32]) -> bool {
+        self.closed
+            || members.iter().all(|&member| {
+                [Channel::Stdout, Channel::Stderr].into_iter().all(|channel| {
+                    route_index(member, channel)
+                        .ok()
+                        .and_then(|route| self.streams.get(route).copied().flatten())
+                        .is_none_or(|stream| stream != Stream::Open)
+                })
+            })
     }
+}
+
+/// How a run's logs are kept (D240): each member's as the run's own log is (`retention`), its
+/// rotated segments compressed where the run's are (`compress`, D162), all of them within the
+/// run's one cap.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Keeping {
+    pub(super) retention: LogRetention,
+    pub(super) compress: bool,
+}
+
+/// The run's one log cap as its keeper holds it (cap.rs): its bound, the output its logs held at
+/// its last hold, and the output kept since. Its command's log grows unseen between its
+/// rotations, each of which holds the cap again ([`Drain::cap`]): within one segment.
+#[derive(Debug, Clone, Copy)]
+struct Cap {
+    /// The run's log bound: its segments' size times their count, as its own log keeps them.
+    bound: u64,
+    /// None until its first hold, which weighs what a run started again left.
+    held: Option<u64>,
+    since: u64,
 }
 
 pub(super) struct Drain {
     run: PathBuf,
     labels: Vec<String>,
+    /// The members the daemon reads itself, ascending.
     members: Vec<u32>,
+    /// The members whose logs it keeps, owned or not, ascending: none where the run keeps none.
+    logged: Vec<u32>,
+    /// Whether its members' rotated segments are compressed, as the run's own are (D162).
+    compress: bool,
     /// The run's record capacity, the least window a channel is credited ([`Windows`]).
     capacity: usize,
     kept: Mutex<Kept>,
     changed: Condvar,
-    /// Each drained member's end, by its declared index: set once each of its channels has
-    /// ended, or the run's capture has, all it wrote kept; what a log lane that follows its
+    /// Each drained or kept member's end, by its declared index: set once each of its channels
+    /// has ended, or the run's capture has, all it wrote kept; what a log lane that follows its
     /// log waits on beside the log's own changes (D238).
     ends: Vec<Option<shards_ipc::Latch>>,
 }
 
 impl Drain {
-    /// The drain of `members` of the run whose directory is `run` and whose declared members
-    /// are `labels`: each member's log begun where a run started again left it, kept as
-    /// `retention` keeps the run's own (none where it keeps none).
+    /// The keeper of the run whose directory is `run` and whose declared members are
+    /// `labels`: draining `members`, the daemon's to read, and keeping their logs and those of
+    /// `owned`, read by their owner, each begun where a run started again left it, as `keeping`
+    /// says (none where the run keeps no log, and none of `owned` then).
     pub(super) fn open(
         run: &Path,
         labels: &[String],
         members: &[u32],
-        retention: Option<LogRetention>,
+        owned: &[u32],
+        keeping: Option<Keeping>,
         capacity: usize,
     ) -> io::Result<Drain> {
+        let mut logged = Vec::new();
+        if keeping.is_some() {
+            logged
+                .try_reserve_exact(members.len().saturating_add(owned.len()))
+                .map_err(io::Error::other)?;
+            // Red: an owned member's log is not kept yet.
+            logged.extend(members.iter().copied());
+            let _ = owned;
+            logged.sort_unstable();
+            logged.dedup();
+        }
+        let retention = keeping.map(|k| k.retention);
         let mut logs = Vec::new();
         logs.try_reserve_exact(labels.len()).map_err(io::Error::other)?;
         logs.resize_with(labels.len(), || None);
@@ -127,14 +199,22 @@ impl Drain {
         let mut streams = Vec::new();
         streams.try_reserve_exact(routes).map_err(io::Error::other)?;
         streams.resize(routes, None);
-        for &member in members {
-            if let Some(retention) = retention {
+        // Every drained member's channels, and every kept one's.
+        let mut tracked = Vec::new();
+        tracked
+            .try_reserve_exact(members.len().saturating_add(logged.len()))
+            .map_err(io::Error::other)?;
+        tracked.extend(members.iter().chain(&logged).copied());
+        tracked.sort_unstable();
+        tracked.dedup();
+        for &member in &tracked {
+            if let Some(retention) = retention.filter(|_| logged.contains(&member)) {
                 let dir = member_dir(run, member);
                 std::fs::create_dir_all(&dir)?;
                 let label = usize::try_from(member)
                     .ok()
                     .and_then(|at| labels.get(at))
-                    .ok_or_else(|| io::Error::other("drained member's label"))?;
+                    .ok_or_else(|| io::Error::other("kept member's label"))?;
                 crate::os::owner_only(
                     std::fs::OpenOptions::new()
                         .create(true)
@@ -148,7 +228,7 @@ impl Drain {
                 let next = Box::new(move |seq| new_segment(&held, seq, retention.files));
                 *logs
                     .get_mut(usize::try_from(member).map_err(io::Error::other)?)
-                    .ok_or_else(|| io::Error::other("drained member index"))? = Some(Writer::new(
+                    .ok_or_else(|| io::Error::other("kept member index"))? = Some(Writer::new(
                     newest.log,
                     newest.index,
                     newest.seq,
@@ -159,7 +239,7 @@ impl Drain {
             for channel in [Channel::Stdout, Channel::Stderr] {
                 *streams
                     .get_mut(route_index(member, channel)?)
-                    .ok_or_else(|| io::Error::other("drained channel index"))? = Some(Stream::Open);
+                    .ok_or_else(|| io::Error::other("kept channel index"))? = Some(Stream::Open);
             }
         }
         let mut drained = Vec::new();
@@ -175,38 +255,49 @@ impl Drain {
         let mut ends = Vec::new();
         ends.try_reserve_exact(labels.len()).map_err(io::Error::other)?;
         for member in 0..labels.len() {
-            let drained = u32::try_from(member).is_ok_and(|m| members.contains(&m));
-            ends.push(if drained {
+            let kept = u32::try_from(member).is_ok_and(|m| tracked.contains(&m));
+            ends.push(if kept {
                 Some(shards_ipc::Latch::new()?)
             } else {
                 None
             });
         }
+        // The run's one bound: its own log's segments' size times their count (D186's history,
+        // or its --log-opt max-size and max-file), shared by its command's log and its members'.
+        let cap = retention.map(|r| Cap {
+            bound: r.size.saturating_mul(r.files),
+            held: None,
+            since: 0,
+        });
         Ok(Drain {
             run: run.to_path_buf(),
             labels: names,
             members: drained,
+            logged,
+            compress: keeping.is_some_and(|k| k.compress),
             capacity,
             kept: Mutex::new(Kept {
                 logs,
                 streams,
                 changes: 0,
                 closed: false,
+                cap,
+                rotated: Vec::new(),
             }),
             changed: Condvar::new(),
             ends,
         })
     }
 
-    /// Member `member`'s end ([`Drain::ends`]), another handle to it: none for a member it does
-    /// not drain.
+    /// Member `member`'s end ([`Drain::ends`]), another handle to it: none for a member it
+    /// neither drains nor keeps.
     pub(super) fn end_of(&self, member: u32) -> Option<io::Result<shards_ipc::Latch>> {
         let at = usize::try_from(member).ok()?;
         self.ends.get(at)?.as_ref().map(shards_ipc::Latch::try_clone)
     }
 
-    /// Sets the end of each drained member whose channels have all ended, or of every one once
-    /// the run's capture has.
+    /// Sets the end of each drained or kept member whose channels have all ended, or of every
+    /// one once the run's capture has.
     fn tell_ends(&self, kept: &Kept) {
         for (member, end) in self.ends.iter().enumerate() {
             let Some(end) = end else {
@@ -228,7 +319,7 @@ impl Drain {
 
     /// Whether the daemon reads credit route `index` itself.
     pub(super) fn drains(&self, index: usize) -> bool {
-        lock(&self.kept).streams.get(index).is_some_and(Option::is_some)
+        u32::try_from(index / 2).is_ok_and(|member| self.drains_member(member))
     }
 
     /// Whether the daemon reads member `member`'s output itself.
@@ -236,14 +327,27 @@ impl Drain {
         self.members.contains(&member)
     }
 
+    /// Whether credit route `index`'s records come to it: a drained channel's, or a kept one's.
+    pub(super) fn keeps(&self, index: usize) -> bool {
+        lock(&self.kept).streams.get(index).is_some_and(Option::is_some)
+    }
+
+    /// Whether member `member`'s records come to it: a drained member's, or a kept one's.
+    pub(super) fn keeps_member(&self, member: u32) -> bool {
+        [Channel::Stdout, Channel::Stderr]
+            .into_iter()
+            .any(|channel| route_index(member, channel).is_ok_and(|route| self.keeps(route)))
+    }
+
     /// The members the daemon reads itself, ascending.
     pub(super) fn members(&self) -> &[u32] {
         &self.members
     }
 
-    /// Keeps `record`, a drained channel's, as its VM sent it: its data in its member's log,
-    /// its end as its stream's. Whether its stream has ended with it. One that comes after its
-    /// stream ended (its member aborted under it) is nothing more.
+    /// Keeps `record`, a drained or kept channel's, as its VM sent it: its data in its member's
+    /// log, its end as its stream's. Whether its stream has ended with it. One that comes after
+    /// its stream ended (its member aborted under it) is nothing more. Where what its logs hold
+    /// may pass the run's bound, its cap holds again.
     pub(super) fn keep(&self, record: &[u8]) -> io::Result<bool> {
         let record =
             Record::decode(record).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -251,7 +355,7 @@ impl Drain {
         let mut kept = lock(&self.kept);
         let stream =
             kept.streams.get(route).copied().flatten().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "a record of a channel not drained")
+                io::Error::new(io::ErrorKind::InvalidData, "a record of a channel not kept")
             })?;
         if stream != Stream::Open {
             return Ok(true);
@@ -260,8 +364,29 @@ impl Drain {
             Event::Open(_) => None,
             Event::Data(bytes) => {
                 let at = usize::try_from(record.member).map_err(io::Error::other)?;
-                if let Some(Some(writer)) = kept.logs.get_mut(at) {
+                let Kept {
+                    logs, cap, rotated, ..
+                } = &mut *kept;
+                if let Some(Some(writer)) = logs.get_mut(at) {
+                    let (seq, written) = (writer.seq(), writer.written());
                     writer.keep(log_stream(record.channel), bytes);
+                    // Each segment it filled is rotated: compressed where the run's are.
+                    if self.compress {
+                        let filled = writer.seq().saturating_sub(seq);
+                        rotated
+                            .try_reserve(usize::try_from(filled).map_err(io::Error::other)?)
+                            .map_err(io::Error::other)?;
+                        // Red: none handed to the packer yet.
+                    }
+                    if let Some(cap) = cap {
+                        cap.since = cap.since.saturating_add(writer.written().saturating_sub(written));
+                    }
+                }
+                if kept.cap.is_some_and(|cap| {
+                    cap.held
+                        .is_none_or(|held| held.saturating_add(cap.since) > cap.bound)
+                }) {
+                    self.hold(&mut kept);
                 }
                 None
             }
@@ -276,6 +401,55 @@ impl Drain {
         drop(kept);
         self.changed.notify_all();
         Ok(end.is_some())
+    }
+
+    /// The run's command's log has rotated (files.rs): its one cap holds again, the segment its
+    /// VM finished now weighed.
+    pub(super) fn cap(&self) {
+        let mut kept = lock(&self.kept);
+        if kept.cap.is_some() {
+            self.hold(&mut kept);
+        }
+    }
+
+    /// Holds the run's logs within its one bound (cap.rs), closing a member's newest through its
+    /// writer where every log is down to its newest. One that fails is said in the daemon's log,
+    /// and holds again once a bound's worth more is kept: the logs keep their output meanwhile.
+    fn hold(&self, kept: &mut Kept) {
+        let Kept { logs, cap, .. } = kept;
+        let Some(limit) = cap else {
+            return;
+        };
+        let held = cap::hold(&self.run, &self.logged, limit.bound, &mut |member| {
+            usize::try_from(member)
+                .ok()
+                .and_then(|at| logs.get_mut(at))
+                .and_then(Option::as_mut)
+                .ok_or_else(|| io::Error::other("a member's log without its writer"))?
+                .rotate()
+        });
+        limit.since = 0;
+        limit.held = Some(match held {
+            Ok(held) => held.total,
+            Err(e) => {
+                log(format!(
+                    "{}: holding its logs to its bound: {e}",
+                    self.run.display()
+                ));
+                0
+            }
+        });
+    }
+
+    /// The members' segments rotated as they filled since last asked, each its log's directory
+    /// and number: for the daemon to compress, as the run's own (D162). None where the run's are
+    /// not compressed.
+    pub(super) fn rotated(&self) -> Vec<(PathBuf, u64)> {
+        let taken = std::mem::take(&mut lock(&self.kept).rotated);
+        taken
+            .into_iter()
+            .map(|(member, seq)| (member_dir(&self.run, member), seq))
+            .collect()
     }
 
     /// Member `member` aborted (`IPC86`, its init's word): both its channels end with
@@ -346,11 +520,11 @@ impl Drain {
         loop {
             let ended = {
                 let mut kept = lock(&self.kept);
-                while seen == Some(kept.changes) && !kept.ended() {
+                while seen == Some(kept.changes) && !kept.ended(&self.members) {
                     kept = self.changed.wait(kept).unwrap_or_else(PoisonError::into_inner);
                 }
                 seen = Some(kept.changes);
-                kept.ended()
+                kept.ended(&self.members)
             };
             for member in &mut shown {
                 if !member.read(to, &mut whole) {
@@ -560,6 +734,10 @@ mod tests {
         size: 1 << 20,
         files: 2,
     };
+    const KEEPING: Keeping = Keeping {
+        retention: KEEP,
+        compress: false,
+    };
 
     /// A drained member's records are kept in its log, each channel apart, its bytes whole;
     /// its end ends its stream, and what comes after is nothing more; a member an owner reads
@@ -567,7 +745,7 @@ mod tests {
     #[test]
     fn a_drained_members_output_is_kept_whole_in_its_log() {
         let run = shards_testdir::TempDir::new("drain-keep").unwrap();
-        let drain = Drain::open(&run, &labels(), &[1], Some(KEEP), 64).unwrap();
+        let drain = Drain::open(&run, &labels(), &[1], &[], Some(KEEPING), 64).unwrap();
         assert!(drain.drains(route_index(1, Channel::Stdout).unwrap()));
         assert!(!drain.drains(route_index(2, Channel::Stdout).unwrap()));
         assert!(drain.drains_member(1) && !drain.drains_member(2));
@@ -616,7 +794,7 @@ mod tests {
     #[test]
     fn a_viewer_shows_each_line_after_its_member() {
         let run = shards_testdir::TempDir::new("drain-show").unwrap();
-        let drain = Drain::open(&run, &labels(), &[0, 1], Some(KEEP), 64).unwrap();
+        let drain = Drain::open(&run, &labels(), &[0, 1], &[], Some(KEEPING), 64).unwrap();
         let mut shown = Vec::new();
         std::thread::scope(|threads| {
             let viewer = threads.spawn(|| {
@@ -670,7 +848,7 @@ mod tests {
             }
         }
         let run = shards_testdir::TempDir::new("drain-whole").unwrap();
-        let drain = Drain::open(&run, &labels(), &[1], Some(KEEP), 64).unwrap();
+        let drain = Drain::open(&run, &labels(), &[1], &[], Some(KEEPING), 64).unwrap();
         drain
             .keep(&encoded(1, Channel::Stdout, 0, Event::Data(b"one\ntwo\nthr")))
             .unwrap();
@@ -698,7 +876,7 @@ mod tests {
     fn a_runs_member_logs_are_found_with_their_labels() {
         let run = shards_testdir::TempDir::new("drain-logs").unwrap();
         assert!(member_logs(&run).unwrap().is_empty());
-        let drain = Drain::open(&run, &labels(), &[0, 2], Some(KEEP), 64).unwrap();
+        let drain = Drain::open(&run, &labels(), &[0, 2], &[], Some(KEEPING), 64).unwrap();
         drain
             .keep(&encoded(2, Channel::Stdout, 0, Event::Data(b"x\n")))
             .unwrap();
@@ -715,7 +893,7 @@ mod tests {
             .unwrap();
         assert_eq!(got, b"x\n");
         let none = shards_testdir::TempDir::new("drain-logs-none").unwrap();
-        let _ = Drain::open(&none, &labels(), &[1], None, 64).unwrap();
+        let _ = Drain::open(&none, &labels(), &[1], &[], None, 64).unwrap();
         assert!(member_logs(&none).unwrap().is_empty());
     }
 
@@ -732,7 +910,7 @@ mod tests {
             }
         }
         let run = shards_testdir::TempDir::new("drain-gone").unwrap();
-        let drain = Drain::open(&run, &labels(), &[1], Some(KEEP), 64).unwrap();
+        let drain = Drain::open(&run, &labels(), &[1], &[], Some(KEEPING), 64).unwrap();
         drain
             .keep(&encoded(1, Channel::Stdout, 0, Event::Data(b"a\n")))
             .unwrap();
@@ -750,7 +928,7 @@ mod tests {
     #[test]
     fn a_run_that_keeps_no_log_keeps_none_of_its_members() {
         let run = shards_testdir::TempDir::new("drain-none").unwrap();
-        let drain = Drain::open(&run, &labels(), &[1], None, 64).unwrap();
+        let drain = Drain::open(&run, &labels(), &[1], &[], None, 64).unwrap();
         assert!(
             !drain
                 .keep(&encoded(1, Channel::Stdout, 0, Event::Data(b"a\n")))
@@ -759,12 +937,157 @@ mod tests {
         assert!(!member_dir(&run, 1).exists());
     }
 
+    /// The segments the log in `dir` keeps, oldest first.
+    fn segments(dir: &Path) -> Vec<u64> {
+        let mut seqs: Vec<u64> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| crate::daemon::logs::segment_of(e.unwrap().file_name().to_str()?))
+            .collect();
+        seqs.sort_unstable();
+        seqs
+    }
+
+    /// Ages the index of segment `seq` of the log in `dir` to `secs` past the epoch: what the
+    /// run's cap orders its logs' oldest by.
+    fn age(dir: &Path, seq: u64, secs: u64) {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join(crate::segments::log_segment(seq).1))
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+            .unwrap();
+    }
+
+    /// Everything the log in `dir` keeps, its output's bytes in order.
+    fn read_whole(dir: &Path) -> Vec<u8> {
+        let mut got = Vec::new();
+        let mut reader = Reader::new();
+        let mut each = |p: Piece<'_>| {
+            got.extend_from_slice(p.bytes);
+            Ok(true)
+        };
+        reader.read(&LogFile::open(dir).unwrap(), &mut each).unwrap();
+        reader.finish(&mut each).unwrap();
+        got
+    }
+
+    /// A member's log is kept, owned or not, and counted in its run's one cap: an owned member's
+    /// records, which its capture brings past the drain to its owner, are kept in its log, found
+    /// with its label as `logs` finds a drained member's, and their bytes, past the run's bound
+    /// with its command's, let the run's oldest segment go, its command's, recorded as its loss.
+    #[test]
+    fn a_members_log_is_kept_and_counted_in_its_runs_cap() {
+        let run = shards_testdir::TempDir::new("keep-owned").unwrap();
+        // The command's log as its VM writes it: records of 17 bytes in segments of 30, one a
+        // segment, its first two aged oldest.
+        let held = platform::open_dir(&run).unwrap();
+        let newest = newest_log(&run).unwrap();
+        let mut command = Writer::new(
+            newest.log,
+            newest.index,
+            newest.seq,
+            LogRetention { size: 30, files: 3 },
+            Box::new(move |seq| new_segment(&held, seq, 3)),
+        )
+        .unwrap();
+        for _ in 0..3 {
+            command.keep(LOG_STDOUT, b"cmd\n");
+        }
+        age(&run, 0, 10);
+        age(&run, 1, 20);
+        // Its bound, 90 bytes: three segments of 30.
+        let keeping = Keeping {
+            retention: LogRetention { size: 30, files: 3 },
+            compress: false,
+        };
+        let drain = Drain::open(&run, &labels(), &[], &[1], Some(keeping), 64).unwrap();
+        let route = route_index(1, Channel::Stdout).unwrap();
+        assert!(
+            !drain.drains(route) && drain.keeps(route),
+            "an owned channel is kept, not drained"
+        );
+        for _ in 0..3 {
+            drain
+                .keep(&encoded(1, Channel::Stdout, 0, Event::Data(b"mbr\n")))
+                .unwrap();
+        }
+        let found = member_logs(&run).unwrap();
+        let named: Vec<&str> = found.iter().map(|(label, _)| label.as_str()).collect();
+        assert_eq!(named, ["agent main"]);
+        assert_eq!(read_whole(&member_dir(&run, 1)), b"mbr\nmbr\nmbr\n");
+        // 102 bytes past 90: the command's oldest goes, its loss its own record's.
+        assert_eq!(segments(&run), [1, 2]);
+        assert_eq!(segments(&member_dir(&run, 1)), [0, 1, 2]);
+        let capped = |dir: &Path| cap::capped(&platform::open_dir(dir).unwrap()).unwrap();
+        assert_eq!(
+            capped(&run),
+            cap::Capped {
+                segments: 1,
+                bytes: 17
+            }
+        );
+        assert_eq!(capped(&member_dir(&run, 1)), cap::Capped::default());
+    }
+
+    /// A member's rotated segment is compressed when the run's options say so, as the run's own
+    /// are (D162): each segment its log filled is handed to the daemon's packer, which leaves it
+    /// read back whole; and none where the run's are not compressed.
+    #[test]
+    fn a_members_rotated_segment_is_compressed_when_the_runs_options_say_so() {
+        let retention = LogRetention { size: 30, files: 8 };
+        for compress in [true, false] {
+            let run = shards_testdir::TempDir::new("keep-packed").unwrap();
+            let keeping = Keeping { retention, compress };
+            let drain = Drain::open(&run, &labels(), &[1], &[2], Some(keeping), 64).unwrap();
+            for member in [1, 2] {
+                for _ in 0..3 {
+                    drain
+                        .keep(&encoded(member, Channel::Stdout, 0, Event::Data(b"out\n")))
+                        .unwrap();
+                }
+            }
+            let mut rotated = drain.rotated();
+            rotated.sort_unstable();
+            if !compress {
+                assert!(rotated.is_empty(), "{rotated:?}");
+                continue;
+            }
+            let (one, two) = (member_dir(&run, 1), member_dir(&run, 2));
+            assert_eq!(
+                rotated,
+                [
+                    (one.clone(), 0),
+                    (one.clone(), 1),
+                    (two.clone(), 0),
+                    (two.clone(), 1)
+                ]
+            );
+            assert!(drain.rotated().is_empty(), "each handed once");
+            for (dir, seq) in &rotated {
+                assert!(
+                    crate::daemon::packed::pack_for_test(&platform::open_dir(dir).unwrap(), *seq).unwrap()
+                );
+            }
+            for dir in [&one, &two] {
+                let names: Vec<String> = std::fs::read_dir(dir)
+                    .unwrap()
+                    .map(|e| e.unwrap().file_name().into_string().unwrap())
+                    .collect();
+                for packed in ["log.zst", "log.1.zst"] {
+                    assert!(names.iter().any(|n| n == packed), "{names:?}");
+                }
+                assert!(!names.iter().any(|n| n == "log" || n == "log.1"), "{names:?}");
+                assert_eq!(read_whole(dir), b"out\nout\nout\n");
+            }
+        }
+    }
+
     /// A run started again goes on in its members' newest segment.
     #[test]
     fn a_run_started_again_goes_on_in_its_members_logs() {
         let run = shards_testdir::TempDir::new("drain-again").unwrap();
         for word in [&b"first\n"[..], b"second\n"] {
-            let drain = Drain::open(&run, &labels(), &[1], Some(KEEP), 64).unwrap();
+            let drain = Drain::open(&run, &labels(), &[1], &[], Some(KEEPING), 64).unwrap();
             drain
                 .keep(&encoded(1, Channel::Stdout, 0, Event::Data(word)))
                 .unwrap();
