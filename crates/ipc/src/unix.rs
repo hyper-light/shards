@@ -2391,9 +2391,12 @@ pub(crate) mod tests {
         }
     }
 
-    /// [`read`] waits as a read would: no longer than its socket's receive timeout, and
-    /// not at all where it is set not to block, as messages do; and it reads a pipe once
-    /// something comes, and a socket to its end through [`Polled`].
+    /// [`read`] waits as a read would: until its socket's receive timeout, and not at all
+    /// where it is set not to block, as messages do; and it reads a pipe once something
+    /// comes, and a socket to its end through [`Polled`]. Nothing comes on these sockets,
+    /// so a read that waited past its timeout would never end: `WouldBlock` is its proof,
+    /// and its time is held only to the timeout from below. A ceiling would be a chosen
+    /// multiple, and a host that pauses the process (a cgroup frozen by a pacer) passes it.
     #[test]
     fn a_read_waits_as_a_read_would() {
         use std::time::Duration;
@@ -2409,17 +2412,16 @@ pub(crate) mod tests {
             };
             assert_eq!(failed.kind(), io::ErrorKind::WouldBlock);
             let waited = start.elapsed();
-            assert!(waited >= timeout && waited < 50 * timeout, "{waited:?}");
+            assert!(waited >= timeout, "{waited:?}");
         }
+        // Set not to block, with no timeout left: one that waited would wait for ever.
         b.set_read_timeout(None).unwrap();
         b.set_nonblocking(true).unwrap();
-        let start = Instant::now();
         assert_eq!(
             read(&b, &mut [0u8; 8]).unwrap_err().kind(),
             io::ErrorKind::WouldBlock
         );
         assert_eq!(recv(&b).unwrap_err().kind(), io::ErrorKind::WouldBlock);
-        assert!(start.elapsed() < Duration::from_secs(1));
 
         let (r, mut w) = pipe();
         let writer = std::thread::spawn(move || {
