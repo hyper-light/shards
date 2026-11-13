@@ -41,8 +41,41 @@ index 4edd0e3c2..8f69cd427 100644
          Ok((part, merged))
      }
  
+diff --git a/crates/shards/src/build/builder.rs b/crates/shards/src/build/builder.rs
+index 159177259..ee5a6444d 100644
+--- a/crates/shards/src/build/builder.rs
++++ b/crates/shards/src/build/builder.rs
+@@ -137,6 +137,10 @@ pub struct Giver {
+     out: Option<u8>,
+     /// What has come of an answer not yet whole.
+     held: Vec<u8>,
++    /// builder-pressure: when the ask out (or answered last) was sent, and whether it was
++    /// said to have had no answer within its pass's patience.
++    pub asked: Option<Instant>,
++    pub missed: bool,
+ }
+ 
+ /// What a builder answered an ask with (build::GIVE_PORT).
+@@ -158,6 +162,8 @@ impl Giver {
+             conn,
+             out: None,
+             held: Vec::new(),
++            asked: None,
++            missed: false,
+         }
+     }
+ 
+@@ -195,6 +201,8 @@ impl Giver {
+         }
+         self.write(kind, payload)?;
+         self.out = Some(kind);
++        self.asked = Some(Instant::now());
++        self.missed = false;
+         Ok(true)
+     }
+ 
 diff --git a/crates/shards/src/build/give.rs b/crates/shards/src/build/give.rs
-index f14b02d66..7df165ae5 100644
+index fa3b4adcc..10c76e784 100644
 --- a/crates/shards/src/build/give.rs
 +++ b/crates/shards/src/build/give.rs
 @@ -25,7 +25,7 @@
@@ -54,7 +87,15 @@ index f14b02d66..7df165ae5 100644
  use std::sync::OnceLock;
  use std::sync::mpsc;
  #[cfg(target_os = "linux")]
-@@ -328,6 +328,10 @@ fn again(
+@@ -281,6 +281,7 @@ fn late(
+             Ok(Some(answer)) => {
+                 came = true;
+                 gave |= matches!(answer, Answer::Gave(..));
++                said(g, &answer);
+                 count(unsaid, answer);
+                 true
+             }
+@@ -331,6 +332,10 @@ fn again(
  /// no budget holds them, each answer heard by `until`: those told alone heard, as one whose
  /// give-back is still out was counted unanswered. The room told kept in `unsaid`.
  fn tell(held: &mut Vec<Giver>, r: Option<i64>, until: Instant, unsaid: &mut Unsaid) {
@@ -65,49 +106,58 @@ index f14b02d66..7df165ae5 100644
      unsaid.told = r;
      let n = i64::try_from(held.len().max(1)).unwrap_or(i64::MAX);
      let share = r.map(|r| r / n);
-@@ -342,10 +346,25 @@ fn tell(held: &mut Vec<Giver>, r: Option<i64>, until: Instant, unsaid: &mut Unsa
+@@ -345,10 +350,18 @@ fn tell(held: &mut Vec<Giver>, r: Option<i64>, until: Instant, unsaid: &mut Unsa
  fn hear(g: &mut Giver, until: Instant, unsaid: &mut Unsaid) -> bool {
      match g.answer(until) {
          Ok(Some(answer)) => {
-+            // builder-pressure: each answer, as long after its word as it came, one write.
-+            let said = match &answer {
-+                Answer::Gave(freed, unplugging) => {
-+                    format!("builder-give answered_ms {} freed {freed} unplugging {unplugging}\n", since(until))
-+                }
-+                Answer::Held(within) => {
-+                    let within_said = within.map_or("none".to_string(), |w| w.to_string());
-+                    format!("builder-give held_ms {} within {within_said}\n", since(until))
-+                }
-+                Answer::Refused(why) => {
-+                    format!("builder-give refused_ms {} why {}\n", since(until), why.replace(' ', "_"))
-+                }
-+            };
-+            let _ = io::stderr().write_all(said.as_bytes());
++            said(g, &answer);
              count(unsaid, answer);
              true
          }
          Ok(None) => {
-+            let _ = io::stderr().write_all(format!("builder-give unanswered_ms {}\n", since(until)).as_bytes());
++            // builder-pressure: an ask with no answer within its pass's patience, once for
++            // each ask however many passes hear it out; one write.
++            if !g.missed {
++                g.missed = true;
++                let ms = g.asked.map_or(0, |at| at.elapsed().as_millis());
++                let _ = io::stderr().write_all(format!("builder-give unanswered_ms {ms}\n").as_bytes());
++            }
              unsaid.unanswered += 1;
              true
          }
-@@ -353,6 +372,11 @@ fn hear(g: &mut Giver, until: Instant, unsaid: &mut Unsaid) -> bool {
+@@ -356,6 +369,27 @@ fn hear(g: &mut Giver, until: Instant, unsaid: &mut Unsaid) -> bool {
      }
  }
  
-+/// builder-pressure: how long after its word an answer heard by `until` came, in ms.
-+fn since(until: Instant) -> u128 {
-+    PATIENCE.saturating_sub(until.saturating_duration_since(Instant::now())).as_millis()
++/// builder-pressure: `g`'s answer, as long after its ask as it came (a give-back's ask goes
++/// at its word), and `late 1` where it came past its pass's patience, heard by a pass after
++/// or by [`late`]; one write.
++fn said(g: &Giver, answer: &Answer) {
++    let ms = g.asked.map_or(0, |at| at.elapsed().as_millis());
++    let late = if g.missed { " late 1" } else { "" };
++    let said = match answer {
++        Answer::Gave(freed, unplugging) => {
++            format!("builder-give answered_ms {ms}{late} freed {freed} unplugging {unplugging}\n")
++        }
++        Answer::Held(within) => {
++            let within_said = within.map_or("none".to_string(), |w| w.to_string());
++            format!("builder-give held_ms {ms}{late} within {within_said}\n")
++        }
++        Answer::Refused(why) => {
++            format!("builder-give refused_ms {ms}{late} why {}\n", why.replace(' ', "_"))
++        }
++    };
++    let _ = io::stderr().write_all(said.as_bytes());
 +}
 +
  /// A builder's answer counted in `unsaid`.
  fn count(unsaid: &mut Unsaid, answer: Answer) {
      match answer {
 diff --git a/crates/shards/src/main.rs b/crates/shards/src/main.rs
-index 50eaf09e3..1884a0b1c 100644
+index f42f1b66e..a4dc66137 100644
 --- a/crates/shards/src/main.rs
 +++ b/crates/shards/src/main.rs
-@@ -129,6 +129,8 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
+@@ -144,6 +144,8 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
  pub(crate) fn phase(_name: &str) {
      #[cfg(all(feature = "alloc-count", unix))]
      alloc_count::phase(_name);
