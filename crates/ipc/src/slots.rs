@@ -223,6 +223,10 @@ pub struct Asked {
     pub session: Session,
     pub fds: Vec<u8>,
     pub request: Frame,
+    /// Whether its client was waited on for its rest: a read found none of what was left
+    /// there, and waited for the client to write it. A rest there as it was read, as one
+    /// write puts a request whole (`Client::ask`), waited on no client (D185).
+    pub waited: bool,
 }
 
 /// What a client's ask for a slot came to.
@@ -276,6 +280,7 @@ mod tests {
                     session,
                     request,
                     fds: named,
+                    ..
                 } = asked(slot);
                 assert_eq!(
                     request,

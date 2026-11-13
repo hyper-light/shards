@@ -746,6 +746,21 @@ pub mod builtin {
     /// columns. TIOCSWINSZ on the terminal init holds for it, which tells the terminal's
     /// foreground process group SIGWINCH where its size changed (TIOCSWINSZ(2const)).
     pub const RESIZE: u8 = 21;
+    /// A member's command signalled (D238, goal 58's step 5), its arguments
+    /// [`members::signal_args`](super::members::signal_args)': its index and a signal by its
+    /// Linux number. Its command is PID 2 under its reaper, as an OCI runtime's kill signals its
+    /// container's process (runtime-spec runtime.md, "kill"): from init's namespace a signal
+    /// reaches the reaper, its namespace's init, only for a handler it has (pid_namespaces(7)),
+    /// and it has SIGCHLD's alone.
+    pub const SIGNAL: u8 = 22;
+    /// [`SIGNAL`]'s exit status where the member's command has ended, its population with it or
+    /// going: ESRCH's number (include/uapi/asm-generic/errno-base.h), as kill(2) refuses a
+    /// process that has, so that its host says why by its kind; [`SIGNAL_UNKNOWN`] where no
+    /// member of that index started; 1 for any other failure.
+    pub const SIGNAL_ENDED: u8 = 3;
+    /// [`SIGNAL`]'s exit status where no member of that index started in this run: ENOENT's
+    /// number (errno-base.h), as [`RESIZE`] says it of one.
+    pub const SIGNAL_UNKNOWN: u8 = 2;
 
     /// [`STATS`]'s one argument, whose cgroup it reads (D231): none for the workload's, as
     /// `stats` reads it; [`RUN`](stats::RUN) for the run's, its command's and every

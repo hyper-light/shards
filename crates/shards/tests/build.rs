@@ -10060,7 +10060,9 @@ fn agents_run_in_their_domains() {
         .collect();
     for want in [
         "confined uid=200000 gid=200000 groups=0",
-        "confined pid=1 procs=1",
+        // PID 2 of its PID namespace, whose PID 1 is init's sealed reaper, the two alone
+        // in its /proc (D59, "owned native domain lifetime": its actor is PID 2).
+        "confined pid=2 procs=2",
         "confined hostname=agent-main",
         "confined caps eff=0000000000000000 prm=0000000000000000 inh=0000000000000000 bnd=0000000000000000 amb=0000000000000000 nnp=1",
         // Another domain, and /sys, hidden; its own /dev.

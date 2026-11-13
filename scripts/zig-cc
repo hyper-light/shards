@@ -4,10 +4,12 @@
 # clang's --target with Rust's triple, which zig does not parse, so that is dropped and zig
 # gets its own. Unoptimized (cc-rs's -O0, a dev profile's), zig cc turns on UBSan, whose
 # runtime zig links only when it is the linker; rust-lld links these, so it is left off, as
-# every optimized build has it.
+# every optimized build has it. Only the pinned zig compiles (scripts/zig-pin), else none.
+. "$(dirname "$0")/zig-pin"
+zig=$(zig_pinned) || exit 1
 for arg do
 	shift
 	case $arg in --target=*) continue ;; esac
 	set -- "$@" "$arg"
 done
-exec zig cc -target "$ZIG_TARGET" -fno-sanitize=undefined "$@"
+exec "$zig" cc -target "$ZIG_TARGET" -fno-sanitize=undefined "$@"

@@ -3,7 +3,8 @@
 use std::io::{self, Read as _, Write as _};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
-const ACTOR: libc::pid_t = 2;
+/// The member's command's PID in its own namespace: the first its namespace's init forks.
+pub(crate) const ACTOR: libc::pid_t = 2;
 const READY: u8 = 1;
 const SPLIT: u8 = 2;
 
@@ -395,6 +396,17 @@ impl Launch {
 impl Owned {
     pub fn group(&self) -> &std::fs::File {
         &self._group
+    }
+
+    /// Its reaper's PID in init's namespace: the parent of its command ([`ACTOR`] in its own).
+    pub fn pid(&self) -> libc::pid_t {
+        self.pid
+    }
+
+    /// Whether its command may run on, to be signalled (`builtin::SIGNAL`): launched, and its
+    /// reaper neither reaped nor stopped, quarantined or faulted.
+    pub fn running(&self) -> bool {
+        self.state == State::Running
     }
 
     pub fn launched(&mut self) -> Result<(), Failure> {

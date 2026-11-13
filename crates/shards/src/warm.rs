@@ -1884,6 +1884,12 @@ pub fn finish(
             (NOT_RUN, None)
         }
     };
+    // Why this VM could not serve its run, for its daemon or run host, whose `DONE` carries
+    // the status its client exits with for that, no command's.
+    let unserved = match (saved, served) {
+        (None, Err(e)) => Some(e.as_str()),
+        _ => None,
+    };
     // A command that never started: what dockerd would say, and the exit code its
     // microVM keeps (shards_cmdline::commands::start_failed).
     let failed = not_run.map(shards_cmdline::commands::start_failed);
@@ -1924,6 +1930,9 @@ pub fn finish(
         let _ = to_daemon(&link.daemon, kind::PORTS_FREE, &[], &[]);
     }
     release_host(0);
+    if let Some(why) = unserved {
+        let _ = to_daemon(&link.daemon, kind::UNSERVED, why.as_bytes(), &[]);
+    }
     let _ = to_daemon(&link.daemon, kind::DONE, &done, &[]);
     if let Some(client) = client {
         let mut payload = vec![said_status];

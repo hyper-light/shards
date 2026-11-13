@@ -111,6 +111,13 @@ enum Event {
         stream: StreamId,
         started: Result<Running, Error>,
     },
+    /// A stranger's join, on its worker ([`join_apart`]), ended: enrolled as `name`, or not.
+    Joined {
+        conn: ConnKey,
+        stream: StreamId,
+        name: String,
+        joined: bool,
+    },
 }
 
 #[derive(Default)]
@@ -257,6 +264,9 @@ struct Peer {
     /// When its handshake ended: of the strangers holding the machine's invitations, the oldest
     /// gives its place to a newer one.
     since: Instant,
+    /// Its join is under way, apart from the driver: its place is not given up meanwhile, as its
+    /// invitation may be spent by then.
+    joining: bool,
 }
 
 struct Server<'s, 'e, H: Host> {
@@ -284,11 +294,11 @@ impl<H: Host> Server<'_, '_, H> {
     }
 
     /// The connections of peers the machine has not enrolled, and when each connected.
-    fn strangers(&self) -> impl Iterator<Item = (ConnKey, Instant)> + '_ {
+    fn strangers(&self) -> impl Iterator<Item = (ConnKey, Instant, bool)> + '_ {
         self.peers
             .iter()
             .filter(|(_, p)| p.client.is_none())
-            .map(|(conn, p)| (*conn, p.since))
+            .map(|(conn, p)| (*conn, p.since, p.joining))
     }
 
     /// Reads `id` and acts on its frames: each whole one before reading more, and none while
@@ -426,13 +436,26 @@ impl<H: Host> Server<'_, '_, H> {
                 let mut parts = payload.splitn(2, |b| *b == 0);
                 let name = String::from_utf8_lossy(parts.next().unwrap_or_default()).into_owned();
                 let proof = parts.next().unwrap_or_default();
-                let joined = io
-                    .export(conn, invite::EXPORTER_LABEL)
-                    .and_then(|exported| self.host.join(&name, proof, &exported, &peer.spki));
-                match joined {
+                // Judged apart from the driver, which acknowledges every client meanwhile: a host's
+                // join keeps a client's record on disk, which takes as long as its sync does.
+                let joining = match (io.export(conn, invite::EXPORTER_LABEL), &self.sender) {
+                    (Ok(exported), Some(sender)) => join_apart(
+                        self.starts,
+                        self.host,
+                        sender,
+                        (conn, id),
+                        name,
+                        proof.to_vec(),
+                        exported,
+                        peer.spki.clone(),
+                    ),
+                    (Ok(_), None) => Err(Error::new("the daemon's listener is not running")),
+                    (Err(e), _) => Err(e),
+                };
+                match joining {
                     Ok(()) => {
-                        peer.client = Some(name);
-                        stream.end(io, conn, id, Tag::Joined, &[]);
+                        stream.starting = true;
+                        peer.joining = true;
                     }
                     Err(_) => stream.end(io, conn, id, Tag::Refused, NOT_INVITED.as_bytes()),
                 }
@@ -553,6 +576,26 @@ impl<H: Host> Server<'_, '_, H> {
     /// A command's start ended ([`Event::Started`]): its stdio relayed, and what its client
     /// sent meanwhile read on, its control streams' too; refused, said so; its stream gone
     /// meanwhile (its client left, or its connection) or ended, hung up, its relay reaping it.
+    fn joined(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId, name: String, joined: bool) {
+        let Some(peer) = self.peers.get_mut(&conn) else {
+            return;
+        };
+        peer.joining = false;
+        if joined {
+            peer.client = Some(name);
+        }
+        let Some(stream) = peer.streams.get_mut(&id).filter(|s| !s.last) else {
+            return;
+        };
+        stream.starting = false;
+        if joined {
+            stream.end(io, conn, id, Tag::Joined, &[]);
+        } else {
+            stream.end(io, conn, id, Tag::Refused, NOT_INVITED.as_bytes());
+        }
+        self.settle(io, conn, id);
+    }
+
     fn started(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId, started: Result<Running, Error>) {
         let began = started.is_ok();
         let relayed = match (started, &self.sender) {
@@ -740,9 +783,19 @@ impl<H: Host> Handler for Server<'_, '_, H> {
                     why: "not enrolled",
                 });
             }
-            if self.strangers().count() >= invited
-                && let Some((oldest, _)) = self.strangers().min_by_key(|(_, since)| *since)
-            {
+            // One whose join is under way keeps its place, as its invitation may be spent by then:
+            // where every place is so held, the newcomer has none.
+            if self.strangers().count() >= invited {
+                let oldest = self
+                    .strangers()
+                    .filter(|(_, _, joining)| !joining)
+                    .min_by_key(|(_, since, _)| *since);
+                let Some((oldest, _, _)) = oldest else {
+                    return Err(Close {
+                        code: UNENROLLED,
+                        why: "not enrolled: every place is held by a join under way",
+                    });
+                };
                 io.close(
                     oldest,
                     UNENROLLED,
@@ -758,6 +811,7 @@ impl<H: Host> Handler for Server<'_, '_, H> {
                 client,
                 streams: HashMap::new(),
                 since: io.now(),
+                joining: false,
             },
         );
         Ok(())
@@ -810,6 +864,12 @@ impl<H: Host> Handler for Server<'_, '_, H> {
                 started,
             } => return self.started(io, conn, stream, started),
             Event::InputTaken { conn, stream } => return self.serve(io, conn, stream),
+            Event::Joined {
+                conn,
+                stream,
+                name,
+                joined,
+            } => return self.joined(io, conn, stream, name, joined),
             Event::Output { conn, stream, .. }
             | Event::OutputEnd { conn, stream, .. }
             | Event::Exited { conn, stream, .. } => (conn, stream),
@@ -827,7 +887,7 @@ impl<H: Host> Handler for Server<'_, '_, H> {
             Event::OutputEnd { tag: Tag::Made, .. } => stream.made_done = true,
             Event::OutputEnd { .. } => stream.stderr_done = true,
             Event::Exited { status, .. } => stream.status = Some(status),
-            Event::InputTaken { .. } | Event::Started { .. } => {}
+            Event::InputTaken { .. } | Event::Started { .. } | Event::Joined { .. } => {}
         }
         stream.exit_when_done(io, conn, id);
         self.settle(io, conn, id);
@@ -875,6 +935,36 @@ pub fn serve<H: Host>(
         ready(driver.local()?, Stopper(sender));
         driver.run()
     })
+}
+
+/// Judges `name`'s join on a worker of `starts` of its own, as [`start_apart`] starts a command:
+/// `host` redeems the invitation `proof` proves over the connection whose exporter gave
+/// `exported`, enrolling `spki`, and tells the driver through `sender` ([`Event::Joined`]).
+#[allow(clippy::too_many_arguments)]
+fn join_apart<'s, 'e, H: Host>(
+    starts: &'s std::thread::Scope<'s, 'e>,
+    host: &'e H,
+    sender: &Sender<Event>,
+    (conn, stream): (ConnKey, StreamId),
+    name: String,
+    proof: Vec<u8>,
+    exported: [u8; 32],
+    spki: Vec<u8>,
+) -> Result<(), Error> {
+    let sender = sender.try_clone()?;
+    std::thread::Builder::new()
+        .name("remote-join".into())
+        .spawn_scoped(starts, move || {
+            let joined = host.join(&name, &proof, &exported, &spki).is_ok();
+            let _ = sender.send(Command::Handler(Event::Joined {
+                conn,
+                stream,
+                name,
+                joined,
+            }));
+        })
+        .map(|_| ())
+        .map_err(|e| Error::new(format!("a thread for the join: {e}")))
 }
 
 /// Starts `request` for `client` on a worker of `starts` of its own, which tells the driver

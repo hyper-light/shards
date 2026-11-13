@@ -1,0 +1,53 @@
+#!/bin/sh
+# Checks that scripts/zig-cc and scripts/zig-ar build with the pinned zig alone
+# (scripts/zig-pin): a zig on PATH of another version refused, its refusal naming both
+# versions and the fix; the pinned version on PATH taken; and install-zig's own copy taken
+# over PATH's. Stand-ins play zig, so this runs anywhere, with no zig and no network.
+#
+#   scripts/zig-pin-check
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+fail() {
+	echo "zig-pin-check: $*" >&2
+	exit 1
+}
+# A stand-in zig of version $2 in directory $1: `zig version` says it; anything else is said
+# back, so that what a wrapper ran is seen.
+stand_in() {
+	mkdir -p "$1"
+	printf '#!/bin/sh\nif [ "$1" = version ]; then echo %s; exit 0; fi\necho "zig %s $*"\n' "$2" "$2" >"$1/zig"
+	chmod +x "$1/zig"
+}
+# No copy of install-zig's anywhere: a home and a cache of its own, and no CI's temporary
+# directory.
+export HOME="$work/home" XDG_CACHE_HOME="$work/cache"
+unset RUNNER_TEMP 2>/dev/null || true
+mkdir -p "$HOME"
+. "$root/scripts/zig-pin"
+stand_in "$work/other" 0.17.1
+stand_in "$work/pinned" "$zig_version"
+for tool in zig-cc zig-ar; do
+	if out=$(PATH="$work/other:$PATH" ZIG_TARGET=x86_64-linux-musl sh "$root/scripts/$tool" x 2>&1); then
+		fail "$tool ran zig 0.17.1, not the pinned $zig_version: $out"
+	fi
+	case $out in
+	*"0.17.1"*"$zig_version"*"scripts/install-zig"*) ;;
+	*) fail "$tool's refusal names neither the versions nor the fix: $out" ;;
+	esac
+done
+cc="cc -target x86_64-linux-musl -fno-sanitize=undefined -c x.c"
+out=$(PATH="$work/pinned:$PATH" ZIG_TARGET=x86_64-linux-musl sh "$root/scripts/zig-cc" --target=x86_64-unknown-linux-musl -c x.c)
+[ "$out" = "zig $zig_version $cc" ] || fail "zig-cc with the pinned zig on PATH ran: $out"
+out=$(PATH="$work/pinned:$PATH" sh "$root/scripts/zig-ar" crs lib.a x.o)
+[ "$out" = "zig $zig_version ar crs lib.a x.o" ] || fail "zig-ar with the pinned zig on PATH ran: $out"
+# install-zig's own copy, where it keeps it, over another zig on PATH.
+stand_in "$zig_dir" "$zig_version"
+out=$(PATH="$work/other:$PATH" ZIG_TARGET=x86_64-linux-musl sh "$root/scripts/zig-cc" -c x.c)
+[ "$out" = "zig $zig_version $cc" ] || fail "zig-cc beside install-zig's copy ran: $out"
+case $zig_dir in
+"$work"/*) ;;
+*) fail "install-zig keeps zig at $zig_dir, outside its user's cache" ;;
+esac
+echo "zig-pin-check: ok"
