@@ -793,6 +793,7 @@ impl Conn {
             waiter: WAITER,
             now: Instant::now(),
             audit: Vec::new(),
+            refused: Vec::new(),
         };
         let said = f(
             flow,
