@@ -1501,8 +1501,11 @@ fn serve(tls: &mut ServerTls, tx: &std::sync::mpsc::Sender<Asked>) -> std::io::R
     }
 }
 
-/// The test host's answer to `asked`: its status, fields and body.
-fn answer(asked: &Asked) -> (u16, Vec<(&'static str, Vec<u8>)>, Vec<u8>) {
+/// An answer of the test's host: its status, fields and body.
+type Answer = (u16, Vec<(&'static str, Vec<u8>)>, Vec<u8>);
+
+/// The test host's answer to `asked`.
+fn answer(asked: &Asked) -> Answer {
     match asked.path.as_str() {
         "/echo" => {
             let credential = asked
@@ -1623,13 +1626,16 @@ fn serve_h2(tls: &mut ServerTls, tx: &std::sync::mpsc::Sender<Asked>) -> std::io
     use shards_net::hpack::{Decoded, Decoder, Encoder, Field, Indexing};
     let mut preface = [0u8; 24];
     tls.read_exact(&mut preface)?;
-    assert_eq!(preface, h2::PREFACE, "the client's preface");
+    if preface != h2::PREFACE {
+        return Err(std::io::Error::other("no client's preface"));
+    }
     let mut out = Vec::new();
     h2::frame(&mut out, h2::SETTINGS, 0, 0, &[]);
     tls.write_all(&out)?;
     let (mut decoder, mut encoder) = (Decoder::new(h2::TABLE), Encoder::new(h2::TABLE, h2::TABLE));
-    // Each open stream's header block so far, its fields once whole, and its body.
-    let mut streams: std::collections::HashMap<u32, (Vec<u8>, Vec<Field>, Vec<u8>)> = Default::default();
+    /// An open stream's header block so far, its fields once whole, and its body.
+    type Open = (Vec<u8>, Vec<Field>, Vec<u8>);
+    let mut streams: std::collections::HashMap<u32, Open> = Default::default();
     loop {
         let mut head = [0u8; 9];
         match tls.read_exact(&mut head) {
@@ -1653,7 +1659,9 @@ fn serve_h2(tls: &mut ServerTls, tx: &std::sync::mpsc::Sender<Asked>) -> std::io
                 s.0.extend_from_slice(h2::unpad(&payload, flags, kind == h2::HEADERS));
                 if flags & h2::END_HEADERS != 0 {
                     let Ok(Decoded::Fields(fields)) = decoder.decode(&s.0, usize::MAX) else {
-                        panic!("a header block the test's host cannot decode");
+                        return Err(std::io::Error::other(
+                            "a header block the test's host cannot decode",
+                        ));
                     };
                     s.1.extend(fields);
                     s.0.clear();
