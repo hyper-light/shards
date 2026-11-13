@@ -35,7 +35,7 @@ page cache before its first read alone: each of its later reads, a run of its ow
 what the share kept of the arm's read before it, as a user's next run over a volume does.
 
 With --as-e2e, each round is the FUSE budget E2E's phases
-(a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one) for each
+(a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none) for each
 arm in turn, in its order, in a home of its own given the images and guest kernel pulled
 once, and a slice made for it: a first run, which saves the image's template under the
 slice and warms its pool there; --reads reads under no budget (`infinity`); --reads under a
