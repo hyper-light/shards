@@ -38,6 +38,7 @@ mod helpers;
 mod kernel;
 mod keyless;
 mod local_store;
+mod log_writer;
 mod logging;
 mod login;
 mod names;

@@ -1,5 +1,6 @@
 //! A run's admitted, independently credited owner-output channels (D180).
 
+mod drain;
 #[cfg(test)]
 mod terminal_order_tests;
 
@@ -24,6 +25,7 @@ use shards_remote::{
 };
 
 use super::{Daemon, Disk, Threads, lock, log};
+use crate::spec::LogRetention;
 
 const METADATA: &str = "managed-output";
 const GENERATION: &str = "managed-generation";
@@ -35,6 +37,11 @@ const HANDSHAKE_BYTES: usize = (1 << 24) - 1 + 4;
 /// an OCI runtime's options travel in annotations (OCI runtime-spec config.md, "Annotations").
 /// A member it does not name has `/dev/null`: input is closed unless its owner asks for it.
 pub(super) const STDIN_ANNOTATION: &str = "shards.stdin";
+/// The run's annotation naming the members whose stdout and stderr its owner reads through
+/// its endpoints (D240), each `KIND:NAME` as [`STDIN_ANNOTATION`] names them. A member it does
+/// not name the daemon reads itself, into its member's log as it comes, so that none waits on
+/// a reader (drain.rs): the members of a detached run, or of one whose client has gone.
+pub(super) const OUTPUT_ANNOTATION: &str = "shards.output";
 /// The most one input record carries: one `STDIN` frame to the member's init, which carries
 /// at most what the guest reads of a stream at once (`run::CHUNK`), as a command's and an
 /// exec's stdin frames do.
@@ -48,10 +55,32 @@ pub(super) fn input_members(
     labels: &[String],
     active: &[u32],
 ) -> Result<Vec<u32>, String> {
+    named_members(annotations, STDIN_ANNOTATION, "to read its stdin", labels, active)
+}
+
+/// The members whose output a run's owner reads ([`OUTPUT_ANNOTATION`]), as
+/// [`input_members`] names them. None where the run names none: the daemon reads them all.
+pub(super) fn output_members(
+    annotations: &[String],
+    labels: &[String],
+    active: &[u32],
+) -> Result<Vec<u32>, String> {
+    named_members(annotations, OUTPUT_ANNOTATION, "to write output", labels, active)
+}
+
+/// The members annotation `annotation` names, by their declared index: each named once, each
+/// one of the image's members that runs a program (`active`), refused by name otherwise.
+fn named_members(
+    annotations: &[String],
+    annotation: &str,
+    purpose: &str,
+    labels: &[String],
+    active: &[u32],
+) -> Result<Vec<u32>, String> {
     let mut named = None;
     for kv in annotations {
         let (key, value) = kv.split_once('=').unwrap_or((kv.as_str(), ""));
-        if key == STDIN_ANNOTATION {
+        if key == annotation {
             // Docker's MapOpts keeps a key's last value (daemon.rs `annotations`).
             named = Some(value);
         }
@@ -64,24 +93,18 @@ pub(super) fn input_members(
         let (kind, name) = entry
             .split_once(':')
             .filter(|(kind, name)| matches!(*kind, "agent" | "harness") && !name.is_empty())
-            .ok_or_else(|| {
-                format!("--annotation {STDIN_ANNOTATION}={value}: {entry:?} is no agent:NAME or harness:NAME")
-            })?;
+            .ok_or_else(|| format!("--annotation {annotation}={value}: {entry:?} is no agent:NAME or harness:NAME"))?;
         let label = format!("{kind} {name}");
         let member = labels
             .iter()
             .position(|l| *l == label)
             .and_then(|i| u32::try_from(i).ok())
-            .ok_or_else(|| format!("--annotation {STDIN_ANNOTATION}: the image declares no {kind} {name}"))?;
+            .ok_or_else(|| format!("--annotation {annotation}: the image declares no {kind} {name}"))?;
         if !active.contains(&member) {
-            return Err(format!(
-                "--annotation {STDIN_ANNOTATION}: {kind} {name} runs no program to read its stdin"
-            ));
+            return Err(format!("--annotation {annotation}: {kind} {name} runs no program {purpose}"));
         }
         if members.contains(&member) {
-            return Err(format!(
-                "--annotation {STDIN_ANNOTATION}: {kind} {name} named twice"
-            ));
+            return Err(format!("--annotation {annotation}: {kind} {name} named twice"));
         }
         members.try_reserve(1).map_err(|e| e.to_string())?;
         members.push(member);
@@ -149,6 +172,24 @@ impl From<io::Error> for Failure {
             _ => Self::Transport(error),
         }
     }
+}
+
+/// A run's members as its capture takes them, each list by declared index, ascending: those
+/// that run a program (`active`), those whose stdin their owner writes (`inputs`), and those
+/// whose output their owner reads (`owned`; the daemon reads the rest itself).
+#[derive(Clone, Copy)]
+pub(super) struct Members<'a> {
+    pub active: &'a [u32],
+    pub inputs: &'a [u32],
+    pub owned: &'a [u32],
+}
+
+/// Where what the daemon reads of its members is kept and shown: kept in their logs as the
+/// run's own log is kept (none for a run that keeps no log, `--log-driver none`), and shown
+/// on the stderr of a client attached to the run.
+pub(super) struct Shown {
+    pub retention: Option<LogRetention>,
+    pub to: Option<File>,
 }
 
 pub(super) struct Outputs {
@@ -507,15 +548,21 @@ struct Owner {
     outputs: Vec<Option<Arc<Output>>>,
     /// Each member's input, by its index, where its owner asked for it.
     inputs: Vec<Option<Arc<Input>>>,
+    /// What the daemon reads itself: the channels of every member whose output no owner
+    /// reads ([`OUTPUT_ANNOTATION`]).
+    drain: Option<Arc<drain::Drain>>,
     stream: Stream,
     credits: Arc<Credits>,
-    _charge: Arc<Charge>,
+    charge: Arc<Charge>,
 }
 
 impl Owner {
     fn abort(&self) {
         self.credits.close();
         shards_ipc::end(&self.stream);
+        if let Some(drain) = &self.drain {
+            drain.close();
+        }
         for output in self.outputs.iter().flatten() {
             output.abort();
         }
@@ -914,11 +961,18 @@ impl Outputs {
             .outputs
             .get(first..end)
             .ok_or_else(|| io::Error::other("unknown aborted member"))?;
-        if outputs.iter().all(Option::is_none) {
+        let drained = owner.drain.as_ref().filter(|drain| drain.drains_member(abort.member));
+        if outputs.iter().all(Option::is_none) && drained.is_none() {
             return Err(io::Error::other("aborted member is inactive"));
         }
         for output in outputs.iter().flatten() {
             output.abort();
+        }
+        if let Some(drain) = drained {
+            for index in first..end {
+                owner.credits.revoke(index);
+            }
+            drain.abort_member(abort.member, abort.errno);
         }
         Ok(())
     }
@@ -1039,12 +1093,12 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         client: &str,
         labels: &[String],
-        active: &[u32],
-        inputs: &[u32],
+        members: Members<'_>,
+        shown: Shown,
         setup: &mut Vec<Vec<u8>>,
     ) -> Result<Stream, Failure> {
         self.managed.begin(id)?;
-        let result = self.start_managed_capture(threads, id, client, labels, active, inputs, setup);
+        let result = self.start_managed_capture(threads, id, client, labels, members, shown, setup);
         if result.is_err() {
             self.managed.end(id);
         }
@@ -1058,10 +1112,11 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         client: &str,
         labels: &[String],
-        active: &[u32],
-        inputs: &[u32],
+        members: Members<'_>,
+        shown: Shown,
         setup: &mut Vec<Vec<u8>>,
     ) -> Result<Stream, Failure> {
+        let Members { active, inputs, owned } = members;
         let members = u32::try_from(labels.len()).map_err(io::Error::other)?;
         let count = labels
             .len()
@@ -1079,6 +1134,11 @@ impl<D: Disk> Daemon<D> {
         if inputs.windows(2).any(|w| w.first() >= w.get(1)) || inputs.iter().any(|m| !active.contains(m)) {
             return Err(
                 io::Error::new(io::ErrorKind::InvalidData, "invalid trusted input member plan").into(),
+            );
+        }
+        if owned.windows(2).any(|w| w.first() >= w.get(1)) || owned.iter().any(|m| !active.contains(m)) {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "invalid trusted output owner plan").into(),
             );
         }
         let active_count = active
@@ -1150,7 +1210,7 @@ impl<D: Disk> Daemon<D> {
         };
         let mut staged = Vec::new();
         staged.try_reserve_exact(active_count).map_err(io::Error::other)?;
-        for &member in active {
+        for &member in owned {
             for channel in [Channel::Stdout, Channel::Stderr] {
                 let scope = Scope {
                     run,
@@ -1239,6 +1299,20 @@ impl<D: Disk> Daemon<D> {
         }
         metadata.sync_all()?;
         let metadata = shared_metadata(metadata)?;
+        let mut drained = Vec::new();
+        drained.try_reserve_exact(active.len()).map_err(io::Error::other)?;
+        drained.extend(active.iter().copied().filter(|member| !owned.contains(member)));
+        let drain = if drained.is_empty() {
+            None
+        } else {
+            Some(Arc::new(drain::Drain::open(
+                &dir,
+                labels,
+                &drained,
+                shown.retention,
+                capacity,
+            )?))
+        };
         let mut outputs = Vec::new();
         let mut producers = Vec::new();
         let mut endpoints = Vec::new();
@@ -1255,6 +1329,13 @@ impl<D: Disk> Daemon<D> {
         slots.resize_with(count, || CreditSlot::Inactive);
         outputs.resize_with(count, || None);
         producers.resize_with(count, || None);
+        for &member in &drained {
+            for channel in [Channel::Stdout, Channel::Stderr] {
+                *slots
+                    .get_mut(route_index(member, channel)?)
+                    .ok_or_else(|| io::Error::other("drained credit index"))? = CreditSlot::Waiting;
+            }
+        }
         let credits = Arc::new(Credits {
             state: Mutex::new(Queue {
                 slots,
@@ -1337,9 +1418,10 @@ impl<D: Disk> Daemon<D> {
         let owner = Arc::new(Owner {
             outputs,
             inputs: input_slots,
+            drain: drain.clone(),
             stream,
             credits,
-            _charge: charge,
+            charge,
         });
         let labels = copy_labels(labels)?;
         let producers = Arc::new(producers);
@@ -1375,6 +1457,13 @@ impl<D: Disk> Daemon<D> {
                     input.control.abort();
                     input.close();
                 })?;
+        }
+        // A client attached to the run is shown what is drained as it is kept: a thread that
+        // writes to it alone, which nothing waits on (drain.rs).
+        if let (Some(drain), Some(mut to), Some(_)) = (drain, shown.to, shown.retention) {
+            std::thread::Builder::new()
+                .name("managed-shown".into())
+                .spawn_scoped(threads, move || drain.show(&mut to))?;
         }
         let writer_owner = Arc::clone(&owner);
         let writer_producers = Arc::clone(&producers);
@@ -1472,7 +1561,16 @@ fn send_credits(
     owner: &Owner,
     producers: &[Option<Arc<Producer>>],
 ) -> Result<(), Failure> {
+    let mut drained = drain::Windows::new(owner.drain.as_deref())?;
     while let Some(action) = owner.credits.next(|index| {
+        // The daemon takes a drained channel's records whenever they come: it waits on no
+        // reader (drain.rs).
+        if drained.covers(index) {
+            return Ok(State::Ready(Progress {
+                accepted: 0,
+                consumed: 0,
+            }));
+        }
         owner
             .outputs
             .get(index)
@@ -1481,6 +1579,35 @@ fn send_credits(
             .ok_or_else(|| io::Error::other("unknown output channel"))
     })? {
         match action {
+            Action::Grant(index) if drained.covers(index) => {
+                let (capacity, bytes) = drained.grant(index, &owner.charge)?;
+                {
+                    let mut state = lock(&owner.credits.state);
+                    let Some(slot @ CreditSlot::Sending) = state.slots.get_mut(index) else {
+                        drained.lend(index, bytes);
+                        continue;
+                    };
+                    *slot = CreditSlot::Granted {
+                        capacity,
+                        began: Instant::now(),
+                        bytes,
+                    };
+                }
+                let (member, channel) = route_of(index)?;
+                send_credit(&mut stream, member, channel, capacity)?;
+            }
+            Action::Submit(index, bytes, after) if drained.covers(index) => {
+                let drain = owner
+                    .drain
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("a drained channel without its drain"))?;
+                let ended = drain.keep(&bytes)? || matches!(after, After::Terminal(_));
+                drained.kept(index, bytes);
+                let mut state = lock(&owner.credits.state);
+                if let Some(slot @ CreditSlot::Sending) = state.slots.get_mut(index) {
+                    *slot = if ended { CreditSlot::Ended } else { CreditSlot::Waiting };
+                }
+            }
             Action::Grant(index) => {
                 let output = owner
                     .outputs
@@ -1511,15 +1638,7 @@ fn send_credits(
                         bytes,
                     };
                 }
-                let credit = run::managed::Credit {
-                    member: output.scope.member,
-                    channel: output.scope.channel,
-                    capacity: u64::try_from(capacity).map_err(io::Error::other)?,
-                }
-                .encode()
-                .map_err(|e| io::Error::other(e.to_string()))?;
-                stream.write_all(&run::header(run::kind::MANAGED_CREDIT, credit.len() as u32))?;
-                stream.write_all(&credit)?;
+                send_credit(&mut stream, output.scope.member, output.scope.channel, capacity)?;
             }
             Action::Submit(index, bytes, after) => {
                 if let Some(output) = owner.outputs.get(index).and_then(Option::as_ref) {
@@ -1578,6 +1697,20 @@ fn send_credits(
         }
     }
     Ok(())
+}
+
+/// Credits `capacity` bytes of member `member`'s `channel` to its VM.
+fn send_credit(stream: &mut Stream, member: u32, channel: Channel, capacity: usize) -> io::Result<()> {
+    let credit = run::managed::Credit {
+        member,
+        channel,
+        capacity: u64::try_from(capacity).map_err(io::Error::other)?,
+    }
+    .encode()
+    .map_err(|e| io::Error::other(e.to_string()))?;
+    let len = u32::try_from(credit.len()).map_err(io::Error::other)?;
+    stream.write_all(&run::header(run::kind::MANAGED_CREDIT, len))?;
+    stream.write_all(&credit)
 }
 
 fn bridge(
@@ -1640,12 +1773,22 @@ fn bridge(
         if states
             .iter()
             .enumerate()
-            .filter(|(index, _)| owner.outputs.get(*index).is_some_and(Option::is_some))
+            .filter(|(index, _)| {
+                owner.outputs.get(*index).is_some_and(Option::is_some)
+                    || owner.drain.as_ref().is_some_and(|drain| drain.drains(*index))
+            })
             .all(|(_, s)| s.terminal())
         {
             return Ok(());
         }
     }
+}
+
+/// The member and channel of credit route `index` ([`route_index`]).
+fn route_of(index: usize) -> io::Result<(u32, Channel)> {
+    let member = u32::try_from(index / 2).map_err(io::Error::other)?;
+    let channel = if index % 2 == 0 { Channel::Stdout } else { Channel::Stderr };
+    Ok((member, channel))
 }
 
 fn route_index(member: u32, channel: Channel) -> io::Result<usize> {
@@ -2901,6 +3044,93 @@ mod tests {
         run::managed::Credit::decode(&payload).map_err(|e| io::Error::other(e.to_string()))
     }
 
+    /// Do: a run whose one member no owner reads, both its channels drained; play its VM,
+    /// answering each credit with a record of that channel (its open, then data as long as
+    /// the credit allows, many credits' worth, then its end) with no subscriber anywhere.
+    /// Expect each next credit to come all the same (D240: no member waits on a reader), every
+    /// record's bytes kept whole in the member's log, each channel apart, and the capture's
+    /// credit worker and bridge to end with the ends. A drain that waited on a reader would
+    /// leave the VM's read of its next credit to time out.
+    #[cfg(unix)]
+    #[test]
+    fn a_drained_channel_is_credited_again_as_soon_as_its_record_is_kept() {
+        let run = shards_testdir::TempDir::new("drained-credit").unwrap();
+        let labels: Vec<String> = vec!["agent main".into()];
+        let capacity = record_capacity(&labels, &[0]).unwrap();
+        let keep = LogRetention { size: 1 << 20, files: 2 };
+        let drain = Arc::new(drain::Drain::open(&run, &labels, &[0], Some(keep), capacity).unwrap());
+        let charge = Arc::new(Charge {
+            budget: Arc::new(Mutex::new(Some(0))),
+            bytes: Mutex::new(0),
+        });
+        let credits = Arc::new(Credits {
+            state: Mutex::new(Queue {
+                slots: vec![CreditSlot::Waiting, CreditSlot::Waiting],
+                next: 0,
+                life: QueueLife::Open,
+            }),
+            changed: Condvar::new(),
+        });
+        let (stream, peer) = Stream::pair().unwrap();
+        peer.set_read_timeout(Some(PATIENCE)).unwrap();
+        let mut vm = peer.try_clone().unwrap();
+        let (writing, reading) = (stream.try_clone().unwrap(), stream.try_clone().unwrap());
+        let owner = Owner {
+            outputs: vec![None, None],
+            inputs: vec![None],
+            drain: Some(Arc::clone(&drain)),
+            stream,
+            credits,
+            charge,
+        };
+        // Many credits' worth of each channel, more than a pipe holds.
+        let rounds = 64;
+        let mut written: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
+        let (credited, bridged) = std::thread::scope(|threads| {
+            let (owner, labels) = (&owner, &labels);
+            let crediting = threads.spawn(move || send_credits(writing, owner, &[]));
+            let bridging = threads.spawn(move || bridge(reading, owner, labels, vec![StreamState::New; 2]));
+            let (mut offsets, mut sent, mut opened, mut ended) = ([0u64; 2], [0usize; 2], [false; 2], 0);
+            while ended < 2 {
+                let granted = credit(&peer).expect("a drained channel's next credit");
+                let at = route_index(0, granted.channel).unwrap();
+                let record = if !opened[at] {
+                    opened[at] = true;
+                    encoded(0, granted.channel, 0, Event::Open("agent main"))
+                } else if sent[at] < rounds {
+                    sent[at] += 1;
+                    let head = encoded(0, granted.channel, offsets[at], Event::Data(&[])).len();
+                    let room = usize::try_from(granted.capacity).unwrap() - head;
+                    let bytes: Vec<u8> = (0..room).map(|i| (i + sent[at] + at) as u8).collect();
+                    written[at].extend_from_slice(&bytes);
+                    let record = encoded(0, granted.channel, offsets[at], Event::Data(&bytes));
+                    offsets[at] += room as u64;
+                    record
+                } else {
+                    ended += 1;
+                    encoded(0, granted.channel, offsets[at], Event::End)
+                };
+                vm.write_all(&run::header(run::kind::MANAGED, record.len() as u32)).unwrap();
+                vm.write_all(&record).unwrap();
+            }
+            (crediting.join().unwrap(), bridging.join().unwrap())
+        });
+        credited.unwrap();
+        bridged.unwrap();
+        drain.close();
+        let log = crate::daemon::logs::LogFile::open(&drain::member_dir(&run, 0)).unwrap();
+        let mut kept: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
+        let mut reader = crate::daemon::logs::Reader::new();
+        let mut each = |p: crate::daemon::logs::Piece<'_>| {
+            kept[usize::from(p.stream == crate::spec::LOG_STDERR)].extend_from_slice(p.bytes);
+            Ok(true)
+        };
+        reader.read(&log, &mut each).unwrap();
+        reader.finish(&mut each).unwrap();
+        assert_eq!(kept[0].len(), written[0].len());
+        assert!(kept == written, "the member's log keeps its channels' bytes whole and apart");
+    }
+
     /// A capture whose window climbed to its most is credited within one endpoint record,
     /// and no channel of its run is aborted for it: the owner's credit worker, granting a
     /// subscribed channel, issues its credit at the window it climbed to, which its
@@ -2971,9 +3201,10 @@ mod tests {
         let owner_side = Owner {
             outputs,
             inputs: Vec::new(),
+            drain: None,
             stream,
             credits,
-            _charge: Arc::clone(&charge),
+            charge: Arc::clone(&charge),
         };
         let (subscriber, sender) = shards_remote::net::Driver::bind_bounded(
             "127.0.0.1:0".parse().unwrap(),
