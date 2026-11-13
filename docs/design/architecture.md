@@ -24139,9 +24139,12 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
         its looks are judged by CPU and the `R` sample alone. No number is chosen: growth is
         any nanosecond.
       - So a sleeping (`S`) process with no wait of its own grown is still, whatever its
-        neighbours do; one stopped or frozen is refused whatever else shows: Linux's leader
-        `T` or `t` or a frozen cgroup (`cgroup.events`), macOS's `SSTOP`, Windows' every
-        thread suspended. macOS and Windows read each thread of the followed process (or,
+        neighbours do; one stopped or frozen is refused whatever else shows, the CPU its stop
+        ran included (a stop signal wakes a sleeper to stop itself, kernel/signal.c
+        `do_signal_stop`: ends.rs's stopped teardown went on at ba81cd9d2, red at b665a2e61,
+        `a_process_stopped_since_the_look_before_is_still_though_its_stop_ran_it`): Linux's
+        leader `T` or `t` or a frozen cgroup (`cgroup.events`), macOS's `SSTOP`, Windows'
+        every thread suspended. Only an end under way outranks a stop. macOS and Windows read each thread of the followed process (or,
         on Windows, of its tree) alone, no group's, and are unchanged.
       Read where each OS keeps it, with no
       privilege: `/proc/<pid>/task/*/stat`, `/proc/<pid>/task/*/schedstat` and the process's

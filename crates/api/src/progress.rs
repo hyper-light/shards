@@ -196,14 +196,18 @@ impl Hold {
     }
 }
 
-/// What a look found of a VM process since the look before: progress where it `ran` or its
-/// end is under way (`ending`); else, stopped or frozen, none of its own, whatever its host
-/// did; else held, where its host held it since (`before`, `now`); else none of its own.
+/// What a look found of a VM process since the look before: progress where its end is under
+/// way (`ending`); else, stopped or frozen, none of its own, whatever it ran or its host did
+/// (a stop signal runs a sleeper to stop it: kernel/signal.c `do_signal_stop`); else progress
+/// where it `ran`; else held, where its host held it since (`before`, `now`); else none of
+/// its own.
 fn found(ran: bool, ending: bool, before: &Hold, now: &Hold) -> Found {
-    if ran || ending {
+    if ending {
         Found::Progressed
     } else if now.stopped {
         Found::Still
+    } else if ran {
+        Found::Progressed
     } else if now.held_since(before) {
         Found::Held
     } else {
@@ -264,9 +268,10 @@ impl Watch {
         Ok(Some(Watch { followed, last, hold }))
     }
 
-    /// What it did since the look before ([`Found`]): progressed where it ran or its end is
-    /// under way; held where its host held it from running; still where it did neither of
-    /// its own, or is stopped or frozen; gone where its process has.
+    /// What it did since the look before ([`Found`]): progressed where its end is under way;
+    /// still where it is stopped or frozen, whatever it ran to its stop; progressed where it
+    /// ran; held where its host held it from running; still where it did neither of its own;
+    /// gone where its process has.
     pub fn look(&mut self) -> Result<Found, ProcessFailure> {
         let Some(look) = self.followed.look()? else {
             return Ok(Found::Gone);
@@ -1320,7 +1325,8 @@ mod tests {
     /// waiting on its host's memory; on Linux, its threads' run-queue wait or its own cgroup's
     /// pressure grown), which is no stall;
     /// still where it waits on itself, and where it is stopped or frozen, whatever else shows.
-    /// One that ran, or whose end is under way, progressed (ROOT's ruling of 2026-11-13).
+    /// One whose end is under way progressed; one that ran progressed unless it is stopped,
+    /// whose stop ran it (ROOT's ruling of 2026-11-13).
     #[test]
     fn a_process_its_host_holds_is_held_and_a_stopped_one_still() {
         let hold = |runnable, stopped| Hold {
@@ -1337,6 +1343,11 @@ mod tests {
         assert_eq!(found(false, false, &idle, &throttled), Found::Held);
         assert_eq!(found(false, false, &idle, &idle), Found::Still);
         assert_eq!(found(false, false, &idle, &stopped), Found::Still);
+        assert_eq!(
+            found(true, false, &idle, &stopped),
+            Found::Still,
+            "its stop ran it"
+        );
         #[cfg(target_os = "linux")]
         {
             let pressed = |total| Hold {
