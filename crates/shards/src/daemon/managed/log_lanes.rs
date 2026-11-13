@@ -35,7 +35,7 @@ use crate::spec::LOG_STDERR;
 
 /// What the log host knows of its run: where its logs are, its members, and how each source
 /// ends.
-pub(super) struct Logs<'a> {
+pub(crate) struct Logs<'a> {
     /// The run's directory: its command's log, and `members/<index>` beside it.
     pub(super) dir: &'a Path,
     /// The members that run a program, by declared index: those whose output is kept.

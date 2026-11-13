@@ -179,6 +179,13 @@ pub struct MemberSpec {
     /// `shards_abi::run::MAX_PAYLOAD`, Linux's own on a command line and environment, and
     /// refused past it, never cut.
     pub args: Vec<String>,
+    /// An MCP bridge of its own (D254): `/run/shards/mcp`, a stdio server its harness's MCP
+    /// config names as a command, each connection to which reaches the run's controller as a
+    /// lane of the run's agent-control endpoint, taken there by `Execs::mcp(member)`
+    /// ([`crate::control`]); so it needs [`ImageSpec::control`]. No network grant: nothing of
+    /// it is an address in the microVM. None: the member has neither the bridge nor its
+    /// socket, and an ask for its connection is refused.
+    pub mcp: bool,
 }
 
 /// A host directory the guest sees at `at`, as `-v HOST:AT[:ro]` gives one: a member gets
@@ -773,6 +780,21 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             input: m.stdin,
             terminal: m.terminal,
             args: m.args.clone(),
+            mcp: m.mcp,
+        });
+    }
+    // A member's MCP bridge reaches its controller over the run's agent-control endpoint
+    // alone (D254), refused here without one, as the run host refuses it again.
+    if spec.control.is_none()
+        && let Some(m) = spec.members.iter().find(|m| m.mcp)
+    {
+        return Err(ImageRefusal::Spec {
+            what: "a member's MCP bridge",
+            why: format!(
+                "{}: its connections reach the run's controller over its agent-control endpoint, \
+                 which the spec's control asks for",
+                m.member.name
+            ),
         });
     }
     let mut shares = Vec::with_capacity(spec.shares.len());
@@ -959,6 +981,7 @@ mod tests {
                 stdin: false,
                 terminal: false,
                 args: Vec::new(),
+                mcp: false,
             }],
             publish: Vec::new(),
             egress: Narrowing::default(),
@@ -1093,6 +1116,88 @@ mod tests {
         assert!(matches!(request(&twice), Err(ImageRefusal::Spec { .. })));
         twice.credentials[1].reference = "anthropic/claude-max".into();
         assert!(request(&twice).is_ok());
+    }
+
+    /// Do: ask runs whose credential grant's reference, placeholder or hosts, or whose sign-in
+    /// grant's name, hosts, access token's reference or placeholders, are as long as the
+    /// network process's wire carries one (a two-byte length: shards-net's `NET_CREDENTIALS`
+    /// and `NET_SIGN_INS`), and one longer. Expect: each at the bound asked; each past it
+    /// refused here, by field, naming the field and never echoing its bytes, where before the
+    /// run host found it after the request had crossed.
+    #[test]
+    fn a_grants_fields_past_the_network_process_wire_are_refused_by_field() {
+        let most = usize::from(u16::MAX);
+        let host = || String::from("api.anthropic.com");
+        let base = || {
+            let mut s = spec();
+            s.credentials = vec![CredentialGrant {
+                reference: "anthropic/claude-max".into(),
+                toward: vec![host()],
+                placeholder: PLACEHOLDER.into(),
+            }];
+            s.sign_ins = vec![wire::SignInGrant {
+                sign_in: "ada/claude".into(),
+                cli: wire::Cli::ClaudeCode,
+                toward: vec![host()],
+                captured: Some(wire::Captured {
+                    access: "ada/claude/access".into(),
+                    access_placeholder: "kiln-placeholder-access-0123".into(),
+                    refresh_placeholder: Some("kiln-placeholder-refresh-4567".into()),
+                }),
+            }];
+            s.lessor = lessor();
+            s
+        };
+        assert!(request(&base()).is_ok());
+        type Set = fn(&mut ImageSpec, usize);
+        let fields: [(&str, &str, Set); 8] = [
+            ("a credential grant", "reference", |s, n| {
+                s.credentials[0].reference = "r".repeat(n)
+            }),
+            ("a credential grant", "placeholder", |s, n| {
+                s.credentials[0].placeholder = "p".repeat(n)
+            }),
+            ("a credential grant", "hosts", |s, n| {
+                s.credentials[0].toward = vec!["api.anthropic.com".into(); n]
+            }),
+            ("a sign-in grant", "name", |s, n| {
+                s.sign_ins[0].sign_in = "s".repeat(n)
+            }),
+            ("a sign-in grant", "hosts", |s, n| {
+                s.sign_ins[0].toward = vec!["api.anthropic.com".into(); n]
+            }),
+            ("a sign-in grant", "access token's reference", |s, n| {
+                if let Some(c) = s.sign_ins[0].captured.as_mut() {
+                    c.access = "a".repeat(n);
+                }
+            }),
+            ("a sign-in grant", "access token's placeholder", |s, n| {
+                if let Some(c) = s.sign_ins[0].captured.as_mut() {
+                    c.access_placeholder = "c".repeat(n);
+                }
+            }),
+            ("a sign-in grant", "refresh token's placeholder", |s, n| {
+                if let Some(c) = s.sign_ins[0].captured.as_mut() {
+                    c.refresh_placeholder = Some("f".repeat(n));
+                }
+            }),
+        ];
+        for (what, field, set) in fields {
+            let mut at = base();
+            set(&mut at, most);
+            assert!(request(&at).is_ok(), "{what}'s {field} at {most} was refused");
+            let mut past = base();
+            set(&mut past, most + 1);
+            match request(&past) {
+                Err(ImageRefusal::Spec { what: w, why }) => {
+                    assert_eq!(w, what, "{field}: {why}");
+                    assert!(why.contains(field), "{what}'s {field}: {why}");
+                    assert!(why.len() < 300, "{what}'s {field}: its refusal echoed its bytes");
+                }
+                Err(other) => panic!("{what}'s {field} past {most}: {other:?}"),
+                Ok(_) => panic!("{what}'s {field} past {most} was asked"),
+            }
+        }
     }
 
     /// Do: ask a run with credential grants and no lessor, with one, and a run with neither
@@ -1291,6 +1396,26 @@ mod tests {
             sockets: None,
         });
         assert_eq!(request(&s).unwrap().control, s.control);
+    }
+
+    /// D254: a member's MCP bridge is carried to its run host where the spec asks the run's
+    /// agent-control endpoint, and refused before any run host starts where it asks none.
+    #[test]
+    fn a_members_mcp_bridge_needs_the_runs_control_and_is_carried_with_it() {
+        let mut s = spec();
+        s.members[0].mcp = true;
+        assert!(matches!(
+            request(&s),
+            Err(ImageRefusal::Spec {
+                what: "a member's MCP bridge",
+                ..
+            })
+        ));
+        s.control = Some(ControlAsk {
+            controller: [1u8; 32],
+            sockets: None,
+        });
+        assert!(request(&s).unwrap().members[0].mcp);
     }
 
     /// D232 through D231: a run's GPUs are D232's selection, checked before any run host starts

@@ -1596,13 +1596,16 @@ impl super::Lanes {
         lanes
     }
 
-    /// Whether exec `exec`'s outputs have all finished, every record consumed, or were let go.
+    /// Whether exec `exec`'s outputs have all ended, every record consumed and their end told
+    /// their controller, or were let go. One that finished before its controller's lane came (a
+    /// log lane with nothing to read) is not done until that lane has been told its end: let go
+    /// sooner, the lane would be refused `Scope` for an output its endpoint served.
     fn outputs_done(&self, exec: u32) -> bool {
         let run = exec_run(self.execs.run.0, exec);
         self.outputs
             .iter()
             .filter(|o| o.scope().run == run)
-            .all(|o| o.finished() || o.aborted())
+            .all(|o| o.ended() || o.aborted())
     }
 
     /// A turn for the execs and members' lanes: what their host said; each steer it had no

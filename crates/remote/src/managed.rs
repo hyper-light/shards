@@ -658,6 +658,16 @@ enum Subscription {
     Closed,
 }
 
+/// Whether its output's end has been told a subscriber: the FIN `flush` writes once the output
+/// finished. An output that finished before any stream subscribed (one with no record at all,
+/// as a log lane with nothing to read) still owes it, and the agent-control endpoint keeps the
+/// output until it is told (`Service::ended`), or its controller's late lane would find none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum End {
+    Owed,
+    Told,
+}
+
 /// Why a subscriber's stream stopped being read: its owner ended its side (FIN), reset it, or
 /// sent what the stream's protocol refuses. An endpoint of one stream closes its connection
 /// for each ([`Gone::reason`]); the agent-control endpoint ends the lane alone for the first
@@ -687,6 +697,7 @@ pub(crate) struct Service {
     owner: Fingerprint,
     shared: Arc<Shared>,
     state: Subscription,
+    end: End,
     control: [u8; CONTROL_BYTES],
     control_len: usize,
 }
@@ -852,6 +863,7 @@ impl Service {
                 waker: Mutex::new(None),
             }),
             state: Subscription::Listening,
+            end: End::Owed,
             control: [0; CONTROL_BYTES],
             control_len: 0,
         })
@@ -907,6 +919,11 @@ impl Service {
     /// at its next flush.
     pub(crate) fn finished(&self) -> bool {
         matches!(lock(&self.shared).0, Slot::Finished(_))
+    }
+
+    /// Its output finished and a subscriber was told its end ([`End`]).
+    pub(crate) fn ended(&self) -> bool {
+        self.end == End::Told
     }
 
     /// A subscription read by the endpoint its stream came to, which admitted the connection
@@ -1104,6 +1121,7 @@ impl Service {
         else {
             if matches!(state.0, Slot::Finished(_)) {
                 let _ = io.finish(conn, stream);
+                self.end = End::Told;
             }
             return;
         };
@@ -1434,6 +1452,7 @@ mod tests {
                 waker: Mutex::new(None),
             }),
             state: Subscription::Listening,
+            end: End::Owed,
             control: [0; CONTROL_BYTES],
             control_len: 0,
         }

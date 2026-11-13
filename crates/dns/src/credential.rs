@@ -99,8 +99,45 @@ pub fn placeholder(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'+' | b'/'))
 }
 
-/// Why a run's grants are refused for their placeholders (D242), typed, as each side that
-/// takes them (the orchestrator's, the run's host, its network process) checks them.
+/// The most a grant's [`Field`] holds: bytes of a reference, a placeholder or a sign-in's name,
+/// or hosts of a grant. The network process's wire carries each behind a two-byte length,
+/// network order (shards-net's `encode_grants`, `NET_CREDENTIALS`, and `signin::encode_grants`,
+/// `NET_SIGN_INS`), so one past it could never reach the injector: the wire's own bound, which
+/// [`check`] and [`check_sign_ins`] hold on every side that takes a grant.
+pub const WIRE_MOST: usize = u16::MAX as usize;
+
+/// A grant's field that the network process's wire carries behind a two-byte length
+/// ([`WIRE_MOST`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Reference,
+    Placeholder,
+    Hosts,
+    SignIn,
+    SignInHosts,
+    Access,
+    AccessPlaceholder,
+    RefreshPlaceholder,
+}
+
+impl fmt::Display for Field {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Field::Reference => "credential grant's reference",
+            Field::Placeholder => "credential grant's placeholder",
+            Field::Hosts => "credential grant's hosts",
+            Field::SignIn => "sign-in grant's name",
+            Field::SignInHosts => "sign-in grant's hosts",
+            Field::Access => "sign-in grant's access token's reference",
+            Field::AccessPlaceholder => "sign-in grant's access token's placeholder",
+            Field::RefreshPlaceholder => "sign-in grant's refresh token's placeholder",
+        })
+    }
+}
+
+/// Why a run's grants are refused for their placeholders or their fields' lengths (D242),
+/// typed, as each side that takes them (the orchestrator's, the run's host, its network
+/// process) checks them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
     /// The grant of this reference has a placeholder that is no [`placeholder`].
@@ -108,6 +145,10 @@ pub enum Refused {
     /// The grants of these two references share a placeholder, which could stand for
     /// neither alone.
     Shared(String, String),
+    /// The grant at `place` among the run's credential grants or its sign-in grants (as
+    /// `field` names) holds `len` in `field`, past [`WIRE_MOST`]. Told by its place and length,
+    /// never its bytes: a placeholder is a capability, and the field may be any size.
+    TooLong { field: Field, place: usize, len: usize },
 }
 
 impl fmt::Display for Refused {
@@ -119,14 +160,38 @@ impl fmt::Display for Refused {
                  (RFC 6750 §2.1's b64token)"
             ),
             Refused::Shared(a, b) => write!(f, "{a} and {b}: one placeholder stands for two credentials"),
+            Refused::TooLong { field, place, len } => {
+                let unit = if matches!(field, Field::Hosts | Field::SignInHosts) {
+                    "hosts"
+                } else {
+                    "bytes"
+                };
+                write!(
+                    f,
+                    "the {field} at {place}: {len} {unit}, past the {WIRE_MOST} the network process's \
+                     wire carries (a two-byte length)"
+                )
+            }
         }
     }
 }
 
-/// Each grant's placeholder a [`placeholder`], and one credential's alone: grants of one
-/// reference may share theirs, as each stands for the same credential.
+/// `len` of `field` within [`WIRE_MOST`], else refused.
+fn within(field: Field, place: usize, len: usize) -> Result<(), Refused> {
+    if len > WIRE_MOST {
+        return Err(Refused::TooLong { field, place, len });
+    }
+    Ok(())
+}
+
+/// Each grant's reference, placeholder and hosts within [`WIRE_MOST`], its placeholder a
+/// [`placeholder`], and one credential's alone: grants of one reference may share theirs, as
+/// each stands for the same credential.
 pub fn check(grants: &[CredentialGrant]) -> Result<(), Refused> {
     for (i, grant) in grants.iter().enumerate() {
+        within(Field::Reference, i, grant.reference.len())?;
+        within(Field::Placeholder, i, grant.placeholder.len())?;
+        within(Field::Hosts, i, grant.toward.len())?;
         if !placeholder(&grant.placeholder) {
             return Err(Refused::NotAToken(grant.reference.clone()));
         }
@@ -236,10 +301,24 @@ impl Captured {
     }
 }
 
-/// A run's grants and its sign-ins' captures checked as one (D242): each placeholder a token
-/// ([`placeholder`]) and one credential's alone, a sign-in's refresh placeholder too, which no
-/// grant or other sign-in may share.
+/// A run's grants and its sign-ins' captures checked as one (D242): each sign-in's name, hosts
+/// and capture within [`WIRE_MOST`], each placeholder a token ([`placeholder`]) and one
+/// credential's alone, a sign-in's refresh placeholder too, which no grant or other sign-in may
+/// share.
 pub fn check_sign_ins(grants: &[CredentialGrant], sign_ins: &[SignInGrant]) -> Result<(), Refused> {
+    for (i, s) in sign_ins.iter().enumerate() {
+        within(Field::SignIn, i, s.sign_in.len())?;
+        within(Field::SignInHosts, i, s.toward.len())?;
+        if let Some(c) = &s.captured {
+            within(Field::Access, i, c.access.len())?;
+            within(Field::AccessPlaceholder, i, c.access_placeholder.len())?;
+            within(
+                Field::RefreshPlaceholder,
+                i,
+                c.refresh_placeholder.as_ref().map_or(0, String::len),
+            )?;
+        }
+    }
     let mut all = grants.to_vec();
     all.extend(
         sign_ins
