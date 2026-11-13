@@ -22546,3 +22546,92 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R10 | Red, then green, in unit tests for (4), and for the patch. Logs are in `measurements/g51-linux-flakes/logs`. |
   | R11 | Unit tests on macOS arm64 and Linux arm64; red on Linux x86_64. Clippy for shards-api (`--all-targets`), Linux arm64. The other targets are CI's on main. |
   | R15, R16 | Implementer, no agents started. `~/g121-tmp/g51-s7` was removed on adacachy and on adalundhe-macbook-pro. |
+
+### M543. A run's agents heard by no one: their output waited for an owner no `shards run` had (D240, D59)
+
+- **Question.** Why do `tests/build.rs`'s agent tests (23 to 24 of them), `isolation.rs`'s
+  `a_local_mcp_server_reaches_only_what_its_caller_reaches` and, likely,
+  `managed_lifecycle.rs`'s supplied-agent test fail on every CI run since 2026-11-10, on
+  GitHub's x86_64 Linux (gnu, musl) and both x86_64 Windows runners alike? An agent's own
+  lines (`confined uid=200000 ...`) never reach the client, though init's lines about the
+  agents do.
+- **Method.**
+  - The x86_64 Linux job's `tests/build.rs` result on each main CI run, read back from
+    11-08 (`/tmp/g51/ci`, `gh api` job logs).
+  - Then the source diff of the range.
+- **Found.**
+  - CI's build.rs passed whole at main 42e3f7582 (run 42822558219: 133 passed). It failed 24
+    at main 24f48ee5e (run 42827483243). Both ran on runner image 20261101.360.1, 75 min
+    apart, and every main run since fails the same way. ROOT's host reading (CachyOS) is
+    withdrawn.
+  - In the range, 9151296a8 ("Capture managed channels through an admitted private
+    transport", managed-runtime P3, G01) removed init's relay (`frames.rs`) that wrote each
+    agent line to the run's stderr as `[label] line`. A member's stdout and stderr became
+    managed records, read by its owner's subscription to the run's QUIC endpoints. G01
+    moved "display formatting ... to viewers", but no viewer was built: no `shards run`
+    subscribes.
+  - The daemon grants a channel's credit only while an owner's subscription is ready
+    (`daemon/managed.rs`, `Credits::next`). So a plain run's agents were heard by no one.
+    By inference from that code, not run: an agent that writes more than a pipe holds
+    waits forever.
+- **Decision** (ROOT, 2026-11-13, option A).
+  - The daemon reads every member's output that the run names no owner for. A run names
+    owners in `shards.output`, each `KIND:NAME` as `shards.stdin` names an input.
+  - It keeps that output whole in the member's log: `members/<index>` in the run's
+    directory, in the run log's own format and segments, under the run's own retention.
+    None is kept where the run keeps no log.
+  - It credits the channel again as soon as the record is kept. Nothing waits on a reader:
+    a detached run's members, those of one whose client has gone, and those under a
+    terminal that has stopped.
+  - A client attached to the run is shown each kept line on its own stderr, after
+    `[label] `, as D59 always showed an agent's. A thread follows the member's log for it
+    (`daemon/logs.rs`'s reader), and nothing waits on that thread.
+  - The run's stdout, stderr and log stay its command's (G01). Owners keep their endpoints
+    for the members they name. The tests that subscribe as owners (`managed_output.rs`,
+    `harness_bringup.rs`, `build.rs`'s code mode) now name theirs.
+  - No product subscribes to a daemon run's owner output today: Hex's and kiln's mains
+    hold no client of it.
+  - The run log's writer moved to `log_writer.rs`, which both binaries compile: the VM
+    process writes the run's log with it, and the daemon a member's (R12).
+- **Merged with agent control** (D238, step 11, which landed meanwhile): a run's owner
+  reads the members `shards.output` names through its own endpoints or through its run's
+  agent-control lanes alike, as the lanes serve the members `shards.stdin` names an input;
+  the daemon drains the rest. Before, the lanes served every active member.
+- **A hang in the first run of its own test.** On adalundhe-macbook-pro
+  `a_drained_channel_is_credited_again_as_soon_as_its_record_is_kept` ran 21 minutes at 0%
+  CPU until stopped. `sample` showed the credit worker in `Credits::next`, the bridge in
+  `read_exact`, and the test's scope parked. Run alone with `--nocapture`, it said
+  `managed.rs:2485: Err(Payload)`: the test sized a data record's header by encoding an
+  empty `Data` record, which the ABI refuses (`Record::encoded_len`). The panic then left
+  the scope waiting on threads whose VM side the test still held. The room is now the
+  credit less `run::managed::HEADER`, and a failing play drops its VM side and closes the
+  credit queue as it unwinds, so a failure is told rather than hung.
+- **Checked** (one host, adas-mac-studio.local, macOS arm64, on the merged tree):
+  `cargo test -p shards --bin shards -- daemon::managed workload::tests::a_log
+  workload::tests::a_logger workload::tests::a_non_blocking_log` (33 passed, 6 ignored as
+  ROOT's native fixtures), including the credit path through the real credit worker and
+  bridge with the test as the VM and no subscriber, and the drain's keeping, viewing and
+  restart tests; `cargo test -p shards-vm-process -- workload::tests::a_log
+  workload::tests::a_logger workload::tests::a_non_blocking_log` (3 passed); `cargo clippy
+  -p shards -p shards-vm-process --all-targets -- -D warnings` for aarch64-apple-darwin, and
+  for x86_64-pc-windows-msvc through cargo-xwin. Its red is CI's (the runs above).
+- **Owed** (ROOT): `tests/build.rs`, `isolation.rs`, `managed_lifecycle.rs`,
+  `managed_output.rs` and `harness_bringup.rs` on KVM, HVF and WHP; a `shards logs` that
+  shows a run's members (their logs are kept, not yet read by `logs`); a later `attach`
+  shown its members; an owner's channel that waits on no subscriber either (served from the
+  member's log; its credit still waits on its owner); a run asking for agent control, with
+  and without `shards.output`, its unnamed members drained (D238).
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap, index or panic in the new production code; every step returns its error. |
+  | R02 | The cause read from source and CI history; managed-runtime-plan.md G01; D240; ROOT's decision. |
+  | R03 | No number introduced: a member's log keeps the run's own retention, and its credit window climbs as an owner's does (D226's quantum, from the run's record capacity). |
+  | R04 | A drained channel's stream is Open, Ended or Aborted; the run's capture ends it whole. |
+  | R05 | The viewer waits on the drain's own notice, not a probe; the log is the one record. |
+  | R07, R13 | Comments say why; one writer for both logs. |
+  | R08, R14 | Not measured: the drain's write is the run log's own path. |
+  | R09, R10 | Red: CI's runs above. Green: the focused tests above. No mutation run (the person's rule). |
+  | R11 | Written for every OS; tested on macOS arm64 alone. CI covers the rest. |
+  | R15, R16 | No agents started; the target directories on adalundhe-macbook-pro and adas-mac-studio.local are removed after. |

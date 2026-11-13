@@ -13356,6 +13356,9 @@ return { me, peers, sent, refused };"#;
         let started = shards(&[
             "run",
             "-d",
+            // Its owner reads the agents' output (D240): the daemon drains none of it.
+            "--annotation",
+            "shards.output=agent:a,agent:b,agent:c",
             "--name",
             "aw-code",
             "code:1",
