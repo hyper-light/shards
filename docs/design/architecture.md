@@ -7688,12 +7688,31 @@ process.
   clock at all: every connection it takes is a socket pair one of its threads writes the
   request on whole (a slot's bridge, a request it puts to itself), and a bridge that cannot
   send ends its writing.
-- **A client that takes nothing of its answer holds a closed daemon twice the longest a
-  client of it took a piece in, at least TCP's R2** (100 s, RFC 1122 §4.2.3.5: the least a
-  sender retransmits to a peer that acknowledges nothing before it gives up), as D222
-  rides out a trouble; its command done, it cannot be told to ask again. A slot whose
-  answer's last word is its client's holds it no more: the word is in its FIFO whether or
-  not the daemon is, and nothing its client reads comes after it.
+- **A client taking its answer holds a closed daemon while it takes, and one that takes
+  nothing for longer than the slowest take seen holds it no more** (`slots::Seen`, PM M549;
+  the person's ruling of 2026-11-13: the slowest answer seen bounds a stall, a gap with no
+  progress, never an answer's whole length). Its command done, it cannot be told to ask
+  again.
+  - *Its progress* is room it makes: its answer is written as its FIFO takes it, a write
+    that does not wait (`slots::write_all_waiting`), and only where the FIFO takes none of
+    what is left is its client waited on, until it reads some: for its FIFO's room
+    (`await_fifo_room`: select(2) on macOS, where poll(2) slept through a reader's end,
+    poll(2) elsewhere), or, where no more than PIPE_BUF is left, in the write itself, which
+    goes whole (POSIX write(2)), as macOS's FIFOs say POLLOUT with less than that free (PM
+    M549). Each such
+    wait that ends is a take; what the FIFO takes at once waits on no client and teaches
+    nothing.
+  - *Its bound*: a closed daemon lets go of a client whose writer has waited on it longer
+    than the slowest take seen. One that reads, however slowly, ends each wait as it reads.
+  - *Its cold start*: before any take, a client holds a closed daemon until it ends (its
+    FIFO's end).
+  - *Windows*: a named pipe says nothing of its room before a write, so its writes wait in
+    WriteFile and no take is seen; a closed daemon follows its clients' ends alone there
+    (owed: a signal of a named pipe's outbound room).
+  - It was twice the longest a piece of 64 KiB took, at least TCP's R2 (100 s, RFC 1122
+    §4.2.3.5).
+  A slot whose answer's last word is its client's holds it no more: the word is in its FIFO
+  whether or not the daemon is, and nothing its client reads comes after it.
 - **Out of descriptors, the daemon refuses the client it cannot take and is woken as
   descriptors are let go of: nothing looks on a clock.** What it accepts on, and how:
   - *The Engine API's socket and the contexts' (Unix)*: a listener whose accept finds no
@@ -7733,7 +7752,7 @@ process.
 |---|---|---|---|
 | `REQUEST_TIMEOUT` (daemon.rs), a request's rest | 10 s, slot ended unanswered | `Seen::request_stall`: nothing past its first byte for the slowest rest read whole (none before any); its rest begun, its client's end; cut told RESTART | its client's own writes (`Client::ask`, one write) and end; was D222's cutoff, doubled per cut (2026-11-09 to 11-13) |
 | `REQUEST_TIMEOUT`, a handled connection's first message | 10 s | none: the daemon's own pairs | its senders write whole or end their writing |
-| `REQUEST_TIMEOUT`, a closed daemon's client taking nothing | 10 s | `Seen::answer_wait`: 2 × longest piece taken, ≥ 100 s | RFC 1122 §4.2.3.5 (R2); Baeza-Yates, Culberson, Rawlins 1993 |
+| `REQUEST_TIMEOUT`, a closed daemon's client taking nothing | 10 s | `Seen::answer_wait`: the slowest take seen (none before any: its end); was 2 × longest piece, ≥ 100 s (2026-11-09 to 11-13) | its own takes: waits on it for FIFO room (`slots::write_all_waiting`), PIPE_BUF (POSIX write(2)) |
 | `REQUEST_TIMEOUT`, after an answer's last word | 10 s | none | pipe(7): a FIFO keeps what was written as its writer goes |
 | `RETRY` (daemon.rs), the API's and contexts' accept | 250 ms | none: refused with a spare, woken as descriptors go | libev ev.3; libuv `uv__emfile_trick`; muxer 3447c5a7 |
 | `RETRY` (relay.rs, Windows), a context's pipe | 250 ms | none: `Listener::refuse` | DisconnectNamedPipe, ConnectNamedPipe (Win32 named pipes) |
@@ -12570,12 +12589,22 @@ peer", each going on here as it should. What changed for them:
     before. Green on the merged tree (origin/main 5bc134861 with 005dce1da; adas-mac-studio.local,
     macOS 26.2 arm64): cli/moves.rs's tests 7 of 7, clippy clean; its real two-machine move,
     refused at the gate, is not run (ROOT's).
-  - Its gap: the remote server's relay can fail after `Host::start` has started a command
-    (a thread or a handle it could not make; server.rs `relay`, or no listener's sender).
-    It refuses that command though it goes on, its stdio closed, and a move takes it for a
-    restore that never ran. The wire tells the two apart nowhere. Owed to ROOT: the
-    refusal's kind on the wire (before the command started, or after), or the relay ending
-    what it started.
+  - *Refused before it started, or cut after* (ROOT's ruling, 2026-11-13). The remote
+    server's relay can fail once `Host::start` has started a command (a thread or a handle
+    it could not make; server.rs `relay`, or no listener's sender), and a frame out of place
+    or cut short ends a command that runs; each was told `Tag::Refused`, which a move took
+    for a restore that never ran, though it may have. Now the wire tells the two apart: a
+    stream whose command started (`Stream::started`, set as `Host::start` answers) ends a
+    refusal as `Tag::Cut` (42), and `Refused` says nothing of it ran. The client takes a cut
+    for no answer (`exit_of`: "…, after the command started: it may have run"), as it takes
+    a connection lost then, so a move asks whether it runs there (`running_there`), never
+    going on here unasked. A client of an earlier build fails on tag 42 as on any frame it
+    does not know, which is no answer too; a server of an earlier build still says
+    `Refused` after a start, so both machines need this build.
+  - Held by shards-remote's tests/loopback.rs `a_command_refused_after_it_started_is_cut` (a
+    raw client starts `cat`, then sends a daemon's frame: red at af15d4532, `Refused` for a
+    started command; green, `Cut`, and a stream whose command never started still
+    `Refused`) and client.rs `a_cut_command_is_unanswered_and_a_refused_one_refused`.
 - **What a move sends**, cold: the move's stream (`Writer`), its plan, then its directory
   but its other snapshots and its kept layer, its snapshot's state, memory, layer and swap
   among it; its volumes; and the files its snapshot restores against that the other machine

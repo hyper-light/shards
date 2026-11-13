@@ -688,6 +688,79 @@ pub fn await_fifo(fd: BorrowedFd<'_>) -> io::Result<()> {
     }
 }
 
+/// Waits until the FIFO or pipe `fd`, a write end, has room for some of what is to be written,
+/// or its reader has gone, which the write that follows says. On macOS in select(2): there
+/// poll(2) for POLLOUT slept through a full FIFO's reader's end, 3 s of 3, where select saw it
+/// in 0.13 s (PM M549), as a read can sleep through its writer's end (PM M253). Elsewhere in
+/// poll(2), which says POLLERR as a pipe's last reader goes (Linux fs/pipe.c, `pipe_poll`).
+pub fn await_fifo_room(fd: BorrowedFd<'_>) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: as `await_fifo`'s.
+        unsafe extern "C" {
+            #[link_name = "select$DARWIN_EXTSN"]
+            fn select_any(
+                nfds: libc::c_int,
+                read: *mut u32,
+                write: *mut u32,
+                error: *mut u32,
+                timeout: *mut libc::timeval,
+            ) -> libc::c_int;
+        }
+        let raw = fd.as_raw_fd();
+        let at = usize::try_from(raw).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let bound = raw
+            .checked_add(1)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // An fd_set's bits, 32 to a word, as FD_SET sets them.
+        let mut set = vec![0u32; at / 32 + 1];
+        loop {
+            if let Some(word) = set.get_mut(at / 32) {
+                *word = 1 << (at % 32);
+            }
+            // SAFETY: a set of `bound` descriptors' bits, as long as that, and no timeout:
+            // select(2) waits until `fd` is writable, or a signal cuts it short.
+            let n = unsafe {
+                select_any(
+                    bound,
+                    std::ptr::null_mut(),
+                    set.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if n > 0 {
+                return Ok(());
+            }
+            let e = io::Error::last_os_error();
+            if n < 0 && e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut pfd = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        loop {
+            // SAFETY: poll(2) of one pollfd, of a descriptor `fd` borrows, with no timeout.
+            match unsafe { libc::poll(&mut pfd, 1, -1) } {
+                n if n > 0 => return Ok(()),
+                0 => {}
+                _ => {
+                    let e = io::Error::last_os_error();
+                    if e.kind() != io::ErrorKind::Interrupted {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Waits until one of `fds`, FIFOs or pipes, has something to read or has ended, and says
 /// which, in their order: on macOS in select(2), as [`await_fifo`] waits, every descriptor
 /// however high; elsewhere in poll(2), which sees a FIFO's end there (PM M253).

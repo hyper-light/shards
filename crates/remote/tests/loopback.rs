@@ -916,6 +916,37 @@ fn until_there(path: &std::path::Path) {
     }
 }
 
+/// A command refused after it started is told apart from one refused before it, which says
+/// nothing of it ran: a frame out of place once its command runs ends the stream with its
+/// cut, which its client takes for "it may have run" (D176 part 6).
+#[test]
+fn a_command_refused_after_it_started_is_cut() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let raw = RawClient::new(laptop, d.remote);
+    let mut bytes = exec(&["cat"]);
+    // A daemon's frame, which no client sends: out of place once its command runs.
+    frame::put(&mut bytes, Tag::Joined, &[]).unwrap();
+    let stream = raw.opens(bytes, false);
+    assert_eq!(
+        raw.next(),
+        Heard::Frame(stream, Tag::Cut, b"a frame out of place (Joined)".to_vec())
+    );
+    // Refused before any command of it started, a stream still hears a refusal.
+    let mut early = Vec::new();
+    frame::put(&mut early, Tag::Joined, &[]).unwrap();
+    let stream = raw.opens(early, false);
+    assert_eq!(
+        raw.next(),
+        Heard::Frame(stream, Tag::Refused, b"a frame out of place (Joined)".to_vec())
+    );
+}
+
 /// `args`' request frame, and none of its stdin's end.
 fn exec(args: &[&str]) -> Vec<u8> {
     let request = Request {
