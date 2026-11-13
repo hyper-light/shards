@@ -490,10 +490,17 @@ production code; clippy with the workspace's denied lints.
 | Slice | Host | Commands | Result |
 |---|---|---|---|
 | 1, the lane and its controller | adalundhe-macbook-pro, macOS 26.5 arm64, rustc 1.98.1 | `cargo test -p shards-remote --lib control::`; `cargo clippy -p shards-remote -p shards --all-targets -- -D warnings` | 56 passed (5 new codec tests, the loopback log test); clean ([log](logs/log-lane-slice1-macos-arm64.log)) |
+| 2, the record reader, the typed gap, the daemon's log host | adalundhe-macbook-pro, macOS 26.5 arm64, rustc 1.98.1 | `cargo test -p shards --bin shards -- daemon::logs daemon::managed log_writer`; `cargo clippy -p shards -p shards-vm-process --all-targets -- -D warnings` (the VM process includes `spec.rs` and `log_writer.rs`) | 62 passed, 6 ignored (ROOT's native fixtures); clean ([log](logs/log-lane-slice2-macos-arm64.log)) |
 
 Red before green, slice 1: the endpoint refusing the log of a member it serves no stream of
 (`scoped()` without its log exception): `left: Err(Refused(Scope))`, `right:
 Err(Unlogged(Unknown))` ([log](logs/log-lane-slice1-red-macos-arm64.log)).
+
+Red before green, slice 2: `logs`' line reader without its pass over a gap's record
+(`Reader::read_segment` taking a gap's bytes as output): `logs` shows the gaps' bytes (`[1, 0, 0,
+0, 0, 0, 0, 16, 0]`, why 1 and 4096 lost) as if output, joined to the next line, where the log
+without them reads `before`, `after` and `err` alone
+([log](logs/log-lane-slice2-red-macos-arm64.log)).
 
 ### R01–R16 (so far)
 
@@ -513,8 +520,20 @@ Err(Unlogged(Unknown))` ([log](logs/log-lane-slice1-red-macos-arm64.log)).
 
 ### Owed
 
-- ROOT's real-VM run, once the daemon's log host lands (next slice): a run with
-  `--annotation shards.control=true`, its controller's `Execs::log` of the run's command and of a
-  member, unfollowed and followed, resumed from a cursor; on Linux KVM, macOS HVF and WHP.
+- ROOT's real-VM run (slices 1 and 2), in `crates/shards/tests/managed_output.rs` beside the exec
+  host's owed run: a run of an image with two agents, `--annotation shards.control=true` and
+  `--annotation shards.output=agent:A` (agent B drained); its controller dialed at the managed
+  metadata's `control` and `vm` lines with `Subscriptions::execs`; then
+  `Execs::log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, false)` reads the
+  command's output, each record at its place; `Execs::log(LogSource::Member(B), …, true)` reads
+  B's output as it is written and ends `Finished` as B's channels end; a second lane from the
+  first's `cursor()` reads only what came after; `LogSource::Member(A)` is refused `Failed` until
+  slice 3 keeps owned members' output; a run with `--log-driver none` refused `Unkept`; on Linux
+  KVM, macOS HVF and WHP.
+- R14: a log lane's read and follow costs (a reader's two 64 KiB buffers, one stream record),
+  from the controller's side, against `logs -f`'s.
+- Slice 3, a fresh agent's: the keeper of every member's log (owned members' output kept, its
+  gaps typed), the run's one log cap with its per-owner loss record and the newest-segment
+  rotation, members' rotated segments packed as the run's own (D162), and `logs`' notice.
 - Hex and kiln: shards-remote's `control::Fault` gains `Unlogged`, and `Granted` gains `Log`; a
   re-vendored caller that matches either exhaustively must add the arm.

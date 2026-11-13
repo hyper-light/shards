@@ -9284,14 +9284,24 @@ fn readable_within(socket: &UnixStream, wait: Option<Duration>) -> bool {
 /// this daemon's VMs' starts (`Answers::ready`): before its first, its liveness alone, its
 /// socket's end; then past W*, the slowest start seen, looked at each W* and given up on
 /// where a whole W* shows it ran no CPU, its host not the reason. Its READY teaches the
-/// record. It was `READY_STALL`'s 10 s looks and `READY_TIMEOUT`'s 60 s, picked, judged by PM
-/// M357's idle microVM (ROOT's (3), 2026-11-13).
+/// record, but one there as the wait begins, which was waited for not at all (D222's wait of
+/// nothing): on macOS the wait begins once the VM has its grants, which a quick restore can
+/// end with its READY said, and as a sample, its W* of next to nothing would have each later
+/// start looked at each millisecond. The log says once, as a start first outlasts W*, how far
+/// into it it is. It was `READY_STALL`'s 10 s looks and `READY_TIMEOUT`'s 60 s, picked, judged
+/// by PM M357's idle microVM (ROOT's (3), 2026-11-13).
 fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(), String> {
     let began = Instant::now();
-    let mut follow = shards_api::Followed::of_pid(pid)
-        .ok()
+    // Its time so far, to the microsecond, as the log says it.
+    let into = || Duration::from_micros(u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX));
+    // Followed only where its READY is still to come, as a slot's rest is learned only where
+    // it was waited for (D185's `Asked::waited`).
+    let mut follow = (!readable_within(socket, Some(Duration::ZERO)))
+        .then(|| shards_api::Followed::of_pid(pid).ok().flatten())
         .flatten()
         .and_then(|followed| shards_api::Follow::begin(record, followed).ok().flatten());
+    // Whether the log has said it outlasted the slowest start seen: once, as it does.
+    let mut said = false;
     loop {
         let wait = follow
             .as_ref()
@@ -9308,16 +9318,19 @@ fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(
                 "VM {pid} was not ready: it ran nothing for {:?}, past the slowest start seen ({:?}), {:?} after it began",
                 stall.over(),
                 stall.slowest(),
-                Duration::from_secs(began.elapsed().as_secs())
+                into()
             ),
             shards_api::Unfollowed::Process { failure, .. } => {
                 format!("VM {pid} was not ready: its process could not be read: {failure}")
             }
         })?;
-        log(format!(
-            "VM {pid}: not ready in {:?}, going on with its start",
-            Duration::from_secs(began.elapsed().as_secs())
-        ));
+        if let (false, shards_api::Seen::Learned { slowest, .. }) = (said, record.seen()) {
+            said = true;
+            log(format!(
+                "VM {pid}: not ready {:?} into its start, past the slowest start seen ({slowest:?}): followed as it goes on",
+                into()
+            ));
+        }
     }
     match shards_ipc::recv(socket) {
         Ok(Some(m)) if m.kind == kind::READY => {
@@ -9635,6 +9648,19 @@ mod tests {
         assert!(refused.contains("ran nothing for"), "{refused}");
         let _ = asleep.kill(shards_ipc::signal::SIGKILL);
         let _ = asleep.wait();
+    }
+
+    /// A READY there as its wait begins was waited for not at all: it is taken, and teaches
+    /// the daemon's record of starts nothing (D222's wait of nothing), whose W* of next to
+    /// nothing would have each later start looked at each millisecond. Its VM process is this
+    /// one, which lives throughout.
+    #[test]
+    fn a_ready_said_before_its_wait_teaches_nothing() {
+        let record = shards_api::Record::new();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        shards_ipc::send(&theirs, kind::READY, &[], &[]).unwrap();
+        ready(&ours, std::process::id(), &record).unwrap();
+        assert_eq!(record.seen(), shards_api::Seen::Cold);
     }
 
     /// The basis as the daemon reads it of a VM's process, on this host: a process that
@@ -12745,6 +12771,88 @@ mod tests {
                     (700, 700),
                     "held past 700 MiB, its group past its memory.max of 1000 with the other's 300"
                 );
+            });
+        });
+    }
+
+    /// A joiner and its provider in one group share one VM process (D119), which the group
+    /// holds once (D183): its `memory.current` sums each VM process of its microVMs once, by
+    /// its identity (its pid and start), and its `cgroup.procs` lists each once. Here a
+    /// provider of 600 MiB, its joiner in its VM process, and a microVM of 100 MiB of its own:
+    /// the group holds 700 MiB of two processes, where a sum by run counted the provider's
+    /// twice, 1300 MiB of three.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_joiner_and_its_provider_in_one_group_count_their_vm_process_once() {
+        let t = Test::new("group-joiner");
+        t.run(|t| {
+            let mib = |n: u64| n << 20;
+            let dir = groups::made(&t.daemon.home, "g").unwrap();
+            for file in ["memory.high", "memory.max"] {
+                std::fs::write(dir.join(file), format!("{}\n", mib(2000))).unwrap();
+            }
+            t.t.daemon.start_groups(t.threads);
+            let (provider, _p_run, p_vm, p_pid) = running_under(t, "provider", "g", mib(600));
+            // Its joiner, in its VM process, as join_vm makes one: its run under the group.
+            let id = t.create("joiner");
+            let dir_of = lock(&t.daemon.containers).dir(&id);
+            let kept = Run {
+                cgroup_parent: "g".into(),
+                ..Run::default()
+            };
+            std::fs::write(dir_of.join(REQUEST), kept.encode()).unwrap();
+            let joiner_run = t.start(&id);
+            let (mut ready, j_vm) = t.warm_vm(None);
+            ready.joined = Some(provider.clone());
+            ready.vm = match lock(&t.daemon.runs).get(&provider) {
+                Some(RunState::Tracked(run)) => run.vm.clone(),
+                _ => panic!("its provider does not run"),
+            };
+            assert_eq!(ready.vm.id(), p_pid);
+            joiner_run.warm.send(ready).unwrap();
+            assert_eq!(heard(&j_vm).0, kind::RUN);
+            say(&j_vm, kind::TAKEN, &[]);
+            say(&j_vm, kind::STARTED, &[]);
+            t.until("the joiner started", |d| {
+                lock(&d.containers)
+                    .get(&id)
+                    .is_some_and(|c| c.state == Life::Running)
+            });
+            let (_, _m_run, m_vm, m_pid) = running_under(t, "other", "g", mib(100));
+            let _ends = Ends {
+                held: None,
+                vms: vec![(&p_vm, 0), (&j_vm, 0), (&m_vm, 0)],
+            };
+            let done = AtomicBool::new(false);
+            let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap_or_default();
+            std::thread::scope(|s| {
+                let _done = Done(&done);
+                let done = &done;
+                for vm in [&p_vm, &j_vm, &m_vm] {
+                    s.spawn(move || answering(vm, done));
+                }
+                // Once its last microVM is summed: its own 100 MiB in it, after the joiner's.
+                t.until("its group never summed its last microVM", |_| {
+                    read("memory.current")
+                        .trim()
+                        .parse::<u64>()
+                        .is_ok_and(|held| held >= mib(700))
+                });
+                assert_eq!(
+                    read("memory.current").trim().parse::<u64>().unwrap() >> 20,
+                    700,
+                    "its provider's VM process, which its joiner shares, counted more than once"
+                );
+                // On macOS its VM processes, each once; on Windows its job's, which a played
+                // microVM has none of.
+                if cfg!(target_os = "macos") {
+                    let mut procs: Vec<u32> =
+                        read("cgroup.procs").lines().map(|p| p.parse().unwrap()).collect();
+                    procs.sort_unstable();
+                    let mut expected = vec![p_pid, m_pid];
+                    expected.sort_unstable();
+                    assert_eq!(procs, expected, "a VM process listed more than once");
+                }
             });
         });
     }

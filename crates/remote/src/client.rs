@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::mpsc;
 
-use hyper_quic::{ConnectionError, StreamId};
+use hyper_quic::StreamId;
 
 use crate::frame::{self, Request, Tag};
 use crate::identity::{Fingerprint, Identity};
@@ -27,7 +27,8 @@ pub struct Remote {
 
 /// A daemon's handshake that has not ended, told as each probe goes (RFC 9002 §6.2): the
 /// datagrams sent in all, and how long it has waited. Its caller says whether it waits on: a
-/// daemon never reached, or whose last wait ran out, has no deadline but its caller's.
+/// handshake has no deadline but its caller's, one with a daemon reached before running out past
+/// the slowest seen from it and going on as one never reached does (`net::RanOut::Handshake`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Unanswered {
     pub probes: u64,
@@ -90,9 +91,8 @@ impl Controls {
 }
 
 /// What ends a command [`exec_with`] runs, from another thread, from the moment its connection
-/// is made: before its daemon answers too, whose handshake has no deadline where the daemon was
-/// never reached ([`tls::Known`]), so that only its holder's own end, a daemon's stop, ends
-/// that wait.
+/// is made: before its daemon answers too, whose handshake has no deadline of its own
+/// ([`Unanswered`]), so that only its holder's own end, a daemon's stop, ends that wait.
 #[derive(Debug)]
 pub struct HangUp(Sender<Event>);
 
@@ -156,9 +156,6 @@ struct Client<'a> {
     waits: Option<Waits<'a>>,
     answer: Option<Answer>,
     failed: Option<String>,
-    /// Its handshake was given up, the slowest seen from its daemon with nothing heard from it,
-    /// past its probe timeout (`net::Liveness::due`): told as QUIC's `TimedOut`.
-    given_up: bool,
     done: bool,
     /// What its connection saw of the path, as it ended.
     seen: Seen,
@@ -471,20 +468,12 @@ impl Handler for Client<'_> {
             let at = self.remote.address;
             self.failed = Some(match self.stream {
                 Some(_) => format!("the connection to {at} ended: {why}"),
-                // Its handshake given up: `why` says what was waited.
-                None if self.given_up => format!(
-                    "no answer from the shards daemon at {at}: {why}: is it listening there (shards run daemon --listen ADDR:PORT)?"
-                ),
                 None => format!(
                     "no shards daemon answered at {at} ({why}): is it listening there (shards run daemon --listen ADDR:PORT)?"
                 ),
             });
         }
         self.done = true;
-    }
-
-    fn cause(&mut self, _conn: ConnKey, error: &ConnectionError) {
-        self.given_up = self.stream.is_none() && matches!(error, ConnectionError::TimedOut);
     }
 
     fn unanswered(&mut self, io: &mut Io<'_>, _conn: ConnKey, probes: u64, waited: std::time::Duration) {
@@ -612,10 +601,10 @@ pub fn exec_made(
 }
 
 /// [`exec_made`], `unanswered` asked as each probe of a handshake that has not ended goes
-/// whether it waits on ([`Unanswered`]: a daemon never reached, or whose last wait ran out, is
-/// waited for as long as its caller does), `hang_up` given what ends it from another thread
-/// once its connection is made ([`HangUp`]), and what its connection saw ([`Seen`]), answered
-/// or not, for what its caller keeps of the daemon ([`tls::Known::after`]).
+/// whether it waits on ([`Unanswered`]: a handshake is waited for as long as its caller does,
+/// one with a daemon reached before past its run-out too), `hang_up` given what ends it from
+/// another thread once its connection is made ([`HangUp`]), and what its connection saw
+/// ([`Seen`]), answered or not, for what its caller keeps of the daemon ([`tls::Known::after`]).
 #[allow(clippy::too_many_arguments)]
 pub fn exec_with(
     identity: &Identity,
@@ -749,7 +738,6 @@ fn run(
             waits,
             answer: None,
             failed: None,
-            given_up: false,
             done: false,
             seen: Seen::default(),
         };
