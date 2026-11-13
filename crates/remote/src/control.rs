@@ -40,7 +40,9 @@ use crate::tls;
 
 mod drive;
 pub mod exec;
-pub use drive::{Controller, Dialed, Fault, Got, Hangup, Input, Output, Subscriptions};
+pub use drive::{
+    Controller, Dialed, Exec, ExecControl, Execs, Fault, Got, Hangup, Input, Output, Subscriptions,
+};
 
 /// The application protocol of a control connection (RFC 7301), apart from a context's
 /// (`shards/1`) and the managed output's: a peer offering another is refused at its handshake.
@@ -2186,6 +2188,89 @@ mod tests {
             drop(newer);
         }
 
+        /// The production controller execs into a member: its stdin and stdout exact over their
+        /// lanes, a resize and a signal reaching its host as it sends them, its stdin's end told,
+        /// its outputs finished and its exit read; an exec its host does not start is said so,
+        /// typed; a controller whose endpoint runs none is told none ran.
+        #[test]
+        fn the_controller_execs_into_a_member_and_drives_its_stdio_steering_and_exit() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let (serving, starts) = Serving::with_execs(&vm, kiln.fingerprint());
+            let (outputs, inputs) = all(0);
+            let admissions = exec::Admissions {
+                output: out_admitted(),
+                input: in_admitted(),
+            };
+            let (dialed, _driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                    execs: Some(admissions),
+                },
+            );
+            let execs = dialed.execs.as_ref().unwrap();
+            // Its host: the first exec it runs, the second it says did not start.
+            let host = std::thread::spawn(move || {
+                stand_in(starts.recv_timeout(tls::IDLE).unwrap());
+                let refused = starts.recv_timeout(tls::IDLE).unwrap();
+                refused
+                    .replies
+                    .tell(exec::Reply::Unstarted(exec::Unstarted::Refused));
+            });
+            let spec = shards_abi::run::Spec {
+                argv: vec![b"cat".to_vec()],
+                stdin: true,
+                ..shards_abi::run::Spec::default()
+            };
+            let Exec {
+                mut stdout,
+                stderr,
+                stdin,
+                mut control,
+            } = execs.exec(0, spec.clone()).unwrap();
+            let (mut stderr, mut stdin) = (stderr.unwrap(), stdin.unwrap());
+            let line = b"\x00\xff typed, no newline";
+            assert_eq!(stdin.write(line).unwrap(), line.len());
+            assert_eq!(
+                stdout.next_record().unwrap(),
+                Got::Record {
+                    at: 0,
+                    bytes: line.to_vec()
+                }
+            );
+            control
+                .resize(shards_abi::run::Size { rows: 50, cols: 132 })
+                .unwrap();
+            assert_eq!(
+                stderr.next_record().unwrap(),
+                Got::Record {
+                    at: 0,
+                    bytes: b"resize 50x132".to_vec()
+                }
+            );
+            control.signal(2).unwrap();
+            assert_eq!(control.signal(0), Err(Fault::Refused(Reason::Protocol)));
+            assert_eq!(
+                stderr.next_record().unwrap(),
+                Got::Record {
+                    at: 13,
+                    bytes: b"signal 2".to_vec()
+                }
+            );
+            assert_eq!(stdin.end().unwrap(), (line.len() as u64, InputEnd::Closed));
+            assert_eq!(stdout.next_record().unwrap(), Got::Finished);
+            assert_eq!(stderr.next_record().unwrap(), Got::Finished);
+            assert_eq!(control.wait(), Ok(0));
+            assert_eq!(
+                execs.exec(0, spec).map(|_| ()),
+                Err(Fault::Unstarted(exec::Unstarted::Refused))
+            );
+            host.join().unwrap();
+        }
+
         /// The production controller (`drive.rs`), dialed at `to` for `subscriptions`, its
         /// driver on a thread of its own.
         fn drive(
@@ -2241,6 +2326,7 @@ mod tests {
                 Subscriptions {
                     outputs: &outputs,
                     inputs: &inputs,
+                    execs: None,
                 },
             );
             let out = b"\x00\xff\xfe not UTF-8 \x80, and no newline";
@@ -2318,6 +2404,7 @@ mod tests {
                 Subscriptions {
                     outputs: &outputs,
                     inputs: &inputs,
+                    execs: None,
                 },
             );
             serving.submit(STDOUT, b"first");
@@ -2393,6 +2480,7 @@ mod tests {
                 Subscriptions {
                     outputs: &outputs,
                     inputs: &inputs,
+                    execs: None,
                 },
             );
             assert_eq!(
@@ -2432,6 +2520,7 @@ mod tests {
             let subscriptions = Subscriptions {
                 outputs: &outputs,
                 inputs: &inputs,
+                execs: None,
             };
             let (mut dialed, driver) = drive(&stranger, vm.fingerprint(), serving.address, subscriptions);
             let refused = dialed.outputs[0].next_record();
@@ -2468,6 +2557,7 @@ mod tests {
                 Subscriptions {
                     outputs: &outputs,
                     inputs: &inputs,
+                    execs: None,
                 },
             );
             serving.submit(STDOUT, b"once");
@@ -2493,6 +2583,7 @@ mod tests {
                 Subscriptions {
                     outputs: &outputs,
                     inputs: &inputs,
+                    execs: None,
                 },
             );
             assert_eq!(
@@ -2537,6 +2628,7 @@ mod tests {
                 Subscriptions {
                     outputs: &outputs,
                     inputs: &inputs,
+                    execs: None,
                 },
             );
             serving.submit(STDOUT, b"before");
@@ -2568,6 +2660,7 @@ mod tests {
                     (output(Channel::Stderr), out_admitted(), 7),
                 ],
                 inputs: &[(stdin(), slow, 0)],
+                execs: None,
             })
             .unwrap();
             let ack = 5 + 8;
@@ -2588,7 +2681,8 @@ mod tests {
             assert!(matches!(
                 super::super::drive::windows(Subscriptions {
                     outputs: &[],
-                    inputs: &[]
+                    inputs: &[],
+                    execs: None,
                 }),
                 Err(managed::Error::Admission(AdmissionError::Capacity))
             ));
