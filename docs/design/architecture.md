@@ -2918,8 +2918,13 @@ gone with the VM. So a microVM that stays (not `--rm`) keeps it on the host:
   the daemon's count of its writes, then renamed over it, its own file removed on any
   error. One name for every writer (`request.new`, the first fix) broke under two writers at
   once (660 to 840 of 2,000 renames found no file); a count needs no random source, as one
-  daemon holds a home (`take_lock`). Not synced, as for every microVM's record (D27). The
-  record, with its red, green and mutations:
+  daemon holds a home (`take_lock`). Not synced, as for every microVM's record (D27). A
+  home's first `engine-id`, which clients may each make at once on threads of their own, is
+  linked as the record rather than renamed over it (`keep_first`: `hard_link` fails where
+  another kept one first, link(2)'s EEXIST, CreateHardLinkW's ERROR_ALREADY_EXISTS). So
+  each caller takes the one kept, where by rename 200 of 200 rounds of 14 callers took an ID
+  the home did not keep (request-sites-v1/review.md). The record, with its red, green and
+  mutations:
   [request-sites-v1](../research/measurements/request-sites-v1/README.md), after
   [audit-fix-request-v1](../research/measurements/audit-fix-request-v1/README.md).
 - **A start refused before it starts** leaves the microVM as it was: nothing of a

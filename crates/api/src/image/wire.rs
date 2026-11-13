@@ -1040,7 +1040,9 @@ impl<'a> Reader<'a> {
                     let guest_ns = self.u64()?;
                     let unread = match self.u8()? {
                         0 => None,
-                        1 => Some(shards_abi::guest_time::Unread::parse(&self.text()?).ok_or(WireError::Unread)?),
+                        1 => Some(
+                            shards_abi::guest_time::Unread::parse(&self.text()?).ok_or(WireError::Unread)?,
+                        ),
                         tag => {
                             return Err(WireError::Tag {
                                 what: "a vCPU's guest time",
