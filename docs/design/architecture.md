@@ -8759,7 +8759,14 @@ alone, never seeded, so that a budget's reads never raise the bound they are jud
 Until 237f3ebe7 the medians of 3 were held within twice those under none, a multiple, and
 each read was waited on 600 s and past that while its microVM ran: on adacachy2 (32 CPUs)
 a read held within the least room, its microVM thrashing at its slice's `memory.high`, ran
-28 minutes reading all along, until it was ended by hand. It runs alone in its test binary
+28 minutes reading all along, until it was ended by hand. The judge's own test plays reads
+to it (`a_read_is_judged_by_the_pace_of_the_reads_held_to_none`: a crawl refused at its
+second look, a read keeping 16 times the least pace past the bound let through, a cold read
+with a second's stop followed to its end, a start that never comes refused): 1 of 1 on
+adacachy2 (Linux 7.3.3-1-cachyos x86_64, rustc 1.98.1) at 9472ec737, with clippy
+`--all-targets -D warnings` of shards and shards-vmm, and of shards-testguest for
+x86_64-unknown-linux-musl, clean. The E2E itself, on a KVM host with a user's systemd
+manager, is ROOT's. It runs alone in its test binary
 so other daemon tests do not compete between its phases (CI 41365265628: 2.06 times beside
 them; alone, 4 runs of 4 passed on Fedora 44, kernel 6.19.10, i9-14900HX, at 49ee67a5
 with the host at load 24 to 45, the slowest phase's median 0.46 to 1.34 times its run's
