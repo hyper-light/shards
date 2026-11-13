@@ -183,7 +183,7 @@ impl<D: Disk> Daemon<D> {
                     .name("give-back".into())
                     .spawn_scoped(threads, move || {
                         let before = super::budget::resident_file(pid);
-                        let gave = self.give_back_of(&id, Wait::WhileRuns(pid));
+                        let gave = self.give_back_of(&id, pid);
                         self.given_back(&vm);
                         if let Some(gave) = gave {
                             self.budgets.gave_back(pid, before, gave.freed);
@@ -209,13 +209,15 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// What microVM `id` gave back of what it holds cold, asked through it and waited for
-    /// as `wait` says; none where it gave nothing back, and why said.
-    pub(super) fn give_back_of(&self, id: &str, wait: Wait) -> Option<Gave> {
+    /// while its VM process `vm` runs (`Wait::WhileRuns`, judged by the give-backs it has
+    /// answered before); none where it gave nothing back, and why said.
+    pub(super) fn give_back_of(&self, id: &str, vm: u32) -> Option<Gave> {
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::RECLAIM,
             ..Default::default()
         };
         let asked = Instant::now();
+        let wait = Wait::WhileRuns(vm, &self.answers.reclaim);
         let quiet = self.exec_waiting(id, &spec, None, 64, wait);
         said_if_long(id, "giving back what it holds cold", asked.elapsed());
         match quiet {
@@ -293,7 +295,8 @@ pub(super) fn said_if_long(id: &str, what: &str, took: Duration) {
 fn given(q: &Quiet) -> Result<Gave, String> {
     let said = String::from_utf8_lossy(&q.output);
     let whole = said.ends_with('\n') && said.split_whitespace().count() == 2;
-    if !(whole && q.timed_out) && (q.timed_out || q.status != Some(0)) {
+    let cut = q.cut.is_some();
+    if !(whole && cut) && (cut || q.status != Some(0)) {
         return Err(said_of(q));
     }
     let mut amounts = said.split_whitespace().map(|n| n.parse::<u64>().unwrap_or(0));
@@ -303,19 +306,17 @@ fn given(q: &Quiet) -> Result<Gave, String> {
     })
 }
 
-/// Why an exec of the daemon's own came to nothing: it had no answer in time, and was ended;
-/// it ended with a status, and what it said, if anything; or its microVM ended it.
+/// Why an exec of the daemon's own came to nothing: its wait ended it, as its cut says; it
+/// ended with a status, and what it said, if anything; or its microVM ended it.
 pub(super) fn said_of(q: &Quiet) -> String {
     let said = String::from_utf8_lossy(&q.output);
     let said = said.trim();
-    match (q.timed_out, q.status) {
-        (true, _) if said.is_empty() => {
-            format!("no answer within {TAKE_TIMEOUT:?}, and so it was ended")
-        }
-        (true, _) => format!("no answer within {TAKE_TIMEOUT:?}, and so it was ended: {said}"),
-        (false, Some(code)) if said.is_empty() => format!("it ended with status {code}"),
-        (false, Some(_)) => said.to_string(),
-        (false, None) => "its microVM ended it".into(),
+    match (&q.cut, q.status) {
+        (Some(cut), _) if said.is_empty() => format!("{cut}, and so it was ended"),
+        (Some(cut), _) => format!("{cut}, and so it was ended: {said}"),
+        (None, Some(code)) if said.is_empty() => format!("it ended with status {code}"),
+        (None, Some(_)) => said.to_string(),
+        (None, None) => "its microVM ended it".into(),
     }
 }
 
@@ -370,55 +371,78 @@ impl Watching {
 
 #[cfg(test)]
 mod tests {
+    use super::super::health::Cut;
     use super::*;
 
-    fn quiet(output: &str, status: Option<i64>, timed_out: bool) -> Quiet {
+    fn quiet(output: &str, status: Option<i64>, cut: Option<Cut>) -> Quiet {
         Quiet {
             output: output.as_bytes().to_vec(),
             more: false,
             status,
-            timed_out,
+            cut,
         }
     }
 
-    /// What init's `RECLAIM` says it gave back is taken; a give-back that had no answer in
-    /// time is said to have had none, and was ended (PM M308: it was said as nothing at
-    /// all), and one that failed says why.
+    /// A stall as the daemon's wait refuses one ([`Cut::Stalled`]): a microVM that ran no CPU
+    /// over a whole W*, its kind's slowest answer of 100 ms, from the wait's start.
+    fn stalled() -> Option<Cut> {
+        let record = shards_api::Record::new();
+        record.teach(Duration::from_millis(100), Duration::from_millis(7));
+        let mut judge = shards_api::Judge::begin(&record);
+        let due = judge.due().unwrap();
+        while Instant::now() < due {
+            std::thread::sleep(due.saturating_duration_since(Instant::now()));
+        }
+        Some(Cut::Stalled(judge.found(shards_api::Found::Still).unwrap_err()))
+    }
+
+    /// What init's `RECLAIM` says it gave back is taken; a give-back its wait ended, its
+    /// microVM having run nothing past the slowest give-back seen, is said to have had no
+    /// answer, with the stall's facts (PM M308: it was said as nothing at all), and one that
+    /// failed says why.
     #[test]
     fn a_give_back_says_what_it_gave_or_why_it_gave_nothing() {
-        let gave = given(&quiet("1048576 2097152\n", Some(0), false)).unwrap();
+        let gave = given(&quiet("1048576 2097152\n", Some(0), None)).unwrap();
         assert_eq!((gave.freed, gave.unplugging), (1 << 20, 2 << 20));
-        assert_eq!(
-            given(&quiet("", None, true)).unwrap_err(),
-            "no answer within 10s, and so it was ended"
+        let stall = stalled();
+        let said = given(&quiet("", Some(137), stall.clone())).unwrap_err();
+        assert!(
+            said.starts_with("its microVM ran no CPU in ")
+                && said.contains(" past the slowest answer seen (100ms), ")
+                && said.contains(" into the wait (the least a microVM ran and still answered: 7ms in 100ms)")
+                && said.ends_with(", and so it was ended"),
+            "{said}"
         );
         assert_eq!(
-            given(&quiet("", Some(137), true)).unwrap_err(),
+            given(&quiet("", None, Some(Cut::Timeout(Duration::from_secs(10))))).unwrap_err(),
             "no answer within 10s, and so it was ended"
         );
         // Its answer whole before its exec was ended: what it gave; cut short, nothing.
-        let late = given(&quiet("420397056 536870912\n", None, true)).unwrap();
+        let late = given(&quiet("420397056 536870912\n", None, stall.clone())).unwrap();
         assert_eq!((late.freed, late.unplugging), (420_397_056, 536_870_912));
-        assert_eq!(
-            given(&quiet("420397056 5368", None, true)).unwrap_err(),
-            "no answer within 10s, and so it was ended: 420397056 5368"
+        let cut_short = given(&quiet("420397056 5368", None, stall)).unwrap_err();
+        assert!(
+            cut_short.ends_with(", and so it was ended: 420397056 5368"),
+            "{cut_short}"
         );
         assert_eq!(
-            given(&quiet(
-                "memory.reclaim: Device or resource busy\n",
-                Some(1),
-                false
-            ))
-            .unwrap_err(),
+            given(&quiet("memory.reclaim: Device or resource busy\n", Some(1), None)).unwrap_err(),
             "memory.reclaim: Device or resource busy"
         );
         assert_eq!(
-            given(&quiet("", Some(1), false)).unwrap_err(),
+            given(&quiet("", Some(1), None)).unwrap_err(),
             "it ended with status 1"
         );
-        assert_eq!(
-            given(&quiet("", None, false)).unwrap_err(),
-            "its microVM ended it"
+        assert_eq!(given(&quiet("", None, None)).unwrap_err(), "its microVM ended it");
+        let unread = Some(Cut::Unread {
+            pid: 4242,
+            failure: shards_api::ProcessFailure::CapacityUnavailable,
+        });
+        let said = given(&quiet("", Some(137), unread)).unwrap_err();
+        assert!(
+            said.starts_with("its microVM's process 4242 could not be read: ")
+                && said.ends_with(", and so it was ended"),
+            "{said}"
         );
     }
 }
