@@ -5389,8 +5389,8 @@ terminal that went away), and checks a client's enrollment again for each comman
 `shards remove client` ends its access at once. A join's refusal is the same whatever made
 it fail. The client's side (`client.rs`, `context.rs`) refuses here what a context does not
 carry yet, the client's terminal and files, read by shards' own parser of each command (a
-flag past another's value included); and where no daemon answers, it says so as each probe
-of its handshake goes, and waits on for as long as its user does, past the slowest handshake
+flag past another's value included); and where no daemon answers, it says so once, past what
+its path has shown, and waits on for as long as its user does, past the slowest handshake
 seen from a daemon reached before ("Its values derived", below). A connection that has done
 its handshake lives while its peer makes progress, its liveness checked as it is used, with
 no idle timeout (D176 part 6, "Over a slow link": 10 s of silence ended 2 of the first 20
@@ -6435,7 +6435,7 @@ stateless reset (§10.3), which ends the connection for that peer as its close w
 connection, its handshake's or established, keeps its place: a vanished owner's is freed only
 as its successor contends for it and it has not answered, within its probe timeout, the PING
 an earlier attempt sent it (`Driver::reclaim`, below), its successor refused and dialing again meanwhile; a stranger's
-handshake in flight holds it too. Every bounded endpoint shares the driver, so an
+handshake in flight holds it too, and gives it up the same way. Every bounded endpoint shares the driver, so an
 output endpoint's observer resubscribing after its close is taken at once, and so is the
 agent-control endpoint's third connection while the older drains (D238's `CONNECTIONS`). No
 literal: the places are the caller's admission, the close period the transport's own. Red at
@@ -6472,12 +6472,26 @@ replaced by:
   previous RTT is available, the initial RTT SHOULD be set to 333 milliseconds"), the only
   figure here, the protocol's own, and has no deadline: QUIC probes it as §6.2 does, its
   backoff doubling each probe timeout, and each probe past its first flight, while nothing of
-  the daemon's has been heard, is told typed to whoever waits (`Handler::unanswered`,
-  `client::Unanswered { probes, waited }`). The CLI says each on stderr
-  (`shards: NAME: no answer yet from ADDR: N probes over T`) and waits as long as its user
-  does; a daemon's relay logs each, and waits until that daemon answers or this one stops,
-  which hangs it up at once from its start (`client::HangUp`), as a probe its backoff puts ever
-  further off would not. A host that answers its port unreachable refuses at once: the
+  the daemon's has been heard, is asked typed of whoever waits whether it waits on
+  (`Handler::unanswered`, `client::Unanswered { probes, waited }`), the user's patience alone
+  deciding. What its user is told is a stall's, once a handshake, as an established
+  connection's is (ROOT's ruling A): a path with no window, a cold start's or a marked one's,
+  is told at the first probe past the probe timeout RFC 9002 gives a path with no RTT sample
+  (`tls::Known::COLD_PTO`: §5.3 starts smoothed_rtt at kInitialRtt and rttvar at half of it,
+  §6.2.1's PTO is smoothed_rtt + max(4·rttvar, kGranularity) with no max_ack_delay in the
+  handshake's spaces: 999 ms, three kInitialRtt, the first probe a cold start sends), and a
+  path with one at its run-out (below), typed `client::Stall::Unreached { waited, window }`
+  (`client::Told`). The CLI says it on stderr (`shards: NAME: no answer yet from ADDR in T;
+  still waiting (…; ^C ends this)`) and waits as long as its user does; a daemon's relay logs
+  it the same way, and waits until that daemon answers or this one stops, which hangs it up at
+  once from its start (`client::HangUp`), as a probe its backoff puts ever further off would
+  not. Each probe was told from 1e4c5a905: a marked path starts its probes from its own RTT,
+  and on a loaded host a reached one's handshake probes within its window, so a command's
+  stderr held "shards: gpu: no answer yet from 127.0.0.1:44476: 4 probes over 424.6µs" (ROOT's
+  KVM run at 21a65b459 on adacachy2, `tests/context.rs`'s
+  `a_policy_through_a_context_is_the_clients_its_builder_the_machine`); red and green so in
+  `client.rs`'s `a_handshake_within_its_paths_window_is_told_nothing_and_once_past_it` and
+  `a_handshake_with_no_window_is_told_once_past_the_cold_probe_timeout`. A host that answers its port unreachable refuses at once: the
   client's socket is connected to its one peer (`Driver::aim`), so its ICMP reads as a refusal
   (ECONNREFUSED; Windows' WSAECONNRESET), said so, and the record kept as it was, whichever of
   its next send and its next read is told of it (`Driver::flush_datagrams`): Linux gives a
@@ -6494,9 +6508,10 @@ replaced by:
   nothing heard from it (its Initial and Handshake packets count; before its first, nothing
   does, QUIC's probes being this side's own sends) past the later of when it was last heard and
   that timeout, it has run out. Run out, it is marked, told once, typed (`Handler::ran_out`,
-  `RanOut::Handshake { waited, window }`), and its window let go (`Liveness::handshake_ran_out`):
-  it goes on as a cold start's does, with no deadline, each probe told to whoever waits, until it
-  ends or its caller gives up, as every wait after a run-out follows the party's liveness and
+  `RanOut::Handshake { waited, window }`, to its user `Stall::Unreached` with its window), and
+  its window let go (`Liveness::handshake_ran_out`): it goes on as a cold start's does, with no
+  deadline, each probe asked of whoever waits and nothing more told, until it ends or its
+  caller gives up, as every wait after a run-out follows the party's liveness and
   progress (the person's ruling; D222's "a run-out learns nothing"). One that goes past its
   window and its probe timeout both while it is heard has run out too, and goes on, marked. A
   marked record's next handshake waits as a cold start does, until a handshake ends again.
@@ -6569,8 +6584,8 @@ replaced by:
   its commands up (`Controls::hang_up`). A stall still unanswered as its connection ends is the
   path's lost silence (`Liveness::lost`: the silence before the send that stalled); one its
   answer ended is the peer's slowness, and records none. What bounds a driver's resources is
-  the reclaim as a newcomer contends (`Driver::reclaim`): it asks each established holder for
-  an answer (a PING) and refuses the newcomer, and at a later attempt lets go of the holder
+  the reclaim as a newcomer contends (`Driver::reclaim`): it asks each holder, its handshake in
+  flight or ended, for an answer (a PING) and refuses the newcomer, and at a later attempt lets go of the holder
   unheard longest of those that have not answered that PING within their own probe timeout
   (`Liveness::unanswering`), its handler told as QUIC's `TimedOut`; a holder that answers,
   however late, keeps its place, and newcomers dialing again put off no judgement, as an ask
@@ -6595,8 +6610,28 @@ replaced by:
   established alike, as its descriptors (`Driver::hold_connections`, `Host::handshakes`:
   `platform::descriptor_limit`, as each connection served may hold a command and its stdio,
   so no more could each be served one; red with no bound,
-  `a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer`). Owed, as for
-  handshakes: the memory a connection holds, measured, as its second term. No wait is
+  `a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer`). ROOT's ruling on
+  #72's handshakes (2026-11-13): a handshake in flight holding a place is judged as any holder
+  is. Only established holders were asked, so a client gone mid-handshake held its place for
+  good: a bounded endpoint's successor refused at every attempt
+  (`a_handshake_unheard_past_its_probe_timeout_gives_its_place_and_one_heard_keeps_it`, red so
+  at 494ceb1dc: one place held by a hand-driven client's Initial, which never reads its
+  server's flight), and the listener's own rule for handshakes, the oldest given up for the
+  newest past `Host::handshakes` (`Driver::hold_handshakes`), never ran, as the listener's
+  places were the same number and a newcomer past them was refused before it was looked at.
+  That rule is gone: the reclaim covers it, and it would have given up a live handshake for
+  any newer one. A handshake is judged by its own spaces' probe timeout, which counts no
+  `max_ack_delay` (RFC 9002 §6.2.1: Initial and Handshake packets are acknowledged at once,
+  RFC 9000 §13.2.1), read from its transport as its application-data probe timeout less its
+  peer's `max_ack_delay` (`Connection::probe_timeout`, `Connection::peer_max_ack_delay`; no
+  ACK_FREQUENCY frame, which raises the former, is sent before the handshake ends); before its
+  first RTT sample it is the initial RTT's (§6.2.2: 333 ms, so 999 ms), and a client that
+  acknowledges nothing gives none. No deadline of the handshake's own, and no idle timeout. A
+  handshake heard since the ask keeps its place, the test's client answering each ask over
+  three such probe timeouts while newcomers were refused. Its failure is typed as an
+  established holder's: a live client whose answer comes later than that loses its place, its
+  handler told `TimedOut`, and dials again. Owed: the memory a connection holds, measured, as
+  its second term. No wait is
   judged sooner than QUIC's own loss recovery judges its send, at its probe timeout (§6.2.1,
   the smoothed RTT, four times its variation and the peer's `max_ack_delay`;
   `Connection::probe_timeout`, hyper-quic's patch Q7): a run-out is past the window and that
@@ -6619,11 +6654,13 @@ replaced by:
   open invitations, none while it holds none, and where every place is taken, a newer stranger
   takes the place of the one that has held it longest without joining, which is let go
   (server.rs `judged`), once the machine has said whom its key is.
-- *Handshakes held at once* (none before): a daemon holds as many handshakes from keys not yet
-  known as its descriptors allow (`Host::handshakes`: the process's limit,
-  `platform::descriptor_limit`, as each connection served may hold a command and its stdio),
-  and past them the newest takes the place of the oldest still unanswered (`Driver::hold_handshakes`).
-  Owed: the memory a handshake holds, measured, as its second term.
+- *Handshakes held at once* (none before): a daemon holds as many connections, handshakes from
+  keys not yet known among them, as its descriptors allow (`Host::handshakes`: the process's
+  limit, `platform::descriptor_limit`, as each connection served may hold a command and its
+  stdio), and past them a newcomer takes the place of a holder, its handshake in flight or
+  ended, unheard past its probe timeout since an earlier newcomer asked it
+  (`Driver::hold_connections`, above; the oldest-first rule it replaced never ran). Owed: the
+  memory a handshake holds, measured, as its second term.
 - *Output's high-water mark* (was 1 MiB of frames held before a reader waited): none. A reader
   of a command's output (`server.rs`) or of a client's stdin (`client.rs`) reads again once the
   transport has taken all it read: the peer's flow control (RFC 9000 §4.1) is the only
