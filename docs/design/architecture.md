@@ -10856,6 +10856,39 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     set it again, all within `TIMEOUT`: now a `Patience`, a budget set again once the daemon
     has answered the one before (a budget set anew is always said, daemon/budget.rs) or once
     the slice has moved so that the budget it leaves is another.
+  - *daemon.rs.* Waits bounded by `TIMEOUT`, 5 s, 10 s, 30 s, 60 s or 600 s are judged: a
+    client starting its daemon, its end on its signal and its daemon's look at the lock
+    (`Wait` on the client, then on the daemon its log names), the background client's stop,
+    a slot taken by hand (`silent_slot`, a `Patience` over `try_slot`'s single look), the
+    events stream's head (`judged`, the daemon killed where refused), the cost measurement's
+    rounds, a restored home's daemon's end and a killed daemon's runs' ends (`Wait` on each
+    process, its home or daemon gone, its threads said where refused), the followers' ends.
+    Sleeps that stood for an event are that event: "past its idle time" (1.5 s past a 1 s
+    idle) is another daemon of this build with that idle time, started after this one's idle
+    clock began, exiting idle (`an_idle_time_ran`); "waiting and following by now" (500 ms)
+    is the follower's first line; "once its client's going has woken it" (300 ms) is a second
+    due mark, which only the daemon's watch can see; the pool's "the same for 300 ms" is a
+    warm VM listed, a refill being a template's VM new since the run was asked for other than
+    the run's own; the starved daemon's 200 ms with no slot is its own word that it is out;
+    a budget's re-set and a home's remaking after nothing lives that could remake it need no
+    window. "Never" watches end at a later event: the pools within their bound until their
+    daemon's stop returns, within their most until their keep-alive empties them (`sleep(KEEP)`
+    before that wait goes). The starved daemon's "collected while out" is the daemon's log
+    order: its "offering slots again" before its collection's word. Upper bounds on elapsed
+    time with no later event to order are measurements: the stop with its own stop timeout
+    (its `>= 1 s`, the test's `--stop-timeout 1`, stays), a stop with a silent client in hand
+    or a download under way, a client past the cap served once one leaves, `ps` beside the
+    waiters, the refused settings and the daemon that cannot serve, the restored runs of a
+    pool of none, the signal's end, a collection after the lease's end, the starved daemon's
+    CPU a second and the 100 idle followers' (their 30 ms and 100 ms thresholds go). The
+    "sent no request in" round is gone: no such word exists since PM M545, the daemon waiting
+    on a silent client as long as it lives, which also makes the cap test's and the silent
+    stop's "short of the 10 s request deadline" moot.
+  - Left as they are, being no wait: the poll paces in judged loops; the measurement windows
+    (the cost test's 5 s settle and 10 s idle window, the idle-wakes 3 s window, the starved
+    daemon's 1 s window); the pools test's own inputs (`SHARDS_POOL_KEEP`'s 15 s, the runs'
+    spacing from a second, doubling); lower bounds from a test's own inputs (a stop past its
+    35 s stop timeout's 30 s).
   - Red at 68770070f (tests/harness.rs `red_a_judged_read_goes_on_while_its_party_works`,
     adas-mac-studio.local, macOS arm64, kiln r1328): the old shape of these reads, a read
     timeout at its test's `TIMEOUT` scaled to 100 ms, cut a stand-in that answers after a
@@ -10865,9 +10898,15 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   - What would falsify it: a warm VM's read refused while its VM process ran; a let-go
     measured whose VM had ended first; a budget set again before the daemon answered the
     one before while the slice stood still.
-  - The gaps. A let-go that never comes holds its wait while the idle VM's CPU shows
-    progress, to its CI job's limit, its account said then, as any cold wait on a hung live
-    party does. ROOT owes the real-VM runs of warm.rs and budget.rs.
+  - The gaps. A let-go that never comes, a daemon that wakes in every window or never rests,
+    a run that outlives its killed daemon spinning: each holds its wait while its party's CPU
+    shows progress, to its CI job's limit, its account said then, as any cold wait on a hung
+    live party does. Two orderings have no event of the daemon's to stand on, and hold their
+    claim only at one look: the cap test's listing unserved as one in hand leaves (nothing
+    marks it waiting at its list), and a collection due under the store's lease found not yet
+    collected as the lease ends (nothing marks the collector waiting on it); the waiters
+    test's `wait` client has no word of its own, ordered only by its start before the
+    follower's. ROOT owes the real-VM runs of warm.rs, budget.rs and daemon.rs.
 
 **The storm's watch, by the host's word (audit of picked constants, 2026-11-09).** The test
 guest's storm said its main thread stood still after 15 s and took its host's stream for
