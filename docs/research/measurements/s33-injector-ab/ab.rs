@@ -927,7 +927,7 @@ fn order(i: usize) -> [usize; 2] {
 fn requests(config: &Config, report: &mut Report) {
     let root = root();
     let addr = host(host_config(&root));
-    let upstream = Upstream::new(vec![root.der().clone()]).unwrap();
+    let upstream = Upstream::new(&shards_verify::Platform::read(), vec![root.der().clone()]).unwrap();
     let mut credentials = credentials(run_ca(), upstream);
     let configs = [
         guest_config(credentials.ca.der().to_vec().into()),
@@ -1072,7 +1072,7 @@ fn child() {
             });
             let mut upstream = None;
             timed("upstream", &mut said, &mut || {
-                upstream = Some(Upstream::new(vec![root.clone()]).unwrap())
+                upstream = Some(Upstream::new(&shards_verify::Platform::read(), vec![root.clone()]).unwrap())
             });
             let mut credentials = credentials(made.unwrap(), upstream.unwrap());
             let config = guest_config(credentials.ca.der().to_vec().into());
@@ -1116,7 +1116,7 @@ fn timed(name: &str, said: &mut String, f: &mut dyn FnMut()) {
 fn codings(config: &Config, report: &mut Report) {
     let root = root();
     let addr = host(host_config(&root));
-    let upstream = Upstream::new(vec![root.der().clone()]).unwrap();
+    let upstream = Upstream::new(&shards_verify::Platform::read(), vec![root.der().clone()]).unwrap();
     let mut credentials = credentials(run_ca(), upstream);
     let guest = guest_config(credentials.ca.der().to_vec().into());
     let mut s = Scratch::new();

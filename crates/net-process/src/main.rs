@@ -50,9 +50,12 @@ struct Args {
     resolvers: Vec<(std::net::Ipv4Addr, u16)>,
     /// What its spawner handed it (Windows: `--grants HANDLE`, shards_ipc's pipe).
     grants: Option<String>,
-    /// The run has credential grants (`--credentials`, D242): its CA's key and its injector's
-    /// TLS to a granted host are made before the process confines itself, its CA's
-    /// certificate once the grants come.
+    /// The run has credential grants (`--credentials`, D242): its CA's key is made and the
+    /// host's roots read before the process confines itself, its CA's certificate and its
+    /// injector's TLS to a granted host once the grants come, with the run's upstream roots.
+    /// It takes no trust from its environment: on Linux the host's roots are read from the
+    /// system's directories, never `SSL_CERT_FILE` or `SSL_CERT_DIR` (shards_verify::Platform);
+    /// elsewhere the OS verifies and reads no variable.
     credentials: bool,
 }
 
@@ -171,8 +174,8 @@ impl Args {
     }
 
     /// What a run with credential grants needs made now, before the process confines itself
-    /// (shards_net::Prepared: its CA's key, and its injector's TLS, whose verifier reads the
-    /// host's roots now on Linux); none where it has none.
+    /// (shards_net::Prepared: its CA's key, and the host's roots, read now on Linux and never
+    /// from its environment); none where it has none.
     fn prepared(&self) -> Result<Option<shards_net::Prepared>, String> {
         self.credentials.then(shards_net::Prepared::new).transpose()
     }

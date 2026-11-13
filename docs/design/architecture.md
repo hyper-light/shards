@@ -25398,7 +25398,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built; log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built, the daemon's runs' and an orchestrator's (api-run); log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -25931,6 +25931,39 @@ steer once the end has come. `MemberEnd::wait` gives the member's status.
 - *Its cost, unmeasured*: one built-in exec per steer (a connection to the VM process, the
   guest's dial of `EXEC_PORT`, a fork of init's). Signals and resizes come at a person's or an
   orchestrator's pace; their real-VM cost is owed to ROOT (R14).
+- *A member it has not* (as api-run's endpoint has no member stream to scope one by): a lane to
+  a member the run has not, or to one of files alone, is refused `Refused`, as its init refuses
+  an exec in one (D243), before it waits on the run's start (`members::Hosting::active`).
+
+*An orchestrator's run's member lanes* (goal 58; api-run, D252). kiln's harnesses run through
+api-run, whose endpoint admits execs (D254's pairing), and with them it hosts its members' own
+lanes and its execs through the daemon's hosts (`members::host`, `execs::host`; shared, not
+copied):
+- *Its ends*: api-run asks `member-ends` of every run already (D231); its `follow` keeps each
+  `MEMBER_ENDED` its VM relays in the run's end table (`members::Ends`), beside relaying it to its
+  orchestrator, and the run's end (its VM's link closing) closes the table and every wait.
+- *Its start*: each lane, exec and steer waits for its command's `STARTED` (`Agent::started`, a
+  condvar over `Begun`: `Awaited`, `Started`, `Over`; an event wait, no probe), and is refused
+  `Failed` once the run is over, started or not. api-run has no pause, so no steer waits on one.
+- *Its steering and execs*: a signal goes as the daemon's do, init's `SIGNAL` built-in handed to
+  its VM as `EXEC_RUN` with `EXEC_TOLD`, and a resize of a member with a terminal of its own
+  (`MemberSpec::terminal`) as D244's `RESIZE`; a controller's exec as `EXEC_RUN` with its own
+  flags. Each goes through `hand_exec`, then `send_exec`, the one sender api-run's own built-ins
+  (`builtin`, `notice_exec`) use too: its client's end held until `EXEC_TAKEN` (M24), let go
+  where its link has closed. Its answer comes by its exit, as the daemon's does;
+  `Fault::Unsteered` is the refusal its controller matches.
+- *Its budget*: the run host's own (`Charge`, held to the host's available memory as the daemon's
+  managed budget is), which its execs, its MCP connections and its member lanes are charged to.
+  No new literal: a payload's size is its number's eight bytes, its flags' one and its spec's
+  encoded length.
+
+Tested: `api_run::hosted::tests::an_orchestrators_run_hosts_its_lanes_as_the_daemons_runs`
+(through api-run's endpoint, its controller in the zero run: member 1 told running once its
+command started, `signal(15)` handed to its VM as `SIGNAL` with `EXEC_TOLD` and taken, a resize
+of it, with no terminal, refused `Terminal`, its end as its init told it read from its lane,
+member 0, files alone, refused `Refused`, its MCP connection carried both ways, a lane and an
+MCP ask after the run's end refused `Failed`, its budget given back whole). Real-VM runs owed to
+ROOT.
 
 *The signal's alternatives* (R02). (a) A run-protocol kind of its own, a member's signal on the
 signal connection answered on the workload connection, through an IPC kind its VM process
@@ -26489,7 +26522,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; kiln's broker answering sign-ins and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; kiln's broker answering sign-ins and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -27511,6 +27544,83 @@ lease answered 503").
 - *Owed.* ROOT: CI's matrix on main; the guard-removal mutations in STEP7.md; a real-VM run with a credential grant
   whose broker refuses its lease (an api run on KVM, HVF and WHP, the guest answered 503 once, on HTTP/1.1 and HTTP/2).
 
+**Built: the injector's upstream roots, explicit and the same on every OS** (ROOT's ruling, #74 credentials;
+`crates/api/src/image.rs` `ImageSpec::upstream_roots`, `UpstreamRoot`, `upstream_roots`; `crates/api/src/image/wire.rs`
+`Request::upstream_roots`, image channel version 26; `crates/dns/src/credential.rs` `check_roots`;
+`crates/net/src/lib.rs` `Prepared`, `encode_credentials`, `decode_credentials`; `crates/net/src/inject.rs`
+`Upstream::new`; `crates/verify/src/lib.rs` `Platform`, `verifier_of`).
+- *Before.* The injector's host side trusted the host's roots alone (`Prepared::new` made `Upstream::new(Vec::new())`).
+  On Linux its verifier read the system's roots through rustls-native-certs, whose `load_native_certs` (0.8.4) takes
+  `SSL_CERT_FILE` and `SSL_CERT_DIR` first and then the system's not at all, as openssl-probe's `probe` (0.2.1) does:
+  a variable of the network process's environment could replace its trust store, on Linux alone. macOS (trustd,
+  shards-verify's `apple.rs`) and Windows (CryptoAPI, rustls-platform-verifier) took no root a run could name, so the
+  injector's real-VM tests were owed there. Those tests named a test CA as `SSL_CERT_FILE` in the run host's
+  environment, which never reached the network process: its spawner gives it `netproc::child_env` alone
+  (`SHARDS_LOG`, `SHARDS_TIMING`), so the tests would have failed on Linux as well.
+- *Decision.* A run's extra roots are its orchestrator's to name, typed, and nothing else adds one.
+  `ImageSpec::upstream_roots: Vec<UpstreamRoot>`, where `UpstreamRoot` is `Der(Vec<u8>)`, one X.509 certificate
+  (RFC 5280), or `Pem(String)`, one or more (RFC 7468 §5: a bundle's, with text allowed between its sections). The
+  real use is a corporate TLS proxy's CA; tests use the same field. They serve injected flows alone (the hosts of
+  the run's credential grants and sign-ins); a run that injects nothing sends no `NET_CREDENTIALS`, and its roots go
+  nowhere.
+  - `request()` reads each PEM with rustls-pki-types' reader. It refuses a PEM of no certificate, one whose section
+    does not parse, and one with a section of anything else (a key). It checks the count and each DER against
+    `WIRE_MOST` (`check_roots`, `Field::UpstreamRoot` and `Field::UpstreamRoots`), then parses each DER as webpki
+    parses a trust anchor (`anchor_from_trusted_cert`, what rustls's `RootCertStore::add` does). Each refusal is
+    `ImageRefusal::Spec { what: "an upstream root", .. }`, naming its place and never its bytes.
+  - The image channel carries each DER (version 26). The run host checks the bounds again and sends the roots
+    ahead of the grants on `NET_CREDENTIALS`, each behind two bytes of length and their count behind two more: the
+    wire's own bound, which is why `WIRE_MOST` is the limit.
+  - The network process reads the host's roots as it starts, before it confines itself (`shards_verify::Platform`,
+    held in `Prepared`). It makes the injector's TLS as `NET_CREDENTIALS` comes, from those roots and the run's
+    (`verifier_of`). A root that is no certificate breaks the run host's contract, and nothing is taken.
+  - Its environment adds nothing. On Linux `Platform::read` loads every certificate in openssl-probe's
+    `candidate_cert_dirs()` (`/etc/ssl/certs`, `/etc/pki/tls/certs`, `/etc/security/certificates`) through
+    rustls-native-certs' `load_certs_from_paths`, the directories rustls-platform-verifier's own reader searches.
+    It never reads `SSL_CERT_FILE` or `SSL_CERT_DIR`. `verifier_of` builds rustls's `WebPkiServerVerifier` over
+    those roots and the run's, which is what rustls-platform-verifier 0.7.1's Linux verifier is
+    (`verification/others.rs`), or the same no-roots refusal as before when there are none. On macOS and Windows,
+    `verifier_of` is `verifier`'s OS verification with the run's roots, each first parsed as a trust anchor
+    (macOS's verifier would otherwise hold a malformed one unread). The OS reads no variable.
+  - Refused alternatives:
+    - Clearing the variables in the network process's `main` (`std::env::remove_var`, unsafe in edition 2024).
+      It covers every reader but is a process-wide side effect, and the injector's own constructor stays
+      untestable without it.
+    - Carrying the roots on the network process's command line. Windows bounds a command line at 32767 UTF-16
+      units (CreateProcess), below one root at `WIRE_MOST` in hex.
+    - Rebuilding the verifier from the system's files after `NET_CREDENTIALS`. Landlock has closed them on Linux
+      by then (`confine::at_start`).
+  - The registry's client (D19) keeps `verifier`, which honors `SSL_CERT_FILE` as Go does on Linux.
+- *Literals.* None new: `WIRE_MOST` is the wire's two-byte length (above); the directories are openssl-probe's.
+  - *Cold start:* the roots are read once per network process, at its start, as before.
+  - *Failure:* each entry is refused by field at `request()` and again at the run host. A distribution whose bundle
+    lies only outside those directories (openssl-probe's OpenELEC `/etc/pki/tls/cacert.pem` and Entware
+    `/opt/etc/ssl/certs`) gets fewer roots, never more: its injected flows are refused, never widened.
+- *Tests.* `the_environment_adds_no_root_to_the_injector` (shards-net) runs itself again in a child process whose
+  `SSL_CERT_FILE` and `SSL_CERT_DIR` name a test root, and checks that the root is refused until the run names it.
+  It is red on Linux under the old reader and vacuous on macOS and Windows, where the OS verifies.
+  `a_runs_upstream_roots_are_what_its_injector_trusts_beside_the_hosts` (shards-net) carries roots through
+  `NET_CREDENTIALS`. `a_runs_upstream_roots_are_certificates_the_network_process_wire_carries` (shards-api) covers
+  DER and PEM bundles, refusals by field, and both `WIRE_MOST` bounds. `a_runs_upstream_roots_cross_the_channel`
+  (wire) round-trips them. api_image's three injector tests name their CA through `upstream_roots` and no longer
+  skip macOS and Windows.
+  - *Red.* Red at 27fb710e5, the tests alone. They do not build against the old API (shards-net: 8 errors;
+    shards-api: 17).
+  - *Linux (adacachy2, x86_64, b6814785d).* T1 and T2 green; shards-verify 2 of 2. Mutation: `Platform::read` taking
+    rustls-native-certs' `load_native_certs` (which reads the environment first). T1 then fails: "the injector
+    trusted a root its environment named".
+  - *macOS (adas-mac-studio.local, arm64).*
+    - Tests: shards-verify 3 of 3; shards-dns `credential` 5 of 5; shards-net (upstream_roots, the_environment,
+      credential, lease, sign_in, inject::tests, tcp::) 67 of 67; shards `api_run::tests` 41 of 41.
+    - `cargo test -p shards --profile test-release --test api_image --no-run` builds.
+    - Clippy (`-D warnings`, all targets) is clean on aarch64-apple-darwin, x86_64-unknown-linux-gnu (zig) and
+      x86_64-pc-windows-msvc (xwin), for shards-verify, shards-dns, shards-net, shards-net-process, shards-api and
+      shards.
+    - shards-api's `upstream_roots`, `a_grants_fields`, `image::wire::tests` and `image::tests`: 38 of 38 at
+      fd61d46da and on the tree merged with main 3b3c6e019 (b6e6f4b9c); fmt clean.
+- *Owed.* ROOT runs the three api_image injector tests on KVM, HVF and WHP (the first runs on HVF and WHP), and CI's
+  matrix on main.
+
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
 the network process telling its run host of a capture, a refresh and a revocation, the run host its
 orchestrator, and the injector capturing and answering outside are built, its second); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
@@ -28472,10 +28582,9 @@ be Shards' own code. Hex's acceptance (step11-b-run-host-endpoint) is held to he
   `Transport(Peer)`: typed, never `Silent`. (g) asks never `Silent`, as (f) does.
 
 **Amended** (goal 58). The run host's endpoint admits execs too, as the daemon's runs do
-(`managed::exec_admissions`), so that it hosts its members' MCP connections (D254) through the
-daemon's exec host; an exec, which it runs none of yet, is refused `Failed`, and a member's own
-lane, which it hosts none of yet, is refused by its endpoint (`Closed`), until goal 58's
-member-lanes slice. Its asks name the zero run and generation 0, as its socket lanes do, its
+(`shards_api::control::exec_admissions`), so that it hosts its members' MCP connections (D254) through the
+daemon's exec host, and hosts its execs and its members' own lanes (D238) through the daemon's
+hosts too. Its asks name the zero run and generation 0, as its socket lanes do, its
 endpoint serving no member stream (D238).
 
 **Literals.** None new. The window and lanes are the caller's (R03). Loopback is where step 5's
@@ -28855,11 +28964,11 @@ hosts' stubs (`daemon` through a stand-in VM, api-run's `mcp_accepted`).
   bridge, or that its budget has no room for, is let go, logged by its typed cause (`Unheld`).
 - *api-run's hand-off and endpoint.* Its `follow` holds each connection as the daemon does
   (`mcp_accepted`, its watcher on a thread of the run's scope), its Windows leg as D251's lanes'.
-  Its endpoint now admits execs as the daemon's runs do (`managed::exec_admissions`, one source
+  Its endpoint now admits execs as the daemon's runs do (`shards_api::control::exec_admissions`, one source
   for both: an output's record `run::CHUNK`, a stdin's a member's), so that an MCP ask reaches
   its host, the daemon's exec host (`host_lanes`), its budget its own (`Charge`, held to the
-  host's available memory); an exec it runs none of yet is refused `Failed`, a member's own lane
-  `Closed` (D252's amendment). An endpoint of no member stream takes asks in the zero run (D238).
+  host's available memory); its execs and its members' own lanes go through the daemon's hosts
+  as well (D238's orchestrator's member lanes). An endpoint of no member stream takes asks in the zero run (D238).
 - *A run moved or resumed* (D176). A save keeps the run's MCP token beside its engine's
   (`Resume::mcp`, hex), its restore reads it back (`Resumable::mcp`), and a resumed request
   brings, after the save's tokens, a spec of what the save kept of its tokens, `engine=` and
@@ -28873,10 +28982,10 @@ Tested (adas-mac-studio-2.local, macOS arm64): `daemon::managed::tests::a_runs_m
 the controller's end the harness's half-close, its end told `Exited(0)` once the harness's side
 ended; a member with no bridge refused `Refused`; one its budget has no room for let go
 `Capacity`; the run's end letting go what is held and refusing the next ask `Failed`; every
-charge given back), `api_run::hosted::tests::an_orchestrators_run_carries_its_members_mcp_connections`
+charge given back), `api_run::hosted::tests::an_orchestrators_run_hosts_its_lanes_as_the_daemons_runs`
 (api-run's endpoint, its controller in the zero run: an MCP connection held as its VM handed it
-over and carried both ways; a member given no bridge refused `Refused`, an exec `Failed`, a
-member's own lane `Closed`, an ask after the run's end `Failed`; its budget given back whole),
+over and carried both ways; a member given no bridge refused `Refused`, an ask after the run's
+end `Failed`; its budget given back whole; its member lanes, D238),
 `api_run::hosted::tests::a_members_mcp_connection_is_held_where_its_run_gave_it_a_bridge`,
 `api_run::tests::a_bridge_is_a_running_members_once_and_needs_the_runs_control`,
 `daemon::tests::a_members_mcp_connection_its_run_gave_no_bridge_is_answered_and_let_go`,

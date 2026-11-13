@@ -113,6 +113,7 @@ fn boot_member(home: &TempDir, image: &str, terminal: bool, stdin: bool) -> Box<
         control: None,
         gpu_devices: Vec::new(),
         sign_ins: Vec::new(),
+        upstream_roots: Vec::new(),
     };
     booted(&ImageShards::new(), &spec).unwrap()
 }
