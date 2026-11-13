@@ -1440,7 +1440,7 @@ const TOOLS: &str = r#"{"tools":[
 {"name":"send","description":"Sends a peer the caller may send requests a request; its ID, which the peer's answer carries.","inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}},
 {"name":"receive","description":"What peers have sent the caller and it has not taken: their requests, and their answers to its own, each a text or a file (its name, its size, and its bytes in Base64).","inputSchema":{"type":"object","properties":{}}},
 {"name":"answer","description":"Answers a request a peer sent the caller, by its ID.","inputSchema":{"type":"object","properties":{"to":{"type":"string"},"id":{"type":"integer"},"text":{"type":"string"}},"required":["to","id","text"]}},
-{"name":"hand","description":"Hands a peer a file of the caller's scratch, /tmp: a request where the caller may send the peer requests, or, with id, the answer to its request of that ID. The file is a regular one, which the caller's group may read, of at most 1 MiB less its name; its server opens it beneath /tmp, through no link, and reads it whole.","inputSchema":{"type":"object","properties":{"to":{"type":"string"},"path":{"type":"string"},"id":{"type":"integer"}},"required":["to","path"]}},
+{"name":"hand","description":"Hands a peer a file of the caller's scratch, /tmp: a request where the caller may send the peer requests, or, with id, the answer to its request of that ID. The file is a regular one, which the caller's group may read, of at most what one message to the peer holds less its name, which a refusal names; its server opens it beneath /tmp, through no link, and reads it whole.","inputSchema":{"type":"object","properties":{"to":{"type":"string"},"path":{"type":"string"},"id":{"type":"integer"}},"required":["to","path"]}},
 {"name":"run","description":"Runs a JavaScript program (ECMAScript, QuickJS-NG) that calls the tools above, many in one round trip, in a sandbox with the caller's grants and no more: no files, no network, no processes. The program is the body of an async function, in strict mode: await the tools, and return a value, which comes back as JSON; a tool's refusal is thrown as an Error, and an error the program does not catch comes back with its stack, at the program's own lines and columns. send, answer and hand also give the broker's typed receipt of what they did: as the cause of the Error they throw, and as the broker property of the value they return. timeout_ms, if given, ends it past that many milliseconds.\n\ndeclare const shards: {\n  whoami(): Promise<string>;\n  mcp(): Promise<Array<{ name: string; remote: true; url: string } | { name: string; remote: false; dir: string; command: string[] }>>;\n  peers(): Promise<Array<{ name: string; send: boolean; answer: boolean }>>;\n  send(to: string, text: string): Promise<{ id: number }>;\n  receive(): Promise<Array<{ from: string; kind: \"request\" | \"answer\"; id: number; text?: string; file?: { name: string; size: number; data: string } }>>;\n  answer(to: string, id: number, text: string): Promise<{}>;\n  hand(to: string, path: string, id?: number): Promise<{ id: number } | {}>;\n};","inputSchema":{"type":"object","properties":{"code":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1}},"required":["code"]}}
 ]}"#;
 
@@ -1470,9 +1470,10 @@ fn call(
     if let Some(request) = broker::Request::receive(name, args) {
         let request = match request {
             Ok(request) => request,
-            Err(error) => return Some(Dispatched::Effect(format.refused(error, &p.label, ""))),
+            Err(error) => return Some(Dispatched::Effect(format.refused(error, &p.label, "", None))),
         };
         let to = request.destination();
+        let path = request.path();
         let peer = peers
             .iter_mut()
             .find(|peer| peer.label == to)
@@ -1496,7 +1497,7 @@ fn call(
             .and_then(|authorized| authorized.reserve(format))
         {
             Ok(reserved) => reserved.execute().present(),
-            Err(error) => format.refused(error, &p.label, to),
+            Err(error) => format.refused(error, &p.label, to, path),
         };
         return Some(Dispatched::Effect(terminal));
     }
@@ -2217,9 +2218,18 @@ mod tests {
         );
         let refused = |path: &str| handed(&p, path, message).unwrap_err().reason;
         assert_eq!(refused("/tmp/key"), broker::Reason::FileIo(Some(libc::ELOOP)));
-        assert_eq!(refused("/tmp/pipe"), broker::Reason::FileKind);
-        assert_eq!(refused("/tmp/d"), broker::Reason::FileKind);
-        assert_eq!(refused("/tmp/big"), broker::Reason::TooLong);
+        assert_eq!(refused("/tmp/pipe"), broker::Reason::FileKind(broker::Kind::Fifo));
+        assert_eq!(
+            refused("/tmp/d"),
+            broker::Reason::FileKind(broker::Kind::Directory)
+        );
+        assert_eq!(
+            refused("/tmp/big"),
+            broker::Reason::FileSize {
+                size: u64::try_from(most + 1).unwrap(),
+                most
+            }
+        );
         assert_eq!(refused("/tmp/../x"), broker::Reason::FileIo(Some(libc::EXDEV)));
         assert_eq!(refused("/x"), broker::Reason::Path);
         p.scratch = None;
@@ -2227,6 +2237,139 @@ mod tests {
             handed(&p, "/tmp/out.txt", message).unwrap_err().reason,
             broker::Reason::NoScratch
         );
+    }
+
+    /// What `hand` refuses, its server says as D139 words it, naming the path its caller
+    /// named and why, and types the cause with what those words name: the OS's code, the
+    /// file's kind, its size and the most a message to its peer holds of it. The files are
+    /// planted as `a_harness_is_handed_files_and_no_link_fifo_or_giant` plants them, with a
+    /// directory, a socket, a file that grows past the most as it is read, a NUL and no
+    /// scratch beside them; the regular file is still handed.
+    #[test]
+    fn a_refused_hand_names_its_file_and_why() {
+        let mut p = prepare_for_test();
+        let tmp = shards_testdir::TempDir::new("hand-why").unwrap();
+        std::fs::write(tmp.join("out.txt"), "hello").unwrap();
+        std::os::unix::fs::symlink("/run/shards/key.pem", tmp.join("key")).unwrap();
+        let fifo = std::ffi::CString::new(tmp.join("pipe").to_str().unwrap()).unwrap();
+        // SAFETY: mkfifo(3) of a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        std::fs::create_dir(tmp.join("d")).unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(tmp.join("sock")).unwrap();
+        let (mine, _theirs) = control_pair();
+        let message = message_most(&mine).unwrap();
+        let most = message - MESSAGE_HEAD - file_head("big");
+        std::fs::write(tmp.join("big"), vec![b'b'; most + 1]).unwrap();
+        p.scratch = Some(OwnedFd::from(std::fs::File::open(&*tmp).unwrap()));
+        let mut peers = [Peer {
+            label: "harness h".into(),
+            most: message,
+            fd: mine,
+            send: true,
+            answer: true,
+            held: None,
+            sent: vec![],
+            last: 0,
+            asked: vec![],
+            gone: false,
+        }];
+        // The words and the cause its MCP answer gives, or what is wrong with it.
+        let hand = |p: &Prepared, peers: &mut [Peer], path: &str| {
+            let args =
+                json::parse(format!(r#"{{"to":"harness h","path":{}}}"#, quote(path)).as_bytes()).unwrap();
+            let Some(Dispatched::Effect(reply)) = call(p, peers, "hand", Some(&args), broker::Format::Mcp)
+            else {
+                panic!("hand is no effect");
+            };
+            let reply = json::parse(reply.as_bytes()).unwrap();
+            let words = reply.get("content").map(Value::array).and_then(<[Value]>::first);
+            let words = words.and_then(|c| c.get("text")).and_then(Value::str);
+            let cause = reply.get("structuredContent").and_then(|m| m.get("cause"));
+            eprintln!("HAND_REFUSED path={path:?} reply={reply:?}");
+            (
+                reply.get("isError") == Some(&Value::Bool(true)),
+                words.map(str::to_string),
+                cause.cloned(),
+            )
+        };
+        let cause = |text: &str| json::parse(text.as_bytes()).unwrap();
+        let mut wrong = Vec::new();
+        let mut expect =
+            |path: &str, got: (bool, Option<String>, Option<Value>), words: String, want: Value| {
+                if got != (true, Some(words.clone()), Some(want.clone())) {
+                    wrong.push(format!("{path:?}: got {got:?}, want {words:?} {want:?}"));
+                }
+            };
+        for (path, words, want) in [
+            (
+                "/tmp/key",
+                "/tmp/key is a symbolic link, or lies past one: a file handed across is a regular file of the caller's scratch".to_string(),
+                cause(&format!(r#"{{"kind":"file_io","os_code":{}}}"#, libc::ELOOP)),
+            ),
+            (
+                "/tmp/pipe",
+                "/tmp/pipe is a FIFO, not a regular file".to_string(),
+                cause(r#"{"kind":"file_kind","file":"fifo"}"#),
+            ),
+            (
+                "/tmp/d",
+                "/tmp/d is a directory, not a regular file".to_string(),
+                cause(r#"{"kind":"file_kind","file":"directory"}"#),
+            ),
+            (
+                "/tmp/sock",
+                "/tmp/sock is a socket, not a regular file".to_string(),
+                cause(&format!(r#"{{"kind":"file_io","os_code":{}}}"#, libc::ENXIO)),
+            ),
+            (
+                "/tmp/big",
+                format!(
+                    "/tmp/big is {} bytes, more than the {most} a file handed across holds",
+                    most + 1
+                ),
+                cause(&format!(
+                    r#"{{"kind":"file_too_large","size":{},"most":{most}}}"#,
+                    most + 1
+                )),
+            ),
+            (
+                "/tmp/../etc/passwd",
+                "/tmp/../etc/passwd lies past the caller's scratch".to_string(),
+                cause(&format!(r#"{{"kind":"file_io","os_code":{}}}"#, libc::EXDEV)),
+            ),
+            (
+                "/etc/passwd",
+                "/etc/passwd is not in /tmp, the scratch files are handed from".to_string(),
+                cause(r#"{"kind":"path"}"#),
+            ),
+            (
+                "/tmp/a\0b",
+                "/tmp/a\0b holds a NUL".to_string(),
+                cause(r#"{"kind":"path_nul"}"#),
+            ),
+        ] {
+            expect(path, hand(&p, &mut peers, path), words, want);
+        }
+        let (refused, words, _) = hand(&p, &mut peers, "/tmp/out.txt");
+        assert!(!refused && words.is_some_and(|w| w.starts_with(r#"{"id":"#)));
+        // A file longer than its size says (procfs says 0 bytes of each) grows past the most
+        // a message holds of it as it is read.
+        p.scratch = Some(OwnedFd::from(std::fs::File::open("/proc/self").unwrap()));
+        peers[0].most = MESSAGE_HEAD + file_head("status") + 16;
+        expect(
+            "/tmp/status",
+            hand(&p, &mut peers, "/tmp/status"),
+            "/tmp/status grew past the 16 bytes a file handed across holds".to_string(),
+            cause(r#"{"kind":"file_grew","most":16}"#),
+        );
+        p.scratch = None;
+        expect(
+            "/tmp/out.txt",
+            hand(&p, &mut peers, "/tmp/out.txt"),
+            "its caller has no scratch, /tmp, to hand files from".to_string(),
+            cause(r#"{"kind":"no_scratch"}"#),
+        );
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 
     #[test]

@@ -1254,7 +1254,11 @@ fn said(what: &str, said: &str) -> String {
 /// So a few dials go out early and fewer as the wait grows: at 150 ms waited, 1.3 ms with a
 /// 5.5 µs dial and 3.6 ms with a 44 µs one, which dialing holds 0.4% and 1.2% of. A dial to a
 /// VM that listens waits for the guest's own answer, so the guest paces it. At most `left`.
-fn pause(dialed: Duration, waited: Duration, left: Duration) -> Duration {
+///
+/// Any wait that looks for its answer, each look a cost of its own, is paced the same way
+/// (`c` its look's cost): shards' engine ring E2E looks at a guest's pinned pages so
+/// (crates/shards/tests/engine_ring.rs, D230).
+pub fn pause(dialed: Duration, waited: Duration, left: Duration) -> Duration {
     let product = dialed
         .as_nanos()
         .checked_mul(waited.as_nanos())
@@ -1411,9 +1415,14 @@ fn handshake_until(
         HandshakeWait::Until(at) => stream::connect_until(vsock, Some(at)),
         HandshakeWait::Unbounded => stream::connect_until(vsock, None),
     };
+    // A dial its deadline passed in is expired, as a write's and a read's are, whatever the
+    // dial said: Windows' connect waits for its connection to complete, to the deadline, and
+    // says TimedOut there (shards_afunix), which was the dial's own failure.
     let mut s = connected.map_err(|source| {
         *cost = began.elapsed();
-        HandshakeError::io(Dial, source)
+        remaining(wait, Dial)
+            .err()
+            .unwrap_or_else(|| HandshakeError::io(Dial, source))
     })?;
     let mut request = [0; REQUEST];
     let mut unused = request.as_mut_slice();

@@ -63,8 +63,10 @@ fn a_members_stdin_is_its_owners_stream_exact_paced_resumed_and_ended_as_its_own
         let half = input.len() / 2;
         let observer = fixture.observe(2, Channel::Stdout, None, false, until);
         let metadata = fixture.metadata.as_ref().unwrap();
-        let wire = std::thread::scope(|scope| {
-            let writing = scope.spawn(|| {
+        let reading = &fixture.observers[observer];
+        let (mut writer, (_, wire)) = beside(
+            reading,
+            || {
                 // Half, then its owner gone without its end: the member's stdin stays open,
                 // and its next subscription is told where to go on.
                 let mut first = InputWriter::start(&fixture.owner, metadata, 2, address, 0, until).unwrap();
@@ -75,11 +77,9 @@ fn a_members_stdin_is_its_owners_stream_exact_paced_resumed_and_ended_as_its_own
                 assert_eq!(at, half, "its next subscription goes on where the last was taken");
                 again.write_all(&input[at..], until).unwrap();
                 again
-            });
-            let (_, wire) = fixture.observers[observer].exact(declared_label(2), &input, until);
-            (writing.join().unwrap(), wire)
-        });
-        let (mut writer, wire) = wire;
+            },
+            || reading.exact(declared_label(2), &input, until),
+        );
         // The run's own command's output is its own meanwhile.
         fixture.main_progress(WITHIN);
         // Its owner's end: every byte in the member's stdin, which then reads its end.
@@ -128,18 +128,21 @@ fn a_member_that_ends_ends_its_input_and_its_owner_hears_how() {
         // Subscribed before its member ended, it is told where its first record goes, then
         // the end; after, the end at once.
         let ended = match InputWriter::start(&fixture.owner, metadata, 2, address, 0, until) {
-            Ok(writer) => match writer.heard.recv_timeout(WITHIN) {
+            Ok(mut writer) => match writer.next(until, "word that the input ended") {
                 Ok(InputHeard::Said(said)) => said,
                 other => panic!("its owner was not told the input ended: {other:?}"),
             },
             Err(InputHeard::Said(said)) => said,
             Err(other) => panic!("no subscription to the ended input: {other:?}"),
         };
+        // The guest's errno, Linux's (include/uapi/asm-generic/errno-base.h), as its init
+        // reports it whatever the host's own.
+        const EPIPE: i32 = 32;
         assert_eq!(
             ended,
             Said::Ended {
                 written: 0,
-                end: InputEnd::Aborted(libc::EPIPE)
+                end: InputEnd::Aborted(EPIPE)
             }
         );
     }));

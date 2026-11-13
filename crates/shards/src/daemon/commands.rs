@@ -1776,10 +1776,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 
     /// SIGKILL sent to the command of run `id` ([`signal`](Self::signal)): how long its
-    /// teardown is given before it is looked at (this host's slice, D217), and the teardown
-    /// followed from then on, in its microVM where that is its own. A SIGKILL that cannot
-    /// be sent leaves its guest nothing to end it by, nor to say its end on: no wait.
-    fn kill_command(&self, id: &str) -> (Duration, Followed) {
+    /// teardown is given before it is looked at (this host's slice, D217: none while this
+    /// home has heard no teardown, which is then followed by its liveness alone), and the
+    /// teardown followed from then on, in its microVM where that is its own. A SIGKILL that
+    /// cannot be sent leaves its guest nothing to end it by, nor to say its end on: no wait.
+    fn kill_command(&self, id: &str) -> (Option<Duration>, Followed) {
         let own = match lock(&self.runs).get(id) {
             Some(RunState::Tracked(t)) => t.joined.is_none().then(|| t.vm.id()),
             _ => None,
@@ -1788,7 +1789,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let wait = if self.signal(id, 9) {
             self.ends.slice(End::Teardown)
         } else {
-            Duration::ZERO
+            Some(Duration::ZERO)
         };
         (wait, teardown)
     }
@@ -2059,7 +2060,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             // guest, and its VM is killed at once.
             let (phase, deadline, followed) = if linux == 9 {
                 let (wait, teardown) = self.kill_command(&id);
-                (Phase::Killed, after(wait), teardown)
+                (Phase::Killed, wait.and_then(after), teardown)
             } else if self.signal(&id, linux) {
                 (Phase::Signalled, grace.and_then(after), Followed::of(None))
             } else {
@@ -2107,7 +2108,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                         Phase::Signalled => {
                             let (wait, teardown) = self.kill_command(&e.id);
                             e.phase = Phase::Escalated;
-                            e.deadline = after(wait);
+                            e.deadline = wait.and_then(after);
                             (e.followed, e.since) = (teardown, Instant::now());
                         }
                         Phase::Killed | Phase::Escalated => {
@@ -2118,7 +2119,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                     e.id,
                                     Duration::from_secs(e.since.elapsed().as_secs())
                                 ));
-                                e.deadline = after(self.ends.slice(End::Teardown));
+                                e.deadline = self.ends.slice(End::Teardown).and_then(after);
                                 i += 1;
                                 continue;
                             }
@@ -2130,7 +2131,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                         "container {}: its command not ended {:?} after it was signalled, its microVM gone on with nothing of its end for {:?}: its microVM killed",
                                         e.id,
                                         Duration::from_secs(e.since.elapsed().as_secs()),
-                                        self.ends.slice(End::Teardown)
+                                        // Its deadline came: the home has a slice.
+                                        self.ends.slice(End::Teardown).unwrap_or_default()
                                     ));
                                     if let Err(err) = t.vm.kill(shards_ipc::signal::SIGKILL) {
                                         super::log(format!("container {}: killing its microVM: {err}", e.id));
@@ -2145,7 +2147,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             }
                             e.phase = Phase::VmKilled;
                             (e.followed, e.since) = (Followed::of(vm), Instant::now());
-                            e.deadline = after(self.ends.slice(End::Exit));
+                            e.deadline = self.ends.slice(End::Exit).and_then(after);
                         }
                         Phase::VmKilled => {
                             if let Some(look) = e.followed.goes_on() {
@@ -2155,7 +2157,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                     e.id,
                                     Duration::from_secs(e.since.elapsed().as_secs())
                                 ));
-                                e.deadline = after(self.ends.slice(End::Exit));
+                                e.deadline = self.ends.slice(End::Exit).and_then(after);
                                 i += 1;
                                 continue;
                             }
@@ -2175,7 +2177,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
                                     "microVM {}: no end heard {:?} after it was killed, its process gone on with nothing of its end for {:?}: {}",
                                     gone.id,
                                     Duration::from_secs(gone.since.elapsed().as_secs()),
-                                    self.ends.slice(End::Exit),
+                                    // Its deadline came: the home has a slice.
+                                    self.ends.slice(End::Exit).unwrap_or_default(),
                                     self.unheard(&gone.id)
                                 ));
                             }
@@ -2486,6 +2489,21 @@ impl<D: crate::containers::Disk> Daemon<D> {
         }
         self.container_event(&id, "stop", &[]);
         Ok(id)
+    }
+
+    /// Stops run `id` as it stops (its own signal, then SIGKILL past its grace,
+    /// [`own_stop`](Self::own_stop)), for a failure of the daemon's own that leaves its run no
+    /// way on (managed.rs `capture_failed`, D258): once it runs, where it is still starting, as
+    /// `stop` stops one; nothing of one that has ended. Its restart is its policy's, as a run
+    /// that fails is.
+    pub(super) fn stop_for_failure(&self, id: &str) {
+        self.await_start(id);
+        if !self.running(id) {
+            return;
+        }
+        let (signal, grace) = self.own_stop(id);
+        let (linux, grace) = signal.map_or((9, None), |l| (l, grace));
+        self.end_all(vec![(0, id.to_owned(), linux, grace)], &mut |_, _, _| {});
     }
 
     /// The stop microVM `id` asks for when nothing else is told, as dockerd reads it

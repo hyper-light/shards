@@ -228,6 +228,19 @@ pub fn main() -> ! {
             let _ = io::stderr().write_all(&file);
             arg(3).parse().unwrap_or(1)
         }
+        // Its command line as it was started, each word with its NUL, on stdout: its program
+        // as found, its image's options, then its run's arguments (D256).
+        "argv" => {
+            let line: Vec<u8> = std::env::args_os()
+                .flat_map(|a| [a.as_encoded_bytes(), b"\0"].concat())
+                .collect();
+            i32::from(
+                io::stdout()
+                    .write_all(&line)
+                    .and_then(|()| io::stdout().flush())
+                    .is_err(),
+            )
+        }
         // A step that lasts `arg(1)` ms, for what shows it to be seen as it runs (`sleep`
         // prints `ready` and lasts until a signal ends it).
         "sleep-for" => {
@@ -252,6 +265,10 @@ pub fn main() -> ! {
         // Reads each file named through, a megabyte at a time, and says how much: what it
         // read stays in the page cache, the reader's own memory one megabyte.
         "read" => read_through(args.get(1..).unwrap_or_default()),
+        // Reads a file through as `read` does, saying as it opens it and as it crosses each
+        // MiB how far it has read (`at BYTES`), each line as it comes, for a host to follow
+        // its progress; then its total and time as `read` says them.
+        "read-marked" => read_marked(arg(1)),
         // What a share costs its guest (D228's relay): N opens of FILE, each reading its
         // first 4 KiB and closing it, timed one by one, said as their n, p50, p90, p99 and
         // max in µs; then FILE read through and a copy of it written and synced beside it,
@@ -3767,6 +3784,45 @@ fn read_through(paths: &[String]) -> i32 {
             began.elapsed().as_millis()
         );
     }
+    0
+}
+
+/// [`read_through`] of `path`, its progress said as it goes: `at 0` once it is open, and
+/// `at BYTES` each time what it has read crosses a MiB, its reader's block (as large as a
+/// share's largest request, `shards_abi::SHARE_MAX_PAGES` of 4 KiB pages), each line written
+/// as it comes (Rust's stdout is line-buffered).
+fn read_marked(path: &str) -> i32 {
+    const BLOCK: u64 = 1 << 20;
+    let mut buf = vec![0u8; 1 << 20];
+    let began = std::time::Instant::now();
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "{path}: {e}");
+            return 1;
+        }
+    };
+    let mut out = io::stdout();
+    let _ = writeln!(out, "at 0");
+    let mut total = 0u64;
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let before = total / BLOCK;
+                total += n as u64;
+                if total / BLOCK > before {
+                    let _ = writeln!(out, "at {total}");
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "{path}: {e}");
+                return 1;
+            }
+        }
+    }
+    let _ = writeln!(out, "read {path} {total} in {} ms", began.elapsed().as_millis());
     0
 }
 

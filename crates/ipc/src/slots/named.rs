@@ -402,16 +402,21 @@ impl Slot {
 
 /// What reads a slot's line for a request's rest, and no longer once `ended` is set: until
 /// `deadline` while nothing of the rest has come, and from the rest's first byte on until
-/// its client ends ([`Opened::request_within`]). Its errors: `TimedOut` past the deadline,
-/// `ConnectionAborted` once ended.
+/// its client ends ([`Opened::request_within`]). It has `waited` on its client once a read
+/// found nothing there (PeekNamedPipe): what is there as it reads waits on none. Its errors:
+/// `TimedOut` past the deadline, `ConnectionAborted` once ended.
 struct Within<'a> {
     line: &'a Pipe,
     ended: Option<&'a Event>,
     deadline: Option<Instant>,
+    waited: bool,
 }
 
 impl Read for Within<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if matches!(pipe::available(self.line.raw(), None), Ok(Some(0))) {
+            self.waited = true;
+        }
         let cancels: Vec<&Event> = self.ended.into_iter().collect();
         match self.line.read_within(buf, &cancels, self.deadline) {
             Called::Done(done) => {
@@ -442,6 +447,7 @@ pub fn read_frame_until(say: &Pipe, said_all: &Event) -> io::Result<Option<Frame
         line: say,
         ended: Some(said_all),
         deadline: None,
+        waited: false,
     };
     match frame_from(&mut from) {
         Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => Ok(None),
@@ -463,20 +469,22 @@ impl Opened {
     /// ([`Requested::Late`]) where none of it has come `stall` from now, one being given, and
     /// once some has, until it is whole or its client ends, a request larger than a pipe
     /// holds coming in parts, each as its reader makes room and its writer is next run (D185);
-    /// and no longer once `ended` is set (its daemon ending its clients).
+    /// and no longer once `ended` is set (its daemon ending its clients). Whole, it says
+    /// whether its client was waited on for it ([`Asked::waited`]).
     pub fn request_within(
         self,
         stall: Option<Duration>,
         ended: Option<&crate::Latch>,
     ) -> io::Result<Requested> {
         let session = self.session;
-        let named = {
+        let (named, waited) = {
             let mut from = Within {
                 line: &session.say,
                 ended: ended.map(crate::Latch::event),
                 deadline: stall.and_then(|t| Instant::now().checked_add(t)),
+                waited: false,
             };
-            (|| -> io::Result<Option<(Vec<u8>, Frame)>> {
+            let named = (|| -> io::Result<Option<(Vec<u8>, Frame)>> {
                 let mut count = [0u8; 1];
                 from.read_exact(&mut count)?;
                 let [count] = count;
@@ -495,13 +503,15 @@ impl Opened {
                     ));
                 }
                 Ok(frame_from(&mut from)?.map(|request| (named, request)))
-            })()
+            })();
+            (named, from.waited)
         };
         match named {
             Ok(Some((fds, request))) => Ok(Requested::Asked(Asked {
                 session,
                 fds,
                 request,
+                waited,
             })),
             Ok(None) => Ok(Requested::Gone),
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Ok(Requested::Gone),
@@ -512,11 +522,55 @@ impl Opened {
     }
 }
 
-/// Writes all of `buf` to a slot's line: a named pipe tells its writer of no room before a
-/// write, so a write it cannot take waits in WriteFile, and `waits` is told none (owed: a
-/// signal of a named pipe's outbound room; D185, PM M549).
-pub fn write_all_waiting(to: &Pipe, buf: &[u8], _waits: impl FnMut(super::Wait)) -> io::Result<()> {
-    (&*to).write_all(buf)
+/// Writes all of `buf` to a slot's line, waiting on its reader only where a write of it
+/// pends: each such wait told `waits` as it begins, and once its reader has taken enough,
+/// how long it took (D185, PM M549), as Unix's FIFO's `write_all_waiting` does. A named pipe
+/// says nothing of its room before a write. Its local information's WriteQuotaAvailable is no
+/// room: npfs keeps it as its quota less what is charged to it (ReactOS's
+/// `NpQueryPipeLocalInfo`), which a read its reader has pending is charged too (`NpCommonRead`,
+/// `NpAddDataQueueEntry`), and which a stalled write takes as its reader frees it
+/// (`NpCompleteStalledWrites`); Cygwin found it so ("WriteQuotaAvailable is unreliable",
+/// select.cc's `pipe_data_available`), and Wine says its whole quota. What says room is the
+/// write's own pend (`pipe::write_telling`). So `buf` goes in parts no larger than the line's
+/// outbound quota, each a write that waits on its reader for no more than a quota's worth of
+/// its reading: a part that finishes at once waits on no reader and teaches nothing, and one
+/// that pends is a take, where its pipe is connected still as it finishes. A wait that fails,
+/// or that finished as its reader went (Windows finishes a write so, its data dropped, PM
+/// M553), is told no end, and the write fails BrokenPipe.
+pub fn write_all_waiting(to: &Pipe, buf: &[u8], mut waits: impl FnMut(super::Wait)) -> io::Result<()> {
+    let quota = usize::try_from(pipe::outbound_quota(to.raw())?).unwrap_or(usize::MAX);
+    let part = if quota == 0 { buf.len() } else { quota }.max(1);
+    for piece in buf.chunks(part) {
+        let mut rest = piece;
+        while !rest.is_empty() {
+            let mut began = None;
+            let written = pipe::write_telling(to.raw(), rest, || {
+                let at = Instant::now();
+                began = Some(at);
+                waits(super::Wait::Began(at));
+            });
+            let n = match written {
+                Called::Done(Ok(0)) => return Err(io::ErrorKind::WriteZero.into()),
+                Called::Done(Ok(n)) => n,
+                Called::Done(Err(e)) if pipe::ended(&e) => return Err(io::ErrorKind::BrokenPipe.into()),
+                Called::Done(Err(e)) => return Err(e),
+                // It waits on nothing else, so neither comes.
+                Called::Cancelled | Called::Late => {
+                    return Err(io::Error::other("a slot's write ended with nothing to end it"));
+                }
+            };
+            rest = rest.get(n..).unwrap_or_default();
+            if let Some(began) = began {
+                // One that finished as its reader went is no take: Windows finishes such a
+                // write, its data dropped (PM M553); the pipe connected no more says so.
+                if !pipe::connected_now(to.raw())? {
+                    return Err(io::ErrorKind::BrokenPipe.into());
+                }
+                waits(super::Wait::Ended(began.elapsed()));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Ends a slot's wait from another thread ([`Slot::stopper`]), through the slot's own event:
@@ -1414,13 +1468,20 @@ mod tests {
     /// that sends nothing past its first byte is cut once `stall` has passed; one whose rest
     /// has begun is waited for past `stall`, until its request is whole, as one larger than
     /// a pipe holds comes in parts; and with no stall, a client that sends nothing more is
-    /// waited for until it ends. Before, a deadline from the first byte cut the second too.
+    /// waited for until it ends, and one paused past its first byte until its rest comes,
+    /// however long it paused (R03's cold start). A rest its client was waited on for says
+    /// so; one written whole at once (`Client::ask`) was there as it was read, and waited on
+    /// no client. Each is timed from before its client's first write: timed from the slot's
+    /// opening, after its first byte was read, a pause of 300 ms took 299.56 ms (CI's
+    /// aarch64 glibc job at f5c0c8b04). Before, a deadline from the first byte cut the
+    /// second too.
     #[test]
     fn a_requests_rest_is_waited_for_while_its_client_goes_on() {
         let stall = Duration::from_millis(100);
         let home = home("slot-stall");
         let mut requests = Requests::open(&home).unwrap();
-        // Slot after slot: its client's writes, then what came of its rest, and when.
+        // Slot after slot: its client's writes, then what came of its rest, and how long
+        // after its client began.
         let mut rest_of = |stall: Option<Duration>, writes: &dyn Fn(&Client)| {
             let slot = requests.make(false).unwrap();
             requests.offer(slot.number(), false).unwrap();
@@ -1429,17 +1490,22 @@ mod tests {
                     let Waited::Opened(opened) = slot.wait().unwrap() else {
                         panic!("no client opened the slot");
                     };
-                    let t0 = Instant::now();
                     let got = opened.request_within(stall, None).unwrap();
-                    (got, t0.elapsed())
+                    (got, Instant::now())
                 });
                 let Taken::Slot(client) = take(&home, 0).unwrap() else {
                     panic!("no slot");
                 };
+                let began = Instant::now();
                 writes(&client);
                 drop(client);
-                served.join().unwrap()
+                let (got, ended) = served.join().unwrap();
+                (got, ended.duration_since(began))
             })
+        };
+        let ps = Frame {
+            kind: 7,
+            payload: b"ps".to_vec(),
         };
         // Its first byte alone: cut once its stall has passed, its client still there.
         let (got, took) = rest_of(Some(stall), &|c| {
@@ -1457,13 +1523,8 @@ mod tests {
         let Requested::Asked(asked) = got else {
             panic!("a request whose rest had begun was not taken whole: {got:?}");
         };
-        assert_eq!(
-            asked.request,
-            Frame {
-                kind: 7,
-                payload: b"ps".to_vec()
-            }
-        );
+        assert_eq!(asked.request, ps);
+        assert!(asked.waited, "its client was waited on");
         assert!(took >= stall * 3, "{took:?}");
         // No stall: its first byte alone is waited on until its client ends.
         let (got, took) = rest_of(None, &|c| {
@@ -1472,5 +1533,179 @@ mod tests {
         });
         assert!(matches!(got, Requested::Gone), "{got:?}");
         assert!(took >= stall * 3, "{took:?}");
+        // No stall: its first byte, a pause, then its rest: whole.
+        let (got, took) = rest_of(None, &|c| {
+            (&c.say).write_all(&[0]).unwrap();
+            std::thread::sleep(stall * 3);
+            (&c.say).write_all(&[0]).unwrap();
+            write_frame(&c.say, 7, b"ps").unwrap();
+        });
+        let Requested::Asked(asked) = got else {
+            panic!("a client paused past its first byte was not waited for: {got:?}");
+        };
+        assert_eq!(asked.request, ps);
+        assert!(asked.waited, "its client was waited on");
+        assert!(took >= stall * 3, "{took:?}");
+        // Written whole at once: there as it was read.
+        let (got, _) = rest_of(Some(stall), &|c| c.ask(7, b"ps", &[]).unwrap());
+        let Requested::Asked(asked) = got else {
+            panic!("a whole request was not taken: {got:?}");
+        };
+        assert_eq!(asked.request, ps);
+        assert!(!asked.waited, "a rest there at once waited on its client");
+    }
+
+    /// What a slot's line holds on this host before a write waits, and what a waiting write
+    /// comes to as its reader goes, each way: its writer's GetNamedPipeInfo (flags, out and in
+    /// buffer sizes); parts of a sixteenth of its outbound quota written, nothing read, until
+    /// one pends, the bytes before it what the line held (and PeekNamedPipe's count of them at
+    /// the pend); then, on a fresh line, its reader dropped as the first pending part waits:
+    /// what that write came to, and the next. A measurement, run by hand (`--ignored
+    /// --nocapture`), for D185's Windows take (ROOT, 2026-11-13): PM M553.
+    #[test]
+    #[ignore = "a measurement, run by hand"]
+    fn what_a_line_holds_and_what_a_waiting_write_comes_to_as_its_reader_goes() {
+        let info = |p: &Pipe| {
+            let (mut flags, mut out, mut inb, mut max) = (0u32, 0u32, 0u32, 0u32);
+            // SAFETY: an end this test holds, and four u32s for the call to fill.
+            let ok = unsafe {
+                windows_sys::Win32::System::Pipes::GetNamedPipeInfo(
+                    p.raw(),
+                    &raw mut flags,
+                    &raw mut out,
+                    &raw mut inb,
+                    &raw mut max,
+                )
+            };
+            assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+            (flags, out, inb)
+        };
+        let said = |done: &Called| match done {
+            Called::Done(Ok(n)) => format!("Ok({n})"),
+            Called::Done(Err(e)) => format!("Err({:?}, {:?}: {e})", e.kind(), e.raw_os_error()),
+            Called::Cancelled => "Cancelled".into(),
+            Called::Late => "Late".into(),
+        };
+        for production in [false, true] {
+            // joined() is (server, client): the client writes, or, as a slot's answer goes,
+            // the server.
+            let lines = || {
+                let (server, client) = super::super::joined().unwrap();
+                if production {
+                    (client, server)
+                } else {
+                    (server, client)
+                }
+            };
+            let (reader, writer) = lines();
+            let (flags, out, inb) = info(&writer);
+            let quota = usize::try_from(pipe::outbound_quota(writer.raw()).unwrap()).unwrap();
+            let part = vec![1u8; (quota / 16).max(1)];
+            let (mut held, mut at_pend, mut parts) = (0usize, None, 0);
+            for _ in 0..256 {
+                let mut pended = false;
+                let done = pipe::write_telling(writer.raw(), &part, || {
+                    pended = true;
+                    at_pend = Some(pipe::available(reader.raw(), None));
+                    let mut drain = vec![0u8; held];
+                    (&reader).read_exact(&mut drain).unwrap();
+                });
+                assert!(
+                    matches!(done, Called::Done(Ok(n)) if n == part.len()),
+                    "{}",
+                    said(&done)
+                );
+                parts += 1;
+                if pended {
+                    break;
+                }
+                held += part.len();
+            }
+            let (reader, writer) = lines();
+            let mut reader = Some(reader);
+            let (mut waited, mut next) = (None, None);
+            for _ in 0..256 {
+                let mut pended = false;
+                let done = pipe::write_telling(writer.raw(), &part, || {
+                    pended = true;
+                    drop(reader.take());
+                });
+                if pended {
+                    waited = Some(said(&done));
+                    next = Some(said(&pipe::write_telling(writer.raw(), &part, || {})));
+                    break;
+                }
+                if !matches!(done, Called::Done(Ok(_))) {
+                    waited = Some(format!("before any pend: {}", said(&done)));
+                    break;
+                }
+            }
+            eprintln!(
+                "{}: writer flags {flags:#x}, out {out}, in {inb}; it held {held} bytes ({} parts of {}) before a part waited (PeekNamedPipe then {at_pend:?}); a waiting write as its reader went: {waited:?}; the next write: {next:?}",
+                if production {
+                    "server writes"
+                } else {
+                    "client writes"
+                },
+                parts - 1,
+                part.len()
+            );
+        }
+    }
+
+    /// A slot's answer is written as its line takes it (D185, PM M549): one its line holds
+    /// whole goes at once, waiting on no reader; one past its outbound quota waits on its
+    /// reader only where a part's write pends, each such wait ending once the reader has taken
+    /// a quota's worth, the next part waiting again; and a reader that goes ends a waiting
+    /// write, its wait told no end. Its reader is the waits themselves, on this thread: each
+    /// wait begun takes a quota, so that every part past the first pends, and ends. Before, a
+    /// named pipe's writer told no wait at all (`_waits`), and a closed daemon held a client
+    /// that took nothing of its answer until it ended.
+    #[test]
+    fn an_answer_is_written_as_its_line_takes_it() {
+        use super::super::Wait;
+        let (reader, writer) = super::super::joined().unwrap();
+        let mut waits = Vec::new();
+        write_all_waiting(&writer, &[7; 1024], |w| waits.push(w)).unwrap();
+        assert!(waits.is_empty(), "{waits:?}");
+        let mut got = vec![0; 1024];
+        (&reader).read_exact(&mut got).unwrap();
+        // Four quotas' worth: its first part the line holds whole, and each after it waits
+        // until the reader takes the quota before it (three, where its quota is what
+        // GetNamedPipeInfo says).
+        let quota = usize::try_from(pipe::outbound_quota(writer.raw()).unwrap()).unwrap();
+        let answer: Vec<u8> = (0..quota * 4).map(|i| u8::try_from(i % 251).unwrap()).collect();
+        let mut taken = Vec::new();
+        write_all_waiting(&writer, &answer, |w| {
+            if matches!(w, Wait::Began(_)) {
+                let mut part = vec![0; quota];
+                (&reader).read_exact(&mut part).unwrap();
+                taken.extend(part);
+            }
+            waits.push(w);
+        })
+        .unwrap();
+        let mut last = vec![0; answer.len() - taken.len()];
+        (&reader).read_exact(&mut last).unwrap();
+        taken.extend(last);
+        assert!(taken == answer, "the answer read was not the one written");
+        assert!(!waits.is_empty() && waits.len() % 2 == 0, "{waits:?}");
+        for pair in waits.chunks(2) {
+            assert!(matches!(pair, [Wait::Began(_), Wait::Ended(_)]), "{waits:?}");
+        }
+        // Its reader gone as a part waits: Windows finishes that write, its data dropped (PM
+        // M553), and with its pipe connected no more it is no take: the write fails, its wait
+        // told no end. Before, it was taken for one, and the write ended Ok (Windows 11 build
+        // 26200, jupiter, at 68baef2d0).
+        let (reader, writer) = super::super::joined().unwrap();
+        let mut reader = Some(reader);
+        let mut waits = Vec::new();
+        let failed = write_all_waiting(&writer, &vec![5u8; quota * 2], |w| {
+            drop(reader.take());
+            waits.push(w);
+        })
+        .unwrap_err();
+        assert_eq!(failed.kind(), io::ErrorKind::BrokenPipe, "{failed}");
+        assert!(matches!(waits.as_slice(), [Wait::Began(_)]), "{waits:?}");
     }
 }

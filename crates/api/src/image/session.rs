@@ -156,6 +156,26 @@ impl State {
     fn gone(&self) -> bool {
         self.exited && self.answered
     }
+
+    /// The run's end, once it has come: its host's word, or its host gone without one, said
+    /// in its last diagnostics; kept as first seen, so that every later look, a stop's among
+    /// them, sees the same.
+    fn end_seen(&mut self) -> Option<RunEnd> {
+        if self.end.is_none() && self.gone() {
+            self.end = Some(RunEnd::Failed(format!(
+                "the run host exited without its run's end{}",
+                quoted(&self.said)
+            )));
+        }
+        self.end.clone()
+    }
+
+    /// The run's end once its stop has been waited for ([`Session::stop`]): the end seen, or
+    /// `Stopped` where none has come.
+    fn stopped(&mut self) -> RunEnd {
+        self.end_seen()
+            .unwrap_or_else(|| self.end.insert(RunEnd::Stopped).clone())
+    }
 }
 
 /// `refused` with the host's last diagnostics, where its run did not boot: what its VM said
@@ -179,9 +199,23 @@ struct Shared {
     lessor: Mutex<Option<RunLessor>>,
     /// The references the run's grants name: no other is leased.
     granted: Mutex<Vec<String>>,
+    /// Where the host's diagnostics are written whole, once its caller has named a file
+    /// ([`ImageGuest::keep_diagnostics`]).
+    said_to: Mutex<Option<std::fs::File>>,
 }
 
 impl Shared {
+    /// The host's diagnostics written whole to `to` from now on, after what is kept of them
+    /// until now, under the lock their keeper writes each part under ([`keep_said`]): so that
+    /// each part is in what is kept now or written after, and once.
+    fn keep_diagnostics(&self, mut to: std::fs::File) -> io::Result<()> {
+        let mut said_to = lock(&self.said_to);
+        let kept: Vec<u8> = lock(&self.state).said.iter().copied().collect();
+        to.write_all(&kept)?;
+        *said_to = Some(to);
+        Ok(())
+    }
+
     fn send(&self, kind: u8, payload: &[u8]) -> io::Result<()> {
         let frame = wire::frame(kind, payload).map_err(io::Error::other)?;
         match lock(&self.to_host).as_mut() {
@@ -506,6 +540,7 @@ impl Begun {
             to_host: Mutex::new(Some(to_host)),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            said_to: Mutex::new(None),
         });
         // Shared: the session and its exit watcher, which outlives this call.
         let host = Arc::new(process);
@@ -792,34 +827,10 @@ impl Session {
         begun.started(request, patience).map_err(|(refused, _)| refused)
     }
 
-    /// A pipe for each running member's channels, and the thread that fills it as its
-    /// bytes come, granting the host room for as many more as it took.
+    /// Its running members' outputs ([`pumped`]).
     fn pump_outputs(&self) -> Result<(), ImageRefusal> {
-        let mut outputs = lock(&self.outputs);
-        for m in self.members.iter().filter(|m| m.runs) {
-            for channel in [Channel::Stdout, Channel::Stderr] {
-                let (reader, writer) = io::pipe().map_err(|e| ImageRefusal::Os {
-                    what: "a member's pipe",
-                    kind: e.kind(),
-                })?;
-                outputs.insert((m.index, channel), reader);
-                let shared = self.shared.clone();
-                let member = m.index;
-                std::thread::Builder::new()
-                    .name("shards-api-member".into())
-                    .spawn(move || pump(&shared, member, channel, writer))
-                    .map_err(|e| ImageRefusal::Os {
-                        what: "a member's pump",
-                        kind: e.kind(),
-                    })?;
-                self.shared
-                    .credit(member, channel, AHEAD)
-                    .map_err(|e| ImageRefusal::Os {
-                        what: "the run host's credit",
-                        kind: e.kind(),
-                    })?;
-            }
-        }
+        let pumped = pumped(&self.shared, &self.members)?;
+        lock(&self.outputs).extend(pumped);
         Ok(())
     }
 
@@ -874,6 +885,40 @@ impl Session {
     }
 }
 
+/// A member's channel, by its index, and the pipe its bytes come out of ([`pumped`]).
+type Pumped = ((u32, Channel), io::PipeReader);
+
+/// A pipe for each of `members`' running members' channels, and the thread that fills it as
+/// its bytes come, the host granted room for its first [`AHEAD`] bytes and for as many more as
+/// each part took ([`pump`]). A credit that cannot go is no refusal: the host's channel is
+/// closed, as the run's end closes it (`read_answers`), or broken, and the run started all the
+/// same, its end its session's to tell (`State::end_seen`), as `pump` takes its own credits'
+/// (WHP at 3a05bc3f1: a template's run of `exit 3`, restored, ended before its first credit
+/// went, and its boot was refused `BrokenPipe`).
+fn pumped(shared: &Arc<Shared>, members: &[MemberInfo]) -> Result<Vec<Pumped>, ImageRefusal> {
+    let mut outputs = Vec::new();
+    for m in members.iter().filter(|m| m.runs) {
+        for channel in [Channel::Stdout, Channel::Stderr] {
+            let (reader, writer) = io::pipe().map_err(|e| ImageRefusal::Os {
+                what: "a member's pipe",
+                kind: e.kind(),
+            })?;
+            outputs.push(((m.index, channel), reader));
+            let pumping = shared.clone();
+            let member = m.index;
+            std::thread::Builder::new()
+                .name("shards-api-member".into())
+                .spawn(move || pump(&pumping, member, channel, writer))
+                .map_err(|e| ImageRefusal::Os {
+                    what: "a member's pump",
+                    kind: e.kind(),
+                })?;
+            let _ = shared.credit(member, channel, AHEAD);
+        }
+    }
+    Ok(outputs)
+}
+
 /// Moves member `member`'s `channel` into `writer` as its bytes come, and grants the host
 /// room for each part once written; ends at the channel's end, closing the pipe. A caller
 /// that let go of its end drops the rest, as a closed pipe drops `docker run`'s output,
@@ -905,7 +950,9 @@ fn pump(shared: &Shared, member: u32, channel: Channel, mut writer: io::PipeWrit
 /// the room the host gave, and its end once the caller closes its pipe; ends with the input,
 /// the run or the host, dropping its pipe's read end so that the caller's writes fail then.
 fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
-    let mut buf = vec![0u8; AHEAD as usize];
+    // What the caller types into the member, a credential as often as not (D242): wiped here
+    // once sent, and the buffer as it goes.
+    let mut buf = zeroize::Zeroizing::new(vec![0u8; AHEAD as usize]);
     loop {
         // Room first: nothing is read of the caller that its host has no room for.
         let room = shared.wait(Duration::MAX, |s| {
@@ -936,13 +983,21 @@ fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
         if let Some(flow) = lock(&shared.state).inputs.get_mut(&member) {
             flow.room = flow.room.saturating_sub(n as u64);
         }
-        let mut payload = Vec::with_capacity(4 + n);
-        payload.extend_from_slice(&wire::Input::head(member));
-        payload.extend_from_slice(buf.get(..n).unwrap_or_default());
-        if shared.send(wire::to_host::INPUT, &payload).is_err() {
+        if send_input(shared, member, buf.get_mut(..n).unwrap_or_default()).is_err() {
             return;
         }
     }
+}
+
+/// Sends `typed`, bytes for member `member`'s stdin, as one `INPUT` frame in its parts, never
+/// copied whole into one (`send_parts`), then wipes them where they were read; the frame's
+/// own copy is wiped as it drops (D242).
+fn send_input(shared: &Shared, member: u32, typed: &mut [u8]) -> io::Result<()> {
+    let mut payload = zeroize::Zeroizing::new(Vec::with_capacity(4 + typed.len()));
+    payload.extend_from_slice(&wire::Input::head(member));
+    payload.extend_from_slice(typed);
+    zeroize::Zeroize::zeroize(typed);
+    shared.send_parts(wire::to_host::INPUT, &payload)
 }
 
 /// Reads the host's answers until it closes its stdout, each into the state; one that
@@ -1257,7 +1312,9 @@ fn release(shared: &Shared) {
     }
 }
 
-/// Keeps the host's last diagnostics until they end.
+/// Keeps the host's last diagnostics until they end, and writes each part whole to the file
+/// its caller named for them, where it has named one ([`Shared::keep_diagnostics`]): kept and
+/// written under that file's lock, which naming a file takes first.
 fn keep_said(shared: &Shared, mut said: io::PipeReader) {
     let keep = said_kept();
     let mut buf = [0u8; 4096];
@@ -1265,10 +1322,18 @@ fn keep_said(shared: &Shared, mut said: io::PipeReader) {
         if n == 0 {
             break;
         }
-        let mut state = lock(&shared.state);
-        state.said.extend(buf.get(..n).unwrap_or_default());
-        let over = state.said.len().saturating_sub(keep);
-        state.said.drain(..over);
+        let part = buf.get(..n).unwrap_or_default();
+        let mut said_to = lock(&shared.said_to);
+        {
+            let mut state = lock(&shared.state);
+            state.said.extend(part);
+            let over = state.said.len().saturating_sub(keep);
+            state.said.drain(..over);
+        }
+        // A part its file refuses is lost to it alone: the tail keeps it.
+        if let Some(to) = said_to.as_mut() {
+            let _ = to.write_all(part);
+        }
     }
     lock(&shared.state).said_all = true;
     shared.changed.notify_all();
@@ -1507,33 +1572,28 @@ impl ImageGuest for Session {
         // Asked of the host, which kills its VM at once and says the run's end; a host that
         // cannot be asked is killed itself, and its VM's link closing ends the VM's run
         // (`STOP_ORDER`). A run that has ended is not asked: its host is cleaning up.
-        let ended = lock(&self.shared.state).end.is_some();
+        let ended = lock(&self.shared.state).end_seen().is_some();
         if !ended && self.shared.send(wire::to_host::STOP, &[]).is_err() {
             kill(&self.host);
         }
         // The run's end comes as its VM goes, which the host kills at once; or the host is
         // gone. The host's own exit after (its cleanup) is the watcher's to reap.
-        self.shared
-            .wait(Duration::MAX, |s| (s.end.is_some() || s.gone()).then_some(()));
+        self.shared.wait(Duration::MAX, |s| s.end_seen().map(|_| ()));
         lock(&self.shared.to_host).take();
-        let mut state = lock(&self.shared.state);
-        state.end.get_or_insert(RunEnd::Stopped);
+        lock(&self.shared.state).stopped();
         self.shared.changed.notify_all();
         Ok(())
     }
 
     fn wait_for(&self, timeout: Duration) -> Result<Option<RunEnd>, ImageRefusal> {
-        Ok(self.shared.wait(timeout, |s| {
-            if let Some(end) = &s.end {
-                return Some(end.clone());
-            }
-            s.gone().then(|| {
-                RunEnd::Failed(format!(
-                    "the run host exited without its run's end{}",
-                    quoted(&s.said)
-                ))
-            })
-        }))
+        Ok(self.shared.wait(timeout, State::end_seen))
+    }
+
+    fn keep_diagnostics(&self, to: std::fs::File) -> Result<(), ImageRefusal> {
+        self.shared.keep_diagnostics(to).map_err(|e| ImageRefusal::Os {
+            what: "the run host's diagnostics",
+            kind: e.kind(),
+        })
     }
 }
 
@@ -1565,7 +1625,125 @@ mod tests {
             to_host: Mutex::new(None),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            said_to: Mutex::new(None),
         }
+    }
+
+    /// A member's typed stdin goes to its host as one `INPUT` frame and is wiped where it was
+    /// read (D242). Do: send typed bytes from a buffer of the test's. Expect: the buffer all
+    /// zeros after; the host reads one `INPUT` frame of the member's bytes, and nothing more.
+    #[test]
+    fn a_members_typed_input_is_wiped_where_it_was_read_once_sent() {
+        let (mut host, to_host) = io::pipe().unwrap();
+        let s = shared();
+        *lock(&s.to_host) = Some(to_host);
+        let mut typed = *b"sk-ant-typed-in-1234";
+        send_input(&s, 4, &mut typed).unwrap();
+        assert!(
+            typed.iter().all(|&b| b == 0),
+            "the typed bytes were left where they were read"
+        );
+        drop(lock(&s.to_host).take());
+        let mut frame = Vec::new();
+        let (kind, len) = wire::read_frame_into(&mut host, &mut frame).unwrap().unwrap();
+        assert_eq!(kind, wire::to_host::INPUT);
+        let input = wire::Input::decode(&frame[..len]).unwrap();
+        assert_eq!(
+            (input.member, input.bytes.0.as_slice()),
+            (4, b"sk-ant-typed-in-1234".as_slice())
+        );
+        assert!(wire::read_frame_into(&mut host, &mut frame).unwrap().is_none());
+    }
+
+    /// Do have a run host write more diagnostics than are kept to quote, its caller naming a
+    /// file for them partway, then end them. Expect: the file holding what was kept until it
+    /// was named and everything after, whole and once; what is kept to quote still their last
+    /// alone (Hex: the cause of a grants-none run had gone from the tail).
+    #[test]
+    fn a_hosts_diagnostics_are_written_whole_to_the_file_its_caller_names() {
+        let shared = shared();
+        let (said, mut host) = io::pipe().unwrap();
+        let dir = shards_testdir::TempDir::new("api-said").unwrap();
+        let path = dir.join("diagnostics");
+        let before = b"shards api-run: before its file\n".to_vec();
+        let after: Vec<u8> = (0..said_kept() * 2).map(|i| b'a' + (i % 26) as u8).collect();
+        std::thread::scope(|s| {
+            let keeping = s.spawn(|| keep_said(&shared, said));
+            host.write_all(&before).unwrap();
+            // What the host wrote is kept before its file is named.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while lock(&shared.state).said.len() < before.len() {
+                assert!(Instant::now() < deadline, "its first words were never kept");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            shared
+                .keep_diagnostics(std::fs::File::create(&path).unwrap())
+                .unwrap();
+            host.write_all(&after).unwrap();
+            drop(host);
+            keeping.join().unwrap();
+        });
+        assert_eq!(std::fs::read(&path).unwrap(), [&before[..], &after[..]].concat());
+        let kept: Vec<u8> = lock(&shared.state).said.iter().copied().collect();
+        assert_eq!(kept, after[after.len() - said_kept()..]);
+    }
+
+    /// Do pump the outputs of a run whose end came before them, its host's channel closed by
+    /// it, as a run that ends at once has (WHP at 3a05bc3f1: a template's run of `exit 3`,
+    /// restored, ended before its first credit went). Expect: a pipe for each channel of each
+    /// running member alone, each ending as the run has, and no refusal: the run started, and
+    /// its end is the session's to tell, never a boot refused `BrokenPipe`.
+    #[test]
+    fn a_run_ended_before_its_first_credit_still_has_its_outputs() {
+        let shared = Arc::new(shared());
+        lock(&shared.state).end = Some(RunEnd::Exited(3));
+        let member = |index, runs| MemberInfo {
+            index,
+            kind: wire::MemberKind::Harness,
+            name: format!("m{index}"),
+            runs,
+        };
+        let outputs = pumped(&shared, &[member(1, true), member(2, false)]).unwrap();
+        let channels: Vec<(u32, Channel)> = outputs.iter().map(|(key, _)| *key).collect();
+        assert_eq!(channels, [(1, Channel::Stdout), (1, Channel::Stderr)]);
+        for (key, mut reader) in outputs {
+            let mut rest = Vec::new();
+            reader.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty(), "{key:?}");
+        }
+        assert_eq!(lock(&shared.state).end_seen(), Some(RunEnd::Exited(3)));
+    }
+
+    /// Do see a run's host gone without its run's end, as `wait_for` sees it, then stop the
+    /// run, as `stop` does once its wait is over; and stop one whose host said its end. Expect:
+    /// the end first seen, in the host's last words, kept through the stop and after, never
+    /// `Stopped` (Hex: `wait_for` read the host's failure, then `stop` turned it `Stopped`);
+    /// the host's own end kept likewise.
+    #[test]
+    fn a_runs_end_once_seen_is_kept_through_its_stop() {
+        let mut state = State {
+            exited: true,
+            answered: true,
+            said: b"shards api-run: its VM's link: reset\n"
+                .iter()
+                .copied()
+                .collect(),
+            ..State::default()
+        };
+        let seen = RunEnd::Failed(
+            "the run host exited without its run's end: shards api-run: its VM's link: reset".into(),
+        );
+        assert_eq!(state.end_seen(), Some(seen.clone()));
+        assert_eq!(state.stopped(), seen);
+        assert_eq!(state.end_seen(), Some(seen));
+        let mut said = State {
+            end: Some(RunEnd::Exited(3)),
+            exited: true,
+            answered: true,
+            ..State::default()
+        };
+        assert_eq!(said.stopped(), RunEnd::Exited(3));
+        assert_eq!(said.end_seen(), Some(RunEnd::Exited(3)));
     }
 
     /// A member's stdin has its flow as the run's start is taken, under the lock that answer
@@ -1591,6 +1769,7 @@ mod tests {
             to_host: Mutex::new(None),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            said_to: Mutex::new(None),
         };
         let info = |index, name: &str| MemberInfo {
             index,
@@ -1655,6 +1834,7 @@ mod tests {
             to_host: Mutex::new(Some(to_host)),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            said_to: Mutex::new(None),
         });
         lock(&s.state).inputs.insert(1, InputFlow::default());
         let (reader, mut writer) = io::pipe().unwrap();
@@ -1671,9 +1851,9 @@ mod tests {
         let (kind, first) = wire::read_frame(&mut from_host).unwrap().unwrap();
         assert_eq!(kind, wire::to_host::INPUT);
         let first = wire::Input::decode(&first).unwrap();
-        assert_eq!((first.member, first.bytes.as_slice()), (1, &payload[..7]));
+        assert_eq!((first.member, first.bytes.0.as_slice()), (1, &payload[..7]));
         assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(1024)), Ok(false));
-        let mut got = first.bytes;
+        let mut got = first.bytes.0.clone();
         loop {
             let (kind, frame) = wire::read_frame(&mut from_host).unwrap().unwrap();
             if kind == wire::to_host::INPUT_END {
@@ -1687,7 +1867,7 @@ mod tests {
                 break;
             }
             assert_eq!(kind, wire::to_host::INPUT);
-            got.extend(wire::Input::decode(&frame).unwrap().bytes);
+            got.extend_from_slice(&wire::Input::decode(&frame).unwrap().bytes.0);
         }
         assert_eq!(got, payload);
         feeding.join().unwrap();
@@ -2194,6 +2374,7 @@ mod tests {
             to_host: Mutex::new(Some(to_host)),
             lessor: Mutex::new(lessor.map(|l| RunLessor(l))),
             granted: Mutex::new(granted.iter().map(|g| (*g).to_string()).collect()),
+            said_to: Mutex::new(None),
         });
         let reader = {
             let shared = Arc::clone(&shared);
