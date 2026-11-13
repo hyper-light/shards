@@ -22762,3 +22762,97 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | The hang: CI's snapshot, fixed by 86f3c87b2; the new test red before that order, green after. `WithRun`: not reproduced, its cause not named; the test now says it. |
   | R11 | The test is Unix's (the door is Unix's; Windows' shares go with its job). |
   | R15, R16 | No agents started for this; `~/g51-carrier/src-s6b` and `~/g51-s2-target` on adalundhe-macbook-pro are removed after. |
+
+### M547. x86_64 musl's tests outgrew their step's 60 minutes: their build in Alpine takes twice glibc's (plan step 1's step 9)
+
+- **Question.** At main cc439a2a7 the x86_64 musl test job (job 131488530250) ran out of its
+  step's 60 minutes ("On the native architecture, in Alpine") after build.rs, isolation.rs
+  and nesting.rs failed. How much of the hour did the failing tests' waits take: would their
+  fixes (plan steps 2, 3 and 6) bring the step under its limit?
+- **Method.** `measurements/g51-musl-time` over the job's log and over x86_64 gnu's of the
+  same run (job 131488530221). The step is split at cargo's `Finished test-release` line, and
+  each test binary is timed from its `Running` line to the next. Then the x86_64 musl test
+  job's outcome and length in the 48 CI runs retained (11-09 to 11-13).
+- **Found** (minutes).
+  - The step took 60.2. Building the tests took 38.6 of it (cargo's 36m23s); gnu's same
+    build, on the same runner image (ubuntu-24.04, 20261101.360.1), took 18m44s, and 19m05s at
+    83f0549ad. Of musl's build, 22 minutes passed between `Compiling shards-server` and
+    `Finished`: the shards crate and its test binaries.
+  - The tests ran 21.6 until the limit cut them, in tests/saved.rs. The 43 binaries both jobs
+    ran took musl 21.4 and gnu 23.0: musl runs the tests at gnu's pace. The 58 binaries musl
+    never reached took gnu 7.0. So the step needs about 36 + 30 = 66.
+  - The failing binaries took 3.9 together: build.rs 3.5 (23 failed), isolation.rs 0.1 (1),
+    nesting.rs 0.3 (6), their failures quick assertions. Fixing them does not bring the step
+    under 60.
+  - The job last went through in 49.3 and 46.5 (runs 42530038334, 42685304283). From run
+    42717322163 (11-10) on it ended at the step's limit in nearly every run, 60.4 to 64.1, a few
+    sooner on failures, as its build grew.
+- **Reading.** The overrun is the step's limit against its build, not the failures' waits. Its
+  limit, 60 minutes (the job's 70), was never derived as M420 derived the native jobs': M420's
+  table has no musl row. Why the build in Alpine takes twice glibc's is not measured here.
+- **Owed** (ROOT's, CI's).
+  - The musl test step's limit by M420's method, from runs that go through: about 66 minutes
+    by these logs, so a run that goes through needs a limit above that first.
+  - The build's doubling measured before choosing: for example the same build from a glibc
+    host, cross to musl, beside Alpine's.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R02, R03 | CI's own logs; no limit chosen here, M420's method named for ROOT. |
+  | R09, R10 | The logs are the evidence; nothing was changed, so no red or green. |
+  | R15, R16 | Implementer; logs read on this Mac, no run. |
+
+### M548. windows-2022's failures at cc439a2a7 and 7eea109ac: a harness's orphan, fixed, and four not reproduced (plan step 1's step 8)
+
+- **Question.** Plan step 8 names windows-2022's failures. In boot.rs:
+  `a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes` (PING.EXE, shards.exe
+  and shards-vm.exe left), `rejects_invalid_vm_configuration` (its client did not exit 60 s
+  after its error) and `brings_up_every_vcpu` (no exit in 60 s). In context.rs, the terminal
+  tests whose shell does not exit (terminal_windows.rs:358). What caused each, from the code
+  and the logs?
+- **Method.** The windows-2022 jobs' logs at main cc439a2a7 (job 131488530917), 7eea109ac
+  (job 131490000850) and 1145bd3f2 (job 131628813177), and windows-2025's at the first two
+  (jobs 131488530464, 131490000849), read for each failure's panic and what came before it.
+  Then the code each names, and git's ancestry of what changed since.
+- **Found.**
+  - Where: at cc439a2a7 the three boot tests failed; at 7eea109ac the deadline test, and
+    context.rs's `a_clients_archives_are_its_own_files` with the terminal's "the shell did not
+    exit". At 1145bd3f2 boot.rs passed whole (32 passed). windows-2025 passed the boot tests at
+    both, and failed one terminal test at cc439a2a7
+    (`a_terminal_through_a_context_is_the_commands_own`, the same panic).
+  - The deadline test's line holds two faults.
+    - PING.EXE is no process of the run. The harness listed an orphaned ping of the daemon
+      unit tests' `sleeper` under it, its parent's ID taken again (PM M528). Fixed by 6ff69befe
+      (11-12 13:09), which both failing runs (12:59, 13:01) predate and 1145bd3f2 has.
+    - shards.exe (the share process) and shards-vm.exe (the VM process) still ran the test's
+      own bound after the client's TerminateProcess: M528's open item, seen on windows-2025 at
+      c01aeb941 too. The job they are made in (`GroupJob::ending_with_this_process`) ends them
+      as its last handle closes: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, made uninheritable, each
+      child given its named handles alone and assigned to the job while suspended. What held
+      the job open, or kept them out of it, the log does not show.
+  - `rejects_invalid_vm_configuration`: the client said "kernel is not an x86_64 vmlinux: not
+    an x86-64 executable" and did not exit within 60 s. The harness's cdb could not attach to
+    it (HRESULT 0x80004002), so there are no stacks. Once in three windows-2022 runs.
+  - `brings_up_every_vcpu`: the guest's console stops at its per-CPU setup ("Hyper-V: PV
+    spinlocks disabled", 0.054 s), before its second vCPU comes up. Once in three.
+  - The terminal tests: after the client exits, the harness types Return for the test
+    shell's last read, and the shell did not exit within the test's bound. Once on
+    windows-2022 and once on windows-2025, in different tests.
+- **Verdicts.** The orphan is fixed on main (6ff69befe). The other four are intermittent, gone
+  at 1145bd3f2, and the logs hold nothing past their symptoms: not reproduced, their causes
+  not named (R09). Each is owed a live reproduction on WHP, which only real VMs give.
+- **Owed** (ROOT's, real VMs).
+  - On jupiter and on CI's windows-2022, repeated: `cargo test -p shards --profile
+    test-release --test boot -- a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes
+    rejects_invalid_vm_configuration brings_up_every_vcpu`, and `--test context` for the
+    terminal tests.
+  - On a recurrence of the deadline test's leftovers: whether each process is in the client's
+    job (IsProcessInJob), and which process holds a handle to it.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R09 | The orphan: M528's reproduction and 6ff69befe's ancestry. The other four: not reproduced, no fix made. |
+  | R11 | windows-2022 and windows-2025 logs read; no Windows run here. |
+  | R15, R16 | Implementer; logs read on this Mac, no run. |
