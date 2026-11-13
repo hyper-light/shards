@@ -8090,17 +8090,22 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   - *Literals*: none. W*, R* and every window are this daemon's own; their durations
     saturate at u64's nanoseconds (D215); a look due now is made, never a read with a zero
     timeout.
-  - *Gaps*, owed to ROOT's runs and decisions:
-    - A cold kind's wait on a microVM whose init never answers holds its thread, and a
-      metrics read its client, until that microVM ends: audit-fix-host-v1's finding 4, now
-      only before the kind's first answer (`metrics_whose_microvm_runs_nothing_are_ended`
-      teaches its record first).
-    - Linux puts a task over its cgroup's `memory.high` to sleep up to
-      `MEMCG_MAX_HIGH_DELAY_JIFFIES` (2 s) at each return to user space (mm/memcontrol.c,
-      `mem_cgroup_handle_over_high`), and a loaded host's scheduler can keep a runnable
-      process off its CPUs for longer than a short W*. A microVM all of whose threads so wait
-      for a whole W* is ended though its host only slowed it. This is not measured: the
-      budget E2E under a `memory.high` (tests/budget.rs, tests/containers.rs) holds it.
+  - *A cold kind follows liveness* (ROOT's ruling, 2026-11-13). Before its kind's first
+    answer, a wait on a microVM whose init never answers holds its thread, and a metrics
+    read its client, until that microVM ends: audit-fix-host-v1's finding 4, now only
+    before the kind's first answer (`metrics_whose_microvm_runs_nothing_are_ended` teaches
+    its record first). Its progress is shown typed meanwhile: a client's wait by the
+    listener's word of what its microVM runs (D209), and an end by its `Cut`.
+  - *A microVM its host holds is live* (ROOT's ruling, 2026-11-13; D215's judge, `Found::Held`).
+    Linux puts a task over its cgroup's `memory.high` to sleep up to
+    `MEMCG_MAX_HIGH_DELAY_JIFFIES` (2 s) at each return to user space (mm/memcontrol.c,
+    `mem_cgroup_handle_over_high`), and a loaded host's scheduler can keep a runnable
+    process off its CPUs for longer than a short W*: a microVM all of whose threads so wait
+    for a whole W* ran nothing of its own fault. A look that finds no CPU refuses now only
+    where its host was not the reason: none of its threads runnable or waiting on its host's
+    memory, nor (Linux) its cgroup's CPU or memory pressure grown; and a microVM stopped or
+    frozen is refused whatever else shows. The evidence is D215's readers'. Not measured
+    here: the budget E2E under a `memory.high` (tests/budget.rs, tests/containers.rs) holds it.
   - Tested (light), health.rs: `a_cold_wait_follows_its_microvm_while_it_lives`,
     `a_microvm_that_runs_at_any_rate_is_waited_for` (a fiftieth of a CPU, below the idle
     rate), `an_exec_is_ended_once_its_microvm_runs_nothing_for_a_whole_w_star`,
@@ -23222,8 +23227,25 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
     nanoseconds (each past u64's, 584 years, its most). Five `Duration`s in the variant
     enlarged every `Result<_, Refusal>`: a test's tuple of two of them crossed clippy's
     `result_large_err` (crates/api/tests/sim.rs, this lane's second run).
-    - A host under load slows a VM process but never stops it, so one that ran nothing for
-      as long as the slowest answer took is stopped, deadlocked or frozen.
+    - A host under load slows a VM process, and may hold it from running for a while, but
+      a VM process that ran nothing for as long as the slowest answer took, its host not
+      the reason, is stopped, deadlocked or frozen. So a look that finds no CPU since the
+      look before refuses only where the host was not the reason (`Found::Held` is no
+      refusal; ROOT's ruling, 2026-11-13): none of its threads runnable (Linux `R`, macOS
+      `TH_STATE_RUNNING`, Windows ready, running, standby or transition) or waiting on its
+      host's memory (macOS `TH_STATE_UNINTERRUPTIBLE`, which macOS keeps no pressure record
+      of; Windows' KWAIT_REASON FreePage, PageIn, PoolAllocation and their Wr forms); nor, on
+      Linux, its cgroup's CPU or memory pressure grown since the look before (cpu.pressure's
+      and memory.pressure's `some` totals, Documentation/accounting/psi.rst; a task held over
+      `memory.high` is a memory stall, mm/memcontrol.c). One stopped or frozen is refused
+      whatever else shows: Linux's leader `T` or `t` or a frozen cgroup (`cgroup.events`),
+      macOS's `SSTOP`, Windows' every thread suspended. Read where each OS keeps it, with no
+      privilege: `/proc/<pid>/task/*/stat` and the process's cgroup v2 files (the root's
+      pressure is `/proc/pressure`); libproc's `PROC_PIDTBSDINFO`, `PROC_PIDLISTTHREADS` and
+      `PROC_PIDTHREADINFO`, which need no task port (`task_threads` would, and `task_for_pid`
+      is refused for a hardened process not built to allow it); NtQuerySystemInformation's
+      SystemProcessInformation records, each thread's state and wait reason. What cannot be
+      read shows nothing, and that look is judged by its CPU alone.
     - R* is in the refusal for diagnosis only, never a bound. ROOT's first design refused a
       look below R*, which would refuse a boot merely slowed by its host's load: the very
       failure R03 ends (ROOT, 2026-11-13, at this lane's report).
@@ -23297,7 +23319,20 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
     The readers also follow a process by its pid alone (`Followed::of_pid`: its start read
     with it, and on Windows the process and what descends from it). shards-api's `Follow`
     is the two together. The daemon's waits on its microVMs' own answers are judged by it
-    (D188, `Wait::WhileRuns`), with records of their own.
+    (D188, `Wait::WhileRuns`), with records of their own. A wait judged from outside, whose
+    party cannot be looked at (a writer blocked in its write, the daemon's `slots_hold`),
+    asks `Record::stalled(since, now)`: none while its kind is cold or less than W* has
+    passed since its last progress, else the stall.
+  - Tested (light), host starvation and the outside judge: judge.rs's
+    `a_party_its_host_holds_is_live_not_stalled` and
+    `a_wait_judged_from_outside_is_stalled_a_whole_w_star_after_its_last_progress`;
+    progress.rs's `a_process_its_host_holds_is_held_and_a_stopped_one_still` (the decision,
+    each OS's evidence), `a_stopped_process_is_seen_stopped_and_refused` (a SIGSTOPped
+    child, seen stopped and refused) and `a_spinning_process_is_seen_runnable` (Unix). Red
+    at 7d5118297 with the rule by CPU alone (the hold read and ignored, `Record::stalled` a
+    stub; adas-mac-studio.local, macOS 26.2 arm64): `Still` where `Held` was due for the
+    throttled stand-in, and no stall where one was due; the readers' own tests passed then
+    too, macOS's libproc reading a child's threads with no task port.
   - *Its literals*: 10^9 nanoseconds a second, a timespec's bound (POSIX <time.h>); 100,
     FILETIME's nanoseconds (GetProcessTimes); a zero-time wait (WaitForSingleObject, 0),
     which is a look, not a wait. Nothing else: W*, R* and every time judged are this
