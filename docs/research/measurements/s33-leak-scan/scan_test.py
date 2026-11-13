@@ -187,6 +187,18 @@ class LeakTest(unittest.TestCase):
         code, said = p.scan()
         self.assertEqual(code, 0, said)
 
+    def test_a_shape_inside_a_word_hides_no_token_after_it(self):
+        """A JWT's shape matched inside a word ("x" + "eyJ0.") is none, and a JWT that begins
+        a token inside that match, after its ".", is still listed: shapes are tried only where
+        a token begins, never skipped past a match that does not."""
+        jwt = "eyJhbGciOiJSUzI1NiJ9." + fake("signature", 43) + "." + fake("more", 43)
+        p = Planted()
+        p.image("memory", b"xeyJ0." + jwt.encode(), AT)
+        code, said = p.scan()
+        self.assertEqual(code, 4, said)
+        self.assertIn("offset %d length %d: a JWT" % (AT + 6, len(jwt)), said)
+        self.assertEqual(said.count("SHAPE"), 1, said)
+
     def test_long_runs_of_every_forms_bytes_scan_in_bounded_memory_and_values_in_them_are_found(self):
         """A saved memory full of long runs of a secret's own bytes, in each of its forms (WHP's
         MemoryError, jupiter, 2026-11-13): the scan's heap stays below the file's own size, which a
