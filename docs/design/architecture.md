@@ -22743,7 +22743,10 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   names its "to whom": each member the image gives it, by declared index, at the member's
   own port (another where an `EXPOSE` maps it), several where several claim it (the one
   listening takes each connection); none where it reaches the run's own command. The rule
-  is `read ports`' (`agentfile::receiving`), one function for both.
+  is `read ports`' (`agentfile::receiving`), one function for both. The run is on a bridge
+  where anything is kept or published, or where the image links its members past the
+  microVM, whatever is kept, its network process then letting nothing past that is not kept
+  (D250).
 - *Shares.* At boot, as the run's `-v`, given to the members the image's `VOLUME` there is
   for (D109). Added while running: D214's path to the run's command, owed; to a member,
   refused (its mounts are made as it starts).
@@ -24667,6 +24670,63 @@ and `cargo test -p shards --profile test-release --test api_image` on a KVM host
 
 **What would falsify it.** A run whose command started ending `Failed` for its `DONE`, or one
 whose command never started ending `Exited`.
+
+### D250. An orchestrator's run keeps the network its image links its members to, letting nothing past that the request does not keep (built; real-VM validation owed)
+
+**Why.** D231's run host gave a run a network only where the request kept something past the
+microVM or published a port. A request keeping nothing past it (Hex's image class's default:
+`Keep::Only([])` for egress, remote MCP servers and destinations, no DNS) of an image whose
+members are granted what lies past it (a harness and its provider) then ran with no network,
+which the image's own check refuses (`Agentfile::refuse`, "cannot run without a network",
+D59): Hex's image_real had Codex refused so on a real KVM node (the Hex lead, 2026-11-13).
+That check holds a fact of the guest's: init links each member as the image's
+`/.agentfile.json` grants it, whatever a request keeps (crates/init `netplan::plan`), and a
+member granted egress, ingress, names or DNS is linked through eth0 (`domains::switch`), which
+a microVM with no network has not: init kills it, "its link: the microVM has no address for
+its agents' egress".
+
+**Alternatives** (R02).
+- *Check the run against the grants the request keeps* (the Hex lead's first draft): the
+  refusal goes, the microVM boots with no NIC, and init kills each member linked past it, as
+  above. Not taken.
+- *Tell init the narrowing, so that it links no member past the microVM*: a setup entry and a
+  change to init's netplan, where every other narrowing is the network process's (D231, D236,
+  D246), and a guest older than its run host would link them all the same. Not taken.
+- *Keep the network, its network process at DenyAll* (taken; the Hex lead's goal 12 found the
+  same): the run host starts the network process at `Policy::DenyAll` ("a VM without
+  grants") and tells it a policy only where the request keeps something (`tell_net`,
+  `NET_POLICY`), so the members are linked as their image grants and nothing passes the
+  microVM that the request does not keep, as a run that only publishes has it today. Its cost
+  is a NIC and a network process for such a run (unmeasured).
+
+**Decided.** `api_run::network` decides the run's network and its policy, `plan`'s whole
+sequence: the grants as the request narrows them (`egress`), each member held apart where
+asked (`held_apart`), a bridge where something is kept or the image links its members past the
+microVM (`Agentfile::linked_past`: it grants them what lies past it, or their flows cross
+init's namespace to eth0, D59), then `Agentfile::refuse`, whose `--network none` refusal takes
+`linked_past` too, one rule for both. No wire change.
+
+**Literals.** None.
+
+**Tests** (unit, one macOS arm64 host).
+`api_run::tests::a_run_keeping_nothing_past_the_microvm_has_its_members_network_and_no_policy`
+(the Hex lead's: nothing kept of an image granting its harness egress and DNS, on a bridge
+with no policy; kept whole, on a bridge with the image's policy; an image granting nothing, on
+none). Red/green on adas-mac-studio.local (Darwin 25.2.0 arm64, rustc 1.98.1), `cargo test -p
+shards --bin shards -- api_run::`: with the network decided as `plan` decided it (a bridge only
+where something is kept), 15 passed and that test failed, refused "cannot run without a
+network: the image's Agentfile grants its agents what lies past the microVM, and --network
+none gives the microVM none"; as built, `api_run::` and `agentfile::` 24 passed. Clippy for
+shards and shards-api, all targets, `-D warnings`: clean. Real VMs, committed unrun:
+`api_image::a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs` (the Hex
+lead's).
+
+**Evidence owed** (ROOT, real VMs). `cargo test -p shards --profile test-release --test
+api_image a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs` on KVM, HVF and
+WHP; Hex's image_real with a box of no grants once Hex vendors this.
+
+**What would falsify it.** A member of such a run reaching anything past the microVM (then a
+network process told no policy is not at `DenyAll`), or one killed for its link.
 
 ## 4. Start path (≤ 5 ms budget)
 

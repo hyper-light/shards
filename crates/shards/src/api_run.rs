@@ -470,6 +470,30 @@ fn held_apart(
     Ok(())
 }
 
+/// The run's network and its network process's policy (D231, D250): the image's grants as the
+/// request narrows them ([`egress`]), each member held apart where asked ([`held_apart`]),
+/// and a bridge where the request keeps anything past the microVM or the image links its
+/// members past it (`Agentfile::linked_past`), whatever is kept. Their init links them to
+/// eth0 as their image grants (its `/.agentfile.json`, which no narrowing reaches), and the
+/// network process holds the microVM to what is kept, nothing where nothing is (no policy
+/// told: its `Policy::DenyAll`). Then the run refused what of it would reach the image's
+/// domains ([`crate::agentfile::Agentfile::refuse`]).
+fn network(
+    agentfile: Option<&crate::agentfile::Agentfile>,
+    request: &wire::Request,
+    run: &mut shards_ipc::Run,
+) -> Result<Option<Vec<u8>>, No> {
+    let egress = egress(agentfile.map(|a| &a.grants), &request.egress)?;
+    held_apart(agentfile, &request.egress)?;
+    if egress.is_some() || agentfile.is_some_and(crate::agentfile::Agentfile::linked_past) {
+        run.network = "bridge".into();
+    }
+    if let Some(a) = agentfile {
+        a.refuse(run).map_err(no(Cause::Request))?;
+    }
+    Ok(egress)
+}
+
 /// Refuses a published port that would widen the run: one the image's Agentfile declares
 /// `AS egress` (a destination, never a listener), and, for a run with no command of its
 /// own, one the image gives no member for ingress (D122).
@@ -696,8 +720,9 @@ mod hosted {
     }
 
     /// The request as `shards run` would have asked it of a daemon: the image, its own
-    /// command or none, its published ports, its shares as `-v`, a network only where
-    /// something goes past the microVM, and the nesting grant as `--security-opt
+    /// command or none, its published ports, its shares as `-v`, a network where a port is
+    /// published (`super::network` gives one where more needs it), and the nesting grant as
+    /// `--security-opt
     /// nesting=true` asks for it (D234), with `ready_by`, its deadline as an instant
     /// (`super::deadline`).
     pub(super) fn as_run(request: &wire::Request, ready_by: Option<u64>) -> shards_ipc::Run {
@@ -792,14 +817,7 @@ mod hosted {
         let inputs = super::inputs(request, &members)?;
         let terminals = super::terminals(request, &members)?;
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
-        let egress = super::egress(agentfile.as_ref().map(|a| &a.grants), &request.egress)?;
-        super::held_apart(agentfile.as_ref(), &request.egress)?;
-        if egress.is_some() {
-            run.network = "bridge".into();
-        }
-        if let Some(a) = &agentfile {
-            a.refuse(&run).map_err(no(Cause::Request))?;
-        }
+        let egress = super::network(agentfile.as_ref(), request, &mut run)?;
         let nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
         let bridge = if run.network == "bridge" {
             Some(
@@ -2838,6 +2856,56 @@ mod tests {
             wire::RunEnd::Failed("the VM's link: reset".into())
         );
         assert!(matches!(run_end(None, None), wire::RunEnd::Failed(_)));
+    }
+
+    /// A run that keeps nothing past the microVM of what the image grants its members has
+    /// the network their links need all the same (their init links each member granted
+    /// anything past the microVM through eth0, D59, D250), and its network process lets
+    /// nothing past (no policy told: `Policy::DenyAll`). Do: narrow an image whose harness is
+    /// granted egress and DNS to nothing, as Hex's image class asks by default (kiln plan
+    /// 01a1cd8e862e7169a074db3d5fa33f3d step 12); keep it whole; and run an image that
+    /// grants nothing. Expect: the first on a bridge with no policy, never refused "cannot
+    /// run without a network"; the second on a bridge with the image's policy; the third on
+    /// none.
+    #[test]
+    fn a_run_keeping_nothing_past_the_microvm_has_its_members_network_and_no_policy() {
+        let granted = crate::agentfile::Agentfile {
+            domains: 2,
+            uplink: true,
+            grants: shards_agentfile::agentfile::Grants {
+                egress: vec![b"443/tcp".to_vec()],
+                dns: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut nothing = request(Vec::new());
+        nothing.egress = wire::Narrowing {
+            egress: wire::Keep::Only(Vec::new()),
+            mcp: wire::Keep::Only(Vec::new()),
+            destinations: wire::Keep::Only(Vec::new()),
+            dns: false,
+            members: None,
+        };
+        let mut run = hosted::as_run(&nothing, None);
+        let policy = network(Some(&granted), &nothing, &mut run);
+        assert!(
+            matches!(&policy, Ok(None)),
+            "{}",
+            policy.err().map(|No(_, why)| why).unwrap_or_default()
+        );
+        assert_eq!(run.network, "bridge");
+        let whole = request(Vec::new());
+        let mut run = hosted::as_run(&whole, None);
+        assert!(matches!(network(Some(&granted), &whole, &mut run), Ok(Some(_))));
+        assert_eq!(run.network, "bridge");
+        let plain = crate::agentfile::Agentfile {
+            domains: 2,
+            ..Default::default()
+        };
+        let mut run = hosted::as_run(&whole, None);
+        assert!(matches!(network(Some(&plain), &whole, &mut run), Ok(None)));
+        assert_eq!(run.network, "none");
     }
 
     /// Labels become members by their declared index; only an active one runs.
