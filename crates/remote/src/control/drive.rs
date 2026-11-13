@@ -1,13 +1,16 @@
 //! The controller's side of the agent-control endpoint (plan step 11, D238): the one connection
 //! kiln or Hex holds to a microVM's endpoint, and the lanes it opens on it to the microVM's
-//! members' stdio, so that neither writes this wire again ("a controller's side is Shards'
-//! code", D238).
+//! members' stdio and to the commands it runs in them, so that neither writes this wire again
+//! ("a controller's side is Shards' code", D238).
 //!
 //! - **Its lanes.** Each opens with step 5's subscription and carries step 5's frames: an
 //!   output's records, one in flight, each acknowledged once its caller asks for the next
 //!   ([`Output::next_record`]); a stdin's records, each within the room the endpoint said and taken
 //!   before the next goes, then its end or abort ([`Input`]). Attaching to a member is this:
 //!   its stdio as step 5 serves it.
+//! - **Its execs** ([`Execs::exec`]). An exec's lane asks for step 6's member exec; once it has
+//!   started, its stdout, stderr and stdin are lanes as a member's are, and its lane carries its
+//!   resizes and signals and tells its exit ([`ExecControl`]).
 //! - **Who it reaches.** No lane opens before the handshake took the microVM's pinned key
 //!   ([`controller`](super::controller)), and no more open at once than the endpoint allows
 //!   (MAX_STREAMS, RFC 9000 §4.6): the rest wait for its room.
@@ -16,7 +19,7 @@
 //!   keeps an unacknowledged record and a stdin's place for the next subscription (step 5).
 //! - **No value of its own** (R03). Every transport value is the endpoint's per-stream
 //!   admission's, as the run's managed metadata gives it, summed over the lanes as the endpoint
-//!   sums them ([`super::Endpoint::bind`]).
+//!   sums them ([`super::Endpoint::bind`]), an exec's while it runs.
 
 use std::mem::size_of;
 use std::net::SocketAddr;
@@ -25,27 +28,35 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 use hyper_quic::{ClientConfig, ConnectionError, StreamId};
-use shards_abi::run::managed::InputEnd;
+use shards_abi::run::managed::{Channel, InputEnd};
+use shards_abi::run::{Size, Spec};
 
+use super::exec::{self, Limits, Steer, Told};
 use super::{By, Ended, REFUSED_BYTES, controller, ended, read_refused};
 use crate::frame::{self, Tag};
 use crate::identity::{self, Fingerprint, Identity};
 use crate::managed::input::{self, Said};
-use crate::managed::{self, AdmissionError, Admitted, CONTROL_BYTES, DATA_HEAD, Reason, Scope, Windows};
+use crate::managed::{
+    self, AdmissionError, Admitted, CONTROL_BYTES, DATA_HEAD, Reason, RunId, Scope, Windows,
+};
 use crate::net::{Close, Command, ConnKey, Driver, DriverLimits, Handler, Io, Read, Sender};
 
 const FRAME_HEAD: usize = size_of::<u8>() + size_of::<u32>();
 const OFFSET: usize = size_of::<u64>();
 /// An output's acknowledgment: a frame's head and the offset it consumed to.
 const ACK_BYTES: usize = FRAME_HEAD + OFFSET;
+/// A steering frame: a frame's head and a u32.
+const STEER_BYTES: usize = FRAME_HEAD + size_of::<u32>();
 
 /// The member streams a controller drives on one connection, each with the admission its
 /// endpoint announced for it (the run's managed metadata) and where its lane opens: an output at
-/// the first byte its controller has not consumed, a stdin at the first it has not seen taken.
+/// the first byte its controller has not consumed, a stdin at the first it has not seen taken;
+/// and what each exec's streams are admitted, where the endpoint runs execs.
 #[derive(Debug, Clone, Copy)]
 pub struct Subscriptions<'a> {
     pub outputs: &'a [(Scope, Admitted, u64)],
     pub inputs: &'a [(input::Scope, Admitted, u64)],
+    pub execs: Option<exec::Admissions>,
 }
 
 /// Why a lane gives no more, typed: what callers match, never words.
@@ -57,6 +68,8 @@ pub enum Fault {
     Revoked,
     /// The member's stdin has ended, having taken `written` bytes, as its init told it.
     InputEnded { written: u64, end: InputEnd },
+    /// An exec did not start ([`exec::Unstarted`]).
+    Unstarted(exec::Unstarted),
     /// The connection ended ([`Ended`]): this side's own close is [`Ended::Local`].
     Lost(Ended),
 }
@@ -73,20 +86,50 @@ pub enum Got {
 /// What the driver tells a lane's handle.
 #[derive(Debug)]
 enum Heard {
-    Record { at: u64, bytes: Vec<u8> },
+    Record {
+        at: u64,
+        bytes: Vec<u8>,
+    },
     Finished,
-    Taken { accepted: u64, room: u32 },
+    Taken {
+        accepted: u64,
+        room: u32,
+    },
     Fault(Fault),
+    /// An exec started: its stdio's handles.
+    Started(Box<Started>),
+    /// An exec ended, with this status.
+    Exit(i32),
 }
 
-/// What a lane's handle asks of the driver: at most one at a time each, as step 5 has one
-/// record in flight each way.
+/// An exec's stdio's handles, as its lane's start makes them.
+#[derive(Debug)]
+struct Started {
+    lane: u64,
+    stdout: Output,
+    stderr: Option<Output>,
+    stdin: Option<Input>,
+}
+
+/// What a handle asks of the driver: a lane's at most one at a time, as step 5 has one record in
+/// flight each way, and an exec's asks as its controller makes them.
 #[derive(Debug)]
 enum Ask {
     /// An output's records to `offset` consumed.
-    Consumed { lane: usize, offset: u64 },
-    /// A stdin's frame: a record, or its end or abort.
-    Send { lane: usize, frame: Vec<u8> },
+    Consumed { lane: u64, offset: u64 },
+    /// A stdin's frame (a record, or its end or abort), or an exec's steering.
+    Send { lane: u64, frame: Vec<u8> },
+    /// An exec's lane to open, its ask its first frame.
+    Exec(Box<Asked>),
+}
+
+#[derive(Debug)]
+struct Asked {
+    frame: Vec<u8>,
+    member: u32,
+    stderr: bool,
+    stdin: bool,
+    tell: mpsc::Sender<Heard>,
 }
 
 /// The handle's view of a lane gone with its driver: the driver ended, which this side did.
@@ -94,20 +137,35 @@ fn gone() -> Fault {
     Fault::Lost(Ended::Local)
 }
 
-/// Hands `ask` to the driver. A driver that ended told the lane why first, which its handle
-/// hears next; a full handoff cannot be, with one ask in flight per lane and a slot for each.
-fn hand(asks: &Sender<Ask>, ask: Ask) -> Result<(), Fault> {
-    match asks.try_send(Command::Handler(ask)) {
-        Ok(()) | Err(mpsc::TrySendError::Disconnected(_)) => Ok(()),
-        Err(mpsc::TrySendError::Full(_)) => Err(gone()),
+/// Where a handle asks the driver, and wakes it: one unit wake, a full handoff a wake queued
+/// already, whose turn reads every ask.
+#[derive(Debug)]
+struct Asks {
+    tx: mpsc::Sender<Ask>,
+    wake: Sender<()>,
+}
+
+impl Asks {
+    /// Hands `ask` over. A driver that ended told the lane why first, which its handle hears.
+    fn hand(&self, ask: Ask) {
+        if self.tx.send(ask).is_ok() {
+            let _ = self.wake.try_send(Command::Handler(()));
+        }
+    }
+
+    fn try_clone(&self) -> Result<Asks, crate::Error> {
+        Ok(Asks {
+            tx: self.tx.clone(),
+            wake: self.wake.try_clone()?,
+        })
     }
 }
 
-/// A member's stdout or stderr, as its controller reads it.
+/// A member's stdout or stderr, or an exec's, as its controller reads it.
 #[derive(Debug)]
 pub struct Output {
-    lane: usize,
-    asks: Sender<Ask>,
+    lane: u64,
+    asks: Asks,
     heard: mpsc::Receiver<Heard>,
     cursor: u64,
     /// The end of the record handed out and not yet acknowledged.
@@ -123,13 +181,10 @@ impl Output {
     pub fn next_record(&mut self) -> Result<Got, Fault> {
         if let Some(offset) = self.held.take() {
             self.cursor = offset;
-            let ask = Ask::Consumed {
+            self.asks.hand(Ask::Consumed {
                 lane: self.lane,
                 offset,
-            };
-            if let Err(fault) = hand(&self.asks, ask) {
-                self.over = Some(Err(fault));
-            }
+            });
         }
         if let Some(over) = self.over {
             return over.map(|()| Got::Finished);
@@ -142,7 +197,7 @@ impl Output {
             }
             Ok(Heard::Finished) => (Ok(Got::Finished), Some(Ok(()))),
             Ok(Heard::Fault(fault)) => (Err(fault), Some(Err(fault))),
-            Ok(Heard::Taken { .. }) | Err(_) => (Err(gone()), Some(Err(gone()))),
+            Ok(_) | Err(_) => (Err(gone()), Some(Err(gone()))),
         };
         self.over = over;
         got
@@ -154,11 +209,11 @@ impl Output {
     }
 }
 
-/// A member's stdin, as its controller writes it.
+/// A member's stdin, or an exec's, as its controller writes it.
 #[derive(Debug)]
 pub struct Input {
-    lane: usize,
-    asks: Sender<Ask>,
+    lane: u64,
+    asks: Asks,
     heard: mpsc::Receiver<Heard>,
     cursor: u64,
     /// Where the endpoint said the next record starts and how long it may be.
@@ -193,7 +248,7 @@ impl Input {
         let mut frame = Vec::new();
         input::record(accepted, bytes.get(..len).unwrap_or_default(), &mut frame)
             .map_err(|_| self.fail(gone()))?;
-        self.send(frame)?;
+        self.send(frame);
         self.room = None;
         // The driver took that taken only where this record ends (`Pace`).
         let (next, _) = self.room()?;
@@ -201,22 +256,22 @@ impl Input {
         Ok(len)
     }
 
-    /// Ends the member's stdin once all before it is taken (step 5's end, errno 0), and waits
-    /// for the member's init to tell how it went: how many bytes its stdin took.
+    /// Ends the stdin once all before it is taken (step 5's end, errno 0), and waits for the
+    /// member's init to tell how it went: how many bytes its stdin took.
     pub fn end(&mut self) -> Result<(u64, InputEnd), Fault> {
         let (accepted, _) = self.room()?;
-        self.send(input::end(accepted, 0).to_vec())?;
+        self.send(input::end(accepted, 0).to_vec());
         self.ended()
     }
 
-    /// Aborts the member's stdin with `errno`, whatever is in flight, and waits for the member's
-    /// init to tell how it went. An errno is positive and below Linux's MAX_ERRNO, 4095
+    /// Aborts the stdin with `errno`, whatever is in flight, and waits for the member's init to
+    /// tell how it went. An errno is positive and below Linux's MAX_ERRNO, 4095
     /// (include/linux/err.h), which a u16 holds.
     pub fn abort(&mut self, errno: NonZeroU16) -> Result<(u64, InputEnd), Fault> {
         if let Some(fault) = self.over {
             return ended_or(fault);
         }
-        self.send(input::end(self.cursor, i32::from(errno.get())).to_vec())?;
+        self.send(input::end(self.cursor, i32::from(errno.get())).to_vec());
         self.ended()
     }
 
@@ -232,12 +287,8 @@ impl Input {
             }
             match self.heard.recv() {
                 Ok(Heard::Taken { accepted, room }) => self.room = Some((accepted, room)),
-                Ok(Heard::Fault(fault)) => {
-                    self.over = Some(fault);
-                }
-                Ok(Heard::Record { .. } | Heard::Finished) | Err(_) => {
-                    self.over = Some(gone());
-                }
+                Ok(Heard::Fault(fault)) => self.over = Some(fault),
+                Ok(_) | Err(_) => self.over = Some(gone()),
             }
         }
     }
@@ -253,12 +304,11 @@ impl Input {
         }
     }
 
-    fn send(&mut self, frame: Vec<u8>) -> Result<(), Fault> {
-        let ask = Ask::Send {
+    fn send(&self, frame: Vec<u8>) {
+        self.asks.hand(Ask::Send {
             lane: self.lane,
             frame,
-        };
-        hand(&self.asks, ask).map_err(|fault| self.fail(fault))
+        });
     }
 
     fn fail(&mut self, fault: Fault) -> Fault {
@@ -275,11 +325,125 @@ fn ended_or(fault: Fault) -> Result<(u64, InputEnd), Fault> {
     }
 }
 
+/// Where a controller asks for execs in the microVM's members, on its one connection.
+#[derive(Debug)]
+pub struct Execs {
+    asks: Asks,
+    run: RunId,
+    generation: u64,
+}
+
+impl Execs {
+    /// Runs `spec` in member `member` (step 6's member exec, D243: as the member runs, its user
+    /// and setup the member's own) and waits until it has started: its stdio's handles and its
+    /// control. Why it did not start, typed: the endpoint's refusal of its lane, the host's
+    /// [`Fault::Unstarted`], or the connection's end.
+    pub fn exec(&self, member: u32, spec: Spec) -> Result<Exec, Fault> {
+        let (stderr, stdin) = (spec.tty.is_none(), spec.stdin);
+        let ask = exec::Ask {
+            run: self.run,
+            generation: self.generation,
+            member,
+            spec,
+        };
+        let frame = ask.frame().map_err(|_| Fault::Refused(Reason::Protocol))?;
+        let (tell, heard) = mpsc::channel();
+        self.asks.hand(Ask::Exec(Box::new(Asked {
+            frame,
+            member,
+            stderr,
+            stdin,
+            tell,
+        })));
+        let started = match heard.recv() {
+            Ok(Heard::Started(started)) => started,
+            Ok(Heard::Fault(fault)) => return Err(fault),
+            Ok(_) | Err(_) => return Err(gone()),
+        };
+        let Started {
+            lane,
+            stdout,
+            stderr,
+            stdin,
+        } = *started;
+        Ok(Exec {
+            stdout,
+            stderr,
+            stdin,
+            control: ExecControl {
+                lane,
+                asks: self.asks.try_clone().map_err(|_| gone())?,
+                heard,
+                exit: None,
+            },
+        })
+    }
+}
+
+/// A command running in a member: its stdout, its stderr (none on a terminal, whose output is
+/// its stdout), its stdin (where it reads one), and its control.
+#[derive(Debug)]
+pub struct Exec {
+    pub stdout: Output,
+    pub stderr: Option<Output>,
+    pub stdin: Option<Input>,
+    pub control: ExecControl,
+}
+
+/// An exec's lane: its resizes and signals, and its exit.
+#[derive(Debug)]
+pub struct ExecControl {
+    lane: u64,
+    asks: Asks,
+    heard: mpsc::Receiver<Heard>,
+    exit: Option<Result<i32, Fault>>,
+}
+
+impl ExecControl {
+    /// Sizes its terminal (step 6's `EXEC_RESIZE`).
+    pub fn resize(&self, size: Size) -> Result<(), Fault> {
+        self.steer(Steer::Resize(size))
+    }
+
+    /// Signals it with `signal`, a Linux signal's number, `1..=run::NSIG`
+    /// (step 6's `EXEC_SIGNAL`).
+    pub fn signal(&self, signal: u32) -> Result<(), Fault> {
+        if !(1..=shards_abi::run::NSIG).contains(&signal) {
+            return Err(Fault::Refused(Reason::Protocol));
+        }
+        self.steer(Steer::Signal(signal))
+    }
+
+    fn steer(&self, steer: Steer) -> Result<(), Fault> {
+        let frame = exec::steering(steer).map_err(|_| gone())?;
+        self.asks.hand(Ask::Send {
+            lane: self.lane,
+            frame,
+        });
+        Ok(())
+    }
+
+    /// Waits for it to end: its status, its command's or 128 plus the signal that ended it. Its
+    /// endpoint tells it once its outputs have finished, every record consumed.
+    pub fn wait(&mut self) -> Result<i32, Fault> {
+        if let Some(exit) = self.exit {
+            return exit;
+        }
+        let exit = match self.heard.recv() {
+            Ok(Heard::Exit(status)) => Ok(status),
+            Ok(Heard::Fault(fault)) => Err(fault),
+            Ok(_) | Err(_) => Err(gone()),
+        };
+        self.exit = Some(exit);
+        exit
+    }
+}
+
 /// Ends the controller's connection and every lane on it: the microVM's control is over here.
 /// Dropping it does so too.
 #[derive(Debug)]
 pub struct Hangup {
-    sender: Sender<Ask>,
+    sender: Sender<()>,
 }
 
 impl Hangup {
@@ -294,11 +458,13 @@ impl Drop for Hangup {
     }
 }
 
-/// The handles of what a controller dialed, in the order its [`Subscriptions`] named them.
+/// The handles of what a controller dialed, in the order its [`Subscriptions`] named them, and
+/// where it asks for execs, where its subscriptions admit them.
 #[derive(Debug)]
 pub struct Dialed {
     pub outputs: Vec<Output>,
     pub inputs: Vec<Input>,
+    pub execs: Option<Execs>,
     pub hangup: Hangup,
 }
 
@@ -335,37 +501,24 @@ impl Controller {
         lanes.try_reserve_exact(count).map_err(|_| allocation())?;
         let mut receivers = Vec::new();
         receivers.try_reserve_exact(count).map_err(|_| allocation())?;
+        let mut id = 0u64;
         for (scope, admitted, from) in subscriptions.outputs {
-            let most = admitted
-                .record_bytes
-                .checked_add(DATA_HEAD)
-                .ok_or(managed::Error::Admission(AdmissionError::Window))?;
-            let (lane, heard) = Lane::new(
-                Carries::Output {
-                    most,
-                    next: *from,
-                    held: false,
-                },
-                &managed::subscribe(*scope, *from),
-                CONTROL_BYTES.saturating_add(ACK_BYTES),
-                most.max(REFUSED_BYTES),
-            )?;
-            lanes.push(lane);
-            receivers.push((heard, *from));
+            let (tell, heard) = mpsc::channel();
+            lanes.push(output_lane(id, *scope, admitted, *from, tell)?);
+            receivers.push((id, heard, *from));
+            id = id.saturating_add(1);
         }
         for (scope, admitted, from) in subscriptions.inputs {
-            let sends = input_sends(admitted)?;
-            let (lane, heard) = Lane::new(
-                Carries::Input {
-                    pace: Pace::First { from: *from },
-                },
-                &input::subscribe(*scope, *from),
-                sends,
-                input_receives(),
-            )?;
-            lanes.push(lane);
-            receivers.push((heard, *from));
+            let (tell, heard) = mpsc::channel();
+            lanes.push(input_lane(id, *scope, admitted, *from, tell)?);
+            receivers.push((id, heard, *from));
+            id = id.saturating_add(1);
         }
+        let run = subscriptions
+            .outputs
+            .first()
+            .map(|(scope, _, _)| (scope.run, scope.generation));
+        let (asks_tx, asks) = mpsc::channel();
         let drive = Drive {
             to,
             vm,
@@ -375,24 +528,43 @@ impl Controller {
             cause: None,
             lanes,
             over: false,
+            asks,
+            asks_tx: asks_tx.clone(),
+            wake: None,
+            next_id: id,
+            run,
+            admissions: subscriptions.execs,
+            base: Limits {
+                // The endpoint opens no lane (D238).
+                streams: 0,
+                receive: u64::try_from(windows.connection).unwrap_or(u64::MAX),
+                send: windows.send,
+            },
         };
         let any: SocketAddr = if to.is_ipv4() {
             SocketAddr::from(([0, 0, 0, 0], 0))
         } else {
             SocketAddr::from(([0u16; 8], 0))
         };
-        let (driver, sender) = Driver::bind_bounded(
+        let (mut driver, sender) = Driver::bind_bounded(
             any,
             None,
             drive,
             DriverLimits {
                 connections: 1,
-                // Each handle has one ask in flight at most (Ask).
-                command_slots: count,
+                // A wake is one unit whoever sends it, and its turn reads every ask.
+                command_slots: 1,
                 queued_datagram_bytes: link.datagram_bytes,
                 handshake_patience: link.patience,
             },
         )?;
+        driver.handler_mut().wake = Some(sender.try_clone()?);
+        let asks = |sender: &Sender<()>| -> Result<Asks, managed::Error> {
+            Ok(Asks {
+                tx: asks_tx.clone(),
+                wake: sender.try_clone()?,
+            })
+        };
         let mut outputs = Vec::new();
         outputs
             .try_reserve_exact(subscriptions.outputs.len())
@@ -401,12 +573,11 @@ impl Controller {
         inputs
             .try_reserve_exact(subscriptions.inputs.len())
             .map_err(|_| allocation())?;
-        for (lane, (heard, from)) in receivers.into_iter().enumerate() {
-            let asks = sender.try_clone()?;
-            if lane < subscriptions.outputs.len() {
+        for (at, (lane, heard, from)) in receivers.into_iter().enumerate() {
+            if at < subscriptions.outputs.len() {
                 outputs.push(Output {
                     lane,
-                    asks,
+                    asks: asks(&sender)?,
                     heard,
                     cursor: from,
                     held: None,
@@ -415,7 +586,7 @@ impl Controller {
             } else {
                 inputs.push(Input {
                     lane,
-                    asks,
+                    asks: asks(&sender)?,
                     heard,
                     cursor: from,
                     room: None,
@@ -423,11 +594,20 @@ impl Controller {
                 });
             }
         }
+        let execs = match (subscriptions.execs, run) {
+            (Some(_), Some((run, generation))) => Some(Execs {
+                asks: asks(&sender)?,
+                run,
+                generation,
+            }),
+            _ => None,
+        };
         Ok((
             Controller { driver },
             Dialed {
                 outputs,
                 inputs,
+                execs,
                 hangup: Hangup { sender },
             },
         ))
@@ -439,6 +619,53 @@ impl Controller {
         self.driver.handler_mut().lose(Ended::Local);
         result.map_err(managed::Error::Transport)
     }
+}
+
+/// An output's lane, subscribed at `from`: what it sends (its subscription, one acknowledgment)
+/// and the largest frame it reads (a record and its head, or a refusal).
+fn output_lane(
+    id: u64,
+    scope: Scope,
+    admitted: &Admitted,
+    from: u64,
+    tell: mpsc::Sender<Heard>,
+) -> Result<Lane, managed::Error> {
+    let most = admitted
+        .record_bytes
+        .checked_add(DATA_HEAD)
+        .ok_or(managed::Error::Admission(AdmissionError::Window))?;
+    Lane::new(
+        id,
+        Carries::Output {
+            most,
+            next: from,
+            held: false,
+        },
+        &managed::subscribe(scope, from),
+        CONTROL_BYTES.saturating_add(ACK_BYTES),
+        most.max(REFUSED_BYTES),
+        tell,
+    )
+}
+
+/// A stdin's lane, subscribed at `from`.
+fn input_lane(
+    id: u64,
+    scope: input::Scope,
+    admitted: &Admitted,
+    from: u64,
+    tell: mpsc::Sender<Heard>,
+) -> Result<Lane, managed::Error> {
+    Lane::new(
+        id,
+        Carries::Input {
+            pace: Pace::First { from },
+        },
+        &input::subscribe(scope, from),
+        input_sends(admitted)?,
+        input_receives(),
+        tell,
+    )
 }
 
 /// What a stdin's lane sends at most at once: its subscription, one record of its admitted
@@ -454,6 +681,11 @@ fn input_sends(admitted: &Admitted) -> Result<usize, managed::Error> {
 /// The largest frame the endpoint sends on a stdin's lane: its taken, its end, or a refusal.
 fn input_receives() -> usize {
     input::TAKEN_BYTES.max(input::ENDED_BYTES).max(REFUSED_BYTES)
+}
+
+/// The largest frame the endpoint sends on an exec's lane: what it tells, or a refusal.
+fn exec_receives() -> usize {
+    exec::TOLD_BYTES.max(REFUSED_BYTES)
 }
 
 /// Where the stdin record `frame` ends, for one (`input::record`'s): its offset and length.
@@ -472,7 +704,8 @@ fn record_end(frame: &[u8]) -> Option<u64> {
 /// the endpoint sends on a lane before it is read (a whole record or a stdin's word, a refusal
 /// at most otherwise), the largest per lane and all of them summed; what the controller sends
 /// unacknowledged on each, summed; no stream the endpoint may open (it opens none, D238); the
-/// least patience, the largest handshake and datagrams.
+/// least patience, the largest handshake and datagrams. An exec's lanes add theirs while it
+/// runs ([`Drive::exec_started`]).
 pub(super) fn windows(subscriptions: Subscriptions<'_>) -> Result<(Admitted, Windows), managed::Error> {
     let window = || managed::Error::Admission(AdmissionError::Window);
     let mut link: Option<Admitted> = None;
@@ -513,8 +746,46 @@ pub(super) fn windows(subscriptions: Subscriptions<'_>) -> Result<(Admitted, Win
             },
         });
     }
+    if let Some(execs) = subscriptions.execs {
+        // An exec's stdio lanes read a record each through one stream's window.
+        let receive = execs
+            .output
+            .record_bytes
+            .checked_add(DATA_HEAD)
+            .ok_or_else(window)?;
+        windows.stream = windows.stream.max(receive).max(exec_receives());
+    }
     let link = link.ok_or(managed::Error::Admission(AdmissionError::Capacity))?;
     Ok((link, windows))
+}
+
+/// What an exec's lanes add to the controller's connection while it runs: what the endpoint
+/// sends on each before it is read (a record and its head on each output, a stdin's word, what
+/// the exec's lane is told) and what the controller sends on each (each output's subscription
+/// and acknowledgment, a stdin's subscription, record and end, a steer), as its dialed lanes'.
+fn exec_limits(admissions: exec::Admissions, stderr: bool, stdin: bool) -> Option<Limits> {
+    let outputs = 1u64.checked_add(u64::from(stderr))?;
+    let record = u64::try_from(admissions.output.record_bytes.checked_add(DATA_HEAD)?).ok()?;
+    let mut receive = u64::try_from(exec_receives())
+        .ok()?
+        .checked_add(record.checked_mul(outputs)?)?;
+    let mut send = u64::try_from(
+        STEER_BYTES.checked_add(
+            CONTROL_BYTES
+                .checked_add(ACK_BYTES)?
+                .checked_mul(usize::from(stderr) + 1)?,
+        )?,
+    )
+    .ok()?;
+    if stdin {
+        receive = receive.checked_add(u64::try_from(input_receives()).ok()?)?;
+        send = send.checked_add(u64::try_from(input_sends(&admissions.input).ok()?).ok()?)?;
+    }
+    Some(Limits {
+        streams: 0,
+        receive,
+        send,
+    })
 }
 
 /// What a lane carries.
@@ -525,6 +796,15 @@ enum Carries {
     Output { most: usize, next: u64, held: bool },
     /// A member's stdin: what its next taken may say.
     Input { pace: Pace },
+    /// An exec's lane: the member it runs in and which stdio it has, its number once started,
+    /// and what its lanes add to the connection while it runs.
+    Exec {
+        member: u32,
+        stderr: bool,
+        stdin: bool,
+        started: Option<u32>,
+        added: Limits,
+    },
 }
 
 /// What a stdin's next taken may say (step 5: one record in flight, taken whole).
@@ -547,15 +827,16 @@ enum Stage {
     /// Open on `stream`; `heard` once the endpoint has said anything on it, before which alone
     /// it may refuse the lane.
     Open { stream: StreamId, heard: bool },
-    /// Its handle told its end; nothing more of it is read.
+    /// Its handle told its end; nothing more of it is read, and it is let go.
     Over,
 }
 
 struct Lane {
+    /// Its number for its handle's asks: a lane let go answers none.
+    id: u64,
     carries: Carries,
     stage: Stage,
-    /// What it has to send, `sent` of it gone: its subscription first. Within what was
-    /// reserved as it was made, as one ask at a time goes.
+    /// What it has to send, `sent` of it gone: its first frame first.
     out: Vec<u8>,
     sent: usize,
     /// The endpoint's next frame as it comes, its largest at most.
@@ -565,36 +846,35 @@ struct Lane {
 
 impl Lane {
     fn new(
+        id: u64,
         carries: Carries,
-        subscription: &[u8],
+        first: &[u8],
         sends: usize,
         receives: usize,
-    ) -> Result<(Lane, mpsc::Receiver<Heard>), managed::Error> {
+        tell: mpsc::Sender<Heard>,
+    ) -> Result<Lane, managed::Error> {
         let allocation = || managed::Error::Admission(AdmissionError::Allocation);
         let mut out = Vec::new();
-        out.try_reserve_exact(sends.max(subscription.len()))
+        out.try_reserve_exact(sends.max(first.len()))
             .map_err(|_| allocation())?;
-        out.extend_from_slice(subscription);
+        out.extend_from_slice(first);
         let mut inbound = Vec::new();
         inbound.try_reserve_exact(receives).map_err(|_| allocation())?;
-        let (tell, heard) = mpsc::channel();
-        Ok((
-            Lane {
-                carries,
-                stage: Stage::Waiting,
-                out,
-                sent: 0,
-                inbound,
-                tell,
-            },
-            heard,
-        ))
+        Ok(Lane {
+            id,
+            carries,
+            stage: Stage::Waiting,
+            out,
+            sent: 0,
+            inbound,
+            tell,
+        })
     }
 
-    /// Tells its handle `heard`, which ends the lane for a fault or an output's finish. A handle
-    /// dropped hears nothing.
+    /// Tells its handle `heard`, which ends the lane for a fault, an output's finish or an
+    /// exec's exit. A handle dropped hears nothing.
     fn tell(&mut self, heard: Heard) {
-        if matches!(heard, Heard::Fault(_) | Heard::Finished) {
+        if matches!(heard, Heard::Fault(_) | Heard::Finished | Heard::Exit(_)) {
             self.stage = Stage::Over;
         }
         let _ = self.tell.send(heard);
@@ -615,15 +895,31 @@ impl Lane {
         self.sent = 0;
     }
 
-    /// Adds `frame` to what it has to send, within what was reserved for it.
+    /// Adds `frame` to what it has to send: within what was reserved for it, or, for an exec's
+    /// steering, which its controller sends as it likes, in room made for it.
     fn queue(&mut self, frame: &[u8]) -> bool {
         let fits = self
             .out
             .len()
             .checked_add(frame.len())
             .is_some_and(|n| n <= self.out.capacity());
-        if fits {
+        let room = fits
+            || (matches!(self.carries, Carries::Exec { .. }) && self.out.try_reserve(frame.len()).is_ok());
+        if room {
             self.out.extend_from_slice(frame);
+        }
+        room
+    }
+
+    /// Adds bytes read to the frame coming, within its largest.
+    fn queue_inbound(&mut self, bytes: &[u8]) -> bool {
+        let fits = self
+            .inbound
+            .len()
+            .checked_add(bytes.len())
+            .is_some_and(|n| n <= self.inbound.capacity());
+        if fits {
+            self.inbound.extend_from_slice(bytes);
         }
         fits
     }
@@ -637,16 +933,29 @@ enum Broken {
     Local,
 }
 
+/// What a lane's frame says: something for its handle, or, on an exec's lane, that the exec
+/// started under this number.
+#[derive(Debug)]
+enum Came {
+    Heard(Heard),
+    Started(u32),
+}
+
 /// One frame of the endpoint's at the front of `bytes` for a lane carrying `carries`, `heard`
 /// whether one came before (a refusal comes first or not at all), and its length; none until it
 /// has come whole. A frame of another kind or of a length its lane does not admit is broken, as
 /// soon as its head says so.
-fn frame_of(bytes: &[u8], carries: Carries, heard: bool) -> Result<Option<(Heard, usize)>, Broken> {
+fn frame_of(bytes: &[u8], carries: Carries, heard: bool) -> Result<Option<(Came, usize)>, Broken> {
     match read_refused(bytes) {
         Ok(None) => return Ok(None),
-        Ok(Some(reason)) if !heard => return Ok(Some((Heard::Fault(Fault::Refused(reason)), REFUSED_BYTES))),
-        Ok(Some(_)) | Err(None) => return Err(Broken::Protocol),
-        Err(Some(_)) => {}
+        Ok(Some(reason)) if !heard => {
+            let refused = Heard::Fault(Fault::Refused(reason));
+            return Ok(Some((Came::Heard(refused), REFUSED_BYTES)));
+        }
+        Ok(Some(_)) => return Err(Broken::Protocol),
+        // An exec's lane tells why its exec did not start in a refusal of its own codes.
+        Err(None) if !matches!(carries, Carries::Exec { .. }) => return Err(Broken::Protocol),
+        Err(_) => {}
     }
     match carries {
         Carries::Output { most, next, held } => {
@@ -668,7 +977,7 @@ fn frame_of(bytes: &[u8], carries: Carries, heard: bool) -> Result<Option<(Heard
             let mut bytes = Vec::new();
             bytes.try_reserve_exact(record.len()).map_err(|_| Broken::Local)?;
             bytes.extend_from_slice(record);
-            Ok(Some((Heard::Record { at, bytes }, whole)))
+            Ok(Some((Came::Heard(Heard::Record { at, bytes }), whole)))
         }
         Carries::Input { pace } => match input::said(bytes).map_err(|_| Broken::Protocol)? {
             None => Ok(None),
@@ -681,16 +990,30 @@ fn frame_of(bytes: &[u8], carries: Carries, heard: bool) -> Result<Option<(Heard
                 if !paced || room == 0 {
                     return Err(Broken::Protocol);
                 }
-                Ok(Some((Heard::Taken { accepted, room }, n)))
+                Ok(Some((Came::Heard(Heard::Taken { accepted, room }), n)))
             }
             Some((Said::Ended { written, end }, n)) => {
-                Ok(Some((Heard::Fault(Fault::InputEnded { written, end }), n)))
+                let ended = Heard::Fault(Fault::InputEnded { written, end });
+                Ok(Some((Came::Heard(ended), n)))
             }
+        },
+        Carries::Exec { started, .. } => match exec::told(bytes).map_err(|_| Broken::Protocol)? {
+            None => Ok(None),
+            Some((Told::Started(exec), n)) if started.is_none() && !heard => {
+                Ok(Some((Came::Started(exec), n)))
+            }
+            Some((Told::Unstarted(why), n)) if started.is_none() && !heard => {
+                Ok(Some((Came::Heard(Heard::Fault(Fault::Unstarted(why))), n)))
+            }
+            Some((Told::Exit(status), n)) if started.is_some() => {
+                Ok(Some((Came::Heard(Heard::Exit(status)), n)))
+            }
+            Some(_) => Err(Broken::Protocol),
         },
     }
 }
 
-/// The controller's handler: its one connection, and its lanes in the order dialed.
+/// The controller's handler: its one connection, and its lanes.
 struct Drive {
     to: SocketAddr,
     vm: Fingerprint,
@@ -702,6 +1025,15 @@ struct Drive {
     cause: Option<Ended>,
     lanes: Vec<Lane>,
     over: bool,
+    asks: mpsc::Receiver<Ask>,
+    asks_tx: mpsc::Sender<Ask>,
+    wake: Option<Sender<()>>,
+    next_id: u64,
+    /// The run and generation an exec is asked for in, from its dialed outputs.
+    run: Option<(RunId, u64)>,
+    admissions: Option<exec::Admissions>,
+    /// The connection's windows with no exec running.
+    base: Limits,
 }
 
 impl Drive {
@@ -717,7 +1049,7 @@ impl Drive {
 
     /// Closes the connection for what a lane's reading found: the endpoint broke its protocol
     /// (`Protocol`, as step 5's endpoints close a broken owner's), or this side has no memory
-    /// for it (`Closed`).
+    /// or room for it (`Closed`).
     fn broke(&mut self, io: &mut Io<'_>, conn: ConnKey, broken: Broken) {
         let (reason, why) = match broken {
             Broken::Protocol => (
@@ -759,35 +1091,41 @@ impl Drive {
             .position(|l| matches!(l.stage, Stage::Open { stream: s, .. } if s == stream))
     }
 
+    /// Lanes over let go, and the connection's windows those of the execs still running.
+    fn sweep(&mut self, io: &mut Io<'_>) {
+        let before = self.lanes.len();
+        self.lanes.retain(|l| l.stage != Stage::Over);
+        if let (Some(conn), true) = (self.conn, self.lanes.len() != before) {
+            let limits = self.lanes.iter().try_fold(self.base, |sum, l| match l.carries {
+                Carries::Exec { added, .. } => sum.plus(added),
+                _ => Some(sum),
+            });
+            if let Some(limits) = limits {
+                let _ = io.limit(conn, limits.streams, limits.receive, limits.send);
+            }
+        }
+    }
+
     /// Reads lane `at` as far as it has come: each whole frame told, its stream's end and reset
-    /// as its protocol has them.
-    fn read(&mut self, io: &mut Io<'_>, conn: ConnKey, at: usize) -> Result<(), Broken> {
+    /// as its protocol has them. An exec that started stops it there: its lanes are made before
+    /// anything after is told ([`Drive::exec_started`]).
+    fn read(&mut self, io: &mut Io<'_>, conn: ConnKey, at: usize) -> Result<Option<u32>, Broken> {
         let Some(lane) = self.lanes.get_mut(at) else {
-            return Ok(());
+            return Ok(None);
         };
         loop {
             let Stage::Open { stream, heard } = lane.stage else {
-                return Ok(());
+                return Ok(None);
             };
-            let room = lane.inbound.capacity().saturating_sub(lane.inbound.len());
-            let (bytes, end) = match io.read_within(conn, stream, room).map_err(|_| Broken::Local)? {
-                Read::Bytes(bytes) => (bytes, false),
-                Read::End(bytes) => (bytes, true),
-                Read::Blocked if room == 0 => return Err(Broken::Protocol),
-                Read::Blocked => return Ok(()),
-                Read::Reset => {
-                    lane.tell(Heard::Fault(Fault::Revoked));
-                    io.stop(conn, stream);
-                    return Ok(());
-                }
-            };
-            if !lane.queue_inbound(&bytes) {
-                return Err(Broken::Protocol);
-            }
             let mut heard = heard;
-            while let Some((said, len)) = frame_of(&lane.inbound, lane.carries, heard)? {
+            while let Some((came, len)) = frame_of(&lane.inbound, lane.carries, heard)? {
                 lane.inbound.drain(..len.min(lane.inbound.len()));
                 heard = true;
+                lane.stage = Stage::Open { stream, heard };
+                let said = match came {
+                    Came::Started(exec) => return Ok(Some(exec)),
+                    Came::Heard(said) => said,
+                };
                 match (&said, &mut lane.carries) {
                     (Heard::Record { at, bytes }, Carries::Output { next, held, .. }) => {
                         *next = at.checked_add(bytes.len() as u64).ok_or(Broken::Protocol)?;
@@ -796,47 +1134,261 @@ impl Drive {
                     (Heard::Taken { .. }, Carries::Input { pace }) => *pace = Pace::Told,
                     _ => {}
                 }
-                lane.stage = Stage::Open { stream, heard };
                 lane.tell(said);
                 if lane.stage == Stage::Over {
                     let _ = io.finish(conn, stream);
                     io.stop(conn, stream);
-                    return Ok(());
+                    return Ok(None);
                 }
             }
+            let room = lane.inbound.capacity().saturating_sub(lane.inbound.len());
+            let (bytes, end) = match io.read_within(conn, stream, room).map_err(|_| Broken::Local)? {
+                Read::Bytes(bytes) => (bytes, false),
+                Read::End(bytes) => (bytes, true),
+                Read::Blocked if room == 0 => return Err(Broken::Protocol),
+                Read::Blocked => return Ok(None),
+                Read::Reset => {
+                    lane.tell(Heard::Fault(Fault::Revoked));
+                    io.stop(conn, stream);
+                    return Ok(None);
+                }
+            };
+            if !lane.queue_inbound(&bytes) {
+                return Err(Broken::Protocol);
+            }
             if end {
-                // The endpoint finishes an output's lane once every record is consumed; a stdin's
-                // only after its end, and either after a refusal (told above).
+                // Its frames first: then an output's lane is finished once every record is
+                // consumed, and any other only after its last word or a refusal (told).
+                while let Some((came, len)) = frame_of(&lane.inbound, lane.carries, heard)? {
+                    lane.inbound.drain(..len.min(lane.inbound.len()));
+                    heard = true;
+                    lane.stage = Stage::Open { stream, heard };
+                    match came {
+                        Came::Started(exec) => return Ok(Some(exec)),
+                        Came::Heard(said) => {
+                            if let (Heard::Record { at, bytes }, Carries::Output { next, held, .. }) =
+                                (&said, &mut lane.carries)
+                            {
+                                *next = at.checked_add(bytes.len() as u64).ok_or(Broken::Protocol)?;
+                                *held = true;
+                            }
+                            lane.tell(said);
+                            if lane.stage == Stage::Over {
+                                return Ok(None);
+                            }
+                        }
+                    }
+                }
                 return match lane.carries {
                     Carries::Output { held: false, .. } if lane.inbound.is_empty() => {
                         lane.tell(Heard::Finished);
                         let _ = io.finish(conn, stream);
-                        Ok(())
+                        Ok(None)
                     }
                     _ => Err(Broken::Protocol),
                 };
             }
         }
     }
-}
 
-impl Lane {
-    /// Adds bytes read to the frame coming, within its largest.
-    fn queue_inbound(&mut self, bytes: &[u8]) -> bool {
-        let fits = self
-            .inbound
-            .len()
-            .checked_add(bytes.len())
-            .is_some_and(|n| n <= self.inbound.capacity());
-        if fits {
-            self.inbound.extend_from_slice(bytes);
+    /// Exec lane `at` started exec `exec`: its stdio's lanes made and opened, as dialed lanes
+    /// are, at its streams ([`exec::exec_run`]) from their first bytes; the connection's windows
+    /// raised by them; and their handles told to the exec's caller.
+    fn exec_started(&mut self, io: &mut Io<'_>, conn: ConnKey, at: usize, exec: u32) -> Result<(), Broken> {
+        let (Some((run, generation)), Some(admissions)) = (self.run, self.admissions) else {
+            return Err(Broken::Protocol);
+        };
+        let Some(lane) = self.lanes.get(at) else {
+            return Ok(());
+        };
+        let Carries::Exec {
+            member,
+            stderr,
+            stdin,
+            started: None,
+            ..
+        } = lane.carries
+        else {
+            return Err(Broken::Protocol);
+        };
+        let (id, tell) = (lane.id, lane.tell.clone());
+        let wake = self
+            .wake
+            .as_ref()
+            .ok_or(Broken::Local)?
+            .try_clone()
+            .map_err(|_| Broken::Local)?;
+        let streams = exec::exec_run(run, exec);
+        let local = |_| Broken::Local;
+        let mut made = Vec::new();
+        made.try_reserve_exact(3).map_err(|_| Broken::Local)?;
+        let mut output = |channel| -> Result<Output, Broken> {
+            let lane = self.next_id;
+            self.next_id = self.next_id.saturating_add(1);
+            let (tell, heard) = mpsc::channel();
+            let scope = Scope {
+                run: streams,
+                generation,
+                member,
+                channel,
+            };
+            made.push(output_lane(lane, scope, &admissions.output, 0, tell).map_err(local)?);
+            Ok(Output {
+                lane,
+                asks: Asks {
+                    tx: self.asks_tx.clone(),
+                    wake: wake.try_clone().map_err(|_| Broken::Local)?,
+                },
+                heard,
+                cursor: 0,
+                held: None,
+                over: None,
+            })
+        };
+        let stdout = output(Channel::Stdout)?;
+        let stderr = match stderr {
+            true => Some(output(Channel::Stderr)?),
+            false => None,
+        };
+        let stdin = match stdin {
+            true => {
+                let lane = self.next_id;
+                self.next_id = self.next_id.saturating_add(1);
+                let (tell, heard) = mpsc::channel();
+                let scope = input::Scope {
+                    run: streams,
+                    generation,
+                    member,
+                };
+                made.push(input_lane(lane, scope, &admissions.input, 0, tell).map_err(local)?);
+                Some(Input {
+                    lane,
+                    asks: Asks {
+                        tx: self.asks_tx.clone(),
+                        wake: wake.try_clone().map_err(|_| Broken::Local)?,
+                    },
+                    heard,
+                    cursor: 0,
+                    room: None,
+                    over: None,
+                })
+            }
+            false => None,
+        };
+        self.lanes.try_reserve(made.len()).map_err(|_| Broken::Local)?;
+        let added = exec_limits(admissions, stderr.is_some(), stdin.is_some()).ok_or(Broken::Local)?;
+        if let Some(Carries::Exec {
+            started, added: kept, ..
+        }) = self.lanes.get_mut(at).map(|l| &mut l.carries)
+        {
+            *started = Some(exec);
+            *kept = added;
         }
-        fits
+        self.lanes.extend(made);
+        let limits = self
+            .lanes
+            .iter()
+            .try_fold(self.base, |sum, l| match l.carries {
+                Carries::Exec { added, .. } => sum.plus(added),
+                _ => Some(sum),
+            })
+            .ok_or(Broken::Local)?;
+        let _ = io.limit(conn, limits.streams, limits.receive, limits.send);
+        let _ = tell.send(Heard::Started(Box::new(Started {
+            lane: id,
+            stdout,
+            stderr,
+            stdin,
+        })));
+        self.open(io);
+        Ok(())
+    }
+
+    /// Reads lane `at`, an exec that started there given its lanes before its lane reads on.
+    fn read_on(&mut self, io: &mut Io<'_>, conn: ConnKey, at: usize) -> Result<(), Broken> {
+        while let Some(exec) = self.read(io, conn, at)? {
+            self.exec_started(io, conn, at, exec)?;
+        }
+        Ok(())
+    }
+
+    /// Acts on what a handle asked.
+    fn ask(&mut self, io: &mut Io<'_>, ask: Ask) -> Result<(), Broken> {
+        let (lane, frame) = match ask {
+            Ask::Exec(asked) => {
+                let Asked {
+                    frame,
+                    member,
+                    stderr,
+                    stdin,
+                    tell,
+                } = *asked;
+                let id = self.next_id;
+                self.next_id = self.next_id.saturating_add(1);
+                let carries = Carries::Exec {
+                    member,
+                    stderr,
+                    stdin,
+                    started: None,
+                    added: Limits::default(),
+                };
+                match Lane::new(id, carries, &frame, frame.len(), exec_receives(), tell.clone()) {
+                    Ok(lane) if self.lanes.try_reserve(1).is_ok() => self.lanes.push(lane),
+                    _ => {
+                        let _ = tell.send(Heard::Fault(Fault::Lost(Ended::Local)));
+                        return Ok(());
+                    }
+                }
+                self.open(io);
+                return Ok(());
+            }
+            Ask::Consumed { lane, offset } => (lane, managed::consumed(offset).to_vec()),
+            Ask::Send { lane, frame } => (lane, frame),
+        };
+        let Some(conn) = self.conn else {
+            return Ok(());
+        };
+        let Some(lane) = self
+            .lanes
+            .iter_mut()
+            .find(|l| l.id == lane && l.stage != Stage::Over)
+        else {
+            return Ok(());
+        };
+        match &mut lane.carries {
+            // An acknowledgment of the record handed out, whole, and nothing else.
+            Carries::Output { next, held, .. } => {
+                let consumed = frame
+                    .get(FRAME_HEAD..)
+                    .and_then(|o| <[u8; OFFSET]>::try_from(o).ok())
+                    .map(u64::from_be_bytes);
+                if !*held || consumed != Some(*next) {
+                    return Ok(());
+                }
+                *held = false;
+            }
+            Carries::Input { pace } => {
+                if let Some(next) = record_end(&frame) {
+                    *pace = Pace::Sent { next };
+                }
+            }
+            Carries::Exec { started, .. } => {
+                // Steering goes once its exec has started.
+                if started.is_none() {
+                    return Ok(());
+                }
+            }
+        }
+        if !lane.queue(&frame) {
+            return Err(Broken::Local);
+        }
+        lane.flush(io, conn);
+        Ok(())
     }
 }
 
 impl Handler for Drive {
-    type Command = Ask;
+    type Command = ();
 
     fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, peer: &[u8]) -> Result<(), Close> {
         // The TLS handshake took no other key (`tls::client_with`); this holds it so whatever
@@ -864,9 +1416,10 @@ impl Handler for Drive {
             io.stop(conn, stream);
             return;
         };
-        if let Err(broken) = self.read(io, conn, at) {
+        if let Err(broken) = self.read_on(io, conn, at) {
             self.broke(io, conn, broken);
         }
+        self.sweep(io);
     }
 
     fn writable(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) {
@@ -895,39 +1448,16 @@ impl Handler for Drive {
         self.lose(why);
     }
 
-    fn command(&mut self, io: &mut Io<'_>, ask: Ask) {
-        // A handle asks only after its lane heard something, so on the connection made.
-        let Some(conn) = self.conn else {
-            return;
-        };
-        let at = match ask {
-            Ask::Consumed { lane, .. } | Ask::Send { lane, .. } => lane,
-        };
-        let Some(lane) = self.lanes.get_mut(at).filter(|l| l.stage != Stage::Over) else {
-            return;
-        };
-        let queued = match (ask, &mut lane.carries) {
-            // An acknowledgment of the record handed out, whole, and nothing else.
-            (Ask::Consumed { offset, .. }, Carries::Output { next, held, .. }) => {
-                if !*held || offset != *next {
-                    return;
+    fn command(&mut self, io: &mut Io<'_>, (): ()) {
+        while let Ok(ask) = self.asks.try_recv() {
+            if let Err(broken) = self.ask(io, ask) {
+                if let Some(conn) = self.conn {
+                    self.broke(io, conn, broken);
                 }
-                *held = false;
-                lane.queue(&managed::consumed(offset))
+                break;
             }
-            (Ask::Send { frame, .. }, Carries::Input { pace }) => {
-                if let Some(next) = record_end(&frame) {
-                    *pace = Pace::Sent { next };
-                }
-                lane.queue(&frame)
-            }
-            _ => return,
-        };
-        if queued {
-            lane.flush(io, conn);
-        } else {
-            self.broke(io, conn, Broken::Local);
         }
+        self.sweep(io);
     }
 
     fn available(&mut self, io: &mut Io<'_>, _conn: ConnKey) {

@@ -12,6 +12,7 @@ publish = false
 sha2 = "0.11"
 shards-abi = { path = "../abi" }
 shards-dns = { path = "../dns" }
+shards-ipc = { path = "../ipc" }
 triomphe = { version = "=0.1.17", default-features = false, features = ["std", "unsize"] }
 unsize = "=1.1.0"
 
