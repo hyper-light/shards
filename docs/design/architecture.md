@@ -22561,7 +22561,10 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   end mark written after that exit, `Duration::MAX` as no clock. What remains timed is
   twice the slowest recorded run on the host class (`shards_api::record`, PM M463, M464,
   M515); a class without a record has no bound, and its timed tests fail naming the record
-  due.
+  due. A record of one host bounds no other's (R03): CI's runner went past twice fedora's
+  slowest boot and refusal (PM M541), and ROOT decided on 2026-11-13 that these bounds are
+  learned where they run (docs/research/s37-decision-inventory.md, row 2). An attach of a
+  guest whose first client reaps it as it is held is refused `Exited` (PM M541).
 - `stop` kills the VM's process at once: the VMM has no host-to-guest power-off
   (vm/runtime.rs), so the page cache a guest held is lost, and a clean stop is the
   client's (ask the guest to sync and power off, `wait_for` its `PowerOff`).

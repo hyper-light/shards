@@ -48,8 +48,19 @@ impl Held {
     /// Held before its start is read: a process given `pid` once it has gone shows another
     /// start, and one that has gone since shows its end.
     pub(crate) fn find(pid: u32, started: u64) -> Result<Held, ProcessFailure> {
-        let os = os::Held::open(pid)?;
-        let now = os::started(pid)?;
+        Held::found(os::Held::open(pid)?, pid, started)
+    }
+
+    /// [`find`](Held::find) of process `pid`, held as `os`. A start unread once the process
+    /// held has exited is that exit: reaped since it was held, by its parent (the client
+    /// that booted it reaps it as it ends), its `/proc/<pid>` is gone (ENOENT, or ESRCH for a
+    /// stat file opened before) and macOS's `proc_pid_rusage` of it fails.
+    fn found(os: os::Held, pid: u32, started: u64) -> Result<Held, ProcessFailure> {
+        let now = match os::started(pid) {
+            Ok(now) => now,
+            Err(_) if matches!(os.exited(false), Ok(true)) => return Err(ProcessFailure::Exited),
+            Err(failure) => return Err(failure),
+        };
         if now != started {
             return Err(ProcessFailure::DifferentStart { observed: now });
         }
@@ -336,5 +347,41 @@ mod macos {
                 unsafe { libc::kill(pid, libc::SIGKILL) };
             }
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::process::{Command, Stdio};
+
+    /// A process reaped between its hold and the read of its start has exited: the hold
+    /// is a pidfd of its zombie, its parent's wait then removes `/proc/<pid>`. A guest's
+    /// first client reaps its VM process as its watcher sees it end, so attach of an ended
+    /// guest met this (boot.rs's conformance, CI job 131488530221 at cc439a2a7: `Os {
+    /// operation: OpenStat, code: 2 }`), where one reaped before is refused at its pidfd
+    /// (ESRCH) and one not yet reaped `Exited`.
+    #[test]
+    fn a_process_reaped_after_it_was_held_has_exited() {
+        // cat waits on its stdin, which this test holds open: alive until it is killed.
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let started = started(pid).unwrap();
+        child.kill().unwrap();
+        // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid(2) of this test's own child into `info`; WNOWAIT leaves it a zombie.
+        let waited = unsafe { libc::waitid(libc::P_PID, pid, &raw mut info, libc::WEXITED | libc::WNOWAIT) };
+        assert_eq!(waited, 0);
+        let held = os::Held::open(pid).unwrap();
+        child.wait().unwrap();
+        assert_eq!(
+            Held::found(held, pid, started).err(),
+            Some(ProcessFailure::Exited)
+        );
     }
 }
