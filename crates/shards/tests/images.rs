@@ -338,6 +338,35 @@ fn a_mirror_daemon_json_names_serves_docker_hubs_pull() {
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
+/// A test's `shards` reads the tests' own daemon.json (`common::as_tests_run`), never the
+/// host's (D194): a host's file, standing in here as the rootless engine's (under
+/// `XDG_CONFIG_HOME`; the native one's on Windows, under `PROGRAMDATA`), holds what dockerd
+/// would not start with, which fails every pull that reads it, and a build of the test image
+/// from the tests' own registry reads none of it. No VM: a build of a base alone runs no
+/// step.
+#[test]
+fn a_hosts_daemon_json_reaches_no_test() {
+    let (image, _) = served();
+    let home = TempDir::new("host-daemon-json");
+    let config = home.join("config");
+    let file = if cfg!(windows) {
+        config.join("docker").join("config").join("daemon.json")
+    } else {
+        config.join("docker").join("daemon.json")
+    };
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, r#"{"registry-mirrors": ["no scheme"]}"#).unwrap();
+    let ctx = TempDir::new("host-daemon-json-ctx");
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\n")).unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("XDG_CONFIG_HOME", config.as_os_str()),
+        ("PROGRAMDATA", config.as_os_str()),
+    ];
+    let built = run_shards_env(&["build"], &[ctx.as_os_str()], &env, TIMEOUT);
+    assert_eq!(built.status, Some(0), "{built}");
+}
+
 /// `pull --output-agentfile` writes the Agentfile of the image it pulled once it is
 /// through, as `make agentfile` writes one: into a directory as its `Agentfile`, where
 /// `shards build DIR` finds one, or to the file named; of the platform pulled. A pull that
