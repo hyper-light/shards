@@ -3231,6 +3231,46 @@ mod tests {
         assert_eq!((status.unwrap(), asked), (500, 2));
     }
 
+    /// A trouble is ridden out no longer than the longest its path has passed, 0.3 s here,
+    /// never twice that nor TCP's 100 s: a gateway's 503s that last 1.5 s are the request's
+    /// answer past 0.3 s. The run-out learns nothing, and the next trouble is ridden out
+    /// while it lasts, to its 200, which is then the longest; a path that has passed none
+    /// rides one out so too (D222).
+    #[test]
+    fn a_trouble_is_ridden_out_no_longer_than_the_longest_its_path_passed() {
+        let first = Arc::new(std::sync::Mutex::new(None::<Instant>));
+        let since = first.clone();
+        // 503 for 1.5 s from each trouble's first asking, then 200.
+        let server = route(None, move |_| {
+            let began = *since.lock().unwrap().get_or_insert_with(Instant::now);
+            if began.elapsed() >= Duration::from_millis(1500) {
+                return Some((http("200 OK", &[]), After::Keep));
+            }
+            Some((http("503 Service Unavailable", &[]), After::Keep))
+        });
+        let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
+        let passed = crate::patience::Shown {
+            trouble_us: 300_000,
+            ..crate::patience::Shown::default()
+        };
+        let http = crate::testing::client().showing("127.0.0.1", server.port, passed);
+        let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
+        let url = registry.base().join("manifests/v1").unwrap();
+        let t0 = Instant::now();
+        let (response, _) = registry.request("GET", &url, &[]).unwrap();
+        let took = t0.elapsed();
+        assert_eq!(response.status, 503, "given up past 0.3 s: {took:?}");
+        drop(response);
+        assert!(took < Duration::from_millis(1500), "{took:?}");
+        // The next trouble, ridden out while it lasts.
+        *first.lock().unwrap() = None;
+        let (response, _) = registry.request("GET", &url, &[]).unwrap();
+        assert_eq!(response.status, 200);
+        drop(response);
+        let shown = registry.http.shown("127.0.0.1", server.port);
+        assert!(shown.trouble_us >= 1_000_000, "{shown:?}");
+    }
+
     /// A wait before asking a registry again ends at its client's cancel, which it says.
     #[test]
     fn a_cancel_ends_a_troubles_wait() {
