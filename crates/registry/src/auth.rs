@@ -753,7 +753,8 @@ impl Bearer {
                 ));
             };
             last = failed.status;
-            // An overdue answer is asked again at once (crate::patience `Cutoff`).
+            // An overdue answer, one past the slowest its path has shown, is asked again at
+            // once (crate::patience).
             if !failed.error.is_overdue() {
                 http.pause(wait)?;
             }

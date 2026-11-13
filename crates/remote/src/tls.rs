@@ -38,10 +38,12 @@ pub enum Known {
     /// is available, the initial RTT SHOULD be set to 333 milliseconds") and has no deadline.
     Never,
     /// Reached, its last waits answered: its next handshake starts from its path's RTT and is
-    /// given up past the slowest handshake seen from it.
+    /// judged by the slowest handshake seen from it, as a send is by the slowest answer: given
+    /// up after that long with nothing heard from it, past its probe timeout (net.rs,
+    /// `Liveness::due`).
     Reached(Path),
     /// A wait of its last connection ran out: its next handshake starts from its path's RTT and
-    /// has no deadline, as a peer never reached's, until a handshake ends again.
+    /// has no window, as a peer never reached's, until a handshake ends again.
     RanOut(Path),
 }
 
@@ -78,9 +80,10 @@ impl Known {
         self.path().map_or(Self::NEVER_RTT, |path| path.rtt)
     }
 
-    /// How long its handshake is waited for: the slowest seen from it, where its last waits
-    /// were answered; else for as long as its caller waits, as its probing goes on.
-    pub fn handshake_deadline(self) -> Option<Duration> {
+    /// The window its handshake is judged by: the slowest seen from it, where its last waits
+    /// were answered; else none, its handshake waited for as long as its caller waits, as its
+    /// probing goes on.
+    pub fn handshake_window(self) -> Option<Duration> {
         match self {
             Known::Reached(path) => Some(path.handshake),
             Known::Never | Known::RanOut(_) => None,
@@ -90,7 +93,7 @@ impl Known {
     /// What is known after a connection that saw `seen`: a handshake that ended and the slowest
     /// answer it waited for raise the path's; the silence after which it was found dead, the
     /// shortest such; its RTT, the last; a run-out, marked. A connection whose handshake never
-    /// ended leaves what was known, but for a run-out past the slowest handshake.
+    /// ended leaves what was known, but for a run-out.
     pub fn after(self, seen: &crate::net::Seen) -> Known {
         let Some(handshake) = seen.handshake else {
             return match (self, seen.ran_out) {
@@ -558,16 +561,16 @@ mod tests {
     }
 
     /// What a home knows of a peer (the person's ruling, 2026-11-13): a peer never reached
-    /// starts its handshake from RFC 9002's 333 ms with no deadline; one reached, from its path's
-    /// last RTT, given up past the slowest handshake seen from it; after a run-out, with no
-    /// deadline again. A connection raises the slowest handshake and answer, keeps the shortest
-    /// silence found dead and takes its last RTT; one whose handshake never ended leaves what
-    /// was known, but marks a run-out past the slowest handshake.
+    /// starts its handshake from RFC 9002's 333 ms with no window; one reached, from its path's
+    /// last RTT, judged by the slowest handshake seen from it; after a run-out, with no window
+    /// again. A connection raises the slowest handshake and answer, keeps the shortest silence
+    /// found dead and takes its last RTT; one whose handshake never ended leaves what was known,
+    /// but marks a run-out.
     #[test]
     fn what_is_known_of_a_peer_follows_what_its_path_showed() {
         let ms = Duration::from_millis;
         assert_eq!(Known::Never.initial_rtt(), ms(333));
-        assert_eq!(Known::Never.handshake_deadline(), None);
+        assert_eq!(Known::Never.handshake_window(), None);
         let seen = |handshake, answer, lost, ran_out| crate::net::Seen {
             rtt: ms(20),
             handshake,
@@ -585,7 +588,7 @@ mod tests {
         };
         assert_eq!(first, Known::Reached(path));
         assert_eq!(first.initial_rtt(), ms(20));
-        assert_eq!(first.handshake_deadline(), Some(ms(40)));
+        assert_eq!(first.handshake_window(), Some(ms(40)));
         // A faster handshake and answer leave the slowest; a silence found dead is kept.
         let second = first.after(&seen(Some(ms(10)), ms(5), Some(ms(90_000)), true));
         let lost = Path {
@@ -593,7 +596,7 @@ mod tests {
             ..path
         };
         assert_eq!(second, Known::RanOut(lost));
-        assert_eq!(second.handshake_deadline(), None);
+        assert_eq!(second.handshake_window(), None);
         // The next that ends raises them, keeps the shorter silence, and is reached again.
         let third = second.after(&seen(Some(ms(70)), ms(60), Some(ms(120_000)), false));
         let raised = Path {
@@ -602,7 +605,7 @@ mod tests {
             ..lost
         };
         assert_eq!(third, Known::Reached(raised));
-        // A handshake never ended: nothing learned, but a run-out past the slowest is marked.
+        // A handshake never ended: nothing learned, but a run-out is marked.
         assert_eq!(third.after(&seen(None, Duration::ZERO, None, false)), third);
         assert_eq!(
             third.after(&seen(None, Duration::ZERO, None, true)),

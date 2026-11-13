@@ -2793,6 +2793,20 @@ rather than a container on the build host's kernel.
   mounted on a tmpfs of their own, in no layer. `--ulimit` takes `as` too, which go-units
   refuses for the way Docker starts a container; every RUN takes the limits, as
   Dockerfile2LLB's AddUlimit gives them, the run alone.
+- **Its end follows its VM** (`Builder`'s drop, 2026-11-13, PM M557). As a build lets its
+  builder go, its guest is asked what its build needed (`NEEDS`, D133) and told to power
+  off (its connection's end), and each wait follows the builder's VM process as D215's
+  judge follows a guest's, shared (R12; `shards_api::Follow`, its process read by pid): the
+  answer, and then the VM's exit, woken by it; once its kind has been seen in this process
+  (the slowest answer, and the slowest end from the connection's end to the exit, with
+  the least CPU rate either came at: the judge's `Record`s), a look at the VM each slowest
+  past the look before, the answer given up on, or the VM killed, at a look that finds it
+  made no progress since, its host holding none of it (a stopped VM stalls, one its host's
+  pressure keeps from running does not: D215); before, its liveness alone. Its own end teaches its kind, read
+  before it is reaped; a kill teaches nothing. A `shards build` boots one builder, so its
+  waits follow its VM's liveness alone, the cold start; a daemon that serves builds (the
+  Engine API) learns from its first. A guest its host left mid-step ends as that step does.
+  Before, both waits had 5 s in all, picked, and the exit was looked for each millisecond.
 - **Not yet as BuildKit:** a step's network is its own loopback until the guest has a
   network (D31); BuildKit's seccomp profile; caches kept past one build; ssh from the
   client. Each is an item of AGENTFILE_ARCH.md §11. A builder may have what its host has
@@ -3584,7 +3598,7 @@ D12's too, derived apart):
   longest first: its last progress is its accept, then its line's latest bytes
   (`Muxer::make_room`). The line is a local process's to write as it runs, so a host so
   loaded that the process runs late fails nothing, where 2 s cut it; and a cut cannot be
-  asked again on the client's behalf, which D222's restart cutoffs rest on.
+  asked again on the client's behalf, which D222's cut lookups rest on.
 - **RSTs owed for packets that matched no connection follow the guest's rings**
   (`stray_rsts_bound`, read at activation from the sizes the guest negotiated): one RST
   answers one guest packet, and a round takes a TX ring of those at most (`step`); it
@@ -6447,19 +6461,46 @@ replaced by:
   which hangs it up at once from its start (`client::HangUp`), as a probe its backoff puts ever
   further off would not. A host that answers its port unreachable refuses at once: the
   client's socket is connected to its one peer (`Driver::aim`), so its ICMP reads as a refusal
-  (ECONNREFUSED; Windows' WSAECONNRESET), said so, and the record kept as it was. A connection
-  begins its waits from its handshake's answer.
-- *A handshake's bound, after that.* A daemon reached before, its last waits answered, is given
-  up past the slowest handshake seen from it (`Known::handshake_deadline`), told so ("no answer
-  ... within the slowest handshake seen from it"), and marked: the next waits as a cold start
+  (ECONNREFUSED; Windows' WSAECONNRESET), said so, and the record kept as it was, whichever of
+  its next send and its next read is told of it (`Driver::flush_datagrams`): Linux gives a
+  connected socket's pending error, and clears it, at either (udp(7): ECONNREFUSED, "caused by
+  a previous packet sent over the socket"), as Winsock's send does (WSAECONNRESET). On Linux's
+  loopback the refusal of a first flight's first datagram comes back before its second is
+  sent, a client hello of the hybrid post-quantum groups filling two: a send that took it and
+  let it go as a lost datagram's left the read nothing to find, and a client asking a closed
+  port waited on, its probes refused unread (ROOT's KVM run at 237f3ebe7: `tests/loopback.rs`'s
+  closed port, 22 minutes).
+- *A handshake's bound, after that.* A daemon reached before, its last waits answered, has its
+  handshake judged as a send is (`Liveness::due`), by a window of the slowest handshake seen
+  from it (`Known::handshake_window`), no sooner than its probe timeout: given up a whole window
+  with nothing heard from it (its Initial and Handshake packets count) past the later of when it
+  was last heard and that timeout, told so ("no answer from the shards daemon at ADDR: nothing
+  heard from it in T, its probe timeout (P) and then the slowest handshake seen from it (W)",
+  typed as QUIC's `TimedOut`), and marked; one that goes past its window and its probe timeout both while it is
+  heard has run out, and goes on, marked. A marked record's next handshake waits as a cold start
   does, as every wait after a run-out does, until a handshake ends again. QUIC's loss recovery
-  starts each handshake from the path's last RTT (`initial_rtt`).
+  starts each handshake from the path's last RTT (`initial_rtt`). The window alone, from its
+  start, gave up daemons whose next handshake the suite's own load slowed: ROOT's runs of
+  `tests/context.rs` at 084891178, 8 of 21 on HVF and 1 on KVM, and at c1ef455c9 6 of 21 on HVF
+  (an engine relay's 502 among them), each "within the slowest handshake seen from it" of
+  0.57-4.2 ms, one sample of which, a fresh home's join, had set it. The probe timeout here is the one a send's wait is held to (patch Q7's
+  `probe_timeout`: its RTT terms and the peer's `max_ack_delay`, 25 ms until its transport
+  parameters say otherwise, RFC 9000 §18.2), where RFC 9002 §6.2.1 arms the Initial and
+  Handshake spaces' own probe timer without `max_ack_delay`, a peer acknowledging their packets
+  at once; that one, from a loopback path's learned RTT, is a millisecond or so, and bounds a
+  handshake's probes, not its peer's answer, whose work (its key exchange and signature) and
+  host's scheduling it does not measure.
 - *An established connection's liveness, at use* (was the idle timeout: `IDLE`, 10 s, then
   `QUIET`, 100 s). Its transport has no idle timeout (`max_idle_timeout` none) and sends no
   keep-alive of its own. A send that waits for its acknowledgment is held to a window, the slowest
-  answer seen on its path (the record's, and this connection's, from its handshake on) plus
-  the peer's own `max_ack_delay`, its declared transport parameter, as RFC 9002 §6.2.1's PTO
-  adds it (`Liveness::look`). Past the window, while the peer makes progress (acknowledges
+  answer seen on its path (the record's, then this connection's sends') plus the peer's own
+  `max_ack_delay`, its declared transport parameter, as RFC 9002 §6.2.1's PTO adds it
+  (`Liveness::look`). Cold, before any send's answer has been seen on its path, there is no
+  window: a wait follows its peer's liveness and progress for as long as it takes, as a
+  handshake's packets, which a peer acknowledges at once (RFC 9000 §13.2.1), measure nothing of
+  how long it takes to answer a request, its work and its host's scheduling with it (a fresh
+  client's join died at 123-152 ms on HVF, ROOT's run at dc7f45bc6, `tests/context.rs` 16 of 21,
+  its window seeded by its handshake while the daemon synced the client's record). Past the window, while the peer makes progress (acknowledges
   more, or is heard at all), the wait has run out: told typed, once (`Handler::ran_out`), the
   record marked, and the connection goes on; the answer that comes raises the slowest seen. A
   whole window with no progress is its death (`Look::Dead`, told as QUIC's `TimedOut`), and the
@@ -6486,7 +6527,7 @@ replaced by:
   no deadline. A machine holds as many connections of clients it has not enrolled as it holds
   open invitations, none while it holds none, and where every place is taken, a newer stranger
   takes the place of the one that has held it longest without joining, which is let go
-  (server.rs `connected`).
+  (server.rs `judged`), once the machine has said whom its key is.
 - *Handshakes held at once* (none before): a daemon holds as many handshakes from keys not yet
   known as its descriptors allow (`Host::handshakes`: the process's limit,
   `platform::descriptor_limit`, as each connection served may hold a command and its stdio),
@@ -6510,7 +6551,39 @@ replaced by:
   on at once (poll(2); WSAPoll), as a socket aimed at its peer takes datagrams from that peer
   alone (connect(2): Linux udp(7), XNU `udp_input`): a wake sent there never came, and a
   client's resize waited for the daemon's next packet. poll waits whole milliseconds, a wait
-  under one taken as one, so that a timer is looked at no sooner than it is due.
+  under one taken as one, so that a timer is looked at no sooner than it is due. What its socket
+  holds is read with the socket non-blocking: a receive timeout of the least, a microsecond,
+  Linux keeps in whole jiffies (SO_RCVTIMEO, net/core/sock.c `sock_set_timeout`), so that a
+  client's socket aimed at its daemon, read whatever its wait said, waited a jiffy out each turn
+  it had nothing to read. What a connection fed has to send goes before more of the socket is
+  read (`Driver::take_in`): its acknowledgement above all, which its peer awaits at once from
+  its second ack-eliciting packet (RFC 9000 §13.2.2), within its `max_ack_delay` at the latest
+  (§13.2.1). Drained whole before any was sent, a backlog at a peer's full rate held every
+  acknowledgement back and heard each datagram as of the drain's start, its silence as long as
+  the drain (the same reading of moved.rs's live move: an import's connection taken for dead
+  mid-stream). A send that goes between reads is taken into its connection's liveness as it
+  goes (`Liveness::note`), before what answers it is read: taken in only at the turn's end, after
+  its answer had been read, it began a wait that answer had already ended, and a quiet peer was
+  taken for dead a window on (2 to 3 of `tests/loopback.rs`'s 26 on adacachy2, 7 on macOS, as
+  the driver first sent between reads).
+- *A driver's absence* (none before): a wait is judged on the time its side was there to hear.
+  The time from one of a driver's turns to the next that its thread neither ran (its CPU time,
+  POSIX's `CLOCK_THREAD_CPUTIME_ID`) nor waited as it planned (its poll, until its timer in whole
+  milliseconds or until what came) is its own absence, its process frozen, starved or
+  descheduled, in a turn's midst or past its timer; on Windows, whose thread times move at the
+  clock interrupt, how far past its timer its poll woke alone (`net::Turn::absent`). Before a
+  turn judges anything, every connection's instants move on by it (`Liveness::absent`: a
+  handshake's start, when its peer was last heard, its handshake's end, a send's wait), so that
+  its peer is not held to the absence and its record (an answer, a silence, a handshake's time)
+  does not learn it as the peer's. The time past its timer alone missed a freeze in a turn's
+  midst: a trickling client froze between a send and its wait's poll took its daemon for dead as
+  it resumed, 1 of 6 rounds on adacachy2. kiln's runners stall whole processes: on adacachy2 under kiln, 400 sleeps of 2 ms took
+  p50 2.105 ms, p90 2.113 ms, p99 123.97 ms, max 124.02 ms (timer slack 100 µs, sched_ext off);
+  one 121 ms freeze took six of `tests/loopback.rs`'s daemons' live clients for dead at once
+  ("unanswered past the slowest answer seen"), and a relay's timeline showed a handshake given up
+  as both its ends resumed from 70 ms in which neither had sent anything, its wait judged on
+  wall-clock time that held its own freeze. A connection's peer gone during an absence is found
+  so a whole window after this side is back.
 
 **hyper-raft's main under it** (2026-11-13). Shards pinned hyper-quic and hyper-tls to a branch
 of hyper-raft forked at f116ac27 (2026-10-15) and carrying nine hyper-tls experiment commits
@@ -6546,27 +6619,43 @@ next probe, its client's connection seen ended there (relay.rs `gone`: recv(2) w
 and MSG_DONTWAIT, which takes nothing and leaves the reader's descriptor blocking; on Windows,
 PeekNamedPipe's broken pipe), as its client's input is read no further than its first chunk
 before the daemon's flow control lets it. A host's start runs on a worker of its own (server.rs `start_apart`,
-`Event::Started`), apart from the driver, which acknowledges every client's packets
-meanwhile: what the client sends after its request, and on the control streams that steer the
-command, is read once the start has ended, its flow control holding it back. On the driver, a
+`Event::Started`), and so do a join (`join_apart`, `Event::Joined`), whose record a host
+syncs to disk, and the machine's verdict on a key as its handshake ends (`judge_apart`,
+`Event::Judged`: the client it enrolled under it, or how many invitations it holds), whose
+files it reads, apart from the driver, which acknowledges every client's packets meanwhile;
+nothing a peer sends is read before its verdict. On the driver, a verdict read from a disk
+under load held up every other client's handshakes and acknowledgements as each handshake
+ended, a moving machine's import among them (the reading of moved.rs's live move failing on HVF
+at dc7f45bc6; its next run there is this change's check). What the client sends after its
+request, and on the control streams that steer the command, is read once the start has ended, its flow control holding it back. On the driver, a
 start longer than a client's probe timeout and window ended that client's connection and held
 up every other client's acknowledgements: the tests' commands' program, built by cargo at its
 first start, did so to every test that started one first (`tests/loopback.rs` builds it
 before its daemon serves, all the same). Tested, each test red before its code: `tls::tests` (what is known of a
-peer follows what its path showed), `net::tests` (a handshake held to its deadline or probing
-on, its silences measured; a send's window, its run-out with progress and its death without;
-a wait judged no sooner than its probe timeout; what its handshake sent no wait; the keep-alive
+peer follows what its path showed), `net::tests` (a handshake judged by its window or probing
+on, its silences measured; a handshake given up a whole window unheard past its probe timeout,
+one heard living on past both, red with its window a deadline from its start; a send's window,
+its run-out with progress and its death without; a cold wait following its peer however long
+its first answer takes; a wait judged no sooner than its probe timeout; a wait judged on the
+time its side was there to hear, red with no absence taken; a send taken in before its
+answer is read answered by it; what its handshake sent no wait; the keep-alive
 early by the window and none while a send waits; a handshake past its slots taking the oldest
 unanswered place), `context::tests` (a daemon's path read back for its
 daemon and address alone, kept only where it changed, removed with its context),
 `tests/loopback.rs` (a machine holding as many strangers as invitations, the oldest giving
 way; an enrolled client's silent command living with no keep-alive; no daemon answering
 probed until its caller gives up; a hang-up ending a command whose daemon never answered; a
-closed port refusing its client at once; a daemon reached before given up past its slowest
-handshake; a slow start holding up no other client, one start held while another client's
-command is answered whole, red with the start on the driver, that command unanswered past the
-test's deadline; and the relays' backpressure as before: 8 MiB crossing whole, a command that
-reads no stdin holding up no other).
+closed port refusing its client at once, its caller giving up past the test's deadline, red on
+Linux with a send's refusal let go; a daemon reached before given up past its slowest
+handshake, unheard; a daemon reached before slower to shake hands than ever, by more than its
+slowest but within a probe timeout, answered, a relay holding what it sends back, red with the
+slowest handshake a deadline; a process frozen 200 ms (SIGSTOP) while a command trickles
+through it keeping its connections, red with no absence taken; a daemon slow to answer a fresh
+client waited for (a stand-in's driver held in its handler), red with its handshake seeding the
+window; a slow start, a slow join and a slow verdict on one key holding up no other client, the
+stranger refused once its verdict is let go, red with each on the driver; and the relays'
+backpressure as before: 8 MiB crossing whole, a command that reads no stdin holding up no
+other).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
@@ -7402,6 +7491,29 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     (`--memory-swap` its memory): its guest's `memory.high` slows it and refuses it nothing
     (cgroup-v2.rst), so it passes `memory.max` whether its room comes before its growth or
     after, as nothing it holds can go to swap.
+  - **Each microVM's words its own** (built, macOS and Windows). The groups' thread told
+    each member its room and asked each to give back one after another, each waited for
+    while its VM process lived (`Wait::WhileRuns`): a member whose guest never answered a
+    room told before any room was answered, which a wait follows while its VM process
+    lives, held every other member's words and every group's stop for as long as its VM
+    process lived: `a_member_that_never_answers_holds_up_no_other_member_or_group`, red at
+    1e391c093 (adas-mac-studio.local, macOS 26.2 arm64: group two's member never stopped
+    in 20 s), plays it.
+    Now each member's word, its room told and then, for a round, what it holds cold asked
+    back, goes on a thread of its own, one word at a time, judged as D215's judge judges a
+    wait, its give-back waiting out one of its host's pressure under way as a budget's does
+    (reclaim.rs `give_after`); an ask made meanwhile waits behind it, its newest room and
+    any give-back kept. The groups' thread asks at its passes, hears each answer as it
+    comes (its condvar), and waits on none. A group found short with no round under way
+    begins one, each member asked once; it is judged once each has answered, ended, or run
+    past the slowest answer of its kind this daemon has seen with none (`Record::stalled`,
+    in memory: no figure of ours, and before its kind's first answer a member's word
+    follows its microVM's liveness alone, as its own wait does), the groups' thread waking
+    at that moment if nothing wakes it sooner; past `memory.max` with nothing given back,
+    its largest is stopped. So a member that never answers holds up no other member and no
+    other group, and its own group's stop comes once its word has run past the slowest
+    room answered (the same test: each group's largest stopped, OOM-killed). A group whose
+    budget goes tells each member it told a room that it has none, its hold let go of.
   - **Windows** (built): every process of a microVM under NAME is made in a job object of
     NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST, the
     group's first; Job Objects, "Nested Jobs", Windows 8 on), its warm VMs too: a VM
@@ -7823,7 +7935,7 @@ process.
   - It was D222's restart cutoff (Luby, Sinclair and Zuckerman 1993, over the daemon's
     requests' times, Kaplan and Meier 1958 over its cuts), a second at least and before any
     (RFC 6298 §2.1, §2.4), doubled for each cut in a row (§5.5), drawn from [t, 2t). The
-    registry's own restart cutoff (D222) is unchanged. The daemon's own handling of a connection waits on no
+    registry's own waits follow the same rule since (D222, PM M555). The daemon's own handling of a connection waits on no
   clock at all: every connection it takes is a socket pair one of its threads writes the
   request on whole (a slot's bridge, a request it puts to itself), and a bridge that cannot
   send ends its writing.
@@ -8145,9 +8257,22 @@ user's host as Docker's.
   network process; it now waits one slice. The cost: a network process stuck on nothing of
   its own is ended 10 s or more after its VM, where it was 1 s; one that exits as its links
   close, as each does, ends the wait at once. The waits that took that second as their
-  basis keep it, their own basis owed (R03): init's relay drain (hostbind.rs `DRAIN`), the
-  daemon's `PUBLISH_PATIENCE`, and the VM process's wait for its network process's
-  unpublish (warm.rs).
+  basis keep it, their own basis owed (R03): the VM process's wait for its network
+  process's unpublish (warm.rs). Init's relay drain (hostbind.rs `DRAIN`) follows its
+  relays' peers since (D124, PM M556).
+- **The daemon's asks of a network process are followed too** (ROOT, 2026-11-13; it was
+  `PUBLISH_PATIENCE`, the same second, picked): a published port, a peer, a network's names
+  (`networks::ask_net`, `Asks`), and a run's on the host's network (`HostNet`), each wait for
+  room and for its answer judged by D215's judge (`netproc::until_ready`) on the daemon's
+  record of its network processes' answers (`netproc::NET_ANSWERS`, one for the process, W*
+  its slowest answer), its network process followed by its pid (`NetLink`, carried with its
+  control from its start): before the record's first answer, the process's liveness alone,
+  its socket's end; past W*, looked at each W*, and refused where a whole W* shows it ran
+  no CPU and its host was not the reason. Each answer teaches the record, its wall and the
+  process's CPU. A wait for room is one for poll(2)'s POLLOUT (WSAPoll's POLLWRNORM), so no
+  write is cut part-way. Red at 07adbbc8b (`ask_red_tests`, adas-mac-studio.local): an answer
+  1.5 s on was refused at 1.002 s; green: `netproc::ask_tests`, a busy stand-in's answers 1.5
+  s on taken, cold and past W*, and a sleeping one's ask refused past a taught W*.
 - **The slice is the host's own, W*.** Each end heard is kept in the home (`ends`:
   `teardown MS`, `exit MS` and `helper MS`, the slowest of each this home's processes have
   heard: its daemon and its runs' hosts keep one record, each end put with what it holds
@@ -12626,8 +12751,13 @@ other's but what the move sends, and what the other takes by content:
 - **Its image, by digest.** The other machine finds it by the digest its name resolved to
   as the microVM was made, or pulls it from its registry by that digest (`repo@sha256:…`),
   converted as a run converts one; one no registry it reaches holds goes with the move,
-  saved here and loaded there. Its request names it there by that digest, which no tag
-  there can move.
+  saved here and loaded there, and is given there the name it has here where nothing there
+  has that name; a name that cannot be given, or a step unanswered, fails the move, resumed
+  here (cli/moves.rs `name_there`). Both answers let go, a moved image was left unnamed there
+  and the move said it had moved (`a_moved_microvms_log_and_image_go_with_it` on KVM, ROOT's
+  run at 084891178), which step failed unsaid; that run's one other failure there was a
+  context's handshake given up within the slowest seen (D180). Its request names it there by
+  that digest, which no tag there can move.
 - **The files its snapshot restores against**, each named relative to the home (its root
   filesystem by its image's ChainID, D18), checked byte for byte by SHA-256 on both machines
   before anything moves: those the other machine has alike are its own; those it lacks or
@@ -16662,7 +16792,8 @@ given the rest as its build needs it, up to what it may have.
     it once. Each builder's guest says, as its build ends (`kind::NEEDS`, `NEEDED`), the
     least memory whose hold keeps its build's peak (`memory.peak` of its cgroup, with the
     reserve its kernel keeps beside it, `plug::needed`), and the build's process adds it to
-    the home's `builder-memory` under its lock, the most kept;
+    the home's `builder-memory` under its lock, the most kept; its answer waited for as the
+    builder's VM goes on (D34's "Its end follows its VM", PM M557), where it was 5 s;
   - and **all the host's memory**, as a run with no limit may have (D148), once a build
     of the home was ended short of memory (its cgroup's `memory.events` `oom_kill`): its
     builder had all it could be given and the build needed more;
@@ -16885,82 +17016,60 @@ download.
 
 **Decided** (crates/registry `patience.rs`, `http.rs`, `registry.rs` `Trouble`):
 - **A lookup (a GET or HEAD without a body) waits for its answer, and a download for its
-  next byte, as long as makes the answer come soonest** (`patience::Cutoff`): a wait cut
-  is asked again (a download resumed where it was), on a fresh connection, so the wait is a
-  restart cutoff, and the optimal one for a known distribution F of the time to an
-  answer, restarts each drawing anew, is one fixed t* minimising E(t) = ∫0^t (1 − F) /
-  F(t) (Luby, Sinclair and Zuckerman, "Optimal speedup of Las Vegas algorithms", Inf.
-  Process. Lett. 47(4), 1993; the renewal-reward expectation of cycles costing min(X, t)
-  and succeeding with F(t)). shards keeps the renewal and measures the rest, per path:
-  - **F is the path's own**: its answers' times, and the times waited before a cut (an
-    answer that came later, if ever), as Kaplan and Meier estimate a distribution from
-    observations cut short ("Nonparametric estimation from incomplete observations", JASA
-    53(282), 1958). A request never answered keeps F below 1, so E grows without end past
-    what the path answers in. Kept in log buckets of 1% relative accuracy (DDSketch,
-    Masson, Rim and Lee, PVLDB 12(12), 2019): a time known within a factor γ = 1.01/0.99,
-    at most 2,219 buckets whatever the count, and two sketches merged exactly by adding
-    their counts. The cutoff is a bucket's upper bound: E(γt) ≤ γ·E(t), as ∫t^γt S ≤
-    (γ − 1)·t·S(t) ≤ (γ − 1)·∫0^t S, so at most 2.02% slower than the best of the times
-    as bucketed.
-  - **What a cut costs is measured, not assumed**: R, the mean time from a cut to the
-    answer of an asking begun after it (from a silence's cut to the first byte of a body
-    begun after it), and the wait W's expected time ∫0^W S + S(W)·R, S = 1 − F. A path
-    whose slow answers come in spells, so that the asking again is slow too (after an
-    asking past its endpoint's p90, the next was past it 26% to 59% of the time on Fedora
-    and 24% to 77% on the Studio, not the 10% of independent askings, M486), is cut
-    later. Before any R is measured, Luby's own: asking again a fresh draw,
-    E[∫0^W S] / E[F(W)].
-  - **The wait is drawn uniformly from [t, 2t)**, and t chosen for that draw. A fixed
-    cutoff cuts every asking at it, so F past it is never seen and t can only fall
-    (replayed, it fell below the paths' p99 and lost more than RFC 6298's waits); the draw
-    spreads the cuts over [t, 2t), Kaplan-Meier sees past t, and t rises where the path
-    answers later. For an answer, the draw is the pause `Trouble` takes before asking
-    again (a uniform share of how long the trouble has lasted, t at the first cut) spent
-    listening to the asking instead of asleep: an answer cut by its wait is overdue
-    (`Error::is_overdue`) and asked again at once, at the moment the pause would have
-    ended, and one that comes meanwhile is taken. A stalled download already resumes at
-    once once it brought bytes (fetch.rs). The cut is its read's own stop, the socket's
-    timeout set to what is left of the wait or the wait's deadline (http.rs `read_head`),
-    as a silence's is (`Silenced::timed_out`), never the time `Instant` says passed: a
-    system wait "can be anywhere between one and two ticks" of a timeout between them
-    (Microsoft Learn, Wait Functions), so ends before its time by the clock, and on CI's
-    arm64 Windows (main cc439a2a7) a first cut so ended went uncounted, its asking again
-    paused and its wait not doubled: 3 asks where 2 were due, in 4.47 s from the test's
-    start, the 1.25 s + a pause + 1.25 + 1.5 s an uncounted cut takes and not the 5.25 s
-    a second cut would (`a_paths_answers_are_waited_for_as_long_as_it_shows`;
-    `a_read_its_wait_stops_is_overdue_by_the_stop_itself`).
-  - **At least a second** (RFC 6298 §2.4's least timeout, which keeps it conservative
-    against what its samples do not show; RFC 6298 cites Allman and Paxson, SIGCOMM
-    1999: a large minimum avoids spurious retransmissions). Without it, this crate's
-    tests on a host at a load of 190 cut healthy loopback answers their paths had learned
-    were quick, and replayed (M486) it lost more on Fedora than RFC 6298's waits in the
-    model where asking again never helps, at two seeds of three.
-  - **Doubled for each cut in a row** (RFC 6298 §5.5), which reaches past anything the
-    path has shown, within its trouble budget (below).
+  next byte, as its path's liveness and progress say, then no longer than the slowest of
+  its kind the path has shown** (2026-11-13, PM M555; `patience::Bounded`). The basis is
+  the person's own rule: "The cold start, and every wait after a run-out, follows the
+  party's liveness and progress. After that the bound is the slowest answer seen." A wait
+  that follows liveness alone is not unbounded: TCP and TLS end it as they end a
+  connection, and the client's cancel does.
+  - **What a stall is**: a gap with no progress, never an answer's whole length. An
+    answer's is the time from its request's end to its head's first byte (`read_head`); a
+    silence is a read's own wait for the bytes it brought (`Body::read`), so the reader's
+    own time between its reads is none of it; once a head's first byte has come, each read
+    of its rest waits as a silence does. A transfer whose bytes keep coming goes on however
+    long it takes in all.
+  - **The cold start**: a path that has shown none of a kind waits for it as TCP keeps its
+    connection (a reset, a FIN, its retransmissions given up) and TLS does (an alert), and
+    no longer than the client's cancel. A body begun cold keeps to that all its life, as
+    D215's judge has a wait begun before its kind's first answer (`Bounded::Cold`); its
+    silences then teach the path.
+  - **The bound**: the slowest answer and the slowest silence the path has shown
+    (`Shown::slowest_answer_us`, `slowest_silence_us`), its record's and this process's.
+    Past it, with nothing come, the wait runs out, by its read's own stop, the socket's
+    timeout set to what is left of it, never by the time `Instant` says passed (below):
+    the answer is asked again at once, overdue (`Error::overdue_by`, typed by the wait that
+    ran out: `Overdue::Answer` before its first byte, `Overdue::Silence` after), and a
+    download is resumed where it was (fetch.rs).
+  - **A run-out learns nothing** (no sample: that answer came later, or never), and the
+    path's next wait of its kind follows its connection's liveness alone until one ends
+    (`Bounded::RanOut`): an answer until one comes, which ends the run-out whatever its
+    time and is the slowest where it is slower; a silence until one longer than the slowest
+    ends, which raises it and bounds the rest of its body, or until a body that brought
+    bytes ends, since the first silence after a resume is mostly its head's own bytes and
+    says nothing of the gaps that ran out. Every asking cut at the slowest, again and again,
+    would let no slower answer through, with no doubling now: a fresh home's `/v2/` check
+    would teach a bound that each slower manifest then ran out on until its budget ended
+    the pull, on every pull.
+  - **What the bound costs**: where a path's times are alike, its k-th answer is the
+    slowest it has shown with chance 1/k (records among exchangeable times: Glick,
+    "Breaking records and breaking boards", Amer. Math. Monthly 85(1), 1978), so a fresh
+    path's first askings run out now and then, each costing its slowest and an asking
+    again; about the natural logarithm of n of a path's n askings over its home's life, as
+    the home keeps the slowest across processes. On loopback, where answers take
+    microseconds, the crate's tests of scripted servers ran out so in 11 to 22 of 168 tests
+    a round (PM M555); those tests' clients follow their connections' liveness alone
+    (`testing::client`), and the waits' own tests start from nothing.
   - **Only a lookup is cut**: asking again is a restart only where it repeats the request
     without effect (a safe method, RFC 9110 §9.2.1). A bodiless PUT (an upload's commit,
-    its digest checked) or POST (an upload begun) waits on its server's work, as a
-    request with a body does; before, any bodiless request was cut as its path's
-    answers said, and a commit cut could be asked of an upload its server had finished.
-  - **Before any answer, a second** (RFC 6298 §2.1), drawn and doubled as any wait: no
-    cut at all would hold a request that is never answered forever, and the doubling
-    reaches an answer of any time x within 2x (Baeza-Yates, Culberson and Rawlins 1993).
-  Replayed on both hosts' records (M486; seed 0 of the draws, seeds 1 and 2 within
-  the ranges given there), in the model where asking again meets the path's own next
-  recorded asking: fixed 30 s waits lost 1,124.8 s on Fedora and 3,836.3 s on the
-  Studio, RFC 6298's 50.3 s and 3,579.6 s, the cutoff 19.7 s and 1,251.3 s (cutting
-  0.05% and 3.01% of healthy answers, against RFC 6298's 0.21% and 5.09%); in the model
-  first replayed, where asking again never helps, RFC 6298's lost 120.1 s and 5,110.8 s,
-  fixed waits 752.0 s and 5,301.2 s (the Studio's 43 answers past 30 s, never answered
-  within them, each charged R2's 100 s: a charge chosen for the replay, not measured;
-  uncounted, as first replayed, 1,001.2 s, and then the cutoff, at 2,344.0 s, loses more
-  there), and the cutoff 102.3 s and 2,344.0 s. The decision rests on `trace`, which
-  replays real next askings rather than a charge. Silences follow the same rule, since a stall cut is a
-  restart whose cost is a reconnect (a resume by range, no bytes lost): RFC 6298's
-  estimator at its floor would cut dozens of a Wi-Fi download's healthy silences
-  (M486). A request with a body
-  waits on its server's work with it (a blob's digest checked as its upload ends), as
-  long as its patience says (D226's), and so does any request but a lookup.
+    its digest checked) or POST (an upload begun) waits on its server's work, as a request
+    with a body does, as long as its patience says (D226's).
+  - **Before** (11-09 to 11-13): a restart cutoff (Luby, Sinclair and Zuckerman's t* over a
+    Kaplan-Meier estimate of the path's times kept in DDSketch buckets, what a cut cost
+    measured, the wait drawn from [t, 2t)), doubled for each cut in a row and at least a
+    second (RFC 6298 §2.4, §5.5). Replayed on M486's records it beat RFC 6298's waits and
+    fixed 30 s ones (M486); it rested on a floor, a doubling and a draw, none of them the
+    path's own, which the person's rule leaves out. Gone with it: `Cutoff`, `Sketch`,
+    `ALPHA`, what a cut cost (`again_us`), and the tests' draw.
 - **A connection is made, and its TLS handshake done, as fast as its path's are**
   (`Wait::Connect`, `Wait::Handshake`): each the same estimator over the path's own
   connects (the name's lookup included, as Go's dialer counts it, and the race of RFC
@@ -16970,6 +17079,20 @@ download.
   as containerd sets it) and every handshake 10 s (Go's `TLSHandshakeTimeout`): figures of
   someone else's machinery, which clients that do not learn their waits (the log
   shippers', clouds' metadata, a build's proxy) keep as Go's.
+- **A wait's end is its own stop, never the clock's word** (`read_head`, `Client::learned`,
+  `Error::is_timed_out`): a read its wait stops is overdue by that stop, the socket's
+  timeout set to what is left of the wait or its deadline, and a connect or a handshake its
+  time ends is counted as its path's timeout by that end (its dial's deadline, an
+  attempt's `connect_timeout` set to what was left of it, attempts still pending as it
+  passed, a handshake's deadline or socket timeout), never by `took >= within`. A system
+  wait "can be anywhere between one and two ticks" of a timeout between them (Microsoft
+  Learn, Wait Functions), so ends before its time by the clock: on CI's arm64 Windows (main
+  cc439a2a7) a first answer's cut so ended went uncounted, 3 asks where 2 were due, in
+  4.47 s from the test's start, the 1.25 s + a pause + 1.25 + 1.5 s an uncounted cut takes
+  (48ef5a191, `a_read_its_wait_stops_is_overdue_by_the_stop_itself`); a connect's or a
+  handshake's so ended went uncounted too, its next wait not doubled (§5.5), found from the
+  code by goal 51's step 4 (`a_wait_its_own_time_ended_counts_as_its_timeout`,
+  `a_handshake_or_a_dial_its_time_ends_says_so`).
 - **An idle connection is not a wait** (`http::IDLE`): nothing waits on it, and how long
   a server keeps one is the server's ("The use of persistent connections places no
   requirements on the length (or existence) of this timeout", RFC 9112 §9.5). A server's
@@ -16992,17 +17115,17 @@ download.
   or a trouble past it, is said as the registry's failure. A 500, which RFC 9110 §15.6.1
   does not say passes, is asked again once, and a repeat is the request's own answer.
   A cancel ends a wait at once.
-- **Kept in the home, by path**: what each path showed (its answers' and silences'
-  times, cuts and what the cuts cost, its connects' and handshakes' estimators, the
-  longest trouble it passed and how many) is
+- **Kept in the home, by path**: what each path showed (its slowest answer and slowest
+  silence, its connects' and handshakes' estimators, the longest trouble it passed and how
+  many) is
   kept in the path's one record under the image store's `links/`, named by its host and
   port and this host's address on its route there (D226), with what transfers learn of
   the path; merged into the record as the pull or push lets its client go, under the
   records' lock (D226), and read as a client first asks the path, and again once a
   connection says its route. Clients that asked one path at once all keep theirs
   (`Shown::merged`, three ways: the record as it is now, what the client read, what it
-  holds): the answers' and silences' counts are the record's and those each client
-  added (a sketch merges exactly); each connect's and handshake's estimator is the one
+  holds): each slowest is the slower of the record's and each client's, both seen; each
+  connect's and handshake's estimator is the one
   whose last sample is the newer, whole, for RFC 6298's SRTT and RTTVAR are their latest
   samples' (each moves them an eighth and a quarter, §2.3), with the count of waits both
   clients'; the longest trouble the longer;
@@ -17019,48 +17142,58 @@ download.
   download three stalls; Go's transport, 30 s to connect, 10 s for a handshake, 30 s for
   an answer and none for a body's silence unless set, and containerd's keeps an idle
   connection 30 s. shards learns each wait from the path (an answer's and a silence's as
-  the cutoff that makes them come soonest), and keeps an idle connection as long as its
-  server and RFC 5382's NATs do.
+  its liveness and progress, then its slowest, say), and keeps an idle connection as long
+  as its server and RFC 5382's NATs do.
 - **Every value, and where it comes from:**
 
   | Value | Where | Source |
   |---|---|---|
-  | an answer's and a silence's cutoff t: argmin of E over W of ∫0^W S + S(W)·R | `Cutoff::base` | Luby, Sinclair and Zuckerman 1993 (restart cutoff, renewal-reward) |
-  | S: Kaplan-Meier over answers and cuts | `Cutoff::base` | Kaplan and Meier 1958 |
-  | R: mean time from a cut to an answer of an asking begun after it; before any, Luby's fresh draw | `Cutoff::recovered`, `Paths::waited`, `Paths::silenced` | measured on the path |
-  | times in buckets of α = 1%, t a bucket's upper bound (≤ 2.02% slower), ≤ 2,219 buckets, merged by adding | `Sketch`, `patience::ALPHA` | DDSketch (Masson, Rim and Lee 2019) |
-  | the wait drawn from [t, 2t); an overdue answer asked again at once | `Cutoff::wait`, `Error::is_overdue` | `Trouble`'s pause (a uniform share of the trouble, t at the first cut) spent listening; Kaplan-Meier past t |
-  | t at least 1 s | `Cutoff::base`, `patience::FIRST` | RFC 6298 §2.4 (after Allman and Paxson 1999) |
+  | an answer's and a silence's bound: the slowest of its kind the path has shown, the record's and this process's | `Shown::slowest_answer_us`, `slowest_silence_us`, `Paths::answer`, `Paths::silence` | the person's rule (2026-11-13): "After that the bound is the slowest answer seen." |
+  | before any of a kind, and after a run-out until one ends: liveness alone (TCP's and TLS's ends, the cancel) | `Bounded::Cold`, `Bounded::RanOut` | the same rule: "The cold start, and every wait after a run-out, follows the party's liveness and progress." |
+  | an answer's stall: its request's end to its head's first byte; a silence: a read's own wait for its bytes, after a head's first byte too | `read_head`, `Body::read` | a stall is a gap with no progress, never an answer's whole length (the person, 2026-11-13) |
+  | a run-out learns nothing; an answer's ends at the next answer, a silence's at one longer than the slowest or a body ended with bytes | `Paths::answer_ran_out`, `Paths::silence_ran_out`, `Paths::outlasted`, `Paths::silenced` | the rule's run-out clause; a resumed body's first silence is its head's own bytes |
+  | an overdue answer asked again at once, typed by the wait that ran out | `Error::overdue_by`, `Overdue` | the wait ran out at the path's slowest: no pause adds to it |
+  | a wait's end its own stop, never `took >= within` | `read_head`, `Client::learned`, `Error::is_timed_out` | Microsoft Learn, Wait Functions (a system wait may end a tick early) |
   | only GET and HEAD without a body cut by their answers' wait | `Client::exchange` | safe methods, RFC 9110 §9.2.1 |
   | connect, handshake: SRTT + 4·RTTVAR, α = 1/8, β = 1/4, first: R, R/2 | `Pace` | RFC 6298 §2.2, §2.3 |
   | 1 s before any wait, and a pace's least | `patience::FIRST` | RFC 6298 §2.1, §2.4 |
   | ×2 a timeout in a row | `backed_off` | RFC 6298 §5.5 |
-  | answers, silences, connects, handshakes each learned | `Wait`, `Paths::timeout`, `Paths::silence` | each over its own times |
+  | answers, silences, connects, handshakes each learned | `Wait`, `Paths::timeout`, `Paths::answer`, `Paths::silence` | each over its own times |
   | budget: 2 × the longest trouble passed | `Shown::budget` | doubling search (Baeza-Yates, Culberson and Rawlins 1993) |
   | budget at least 100 s | `patience::R2` | RFC 1122 §4.2.3.5, R2 |
   | a random share of the trouble so far | `Trouble` | full jitter, bounded by the trouble's own length |
   | at least `Retry-After` | `Trouble` | RFC 9110 §10.2.3 |
   | 502, 503, 504, 408 pass; a 500 asked once more | `Trouble` | RFC 9110 §15.5.9, §15.6.1, §15.6.3 to §15.6.5 |
-  | merged: answers' and silences' counts summed, the newer sample's pace, troubles summed, the longest kept | `Shown::merged` | DDSketch's merge; RFC 6298 §2.3 (SRTT, RTTVAR follow their latest samples) |
+  | merged: each slowest the slower, the newer sample's pace, troubles summed, the longest kept | `Shown::merged` | the slowest of both, each seen; RFC 6298 §2.3 (SRTT, RTTVAR follow their latest samples) |
   | an idle connection kept 2 h 4 min at most | `http::IDLE` | not a wait (RFC 9112 §9.5); RFC 5382 §5 REQ-5 |
   | 30 s to connect, 10 s a handshake: clients that do not learn | `http::CONNECT`, `http::HANDSHAKE` | Go's dialer and `TLSHandshakeTimeout`, as containerd sets them |
-- **Tested:** patience.rs (RFC 6298's arithmetic; a sketch's buckets within γ and its
-  merge, `a_sketch_keeps_times_within_its_accuracy`; the cutoff, `the_cutoff_makes_answers_come_soonest`:
-  nine answers in ten at 2 s and one at 100 s cut just past 2 s, waited past 100 s once
-  a cut is measured to cost an hour, a path that answers alike cut just past its
-  answers, one that answers in 100 ms at the least second, the draw and doubling; what a cut costs, `what_a_cut_costs_is_measured`; a
-  path's budget, backoff and record, kept and read back by the next client; each wait's
-  backoff its own; two clients at once both kept, `clients_at_once_both_keep_what_they_showed`;
-  a record of before answers were counted read whole); http.rs (`a_learning_client_learns_its_connects_and_handshakes`:
-  one connect, one handshake, two answers over a connection used twice;
-  `an_answer_cut_by_its_wait_is_overdue`); registry.rs (a gateway's 502, 503, 504, 408 or
-  cut connections ridden out for as long as they last and no longer than their length
-  again; past the budget the registry's answer; a named wait waited, one past the budget
-  not; a cancel ends a wait; a path whose answers come 1.5 s late cut once at the 1.25 s
-  drawn, asked again, then waited for; a download silent 1.5 s cut and resumed where it
-  was, what the cut cost learned; a blob short of its size failing at once); fetch.rs (a stuck layer keeps no other waiting; a blob shorter than
-  its descriptor fails at once, with ranges and without); auth.rs (a token server's
-  gateway failures ridden out). Mutation-checked: the budget, the riding, the short blob.
+- **Tested:** patience.rs (RFC 6298's arithmetic; the bounds,
+  `a_paths_waits_follow_the_slowest_and_a_run_out_learns_nothing`: none before any, the
+  slowest after, a run-out learning nothing and ending as the rule says, each kind its own;
+  a path's budget, backoff and record, kept and read back by the next client, one that only
+  ran out not written; each wait's backoff its own; two clients at once both kept, the
+  slowest of both, `clients_at_once_both_keep_what_they_showed`; records of RFC 6298's and
+  of the cutoff's read whole, their answers and silences cold); http.rs
+  (`a_learning_client_learns_its_connects_and_handshakes`: one connect, one handshake, two
+  answers over a connection used twice; `an_answer_cut_by_its_wait_is_overdue`: past the
+  slowest, overdue; on a path that has shown none, a 1.3 s answer waited for and learned;
+  `an_answer_is_cut_only_before_its_first_byte`: a head begun within the slowest and ended
+  past it read whole, its time to its first byte learned;
+  `a_wait_its_own_time_ended_counts_as_its_timeout`;
+  `a_handshake_or_a_dial_its_time_ends_says_so`); registry.rs (a gateway's 502, 503, 504,
+  408 or cut connections ridden out for as long as they last and no longer than their
+  length again; past the budget the registry's answer; a named wait waited, one past the
+  budget not; a cancel ends a wait; `a_paths_answers_are_waited_for_as_long_as_it_shows`:
+  a path whose answers come 1.5 s late, with nothing shown asked once, with 0.3 s shown
+  cut once past it and that asking waited for, the next within what it learned asked once;
+  `a_silent_download_is_cut_and_resumed_and_its_silence_learned`: a 1.5 s silence waited
+  out where none was shown, cut and resumed where it was past 0.3 s shown, the run-out
+  learning nothing and over once the resumed body brought bytes; a blob short of its size
+  failing at once); fetch.rs (a stuck layer, its CDN's path having shown a second, keeps no
+  other waiting; a blob shorter than its descriptor fails at once, with ranges and
+  without); auth.rs (a token server's gateway failures ridden out). Mutation-checked: the
+  budget, the riding, the short blob; the bound, the run-out, the first byte and the own
+  stop (PM M555).
   A real pull from ghcr.io on Fedora kept ghcr.io's and its CDN's paths in the home.
 
 **Its remaining figures (audit of picked constants, 2026-11-09).**
@@ -17630,8 +17763,24 @@ host networking does for its VM's containers (PM M177).
   network process answers a port's letting go once it has closed its copy, which the
   daemon waits for before it binds the port again, and only then. What a relay holds is
   passed on before it goes: a server's last datagrams, sent before its socket closed;
-  and, at the run's end, which spares the relays, what their connections hold, for up to
-  a second, the network process's own grace. The VM puts what the guest sent in the
+  and, at the run's end, which spares the relays, what their connections hold of their
+  servers', each until its own end (PM M556; `hostbind::drain`, `Pair::drain`, its ends
+  typed, `Ended`): the server's end (its FIN, or its reset once what it held was read, as
+  a killed server's socket with its client's bytes unread resets) and all it sent before
+  passed on, sent (TCP_NOTSENT_LOWAT of a byte, which says POLLOUT only once nothing is
+  left unsent, Linux 3.12 and later; where a guest's kernel refuses it, once written) and
+  its end told; or the client's end, its reset or a failure, which nothing more can pass
+  to. What the client sends then reaches no one, read and dropped, so that none is left
+  unread to make the relay's close a reset (Linux's tcp_close()), and no client that holds
+  its connection open without a word holds the run's end. Each run's relay drains once, so
+  a drain of its own could tell it nothing of how long another took, and in-process
+  learning is always cold: the cold start, the relays' own peers' ends alone, with no
+  clock. A bound would have to be the host's (its runs' slowest drain, given in the run's
+  setup), and none is: a client that stops taking a dead server's last bytes holds its
+  run's end while it lives, as a closed daemon's client does (D185, PM M549), and the run's
+  kill ends it. It was a second, the network process's grace (`netproc::GRACE`, PM M546):
+  a client slower than that lost what the relays still held, and a server's reset ended
+  its relay at once, what it held lost. The VM puts what the guest sent in the
   network process's ring before the daemon's word to close a port, which that process
   takes first. As a microVM ends, before its end is told, its ports go (PM M181): the
   VM asks the daemon to let go of them (`HOST_RELEASE`), which closes its copies, waits
@@ -17684,7 +17833,12 @@ host networking does for its VM's containers (PM M177).
   (below) fails without the gateway's entry at boot, after a new MAC, on a network of
   the run's own, or for IPv6's gateway. Init's
   `a_bind_goes_where_its_address_says`, `a_gone_sockets_cookie_is_read_from_its_message`
-  and `a_calls_arguments_are_read_as_the_kernel_takes_them`; the network process's
+  and `a_calls_arguments_are_read_as_the_kernel_takes_them`; its drain's (PM M556),
+  `a_relay_drains_its_servers_bytes_however_long_its_client_takes` (4 MiB to a client that
+  reads only after 1.5 s), `a_relays_drain_ends_once_its_servers_bytes_are_sent`,
+  `a_reset_servers_bytes_are_drained_too` and `a_relays_drain_ends_with_its_server_or_its_client`,
+  each red with its guard removed (the second back, the sent-wait gone, a reset ending the
+  relay, no drain); the network process's
   `the_hosts_network_reaches_what_the_host_does` and
   `a_hosted_port_is_let_go_by_its_number`; seccomp's
   `the_hosts_networks_binds_are_notified_on_every_abi`; the ABI's
@@ -21872,6 +22026,31 @@ a value that would expand, the Agentfile made of it, built: the config the origi
 mutation-checked (`$` unescaped, no lookup by digest);
 `values_are_written_so_that_nothing_in_them_expands`,
 `an_images_config_is_written_as_its_instructions`.
+
+**A base the store holds asks no registry (2026-11-13).** A build without `--pull` asks no
+registry for a base its store holds: one pinned by a digest held under any name is resolved
+to the digest asked (above); one named by a tag held under that name is taken as the store
+has it, as buildx's docker driver has Docker's builder take one (`image-resolve-mode=local`,
+buildx v0.37.1 build/opt.go:580-585; BuildKit v0.28.1 util/resolver/pool.go:243-263,
+`ResolveModePreferLocal`, the image store asked before the registry). A tag it does not
+hold, and every base with `--pull`, is asked of its registry. BuildKit takes a digest its
+content store holds from the same repository from there, whatever the resolve mode
+(v0.28.1 util/imageutil/config.go:87-111, `Config`; util/pull/pull.go:56-112,
+`tryLocalResolve`, `contentutil.HasSource`), yet its resolver's first fetcher still resolves
+the reference, the image store answering in `local` mode where it names the image at that
+digest, else the registry, whose answer it drops (util/resolver/pool.go:234-262); shards
+takes one held under any name, and asks nothing. Tested: `a_base_the_store_holds_is_resolved_without_asking_a_registry`
+(build/bases_tests.rs), an image pulled by its digest from a stand-in registry that counts
+what it is asked, then resolved under another registry's name and a tag of its own, and by
+a tag pulled once: no registry asked either time. It holds on the revision it was written
+against (7152fa749): what spent Docker Hub's anonymous pulls (100 an hour for the LAN's
+IPv6 /64) were E2E tests whose fresh homes each pulled their base, which now take Docker
+Hub's images from the tests' own registry, served from what a build pulled once per
+checkout into target/artifacts/hub (tests/common `hub`), as the pinned kernel is fetched
+once into target/artifacts. A test that must read Docker Hub itself (attestation chains and
+signatures, tags as they move, other CPUs' images and the emulator image) skips unless
+`SHARDS_TESTS_DOCKER_HUB=1`, which CI's test step sets (tests/common
+`cannot_reach_docker_hub`).
 
 **A pull's Agentfile, and the platform's (2026-10-16).** §10 has a pull make an image a
 microVM, an Agentfile, or both; `pull --output-agentfile` was in pull's help from its first

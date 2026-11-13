@@ -13,9 +13,6 @@ mod fetch;
 pub mod http;
 pub mod links;
 mod patience;
-/// D222's restart cutoff, for other waits whose cut is asked again: the daemon's for a
-/// client's request (D185).
-pub use patience::{Cutoff, Sketch};
 pub mod proxy;
 pub mod pull;
 pub mod push;
@@ -43,9 +40,23 @@ pub struct Error {
     /// registry named insecure without a port is then asked in plain HTTP on HTTP's
     /// (registry.rs, D194).
     refused: bool,
-    /// Whether it is an answer its path's wait cut (crate::patience `Cutoff`): asked
-    /// again at once, the trouble's pause spent waiting for it.
-    overdue: bool,
+    /// Which of its path's waits cut it, where one did, past the slowest of its kind the
+    /// path has shown (crate::patience): asked again at once.
+    overdue: Option<Overdue>,
+    /// Whether a wait's own time ended it: its deadline, or a socket's timeout set to what
+    /// was left of it, whatever time `Instant` says passed (a connect's or a handshake's,
+    /// which its path then counts as timed out, crate::patience).
+    timed_out: bool,
+}
+
+/// Which of a path's waits ran out on a request's answer, which is then asked again at once
+/// (crate::patience).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Overdue {
+    /// The wait for its first byte.
+    Answer,
+    /// A silence, once its bytes had begun.
+    Silence,
 }
 
 /// What dockerd says of a registry's refusal in place of containerd's words
@@ -93,7 +104,8 @@ impl Error {
             said: None,
             not_tls: false,
             refused: false,
-            overdue: false,
+            overdue: None,
+            timed_out: false,
         }
     }
 
@@ -121,16 +133,33 @@ impl Error {
         self.refused
     }
 
-    /// The same error, of an answer its path's wait cut.
-    pub(crate) fn overdue(self) -> Error {
+    /// The same error, of an answer its path's wait `which` cut.
+    pub(crate) fn overdue(self, which: Overdue) -> Error {
         Error {
-            overdue: true,
+            overdue: Some(which),
             ..self
         }
     }
 
     pub(crate) fn is_overdue(&self) -> bool {
+        self.overdue.is_some()
+    }
+
+    /// Which of its path's waits cut it, where one did.
+    pub(crate) fn overdue_by(&self) -> Option<Overdue> {
         self.overdue
+    }
+
+    /// The same error, of a wait its own time ended.
+    pub(crate) fn timed_out(self) -> Error {
+        Error {
+            timed_out: true,
+            ..self
+        }
+    }
+
+    pub(crate) fn is_timed_out(&self) -> bool {
+        self.timed_out
     }
 
     /// The same error, with what dockerd says of it.
@@ -165,6 +194,7 @@ impl Error {
             not_tls: self.not_tls,
             refused: self.refused,
             overdue: self.overdue,
+            timed_out: self.timed_out,
         }
     }
 }
