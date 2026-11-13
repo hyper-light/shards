@@ -2523,7 +2523,12 @@ mod tests {
     /// short, padded or of a tag no version has, refused.
     #[test]
     fn rates_and_their_answers_read_back_as_said() {
-        for rate in [None, NonZeroU64::new(1), NonZeroU64::new(1500), NonZeroU64::new(u64::MAX)] {
+        for rate in [
+            None,
+            NonZeroU64::new(1),
+            NonZeroU64::new(1500),
+            NonZeroU64::new(u64::MAX),
+        ] {
             let ask = RateAsk { id: 7, rate };
             assert_eq!(RateAsk::decode(&ask.encode()), Ok(ask));
         }
@@ -2547,7 +2552,11 @@ mod tests {
         }
         .encode();
         for cut in 0..ask.len() {
-            assert_eq!(RateAsk::decode(&ask[..cut]), Err(WireError::Short), "cut at {cut}");
+            assert_eq!(
+                RateAsk::decode(&ask[..cut]),
+                Err(WireError::Short),
+                "cut at {cut}"
+            );
         }
         let mut padded = ask.clone();
         padded.push(0);
@@ -2559,7 +2568,11 @@ mod tests {
         .encode()
         .unwrap();
         for cut in 0..answer.len() {
-            assert_eq!(RateAnswer::decode(&answer[..cut]), Err(WireError::Short), "cut at {cut}");
+            assert_eq!(
+                RateAnswer::decode(&answer[..cut]),
+                Err(WireError::Short),
+                "cut at {cut}"
+            );
         }
         let mut padded = answer.clone();
         padded.push(0);

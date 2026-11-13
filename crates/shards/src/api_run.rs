@@ -476,7 +476,9 @@ fn rated_of(rate: Option<std::num::NonZeroU64>, said: &str) -> Result<Option<std
     }
     match (said.parse::<std::num::NonZeroU64>(), rate) {
         (Ok(held), Some(asked)) if held == asked => Ok(Some(held)),
-        (Ok(held), _) => Err(format!("its VM held its vCPUs to {held} milli-CPU, asked {rate:?}")),
+        (Ok(held), _) => Err(format!(
+            "its VM held its vCPUs to {held} milli-CPU, asked {rate:?}"
+        )),
         (Err(_), _) => Err(format!("its VM held its vCPUs to {said:?}, no rate")),
     }
 }
@@ -3131,7 +3133,11 @@ mod tests {
     fn a_rates_answer_reads_as_it_was_asked() {
         let rate = std::num::NonZeroU64::new;
         assert_eq!(rated_of(rate(1500), "1500"), Ok(rate(1500)));
-        assert_eq!(rated_of(rate(4000), ""), Ok(None), "every vCPU's whole CPU: no hold");
+        assert_eq!(
+            rated_of(rate(4000), ""),
+            Ok(None),
+            "every vCPU's whole CPU: no hold"
+        );
         assert_eq!(rated_of(None, ""), Ok(None));
         for (asked, said) in [
             (rate(1500), "1000"),

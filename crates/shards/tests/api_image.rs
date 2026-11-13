@@ -515,8 +515,14 @@ fn the_orchestrators_rate_holds_its_run_to_it() {
     // D191's period, 100 ms: a quarter of it the share, and the period's whole share and
     // what one vCPU overruns before its governor reads at the window's two ends.
     let most = wall / 4 + 200_000_000;
-    assert!(used <= most, "{used} ns of guest in {wall} ns, held to a quarter CPU");
-    assert!(used >= wall / 20, "{used} ns of guest in {wall} ns: held, and never let go");
+    assert!(
+        used <= most,
+        "{used} ns of guest in {wall} ns, held to a quarter CPU"
+    );
+    assert!(
+        used >= wall / 20,
+        "{used} ns of guest in {wall} ns: held, and never let go"
+    );
     assert_eq!(
         guest.rate(NonZeroU64::new(1000), TIMEOUT).unwrap(),
         None,

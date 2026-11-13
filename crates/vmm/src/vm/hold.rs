@@ -534,7 +534,10 @@ mod tests {
         assert_eq!(hold.set(0), None);
         assert_eq!(hold.set(1), NonZeroU64::new(1));
         assert_eq!(hold.set(1500), NonZeroU64::new(1500));
-        assert_eq!(hold.set(2 * MILLI_PER_CPU - 1), NonZeroU64::new(2 * MILLI_PER_CPU - 1));
+        assert_eq!(
+            hold.set(2 * MILLI_PER_CPU - 1),
+            NonZeroU64::new(2 * MILLI_PER_CPU - 1)
+        );
         assert_eq!(hold.set(2 * MILLI_PER_CPU), None);
         assert_eq!(hold.set(u64::MAX), None);
     }

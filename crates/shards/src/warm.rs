@@ -709,10 +709,6 @@ enum From<'a> {
 /// connection to answer on.
 type Pause = (bool, [u8; 8], UnixStream);
 
-/// The pauses and resumes the daemon asks of this VM (`PAUSE`), done in order on a thread
-/// of their own, each answered (`PAUSED`) on its own copy of the daemon's connection as it
-/// is done: a pause waits for every vCPU to be held, which a vCPU busy with an exit this
-/// connection serves must not wait out.
 /// A `RATE`'s number and its rate in milli-CPU (D244): exactly 16 bytes, both big-endian;
 /// anything else is no ask, as an unread `GUEST_TIME`'s is.
 fn rate_asked(payload: &[u8]) -> Option<([u8; 8], u64)> {
@@ -720,6 +716,10 @@ fn rate_asked(payload: &[u8]) -> Option<([u8; 8], u64)> {
     Some((*number, u64::from_be_bytes(<[u8; 8]>::try_from(milli).ok()?)))
 }
 
+/// The pauses and resumes the daemon asks of this VM (`PAUSE`), done in order on a thread
+/// of their own, each answered (`PAUSED`) on its own copy of the daemon's connection as it
+/// is done: a pause waits for every vCPU to be held, which a vCPU busy with an exit this
+/// connection serves must not wait out.
 fn pauses() -> Result<&'static mpsc::Sender<Pause>, String> {
     static PAUSES: std::sync::OnceLock<Result<mpsc::Sender<Pause>, String>> = std::sync::OnceLock::new();
     PAUSES

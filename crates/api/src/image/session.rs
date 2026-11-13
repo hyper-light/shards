@@ -173,7 +173,12 @@ impl Shared {
     /// Sends `asked`'s ask, numbered by the session, and waits at most `patience` for its
     /// answer: the ask awaited from before it is sent until it is answered or given up, so
     /// that no answer outlives its ask (D241, D244).
-    fn ask<T>(&self, asked: Asked<T>, ask: impl FnOnce(u32) -> Vec<u8>, patience: Duration) -> Result<T, ImageRefusal> {
+    fn ask<T>(
+        &self,
+        asked: Asked<T>,
+        ask: impl FnOnce(u32) -> Vec<u8>,
+        patience: Duration,
+    ) -> Result<T, ImageRefusal> {
         let id = {
             let mut state = lock(&self.state);
             if let Some(end) = &state.end {
@@ -1204,7 +1209,10 @@ mod tests {
             take(&s, wire::to_client::RATED, &rated(4, Ok(NonZeroU64::new(1500)))),
             Ok(false)
         );
-        assert_eq!(lock(&s.state).rates.get(&4), Some(&Some(Ok(NonZeroU64::new(1500)))));
+        assert_eq!(
+            lock(&s.state).rates.get(&4),
+            Some(&Some(Ok(NonZeroU64::new(1500))))
+        );
         assert_eq!(take(&s, wire::to_client::RATED, &rated(5, Ok(None))), Ok(false));
         assert!(
             !lock(&s.state).rates.contains_key(&5),
