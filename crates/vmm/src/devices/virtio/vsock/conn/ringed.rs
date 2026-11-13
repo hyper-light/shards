@@ -828,6 +828,7 @@ mod tests {
                 path: None,
                 ports: Vec::new(),
                 every: vec![(PORT, ServedPort::Ringed(sender))],
+                rate: None,
             };
             let mut m = Muxer::new(host, 3).unwrap();
             let mem = Arc::new(GuestMemory::anonymous(&[(0, 16 << 20)]).unwrap());
