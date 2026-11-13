@@ -7,8 +7,9 @@
 //!
 //! A member's log is `members/<index>` in its run's directory, its two channels as a run's log
 //! keeps a command's stdout and stderr (spec.rs, `LOG_STDOUT`), as long and as many segments
-//! as the run's own log keeps (segments.rs); a run that keeps no log (`--log-driver none`)
-//! keeps none of its members' either, and is shown nothing of them.
+//! as the run's own log keeps (segments.rs), its member's label beside it for `shards read
+//! logs` ([`member_logs`]); a run that keeps no log (`--log-driver none`) keeps none of its
+//! members' either, and is shown nothing of them.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -25,9 +26,44 @@ use crate::log_writer::Writer;
 use crate::segments::new_segment;
 use crate::spec::{LOG_STDERR, LOG_STDOUT, LogRetention};
 
+/// Where the run's members' logs are in its directory.
+const MEMBERS: &str = "members";
+/// A member's label (`agent main`), kept beside its log for its readers (`shards read logs`).
+const LABEL: &str = "label";
+
 /// Where member `member`'s log is in its run's directory `run`.
 pub(super) fn member_dir(run: &Path, member: u32) -> PathBuf {
-    run.join("members").join(member.to_string())
+    run.join(MEMBERS).join(member.to_string())
+}
+
+/// The logs of the run whose directory is `run` that its drain keeps, by its members'
+/// declared index, each with its member's label: none where it drained none.
+pub(in crate::daemon) fn member_logs(run: &Path) -> io::Result<Vec<(String, LogFile)>> {
+    let mut members: Vec<u32> = match std::fs::read_dir(run.join(MEMBERS)) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+            .collect(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    members.sort_unstable();
+    let mut logs = Vec::new();
+    logs.try_reserve_exact(members.len()).map_err(io::Error::other)?;
+    for member in members {
+        let dir = member_dir(run, member);
+        let label = match std::fs::read_to_string(dir.join(LABEL)) {
+            Ok(label) => label,
+            // A member's log without its label is none of its drain's.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        match LogFile::open(&dir) {
+            Ok(log) => logs.push((label, log)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(logs)
 }
 
 /// How far a drained channel's stream has come.
@@ -91,6 +127,18 @@ impl Drain {
             if let Some(retention) = retention {
                 let dir = member_dir(run, member);
                 std::fs::create_dir_all(&dir)?;
+                let label = usize::try_from(member)
+                    .ok()
+                    .and_then(|at| labels.get(at))
+                    .ok_or_else(|| io::Error::other("drained member's label"))?;
+                crate::os::owner_only(
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .truncate(true),
+                )
+                .open(dir.join(LABEL))?
+                .write_all(label.as_bytes())?;
                 let held = platform::open_dir(&dir)?;
                 let newest = newest_log(&dir)?;
                 let next = Box::new(move |seq| new_segment(&held, seq, retention.files));
@@ -143,6 +191,11 @@ impl Drain {
     /// Whether the daemon reads member `member`'s output itself.
     pub(super) fn drains_member(&self, member: u32) -> bool {
         self.members.contains(&member)
+    }
+
+    /// The members the daemon reads itself, ascending.
+    pub(super) fn members(&self) -> &[u32] {
+        &self.members
     }
 
     /// Keeps `record`, a drained channel's, as its VM sent it: its data in its member's log,
@@ -241,6 +294,9 @@ impl Drain {
             })
             .collect();
         let mut seen = None;
+        // Each line goes in one write, so that what else writes to the client's stderr (its
+        // command's own) comes between its lines, never within one.
+        let mut whole = Vec::new();
         loop {
             let ended = {
                 let mut kept = lock(&self.kept);
@@ -251,14 +307,15 @@ impl Drain {
                 kept.ended()
             };
             for member in &mut shown {
-                if !member.read(to) {
+                if !member.read(to, &mut whole) {
                     return;
                 }
             }
             if ended {
                 for member in &mut shown {
                     let Viewed { label, reader, .. } = member;
-                    if !matches!(reader.finish(&mut |piece| line(to, label, &piece)), Ok(true)) {
+                    let mut each = |piece: Piece<'_>| line(to, &mut whole, label, &piece);
+                    if !matches!(reader.finish(&mut each), Ok(true)) {
                         return;
                     }
                 }
@@ -277,8 +334,9 @@ struct Viewed {
 }
 
 impl Viewed {
-    /// Shows what its log has whole since it last looked. Whether `to` took it all.
-    fn read(&mut self, to: &mut dyn Write) -> bool {
+    /// Shows what its log has whole since it last looked, each line made in `whole`. Whether
+    /// `to` took it all.
+    fn read(&mut self, to: &mut dyn Write, whole: &mut Vec<u8>) -> bool {
         if self.log.is_none() {
             self.log = LogFile::open(&self.dir).ok();
         }
@@ -286,28 +344,37 @@ impl Viewed {
             label, log, reader, ..
         } = self;
         match log {
-            Some(log) => matches!(reader.read(log, &mut |piece| line(to, label, &piece)), Ok(true)),
+            Some(log) => matches!(
+                reader.read(log, &mut |piece| line(to, whole, label, &piece)),
+                Ok(true)
+            ),
             None => true,
         }
     }
 }
 
 /// Writes `piece` of a member's output as a line of its own after `[label] `, as D59 shows an
-/// agent's: a line longer than a piece goes in pieces, each a line, and one cut short at
-/// its stream's end is ended. Whether to go on: not once `to` refuses it.
-fn line(to: &mut dyn Write, label: &str, piece: &Piece<'_>) -> io::Result<bool> {
-    let newline: &[u8] = if piece.bytes.last() == Some(&b'\n') {
-        b""
-    } else {
-        b"\n"
-    };
-    let written = to
-        .write_all(b"[")
-        .and_then(|()| to.write_all(label.as_bytes()))
-        .and_then(|()| to.write_all(b"] "))
-        .and_then(|()| to.write_all(piece.bytes))
-        .and_then(|()| to.write_all(newline));
-    Ok(written.is_ok())
+/// agent's, made whole in `whole` and written at once: a line longer than a piece goes in
+/// pieces, each a line, and one cut short at its stream's end is ended. Whether to go on: not
+/// once `to` refuses it.
+fn line(to: &mut dyn Write, whole: &mut Vec<u8>, label: &str, piece: &Piece<'_>) -> io::Result<bool> {
+    whole.clear();
+    let len = label
+        .len()
+        .saturating_add(piece.bytes.len())
+        .saturating_add(b"[] \n".len());
+    // A line with no room to be made ends what is shown; nothing waits on it.
+    if whole.try_reserve(len).is_err() {
+        return Ok(false);
+    }
+    whole.push(b'[');
+    whole.extend_from_slice(label.as_bytes());
+    whole.extend_from_slice(b"] ");
+    whole.extend_from_slice(piece.bytes);
+    if piece.bytes.last() != Some(&b'\n') {
+        whole.push(b'\n');
+    }
+    Ok(to.write_all(whole).is_ok())
 }
 
 /// The run log's stream byte a channel's output is kept as.
@@ -540,6 +607,70 @@ mod tests {
                 "[agent main] half"
             ]
         );
+    }
+
+    /// Each line a viewer shows goes in one write, so that what else writes to its client's
+    /// stderr (its command's own output) comes between its lines, never within one.
+    #[test]
+    fn a_viewer_writes_each_line_at_once() {
+        struct Writes(Vec<Vec<u8>>);
+        impl Write for Writes {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.push(bytes.to_vec());
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let run = shards_testdir::TempDir::new("drain-whole").unwrap();
+        let drain = Drain::open(&run, &labels(), &[1], Some(KEEP), 64).unwrap();
+        drain
+            .keep(&encoded(1, Channel::Stdout, 0, Event::Data(b"one\ntwo\nthr")))
+            .unwrap();
+        drain
+            .keep(&encoded(1, Channel::Stderr, 0, Event::Data(b"err\n")))
+            .unwrap();
+        drain.keep(&encoded(1, Channel::Stdout, 11, Event::End)).unwrap();
+        drain.keep(&encoded(1, Channel::Stderr, 4, Event::End)).unwrap();
+        let mut to = Writes(Vec::new());
+        drain.show(&mut to);
+        assert_eq!(
+            to.0,
+            [
+                &b"[agent main] one\n"[..],
+                b"[agent main] two\n",
+                b"[agent main] err\n",
+                b"[agent main] thr\n"
+            ]
+        );
+    }
+
+    /// A run's members' logs are found with their labels, by declared index, as `logs`
+    /// reads them; a run that drains none has none, and nor has one that keeps no log.
+    #[test]
+    fn a_runs_member_logs_are_found_with_their_labels() {
+        let run = shards_testdir::TempDir::new("drain-logs").unwrap();
+        assert!(member_logs(&run).unwrap().is_empty());
+        let drain = Drain::open(&run, &labels(), &[0, 2], Some(KEEP), 64).unwrap();
+        drain
+            .keep(&encoded(2, Channel::Stdout, 0, Event::Data(b"x\n")))
+            .unwrap();
+        drain.close();
+        let found = member_logs(&run).unwrap();
+        let named: Vec<&str> = found.iter().map(|(label, _)| label.as_str()).collect();
+        assert_eq!(named, ["agent files", "harness drive"]);
+        let mut got = Vec::new();
+        Reader::new()
+            .read(&found[1].1, &mut |p| {
+                got.extend_from_slice(p.bytes);
+                Ok(true)
+            })
+            .unwrap();
+        assert_eq!(got, b"x\n");
+        let none = shards_testdir::TempDir::new("drain-logs-none").unwrap();
+        let _ = Drain::open(&none, &labels(), &[1], None, 64).unwrap();
+        assert!(member_logs(&none).unwrap().is_empty());
     }
 
     /// A viewer whose client has gone stops at once; the drain keeps going.

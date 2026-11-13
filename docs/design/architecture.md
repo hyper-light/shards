@@ -23016,11 +23016,16 @@ JSON library into PID 1. Each domain gets:
 - **Its stdio:** stdin is `/dev/null`; stdout and stderr are pipes of their own, which init
   captures whole for its owner (D240). Where the run names no owner of a member's output
   (`shards.output`), the daemon reads it itself, keeps it in the member's log
-  (`members/<index>` in the run's directory, as the run's log is kept) and shows it to a
-  client attached to the run on that client's **stderr**, each line prefixed
-  `[agent main] `; the run's own stdout, stderr and log stay its command's. No member
-  waits on a reader: the daemon credits a channel again as soon as what came is kept, a
-  detached run's and one whose client has gone alike (PM M543). Every descriptor past 2
+  (`members/<index>` in the run's directory, as the run's log is kept, its label beside it)
+  and shows it to a client attached to the run on that client's **stderr**, each line
+  prefixed `[agent main] ` and written whole; `shards read logs` shows the same lines after
+  the run's own output, and follows them with `-f`. The run's own stdout, stderr and log stay
+  its command's. No member waits on a reader: the daemon credits a channel again as soon as
+  what came is kept, a detached run's and one whose client has gone alike (PM M543). As the
+  run ends, all such a member wrote is kept and shown before the run's end is said: init
+  reads its pipes to their ends, which the run's end brings as it ends the member, and the
+  daemon tells the run's end once its capture has kept the last of it (PM M543, "Lost at the
+  run's end"). Every descriptor past 2
   is closed before exec. Every descriptor init holds is close-on-exec today, which the
   mutation shows: without the close, nothing of init's reaches the agent. The close is
   there so that one descriptor not marked close-on-exec, such as the O_PATH descriptors
@@ -25460,9 +25465,18 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   members' output as they serve the named members' input;
   else the daemon, which keeps it in the member's log and credits it again at once, so that
   no member waits for want of a subscriber, and shows it to an attached client prefixed
-  with the member's label (D59, "Its stdio"; PM M543). Before, every member's output waited
-  for an owner's subscription that no `shards run` made: a run's agents were heard by no one
-  (`tests/build.rs`'s agents in their domains, red on every CI run since 9151296a8).
+  with the member's label, as `shards read logs` shows it (D59, "Its stdio"; PM M543). Before,
+  every member's output waited for an owner's subscription that no `shards run` made: a run's
+  agents were heard by no one (`tests/build.rs`'s agents in their domains, red on every CI
+  run since 9151296a8).
+  As the run ends, a drained member's output goes to its end: the daemon names those members
+  in the run's setup (`managed-drained=`, `shards_abi::run::managed::DRAINED_KEY`), init reads
+  their pipes to their ends before it says the run's end, and the daemon tells the run's end
+  (its waiters, `logs -f`, its removal and restart) once its capture has kept the last record
+  it brought; an owner's channel still ends with the run, aborted, as its credit may never
+  come. Before, init aborted every member's pipes as the command ended, and the daemon ended
+  the capture at the run's DONE, and agents' reports were cut mid-line (PM M543, "Lost at
+  the run's end").
 - *Its environment* (step 7, 239749c60). Init's, then the image's `Env`, then its own
   `run.env`, then what its run stages, the last given of each name winning. `PATH` keeps the
   member's own programs first; `HOME` is never the image's; `SHARDS_DOMAIN` is refused at the
