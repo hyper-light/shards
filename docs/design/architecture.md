@@ -27319,6 +27319,29 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
   cut is the stream's reset, `ConnectionReset` at the controller. On Windows a cut WinSock
   socket (AF_UNIX, the VM process's legs) reads WSAECONNRESET (10054), which std reads as
   `ConnectionReset`.
+- *Its cut through the guest's legs.* Each leg between the workload and the endpoint carries
+  the same rule: hung up at a read's end while the other way is open is a cut, carried on as
+  both ways ended at once, never as a half-close first. No wire, tag or constant is added.
+  - shards-init's relay (`relay.rs` `pump`, `EndPolicy::Independent`: lanes and MCP
+    members) asks the workload's socket at its read's end (POLLHUP or POLLERR asked for
+    POLLOUT at once, PM M559). Hung up while the host's way is open (still read, or bytes
+    for the workload unwritten), it ends the vsock connection in one `shutdown(SHUT_RDWR)`,
+    one SHUTDOWN of RCV and SEND (`virtio_transport_shutdown`), and ends
+    (`Termination::ClientCut`). Hung up after the host's way has ended, or not hung up, the
+    end is the workload's half-close (SHUT_WR, SHUTDOWN(SEND)), as before. A TCP peer's FIN
+    sets no POLLHUP (`tcp_poll`), so testguest's TCP forward keeps its half-close.
+  - The VM process's vsock muxer (`vsock/conn.rs`, `HostWrites`: `Open`, `Shut`, `Cut`):
+    the guest's SHUTDOWN(RCV) while the host's way is open (no host end-of-stream read) and
+    its SEND not ended in an earlier packet is a cut. Its host socket is closed once the
+    guest's bytes are flushed, on the guest's RST, with no `shutdown(Write)` first, and on
+    Windows held for nothing (`Conn::linger`): its peer loses what it had not read and reads
+    a reset (PM M358), as a cut promises no byte before it. The guest's SHUTDOWN(SEND), then
+    its close, is a half-close exactly as before (exec's run connection ends so,
+    `shutdown_and_wait`), and M358's hold for it stands.
+  - Windows' relay of a guest connection onto its owner's pipe (`warm.rs` `pass`): a read
+    that fails (WSAECONNRESET from a cut socket) ends the other side both ways, the owner's
+    pipe ended (`shards_ipc::end`, whose reader then finds it hung up: ERROR_BROKEN_PIPE) or
+    the guest's socket shut down both ways; a read's end still half-closes it.
 - *The controller* (`control::drive`). `Subscriptions::sockets` and `Dialed::sockets`;
   `Sockets::connect(name)` answers a `Socket` or a typed `Fault`, `Fault::Unreached(errno)`
   among them. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
@@ -27397,23 +27420,35 @@ wakes it, net/unix/af_unix.c; macOS as measured, PM M559).
   shards-ipc `hung_up_tells_a_peer_gone_from_a_half_close`; clippy for shards-remote and
   shards-ipc on macOS, x86_64-unknown-linux-gnu (natively, adacachy2) and
   x86_64-pc-windows-msvc (cargo xwin).
+- Its cut through the guest's legs (policy df2acf47, implementer; red df507bf16, green
+  e7c275363): shards-init `lanes::tests::a_workload_gone_mid_stream_ends_its_vsock_both_ways`
+  (the workload reads all the host sent, answers, closes: the host reads the answer whole,
+  then an end hung up) red on adacachy2 (Linux 7.3.3 x86_64, musl: an end with no hang-up),
+  green after with `a_workloads_half_close_still_ends_its_way_in_order` and the lanes,
+  engine and MCP relays' 14; shards-vmm
+  `muxer::tests::a_guest_gone_both_ways_while_its_host_sends_is_no_half_close` (the guest's
+  SHUTDOWN of RCV and SEND at once with its host writing: no end before the connection
+  goes, then hung up) red on adas-mac-studio.local (macOS arm64) and adacachy2 (an end where
+  none was due), green after on both with the vsock module's 70, among them M358's
+  `what_the_guest_sent_before_its_end_is_read_whole_whatever_the_host_writes`, its guest now
+  ending in order (SEND, then its close); testguest's `tcp_forward` (1, 6 ignored, unprivileged).
+  Clippy clean: shards-init and shards-testguest for x86_64-unknown-linux-musl (zig CC),
+  shards-vmm for x86_64-unknown-linux-gnu (adacachy2), shards-vmm and shards-vm-process on
+  macOS and x86_64-pc-windows-msvc (cargo xwin).
 
 **Evidence owed** (ROOT, real VMs).
 - Hex's case (f), `nesting::a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller`
   (with the run host's endpoint, D252), on HVF, KVM x86_64 and WHP.
 - The lane's throughput and round trip against D238's arm h numbers (control-end's harness).
 - Mutation of the grant's and the name's checks.
-- A cut carried through a real VM, which the guest's legs do not yet carry: shards-init's
-  relay (`relay.rs` `Direction::turn`, `EndPolicy::Independent`) forwards the workload's end
-  as SHUT_WR on vsock before its write's EPIPE is known, and the VM process's muxer
-  (`vsock/conn.rs` `flush`) turns the guest's SHUTDOWN(SEND) into the host socket's
-  shutdown(Write) before it closes on the guest's RST, so the endpoint's socket reads a
-  half-close first, not hung up, and the lane ends in order. On Windows warm.rs's `pass`
-  reads a guest connection's WSAECONNRESET as its end and half-closes the owner's pipe. Each
-  leg needs this entry's rule: hung up at a read's end while the other way is open is a cut,
-  carried as both ways ended at once (the muxer closing its host socket, no shutdown(Write)
-  first), with real-VM runs on HVF, KVM and WHP, the muxer being every exec's and engine's
-  too.
+- A cut carried through a real VM (*Its cut through the guest's legs*, built and unit
+  tested): a workload's socket cut mid-stream read as `ConnectionReset` at the controller,
+  and its half-close still as its way's end, on HVF, KVM and WHP; and, the muxer being every
+  exec's, engine's and MCP member's, their suites on all three. On WHP: a guest connection
+  ended both ways at once with its host still writing now loses the host what it had not
+  read (no linger); exec's own end is a half-close first, which keeps M358's hold.
+- Windows: `pass`'s test (`warm::tests::a_read_that_fails_ends_the_other_side_both_ways`)
+  was compiled (cargo xwin clippy) but not run.
 - Windows: `hung_up` on a pipe whose other end has closed, unrun (its peek is `readable`'s).
 
 **What would falsify it.**
