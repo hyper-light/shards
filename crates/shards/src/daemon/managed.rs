@@ -1993,7 +1993,7 @@ fn bridge(
 /// The member and channel of credit route `index` ([`route_index`]).
 fn route_of(index: usize) -> io::Result<(u32, Channel)> {
     let member = u32::try_from(index / 2).map_err(io::Error::other)?;
-    let channel = if index % 2 == 0 {
+    let channel = if index.is_multiple_of(2) {
         Channel::Stdout
     } else {
         Channel::Stderr
