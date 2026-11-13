@@ -8704,8 +8704,8 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   apart from the VM (`hv::VfioHost`), which the running machine owns. Off Linux
   `Handle::plug_vfio` refuses, changing nothing (`vm::plug_refused`): macOS's
   Hypervisor.framework assigns no device at all, and Windows gives a microVM a host's
-  function as it starts alone (`WHP_NO_PLUG`): WHP allows a partition device assignment
-  before its setup alone (M401), Microsoft documents Discrete Device Assignment for a VM
+  function as it starts alone (`PassthroughRefusal::NoPlug`): WHP allows a partition device
+  assignment before its setup alone (M401), Microsoft documents Discrete Device Assignment for a VM
   given its device before it starts and giving it back once stopped, and WHP's pages say
   nothing of a virtual PCI device made in a partition that runs (D154's "No Windows host
   plugs a function"). Untested where a hypervisor assigns devices, as none here does.
@@ -14031,7 +14031,8 @@ one. So both, in that order.
     host's USB device for the VM's emulated XHCI controller (the
     `com.apple.vm.device-access` entitlement: "captures USB devices and uses them in the
     guest"), no PCI function. A run that names one is refused with "macOS's
-    Hypervisor.framework assigns no device to a VM" (`vm::passthrough_refused`).
+    Hypervisor.framework assigns no device to a VM, whose every device its VMM emulates"
+    (`vm::passthrough_refused`, `PassthroughRefusal::HypervisorFramework`).
   - **Windows passes one through where its hypervisor assigns devices** (Discrete Device
     Assignment), by WHP's virtual PCI devices (Microsoft Learn, "Windows Hypervisor Platform
     API Definitions", its Virtual PCI (VPCI) Devices and each function's page, 2026-06-08),
@@ -14120,7 +14121,8 @@ one. So both, in that order.
     2026-06-08) say nothing of a device made in a partition that runs, nor does OpenVMM make
     one (ba105dd7: its `new_physical_device` has no caller). So `Handle::plug_vfio` off
     Linux refuses (`vm::plug_refused`): where the hypervisor assigns devices with
-    `WHP_NO_PLUG`, naming those limits and how to give the function as the microVM starts;
+    `PassthroughRefusal::NoPlug`, naming those limits and how to give the function as the
+    microVM starts;
     elsewhere with the host's own answer. Untested on such a host, as none here assigns one.
   - **Windows refuses where its hypervisor assigns none**, with the hypervisor's own answer,
     asked as a function is (`hv::device_assignment_refused`: WHP's VirtualPciDeviceSupport,
@@ -14147,6 +14149,39 @@ one. So both, in that order.
     `a_hosts_pci_function_is_refused_with_its_oss_own_limit` (vm/mod.rs),
     `a_hosts_pci_function_is_refused_where_its_os_passes_none` (boot.rs) and
     `a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit` (containers.rs).
+  - **Each refusal is typed** (R04), its variant the OS's own limit
+    (`vm::PassthroughRefusal`, crates/vmm/src/vm/passthrough.rs): macOS's
+    `HypervisorFramework` (Apple's docs: "Hypervisor maps the physical memory in the guest
+    to virtual memory of the host process", the VMM to "Emulate memory-mapped hardware by
+    emulating the memory access on exit"; M403); Windows' `Hypervisor`, the hypervisor's own
+    answer; where it assigns devices, `NoGuestIommu` and `NoPlug`; a host without a backend's
+    `NoBackend`. Callers that decide match it (`Vfio::of`, `plug_refused`, the tests); those
+    that say it render it, in their own words around it (dockerd's "error gathering device
+    information", the VM process's exit, the daemon's answer to `shards plug`), and text is
+    all that crosses those processes. The hypervisor's answer (`hv::assignment::Refused`,
+    written once for both WHP backends) is `NoPlatform`, `Unasked` (its words), `NoVirtualPci`
+    or `NotAllowed`: AllowDeviceAssignment refused, in its words, with WHP's IommuSupport bit
+    and the Windows edition, which says whose limit the refusal is. Microsoft supports
+    Discrete Device Assignment on Windows Server alone: "DDA and GPU-P aren't supported on
+    desktop-class hardware or client operating systems such as Windows 10 or 11 Pro"
+    (Microsoft Learn, "Troubleshooting guidance for Hyper-V GPU assignment, partitioning,
+    and passthrough", 2026-02-12), its host "running Windows Server 2016 or later" ("Deploy
+    graphics devices by using Discrete Device Assignment", 2026-01-30); and on Windows
+    Server it needs "server class hardware that's capable of granting the operating system
+    control over configuring the PCIe fabric (Native PCI Express Control)" and Access
+    Control Services at the PCIe root complex ("Deploy devices by using Discrete Device
+    Assignment", 2025-02-19). So a client edition's refusal names the first limit and a
+    server's the second, neither the other's: jupiter's Windows 11 Pro (ProductType 1, M401)
+    the edition's, CI's Server 2022 and 2025 (ProductType 3, M402) the hardware's. The
+    edition is the kernel's word, RtlGetVersion's wProductType (winnt.h's
+    VER_NT_WORKSTATION a client; VER_NT_SERVER and VER_NT_DOMAIN_CONTROLLER a server; any
+    other said as itself), read on the refusal path alone (`platform::product_type`); not
+    VerifyVersionInfoW, which IsWindowsServer wraps, whose page says it "has been
+    deprecated for Windows 10". No number is chosen here: the edition and the HRESULT are
+    the host's own answers. Held by `hv::assignment`'s tests (each product type's edition;
+    each edition's limit and not the other's), `vm::passthrough`'s (each variant's words),
+    and `a_hosts_pci_function_is_refused_with_its_oss_own_limit`, which matches the variant
+    its host gives.
   - Step 13's last part waits on hardware: the Windows E2E passing on a Windows Server host
     that assigns devices, and x86_64 Linux's VFIO on a host with a function to spare.
 - **BARs in the guest's memory.** Each BAR vfio-pci lets a user map
