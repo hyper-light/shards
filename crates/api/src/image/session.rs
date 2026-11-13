@@ -827,34 +827,10 @@ impl Session {
         begun.started(request, patience).map_err(|(refused, _)| refused)
     }
 
-    /// A pipe for each running member's channels, and the thread that fills it as its
-    /// bytes come, granting the host room for as many more as it took.
+    /// Its running members' outputs ([`pumped`]).
     fn pump_outputs(&self) -> Result<(), ImageRefusal> {
-        let mut outputs = lock(&self.outputs);
-        for m in self.members.iter().filter(|m| m.runs) {
-            for channel in [Channel::Stdout, Channel::Stderr] {
-                let (reader, writer) = io::pipe().map_err(|e| ImageRefusal::Os {
-                    what: "a member's pipe",
-                    kind: e.kind(),
-                })?;
-                outputs.insert((m.index, channel), reader);
-                let shared = self.shared.clone();
-                let member = m.index;
-                std::thread::Builder::new()
-                    .name("shards-api-member".into())
-                    .spawn(move || pump(&shared, member, channel, writer))
-                    .map_err(|e| ImageRefusal::Os {
-                        what: "a member's pump",
-                        kind: e.kind(),
-                    })?;
-                self.shared
-                    .credit(member, channel, AHEAD)
-                    .map_err(|e| ImageRefusal::Os {
-                        what: "the run host's credit",
-                        kind: e.kind(),
-                    })?;
-            }
-        }
+        let pumped = pumped(&self.shared, &self.members)?;
+        lock(&self.outputs).extend(pumped);
         Ok(())
     }
 
@@ -909,6 +885,40 @@ impl Session {
     }
 }
 
+/// A member's channel, by its index, and the pipe its bytes come out of ([`pumped`]).
+type Pumped = ((u32, Channel), io::PipeReader);
+
+/// A pipe for each of `members`' running members' channels, and the thread that fills it as
+/// its bytes come, the host granted room for its first [`AHEAD`] bytes and for as many more as
+/// each part took ([`pump`]). A credit that cannot go is no refusal: the host's channel is
+/// closed, as the run's end closes it (`read_answers`), or broken, and the run started all the
+/// same, its end its session's to tell (`State::end_seen`), as `pump` takes its own credits'
+/// (WHP at 3a05bc3f1: a template's run of `exit 3`, restored, ended before its first credit
+/// went, and its boot was refused `BrokenPipe`).
+fn pumped(shared: &Arc<Shared>, members: &[MemberInfo]) -> Result<Vec<Pumped>, ImageRefusal> {
+    let mut outputs = Vec::new();
+    for m in members.iter().filter(|m| m.runs) {
+        for channel in [Channel::Stdout, Channel::Stderr] {
+            let (reader, writer) = io::pipe().map_err(|e| ImageRefusal::Os {
+                what: "a member's pipe",
+                kind: e.kind(),
+            })?;
+            outputs.push(((m.index, channel), reader));
+            let pumping = shared.clone();
+            let member = m.index;
+            std::thread::Builder::new()
+                .name("shards-api-member".into())
+                .spawn(move || pump(&pumping, member, channel, writer))
+                .map_err(|e| ImageRefusal::Os {
+                    what: "a member's pump",
+                    kind: e.kind(),
+                })?;
+            let _ = shared.credit(member, channel, AHEAD);
+        }
+    }
+    Ok(outputs)
+}
+
 /// Moves member `member`'s `channel` into `writer` as its bytes come, and grants the host
 /// room for each part once written; ends at the channel's end, closing the pipe. A caller
 /// that let go of its end drops the rest, as a closed pipe drops `docker run`'s output,
@@ -940,7 +950,9 @@ fn pump(shared: &Shared, member: u32, channel: Channel, mut writer: io::PipeWrit
 /// the room the host gave, and its end once the caller closes its pipe; ends with the input,
 /// the run or the host, dropping its pipe's read end so that the caller's writes fail then.
 fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
-    let mut buf = vec![0u8; AHEAD as usize];
+    // What the caller types into the member, a credential as often as not (D242): wiped here
+    // once sent, and the buffer as it goes.
+    let mut buf = zeroize::Zeroizing::new(vec![0u8; AHEAD as usize]);
     loop {
         // Room first: nothing is read of the caller that its host has no room for.
         let room = shared.wait(Duration::MAX, |s| {
@@ -971,13 +983,21 @@ fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
         if let Some(flow) = lock(&shared.state).inputs.get_mut(&member) {
             flow.room = flow.room.saturating_sub(n as u64);
         }
-        let mut payload = Vec::with_capacity(4 + n);
-        payload.extend_from_slice(&wire::Input::head(member));
-        payload.extend_from_slice(buf.get(..n).unwrap_or_default());
-        if shared.send(wire::to_host::INPUT, &payload).is_err() {
+        if send_input(shared, member, buf.get_mut(..n).unwrap_or_default()).is_err() {
             return;
         }
     }
+}
+
+/// Sends `typed`, bytes for member `member`'s stdin, as one `INPUT` frame in its parts, never
+/// copied whole into one (`send_parts`), then wipes them where they were read; the frame's
+/// own copy is wiped as it drops (D242).
+fn send_input(shared: &Shared, member: u32, typed: &mut [u8]) -> io::Result<()> {
+    let mut payload = zeroize::Zeroizing::new(Vec::with_capacity(4 + typed.len()));
+    payload.extend_from_slice(&wire::Input::head(member));
+    payload.extend_from_slice(typed);
+    zeroize::Zeroize::zeroize(typed);
+    shared.send_parts(wire::to_host::INPUT, &payload)
 }
 
 /// Reads the host's answers until it closes its stdout, each into the state; one that
@@ -1609,6 +1629,32 @@ mod tests {
         }
     }
 
+    /// A member's typed stdin goes to its host as one `INPUT` frame and is wiped where it was
+    /// read (D242). Do: send typed bytes from a buffer of the test's. Expect: the buffer all
+    /// zeros after; the host reads one `INPUT` frame of the member's bytes, and nothing more.
+    #[test]
+    fn a_members_typed_input_is_wiped_where_it_was_read_once_sent() {
+        let (mut host, to_host) = io::pipe().unwrap();
+        let s = shared();
+        *lock(&s.to_host) = Some(to_host);
+        let mut typed = *b"sk-ant-typed-in-1234";
+        send_input(&s, 4, &mut typed).unwrap();
+        assert!(
+            typed.iter().all(|&b| b == 0),
+            "the typed bytes were left where they were read"
+        );
+        drop(lock(&s.to_host).take());
+        let mut frame = Vec::new();
+        let (kind, len) = wire::read_frame_into(&mut host, &mut frame).unwrap().unwrap();
+        assert_eq!(kind, wire::to_host::INPUT);
+        let input = wire::Input::decode(&frame[..len]).unwrap();
+        assert_eq!(
+            (input.member, input.bytes.0.as_slice()),
+            (4, b"sk-ant-typed-in-1234".as_slice())
+        );
+        assert!(wire::read_frame_into(&mut host, &mut frame).unwrap().is_none());
+    }
+
     /// Do have a run host write more diagnostics than are kept to quote, its caller naming a
     /// file for them partway, then end them. Expect: the file holding what was kept until it
     /// was named and everything after, whole and once; what is kept to quote still their last
@@ -1640,6 +1686,32 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), [&before[..], &after[..]].concat());
         let kept: Vec<u8> = lock(&shared.state).said.iter().copied().collect();
         assert_eq!(kept, after[after.len() - said_kept()..]);
+    }
+
+    /// Do pump the outputs of a run whose end came before them, its host's channel closed by
+    /// it, as a run that ends at once has (WHP at 3a05bc3f1: a template's run of `exit 3`,
+    /// restored, ended before its first credit went). Expect: a pipe for each channel of each
+    /// running member alone, each ending as the run has, and no refusal: the run started, and
+    /// its end is the session's to tell, never a boot refused `BrokenPipe`.
+    #[test]
+    fn a_run_ended_before_its_first_credit_still_has_its_outputs() {
+        let shared = Arc::new(shared());
+        lock(&shared.state).end = Some(RunEnd::Exited(3));
+        let member = |index, runs| MemberInfo {
+            index,
+            kind: wire::MemberKind::Harness,
+            name: format!("m{index}"),
+            runs,
+        };
+        let outputs = pumped(&shared, &[member(1, true), member(2, false)]).unwrap();
+        let channels: Vec<(u32, Channel)> = outputs.iter().map(|(key, _)| *key).collect();
+        assert_eq!(channels, [(1, Channel::Stdout), (1, Channel::Stderr)]);
+        for (key, mut reader) in outputs {
+            let mut rest = Vec::new();
+            reader.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty(), "{key:?}");
+        }
+        assert_eq!(lock(&shared.state).end_seen(), Some(RunEnd::Exited(3)));
     }
 
     /// Do see a run's host gone without its run's end, as `wait_for` sees it, then stop the
@@ -1779,9 +1851,9 @@ mod tests {
         let (kind, first) = wire::read_frame(&mut from_host).unwrap().unwrap();
         assert_eq!(kind, wire::to_host::INPUT);
         let first = wire::Input::decode(&first).unwrap();
-        assert_eq!((first.member, first.bytes.as_slice()), (1, &payload[..7]));
+        assert_eq!((first.member, first.bytes.0.as_slice()), (1, &payload[..7]));
         assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(1024)), Ok(false));
-        let mut got = first.bytes;
+        let mut got = first.bytes.0.clone();
         loop {
             let (kind, frame) = wire::read_frame(&mut from_host).unwrap().unwrap();
             if kind == wire::to_host::INPUT_END {
@@ -1795,7 +1867,7 @@ mod tests {
                 break;
             }
             assert_eq!(kind, wire::to_host::INPUT);
-            got.extend(wire::Input::decode(&frame).unwrap().bytes);
+            got.extend_from_slice(&wire::Input::decode(&frame).unwrap().bytes.0);
         }
         assert_eq!(got, payload);
         feeding.join().unwrap();

@@ -59,6 +59,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - run: python3 scripts/check-development-policy
+      # Only the pinned zig compiles shards' C (scripts/zig-pin), checked with stand-ins.
+      - run: scripts/zig-pin-check
       - run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt
       - run: cargo fmt --all --check
 
@@ -252,6 +254,10 @@ jobs:
             x86_64-unknown-linux-gnu) export SHARDS_REQUIRE_VMS=1 SHARDS_REQUIRE_USER_MANAGER=1 ;;
             x86_64-pc-windows-msvc) export SHARDS_REQUIRE_VMS=1 ;;
           esac
+          # The tests that must reach Docker Hub itself run here, as before they were gated;
+          # where a LAN's machines share an address and its pulls, they skip unless asked
+          # (tests/common, cannot_reach_docker_hub).
+          export SHARDS_TESTS_DOCKER_HUB=1
           if [ "${{ matrix.target }}" = x86_64-unknown-linux-gnu ]; then
             scripts/ci/hang-watch.sh "$RUNNER_TEMP/hangs" &
             watcher=$!

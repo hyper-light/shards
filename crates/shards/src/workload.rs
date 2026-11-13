@@ -754,7 +754,10 @@ pub fn serve(
             if resuming {
                 return Err("managed output restore generation is not admitted".into());
             }
-            Some(capture::start(&mut spec, capture)?)
+            let run = conn
+                .try_clone()
+                .map_err(|e| format!("managed capture's copy of the run's connection: {e}"))?;
+            Some(capture::start(&mut spec, capture, run)?)
         }
         None => None,
     };
@@ -818,6 +821,13 @@ pub fn serve(
         host_net,
     };
     let status = relay(&mut reader, timing, log.as_mut(), started, records);
+    // A relay of its members' output that broke ended the run's connection here, which its
+    // relay failed for: why, in place of that end (capture.rs `relay_ending`).
+    let status = status.map_err(|e| {
+        capture::ended_run().map_or(e, |why| {
+            format!("its members' output could not be relayed: {why}")
+        })
+    });
     // A save waiting for the guest to go quiet waits no more: its command has ended.
     quiescing().end();
     QUIET.notify_all();

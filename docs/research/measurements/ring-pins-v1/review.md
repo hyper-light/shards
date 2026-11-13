@@ -372,6 +372,10 @@ and is untouched here.
    then that host's command for the pins test. Expected: refused "1 vCPUs: the setup's slots freed: N
    pages pinned, not M, after …: none released over the last …, its window …", one to two windows after
    the setup, where before it waited 600 s. Then `git checkout crates/init/src/ring.rs`.
+   Superseded by "Cures, goal 71" below: a kind's first settle now follows its microVM's liveness
+   alone, so with every slot kept the pins test is refused nowhere. Its first settle goes on, its
+   looks ever further apart, and its told line ("1 vCPUs: the setup's slots: N pages pinned, not M, …")
+   names its home. This run's evidence is that line and the count staying while the microVM answers.
 3. **F3's test on Linux arm64** (CI on main runs it), and R14's measure of how long the lock is held.
 
 ## Cures, F5 (goal 52's agent, 2026-11-13)
@@ -396,3 +400,156 @@ an unrelated free or a word of the run's room. So growth came late, though pins 
 | Lint | `cargo clippy -p shards-init --all-targets -- -D warnings`, for x86_64-gnu, x86_64-musl and aarch64-musl | clean |
 
 `cargo fmt -p shards-init -- --check` is clean. Owed to ROOT: the test on Linux arm64 (CI on main).
+
+## Cures, goal 71 (CI cluster 9), 2026-11-13
+
+Two failures of engine_ring.rs on main, one on HVF and one on CI's Linux, both in the test's
+waits. Neither shows a defect of the ring.
+
+- **Identity:** goal 71's child for CI cluster 9, role implementer (ROOT "main"). Base: origin/main
+  d5afadbc8ed9f5c7ed5dcedee7a7a88da7300efe; the cure's commit 3c93f59e9, merged with main d9f759025 as
+  b97d37664 before landing. Policy at the base:
+  AGENTS.md f66d304c…, development-rules.md df2acf47…, development-evidence.md 61613a24…; POLICY_READ
+  sent before any edit. Owned: crates/shards/tests/engine_ring.rs, `common::Told`'s Windows pipe name,
+  `shards_api::pause` made public (not copied), D230's text and this section.
+- **Host:** adalundhe-macbook-pro (macOS 26.5.2 arm64, 18 CPUs, rustc 1.98.1), through a carrier: a
+  blobless clone of GitHub's repository, this lane's commits from a bundle, `CARGO_TARGET_DIR` under
+  ~/g121-tmp/g71-ring, `CARGO_INCREMENTAL=0`, `nice -n 10`, `SHARDS_HELPERS=skip` with placeholder init
+  and server binaries. No E2E, VM, CI or scripts/lint ran, and nothing was built on adas-macbook-pro-2.
+
+### G1. The settle's window refused 18 vCPUs on HVF (dc7f45bc6)
+
+- **Symptom** (ROOT's workspace run on macOS arm64, its log e2e-hvf9-workspace-dc7f45bc6.log):
+  `an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends` passed at 1 and 2 vCPUs and failed
+  at 18, "every stream's slot freed: 21 pages pinned, not 0, after 206.90675ms: none released over the
+  last 201.082458ms, its window 176.721958ms". HVF's batch at 9483b5a84 had passed it.
+- **What the evidence shows.**
+  - The device let go of every ring, bytes for bytes, before the settle began: the test's own checks
+    passed, and the device's lines in the daemon's log end with the last streams' rings let go
+    (`HostEnded`).
+  - Nothing on the ring's path changed between 9483b5a84 and dc7f45bc6 (git log over init's ring.rs
+    and engine.rs, the vsock device, the ABI's ring.rs, the test guest's engine_bulk.rs, engine_ring.rs
+    and tests/common/mod.rs).
+  - The relay frees a slot only once its stream's thread has heard the device let go and passed on what
+    the slot held; its vsock connection closes after that (engine.rs `relay`, ring.rs
+    `Stream::serve`). Its release drops the pins in the update itself, no request holding the buffer
+    (ring.rs `unregister`, on the guest's Linux 6.18.48).
+  - Whether the 21 pages were freed later is not in the log: the test stopped at 207 ms. So no defect
+    of the ring is shown, and none is ruled out. A real VM answers that (owed below).
+- **Cause, in the test.** The settle's window was the time its own work had taken (a2c887eeb), a seed
+  of no answer of the settle's own. The person's ruling of 2026-11-13: "No record seeds. The cold start,
+  and every wait after a run-out, follows the party's liveness and progress. After that the bound is the
+  slowest answer seen. No ×2."
+- **The cure (3c93f59e9).** The settle is D215's judge, shared, its progress a slot freed (the pins at a
+  new low).
+  - Its kind is a work (the setup's, or the streams') at the microVM's vCPU count, each kind's record
+    its own, in the test's memory.
+  - A kind not yet seen follows its microVM's liveness alone, each look an exec it answers. A kind seen
+    is looked at once each W* and refused where no slot was freed since the look before (`Stalled`,
+    carrying `shards_api::Stall`).
+  - Its looks are paced by D215's `sqrt(2 c w)`, `shards_api::pause` made public rather than copied, `c`
+    a look's own time. Its progress is told on stderr as it comes, its home named, and each settle's
+    time is reported per size.
+  - In one run each kind settles once, so every settle there is a cold start. Its gap: a slot never
+    freed while its microVM lives is not refused on a kind's first settle. Its looks go on, ever further
+    apart, until its caller ends it. A learned settle reads the guest's pins alone, not its host's hold
+    on the VM process, which shards-api's followers read privately.
+- **Not chosen.**
+  - `common::Patience`: its 600 s and `DAEMON_QUIET` are numbers of ours.
+  - D185's slowest gap between frees, learned within a settle: its first gaps are short, so a later,
+    longer gap of the same settle is refused. Shared by the setup and the streams, the setup's few
+    slots, freed a connection at a time, would bound the release of the streams' 3V, which is the
+    failure's own shape.
+  - One record for every size of a work: the 1 and 2 vCPUs' answers then judge the 18. Its red is below.
+
+### G2. The held connection's wait looked for a state a give-back ends (f5c0c8b04, CI)
+
+- **Symptom** (CI run 43435318858, job x86_64-unknown-linux-gnu, its log lines 3590 to 3880):
+  `a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain` (engine_ring.rs:355) failed,
+  "shards exec prov /bin/testguest api POST /containers/idle/wait did not exit within 600s" and "the
+  held connection's ring: Rings { attached: 4, pinned: 49152, let_go: 4, unpinned: 49152, asked: 1 }".
+  The musl job of the same run passed it.
+- **What the evidence shows.** In the daemon's log, the held connection's ring attached at 1272652 µs
+  of VM 460995's clock. The daemon's give-back to that microVM answered next ("giving back what it holds
+  cold: answered after 69.022659ms"), and the ring was let go `(Asked)` at 1303913 µs, 31 ms after it
+  attached. The daemon said why: "the host is short of memory: its microVMs gave back 3 MiB ...". The
+  test looked each 50 ms for the ring attached and not yet let go, a state that lasted 31 ms between two
+  of its looks, and waited on. The held exec, a wait on a joiner the test removes only at its end, ran
+  to its own 600 s.
+- **The product did as D230 says:** a give-back lets every idle slot go, the connection goes on over
+  plain vsock, and the device let go of it bytes for bytes. No defect of the let-go path is shown.
+- **The cure (3c93f59e9).**
+  - `held_open` waits for the device's word that the ring attached, which the log keeps
+    (`held_attached`).
+  - Each test checks that its ring was not let go before it asks for the slot (`held_still`). Once let
+    go a ring stays let go, so a ring found attached then was attached all along.
+  - The shrinking-room test hears its host's pressure only through a pipe of its own, never said, as
+    the give-back test does. The daemon then takes its host's word from that pipe in place of its
+    kernel's (reclaim.rs `TOLD`), and its budget's room is still told through its file watches
+    (budget.rs `watch_budgets`, groups.rs `hold_groups`).
+  - `common::Told` is named per instance on Windows, so that both tests' pipes live at once in one test
+    process.
+
+### Red and green (R09, R10)
+
+Each red is a patch of the cure's own code restoring one old rule, the same unit tests run on it. The
+unit tests take no VM: the settle is fed the looks of ROOT's HVF run, and the log's parser and the held
+wait are fed the CI run's lines. At the merge b97d37664 ([r23](logs/r23-g71-settle-held-light.txt),
+[cure-g71-light.sh](cure-g71-light.sh), kiln run r327), and the same again, red for the same reasons, at
+the merge with main b87c0ce19, 4130e0725 (r341), and at the landed merge with main f6d6f7da2, e072a886f (r351:
+main's window refused at 222.75 ms, the sizes shared at 9.22 ms, W* 8.59 ms):
+
+| Run | Code | Result |
+|---|---|---|
+| Green | the cure | 4 passed: `a_settle_of_a_size_not_yet_seen_follows_its_liveness_whatever_other_kinds_answered`, `a_settle_of_a_kind_seen_is_refused_a_whole_w_star_after_its_last_freed_slot`, `a_settle_of_a_kind_seen_goes_on_past_w_star_while_its_slots_are_freed`, `the_held_connections_wait_reads_a_word_its_log_keeps` |
+| Red: main's window | [cure-g71-red-main-window.patch](cure-g71-red-main-window.patch): a kind not yet seen seeded with its work's own time, a2c887eeb's window | the HVF test FAILED: `Stalled { now: 21, want: 0, waited 223.16 ms, over 223.16 ms, slowest 176.722 ms }`, as main refused HVF at 207 ms; the other three passed |
+| Red: sizes shared | [cure-g71-red-sizes-shared.patch](cure-g71-red-sizes-shared.patch): one record for every size of a work | the HVF test FAILED: refused at 21.61 ms, W* 21.09 ms, the 1 and 2 vCPUs' answers. The two learned-kind tests failed too, at their own lookups of a record by kind, which the patch moves |
+| Red: main's held wait | [cure-g71-red-held-attached-still.patch](cure-g71-red-held-attached-still.patch): the ring attached still, main's predicate | `the_held_connections_wait_reads_a_word_its_log_keeps` FAILED at its `held_attached(&r, 3)`; the other three passed |
+| Lint | `cargo clippy -p shards-api -p shards --all-targets -- -D warnings` | clean |
+| shards-api | `cargo test -p shards-api --profile test-release --lib a_pause_weighs` | 1 passed |
+
+`rustfmt --check` is clean for every file touched.
+
+- **What the reds found in the test itself.** At 5f129b93d (r291) all three reds failed as here. Merged
+  with main as 5bd87fcae (r313), main's window passed: the HVF test looked only while its time was within
+  206.907 ms, so a pause that ended past it, its judged look still to come, left the seeded rule
+  unjudged, and the last look (0 pages) answered first. Its guard hung on a pause's lateness. Its last
+  look now begins past 206.907 ms, however late a pause ends. In the same run the sizes-shared red failed
+  at the test's own lookup of the other kinds' records, not at a refusal; that lookup now reads
+  `records.get`.
+
+### R01-R16 for this cure
+
+| Rule | |
+|---|---|
+| R01 | No production code changed but `pause`'s visibility. The tests may panic. |
+| R02 | The person's ruling, D215's judge and D185's and D180's records of it; alternatives above. |
+| R03 | No literal added. W* is each kind's own, learned in the test's memory; the looks' pacing is D215's derivation; the HVF test's figures are that run's own. Cold start: liveness alone, its gap stated. |
+| R04 | `Stalled` is typed and carries the judge's `Stall`. A settle's outcomes are settled, not yet, or refused. The held connection's state is read from the device's words, which stay said. |
+| R05 | The settle's looks are paced by a derivation, not a sleep of ours. The held waits read words that stay said. `await_rings`' 50 ms looks and `Patience` are as they were. No cache. |
+| R06 | `Settle::looked` is one judgment; `held_attached` and `held_still` are a line each. |
+| R07 | Comments give each source and the evidence. |
+| R08, R14 | No performance claim. |
+| R09 | Both symptoms are reproduced from their own logs in unit tests, red on main's rules. Neither is reproduced on a real VM here (ROOT's). |
+| R10 | Red, green, and each guard's removal as above, with their patches and log committed. |
+| R11 | Ran on macOS arm64 alone. The Windows-only `Told` change and every other target's lint are CI's on main; every real VM is ROOT's. |
+| R12 | D215's judge and `pause`, shared. |
+| R13 | Two small types and a judgment; the old settle's loop gone. |
+| R15 | Implementer's light tests on one host; landed fast-forward on the person's rule of 2026-11-13. |
+| R16 | The carrier's clone and target directory on adalundhe-macbook-pro are removed after landing. |
+
+### Owed to ROOT (real VMs)
+
+1. engine_ring's four E2E tests and four unit tests, on HVF arm64 (the pins test at 1, 2 and the
+   host's every CPU), KVM x86_64 (CI's glibc and musl jobs), and WHP x86_64:
+   `cargo test -p shards --profile test-release --test engine_ring -- --nocapture`. To see the HVF
+   failure's conditions, run it as ROOT's workspace run did: the binary's tests at once, under the
+   session's scheduling. Each size's settle times are printed ("the setup's slots … into their settle
+   (it took …), the streams' … into theirs (they took …)").
+2. KVM arm64 through L1, on an M3 or later Mac: `SHARDS_L1_TESTS=engine_ring cargo test -p shards
+   --profile test-release --test boot snapshot_tests_pass_on_a_kvm_host_of_this_architecture --
+   --nocapture`, timed through docs/research/measurements/macos-sched/launchd-run.sh.
+3. If a settle goes on without its pins falling, its told line names its home: look at it live with
+   `SHARDS_HOME=<home> shards exec prov /bin/testguest vmstat nr_foll_pin_acquired
+   nr_foll_pin_released`. A count that stays past every stream's end is a slot the relay did not free:
+   the first live evidence of a defect of the ring, where these logs show none.

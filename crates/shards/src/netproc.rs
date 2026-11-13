@@ -108,6 +108,153 @@ pub fn recv(net: &Control) -> std::io::Result<Option<shards_ipc::Message>> {
     return shards_ipc::read_message(&net.socket);
 }
 
+/// What this daemon has seen of its network processes' answers to its asks (D215's record):
+/// W*, the slowest an answer came in, and R*, none before its first. One for the process:
+/// every run's network process answers the daemon's asks alike (a published port, a peer, a
+/// network's names), and a long-lived ask's waits (`HostNet`) learn into it too.
+pub static NET_ANSWERS: shards_api::Record = shards_api::Record::new();
+
+/// A run's network process as the daemon asks it: its control socket ([`Control`]) and its
+/// process, by which a wait for its answers follows it ([`ask`]).
+#[derive(Debug)]
+pub struct NetLink {
+    pub control: Control,
+    pub pid: u32,
+}
+
+impl NetLink {
+    pub fn try_clone(&self) -> std::io::Result<NetLink> {
+        Ok(NetLink {
+            control: self.control.try_clone()?,
+            pid: self.pid,
+        })
+    }
+
+    /// A wait on it beginning now, judged by `record` ([`until_ready`]): none where its
+    /// process cannot be followed (gone already, or not to be read), its socket's end alone
+    /// the wait's then.
+    pub fn follow<'r>(&self, record: &'r shards_api::Record) -> Option<shards_api::Follow<'r>> {
+        let followed = shards_api::Followed::of_pid(self.pid).ok().flatten()?;
+        shards_api::Follow::begin(record, followed).ok().flatten()
+    }
+}
+
+/// Which way a wait on a network process's control is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Way {
+    /// Its answer.
+    Read,
+    /// Room for an ask.
+    Write,
+}
+
+/// Waits until network process `net`'s control is ready `way` (or ended, which its next
+/// read or write says), following its process as D215's judge follows a party (`follow`,
+/// the person's rule, 2026-11-13): before its record's first answer, or with nothing to
+/// follow, until then, its liveness alone; past W*, looked at each W*, and refused where a
+/// whole W* shows it ran no CPU and its host was not the reason. It was a second, picked
+/// (`PUBLISH_PATIENCE`).
+pub fn until_ready(
+    net: &NetLink,
+    way: Way,
+    follow: &mut Option<shards_api::Follow<'_>>,
+) -> Result<(), String> {
+    loop {
+        let wait = follow
+            .as_ref()
+            .and_then(shards_api::Follow::due)
+            .map(|due| due.saturating_duration_since(std::time::Instant::now()));
+        if ready(&net.control, way, wait) {
+            return Ok(());
+        }
+        if let Some(followed) = follow.as_mut() {
+            followed.look().map_err(|why| match why {
+                shards_api::Unfollowed::Stalled(stall) => format!(
+                    "its network process ({}) ran nothing for {:?}, past the slowest answer one has given ({:?})",
+                    net.pid,
+                    stall.over(),
+                    stall.slowest()
+                ),
+                shards_api::Unfollowed::Process { failure, .. } => {
+                    format!("its network process ({}) could not be read: {failure}", net.pid)
+                }
+            })?;
+        }
+    }
+}
+
+/// Sends network process `net` an ask, `kind` with `payload` and `socks`, and waits for its
+/// answer, each wait following it ([`until_ready`]) and its answer teaching `record`: none
+/// once it has hung up.
+pub fn ask(
+    net: &NetLink,
+    record: &shards_api::Record,
+    kind: u8,
+    payload: &[u8],
+    socks: &[Lent<'_>],
+) -> Result<Option<shards_ipc::Message>, String> {
+    let mut follow = net.follow(record);
+    until_ready(net, Way::Write, &mut follow)?;
+    send(&net.control, kind, payload, socks).map_err(|e| e.to_string())?;
+    until_ready(net, Way::Read, &mut follow)?;
+    let answer = recv(&net.control).map_err(|e| e.to_string())?;
+    if answer.is_some()
+        && let Some(followed) = follow.as_mut()
+    {
+        followed.answered();
+    }
+    Ok(answer)
+}
+
+/// Whether `net` is ready `way` within `wait` (none: until it is): poll(2) on Unix, WSAPoll on
+/// Windows, an end readable as one is.
+#[cfg(unix)]
+fn ready(net: &Control, way: Way, wait: Option<std::time::Duration>) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let mut p = libc::pollfd {
+        fd: net.as_raw_fd(),
+        events: match way {
+            Way::Read => libc::POLLIN,
+            Way::Write => libc::POLLOUT,
+        },
+        revents: 0,
+    };
+    // Whole milliseconds, rounded up, so that a wait never ends before its time.
+    let ms = wait.map_or(-1, |w| {
+        libc::c_int::try_from(w.as_nanos().div_ceil(1_000_000)).unwrap_or(libc::c_int::MAX)
+    });
+    loop {
+        // SAFETY: poll(2) of one pollfd of ours.
+        match unsafe { libc::poll(&raw mut p, 1, ms) } {
+            n if n > 0 => return true,
+            0 => return false,
+            _ if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted => {}
+            // A poll that fails says nothing of the socket: its read or write will.
+            _ => return true,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn ready(net: &Control, way: Way, wait: Option<std::time::Duration>) -> bool {
+    use windows_sys::Win32::Networking::WinSock::{POLLRDNORM, POLLWRNORM, WSAPOLLFD, WSAPoll};
+    let mut p = WSAPOLLFD {
+        fd: net.socket.raw(),
+        events: match way {
+            Way::Read => POLLRDNORM,
+            Way::Write => POLLWRNORM,
+        },
+        revents: 0,
+    };
+    let ms = wait.map_or(-1, |w| {
+        i32::try_from(w.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
+    });
+    // SAFETY: WSAPoll of one entry, a socket of ours.
+    let n = unsafe { WSAPoll(&raw mut p, 1, ms) };
+    // A poll that fails says nothing of the socket: its read or write will.
+    n != 0
+}
+
 /// What a VM or network process is given of its spawner's environment: the variables it
 /// reads, and nothing else. A daemon's environment is that of the client that started
 /// it, which may hold secrets (an API key, an agent's socket), and these are the
@@ -347,15 +494,17 @@ fn serve_dials(link: &std::os::unix::net::UnixStream, socket: &std::path::Path) 
 /// Waits for a network or share process whose VM is gone, and which its spawner holds
 /// nothing of, for as long as it goes on with its end (D217's [`Followed`], PM M546): it
 /// goes as its VM's links close, which it is woken by. Looked at once each slice of this
-/// host's passes (`End::Helper`), it is waited on for another while it runs or frees what
-/// it holds, and ended only once it has done neither for a slice. Its end, where it came of
-/// itself, is kept as this host's (`ends`). It was a second, picked (`GRACE`).
+/// host's passes (`End::Helper`, W*), it is waited on for another while it runs, frees what
+/// it holds or its host holds it, and ended only once it has done none of these for a
+/// slice; a home that has heard no such end yet waits for its end alone, its liveness. Its
+/// end, where it came of itself, is kept as this host's (`ends`). It was a second, picked
+/// (`GRACE`).
 pub fn reap(net: &NetProcess, ends: &Ends) {
     reap_by(net, ends, ends.slice(End::Helper));
 }
 
-/// [`reap`], each look `slice` apart.
-fn reap_by(net: &NetProcess, ends: &Ends, slice: std::time::Duration) {
+/// [`reap`], each look `slice` apart: none, its end alone.
+fn reap_by(net: &NetProcess, ends: &Ends, slice: Option<std::time::Duration>) {
     let began = std::time::Instant::now();
     let mut followed = Followed::of(Some(net.id()));
     loop {
@@ -376,9 +525,10 @@ fn reap_by(net: &NetProcess, ends: &Ends, slice: std::time::Duration) {
 /// Whether `net` ends within `slice`: woken by its end (`Poller::add_exit`), where one
 /// cannot be watched by a look every millisecond.
 #[cfg(unix)]
-fn ended_within(net: &NetProcess, slice: std::time::Duration) -> bool {
+fn ended_within(net: &NetProcess, slice: Option<std::time::Duration>) -> bool {
     let now = std::time::Instant::now();
-    let deadline = now.checked_add(slice).unwrap_or(now);
+    let deadline = slice.map(|slice| now.checked_add(slice).unwrap_or(now));
+    let left = || deadline.map(|at| at.saturating_duration_since(std::time::Instant::now()));
     let watched = shards_vmm::platform::Poller::new()
         .and_then(|poller| poller.add_exit(net.id(), 0).map(|watch| (poller, watch)));
     match watched {
@@ -386,8 +536,8 @@ fn ended_within(net: &NetProcess, slice: std::time::Duration) -> bool {
             let mut ready = Vec::new();
             // A signal's interruption is an empty wait: until its end, or the deadline.
             while ready.is_empty() {
-                let left = deadline.saturating_duration_since(std::time::Instant::now());
-                if left.is_zero() || poller.wait(&mut ready, Some(left)).is_err() {
+                let left = left();
+                if left.is_some_and(|left| left.is_zero()) || poller.wait(&mut ready, left).is_err() {
                     break;
                 }
             }
@@ -395,7 +545,7 @@ fn ended_within(net: &NetProcess, slice: std::time::Duration) -> bool {
         // Ended already (macOS refuses to watch it then).
         Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {}
         Err(_) => {
-            while net.try_wait().is_none() && std::time::Instant::now() < deadline {
+            while net.try_wait().is_none() && !left().is_some_and(|left| left.is_zero()) {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
@@ -405,8 +555,11 @@ fn ended_within(net: &NetProcess, slice: std::time::Duration) -> bool {
 
 /// Whether `net` ends within `slice` (Windows): it goes as it sees its VM's process end.
 #[cfg(windows)]
-fn ended_within(net: &NetProcess, slice: std::time::Duration) -> bool {
-    net.ended_within(u32::try_from(slice.as_millis()).unwrap_or(u32::MAX))
+fn ended_within(net: &NetProcess, slice: Option<std::time::Duration>) -> bool {
+    // None, or past a u32's milliseconds: INFINITE (u32::MAX), its end alone.
+    net.ended_within(slice.map_or(u32::MAX, |slice| {
+        u32::try_from(slice.as_millis()).unwrap_or(u32::MAX)
+    }))
 }
 
 /// The VM's side of its network (Windows, D142): the ring and its two doorbells, handed
@@ -884,7 +1037,7 @@ mod reap_tests {
                 std::thread::sleep(slice * 5);
                 std::fs::write(&stop, b"").unwrap();
             });
-            reap_by(&busy, &ends, slice);
+            reap_by(&busy, &ends, Some(slice));
             began.elapsed()
         });
         assert!(took >= slice * 5, "ended while it went on: {took:?}");
@@ -896,9 +1049,92 @@ mod reap_tests {
         let ends = Ends::kept_in(&home);
         let asleep = sh("exec /bin/sleep 60", &home);
         let began = Instant::now();
-        reap_by(&asleep, &ends, slice);
+        reap_by(&asleep, &ends, Some(slice));
         let took = began.elapsed();
         assert!(took >= slice && took < slice * 4, "{took:?}");
         assert_eq!(kept(&home), None);
+    }
+}
+
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
+mod ask_tests {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    /// A network process's stand-in, a shell running `script` (its CPU what the asks
+    /// follow), killed as it drops; and the daemon's end of its control, whose other end a
+    /// thread of the test answers on.
+    struct Stand(NetProcess);
+
+    impl Drop for Stand {
+        fn drop(&mut self) {
+            let _ = self.0.kill(shards_ipc::signal::SIGKILL);
+            let _ = self.0.wait();
+        }
+    }
+
+    fn stand(script: &str) -> Stand {
+        let args = [OsStr::new("-c"), OsStr::new(script)];
+        Stand(shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap())
+    }
+
+    /// The daemon's end of a control whose network process is `pid`, and the other end.
+    fn link(pid: u32) -> (NetLink, Control) {
+        let (ours, theirs) = Control::pair().unwrap();
+        (NetLink { control: ours, pid }, theirs)
+    }
+
+    /// An ask's answer that comes past the second a network process was given (`PUBLISH_PATIENCE`)
+    /// is waited for while that process goes on, before its kind's first answer as after:
+    /// cold, its liveness alone; then past W*, its CPU. Its answer teaches the record.
+    #[test]
+    fn an_ask_is_answered_as_its_network_process_goes_on() {
+        let record = shards_api::Record::new();
+        let busy = stand("while :; do :; done");
+        let (net, theirs) = link(busy.0.id());
+        let late = Duration::from_millis(1500);
+        let answers = |count: usize| {
+            for _ in 0..count {
+                let m = recv(&theirs).unwrap().unwrap();
+                std::thread::sleep(late);
+                send(&theirs, m.kind, &[], &[]).unwrap();
+            }
+        };
+        std::thread::scope(|s| {
+            s.spawn(|| answers(2));
+            let began = Instant::now();
+            let got = ask(&net, &record, shards_ipc::kind::NET_NAMES, b"cold", &[]).unwrap();
+            assert_eq!(got.map(|m| m.kind), Some(shards_ipc::kind::NET_NAMES));
+            assert!(began.elapsed() >= late, "{:?}", began.elapsed());
+            assert!(
+                matches!(record.seen(), shards_api::Seen::Learned { slowest, .. } if slowest >= late),
+                "{:?}",
+                record.seen()
+            );
+            // Its W* learned: a second answer as late, its process running, past it.
+            let got = ask(&net, &record, shards_ipc::kind::NET_NAMES, b"warm", &[]).unwrap();
+            assert_eq!(got.map(|m| m.kind), Some(shards_ipc::kind::NET_NAMES));
+        });
+    }
+
+    /// Past W*, an ask whose network process runs nothing of its own for a whole W* is
+    /// refused, said as such; before, it was refused a second on, picked, whatever it did.
+    #[test]
+    fn an_ask_of_a_network_process_that_runs_nothing_is_refused_past_w_star() {
+        let record = shards_api::Record::new();
+        let slowest = Duration::from_millis(200);
+        record.teach(slowest, Duration::from_millis(1));
+        let asleep = stand("exec /bin/sleep 60");
+        let (net, theirs) = link(asleep.0.id());
+        // Its first look a moment after its start's own CPU.
+        std::thread::sleep(Duration::from_millis(200));
+        let began = Instant::now();
+        let refused = ask(&net, &record, shards_ipc::kind::NET_NAMES, b"none", &[]).unwrap_err();
+        assert!(began.elapsed() >= slowest, "{:?}", began.elapsed());
+        assert!(refused.contains("ran nothing for"), "{refused}");
+        drop(theirs);
     }
 }

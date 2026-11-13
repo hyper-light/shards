@@ -281,7 +281,9 @@ impl<D: Disk> Daemon<D> {
                         .as_mut()
                         .is_some_and(|(_, done)| done.goes_on().is_some())
                     {
-                        Instant::now().checked_add(self.ends.slice(End::Helper))
+                        self.ends
+                            .slice(End::Helper)
+                            .and_then(|slice| Instant::now().checked_add(slice))
                     } else {
                         *following = None;
                         let _ = child.kill(shards_ipc::signal::SIGKILL);
@@ -432,8 +434,13 @@ impl<D: Disk> Daemon<D> {
                     let now = Instant::now();
                     *following = Some((now, super::ends::Followed::of(Some(child.id()))));
                     drop(processes);
-                    // A slice past what a clock holds: its end alone, which reaps it.
-                    if let Some(at) = now.checked_add(self.ends.slice(End::Helper)) {
+                    // A slice past what a clock holds, or none heard yet: its end alone,
+                    // which reaps it.
+                    if let Some(at) = self
+                        .ends
+                        .slice(End::Helper)
+                        .and_then(|slice| now.checked_add(slice))
+                    {
                         lock(&f.deadlines).push(Reverse((at, net)));
                         f.wake();
                     }

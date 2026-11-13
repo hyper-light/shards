@@ -1933,6 +1933,16 @@ fn serve_workload(
             ));
             engines
         });
+        // So may its members' MCP connections (D254), each its owner's: as its engine's,
+        // its port's connections wait for the run, which takes them or lets the port go.
+        let mcps = matches!(command, Command::Warm(..)).then(|| {
+            let (mcp_port, mcps) = std::sync::mpsc::channel();
+            vsock.every.push((
+                shards_abi::run::MCP_PORT,
+                shards_vmm::vm::ServedPort::Ringed(mcp_port),
+            ));
+            mcps
+        });
         // A warm VM's signals come from its client. The command line's are this process's:
         // blocked before the VM's threads start, so that they inherit the mask.
         // One workload a process (M34): what its threads share lives as long as they do.
@@ -2025,6 +2035,7 @@ fn serve_workload(
                         let client: std::sync::OnceLock<Option<shards_ipc::Stream>> =
                             std::sync::OnceLock::new();
                         let engines = std::cell::Cell::new(engines);
+                        let mcps = std::cell::Cell::new(mcps);
                         let started = || {
                             crate::warm::started(&link);
                             end_recording_in(&stopper, RECORD_FOR);
@@ -2112,6 +2123,13 @@ fn serve_workload(
                                 }
                                 _ => false,
                             };
+                            // Its members' MCP connections (D254), where it asks for them,
+                            // before its guest hears of the run; where not, its port is let
+                            // go, and refuses. A resumed run's spec is none (D176): its port
+                            // refuses too.
+                            if let (Some(mcps), Some(token)) = (mcps.take(), crate::warm::mcp_token(&request.spec)) {
+                                crate::warm::serve_mcp(&link, token, mcps).inspect_err(|e| report(e))?;
+                            }
                             // The run's own most memory to plug, before its guest hears of
                             // it (D148), none included: the template's is the host's. A VM
                             // with none to plug has what it booted with.

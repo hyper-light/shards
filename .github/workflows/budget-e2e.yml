@@ -1,7 +1,7 @@
 name: budget E2E
 
 # An E2E test of crates/shards/tests, by default the FUSE budget E2E (tests/budget.rs
-# a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one, D188),
+# a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none, D188),
 # run on eight ubuntu-24.04 runners at once, each runner's CPU as it lands, as many times in
 # a row as asked: whether a test passes run after run across runner CPUs, and whether a
 # failure seen once in the whole suite's job comes back, how often and on which CPU, with
@@ -20,7 +20,7 @@ on:
         default: budget
       name:
         description: its exact name; all, the whole binary; on Windows, ignored:NAME runs the ignored test NAME, a measurement
-        default: a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one
+        default: a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none
       times:
         description: runs on each runner, one after another
         default: "1"
@@ -70,7 +70,7 @@ jobs:
           SHARDS_REQUIRE_USER_MANAGER: "1"
           # A push runs the default, as a dispatch with nothing asked does.
           TEST: ${{ github.event.inputs.test || 'budget' }}
-          NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.name || 'a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one' }}
+          NAME: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.name || 'a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none' }}
           TIMES: ${{ github.event.inputs.times || '1' }}
         run: |
           if [ "$NAME" != all ]; then args=("$NAME" -- --exact --nocapture); else args=(-- --nocapture); fi

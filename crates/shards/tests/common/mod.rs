@@ -276,6 +276,24 @@ pub fn cannot_pool() -> bool {
     cannot_snapshot()
 }
 
+/// Whether a test that must reach Docker Hub itself skips here, saying why: unless
+/// `SHARDS_TESTS_DOCKER_HUB=1` says it runs, as CI's test step does. Docker Hub counts
+/// anonymous pulls by address, and every machine behind one shares them: 100 an hour for
+/// this LAN's whole IPv6 /64, which tests that pulled each run spent (CI cluster 13). What
+/// such a test reads is Docker Hub's own (`what`: attestation chains and signatures, tags as
+/// they move, other CPUs' images and the emulator image), which the tests' own registry
+/// ([`hub`]) does not serve.
+pub fn cannot_reach_docker_hub(what: &str) -> bool {
+    if std::env::var_os("SHARDS_TESTS_DOCKER_HUB").is_some_and(|v| v == "1") {
+        return false;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIP: {what} is Docker Hub's, whose anonymous pulls every machine behind this address shares: SHARDS_TESTS_DOCKER_HUB=1 runs it"
+    );
+    true
+}
+
 /// The kernel shards pins for its guests (src/kernel.rs), which the tests boot too.
 #[path = "../../src/kernel.rs"]
 pub mod pinned;
@@ -441,14 +459,14 @@ pub fn kvm_kernel() -> Option<&'static Path> {
         let pinned = match ARCH {
             _ if cfg!(windows) => return None,
             "aarch64" => Artifact {
-                name: "Image-6.18.48-aarch64-kvm-17c3ba205400",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-17c3ba205400/Image-6.18.48-aarch64-kvm",
-                sha256: "eb06ef6171a207fe7739687342d0ec50204ff4f7a86a1ee2fcc385e8871ad6e6",
+                name: "Image-6.18.48-aarch64-kvm-54fba99afaee",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/Image-6.18.48-aarch64-kvm",
+                sha256: "ed1e6dabf2f4088b37e3405a40b12962eb5eff76afe4303730e9d76ee1a7a3ba",
             },
             "x86_64" => Artifact {
-                name: "vmlinux-6.18.48-x86_64-kvm-17c3ba205400",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-17c3ba205400/vmlinux-6.18.48-x86_64-kvm",
-                sha256: "0d7e6b69d43a3ad1373c68164243f633c12c87a3f3782917a741d7703f337b60",
+                name: "vmlinux-6.18.48-x86_64-kvm-54fba99afaee",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/vmlinux-6.18.48-x86_64-kvm",
+                sha256: "71b5de5f7c9b4abfc543e230ad09bc1736e2ca15f7e76cbd28efbc546e6fa89e",
             },
             _ => return None,
         };
@@ -2159,33 +2177,112 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
 /// of its start. While one runs its start, however slowly its host runs it, the daemon says
 /// so each `READY_STALL` (10 s), and says why it gave up on one when it does. What it says
 /// each as long of a microVM a client waits on as it runs its workload ([`HEARTBEAT`],
-/// D209) is no word of the test's subject.
+/// D209) counts by what the microVM did ([`Floor`]).
 pub const DAEMON_QUIET: Duration = Duration::from_secs(60);
 
 /// The daemon's heartbeat of a microVM a client waits on (daemon.rs `log_progress`, D209),
 /// in each of its lines: said each `READY_STALL` while the microVM's CPU runs, whatever it
-/// runs, the same line again with its numbers grown. No progress of a test's subject: a
-/// nesting test whose runc hung waited on it to Linux CI's 56-minute limit (ROOT's R03
-/// ruling, 2026-11-13: a repeated, unchanged liveness line is no progress).
+/// runs, the same line again with its numbers grown. A nesting test whose runc hung waited
+/// on it to Linux CI's 56-minute limit, its guest idle: it counts by its deltas alone, as
+/// [`Floor`] judges them (ROOT's rulings, 2026-11-13).
 pub const HEARTBEAT: &str = " runs as its client waits: ";
+
+/// What this test process has learned of a microVM's work, as D215's judge learns a kind of
+/// answer in its process's memory (shards_api's `Record`): the least CPU rate at which its run
+/// still answered, its floor (ROOT's ruling, 2026-11-13). A slice of its work counts as
+/// progress during its cold start, before its run has answered, by liveness alone (as a wait
+/// begun before its kind's first answer follows its party's liveness); past it, only where
+/// its CPU rate is not below that floor, compared by cross-multiplication (`Rate::below`):
+/// an idle microVM's timer ticks are no progress of a test's subject, and a workload's CPU,
+/// past what its run answered at, is. A window its run answered within teaches its record,
+/// from its last teaching to the slice that closes it, as an answer teaches a wait's.
+pub struct Floor {
+    record: shards_api::Record,
+    /// Its CPU time, and the wall time it was had over, since its record last learned.
+    since: (Duration, Duration),
+    /// Whether its run has answered since then.
+    answered: bool,
+}
+
+/// The floors of every microVM this process's tests have followed, by its home and its run's
+/// container and VM process (a daemon's heartbeats, [`Said`]) or its VM process ([`Ran`]).
+static FLOORS: std::sync::Mutex<std::collections::BTreeMap<String, Floor>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn floors() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, Floor>> {
+    FLOORS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Floor {
+    /// A microVM first seen, its run having answered meanwhile or not.
+    pub fn new(answered: bool) -> Floor {
+        Floor {
+            record: shards_api::Record::new(),
+            since: (Duration::ZERO, Duration::ZERO),
+            answered,
+        }
+    }
+
+    /// A slice of its work, `cpu` over `over`, `live` as its follower's liveness judges it:
+    /// whether it is progress, judged by what its record learned before it; then, where its
+    /// run answered within the window this slice closes, that window taught.
+    pub fn slice(&mut self, cpu: Duration, over: Duration, live: bool) -> bool {
+        let progressed = match self.record.seen() {
+            shards_api::Seen::Cold => live,
+            shards_api::Seen::Learned { least, .. } => !shards_api::Rate { cpu, over }.below(&least),
+        };
+        self.since = (
+            self.since.0.saturating_add(cpu),
+            self.since.1.saturating_add(over),
+        );
+        if std::mem::take(&mut self.answered) {
+            let (work, wall) = std::mem::take(&mut self.since);
+            self.record.teach(wall, work);
+        }
+        progressed
+    }
+
+    /// Its run answered: the window its next slice closes teaches its record.
+    pub fn answered(&mut self) {
+        self.answered = true;
+    }
+}
+
+/// A heartbeat's microVM, by its run's container and its VM process, and the CPU time it ran
+/// over the slice it says (`+N ms in Ss`, platform::Progress's `Look`).
+fn heartbeat(line: &str) -> Option<(&str, Duration, Duration)> {
+    let (vm, look) = line.split_once(HEARTBEAT)?;
+    let vm = vm.split_once(": container ").map_or(vm, |(_, vm)| vm);
+    let slice = look.split_once("(+")?.1.split_once(')')?.0;
+    let (ms, secs) = slice.split_once(" ms in ")?;
+    let secs = secs.strip_suffix('s')?;
+    Some((
+        vm,
+        Duration::from_millis(ms.parse().ok()?),
+        Duration::from_secs(secs.parse().ok()?),
+    ))
+}
 
 /// What the daemon of a home has said in its log since this began watching: a client past
 /// its deadline is waited on while its daemon says something of it within [`DAEMON_QUIET`],
 /// as it does while it waits on a microVM its host boots slowly (the parity plan's step 10:
-/// boots past a minute on an arm64 Windows host nested under QEMU's TCG), each line but its
-/// [`HEARTBEAT`]. A test's deadline then holds where its host is fast, and follows the
-/// daemon's own judgment of a start where it is slow: never a fixed guess at the host's
-/// speed. A workload its host runs slowly is waited on through its own words and its run's
-/// own lines, never through its microVM's CPU alone.
+/// boots past a minute on an arm64 Windows host nested under QEMU's TCG): each line but its
+/// [`HEARTBEAT`], and that by what its microVM did ([`Floor`]). A test's deadline then holds
+/// where its host is fast, and follows the daemon's own judgment of a start, and its
+/// microVMs' own work, where it is slow: never a fixed guess at the host's speed.
 pub struct Said {
     log: PathBuf,
+    /// Its microVMs' floors' prefix in [`FLOORS`]: its home's.
+    home: String,
     /// How far the log has been read: to the end of the last whole line in it.
     len: u64,
-    /// When it last said something but its heartbeat, since this began watching, to within
-    /// a second.
+    /// When it last said something of its subject, since this began watching, to within a
+    /// second.
     at: Option<Instant>,
     /// When it was last read: once a second at most.
     read: Option<Instant>,
+    /// Whether its run has answered since it was last read, and since this began watching.
+    answers: (bool, bool),
 }
 
 impl Said {
@@ -2194,10 +2291,18 @@ impl Said {
         let len = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
         Said {
             log,
+            home: format!("{}|", home.display()),
             len,
             at: None,
             read: None,
+            answers: (false, false),
         }
+    }
+
+    /// Its run answered, as its client's own output says ([`run_command`]'s client): the
+    /// window each of its microVMs' next heartbeat closes teaches its floor.
+    pub fn answered(&mut self) {
+        self.answers = (true, true);
     }
 
     /// Whether the daemon has said something but its [`HEARTBEAT`] within [`DAEMON_QUIET`]:
@@ -2214,9 +2319,9 @@ impl Said {
         self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
     }
 
-    /// Whether the whole lines the log gained since its last read say anything but its
-    /// heartbeat, read to the end of the last of them; a log begun again is read from its
-    /// start.
+    /// Whether the whole lines the log gained since its last read say anything of its
+    /// subject, read to the end of the last of them: each but its heartbeat, and that where
+    /// its microVM's floor takes it for progress; a log begun again is read from its start.
     fn said_anew(&mut self) -> bool {
         use std::io::Seek as _;
         let Ok(mut log) = std::fs::File::open(&self.log) else {
@@ -2237,9 +2342,45 @@ impl Said {
             return false;
         };
         self.len += last as u64 + 1;
-        new[..last]
-            .split(|&b| b == b'\n')
-            .any(|line| !line.is_empty() && !String::from_utf8_lossy(line).contains(HEARTBEAT))
+        let mut floors = floors();
+        if std::mem::take(&mut self.answers.0) {
+            for (_, floor) in floors
+                .range_mut(self.home.clone()..)
+                .take_while(|(k, _)| k.starts_with(&self.home))
+            {
+                floor.answered();
+            }
+        }
+        let mut said = false;
+        for line in new[..last].split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+            let line = String::from_utf8_lossy(line);
+            match line.contains(HEARTBEAT).then(|| heartbeat(&line)) {
+                // One whose slice cannot be read says nothing of what its microVM did.
+                Some(None) => {}
+                Some(Some((vm, cpu, over))) => {
+                    let floor = floors
+                        .entry(format!("{}{vm}", self.home))
+                        .or_insert_with(|| Floor::new(self.answers.1));
+                    // The daemon says it only where its microVM ran past an idle one
+                    // (`progressed`): its liveness.
+                    said |= floor.slice(cpu, over, true);
+                }
+                None => {
+                    // A run's own line answers for its microVMs.
+                    if let Some(id) = line.split_once("container ").and_then(|(_, r)| r.split_once(':')) {
+                        let of = format!("{}{}", self.home, id.0);
+                        for (_, floor) in floors
+                            .range_mut(of.clone()..)
+                            .take_while(|(k, _)| k.starts_with(&of))
+                        {
+                            floor.answered();
+                        }
+                    }
+                    said = true;
+                }
+            }
+        }
+        said
     }
 }
 
@@ -2266,6 +2407,8 @@ pub struct Ran {
     looked: Instant,
     /// When one of them last ran, since this began watching.
     at: Option<Instant>,
+    /// Whether its client's run has answered since this began watching.
+    answered: bool,
 }
 
 impl Ran {
@@ -2275,21 +2418,47 @@ impl Ran {
             followed: std::collections::HashMap::new(),
             looked: Instant::now(),
             at: None,
+            answered: false,
         }
     }
 
-    /// Whether a VM process under its client ran within [`DAEMON_QUIET`]. Asked as often as
-    /// its caller likes, it looks once each [`PROGRESS_SLICE`]; one found anew is judged
-    /// from the next look on.
+    /// Its client's run answered, as its output says ([`run_command`]): the window each of
+    /// its VM processes' next look closes teaches its floor.
+    pub fn answered(&mut self) {
+        self.answered = true;
+        let mut floors = floors();
+        for pid in self.followed.keys() {
+            if let Some(floor) = floors.get_mut(&format!("vm process {pid}")) {
+                floor.answered();
+            }
+        }
+    }
+
+    /// Whether a VM process under its client ran within [`DAEMON_QUIET`], as its [`Floor`]
+    /// judges what it ran: during its cold start, past an idle microVM's
+    /// (`platform::progressed`); past it, not below its floor. Asked as often as its caller
+    /// likes, it looks once each [`PROGRESS_SLICE`]; one found anew is judged from the next
+    /// look on.
     pub fn lately(&mut self) -> bool {
         if self.looked.elapsed() >= PROGRESS_SLICE {
             self.looked = Instant::now();
             let vms = vm_processes_under(self.client);
             self.followed.retain(|pid, _| vms.contains(pid));
+            let mut floors = floors();
             for pid in vms {
+                let floor = floors
+                    .entry(format!("vm process {pid}"))
+                    .or_insert_with(|| Floor::new(self.answered));
                 match self.followed.entry(pid) {
                     std::collections::hash_map::Entry::Occupied(mut p) => {
-                        if p.get_mut().look().ran {
+                        let look = p.get_mut().look();
+                        let ran = look
+                            .before
+                            .zip(look.now)
+                            .map(|(b, n)| Duration::from_nanos(n.cpu_ns.saturating_sub(b.cpu_ns)));
+                        if let Some(ran) = ran
+                            && floor.slice(ran, look.over, look.ran)
+                        {
                             self.at = Some(Instant::now());
                         }
                     }
@@ -2505,14 +2674,13 @@ fn run_ending(
         });
         rx
     };
-    // All it wrote, to its end; or what came by the deadline, where it never ends.
-    // Lossily: a step's output is printed as it came, bytes that are no UTF-8 included,
-    // which a strict conversion would drop the whole of.
-    let took = |rx: &std::sync::mpsc::Receiver<Vec<u8>>| {
+    // All it wrote, to its end, after what had come of it (`got`); or what came by the
+    // deadline, where it never ends. Lossily: a step's output is printed as it came, bytes
+    // that are no UTF-8 included, which a strict conversion would drop the whole of.
+    let took = |rx: &std::sync::mpsc::Receiver<Vec<u8>>, mut got: Vec<u8>| {
         let until = Instant::now()
             .max(start + timeout)
             .max(Instant::now() + Duration::from_secs(1));
-        let mut got = Vec::new();
         loop {
             match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
                 Ok(chunk) => got.extend_from_slice(&chunk),
@@ -2530,11 +2698,28 @@ fn run_ending(
     };
     let out = collect(Box::new(child.stdout.take().unwrap()));
     let err = collect(Box::new(child.stderr.take().unwrap()));
+    let (mut out_got, mut err_got) = (Vec::new(), Vec::new());
+    // What came of it since the look before: its run's answers, which teach its microVMs'
+    // floors ([`Floor`]).
+    let came = |rx: &std::sync::mpsc::Receiver<Vec<u8>>, got: &mut Vec<u8>| {
+        let mut came = false;
+        while let Ok(chunk) = rx.try_recv() {
+            got.extend_from_slice(&chunk);
+            came = true;
+        }
+        came
+    };
     let mut said = home.as_deref().map(Said::of);
     let mut ran = Ran::of(child.id());
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {
             break st;
+        }
+        if came(&out, &mut out_got) | came(&err, &mut err_got) {
+            if let Some(said) = said.as_mut() {
+                said.answered();
+            }
+            ran.answered();
         }
         // Each asked each time, so that it sees when the daemon last said something, and
         // when a microVM of the client's own last ran.
@@ -2547,8 +2732,8 @@ fn run_ending(
                 said: format!(
                     "{} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}{seen}",
                     asked.join(" "),
-                    took(&out),
-                    took(&err)
+                    took(&out, std::mem::take(&mut out_got)),
+                    took(&err, std::mem::take(&mut err_got))
                 ),
                 started,
                 left,
@@ -2563,8 +2748,8 @@ fn run_ending(
     Ok(Run {
         status: status.code(),
         signal,
-        stdout: took(&out),
-        stderr: took(&err),
+        stdout: took(&out, out_got),
+        stderr: took(&err, err_got),
         elapsed: start.elapsed(),
     })
 }
@@ -3374,6 +3559,143 @@ pub fn served_counting() -> (String, Arc<AtomicUsize>) {
     let (manifest, blobs) = test_image();
     let (port, served) = registry(manifest, blobs);
     (format!("127.0.0.1:{port}/test/image:v1"), served)
+}
+
+/// Docker Hub's image `reference`, pinned by its digest, served by a registry of the
+/// tests' own as `127.0.0.1:<port>/test/image@<digest>`: the same image, never pulled from
+/// Docker Hub as a test runs. Docker Hub counts its anonymous pulls by address, here the
+/// whole LAN's IPv6 /64, 100 an hour, and test homes that pulled their base from it each run
+/// spent them for every machine there (CI cluster 13: api_image.rs's builds, refused from its
+/// eighth round of 30 on). What it serves is what a pull of the image for this host's
+/// platform fetches, pulled once per checkout ([`hub_seed`]); one registry serves each image
+/// to every test of the binary.
+pub fn hub(reference: &str, timeout: Duration) -> String {
+    static SERVED: OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
+    let mut served = SERVED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(at) = served.get(reference) {
+        return at.clone();
+    }
+    let (top, blobs) = hub_seed(reference, timeout);
+    let digest = sha256_digest(&top);
+    let (port, _) = registry(top, blobs);
+    let at = format!("127.0.0.1:{port}/test/image@{digest}");
+    served.insert(reference.to_string(), at.clone());
+    at
+}
+
+/// `reference` as a test pulls it: a Docker Hub image pinned by its digest from the tests'
+/// own registry ([`hub`]), any other as it is.
+pub fn hubless(reference: &str, timeout: Duration) -> String {
+    match shards_image::reference::Reference::parse(reference) {
+        Ok(r) if r.domain == shards_image::reference::DOCKER_HUB && r.digest.is_some() => {
+            hub(reference, timeout)
+        }
+        _ => reference.to_string(),
+    }
+}
+
+/// `agentfile` with each base it takes `FROM` Docker Hub by a digest taken from the tests'
+/// own registry instead ([`hubless`]): the same image, every other word as it was.
+pub fn hub_bases(agentfile: &str, timeout: Duration) -> String {
+    agentfile
+        .split_inclusive('\n')
+        .map(|line| {
+            let base = line
+                .strip_prefix("FROM ")
+                .and_then(|rest| rest.split_whitespace().find(|w| !w.starts_with("--")));
+            match base {
+                Some(base) => line.replacen(base, &hubless(base, timeout), 1),
+                None => line.to_string(),
+            }
+        })
+        .collect()
+}
+
+/// What [`hub`] serves of `reference`: the document its digest names, then each manifest,
+/// config and layer of it a pull for this host's platform fetched (the platform's manifest
+/// and its attestations), from the store of target/artifacts/hub, a home of the tests' own
+/// that a build pulls each into from Docker Hub the first time it is asked for, in process,
+/// as a build pulls its base (no daemon): once per checkout, as the pinned kernel is
+/// downloaded once into target/artifacts ([`fetch`]), one test process at a time.
+fn hub_seed(reference: &str, timeout: Duration) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let pinned = shards_image::reference::Reference::parse(reference).unwrap();
+    assert!(
+        pinned.domain == shards_image::reference::DOCKER_HUB && pinned.digest.is_some(),
+        "{reference}: a Docker Hub image pinned by its digest"
+    );
+    let home = workspace().join("target/artifacts/hub");
+    shards_vmm::platform::create_private_dir(&home).unwrap();
+    let _seeding = shards_image::store::Locked::exclusive(&home.join("seeding.lock")).unwrap();
+    if let Some(seed) = hub_held(&home, &pinned) {
+        return seed;
+    }
+    let ctx = TempDir::new("hub-seed");
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {reference}\n")).unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let built = run_shards_env(&["build"], &[ctx.as_os_str()], &env, timeout);
+    assert_eq!(
+        built.status,
+        Some(0),
+        "{reference}, pulled from Docker Hub once into {}: {}",
+        home.display(),
+        built.stderr
+    );
+    hub_held(&home, &pinned)
+        .unwrap_or_else(|| panic!("{reference}: not held whole in {} once pulled", home.display()))
+}
+
+/// What `home`'s store holds of `pinned`, whole: none where a part is missing or is not
+/// what its digest says.
+fn hub_held(home: &Path, pinned: &shards_image::reference::Reference) -> Option<(Vec<u8>, Vec<Vec<u8>>)> {
+    let store = shards_image::store::Store::open(&home.join("images")).ok()?;
+    let digest = pinned.digest.as_ref()?.to_string();
+    if store.resolved(&pinned.to_string()).ok()??.to_string() != digest {
+        return None;
+    }
+    let read = |d: &str| {
+        let bytes = std::fs::read(store.blob_path(&shards_image::reference::Digest::parse(d).ok()?)).ok()?;
+        (sha256_digest(&bytes) == d).then_some(bytes)
+    };
+    let top = read(&digest)?;
+    let doc: serde_json::Value = serde_json::from_slice(&top).ok()?;
+    // The registry serves a document as the media type its words name, a Docker list's as
+    // a Docker manifest's (registry_serving_at): Docker Hub's official images are OCI's.
+    assert_ne!(
+        doc["mediaType"].as_str(),
+        Some("application/vnd.docker.distribution.manifest.list.v2+json"),
+        "{pinned}: a Docker manifest list, which the tests' registry serves as a manifest"
+    );
+    // An index's manifests that its pull fetched, which the registry serves among the blobs;
+    // a lone manifest is the document itself.
+    let listed = doc["manifests"].as_array();
+    let manifests: Vec<Vec<u8>> = match listed {
+        Some(listed) => listed
+            .iter()
+            .filter_map(|m| read(m["digest"].as_str()?))
+            .collect(),
+        None => vec![top.clone()],
+    };
+    if manifests.is_empty() {
+        return None;
+    }
+    let mut blobs = Vec::new();
+    for manifest in manifests {
+        let parsed: serde_json::Value = serde_json::from_slice(&manifest).ok()?;
+        for part in std::iter::once(&parsed["config"]).chain(parsed["layers"].as_array()?) {
+            blobs.push(read(part["digest"].as_str()?)?);
+        }
+        if listed.is_some() {
+            blobs.push(manifest);
+        }
+    }
+    Some((top, blobs))
 }
 
 /// A running `shards` whose output lines arrive on a channel, killed when dropped.
@@ -4984,7 +5306,10 @@ pub fn noise(path: &Path, mib: usize) {
 
 /// The pipe a test tells its daemon its host is short of memory through
 /// (`SHARDS_PRESSURE`, D188), each line a word: a FIFO on Unix, a named pipe on Windows,
-/// there before the daemon opens it as it starts.
+/// there before the daemon opens it as it starts. One never said keeps a daemon from its
+/// host's own word (engine_ring.rs's shrinking room). Each is its own, as many at once as a
+/// test process's tests make: a named pipe of one instance, named by the process alone,
+/// would refuse a second.
 pub struct Told {
     pub path: std::ffi::OsString,
     #[cfg(windows)]
@@ -5010,7 +5335,9 @@ impl Told {
             use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
             use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, PIPE_TYPE_BYTE, PIPE_WAIT};
             let _ = home;
-            let pipe = format!(r"\\.\pipe\shards-test-pressure-{}", std::process::id());
+            static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let pipe = format!(r"\\.\pipe\shards-test-pressure-{}-{n}", std::process::id());
             let name: Vec<u16> = pipe.encode_utf16().chain(Some(0)).collect();
             // SAFETY: a NUL-terminated name and plain arguments.
             let server = unsafe {

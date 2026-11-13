@@ -117,18 +117,18 @@ fn member_spec(member: u32, spec: Spec) -> Option<Spec> {
 }
 
 /// The host's ends of an exec's connection and pipes.
-struct Ours {
-    conn: Stream,
-    stdout: io::PipeReader,
-    stderr: Option<io::PipeReader>,
-    stdin: Option<io::PipeWriter>,
+pub(super) struct Ours {
+    pub(super) conn: Stream,
+    pub(super) stdout: io::PipeReader,
+    pub(super) stderr: Option<io::PipeReader>,
+    pub(super) stdin: Option<io::PipeWriter>,
 }
 
 /// What an exec's VM process is handed: its client's end of the connection, the pipes' other
 /// ends, the null device for a stdin it reads none of. Dropped once handed, so that the pipes
 /// end as the VM process lets its ends go.
-struct Theirs {
-    conn: Stream,
+pub(super) struct Theirs {
+    pub(super) conn: Stream,
     stdin: TheirStdin,
     stdout: io::PipeWriter,
     stderr: Option<io::PipeWriter>,
@@ -142,7 +142,7 @@ enum TheirStdin {
 impl Theirs {
     /// Its stdin, stdout and stderr, as `EXEC_RUN` takes them: a terminal's errors are its
     /// output.
-    fn stdio(&self) -> [BorrowedFd<'_>; 3] {
+    pub(super) fn stdio(&self) -> [BorrowedFd<'_>; 3] {
         let stdin = match &self.stdin {
             TheirStdin::Pipe(pipe) => pipe.as_fd(),
             TheirStdin::Null(null) => null.as_fd(),
@@ -155,7 +155,7 @@ impl Theirs {
 
 /// An exec's connection and pipes: a stderr pipe where it has a stderr (no terminal), and a
 /// stdin pipe where it reads its stdin.
-fn made(stderr: bool, stdin: bool) -> io::Result<(Ours, Theirs)> {
+pub(super) fn made(stderr: bool, stdin: bool) -> io::Result<(Ours, Theirs)> {
     let (conn, their_conn) = Stream::pair()?;
     let (stdout, their_stdout) = io::pipe()?;
     let (stderr, their_stderr) = match stderr {
@@ -230,7 +230,7 @@ fn cost(
 /// (`F_GETPIPE_SZ`, fcntl(2)); macOS's most, which it says of no pipe ([`XNU_PIPE_MOST`]);
 /// Windows' in and out buffers as it says them (GetNamedPipeInfo: std's pipes are named pipes
 /// of their own).
-fn pipe_bytes(pipe: &impl AsRawFd) -> io::Result<u64> {
+pub(super) fn pipe_bytes(pipe: &impl AsRawFd) -> io::Result<u64> {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: fcntl(2) of a pipe this process holds open, which touches no memory of ours.
@@ -263,14 +263,15 @@ fn pipe_bytes(pipe: &impl AsRawFd) -> io::Result<u64> {
     }
 }
 
-/// The run's budget, charged for one exec while it runs and given back as it drops.
-struct Held<'a> {
+/// The run's budget, charged for one exec while it runs and given back as it drops; or for a
+/// member's lane while it is open, or a steer's delivery while it goes (members.rs).
+pub(super) struct Held<'a> {
     charge: &'a Charge,
     bytes: u64,
 }
 
 impl<'a> Held<'a> {
-    fn new(charge: &'a Charge, bytes: u64) -> Result<Held<'a>, Admission> {
+    pub(super) fn new(charge: &'a Charge, bytes: u64) -> Result<Held<'a>, Admission> {
         charge.grow(bytes)?;
         Ok(Held { charge, bytes })
     }
@@ -462,6 +463,11 @@ fn serve(start: Start, admissions: exec::Admissions, charge: &Charge, launch: &L
                 Unstarted::Refused,
                 "an MCP connection: its member has no MCP bridge",
             );
+        }
+        // A member's own lane is the member host's (members.rs), which the endpoint hands it
+        // on a channel of its own: none reaches this one.
+        exec::Kind::Member => {
+            return refuse(Unstarted::Failed, "a member's own lane, which no exec serves");
         }
     };
     let argv: Vec<String> = spec

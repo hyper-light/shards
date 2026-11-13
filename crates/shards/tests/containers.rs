@@ -1247,6 +1247,16 @@ fn pulled(name: &str, image: &str) -> Option<TempDir> {
     Some(home)
 }
 
+/// A home with [`ALPINE`] pulled, from the tests' own registry (`common::hub`), never from
+/// Docker Hub as a test runs; and the name it is run by there.
+fn pulled_alpine(name: &str) -> Option<(TempDir, String)> {
+    if cannot_run_vms() {
+        return None;
+    }
+    let alpine = common::hub(ALPINE, TIMEOUT);
+    Some((pulled(name, &alpine)?, alpine))
+}
+
 /// A run's command is PID 1 of a PID namespace of its own, as a container's is (D115), with
 /// PID 1's signals; `--init` puts a reaper there in docker-init's place, which forwards
 /// what it hears; execs and restarts join or begin such a namespace as Docker's do;
@@ -1256,9 +1266,10 @@ fn pulled(name: &str, image: &str) -> Option<TempDir> {
 /// `--init`'s command, which is 0 here, its parent being init, outside the namespace.
 #[test]
 fn a_command_is_pid_1_as_a_containers_is() {
-    let Some(home) = pulled("containers-pid1", ALPINE) else {
+    let Some((home, alpine)) = pulled_alpine("containers-pid1") else {
         return;
     };
+    let alpine = alpine.as_str();
     let shards = |args: &[&str]| shards_in(&home, args);
     let run = |args: &[&str]| {
         let mut all = vec!["run", "--rm"];
@@ -1266,18 +1277,18 @@ fn a_command_is_pid_1_as_a_containers_is() {
         shards(&all)
     };
     let said = |r: &Run| (r.status, r.stdout.clone());
-    let r = run(&[ALPINE, "sh", "-c", "echo $$"]);
+    let r = run(&[alpine, "sh", "-c", "echo $$"]);
     assert_eq!(said(&r), (Some(0), "1\n".into()), "{r}");
     // From inside, PID 1 hears only what it handles: TERM and KILL alike go unheard.
-    let r = run(&[ALPINE, "sh", "-c", "kill -TERM 1; kill -KILL 1; echo alive"]);
+    let r = run(&[alpine, "sh", "-c", "kill -TERM 1; kill -KILL 1; echo alive"]);
     assert_eq!(said(&r), (Some(0), "alive\n".into()), "{r}");
-    let r = run(&[ALPINE, "ps", "-o", "pid,ppid,comm"]);
+    let r = run(&[alpine, "ps", "-o", "pid,ppid,comm"]);
     assert_eq!(
         said(&r),
         (Some(0), "PID   PPID  COMMAND\n    1     0 ps\n".into()),
         "{r}"
     );
-    let r = run(&["--init", ALPINE, "ps", "-o", "pid,ppid,comm"]);
+    let r = run(&["--init", alpine, "ps", "-o", "pid,ppid,comm"]);
     assert_eq!(
         said(&r),
         (
@@ -1293,7 +1304,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
             "--init",
             "-u",
             user,
-            ALPINE,
+            alpine,
             "sh",
             "-c",
             "kill -TERM 1; sleep 5; echo alive",
@@ -1336,7 +1347,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
     ] {
         let mut args = vec!["run", "-d", "--name", name];
         args.extend_from_slice(flags);
-        args.push(ALPINE);
+        args.push(alpine);
         args.extend_from_slice(command);
         let started = shards(&args);
         assert_eq!(started.status, Some(0), "{started}");
@@ -1417,7 +1428,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
     // `kill -s TERM` leaves it running; `kill`, SIGKILL, which PID 1 hears from outside,
     // ends it.
     assert_eq!(
-        shards(&["run", "-d", "--name", "deaf", ALPINE, "sleep", "1000"]).status,
+        shards(&["run", "-d", "--name", "deaf", alpine, "sleep", "1000"]).status,
         Some(0)
     );
     assert_eq!(shards(&["kill", "-s", "TERM", "deaf"]).status, Some(0));
@@ -1443,7 +1454,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
     assert_eq!(code("deaf"), "137\n");
     // `top` lists the reaper under --init, as `docker top` lists docker-init.
     assert_eq!(
-        shards(&["run", "-d", "--init", "--name", "listed", ALPINE, "sleep", "1000"]).status,
+        shards(&["run", "-d", "--init", "--name", "listed", alpine, "sleep", "1000"]).status,
         Some(0)
     );
     let top = shards(&["top", "listed", "-o", "pid,comm"]);
@@ -1464,7 +1475,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
         "on-failure:2",
         "--name",
         "again",
-        ALPINE,
+        alpine,
         "sh",
         "-c",
         "echo $$; exit 3",
@@ -1483,7 +1494,7 @@ fn a_command_is_pid_1_as_a_containers_is() {
     let r = run(&[
         "--pid",
         "host",
-        ALPINE,
+        alpine,
         "sh",
         "-c",
         "echo $$; cat /proc/2/comm; ls /proc/1/root >/dev/null 2>&1 && echo reached || echo denied",
@@ -1494,14 +1505,14 @@ fn a_command_is_pid_1_as_a_containers_is() {
         "{r}"
     );
     // The rest, refused in shards' words.
-    let r = run(&["--pid", "foo", ALPINE, "true"]);
+    let r = run(&["--pid", "foo", alpine, "true"]);
     assert!(
         r.status == Some(125)
             && r.stderr
                 .contains("--pid foo: give host (the microVM's PID namespace) or container:NAME"),
         "{r}"
     );
-    let r = shards(&["create", "--pid", "container:nope", ALPINE, "true"]);
+    let r = shards(&["create", "--pid", "container:nope", alpine, "true"]);
     assert_eq!(
         (r.status, r.stderr.as_str()),
         (Some(1), "shards: --pid container:nope: no run is named nope\n"),
@@ -1515,14 +1526,14 @@ fn a_command_is_pid_1_as_a_containers_is() {
     ] {
         let mut args = vec!["create", "--name", name];
         args.extend_from_slice(flags);
-        args.extend([ALPINE, "true"]);
+        args.extend([alpine, "true"]);
         assert_eq!(shards(&args).status, Some(0));
         let format = "{{json .HostConfig.Init}} {{json .HostConfig.PidMode}} {{if .HostConfig.Init}}set{{else}}unset{{end}}";
         assert_eq!(shards(&["inspect", "-f", format, name]).stdout, want, "{name}");
     }
     // Another run's, a microVM of its own: none of its processes' namespaces is ours,
     // but a joiner's of its network, in its microVM (D119).
-    let r = shards(&["create", "--pid", "container:i0", ALPINE, "true"]);
+    let r = shards(&["create", "--pid", "container:i0", alpine, "true"]);
     assert_eq!(
         (r.status, r.stderr.as_str()),
         (
@@ -1539,9 +1550,10 @@ fn a_command_is_pid_1_as_a_containers_is() {
 /// Docker 29.3.1 answered (M145).
 #[test]
 fn default_sysctls_let_ping_go_without_net_raw() {
-    let Some(home) = pulled("containers-sysctls", ALPINE) else {
+    let Some((home, alpine)) = pulled_alpine("containers-sysctls") else {
         return;
     };
+    let alpine = alpine.as_str();
     let run = |args: &[&str]| {
         let mut all = vec!["run", "--rm"];
         all.extend_from_slice(args);
@@ -1552,7 +1564,7 @@ fn default_sysctls_let_ping_go_without_net_raw() {
         "net.ipv4.ping_group_range",
         "net.ipv4.ip_unprivileged_port_start",
     ];
-    let mut args = vec![ALPINE];
+    let mut args = vec![alpine];
     args.extend(keys);
     let r = run(&args);
     assert_eq!(
@@ -1563,7 +1575,7 @@ fn default_sysctls_let_ping_go_without_net_raw() {
         ),
         "{r}"
     );
-    let mut args = vec!["--sysctl", "net.ipv4.ip_unprivileged_port_start=1024", ALPINE];
+    let mut args = vec!["--sysctl", "net.ipv4.ip_unprivileged_port_start=1024", alpine];
     args.extend(keys);
     let r = run(&args);
     assert!(
@@ -1575,7 +1587,7 @@ fn default_sysctls_let_ping_go_without_net_raw() {
         "NET_RAW",
         "-u",
         "1000",
-        ALPINE,
+        alpine,
         "ping",
         "-c",
         "1",
@@ -1757,6 +1769,19 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         .collect();
     std::fs::write(dir.join("big"), &big).unwrap();
     std::fs::write(dir.join("small"), b"small").unwrap();
+    // Each file is made before the microVM runs: one the host makes while it runs is
+    // touched by its notice (D235) as the host writes it, and the guest's kernel decides a
+    // file's DAX as it first makes its inode (fs/fuse/dax.c, `fuse_dax_inode_init`), which
+    // a file not yet 1 MiB long then goes without until its inode is made again (PM M550).
+    let odd: Vec<u8> = (0..(3u32 << 20) + 5000)
+        .map(|i| (i.wrapping_mul(40_503) >> 8) as u8)
+        .collect();
+    std::fs::write(dir.join("odd"), &odd).unwrap();
+    std::fs::write(dir.join("held"), &odd).unwrap();
+    let pages: Vec<u8> = (0..4u32 << 20)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    std::fs::write(dir.join("pages"), &pages).unwrap();
     let volume = format!("{}:/v", dir.display());
     let run = shards(&[
         "run", "-d", "--pull", "never", "--name", "dax", "-u", "0", "-v", &volume, &image, "sleep",
@@ -1814,10 +1839,6 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     // A file whose end is no range's: its last range is mapped past its end, where the
     // guest reads nothing. Grown past it, by the guest through FUSE and by the host, within
     // a range the guest maps, the guest reads through the window what each wrote.
-    let odd: Vec<u8> = (0..(3u32 << 20) + 5000)
-        .map(|i| (i.wrapping_mul(40_503) >> 8) as u8)
-        .collect();
-    std::fs::write(dir.join("odd"), &odd).unwrap();
     let digest = format!("{:016x}", shards_testguest::fnv1a(&odd));
     assert_eq!(exec(&["fs", "dax:/v/odd"]), "dax /v/odd yes\n");
     assert_eq!(exec(&["digest", "/v/odd"]), format!("digest /v/odd {digest}\n"));
@@ -1830,7 +1851,8 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             format!("peek /v/odd {at} 7\n")
         );
     }
-    // The host's, which the guest reads once it asks the file's size again (VALID_S).
+    // The host's, which the guest reads once it learns the file's size again: as its notice
+    // is touched (D235), or as it asks once the size it holds has aged (VALID_S).
     let at = end + 40_000;
     {
         let odd_file = std::fs::OpenOptions::new()
@@ -1855,10 +1877,11 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         assert!(patience.holds(), "{r}");
         std::thread::sleep(Duration::from_millis(100));
     }
-    // Cut short by the host under the guest's mapping: read there before the guest asks
-    // its size again, its window gives zeros past the file's end, where the host has no
-    // page to give, and the microVM runs on (D189); after, the guest is at the file's end.
-    // Written there again by the host, the guest reads the file's byte through the window.
+    // Cut short by the host under the guest's mapping: read there before the guest learns
+    // its size, its window gives zeros past the file's end, where the host has no page to
+    // give, and the microVM runs on (D189); after, by its notice or its asking again, the
+    // guest is at the file's end. Written there again by the host, the guest reads the
+    // file's byte through the window.
     let odd_file = std::fs::OpenOptions::new()
         .write(true)
         .open(dir.join("odd"))
@@ -1894,11 +1917,13 @@ fn a_volumes_large_files_go_through_its_dax_window() {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
-    // Cut short by the host while a process holds it open, read whole: with nothing asked
-    // about the file between, the holder's read past the new end goes through the mapping
-    // it holds, and reads zeros (Linux: the daemon's watch told the VM, PM M273; HVF: the
-    // read faults), its vCPU never spinning.
-    std::fs::write(dir.join("held"), &odd).unwrap();
+    // Moved out of the volume and cut short by the host while a process holds it open, read
+    // whole: the move is told the guest as its name goes, and the cut, of a file no name of
+    // the volume's is, nothing tells it of (D235), so that with nothing asked about the file
+    // between, the holder's read past the new end goes through the mapping it holds, and
+    // reads zeros (Linux: the daemon's watch told the VM, PM M273; HVF: the read faults),
+    // its vCPU never spinning. Cut in the volume, the guest learns the size as the cut's
+    // notice is touched, and reads the file's end (PM M550).
     let holder = {
         let home = home.to_path_buf();
         std::thread::spawn(move || {
@@ -1923,12 +1948,20 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         assert!(patience.holds(), "the holder never read the file");
         std::thread::sleep(Duration::from_millis(10));
     }
+    // Moved out first on Unix. Windows refuses the cut wherever the file is, its window
+    // mapping it, and the holder reads on (PM M412).
+    let elsewhere = TempDir::new("containers-dax-o");
+    let held_at = if cfg!(windows) {
+        dir.join("held")
+    } else {
+        std::fs::rename(dir.join("held"), elsewhere.join("held")).unwrap();
+        elsewhere.join("held")
+    };
     let cut = std::fs::OpenOptions::new()
         .write(true)
-        .open(dir.join("held"))
+        .open(held_at)
         .unwrap()
         .set_len(1 << 20);
-    // Refused on Windows, its window mapping it, which the holder reads on (PM M412).
     let past = if cfg!(windows) {
         assert_eq!(cut.unwrap_err().raw_os_error(), Some(1224));
         odd[3 << 20]
@@ -1943,10 +1976,6 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     // 0009): on Linux the host lets go of the file's pages first, and the guest's kernel
     // writes them as a FUSE_WRITE, by its window's record; elsewhere through the window.
     // Either way the host reads them, and the guest reads them through its window.
-    let pages: Vec<u8> = (0..4u32 << 20)
-        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
-        .collect();
-    std::fs::write(dir.join("pages"), &pages).unwrap();
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd as _;
@@ -1973,11 +2002,12 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     }
     assert_eq!(shards(&["rm", "-f", "dax"]).status, Some(0));
     // Mapped 2 MiB at a time by a process as the host grows it, then stat'ed and opened
-    // again: the guest learns the new size, and lets go of none of the entries the process
-    // still maps, which Linux's FUSE did at both (PM M274): the device keeps them at the
-    // open, shards' kernel at the size (resources/kernel/patches/0007). No warning of
-    // fs/dax.c in the guest's log, which a privileged microVM's exec reads (syslog(2)'s
-    // CAP_SYSLOG is the first user namespace's).
+    // again: the guest learns the new size, from the reply to its notice's touch (D235) and
+    // as it stats the file, and lets go of none of the entries the process still maps,
+    // which Linux's FUSE did at each (PM M274, M550): the device keeps them at the open,
+    // shards' kernel at the size its attributes and a SETATTR's reply say
+    // (resources/kernel/patches/0007). No warning of fs/dax.c in the guest's log, which a
+    // privileged microVM's exec reads (syslog(2)'s CAP_SYSLOG is the first user namespace's).
     std::fs::write(dir.join("mapped"), [&big[..], &big[..1 << 20]].concat()).unwrap();
     let run = shards(&[
         "run",
@@ -3457,10 +3487,11 @@ fn a_groups_job_holds_its_microvms_to_its_memory_max() {
 /// of the home, its budget files `max`, the group's `memory.current` its VM processes'
 /// footprints; with its `memory.high` written short of what it holds, what it read of a
 /// host directory through FUSE (D197 on Windows), told so and asked to give back what it
-/// holds cold, its group within its budget again; and, on macOS, a microVM of the group that
-/// holds past its `memory.max` with nothing to give back stopped, OOM-killed, as a cgroup's
-/// OOM killer kills within it. On Windows the group's job holds its VM processes to its
-/// `memory.max` by what they commit (`a_groups_job_holds_its_microvms_to_its_memory_max`).
+/// holds cold, its group within its budget again; and, on macOS, a microVM of the group with
+/// no swap that holds past its `memory.max` with nothing to give back stopped, OOM-killed,
+/// as a cgroup's OOM killer kills within it. On Windows the group's job holds its VM
+/// processes to its `memory.max` by what they commit
+/// (`a_groups_job_holds_its_microvms_to_its_memory_max`).
 #[test]
 fn a_microvm_under_a_group_is_held_to_its_budget() {
     if !cfg!(any(target_os = "macos", windows)) || cannot_run_vms() {
@@ -3539,22 +3570,52 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
         said().contains("within its budget of") && current() <= high
     });
     if cfg!(target_os = "macos") {
-        // Past its memory.max, which a microVM that holds 768 MiB its guest uses takes it
-        // past, with nothing to give back.
+        // Past its memory.max, which a microVM whose guest uses 768 MiB and may swap none of
+        // it (`--memory-swap` its memory, D159) takes it past, with nothing to give back. One
+        // that may swap, as much again as its memory by default, is held within its room by
+        // its guest, which swaps what passes it to a file of its host's, whose pages its VM
+        // process's footprint leaves out (XNU's phys_footprint counts anonymous memory, and
+        // what the compressor holds of it, alone): its group within memory.max, it runs on.
         std::fs::write(group.join("memory.high"), "max\n").unwrap();
-        std::fs::write(group.join("memory.max"), format!("{}\n", current() + (512 << 20))).unwrap();
+        let max = current() + (512 << 20);
+        std::fs::write(group.join("memory.max"), format!("{max}\n")).unwrap();
         let args = run_args(
             &image,
-            &["-d", "--name", "hog", "--cgroup-parent", "agents", "-m", "1g"],
+            &[
+                "-d",
+                "--name",
+                "hog",
+                "--cgroup-parent",
+                "agents",
+                "-m",
+                "1g",
+                "--memory-swap",
+                "1g",
+            ],
             &["alloc-hold", "768", "600"],
         );
         let hog = shards(&args.iter().map(String::as_str).collect::<Vec<_>>());
         assert_eq!(hog.status, Some(0), "{hog}");
+        // Said as the daemon stops it. Where it never is: what its group held as its last
+        // pass wrote it, and how long ago, beside what its guests run.
+        let mut patience = Patience::of(&home, TIMEOUT);
+        while !said().contains("past its memory.max") {
+            assert!(
+                patience.holds(),
+                "its group held {} bytes, written {:?} ago, under a memory.max of {max}, and stopped none:{}",
+                current(),
+                std::fs::metadata(group.join("memory.current"))
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok()),
+                common::guests_processes(&home)
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let waited = shards(&["wait", "hog"]);
         assert_eq!(waited.stdout.trim(), "137", "{waited}\n{}", said());
         let oom = shards(&["inspect", "-f", "{{.State.OOMKilled}}", "hog"]);
         assert_eq!(oom.stdout.trim(), "true", "{oom}");
-        assert!(said().contains("past its memory.max"), "{}", said());
     }
     // The other runs on: what it held it gave back, and held no more.
     let ps = shards(&["ps", "-q", "--filter", "name=held"]);

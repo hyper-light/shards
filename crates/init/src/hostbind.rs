@@ -721,7 +721,7 @@ impl Pair {
     /// what the server sent before its end is passed on, and its end then, as the kernel
     /// sends what a socket was given before it closed; nothing bounds it but the
     /// connection's own peers. Each run's relay drains once, so no drain of its own could
-    /// tell it how long another took (PM M550). What the client sends reaches no one now:
+    /// tell it how long another took (PM M556). What the client sends reaches no one now:
     /// read, and dropped, so that none is left unread as net closes, which would make that a
     /// reset (Linux's tcp_close()). The server's end is its FIN, or its reset once what it
     /// held was read, as its socket closed with bytes of the client's unread (tcp_recvmsg()
@@ -2364,7 +2364,7 @@ mod tests {
     }
 
     /// The run's end with its server's 4 MiB still to come and its client reading only
-    /// after 1.5 s, past the second the relays had (`DRAIN`, PM M550): all of it passes on,
+    /// after 1.5 s, past the second the relays had (`DRAIN`, PM M556): all of it passes on,
     /// then its end; the drain follows its peers, no clock (D124).
     #[test]
     fn a_relay_drains_its_servers_bytes_however_long_its_client_takes() {
