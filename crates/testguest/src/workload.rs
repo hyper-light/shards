@@ -228,6 +228,19 @@ pub fn main() -> ! {
             let _ = io::stderr().write_all(&file);
             arg(3).parse().unwrap_or(1)
         }
+        // Its command line as it was started, each word with its NUL, on stdout: its program
+        // as found, its image's options, then its run's arguments (D256).
+        "argv" => {
+            let line: Vec<u8> = std::env::args_os()
+                .flat_map(|a| [a.as_encoded_bytes(), b"\0"].concat())
+                .collect();
+            i32::from(
+                io::stdout()
+                    .write_all(&line)
+                    .and_then(|()| io::stdout().flush())
+                    .is_err(),
+            )
+        }
         // A step that lasts `arg(1)` ms, for what shows it to be seen as it runs (`sleep`
         // prints `ready` and lasts until a signal ends it).
         "sleep-for" => {

@@ -156,6 +156,26 @@ impl State {
     fn gone(&self) -> bool {
         self.exited && self.answered
     }
+
+    /// The run's end, once it has come: its host's word, or its host gone without one, said
+    /// in its last diagnostics; kept as first seen, so that every later look, a stop's among
+    /// them, sees the same.
+    fn end_seen(&mut self) -> Option<RunEnd> {
+        if self.end.is_none() && self.gone() {
+            self.end = Some(RunEnd::Failed(format!(
+                "the run host exited without its run's end{}",
+                quoted(&self.said)
+            )));
+        }
+        self.end.clone()
+    }
+
+    /// The run's end once its stop has been waited for ([`Session::stop`]): the end seen, or
+    /// `Stopped` where none has come.
+    fn stopped(&mut self) -> RunEnd {
+        self.end_seen()
+            .unwrap_or_else(|| self.end.insert(RunEnd::Stopped).clone())
+    }
 }
 
 /// `refused` with the host's last diagnostics, where its run did not boot: what its VM said
@@ -179,9 +199,23 @@ struct Shared {
     lessor: Mutex<Option<RunLessor>>,
     /// The references the run's grants name: no other is leased.
     granted: Mutex<Vec<String>>,
+    /// Where the host's diagnostics are written whole, once its caller has named a file
+    /// ([`ImageGuest::keep_diagnostics`]).
+    said_to: Mutex<Option<std::fs::File>>,
 }
 
 impl Shared {
+    /// The host's diagnostics written whole to `to` from now on, after what is kept of them
+    /// until now, under the lock their keeper writes each part under ([`keep_said`]): so that
+    /// each part is in what is kept now or written after, and once.
+    fn keep_diagnostics(&self, mut to: std::fs::File) -> io::Result<()> {
+        let mut said_to = lock(&self.said_to);
+        let kept: Vec<u8> = lock(&self.state).said.iter().copied().collect();
+        to.write_all(&kept)?;
+        *said_to = Some(to);
+        Ok(())
+    }
+
     fn send(&self, kind: u8, payload: &[u8]) -> io::Result<()> {
         let frame = wire::frame(kind, payload).map_err(io::Error::other)?;
         match lock(&self.to_host).as_mut() {
@@ -506,6 +540,7 @@ impl Begun {
             to_host: Mutex::new(Some(to_host)),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            said_to: Mutex::new(None),
         });
         // Shared: the session and its exit watcher, which outlives this call.
         let host = Arc::new(process);
@@ -1267,7 +1302,9 @@ fn release(shared: &Shared) {
     }
 }
 
-/// Keeps the host's last diagnostics until they end.
+/// Keeps the host's last diagnostics until they end, and writes each part whole to the file
+/// its caller named for them, where it has named one ([`Shared::keep_diagnostics`]): kept and
+/// written under that file's lock, which naming a file takes first.
 fn keep_said(shared: &Shared, mut said: io::PipeReader) {
     let keep = said_kept();
     let mut buf = [0u8; 4096];
@@ -1275,10 +1312,18 @@ fn keep_said(shared: &Shared, mut said: io::PipeReader) {
         if n == 0 {
             break;
         }
-        let mut state = lock(&shared.state);
-        state.said.extend(buf.get(..n).unwrap_or_default());
-        let over = state.said.len().saturating_sub(keep);
-        state.said.drain(..over);
+        let part = buf.get(..n).unwrap_or_default();
+        let mut said_to = lock(&shared.said_to);
+        {
+            let mut state = lock(&shared.state);
+            state.said.extend(part);
+            let over = state.said.len().saturating_sub(keep);
+            state.said.drain(..over);
+        }
+        // A part its file refuses is lost to it alone: the tail keeps it.
+        if let Some(to) = said_to.as_mut() {
+            let _ = to.write_all(part);
+        }
     }
     lock(&shared.state).said_all = true;
     shared.changed.notify_all();
@@ -1517,33 +1562,28 @@ impl ImageGuest for Session {
         // Asked of the host, which kills its VM at once and says the run's end; a host that
         // cannot be asked is killed itself, and its VM's link closing ends the VM's run
         // (`STOP_ORDER`). A run that has ended is not asked: its host is cleaning up.
-        let ended = lock(&self.shared.state).end.is_some();
+        let ended = lock(&self.shared.state).end_seen().is_some();
         if !ended && self.shared.send(wire::to_host::STOP, &[]).is_err() {
             kill(&self.host);
         }
         // The run's end comes as its VM goes, which the host kills at once; or the host is
         // gone. The host's own exit after (its cleanup) is the watcher's to reap.
-        self.shared
-            .wait(Duration::MAX, |s| (s.end.is_some() || s.gone()).then_some(()));
+        self.shared.wait(Duration::MAX, |s| s.end_seen().map(|_| ()));
         lock(&self.shared.to_host).take();
-        let mut state = lock(&self.shared.state);
-        state.end.get_or_insert(RunEnd::Stopped);
+        lock(&self.shared.state).stopped();
         self.shared.changed.notify_all();
         Ok(())
     }
 
     fn wait_for(&self, timeout: Duration) -> Result<Option<RunEnd>, ImageRefusal> {
-        Ok(self.shared.wait(timeout, |s| {
-            if let Some(end) = &s.end {
-                return Some(end.clone());
-            }
-            s.gone().then(|| {
-                RunEnd::Failed(format!(
-                    "the run host exited without its run's end{}",
-                    quoted(&s.said)
-                ))
-            })
-        }))
+        Ok(self.shared.wait(timeout, State::end_seen))
+    }
+
+    fn keep_diagnostics(&self, to: std::fs::File) -> Result<(), ImageRefusal> {
+        self.shared.keep_diagnostics(to).map_err(|e| ImageRefusal::Os {
+            what: "the run host's diagnostics",
+            kind: e.kind(),
+        })
     }
 }
 
@@ -1575,6 +1615,7 @@ mod tests {
             to_host: Mutex::new(None),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            said_to: Mutex::new(None),
         }
     }
 
@@ -1604,6 +1645,71 @@ mod tests {
         assert!(wire::read_frame_into(&mut host, &mut frame).unwrap().is_none());
     }
 
+    /// Do have a run host write more diagnostics than are kept to quote, its caller naming a
+    /// file for them partway, then end them. Expect: the file holding what was kept until it
+    /// was named and everything after, whole and once; what is kept to quote still their last
+    /// alone (Hex: the cause of a grants-none run had gone from the tail).
+    #[test]
+    fn a_hosts_diagnostics_are_written_whole_to_the_file_its_caller_names() {
+        let shared = shared();
+        let (said, mut host) = io::pipe().unwrap();
+        let dir = shards_testdir::TempDir::new("api-said").unwrap();
+        let path = dir.join("diagnostics");
+        let before = b"shards api-run: before its file\n".to_vec();
+        let after: Vec<u8> = (0..said_kept() * 2).map(|i| b'a' + (i % 26) as u8).collect();
+        std::thread::scope(|s| {
+            let keeping = s.spawn(|| keep_said(&shared, said));
+            host.write_all(&before).unwrap();
+            // What the host wrote is kept before its file is named.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while lock(&shared.state).said.len() < before.len() {
+                assert!(Instant::now() < deadline, "its first words were never kept");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            shared
+                .keep_diagnostics(std::fs::File::create(&path).unwrap())
+                .unwrap();
+            host.write_all(&after).unwrap();
+            drop(host);
+            keeping.join().unwrap();
+        });
+        assert_eq!(std::fs::read(&path).unwrap(), [&before[..], &after[..]].concat());
+        let kept: Vec<u8> = lock(&shared.state).said.iter().copied().collect();
+        assert_eq!(kept, after[after.len() - said_kept()..]);
+    }
+
+    /// Do see a run's host gone without its run's end, as `wait_for` sees it, then stop the
+    /// run, as `stop` does once its wait is over; and stop one whose host said its end. Expect:
+    /// the end first seen, in the host's last words, kept through the stop and after, never
+    /// `Stopped` (Hex: `wait_for` read the host's failure, then `stop` turned it `Stopped`);
+    /// the host's own end kept likewise.
+    #[test]
+    fn a_runs_end_once_seen_is_kept_through_its_stop() {
+        let mut state = State {
+            exited: true,
+            answered: true,
+            said: b"shards api-run: its VM's link: reset\n"
+                .iter()
+                .copied()
+                .collect(),
+            ..State::default()
+        };
+        let seen = RunEnd::Failed(
+            "the run host exited without its run's end: shards api-run: its VM's link: reset".into(),
+        );
+        assert_eq!(state.end_seen(), Some(seen.clone()));
+        assert_eq!(state.stopped(), seen);
+        assert_eq!(state.end_seen(), Some(seen));
+        let mut said = State {
+            end: Some(RunEnd::Exited(3)),
+            exited: true,
+            answered: true,
+            ..State::default()
+        };
+        assert_eq!(said.stopped(), RunEnd::Exited(3));
+        assert_eq!(said.end_seen(), Some(RunEnd::Exited(3)));
+    }
+
     /// A member's stdin has its flow as the run's start is taken, under the lock that answer
     /// is taken in: the host gives it room (`INPUT_ROOM`) as soon as its input connection
     /// comes, which this session's reader may take before the caller waiting for the start
@@ -1627,6 +1733,7 @@ mod tests {
             to_host: Mutex::new(None),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            said_to: Mutex::new(None),
         };
         let info = |index, name: &str| MemberInfo {
             index,
@@ -1691,6 +1798,7 @@ mod tests {
             to_host: Mutex::new(Some(to_host)),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            said_to: Mutex::new(None),
         });
         lock(&s.state).inputs.insert(1, InputFlow::default());
         let (reader, mut writer) = io::pipe().unwrap();
@@ -2230,6 +2338,7 @@ mod tests {
             to_host: Mutex::new(Some(to_host)),
             lessor: Mutex::new(lessor.map(|l| RunLessor(l))),
             granted: Mutex::new(granted.iter().map(|g| (*g).to_string()).collect()),
+            said_to: Mutex::new(None),
         });
         let reader = {
             let shared = Arc::clone(&shared);

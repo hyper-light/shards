@@ -617,6 +617,12 @@ pub mod kind {
     /// relays the lane onto, or none for a lane its owner closes. Numbers its owner chose
     /// ([`LANE_OPEN`]) are below 2^63; a VM's own, for lanes its guest begins, at or above.
     pub const LANE_HELD: u8 = 99;
+    /// Warm VM → its daemon or run host, before its `DONE`: it could not serve its run, and
+    /// why, in words (warm.rs `finish`): its guest gone before its command ended, a frame it
+    /// could not read, a spec it could not send. Its `DONE` then carries the status its client
+    /// exits with for it (125, as `docker run` exits for dockerd's own failures), which no
+    /// command gave: the run failed, in these words.
+    pub const UNSERVED: u8 = 101;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
