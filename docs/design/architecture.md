@@ -28211,7 +28211,9 @@ on disk is the most sensitive thing a run has:
   under a token, key, secret or account_id name, and a leak is the whole value or a run of
   `RUN` bytes, looked up at every offset. It adds:
   - the scan of a save's files, a disk image and each member's environment as given, each file
-    mapped, not read in;
+    mapped, not read in, and walked in time linear in its size, with a heap that does not grow
+    with it (#74 step 10: a run of a form's bytes walked a host page at a time, windows looked
+    up through anchors; the old unbounded match ran out of memory on WHP);
   - each value's UTF-16LE and base64 forms;
   - the run's placeholders, given as public, whose windows are no leak;
   - the bring-up's credential shapes, those no value explains listed by where they lie;
@@ -28228,6 +28230,16 @@ on disk is the most sensitive thing a run has:
     confirmed it, 2026-11-13.
   - A shape's random part is at least `ceil(128 / 6) = 22` base64url characters: RFC 6749
     §10.10 bounds a token's guessing odds at 2^-128, and RFC 4648 §5's 64 symbols carry 6 bits.
+  - #74 step 10. Its walk and its anchors add no chosen number:
+    - The walk finds a run by its first `RUN` units, the window's own width, and takes it a host
+      page (`mmap.PAGESIZE`, read where it runs) at a time.
+    - An anchor is `width // 2 + 1` bytes, read every `width + 1 - anchor`. That is the
+      pigeonhole's split of `width + 1`: a window holds an anchor at `stride` consecutive
+      offsets. Any split finds the same windows; halving it keeps an anchor no shorter than
+      its stride.
+    - Measured in the scan's README: on 16 and 64 MiB images the heap is flat (710268 B on
+      macOS, 281300 B on Linux), where the old scan's reached 2239349400 B; the time is less
+      than half the old; the findings are the same, digest for digest.
   - Exit 3 is credentials.py's for a leak; 4 is the next.
 
 **Cold start** (R03). Nothing is learned or chosen.
