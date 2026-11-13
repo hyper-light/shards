@@ -1066,7 +1066,12 @@ mod hosted {
             );
         }
         prepared.spec.setup = setup;
-        prepared.spec.cgroup = crate::resources::cgroup(&run.resources, prepared.cpus)
+        // Of its microVM's CPUs, which its spec sizes (`size.0`): not the host's, which a
+        // run asking fewer vCPUs than the host has would name past its guest's, and a guest
+        // whose workload has the cpuset controller (the nesting grant, D234) refuses.
+        let vcpus = usize::try_from(prepared.size.0)
+            .map_err(|_| No(Cause::Request, "its vCPUs pass what this host counts".into()))?;
+        prepared.spec.cgroup = crate::resources::cgroup(&run.resources, vcpus)
             .map_err(|e| No(Cause::Request, e.message(format_args!("its limits"))))?;
         if bridge.is_some() {
             prepared.spec.resolv = Some(crate::build::step::resolv_with(
