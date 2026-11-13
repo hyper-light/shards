@@ -435,6 +435,75 @@ run ended, over HTTP/1.1 and HTTP/2 alike, unless an HTTP/2 stream was let go of
 - R11/R12: platform-independent code; clippy on three targets.
 - R15: implementer scope. R16: the runner's `~/g121-tmp/s33-ad` is removed after landing.
 
+## The injector's test waits end on their evidence or on quiescence (#74 steps 7/8 tests)
+
+Role: implementer for ROOT (g121), the third on this slice (predecessors stopped by session interruptions). Policy read
+at origin/main a939a2b19: AGENTS.md sha256 f66d304c…, docs/development-rules.md df2acf47…,
+docs/development-evidence.md 61613a24…. Worktree `net-test-waits`, branch `p/net-test-waits-v1`, base 1f190f888.
+
+### Change (`crates/net/src/inject.rs`, tests alone)
+
+- Every bench's host is stepped in the bench's own turns, its bytes in memory (`Wire::H1`, `Wire::H2`), as slice (b)'s
+  coverage tests' were: the threaded socket hosts (`echo`/`answer`, `token_endpoint`, `h2_serving`/`h2_answer`) became
+  `H1Host` (an echo, or Claude Code's token endpoint, `slow` reading one TLS read a turn and none while what it wrote
+  waits) and `H2Host` answering through an `H2Answer` (`h2_echo`, or `h2_token_answer` with `H2Host::serving`).
+- `Bench::until` (30 s), `drive` (30 s), `h2_until` (30 s), `h2_drive` (no bound), the lease, refusal and refresh loops
+  (30 s each), `h2_token_bench`'s handshake loop (no bound) and every `recv_timeout` (10 s; 200 ms for "nothing reached
+  the host") are gone. `Bench::turns`/`until`/`settle` and `h2_turns`/`h2_until`/`h2_settle` end a wait on its evidence,
+  or fail on a turn in which guest, flow, host and broker all move nothing: nothing there waits on a clock, so that
+  turn is the end of what can come. No constant, deadline or sleep is left in the module's tests.
+- What reached a host is read from the host itself (`H1Host::heads`/`had`, `H2Host::streams`/`at`/`had`), after the
+  bench settles where the test says nothing reached it, so that "nothing" is exact where it was 200 ms of silence.
+- A livelock moves for ever, which quiescence can't catch: the refresh and revocation tests fail on the wrong event
+  itself as it comes, a refresh or revocation reaching the host (HTTP/1.1: its token host's heads; HTTP/2: a stream for
+  `/v1/oauth/token` or `/v1/oauth/token/revoke`), as the 503 tests fail on a second ask.
+- `a_granted_hosts_request_carries_the_value_and_its_echo_comes_back_masked` waits now until the parked flow settles,
+  where it stopped at the first ask; the flow looks at its lease again as the host's handshake comes, and
+  `Leases::ask` adds it to the ask's waiters again, so one answer gives two `Resumed` for it. lib.rs' `resume_flows`
+  resumes each flow once, so this is no defect; the test asserts that the flow, and it alone, was resumed, where it
+  counted one entry.
+- `docs/research/measurements/s33-injector-ab/ab.rs` (included by path) is unchanged and builds.
+
+### Tests (adas-mac-studio.local, macOS arm64, rustc 1.98.1; carrier `/tmp/g121-shot/ntw-carrier`, `run.sh BUNDLE REF test|clippy|both|mutate`)
+
+`cargo test --locked -p shards-net --profile test-release --lib`, the whole lib, built first so that the wall time is
+the tests' own:
+
+| tree | kiln run | passed | failed | ignored | libtest | step wall |
+|---|---|---|---|---|---|---|
+| base 1f190f888 | r1167 | 143 | 1 | 3 | 3.52 s | 5 s |
+| e10529a63 | r1206 | 143 | 1 | 3 | 1.26 s | 2 s |
+
+The one failure in both is `tcp::tests::the_injector_passes_an_ungranted_flow_and_ends_a_granted_ones_tls`
+(tcp.rs:1923, "no handshake for the guest"), which this slice does not cure: no wait is involved. Since 3ad5e9d3a the
+flow (`Flow::hello`, `State::Opening`) begins the host's TLS first and answers the guest's handshake once the host has
+chosen its protocol, and the test still asks for the guest's handshake straight after the ClientHello's segment.
+
+Clippy, `cargo clippy --locked -p shards-net --all-targets -- -D warnings` on aarch64-apple-darwin,
+x86_64-unknown-linux-gnu (zig) and x86_64-pc-windows-msvc (xwin): clean (r1206).
+
+### Red: the refresh mutation fails at once
+
+`perl -0pi -e 's/s\.up = Upward::Refreshing;/s.up = Upward::Parked(go);/' crates/net/src/inject.rs` (the refresh asked
+outside left parked, so that it goes upward), the whole lib (r1206, `run.sh … mutate`): 141 passed, 3 failed, 3 ignored,
+libtest 1.26 s. `an_h2_refresh_is_answered_outside_on_its_stream_with_placeholders` and
+`a_refused_h2_refresh_is_answered_on_its_stream_while_another_completes` failed "the refresh reached the host"; the
+third, tcp.rs:1923 as above. Before, ROOT's guard-removal run of the same test under it ran over an hour (`h2_drive` had
+no bound, and the threaded host waited on a body that would never come).
+
+### R01-R16
+
+- R01: test code alone; production untouched. R03: no constant, deadline or sleep; each wait ends on evidence or
+  quiescence. R04/R05: the tests read typed host state; no new production interface. R06/R07/R13: one wait loop per
+  bench kind, 115 fewer lines. R08/R14: no performance claim; the wall times above are the suite's own, one sample each.
+- R09: the duplicate `Resumed` was reproduced by r1199's failure and found harmless in lib.rs; no fix claimed.
+- R10: the red above. R11/R12: platform-independent tests, clippy on three targets. R15: implementer scope.
+  R16: the runner's `~/g121-tmp/net-test-waits` is removed after landing.
+- Not converted (outside inject.rs, each a real socket, timer or poll wait whose clock is the thing tested, or a real
+  socket read): `lib.rs` tests (`set_read_timeout` and deadline loops near 3817-3844 and 4157-4303), `tcp.rs` tests
+  (`set_read_timeout`s at 1907/1935, deadline loops at 1405, 1963, 2004), `poll.rs`'s wait tests, `pktinfo.rs`'s read
+  timeouts. Listed for ROOT to rule on.
+
 ## Owed
 
 - Slice 3 (kiln): `RunLessor` answering capture, refresh and revoke from the broker.

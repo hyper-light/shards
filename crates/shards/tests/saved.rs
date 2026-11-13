@@ -85,17 +85,19 @@ fn next_count(lines: &mut Lines<BufReader<ChildStdout>>) -> u64 {
 }
 
 /// Waits for a child, a client of `home`'s daemon, failing the test rather than hanging
-/// it: within [`TIMEOUT`], or past it while the daemon or its microVMs progress
-/// ([`Patience`]).
+/// it: for as long as the daemon or its microVMs progress ([`Patience`], its kind its
+/// caller's call site).
+#[track_caller]
 fn exit(child: &mut Child, home: &Path) -> Option<i32> {
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
+            patience.done();
             return status.code();
         }
         if !patience.holds() {
             let _ = child.kill();
-            panic!("shards run did not exit within {TIMEOUT:?}, nor while its daemon or microVMs progressed");
+            panic!("shards run did not exit, its daemon and microVMs no longer progressing");
         }
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -463,11 +465,12 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
     // Once they end, it is saved, and restored with its join disk as its guest knew it: a
     // joiner joins the restored microVM, its image given the disk's next range.
     let mut saved = shards(&["save", "vm", "provider", "joined"]);
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while saved.status != Some(0) && patience.holds() {
         std::thread::sleep(Duration::from_millis(50));
         saved = shards(&["save", "vm", "provider", "joined"]);
     }
+    patience.done();
     assert_eq!(saved.stdout, "joined\n", "{saved}");
     let restored = shards(&["restore", "vm", "provider", "joined"]);
     assert_eq!(restored.status, Some(0), "{restored}");
@@ -658,15 +661,16 @@ fn counts(logs: &str) -> Vec<u64> {
     logs.lines().filter_map(|l| l.parse().ok()).collect()
 }
 
-/// Waits until `done`, failing the test with what `said` says then after TIMEOUT, or past
-/// it once `home`'s daemon and its microVMs have progressed no more for as long
-/// ([`Patience`]).
+/// Waits until `done`, failing the test with what `said` says then once `home`'s daemon and
+/// its microVMs progress no more ([`Patience`], its kind its caller's call site).
+#[track_caller]
 fn until(home: &Path, what: &str, done: &mut dyn FnMut() -> bool, said: &dyn Fn() -> String) {
-    let mut patience = Patience::of(home, TIMEOUT);
+    let mut patience = Patience::of(home);
     while !done() {
         assert!(patience.holds(), "{what}: {}", said());
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
 }
 
 /// What is asked of a microVM's command as it is restored goes on the signal connection its
@@ -1060,15 +1064,16 @@ fn an_exec_reading_its_stdin_through_a_save_ends_once_restored() {
     // The writer is still open here: the exec's stdin ends with its connection's client.
     let listed = || shards(&["exec", "reader", "/bin/testguest", "ps"]).stdout;
     let mut ps = listed();
-    let mut patience = Patience::of(&home, Duration::from_secs(10));
+    let mut patience = Patience::of(&home);
     while ps.contains("testguest cat") {
         assert!(
             patience.holds(),
-            "an exec reading its stdin outlived its client by 10 s, and its progress by a minute:\n{ps}"
+            "an exec reading its stdin outlived its client, and its progress:\n{ps}"
         );
         std::thread::sleep(Duration::from_millis(100));
         ps = listed();
     }
+    patience.done();
     drop(writer);
     assert_eq!(shards(&["stop", "reader"]).status, Some(0));
 }

@@ -2486,91 +2486,107 @@ impl Ran {
     }
 }
 
-/// How long a test waits on a state a home's daemon or its microVMs come to (a pool
-/// filled, a restored run's VM up, a VM gone): `timeout`, as before, or past it for as long
-/// as they progress, as [`run_command`] waits on a client: while the home's daemon says
-/// something within [`DAEMON_QUIET`] ([`Said`]), or a VM process under it, or under this
-/// test's process (its clients' own, `run --kernel` and `restore`'s), ran within as long
-/// ([`Ran`]). Fast hosts keep `timeout`; a slow one (the parity plan's step 10, an arm64
-/// Windows host nested under QEMU's TCG, whose template saves took 20 s and pool restores
-/// a further minute) is waited on while it works, and a stuck one fails a minute after its
-/// last progress. A wait is never failed before each [`Ran`] has judged a whole slice of
-/// its VM processes (R03: refused only after a whole window with no progress): a bound
-/// shorter than a slice, as a start's learned from fast ones is (tests/budget.rs, 32 ms on
-/// adacachy2), is otherwise past before any of them has been looked at twice. The look that
-/// fails a wait begins past it: one that takes long itself, as a PowerShell's look at
-/// Windows' processes does, is never what the wait runs out in.
+/// A test's wait on a state a home's daemon or its microVMs come to (a pool filled, a
+/// restored run's VM up, a VM gone), judged as [`run_command`]'s wait on a command is
+/// ([`Wait`], D215's judge; the person's ruling of 2026-11-13, D209): its kind is its call
+/// site (`#[track_caller]` through the helpers that make one), whose answers ([`done`]) teach
+/// W*, the slowest. Its party ([`Party`]) is its home's daemon and what descends from it,
+/// this test's own VM processes and theirs, and the daemon's words ([`Said`]). Cold (no
+/// answer of its kind on this host), it follows its party's liveness alone; learned, it is
+/// looked at each W* past its start and refused at a look that finds its party made no
+/// progress at all since the look before, its host not holding it. Cold or learned, it is
+/// refused at a look that finds its party gone: none of it running and its daemon saying
+/// nothing, its liveness ended. Its caller gives it no bound (R03).
+///
+/// [`done`]: Patience::done
 pub struct Patience {
-    start: Instant,
-    timeout: Duration,
-    home: Option<PathBuf>,
-    said: Option<Said>,
-    /// The VM processes under this test's process.
-    own: Ran,
-    /// The home's daemon, and the VM processes under it, followed anew as it changes.
-    daemon: Option<(u32, Ran)>,
-    /// When the daemon's pid was last read: once a second at most.
-    read: Option<Instant>,
-    /// Whether patience has run out, the look after it still to come.
-    out: bool,
+    wait: Wait,
+    state: Patient,
+}
+
+/// Where a [`Patience`] is: each refusal said once, and followed by one look more, so that a
+/// state that came as its party ended or stalled is still seen.
+enum Patient {
+    /// Waiting.
+    Holds,
+    /// Refused, what it said of itself kept for its look after.
+    Refused(String),
+    /// Its look after the refusal spent: no more.
+    Spent,
 }
 
 impl Patience {
     /// Patience with the daemon of `home` and its microVMs, and this test's own.
-    pub fn of(home: &Path, timeout: Duration) -> Patience {
-        Patience::with(Some(home), timeout)
+    #[track_caller]
+    pub fn of(home: &Path) -> Patience {
+        Patience::with(Some(home), std::panic::Location::caller())
     }
 
     /// Patience with this test's own microVMs, where no home's daemon serves them.
-    pub fn own(timeout: Duration) -> Patience {
-        Patience::with(None, timeout)
+    #[track_caller]
+    pub fn own() -> Patience {
+        Patience::with(None, std::panic::Location::caller())
     }
 
-    fn with(home: Option<&Path>, timeout: Duration) -> Patience {
+    fn with(home: Option<&Path>, site: &'static std::panic::Location<'static>) -> Patience {
         Patience {
-            start: Instant::now(),
-            timeout,
-            home: home.map(Path::to_path_buf),
-            said: home.map(Said::of),
-            own: Ran::of(std::process::id()),
-            daemon: None,
-            read: None,
-            out: false,
+            wait: Wait::on(
+                WaitKind::at(site),
+                Party::of(None, home),
+                "a state its party comes to",
+            ),
+            state: Patient::Holds,
         }
     }
 
-    /// Whether to look again: within its timeout, or past it while the daemon or a microVM
-    /// progresses or a VM process has yet to be judged over a whole slice; once none of
-    /// these holds, once more, the look after this one, and then no more. Ask it after each
-    /// look that found the state not yet come, as often as they come.
+    /// Whether to look again: while its judge holds it and its party lives; once either
+    /// refuses it, once more, the look after this one, and then no more, its account said on
+    /// stderr. Ask it after each look that found the state not yet come, as often as they
+    /// come: it looks at its party only as its pace says.
     pub fn holds(&mut self) -> bool {
-        let due = self.read.is_none_or(|r| r.elapsed() >= Duration::from_secs(1));
-        if let Some(home) = self.home.as_ref().filter(|_| due) {
-            self.read = Some(Instant::now());
-            let pid = std::fs::read_to_string(home.join("daemon.pid"))
-                .ok()
-                .and_then(|p| p.split_ascii_whitespace().next()?.parse::<u32>().ok());
-            if pid != self.daemon.as_ref().map(|(d, _)| *d) {
-                self.daemon = pid.map(|d| (d, Ran::of(d)));
+        match std::mem::replace(&mut self.state, Patient::Spent) {
+            Patient::Holds => {
+                let refused = match self.wait.look(false) {
+                    Err(stall) => Some(self.wait.refused(&stall)),
+                    Ok(()) if self.wait.gone() => Some(format!(
+                        "its party is gone, its liveness ended\n--- its wait\n{}",
+                        self.wait.account()
+                    )),
+                    Ok(()) => None,
+                };
+                self.state = refused.map_or(Patient::Holds, Patient::Refused);
+                true
             }
+            Patient::Refused(said) => {
+                let _ = writeln!(io::stderr(), "{said}");
+                false
+            }
+            Patient::Spent => false,
         }
-        // Each asked each time, so that each sees when it last progressed.
-        let said = self.said.as_mut().is_some_and(Said::lately);
-        let ran = self.own.lately();
-        let daemons = self.daemon.as_mut().is_some_and(|(_, r)| r.lately());
-        let watched = self.own.watched() && self.daemon.as_ref().is_none_or(|(_, r)| r.watched());
-        if self.start.elapsed() < self.timeout || said || ran || daemons || !watched {
-            self.out = false;
-            return true;
+    }
+
+    /// The state came: its kind's answer, which teaches its record, kept on this host. A
+    /// state seen only at the look after a refusal teaches nothing.
+    pub fn done(mut self) {
+        if matches!(self.state, Patient::Holds) {
+            self.wait.answered();
         }
-        !std::mem::replace(&mut self.out, true)
+    }
+
+    /// What its kind has learned on this host.
+    pub fn seen(&self) -> shards_api::Seen {
+        self.wait.kind.record().seen()
     }
 }
 
 /// The VM processes `client` is, or started, as far down as its descendants go: shards-vm's
 /// and the GPU's (shards-vm-gpu), from Windows' table of processes or `ps`.
 pub fn vm_processes_under(client: u32) -> Vec<u32> {
-    let listed = processes();
+    vm_processes_among(&processes(), client)
+}
+
+/// [`vm_processes_under`] `client`, among the processes `listed`.
+fn vm_processes_among(listed: &[(u32, u32, String)], client: u32) -> Vec<u32> {
     let is_vm = |name: &str| {
         let name = name
             .rsplit(['/', '\\'])
@@ -2583,7 +2599,7 @@ pub fn vm_processes_under(client: u32) -> Vec<u32> {
     let mut under = vec![client];
     let mut i = 0;
     while let Some(&parent) = under.get(i) {
-        for (pid, ppid, _) in &listed {
+        for (pid, ppid, _) in listed {
             if *ppid == parent && !under.contains(pid) {
                 under.push(*pid);
             }
@@ -2921,9 +2937,12 @@ fn host_class() -> String {
 /// caller's to tell, [`Wait::look`]), what its home's daemon says ([`Said`]), and the
 /// processes that serve it: its client and what descends from it, and its home's daemon and
 /// what descends from that (its spawner, VM, network and share processes), each followed by
-/// D215's readers (`shards_api::Watch`) from the look that first finds it on.
+/// D215's readers (`shards_api::Watch`) from the look that first finds it on. A wait on a
+/// state ([`Patience`]) has no client: its party is its home's daemon, and this test's own
+/// VM processes (`run --kernel`'s and `restore`'s) with what descends from them.
 pub struct Party {
-    client: u32,
+    /// Its client; none for this test's own VM processes.
+    client: Option<u32>,
     home: Option<PathBuf>,
     said: Option<Said>,
     watched: std::collections::BTreeMap<u32, shards_api::Watch>,
@@ -2939,8 +2958,9 @@ pub struct Looked {
 }
 
 impl Party {
-    /// The party of client `client`, whose home is `home` where it has one.
-    pub fn of(client: u32, home: Option<&Path>) -> Party {
+    /// The party of client `client`, whose home is `home` where it has one: of this test's
+    /// own VM processes where it has no client.
+    pub fn of(client: Option<u32>, home: Option<&Path>) -> Party {
         Party {
             client,
             home: home.map(Path::to_path_buf),
@@ -2960,16 +2980,24 @@ impl Party {
             .ok()
     }
 
-    /// The processes it is now: its client and its daemon, and on Unix what descends from
-    /// them, from one listing of the system's ([`processes`]); on Windows each of the two is
-    /// followed with what descends from it (shards-api's tree of a process, Toolhelp32).
+    /// The processes it is now: its client (or this test's own VM processes) and its
+    /// daemon, and on Unix what descends from them, from one listing of the system's
+    /// ([`processes`]); on Windows each is followed with what descends from it (shards-api's
+    /// tree of a process, Toolhelp32).
     fn members(&self) -> Vec<u32> {
-        let roots: Vec<u32> = std::iter::once(self.client).chain(self.daemon()).collect();
+        let listed = match self.client {
+            Some(_) if cfg!(windows) => Vec::new(),
+            _ => processes(),
+        };
+        let own = match self.client {
+            Some(client) => vec![client],
+            None => vm_processes_among(&listed, std::process::id()),
+        };
+        let roots: Vec<u32> = own.into_iter().chain(self.daemon()).collect();
         #[cfg(windows)]
         return roots;
         #[cfg(unix)]
         {
-            let listed = processes();
             let mut tree = roots;
             let mut i = 0;
             while let Some(&parent) = tree.get(i) {
@@ -2989,7 +3017,8 @@ impl Party {
     /// its host held one from running (runnable on no CPU, stalled on its memory), or
     /// stopped or suspended one, which D215's look finds `Still` and a test's wait counts as
     /// its host's hold: a kiln runner's headroom guard suspends a run's processes as it
-    /// paces them (ROOT, 2026-11-13); else still. A process found anew is judged from the
+    /// paces them (ROOT, 2026-11-13); else still; and gone where no process of it runs and
+    /// its daemon said nothing, its liveness ended. A process found anew is judged from the
     /// look after.
     pub fn look(&mut self) -> Looked {
         use shards_api::Found;
@@ -3004,6 +3033,8 @@ impl Party {
             looked.found = Found::Progressed;
             looked.what = "its daemon said something".into();
         }
+        // Whether a process of it was found live: one found anew, or one still to be read.
+        let mut live = false;
         for pid in members {
             let Some(watch) = self.watched.get_mut(&pid) else {
                 let watch = shards_api::Followed::of_pid(pid)
@@ -3012,12 +3043,14 @@ impl Party {
                     .and_then(|followed| shards_api::Watch::of(followed).ok().flatten());
                 if let Some(watch) = watch {
                     self.watched.insert(pid, watch);
+                    live = true;
                 }
                 continue;
             };
             let before = watch.cpu();
             let found = watch.look();
             looked.cpu = looked.cpu.saturating_add(watch.cpu().saturating_sub(before));
+            live |= matches!(found, Ok(Found::Progressed | Found::Held | Found::Still));
             match found {
                 Ok(Found::Progressed) if looked.found != Found::Progressed => {
                     looked.found = Found::Progressed;
@@ -3034,17 +3067,23 @@ impl Party {
                 _ => {}
             }
         }
+        if !live && looked.found == Found::Still {
+            looked.found = Found::Gone;
+            looked.what = "none of it runs".into();
+        }
         looked
     }
 
     /// Who it is, for a wait's account of itself.
     fn named(&self) -> String {
+        let client = self.client.map_or_else(
+            || "this test's own VM processes".to_string(),
+            |c| format!("client {c}"),
+        );
         match (&self.home, self.daemon()) {
-            (Some(home), Some(daemon)) => {
-                format!("client {}, daemon {daemon} of {}", self.client, home.display())
-            }
-            (Some(home), None) => format!("client {}, no daemon yet in {}", self.client, home.display()),
-            (None, _) => format!("client {}", self.client),
+            (Some(home), Some(daemon)) => format!("{client}, daemon {daemon} of {}", home.display()),
+            (Some(home), None) => format!("{client}, no daemon yet in {}", home.display()),
+            (None, _) => client,
         }
     }
 }
@@ -3072,6 +3111,9 @@ pub struct Wait {
     last: (Instant, String),
     /// Whether its last look found its host holding it, and what showed it.
     holding: Option<String>,
+    /// Whether its last look found its party gone: nothing of it running, nor its daemon
+    /// saying anything.
+    gone: bool,
     /// Its party's CPU since it began.
     work: Duration,
     live: Live,
@@ -3080,11 +3122,16 @@ pub struct Wait {
 impl Wait {
     /// A wait beginning now on client `client`'s party, `asked` naming its command.
     pub fn begin(kind: &'static WaitKind, client: u32, home: Option<&Path>, asked: &str) -> Wait {
+        Wait::on(kind, Party::of(Some(client), home), asked)
+    }
+
+    /// A wait beginning now on `party`, `asked` naming what it waits for.
+    fn on(kind: &'static WaitKind, party: Party, asked: &str) -> Wait {
         let began = Instant::now();
         Wait {
             kind,
             judge: shards_api::Judge::begin(&kind.record),
-            party: Party::of(client, home),
+            party,
             asked: asked.to_string(),
             began,
             next: began,
@@ -3092,6 +3139,7 @@ impl Wait {
             held: None,
             last: (began, "its start".into()),
             holding: None,
+            gone: false,
             work: Duration::ZERO,
             live: Live::new(),
         }
@@ -3120,6 +3168,7 @@ impl Wait {
         let looked = self.party.look();
         self.work = self.work.saturating_add(looked.cpu);
         self.holding = None;
+        self.gone = looked.found == Found::Gone;
         match looked.found {
             Found::Progressed => {
                 self.last = (now, looked.what.clone());
@@ -3172,6 +3221,11 @@ impl Wait {
                 |held| format!("held: {held}")
             ),
         )
+    }
+
+    /// Whether its last look found its party gone ([`Party::look`]).
+    pub fn gone(&self) -> bool {
+        self.gone
     }
 
     /// What a refusal says of it.

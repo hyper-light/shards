@@ -13,7 +13,9 @@ use hyper_quic::StreamId;
 use crate::frame::{self, Request, Tag};
 use crate::identity::{Fingerprint, Identity};
 use crate::invite::{self, Invitation};
-use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, RanOut, Read as StreamRead, Seen, Sender};
+use crate::net::{
+    Close, Command, ConnKey, Driver, Handler, Io, RanOut, Read as StreamRead, Seen, Sender, View,
+};
 use crate::{Error, server, tls};
 
 /// Where the daemon is: its address, its key's SHA-256, and what this home knows of it from its
@@ -174,6 +176,11 @@ impl HangUp {
     /// handshake has ended: [`exec_with`] returns.
     pub fn now(&self) -> Result<(), Error> {
         self.0.send(Command::Handler(Event::HangUp))
+    }
+
+    /// What its connection's driver has heard, and the window it has shown ([`View`]).
+    pub fn view(&self) -> View {
+        self.0.view()
     }
 }
 

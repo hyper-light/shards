@@ -2180,11 +2180,12 @@ fn the_docker_cli_checkpoints_and_restores_microvms() {
         let (_, out, _) = docker(&["logs", "cp"]);
         out.lines().filter_map(|l| l.parse().ok()).collect()
     };
-    let mut patience = Patience::of(&home, CLIENT);
+    let mut patience = Patience::of(&home);
     while counts().len() < 10 {
         assert!(patience.holds(), "no counts");
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     let (status, out, err) = docker(&["checkpoint", "create", "cp", "first"]);
     assert_eq!((status, out.as_str()), (Some(0), "first\n"), "{err}");
     let n = counts().len();
@@ -2192,10 +2193,12 @@ fn the_docker_cli_checkpoints_and_restores_microvms() {
     assert_eq!(out, "CHECKPOINT NAME\nfirst\n");
     let (status, out, err) = docker(&["start", "--checkpoint", "first", "cp"]);
     assert_eq!((status, out.as_str()), (Some(0), ""), "{err}");
+    let mut patience = Patience::of(&home);
     while counts().len() < n + 5 {
         assert!(patience.holds(), "no counts after the restore");
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     assert_eq!(counts()[n], n as u64 + 1);
     let (status, _, err) = docker(&["checkpoint", "create", "cp", "first"]);
     assert_eq!(status, Some(1));
@@ -2545,7 +2548,7 @@ fn a_runs_command_reaches_its_own_microvms_engine() {
         let (status, body) = out.stdout.split_once('\n').unwrap_or((&out.stdout, ""));
         (status.to_string(), body.to_string())
     };
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     loop {
         let out = shards(&["exec", "prov", "/bin/testguest", "api", "GET", "/_ping", ""]);
         if out.status == Some(0) && out.stdout == "api HTTP/1.1 200 OK\nOK" {
@@ -2651,7 +2654,7 @@ fn a_runs_command_reaches_its_own_microvms_engine() {
     assert_eq!(state("prov.held"), "running\n");
     let killed = shards(&["kill", "prov"]);
     assert_eq!(killed.status, Some(0), "{killed}");
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while state("prov.held") != "exited\n" || state("prov") != "exited\n" {
         assert!(
             patience.holds(),
@@ -2661,6 +2664,7 @@ fn a_runs_command_reaches_its_own_microvms_engine() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     let removed = shards(&["rm", "prov"]);
     assert_eq!(removed.status, Some(0), "{removed}");
     assert_eq!(host_names(), "other\n");
@@ -2719,11 +2723,12 @@ fn a_microvms_own_engine_runs_binds_execs_and_pulls() {
         all.extend_from_slice(args);
         shards(&all)
     };
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while exec(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
         assert!(patience.holds(), "its engine never answered");
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     // `docker run`'s calls: its output from its first byte, its status.
     let ran = exec(&["api-run", &image, "streams", "out", "err"]);
     assert_eq!(
@@ -2884,11 +2889,12 @@ fn a_microvms_own_engine_makes_each_container_a_member_of_its_switch() {
         all.extend_from_slice(args);
         shards(&all)
     };
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while exec(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
         assert!(patience.holds(), "its engine never answered");
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     let create = |name: &str, body: Value| {
         let out = exec(&[
             "api",
@@ -2910,7 +2916,7 @@ fn a_microvms_own_engine_makes_each_container_a_member_of_its_switch() {
     };
     let logs_of = |name: &str| exec(&["api", "GET", &format!("/containers/{name}/logs?stdout=1"), ""]).stdout;
     let ready = |name: &str| {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !logs_of(name).contains("ready") {
             assert!(
                 patience.holds(),
@@ -2919,6 +2925,7 @@ fn a_microvms_own_engine_makes_each_container_a_member_of_its_switch() {
             );
             std::thread::sleep(Duration::from_millis(50));
         }
+        patience.done();
     };
     let finished = |name: &str| {
         let _ = exec(&["api", "POST", &format!("/containers/{name}/wait"), ""]);
@@ -3112,11 +3119,12 @@ fn a_microvms_own_engine_makes_each_container_a_member_of_its_switch() {
         all.extend_from_slice(args);
         shards(&all)
     };
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while in_onpast(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
         assert!(patience.holds(), "its engine never answered");
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     // Not from a member of internal networks alone, which reaches nothing past the
     // microVM: peer, which serves one connection, has it still for the next.
     let api_onpast = |method: &str, path: &str, body: &Value| {
@@ -3171,11 +3179,12 @@ fn a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares()
         all.extend_from_slice(args);
         shards(&all)
     };
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while exec(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
         assert!(patience.holds(), "its engine never answered");
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     let api = |method: &str, path: &str, body: &Value| -> (String, Value) {
         let out = exec(&["api", method, path, &body.to_string()]);
         let (status, rest) = out.stdout.split_once('\n').unwrap_or((&out.stdout, ""));
@@ -3237,7 +3246,7 @@ fn a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares()
         |network: &str, aliases: &[&str]| json!({ "EndpointsConfig": { network: { "Aliases": aliases } } });
     let logs_of = |name: &str| exec(&["api", "GET", &format!("/containers/{name}/logs?stdout=1"), ""]).stdout;
     let ready = |name: &str| {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !logs_of(name).contains("ready") {
             assert!(
                 patience.holds(),
@@ -3246,6 +3255,7 @@ fn a_microvms_own_engine_makes_networks_whose_members_reach_what_each_declares()
             );
             std::thread::sleep(Duration::from_millis(50));
         }
+        patience.done();
     };
     let finished = |name: &str| {
         let _ = exec(&["api", "POST", &format!("/containers/{name}/wait"), ""]);
@@ -3483,11 +3493,12 @@ fn a_microvms_own_engine_makes_volumes_of_its_own() {
         shards(&all)
     };
     for prov in ["prov", "other"] {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while exec_in(prov, &["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
             assert!(patience.holds(), "{prov}'s engine never answered");
             std::thread::sleep(Duration::from_millis(50));
         }
+        patience.done();
     }
     let api = |prov: &str, method: &str, path: &str, body: &Value| -> (String, Value) {
         let body = if body.is_null() {
@@ -3691,11 +3702,12 @@ fn a_container_in_anothers_namespace_shares_that_ones_as_it_is() {
         all.extend_from_slice(args);
         shards(&all)
     };
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while exec(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
         assert!(patience.holds(), "its engine never answered");
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     let api = |method: &str, path: &str, body: &Value| -> (String, String) {
         let body = if body.is_null() {
             String::new()
@@ -3718,11 +3730,12 @@ fn a_container_in_anothers_namespace_shares_that_ones_as_it_is() {
         logs_of(name)
     };
     let ready = |name: &str| {
-        let mut patience = Patience::of(&home, TIMEOUT);
+        let mut patience = Patience::of(&home);
         while !logs_of(name).contains("ready") {
             assert!(patience.holds(), "{name} never said it was ready");
             std::thread::sleep(Duration::from_millis(50));
         }
+        patience.done();
     };
     let links = |said: &str| -> Vec<String> {
         said.lines()
@@ -3866,7 +3879,7 @@ volumes:
         all.extend_from_slice(args);
         shards(&all)
     };
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     let mut said = compose_in(&["up", "-d"]);
     while said.status != Some(0) && patience.holds() {
         // Its engine may not answer yet as the microVM's command starts.
@@ -3879,11 +3892,12 @@ volumes:
     listed.sort_unstable();
     assert_eq!(listed, ["app running", "db running"], "{ps}");
     // app reaches db by its service's name, on the port db declares, once db listens.
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while !compose_in(&["logs", "db"]).stdout.contains("ready") {
         assert!(patience.holds(), "db never said it was ready");
         std::thread::sleep(Duration::from_millis(100));
     }
+    patience.done();
     let asked = compose_in(&["exec", "-T", "app", "/bin/testguest", "ask", "db:7000"]);
     assert_eq!(asked.status, Some(0), "{asked}");
     assert!(asked.stdout.starts_with("ask from 10.244."), "{asked}");
@@ -3925,11 +3939,12 @@ fn a_running_member_is_connected_and_disconnected_at_once() {
         all.extend_from_slice(args);
         shards(&all)
     };
-    let mut patience = Patience::of(&home, TIMEOUT);
+    let mut patience = Patience::of(&home);
     while exec(&["api", "GET", "/_ping", ""]).stdout != "api HTTP/1.1 200 OK\nOK" {
         assert!(patience.holds(), "its engine never answered");
         std::thread::sleep(Duration::from_millis(50));
     }
+    patience.done();
     let api = |method: &str, path: &str, body: &Value| -> (String, Value) {
         let body = if body.is_null() {
             String::new()

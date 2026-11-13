@@ -259,6 +259,11 @@ Run each on the green tree with `cargo test -p shards-net --profile test-release
    `perl -0pi -e 's/for r in resumed\.iter\(\)\.filter\(\|r\| r\.waiter == waiter\)/for r in resumed.iter().filter(|_| false)/' crates/net/src/lease.rs`
 3. `Run::resumed` dropping what `lease::refused` gave (the `resume_flows` path). Fails both 503 tests:
    `perl -0pi -e 's/refused: lease::refused\(resumed, waiter\),/refused: { let _ = resumed; Vec::new() },/' crates/net/src/inject.rs`
+4. A refresh asked outside left parked to go upward (the test waits' red, STEP8.md "The injector's test waits"). Fails
+   `an_h2_refresh_is_answered_outside_on_its_stream_with_placeholders` and
+   `a_refused_h2_refresh_is_answered_on_its_stream_while_another_completes` at once, "the refresh reached the host"
+   (run r1206, the whole lib in 1.26 s; before, a hang of over an hour):
+   `perl -0pi -e 's/s\.up = Upward::Refreshing;/s.up = Upward::Parked(go);/' crates/net/src/inject.rs`
 
 ## Owed
 

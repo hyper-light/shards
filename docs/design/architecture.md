@@ -10602,7 +10602,7 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   host), so the arm decides only where a suspension is all a look sees, Windows' suspended
   threads (jupiter's guard): its red is owed on WHP.
   The gap: a cold wait whose client hangs alive runs to its CI job's limit, its account
-  said then. Owed to the next slice: `Patience`'s own timeout and `DAEMON_QUIET`'s other
+  said then. Owed to the next slices: `DAEMON_QUIET`'s other
   users (`Said::lately`, `Ran`, `Heard`, guests' streams; `STREAM_QUIET` told to guests is
   gone, #77, below),
   and shards-api's `found()` taking a stopped process for held in production's waits too.
@@ -10623,6 +10623,39 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   daemon.rs' `eventually`
   and `wait`, saved.rs', containers.rs', engine.rs' and budget.rs' waits on pools,
   restored VMs and guests' answers, and warm.rs' warm VM's end take it.
+  Since W6's slice 2b (2026-11-13, the person's ruling as above) `Patience` has no deadline
+  of its caller's: `Patience::of(home)` and `Patience::own()` take none, and each is a
+  `Wait` judged as `run_command`'s is (D215's `shards_api::Judge`):
+  - *Its kind* is its call site (`#[track_caller]`, through the helpers that make one:
+    daemon.rs' `wait` and `eventually`, saved.rs' `exit` and `until`, containers.rs' `exit`,
+    `eventually`, `created`, `each_ends`, engine_ring.rs' `answering`, `await_rings` and
+    `held`), its record kept under `target/judge-records` as a command's is. Its caller
+    says the state came with `done()`, the kind's answer, which teaches W*; a state seen
+    only at the look after a refusal teaches nothing.
+  - *Its party* (`common::Party` with no client) is its home's daemon and what descends
+    from it, this test's own VM processes (`shards-vm`, `shards-vm-gpu` under the test's
+    process: `run --kernel`'s, `restore`'s, warm.rs' warm VM) and theirs, and the daemon's
+    words (`Said`, its heartbeats judged by their floor as before). The test's process
+    itself is no member: its own looks are CPU.
+  - *Cold*, it follows its party's liveness alone; *learned*, it is looked at each W* past
+    its start and refused at a look that finds no progress at all since the look before, its
+    host not holding it (a stopped or suspended process held, `Watch::stopped`). Cold or
+    learned, it is refused at a look that finds its party gone, no process of it found live
+    (a crashed daemon's stale `daemon.pid` included) and its daemon saying nothing: with no
+    client whose end ends the wait, the party's processes are its liveness. A refusal is
+    followed by one look more, so a state that came as its party ended is still seen, and
+    then says its account on stderr (call site, party, last progress, hold, record).
+  - R03: no literal. The old `TIMEOUT`, `CLIENT`, 10 s and 5 s arguments, budget.rs'
+    learned start and containers.rs' pace bound go from every call (68 sites); the
+    tests' own claims beside them (`each_ends`' pace, daemon.rs' unpatient 5 s probe) stay.
+  - Red at 3e9723c64 (tests/harness.rs `a_patient_wait_goes_on_while_its_party_works`): a
+    stand-in busy for a second, named its home's daemon, cut by `Patience::of(home, 100 ms)`
+    156 ms in on adas-mac-studio.local (macOS arm64, kiln r1140), as `Ran` followed only VM
+    processes under the daemon. Green at 1361742b3 there (r1154): both rounds held to the
+    stand-in's end, the second's kind learned from the first's `done()`; harness.rs 6 passed.
+  - The gap: a wait on a state another party brings after the home's daemon has gone
+    (containers.rs' `placed_under_slices`: the systemd scope removed after `stop daemon`)
+    has its liveness end at once and gets its look after alone.
 - **A guest's stream follows its bytes, and its end its output** (every host). CPU time is
   no progress past a start: a guest on more vCPUs than its host has CPUs runs them all for
   ever, its stream stopped or not, and snapshot.rs' 64-vCPU storm on the arm64 Windows
