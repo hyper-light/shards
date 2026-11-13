@@ -258,6 +258,7 @@ fn daemon(
         remote: Remote {
             address,
             daemon: identity.fingerprint(),
+            rtt: tls::Rtt::Unmeasured,
         },
         stopper,
         seen: Watch { rx, seen: Vec::new() },
@@ -497,8 +498,13 @@ fn a_streams_last_frames_and_its_end_come_at_once_and_are_all_taken() {
             inbound: HashMap::new(),
         };
         let config = tls::server(daemon_id).unwrap();
-        let (mut driver, sender) =
-            Driver::bind("127.0.0.1:0".parse().unwrap(), Some(config), handler).unwrap();
+        let (mut driver, sender) = Driver::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            Some(config),
+            handler,
+            tls::Rtt::Unmeasured.handshake_bound(),
+        )
+        .unwrap();
         let _ = tx.send((driver.local().unwrap(), sender));
         let _ = driver.run();
     });
@@ -507,6 +513,7 @@ fn a_streams_last_frames_and_its_end_come_at_once_and_are_all_taken() {
     let remote = Remote {
         address,
         daemon: daemon_id.fingerprint(),
+        rtt: tls::Rtt::Unmeasured,
     };
     for _ in 0..20 {
         let (status, out, err) = run(laptop, remote, &["anything"], None).get();
@@ -580,8 +587,13 @@ fn a_client_asked_to_send_no_more_stdin_waits_for_its_answer() {
             inbound: HashMap::new(),
         };
         let config = tls::server(daemon_id).unwrap();
-        let (mut driver, sender) =
-            Driver::bind("127.0.0.1:0".parse().unwrap(), Some(config), handler).unwrap();
+        let (mut driver, sender) = Driver::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            Some(config),
+            handler,
+            tls::Rtt::Unmeasured.handshake_bound(),
+        )
+        .unwrap();
         let _ = tx.send((driver.local().unwrap(), sender));
         let _ = driver.run();
     });
@@ -589,6 +601,7 @@ fn a_client_asked_to_send_no_more_stdin_waits_for_its_answer() {
     let remote = Remote {
         address,
         daemon: daemon_id.fingerprint(),
+        rtt: tls::Rtt::Unmeasured,
     };
     let endless: Option<Box<dyn Read + Send>> = Some(Box::new(std::io::repeat(b'y')));
     let later = run(laptop, remote, &["anything"], endless);
@@ -794,14 +807,20 @@ impl RawClient {
         let (tx, made) = mpsc::channel();
         let driver = std::thread::spawn(move || {
             let raw = Raw {
-                config: Some(tls::client(identity, remote.daemon).unwrap()),
+                config: Some(tls::client(identity, remote.daemon, remote.rtt).unwrap()),
                 heard: heard_tx,
                 stops: stops_tx,
                 conn: None,
                 inbound: HashMap::new(),
                 done: false,
             };
-            let (mut driver, sender) = Driver::bind("127.0.0.1:0".parse().unwrap(), None, raw).unwrap();
+            let (mut driver, sender) = Driver::bind(
+                "127.0.0.1:0".parse().unwrap(),
+                None,
+                raw,
+                remote.rtt.handshake_bound(),
+            )
+            .unwrap();
             let _ = tx.send(sender);
             let _ = driver.run();
         });
@@ -1033,7 +1052,11 @@ fn a_machine_takes_as_many_strangers_as_it_holds_invitations() {
     let start = Instant::now();
     let second = RawClient::new(strangers[1], d.remote);
     assert_eq!(second.next(), unenrolled());
-    assert!(start.elapsed() < tls::IDLE, "{:?}", start.elapsed());
+    assert!(
+        start.elapsed() < tls::unanswered(Duration::ZERO),
+        "{:?}",
+        start.elapsed()
+    );
     // The first is served: a join too long, refused by its header.
     let mut join = vec![Tag::Join as u8];
     join.extend_from_slice(&u32::try_from(invite::JOIN_MAX + 1).unwrap().to_be_bytes());
@@ -1055,13 +1078,18 @@ fn a_machine_takes_as_many_strangers_as_it_holds_invitations() {
     let start = Instant::now();
     let fourth = RawClient::new(strangers[3], none.remote);
     assert_eq!(fourth.next(), unenrolled());
-    assert!(start.elapsed() < tls::IDLE, "{:?}", start.elapsed());
+    assert!(
+        start.elapsed() < tls::unanswered(Duration::ZERO),
+        "{:?}",
+        start.elapsed()
+    );
 }
 
-/// A client the machine has not enrolled has as long to join as a client waits for its
-/// daemon, the idle bound: its connection kept alive, the daemon closes it then.
+/// A client the machine has not enrolled has as long to join as its connection waits for an
+/// unanswered peer, R1 at its probe timeout (`tls::unanswered`), 15 s on loopback: its
+/// connection kept alive, the daemon closes it then.
 #[test]
-fn a_stranger_has_the_idle_bound_to_join() {
+fn a_stranger_has_an_unanswered_peers_bound_to_join() {
     let daemon_id = leak(Identity::generate().unwrap());
     let stranger = leak(Identity::generate().unwrap());
     let d = daemon(daemon_id, Vec::new(), vec![invitation(daemon_id)]);
@@ -1069,13 +1097,14 @@ fn a_stranger_has_the_idle_bound_to_join() {
     let raw = RawClient::new(stranger, d.remote);
     assert_eq!(raw.next(), unenrolled());
     let took = start.elapsed();
-    assert!(took >= tls::IDLE, "closed after {took:?}, before {:?}", tls::IDLE);
+    let bound = tls::unanswered(Duration::ZERO);
+    assert!(took >= bound, "closed after {took:?}, before {bound:?}");
 }
 
-/// A client the machine enrolled keeps its connection past the idle bound, as long as its
-/// command runs.
+/// A client the machine enrolled keeps its connection past a stranger's bound to join, as long
+/// as its command runs.
 #[test]
-fn an_enrolled_clients_command_runs_past_the_idle_bound() {
+fn an_enrolled_clients_command_runs_past_a_strangers_bound() {
     let daemon_id = leak(Identity::generate().unwrap());
     let laptop = leak(Identity::generate().unwrap());
     let d = daemon(
@@ -1083,14 +1112,15 @@ fn an_enrolled_clients_command_runs_past_the_idle_bound() {
         vec![("laptop".into(), laptop.spki().to_vec())],
         Vec::new(),
     );
-    let past = (tls::IDLE.as_secs() + 1).to_string();
+    let past = (tls::unanswered(Duration::ZERO).as_secs() + 1).to_string();
     let (status, _, _) = run(laptop, d.remote, &["sleep", &past], None).get();
     assert_eq!(status, Ok(0));
 }
 
-/// A client of an address no daemon answers at is told so at its handshake's bound, the
-/// idle bound, never at the longer silence an established connection lives through
-/// (`tls::QUIET`), which its transport's own idle timeout now is.
+/// A client of an address no daemon answers at is told so at its handshake's bound
+/// (`tls::Rtt::handshake_bound`, 15 s for a daemon never measured), never at the longer
+/// silence an established connection lives through (`tls::QUIET`), its transport's own idle
+/// timeout.
 #[test]
 fn no_daemon_answering_is_told_at_the_handshakes_bound() {
     let laptop = leak(Identity::generate().unwrap());
@@ -1099,6 +1129,7 @@ fn no_daemon_answering_is_told_at_the_handshakes_bound() {
     let remote = Remote {
         address: silent.local_addr().unwrap(),
         daemon: Identity::generate().unwrap().fingerprint(),
+        rtt: tls::Rtt::Unmeasured,
     };
     let request = Request {
         args: vec![b"true".to_vec()],
@@ -1117,7 +1148,10 @@ fn no_daemon_answering_is_told_at_the_handshakes_bound() {
     )
     .unwrap_err();
     let took = start.elapsed();
-    assert!(took >= tls::IDLE && took < tls::QUIET, "{took:?}");
+    assert!(
+        took >= remote.rtt.handshake_bound() && took < tls::QUIET,
+        "{took:?}"
+    );
     assert!(said.to_string().contains("no shards daemon answered"), "{said}");
     drop(silent);
 }
