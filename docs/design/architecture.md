@@ -5389,8 +5389,8 @@ terminal that went away), and checks a client's enrollment again for each comman
 `shards remove client` ends its access at once. A join's refusal is the same whatever made
 it fail. The client's side (`client.rs`, `context.rs`) refuses here what a context does not
 carry yet, the client's terminal and files, read by shards' own parser of each command (a
-flag past another's value included); and where no daemon answers, it says so as each probe
-of its handshake goes, and waits on for as long as its user does, past the slowest handshake
+flag past another's value included); and where no daemon answers, it says so once, past what
+its path has shown, and waits on for as long as its user does, past the slowest handshake
 seen from a daemon reached before ("Its values derived", below). A connection that has done
 its handshake lives while its peer makes progress, its liveness checked as it is used, with
 no idle timeout (D176 part 6, "Over a slow link": 10 s of silence ended 2 of the first 20
@@ -6473,12 +6473,26 @@ replaced by:
   previous RTT is available, the initial RTT SHOULD be set to 333 milliseconds"), the only
   figure here, the protocol's own, and has no deadline: QUIC probes it as §6.2 does, its
   backoff doubling each probe timeout, and each probe past its first flight, while nothing of
-  the daemon's has been heard, is told typed to whoever waits (`Handler::unanswered`,
-  `client::Unanswered { probes, waited }`). The CLI says each on stderr
-  (`shards: NAME: no answer yet from ADDR: N probes over T`) and waits as long as its user
-  does; a daemon's relay logs each, and waits until that daemon answers or this one stops,
-  which hangs it up at once from its start (`client::HangUp`), as a probe its backoff puts ever
-  further off would not. A host that answers its port unreachable refuses at once: the
+  the daemon's has been heard, is asked typed of whoever waits whether it waits on
+  (`Handler::unanswered`, `client::Unanswered { probes, waited }`), the user's patience alone
+  deciding. What its user is told is a stall's, once a handshake, as an established
+  connection's is (ROOT's ruling A): a path with no window, a cold start's or a marked one's,
+  is told at the first probe past the probe timeout RFC 9002 gives a path with no RTT sample
+  (`tls::Known::COLD_PTO`: §5.3 starts smoothed_rtt at kInitialRtt and rttvar at half of it,
+  §6.2.1's PTO is smoothed_rtt + max(4·rttvar, kGranularity) with no max_ack_delay in the
+  handshake's spaces: 999 ms, three kInitialRtt, the first probe a cold start sends), and a
+  path with one at its run-out (below), typed `client::Stall::Unreached { waited, window }`
+  (`client::Told`). The CLI says it on stderr (`shards: NAME: no answer yet from ADDR in T;
+  still waiting (…; ^C ends this)`) and waits as long as its user does; a daemon's relay logs
+  it the same way, and waits until that daemon answers or this one stops, which hangs it up at
+  once from its start (`client::HangUp`), as a probe its backoff puts ever further off would
+  not. Each probe was told from 1e4c5a905: a marked path starts its probes from its own RTT,
+  and on a loaded host a reached one's handshake probes within its window, so a command's
+  stderr held "shards: gpu: no answer yet from 127.0.0.1:44476: 4 probes over 424.6µs" (ROOT's
+  KVM run at 21a65b459 on adacachy2, `tests/context.rs`'s
+  `a_policy_through_a_context_is_the_clients_its_builder_the_machine`); red and green so in
+  `client.rs`'s `a_handshake_within_its_paths_window_is_told_nothing_and_once_past_it` and
+  `a_handshake_with_no_window_is_told_once_past_the_cold_probe_timeout`. A host that answers its port unreachable refuses at once: the
   client's socket is connected to its one peer (`Driver::aim`), so its ICMP reads as a refusal
   (ECONNREFUSED; Windows' WSAECONNRESET), said so, and the record kept as it was, whichever of
   its next send and its next read is told of it (`Driver::flush_datagrams`): Linux gives a
@@ -6495,9 +6509,10 @@ replaced by:
   nothing heard from it (its Initial and Handshake packets count; before its first, nothing
   does, QUIC's probes being this side's own sends) past the later of when it was last heard and
   that timeout, it has run out. Run out, it is marked, told once, typed (`Handler::ran_out`,
-  `RanOut::Handshake { waited, window }`), and its window let go (`Liveness::handshake_ran_out`):
-  it goes on as a cold start's does, with no deadline, each probe told to whoever waits, until it
-  ends or its caller gives up, as every wait after a run-out follows the party's liveness and
+  `RanOut::Handshake { waited, window }`, to its user `Stall::Unreached` with its window), and
+  its window let go (`Liveness::handshake_ran_out`): it goes on as a cold start's does, with no
+  deadline, each probe asked of whoever waits and nothing more told, until it ends or its
+  caller gives up, as every wait after a run-out follows the party's liveness and
   progress (the person's ruling; D222's "a run-out learns nothing"). One that goes past its
   window and its probe timeout both while it is heard has run out too, and goes on, marked. A
   marked record's next handshake waits as a cold start does, until a handshake ends again.
@@ -28117,6 +28132,52 @@ tests unchanged.
 **Owed** (ROOT, real VMs): `api_image.rs`'s `an_images_next_run_takes_a_warm_host_of_its_pool`
 on HVF, KVM x86_64 and WHP; R14's start of a warm run against a restored one, the warm host's
 resident memory, and its start's time from `WARMED`.
+
+**Decided: a run host's layers end with it** (plan step 17, #73). A run host makes its
+microVM's writable layer's file in its home's `layers` (D190, layers.rs `fresh`), unlinked as
+its handle goes once the microVM is ready or has failed. A host that ends before that, stopped
+mid-boot (D231's `BootStop`: its process group killed on Unix, its job on Windows) or failing,
+never lets go of it: the file stayed, sparse, up to the run's 10 GiB, its written blocks
+counted, until a daemon next started in that home cleared `layers`, and an orchestrator's home
+may never run one. Found from source by the boot-stop test's implementer; reproduced by the
+stand-in host tests below, red before the change.
+- *Considered: no name to outlive its holders.* Unlink as the VM process opens the file, or
+  hand it a descriptor of an unlinked file. Rejected for this slice: the VM process takes
+  `--layer PATH` and opens it by path (`platform::open_input`, through its grants on macOS and
+  Windows), a restore's file is a clone made by name (`for_restore`), and a daemon's run that
+  stays needs the name until its microVM has gone, when it renames it into its directory
+  (`keep_at`). A descriptor-only layer means a new grant kind on three platforms and a
+  `keep_at` that links an open file back to a name (Linux's `linkat` of `/proc/self/fd`, none
+  on macOS or Windows): a larger redesign, and the window between `fresh` and the hand-off
+  stays either way.
+- *Decided: the orchestrator removes them.* Only the process that makes a layer's file names it,
+  by its own pid (`shards_ipc::layer_name`, now shared by `fresh` and the sweep;
+  `layer_maker` reads it back). The orchestrator's watcher of each host (`session.rs`
+  `watch`) waits for the host's end without reaping it (`Child::ended`, waitid `WNOWAIT`), then
+  removes every `layers/<hostpid>-*` file (`clear_layers`), then reaps it. Ended, the host
+  makes no more; unreaped (on Windows, its handle held by the watcher), its pid is no other
+  process's, so no live host of the same pid in the same home can exist and lose its file to
+  the sweep. Which home is the host's is found as the host finds it, from the environment it is
+  given over the orchestrator's (`shards_ipc::home_in`, `home`'s rule with the lookup passed
+  in). A file its microVM still holds as it is killed goes as the one its host let go of at
+  readiness does: the name now, the blocks with the microVM.
+- *Unchanged:* a run that stays keeps its layer. A kept layer is renamed out of `layers` into
+  its run's directory (`keep_at`) or never was in it (`in_place`), and an orchestrator's run host
+  keeps none. A host that ends after its run started has let go of its file already, and the
+  sweep finds nothing. The daemon's `clear` at start stays for a daemon's own.
+- *Literals:* none. Removal failures are not refusals: the watcher has no caller to tell, a
+  name left is what the drop leaves on the same failure, and the next daemon clears it.
+
+**Tested** (unit, stand-in hosts, no VM): `a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started`
+(Unix) and its Windows twin `a_stop_mid_boot_ends_the_boot_its_host_and_the_vm_of_its_job`,
+whose hosts now make a layer's file as the real one names it and are stopped mid-boot;
+`a_run_host_that_ends_before_its_run_starts_leaves_no_layer` (Unix), whose host makes two
+and exits. Each expects the host's gone and another pid's kept. `a_layers_name_says_its_maker`
+(shards-ipc).
+
+**Owed** (ROOT, real VMs): `api_image.rs`'s
+`a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run`, which now also expects no
+`layers/<host>-*` file once stopped, on HVF, KVM x86_64 and WHP.
 
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the run hosts' pairing, kiln's side and every real-VM run owed)
 

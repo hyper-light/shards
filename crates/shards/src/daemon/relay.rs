@@ -497,32 +497,33 @@ impl<D: Disk> Daemon<D> {
                 };
                 // Its handshake and waits start from what the home knows of the machine's path,
                 // and what the connection saw is kept for the next (D180). A machine never
-                // reached is waited for with no deadline of shards' own, each probe logged, for
-                // as long as its client waits (its party's liveness: a client gone is seen at
-                // the next probe), and the relay hung up from its start as the daemon stops,
-                // which ends its client's connection here.
+                // reached is waited for with no deadline of shards' own, for as long as its
+                // client waits (its party's liveness: a client gone is seen at the next probe),
+                // and the relay hung up from its start as the daemon stops, which ends its
+                // client's connection here.
                 let before = crate::context::known(&self.home, &context);
-                let told = |unanswered: shards_remote::client::Unanswered| {
-                    let waits = !gone(&conn);
-                    log(format!(
-                        "context {}: no answer yet from {}: {} probes over {:.1?}{}",
-                        context.name,
-                        context.address,
-                        unanswered.probes,
-                        unanswered.waited,
-                        if waits { "" } else { "; its engine client has gone" }
-                    ));
-                    waits
-                };
-                // A machine unheard past its path's window is logged once a stall, and waited for
-                // as its client waits (D180, ROOT's ruling A).
-                let stalled = |stall: shards_remote::client::Stall| {
-                    if let shards_remote::client::Stall::Unheard { unheard, .. } = stall {
+                let waits = |unanswered: shards_remote::client::Unanswered| {
+                    let goes_on = !gone(&conn);
+                    if !goes_on {
                         log(format!(
-                            "context {}: the daemon at {} hasn't been heard for {unheard:.1?}; still waiting (it may be busy or gone)",
-                            context.name, context.address
+                            "context {}: no answer yet from {}: {} probes over {:.1?}; its engine client has gone",
+                            context.name, context.address, unanswered.probes, unanswered.waited,
                         ));
                     }
+                    goes_on
+                };
+                // A machine unheard past its path's window, its handshake's or its answers', is
+                // logged once a stall, and waited for as its client waits (D180, ROOT's ruling A).
+                let stalled = |stall: shards_remote::client::Stall| match stall {
+                    shards_remote::client::Stall::Unheard { unheard, .. } => log(format!(
+                        "context {}: the daemon at {} hasn't been heard for {unheard:.1?}; still waiting (it may be busy or gone)",
+                        context.name, context.address
+                    )),
+                    shards_remote::client::Stall::Unreached { waited, .. } => log(format!(
+                        "context {}: no answer yet from {} in {waited:.1?}; still waiting (it may be busy, loaded or not listening)",
+                        context.name, context.address
+                    )),
+                    shards_remote::client::Stall::Answered { .. } => {}
                 };
                 let held = |hang_up| self.engine.hold_relayed(number, hang_up, &self.stopping);
                 let (ran, seen) = shards_remote::client::exec_with(
@@ -534,7 +535,7 @@ impl<D: Disk> Daemon<D> {
                     io::sink(),
                     |_| {},
                     |_| {},
-                    told,
+                    waits,
                     stalled,
                     held,
                 );

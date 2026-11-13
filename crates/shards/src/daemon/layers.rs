@@ -11,7 +11,8 @@
 //! gone ([`LayerFile::keep_at`]), its guest having written its journal in place, and every
 //! other goes with its handle, its microVM holding it open and mapped meanwhile, as a
 //! run's swap does (D159).
-//! What a daemon before left in `layers` is no run's by the next.
+//! What a daemon before left in `layers` is no run's by the next; what a run host left
+//! there as it ended before its microVM held it, its orchestrator removes (D253).
 //!
 //! A kept layer is read here, on the host ([`pack`]): what `commit` takes of a stopped
 //! microVM, and what a microVM's next run, or a visit to its files, puts back.
@@ -25,7 +26,7 @@ use shards_ext4::read::{self, Kind, Volume, Walker};
 
 /// Where layers are made: in the home, beside the files they are copied from, so that a
 /// copy may share their blocks.
-const LAYERS: &str = "layers";
+const LAYERS: &str = shards_ipc::LAYERS;
 
 /// A layer's file is whole multiples of this: a pmem device's (vmm `pmem::ALIGN`).
 const STEP: u64 = 2 << 20;
@@ -946,13 +947,15 @@ pub(super) fn clear(home: &Path) {
     }
 }
 
-/// A name in the home's layers no other file has had.
+/// A name in the home's layers no other file has had: this process's own, by its pid, so
+/// that what it leaves there as it ends before its microVM holds the file is its
+/// orchestrator's to remove once it has ended, and no other's (D253).
 fn fresh(home: &Path) -> Result<PathBuf, String> {
     static COUNT: AtomicU64 = AtomicU64::new(0);
     let dir = home.join(LAYERS);
     shards_vmm::platform::create_private_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let n = COUNT.fetch_add(1, Ordering::Relaxed);
-    Ok(dir.join(format!("{}-{n}", std::process::id())))
+    Ok(dir.join(shards_ipc::layer_name(std::process::id(), n)))
 }
 
 /// A new file at `path`, read-write, its user's alone, sparse: a run's layer holds 10 GiB
