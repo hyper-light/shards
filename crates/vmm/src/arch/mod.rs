@@ -3,6 +3,30 @@
 pub mod aarch64;
 pub mod x86_64;
 
+/// The CPU a guest of this build's architecture is told, and a move checks (D176 part 6):
+/// its ID registers on arm64 ([`aarch64::cpu`]), its CPUID's feature leaves on x86-64
+/// ([`x86_64::cpuid`]), each as a CPU baseline names them.
+pub mod cpu {
+    #[cfg(target_arch = "aarch64")]
+    pub use super::aarch64::cpu::{Lacks, covers, decode, encode};
+    #[cfg(target_arch = "x86_64")]
+    pub use super::x86_64::cpuid::{Lacks, baseline, covers, decode, encode};
+
+    /// A CPU as a baseline names it: ID registers by encoding.
+    #[cfg(target_arch = "aarch64")]
+    pub type Id = Vec<(u16, u64)>;
+    /// A CPU as a baseline names it: leaf 0 and each feature leaf, as `[function, index,
+    /// flags, eax, ebx, ecx, edx]`.
+    #[cfg(target_arch = "x86_64")]
+    pub type Id = Vec<[u32; 7]>;
+
+    /// The CPU every one of `cpus` runs; none of none. Any two arm64 CPUs have one.
+    #[cfg(target_arch = "aarch64")]
+    pub fn baseline(cpus: &[Id]) -> Result<Id, Lacks> {
+        Ok(super::aarch64::cpu::baseline(cpus))
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

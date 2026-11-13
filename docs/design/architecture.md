@@ -12184,10 +12184,13 @@ peer", each going on here as it should. What changed for them:
   Ultra's and an M4 Max's no `rpres`, PM M499), so no move checks them, and the baseline
   test holds it on each Mac it runs on. A guest is shown less than the features macOS
   names in registers the framework does say too (an M4 Max's finds no `i8mm`, ISAR1's),
-  which a baseline's fields, the hypervisors' own views, take in. On
-  arm64 only: x86_64's CPUID has `covers` and no meet yet, and `configure cpu` says so
-  there; between the two Linux hosts measured (one CPU model, Linux 7.2 and 7.3) every move
-  went through without one (PM M497).
+  which a baseline's fields, the hypervisors' own views, take in. On KVM x86-64 too (D242):
+  CPUID's feature leaves, one vendor's, each register the bits every machine's KVM offers
+  (`arch::x86_64::cpuid::meet`), the VM's supported CPUID brought within it before its
+  shape is written in (`cpuid::within`), and checked by those bits alone, none by name.
+  Not on WHP, which restores a snapshot only on the CPU it was taken on: `configure cpu`
+  says so there. Between the two Linux hosts measured (one CPU model, Linux 7.2 and 7.3)
+  every move went through without one (PM M497).
 - **A listener that outlives its runner's restarts** (two-hosts.sh, the harness of these
   measurements). A runner that restarts ends what its runs started, the listening daemon
   among them, and kiln's ends a launchd job a session starts within seconds (3 s on the M3

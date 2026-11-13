@@ -781,6 +781,105 @@ fn a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it() {
     assert_eq!(shards_in(&there, &["rm", "-f", "told"]).status, Some(0));
 }
 
+/// The CPU baseline a home's microVMs are told on x86-64 (D176 part 6, D241): CPUID's
+/// feature leaves, which `configure cpu` meets across the machines its contexts reach, and
+/// which go with a microVM moved. Told this machine's own CPU less AVX2 and SHA (leaf 7
+/// EBX bits 5 and 29), a guest's /proc/cpuinfo names neither, whatever its host has; moved,
+/// it finds the same there. KVM's: WHP tells no baseline (hv::whp restores a snapshot only
+/// on the CPU it was taken on).
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[test]
+fn an_x86_cpu_baseline_is_all_its_guest_finds_and_goes_with_it() {
+    let Some((here, there, _listening, image)) = machines("base86") else {
+        return;
+    };
+    let field = |home: &Path, args: &[&str]| {
+        let said = shards_in(home, args);
+        assert_eq!(said.status, Some(0), "{args:?}: {said}");
+        said.stdout.trim().to_string()
+    };
+    let cpu = |home: &Path, name: &str| {
+        cpu_identity(&field(
+            home,
+            &["exec", name, "/bin/testguest", "files", "/proc/cpuinfo"],
+        ))
+    };
+    let flags = |cpu: &[String]| {
+        cpu.iter()
+            .find_map(|l| l.strip_prefix("flags"))
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    let start = |name: &str| {
+        let run = shards_in(
+            &here,
+            &[
+                "run", "-d", "--pull", "never", "--name", name, &image, "counter", "20",
+            ],
+        );
+        assert_eq!(run.status, Some(0), "{run}");
+        let log_here = || logs(&here, name);
+        until("counting", &mut || counts(&log_here()).len() >= 3, &log_here);
+    };
+    start("host");
+    let hosts = flags(&cpu(&here, "host"));
+    assert!(!hosts.is_empty(), "a guest's CPU names its features");
+    assert_eq!(shards_in(&here, &["rm", "-f", "host"]).status, Some(0));
+
+    // This machine's CPU met with the other home's, its own: then less AVX2 and SHA.
+    let _ = field(&here, &["configure", "cpu", "--baseline", "lab"]);
+    let file = here.join("cpu-baseline");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let (line, of) = text.split_once('\n').unwrap();
+    assert_eq!(of.trim(), "lab", "{text}");
+    assert!(line.starts_with("0.0="), "leaf 0, its vendor, first: {line}");
+    let told_line: Vec<String> = line
+        .split(',')
+        .map(|leaf| match leaf.strip_prefix("7.0=") {
+            Some(regs) => {
+                let mut r: Vec<u32> = regs
+                    .split(':')
+                    .map(|v| u32::from_str_radix(v, 16).unwrap())
+                    .collect();
+                r[1] &= !(1 << 5 | 1 << 29);
+                format!("7.0={:08x}:{:08x}:{:08x}:{:08x}", r[0], r[1], r[2], r[3])
+            }
+            None => leaf.to_string(),
+        })
+        .collect();
+    let told_line = told_line.join(",");
+    std::fs::write(&file, format!("{told_line}\nlab\n")).unwrap();
+    let inspected = field(&here, &["inspect", "cpu"]);
+    assert!(inspected.contains(&told_line), "{inspected}");
+    start("told");
+    let told = cpu(&here, "told");
+    let found = flags(&told);
+    assert!(!found.is_empty(), "{told:?}");
+    for masked in ["avx2", "sha_ni"] {
+        assert!(!found.iter().any(|f| f == masked), "{masked}: {found:?}");
+    }
+    // Where this host has either, the baseline took it away; the rest are the host's.
+    if hosts.iter().any(|f| f == "avx2" || f == "sha_ni") {
+        assert_ne!(found, hosts);
+    }
+    assert!(
+        found.iter().all(|f| hosts.contains(f)),
+        "{found:?} within {hosts:?}"
+    );
+    let (kernel, init) = (kernel(), guest_init());
+    let timed: [(&str, &OsStr); 3] = [
+        ("SHARDS_HOME", here.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+    ];
+    let moved = run_shards_env(&[], &["move", "vm", "told", "lab"], &timed, TIMEOUT);
+    assert_eq!(moved.status, Some(0), "{moved}");
+    assert_eq!(cpu(&there, "told"), told);
+    assert_eq!(shards_in(&there, &["rm", "-f", "told"]).status, Some(0));
+}
+
 /// A microVM moved to another machine, the one whose invitation `SHARDS_MOVE_INVITE` names
 /// (a file: two-hosts.sh `invite`, run there, makes one), as context `peer`; the test image
 /// pulled here alone, from this machine's own loopback registry, which the other cannot
