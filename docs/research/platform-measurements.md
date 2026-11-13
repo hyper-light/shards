@@ -22773,6 +22773,153 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R11 | The test is Unix's (the door is Unix's; Windows' shares go with its job). |
   | R15, R16 | No agents started for this; `~/g51-carrier/src-s6b` and `~/g51-s2-target` on adalundhe-macbook-pro are removed after. |
 
+### M545. A request's rest waited for while its client goes on with it, never a doubled cutoff (D185)
+
+- **Question.** fb1f28d42 (11-09) waited for the rest of a request by D222's restart cutoff:
+  a second at least before any cut, drawn from [t, 2t), and doubled for each cut in a row
+  (RFC 6298 §5.5). On macOS the doubled wait passed what one select(2) takes (PM M542). The
+  person ruled on 2026-11-13 that there is no ×2: a wait follows the party's liveness and
+  progress, then the slowest answer seen. For a request, what is its client's progress, and
+  what is the slowest answer?
+- **Found, from the code.**
+  - A client writes its request in one write (`shards_ipc::slots::Client::ask`). Its first
+    byte, which the slot's wait reads (`Slot::wait`), and its rest come together. So a rest
+    is read whole within microseconds of its first byte, and a client that sends nothing
+    past it is none of shards' own.
+  - A request can be larger than a FIFO or pipe holds: a run's spec, up to `MAX_PAYLOAD`
+    (6 MiB, `run::ARGS_MOST`). Its rest then comes in parts, each as the daemon reads and its
+    client is next run. `a_closed_daemon_waits_for_its_clients_to_take_their_answers` asks
+    with a 300 KiB name. The gap between parts is its client's scheduling, which no rest
+    written whole measures. A window learned from those (microseconds) would cut such a
+    request every time it was asked, for ever, with no doubling now to let one through.
+- **Decision** (`slots::Seen::request_stall`; D185's "Admission").
+  - A client that sends nothing past its first byte is waited for as long as the slowest
+    rest the daemon has read whole, from its first byte, and then cut. As before, it is told
+    RESTART, or finds its `say` gone as it writes, and asks again.
+  - Before any rest has come whole, nothing bounds the wait: it follows the client alone,
+    its end (its FIFO's or pipe's) or the daemon ending its clients. A daemon is mostly
+    started by a client's request, which teaches it the first rest.
+  - Once its rest has begun, a request is read until it is whole or its client ends.
+    shards_ipc's slot readers (`Within`, fifo.rs and named.rs) keep their deadline until the
+    rest's first byte, then none.
+  - Its cost: a client stopped mid-request holds its slot's descriptors, and keeps an idle
+    daemon up, until it goes on or ends; a closing daemon still lets it go after its
+    answer's wait. The slowest rest is the daemon's own, in memory. A client of the home's
+    own user can lengthen it by writing slowly, which only lengthens the wait on a silent
+    client.
+- **Tests.**
+  - `shards_ipc` `slots::fifo::tests::a_requests_rest_is_waited_for_while_its_client_goes_on`
+    (and its Windows twin in named.rs): a first byte alone is `Late` once the stall has
+    passed; a rest begun and paused past the stall is taken whole; with no stall, a first
+    byte alone is waited on until its client ends.
+  - `daemon::tests::a_request_is_waited_for_while_its_client_goes_on_with_it`: a whole
+    request is answered, and a rest is learned; a client whose rest has begun hears nothing
+    for 2.5 s (past the old cutoff's longest draw), then RESTART as the daemon ends its
+    clients.
+  - `daemon::tests::a_requests_wait_is_learned_from_its_clients`: none before any rest, then
+    the slowest.
+  - tests/daemon.rs's `a_daemon_out_of_descriptors_waits_for_room` now starts its daemon
+    with `shards daemon --detached`, with no request served, so that its silent clients
+    hold their slots (`start_idle_daemon`).
+- **Checked** (one host, adalundhe-macbook-pro, macOS arm64, at 5023a273f over main
+  e1995061f, helpers carried; kiln run r360):
+  - `cargo test -p shards-ipc --lib -- slots`: 15 passed.
+  - `cargo test -p shards --bin shards --` the two daemon tests above, the
+    `a_closed_daemon_*` slot tests and the spare test: 8 passed in 12.6 s.
+  - `cargo test -p shards --test daemon -- a_daemon_out_of_descriptors_waits_for_room`:
+    passed in 5.0 s.
+  - Red, with the reader's deadline kept after the rest began (`/tmp/g51/carrier/red-r03a.sh`):
+    the ipc test failed (`Late` for a rest begun), and the daemon test failed (its client
+    heard RESTART within the 2.5 s).
+  - `cargo clippy -p shards-ipc -p shards --all-targets -- -D warnings` was clean for
+    aarch64-apple-darwin, and for x86_64-pc-windows-msvc through cargo-xwin on
+    adas-mac-studio.local (r394).
+  - Again with D217's helper ends (PM M546), at bdbe0d58e over main 144dc4ada with
+    `CARGO_INCREMENTAL=0` (r486, r488): the same tests passed and both clippies were clean.
+- **Owed.** CI's: the named.rs twin on Windows, and Linux. ROOT's: the daemon and CLI suites
+  on every backend, where every request goes through a slot.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap, index or panic added to production code. |
+  | R02, R03 | The client's own writes and end are the evidence; the one learned value is the slowest rest read whole, none before any. The doubling and RFC 6298's floor go. |
+  | R04 | `Requested`'s outcomes unchanged: `Asked`, `Gone`, `Late` (none of the rest within its stall), `Ended`. |
+  | R05 | The wait is on the FIFO's or pipe's readiness and its end, no probe. |
+  | R09, R10 | Red with the guard removed, green after: above. |
+  | R11 | fifo.rs and named.rs alike; macOS arm64 run, Windows' twin and Linux owed to CI. |
+  | R15, R16 | Implementer; the targets on adalundhe-macbook-pro and adas-mac-studio.local are removed after. |
+
+### M546. A network or share process followed to its end while it goes on with it, never a picked second (D217)
+
+- **Question.** `netproc::reap` gave a network or share process whose VM had gone one second
+  (`GRACE`, picked) and then killed it. The daemon's followers gave a run's network process
+  the same second, and its port check (`in_use`) waited twice that for one. The person ruled
+  on 2026-11-13 that a wait follows the party's liveness and progress, then the slowest answer
+  seen. What is such a process's progress, and its slowest answer?
+- **Found, from the code.** Such a process goes as its VM's links close: the network process
+  as its doorbell hangs up, the share process as its connections to the VM close, once its
+  spawner holds nothing of it (PM M544). Its end wakes its reaper (`Poller::add_exit`, or the
+  process's handle on Windows). D217 already follows a killed VM process the same way: looked
+  at once a slice has passed, and waited on while it runs more than an idle microVM does or
+  holds less than it did (`Followed`), its slice the slowest such end the home has kept, never
+  less than `Progress`'s window (`IDLE_VM_CPU`'s 10 s).
+- **Decision** (D217's new bullet).
+  - Such a process is followed as D217 follows a killed VM process (`End::Helper`, the home's
+    `helper MS`), by `netproc::reap` (the run host's network and share processes, a builder's
+    network process, a daemon run's that failed to start) and by the daemon's followers (a
+    run's network process once its VM ends).
+  - Its own end is kept as the host's; an end its reaper made is not.
+  - A run's host and a builder now write the home's record beside the daemon, so
+    `Ends::heard` puts each end with what the record holds then (another process may have kept
+    one since this one read it), and returns a record it cannot keep, which each caller logs as
+    its own.
+  - `in_use` waits one helper slice for an ended run's network process.
+  - Its cost: a process stuck on nothing of its own is ended 10 s or more after its VM, where it
+    was 1 s. One that exits as its links close ends the wait at once.
+  - Left with their second, their own basis owed (R03): init's relay drain (hostbind.rs
+    `DRAIN`), the daemon's `PUBLISH_PATIENCE`, and warm.rs's wait for its network process's
+    unpublish, each of which took `GRACE` as its basis.
+- **Tests.**
+  - `netproc::reap_tests::a_helper_is_waited_on_while_it_goes_on_with_its_end` (a 200 ms slice):
+    a busy helper is waited on past five slices and ends of itself as its file comes, its end
+    kept; a sleeping one is ended at its first look, nothing kept.
+  - `daemon::ends::tests::a_homes_processes_keep_one_record_of_its_ends`: a run host's helper
+    end and the daemon's exit end are kept together, neither lost to the other's write, and a
+    record that cannot be kept is said.
+  - The daemon's `a_network_process_is_ended_once_it_goes_on_no_more_and_the_ports_freed` (was
+    `…_past_its_grace_…`): a sleeping network process is ended at its first look, after a whole
+    slice, and its end is not kept. `ports_are_freed_as_the_vm_ends_after_its_network_process`
+    and `a_run_whose_ports_are_closed_holds_them_no_longer` hold to one helper slice.
+  - `api_run::hosted::tests::a_share_process_goes_as_its_door_is_let_go_of` (PM M544) passes
+    the home's record.
+- **Checked** (one host, adalundhe-macbook-pro, macOS arm64, `CARGO_INCREMENTAL=0`, at bdbe0d58e
+  over main 144dc4ada, with D185's request wait, PM M545; kiln run r486):
+  - `cargo test -p shards --bin shards --` the tests above with the daemon's slot tests: 17
+    passed in 12.2 s.
+  - `cargo test -p shards-ipc --lib -- slots`: 15 passed.
+  - tests/daemon.rs's `a_daemon_out_of_descriptors_waits_for_room`: passed.
+  - Red with the guard removed, a helper ended at its first look whatever it did
+    (`/tmp/g51/carrier/red-reap.sh`): the reap test failed, "ended while it went on: 201.7ms".
+  - `cargo clippy -p shards-ipc -p shards --all-targets -- -D warnings`: clean for
+    aarch64-apple-darwin, and for x86_64-pc-windows-msvc through cargo-xwin on
+    adas-mac-studio.local (r488).
+- **Owed.** CI's: Linux, and Windows, where `reap` follows a process through its handle; the
+  daemon's followers' "goes on" branch, which only a network process running past a whole
+  slice (10 s at least) shows. ROOT's: the run host's and daemon's real runs, api_image.rs and
+  daemon.rs on every backend.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap, index or panic added to production code; a slice past what a clock holds sets no deadline (the process's end alone). |
+  | R02, R03 | D217's method and record, shared (R12); the second goes; the waits that took it as their basis are named as owed. |
+  | R04 | `Ends::heard` returns its failure; each caller says it in its own words. |
+  | R05 | Woken by the process's end; looked at only once each slice passes. |
+  | R09, R10 | Red with the guard removed, green after: above. |
+  | R11 | Unix and Windows share `reap_by`; each has its own `ended_within`. macOS arm64 run; Windows clippy-checked. |
+  | R15, R16 | Implementer; the targets on adalundhe-macbook-pro and adas-mac-studio.local are removed after landing. |
+
 ### M547. x86_64 musl's tests outgrew their step's 60 minutes: their build in Alpine takes twice glibc's (plan step 1's step 9)
 
 - **Question.** At main cc439a2a7 the x86_64 musl test job (job 131488530250) ran out of its

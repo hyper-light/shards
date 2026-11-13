@@ -7473,11 +7473,13 @@ descriptors.
   took a slot holds no place; and sweeps only while a slot is taken with no request
   read: a minute after it is first seen so, and again a minute after, when a slot still
   unwritten goes. With none, it sleeps until it hears something (PM M260).
-- **A request in time.** The rest of a request is read within the wait its clients'
-  requests have shown makes them come soonest (D222's cutoff; "Admission", below), and no
-  longer once the daemon ends its clients (`requests_end`, a pipe written once): either
-  way the client hears RESTART, as one whose request no thread had read did, and asks
-  again. (Was 10 s, `REQUEST_TIMEOUT`, after which the slot ended unanswered.)
+- **A request in time.** The rest of a request is waited for while its client goes on with
+  it: one that sends nothing past its first byte for as long as the slowest rest the daemon
+  has seen whole is cut, and one whose rest has begun is read until it is whole or its
+  client ends ("Admission", below); no longer, either way, once the daemon ends its clients
+  (`requests_end`, a pipe written once). A client cut hears RESTART, as one whose request
+  no thread had read does, and asks again. (Was 10 s, `REQUEST_TIMEOUT`, after which the
+  slot ended unanswered; then D222's restart cutoff, doubled for each cut in a row.)
 - **Out of descriptors**, the maker offers nothing, says so once, and offers again as it is
   told descriptors were let go of (`Event::Room`, from `wake_listener`); no collection
   starts meanwhile, and clients wait on their lists. A slot taken whose serving finds no
@@ -7577,17 +7579,33 @@ daemon out of descriptors looked for one, and how a client knew its daemon. Each
 it follows: the request's own times, the descriptors' being let go of, the daemon's own
 process.
 
-- **A request's rest is waited for as long as makes requests come soonest, and a cut one is
-  asked again** (`slots::Seen`). A cut is safe to learn only where its client is told to ask
-  again: a request cut is not begun anywhere, so asking again is a restart, and its slot now
-  answers RESTART, as a closing daemon's does (before, it ended unanswered, and its client
-  took the end for its command's); a client still writing finds its `say` gone, and asks
-  again through the next slot (`ask_slot`'s BrokenPipe). So the wait is D222's restart
-  cutoff (Luby, Sinclair and Zuckerman 1993) over this daemon's own requests' times from
-  their first byte to whole, cuts counted as observations cut short (Kaplan and Meier
-  1958), a second at least and before any (RFC 6298 §2.1, §2.4), doubled for each cut in a
-  row (§5.5), drawn from [t, 2t); asking again taken as a fresh draw, since a client's next
-  asking is not told from another's. The daemon's own handling of a connection waits on no
+- **A request's rest is waited for while its client goes on with it, and a client cut asks
+  again** (`slots::Seen`, PM M545; the person's ruling of 2026-11-13: a wait follows the
+  party's liveness and progress, then the slowest answer seen, never a doubling). A request
+  cut is begun nowhere, so asking again is a restart: its slot answers RESTART, as a
+  closing daemon's does, and a client still writing finds its `say` gone and asks again
+  through the next slot (`ask_slot`'s BrokenPipe).
+  - *Its first byte alone.* A client writes its request in one write (`Client::ask`), so
+    its rest comes with its first byte. A client that sends nothing past it is waited for as
+    long as the slowest rest this daemon has read whole, from its first byte, and then cut.
+  - *Its cold start.* Before any request has come whole the daemon has seen no rest, and
+    bounds none: the wait follows the client alone, its end (the FIFO's, or the pipe's) or
+    the daemon ending its clients. A daemon is mostly started by a client's request, which
+    comes whole and so teaches it the first rest.
+  - *Its rest begun.* A request whose rest has begun is read until it is whole or its
+    client ends. One larger than a FIFO holds (a run's spec, up to `MAX_PAYLOAD`, 6 MiB)
+    comes in parts, each as the daemon reads and its client is next run: a gap no rest of a
+    request written whole measures, so a window learned from those would cut such a request
+    each time it was asked, for ever.
+  - *What it costs.* A client stopped mid-request (`SIGSTOP`) holds its slot's descriptors
+    until it goes on or ends, and keeps an idle daemon from exiting meanwhile; a closing
+    daemon still lets it go after its answer's wait (below). The slowest rest is this
+    daemon's alone, in memory: a client of the home's own user can make it longer by
+    writing its request slowly, which only waits longer on a silent one.
+  - It was D222's restart cutoff (Luby, Sinclair and Zuckerman 1993, over the daemon's
+    requests' times, Kaplan and Meier 1958 over its cuts), a second at least and before any
+    (RFC 6298 §2.1, §2.4), doubled for each cut in a row (§5.5), drawn from [t, 2t). The
+    registry's own restart cutoff (D222) is unchanged. The daemon's own handling of a connection waits on no
   clock at all: every connection it takes is a socket pair one of its threads writes the
   request on whole (a slot's bridge, a request it puts to itself), and a bridge that cannot
   send ends its writing.
@@ -7634,7 +7652,7 @@ process.
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
-| `REQUEST_TIMEOUT` (daemon.rs), a request's rest | 10 s, slot ended unanswered | `Seen::request_wait`, learned; cut told RESTART | D222's cutoff (Luby, Sinclair, Zuckerman 1993; Kaplan, Meier 1958; RFC 6298 §2.1, §2.4, §5.5) |
+| `REQUEST_TIMEOUT` (daemon.rs), a request's rest | 10 s, slot ended unanswered | `Seen::request_stall`: nothing past its first byte for the slowest rest read whole (none before any); its rest begun, its client's end; cut told RESTART | its client's own writes (`Client::ask`, one write) and end; was D222's cutoff, doubled per cut (2026-11-09 to 11-13) |
 | `REQUEST_TIMEOUT`, a handled connection's first message | 10 s | none: the daemon's own pairs | its senders write whole or end their writing |
 | `REQUEST_TIMEOUT`, a closed daemon's client taking nothing | 10 s | `Seen::answer_wait`: 2 × longest piece taken, ≥ 100 s | RFC 1122 §4.2.3.5 (R2); Baeza-Yates, Culberson, Rawlins 1993 |
 | `REQUEST_TIMEOUT`, after an answer's last word | 10 s | none | pipe(7): a FIFO keeps what was written as its writer goes |
@@ -7836,9 +7854,24 @@ user's host as Docker's.
   slice. A killed VM process is followed the same way, its host freeing it, before its end
   is given up on. A joiner's VM is its provider's, which runs the provider's command too:
   a joiner is held to one slice, then sent SIGKILL again, as before.
+- **A network or share process is followed the same way** (2026-11-13, PM M546; the
+  person's ruling: a wait follows the party's liveness and progress, then the slowest
+  answer seen). Once its VM has gone and its spawner holds nothing of it, it goes as its
+  VM's links close, which wakes its reaper (`netproc::reap`; for a daemon's run, the
+  followers' loop). It is looked at once a slice has passed, waited on for another while it
+  runs or frees what it holds, and ended only once it has done neither for a slice. Its own
+  end is kept as the host's; one its reaper made is not. It was `netproc::GRACE`, a second,
+  picked, and the daemon's port check (`in_use`) waited twice that for an ended run's
+  network process; it now waits one slice. The cost: a network process stuck on nothing of
+  its own is ended 10 s or more after its VM, where it was 1 s; one that exits as its links
+  close, as each does, ends the wait at once. The waits that took that second as their
+  basis keep it, their own basis owed (R03): init's relay drain (hostbind.rs `DRAIN`), the
+  daemon's `PUBLISH_PATIENCE`, and the VM process's wait for its network process's
+  unpublish (warm.rs).
 - **The slice is the host's own.** Each end heard is kept in the home (`ends`: `teardown
-  MS`, `exit MS`, the slowest of each this home's daemons have heard, written whole and
-  renamed over), and a slice is the slowest of its kind there, so that a host whose guests
+  MS`, `exit MS` and `helper MS`, the slowest of each this home's processes have heard: its
+  daemon and its runs' hosts keep one record, each end put with what it holds then, written
+  whole and renamed over), and a slice is the slowest of its kind there, so that a host whose guests
   stall on its disk for 9 s before they end (PM M419) gives its teardowns that long, and
   never less than the window over which `Progress` tells a microVM that runs from one
   that runs nothing (`IDLE_VM_CPU`'s 10 s), which a home with no record yet takes alone:
@@ -7859,8 +7892,12 @@ user's host as Docker's.
 
 **Tested.** Unit tests (daemon/ends.rs): a home with no record gives each end the least
 slice; each slower end heard is kept, in the home too, and read back by the next daemon; a
-record it cannot read is none; an end is followed while its VM process runs, a joiner's
-never. On real microVMs, tests/containers.rs `a_kills_end_is_kept_as_this_hosts_in_its_home`:
+record it cannot read is none; a home's processes keep one record, neither's slower end
+lost to the other's write, and a record that cannot be kept is said; an end is followed
+while its VM process runs, a joiner's never. netproc.rs
+`a_helper_is_waited_on_while_it_goes_on_with_its_end`: a busy helper is waited on past five
+slices and its end kept, a sleeping one ended at its first look and nothing kept; the
+daemon's `a_network_process_is_ended_once_it_goes_on_no_more_and_the_ports_freed`. On real microVMs, tests/containers.rs `a_kills_end_is_kept_as_this_hosts_in_its_home`:
 a kill's end kept in the home, its VM not killed under it; the stop, kill, pause and
 daemon-stop tests as before. Measured: PM M480 to M482, which validate the method (every
 teardown and freeze measured ends while it is followed) and are no figure of it.
