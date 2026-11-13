@@ -4511,30 +4511,7 @@ mod hosted {
                 let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
                 let (capture, its_vms) = Stream::pair().unwrap();
                 let (link, _vm_link) = Stream::pair().unwrap();
-                let live = Live {
-                    answers: &answers,
-                    ends: Ends::kept_in(dir.path()),
-                    flows: Mutex::new(Flows::default()),
-                    feeds: Mutex::new(HashMap::new()),
-                    fed: std::sync::Condvar::new(),
-                    capture: None,
-                    link: Mutex::new(link),
-                    held: Mutex::new(Some(HashMap::new())),
-                    asks_end: Mutex::new(None),
-                    next_exec: std::sync::atomic::AtomicU64::new(0),
-                    home: dir.path(),
-                    members: &[],
-                    roots: &[],
-                    devices: Mutex::new(Some(Vec::new())),
-                    guest_times: Mutex::new(Some(Vec::new())),
-                    rates: Mutex::new(Some(Vec::new())),
-                    lanes: Mutex::new(Some(HashMap::new())),
-                    next_lane: std::sync::atomic::AtomicU64::new(0),
-                    plugged: Mutex::new(HashMap::new()),
-                    notices_due: Mutex::new(None),
-                    notices: Mutex::new(Vec::new()),
-                    leasing: None,
-                };
+                let live = live(&answers, dir.path(), link, None);
                 let args = [OsStr::new("-c"), OsStr::new("sleep 30")];
                 let vm = shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap();
                 if refused {
