@@ -10749,10 +10749,11 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     by its host. Or a spinning overcommitted guest that says nothing waited on past two
     W* windows.
   - The gaps. A cold wait on a guest that hangs alive runs to its CI job's limit, its
-    account said then (`dump_live_waits`), as a command's does. A machine of the test's own
-    process stopped with the whole test process is judged on resume against a look before
-    its stop, as every wait is when its waiter stops too. A stream's party is all of this
-    test's own VM processes, so a stop of another test's counts as its hold. Owed (ROOT):
+    account said then (`dump_live_waits`), as a command's does. A waiter stopped with its
+    party (a machine of the test's own process, the whole test process suspended) is no
+    stall on resume: D215's judge counts its own late look as its host's hold. A stream's
+    party is all of this test's own VM processes, so a stop of another test's counts as its
+    hold. Owed (ROOT):
     the E2E files that use them, listed in the slice's report.
 
 **The storm's watch, by the host's word (audit of picked constants, 2026-11-09).** The test
