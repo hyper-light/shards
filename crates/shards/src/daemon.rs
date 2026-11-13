@@ -12958,13 +12958,18 @@ mod tests {
                 drop(asked);
                 t.until("its answer taken", |d| !d.watching.giving(&answers));
             };
-            // What the daemon learns of a give-back's answer, from its own answers alone.
-            for _ in 0..2 {
+            // What the daemon learns of a give-back's answer, from its own answers alone: pass
+            // after pass until one has taught it. This stand-in answers as it reads the ask, so
+            // its answer can be there before the daemon's wait begins (`exec_followed` spawns
+            // its output's reader first), and such a pass teaches nothing (D222, health.rs
+            // `await_exit`): two passes, both beaten so, left it cold (CI 43496145972, x86_64
+            // gnu and musl, Windows arm64).
+            let slowest = loop {
+                if let shards_api::Seen::Learned { slowest, .. } = t.t.daemon.answers.reclaim.seen() {
+                    break slowest;
+                }
                 t.t.daemon.give_back_cold(t.threads);
                 answered(t);
-            }
-            let shards_api::Seen::Learned { slowest, .. } = t.t.daemon.answers.reclaim.seen() else {
-                panic!("no give-back's answer learned from two answered");
             };
             let (stalled, _stalled, vm) = running(t, "stalled");
             let t0 = Instant::now();
