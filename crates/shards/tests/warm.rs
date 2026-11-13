@@ -830,7 +830,10 @@ fn a_warm_vm_lets_go_of_its_clients_stdio() {
         warm.child.try_wait().unwrap().is_none(),
         "the command outlives its client"
     );
-    common::measured("a warm VM's let-go of its client's stdio after it hung up", &[let_go]);
+    common::measured(
+        "a warm VM's let-go of its client's stdio after it hung up",
+        &[let_go],
+    );
     warm.child.kill().unwrap();
     warm.child.wait().unwrap();
 }
