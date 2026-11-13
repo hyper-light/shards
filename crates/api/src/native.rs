@@ -219,6 +219,52 @@ fn remaining(deadline: Instant) -> Result<(), Refusal> {
     Ok(())
 }
 
+/// SHA-256's block, 64 bytes (FIPS 180-4 §5.1.1): the least the digest takes in at once, and
+/// what an image is read in where its file system names no size of its own.
+const SHA256_BLOCK: u64 = 64;
+
+/// How much of an image one read takes: the size its file system prefers for I/O, stat(2)'s
+/// `st_blksize` ("the preferred block size for efficient file system I/O") or, on Windows,
+/// the volume's `PhysicalBytesPerSectorForPerformance` (FILE_STORAGE_INFO). A launch hashes
+/// the whole `shards` binary and kernel, tens of MiB, which SHA-256's 64-byte blocks read in
+/// about a million reads. Where the file system says nothing, SHA-256's block.
+fn read_size(file: &File, metadata: &Metadata) -> u64 {
+    let preferred = preferred_io(file, metadata).unwrap_or(0);
+    if preferred == 0 { SHA256_BLOCK } else { preferred }
+}
+
+#[cfg(unix)]
+fn preferred_io(_file: &File, metadata: &Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt as _;
+    Some(metadata.blksize())
+}
+
+#[cfg(windows)]
+fn preferred_io(file: &File, _metadata: &Metadata) -> Option<u64> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_STORAGE_INFO, FileStorageInfo, GetFileInformationByHandleEx,
+    };
+    let mut info = FILE_STORAGE_INFO::default();
+    let size = u32::try_from(std::mem::size_of::<FILE_STORAGE_INFO>()).ok()?;
+    // SAFETY: an open file's handle, and a FILE_STORAGE_INFO of `size` bytes for the call to
+    // fill; nothing is kept past it.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileStorageInfo,
+            (&raw mut info).cast(),
+            size,
+        )
+    };
+    (ok != 0).then_some(u64::from(info.PhysicalBytesPerSectorForPerformance))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn preferred_io(_file: &File, _metadata: &Metadata) -> Option<u64> {
+    None
+}
+
 fn same(before: &Metadata, after: &Metadata) -> bool {
     if !after.is_file() || before.len() != after.len() {
         return false;
@@ -286,9 +332,13 @@ pub fn verify_native_image(path: &Path, expected: ImageIdentity, deadline: Insta
         }
     }
     let mut digest = Sha256::new();
-    // One SHA-256 compression block (512 bits); a protocol-derived stack bound,
-    // not an empirically tuned throughput or allocation claim.
-    let mut block = [0u8; 64];
+    let mut block = Vec::new();
+    let piece = usize::try_from(read_size(&file, &before).min(expected.bytes))
+        .map_err(|_| Refusal::Launch(LaunchError::Count))?;
+    block
+        .try_reserve_exact(piece)
+        .map_err(|_| Refusal::Launch(LaunchError::Allocation))?;
+    block.resize(piece, 0);
     let mut left = expected.bytes;
     while left != 0 {
         remaining(deadline)?;
@@ -299,6 +349,8 @@ pub fn verify_native_image(path: &Path, expected: ImageIdentity, deadline: Insta
         let room = block
             .get_mut(..count)
             .ok_or(Refusal::Launch(LaunchError::Count))?;
+        #[cfg(test)]
+        READS.with(|reads| reads.set(reads.get().saturating_add(1)));
         let got = match file.read(room) {
             Err(why) if why.kind() == std::io::ErrorKind::Interrupted => continue,
             read => read.map_err(|why| io("reading native image", why))?,
@@ -334,6 +386,12 @@ pub fn verify_native_image(path: &Path, expected: ImageIdentity, deadline: Insta
         .map_err(|why| io("rewinding verified native image", why))?;
     remaining(deadline)?;
     Ok(file)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The reads of an image's bytes this thread's verifications made.
+    static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
