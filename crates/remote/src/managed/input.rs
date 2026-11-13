@@ -1606,9 +1606,15 @@ mod tests {
         }
         drop(stranger);
 
-        // The endpoint takes one connection at a time: the stranger's, refused, is let go
-        // before the owner's is taken.
-        let live = subscribed(&owner, server.fingerprint(), address, 0, 0);
+        // The endpoint takes one connection at a time, and the stranger's, refused at its
+        // handshake and closed, holds no place: the owner is taken at its first attempt, as the
+        // coordinator's real-VM run (tests/managed_output/member_stdin.rs) makes it.
+        let live = Live::connect(&owner, server.fingerprint(), address, 0);
+        assert_eq!(
+            live.taken(),
+            0,
+            "the owner, at its first attempt after a stranger"
+        );
         let first: &[u8] = b"\0\xff\x80{\"jsonrpc\":\"2.0\"}\n";
         live.send(record_frame(0, first));
         // Held by the member: no taken comes, so no second record may go.
@@ -1645,6 +1651,64 @@ mod tests {
             "its stream finished after the end"
         );
         drop(live);
+        control.abort();
+        let _ = endpoint_driver.join();
+    }
+
+    /// Half its input, then its owner gone without its end, its connection closed (its driver's
+    /// stop, as the real-VM run's writer drops): the member's stdin stays open, and its next
+    /// subscription, made once, is taken at once and told where to go on, the rest and the end
+    /// after it. The closed connection, still absorbing its last packets (RFC 9000 §10.2), holds
+    /// no place its owner needs.
+    #[test]
+    fn an_owner_closed_without_its_end_resubscribes_at_its_first_attempt_where_its_last_was_taken() {
+        let server = Identity::generate().unwrap();
+        let owner = Identity::generate().unwrap();
+        let (endpoint, relay, control) =
+            Endpoint::bind(&server, owner.fingerprint(), scope(), admitted()).unwrap();
+        let address = endpoint.address;
+        let control = Arc::new(control);
+        let endpoint_driver = std::thread::Builder::new()
+            .name("input-endpoint".into())
+            .spawn(move || endpoint.run())
+            .unwrap();
+        let (gate, gated) = mpsc::channel();
+        let records = relay_into(relay, Arc::clone(&control), gated);
+
+        let first = Live::connect(&owner, server.fingerprint(), address, 0);
+        assert_eq!(first.taken(), 0);
+        let half: &[u8] = b"{\"id\":1}\n\0\xff\x80";
+        first.send(record_frame(0, half));
+        gate.send(()).unwrap();
+        assert_eq!(records.recv_timeout(PATIENCE).unwrap(), half);
+        let at = first.taken();
+        assert_eq!(at, half.len() as u64);
+        drop(first);
+
+        let again = Live::connect(&owner, server.fingerprint(), address, 0);
+        assert_eq!(
+            again.taken(),
+            at,
+            "its next subscription, at its first attempt, goes on where the last was taken"
+        );
+        let rest: &[u8] = b"\x1b[2Jno-newline\xc3\x28";
+        again.send(record_frame(at, rest));
+        gate.send(()).unwrap();
+        assert_eq!(records.recv_timeout(PATIENCE).unwrap(), rest);
+        let at = again.taken();
+        assert_eq!(at, (half.len() + rest.len()) as u64);
+        again.send(end(at, 0).to_vec());
+        match again.hear() {
+            Heard::Said(Said::Ended { written, end }) => {
+                assert_eq!((written, end), (at, InputEnd::Closed));
+            }
+            other => panic!("no end: {other:?}"),
+        }
+        assert!(
+            matches!(again.hear(), Heard::End),
+            "its stream finished after the end"
+        );
+        drop(again);
         control.abort();
         let _ = endpoint_driver.join();
     }
