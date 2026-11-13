@@ -12034,6 +12034,28 @@ other's but what the move sends, and what the other takes by content:
   another program take one between. Two homes of one machine share its host ports, so their
   test publishes on a port each home picks (`a_moved_microvms_published_port_answers_there`);
   a fixed one is the two-host test's.
+- **Its key, made anew where it lands and never carried** (decided by ROOT, 2026-11-13).
+  A run's own key (D238: made by its host's daemon as its managed scope begins, held by its
+  agent-control endpoint alone, its SHA-256 the `vm` line of the run's managed metadata) is
+  its host's, and no private key leaves the host that made it. A restore there is a new run
+  identity: its run makes a key of its own after the restore, as after every restore, since
+  a key made before a snapshot would be every run restored from it (D238, "A key per run,
+  never a template's"; D25's templates restore many runs from one). Step 33 issues a run's
+  leases to its key and relies on that key unchanged for the run's life (kiln plan
+  01a1d2b88be57304b972761e2a5c6781, steps 4 and 5), so the move replaces it: the leases
+  bound to the old key are revoked at the move and reissued to the new, by the broker, which
+  alone says which key is current. What the move does: its plan names the run's key where it
+  ran (`Plan::key`); the machine moved to keeps it as the key replaced (the run's
+  `key-replaced`); `move step key NAME [ASKED]` answers the run's key there and the one
+  replaced (`key`, `replaces`: 64 lowercase hex digits, or null) and, asked under the
+  replaced key, refuses typed (`Refused::KeyReplaced { asked, current }`, whose fields step
+  33's lease refusal takes); and `shards move vm` prints the microVM's name, then, where
+  either is known, `{"name", "context", "key", "replaces"}` on a line of its own, for its
+  controller to pin the new key and its broker to reissue its leases. Today a run with a
+  managed scope is refused before anything moves (below), as a restore does not take a
+  managed scope; the key side runs once one does, its restore making a new key and writing
+  `vm` anew (D238). Held by
+  `a_lease_under_the_key_a_move_replaced_is_refused_and_the_run_names_its_own` (moves.rs).
 - **Refused before anything moves, by what refuses it** (R04). The machine moved to answers
   `ready` with a `Refused` (daemon/moves.rs) as JSON on stdout, beside its words on
   stderr, which a mover of an earlier build prints as before; this build's mover reads it
@@ -12047,7 +12069,9 @@ other's but what the move sends, and what the other takes by content:
   on that one (WHP on x86-64, `Plan::cpu_identity`, D245); the
   features its guest may have used that this CPU lacks, by name; its ID, its name or a
   volume of its name here already; a bind's host path absent; a port it publishes that this
-  machine cannot bind. A plan of an earlier build
+  machine cannot bind. Where the microVM runs, before it is saved: a run with a managed
+  scope (`Refused::Managed`), which a restore does not take yet, so that a cold move's save
+  left it stopped here, its resume refused too. A plan of an earlier build
   names no hypervisor, and is taken as before. Held by
   `a_microvm_of_another_hypervisor_is_refused_before_anything_moves` and
   `a_refusal_is_typed_on_the_wire_and_says_what_it_said` (moves.rs),

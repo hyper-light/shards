@@ -81,8 +81,19 @@ pub(crate) fn move_vm(parsed: &Parsed, home: &Path, ask: &Ask<'_>) -> ExitCode {
         return failed("shards: move vm: a microVM and a context");
     };
     match moved(home, name, to, parsed.bool("live"), ask) {
-        Ok(()) => {
+        Ok(keys) => {
             let _ = writeln!(io::stdout(), "{name}");
+            // Its run's own key there and the one it replaced (D176 part 6, D238): for its
+            // controller to pin anew and its leases' broker to reissue them (step 33).
+            if keys.key.is_some() || keys.replaces.is_some() {
+                let answer = serde_json::json!({
+                    "name": name,
+                    "context": to,
+                    "key": keys.key,
+                    "replaces": keys.replaces,
+                });
+                let _ = writeln!(io::stdout(), "{answer}");
+            }
             ExitCode::SUCCESS
         }
         Err(e) => failed(&format!("shards: {e}")),
@@ -303,7 +314,15 @@ fn sent_line(tally: Option<crate::packing::Tally>, seen: &Seen, took: std::time:
     )
 }
 
-fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result<(), String> {
+/// A moved run's own key on the machine it landed on, and the one it had here, each a key's
+/// SHA-256 in lowercase hex (`move step key`).
+#[derive(Debug, Default, PartialEq, Eq, serde::Deserialize)]
+struct Keys {
+    key: Option<String>,
+    replaces: Option<String>,
+}
+
+fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result<Keys, String> {
     let times = Times {
         on: std::env::var_os("SHARDS_MOVE_TIMES").is_some(),
         began: Instant::now(),
@@ -343,7 +362,7 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     // 1. Saved here; or, moved live, its plan alone, as it runs on (D176 part 7).
     let saved = ask(step(&[mv, if live { "plan" } else { "save" }, name]), &[])?;
     if saved.0 != 0 {
-        return Err(said(if live { "its plan" } else { "its save" }, &saved));
+        return Err(unready(if live { "its plan" } else { "its save" }, &saved));
     }
     let plan_json = String::from_utf8(saved.1).map_err(|_| "its plan is not UTF-8".to_string())?;
     let plan_json = plan_json.trim().to_string();
@@ -549,6 +568,12 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
         },
     }
     times.step("resumed there");
+    // Its run's key there, made after its restore, and the one it replaced: none from a
+    // daemon of an earlier build, which has no such step.
+    let keys = match there(step(&[mv, "key", name]), None) {
+        Ok((0, out, _)) => serde_json::from_slice::<Keys>(&out).unwrap_or_default(),
+        _ => Keys::default(),
+    };
     // How long it ran nowhere, as this machine's clock says: from its last save asked,
     // which held it here, to its restore there said done.
     if times.on
@@ -578,7 +603,7 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
         ));
     }
     times.step("removed here");
-    Ok(())
+    Ok(keys)
 }
 
 #[cfg(test)]
