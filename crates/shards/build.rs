@@ -12,7 +12,9 @@
 //!   process signed with its App Sandbox entitlements first, so that its signature travels
 //!   inside `shards`. `SHARDS_HELPERS_DIR` names prebuilt ones; `SHARDS_HELPERS=skip`
 //!   carries none, for check builds of other targets (scripts/lint), and such a `shards`
-//!   refuses what needs them.
+//!   refuses what needs them; `SHARDS_HELPERS=beside` carries none either, for a program
+//!   that carries `shards` and writes its helpers out beside it, signed as that program
+//!   signs them (kiln, D237), and such a `shards` starts the ones beside it.
 //! - The GPU's VM process (`shards-vm-gpu`, D144, D201, D202): the VM process built with
 //!   its renderer, on Apple silicon, on Linux (glibc's and musl's) and on x86_64 Windows where
 //!   `SHARDS_GPU_LIBS` names the renderer's libraries (scripts/gpu-libs), into
@@ -265,7 +267,9 @@ fn helpers() -> Result<(), String> {
         ""
     };
     let names = ["shards-vm", "shards-net"];
-    let skip = env::var("SHARDS_HELPERS").is_ok_and(|v| v == "skip");
+    let mode = env::var("SHARDS_HELPERS").ok();
+    let beside = mode.as_deref() == Some("beside");
+    let skip = beside || mode.as_deref() == Some("skip");
     let _ = writeln!(out, "cargo::rerun-if-env-changed=SHARDS_GPU_LIBS");
     let built: Option<PathBuf> = if skip {
         None
@@ -292,6 +296,7 @@ fn helpers() -> Result<(), String> {
     fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut code = String::from("// What `shards` carries: written by build.rs.\n");
     code.push_str(&format!("pub const PRESENT: bool = {};\n", built.is_some()));
+    code.push_str(&format!("pub const BESIDE: bool = {beside};\n"));
     for name in names {
         let to = dir.join(format!("{name}{exe}"));
         match &built {

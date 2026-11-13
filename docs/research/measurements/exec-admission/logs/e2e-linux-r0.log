@@ -1,0 +1,510 @@
+host adacachy2 Linux 7.3.3-1-cachyos x86_64, 32 CPUs, load 14.80, 18.86, 19.35
+revision e61d11b4c, 2944d9ab5 and 0d4f20288 reverted
+rustc 1.98.1 (48a229cea 2026-09-01)
+zig 0.16.0
+=== round 1
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (3688062) panicked at crates/shards/tests/containers.rs:9759:13:
+2 of 64 execs' clients never ended: none ended for 277.94368ms, 64 execs at a lone one's 4.34287ms, nor did the daemon or its microVM progress
+up-19: stderr ""
+up-48: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED        STATUS                  PORTS     NAMES
+fec91d0e80da70c9f92bf4e36950181af3ac41ca36d9b3685e94c1e64372b916   127.0.0.1:38125/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 3741916: the default bridge is 172.18.0.0/16
+shards daemon 3741916: serving /tmp/shards-tests/3688057/containers-execs-at-once-0 through /tmp/shards-tests/3688057/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3741916: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /tmp/shards-tests/3688057/containers-execs-at-once-0/run-0.stderr
+--- /tmp/shards-tests/3688057/containers-execs-at-once-0/daemon.log, its last 9 lines
+shards daemon 3741916: the default bridge is 172.18.0.0/16
+shards daemon 3741916: serving /tmp/shards-tests/3688057/containers-execs-at-once-0 through /tmp/shards-tests/3688057/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3741916: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+--- /tmp/shards-tests/3688057/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3688057/containers-execs-at-once-0/daemon.log, its last 2209 of 2209 bytes
+shards daemon 3741916: the default bridge is 172.18.0.0/16
+shards daemon 3741916: serving /tmp/shards-tests/3688057/containers-execs-at-once-0 through /tmp/shards-tests/3688057/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3741916: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3741916: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 27.41s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 2
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (3744063) panicked at crates/shards/tests/containers.rs:9759:13:
+3 of 64 execs' clients never ended: none ended for 277.671808ms, 64 execs at a lone one's 4.338622ms, nor did the daemon or its microVM progress
+up-61: stderr ""
+up-47: stderr ""
+up-21: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED        STATUS                  PORTS     NAMES
+fe82d30334abf5ad439c52264f14774dd37db2eec9ea11cd3db214dd634a58ea   127.0.0.1:46539/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 3744381: the default bridge is 172.18.0.0/16
+shards daemon 3744381: serving /tmp/shards-tests/3744062/containers-execs-at-once-0 through /tmp/shards-tests/3744062/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3744381: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /tmp/shards-tests/3744062/containers-execs-at-once-0/run-0.stderr
+--- /tmp/shards-tests/3744062/containers-execs-at-once-0/daemon.log, its last 9 lines
+shards daemon 3744381: the default bridge is 172.18.0.0/16
+shards daemon 3744381: serving /tmp/shards-tests/3744062/containers-execs-at-once-0 through /tmp/shards-tests/3744062/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3744381: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+--- /tmp/shards-tests/3744062/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3744062/containers-execs-at-once-0/daemon.log, its last 2209 of 2209 bytes
+shards daemon 3744381: the default bridge is 172.18.0.0/16
+shards daemon 3744381: serving /tmp/shards-tests/3744062/containers-execs-at-once-0 through /tmp/shards-tests/3744062/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3744381: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3744381: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.78s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 3
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (3746348) panicked at crates/shards/tests/containers.rs:9759:13:
+1 of 64 execs' clients never ended: none ended for 278.726592ms, 64 execs at a lone one's 4.355103ms, nor did the daemon or its microVM progress
+up-18: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED        STATUS                  PORTS     NAMES
+7a7533f804e0caf05f47f547a36ea3791c6736a8c827fedc607c439d18d95531   127.0.0.1:44503/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 3746671: the default bridge is 172.18.0.0/16
+shards daemon 3746671: serving /tmp/shards-tests/3746338/containers-execs-at-once-0 through /tmp/shards-tests/3746338/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3746671: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /tmp/shards-tests/3746338/containers-execs-at-once-0/run-0.stderr
+--- /tmp/shards-tests/3746338/containers-execs-at-once-0/daemon.log, its last 9 lines
+shards daemon 3746671: the default bridge is 172.18.0.0/16
+shards daemon 3746671: serving /tmp/shards-tests/3746338/containers-execs-at-once-0 through /tmp/shards-tests/3746338/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3746671: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+--- /tmp/shards-tests/3746338/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3746338/containers-execs-at-once-0/daemon.log, its last 2209 of 2209 bytes
+shards daemon 3746671: the default bridge is 172.18.0.0/16
+shards daemon 3746671: serving /tmp/shards-tests/3746338/containers-execs-at-once-0 through /tmp/shards-tests/3746338/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3746671: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3746671: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.83s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 4
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 56.529351ms after, a lone one 4.362526ms
+thread 'execs_at_once_each_end_with_their_commands_status' (3748465) panicked at crates/shards/tests/containers.rs:9759:13:
+2 of 64 execs' clients never ended: none ended for 279.201664ms, 64 execs at a lone one's 4.362526ms, nor did the daemon or its microVM progress
+fresh-56: stderr ""
+fresh-7: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED        STATUS                  PORTS     NAMES
+d8cb9826e5823867a18ac68aa9242046640e149deabfa1b33947f91cd0aedb79   127.0.0.1:42601/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             fresh
+181f58a5b2107630855bab4909777495d3d726ae978d06dc5c1f63ef624e2f87   127.0.0.1:42601/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 3748821: the default bridge is 172.18.0.0/16
+shards daemon 3748821: serving /tmp/shards-tests/3748461/containers-execs-at-once-0 through /tmp/shards-tests/3748461/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3748821: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /tmp/shards-tests/3748461/containers-execs-at-once-0/fresh.stderr
+--- /tmp/shards-tests/3748461/containers-execs-at-once-0/run-0.stderr
+--- /tmp/shards-tests/3748461/containers-execs-at-once-0/daemon.log, its last 9 lines
+shards daemon 3748821: the default bridge is 172.18.0.0/16
+shards daemon 3748821: serving /tmp/shards-tests/3748461/containers-execs-at-once-0 through /tmp/shards-tests/3748461/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3748821: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+--- /tmp/shards-tests/3748461/containers-execs-at-once-0/fresh.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3748461/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3748461/containers-execs-at-once-0/daemon.log, its last 2209 of 2209 bytes
+shards daemon 3748821: the default bridge is 172.18.0.0/16
+shards daemon 3748821: serving /tmp/shards-tests/3748461/containers-execs-at-once-0 through /tmp/shards-tests/3748461/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3748821: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3748821: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 1.04s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 5
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 66.935303ms after, a lone one 4.348681ms
+thread 'execs_at_once_each_end_with_their_commands_status' (3751535) panicked at crates/shards/tests/containers.rs:9759:13:
+2 of 64 execs' clients never ended: none ended for 278.315584ms, 64 execs at a lone one's 4.348681ms, nor did the daemon or its microVM progress
+fresh-40: stderr ""
+fresh-58: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED        STATUS                  PORTS     NAMES
+e0e28a020483576cdd18748ac3543312fa0fb1e9ab8b04795a8590983b054f0b   127.0.0.1:40851/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             fresh
+2ee2c9490720db7a2019ee41330003875bea18a652b49b3fb8966c4b90d0372b   127.0.0.1:40851/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 3751922: the default bridge is 172.18.0.0/16
+shards daemon 3751922: serving /tmp/shards-tests/3751534/containers-execs-at-once-0 through /tmp/shards-tests/3751534/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3751922: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /tmp/shards-tests/3751534/containers-execs-at-once-0/fresh.stderr
+--- /tmp/shards-tests/3751534/containers-execs-at-once-0/run-0.stderr
+--- /tmp/shards-tests/3751534/containers-execs-at-once-0/daemon.log, its last 9 lines
+shards daemon 3751922: the default bridge is 172.18.0.0/16
+shards daemon 3751922: serving /tmp/shards-tests/3751534/containers-execs-at-once-0 through /tmp/shards-tests/3751534/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3751922: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+--- /tmp/shards-tests/3751534/containers-execs-at-once-0/fresh.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3751534/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3751534/containers-execs-at-once-0/daemon.log, its last 2209 of 2209 bytes
+shards daemon 3751922: the default bridge is 172.18.0.0/16
+shards daemon 3751922: serving /tmp/shards-tests/3751534/containers-execs-at-once-0 through /tmp/shards-tests/3751534/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3751922: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3751922: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 1.09s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 6
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (3755429) panicked at crates/shards/tests/containers.rs:9759:13:
+3 of 64 execs' clients never ended: none ended for 278.265536ms, 64 execs at a lone one's 4.347899ms, nor did the daemon or its microVM progress
+up-0: stderr ""
+up-40: stderr ""
+up-37: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED        STATUS                  PORTS     NAMES
+3f289e65d0206b93a9a334ea4e5427e37eec3e873a1f05531467f3f32bc29156   127.0.0.1:32805/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 3755753: the default bridge is 172.18.0.0/16
+shards daemon 3755753: serving /tmp/shards-tests/3755426/containers-execs-at-once-0 through /tmp/shards-tests/3755426/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3755753: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /tmp/shards-tests/3755426/containers-execs-at-once-0/run-0.stderr
+--- /tmp/shards-tests/3755426/containers-execs-at-once-0/daemon.log, its last 9 lines
+shards daemon 3755753: the default bridge is 172.18.0.0/16
+shards daemon 3755753: serving /tmp/shards-tests/3755426/containers-execs-at-once-0 through /tmp/shards-tests/3755426/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3755753: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+--- /tmp/shards-tests/3755426/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3755426/containers-execs-at-once-0/daemon.log, its last 2209 of 2209 bytes
+shards daemon 3755753: the default bridge is 172.18.0.0/16
+shards daemon 3755753: serving /tmp/shards-tests/3755426/containers-execs-at-once-0 through /tmp/shards-tests/3755426/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3755753: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3755753: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.84s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 7
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 66.821229ms after, a lone one 4.291634ms
+thread 'execs_at_once_each_end_with_their_commands_status' (3757640) panicked at crates/shards/tests/containers.rs:9759:13:
+2 of 64 execs' clients never ended: none ended for 274.664576ms, 64 execs at a lone one's 4.291634ms, nor did the daemon or its microVM progress
+fresh-50: stderr ""
+fresh-58: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED        STATUS                  PORTS     NAMES
+d2a9dac3b15c2dd5cc77016fdf9e17f609785c570836a2267b5fbd70401a9793   127.0.0.1:39813/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             fresh
+b6a9382fc7329a8a1ef9e3595bb385204b7d8ef5f3572664ba70dd5c0689dbcd   127.0.0.1:39813/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 3757986: the default bridge is 172.18.0.0/16
+shards daemon 3757986: serving /tmp/shards-tests/3757639/containers-execs-at-once-0 through /tmp/shards-tests/3757639/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3757986: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /tmp/shards-tests/3757639/containers-execs-at-once-0/fresh.stderr
+--- /tmp/shards-tests/3757639/containers-execs-at-once-0/run-0.stderr
+--- /tmp/shards-tests/3757639/containers-execs-at-once-0/daemon.log, its last 9 lines
+shards daemon 3757986: the default bridge is 172.18.0.0/16
+shards daemon 3757986: serving /tmp/shards-tests/3757639/containers-execs-at-once-0 through /tmp/shards-tests/3757639/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3757986: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+--- /tmp/shards-tests/3757639/containers-execs-at-once-0/fresh.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3757639/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3757639/containers-execs-at-once-0/daemon.log, its last 2209 of 2209 bytes
+shards daemon 3757986: the default bridge is 172.18.0.0/16
+shards daemon 3757986: serving /tmp/shards-tests/3757639/containers-execs-at-once-0 through /tmp/shards-tests/3757639/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3757986: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3757986: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 1.08s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 8
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (3760785) panicked at crates/shards/tests/containers.rs:9759:13:
+2 of 64 execs' clients never ended: none ended for 278.014208ms, 64 execs at a lone one's 4.343972ms, nor did the daemon or its microVM progress
+up-18: stderr ""
+up-5: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED        STATUS                  PORTS     NAMES
+8ec7a64fd0d92ec9202128b5708e21eac1e3df5447fe99f1e9e3d4e9c9d751ac   127.0.0.1:46335/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 3761142: the default bridge is 172.18.0.0/16
+shards daemon 3761142: serving /tmp/shards-tests/3760784/containers-execs-at-once-0 through /tmp/shards-tests/3760784/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3761142: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /tmp/shards-tests/3760784/containers-execs-at-once-0/run-0.stderr
+--- /tmp/shards-tests/3760784/containers-execs-at-once-0/daemon.log, its last 9 lines
+shards daemon 3761142: the default bridge is 172.18.0.0/16
+shards daemon 3761142: serving /tmp/shards-tests/3760784/containers-execs-at-once-0 through /tmp/shards-tests/3760784/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3761142: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+--- /tmp/shards-tests/3760784/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3760784/containers-execs-at-once-0/daemon.log, its last 2209 of 2209 bytes
+shards daemon 3761142: the default bridge is 172.18.0.0/16
+shards daemon 3761142: serving /tmp/shards-tests/3760784/containers-execs-at-once-0 through /tmp/shards-tests/3760784/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3761142: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3761142: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.82s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 9
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 56.675814ms after, a lone one 4.422088ms
+thread 'execs_at_once_each_end_with_their_commands_status' (3762850) panicked at crates/shards/tests/containers.rs:9759:13:
+1 of 64 execs' clients never ended: none ended for 283.013632ms, 64 execs at a lone one's 4.422088ms, nor did the daemon or its microVM progress
+fresh-20: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED                  STATUS                  PORTS     NAMES
+30a935f91cd9c331383059a8f278bb4ad4cd2a84ae1f5da30bdd5a2ca9d828d2   127.0.0.1:43569/test/image:v1   "/bin/testguest sleep"   Less than a second ago   Up Less than a second             fresh
+9f24f2402fb52070bc4ef3d3bd892437fca799268ef45b08c6fee4f4510eca3f   127.0.0.1:43569/test/image:v1   "/bin/testguest sleep"   1 second ago             Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 3763220: the default bridge is 172.18.0.0/16
+shards daemon 3763220: serving /tmp/shards-tests/3762843/containers-execs-at-once-0 through /tmp/shards-tests/3762843/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3763220: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /tmp/shards-tests/3762843/containers-execs-at-once-0/fresh.stderr
+--- /tmp/shards-tests/3762843/containers-execs-at-once-0/run-0.stderr
+--- /tmp/shards-tests/3762843/containers-execs-at-once-0/daemon.log, its last 9 lines
+shards daemon 3763220: the default bridge is 172.18.0.0/16
+shards daemon 3763220: serving /tmp/shards-tests/3762843/containers-execs-at-once-0 through /tmp/shards-tests/3762843/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3763220: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+--- /tmp/shards-tests/3762843/containers-execs-at-once-0/fresh.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3762843/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3762843/containers-execs-at-once-0/daemon.log, its last 2209 of 2209 bytes
+shards daemon 3763220: the default bridge is 172.18.0.0/16
+shards daemon 3763220: serving /tmp/shards-tests/3762843/containers-execs-at-once-0 through /tmp/shards-tests/3762843/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3763220: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3763220: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 1.09s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 10
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (3766336) panicked at crates/shards/tests/containers.rs:9759:13:
+2 of 64 execs' clients never ended: none ended for 418.622336ms, 64 execs at a lone one's 6.540974ms, nor did the daemon or its microVM progress
+up-57: stderr ""
+up-58: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED        STATUS                  PORTS     NAMES
+1becd74ed60258aadebf5812db17443a0f52513d4667c347df4ac3f18a943026   127.0.0.1:45297/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 3766710: the default bridge is 172.18.0.0/16
+shards daemon 3766710: serving /tmp/shards-tests/3766335/containers-execs-at-once-0 through /tmp/shards-tests/3766335/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3766710: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /tmp/shards-tests/3766335/containers-execs-at-once-0/run-0.stderr
+--- /tmp/shards-tests/3766335/containers-execs-at-once-0/daemon.log, its last 9 lines
+shards daemon 3766710: the default bridge is 172.18.0.0/16
+shards daemon 3766710: serving /tmp/shards-tests/3766335/containers-execs-at-once-0 through /tmp/shards-tests/3766335/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3766710: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+--- /tmp/shards-tests/3766335/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /tmp/shards-tests/3766335/containers-execs-at-once-0/daemon.log, its last 2209 of 2209 bytes
+shards daemon 3766710: the default bridge is 172.18.0.0/16
+shards daemon 3766710: serving /tmp/shards-tests/3766335/containers-execs-at-once-0 through /tmp/shards-tests/3766335/containers-execs-at-once-0/requests, with up to 1048576 descriptors open
+shards daemon 3766710: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/run-01a1d1f4696673bc9a6ca91832ba5248/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/kiln-agents-1243/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3766710: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 1.00s
+error: test failed, to rerun pass `-p shards --test containers`

@@ -35,33 +35,185 @@ pub type Port = std::sync::mpsc::Receiver<UnixStream>;
 /// offers is attached through (D230).
 pub type EnginePort = std::sync::mpsc::Receiver<(UnixStream, RingHandle)>;
 
-/// Signals and terminal sizes on their way to the workload, as frames: sent once the guest
-/// has dialed the signal port, queued before then while the workload runs or is sure to,
-/// and otherwise not sent.
+/// The workload's control (D16): its signals, its terminal's sizes, its execs and the host's
+/// answers on its network, as frames on the guest's signal connection ([`Link`]).
 #[derive(Debug, Default)]
 pub struct Signals {
-    conn: Option<UnixStream>,
-    queued: Vec<(u8, Vec<u8>)>,
-    /// The workload runs, or is sure to.
-    running: bool,
+    link: Link,
 }
 
 impl Signals {
     pub const fn new() -> Signals {
-        Signals {
-            conn: None,
-            queued: Vec::new(),
-            running: false,
+        Signals { link: Link::Idle }
+    }
+}
+
+/// Where the workload's control stands, and so what a frame for it meets.
+#[derive(Debug, Default)]
+enum Link {
+    /// No workload runs, nor is sure to, or its run has ended: a frame has no one to go to.
+    #[default]
+    Idle,
+    /// The workload runs, or is sure to, and its guest has yet to dial (a restored guest
+    /// dials again, D176): frames wait for it, one for each thing pending ([`Pending`]).
+    Awaiting(Pending),
+    /// The guest's connection, of which its sender ([`send_frames`]) owns the sending and
+    /// [`watch`] the reading: frames wait here for the sender, one for each thing pending,
+    /// and it sends them in order with the lock let go, so that a guest that reads slowly
+    /// or not at all (its vCPUs held: a pause, a save) holds that thread alone.
+    Connected(Pending),
+    /// It failed while the run went on: frames are refused. The guest dials the signal port
+    /// once, so that a workload dialing it finds it taken (AGENTFILE_ARCH.md §9.7), and only
+    /// a copy restored from a save dials again, in a VM process of its own (D176): nothing
+    /// reaches this workload's control again.
+    Lost(Lost),
+}
+
+/// Why a frame for the workload's control did not go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unsent {
+    /// No workload runs, nor is sure to, or its run has ended.
+    NotRunning,
+    /// Linux has no signal of this number: the guest would drop it.
+    NoSuchSignal(u32),
+    /// No memory to hold it until the guest dials.
+    Unheld,
+    /// The guest's signal connection failed.
+    Lost(Lost),
+}
+
+impl std::fmt::Display for Unsent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRunning => f.write_str("the container is not running"),
+            Self::NoSuchSignal(n) => write!(f, "Linux has no signal {n}"),
+            Self::Unheld => f.write_str("no memory to hold it until the guest dials"),
+            Self::Lost(lost) => write!(f, "the guest's signal connection is lost: {lost}"),
         }
     }
 }
 
-/// Where signals for the workload go. A VM process serves one workload, so its own is a
-/// `static` that the threads relaying signals, which live as long as the process, share.
-pub type ToGuest = Mutex<Signals>;
+impl std::error::Error for Unsent {}
+
+/// How the guest's signal connection failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lost {
+    /// The guest closed it without saying its relay's end ([`kind::SIGNALS_END`]).
+    Closed,
+    /// The guest sent on it what it never sends.
+    Protocol,
+    /// The host could not take it as a restored guest dialed it again (D176).
+    Untaken,
+    /// A send on it, a read of it, or a copy of it to read failed: the error's kind, and
+    /// the OS's code where there was one.
+    Failed { kind: io::ErrorKind, os: Option<i32> },
+}
+
+impl Lost {
+    fn of(e: &io::Error) -> Lost {
+        Lost::Failed {
+            kind: e.kind(),
+            os: e.raw_os_error(),
+        }
+    }
+}
+
+impl std::fmt::Display for Lost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Closed => f.write_str("the guest closed it before its end"),
+            Self::Protocol => f.write_str("the guest sent on it what it never sends"),
+            Self::Untaken => f.write_str("its restored guest's dial could not be taken"),
+            Self::Failed { os: Some(code), .. } => write!(f, "{}", io::Error::from_raw_os_error(code)),
+            Self::Failed { kind, os: None } => write!(f, "{}", io::Error::from(kind)),
+        }
+    }
+}
+
+/// Frames waiting for the guest's dial, or for its connection's sender, in the order they
+/// came, one for each thing pending: each signal once, as Linux holds a standard signal
+/// pending once (Linux 6.18 kernel/signal.c l. 1037, `legacy_queue`); the workload's
+/// terminal's latest size; each exec's start, and its signals and its terminal's latest size;
+/// the latest answer to each of the guest's asks on the host's network (D124). So they are
+/// never more than [`run::NSIG`] signals and a size for the workload and for each exec, its
+/// start, and an answer for each ask; and the sender holds one batch of them at a time.
+#[derive(Debug, Default)]
+struct Pending(Vec<(u8, Vec<u8>)>);
+
+impl Pending {
+    /// Holds frame `which`: in the place of the one waiting that it stands for
+    /// ([`stands_for`]), or after those waiting. Before the guest dials (`dialed` false), an
+    /// exec's signal or size waits only where its start does: no exec of this workload is
+    /// in its guest yet.
+    fn hold(&mut self, which: u8, payload: &[u8], dialed: bool) -> Result<(), Unsent> {
+        if !dialed && matches!(which, kind::EXEC_SIGNAL | kind::EXEC_RESIZE) {
+            let id = payload.get(..4).ok_or(Unsent::NotRunning)?;
+            if !self
+                .0
+                .iter()
+                .any(|(w, p)| *w == kind::EXEC && exec_id(p) == Some(id))
+            {
+                return Err(Unsent::NotRunning);
+            }
+        }
+        let held = stands_for(which, payload);
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(payload.len())
+            .map_err(|_| Unsent::Unheld)?;
+        copy.extend_from_slice(payload);
+        match self
+            .0
+            .iter_mut()
+            .find(|(w, p)| *w == which && stands_for(*w, p) == held)
+        {
+            Some((_, waiting)) => *waiting = copy,
+            None => {
+                self.0.try_reserve(1).map_err(|_| Unsent::Unheld)?;
+                self.0.push((which, copy));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// What a frame waiting for the guest's dial stands for, of which one waits: the workload's
+/// terminal for its size; an exec's id for its start and its size; an ask's number for its
+/// answer; a signal's own bytes, its exec's id and its number.
+fn stands_for(which: u8, payload: &[u8]) -> &[u8] {
+    match which {
+        kind::RESIZE => &[],
+        kind::EXEC => exec_id(payload).unwrap_or(payload),
+        kind::EXEC_RESIZE | kind::BOUND => payload.get(..4).unwrap_or(payload),
+        _ => payload,
+    }
+}
+
+/// The id an exec's frame carries after its token ([`exec_frame`]).
+fn exec_id(payload: &[u8]) -> Option<&[u8]> {
+    payload.get(run::TOKEN..run::TOKEN + 4)
+}
+
+/// Where signals for the workload go: its link, and what its connection's sender waits on.
+/// A VM process serves one workload, so its own is a `static` that the threads relaying
+/// signals, which live as long as the process, share.
+#[derive(Debug)]
+pub struct ToGuest {
+    state: Mutex<Signals>,
+    /// Told as frames come for the sender, and as the link leaves `Connected`.
+    changed: Condvar,
+}
+
+impl ToGuest {
+    pub const fn new(signals: Signals) -> ToGuest {
+        ToGuest {
+            state: Mutex::new(signals),
+            changed: Condvar::new(),
+        }
+    }
+}
 
 fn lock(to: &ToGuest) -> std::sync::MutexGuard<'_, Signals> {
-    to.lock().unwrap_or_else(PoisonError::into_inner)
+    to.state.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// When a request arrived and when it was answered, on the VMM's clock (for
@@ -723,7 +875,7 @@ pub fn serve(
     } else if !interactive && !resuming {
         send(&mut conn, kind::STDIN, &[]).map_err(|e| format!("closing stdin: {e}"))?;
     }
-    lock(to).running = true;
+    will_run(to);
     let boundary = capture_control
         .as_ref()
         .map(|_| conn.try_clone())
@@ -733,43 +885,17 @@ pub fn serve(
         .name("signal-conn".into())
         .spawn(move || {
             // Ends with the microVM, if the guest never dials.
-            let dialed = match (signals, resumed_signals) {
+            let came = match (signals, resumed_signals) {
                 (Some(port), _) => port.recv().ok(),
-                (None, Some(again)) => again.recv().ok().and_then(Result::ok),
+                (None, Some(again)) => match again.recv() {
+                    Ok(Ok(conn)) => Some(conn),
+                    Ok(Err(_)) => return lose(to, Lost::Untaken),
+                    Err(_) => None,
+                },
                 (None, None) => None,
             };
-            let Some(mut c) = dialed else {
-                return;
-            };
-            let mut state = lock(to);
-            if !state.running {
-                return;
-            }
-            let queued = std::mem::take(&mut state.queued);
-            if queued
-                .iter()
-                .all(|(which, payload)| send(&mut c, *which, payload).is_ok())
-            {
-                if let Some(control) = capture_control {
-                    let reader = match c.try_clone() {
-                        Ok(reader) => reader,
-                        Err(_) => {
-                            if let Some(boundary) = boundary {
-                                end_guest(&boundary);
-                            }
-                            return;
-                        }
-                    };
-                    state.conn = Some(c);
-                    drop(state);
-                    if let Some(boundary) = boundary
-                        && let Err(e) = control.supervise(&reader, &boundary)
-                    {
-                        shards_vmm::debug!("managed control boundary ended: {e}");
-                    }
-                } else {
-                    state.conn = Some(c);
-                }
+            if let Some(conn) = came {
+                take_signals(to, conn, capture_control.zip(boundary));
             }
         })
         .map_err(|e| format!("signal connection: {e}"))?;
@@ -851,8 +977,8 @@ pub fn serve(
         drain(&mut reader, &mut beyond);
     }
     if !joined {
-        let mut state = lock(to);
-        *state = Signals::default();
+        *lock(to) = Signals::default();
+        to.changed.notify_all();
     }
     *lock_stdin() = None;
     STDIN_OPEN.store(false, Ordering::Relaxed);
@@ -1250,6 +1376,11 @@ enum Target {
     },
     Resumed(std::sync::mpsc::SyncSender<Result<UnixStream, String>>),
     Capture(std::sync::mpsc::SyncSender<Result<UnixStream, String>>),
+    /// A member's input connection (capture.rs `start`), by the member's index.
+    Input {
+        member: u32,
+        to: std::sync::mpsc::SyncSender<(u32, UnixStream)>,
+    },
 }
 
 impl Target {
@@ -1262,6 +1393,14 @@ impl Target {
     fn deliver(self, result: Result<UnixStream, String>) {
         let to = match self {
             Self::Exec { to, .. } | Self::Resumed(to) | Self::Capture(to) => to,
+            // An input that never comes is its init's to tell (`managed::InputEnded`), as the
+            // connection it dialed fails there: nothing waits on it here.
+            Self::Input { member, to } => {
+                if let Ok(conn) = result {
+                    let _ = to.try_send((member, conn));
+                }
+                return;
+            }
         };
         let _ = to.try_send(result);
     }
@@ -1565,9 +1704,9 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
     let payload = exec_frame(&token, id, &req.spec)?;
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     register(token, Target::Exec { id, to: tx })?;
-    if !to_guest(to, kind::EXEC, &payload) {
+    if let Err(unsent) = to_guest(to, kind::EXEC, &payload) {
         hellos::forget(&token);
-        return Err("the container is not running".into());
+        return Err(unsent.to_string());
     }
     let mut conn = rx
         .recv()
@@ -1599,16 +1738,18 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
         std::thread::Builder::new()
             .name("exec-client".into())
             .spawn(move || {
+                // A size or signal refused leaves the exec as it is, its output and end
+                // coming on its own connection; a lost link is the VM's log's to say (`lose`).
                 while let Ok(Some(m)) = shards_ipc::recv(&client) {
                     match m.kind {
                         shards_ipc::kind::RESIZE if Size::decode(&m.payload).is_some() => {
-                            let resize = [&id.to_be_bytes()[..], &m.payload].concat();
-                            to_guest(to, kind::EXEC_RESIZE, &resize);
+                            let _ = resize_exec(to, id, &m.payload);
                         }
                         // The daemon's, for a health check past its timeout.
-                        shards_ipc::kind::SIGNAL if m.payload.len() == 4 => {
-                            let signal = [&id.to_be_bytes()[..], &m.payload].concat();
-                            to_guest(to, kind::EXEC_SIGNAL, &signal);
+                        shards_ipc::kind::SIGNAL => {
+                            if let Ok(signal) = <[u8; 4]>::try_from(m.payload.as_slice()) {
+                                let _ = signal_exec(to, id, u32::from_be_bytes(signal));
+                            }
                         }
                         _ => {}
                     }
@@ -1757,13 +1898,13 @@ pub fn attach_joiner(to: &'static ToGuest, id: u32, req: AttachRequest) -> Resul
             while let Ok(Some(m)) = shards_ipc::recv(&listened) {
                 match m.kind {
                     // Its INTERRUPT is the command's signal (D26).
-                    shards_ipc::kind::SIGNAL | shards_ipc::kind::INTERRUPT if m.payload.len() == 4 => {
-                        let signal = [&id.to_be_bytes()[..], &m.payload].concat();
-                        to_guest(to, kind::EXEC_SIGNAL, &signal);
+                    shards_ipc::kind::SIGNAL | shards_ipc::kind::INTERRUPT => {
+                        if let Ok(signal) = <[u8; 4]>::try_from(m.payload.as_slice()) {
+                            let _ = signal_exec(to, id, u32::from_be_bytes(signal));
+                        }
                     }
                     shards_ipc::kind::RESIZE if Size::decode(&m.payload).is_some() => {
-                        let resize = [&id.to_be_bytes()[..], &m.payload].concat();
-                        to_guest(to, kind::EXEC_RESIZE, &resize);
+                        let _ = resize_exec(to, id, &m.payload);
                     }
                     _ => {}
                 }
@@ -1858,9 +1999,10 @@ pub fn end_joiner(id: u32, status: u8) {
     }
 }
 
-/// Sends Linux signal `linux` to the guest's exec, or joiner, `id` (D119), as the daemon
-/// signals a microVM's command: false where the guest has no connection to take it.
-pub fn signal_exec(to: &ToGuest, id: u32, linux: u32) -> bool {
+/// Sends Linux signal `linux` to the guest's exec, or joiner, `id` (D119), as
+/// [`signal_guest`] signals a microVM's command.
+pub fn signal_exec(to: &ToGuest, id: u32, linux: u32) -> Result<(), Unsent> {
+    is_signal(linux)?;
     to_guest(
         to,
         kind::EXEC_SIGNAL,
@@ -1898,9 +2040,12 @@ pub fn join(
     let payload = exec_frame(&token, id, &spec)?;
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     register(token, Target::Exec { id, to: tx })?;
-    if !to_guest(to, kind::EXEC, &payload) {
+    if let Err(unsent) = to_guest(to, kind::EXEC, &payload) {
         hellos::forget(&token);
-        return Err("the container whose network it joins is not running".into());
+        return Err(match unsent {
+            Unsent::NotRunning => "the container whose network it joins is not running".into(),
+            other => other.to_string(),
+        });
     }
     let stream = rx
         .recv()
@@ -1940,13 +2085,13 @@ pub fn join(
                 while let Ok(Some(m)) = shards_ipc::recv(&client) {
                     match m.kind {
                         shards_ipc::kind::RESIZE if Size::decode(&m.payload).is_some() => {
-                            let resize = [&id.to_be_bytes()[..], &m.payload].concat();
-                            to_guest(to, kind::EXEC_RESIZE, &resize);
+                            let _ = resize_exec(to, id, &m.payload);
                         }
                         // Its INTERRUPT is the command's signal once its run is made (D26).
-                        shards_ipc::kind::SIGNAL | shards_ipc::kind::INTERRUPT if m.payload.len() == 4 => {
-                            let signal = [&id.to_be_bytes()[..], &m.payload].concat();
-                            to_guest(to, kind::EXEC_SIGNAL, &signal);
+                        shards_ipc::kind::SIGNAL | shards_ipc::kind::INTERRUPT => {
+                            if let Ok(signal) = <[u8; 4]>::try_from(m.payload.as_slice()) {
+                                let _ = signal_exec(to, id, u32::from_be_bytes(signal));
+                            }
                         }
                         _ => {}
                     }
@@ -2154,12 +2299,12 @@ pub fn attach(to: &'static ToGuest, req: AttachRequest) -> Result<(), String> {
                     // Its INTERRUPT is the command's signal (D26).
                     shards_ipc::kind::SIGNAL | shards_ipc::kind::INTERRUPT => {
                         if let Ok(sig) = <[u8; 4]>::try_from(m.payload.as_slice()) {
-                            signal_guest(to, u32::from_be_bytes(sig));
+                            let _ = signal_guest(to, u32::from_be_bytes(sig));
                         }
                     }
                     shards_ipc::kind::RESIZE => {
                         if let Some(size) = Size::decode(&m.payload) {
-                            resize_guest(to, size);
+                            let _ = resize_guest(to, size);
                         }
                     }
                     _ => {}
@@ -2208,7 +2353,9 @@ pub fn forward_signals(to: &'static ToGuest, reads_terminal: bool) -> Result<(),
                 let Some(linux) = shards_ipc::linux_signal(sig) else {
                     continue;
                 };
-                let forwarded = signal_guest(to, linux);
+                // Not forwarded where its workload's control is lost too: a signal that would
+                // end shards ends it, its microVM with it, as no other way is left to end it.
+                let forwarded = signal_guest(to, linux).is_ok();
                 let ends = [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM].contains(&sig);
                 if !forwarded && ends && !ignored.contains(&sig) {
                     // SAFETY: the default action of a terminating signal, on this process.
@@ -2245,7 +2392,7 @@ pub fn forward_signals(to: &'static ToGuest, _reads_terminal: bool) -> Result<()
             CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT => 15,
             _ => return 0,
         };
-        i32::from(TO.get().is_some_and(|to| signal_guest(to, linux)))
+        i32::from(TO.get().is_some_and(|to| signal_guest(to, linux).is_ok()))
     }
     if TO.set(to).is_err() {
         return Err("signals forwarded twice".into());
@@ -2260,46 +2407,224 @@ pub fn forward_signals(to: &'static ToGuest, _reads_terminal: bool) -> Result<()
     Ok(())
 }
 
-/// From here on the workload will run, so signals queue for it until the guest dials the
-/// signal port rather than being refused: a warm VM calls it once it has taken a request.
+/// From here on the workload will run, so frames for its control wait for the guest's dial
+/// rather than being refused: a warm VM calls it once it has taken a request.
 pub fn will_run(to: &ToGuest) {
-    lock(to).running = true;
+    let mut state = lock(to);
+    if matches!(state.link, Link::Idle) {
+        state.link = Link::Awaiting(Pending::default());
+    }
 }
 
-/// Sends Linux signal `linux` to the workload through `to`, or queues it until the guest
-/// dials the signal port. Returns false before the workload runs, when there is no one to
-/// send it to.
-pub fn signal_guest(to: &ToGuest, linux: u32) -> bool {
+/// Sends Linux signal `linux` to the workload through `to`, or holds it until the guest
+/// dials ([`Link`]); or says why it cannot.
+pub fn signal_guest(to: &ToGuest, linux: u32) -> Result<(), Unsent> {
+    is_signal(linux)?;
     to_guest(to, kind::SIGNAL, &linux.to_be_bytes())
+}
+
+/// Linux signal `linux` is one the guest delivers: `1..=NSIG`, as init checks it.
+fn is_signal(linux: u32) -> Result<(), Unsent> {
+    if (1..=run::NSIG).contains(&linux) {
+        Ok(())
+    } else {
+        Err(Unsent::NoSuchSignal(linux))
+    }
 }
 
 /// Gives the guest the host's answer to its ask on the host's network (D124), as
 /// [`signal_guest`] sends a signal.
-pub fn bound_guest(to: &ToGuest, bound: &[u8]) -> bool {
+pub fn bound_guest(to: &ToGuest, bound: &[u8]) -> Result<(), Unsent> {
     to_guest(to, kind::BOUND, bound)
 }
 
 /// Sizes the workload's terminal, if it has one, as [`signal_guest`] sends a signal.
-pub fn resize_guest(to: &ToGuest, size: Size) -> bool {
+pub fn resize_guest(to: &ToGuest, size: Size) -> Result<(), Unsent> {
     to_guest(to, kind::RESIZE, &size.encode())
 }
 
-fn to_guest(to: &ToGuest, which: u8, payload: &[u8]) -> bool {
-    let mut guard = lock(to);
-    let state = &mut *guard;
-    match (&mut state.conn, state.running) {
-        (Some(conn), _) => {
-            if send(conn, which, payload).is_err() {
-                state.conn = None;
-            }
-            true
+/// Sizes exec, or joiner, `id`'s terminal (D119), as [`signal_guest`] sends a signal.
+fn resize_exec(to: &ToGuest, id: u32, size: &[u8]) -> Result<(), Unsent> {
+    to_guest(to, kind::EXEC_RESIZE, &[&id.to_be_bytes()[..], size].concat())
+}
+
+/// Holds frame `which` for the workload's control, for its guest's dial or its connection's
+/// sender; or says why it cannot, at once. It never waits on the guest: no send happens
+/// under the link's lock ([`send_frames`]).
+fn to_guest(to: &ToGuest, which: u8, payload: &[u8]) -> Result<(), Unsent> {
+    let mut state = lock(to);
+    match &mut state.link {
+        Link::Idle => Err(Unsent::NotRunning),
+        Link::Lost(lost) => Err(Unsent::Lost(*lost)),
+        Link::Awaiting(pending) => pending.hold(which, payload, false),
+        Link::Connected(pending) => {
+            pending.hold(which, payload, true)?;
+            to.changed.notify_one();
+            Ok(())
         }
-        (None, true) => {
-            state.queued.push((which, payload.to_vec()));
-            true
-        }
-        (None, false) => false,
     }
+}
+
+/// The guest has dialed the signal port with `conn`, or a restored guest has dialed again
+/// (D176): what waited for it waits now for the connection's sender, first. Its two halves
+/// come back, the sender's and the one to [`watch`]; none where its run is over, or no copy
+/// can be had to watch it, which loses it ([`lose`]): a connection whose end no one reads
+/// could keep an exec waiting for a frame the guest never read.
+fn dialed(to: &ToGuest, conn: UnixStream) -> Option<(UnixStream, UnixStream)> {
+    let mut state = lock(to);
+    let Link::Awaiting(pending) = &mut state.link else {
+        // Its run over before it dialed (or a dial past the one its port takes): the guest
+        // reads this one's end.
+        return None;
+    };
+    let watched = match conn.try_clone() {
+        Ok(watched) => watched,
+        Err(e) => {
+            drop(state);
+            lose(to, Lost::of(&e));
+            return None;
+        }
+    };
+    state.link = Link::Connected(std::mem::take(pending));
+    Some((conn, watched))
+}
+
+/// Takes the guest's signal connection as it comes, `conn`: its sender starts on a thread of
+/// its own ([`send_frames`]), what waited going first, a managed run's control boundary is
+/// held on it (`capture::Control`), and its end is watched from then on ([`watch`]).
+fn take_signals(to: &'static ToGuest, conn: UnixStream, managed: Option<(capture::Control, UnixStream)>) {
+    let sender = dialed(to, conn).map(|(sending, watched)| {
+        let started = std::thread::Builder::new()
+            .name("signal-send".into())
+            .spawn(move || send_frames(to, sending));
+        (started, watched)
+    });
+    let watched = match sender {
+        Some((Ok(_), watched)) => watched,
+        Some((Err(e), _)) => {
+            lose(to, Lost::of(&e));
+            return end_managed(managed);
+        }
+        None => return end_managed(managed),
+    };
+    if let Some((control, boundary)) = managed
+        && let Err(e) = control.supervise(&watched, &boundary)
+    {
+        shards_vmm::debug!("managed control boundary ended: {e}");
+        return lose(to, Lost::of(&e));
+    }
+    watch(to, &watched);
+}
+
+/// A managed run's control boundary, which nothing reads or sends on: ended, as it cannot
+/// hold.
+fn end_managed(managed: Option<(capture::Control, UnixStream)>) {
+    if let Some((_, boundary)) = managed {
+        end_guest(&boundary);
+    }
+}
+
+/// Sends what waits for the guest on its signal connection, `conn`, in order: each batch
+/// taken under the link's lock, and sent with it let go, so that what holds a send (a guest
+/// that reads slowly, or whose vCPUs are held for a pause or a save) holds this thread
+/// alone, never a frame's caller, nor the relay that brings the pause's end. Ends as the link
+/// leaves `Connected`. A send that fails refuses every frame after it, the first cause
+/// standing. Where its error says the guest's end has gone, whether the guest had said its
+/// end first, or the connection is lost, is [`watch`]'s to find, which reads that end at
+/// once; any other error leaves an end the watch may never read, and loses the connection
+/// here ([`lose`]).
+fn send_frames(to: &ToGuest, mut conn: UnixStream) {
+    let mut state = lock(to);
+    loop {
+        let batch = match &mut state.link {
+            Link::Connected(pending) if !pending.0.is_empty() => std::mem::take(pending),
+            Link::Connected(_) => {
+                state = to.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+                continue;
+            }
+            Link::Idle | Link::Awaiting(_) | Link::Lost(_) => return,
+        };
+        drop(state);
+        let sent = batch
+            .0
+            .iter()
+            .try_for_each(|(which, payload)| send(&mut conn, *which, payload));
+        state = lock(to);
+        if let Err(e) = sent {
+            let lost = Lost::of(&e);
+            if matches!(state.link, Link::Connected(_)) {
+                state.link = Link::Lost(lost);
+            }
+            drop(state);
+            let gone = matches!(
+                e.kind(),
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::NotConnected
+            );
+            if !gone {
+                lose(to, lost);
+            }
+            return;
+        }
+    }
+}
+
+/// Reads the guest's signal connection, `conn`, to its end. The guest sends nothing on it but
+/// its managed control, read before this (`capture::Control`), and last its relay's end
+/// ([`kind::SIGNALS_END`]): that said, the run is over ([`ended`]); the connection closed or
+/// failed without it, or anything else said on it, the workload's control is lost
+/// ([`lose`]). Blocked in a read, it costs no wake until one of those.
+fn watch(to: &ToGuest, conn: &UnixStream) {
+    let mut header = [0u8; run::HEADER];
+    match shards_ipc::Polled(conn).read_exact(&mut header) {
+        Ok(()) if run::parse_header(header) == Some((kind::SIGNALS_END, 0)) => ended(to),
+        Ok(()) => lose(to, Lost::Protocol),
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => lose(to, Lost::Closed),
+        Err(e) => lose(to, Lost::of(&e)),
+    }
+}
+
+/// The guest's relay has said its end on the signal connection: the workload and every exec
+/// of it are over, and nothing reads what the host would send. Frames are refused as an
+/// ended run's from now on, a send that failed meanwhile having met that end, and execs that
+/// still wait fail so: nothing is left in the guest to start them.
+fn ended(to: &ToGuest) {
+    {
+        let mut state = lock(to);
+        if !matches!(state.link, Link::Connected(_) | Link::Lost(_)) {
+            return;
+        }
+        state.link = Link::Idle;
+    }
+    to.changed.notify_all();
+    hellos::fail_execs(&Unsent::NotRunning.to_string());
+}
+
+/// The guest's signal connection has failed, as `lost` says, while its run goes on: frames are
+/// refused from now on with why, the first cause found standing; execs that wait for
+/// connections they asked the guest for on it, which it may never have read, fail with it;
+/// and the VM process's log, its daemon's for a warm VM, says it.
+fn lose(to: &ToGuest, lost: Lost) {
+    let lost = {
+        let mut state = lock(to);
+        match &state.link {
+            Link::Idle => return,
+            Link::Lost(first) => *first,
+            Link::Awaiting(_) | Link::Connected(_) => {
+                state.link = Link::Lost(lost);
+                lost
+            }
+        }
+    };
+    to.changed.notify_all();
+    let why = Unsent::Lost(lost);
+    let failed = hellos::fail_execs(&why.to_string());
+    shards_vmm::warn!(
+        "{why}: its workload takes no more signals, terminal sizes, answers or execs, its \
+         command going on; execs that waited and failed with it: {failed}"
+    );
 }
 
 #[cfg(all(test, unix))]
@@ -2995,5 +3320,419 @@ mod tests {
             broken.err().as_deref(),
             Some("the guest sent a malformed readiness")
         );
+    }
+
+    /// An exec's request as the daemon brings it, its stdio the null device's.
+    fn exec_request() -> ExecRequest {
+        let (client, _peer) = shards_ipc::Stream::pair().unwrap();
+        let null = || {
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/null")
+                .unwrap()
+        };
+        ExecRequest {
+            spec: Spec {
+                argv: vec![b"true".to_vec()],
+                ..Spec::default()
+            },
+            interactive: false,
+            detached: false,
+            number: 1,
+            daemon: None,
+            client,
+            stdin: null(),
+            stdout: null(),
+            stderr: null(),
+        }
+    }
+
+    /// `to`'s workload runs, its guest's signal connection dialed: the connection's two
+    /// halves, its sender's and the one to watch, and the guest's end.
+    fn connected(to: &ToGuest) -> ((UnixStream, UnixStream), UnixStream) {
+        will_run(to);
+        let (host, guest) = pair();
+        (dialed(to, host).unwrap(), guest)
+    }
+
+    /// A connection's host end and its guest's, whose reads give up after 5 s, a bound on a
+    /// frame that comes at once or never.
+    fn pair() -> (UnixStream, UnixStream) {
+        let (host, guest) = UnixStream::pair().unwrap();
+        guest
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        (host, guest)
+    }
+
+    /// `to`'s workload runs, its guest's signal connection taken as `serve` takes it, its
+    /// sender and its watch on threads of their own ([`take_signals`]): the guest's end, and
+    /// the watch's thread.
+    fn taken(to: &'static ToGuest) -> (UnixStream, std::thread::JoinHandle<()>) {
+        will_run(to);
+        let (host, guest) = pair();
+        (guest, std::thread::spawn(move || take_signals(to, host, None)))
+    }
+
+    /// An exec asked for through `to` on a thread of its own: how it ends.
+    fn exec_ends(to: &'static ToGuest) -> std::sync::mpsc::Receiver<Result<u8, String>> {
+        let (said, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = said.send(exec_session(to, &mut exec_request()));
+        });
+        heard
+    }
+
+    /// Why the exec `heard` tells of failed, within 5 s: a bound on an event that comes at
+    /// once or never.
+    fn failure(heard: &std::sync::mpsc::Receiver<Result<u8, String>>) -> String {
+        let ended = heard.recv_timeout(std::time::Duration::from_secs(5));
+        assert!(
+            matches!(ended, Ok(Err(_))),
+            "the exec did not fail at once: {ended:?}"
+        );
+        ended.unwrap().unwrap_err()
+    }
+
+    /// The frame `guest` reads next on the signal connection.
+    fn next_frame(guest: &mut UnixStream) -> (u8, Vec<u8>) {
+        let mut header = [0u8; run::HEADER];
+        guest.read_exact(&mut header).unwrap();
+        let (which, len) = run::parse_header(header).unwrap();
+        let mut payload = vec![0; len as usize];
+        guest.read_exact(&mut payload).unwrap();
+        (which, payload)
+    }
+
+    /// Waits for what `guest` has yet to read: a frame on its way.
+    fn readable(guest: &UnixStream) {
+        let mut came = libc::pollfd {
+            fd: std::os::fd::AsRawFd::as_raw_fd(guest),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll(2) of one pollfd of a socket this test holds open.
+        assert_eq!(unsafe { libc::poll(&mut came, 1, 5000) }, 1, "no frame came");
+    }
+
+    /// A send on the signal connection that fails, the guest's end of it gone, refuses every
+    /// frame after it at once with why: none is held for a sender that cannot send it (at
+    /// d35c4cf79 each was told it went, and the later ones queued for ever).
+    #[test]
+    fn a_send_that_fails_refuses_every_later_frame_at_once() {
+        let to = ToGuest::new(Signals::new());
+        let ((sending, _watched), guest) = connected(&to);
+        drop(guest);
+        signal_guest(&to, 15).unwrap();
+        send_frames(&to, sending);
+        let failed = signal_guest(&to, 15).unwrap_err();
+        assert!(matches!(failed, Unsent::Lost(Lost::Failed { .. })), "{failed:?}");
+        assert!(
+            failed
+                .to_string()
+                .starts_with("the guest's signal connection is lost: "),
+            "{failed}"
+        );
+        for _ in 0..3 {
+            assert_eq!(signal_guest(&to, 15), Err(failed), "a later frame");
+        }
+        assert_eq!(resize_guest(&to, Size { rows: 1, cols: 1 }), Err(failed));
+        assert!(matches!(lock(&to).link, Link::Lost(_)), "nothing waits");
+    }
+
+    /// A send that fails with the guest's end still there, which the watch would never read
+    /// an end of, loses the connection at once: an exec its frame asked for fails with why,
+    /// rather than wait for an end that may never come.
+    #[test]
+    fn a_send_that_fails_with_its_guest_still_there_loses_the_connection() {
+        static TO: ToGuest = ToGuest::new(Signals::new());
+        let (_serial, _port, _acceptor) = exec_port_test();
+        let ((sending, _watched), _guest) = connected(&TO);
+        // A send that cannot wait fails as soon as the guest reads no more, its end open.
+        sending.set_nonblocking(true).unwrap();
+        let heard = exec_ends(&TO);
+        while !matches!(&lock(&TO).link, Link::Connected(p) if !p.0.is_empty()) {
+            std::thread::yield_now();
+        }
+        to_guest(&TO, kind::BOUND, &vec![0x5a; 4 << 20]).unwrap();
+        send_frames(&TO, sending);
+        let why = failure(&heard);
+        hellos::close();
+        assert!(
+            why.starts_with("the guest's signal connection is lost: "),
+            "{why}"
+        );
+    }
+
+    /// An exec whose frame cannot be sent ends at once with why, its wait over (at d35c4cf79
+    /// it was told the frame went, and waited for the workload's end).
+    #[test]
+    fn an_exec_whose_frame_cannot_be_sent_ends_at_once_with_why() {
+        static TO: ToGuest = ToGuest::new(Signals::new());
+        let (_serial, _port, _acceptor) = exec_port_test();
+        let (guest, watching) = taken(&TO);
+        drop(guest);
+        let why = failure(&exec_ends(&TO));
+        watching.join().unwrap();
+        assert!(
+            why.starts_with("the guest's signal connection is lost: "),
+            "{why}"
+        );
+        assert_eq!(hellos::fail_execs("none"), 0, "its wait is over");
+        hellos::close();
+    }
+
+    /// An exec whose frame went on the signal connection, the guest's end of it closing
+    /// before the guest read it and with its end unsaid, fails as the watch reads that
+    /// close, and so does every frame after it (at d35c4cf79 nothing read the connection's
+    /// end, and the exec waited for the workload's).
+    #[test]
+    fn an_exec_whose_frame_the_guest_never_read_fails_as_its_connection_closes() {
+        static TO: ToGuest = ToGuest::new(Signals::new());
+        let (_serial, _port, _acceptor) = exec_port_test();
+        let (guest, watching) = taken(&TO);
+        let heard = exec_ends(&TO);
+        // Its frame has come, unread: the exec waits for its connection.
+        readable(&guest);
+        drop(guest);
+        let why = failure(&heard);
+        watching.join().unwrap();
+        hellos::close();
+        assert!(
+            why.starts_with("the guest's signal connection is lost: "),
+            "{why}"
+        );
+        assert!(
+            matches!(signal_guest(&TO, 15), Err(Unsent::Lost(_))),
+            "a later frame"
+        );
+    }
+
+    /// A guest that says its relay's end before closing the signal connection has ended its
+    /// run: what waits fails as an ended run's, and no loss is said, a send that met the
+    /// connection's end first having met that end.
+    #[test]
+    fn a_guest_that_says_its_end_has_ended_its_run() {
+        static TO: ToGuest = ToGuest::new(Signals::new());
+        let (_serial, _port, _acceptor) = exec_port_test();
+        let ((sending, watched), mut guest) = connected(&TO);
+        let sender = std::thread::spawn(move || send_frames(&TO, sending));
+        let heard = exec_ends(&TO);
+        assert_eq!(next_frame(&mut guest).0, kind::EXEC);
+        guest.write_all(&run::header(kind::SIGNALS_END, 0)).unwrap();
+        drop(guest);
+        // Held for the sender, whose send meets the connection's end.
+        signal_guest(&TO, 15).unwrap();
+        sender.join().unwrap();
+        assert!(
+            matches!(signal_guest(&TO, 15), Err(Unsent::Lost(_))),
+            "a send failed"
+        );
+        watch(&TO, &watched);
+        assert_eq!(failure(&heard), "the container is not running");
+        assert_eq!(signal_guest(&TO, 15), Err(Unsent::NotRunning));
+        hellos::close();
+    }
+
+    /// The signal connection is taken as it comes: what waited goes on it, and its end is
+    /// watched from then on.
+    #[test]
+    fn a_signal_connection_is_watched_from_its_dial() {
+        static TO: ToGuest = ToGuest::new(Signals::new());
+        let (_serial, _port, _acceptor) = exec_port_test();
+        will_run(&TO);
+        signal_guest(&TO, 15).unwrap();
+        let (host, mut guest) = pair();
+        let taking = std::thread::spawn(move || take_signals(&TO, host, None));
+        assert_eq!(
+            next_frame(&mut guest),
+            (kind::SIGNAL, 15u32.to_be_bytes().to_vec())
+        );
+        drop(guest);
+        taking.join().unwrap();
+        assert_eq!(signal_guest(&TO, 15), Err(Unsent::Lost(Lost::Closed)));
+    }
+
+    /// The signal connection's watch takes anything but the guest's end as its loss: bytes
+    /// the guest never sends, or a read that fails.
+    #[test]
+    fn a_signal_connection_saying_anything_else_is_lost() {
+        let (_serial, _port, _acceptor) = exec_port_test();
+        let to = ToGuest::new(Signals::new());
+        let ((_sending, watched), mut guest) = connected(&to);
+        guest.write_all(&run::header(kind::SIGNAL, 0)).unwrap();
+        watch(&to, &watched);
+        assert_eq!(signal_guest(&to, 15), Err(Unsent::Lost(Lost::Protocol)));
+        // Once its run is over, its connection's end is no loss.
+        let to = ToGuest::new(Signals::new());
+        let ((_sending, watched), guest) = connected(&to);
+        *lock(&to) = Signals::default();
+        drop(guest);
+        watch(&to, &watched);
+        assert_eq!(signal_guest(&to, 15), Err(Unsent::NotRunning));
+    }
+
+    /// A frame whose send waits on its guest (more than the connection's sockets hold, its
+    /// guest reading nothing, as a paused microVM's reads nothing) holds no other frame's
+    /// caller: theirs are answered at once, held behind it, and every frame goes in order as
+    /// the guest reads again (at e8d19fc68 that send held the link's lock until the guest
+    /// read it, and every other caller waited for the lock: the daemon's relay among them,
+    /// and with it the unpause it would read next).
+    #[test]
+    fn a_send_its_guest_has_yet_to_read_holds_no_other_frames_caller() {
+        static TO: ToGuest = ToGuest::new(Signals::new());
+        let (_serial, _port, _acceptor) = exec_port_test();
+        let (mut guest, watching) = taken(&TO);
+        let big = vec![0x5a; 4 << 20];
+        let first = big.clone();
+        let held = std::thread::spawn(move || to_guest(&TO, kind::BOUND, &first));
+        // Its send is under way.
+        readable(&guest);
+        let (said, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = said.send(signal_guest(&TO, 28));
+        });
+        let answered = heard.recv_timeout(std::time::Duration::from_secs(5));
+        // The guest reads again: both go, in order.
+        assert_eq!(next_frame(&mut guest), (kind::BOUND, big));
+        assert_eq!(
+            next_frame(&mut guest),
+            (kind::SIGNAL, 28u32.to_be_bytes().to_vec())
+        );
+        assert_eq!(held.join().unwrap(), Ok(()));
+        drop(guest);
+        watching.join().unwrap();
+        hellos::close();
+        assert_eq!(answered, Ok(Ok(())), "a signal waited on another frame's send");
+    }
+
+    /// Frames for the workload's control wait for its guest's dial, as a restored guest's
+    /// dial again too (D176), one for each thing pending: a signal once, the workload's
+    /// terminal's latest size, an exec's start, and its signals and latest size once it is on
+    /// its way, an ask's latest answer. Then they go on the connection in the order they came.
+    /// Before the workload runs there is no one to send them to; a number that is no Linux
+    /// signal is refused.
+    #[test]
+    fn frames_wait_for_the_dial_one_for_each_thing_pending() {
+        let to = ToGuest::new(Signals::new());
+        assert_eq!(signal_guest(&to, 15), Err(Unsent::NotRunning));
+        will_run(&to);
+        assert_eq!(signal_guest(&to, 0), Err(Unsent::NoSuchSignal(0)));
+        assert_eq!(signal_guest(&to, 65), Err(Unsent::NoSuchSignal(65)));
+        for _ in 0..3 {
+            signal_guest(&to, 15).unwrap();
+        }
+        signal_guest(&to, 2).unwrap();
+        let (small, large) = (Size { rows: 24, cols: 80 }, Size { rows: 50, cols: 132 });
+        resize_guest(&to, small).unwrap();
+        resize_guest(&to, large).unwrap();
+        assert_eq!(
+            signal_exec(&to, 7, 15),
+            Err(Unsent::NotRunning),
+            "no exec 7 waits"
+        );
+        let spec = Spec {
+            argv: vec![b"x".to_vec()],
+            ..Spec::default()
+        };
+        let exec = exec_frame(&[1; run::TOKEN], 7, &spec).unwrap();
+        to_guest(&to, kind::EXEC, &exec).unwrap();
+        for _ in 0..2 {
+            signal_exec(&to, 7, 15).unwrap();
+        }
+        resize_exec(&to, 7, &small.encode()).unwrap();
+        resize_exec(&to, 7, &large.encode()).unwrap();
+        let answer = |request: u32, errno: i32| {
+            run::HostBound {
+                request,
+                errno,
+                port: 0,
+                number: 0,
+            }
+            .encode()
+        };
+        bound_guest(&to, &answer(1, 98)).unwrap();
+        bound_guest(&to, &answer(1, 0)).unwrap();
+        bound_guest(&to, &answer(2, 0)).unwrap();
+        let ((sending, _watched), mut guest) = {
+            let (host, guest) = pair();
+            (dialed(&to, host).unwrap(), guest)
+        };
+        std::thread::scope(|s| {
+            s.spawn(|| send_frames(&to, sending));
+            let exec_and = |rest: &[u8]| [&7u32.to_be_bytes()[..], rest].concat();
+            let expected = [
+                (kind::SIGNAL, 15u32.to_be_bytes().to_vec()),
+                (kind::SIGNAL, 2u32.to_be_bytes().to_vec()),
+                (kind::RESIZE, large.encode().to_vec()),
+                (kind::EXEC, exec),
+                (kind::EXEC_SIGNAL, exec_and(&15u32.to_be_bytes())),
+                (kind::EXEC_RESIZE, exec_and(&large.encode())),
+                (kind::BOUND, answer(1, 0).to_vec()),
+                (kind::BOUND, answer(2, 0).to_vec()),
+            ];
+            for (i, frame) in expected.into_iter().enumerate() {
+                assert_eq!(next_frame(&mut guest), frame, "frame {i}");
+            }
+            // Once dialed, an exec's signal goes whether or not its start waits with it.
+            signal_guest(&to, 1).unwrap();
+            signal_exec(&to, 9, 15).unwrap();
+            assert_eq!(
+                next_frame(&mut guest),
+                (kind::SIGNAL, 1u32.to_be_bytes().to_vec())
+            );
+            assert_eq!(
+                next_frame(&mut guest),
+                (
+                    kind::EXEC_SIGNAL,
+                    [&9u32.to_be_bytes()[..], &15u32.to_be_bytes()].concat()
+                )
+            );
+            // The sender ends with the link.
+            *lock(&to) = Signals::default();
+            to.changed.notify_all();
+        });
+    }
+
+    /// What waits for a dial whose sends fail is lost with it: an exec it asked for fails
+    /// with why as the watch reads the connection's end.
+    #[test]
+    fn an_exec_waiting_for_a_dial_that_fails_fails_with_it() {
+        static TO: ToGuest = ToGuest::new(Signals::new());
+        let (_serial, _port, _acceptor) = exec_port_test();
+        will_run(&TO);
+        let heard = exec_ends(&TO);
+        // Its frame waits for the dial.
+        while !matches!(&lock(&TO).link, Link::Awaiting(p) if !p.0.is_empty()) {
+            std::thread::yield_now();
+        }
+        let (host, guest) = UnixStream::pair().unwrap();
+        drop(guest);
+        take_signals(&TO, host, None);
+        let why = failure(&heard);
+        hellos::close();
+        assert!(
+            why.starts_with("the guest's signal connection is lost: "),
+            "{why}"
+        );
+    }
+
+    /// Execs that wait fail with why as the signal connection is lost or ended; a restored
+    /// run's waits and a capture's, which ask nothing on it, wait on.
+    #[test]
+    fn only_execs_fail_as_the_signal_connection_goes() {
+        let (_serial, _port, _acceptor) = exec_port_test();
+        let (exec, failed) = std::sync::mpsc::sync_channel(1);
+        let (resumed, waits) = std::sync::mpsc::sync_channel(1);
+        let (capture, captured) = std::sync::mpsc::sync_channel(1);
+        register([11; run::TOKEN], Target::Exec { id: 11, to: exec }).unwrap();
+        register([12; run::TOKEN], Target::Resumed(resumed)).unwrap();
+        register([13; run::TOKEN], Target::Capture(capture)).unwrap();
+        assert_eq!(hellos::fail_execs("lost"), 1);
+        assert_eq!(failed.try_recv().unwrap().unwrap_err(), "lost");
+        assert!(waits.try_recv().is_err() && captured.try_recv().is_err());
+        assert_eq!(hellos::fail_execs("lost"), 0);
+        hellos::close();
     }
 }

@@ -21579,7 +21579,8 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     for, the run's VM process ended instead, its daemon alive. A diagnostic build
     (`harness/diag.patch`, not merged) said how each side of the slot ended.
   - The fix: its unit tests, then each guard removed (`harness/unit.sh`), on Linux, macOS
-    and Windows, and the shards binary's whole unit suite; `kill.sh` again with the fix.
+    and Windows, and the shards binary's whole unit suite; `kill.sh` again with the fix;
+    `scripts/lint` on every supported target from a Mac (`harness/lint.sh`, `lint2.sh`).
 - **Found.**
   - kiln ended them. At 16:00:49.831Z its agent "stopping what agents' commands left running,
     now that they're between turns" ended 48108 (the eng-ring-2 daemon, whose log's lines are
@@ -21605,14 +21606,20 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   - With the fix the daemon ended mid-run said "the daemon ended before the command did",
     6 of 6 (3 and 3), and the VM ended "the command's microVM stopped before the command
     ended", 3 of 3 (r4).
-  - The unit tests, on Linux: green; with the relay's `UNANSWERED` a no-op, the relay's test
-    failed ("left: Some([12]) right: Some([12, 91])"); with the client's line for a wordless
-    end put back, the client's test failed (its words against "the daemon ended before the
-    command did"); the shards binary's unit suite passed in test-release, 730 of 730, 14
-    ignored (r5). On Windows, green, and the relay's test red without its guard, as on
-    Linux; the rest of Windows' and macOS' as the record's Owed says. In the dev profile
-    the suite ended at a stack overflow of a test's `policy` thread (Rego) on Linux and
-    Windows alike, code this change leaves alone.
+  - The unit tests, on Linux (adacachy, x86_64), Windows (jupiter) and macOS (a Mac
+    Studio, arm64), rustc 1.98.1: green; with the relay's `UNANSWERED` a no-op, the relay's test
+    failed on each ("left: Some([12]) right: Some([12, 91])"); with the client's line for a
+    wordless end put back, the client's test failed on each (its words against "the daemon
+    ended before the command did"); the shards binary's unit suite passed in test-release:
+    730 passed and 14 ignored on Linux, 709 and 10 on Windows, 730 and 12 on macOS, none
+    failed (r5). In the dev
+    profile the suite ended at a stack overflow in
+    `build::policy::tests::the_deepest_policy_runs_on_the_policy_thread` (its `policy`
+    thread) on Linux and Windows alike, code this change leaves alone.
+  - `scripts/lint`, every supported target (r6): clean, but for both Windows targets'
+    workspace lint, stopped by another change's test (windows_process.rs:544, an unsafe
+    block whose SAFETY comment sat above its `assert_ne!`; cacbd8883, fixed on main by 63bdbf315);
+    this change's crates, shards and shards-ipc, were clean there alone.
 - **Consequence (D185).** The cause is outside shards: kiln's between-turns sweep ends a
   shards daemon, and every microVM it holds, once the agent whose command started it is
   between turns, whatever still uses it. For agents in kiln sessions: wait for a run that
@@ -21626,3 +21633,296 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   on Linux and macOS, by SIGTERM, for which the daemon installs no handler, so that its
   default ends it as a kill does: held there by the unit tests alone; GitHub's windows-2025
   failures of the same day are not this (no kiln there; M528).
+
+### M531. init's path descriptors on musl, and code mode's workers stopped in a timed wait (PM M525's two latent defects)
+
+- **Question.** M525 found init's four production opens of a path descriptor made through
+  std's `OpenOptions::custom_flags(O_PATH)`, which musl's `O_ACCMODE` (`03|O_SEARCH`, its
+  `O_SEARCH` being `O_PATH`) loses to std's mask, and a code-mode worker's filter that
+  allows futex but not `restart_syscall`. Are both real, on which architectures and libcs,
+  and does any other filter of shards' own share the second?
+- **Method.** On x86_64 (adacachy, kernel 7.2.9) natively (glibc) and in CI's pinned musl
+  image under Docker's default seccomp profile, and on arm64 (Docker Desktop's VM, kernel
+  6.12.76-linuxkit) in the same musl image and in Debian's `rust:1.98.1`, each as uid 1000:
+  init's and the code-mode server's unit tests; probes, test modules appended for one run
+  (`changes::keep`'s descriptors read back by F_GETFL and a mode-0 layer kept, fixed and as
+  main had it; the managed reaper's own loop and the network process's poller, each under
+  its filter, stopped and continued in its wait; a program's `Atomics.wait` in a worker's
+  runtime); and mutants of each guard. Harnesses, logs and sources:
+  [the record](measurements/musl-opath-v1/README.md). Revisions 883796ec1 and fc71859bc
+  (main), 2026-11-12.
+- **Found.**
+
+  | Defect | Before (main's code) | After |
+  |---|---|---|
+  | init's kept layers (`changes::keep`), musl | not `O_PATH`: `O_RDONLY \| O_DIRECTORY \| O_LARGEFILE` (x86_64 `0o300000`, arm64 `0o440000`); a mode-0 layer refused EACCES | `O_PATH \| O_DIRECTORY` (`0o10200000`, `0o10040000`); kept |
+  | the same, glibc | `O_PATH` already (glibc's `O_ACCMODE` is 3) | unchanged |
+  | a worker stopped and continued in a timed futex wait | SIGSYS on x86_64 and arm64, glibc and musl (`restart_syscall` refused) | exits 0 on each |
+  | the helper stopped in its poll (M525's fix kept) | lives; with `restart_syscall` in neither filter, SIGSYS on x86_64, lives on arm64 (ppoll restarts as itself) | lives on each |
+  | the managed reaper, the network process (x86_64) | live through the stop: no call they allow resumes through `restart_syscall` (ppoll and wait4 restart as themselves; epoll_wait returns EINTR, which the poller takes as no events) | unchanged |
+  | a program's timed `Atomics.wait` in a worker | throws "cannot block in this thread" (QuickJS-NG blocks only where `JS_SetCanBlock` allows; rquickjs never sets it) | unchanged |
+
+- **Mutants**, on each of the four: a call site put back on std's `OpenOptions` (killed by
+  the test that no source of init's asks std for `O_PATH`, on glibc too); the helper given
+  std's flags (killed on musl, "not O_PATH: 0o300000"; survives on glibc, which keeps
+  `O_PATH`: the source test is the guard there); the filters as main had them (the worker's
+  test killed, SIGSYS); `restart_syscall` in neither (the helper's test killed on x86_64
+  alone).
+- **Reading.** Both defects were real and latent. init, musl alone, made read-only opens
+  where it meant path descriptors: each its directory's file system's open and release,
+  fsnotify's events, a read permission asked, and a descriptor able to read the directory;
+  init runs them as root, so none failed in a guest. The worker's filter allowed a timed
+  futex wait and killed its resumption after a stop, a cgroup's freeze (init's pause and
+  commit) or a debugger, on both architectures; no worker path is known to make one today.
+  The fix: `opath::open` (open(2) itself, `O_PATH | O_CLOEXEC`) for init's five opens, and
+  `restart_syscall` in the worker's list, which the helper's extends (D136). What would
+  falsify it: a path descriptor of init's whose F_GETFL lacks `O_PATH` on musl, or a
+  filtered worker or helper ended by SIGSYS after a stop.
+- **Unverified.** The guest paths that hold these descriptors on real microVMs (diff,
+  commit, export and size of runs and joiners, D190's go-over) and code mode under init's
+  pause and commit (ROOT's); scripts/lint's whole workspace and its macOS and Windows
+  targets, which compile none of this change (clippy of init, server and net ran clean on
+  the four Linux targets, and `cargo fmt --all --check`, at 1464cdb88).
+
+### M532. A storm's memory grows with its vCPUs: 256 MiB to 64, then 4 MiB a vCPU, which holds the kernel's thread limit
+
+- **Question.** Both storm tests (`snapshot.rs`, `storm::`) failed on windows-2025 (CI run
+  43251385669, job 131297794363, 2556e892f; job 131325553441, c01aeb941). The guest
+  kernel panicked at boot: `workqueue: Failed to create a worker thread: -EAGAIN`, then
+  `Kernel panic - not syncing: Cannot create quota_unbound_wq` in `dquot_init`. Since
+  9933b02bf and d77ef9948 (NR_CPUS 255 on x86-64, read by `kernel_nr_cpus`), `storm_cpus`
+  asks for the host's most vCPUs: 240 under WHP, on GitHub's runners and on jupiter. The
+  storm still had 256 MiB. Why does that guest not boot, and how much memory does a storm
+  of N vCPUs need?
+- **Method.** jupiter (Windows 11 10.0.26200, AMD Ryzen AI Max+ 395, WHP: `shards: 4096
+  vCPUs requested; this host supports 240`), 2026-11-12, raw output in
+  `measurements/storm-memory/results/`:
+  - `measurements/storm-memory/probe.sh`: the test guest's `limits` mode booted without
+    `quiet`, 3 times at each size. It reads the kernel's `Memory:` line,
+    `kernel.threads-max`, and the tasks there as init starts (`/proc/loadavg`, a line this
+    change adds to `limits`).
+  - The storm tests as CI runs them (2, 8 and 240 vCPUs) on four trees, and at
+    `SHARDS_STORM_CPUS=64` 5 times. The red: 256 MiB at 240 vCPUs, on 451672250 and on
+    34215b23e.
+- **Found.** Each size's 3 boots agreed to within 0.2% of available memory and 5 tasks:
+
+  | vCPUs, MiB | available at boot | reserved | `threads-max` | tasks at init | boots |
+  |---|---|---|---|---|---|
+  | 1, 256 | 226,232K | 33,468K | 1,787 | 52-55 | yes |
+  | 2, 256 | 225,712K | 33,648K | 1,786 | 58-63 | yes |
+  | 8, 256 | 222,248-222,360K | 34,728K | 1,778 | 96-97 | yes |
+  | 64, 256 | 192,984-193,160K | 47,140K | 1,681 | 435-440 | yes |
+  | 128, 256 | 159,540-159,724K | 61,000K | 1,572 | 824-826 | yes |
+  | 128, 512 | 417,316-417,380K | 65,480K | 3,585 | 825-826 | yes |
+  | 240, 256 | 108,924-109,012K | 85,824K | none read | none | no: `-EAGAIN` |
+  | 240, 960 | 808,320-808,500K | 99,264K | 6,905 | 1,503-1,506 | yes |
+
+  - The kernel caps its threads at the memory free at boot over 8 × THREAD_SIZE, 128 KiB a
+    thread at x86-64's and arm64's 16 KiB stacks, neither config with KASAN (kernel/fork.c
+    `set_max_threads`). `copy_process` refuses a thread past the cap with `-EAGAIN`, its
+    own kernel threads included.
+  - Each vCPU adds 6.0 to 6.1 tasks at init (the kernel's per-CPU threads), about 220 KiB
+    reserved and 480 to 520 KiB less available, and takes 1.7 from the cap at a fixed size.
+    Each MiB more adds 7.9 to the cap (128 vCPUs: 1,572 at 256 MiB, 3,585 at 512).
+  - So at 240 vCPUs in 256 MiB the kernel's own 1,500 threads pass its cap, which is about
+    1,380 by the 1.7 a vCPU from 128 vCPUs. That is why it panics; it is not read, since the
+    guest never reaches init.
+  - The storm adds two threads a vCPU (its pairs' turns and its clock's readers) and 10 of
+    its own (the timer, reader and writer, the echo's two, four watchers and main).
+  - Storms: at 64 vCPUs in 256 MiB, both tests passed 5 of 5 (10 to 38 s, with jupiter's
+    32 CPUs busy at the time). At 240 vCPUs in `storm_mib`'s 960 MiB, both passed on all
+    four trees. In 256 MiB they failed with CI's panic on both red trees.
+- **Derivation (R03).** What binds is the kernel's thread cap, by which a guest of N vCPUs
+  needs `threads-max ≥ 52 + 6.1·N` (its own threads) `+ 2·N + 10` (the storm's). Both
+  sides grow linearly: the cap by 7.9 a MiB, less 1.7 a vCPU; the need by 8.1 a vCPU.
+  - 256 MiB holds a 64-vCPU storm with 2.9 times its threads to spare (1,681 against 578).
+  - Past 64, `storm_mib` gives each vCPU the 4 MiB a 64-vCPU storm has (256 × N / 64,
+    rounded up), which keeps that headroom at every size: 3.3 times at 128 (3,585 against
+    1,092), 3.5 at 240 (6,905 against 1,996). Since need and cap are both linear, the
+    headroom stays at least the anchor's for every N from 64 to the kernel's 255.
+  - At 128 vCPUs, 256 MiB alone would leave 1.44 times; at 240, none.
+  - Memory itself is not what binds: 808 MB available at 240 against a storm that touches a
+    few MiB of stacks and buffers.
+  - Cold start: the bound is a formula of the vCPU count alone and learns nothing, so a
+    host's first storm has it.
+  - Overflow: `cpus.saturating_mul(256)` stays within u32. Past 16,777,215 vCPUs it would
+    ask for 64 TiB, which no host gives and the run refuses. In practice N is at most
+    NR_CPUS (255 on x86-64: 1,020 MiB; 123 on arm64: 492 MiB).
+- **Reading.** The fault was the test's: it asked for a machine that cannot boot. A user's
+  `run --kernel --cpus 240 --memory 256` meets the same panic. That is the user's memory
+  to choose and is not changed here. What would falsify the fix: a storm of N vCPUs in
+  `storm_mib(N)` whose kernel or storm cannot start a thread.
+- **Held to 4 CPUs.** On 4 of jupiter's CPUs (`start /affinity F`, as CI's 4-CPU runners
+  have; jupiter's other work shares those CPUs), the 240-vCPU restore storm alone passed
+  (124.5 s). Run beside the resuming storm, and once with all of snapshot.rs, a guest
+  said nothing past its `PCI:` line for 3 minutes, and the harness's fixed 120 s, plus its
+  60 s of quiet, gave up on it. That patience is the harness's, and is its own landing.
+- **Unverified.**
+  - CI's windows-2025 run, whose 4 CPUs may meet the harness's patience above.
+  - Linux KVM x86-64 (255 vCPUs: 1,020 MiB), which CI's x86_64 Linux job has not reached
+    since NR_CPUS rose (its `api_image` hangs first).
+  - arm64 on KVM (the nested L1) and WHP: its tasks a vCPU and its costs a vCPU, unmeasured.
+  - macOS, whose storm runs at HVF's most vCPUs.
+
+### M533. A second GPU report of one scope on Windows, refused ERROR_PIPE_BUSY (D232, D233)
+
+- **Question.** shards-api's `physical::report` tests failed on Windows when run side by
+  side and passed one at a time (step 9's report, at a7dbf1446). Did the client's own pipe
+  code fail, would it under clients of its own, and what does Windows say?
+- **Method.** `docs/research/measurements/api-flakes/` (its README has the harness, every
+  revision and binary): the library tests built at `test-release` and run again and again
+  on jupiter (Windows x86_64, 32 CPUs, rustc 1.98.1; a kiln runner beside CI's jobs),
+  2026-11-12: `physical::report` side by side as libtest runs them, and one at a time; a
+  new test, two reports of one scope at once and one beside an earlier report's writer, on
+  main's code and on the fix's.
+- **Found.**
+
+  | build | args | runs failed |
+  |---|---|---|
+  | main ad600dd52 | `physical::report` | 40 of 40 |
+  | main ad600dd52 | `physical::report --test-threads=1` | 0 of 40 |
+  | main c2c4547c1 | `physical::report` | 40 of 40 |
+  | main c2c4547c1 and the new test | the new test alone | 20 of 20 |
+  | the fix | `physical::report` | 0 of 200 |
+  | main c2c4547c1, runs interleaved with the fix's | the whole library | 11 of 40 |
+  | the fix, runs interleaved with main's | the whole library | 4 of 40 |
+
+  Every failure was `CreateNamedPipeW`'s, `ManagedIo { operation: "GPU report pipe", code:
+  Some(231) }`: ERROR_PIPE_BUSY. The pipe's name was the report's scope
+  (`\\.\pipe\shards-api-gpu-<scope>`), one instance, FILE_FLAG_FIRST_PIPE_INSTANCE; the
+  six tests' fixtures share one scope, so any two at once met; and the new test met it
+  alone, twice over: a second report of the scope while the first lived, and one beside
+  an earlier report's writer, whose instance outlives its receiver. In the whole library,
+  main's 11 failed runs were 8 of these and 3 that hung; the fix's 4 all hung, in
+  `client::borrowed_tests::exact_bytes_clone_and_half_close`, past 120 s, a fault of its
+  own that main has too, measured apart.
+- **Reading.**
+  - The fault was the client's, not its tests': a scope names a report's frame
+    (`GpuReport::parse` checks it) and nothing makes it unique to one report at a time, so
+    a client that boots two guests in one native scope, or one again while a VM process
+    still holds the last one's writer, was refused on Windows alone (its Unix pipe has no
+    name). An instance "is always deleted when the last handle to the instance of the named
+    pipe is closed", and the pipe's name is "the unique pipe name"
+    ([CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea)).
+  - Windows names the second instance's refusal ERROR_PIPE_BUSY here, not the
+    ERROR_ACCESS_DENIED the same page gives FILE_FLAG_FIRST_PIPE_INSTANCE: the instance
+    count is checked first.
+  - Not a client to make wait: a named pipe client that meets ERROR_PIPE_BUSY "uses the
+    WaitNamedPipe function to wait for an instance of the named pipe to become available"
+    ([Named Pipe Client](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-client)),
+    but this pipe's one client is the report's own writer, opened by the same call that
+    made the pipe; an instance another holds is no report's, and refused.
+  - The fix names the pipe as Windows names its own anonymous ones ("implemented using a
+    named pipe with a unique name",
+    [Anonymous Pipe Operations](https://learn.microsoft.com/en-us/windows/win32/ipc/anonymous-pipe-operations),
+    which also says they take no overlapped reads, so this one stays named): the client
+    process's nonce and counter (`client::private_name`, which its socket directories
+    already used), `\\.\pipe\shards-api-gpu-<nonce>-<n>`. The scope stays in the frame.
+    FILE_FLAG_FIRST_PIPE_INSTANCE and the writer's process check stay: a name another took
+    first is refused, never joined.
+  - What would show this wrong: a refusal of a report's pipe with no other of this
+    process's alive, or a frame of one report read by another.
+
+### M534. A GPU probe's test on macOS, Pending: a real guest's patience on a new script's first start (D215, D232)
+
+- **Question.** `client::tests::gpu_probe_protocol_requires_exact_completed_receipt` failed on
+  macOS now and then, `GpuProbe(Pending)` where its stand-in's report was due (step 9's
+  report, at a7dbf1446). What did its probe wait on?
+- **Method.** `docs/research/measurements/api-flakes/` (`runs.sh`, `first-exec.py`; its README
+  names every build): shards-api's test binaries at `test-release`, run again and again on
+  adas-mac-studio.local-2 (M3 Ultra, 32 CPUs, macOS 26.4) in kiln's shell (priority 20,
+  nice 10) and as launchd jobs of the user's session (Interactive: priority 31, nice 0;
+  `macos-sched/launchd-run.sh`), under its co-tenants (load average 5 to 27), 2026-11-12;
+  M463's harness (tests/sim.rs `the_waits_of_these_tests`, n 40) there; and `first-exec.py`
+  (a new script's first start against its second, n 60) there and on Adas-MacBook-Pro-2
+  (M5 Max, 18 CPUs, macOS 26.4.1, an agent's session, load 13 to 23).
+- **Found.** Runs failed, every failure `GpuProbe(Pending)`:
+
+  | build | test | kiln's shell | launchd |
+  |---|---|---|---|
+  | main c2c4547c1 | alone | 9 of 100 | 89 of 100 |
+  | main c2c4547c1 | the whole library | 37 of 100 | 12 of 100 |
+  | main 99d88fccf | alone | 14 of 100 | 9 of 100 |
+  | main 99d88fccf | the whole library | 32 of 100 | |
+  | the fix | alone (in tests/sim.rs) | 0 of 200 | 0 of 200 |
+  | the fix less its first start | alone | 0 of 200 (c2c4547c1) | 1 of 200 (c2c4547c1, a probe past 8.8 s), 0 of 200 |
+  | the fix less its bound (a guest's) | alone | | 0 of 200 |
+
+  What a start costs (`first-exec.py`, ms):
+
+  | | Mac Studio, kiln's shell | Mac Studio, launchd | MacBook |
+  |---|---|---|---|
+  | a new script, its first start | p50 145.6, p99 412.1 | p50 183.4, p99 362.8 | p50 182.0, p99 279.4 |
+  | the same script, started again | p50 5.6, p99 8.3 | p50 13.6, p99 46.3 | p50 21.9, p99 106.8 |
+  | a new copy of /usr/bin/true | p50 93.1, p99 452.8 | p50 94.7, p99 249.6 | p50 88.9, p99 181.3 |
+  | /bin/sh reading a new script | p50 5.9, p99 8.7 | p50 16.3, p99 63.6 | p50 17.5, p99 169.4 |
+
+  An earlier probe of the same kind there started the first scripts of a new directory in
+  2,561 and 7,166 ms. Each new file carries `com.apple.provenance`.
+
+  M463's waits of a stand-in (n 40), each a new one as main makes them, then each started
+  once before (the fix):
+
+  | wait | kiln's shell, new | launchd, new | kiln's shell, started | launchd, started |
+  |---|---|---|---|---|
+  | a stand-in ending first, refused | p50 300.4 ms, max 4.97 s | p50 284.5 ms, max 7.19 s | p50 4.0 ms, max 43.0 ms | p50 10.1 ms, max 17.5 ms |
+  | a stand-in exiting 0, its end | p50 300.2 ms, max 4.98 s | p50 285.9 ms, max 5.83 s | p50 3.9 ms, max 9.4 ms | p50 10.2 ms, max 15.0 ms |
+- **Reading.**
+  - The test bounded a probe of a new script by `conformance::PATIENCE`, twice a real guest's
+    slowest power-off (M463's 134 ms): another wait's record. macOS assesses a new executable
+    as it first starts: 90 to 180 ms at the median and past 7 s at worst here, where the
+    same file's next start takes 6 to 22 ms. The probe's start ran past 268 ms, and it was
+    Pending.
+  - M463's record of a new stand-in's start, 4.4 s, is past too (4.97 s and 7.19 s here),
+    and a probe bounded by twice it, 8.8 s, failed once in 200.
+  - The fix: the test moves among the stand-ins it is one of, tests/sim.rs, to their patience
+    (M463) and their install(1) (no ETXTBSY on Linux), its refusals' causes asserted exactly
+    (a refused report's Pending no longer passes); and each stand-in starts once, untimed,
+    as `stand_in` makes it (`--warm` first, which no launch gives shards), so a test times
+    its stand-in's own work: 4 to 10 ms at the median and 43 ms at most here, where new ones
+    took 0.3 s and up to 7.2 s. Either half alone failed once in 200 or not at all: the
+    bound alone leaves macOS's assessment inside the probe, the start alone a guest's
+    patience on a stand-in. Both stay.
+  - What would show this wrong: a stand-in started once whose next start takes as long as a
+    new one's, or a probe of one past the stand-ins' patience.
+
+### M535. The zero-patience test's refused socket, still open at its peer: a process another test starts holds it (D215)
+
+- **Question.** `client::borrowed_tests::contract::zero_patience_attempts_one_request_and_does_not_wait_for_accept_or_reply`
+  failed now and then on macOS (step 9's report) and on Linux (Hex upstream 0030, 0031): its
+  peer's read of the refused socket's end found it open, `WouldBlock` (contract.rs:40). What
+  held the socket?
+- **Method.** `docs/research/measurements/api-flakes/` (`runs.sh`; `spawns.rs`, the test's
+  check 5,000 times beside four threads each keeping eight processes alive, none, `/bin/sleep
+  0.2` or a new script each, with the time each refused socket's end then took): shards-api's
+  library at `test-release` on adas-mac-studio.local-2 (M3 Ultra, 32 CPUs, macOS 26.4) in
+  kiln's shell and as launchd jobs (load average 5 to 27), and on adacachy2 (x86_64 Linux,
+  CachyOS, a user unit of 12 CPUs, load 10 to 16), 2026-11-12.
+- **Found.** Runs of the whole library failed in this test:
+
+  | build | host | kiln's shell or Linux | launchd |
+  |---|---|---|---|
+  | main c2c4547c1 | macOS | 5 of 100 | 3 of 100 |
+  | main c2c4547c1 and M534's fix | macOS | 6 of 100 | |
+  | main 99d88fccf | macOS | 8 of 100 | |
+  | main 99d88fccf | Linux | 1 of 20 | |
+  | the fix | macOS | 0 of 200 | 0 of 100 |
+  | the fix | Linux | 0 of 20 | |
+  | the fix with its check in the library's process again | macOS | 2 of 100 | |
+
+  `spawns.rs` (macOS, kiln's shell): with none started, 0 of 5,000 found open; beside 165
+  `sleep`s, 3, each ending 0.1 to 0.5 ms later; beside 79 new scripts, 14, ending in under
+  1 ms but for 4.5 ms and 3,512 ms.
+- **Reading.**
+  - The product closes its socket. Its peer sees the end once no process holds the socket,
+    and a process another test starts holds every descriptor of this one as it starts,
+    close-on-exec ones too, until its exec closes them: a few tenths of a millisecond after
+    a `sleep`, up to seconds after a new script, which macOS assesses as it starts (M534).
+    The test read its peer at once, in that window.
+  - Its check now runs alone in a process of its own (`zero_patience_alone`, started by the
+    test as 0030's reader checks are), where no other test starts anything; the check is the
+    same.
+  - Not a fix the product could make: neither Linux's nor macOS's process start leaves a
+    starting child without its parent's descriptors, and std's own sockets are as exposed.
+  - What would show this wrong: the check failing alone, or a socket found open with no
+    process started beside it.

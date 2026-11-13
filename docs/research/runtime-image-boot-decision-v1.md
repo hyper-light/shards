@@ -162,7 +162,9 @@ streams and end are separate: `Member { stdout, stderr: StreamState, ended: Opti
   not an end, plan §4), init sends `MEMBER_ENDED` (member, status as `docker run` reports it:
   code, or 128 plus a fatal signal), once; the VM process passes it to its owner; the run host
   to the orchestrator.
-- *stdin* is designed here and owed (v1's client refuses it `Unsupported`): closed unless the
+- *stdin* is designed here, and built as designed by plan step 5
+  ([member-stdin-v1](measurements/member-stdin-v1/README.md); the wire's version 4, its
+  `INPUT`, `INPUT_END`, `INPUT_ROOM` and `INPUT_ENDED`): closed unless the
   orchestrator asks for it at create (P3's input policy: owned by an authorized session).
   Asked, init makes the member's stdin the read end of a
   pipe, and the member's input arrives on a connection of its own that init dials to the
@@ -295,10 +297,10 @@ macOS and Windows x86_64 ran on real VMs, `crates/shards/tests/api_image.rs` 6 o
 
 | Host | 1 stdout/stderr, end | 1 stdin | 1 terminal | 2 staging | 3 ports, grants | 4 shares at boot | 4 added | 5 stats | 6 stop |
 |---|---|---|---|---|---|---|---|---|---|
-| Linux x86_64 KVM (gnu, musl) | v1 | owed | owed | v1 | v1 | v1 (FUSE, no DAX window) | owed (to the command); members cannot | v1 | v1 |
-| Linux arm64 KVM (gnu, musl) | v1 | owed | owed | v1 | v1 | v1 (as above) | as above | v1 | v1 |
-| macOS arm64 HVF | v1 | owed | owed | v1 | v1 | v1 (as above) | as above | v1 | v1 |
-| Windows x86_64 WHP | v1 | owed | owed | v1 | v1 | v1 (as above) | as above | v1 | v1 |
+| Linux x86_64 KVM (gnu, musl) | v1 | step 5 (light tests; real VM owed) | owed | v1 | v1 | v1 (FUSE, no DAX window) | owed (to the command); members cannot | v1 | v1 |
+| Linux arm64 KVM (gnu, musl) | v1 | step 5 (light tests; real VM owed) | owed | v1 | v1 | v1 (as above) | as above | v1 | v1 |
+| macOS arm64 HVF | v1 | step 5 (light tests; real VM owed) | owed | v1 | v1 | v1 (as above) | as above | v1 | v1 |
+| Windows x86_64 WHP | v1 | step 5 (light tests; real VM owed) | owed | v1 | v1 | v1 (as above) | as above | v1 | v1 |
 | Windows arm64 WHP (D209) | v1's code, unbuilt (below) | owed | owed | as x86_64 | as x86_64 | as x86_64 | as above | as x86_64 | as x86_64 |
 | macOS x86_64 | refused `NoBackend`, as D215 | | | | | | | | |
 
@@ -334,8 +336,8 @@ re-ownership is P11's (owner transfer).
    Windows;
    real-VM E2E tests (`crates/shards/tests/api_image.rs`), written for ROOT to run.
 
-Owed beyond v1, each its own slice: a member's stdin (its input connection, §3.3, refused
-`Unsupported` by the client today) and terminal (G24); Windows arm64's build and runs (§4); shares
+Owed beyond v1, each its own slice: a member's terminal (G24; its stdin, §3.3, built by plan
+step 5); Windows arm64's build and runs (§4); shares
 added while running (D214, to the run's own command); DAX windows for an orchestrated run's
 shares (D189: v1 passes no `--share-window`, so its shares go through FUSE); templates and
 pools for orchestrated runs (D25, D26: a cold boot each run until measured); `attach` after

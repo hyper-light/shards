@@ -14,6 +14,14 @@ pub const ENV_KEY: &[u8] = b"member-env=";
 /// `member-file=<index>\0<mode in octal>\0<path>\0<bytes>`: a regular file under the
 /// member's home, its own scratch tmpfs.
 pub const FILE_KEY: &[u8] = b"member-file=";
+/// `member-workdir=<index>\0<path>`: the member's working directory, absolute and plain
+/// ([`workdir_ok`]): the project path its run names, over its image's (its config's
+/// `run.workdir`, in its directory). One for a member at most.
+pub const WORKDIR_KEY: &[u8] = b"member-workdir=";
+/// `image-env=KEY=VALUE`: one of the image's own variables (its config's `Env`, OCI
+/// image-spec config.md), which every member starts with: over init's defaults, under its
+/// own config's `run.env` and what is staged for it (init domains.rs `harness_env`).
+pub const IMAGE_ENV_KEY: &[u8] = b"image-env=";
 /// `member-ends`, alone: the run's owner hears each member's end
 /// ([`kind::MEMBER_ENDED`](super::kind::MEMBER_ENDED)), which a daemon's run does not ask.
 pub const ENDS: &[u8] = b"member-ends";
@@ -43,6 +51,11 @@ pub enum Error {
     /// Its path is empty, absolute, holds an empty, `.` or `..` component or a NUL, or is
     /// past Linux's bounds.
     Path,
+    /// Its working directory is relative, holds an empty, `.` or `..` component or a NUL,
+    /// or is past Linux's bounds.
+    Workdir,
+    /// A second working directory for one member.
+    Twice,
     /// The entry lacks one of its fields.
     Shape,
 }
@@ -55,6 +68,8 @@ impl core::fmt::Display for Error {
             Error::Reserved => "SHARDS_DOMAIN, which init sets",
             Error::Mode => "a mode past the permission bits (0777)",
             Error::Path => "a path that is not relative, plain and within PATH_MAX",
+            Error::Workdir => "a working directory that is not absolute, plain and within PATH_MAX",
+            Error::Twice => "a second working directory for one member",
             Error::Shape => "an entry missing a field",
         })
     }
@@ -110,6 +125,57 @@ pub fn path_ok(path: &[u8]) -> bool {
             .all(|c| !c.is_empty() && c != b"." && c != b".." && c.len() <= NAME_MOST)
 }
 
+/// Whether `path` names a directory a member may work in, and nothing else: absolute, each
+/// component past `/` nonempty and neither `.` nor `..` (so nothing it names leaves where
+/// it is written to be), no NUL, within Linux's bounds. `/` alone is one.
+pub fn workdir_ok(path: &[u8]) -> bool {
+    match path.strip_prefix(b"/") {
+        Some(b"") => true,
+        Some(rest) => path.len() < PATH_MOST && path_ok(rest),
+        None => false,
+    }
+}
+
+/// The setup entry giving member `member` the working directory `path`, refused where it is
+/// not one a member may work in ([`workdir_ok`]).
+pub fn workdir(member: u32, path: &[u8]) -> Result<Vec<u8>, Error> {
+    if !workdir_ok(path) {
+        return Err(Error::Workdir);
+    }
+    let mut entry = Vec::new();
+    entry.extend_from_slice(WORKDIR_KEY);
+    push_decimal(&mut entry, member);
+    entry.push(0);
+    entry.extend_from_slice(path);
+    Ok(entry)
+}
+
+/// A `member-workdir=` entry's value, checked: its member and its path.
+pub fn parse_workdir(value: &[u8]) -> Result<(u32, &[u8]), Error> {
+    let (index, path) = split_once(value, 0).ok_or(Error::Shape)?;
+    if !workdir_ok(path) {
+        return Err(Error::Workdir);
+    }
+    Ok((decimal(index)?, path))
+}
+
+/// Member `member`'s working directory, where `setup` gives it one; every entry is checked,
+/// and a second for one member refuses the whole.
+pub fn workdir_of(setup: &[Vec<u8>], member: u32) -> Result<Option<&[u8]>, Error> {
+    let mut seen = alloc::collections::BTreeSet::new();
+    let mut found = None;
+    for value in setup.iter().filter_map(|e| e.strip_prefix(WORKDIR_KEY)) {
+        let (m, path) = parse_workdir(value)?;
+        if !seen.insert(m) {
+            return Err(Error::Twice);
+        }
+        if m == member {
+            found = Some(path);
+        }
+    }
+    Ok(found)
+}
+
 /// `variable` as a staged variable may be: `KEY=VALUE`, its key nonempty, no NUL, and not
 /// init's own.
 pub fn variable_ok(variable: &[u8]) -> Result<(), Error> {
@@ -133,6 +199,24 @@ pub fn env(member: u32, variable: &[u8]) -> Result<Vec<u8>, Error> {
     entry.push(0);
     entry.extend_from_slice(variable);
     Ok(entry)
+}
+
+/// The setup entry giving every member the image's `variable`, refused as [`variable_ok`]
+/// refuses it: an image's `ENV` may not name a member's domain.
+pub fn image_env(variable: &[u8]) -> Result<Vec<u8>, Error> {
+    variable_ok(variable)?;
+    Ok([IMAGE_ENV_KEY, variable].concat())
+}
+
+/// Every `image-env=` entry of `setup`, in order, each checked; the first refused ends it
+/// with its error.
+pub fn image_envs(setup: &[Vec<u8>]) -> Result<Vec<&[u8]>, Error> {
+    let mut out = Vec::new();
+    for variable in setup.iter().filter_map(|e| e.strip_prefix(IMAGE_ENV_KEY)) {
+        variable_ok(variable)?;
+        out.push(variable);
+    }
+    Ok(out)
 }
 
 /// The setup entry staging `bytes` at `path` under member `member`'s home with `mode`,
@@ -218,6 +302,8 @@ pub fn staged_members(setup: &[Vec<u8>]) -> Result<Vec<u32>, Error> {
             parse_env(value)?.member
         } else if let Some(value) = entry.strip_prefix(FILE_KEY) {
             parse_file(value)?.member
+        } else if let Some(value) = entry.strip_prefix(WORKDIR_KEY) {
+            parse_workdir(value)?.0
         } else {
             continue;
         };
@@ -394,6 +480,80 @@ mod tests {
         assert_eq!(parse_env(b"0\0SHARDS_DOMAIN=agent x"), Err(Error::Reserved));
         assert!(env(0, b"SHARDS_DOMAINS=fine").is_ok());
         assert!(env(0, b"EMPTY=").is_ok());
+    }
+
+    /// A member's working directory is absolute and plain, made and read alike, one for a
+    /// member at most; it counts as staged into its member.
+    #[test]
+    fn a_working_directory_is_absolute_plain_and_one() {
+        for good in [
+            &b"/"[..],
+            b"/Users/ada/proj",
+            b"/home/claude/work.d",
+            b"/a/.b/..c",
+        ] {
+            assert!(workdir_ok(good), "{good:?}");
+            let entry = workdir(3, good).unwrap();
+            assert_eq!(
+                parse_workdir(entry.strip_prefix(WORKDIR_KEY).unwrap()),
+                Ok((3, good))
+            );
+        }
+        for bad in [
+            &b""[..],
+            b"proj",
+            b"./proj",
+            b"//x",
+            b"/a//b",
+            b"/a/",
+            b"/a/./b",
+            b"/a/../etc",
+            b"/..",
+            b"/a\0b",
+        ] {
+            assert!(!workdir_ok(bad), "{bad:?}");
+            assert_eq!(workdir(0, bad), Err(Error::Workdir), "{bad:?}");
+            let crafted = [&b"0\0"[..], bad].concat();
+            assert_eq!(parse_workdir(&crafted), Err(Error::Workdir), "{bad:?}");
+        }
+        let long = [&b"/"[..], &b"a/".repeat(PATH_MOST / 2)[..], b"a"].concat();
+        assert!(!workdir_ok(&long));
+        let setup = vec![
+            workdir(1, b"/Users/ada/one").unwrap(),
+            env(2, b"A=b").unwrap(),
+            workdir(2, b"/Users/ada/two").unwrap(),
+        ];
+        assert_eq!(workdir_of(&setup, 2), Ok(Some(&b"/Users/ada/two"[..])));
+        assert_eq!(workdir_of(&setup, 0), Ok(None));
+        assert_eq!(staged_members(&setup).unwrap(), [1, 2]);
+        let mut twice = setup.clone();
+        twice.push(workdir(1, b"/elsewhere").unwrap());
+        assert_eq!(workdir_of(&twice, 2), Err(Error::Twice));
+        assert_eq!(parse_workdir(b"0"), Err(Error::Shape));
+        assert_eq!(parse_workdir(b"01\0/x"), Err(Error::Index));
+    }
+
+    /// The image's variables reach every member in order, each checked as a staged one
+    /// is, made and read alike: none names the domain or holds a NUL, and each is
+    /// KEY=VALUE.
+    #[test]
+    fn the_images_variables_are_checked_as_staged_ones() {
+        let setup = vec![
+            image_env(b"PATH=/opt/bin:/usr/bin").unwrap(),
+            env(0, b"A=staged").unwrap(),
+            image_env(b"LANG=C.UTF-8").unwrap(),
+        ];
+        assert_eq!(
+            image_envs(&setup).unwrap(),
+            [&b"PATH=/opt/bin:/usr/bin"[..], b"LANG=C.UTF-8"]
+        );
+        assert_eq!(image_env(b"SHARDS_DOMAIN=agent x"), Err(Error::Reserved));
+        assert_eq!(image_env(b"NOEQUALS"), Err(Error::Variable));
+        assert_eq!(image_env(b"A=b\0c"), Err(Error::Variable));
+        for crafted in [&b"SHARDS_DOMAIN=agent x"[..], b"=v", b"NOEQUALS"] {
+            let setup = vec![[IMAGE_ENV_KEY, crafted].concat()];
+            assert!(image_envs(&setup).is_err(), "{crafted:?}");
+        }
     }
 
     /// An index has one spelling: no sign, no leading zero, no overflow, no other byte.

@@ -33,6 +33,8 @@ mod hostbind;
 #[cfg(target_os = "linux")]
 mod hotplug;
 #[cfg(target_os = "linux")]
+mod input;
+#[cfg(target_os = "linux")]
 mod inroot;
 #[cfg(target_os = "linux")]
 mod jit;

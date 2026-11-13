@@ -1,0 +1,205 @@
+diff --git a/crates/shards/tests/containers.rs b/crates/shards/tests/containers.rs
+index 63d08df40..c2b3c823e 100644
+--- a/crates/shards/tests/containers.rs
++++ b/crates/shards/tests/containers.rs
+@@ -4115,6 +4115,200 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
+     assert_eq!(exit(&mut spinner, &home), Some(128 + 15));
+ }
+ 
++/// A paused microVM's unpause, and a signal sent to it, wait for no exec on its way to its
++/// guest: here one whose frame is far more than the signal connection's host sockets and its
++/// guest's window hold, sent as the run, held to a hundredth of a CPU so that its guest reads
++/// it slowly, is paused partway through (the daemon refuses an exec into a microVM paused
++/// already). Before, the exec's send held the link's lock until its guest read it, the signal
++/// waited for that lock in the VM's relay of its daemon, and the unpause behind it was never
++/// read: the microVM stayed paused, and `unpause` and the exec waited for ever (D16).
++#[test]
++fn a_paused_microvms_unpause_waits_for_no_exec_on_its_way() {
++    let Some((home, image)) = home("containers-paused-exec") else {
++        return;
++    };
++    let mut run = start(&home, &image, &["--name", "slow", "--cpus", "0.01"], &["sleep"]);
++    // 5 MiB of environment, near the most a frame carries (run::MAX_PAYLOAD, 6 MiB).
++    let env = home.join("big.env");
++    let lines: String = (0..80)
++        .map(|i| format!("BIG{i}={}\n", "x".repeat(64 << 10)))
++        .collect();
++    std::fs::write(&env, lines).unwrap();
++    let said = home.join("exec.stderr");
++    let mut exec = common::command()
++        .args(["exec", "--env-file"])
++        .arg(&env)
++        .args(["slow", "/bin/testguest", "exit", "0"])
++        .env("SHARDS_HOME", &*home)
++        .env("SHARDS_KERNEL", kernel())
++        .env("SHARDS_INIT", guest_init())
++        .stdin(Stdio::null())
++        .stdout(Stdio::null())
++        .stderr(std::fs::File::create(&said).unwrap())
++        .spawn()
++        .unwrap();
++    // Its frame on its way as the guest, a hundredth of a CPU's, reads it.
++    std::thread::sleep(Duration::from_secs(1));
++    let paused = shards_in(&home, &["pause", "slow"]);
++    assert_eq!(paused.status, Some(0), "{paused}");
++    let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", "slow"]);
++    eprintln!("the paused microVM's VM process: {}", vm.stdout.trim());
++    // SIGWINCH, which the command ignores, through its daemon's link with its VM.
++    let signalled = shards_in(&home, &["kill", "-s", "WINCH", "slow"]);
++    assert_eq!(signalled.status, Some(0), "{signalled}");
++    let unpaused = shards_in(&home, &["unpause", "slow"]);
++    assert_eq!(
++        (unpaused.status, unpaused.stdout.as_str()),
++        (Some(0), "slow\n"),
++        "{unpaused}"
++    );
++    let ran = exit(&mut exec, &home);
++    assert_eq!(
++        ran,
++        Some(0),
++        "the exec: {}",
++        std::fs::read_to_string(&said).unwrap_or_default()
++    );
++    assert_eq!(shards_in(&home, &["kill", "slow"]).status, Some(0));
++    assert_eq!(exit(&mut run, &home), Some(137));
++}
++
++/// Experiment, not for main: execs streaming frames larger than the signal connection holds,
++/// so that one is on its way most of the time, as a pause holds the guest.
++#[test]
++#[ignore]
++fn paused_exec_stream_experiment() {
++    let Some((home, image)) = home("containers-stream") else {
++        return;
++    };
++    let mut run = start(&home, &image, &["--name", "busy", "--stop-signal", "TERM"], &["sleep"]);
++    let env = home.join("big.env");
++    let lines: String = (0..24).map(|i| format!("BIG{i}={}\n", "x".repeat(64 << 10))).collect();
++    std::fs::write(&env, lines).unwrap();
++    let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", "busy"]);
++    let stop = std::sync::atomic::AtomicBool::new(false);
++    let env_arg = env.to_str().unwrap();
++    std::thread::scope(|s| {
++        let loops: Vec<_> = (0..16)
++            .map(|_| {
++                s.spawn(|| {
++                    let mut ends = std::collections::BTreeMap::<String, u32>::new();
++                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
++                        let ran = shards_in_within(
++                            &home,
++                            &["exec", "--env-file", env_arg, "busy", "/bin/testguest", "exit", "0"],
++                            Duration::from_secs(120),
++                        );
++                        let said = ran.stderr.lines().last().unwrap_or_default().to_string();
++                        *ends.entry(format!("{:?} {said}", ran.status)).or_default() += 1;
++                    }
++                    ends
++                })
++            })
++            .collect();
++        for round in 0..10 {
++            std::thread::sleep(Duration::from_millis(700));
++            let t = Instant::now();
++            let paused = shards_in(&home, &["pause", "busy"]);
++            let signalled = shards_in(&home, &["kill", "-s", "WINCH", "busy"]);
++            eprintln!(
++                "round {round}: pause {:?}, kill {:?} in {:?}, VM {}",
++                paused.status,
++                signalled.status,
++                t.elapsed(),
++                vm.stdout.trim()
++            );
++            let t = Instant::now();
++            let unpaused = shards_in_within(&home, &["unpause", "busy"], Duration::from_secs(30));
++            eprintln!("round {round}: unpause {:?} in {:?}", unpaused.status, t.elapsed());
++        }
++        stop.store(true, std::sync::atomic::Ordering::Relaxed);
++        for l in loops {
++            eprintln!("an exec loop's ends: {:?}", l.join().unwrap());
++        }
++    });
++    assert_eq!(shards_in(&home, &["kill", "busy"]).status, Some(0));
++    let _ = exit(&mut run, &home);
++}
++
++/// Experiment, not for main: how often an exec's frame is still on its way as a pause asked
++/// at once after it holds its guest.
++#[test]
++#[ignore]
++fn paused_exec_race_experiment() {
++    let Some((home, image)) = home("containers-race") else {
++        return;
++    };
++    let mut run = start(
++        &home,
++        &image,
++        &["--name", "race", "--stop-signal", "TERM"],
++        &["sleep"],
++    );
++    let env = home.join("big.env");
++    let lines: String = (0..90)
++        .map(|i| format!("BIG{i}={}\n", "x".repeat(64 << 10)))
++        .collect();
++    std::fs::write(&env, lines).unwrap();
++    let vm = shards_in(&home, &["inspect", "-f", "{{.State.Pid}}", "race"]);
++    let spawn = |args: &[&str], err: &Path| {
++        common::command()
++            .args(args)
++            .env("SHARDS_HOME", &*home)
++            .env("SHARDS_KERNEL", kernel())
++            .env("SHARDS_INIT", guest_init())
++            .stdin(Stdio::null())
++            .stdout(Stdio::null())
++            .stderr(std::fs::File::create(err).unwrap())
++            .spawn()
++            .unwrap()
++    };
++    let env_arg = env.to_str().unwrap().to_string();
++    for attempt in 0..60u64 {
++        let said = home.join(format!("exec-{attempt}.stderr"));
++        let mut exec = spawn(
++            &[
++                "exec",
++                "--env-file",
++                &env_arg,
++                "race",
++                "/bin/testguest",
++                "exit",
++                "0",
++            ],
++            &said,
++        );
++        std::thread::sleep(Duration::from_millis(attempt % 12));
++        let t = Instant::now();
++        let paused = shards_in(&home, &["pause", "race"]);
++        let pause_took = t.elapsed();
++        let t = Instant::now();
++        let signalled = shards_in(&home, &["kill", "-s", "WINCH", "race"]);
++        let kill_took = t.elapsed();
++        eprintln!(
++            "attempt {attempt}: delay {} ms, pause {:?} in {pause_took:?}, kill {:?} in {kill_took:?}, VM {}",
++            attempt % 12,
++            paused.status,
++            signalled.status,
++            vm.stdout.trim()
++        );
++        let t = Instant::now();
++        let unpaused = shards_in_within(&home, &["unpause", "race"], Duration::from_secs(30));
++        eprintln!(
++            "attempt {attempt}: unpause {:?} in {:?}",
++            unpaused.status,
++            t.elapsed()
++        );
++        let ended = exit(&mut exec, &home);
++        eprintln!(
++            "attempt {attempt}: exec {ended:?}: {}",
++            std::fs::read_to_string(&said).unwrap_or_default().trim()
++        );
++    }
++    assert_eq!(shards_in(&home, &["kill", "race"]).status, Some(0));
++    let _ = exit(&mut run, &home);
++}
++
+ #[test]
+ fn top_lists_a_microvms_processes() {
+     let Some((home, image)) = home("containers-top") else {

@@ -1,0 +1,16 @@
+host jupiter (Windows 11 x86_64, MINGW64 shell, cargo of rust-toolchain.toml's 1.98.1), at aeac12d67
+(main with items 4, 1 and 2), CARGO_TARGET_DIR outside the clone, SHARDS_HELPERS=skip
+$ cargo test -j4 -p shards-abi -p shards-api
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test physical::report::tests::private_report_neither_recheck_expired_transfers_the_frame ... FAILED
+test physical::report::tests::private_report_refuses_missing_torn_and_over_bound_bytes ... FAILED
+thread 'physical::report::tests::private_report_neither_recheck_expired_transfers_the_frame' (156656) panicked at crates\api\src\physical\report.rs:253:65:
+thread 'physical::report::tests::private_report_refuses_missing_torn_and_over_bound_bytes' (40340) panicked at crates\api\src\physical\report.rs:241:69:
+test result: FAILED. 65 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s
+error: test failed, to rerun pass `-p shards-api --lib`
+exit=101
+
+The two failures are shards-api's physical::report tests (Hex patches 0019-0027), a module this
+change does not touch; reported to ROOT. shards-abi passes whole. The shards binary's tests on
+Windows were not run: jupiter had no idle cores (0 of 32), and they are owed.

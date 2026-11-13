@@ -13,6 +13,9 @@ use crate::identity::{Fingerprint, Identity};
 use crate::net::{Close, Command, ConnKey, Driver, DriverLimits, Handler, Io, Read, Sender};
 use crate::tls;
 
+/// A member's stdin, written by its owner: one record in flight, its end and abort typed.
+pub mod input;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolError {
     ControlKind,

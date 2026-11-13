@@ -1,0 +1,26 @@
+# scripts/lint (cargo fmt --all --check, then clippy -D warnings, --workspace --all-targets, of every supported
+# target, with SHARDS_HELPERS=skip) of 34329a8ab (the branch merged with origin/main 99d88fccf), on the Mac Studio
+# (Darwin 25.4.0 arm64): zig 0.16.0 (scripts/install-zig) for the Linux targets, cargo-xwin with Homebrew's LLVM and
+# NASM for Windows'. CARGO_TARGET_DIR=~/g121-tmp/exec-e2e/target-lint LLVM_BIN=/opt/homebrew/opt/llvm/bin sh scripts/lint
+# Its 1354 lines, less the C build scripts' own notes (aws-lc-sys's settings, shards-vmm's "the gpu feature links
+# the renderer from SHARDS_GPU_LIBS, which is not set"): no warning or error.
+== format
+== aarch64-apple-darwin
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 33s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.50s
+== x86_64-unknown-linux-gnu
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 29s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.66s
+== aarch64-unknown-linux-gnu
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 24s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.90s
+== x86_64-pc-windows-msvc
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 22s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.24s
+== aarch64-pc-windows-msvc
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 23s
+== x86_64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 27s
+== aarch64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 37s
+LINT-EXIT 0

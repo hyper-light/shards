@@ -4115,6 +4115,207 @@ fn pause_freezes_a_microvm_until_unpause_or_stop() {
     assert_eq!(exit(&mut spinner, &home), Some(128 + 15));
 }
 
+/// A paused microVM's unpause, and a signal sent it while paused, wait for no exec on its way
+/// to its guest. Execs stream frames larger than the signal connection's host sockets and its
+/// guest's window hold (each 1.5 MiB of environment, within the 2 MiB a guest's exec takes),
+/// so that one is on its way as each pause holds the guest: the daemon refuses an exec into a
+/// microVM paused already. Before, that frame's send held the link's lock until the guest
+/// read it, the signal waited for the lock in the VM's relay of its daemon, and the unpause
+/// behind it was never read: the microVM stayed paused, and `unpause` and every exec waited
+/// for ever (D16; live at e8d19fc68, docs/research/measurements/signal-link).
+#[test]
+fn a_paused_microvms_unpause_waits_for_no_exec_on_its_way() {
+    let Some((home, image)) = home("containers-paused-exec") else {
+        return;
+    };
+    // Its stop signal named, so that a signal sent it while paused leaves it paused (D27).
+    let mut run = start(
+        &home,
+        &image,
+        &["--name", "busy", "--stop-signal", "TERM"],
+        &["sleep"],
+    );
+    let env = home.join("big.env");
+    let lines: String = (0..24)
+        .map(|i| format!("BIG{i}={}\n", "x".repeat(64 << 10)))
+        .collect();
+    std::fs::write(&env, lines).unwrap();
+    let env = env.to_str().unwrap();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|s| {
+        let streams: Vec<_> = (0..8)
+            .map(|_| {
+                s.spawn(|| {
+                    let mut ends = Vec::new();
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let ran = shards_in(
+                            &home,
+                            &["exec", "--env-file", env, "busy", "/bin/testguest", "exit", "0"],
+                        );
+                        ends.push((ran.status, ran.stderr));
+                    }
+                    ends
+                })
+            })
+            .collect();
+        for _ in 0..5 {
+            std::thread::sleep(Duration::from_millis(700));
+            let paused = shards_in(&home, &["pause", "busy"]);
+            assert_eq!(paused.status, Some(0), "{paused}");
+            // SIGWINCH, which the command ignores, through its daemon's link with its VM.
+            let signalled = shards_in(&home, &["kill", "-s", "WINCH", "busy"]);
+            assert_eq!(signalled.status, Some(0), "{signalled}");
+            let unpaused = shards_in(&home, &["unpause", "busy"]);
+            assert_eq!(
+                (unpaused.status, unpaused.stdout.as_str()),
+                (Some(0), "busy\n"),
+                "{unpaused}"
+            );
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for stream in streams {
+            for (status, said) in stream.join().unwrap() {
+                // Run, or refused as it came while its microVM was paused.
+                let refused = said.ends_with("is paused: unpause it to run a command in it\n");
+                assert!(
+                    status == Some(0) || (status == Some(1) && refused),
+                    "an exec: {status:?} {said}"
+                );
+            }
+        }
+    });
+    assert_eq!(shards_in(&home, &["kill", "busy"]).status, Some(0));
+    assert_eq!(exit(&mut run, &home), Some(137));
+}
+
+/// A run booted from the test kernel and an init built to take a signal frame of
+/// `LOSES_SIGNALS_ON` for a malformed one (common::lossy_init): its client, its command's
+/// first line read.
+fn start_lossy(home: &Path, image: &str, options: &[&str]) -> Child {
+    let mut child = common::interruptible(
+        common::command()
+            .args(run_args(image, options, &["sleep"]))
+            .env("SHARDS_HOME", home)
+            .env("SHARDS_KERNEL", kernel())
+            .env("SHARDS_INIT", common::lossy_init())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
+    )
+    .spawn()
+    .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.as_mut().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line, "ready\n");
+    child
+}
+
+/// Waits for `home`'s daemon log to say a loss of a workload's control `count` times (D16).
+fn lost_said(home: &Path, count: usize) {
+    let said = "the guest's signal connection is lost: the guest closed it before its end";
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+        if log.matches(said).count() >= count {
+            return;
+        }
+        assert!(Instant::now() < deadline, "no loss said:\n{log}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A run's guest that loses its signal connection unsaid, as a malformed frame loses it, has
+/// lost its workload's control: from then on an exec fails at once with why, a SIGKILL ends
+/// its microVM at once, as no signal reaches its command any more, and so does its daemon's
+/// end, its VM's stop order having no signal to send (D16).
+#[test]
+fn a_lost_signal_connection_fails_execs_and_kills_at_once() {
+    let Some((home, image)) = home("containers-lost-link") else {
+        return;
+    };
+    let mut run = start_lossy(&home, &image, &["--name", "lost"]);
+    let shards = |args: &[&str]| shards_in(&home, args);
+    assert_eq!(
+        shards(&["kill", "-s", common::LOSES_SIGNALS_ON, "lost"]).status,
+        Some(0)
+    );
+    lost_said(&home, 1);
+    let exec = shards(&["exec", "lost", "/bin/testguest", "exit", "0"]);
+    assert_eq!(
+        (exec.status, exec.stderr.as_str()),
+        (
+            Some(1),
+            "shards: the guest's signal connection is lost: the guest closed it before its end\n"
+        ),
+        "{exec}"
+    );
+    let t = Instant::now();
+    assert_eq!(shards(&["kill", "lost"]).status, Some(0));
+    let ended = exit(&mut run, &home);
+    assert!(ended.is_some(), "the run's client was killed");
+    let waited = t.elapsed();
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    assert!(
+        log.contains("SIGKILL for its command, which no signal reaches"),
+        "its microVM ended otherwise, in {waited:?}: {log}"
+    );
+    // Its daemon gone: its VM ends at once, its stop signal and SIGKILL reaching nothing.
+    let mut gone = start_lossy(&home, &image, &["--name", "gone"]);
+    assert_eq!(
+        shards(&["kill", "-s", common::LOSES_SIGNALS_ON, "gone"]).status,
+        Some(0)
+    );
+    lost_said(&home, 2);
+    let vm: i32 = shards(&["inspect", "-f", "{{.State.Pid}}", "gone"])
+        .stdout
+        .trim()
+        .parse()
+        .unwrap();
+    let daemon: i32 = std::fs::read_to_string(home.join("daemon.pid"))
+        .unwrap()
+        .split_ascii_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    common::kill_now(daemon);
+    let deadline = Instant::now() + TIMEOUT;
+    while common::alive(vm) {
+        assert!(Instant::now() < deadline, "its VM outlived its daemon");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = gone.kill();
+    let _ = gone.wait();
+}
+
+/// A run's normal end, its guest saying its relay's end last on the signal connection
+/// (`SIGNALS_END`), is no loss of its workload's control: its daemon's log says none,
+/// whatever went on that connection first, of the run's own command or of a joiner's (D16,
+/// D119).
+#[test]
+fn a_runs_end_says_no_lost_signal_connection() {
+    let Some((home, image)) = home("containers-end-said") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let mut run = start(&home, &image, &["--name", "ending", "--init"], &["sleep"]);
+    assert_eq!(
+        shards(&["exec", "ending", "/bin/testguest", "exit", "0"]).status,
+        Some(0)
+    );
+    assert_eq!(shards(&["kill", "-s", "WINCH", "ending"]).status, Some(0));
+    let joined = run_in(&home, &image, &["--network", "container:ending"], &["exit", "3"]);
+    assert_eq!(joined.status, Some(3), "{joined}");
+    assert_eq!(shards(&["kill", "-s", "TERM", "ending"]).status, Some(0));
+    assert_eq!(exit(&mut run, &home), Some(128 + 15));
+    let ran = run_in(&home, &image, &["--rm"], &["exit", "0"]);
+    assert_eq!(ran.status, Some(0), "{ran}");
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    assert!(!log.contains("signal connection is lost"), "{log}");
+}
+
 #[test]
 fn top_lists_a_microvms_processes() {
     let Some((home, image)) = home("containers-top") else {
@@ -9616,6 +9817,169 @@ fn exec_runs_commands_in_a_running_microvm() {
     );
     // Before the exec is made: before whether the microVM runs is asked.
     refused(&["-it", "ex", "/bin/testguest", "report"], 1, untty);
+}
+
+/// Many `exec`s at once into one run, each a command that fails at once and says why on
+/// stderr: every client ends, with its own command's status and stderr. Before, of 64 at
+/// once into a microVM of 32 vCPUs two clients waited for ever (ring-pins-v1 r11,
+/// exec-admission): the exec port refused a guest's connection while an exec registering
+/// held a lock, or gave it to another exec's wait, and the guest said nothing of the loss.
+/// Into a run that is up, and into one coming up, whose execs wait for its start
+/// (`await_start`) and reach its guest together, the case that hung most. The daemon's log
+/// says no refusal of the exec port's while they ran: its first for each reason is said at
+/// warn (workload/hellos.rs).
+#[test]
+fn execs_at_once_each_end_with_their_commands_status() {
+    let Some((home, image)) = home("containers-execs-at-once") else {
+        return;
+    };
+    // Twice the microVM's vCPUs, and at least 64: 64 at once into a microVM of 32 left two
+    // waiting (r11, its pins test's twice the vCPUs), and a microVM has as many vCPUs as its
+    // host has CPUs (D191).
+    let n = (2 * std::thread::available_parallelism().unwrap().get()).max(64);
+    let refusals = || -> Vec<String> {
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+        log.lines()
+            .filter(|l| l.contains("the exec port refused a guest's connection"))
+            .map(str::to_string)
+            .collect()
+    };
+    let mut up = start(&home, &image, &["--name", "up"], &["sleep"]);
+    // The run's own pace: an exec of the same kind, alone.
+    let lone = shards_in(&home, &["exec", "up", "/bin/testguest", "lone"]);
+    assert_eq!(
+        (lone.status, lone.stderr.as_str()),
+        (Some(2), "unknown mode \"lone\"\n"),
+        "{lone}"
+    );
+    let pace = lone.elapsed;
+    let took = each_ends(&home, execs_at_once(&home, "up", n), pace);
+    eprintln!("{n} execs at once into a run that is up: the last ended {took:?} after, a lone one {pace:?}");
+    assert_eq!(refusals(), Vec::<String>::new(), "into a run that is up");
+    // A run coming up: its execs begin once the daemon has it, which is before its microVM
+    // is up where its start outlasts their own; each waits for the start.
+    let said = home.join("fresh.stderr");
+    let mut fresh = common::command()
+        .args(run_args(&image, &["-d", "--name", "fresh"], &["sleep"]))
+        .env("SHARDS_HOME", &*home)
+        .env("SHARDS_KERNEL", kernel())
+        .env("SHARDS_INIT", guest_init())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&said).unwrap())
+        .spawn()
+        .unwrap();
+    let mut patience = Patience::of(&home, TIMEOUT);
+    let met = loop {
+        let state = shards_in(&home, &["inspect", "-f", "{{.State.Status}}", "fresh"]);
+        if state.status == Some(0) {
+            break state.stdout;
+        }
+        if let Some(ended) = fresh.try_wait().unwrap().filter(|s| !s.success()) {
+            panic!("the run {ended}: {}", std::fs::read_to_string(&said).unwrap());
+        }
+        assert!(patience.holds(), "the daemon never had the run: {state}");
+    };
+    let execs = execs_at_once(&home, "fresh", n);
+    let started = exit(&mut fresh, &home);
+    assert_eq!(started, Some(0), "{}", std::fs::read_to_string(&said).unwrap());
+    let took = each_ends(&home, execs, pace);
+    eprintln!(
+        "{n} execs at once into a run coming up, begun as it was {}: the last ended {took:?} after it was up",
+        met.trim()
+    );
+    assert_eq!(refusals(), Vec::<String>::new(), "into a run coming up");
+    assert_eq!(shards_in(&home, &["rm", "-f", "up", "fresh"]).status, Some(0));
+    let _ = exit(&mut up, &home);
+}
+
+/// `n` clients of `shards exec NAME /bin/testguest MODE`, started at once by as many threads
+/// let go together: each MODE its own (`NAME-I`), and no mode of the test guest's, which
+/// says `unknown mode "MODE"` on stderr and exits 2 at once (testguest workload.rs). Each
+/// client's stdout and stderr are files in the home, MODE.out and MODE.err.
+fn execs_at_once(home: &Path, name: &str, n: usize) -> Vec<(String, Child)> {
+    let together = std::sync::Barrier::new(n);
+    std::thread::scope(|s| {
+        let started: Vec<_> = (0..n)
+            .map(|i| {
+                let together = &together;
+                s.spawn(move || {
+                    let mode = format!("{name}-{i}");
+                    let mut exec = common::command();
+                    exec.args(["exec", name, "/bin/testguest", &mode])
+                        .env("SHARDS_HOME", home)
+                        .stdin(Stdio::null())
+                        .stdout(std::fs::File::create(home.join(format!("{mode}.out"))).unwrap())
+                        .stderr(std::fs::File::create(home.join(format!("{mode}.err"))).unwrap());
+                    together.wait();
+                    (mode, exec.spawn().unwrap())
+                })
+            })
+            .collect();
+        started.into_iter().map(|t| t.join().unwrap()).collect()
+    })
+}
+
+/// Waits for the clients [`execs_at_once`] started, each to end as its command did: status 2,
+/// `unknown mode "MODE"` on stderr, nothing on stdout. Served one at a time at `pace`, a lone
+/// exec's time into the same run, they would all end within their number of paces: one still
+/// waiting once that long has passed with none of them ending, since now or since the last
+/// that ended, fails the test, unless the daemon or its microVM still progresses
+/// ([`Patience`]), naming each still waiting with what it said. Gives how long after now the
+/// last ended.
+fn each_ends(home: &Path, mut execs: Vec<(String, Child)>, pace: Duration) -> Duration {
+    let (all, began) = (execs.len(), Instant::now());
+    let bound = pace * u32::try_from(all).unwrap();
+    let mut patience = Patience::of(home, bound);
+    let (mut last, mut ended) = (began, Vec::with_capacity(all));
+    let said = |mode: &str, of: &str| {
+        std::fs::read_to_string(home.join(format!("{mode}.{of}"))).unwrap_or_else(|e| format!("({e})"))
+    };
+    while !execs.is_empty() {
+        let mut i = 0;
+        while i < execs.len() {
+            match execs[i].1.try_wait().unwrap() {
+                Some(status) => {
+                    ended.push((execs.swap_remove(i).0, status.code()));
+                    last = Instant::now();
+                }
+                None => i += 1,
+            }
+        }
+        let progresses = patience.holds();
+        if !execs.is_empty() && last.elapsed() >= bound && !progresses {
+            let seen = common::stacks_of(&[("the first still waiting", execs[0].1.id())], Some(home));
+            let waiting: Vec<String> = execs
+                .iter_mut()
+                .map(|(mode, child)| {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    format!("{mode}: stderr {:?}", said(mode, "err"))
+                })
+                .collect();
+            panic!(
+                "{} of {all} execs' clients never ended: none ended for {bound:?}, {all} execs at a lone one's {pace:?}, nor did the daemon or its microVM progress\n{}{seen}",
+                waiting.len(),
+                waiting.join("\n")
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let wrong: Vec<String> = ended
+        .iter()
+        .map(|(mode, status)| (mode, *status, said(mode, "out"), said(mode, "err")))
+        .filter(|(mode, status, out, err)| {
+            *status != Some(2) || !out.is_empty() || *err != format!("unknown mode {mode:?}\n")
+        })
+        .map(|(mode, status, out, err)| format!("{mode}: status {status:?}, stdout {out:?}, stderr {err:?}"))
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "{} of {all} execs did not end as their commands did:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+    last.duration_since(began)
 }
 
 /// Who holds TCP port `port`, as lsof lists them: each process's ID, command and

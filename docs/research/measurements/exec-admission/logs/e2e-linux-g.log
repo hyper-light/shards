@@ -1,0 +1,74 @@
+host adacachy2 Linux 7.3.3-1-cachyos x86_64, 32 CPUs, load 16.59, 19.57, 19.56
+revision c16facdb2
+rustc 1.98.1 (48a229cea 2026-09-01)
+zig 0.16.0
+=== round 1
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-g/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 61.741833ms after, a lone one 4.354551ms
+64 execs at once into a run coming up, begun as it was created: the last ended 51.333728ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 27.46s
+=== round 2
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-g/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 61.656934ms after, a lone one 4.413461ms
+64 execs at once into a run coming up, begun as it was created: the last ended 46.402388ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.74s
+=== round 3
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-g/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 61.94919ms after, a lone one 4.57314ms
+64 execs at once into a run coming up, begun as it was created: the last ended 51.46399ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.76s
+=== round 4
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-g/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 61.699514ms after, a lone one 4.37509ms
+64 execs at once into a run coming up, begun as it was created: the last ended 56.580785ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.80s
+=== round 5
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-g/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 51.389201ms after, a lone one 4.378426ms
+64 execs at once into a run coming up, begun as it was created: the last ended 56.688546ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.73s
+=== round 6
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-g/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 66.987588ms after, a lone one 4.367807ms
+64 execs at once into a run coming up, begun as it was created: the last ended 51.603732ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.80s
+=== round 7
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-g/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 61.816912ms after, a lone one 4.342168ms
+64 execs at once into a run coming up, begun as it was created: the last ended 51.576851ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.75s
+=== round 8
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-g/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 61.573288ms after, a lone one 4.379137ms
+64 execs at once into a run coming up, begun as it was created: the last ended 51.403257ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.74s
+=== round 9
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-g/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 56.537955ms after, a lone one 4.33756ms
+64 execs at once into a run coming up, begun as it was created: the last ended 56.666927ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.75s
+=== round 10
+     Running tests/containers.rs (/home/adalundhe/g121-tmp/exec-e2e/target-g/test-release/deps/containers-ea7d8d2b13880791)
+running 1 test
+64 execs at once into a run that is up: the last ended 77.228382ms after, a lone one 6.537488ms
+64 execs at once into a run coming up, begun as it was created: the last ended 78.156554ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.91s

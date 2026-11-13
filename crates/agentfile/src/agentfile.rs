@@ -322,6 +322,47 @@ pub fn nesting(directives: &[Directive]) -> Result<bool, NestingRefused> {
     }
 }
 
+/// Why an image's `ENV` is refused where it declares agents or harnesses, which start with
+/// it (D59): `entry` is no variable a member may be given (`why`), as shards-init and the
+/// daemon refuse it too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageEnvRefused {
+    pub entry: Vec<u8>,
+    pub why: shards_abi::run::members::Error,
+}
+
+impl std::fmt::Display for ImageEnvRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the image's ENV, which its agents and harnesses start with: {:?}: {}",
+            String::from_utf8_lossy(&self.entry),
+            self.why
+        )
+    }
+}
+
+/// Checks the environment `env` of an image whose Agentfile is `directives` as its agents
+/// and harnesses are given it (D59): each entry `KEY=VALUE`, and none their domain's name
+/// (`SHARDS_DOMAIN`), which shards-init sets. An image declaring neither gives no member
+/// anything, and is not held to it. The build checks the image it makes, the daemon the
+/// image it runs.
+pub fn image_env(directives: &[Directive], env: &[impl AsRef<[u8]>]) -> Result<(), ImageEnvRefused> {
+    if !directives
+        .iter()
+        .any(|d| matches!(d, Directive::Agent(_) | Directive::Harness(_)))
+    {
+        return Ok(());
+    }
+    for e in env {
+        shards_abi::run::members::variable_ok(e.as_ref()).map_err(|why| ImageEnvRefused {
+            entry: e.as_ref().to_vec(),
+            why,
+        })?;
+    }
+    Ok(())
+}
+
 /// What an `AGENT`, `HARNESS` or `MCP` `FROM` names (§12.2), told apart as written: a Git
 /// URL (as git.rs reads a build context's), an http(s) URL, a path from the build
 /// context (`.`, `./`, `../` or `/` first), or else an OCI reference.

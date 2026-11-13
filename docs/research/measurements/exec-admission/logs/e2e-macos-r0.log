@@ -1,0 +1,212 @@
+host Adas-Mac-Studio.local Darwin 25.4.0 arm64, 32 CPUs, load 22.66 27.85 29.75
+revision fecd60256049111a28c2bfb98d4d19b4217ccc1d, 2944d9ab5 and 0d4f20288 reverted
+rustc 1.98.1 (48a229cea 2026-09-01)
+zig 0.16.0
+=== round 1
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (31334838) panicked at crates/shards/tests/containers.rs:9759:13:
+1 of 64 execs' clients never ended: none ended for 389.808ms, 64 execs at a lone one's 6.09075ms, nor did the daemon or its microVM progress
+up-50: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED        STATUS                  PORTS     NAMES
+dbd001aa5e210a0089fa5eecca45f4f410b4d1e51256900e9d0fc3be58de9374   127.0.0.1:56598/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 72835: the default bridge is 172.17.0.0/16
+shards daemon 72835: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/69773/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/69773/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 72835: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/69773/containers-execs-at-once-0/run-0.stderr
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/69773/containers-execs-at-once-0/daemon.log, its last 3 lines
+shards daemon 72835: the default bridge is 172.17.0.0/16
+shards daemon 72835: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/69773/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/69773/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 72835: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/69773/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/69773/containers-execs-at-once-0/daemon.log, its last 465 of 465 bytes
+shards daemon 72835: the default bridge is 172.17.0.0/16
+shards daemon 72835: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/69773/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/69773/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 72835: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 47.06s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 2
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+64 execs at once into a run that is up: the last ended 66.669542ms after, a lone one 6.3885ms
+64 execs at once into a run coming up, begun as it was created: the last ended 81.13725ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.87s
+=== round 3
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (31359443) panicked at crates/shards/tests/containers.rs:9759:13:
+1 of 64 execs' clients never ended: none ended for 362.061376ms, 64 execs at a lone one's 5.657209ms, nor did the daemon or its microVM progress
+up-14: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED                  STATUS                  PORTS     NAMES
+de5b84e6fdf3b756560593285a2ac56e76f3600ed0c4232e29ed52141423e72c   127.0.0.1:56618/test/image:v1   "/bin/testguest sleep"   Less than a second ago   Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 73068: the default bridge is 172.17.0.0/16
+shards daemon 73068: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73060/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73060/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 73068: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73060/containers-execs-at-once-0/run-0.stderr
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73060/containers-execs-at-once-0/daemon.log, its last 3 lines
+shards daemon 73068: the default bridge is 172.17.0.0/16
+shards daemon 73068: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73060/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73060/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 73068: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73060/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73060/containers-execs-at-once-0/daemon.log, its last 465 of 465 bytes
+shards daemon 73068: the default bridge is 172.17.0.0/16
+shards daemon 73068: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73060/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73060/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 73068: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 1.01s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 4
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (31360363) panicked at crates/shards/tests/containers.rs:9759:13:
+1 of 64 execs' clients never ended: none ended for 669.418688ms, 64 execs at a lone one's 10.459667ms, nor did the daemon or its microVM progress
+up-8: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED        STATUS                  PORTS     NAMES
+f8df363306f886d30a127bb7e427ab36c56c51144432d2b483b7a9a948b8d077   127.0.0.1:56623/test/image:v1   "/bin/testguest sleep"   1 second ago   Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 73164: the default bridge is 172.17.0.0/16
+shards daemon 73164: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73156/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73156/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 73164: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73156/containers-execs-at-once-0/run-0.stderr
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73156/containers-execs-at-once-0/daemon.log, its last 3 lines
+shards daemon 73164: the default bridge is 172.17.0.0/16
+shards daemon 73164: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73156/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73156/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 73164: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73156/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73156/containers-execs-at-once-0/daemon.log, its last 465 of 465 bytes
+shards daemon 73164: the default bridge is 172.17.0.0/16
+shards daemon 73164: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73156/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73156/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 73164: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 1.28s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 5
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (31361106) panicked at crates/shards/tests/containers.rs:9759:13:
+1 of 64 execs' clients never ended: none ended for 393.44ms, 64 execs at a lone one's 6.1475ms, nor did the daemon or its microVM progress
+up-9: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED                  STATUS                  PORTS     NAMES
+22740eea30076e028c30b251315cd06b1965041af9aebf91e84c94683f1e4b31   127.0.0.1:56628/test/image:v1   "/bin/testguest sleep"   Less than a second ago   Up Less than a second             up
+--- the end of its daemon.log
+shards daemon 73246: the default bridge is 172.17.0.0/16
+shards daemon 73246: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73238/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73238/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 73246: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73238/containers-execs-at-once-0/run-0.stderr
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73238/containers-execs-at-once-0/daemon.log, its last 3 lines
+shards daemon 73246: the default bridge is 172.17.0.0/16
+shards daemon 73246: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73238/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73238/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 73246: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73238/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73238/containers-execs-at-once-0/daemon.log, its last 465 of 465 bytes
+shards daemon 73246: the default bridge is 172.17.0.0/16
+shards daemon 73246: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73238/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/73238/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 73246: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.99s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 6
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+64 execs at once into a run that is up: the last ended 66.716834ms after, a lone one 18.302416ms
+64 execs at once into a run coming up, begun as it was created: the last ended 69.994791ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.90s
+=== round 7
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+64 execs at once into a run that is up: the last ended 108.356458ms after, a lone one 23.738917ms
+64 execs at once into a run coming up, begun as it was created: the last ended 39.09775ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 1.02s
+=== round 8
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+64 execs at once into a run that is up: the last ended 89.589667ms after, a lone one 18.463125ms
+64 execs at once into a run coming up, begun as it was created: the last ended 116.078375ms after it was up
+test execs_at_once_each_end_with_their_commands_status ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.94s
+=== round 9
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (31368609) panicked at crates/shards/tests/containers.rs:9759:13:
+1 of 64 execs' clients never ended: none ended for 1.203528s, 64 execs at a lone one's 18.805125ms, nor did the daemon or its microVM progress
+up-43: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED         STATUS        PORTS     NAMES
+4538ecf1e9277498aa2c4513f51d600a8f739982b86d0e011585063f379d0075   127.0.0.1:56656/test/image:v1   "/bin/testguest sleep"   2 seconds ago   Up 1 second             up
+--- the end of its daemon.log
+shards daemon 74339: the default bridge is 172.17.0.0/16
+shards daemon 74339: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74264/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74264/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 74339: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74264/containers-execs-at-once-0/run-0.stderr
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74264/containers-execs-at-once-0/daemon.log, its last 3 lines
+shards daemon 74339: the default bridge is 172.17.0.0/16
+shards daemon 74339: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74264/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74264/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 74339: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74264/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74264/containers-execs-at-once-0/daemon.log, its last 465 of 465 bytes
+shards daemon 74339: the default bridge is 172.17.0.0/16
+shards daemon 74339: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74264/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74264/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 74339: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 1.91s
+error: test failed, to rerun pass `-p shards --test containers`
+=== round 10
+     Running tests/containers.rs (/Users/adalundhe/g121-tmp/exec-e2e/target-r0/test-release/deps/containers-77041cc606b2a9bc)
+running 1 test
+thread 'execs_at_once_each_end_with_their_commands_status' (31372016) panicked at crates/shards/tests/containers.rs:9759:13:
+1 of 64 execs' clients never ended: none ended for 1.379050624s, 64 execs at a lone one's 21.547666ms, nor did the daemon or its microVM progress
+up-50: stderr ""
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED         STATUS        PORTS     NAMES
+a151117ccffbf672f81614dd701f1377f5f4f4985bf628b61ced93c50e0537a8   127.0.0.1:56663/test/image:v1   "/bin/testguest sleep"   2 seconds ago   Up 1 second             up
+--- the end of its daemon.log
+shards daemon 74831: the default bridge is 172.17.0.0/16
+shards daemon 74831: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74736/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74736/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 74831: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74736/containers-execs-at-once-0/run-0.stderr
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74736/containers-execs-at-once-0/daemon.log, its last 3 lines
+shards daemon 74831: the default bridge is 172.17.0.0/16
+shards daemon 74831: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74736/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74736/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 74831: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74736/containers-execs-at-once-0/run-0.stderr, its last 0 of 0 bytes
+--- /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74736/containers-execs-at-once-0/daemon.log, its last 465 of 465 bytes
+shards daemon 74831: the default bridge is 172.17.0.0/16
+shards daemon 74831: serving /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74736/containers-execs-at-once-0 through /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-tests/74736/containers-execs-at-once-0/requests, with up to 245760 descriptors open
+shards daemon 74831: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+test execs_at_once_each_end_with_their_commands_status ... FAILED
+failures:
+failures:
+    execs_at_once_each_end_with_their_commands_status
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 160 filtered out; finished in 2.24s
+error: test failed, to rerun pass `-p shards --test containers`

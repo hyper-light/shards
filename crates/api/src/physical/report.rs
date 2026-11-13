@@ -125,7 +125,7 @@ impl Receiver {
             .map_err(Refusal::GpuProbe)?
             .checked_add(1)
             .ok_or(Refusal::GpuProbe(GpuProbeError::Count))?;
-        let (reader, writer) = Reader::new(bytes, request.scope)?;
+        let (reader, writer) = Reader::new(bytes)?;
         Ok((
             Self {
                 request,
@@ -226,6 +226,29 @@ mod tests {
             Err(Refusal::GpuProbe(GpuProbeError::ReportTaken))
         ));
         receiver.finish().unwrap();
+    }
+
+    /// D232, PM M533: reports of one scope at once each transfer their own frame, one
+    /// beside an earlier report's writer too, which a VM process can hold past its
+    /// client's receiver. A scope names a frame, not its channel: Windows' pipe once took
+    /// the scope's name, its one instance still live, and refused these ERROR_PIPE_BUSY.
+    #[test]
+    fn reports_of_one_scope_at_once_each_transfer_their_own_frame() {
+        let (request, expected) = fixture();
+        let (earlier, lingering) = Receiver::new(request).unwrap();
+        drop(earlier);
+        let mut reports = Vec::new();
+        for _ in 0..2 {
+            let (receiver, mut writer) = Receiver::new(fixture().0).unwrap();
+            writer.write_all(expected.encode().unwrap().as_bytes()).unwrap();
+            drop(writer);
+            reports.push(receiver);
+        }
+        for receiver in &mut reports {
+            assert_eq!(receiver.take(Duration::from_secs(1)).unwrap(), expected);
+            receiver.finish().unwrap();
+        }
+        drop(lingering);
     }
 
     /// D232: an empty/malformed/oversized private stream is uncertainty,

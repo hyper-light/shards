@@ -392,7 +392,89 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     those a fault raises (BUS, FPE, ILL, SEGV, SYS, TRAP), which a process cannot block
     safely, and those Linux has no number for.
   - They travel on a second vsock connection that the guest opens once the command runs,
-    so unread stdin cannot hold them up.
+    so unread stdin cannot hold them up. Terminal sizes, execs (`EXEC`) and the host's
+    answers on its network (D124) travel on it too.
+  - **That connection's state is explicit** (`workload::Link`): idle (no workload, or its
+    run over), awaiting the guest's dial, connected, or lost. Each frame meets it at once:
+    it is held for the dial or for the connection's sender, or it is refused with why
+    (`Unsent`). Before (d35c4cf79), a send that failed was taken as sent and every frame
+    after it waited for a dial that never came, so that an exec asked for then waited for
+    the workload's end; so did one whose frame the guest closed the connection on unread.
+    Reproduced and held by unit tests, mutation-checked (docs/research/measurements/signal-link).
+  - **No send waits under the link's lock.** One thread, the connection's sender
+    (`send_frames`), owns its sending: it takes what waits under the lock and sends it with
+    the lock let go, so that a guest that reads slowly or not at all holds that thread
+    alone. Before (e8d19fc68), each frame's caller sent it holding the lock: an exec's frame
+    larger than the connection's host sockets and its guest's window hold (Linux's
+    default AF_UNIX buffer and vsock's 256 KiB) waited there while a pause held its guest's
+    vCPUs, the daemon's relay waited for the lock with the next signal, and the unpause
+    behind that signal was never read: the microVM stayed paused, `unpause` and every exec
+    waited for ever. The daemon refuses an exec into a microVM paused already, so it took a
+    pause as such a frame was on its way: 1 in 60 single execs at once with a pause, every
+    round with 16 execs streaming such frames (KVM, live, the stuck threads' stacks kept).
+    Held by `a_paused_microvms_unpause_waits_for_no_exec_on_its_way` (8 execs streaming,
+    pause, signal, unpause, 5 rounds: red at e8d19fc68, green since) and a unit test,
+    mutation-checked (the sender sending with the lock held).
+  - What is asked for before the dial waits for it, as for a restored guest's dial again
+    (D176), one frame for each thing pending and no time bound: a signal once, as Linux
+    holds a standard signal pending once (6.18 kernel/signal.c `legacy_queue`); the
+    terminal's latest size; an exec's start, then its signals and latest size; each ask's
+    latest answer. So no more wait than `NSIG` (64) signals and a size for the workload and
+    for each exec on its way, and an answer for each ask. A real-time signal sent twice
+    before the dial reaches the command once. A number that is no Linux signal (`1..=64`,
+    `_NSIG`) is refused, as init would drop it.
+  - The guest says its relay's end last on the connection (`SIGNALS_END`), its command and
+    its execs over, as the managed control says its own (`MANAGED_CONTROL_END`). The host
+    reads the connection, where nothing else comes: closed without that end, a failed read
+    or send, or anything else said, and the connection is lost. Without that end the host
+    could not tell a lost connection from a run over, as the guest closes it just before
+    its exit status, on another connection.
+  - Lost is for good in its VM process. The guest dials the port once, so that a workload
+    dialing it finds it taken (AGENTFILE_ARCH.md §9.7), and only a copy restored from a save
+    dials again, in a VM process of its own (D176). A redial in place, gated by a token as
+    a restore's is, would be a protocol of its own for a loss no run has shown: not built.
+    From the loss on, every frame is refused with the connection's own error, every exec
+    still waiting for its connection fails with it (`shards exec` says "the guest's signal
+    connection is lost: Broken pipe (os error 32)"), and the VM process's log, its
+    daemon's, says it once.
+  - The run goes on: its stdin, output and end travel on the run connection, which the loss
+    leaves whole. containerd ends a task whose shim connection closes (v2.4.2
+    core/runtime/v2/shim.go `cleanupAfterDeadShim`: the shim's `delete`, then `TaskExit`),
+    as that close is the shim's death, and the shim held the task's stdio and exit; here
+    init holds them, and still says the command's end. Where nothing else reaches the
+    command, its microVM ends: a SIGKILL its daemon sends (`kill`, a stop past its grace)
+    or that its VM sends as the daemon goes, refused for a lost connection, stops the
+    machine at once, where the daemon's fallback waited out a teardown slice and a VM
+    whose daemon had gone found no end at all; a stop signal refused as the daemon goes
+    waits out no grace (moby docker-v29.8.1 daemon/stop.go waits 2 s on a stop signal it
+    could not send). `run --kernel` ends as a signal it cannot forward would end it. A
+    joiner's SIGKILL refused so leaves its provider's microVM running (D119). Held on real
+    microVMs by `a_lost_signal_connection_fails_execs_and_kills_at_once` (an init built to
+    take a signal's frame for a malformed one, as one loses the connection:
+    `common::lossy_init`; the exec, the kill and the daemon's end each at once),
+    `a_runs_end_says_no_lost_signal_connection` (no loss said at a run's end, a joiner's
+    included) and `what_a_restoring_microvm_is_sent_goes_on_its_guests_dial` (D176: execs
+    sent as the restore begins each run).
+  - **Not built yet: a guest that never dials.** Where init cannot make its signal
+    connection (its socket refused it, or the host's muxer refused the dial for want of a
+    socket pair, `serve` in vsock/muxer.rs), it says nothing, and the host's link waits for
+    the dial: frames are held, bounded as above, and an exec waits for a connection its
+    held frame never asked for, until its run ends (measured: an exec asked of a run whose
+    guest never dialed still waited after 20 s, and failed only as the run's end closed the
+    exec port, "the container's process ended before the command started",
+    docs/research/measurements/signal-link). A SIGKILL is held too: `kill` ends the run
+    by the daemon's fallback, its VM killed after a teardown slice, and a VM whose daemon
+    has gone keeps its command until it ends. The design: init says so on the run
+    connection, a frame of its own (`SIGNALS_UNDIALED`, guest to host, why in words), as
+    soon as its dial or its connect's result fails, and the host's relay of that
+    connection, during the command and past its end (`beyond`, for joiners), loses the link
+    with it (`lose`): frames refused, execs failed, kills ending the microVM, as for any
+    loss. The frame is held while a cut is not open, and dropped as a restore is found, as
+    `exec_failures` are: a save would carry it into a copy whose host never waited for that
+    dial, and whose guest dials again by the save's token (D176). Alternatives: a deadline
+    on the host's wait for the dial (none is set by time: a slow guest's dial is no loss);
+    the muxer telling the signal port of a dial it refused (it sees one cause, and init's
+    own failure to make the socket sends it nothing). Its restore path wants a real guest.
   - Through the daemon, a signal that arrives once the run's record is made, before the
     command runs, waits for it (D26). `run --kernel`, whose process is the VM, ends as that
     signal would end it. dockerd instead drops a signal sent before its container starts
@@ -5993,6 +6075,86 @@ the first packet sent since the last one heard restarts the endpoint's idle time
 meanwhile. The patience reuses D180's `QUIET`, derived for contexts over real links (RFC 1122
 §4.2.3.5's R2, D176 part 6), without a derivation of its own for a loopback owner.
 
+#### A member's stdin, a stream its owner writes (plan step 5; P3's input, G24)
+
+A HARNESS is driven over its stdio (Claude Code's stream-json, Codex's app-server, ACP), so
+its owner holds its stdin as it holds its stdout and stderr. Input stays closed unless the
+owner asks for it as the run is made (managed-runtime-plan.md P3: "explicitly closed unless
+a native adapter or authorized session owns it"): a member it does not name has `/dev/null`,
+as before. The daemon's owner names members by the run's annotation `shards.stdin` (`KIND:NAME`
+each, comma-separated: `shards run vm --annotation shards.stdin=harness:codex IMAGE`; the
+Engine API's `HostConfig.Annotations` alike), shards' own key, as `shards.egress` is a
+network's (D192), since an OCI runtime takes its options in annotations (OCI runtime-spec
+config.md, "Annotations"; Kata Containers' `io.katacontainers.*` and gVisor's `dev.gvisor.*`
+the same way). A name the image does not declare, a member that runs no program, and a name
+given twice are refused, the run with them. The design is D231 decision v1's §3.3
+([record](../research/runtime-image-boot-decision-v1.md)), now built for the daemon's owner;
+`shards api-run`'s orchestrator path (`MemberSpec::stdin`, refused `Unsupported` there still)
+is the next slice.
+
+- **In the guest** (crates/init `input.rs`): the member's fd 0 is the read end of a pipe whose
+  write end init holds, nonblocking, and its owner's bytes come on a connection of the
+  member's own, which init dials to the exec port saying a token the VM process minted for that
+  member (`managed-input-token=`), as an exec's connection says its own. They come as `STDIN`
+  frames, an empty one the owner's end, as a command's and an exec's stdin do; init writes
+  every byte to the pipe as it came, whatever its frames, and reads the connection again only
+  once all it read is in the pipe. So the member's reading paces its owner's writing through
+  vsock's own credit (virtio 1.3 §5.10.6.3; the device reads a host socket only while its
+  guest has credit, conn.rs `interest`), and a stdin no one reads holds up nothing else: no
+  other member's input, no output channel, no control frame. However it ends, init closes the
+  pipe, so the member reads its end, and tells the owner, on the managed control connection,
+  how and how many bytes the member's stdin took (`MANAGED_INPUT_ENDED`,
+  `managed::InputEnded`): its owner's end (`Closed`), the member no longer reading (`EPIPE`,
+  seen as the pipe's POLLERR whether or not its owner writes, fs/pipe.c `pipe_poll`), the
+  connection refused, failing or ending without its owner's end (its errno, `ECONNRESET` for
+  an end), a frame of another kind (`EPROTO`), or no room for its relay (`ENOMEM`). None is
+  dropped: a dial that fails at once is an input that has ended, told as any other.
+- **In the VM process** (workload/capture.rs, warm.rs): each connection whose hello says an
+  input token goes to the run's owner as an engine connection goes (`MANAGED_INPUT`; D181):
+  beside the message on Unix, the VM's copy held until the owner says it has it (M24); on
+  Windows, where a VM gives its owner no handle, the owner answers with the pipe the VM relays
+  it onto (`relay_engine`). The input's end is passed on, checked once a member.
+- **The owner's endpoint** (crates/remote `managed::input`): one per input member, on the
+  managed transport (its ALPN, AES-256-GCM alone, the owner's key pinned, one connection, one
+  bidirectional stream), its scope the run, its generation, the member and channel 0 (the run
+  protocol's stdin). The owner subscribes with the first of its bytes it has not seen taken;
+  the endpoint says where the next record goes and how long it may be (`Taken`) once the
+  record before is in the member's connection, so one record is in flight and the endpoint
+  holds one at most. A record is taken whole or not at all: one cut short by a lost connection
+  is let go, and the owner's next subscription, which may be a record behind, is told where to
+  go on; one ahead of what was taken is refused. The owner's end and its abort (an errno) are
+  frames of their own; an abort is heard while a record waits for a member that does not read
+  it, and ends the member's connection under the relay. The input's end comes back (`Ended`,
+  the bytes taken and the errno), then the stream's FIN. An owner's connection lost or closed
+  takes nothing from the member: what it sent whole goes on, and its stdin stays open.
+  Its states: `Free → Coming → Whole → Relaying → Free`, `Free → Ending → Closing → Ended`,
+  any of them `→ Ending` by an abort, every one `→ Revoked` as the run's scope ends.
+
+| Literal | Derivation/source |
+| --- | --- |
+| A record at most `run::CHUNK` | one `STDIN` frame to the member's init, which carries at most what the guest reads of a stream at once, as a command's and an exec's stdin frames do |
+| Init's relay buffer, one pipe's capacity | `F_GETPIPE_SZ` of the member's own pipe (pipe(7)): one read of the connection never takes more than the member's stdin holds at once |
+| Input token `run::TOKEN`, one a member | the exec port's own (abi run.rs), checked in constant time |
+| Frames: subscribe 58 bytes, record head 13, end 17, taken and ended 17 | tag + u32 length (crate::frame), then the run ID (32), u64 generation, u32 member, u8 channel, u64 offset; a u64 offset; a u64 and an i32; a u64 and a u32 |
+| An end's errno 0, an abort's above 0 | `InputEnd::Closed`, `InputEnd::Aborted(errno)`, typed on every wire |
+| The endpoint's receive window: a record's head, the record and an end, at least a subscription | what the owner may send before the endpoint reads it |
+| Patience `QUIET`, keep-alive a quarter of it | the output endpoint's (above) |
+
+Tested: abi `run::managed` (the input entries, one token a member, the end's codec); init
+`input` (binary, no newline, invalid UTF-8 across split frames reach the pipe exactly; an
+unread stdin stops the connection's reading and resumes as it is read; a member that stops
+reading ends its input as `EPIPE` idle and writing; a connection cut short or of another
+protocol, and a hello that cannot go, end typed) and `capture` (the end's room reserved and
+told before the scope's end); remote `managed::input` (frames; a record taken whole once the
+last is delivered; resubscription and refusals by scope, generation, channel and offset; an
+abort held by an unread record closes its connection; revocation), and over the real transport
+a stranger's key refused, exact bytes, a record held until delivered, a vanished owner's
+record going on and its next subscription told where to go on, and the end. Written for the
+coordinator's real-VM suite: `tests/managed_output.rs` `member_stdin` (a harness echoing its
+stdin: exact JSON lines and bytes past a pipe's capacity, a stranger refused, a resumed
+owner, its end; and a member that ends, its input `EPIPE`).
+[Record](../research/measurements/member-stdin-v1/README.md).
+
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
 The [current guest stream pump closing record](../research/measurements/managed-engine-relay-root/README.md)
@@ -7108,8 +7270,8 @@ descriptors.
   the command did". A command's client (`END`) reads any early end as its daemon's already;
   a socket's peer (a daemon of a build from before slots) is the run's VM. Held by
   `a_side_that_ends_without_its_last_word_says_so` and
-  `a_runs_client_tells_its_daemons_end_from_its_microvms`, each red with its guard removed
-  (M530 says on which hosts); live on WHP, a daemon ended mid-run said so and a VM ended
+  `a_runs_client_tells_its_daemons_end_from_its_microvms`, each red with its guard removed,
+  on Linux, macOS and Windows; live on WHP, a daemon ended mid-run said so and a VM ended
   said the microVM's words.
 - **Many clients on one list** (PM M262). On macOS a client waiting in select(2) for its
   slot could stop waking at all while the others took theirs: 12 of 16 clients slept
@@ -15271,10 +15433,11 @@ It is shards' own MCP's, and its runtime shards' to choose (AGENTFILE_ARCH §11 
   `restart_syscall`, by which the kernel resumes a wait a stop broke into where no handler
   ran (a cgroup's freeze for init's pause and commit, a job-control stop, a debugger): a
   timed futex wait's on every architecture, and the helper's poll on x86_64 (PM M525,
-  M527). It calls only the restart the interrupted call left, else fails with EINTR, so it
-  allows no other call. A worker opens nothing: no file, socket, process or descriptor. Each tool it calls is a frame to the instance over
-  its socket, which the instance answers as it answers its caller's MCP call of that tool,
-  under the same grants, with the same refusals. Helper and workers are the instance's
+  M531). It calls only the restart the interrupted call left, else fails with EINTR, so it
+  allows no other call. A worker opens nothing: no file, socket, process or descriptor.
+  Each tool it calls is a frame to the instance over its socket, which the instance
+  answers as it answers its caller's MCP call of that tool, under the same grants, with
+  the same refusals. Helper and workers are the instance's
   uid, gid and cgroup, its agent's (D60): a program's memory and CPU are its caller's,
   under the domains' memory policy, and need no limits of their own. `shards top` shows
   them as `shards-sandbox` and `shards-program`.
@@ -15312,7 +15475,7 @@ cannot hold, a throw, an error's positions, a syntax error's, a promise nothing 
 `a_worker_is_ended_for_a_call_its_filter_refuses` (`openat`, and x32 on x86_64, SIGSYS),
 `a_worker_stopped_in_a_timed_wait_lives_on` and `the_helper_stopped_in_its_poll_lives_on`
 (each stopped and continued in its wait under its own filter; without `restart_syscall`
-the worker dies on x86_64 and arm64, the helper on x86_64: PM M527),
+the worker dies on x86_64 and arm64, the helper on x86_64: PM M531),
 `initialize_begins_a_session`, `a_cancellation_names_a_request_in_its_own_session`,
 `a_programs_call_is_its_callers`; on real microVMs,
 `code_mode_runs_a_program_with_the_callers_grants`: a's program finds itself, its peers,
@@ -21586,6 +21749,47 @@ own writable layer is the uppermost for `/`, and D235's `image_root` gives that 
 image root's owner and mode. **Owed (ROOT):** the same in a real microVM on KVM,
 Hypervisor.framework and WHP.
 
+**A member's environment: init's, the image's, its own, its run's** (2026-11-12, kiln plan
+01a1cd8e862e7169a074db3d5fa33f3d, step 7). A member got init's `PATH` (its directory, its
+`bin`, Docker's), `HOME=/tmp` and `SHARDS_DOMAIN`, then its config's `run.env` (997f4e47e),
+then what D231 stages: none of the image's own `Env`. The sources on that order:
+- OCI image-spec v1.1.0 config.md, `Env`: "These values act as defaults and are merged with
+  any specified when creating a container."
+- moby docker-v29.0.0 daemon/commit.go, `merge`: the run's `-e` kept, and each of the image's
+  appended whose name it does not give; then `CreateDaemonEnvironment` lays that over Docker's
+  own `PATH` and `HOSTNAME` (daemon/container/env.go, `ReplaceOrAppendEnvValues`).
+- Kubernetes, "Define Environment Variables for a Container": "The environment variables set
+  using the env or envFrom field override any environment variables specified in the container
+  image."
+- D231: what is staged goes "over its image's".
+
+So a member's environment is, the last given of each name winning: init's own; over it, the
+image's `Env`; over that, its config's `run.env`, its own, as a pod's container's `env` goes
+over its image's, where the image's is every member's and the run's command's alike; over all,
+what its run stages. Two names keep init's rules:
+- **`PATH`**: init's is the member's directory and its `bin`, then the image's `PATH` where it
+  gives one, else Docker's: the image's replaces Docker's default, as in a container, and a
+  member's own program is still found before the system's (part one). Its program is found on
+  the `PATH` it runs with, a staged one included, where it was found on `run.env`'s alone.
+- **`HOME`**: never the image's. One value for every member is private to none, which a
+  member's `HOME` must be (step 7's acceptance), and the system it would name is read-only to
+  a domain. A member's `HOME` is its scratch unless its own `run.env`, or its run, names one.
+
+`SHARDS_DOMAIN` in the image's `Env` is refused, as in `run.env` and in staging, at each end:
+the build of an image with agents or harnesses (`agentfile::image_env`, `ImageEnvRefused`), the
+daemon's and the run host's reading of the image (`run::prepare`, `agentfile::members_env`),
+and init (`shards_abi::run::members::image_envs`), all in the build's words. The image's
+`Env` reaches init as `image-env=` setup entries, beside the domains' filter. An image of
+neither agents nor harnesses keeps its `ENV` as BuildKit writes it. Tests: the order, the two
+rules and the refusals (`a_members_environment_is_inits_then_its_images_then_its_own`); the
+program found on the `PATH` it runs with
+(`a_members_program_is_found_on_the_path_it_runs_with`); the entries made and read
+(`the_images_variables_are_checked_as_staged_ones`); the daemon's
+(`the_images_environment_is_its_members_as_its_build_checks_it`); the build's
+(`an_image_with_members_never_names_their_domain_in_its_env`). **Owed (ROOT):** a member's
+`env` in a real microVM on KVM, Hypervisor.framework and WHP, of an image whose `ENV` sets
+`PATH`, `HOME` and another name.
+
 Part two, after `no_new_privs`, before its command:
 
 - **Landlock** (Documentation/userspace-api/landlock.rst; ABI 6 at least, which Linux 6.12
@@ -22223,9 +22427,35 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   refused `Unsupported` on every host.
 - *Staging.* `member-env=` and `member-file=` setup entries, by the member's declared
   index: variables over its image's (`SHARDS_DOMAIN` refused), regular files under its home
-  tmpfs at relative paths, owned by its uid, permission bits alone, applied before its
-  program runs, within `run::MAX_PAYLOAD`. Native-sign-in delegation, not opacity (G18): the
-  member reads what it is given.
+  at relative paths, owned by its uid, permission bits alone, applied before its program
+  runs, within `run::MAX_PAYLOAD`. Native-sign-in delegation, not opacity (G18): the member
+  reads what it is given. Its home is where its `HOME` lies, as its variables end
+  (2026-11-12, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 7): its scratch at `/tmp`
+  (`HOME=/tmp`, init's), or a writable volume given it, the deepest that holds it, by its
+  mount point as declared or as it lies in the image (a harness's per-user volume at
+  `/home/claude`, `HOME` its `run.env`'s). The home's directories are made where missing,
+  0700 and the member's. A file an earlier run left there (a volume outlives its run) is
+  replaced, as nothing of the member runs yet to read it; one path staged twice is refused;
+  nothing is followed that a link could redirect; files staged for a member whose `HOME` is
+  in neither are refused, as it would never read them. Before, the files went to the
+  scratch whatever `HOME` said, and a harness whose `HOME` was a volume never read them
+  (reproduced, docs/research/measurements/s7-home-workdir).
+- *A member's working directory* (2026-11-12, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
+  step 7): `MemberSpec::workdir`, the project path it works in, carried in the request's
+  version 4 and staged as `member-workdir=<index>\0<path>`, one for a member. It is absolute
+  and plain, no empty, `.` or `..` component, within `PATH_MAX`
+  (`shards_abi::run::members::workdir_ok`): a relative or escaping one is refused by
+  `shards_api::image` before the run host starts, by the run host, and by init, as are two
+  for one member. Init enters it where it entered the member's own (`run.workdir` in its
+  directory, which init now holds to the build's rule as well: relative, never leaving the
+  directory). It must be there as the member starts, as an exec's working directory must be
+  (D27): a missing one fails the member's start, `entering its working directory`, and none
+  is made. A process's working directory is the directory it entered, under whatever is
+  mounted there later, so a project plugged into a running member (D235) is not the working
+  directory of a member that started before it: the project must be at its path as the
+  member starts. **Owed:** a boot-time path for that (a share given a member at its host
+  path, or a member started once its project is plugged), D235's and the orchestrator's to
+  choose; the real-VM runs on KVM, Hypervisor.framework and WHP (ROOT).
 - *Ports and grants.* Published ports bound by `publish::bind`, only for a port the image
   gives a member for ingress (D122) or for the run's own command; egress, remote MCP hosts,
   destinations (D236) and DNS the image grants, kept or dropped by the orchestrator, never
@@ -22363,7 +22593,11 @@ API's protocol: its output drained, its end, its connections.
   completed after it never published; `connect_once_before` dials once, refused at once where
   nothing listens.
 - *The report.* D232's report reaches the client on its private pipe: one complete scoped
-  frame by the deadline, anything else uncertainty.
+  frame by the deadline, anything else uncertainty. On Windows the pipe is a named pipe, as
+  Windows' anonymous pipes are (which take no overlapped reads), with a name of the
+  client process's own, its nonce and counter as its socket directories have: a scope
+  names a frame, not a channel, and a pipe named for its scope refused every other report
+  of that scope while its one instance lived, ERROR_PIPE_BUSY (PM M533).
 
 **Literals.** None new beyond D232's; every wait is the caller's deadline.
 
@@ -22556,6 +22790,66 @@ destinations once run so.
 **What would falsify it.** A provider whose clients reach it at addresses its names never
 answer (then address ranges as grants); a member that must reach one port by name beside
 another member's other names (then the per-member hold above, which lifts the refusal).
+
+### D237. A program that carries shards writes its VM and network processes out beside its own `shards`, signed as it signs its own (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 16: kiln is one binary, as shards is
+(D36), and it runs every harness in a microVM of its own through Hex, whose node boots it
+through shards-api, a client of the `shards` binary (D215, D231). So kiln carries a `shards`,
+and the VM and network processes that `shards` starts. On macOS each of those runs in App
+Sandbox under entitlements that are its binary's signature (D30, D31), and kiln signs every
+binary it installs or starts on a Mac with an identity of its own (kiln's `kiln signing
+setup`, `crates/kiln/src/os/macsign.rs`): macOS's local network privacy knows a program by its
+signature, and on 2026-10-18 kiln measured an ad hoc signed upgrade cut off from the local
+network until someone allowed it again. A `shards` that writes its own helpers out (D36) writes
+the bytes its build signed, ad hoc, and only a build on a Mac signs them at all (kiln's
+releases are cross-built on Linux, where codesign is not); no carrier can sign them again in
+place, as a file signed again is another size, which `helpers::complete` takes for a copy cut
+short and writes over.
+
+**Alternatives.**
+- *Each helper written out by `shards` itself, as D36 has it:* the carrier gives its own
+  `shards` and nothing else. Its helpers are signed only where the carrier is built on a Mac,
+  ad hoc, never with the carrier's identity, and are new programs to macOS with each build.
+  Not taken.
+- *The carrier links shards' command as a library and serves `api-run` itself:* `crates/shards`
+  is one binary's crate (D36); as a library it would link all of shards' daemon, builder and
+  registry into the carrier, and shards' command line into the carrier's (kiln's own `run` is
+  another command). Not taken.
+- *`SHARDS_VM_BINARY` for the VM process:* it names a VM process for VMM work and tests, not
+  the network process, and shards-api's configured client clears every variable it does not
+  name (D233). Not taken.
+- *A `shards` built to be carried (taken):* `SHARDS_HELPERS=beside` builds one that carries no
+  helpers, as `skip` does, and starts the VM and network processes (and a GPU's, where one is
+  there) from the directory it was started from (`helpers::beside`): the carrier writes the
+  three out together, signed as it signs its own, and owns that directory's life. Nothing in
+  shards writes, holds or collects it. kiln writes it whole (beside its place, signed, marked
+  ready, renamed into it), names it by what it carries and by who signed it, holds it from
+  each process that uses it, and collects the others no process holds, as D182 does
+  (`crates/kiln/src/shards.rs`).
+
+**D36 kept.** To kiln's users kiln is the one file to install and run: its `shards`,
+`shards-vm` and `shards-net` are carried inside it and written out by it the first time a build
+of it needs them, as shards writes its own helpers, and none is shipped, installed or
+documented beside it. The VM and network processes stay processes of their own binaries for
+D36's two measured reasons (each VM maps only its own; App Sandbox's entitlements are the VM
+process's signature alone). shards' own builds are unchanged: by default a `shards` carries
+its helpers and writes them out itself.
+
+**Literals.** None.
+
+**Tested.** `helpers::tests::a_carried_shards_starts_the_helpers_beside_it`: both helpers there,
+the directory found; one missing, refused naming it; nothing written. kiln's own: its carried
+Shards written whole once, found after, a folder not ready written again, and other builds'
+folders collected once no process holds them (`crate::shards`'s tests).
+
+**Evidence owed** (ROOT). Real VMs started by kiln's carried `shards` from its kiln-signed
+helpers on HVF, and from its helpers on KVM and WHP; kiln's build time and binary size with
+Shards carried and without (kiln's `docs/research/s16-vendor/`).
+
+**What would falsify it.** A carrier that cannot keep its helpers in the directory its
+`shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
+hoc (then ad hoc, as shards signs them).
 
 ## 4. Start path (≤ 5 ms budget)
 

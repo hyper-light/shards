@@ -540,10 +540,8 @@ mod tests {
                 ..Default::default()
             };
             // SAFETY: counters of the size their `cb` says, of this process.
-            assert_ne!(
-                unsafe { GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut c).cast(), c.cb) },
-                0
-            );
+            let read = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut c).cast(), c.cb) };
+            assert_ne!(read, 0);
             c.PrivateUsage as u64
         };
         let thread = std::thread::spawn(Thread::here).join().unwrap().unwrap();
@@ -565,7 +563,8 @@ mod tests {
         };
         assert_ne!(set, 0);
         // SAFETY: this process's pseudo-handle, into the job, nested in any it is in already.
-        assert_ne!(unsafe { AssignProcessToJobObject(job, GetCurrentProcess()) }, 0);
+        let assigned = unsafe { AssignProcessToJobObject(job, GetCurrentProcess()) };
+        assert_ne!(assigned, 0);
         let room = Room::now().unwrap();
         assert_eq!(room.commit, limit, "{room:?}: not the job's limit");
         assert_eq!(thread_limit(), room.threads(&thread));

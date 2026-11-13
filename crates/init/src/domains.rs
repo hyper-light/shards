@@ -21,8 +21,10 @@
 //! - has only its own loopback, brought up;
 //! - runs as uid and gid `200000 + n`, the n-th domain's, with no supplementary groups and
 //!   no capability left, bounding set included, and `no_new_privs` set;
-//! - holds no descriptor of init's but its stdio: stdin `/dev/null`, stdout and stderr one
-//!   pipe that init relays a line at a time, each line prefixed with the domain;
+//! - holds no descriptor of init's but its stdio: stdin `/dev/null`, or where its owner
+//!   asked for its input as the run was made a pipe whose write end init holds
+//!   ([`crate::input`]), stdout and stderr pipes of their own that init relays to its
+//!   owner as managed records ([`crate::capture`]);
 //! - runs the command its config says, a relative program its directory's, a bare name
 //!   found on `PATH` before it starts.
 
@@ -74,8 +76,12 @@ pub struct Domain {
     /// `memory.max`, in bytes, where its config asks one (`asks.memory`): under the
     /// domains' own, which every domain has.
     pub memory: Option<u64>,
+    /// Its config's `run.command`, as written: its program is found as it starts
+    /// ([`executable`]), on the `PATH` it runs with.
     pub argv: Vec<CString>,
-    pub env: Vec<CString>,
+    /// Its config's `run.env`, as written: its environment is made as it starts
+    /// ([`harness_env`]), with the image's and what is staged for it.
+    pub run_env: Vec<String>,
     pub workdir: CString,
     /// Whether it is a harness, and its name, as `CONNECT`s name it.
     pub name: crate::netplan::Name,
@@ -563,26 +569,41 @@ fn quote(s: &str) -> String {
     out
 }
 
-/// A supplied domain's environment: init's `PATH` (its own directory first), `HOME=/tmp` and
-/// `SHARDS_DOMAIN`, then its config's `run.env`, each name once and the last given winning, so a
-/// harness.json sets its harness's `HOME` or `PATH` (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
-/// master step 7: run.env was appended after init's before, and a program reads the first).
-/// `SHARDS_DOMAIN` is init's alone: a domain's own name, never its image's word.
-fn harness_env(path: &str, label: &str, given: &[String]) -> Result<Vec<String>, String> {
+/// A supplied domain's environment, each name once and the last given winning (kiln plan
+/// 01a1cd8e862e7169a074db3d5fa33f3d, step 7; a program reads a name's first entry):
+/// - init's own: `PATH`, the domain's directory and its `bin` first, then the image's
+///   `PATH`, else Docker's; `HOME=/tmp`, its scratch; and `SHARDS_DOMAIN`, its own name;
+/// - over them, the image's environment (`image`, its config's `Env`), as Docker lays an
+///   image's over its own defaults (moby daemon/container/env.go, ReplaceOrAppendEnvValues),
+///   but for its `PATH`, which init's holds, and its `HOME`: one for every member could be
+///   private to none, and a domain's is its own;
+/// - over those, its config's `run.env` (`given`), its own, which no other member shares.
+///
+/// What its orchestrator stages goes over all of it (staged.rs `env`, D231). `SHARDS_DOMAIN`
+/// is init's alone: a domain's own name, never its image's word.
+fn harness_env(dir: &str, label: &str, image: &[String], given: &[String]) -> Result<Vec<String>, String> {
+    let base = image
+        .iter()
+        .rev()
+        .find_map(|e| e.strip_prefix("PATH="))
+        .unwrap_or(PATH);
     let mut env = vec![
-        format!("PATH={path}"),
+        format!("PATH={dir}:{dir}/bin:{base}"),
         "HOME=/tmp".to_string(),
         format!("SHARDS_DOMAIN={label}"),
     ];
-    for e in given {
+    let name = |e: &str, whose: &str| -> Result<String, String> {
         let Some((name, _)) = e.split_once('=').filter(|(name, _)| !name.is_empty()) else {
-            return Err(format!("{label}: run.env entry {e:?} is no NAME=value"));
+            return Err(format!("{label}: {whose} entry {e:?} is no NAME=value"));
         };
         if name == "SHARDS_DOMAIN" {
             return Err(format!(
-                "{label}: run.env sets SHARDS_DOMAIN, which is init's: a domain's own name"
+                "{label}: {whose} sets SHARDS_DOMAIN, which is init's: a domain's own name"
             ));
         }
+        Ok(name.to_string())
+    };
+    let mut put = |e: &String, name: &str| {
         let at = env
             .iter()
             .position(|kept| kept.split_once('=').is_some_and(|(n, _)| n == name));
@@ -590,8 +611,93 @@ fn harness_env(path: &str, label: &str, given: &[String]) -> Result<Vec<String>,
             Some(kept) => kept.clone_from(e),
             None => env.push(e.clone()),
         }
+    };
+    for e in image {
+        let name = name(e, "the image's ENV")?;
+        if !matches!(name.as_str(), "PATH" | "HOME") {
+            put(e, &name);
+        }
+    }
+    for e in given {
+        put(e, &name(e, "run.env")?);
     }
     Ok(env)
+}
+
+/// The program `d` starts, its config's `run.command`'s first word: an absolute one as
+/// written, a relative one its directory's, and a bare name found on the `PATH` of `env`,
+/// the environment it runs with, as execvp(3) finds one (its own artifact's before the
+/// system's tools, the inherited `PATH` letting a launcher such as nohup find its child):
+/// here, as the child may not allocate.
+fn executable(d: &Domain, env: &[CString]) -> Result<CString, String> {
+    let first = d.argv.first().map(|a| a.to_bytes()).unwrap_or_default();
+    let cstr = |b: Vec<u8>| CString::new(b).map_err(|_| format!("{}: a NUL in its program", d.label));
+    if first.starts_with(b"/") {
+        return cstr(first.to_vec());
+    }
+    if first.contains(&b'/') {
+        return cstr([d.dir.as_slice(), b"/", first].concat());
+    }
+    let path = env
+        .iter()
+        .rev()
+        .find_map(|e| e.to_bytes().strip_prefix(b"PATH="))
+        .unwrap_or_default();
+    path.split(|&b| b == b':')
+        .filter_map(|p| CString::new([p, b"/", first].concat()).ok())
+        // SAFETY: access(2) of a NUL-terminated path.
+        .find(|c| unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 })
+        .ok_or_else(|| {
+            format!(
+                "{}: {:?} is on no directory of PATH",
+                d.label,
+                String::from_utf8_lossy(first)
+            )
+        })
+}
+
+/// Where `home`, a member's `HOME`, lies among the mounts it may write as it starts, each by
+/// its mount point in its view (`points`: its scratch's `/tmp`, a writable volume's as
+/// declared and as it lies in the image): the deepest that is `home` or holds it, by its
+/// place in `points`, and `home`'s components beneath it. None where none does, or where
+/// `home` is no absolute path that stays where it says (`..`).
+fn home_in<'h>(home: &'h str, points: &[&str]) -> Option<(usize, Vec<&'h str>)> {
+    let comps: Vec<&str> = home
+        .strip_prefix('/')?
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect();
+    if comps.contains(&"..") {
+        return None;
+    }
+    let plain = format!("/{}", comps.join("/"));
+    let (at, point) = points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| within(&plain, p))
+        .max_by_key(|(_, p)| p.len())?;
+    let depth = point.split('/').filter(|c| !c.is_empty()).count();
+    Some((at, comps.get(depth..).unwrap_or_default().to_vec()))
+}
+
+/// Whether `p` is relative and stays inside the directory it is relative to: the twin of
+/// the build's (shards_image osi.rs `inside`), as init links no host crate.
+fn inside(p: &str) -> bool {
+    if p.is_empty() || p.starts_with('/') || p.contains('\0') {
+        return false;
+    }
+    let mut depth = 0u32;
+    for part in p.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => match depth.checked_sub(1) {
+                Some(d) => depth = d,
+                None => return false,
+            },
+            _ => depth = depth.saturating_add(1),
+        }
+    }
+    true
 }
 
 fn domain(
@@ -628,42 +734,15 @@ fn domain(
                 .ok_or_else(|| format!("{label}: asks.memory is no count of bytes"))?,
         ),
     };
+    // Its own working directory, in its directory, as its build checks it (shards_image
+    // osi.rs `Config::check`): a run may name another (D231, `start`).
     let workdir = run.get("workdir").and_then(Value::str).unwrap_or(".");
-    // A supplied bare command lives in its own artifact before the system tools.
-    // The inherited PATH also lets an explicit launcher such as nohup find its child.
-    let path = format!("{dir}:{dir}/bin:{PATH}");
-    let given = run.get("env").and_then(Value::strings).unwrap_or_default();
-    let env = harness_env(&path, &label, &given)?;
-    // Its program is found on the PATH it runs with: init's, unless run.env gave its own.
-    let path = env
-        .iter()
-        .find_map(|e| e.strip_prefix("PATH="))
-        .unwrap_or(&path)
-        .to_string();
-    let env = env.iter().map(|e| cstr(e)).collect::<Result<Vec<_>, _>>()?;
-    let first = command.first().map(String::as_str).unwrap_or_default();
-    let program = if first.starts_with('/') {
-        first.to_string()
-    } else if first.contains('/') {
-        // Relative: its directory's.
-        format!("{dir}/{first}")
-    } else {
-        // A bare name, on PATH as execvp(3) would find it, found here: the child may not
-        // allocate.
-        path.split(':')
-            .map(|p| format!("{p}/{first}"))
-            .find(|p| {
-                CString::new(p.as_str()).is_ok_and(|c| {
-                    // SAFETY: access(2) of a NUL-terminated path.
-                    unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 }
-                })
-            })
-            .ok_or_else(|| format!("{label}: {first:?} is on no directory of PATH"))?
-    };
-    let mut argv = vec![cstr(&program)?];
-    for a in command.iter().skip(1) {
-        argv.push(cstr(a)?);
+    if !inside(workdir) {
+        return Err(format!(
+            "{label}: run.workdir {workdir:?} must be relative and stay inside its directory"
+        ));
     }
+    let argv = command.iter().map(|a| cstr(a)).collect::<Result<Vec<_>, _>>()?;
     let workdir = cstr(&format!("{dir}/{workdir}"))?;
     Ok(Domain {
         cgroup: format!("{kind}-{name}"),
@@ -674,7 +753,7 @@ fn domain(
         no_processes,
         memory,
         argv,
-        env,
+        run_env: run.get("env").and_then(Value::strings).unwrap_or_default(),
         workdir,
         name: (kind == "harness", name.to_string()),
         link: None,
@@ -696,6 +775,8 @@ pub struct Started {
     pub lifecycle: crate::managed::Owned,
     pub stdout: crate::capture::Pipe,
     pub stderr: crate::capture::Pipe,
+    /// Its stdin, where its owner asked for it: else `/dev/null`.
+    pub input: Option<crate::input::Input>,
     /// Its end has been told its owner (`MEMBER_ENDED`, D231).
     pub end_told: bool,
 }
@@ -775,6 +856,8 @@ const SYSTEM: u64 = libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOSUID | libc::MO
 /// Everything a domain's first process uses, made before it is: after `clone3` it calls
 /// the kernel alone.
 struct Prepared {
+    /// Its working directory: the one its run names (D231), else its own.
+    workdir: CString,
     hide: Vec<CString>,
     hostname: CString,
     argv: Vec<*const libc::c_char>,
@@ -792,6 +875,9 @@ struct Prepared {
     /// Where it sends the listener of the chooser's filter, and the filter, for a domain
     /// among several given a port (D122, crate::chooser).
     chooser: Option<(RawFd, *const libc::sock_fprog)>,
+    /// Its stdin: the read end of its input's pipe, where its owner asked for its input
+    /// ([`crate::input`]); else `/dev/null`, opened as it starts.
+    stdin: Option<RawFd>,
     /// Its root: the image as built, a mount not yet attached.
     root: RawFd,
     /// The run's plug roots (D235), `/Users`, beneath which Landlock grants it every right.
@@ -1602,6 +1688,15 @@ pub fn start(
         domains.iter().any(|d| d.id.checked_sub(FIRST_ID) == Some(m))
     })?;
     let shm = shm_of(setup)?;
+    // The image's environment, which every member starts with (D59), as the host read it
+    // from the image's config and the build and the daemon checked it.
+    let image_env = shards_abi::run::members::image_envs(setup)
+        .map_err(|e| format!("the image's environment: {e}"))?
+        .into_iter()
+        .map(|e| {
+            String::from_utf8(e.to_vec()).map_err(|_| "the image's environment: a variable that is not UTF-8")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     // The kernel's log holds what it says of the domains' processes (a fault, an OOM kill
     // naming each process of their cgroup): only for CAP_SYSLOG, which no run of an
     // Agentfile's image is given (D115), not for any process that calls syslog(2) or
@@ -1853,6 +1948,18 @@ pub fn start(
         len: u16::try_from(notify_ops.len()).map_err(|_| "the chooser's filter is too long")?,
         filter: notify_ops.as_ptr().cast_mut(),
     };
+    // The members whose stdin their owner writes, each with its connection's token; every
+    // one a member that starts here, else the run is refused, as a staging entry is.
+    let inputs =
+        shards_abi::run::managed::input_tokens(setup).map_err(|e| format!("its members' input: {e}"))?;
+    if let Some((member, _)) = inputs
+        .iter()
+        .find(|(m, _)| !domains.iter().any(|d| d.id.checked_sub(FIRST_ID) == Some(*m)))
+    {
+        return Err(format!(
+            "an input is asked for member {member}, which this image starts no program for"
+        ));
+    }
     let mut started = Vec::new();
     for (i, d) in domains.iter().enumerate() {
         let member =
@@ -1914,11 +2021,54 @@ pub fn start(
             .collect();
         // Its scratch, which its instance holds too, to read the files it hands across.
         let scratch = scratch(lower, d.id).map_err(|e| format!("{}: its /tmp: {e}", d.label))?;
-        // What its orchestrator staged for it (D231): its files in its home before anything
-        // of it runs, its variables over its image's.
-        crate::staged::files(scratch.as_ref().map(AsFd::as_fd), (d.id, d.id), member, setup)
-            .map_err(|e| format!("{}: {e}", d.label))?;
-        let env = crate::staged::env(&d.env, member, setup).map_err(|e| format!("{}: {e}", d.label))?;
+        // What its orchestrator staged for it (D231): its variables over its own and its
+        // image's, its program found on the PATH it runs with, its working directory, and
+        // its files in its home, where its HOME lies, before anything of it runs.
+        let its_dir =
+            std::str::from_utf8(&d.dir).map_err(|_| format!("{}: a directory that is not UTF-8", d.label))?;
+        let own = harness_env(its_dir, &d.label, &image_env, &d.run_env)?
+            .into_iter()
+            .map(|e| CString::new(e).map_err(|_| format!("{}: a NUL in its environment", d.label)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let env = crate::staged::env(&own, member, setup).map_err(|e| format!("{}: {e}", d.label))?;
+        let argv0 = executable(d, &env)?;
+        let workdir = crate::staged::workdir(member, setup)
+            .map_err(|e| format!("{}: {e}", d.label))?
+            .unwrap_or_else(|| d.workdir.clone());
+        let home = env
+            .iter()
+            .rev()
+            .find_map(|e| e.to_bytes().strip_prefix(b"HOME="))
+            .map(String::from_utf8_lossy)
+            .unwrap_or_default();
+        // What it may write as it starts, each where it sees it: its scratch, at /tmp, and
+        // each writable volume given it, at its mount point as declared and as it lies in
+        // the image, with init's own mount of it.
+        let mut writable: Vec<(&str, crate::staged::Mount<'_>)> = Vec::new();
+        if let Some(s) = &scratch {
+            writable.push(("/tmp", crate::staged::Mount::Held(s.as_fd())));
+        }
+        for (sh, at, real) in staged
+            .iter()
+            .filter(|(sh, _, _)| !sh.ro && given_volume(d, &sh.dest))
+        {
+            writable.extend([
+                (real.as_str(), crate::staged::Mount::At(at.as_str())),
+                (sh.dest.as_str(), crate::staged::Mount::At(at.as_str())),
+            ]);
+        }
+        let points: Vec<&str> = writable.iter().map(|(p, _)| *p).collect();
+        let place = home_in(&home, &points)
+            .and_then(|(i, beneath)| {
+                Some(crate::staged::Home {
+                    mount: writable.get(i)?.1,
+                    beneath,
+                })
+            })
+            .ok_or_else(|| {
+                format!("HOME, {home:?}, lies in neither its scratch nor a writable volume given it")
+            });
+        crate::staged::files(place, (d.id, d.id), member, setup).map_err(|e| format!("{}: {e}", d.label))?;
         let dir = server.start(
             i,
             d,
@@ -1955,6 +2105,7 @@ pub fn start(
         let root = image_root(skel_of, lower, !roots.is_empty())
             .map_err(|e| format!("{}: its root: {e}", d.label))?;
         let prepared = Prepared {
+            workdir,
             shm: shm.clone(),
             root: root.as_raw_fd(),
             plug_roots: plug_roots.clone(),
@@ -1970,10 +2121,9 @@ pub fn start(
                 .collect(),
             hostname: CString::new(d.cgroup.as_str())
                 .map_err(|_| format!("{}: a NUL in its name", d.label))?,
-            argv: d
-                .argv
-                .iter()
-                .map(|a| a.as_ptr())
+            argv: [argv0.as_ptr()]
+                .into_iter()
+                .chain(d.argv.iter().skip(1).map(|a| a.as_ptr()))
                 .chain([std::ptr::null()])
                 .collect(),
             envp: env.iter().map(|a| a.as_ptr()).chain([std::ptr::null()]).collect(),
@@ -1989,6 +2139,7 @@ pub fn start(
             resolv: d.resolv.clone(),
             go: None,
             chooser: None,
+            stdin: None,
         };
         let mut prepared = prepared;
         // A candidate for a port several are given: the channel its listener comes on.
@@ -2024,6 +2175,15 @@ pub fn start(
             crate::capture::Pipe::make().map_err(|e| format!("{}: its stdout pipe: {e}", d.label))?;
         let (stderr, stderr_write) =
             crate::capture::Pipe::make().map_err(|e| format!("{}: its stderr pipe: {e}", d.label))?;
+        let (input, stdin) = match inputs.iter().find(|(m, _)| *m == member) {
+            Some((_, token)) => {
+                let (input, stdin) = crate::input::Input::open(member, token)
+                    .map_err(|e| format!("{}: its stdin pipe: {e}", d.label))?;
+                (Some(input), Some(stdin))
+            }
+            None => (None, None),
+        };
+        prepared.stdin = stdin.as_ref().map(AsRawFd::as_raw_fd);
         let mut launch = crate::managed::Launch::new(last_cap, cgroup)
             .map_err(|e| format!("{}: preparing its owner: {e}", d.label))?;
         let mut args = CloneArgs {
@@ -2063,6 +2223,9 @@ pub fn start(
         let mut lifecycle = launch
             .parent(pid, admitted.into_file())
             .map_err(|e| format!("{}: retaining its owner: {e}", d.label))?;
+        // Its stdin's read end is the member's alone: init holding it would keep the pipe
+        // read after the member is gone, and so hide its end.
+        drop(stdin);
         drop(stdout_write);
         drop(stderr_write);
         drop(root);
@@ -2115,6 +2278,7 @@ pub fn start(
             lifecycle,
             stdout,
             stderr,
+            input,
             end_told: false,
         });
     }
@@ -2717,11 +2881,14 @@ fn child(
             }
         }
         // Its stdio, and no other descriptor of init's.
-        let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+        let input = match p.stdin {
+            Some(fd) => fd,
+            None => libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC),
+        };
         let status = libc::fcntl(setup, libc::F_DUPFD_CLOEXEC, libc::STDERR_FILENO + 2);
-        if devnull < 0
+        if input < 0
             || status < 0
-            || libc::dup2(devnull, 0) < 0
+            || libc::dup2(input, 0) < 0
             || libc::dup2(stdout, 1) < 0
             || libc::dup2(out, 2) < 0
         {
@@ -2754,7 +2921,7 @@ fn exec_child(d: &Domain, p: &Prepared, flags: u32, program: &libc::sock_fprog) 
     let fail = |out, what| -> ! { fail(out, setup, crate::managed::Step::Setup, what) };
     // SAFETY: the actor's remaining confinement uses prepared buffers and system calls.
     unsafe {
-        if libc::chdir(d.workdir.as_ptr()) != 0 {
+        if libc::chdir(p.workdir.as_ptr()) != 0 {
             fail(out, c"entering its working directory");
         }
         // Its own IDs and no capability: the bounding set first, which needs CAP_SETPCAP;
@@ -2982,28 +3149,43 @@ mod tests {
         );
     }
 
-    /// A harness.json's run.env sets its harness's HOME and PATH, the last given winning, and never
-    /// its domain's name (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, master step 7).
+    /// A member's environment (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 7): init's
+    /// own, then the image's ENV over it, but for its PATH, which init's holds after the
+    /// member's own directories, and its HOME, the member's own; then its config's run.env,
+    /// the last given of each name winning; never its domain's name, from either. What is
+    /// staged for it goes over all of it (staged.rs).
     #[test]
-    fn run_env_replaces_inits_defaults_and_never_the_domains_name() {
+    fn a_members_environment_is_inits_then_its_images_then_its_own() {
         let given = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
         assert_eq!(
-            harness_env("/d:/d/bin:/usr/bin", "harness agy", &[]).unwrap(),
+            harness_env("/d", "harness agy", &[], &[]).unwrap(),
             [
-                "PATH=/d:/d/bin:/usr/bin",
+                format!("PATH=/d:/d/bin:{PATH}"),
+                "HOME=/tmp".into(),
+                "SHARDS_DOMAIN=harness agy".into()
+            ]
+        );
+        let image = given(&[
+            "PATH=/usr/local/cargo/bin:/usr/bin",
+            "HOME=/root",
+            "LANG=C.UTF-8",
+            "TZ=UTC",
+        ]);
+        assert_eq!(
+            harness_env("/d", "harness agy", &image, &[]).unwrap(),
+            [
+                "PATH=/d:/d/bin:/usr/local/cargo/bin:/usr/bin",
                 "HOME=/tmp",
-                "SHARDS_DOMAIN=harness agy"
+                "SHARDS_DOMAIN=harness agy",
+                "LANG=C.UTF-8",
+                "TZ=UTC"
             ]
         );
         let env = harness_env(
-            "/d:/d/bin:/usr/bin",
+            "/d",
             "harness agy",
-            &given(&[
-                "HOME=/home/agy",
-                "LANG=C.UTF-8",
-                "HOME=/home/two",
-                "PATH=/opt/agy/bin",
-            ]),
+            &image,
+            &given(&["HOME=/home/agy", "LANG=C", "HOME=/home/two", "PATH=/opt/agy/bin"]),
         )
         .unwrap();
         assert_eq!(
@@ -3012,7 +3194,8 @@ mod tests {
                 "PATH=/opt/agy/bin",
                 "HOME=/home/two",
                 "SHARDS_DOMAIN=harness agy",
-                "LANG=C.UTF-8"
+                "LANG=C",
+                "TZ=UTC"
             ]
         );
         for (bad, why) in [
@@ -3020,9 +3203,134 @@ mod tests {
             ("NOEQUALS", "NAME=value"),
             ("=x", "NAME=value"),
         ] {
-            let e = harness_env("/d", "harness agy", &given(&[bad])).unwrap_err();
-            assert!(e.contains(why), "{bad}: {e}");
+            let e = harness_env("/d", "harness agy", &[], &given(&[bad])).unwrap_err();
+            assert!(e.contains(why) && e.contains("run.env"), "{bad}: {e}");
+            let e = harness_env("/d", "harness agy", &given(&[bad]), &[]).unwrap_err();
+            assert!(e.contains(why) && e.contains("the image's ENV"), "{bad}: {e}");
         }
+    }
+
+    /// A member's own working directory is its config's `run.workdir` in its directory, held
+    /// to it as its build holds it: relative, never leaving it, however crafted.
+    #[test]
+    fn a_members_own_working_directory_stays_in_its_directory() {
+        for good in [".", "work", "a/../b", "./x/", "a/b/.."] {
+            assert!(inside(good), "{good}");
+        }
+        for bad in ["", "/etc", "..", "../h2", "a/../../etc", "a\0b"] {
+            assert!(!inside(bad), "{bad:?}");
+        }
+        let config = |workdir: &str| {
+            json::parse(format!(r#"{{"run":{{"command":["/bin/true"],"workdir":"{workdir}"}}}}"#).as_bytes())
+                .unwrap()
+        };
+        let declared = json::parse(br#"{"name":"h"}"#).unwrap();
+        let d = |workdir: &str| {
+            let c = config(workdir);
+            domain(
+                "harness",
+                "h",
+                "/harness/h",
+                FIRST_ID,
+                &declared,
+                &c,
+                c.get("run").unwrap(),
+            )
+        };
+        assert_eq!(
+            d("work").unwrap().workdir,
+            CString::new("/harness/h/work").unwrap()
+        );
+        let e = d("../../etc").unwrap_err();
+        assert!(
+            e.contains("must be relative and stay inside its directory"),
+            "{e}"
+        );
+        assert!(d("/etc").is_err());
+    }
+
+    /// A member's HOME lies in the deepest of its writable mounts that holds it, however it
+    /// is written but for `..`; what is staged for it goes there (staged.rs), never to a
+    /// mount beside it.
+    #[test]
+    fn a_members_home_lies_in_the_deepest_mount_that_holds_it() {
+        let points = ["/tmp", "/var/home/claude", "/home/claude", "/home/claude/.cache"];
+        assert_eq!(home_in("/tmp", &points), Some((0, vec![])));
+        assert_eq!(home_in("/tmp/h/i", &points), Some((0, vec!["h", "i"])));
+        assert_eq!(home_in("/home/claude", &points), Some((2, vec![])));
+        assert_eq!(home_in("//home/claude/./", &points), Some((2, vec![])));
+        assert_eq!(home_in("/home/claude/.cache/x", &points), Some((3, vec!["x"])));
+        assert_eq!(home_in("/var/home/claude/w", &points), Some((1, vec!["w"])));
+        for nowhere in [
+            "/root",
+            "/home",
+            "/home/claudette",
+            "tmp",
+            "",
+            "/tmp/../etc",
+            "/home/claude/../x",
+        ] {
+            assert_eq!(home_in(nowhere, &points), None, "{nowhere}");
+        }
+        assert_eq!(home_in("/tmp", &[]), None);
+    }
+
+    /// A domain of `argv` whose directory is `dir`.
+    fn domain_at(dir: &str, argv: &[&str]) -> Domain {
+        Domain {
+            label: "agent a".into(),
+            cgroup: "agent-a".into(),
+            dir: dir.as_bytes().to_vec(),
+            id: FIRST_ID,
+            pids: None,
+            no_processes: false,
+            memory: None,
+            argv: argv.iter().map(|a| CString::new(*a).unwrap()).collect(),
+            run_env: Vec::new(),
+            workdir: CString::default(),
+            name: (false, "a".into()),
+            link: None,
+            channels: Vec::new(),
+            mcp: "[]".into(),
+            resolv: None,
+            volumes: Vec::new(),
+        }
+    }
+
+    /// A member's program: an absolute one as written, a relative one its directory's, a
+    /// bare name found on the PATH it runs with, whatever gave that PATH last.
+    #[test]
+    fn a_members_program_is_found_on_the_path_it_runs_with() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = shards_testdir::TempDir::new("program").unwrap();
+        let root = dir.path().to_str().unwrap();
+        for (d, mode) in [("bin", 0o755), ("other", 0o755)] {
+            std::fs::create_dir(dir.path().join(d)).unwrap();
+            let tool = dir.path().join(d).join("tool");
+            std::fs::write(&tool, b"#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let env = |path: String| vec![CString::new("HOME=/tmp").unwrap(), CString::new(path).unwrap()];
+        let found = |argv: &[&str], path: String| executable(&domain_at(root, argv), &env(path));
+        let at = |p: &str| CString::new(format!("{root}/{p}")).unwrap();
+        assert_eq!(
+            found(&["tool"], format!("PATH={root}/none:{root}/bin")).unwrap(),
+            at("bin/tool")
+        );
+        assert_eq!(
+            found(&["tool"], format!("PATH={root}/other:{root}/bin")).unwrap(),
+            at("other/tool")
+        );
+        assert_eq!(
+            found(&["bin/tool", "-x"], "PATH=/nowhere".into()).unwrap(),
+            at("bin/tool")
+        );
+        assert_eq!(
+            found(&["/usr/bin/env"], "PATH=/nowhere".into()).unwrap(),
+            CString::new("/usr/bin/env").unwrap()
+        );
+        let e = found(&["tool"], "PATH=/nowhere".into()).unwrap_err();
+        assert!(e.contains("\"tool\" is on no directory of PATH"), "{e}");
     }
 
     /// The host's entries (volumes.rs, `open`): those for the domains, with their tag,
@@ -3063,22 +3371,8 @@ mod tests {
     #[test]
     fn a_volume_is_given_as_its_volume_says() {
         let d = |volumes: Vec<VolumeRule>| Domain {
-            label: "agent a".into(),
-            cgroup: "agent-a".into(),
-            dir: b"/agents/a".to_vec(),
-            id: FIRST_ID,
-            pids: None,
-            no_processes: false,
-            memory: None,
-            argv: Vec::new(),
-            env: Vec::new(),
-            workdir: CString::default(),
-            name: (false, "a".into()),
-            link: None,
-            channels: Vec::new(),
-            mcp: "[]".into(),
-            resolv: None,
             volumes,
+            ..domain_at("/agents/a", &[])
         };
         let rule = |path: &str, granted: bool| VolumeRule {
             path: path.into(),

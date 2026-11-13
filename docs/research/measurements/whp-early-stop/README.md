@@ -33,6 +33,9 @@ it heard.
 | [r3-negative-controls.txt](logs/r3-negative-controls.txt) | Without the sweep, nothing stopped early: 628 runs (plain, detached, fresh homes, 1 to 8 at once) and 3 engine_ring rounds. |
 | [r4-kill-red-green.txt](logs/r4-kill-red-green.txt) | R09's live example: a daemon ended mid-run with `taskkill /F` gives the exact symptom (6 of 6 on main), its microVM's end the same words (4 of 4); with the fix the daemon's end is said as the daemon's (6 of 6) and the VM's as the microVM's (3 of 3); the diagnostic build's view of each end. |
 | [r5-unit-linux.txt](logs/r5-unit-linux.txt) | Linux: the fix's tests green; each guard removed, red for its reason; the binary's unit suite in test-release; clippy. |
+| [r5-unit-windows.txt](logs/r5-unit-windows.txt) | The same on Windows (jupiter, 31f6dd5d9): green, both guards red, the suite 709 of 709. |
+| [r5-unit-macos.txt](logs/r5-unit-macos.txt) | The same on macOS (adas-mac-studio.local-2, 5564278e3): green, both guards red, the suite 730 of 730. |
+| [r6-lint.txt](logs/r6-lint.txt) | `scripts/lint` on all seven supported targets: clean but for another change's test on both Windows targets (fixed on main since), where this change's crates are clean alone. |
 
 ## Harness
 
@@ -43,7 +46,8 @@ it heard.
 - `harness/build.sh`: a test-release build on jupiter from a clone over HTTPS, outside any
   synced copy.
 - `harness/unit.sh`: the fix's tests, each guard removed in turn, the unit suite (r5);
-  `harness/lint.sh`: `scripts/lint` from a Mac, zig installed by `scripts/install-zig` (r6).
+  `harness/lint.sh`: `scripts/lint` from a Mac, zig installed by `scripts/install-zig`, and
+  `harness/lint2.sh`: the targets it had yet to reach, and this change's crates on Windows (r6).
 - `harness/diag.patch`: the diagnostic build's lines (not merged): which side of a slot ended.
 - `harness/wer.ps1`: Windows Error Reporting's records of a crashed process (none of shards'
   in the 3 days before); `harness/tx.js`: a Claude Code transcript's tool calls and results.
@@ -74,7 +78,8 @@ it heard.
 - **R09 (live first).** Reproduced before the fix: r4 (red).
 - **R10 (durable evidence).** This directory, M530 and D185; red and mutants in r4 and r5.
 - **R11, R12 (platforms).** The change is the slots' own, shared by every OS; its unit tests
-  red and green on each OS (r5: Linux whole, Windows and macOS as Owed says); the live example
+  green, and red with each guard removed, on Linux, macOS and Windows, and the binary's suite
+  green on each (r5); clippy clean on all seven targets for its crates (r6); the live example
   on WHP alone (r4): the sweep's own end of a daemon on Linux and macOS is unverified
   (SIGTERM there, which the daemon takes no handler for).
 - **R15 (roles).** A bounded campaign on jupiter in ~/g121-whp-stop-* dirs; builds there and on
@@ -85,10 +90,8 @@ it heard.
 
 ## Owed
 
-- Landing next, as each turns green: Windows' and macOS' unit red/green and suites (r5),
-  `scripts/lint` on every supported target (r6). At this record's first landing: Windows'
-  tests green and the relay's guard red (037fe95d4, jupiter); Linux's all of r5.
 - ROOT's real-VM suites with the fix (daemon.rs, containers.rs, engine_ring) on each host.
 - The sweep's own end of a daemon on Linux and macOS, live.
-- Whether main's dev-profile unit suite overflows the 'policy' thread's stack too (seen at the
-  fix on Linux and Windows; test-release passes).
+- The dev profile's stack overflow in `build::policy::tests::the_deepest_policy_runs_on_the_policy_thread`
+  ('policy' thread; Linux SIGABRT, Windows STATUS_STACK_OVERFLOW; test-release passes):
+  the Rego owner's, as ROOT assigned it; not this change's code.

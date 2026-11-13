@@ -1,0 +1,33 @@
+host adacachy Linux 7.2.9-2-cachyos x86_64, 2026-11-12T22:32:29Z, base 6243ca378fd04743089da3bdfaf1cd51a01e808d
+== relative-taken
+thread 'run::members::tests::a_working_directory_is_absolute_plain_and_one' (720812) panicked at crates/abi/src/run/members.rs:514:13:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 52 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-abi --lib`
+== twice-staged
+thread 'api_run::tests::staging_names_a_running_member' (736524) panicked at crates/shards/src/api_run.rs:2124:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 746 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== no-client-check
+thread 'image::tests::what_the_guest_refuses_is_refused_first' (743777) panicked at crates/api/src/image.rs:492:22:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 102 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-api --lib`
+== guest-ignores
+thread 'staged::tests::a_working_directory_is_read_again_in_the_guest' (751292) panicked at crates/init/src/staged.rs:200:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+== image-workdir-escapes
+thread 'domains::tests::a_members_own_working_directory_stays_in_its_directory' (758457) panicked at crates/init/src/domains.rs:3152:32:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 215 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+== wire-unread
+thread 'image::wire::tests::messages_round_trip' (760875) panicked at crates/api/src/image/wire.rs:1374:58:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 102 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-api --lib`
+== green
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 52 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.00s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 214 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 746 filtered out; finished in 0.00s
+
+[exited with code 0]

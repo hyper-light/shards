@@ -1,0 +1,32 @@
+# r5 (Windows). harness/unit.sh on jupiter (Windows 11 Pro 10.0.26200, AMD64, 32 CPUs; Git
+# Bash, MSVC, NASM 3.02, zig 0.16.0), at 31f6dd5d9 (the fix with origin/main fc71859bc merged
+# in), rustc 1.98.1 (48a229cea 2026-09-01), SHARDS_HELPERS=skip with empty init and server
+# binaries, 2026-11-12 ~22:15Z-22:45Z. Guards A and B as r5-unit-linux.txt says.
+#
+# A first run, at 037fe95d4, with unit.sh's first client mutant (whose sed changed the test's
+# own expected text too, so that its red passed: void) and a dev-profile suite: green 4 of 4,
+# guard A red as below; its suite ended at STATUS_STACK_OVERFLOW (0xc00000fd) in a test's
+# 'policy' thread (Rego), code this change leaves alone. This run replaces it.
+
+HEAD 31f6dd5d906900f33c74855fd97caaf0551a2f83 The fix's comments name its record, PM M530: main's M528 is anot
+host: MINGW64_NT-10.0-26200 x86_64 3.6.10-5a1665c8.x86_64; rustc 1.98.1 (48a229cea 2026-09-01)
+ipc-kinds: exit 0 in 6 s: test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 70 filtered out; finished in 0.00s
+green: exit 0 in 351 s: test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 715 filtered out; finished in 0.02s
+mutant A lines: 1
+red-relay: exit 101 in 177 s: test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 718 filtered out; finished in 0.04s
+test daemon::tests::a_side_that_ends_without_its_last_word_says_so ... FAILED
+thread 'daemon::tests::a_side_that_ends_without_its_last_word_says_so' (140344) panicked at crates\shards\src\daemon.rs:11332:17:
+assertion `left == right` failed: a request of kind 5 its side left unanswered
+  left: Some([12])
+ right: Some([12, 91])
+mutant B:  crates/shards/src/cli/client.rs | 2 +-
+mutant B:  1 file changed, 1 insertion(+), 1 deletion(-)
+red-client: exit 101 in 190 s: test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 718 filtered out; finished in 0.00s
+test cli::client::tests::a_runs_client_tells_its_daemons_end_from_its_microvms ... FAILED
+thread 'cli::client::tests::a_runs_client_tells_its_daemons_end_from_its_microvms' (147952) panicked at crates\shards\src\cli\client.rs:1799:13:
+assertion `left == right` failed: kind 5
+  left: "the command's microVM stopped before the command ended; see home\\daemon.log"
+ right: "the daemon ended before the command did; see home\\daemon.log"
+tree restored clean
+full: exit 0 in 520 s: test result: ok. 709 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 149.18s
+done

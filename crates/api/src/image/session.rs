@@ -44,11 +44,22 @@ struct Flow {
     ended: Option<wire::StreamEnd>,
 }
 
+/// A member's stdin, which the caller writes (plan step 5): the room its host gave and the
+/// feed has not used, whether its pipe was taken, and its end as its host told it.
+#[derive(Debug, Default)]
+struct InputFlow {
+    room: u64,
+    taken: bool,
+    ended: Option<(u64, wire::StreamEnd)>,
+}
+
 #[derive(Debug, Default)]
 struct State {
     started: Option<wire::Started>,
     refused: Option<ImageRefusal>,
     flows: HashMap<(u32, Channel), Flow>,
+    /// Each member's stdin its spec asked for, by its index.
+    inputs: HashMap<u32, InputFlow>,
     ends: HashMap<u32, u32>,
     stats: HashMap<u32, Result<Stats, String>>,
     /// Each plug's or unplug's answer, by its ask's id (D235).
@@ -347,6 +358,19 @@ impl Session {
                 )));
             }
         };
+        // Each member whose stdin its spec asked for, by its index in the host's answer.
+        {
+            let mut state = lock(&shared.state);
+            for m in request.members.iter().filter(|m| m.input) {
+                if let Some(info) = started
+                    .members
+                    .iter()
+                    .find(|i| i.kind == m.kind && i.name == m.name)
+                {
+                    state.inputs.entry(info.index).or_default();
+                }
+            }
+        }
         let session = Session {
             shared,
             host,
@@ -468,6 +492,50 @@ fn pump(shared: &Shared, member: u32, channel: Channel, mut writer: io::PipeWrit
     }
 }
 
+/// Moves what the caller writes to member `member`'s stdin to its host, no more at once than
+/// the room the host gave, and its end once the caller closes its pipe; ends with the input,
+/// the run or the host, dropping its pipe's read end so that the caller's writes fail then.
+fn feed(shared: &Shared, member: u32, mut reader: io::PipeReader) {
+    let mut buf = vec![0u8; AHEAD as usize];
+    loop {
+        // Room first: nothing is read of the caller that its host has no room for.
+        let room = shared.wait(Duration::MAX, |s| {
+            let gone = s.end.is_some() || s.answered;
+            let flow = s.inputs.get(&member)?;
+            if flow.ended.is_some() || gone {
+                return Some(None);
+            }
+            (flow.room > 0).then_some(Some(flow.room))
+        });
+        let Some(Some(room)) = room else {
+            return;
+        };
+        let want = usize::try_from(room).unwrap_or(usize::MAX).min(buf.len());
+        let n = match reader.read(buf.get_mut(..want).unwrap_or_default()) {
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        };
+        if n == 0 {
+            let end = wire::InputEnd {
+                member,
+                end: wire::StreamEnd::Closed,
+            };
+            let _ = shared.send(wire::to_host::INPUT_END, &end.encode());
+            return;
+        }
+        if let Some(flow) = lock(&shared.state).inputs.get_mut(&member) {
+            flow.room = flow.room.saturating_sub(n as u64);
+        }
+        let mut payload = Vec::with_capacity(4 + n);
+        payload.extend_from_slice(&wire::Input::head(member));
+        payload.extend_from_slice(buf.get(..n).unwrap_or_default());
+        if shared.send(wire::to_host::INPUT, &payload).is_err() {
+            return;
+        }
+    }
+}
+
 /// Reads the host's answers until it closes its stdout, each into the state; one that
 /// breaks the channel's contract ends the session as a failed run. The run's end closes
 /// the host's stdin: the host then ends.
@@ -553,6 +621,27 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
             state.plugs.insert(answer.id, answer.result);
         }
         k::READY => state.ready = Some(wire::ready(payload).map_err(bad)?),
+        k::INPUT_ROOM => {
+            let room = wire::InputRoom::decode(payload).map_err(bad)?;
+            let flow = state
+                .inputs
+                .get_mut(&room.member)
+                .ok_or_else(|| "room for a member with no stdin of its owner's".to_string())?;
+            flow.room = flow
+                .room
+                .checked_add(room.bytes)
+                .ok_or_else(|| "a stdin's room past what a u64 counts".to_string())?;
+        }
+        k::INPUT_ENDED => {
+            let e = wire::InputEnded::decode(payload).map_err(bad)?;
+            let flow = state
+                .inputs
+                .get_mut(&e.member)
+                .ok_or_else(|| "an end of a member with no stdin of its owner's".to_string())?;
+            if flow.ended.replace((e.written, e.end)).is_some() {
+                return Err("a stdin ended twice".into());
+            }
+        }
         k::ENDED => {
             let end = wire::RunEnd::decode(payload).map_err(bad)?;
             if state.end.replace(end).is_some() {
@@ -649,11 +738,35 @@ impl ImageGuest for Session {
             })
     }
 
-    fn take_input(&self, _member: &MemberName) -> Result<io::PipeWriter, ImageRefusal> {
-        Err(ImageRefusal::Unsupported {
-            what: "a member's stdin",
-            why: "a member's input connection is owed (D231's next slice)".into(),
-        })
+    fn take_input(&self, member: &MemberName) -> Result<io::PipeWriter, ImageRefusal> {
+        let index = self.index(member)?.index;
+        {
+            let mut state = lock(&self.shared.state);
+            let flow = state.inputs.get_mut(&index).ok_or_else(|| ImageRefusal::Spec {
+                what: "a member's stdin",
+                why: format!("{member:?}: its spec asks for no stdin of it"),
+            })?;
+            if flow.taken {
+                return Err(ImageRefusal::Spec {
+                    what: "a member's stdin",
+                    why: format!("{member:?}: taken already"),
+                });
+            }
+            flow.taken = true;
+        }
+        let (reader, writer) = io::pipe().map_err(|e| ImageRefusal::Os {
+            what: "a member's stdin pipe",
+            kind: e.kind(),
+        })?;
+        let shared = self.shared.clone();
+        std::thread::Builder::new()
+            .name("shards-api-input".into())
+            .spawn(move || feed(&shared, index, reader))
+            .map_err(|e| ImageRefusal::Os {
+                what: "a member's stdin feed",
+                kind: e.kind(),
+            })?;
+        Ok(writer)
     }
 
     fn wait_member(&self, member: &MemberName, timeout: Duration) -> Result<Option<MemberEnd>, ImageRefusal> {
@@ -812,6 +925,91 @@ mod tests {
             changed: Condvar::new(),
             to_host: Mutex::new(None),
         }
+    }
+
+    /// A member's stdin's room and end are taken as its host says them: room adds up, an
+    /// end comes once, and a member whose stdin its spec never asked for is given none.
+    #[test]
+    fn a_stdins_room_and_end_are_its_hosts_and_come_for_asked_members_alone() {
+        let s = shared();
+        lock(&s.state).inputs.insert(2, InputFlow::default());
+        let room = |member, bytes| wire::InputRoom { member, bytes }.encode();
+        assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(2, 5)), Ok(false));
+        assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(2, 3)), Ok(false));
+        assert_eq!(lock(&s.state).inputs[&2].room, 8);
+        assert!(take(&s, wire::to_client::INPUT_ROOM, &room(3, 1)).is_err());
+        assert!(take(&s, wire::to_client::INPUT_ROOM, &room(2, u64::MAX)).is_err());
+        let ended = wire::InputEnded {
+            member: 2,
+            written: 4,
+            end: wire::StreamEnd::Aborted(32),
+        }
+        .encode();
+        assert_eq!(take(&s, wire::to_client::INPUT_ENDED, &ended), Ok(false));
+        assert_eq!(
+            lock(&s.state).inputs[&2].ended,
+            Some((4, wire::StreamEnd::Aborted(32)))
+        );
+        assert!(
+            take(&s, wire::to_client::INPUT_ENDED, &ended).is_err(),
+            "ended twice"
+        );
+    }
+
+    /// The caller's bytes reach the host as they were written, never past the room it gave,
+    /// and the pipe's close is the input's end. The host here is `cat`, which hands back what
+    /// the feed sent.
+    #[cfg(unix)]
+    #[test]
+    fn a_feed_sends_its_callers_bytes_within_its_room_then_its_end() {
+        let mut host = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let s = Arc::new(Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+            to_host: Mutex::new(host.stdin.take()),
+        });
+        lock(&s.state).inputs.insert(1, InputFlow::default());
+        let (reader, mut writer) = io::pipe().unwrap();
+        let feeding = {
+            let s = s.clone();
+            std::thread::spawn(move || feed(&s, 1, reader))
+        };
+        let payload = b"\0\xff\x80{\"id\":1}\nno-newline";
+        writer.write_all(payload).unwrap();
+        drop(writer);
+        // Room for 7 bytes, then the rest: no frame carries more than it was given.
+        let room = |bytes| wire::InputRoom { member: 1, bytes }.encode();
+        assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(7)), Ok(false));
+        let mut from_host = host.stdout.take().unwrap();
+        let (kind, first) = wire::read_frame(&mut from_host).unwrap().unwrap();
+        assert_eq!(kind, wire::to_host::INPUT);
+        let first = wire::Input::decode(&first).unwrap();
+        assert_eq!((first.member, first.bytes.as_slice()), (1, &payload[..7]));
+        assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(1024)), Ok(false));
+        let mut got = first.bytes;
+        loop {
+            let (kind, frame) = wire::read_frame(&mut from_host).unwrap().unwrap();
+            if kind == wire::to_host::INPUT_END {
+                assert_eq!(
+                    wire::InputEnd::decode(&frame).unwrap(),
+                    wire::InputEnd {
+                        member: 1,
+                        end: wire::StreamEnd::Closed
+                    }
+                );
+                break;
+            }
+            assert_eq!(kind, wire::to_host::INPUT);
+            got.extend(wire::Input::decode(&frame).unwrap().bytes);
+        }
+        assert_eq!(got, payload);
+        feeding.join().unwrap();
+        lock(&s.to_host).take();
+        host.wait().unwrap();
     }
 
     /// A refusal comes back typed by its cause, its host's words unchanged: the nesting

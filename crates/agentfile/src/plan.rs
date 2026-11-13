@@ -5120,6 +5120,9 @@ impl Planner<'_> {
             crate::agentfile::ingress(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::connections(&t.agentfile).map_err(Fail::new)?;
             crate::agentfile::held(&t.agentfile).map_err(Fail::new)?;
+            // Its environment, which its agents and harnesses start with (D59).
+            crate::agentfile::image_env(&t.agentfile, &image.config.env)
+                .map_err(|e| Fail::new(e.to_string().into_bytes()))?;
             // Its grants, for Docker and Kubernetes to see: the daemon holds a run to its
             // own reading of the normalized Agentfile, never to these (D109).
             let grants = crate::agentfile::grants(&t.agentfile);

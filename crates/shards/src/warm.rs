@@ -781,6 +781,19 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     drop(held);
                 }
             }
+            // A member's input connection its owner has, or will not take: this VM's copy
+            // goes (M24). On Windows the owner gives the pipe it is relayed onto, or none.
+            kind::MANAGED_INPUT if matches!(from, From::Daemon(_)) => {
+                if let Ok(member) = <[u8; 4]>::try_from(message.payload.as_slice()) {
+                    let held = input_held().remove(&u32::from_be_bytes(member));
+                    #[cfg(windows)]
+                    if let (Some(guest), Some(pipe)) = (held, message.fds.into_iter().next()) {
+                        relay_engine(guest, pipe);
+                    }
+                    #[cfg(unix)]
+                    drop(held);
+                }
+            }
             // Its run's limit updated (D148): its guest's most to plug, before the exec that
             // writes its cgroup, which comes after this on the same link.
             kind::PLUG if matches!(from, From::Daemon(_)) => {
@@ -864,7 +877,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             }
             // The host's answer to the guest's ask on the host's network (D124).
             kind::HOST_BOUND if matches!(from, From::Daemon(_)) => {
-                workload::bound_guest(to, &message.payload);
+                let _ = workload::bound_guest(to, &message.payload);
             }
             // A microVM's ports of the host's, let go as it ends (`release_host`).
             kind::HOST_RELEASE if matches!(from, From::Daemon(_)) => {
@@ -996,10 +1009,12 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                         // A joiner's, once it has an id in the guest.
                         Some(0) => {}
                         Some(id) => {
-                            workload::signal_exec(to, id, signal);
+                            let _ = workload::signal_exec(to, id, signal);
                         }
+                        // The daemon's SIGKILL: `kill`, or a stop past its grace.
+                        None if signal == 9 && matches!(from, From::Daemon(_)) => kill_command(to),
                         None => {
-                            workload::signal_guest(to, signal);
+                            let _ = workload::signal_guest(to, signal);
                         }
                     }
                 }
@@ -1064,7 +1079,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             }
             kind::RESIZE if client => {
                 if let Some(size) = shards_abi::run::Size::decode(&message.payload) {
-                    workload::resize_guest(to, size);
+                    let _ = workload::resize_guest(to, size);
                 }
             }
             _ => {}
@@ -1079,13 +1094,25 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
     if let (From::Daemon(_), Some((signal, grace))) = (&from, order) {
         let _ = writeln!(io::stderr(), "shards: the daemon is gone: the run stops");
         if signal != 0 {
-            workload::signal_guest(to, signal);
+            let sent = workload::signal_guest(to, signal);
             match grace {
-                Some(grace) => std::thread::sleep(grace),
+                // Its grace is the command's, to end on the signal it was sent.
+                Some(grace) if sent.is_ok() => std::thread::sleep(grace),
+                Some(_) => {}
                 None => return,
             }
         }
-        workload::signal_guest(to, 9);
+        kill_command(to);
+    }
+}
+
+/// SIGKILL for the run's command, from its daemon or as its daemon has gone. Where its guest's
+/// signal connection is lost no signal reaches the command, and its microVM's end is the one
+/// way left to end it, as `kill` ends it (D16).
+fn kill_command(to: &ToGuest) {
+    if let Err(workload::Unsent::Lost(lost)) = workload::signal_guest(to, 9) {
+        shards_vmm::warn!("SIGKILL for its command, which no signal reaches ({lost}): its microVM stops");
+        crate::vm_run::stop();
     }
 }
 
@@ -1689,8 +1716,9 @@ pub fn serve_engine(
         .map_err(|e| format!("its engine's thread: {e}"))
 }
 
-/// Relays a guest's connection to its run's engine onto the pipe its daemon gave for it
-/// (Windows, where a VM gives its daemon no handle): each way on a thread of its own, the
+/// Relays a guest's connection to its run's engine, or a member's input connection, onto the
+/// pipe its daemon gave for it (Windows, where a VM gives its daemon no handle): each way on
+/// a thread of its own, the
 /// end of each side's writes said to the other (the pipe's message of no bytes, the
 /// socket's half-close), as the daemon serves a connection passed whole elsewhere; a side
 /// that can take no more ends the other's, and each is closed once both ways have ended.
@@ -2084,6 +2112,49 @@ fn close_input(old: windows_sys::Win32::Foundation::HANDLE) {
 pub fn managed_abort(daemon: &UnixStream, payload: &[u8]) -> io::Result<()> {
     shards_abi::run::managed::Abort::decode(payload).map_err(io::Error::other)?;
     to_daemon(daemon, kind::MANAGED_ABORT, payload, &[])
+}
+
+/// A member's input's end, as its init told it, to its owner on the control link.
+pub fn managed_input_ended(daemon: &UnixStream, payload: &[u8]) -> io::Result<()> {
+    shards_abi::run::managed::InputEnded::decode(payload).map_err(io::Error::other)?;
+    to_daemon(daemon, kind::MANAGED_INPUT_ENDED, payload, &[])
+}
+
+/// The member input connections handed to the owner and not yet taken, by member: held
+/// meanwhile, as an engine connection is ([`ENGINE_HELD`], M24); on Windows until the owner
+/// gives the pipe each is relayed onto.
+static INPUT_HELD: std::sync::Mutex<std::collections::BTreeMap<u32, GuestConn>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn input_held() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<u32, GuestConn>> {
+    INPUT_HELD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Hands member `member`'s input connection to the run's owner (`MANAGED_INPUT`), as an
+/// engine connection goes ([`serve_engine`]): beside the message on Unix, a copy held until
+/// the owner says it has it; on Windows the owner's answer brings the pipe it is relayed
+/// onto. One a member has already handed, or the owner cannot be told of, is closed: its
+/// init then tells its owner its input ended.
+pub fn hand_input(owner: &UnixStream, member: u32, conn: GuestConn) -> io::Result<()> {
+    conn.set_nonblocking(false)?;
+    #[cfg(unix)]
+    let (held, handed) = (conn.try_clone()?, [std::os::fd::AsFd::as_fd(&conn)]);
+    #[cfg(windows)]
+    let (held, handed) = (conn, []);
+    {
+        let mut inputs = input_held();
+        if inputs.contains_key(&member) {
+            return Err(io::Error::other("a member's input connection handed twice"));
+        }
+        inputs.insert(member, held);
+    }
+    let sent = to_daemon(owner, kind::MANAGED_INPUT, &member.to_be_bytes(), &handed);
+    if sent.is_err() {
+        input_held().remove(&member);
+    }
+    sent
 }
 
 #[cfg(test)]

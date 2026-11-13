@@ -683,21 +683,27 @@ struct PrivateDir(PathBuf);
 /// Windows' 108 (afunix.h, `UNIX_PATH_MAX`): the least of them.
 const SOCKET_PATH: usize = 103;
 
+/// The two numbers that make the name of one of this process's private objects (a guest's
+/// socket directory, a GPU report's pipe) its own: unique in this process by its counter,
+/// and apart from every other process's by the process's nonce, 64 bits of std's
+/// `RandomState`, seeded from the OS's random source, which no earlier process of the same
+/// pid shares and no other user can guess and take first. So one that exists is refused,
+/// not passed over.
+pub(crate) fn private_name() -> (u64, u64) {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    static NONCE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let nonce = *NONCE.get_or_init(|| RandomState::new().hash_one(std::process::id()));
+    (nonce, NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
 impl PrivateDir {
     fn new() -> Result<PrivateDir, Refusal> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         #[expect(
             clippy::disallowed_methods,
             reason = "a guest's socket directory, made 0700 and removed with its guest, no test's"
         )]
         let tmp = socket_dir(std::env::temp_dir())?;
-        // Unique in this process by its counter, and apart from every other process's by
-        // the process's nonce: 64 bits of std's `RandomState`, seeded from the OS's random
-        // source, which no earlier process of the same pid shares and no other user can
-        // guess and take first. So one that exists is refused, not passed over.
-        static NONCE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-        let nonce = NONCE.get_or_init(|| RandomState::new().hash_one(std::process::id()));
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let (nonce, n) = private_name();
         let dir = tmp.join(format!("shards-api-{nonce:016x}-{n}"));
         #[cfg(unix)]
         let builder = {
@@ -1463,6 +1469,10 @@ pub fn connect_borrowed(
 #[cfg(test)]
 #[path = "../../../docs/research/measurements/managed-borrowed-nowait/focused.rs"]
 mod borrowed_tests;
+
+#[cfg(all(test, unix))]
+#[path = "../../../docs/research/measurements/api-flakes/spawns.rs"]
+mod spawns;
 
 #[cfg(windows)]
 mod borrowed_windows {
@@ -2954,55 +2964,6 @@ mod tests {
             Err(Refusal::Launch(crate::LaunchError::Binary))
         ));
         assert_eq!(std::fs::read_dir(&*dir).unwrap().count(), 0);
-    }
-
-    /// D215, D232: exercise real bounded pipe/watch/parse wiring with an owned
-    /// protocol fixture process. This is not a renderer/native GPU witness.
-    #[cfg(unix)]
-    #[test]
-    fn gpu_probe_protocol_requires_exact_completed_receipt() {
-        use std::os::unix::fs::PermissionsExt;
-        let directory = shards_testdir::TempDir::new("api-gpu-probe").unwrap();
-        let binary = directory.join("fixture");
-        let native = crate::PhysicalGpu::MetalRegistry(7);
-        let expected = crate::GpuProbe {
-            devices: vec![crate::ResolvedGpu {
-                physical: native,
-                uuid: [7; 16],
-                pci: None,
-                luid: Some(7u64.to_be_bytes()),
-                name: None,
-                device_local_bytes: None,
-            }],
-            host_visible_bytes: 4096,
-        };
-        let body = expected.encode().unwrap();
-        let mut spec = spec();
-        spec.binary = Some(binary.clone());
-        spec.gpu = true;
-        spec.gpu_devices = vec![native];
-        for (text, valid) in [
-            (body.clone(), true),
-            (
-                body.replace("metal:0000000000000007", "metal:0000000000000008"),
-                false,
-            ),
-            (body.replace("end\n", ""), false),
-        ] {
-            // Canonical protocol fields contain no shell quoting characters.
-            std::fs::write(&binary, format!("#!/bin/sh\nprintf '%s' '{text}'\n")).unwrap();
-            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-            let result = Shards.probe_gpu(&spec, crate::conformance::PATIENCE.get());
-            if valid {
-                assert_eq!(result.unwrap(), expected);
-            } else {
-                assert!(matches!(result, Err(Refusal::GpuProbe(_))), "{result:?}");
-            }
-        }
-        assert!(matches!(
-            Shards.probe_gpu(&spec, Duration::ZERO),
-            Err(Refusal::GpuProbe(crate::GpuProbeError::Pending))
-        ));
     }
 
     /// Inputs, each only formatted into a flag: any values show the mapping.

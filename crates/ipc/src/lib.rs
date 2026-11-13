@@ -566,6 +566,15 @@ pub mod kind {
     /// connection closed or the daemon's handling of it ended first. A slot that ends
     /// without any last word ended with its daemon (D185).
     pub const UNANSWERED: u8 = 91;
+    /// VM → its owner: a member's input connection, its guest's whose hello said that
+    /// member's token, by the member's index (4, big-endian): on Unix beside the message,
+    /// held by the VM until its owner answers with the same message, which it then lets go
+    /// of (M24); on Windows, where a VM gives its owner no handle, none, its owner answering
+    /// with the pipe the VM relays the connection onto, or with none for one it closes.
+    pub const MANAGED_INPUT: u8 = 92;
+    /// VM → its owner: a member's input has ended, as its init told it
+    /// (`shards_abi::run::managed::InputEnded`), on the independent control path.
+    pub const MANAGED_INPUT_ENDED: u8 = 93;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the

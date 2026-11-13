@@ -75,9 +75,17 @@ enum AbortState {
     Active,
     Aborted,
 }
+/// Whether a member has an input, and whether its end has been told.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InputState {
+    None,
+    Open,
+    Ended,
+}
 pub struct Control {
     daemon: shards_ipc::Stream,
     members: Vec<AbortState>,
+    inputs: Vec<InputState>,
 }
 impl Control {
     pub fn supervise(self, signals: &UnixStream, boundary: &UnixStream) -> io::Result<()> {
@@ -95,6 +103,19 @@ impl Control {
             match run::parse_header(header) {
                 Some((kind::MANAGED_CONTROL_END, 0)) => return Ok(()),
                 Some((kind::MANAGED_ABORT, n)) if n == managed::ABORT_LEN as u32 => {}
+                Some((kind::MANAGED_INPUT_ENDED, n)) if n == managed::INPUT_ENDED_LEN as u32 => {
+                    let mut payload = [0; managed::INPUT_ENDED_LEN];
+                    read.read_exact(&mut payload)?;
+                    let ended = managed::InputEnded::decode(&payload).map_err(invalid)?;
+                    let state = self
+                        .inputs
+                        .get_mut(usize::try_from(ended.member).map_err(invalid)?)
+                        .filter(|s| **s == InputState::Open)
+                        .ok_or_else(|| invalid("managed input end of a member with no open input"))?;
+                    crate::warm::managed_input_ended(&self.daemon, &payload)?;
+                    *state = InputState::Ended;
+                    continue;
+                }
                 _ => return Err(invalid("managed abort frame")),
             }
             let mut payload = [0; managed::ABORT_LEN];
@@ -141,9 +162,40 @@ pub fn start(spec: &mut run::Spec, given: Given) -> Result<Control, String> {
     let mut aborts = Vec::new();
     aborts.try_reserve_exact(members).map_err(|e| e.to_string())?;
     aborts.resize(members, AbortState::Active);
+    let mut input_states = Vec::new();
+    input_states
+        .try_reserve_exact(members)
+        .map_err(|e| e.to_string())?;
+    input_states.resize(members, InputState::None);
+    // Each member whose input its owner writes: a token of its own for its connection, which
+    // goes to the owner as its hello comes.
+    if !managed::input_tokens(&spec.setup)
+        .map_err(|e| e.to_string())?
+        .is_empty()
+    {
+        return Err("managed input tokens are the VM's to mint".into());
+    }
+    let mut inputs = Vec::new();
+    let named = managed::inputs(&spec.setup)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    inputs.try_reserve_exact(named.len()).map_err(|e| e.to_string())?;
+    inputs.extend_from_slice(named);
+    for id in &inputs {
+        let slot = input_states
+            .get_mut(usize::try_from(u32::from_be_bytes(*id)).map_err(|e| e.to_string())?)
+            .ok_or("managed input member exceeds bound")?;
+        *slot = InputState::Open;
+    }
+    let handing = given
+        .control
+        .try_clone()
+        .map_err(|e| format!("managed input's owner link: {e}"))?;
+    start_inputs(spec, &inputs, handing)?;
     let control = Control {
         daemon: given.control,
         members: aborts,
+        inputs: input_states,
     };
     let mut token = [0; run::TOKEN];
     shards_vmm::platform::fill_random(&mut token).map_err(|e| format!("managed capture token: {e}"))?;
@@ -176,6 +228,74 @@ pub fn start(spec: &mut run::Spec, given: Given) -> Result<Control, String> {
     }
     spec.setup.push(entry);
     Ok(control)
+}
+
+/// Mints each input member's token into the run's setup and registers it, and hands each
+/// connection whose hello says one to the run's owner as it comes, on a thread of its own,
+/// so that no hello waits on another's hand-over. A connection the owner cannot take is
+/// closed here, and init tells its owner its input ended (`ECONNRESET`).
+fn start_inputs(spec: &mut run::Spec, inputs: &[[u8; 4]], owner: shards_ipc::Stream) -> Result<(), String> {
+    if inputs.is_empty() {
+        return Ok(());
+    }
+    let (to, from) = std::sync::mpsc::sync_channel(inputs.len());
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(inputs.len())
+        .map_err(|e| e.to_string())?;
+    spec.setup.try_reserve(inputs.len()).map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(inputs.len())
+        .map_err(|e| e.to_string())?;
+    for id in inputs {
+        let mut token = [0; run::TOKEN];
+        shards_vmm::platform::fill_random(&mut token).map_err(|e| format!("managed input token: {e}"))?;
+        let mut entry = Vec::new();
+        let length = managed::INPUT_TOKEN_KEY
+            .len()
+            .checked_add(id.len())
+            .and_then(|n| n.checked_add(token.len()))
+            .ok_or("managed input token entry overflow")?;
+        entry.try_reserve_exact(length).map_err(|e| e.to_string())?;
+        entry.extend_from_slice(managed::INPUT_TOKEN_KEY);
+        entry.extend_from_slice(id);
+        entry.extend_from_slice(&token);
+        entries.push(entry);
+        tokens.push(token);
+    }
+    // Waits whose connection was never asked of the guest, as its setup does not go.
+    let forget = |tokens: &[[u8; run::TOKEN]]| {
+        for token in tokens {
+            super::hellos::forget(token);
+        }
+    };
+    for (id, token) in inputs.iter().zip(&tokens) {
+        let target = super::Target::Input {
+            member: u32::from_be_bytes(*id),
+            to: to.clone(),
+        };
+        if let Err(e) = super::register(*token, target) {
+            forget(&tokens);
+            return Err(e);
+        }
+    }
+    drop(to);
+    if let Err(e) = std::thread::Builder::new()
+        .name("managed-input".into())
+        .spawn(move || {
+            for (member, conn) in from {
+                if let Err(e) = crate::warm::hand_input(&owner, member, conn) {
+                    shards_vmm::debug!("managed input of member {member}: its owner did not take it: {e}");
+                }
+            }
+        })
+    {
+        forget(&tokens);
+        return Err(format!("managed input worker: {e}"));
+    }
+    spec.setup.extend(entries);
+    Ok(())
 }
 
 fn relay(
@@ -443,6 +563,7 @@ mod tests {
             let control = Control {
                 daemon,
                 members: vec![AbortState::Active],
+                inputs: vec![InputState::None],
             };
             let retained_boundary = boundary.try_clone().unwrap();
             let worker = std::thread::spawn(move || control.supervise(&signals, &boundary));
@@ -473,6 +594,7 @@ mod tests {
         let control = Control {
             daemon,
             members: vec![AbortState::Active; 3],
+            inputs: vec![InputState::None; 3],
         };
         let worker = std::thread::spawn(move || control.serve(&signals));
         let abort = managed::Abort { member: 2, errno: 5 };
@@ -488,5 +610,63 @@ mod tests {
         assert_eq!(message.kind, shards_ipc::kind::MANAGED_ABORT);
         assert_eq!(managed::Abort::decode(&message.payload).unwrap(), abort);
         assert!(shards_ipc::recv(&owner).unwrap().is_none());
+    }
+
+    /// A member's input's end, as its init tells it, goes to the owner checked and once a
+    /// member: a second end, or one for a member whose input is not open, breaks the control
+    /// scope.
+    #[test]
+    fn an_inputs_end_is_relayed_once_for_an_open_input_alone() {
+        let ended = managed::InputEnded {
+            member: 1,
+            written: 9,
+            end: managed::InputEnd::Aborted(libc::EPIPE),
+        }
+        .encode()
+        .unwrap();
+        let said = |peer: &mut UnixStream, payload: &[u8]| {
+            peer.write_all(&run::header(
+                kind::MANAGED_INPUT_ENDED,
+                managed::INPUT_ENDED_LEN as u32,
+            ))
+            .unwrap();
+            peer.write_all(payload).unwrap();
+        };
+        let (signals, mut peer) = UnixStream::pair().unwrap();
+        let (daemon, owner) = shards_ipc::Stream::pair().unwrap();
+        let control = Control {
+            daemon,
+            members: vec![AbortState::Active; 2],
+            inputs: vec![InputState::None, InputState::Open],
+        };
+        let worker = std::thread::spawn(move || control.serve(&signals));
+        said(&mut peer, &ended);
+        peer.write_all(&run::header(kind::MANAGED_CONTROL_END, 0))
+            .unwrap();
+        worker.join().unwrap().unwrap();
+        let message = shards_ipc::recv(&owner).unwrap().unwrap();
+        assert_eq!(message.kind, shards_ipc::kind::MANAGED_INPUT_ENDED);
+        assert_eq!(message.payload, ended);
+        // Twice, or for a member with no input: refused.
+        for (inputs, times) in [
+            (vec![InputState::None, InputState::Open], 2),
+            (vec![InputState::None, InputState::None], 1),
+        ] {
+            let (signals, mut peer) = UnixStream::pair().unwrap();
+            let (daemon, _owner) = shards_ipc::Stream::pair().unwrap();
+            let control = Control {
+                daemon,
+                members: vec![AbortState::Active; 2],
+                inputs,
+            };
+            let worker = std::thread::spawn(move || control.serve(&signals));
+            for _ in 0..times {
+                said(&mut peer, &ended);
+            }
+            // Closed after: a relay that took them all reads its end, never hangs.
+            drop(peer);
+            let refused = worker.join().unwrap().unwrap_err();
+            assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
+        }
     }
 }
