@@ -5260,7 +5260,9 @@ terminal that went away), and checks a client's enrollment again for each comman
 it fail. The client's side (`client.rs`, `context.rs`) refuses here what a context does not
 carry yet, the client's terminal and files, read by shards' own parser of each command (a
 flag past another's value included); and where no daemon answers, it says so once its
-handshake has not ended within the idle bound, 10 s, which its driver holds it to. A
+handshake has not ended within its bound, which its driver holds it to: RFC 1122's R1 at
+the handshake's first probe timeout, 15 s for a daemon never measured ("Its values
+derived", below). A
 connection that has done its handshake lives while its peer is heard, its transport's idle
 timeout 100 s since the last packet (D176 part 6, "Over a slow link": 10 s of silence ended
 2 of the first 20 moves over Wi-Fi). Tested: `crates/remote` (raw keys pinned and refused, the
@@ -5326,8 +5328,8 @@ Reading the daemon's side for the same fault found four more, each fixed:
   keep-alives keeping it, and open as many as it liked. A machine now takes as many such
   connections at once as it holds open invitations, as each invitation enrolls one client,
   and none while it holds none: the rest are refused as their handshake ends. And it lets
-  each go that has not joined within the idle bound, as long as a client waits for its
-  daemon. Its client says such a refusal in the words its stream would have said (the
+  each go that has not joined in as long as its connection waits for a peer that answers
+  nothing, from the probe timeout its handshake measured ("Its values derived", below). Its client says such a refusal in the words its stream would have said (the
   join's refusal for a join, `this machine has not enrolled you` for a command), so that
   what a stranger learns is whether an invitation is free, nothing of which or whose.
   focal has no such peers: its invitations issue a credential its TLS checks (../focal
@@ -6268,6 +6270,56 @@ coordinator's real-VM suite: `tests/managed_output.rs` `member_stdin` (a harness
 stdin: exact JSON lines and bytes past a pipe's capacity, a stranger refused, a resumed
 owner, its end; and a member that ends, its input `EPIPE`).
 [Record](../research/measurements/member-stdin-v1/README.md).
+
+**Its values derived** (2026-11-13; R03: no value chosen). D180's transport and relays held
+values chosen by hand; each is now a protocol's bound, a cited system's, or follows from the
+connection itself:
+- *A handshake's bound* (was `IDLE`, 10 s). Each side waits for the other's handshake until RFC
+  1122 §4.2.3.5's R1, "at least 3 retransmissions, at the current RTO", each timeout twice the
+  last (RFC 6298 §5.5; RFC 9002 §6.2.1's backoff), 15 timeouts as Linux counts R1
+  (`tcp_retries1` 3, net/ipv4/tcp_timer.c `tcp_model_timeout`): there TCP "SHOULD inform the
+  application of the delivery problem", which "can close the connection (i.e., give up on the
+  open attempt) sooner" than R2. Its timeout is the handshake's first probe timeout (RFC 9002
+  §5.3, §6.2.1: three times the RTT it starts from), no shorter than RFC 6298 §2.4's 1 s, so
+  that a stalled host's late answer is not taken for none ([AP99]). The RTT is the peer's as
+  last measured or, for a peer never measured, RFC 9002 §6.2.2's 333 ms, a cold start typed
+  (`tls::Rtt::{Unmeasured, Measured}`): 15 s for a daemon never measured, or measured under a
+  third of a second (`Rtt::handshake_bound`, `tls::unanswered`). QUIC's loss recovery starts the
+  handshake from the same RTT (`initial_rtt`). A daemon, which knows no client's RTT before its
+  handshake, waits as for one never measured.
+- *A stranger's time to join* (was `IDLE` from its handshake): as long as its own connection
+  waits for a peer that answers nothing, from the probe timeout its handshake measured
+  (`Io::unanswered`); a join is one request and its answer.
+- *The keep-alive* (was a quarter of `IDLE`, 2.5 s): a quarter of `QUIET`, 25 s, three within
+  the idle bound (RFC 9000 §10.1) and under the 30 s RFC 9000 §10.1.2 finds "necessary to
+  prevent the majority of middleboxes from losing state for UDP flows" (Hätönen et al., IMC
+  2010). A peer of an earlier build, held to 10 s, keeps the connection alive by its own
+  keep-alive, at a quarter of its own bound: the lesser bound holds both ends (§10.1).
+- *Output's high-water mark* (was 1 MiB of frames held before a reader waited): none. A reader
+  of a command's output (`server.rs`) or of a client's stdin (`client.rs`) reads again once the
+  transport has taken all it read: the peer's flow control (RFC 9000 §4.1) is the only
+  read-ahead, and the pipe the command writes holds its next bytes meanwhile.
+- *Input's queue* (was 4 chunks): one (`server::QUEUED_CHUNKS`), the writer's next chunk while
+  it writes the last; none would lose a wake, as the writer tells the driver it took a chunk
+  before it takes the next, and the driver's offer meanwhile finds no taker. The peer's flow
+  control holds the rest.
+- *A read's size* (64 KiB, `server::READ_MOST`): what a pipe holds to be read at once, Linux's
+  default 16 pages (`PIPE_DEF_BUFFERS`; pipe(7): 65536 bytes on 4 KiB pages) and macOS's
+  `BIG_PIPE_SIZE`, as synced.rs's frames and the exec host's pipes cite them; a source that
+  holds more gives the rest to the next read.
+- *The driver's wait* (was `IDLE` with nothing due, and at least 100 µs): until its next timer,
+  no shorter than a nanosecond, the least a socket's timeout takes; with none due, until a
+  datagram or a wake comes, which every command and stop sends (`net::Sender`).
+
+Left as hyper-quic sets them, and owed: quinn-proto's stream and connection receive windows,
+its send window, and the 100 streams a daemon's client may open at once (one command and its
+control stream, or one join, is all a connection opens; holding it there needs the raw test
+client in `tests/loopback.rs` to wait for stream credit). Tested: `tls::tests` (the bound for a
+peer never measured, one measured fast and one far, the keep-alive's place), `net::tests` (a
+handshake held to its bound alone), `tests/loopback.rs` (a stranger let go at its connection's
+bound, no daemon answering told at the handshake's, an enrolled client's command running past
+a stranger's bound, and the relays' backpressure as before: 8 MiB crossing whole, a command
+that reads no stdin holding up no other).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
@@ -12169,8 +12221,10 @@ peer", each going on here as it should. What changed for them:
   (`no_daemon_answering_is_told_at_the_handshakes_bound`, tests/loopback.rs), as is a
   stranger that has not joined (server.rs). The keep-alives stay at a quarter of 10 s, as
   §10.1.2 has a peer that awaits an answer send PINGs, more often than the 30 s it finds
-  most middleboxes keep a UDP flow's state for. A connection takes the lesser of the two
-  sides' bounds, so both machines need this build. No other deadline is on the stream's
+  most middleboxes keep a UDP flow's state for (since derived, D180's "Its values
+  derived": the handshake held to R1 at its first probe timeout, the keep-alives at a quarter
+  of `QUIET`). A connection takes the lesser of the two sides' bounds, so both machines need
+  this build. No other deadline is on the stream's
   path: the CLI's pipes and the daemons' reads and writes block as the link lets them
   (cli/moves.rs, daemon/moves.rs, daemon/remote.rs `copy_step`); `running_there`'s
   minute of asking whether a restore with no answer runs there (twelve asks, 5 s apart) is
@@ -24982,6 +25036,114 @@ WHP; Hex's image_real with a box of no grants once Hex vendors this.
 
 **What would falsify it.** A member of such a run reaching anything past the microVM (then a
 network process told no policy is not at `DenyAll`), or one killed for its link.
+
+### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller; the member's listener and bridge, the run hosts' pairing, kiln's side and every real-VM run owed)
+
+**Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`
+in-process). ROOT's first call was plain HTTP from the microVM to the runner's loopback
+`/api/mcp` through a granted egress, as host-local as the request slots; the person did not
+take it, and ROOT decided (2026-11-13) that MCP rides the agent-control link (D238) as a lane of
+its own:
+- no network grant at all for MCP, so default deny (D59) holds for kiln too;
+- it works where the microVM runs on another machine than the kiln runner, over the link's
+  TLS 1.3 AES-256-GCM (D239), and on Windows;
+- one authenticated channel, the link the microVM's own key already pins, not a second one.
+
+**What a harness dials** (the evidence; R02). MCP's transports are two, and "Clients **SHOULD**
+support stdio whenever possible" (MCP specification 2025-06-18, Basic, Transports: stdio, the
+client launching the server as its subprocess and speaking newline-delimited JSON-RPC on its
+stdin and stdout; Streamable HTTP, one endpoint path). The Agent Client Protocol makes stdio
+the floor: "All Agents **MUST** support connecting to MCP servers via stdio", HTTP and SSE only
+where `agentCapabilities.mcpCapabilities.http` or `.sse` says so (agentclientprotocol.com,
+Session Setup). The ten harnesses kiln runs (kiln main `562268830`, from its step 18's agent):
+- Claude Code: `--mcp-config`, stdio servers (`type: "stdio"`, `command`, `args`, `env`) and
+  HTTP ones (`type: "http"`, `url`, `headers`) (code.claude.com/docs/en/mcp; kiln
+  `crates/kiln/src/reach/mcp.rs` `claude_config`);
+- Codex: `mcp_servers.<name>`, stdio as `command`/`args`/`env`, Streamable HTTP as `url` and
+  `bearer_token_env_var`, no token inline (codex-rs `config/src/mcp_types.rs`; kiln
+  `codex_config`);
+- the ACP agents, Gemini CLI, opencode, Goose, Amp (amp-acp), Cursor and Devin: `mcpServers` in
+  `session/new`, stdio always, HTTP where the agent says so, Cursor alone among them in kiln's
+  fixtures (kiln `harness/acp.rs`, `acp_config`);
+- Antigravity (agy 1.5.7): servers only from its own `~/.gemini/config/mcp_config.json`, a
+  stdio server starting as agy starts (kiln `docs/research/s35-every-harness/agy-mcp/`, main
+  `4622aa502`);
+- Pi: no MCP server at all.
+
+Every one that takes MCP takes a stdio server; only some take HTTP. So the microVM offers the
+one form all nine take, and no other.
+
+**Decided.**
+1. *In the member: a bridge, a socket, and nothing on the network.* A member whose run asks for
+   it gets a stdio bridge at `/run/shards/mcp` (shards-init's own binary, read-only in the
+   member's view, a bridge by its name, so no other guest binary) and a socket at
+   `/run/shards/mcp.sock` beside it (as `/run/shards/notify`, D234), seen by that member's
+   processes alone. A harness's MCP config names the bridge as a stdio server's command; the
+   bridge copies its stdin to the socket and the socket to its stdout, each direction ending as
+   its source ends. Init binds the socket from the member's setup entry (`mcp=TOKEN`, the
+   run-wide token as `engine=` carries it, D181) and carries each connection made to it to the
+   host by its relay (D251's mechanism, the listen direction beside its connect one), a
+   preamble naming the member; the VM process hands each to its run host unprompted
+   (`LANE_ACCEPTED`). Nothing of it is an address: the member's network grants and its
+   default deny are untouched.
+2. *On the link: one lane per connection, an exec's in all but its start.* The controller asks
+   with a lane whose first frame is `Mcp`, the run, its generation and the member, as an exec's
+   ask names them. The endpoint numbers it and hands its host the ask with two streams, step
+   5's, under a run of its own (as an exec's are, `exec_run`): the harness's bytes as an output,
+   the controller's as an input. The host pairs the ask with the member's next connection and
+   says it started; the lane tells its end once the harness's side has ended and every byte of
+   it is taken. A member with no listener refuses it, typed (`Unstarted::Refused`). Its
+   admissions, windows, told frames and charge to the run's budget are an exec's (D238), so no
+   value is new here.
+3. *At the controller:* `Execs::mcp(member)` waits for the member's next connection and gives
+   its two streams' handles; kiln serves MCP over them in its own process, the session the one
+   it drives in that member, which the lane names: no token in the microVM.
+4. *Asked for, never implied.* A run gets a member's listener only where it asks: the daemon's
+   runs by an annotation, an orchestrator's by its member spec (D252's endpoint). A run that
+   asks for none has no socket and no bridge, and its controller's `Mcp` asks are refused.
+
+**Rejected.**
+- *HTTP to the runner's loopback through a granted egress* (ROOT's first call): a network grant
+  for every harness, one machine only, and on Windows a host address the guest must reach.
+- *A Streamable HTTP listener in the member*: only Claude Code, Codex and the ACP agents that
+  say so take it; a TCP port in the member's network namespace, with the specification's own
+  obligations ("Servers **MUST** validate the `Origin` header … to prevent DNS rebinding
+  attacks").
+- *A second TLS channel from the microVM to kiln*: a second authenticated channel, and a
+  credential or a key of kiln's inside the microVM (D242: none).
+
+**Literals.**
+
+| Literal | Source |
+|---|---|
+| Frame tag `Mcp` 7 | this protocol's own, after `Control` 6 (D238); 5 is D251's socket lane's |
+| An `Mcp` ask's payload, 44 bytes | an exec ask's scope: the run (32), its generation (8), the member (4) |
+| `/run/shards/mcp`, `/run/shards/mcp.sock` | shards' own guest paths, beside D234's `/run/shards/notify` |
+| `mcp=TOKEN` | the run-wide token, as `engine=` carries it (D181) |
+
+**Built** (step 11). The endpoint's `Mcp` asks, on the exec lanes' machinery (`exec::Kind::Mcp`:
+one stream each way, no stderr, any steering let go by its host), and the controller's
+`Execs::mcp`, which gives `McpConnection { from, to, end }`. The daemon's host refuses each
+(`Unstarted::Refused`) until its runs can ask for a bridge. An ask the endpoint's first read
+took whole was never read on: an MCP ask, 49 bytes, is shorter than a lane's first read
+(`LANE_MOST`, 58), and its lane waited for a read of no room, which is blocked
+(`Io::read_within`), so the controller's first MCP ask hung (seen on adas-mac-studio-3: the
+test binary waiting 13 minutes at 0.45 s of CPU); such an ask is now decoded as it comes.
+Tested: `control::exec::tests` (both kinds' asks read back; an MCP ask carrying more than its
+scope refused), `control::tests::lanes` (an MCP connection through a stand-in host, the
+controller's bytes and the harness's exact, its end told, a member with no bridge refused,
+typed), `daemon::managed::tests` (the daemon's host refusing an MCP ask before its VM process
+hears of it).
+
+**Owed.** The listener, the bridge and `LANE_ACCEPTED` (D251's agent); the daemon's and the orchestrator's
+hosts pairing each connection with its ask; kiln's harness configs naming the bridge and its
+in-process server over the two streams (kiln's step 18); every real-VM run, ROOT's: each
+harness that takes MCP calling kiln's server through the bridge, on KVM, HVF and WHP, with the
+microVM and the kiln runner on one machine and on two.
+
+**What would falsify it.** A harness that takes MCP and no stdio server; a byte of an MCP
+connection reaching the microVM's network; a member's connection told to the controller as
+another member's.
 
 ## 4. Start path (≤ 5 ms budget)
 

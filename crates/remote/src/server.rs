@@ -16,8 +16,19 @@ use crate::invite;
 use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Sender};
 use crate::{Error, tls};
 
-/// How many bytes of a command's output wait unsent before its readers wait too.
-const HIGH_WATER: usize = 1 << 20;
+/// What one read of a command's output takes at most: what a pipe holds to be read at once,
+/// Linux's default 16 pages (`PIPE_DEF_BUFFERS`, include/linux/pipe_fs_i.h; pipe(7): 65536
+/// bytes on 4 KiB pages) and macOS's most (`BIG_PIPE_SIZE`, xnu-12377.101.15 bsd/sys/pipe.h
+/// l. 80), as synced.rs's frames and the exec host's pipes cite them. A source that holds more
+/// gives the rest to the next read.
+pub(crate) const READ_MOST: usize = 64 << 10;
+
+/// The chunks of a command's input queued for the thread that writes them: one, which the
+/// writer takes as it finishes the last, so that it waits on the driver only when nothing has
+/// come; none would lose a wake, as the writer tells the driver it took a chunk before it
+/// takes the next, and the driver's offer meanwhile finds no taker. The client's flow control
+/// holds the rest (RFC 9000 §4.1).
+pub(crate) const QUEUED_CHUNKS: usize = 1;
 
 /// A command a client asked for, started: its stdio, and a wait for its exit status.
 #[allow(missing_debug_implementations)]
@@ -148,7 +159,10 @@ impl Stream {
                 }
             }
         }
-        if self.starved && self.pending.len() < HIGH_WATER {
+        // Its readers read on once the transport has taken all they read: what the client's
+        // flow control lets through (RFC 9000 §4.1) is the output's only read-ahead, and the
+        // pipe the command writes holds its next bytes meanwhile.
+        if self.starved && self.pending.is_empty() {
             self.starved = false;
             for credit in &self.credits {
                 let _ = credit.try_send(());
@@ -219,8 +233,10 @@ struct Peer {
     spki: Vec<u8>,
     client: Option<String>,
     streams: HashMap<StreamId, Stream>,
-    /// When its handshake was done.
-    since: Instant,
+    /// When a stranger is let go unless it has joined: as long after its handshake as its
+    /// connection waits for an unanswered peer ([`tls::unanswered`] at the probe timeout its
+    /// handshake measured), a join being one request, one answer.
+    joins_by: Instant,
 }
 
 struct Server<H: Host> {
@@ -246,12 +262,12 @@ impl<H: Host> Server<H> {
     }
 
     /// The connections of peers the machine has not enrolled, and when each is due to have
-    /// joined: as long after its handshake as a client waits for its daemon, the idle bound.
-    fn strangers(&self) -> impl Iterator<Item = (ConnKey, Option<Instant>)> + '_ {
+    /// joined ([`Peer::joins_by`]).
+    fn strangers(&self) -> impl Iterator<Item = (ConnKey, Instant)> + '_ {
         self.peers
             .iter()
             .filter(|(_, p)| p.client.is_none())
-            .map(|(conn, p)| (*conn, p.since.checked_add(tls::IDLE)))
+            .map(|(conn, p)| (*conn, p.joins_by))
     }
 
     /// Reads `id` and acts on its frames: each whole one before reading more, and none while
@@ -540,7 +556,7 @@ fn relay(
             .map(drop)
             .map_err(|e| Error::new(format!("a thread for a client's command: {e}")))
     };
-    let (stdin_tx, stdin_rx) = mpsc::sync_channel::<Vec<u8>>(4);
+    let (stdin_tx, stdin_rx) = mpsc::sync_channel::<Vec<u8>>(QUEUED_CHUNKS);
     let to = sender.try_clone()?;
     spawn(
         "remote-stdin",
@@ -567,7 +583,7 @@ fn relay(
         spawn(
             "remote-out",
             Box::new(move || {
-                let mut buffer = vec![0u8; 64 << 10];
+                let mut buffer = vec![0u8; READ_MOST];
                 while credit_rx.recv().is_ok() {
                     match from.read(&mut buffer) {
                         Ok(0) | Err(_) => break,
@@ -646,13 +662,18 @@ impl<H: Host> Handler for Server<H> {
                 why: "not enrolled",
             });
         }
+        let now = io.now();
+        let bound = io
+            .unanswered(conn)
+            .unwrap_or_else(|| tls::Rtt::Unmeasured.handshake_bound());
+        let joins_by = now.checked_add(bound).unwrap_or(now);
         self.peers.insert(
             conn,
             Peer {
                 spki: peer.to_vec(),
                 client,
                 streams: HashMap::new(),
-                since: io.now(),
+                joins_by,
             },
         );
         Ok(())
@@ -730,14 +751,14 @@ impl<H: Host> Handler for Server<H> {
     }
 
     fn due(&self) -> Option<Instant> {
-        self.strangers().filter_map(|(_, due)| due).min()
+        self.strangers().map(|(_, due)| due).min()
     }
 
     /// A peer the machine has not enrolled that has not joined in its time is let go.
     fn timeout(&mut self, io: &mut Io<'_>, now: Instant) {
         let late: Vec<ConnKey> = self
             .strangers()
-            .filter(|(_, due)| due.is_some_and(|at| at <= now))
+            .filter(|(_, due)| *due <= now)
             .map(|(conn, _)| conn)
             .collect();
         for conn in late {
@@ -771,7 +792,9 @@ pub fn serve<H: Host>(
         peers: HashMap::new(),
         sender: None,
     };
-    let (mut driver, sender) = Driver::bind(at, Some(config), server)?;
+    // A client's round trip is not known before its handshake measures it.
+    let handshake = tls::Rtt::Unmeasured.handshake_bound();
+    let (mut driver, sender) = Driver::bind(at, Some(config), server, handshake)?;
     driver.handler_mut().sender = Some(sender.try_clone()?);
     ready(driver.local()?, Stopper(sender));
     driver.run()
