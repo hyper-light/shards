@@ -650,10 +650,10 @@ fn head_end(buf: &[u8]) -> Result<Option<usize>, ()> {
 
 /// A head's field as it lies in the head: its name, lowered, and where its line and value are.
 #[derive(Debug, Clone)]
-struct Field {
-    name: String,
-    line: Range<usize>,
-    value: Range<usize>,
+pub(crate) struct Field {
+    pub(crate) name: String,
+    pub(crate) line: Range<usize>,
+    pub(crate) value: Range<usize>,
 }
 
 /// Where `part`, a slice of `buf`, lies in it.
@@ -664,7 +664,7 @@ fn place(buf: &[u8], part: &[u8]) -> Option<Range<usize>> {
 }
 
 /// The fields httparse read of `head`, where each lies: each line from its name to its CRLF.
-fn fields(head: &[u8], read: &[httparse::Header<'_>]) -> Option<Vec<Field>> {
+pub(crate) fn fields(head: &[u8], read: &[httparse::Header<'_>]) -> Option<Vec<Field>> {
     read.iter()
         .map(|h| {
             let name = place(head, h.name.as_bytes())?;
@@ -681,7 +681,11 @@ fn fields(head: &[u8], read: &[httparse::Header<'_>]) -> Option<Vec<Field>> {
 }
 
 /// Each field's value of `name` in `head`.
-fn values<'h>(head: &'h [u8], fields: &'h [Field], name: &'h str) -> impl Iterator<Item = &'h [u8]> + 'h {
+pub(crate) fn values<'h>(
+    head: &'h [u8],
+    fields: &'h [Field],
+    name: &'h str,
+) -> impl Iterator<Item = &'h [u8]> + 'h {
     fields
         .iter()
         .filter(move |f| f.name == name)
@@ -689,7 +693,7 @@ fn values<'h>(head: &'h [u8], fields: &'h [Field], name: &'h str) -> impl Iterat
 }
 
 /// A comma-separated list's elements (RFC 9110 §5.6.1), trimmed, the empty ones dropped.
-fn list(value: &[u8]) -> impl Iterator<Item = &[u8]> {
+pub(crate) fn list(value: &[u8]) -> impl Iterator<Item = &[u8]> {
     value
         .split(|&b| b == b',')
         .map(<[u8]>::trim_ascii)
@@ -901,7 +905,7 @@ struct Masked<'a> {
 
 /// KMP's failure function of `v` (Knuth, Morris and Pratt 1977): for each of its prefixes, the
 /// length of its longest proper prefix that is also its suffix.
-fn failure(v: &[u8]) -> Vec<usize> {
+pub(crate) fn failure(v: &[u8]) -> Vec<usize> {
     let mut f = vec![0usize; v.len()];
     let mut k = 0usize;
     for i in 1..v.len() {
@@ -920,7 +924,7 @@ fn failure(v: &[u8]) -> Vec<usize> {
 }
 
 /// How much of `v` data ends with once `b` follows data that ended with `m` of it.
-fn step(v: &[u8], table: &[usize], mut m: usize, b: u8) -> usize {
+pub(crate) fn step(v: &[u8], table: &[usize], mut m: usize, b: u8) -> usize {
     while m > 0 && v.get(m) != Some(&b) {
         m = table.get(m - 1).copied().unwrap_or(0);
     }
