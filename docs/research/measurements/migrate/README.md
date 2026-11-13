@@ -114,3 +114,22 @@ Windows hosts of different CPUs, none here:
     shards move vm NAME CONTEXT    # from one WHP host to another of another CPU: refused at
                                    # `ready`, "this machine's CPU is not the one NAME was
                                    # saved on", NAME going on where it was
+
+## Step 4: a moved microVM's published ports checked before anything moves (D176 part 6)
+
+`ports_refused` (daemon/moves.rs): each port the plan says its run publishes bound here as
+a start binds it (`publish::bind`), let go at once; one that cannot be bound refused typed
+(`Refused::PortTaken`). Held by `a_move_whose_published_port_is_taken_here_is_refused_typed`
+(daemon.rs: a port a test listener holds refused, a range with a free port taken, the port
+taken once let go) and the refusal's round trip.
+
+At 3030a5fab (one host, adas-mac-studio.local: Apple M4 Max, macOS 26.2, rustc 1.98.1,
+2026-11-13T04:50Z): `cargo test -p shards --bin shards -- daemon::moves cli::moves
+a_move_of_another_hypervisors_microvm_is_refused_typed
+a_move_whose_published_port_is_taken_here_is_refused_typed` 12 passed; `cargo clippy -p
+shards --all-targets -- -D warnings` clean (it first refused the refusal's size inside
+`Unready`, now boxed).
+
+Owed (the coordinator's): the E2E on two homes of each OS,
+
+    cargo test -p shards --test moved -- a_moved_microvms_published_port_answers_there
