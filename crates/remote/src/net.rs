@@ -223,17 +223,15 @@ pub trait Handler {
     /// Why a connection ended, as QUIC told it (RFC 9000 §20, RFC 9001 §4.8), just before
     /// [`Handler::lost`] tells of it: for a handler that types its peer's refusals, which
     /// `lost`'s words and application code do not carry. Nothing, by default; a connection
-    /// whose handshake was given up ([`Liveness::due`]), or taken for dead at use
-    /// ([`Liveness::look`]), is QUIC's `TimedOut`.
+    /// taken for dead at use ([`Liveness::look`]) is QUIC's `TimedOut`.
     fn cause(&mut self, _conn: ConnKey, _error: &ConnectionError) {}
     /// A connection whose handshake has not ended sent another probe (RFC 9002 §6.2): `probes`
     /// datagrams in all, `waited` since it began. Its handshake waits on, with no window of its
-    /// own where it has none, for as long as its handler does: one that gives up closes it.
+    /// own where it has none or its window ran out ([`RanOut::Handshake`]), for as long as its
+    /// handler does: one that gives up closes it.
     fn unanswered(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _probes: u64, _waited: Duration) {}
-    /// A send on an established connection has waited `waited`, past the slowest answer seen
-    /// on its path (`window`), while its peer still makes progress: told once a wait, and the
-    /// connection goes on.
-    fn ran_out(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _waited: Duration, _window: Duration) {}
+    /// A wait of `conn`'s ran out ([`RanOut`]): told once a wait, and the connection goes on.
+    fn ran_out(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _what: RanOut) {}
     /// Another thread's command.
     fn command(&mut self, io: &mut Io<'_>, command: Self::Command);
     /// The peer allows more of the streams this side opens (MAX_STREAMS, RFC 9000 §4.6): one
@@ -284,9 +282,10 @@ struct Conn {
 /// 2026-11-13: a cold start, and every wait after a run-out, follows the peer's liveness and
 /// progress, and after that a wait's bound is the slowest answer seen). Its handshake, with a
 /// peer reached before, is judged as a send is ([`Liveness::due`]): by a window of the slowest
-/// handshake seen from that peer, no sooner than its probe timeout; with a peer never reached,
-/// or whose last wait ran out, it has no window, its probing told as it goes
-/// ([`Liveness::unanswered`]). Once connected, where its driver checks it at use ([`Liveness::look`]): each send of this
+/// handshake seen from that peer, no sooner than its probe timeout, past which it runs out and
+/// goes on with none ([`Liveness::handshake_ran_out`]); with a peer never reached, or whose last
+/// wait ran out, it has no window, its probing told as it goes ([`Liveness::unanswered`]). Once
+/// connected, where its driver checks it at use ([`Liveness::look`]): each send of this
 /// side's waits for the peer to acknowledge any of it, within a window of the slowest answer
 /// seen on its path and the peer's own `max_ack_delay` (its transport parameter, as RFC 9002
 /// §6.2.1's probe timeout adds it). Cold, before any send's answer has been seen on its path,
@@ -300,8 +299,8 @@ struct Conn {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Liveness {
     began: Instant,
-    /// The window its handshake is judged by, the slowest seen from its peer: none, waited for
-    /// as long as its probing goes on.
+    /// The window its handshake is judged by, the slowest seen from its peer: none, or none once
+    /// it ran out ([`Liveness::handshake_ran_out`]), waited for as long as its probing goes on.
     handshake: Option<Duration>,
     heard: Option<Instant>,
     /// When its handshake ended.
@@ -341,6 +340,20 @@ struct Wait {
     quiet: Duration,
     /// Its run-out has been told.
     told: bool,
+}
+
+/// A wait of a connection's that ran out, told once ([`Handler::ran_out`]) as the connection goes
+/// on (R04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RanOut {
+    /// Its handshake, with a peer reached before: nothing heard from it in the slowest handshake
+    /// seen from it (`window`), past its probe timeout ([`Liveness::due`]), `waited` since it
+    /// began. It goes on as a peer never reached's does, with no deadline of its own, each probe
+    /// told ([`Handler::unanswered`]).
+    Handshake { waited: Duration, window: Duration },
+    /// A send, its connection established: unanswered past its window and probe timeout while its
+    /// peer still makes progress ([`Look::RanOut`]).
+    Send { waited: Duration, window: Duration },
 }
 
 /// What looking at an established connection found (R04).
@@ -419,15 +432,15 @@ impl Liveness {
         self.pto = pto;
     }
 
-    /// When the driver gives its handshake up, unless it ends first, judged as a send is
-    /// ([`Liveness::look`]): a whole window of the slowest handshake seen from its peer with
-    /// nothing heard from that peer (its Initial and Handshake packets count), past the later of
-    /// when it was last heard and its probe timeout (QUIC declares no loss sooner, RFC 9002
-    /// §6.2.1), however long it has gone on while it was heard. None once it has ended, or where
-    /// its handshake has no window. A bound of the slowest handshake alone, from a path's quiet
-    /// samples (one, after a join), refused a daemon reached before as the suite's own load
-    /// slowed its answer: ROOT's runs at 084891178, tests/context.rs 8 of 21 on HVF and 1 on KVM,
-    /// "within the slowest handshake seen from it" of 0.93-4.2 ms.
+    /// When its handshake runs out, unless it ends first ([`Liveness::handshake_ran_out`]),
+    /// judged as a send is ([`Liveness::look`]): a whole window of the slowest handshake seen
+    /// from its peer with nothing heard from that peer (its Initial and Handshake packets
+    /// count), past the later of when it was last heard and its probe timeout (QUIC declares no
+    /// loss sooner, RFC 9002 §6.2.1), however long it has gone on while it was heard. None once
+    /// it has ended, or where its handshake has no window. A bound of the slowest handshake
+    /// alone, from a path's quiet samples (one, after a join), refused a daemon reached before
+    /// as the suite's own load slowed its answer: ROOT's runs at 084891178, tests/context.rs 8
+    /// of 21 on HVF and 1 on KVM, "within the slowest handshake seen from it" of 0.93-4.2 ms.
     pub fn due(&self) -> Option<Instant> {
         if self.connected.is_some() {
             return None;
@@ -464,9 +477,13 @@ impl Liveness {
         }
     }
 
-    /// Its handshake was given up ([`Liveness::due`]).
-    pub fn handshake_ran_out(&mut self) {
+    /// Its handshake ran out ([`Liveness::due`]): marked, and its window let go, so that it goes
+    /// on as a peer never reached's does, with no deadline of its own (the person's ruling,
+    /// 2026-11-13: every wait after a run-out follows the party's liveness and progress); the
+    /// window it ran out of, none where it had none.
+    pub fn handshake_ran_out(&mut self) -> Option<Duration> {
         self.ran_out = true;
+        self.handshake.take()
     }
 
     /// Its peer refused it, definitely.
@@ -1524,7 +1541,7 @@ impl<H: Handler> Driver<H> {
                 Look::Fine => {}
                 Look::RanOut { waited, window } => {
                     let (mut io, handler) = self.io(now);
-                    handler.ran_out(&mut io, key, waited, window);
+                    handler.ran_out(&mut io, key, RanOut::Send { waited, window });
                     self.client = io.client;
                 }
                 // Typed as QUIC types a peer unheard past its bound (RFC 9000 §10.1), for a
@@ -1672,34 +1689,34 @@ impl<H: Handler> Driver<H> {
         }
     }
 
-    /// Gives up each connection whose handshake has not ended by its due time
-    /// ([`Liveness::due`]), its handler told what was waited: its transport's own idle bound is
-    /// for a peer known to be there.
+    /// Each connection whose handshake has not ended by its due time ([`Liveness::due`]) has run
+    /// out: marked, its handler told once ([`RanOut::Handshake`]), and its handshake goes on as a
+    /// peer never reached's does, with no deadline of its own, each probe told, until it ends or
+    /// its handler gives up (the person's ruling, 2026-11-13: every wait after a run-out follows
+    /// the party's liveness and progress). Given up there, a daemon its loaded host descheduled
+    /// past its probe timeout and slowest handshake was asked "is it listening there" (ROOT's run
+    /// of `tests/loopback.rs` on adas-macbook-pro-2 at ea6f4b53b, load1 about 44).
     fn expire(&mut self, now: Instant) {
-        let mut given_up = Vec::new();
-        for (key, conn) in &mut self.conns {
-            if !conn.quic.is_closed() && conn.liveness.due().is_some_and(|at| at <= now) {
-                conn.liveness.handshake_ran_out();
-                let (window, pto) = (conn.liveness.handshake.unwrap_or_default(), conn.liveness.pto);
-                let why = match conn.liveness.heard {
-                    None => format!(
-                        "nothing heard from it in {:?}, its probe timeout ({pto:?}) and then the slowest handshake seen from it ({window:?})",
-                        pto.saturating_add(window)
-                    ),
-                    Some(_) => format!(
-                        "nothing heard from it in the slowest handshake seen from it ({window:?}) since it was last heard, past its probe timeout ({pto:?})"
-                    ),
-                };
-                given_up.push((*key, why));
-            }
-        }
-        for (key, why) in given_up {
+        self.keys.clear();
+        self.keys.extend(
+            self.conns
+                .iter()
+                .filter(|(_, c)| !c.quic.is_closed() && c.liveness.due().is_some_and(|at| at <= now))
+                .map(|(key, _)| *key),
+        );
+        for at in 0..self.keys.len() {
+            let Some(&key) = self.keys.get(at) else {
+                break;
+            };
+            let Some(conn) = self.conns.get_mut(&key) else {
+                continue;
+            };
+            let waited = now.saturating_duration_since(conn.liveness.began);
+            let Some(window) = conn.liveness.handshake_ran_out() else {
+                continue;
+            };
             let (mut io, handler) = self.io(now);
-            io.close(key, 0, "its handshake took too long");
-            // Typed as QUIC types a peer unheard past its bound (RFC 9000 §10.1), as a
-            // connection taken for dead at use is.
-            handler.cause(key, &ConnectionError::TimedOut);
-            handler.lost(&mut io, key, &why, None);
+            handler.ran_out(&mut io, key, RanOut::Handshake { waited, window });
             self.client = io.client;
         }
     }
@@ -2134,7 +2151,7 @@ mod tests {
     }
 
     /// A handshake is judged by its window, the slowest seen from its peer
-    /// (`a_handshake_is_given_up_a_whole_window_unheard_past_its_probe_timeout`), or by none, as
+    /// (`a_handshake_runs_out_a_whole_window_unheard_past_its_probe_timeout`), or by none, as
     /// long as its probing goes on, each new probe past its first flight told once with how long
     /// it has waited, and none once its peer is heard; its end measures its first answer, and
     /// nothing of the handshake's holds it after. The longest silence a connection lived through
@@ -2188,9 +2205,12 @@ mod tests {
     /// ran out not, however much slower than the slowest. Red with the slowest handshake its
     /// deadline from its start: ROOT's runs of tests/context.rs at 084891178 (8 of 21 on HVF, 1
     /// on KVM), a daemon reached before given up "within the slowest handshake seen from it" of
-    /// 0.93-4.2 ms under the suite's own load.
+    /// 0.93-4.2 ms under the suite's own load. One unheard past them runs out, marked, and goes
+    /// on with no window, as a peer never reached's does, its probes told: red with its window
+    /// kept, its run-out its end ("is it listening there", ROOT's run of tests/loopback.rs on
+    /// adas-macbook-pro-2 at ea6f4b53b, load1 about 44).
     #[test]
-    fn a_handshake_is_given_up_a_whole_window_unheard_past_its_probe_timeout() {
+    fn a_handshake_runs_out_a_whole_window_unheard_past_its_probe_timeout() {
         let t0 = Instant::now();
         let mut l = Liveness::new(t0, Some(ms(2)), Duration::ZERO);
         l.probe_timeout(ms(26));
@@ -2225,6 +2245,33 @@ mod tests {
             (slower.handshake_took(), slower.ran_out),
             (Some(ms(14)), false),
             "seven times the slowest, within its probe timeout"
+        );
+        // Unheard past its window and probe timeout: run out, marked, and on with no window.
+        let mut unheard = Liveness::new(t0, Some(ms(2)), Duration::ZERO);
+        unheard.probe_timeout(ms(26));
+        assert_eq!(unheard.unanswered(t0, 2), None, "its first flight");
+        assert_eq!(unheard.due(), t0.checked_add(ms(28)));
+        assert_eq!(
+            unheard.handshake_ran_out(),
+            Some(ms(2)),
+            "the window it ran out of"
+        );
+        assert_eq!(
+            (unheard.due(), unheard.ran_out),
+            (None, true),
+            "no deadline, marked"
+        );
+        assert_eq!(
+            unheard.unanswered(t0 + ms(60), 4),
+            Some((2, ms(60))),
+            "its probes told on"
+        );
+        unheard.heard(t0 + ms(200));
+        unheard.connected(t0 + ms(200), 0, 0);
+        assert_eq!(
+            (unheard.handshake_took(), unheard.ran_out),
+            (Some(ms(200)), true),
+            "answered once heard, its run-out kept"
         );
     }
 

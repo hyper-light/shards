@@ -1461,11 +1461,15 @@ fn a_closed_port_refuses_its_client_at_once() {
     assert!(start.elapsed() < DEADLINE, "{:?}", start.elapsed());
 }
 
-/// A daemon reached before is given up once the slowest handshake seen from it has passed
-/// with nothing heard from it, past its probe timeout, its run-out marked, so that the next
-/// attempt waits as for a daemon never reached.
+/// A daemon reached before that answers nothing runs out once the slowest handshake seen from
+/// it has passed with nothing heard from it, past its probe timeout: marked, so that the next
+/// attempt waits as for a daemon never reached, and probed on as one never reached is, each
+/// probe told its caller, until its caller gives up (the person's ruling, 2026-11-13: every wait
+/// after a run-out follows the party's liveness). Red with the run-out its end: given up at it
+/// at 476f77d7b, "no answer from the shards daemon at ADDR: nothing heard from it in 328ms, its
+/// probe timeout (28ms) and then the slowest handshake seen from it (300ms)".
 #[test]
-fn a_daemon_reached_before_is_given_up_past_its_slowest_handshake() {
+fn a_daemon_reached_before_that_answers_nothing_runs_out_and_is_probed_on() {
     let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let path = tls::Path {
         rtt: Duration::from_millis(1),
@@ -1479,11 +1483,13 @@ fn a_daemon_reached_before_is_given_up_past_its_slowest_handshake() {
         known: tls::Known::Reached(path),
     };
     let start = Instant::now();
-    let (ran, _, seen) = asked(remote, |_| false);
+    // Its caller gives up at the first probe told past twice its slowest handshake: well past
+    // its run-out, which comes a probe timeout and its slowest handshake in.
+    let (ran, _, seen) = asked(remote, |u| u.waited >= path.handshake * 2);
     let took = start.elapsed();
     let said = ran.unwrap_err().to_string();
-    assert!(said.contains("slowest handshake seen from it"), "{said}");
-    assert!(took >= path.handshake, "{took:?}");
+    assert!(said.contains("no shards daemon answered"), "{said}");
+    assert!(took >= path.handshake * 2, "{took:?}");
     assert!(seen.ran_out, "{seen:?}");
     assert_eq!(remote.known.after(&seen), tls::Known::RanOut(path));
     drop(silent);
@@ -1624,6 +1630,54 @@ fn a_daemon_reached_before_slower_to_shake_hands_within_a_probe_timeout_is_answe
     let slower = seen.handshake.unwrap();
     assert!(slower > hold, "{slower:?}, {path:?}");
     assert_eq!(known.after(&seen).path().map(|p| p.handshake), Some(slower));
+}
+
+/// A daemon reached before whose next handshake goes unheard past the slowest handshake seen
+/// from it and its probe timeout (its host descheduling it: ROOT's run of this file on
+/// adas-macbook-pro-2 at ea6f4b53b, load1 about 44, "nothing heard from it in 30.075715ms, its
+/// probe timeout (26.36784ms) and then the slowest handshake seen from it (3.707875ms): is it
+/// listening there"; here a relay holding what it sends back four times that long) runs out,
+/// marked, and is waited for as a daemon never reached is: answered once it is heard, its
+/// run-out kept, so that its next handshake waits as a cold one does. Red with the run-out its
+/// end, in those words, at 476f77d7b on an unloaded host: "nothing heard from it in 39.906044ms,
+/// its probe timeout (38.234002ms) and then the slowest handshake seen from it (1.672042ms)".
+#[test]
+fn a_daemon_reached_before_unheard_past_its_window_runs_out_and_is_waited_for() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let relay = Relay::new(d.remote.address);
+    let remote = Remote {
+        address: relay.address,
+        ..d.remote
+    };
+    let (status, seen) = ran_seen(laptop, remote, &["say", "first", "x", "0"]);
+    assert_eq!(status, Ok(0));
+    let known = remote.known.after(&seen);
+    let tls::Known::Reached(path) = known else {
+        panic!("{known:?}");
+    };
+    // What the client waits before its run-out: its probe timeout from the path's RTT (RFC 9002
+    // §6.2.1: the smoothed RTT, the larger of four times its variation, half the RTT to start
+    // from, §6.2.2, and the 1 ms granularity, §6.1.2, and the daemon's max_ack_delay, 25 ms
+    // where its transport parameters say none, RFC 9000 §18.2), then the slowest handshake
+    // seen. Held four times that.
+    let ms = Duration::from_millis;
+    let past = path.rtt + (path.rtt * 2).max(ms(1)) + ms(25) + path.handshake;
+    let hold = past * 4;
+    eprintln!("first {seen:?}; hold {hold:?}");
+    relay.hold(hold);
+    let (status, seen) = ran_seen(laptop, Remote { known, ..remote }, &["say", "second", "x", "0"]);
+    assert_eq!(status, Ok(0), "{seen:?}");
+    assert!(
+        seen.ran_out && seen.handshake.is_some_and(|h| h >= hold),
+        "{seen:?}"
+    );
+    assert!(matches!(known.after(&seen), tls::Known::RanOut(_)), "{seen:?}");
 }
 
 /// A whole process frozen past every window (a host that stops or starves it: kiln's runners

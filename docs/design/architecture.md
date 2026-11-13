@@ -6481,18 +6481,33 @@ replaced by:
   closed port, 22 minutes).
 - *A handshake's bound, after that.* A daemon reached before, its last waits answered, has its
   handshake judged as a send is (`Liveness::due`), by a window of the slowest handshake seen
-  from it (`Known::handshake_window`), no sooner than its probe timeout: given up a whole window
-  with nothing heard from it (its Initial and Handshake packets count) past the later of when it
-  was last heard and that timeout, told so ("no answer from the shards daemon at ADDR: nothing
-  heard from it in T, its probe timeout (P) and then the slowest handshake seen from it (W)",
-  typed as QUIC's `TimedOut`), and marked; one that goes past its window and its probe timeout both while it is
-  heard has run out, and goes on, marked. A marked record's next handshake waits as a cold start
-  does, as every wait after a run-out does, until a handshake ends again. QUIC's loss recovery
-  starts each handshake from the path's last RTT (`initial_rtt`). The window alone, from its
-  start, gave up daemons whose next handshake the suite's own load slowed: ROOT's runs of
-  `tests/context.rs` at 084891178, 8 of 21 on HVF and 1 on KVM, and at c1ef455c9 6 of 21 on HVF
-  (an engine relay's 502 among them), each "within the slowest handshake seen from it" of
-  0.57-4.2 ms, one sample of which, a fresh home's join, had set it. The probe timeout here is the one a send's wait is held to (patch Q7's
+  from it (`Known::handshake_window`), no sooner than its probe timeout: a whole window with
+  nothing heard from it (its Initial and Handshake packets count; before its first, nothing
+  does, QUIC's probes being this side's own sends) past the later of when it was last heard and
+  that timeout, it has run out. Run out, it is marked, told once, typed (`Handler::ran_out`,
+  `RanOut::Handshake { waited, window }`), and its window let go (`Liveness::handshake_ran_out`):
+  it goes on as a cold start's does, with no deadline, each probe told to whoever waits, until it
+  ends or its caller gives up, as every wait after a run-out follows the party's liveness and
+  progress (the person's ruling; D222's "a run-out learns nothing"). One that goes past its
+  window and its probe timeout both while it is heard has run out too, and goes on, marked. A
+  marked record's next handshake waits as a cold start does, until a handshake ends again.
+  QUIC's loss recovery starts each handshake from the path's last RTT (`initial_rtt`). The
+  window alone, from its start, gave up daemons whose next handshake the suite's own load
+  slowed: ROOT's runs of `tests/context.rs` at 084891178, 8 of 21 on HVF and 1 on KVM, and at
+  c1ef455c9 6 of 21 on HVF (an engine relay's 502 among them), each "within the slowest
+  handshake seen from it" of 0.57-4.2 ms, one sample of which, a fresh home's join, had set it.
+  Past the window and the probe timeout, the run-out then ended the handshake, and a daemon its
+  loaded host descheduled was told to its client as one gone: "no answer from the shards daemon
+  at ADDR: nothing heard from it in 30.075715ms, its probe timeout (26.36784ms) and then the
+  slowest handshake seen from it (3.707875ms): is it listening there" (ROOT's run of
+  `tests/loopback.rs` on adas-macbook-pro-2 at ea6f4b53b, load1 about 44, its relay holding the
+  daemon's answers 7.4 ms). Red so on an unloaded host at 476f77d7b with a relay holding them four
+  times the probe timeout and window (`a_daemon_reached_before_unheard_past_its_window_runs_out_and_is_waited_for`:
+  "nothing heard from it in 39.906044ms, its probe timeout (38.234002ms) and then the slowest
+  handshake seen from it (1.672042ms)", kiln r619 on adas-mac-studio.local-2), and with a daemon
+  reached before that answers nothing (given up at 328 ms), each green with the run-out going on.
+  Owed, ROOT's: `cargo test -p shards-remote --profile test-release --test loopback` on
+  adas-macbook-pro-2 under its usual load. The probe timeout here is the one a send's wait is held to (patch Q7's
   `probe_timeout`: its RTT terms and the peer's `max_ack_delay`, 25 ms until its transport
   parameters say otherwise, RFC 9000 §18.2), where RFC 9002 §6.2.1 arms the Initial and
   Handshake spaces' own probe timer without `max_ack_delay`, a peer acknowledging their packets
@@ -6642,8 +6657,9 @@ up every other client's acknowledgements: the tests' commands' program, built by
 first start, did so to every test that started one first (`tests/loopback.rs` builds it
 before its daemon serves, all the same). Tested, each test red before its code: `tls::tests` (what is known of a
 peer follows what its path showed), `net::tests` (a handshake judged by its window or probing
-on, its silences measured; a handshake given up a whole window unheard past its probe timeout,
-one heard living on past both, red with its window a deadline from its start; a send's window,
+on, its silences measured; a handshake run out a whole window unheard past its probe timeout,
+going on with no window, red with its window kept, one heard living on past both, red with its
+window a deadline from its start; a send's window,
 its run-out with progress and its death without; a cold wait following its peer however long
 its first answer takes; a wait judged no sooner than its probe timeout; a wait judged on the
 time its side was there to hear, red with no absence taken; a send taken in before its
@@ -6655,10 +6671,12 @@ daemon and address alone, kept only where it changed, removed with its context),
 way; an enrolled client's silent command living with no keep-alive; no daemon answering
 probed until its caller gives up; a hang-up ending a command whose daemon never answered; a
 closed port refusing its client at once, its caller giving up past the test's deadline, red on
-Linux with a send's refusal let go; a daemon reached before given up past its slowest
-handshake, unheard; a daemon reached before slower to shake hands than ever, by more than its
-slowest but within a probe timeout, answered, a relay holding what it sends back, red with the
-slowest handshake a deadline; a process frozen 200 ms (SIGSTOP) while a command trickles
+Linux with a send's refusal let go; a daemon reached before that answers nothing running out
+past its slowest handshake and probed on until its caller gives up, red with the run-out its
+end; a daemon reached before slower to shake hands than ever, by more than its slowest but
+within a probe timeout, answered, a relay holding what it sends back, red with the slowest
+handshake a deadline; one unheard past its probe timeout and window, run out and answered as the
+relay lets its answers go, red with the run-out its end; a process frozen 200 ms (SIGSTOP) while a command trickles
 through it keeping its connections, red with no absence taken; a daemon slow to answer a fresh
 client waited for (a stand-in's driver held in its handler), red with its handshake seeding the
 window; a slow start, a slow join and a slow verdict on one key holding up no other client, the
@@ -13061,8 +13079,8 @@ peer", each going on here as it should. What changed for them:
     `ready`, the image's `load`, the import, the restore, these asks): its slowest answer.
     Not known then. An ask's handshake waits on while that machine has gone unheard no longer
     than that (`Heard::silent`, given `context::exec_with` as whether it waits), as a daemon
-    whose last wait ran out has no handshake deadline of its own (D180), and gives up past the
-    slowest handshake seen from it where it has one. The first ask goes out whatever that
+    whose last wait ran out has no handshake deadline of its own (D180), nor one whose
+    handshake ran out past the slowest seen from it. The first ask goes out whatever that
     machine's silence, the wait after the restore's run-out following liveness alone, each
     ask held to the link's own bounds (its handshake's, then its liveness at use). The cold
     start, a move that heard nothing of that machine (none reaches this step, `ready` and the
