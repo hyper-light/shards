@@ -25,13 +25,13 @@ use shards_ipc::Stream;
 use shards_ipc::fd::BorrowedFd;
 use shards_remote::control::exec::{self, MemberStart, Reply, Steer, Unstarted, Unsteered};
 
-use super::execs::{self, Held};
-use super::{Charge, ipc_buffers, lock, log};
+use super::execs::{self, Held, Say};
+use super::{Charge, ipc_buffers, lock};
 
 /// Each member's end as its init told it (`MEMBER_ENDED`, D231): kept for a lane that asks
 /// after, and told as it comes to whoever waits on it.
 #[derive(Debug)]
-pub(super) struct Ends {
+pub(crate) struct Ends {
     state: Mutex<Told>,
     changed: Condvar,
 }
@@ -46,7 +46,7 @@ struct Told {
 
 impl Ends {
     /// The end table of a run of `members` members, none ended.
-    pub(super) fn new(members: usize) -> io::Result<Ends> {
+    pub(crate) fn new(members: usize) -> io::Result<Ends> {
         let mut ended = Vec::new();
         ended.try_reserve_exact(members).map_err(io::Error::other)?;
         ended.resize(members, None);
@@ -59,7 +59,7 @@ impl Ends {
     /// Member `member` ended with `status`, as its init told it (once a member): told whoever
     /// waits on it. A member of no index the run has, or told twice, is the guest's protocol
     /// broken, refused.
-    pub(super) fn told(&self, member: u32, status: u32) -> io::Result<()> {
+    pub(crate) fn told(&self, member: u32, status: u32) -> io::Result<()> {
         let mut told = lock(&self.state);
         let slot = usize::try_from(member)
             .ok()
@@ -78,7 +78,7 @@ impl Ends {
     }
 
     /// The run is over: no member's end is told from now on, and every wait ends.
-    pub(super) fn close(&self) {
+    pub(crate) fn close(&self) {
         lock(&self.state).over = true;
         self.changed.notify_all();
     }
@@ -118,23 +118,26 @@ impl Ends {
 }
 
 /// How the host runs one of init's built-ins in its run's microVM: its spec, its stdio and its
-/// client's end of the connection its end is told on (`Daemon::launch_builtin`).
-pub(super) type Builtin<'a> = dyn Fn(&Spec, [BorrowedFd<'_>; 3], &Stream) -> io::Result<()> + Sync + 'a;
+/// client's end of the connection its end is told on (`Daemon::launch_builtin`, api_run.rs
+/// `hand_exec`).
+pub(crate) type Builtin<'a> = dyn Fn(&Spec, [BorrowedFd<'_>; 3], &Stream) -> io::Result<()> + Sync + 'a;
 
-/// What the host serves its members' lanes with: the run's end table, the members with a
-/// terminal of their own, the run's budget, whether its run runs (once it has started), and
-/// how it runs a built-in.
-pub(super) struct Hosting<'a> {
-    pub(super) ends: &'a Ends,
-    pub(super) terminals: &'a [u32],
-    pub(super) charge: &'a Charge,
-    pub(super) started: &'a (dyn Fn() -> bool + Sync),
-    pub(super) builtin: &'a Builtin<'a>,
+/// What the host serves its members' lanes with: the run's end table, the members that run a
+/// program and those with a terminal of their own, the run's budget, whether its run runs
+/// (once it has started), how it runs a built-in, and where it says what befell a lane.
+pub(crate) struct Hosting<'a> {
+    pub(crate) ends: &'a Ends,
+    pub(crate) active: &'a [u32],
+    pub(crate) terminals: &'a [u32],
+    pub(crate) charge: &'a Charge,
+    pub(crate) started: &'a (dyn Fn() -> bool + Sync),
+    pub(crate) builtin: &'a Builtin<'a>,
+    pub(crate) say: &'a Say,
 }
 
 /// Serves each member's lane `lanes` brings, on a thread of its own, until the endpoint that
 /// brings them has ended and so has every lane it brought.
-pub(super) fn host(lanes: &mpsc::Receiver<MemberStart>, hosting: &Hosting<'_>) {
+pub(crate) fn host(lanes: &mpsc::Receiver<MemberStart>, hosting: &Hosting<'_>) {
     std::thread::scope(|scope| {
         while let Ok(start) = lanes.recv() {
             let (number, replies) = (start.lane, start.replies.try_clone());
@@ -142,7 +145,7 @@ pub(super) fn host(lanes: &mpsc::Receiver<MemberStart>, hosting: &Hosting<'_>) {
                 .name("agent-member".into())
                 .spawn_scoped(scope, move || serve(start, hosting));
             if let Err(e) = spawned {
-                log(format!("agent-control member lane {number}: its thread: {e}"));
+                (hosting.say)(&format!("agent-control member lane {number}: its thread: {e}"));
                 if let Ok(replies) = replies {
                     replies.tell(Reply::Unstarted(Unstarted::Failed));
                 }
@@ -156,9 +159,9 @@ fn told_status(status: u32) -> i32 {
     i32::from_be_bytes(status.to_be_bytes())
 }
 
-/// One member's lane, from its ask to its letting go: refused where its run does not run or
-/// its budget has no room for it; told the member's end at once where it has ended, else that
-/// it runs, then each steer answered and its end as it comes.
+/// One member's lane, from its ask to its letting go: refused where its run has no such member
+/// that runs, does not run, or has no room in its budget for it; told the member's end at once
+/// where it has ended, else that it runs, then each steer answered and its end as it comes.
 fn serve(start: MemberStart, hosting: &Hosting<'_>) {
     let MemberStart {
         ask: exec::Ask { member, .. },
@@ -166,7 +169,13 @@ fn serve(start: MemberStart, hosting: &Hosting<'_>) {
         steer,
         replies,
     } = start;
-    let say = |what: &str| log(format!("agent-control member {member}, lane {lane}: {what}"));
+    let say = |what: &str| (hosting.say)(&format!("agent-control member {member}, lane {lane}: {what}"));
+    // A member the run has not, or one that runs no program, refused as its init refuses an
+    // exec in one (D243): an endpoint of no member stream leaves the member to its host.
+    if !hosting.active.contains(&member) {
+        say("its run has no such member that runs");
+        return replies.tell(Reply::Unstarted(Unstarted::Refused));
+    }
     if !(hosting.started)() {
         say("its run does not run");
         return replies.tell(Reply::Unstarted(Unstarted::Failed));
@@ -242,7 +251,7 @@ fn deliver(member: u32, steer: Steer, hosting: &Hosting<'_>) -> Result<(), Unste
             Err(Unsteered::Ended)
         }
         Ok(Said { status, words }) => {
-            log(format!(
+            (hosting.say)(&format!(
                 "agent-control member {member}: built-in {builtin} exited {status}: {}",
                 String::from_utf8_lossy(&words).trim_end()
             ));
@@ -250,7 +259,7 @@ fn deliver(member: u32, steer: Steer, hosting: &Hosting<'_>) -> Result<(), Unste
         }
         Err(Undelivered::Capacity) => Err(Unsteered::Capacity),
         Err(Undelivered::Failed(why)) => {
-            log(format!(
+            (hosting.say)(&format!(
                 "agent-control member {member}: built-in {builtin}: {why}"
             ));
             Err(Unsteered::Failed)

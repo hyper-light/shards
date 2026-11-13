@@ -2173,7 +2173,7 @@ mod hosted {
 
     use super::{Answers, No, no};
     use crate::daemon::ends::Ends;
-    use crate::daemon::managed::{self as hosts, Charge, execs, mcp};
+    use crate::daemon::managed::{Charge, execs, mcp, members};
     use crate::daemon::publish;
 
     fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -2209,6 +2209,8 @@ mod hosted {
         capture: Option<(u32, Vec<u32>)>,
         /// The members whose stdin its orchestrator writes, by their declared index.
         inputs: Vec<u32>,
+        /// Its members with a terminal of their own (D244), by their declared index.
+        terminals: Vec<u32>,
         /// Its members with an MCP bridge (D254), by their declared index.
         mcps: Vec<u32>,
         /// Its domains' plug roots (D235), by name (`Users`), as its setup names them.
@@ -2623,6 +2625,7 @@ mod hosted {
             microvm,
             capture,
             inputs,
+            terminals,
             mcps,
             roots,
             control: request.control.clone(),
@@ -3233,27 +3236,46 @@ mod hosted {
         job: &'a shards_ipc::GroupJob,
     }
 
-    /// What the run's own lanes of its agent-control endpoint are served with, as the daemon's
-    /// runs' are (daemon/managed): its members' MCP connections (D254), through the daemon's
-    /// exec host.
+    /// What a run's own lanes of its agent-control endpoint are served with, as the daemon's
+    /// runs' are (daemon/managed): its execs, its members' MCP connections and its members' own
+    /// lanes, each through the daemon's hosts.
     struct Agent {
         /// What each exec's and MCP connection's streams are admitted, as the daemon's runs
-        /// admit them (`managed::exec_admissions`).
+        /// admit them (`shards_api::control::exec_admissions`).
         admissions: shards_remote::control::exec::Admissions,
         /// The budget its lanes are charged to: this host's own, held to the host's available
         /// memory as the daemon's runs' is.
         charge: std::sync::Arc<Charge>,
-        /// Its members' MCP connections, where its request gave any a bridge.
+        /// Where its command stands, for each lane that waits on its start.
+        begun: Mutex<Begun>,
+        began: std::sync::Condvar,
+        /// Each member's end as its init tells it (`MEMBER_ENDED`), for its own lanes.
+        ends: members::Ends,
+        /// Its members that run a program, and those with a terminal of their own (D244).
+        active: Vec<u32>,
+        terminals: Vec<u32>,
+        /// Its members' MCP connections, where its request gave any a bridge (D254).
         bridges: Option<mcp::Bridges>,
+    }
+
+    /// Where a run's command stands, as its VM says it (R04): awaited until its `STARTED`;
+    /// over once its link has closed, started or not.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Begun {
+        Awaited,
+        Started,
+        Over,
     }
 
     impl Agent {
         /// A run's, `plan`'s.
         fn of(plan: &Plan) -> Result<Agent, String> {
-            let admissions = hosts::exec_admissions().map_err(|e| format!("its lanes' admissions: {e}"))?;
+            let admissions = shards_api::control::exec_admissions();
             let budget = std::sync::Arc::new(Mutex::new(Some(0)));
             let charge = Charge::reserve(&budget, 0).map_err(|e| format!("its lanes' budget: {e:?}"))?;
             let charge = std::sync::Arc::new(charge);
+            let ends =
+                members::Ends::new(plan.members.len()).map_err(|e| format!("its members' ends: {e}"))?;
             let bridges = (!plan.mcps.is_empty()).then(|| {
                 let record = admissions.output.record_bytes;
                 mcp::Bridges::new(plan.mcps.clone(), record, std::sync::Arc::clone(&charge))
@@ -3261,15 +3283,38 @@ mod hosted {
             Ok(Agent {
                 admissions,
                 charge,
+                begun: Mutex::new(Begun::Awaited),
+                began: std::sync::Condvar::new(),
+                ends,
+                active: plan.members.iter().filter(|m| m.runs).map(|m| m.index).collect(),
+                terminals: plan.terminals.clone(),
                 bridges,
             })
         }
 
-        /// The run is over: what its members' bridges held let go, and every ask waiting ends.
+        /// Says where its command stands now: told every lane that waits on its start.
+        fn stands(&self, now: Begun) {
+            *lock(&self.begun) = now;
+            self.began.notify_all();
+        }
+
+        /// The run is over: every lane that waits on its start, or on a member's end, told so,
+        /// and what its members' bridges held let go.
         fn over(&self) {
+            self.stands(Begun::Over);
+            self.ends.close();
             if let Some(bridges) = &self.bridges {
                 bridges.close();
             }
+        }
+
+        /// Waits for its command to start: whether it has, or none once the run is over.
+        fn started(&self) -> bool {
+            let mut begun = lock(&self.begun);
+            while *begun == Begun::Awaited {
+                begun = self.began.wait(begun).unwrap_or_else(PoisonError::into_inner);
+            }
+            *begun == Begun::Started
         }
     }
 
@@ -3761,13 +3806,11 @@ mod hosted {
                         super::say(format_args!("its socket lanes have no thread: {e}"));
                     }
                 }
-                // Its members' MCP connections (D254), hosted as the daemon hosts its runs'
-                // until the endpoint that brings them ends. Its members' own lanes are hosted
-                // by none yet: let go, the endpoint refuses each `Closed`.
+                // Its execs, its members' MCP connections (D254) and its members' own lanes,
+                // hosted as the daemon hosts its runs' until the endpoint that brings them ends.
                 if let Some(agent) = &live.agent {
-                    host_lanes(agent, served.execs, scope);
+                    host_lanes(live, agent, served.execs, served.members, scope);
                 }
-                drop(served.members);
                 served.revoke
             });
             let members: Vec<u32> = lock(&live.feeds).keys().copied().collect();
@@ -4042,48 +4085,122 @@ mod hosted {
         }
     }
 
-    /// Hosts its members' MCP connections each ask `execs` brings (D254) as the daemon hosts
-    /// its runs' (daemon/managed), on threads of their own, until the endpoint that brings them
-    /// has ended. An exec, which this host runs none of yet, is refused `Failed`; a member's
-    /// own lane, which it hosts none of yet, is refused by the endpoint (`Closed`), as no host
-    /// takes it.
+    /// Hosts the run's own lanes of its endpoint as the daemon hosts its runs' (daemon/managed):
+    /// each exec and MCP connection `execs` brings, and each member's lane `members` brings,
+    /// each on threads of its own, until the endpoint that brings them has ended.
     fn host_lanes<'scope, 'env>(
+        live: &'env Live<'env>,
         agent: &'env Agent,
         execs: Option<std::sync::mpsc::Receiver<shards_remote::control::exec::Start>>,
+        members: Option<std::sync::mpsc::Receiver<shards_remote::control::exec::MemberStart>>,
         scope: &'scope std::thread::Scope<'scope, 'env>,
     ) {
-        let Some(starts) = execs else {
-            return;
-        };
-        let hosting = std::thread::Builder::new()
-            .name("api-run mcp".into())
-            .spawn_scoped(scope, move || {
-                execs::host(
-                    &starts,
-                    &execs::Hosting {
-                        admissions: agent.admissions,
-                        charge: &agent.charge,
-                        launch: &|_, _, _, _, _| {
-                            Err(io::Error::other(
-                                "an orchestrator's run host runs no member's exec",
-                            ))
+        if let Some(starts) = execs {
+            let hosting = std::thread::Builder::new()
+                .name("api-run execs".into())
+                .spawn_scoped(scope, move || {
+                    execs::host(
+                        &starts,
+                        &execs::Hosting {
+                            admissions: agent.admissions,
+                            charge: &agent.charge,
+                            launch: &|spec, _, flags, stdio, theirs| {
+                                hand_exec(live, agent, spec, flags, stdio, theirs)
+                            },
+                            logs: None,
+                            bridges: agent.bridges.as_ref(),
+                            say: &|line| super::say(format_args!("{line}")),
                         },
-                        logs: None,
-                        bridges: agent.bridges.as_ref(),
-                        say: &|line| super::say(format_args!("{line}")),
-                    },
-                );
-            });
-        if let Err(e) = hosting {
-            super::say(format_args!("its members' MCP connections have no thread: {e}"));
+                    );
+                });
+            if let Err(e) = hosting {
+                super::say(format_args!("its execs have no thread: {e}"));
+            }
+        }
+        if let Some(lanes) = members {
+            let hosting = std::thread::Builder::new()
+                .name("api-run members".into())
+                .spawn_scoped(scope, move || {
+                    members::host(
+                        &lanes,
+                        &members::Hosting {
+                            ends: &agent.ends,
+                            active: &agent.active,
+                            terminals: &agent.terminals,
+                            charge: &agent.charge,
+                            started: &|| agent.started(),
+                            builtin: &|spec, stdio, theirs| {
+                                hand_exec(live, agent, spec, shards_ipc::EXEC_TOLD, stdio, theirs)
+                            },
+                            say: &|line| super::say(format_args!("{line}")),
+                        },
+                    );
+                });
+            if let Err(e) = hosting {
+                super::say(format_args!("its members' lanes have no thread: {e}"));
+            }
         }
     }
 
+    /// Hands the run's VM a lane's exec of `spec` (`EXEC_RUN`, its `flags`) with `stdio` and
+    /// `theirs`, as the daemon hands one (health.rs `hand_exec`): once its command has started,
+    /// refused once its run is over.
+    fn hand_exec(
+        live: &Live<'_>,
+        agent: &Agent,
+        spec: &protocol::Spec,
+        flags: u8,
+        stdio: [BorrowedFd<'_>; 3],
+        theirs: &Stream,
+    ) -> io::Result<()> {
+        if !agent.started() {
+            return Err(io::Error::other("its run does not run"));
+        }
+        send_exec(live, spec, flags, stdio, theirs)
+    }
+
+    /// Sends the run's VM an exec of `spec` (`EXEC_RUN`, its `flags`) with `stdio` and
+    /// `theirs`, its client's end of the connection its end is told on, held until the VM says
+    /// it has it (`EXEC_TAKEN`, M24); refused once its link has closed.
+    fn send_exec(
+        live: &Live<'_>,
+        spec: &protocol::Spec,
+        flags: u8,
+        stdio: [BorrowedFd<'_>; 3],
+        theirs: &Stream,
+    ) -> io::Result<()> {
+        let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut payload = Vec::new();
+        // Its number's eight bytes, its flags' one, then its spec.
+        payload
+            .try_reserve_exact(9 + spec.encoded_len().unwrap_or(0))
+            .map_err(io::Error::other)?;
+        payload.extend_from_slice(&number.to_be_bytes());
+        payload.push(flags);
+        spec.encode_into(&mut payload);
+        let handed = shards_ipc::handed(theirs)?;
+        match lock(&live.held).as_mut() {
+            Some(held) => {
+                held.insert(number, theirs.try_clone()?);
+            }
+            None => return Err(io::Error::other("the run has ended")),
+        }
+        let [stdin, stdout, stderr] = stdio;
+        let fds = [handed.as_fd(), stdin, stdout, stderr];
+        if let Err(e) = shards_ipc::send(&lock(&live.link), kind::EXEC_RUN, &payload, &fds) {
+            if let Some(held) = lock(&live.held).as_mut() {
+                held.remove(&number);
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
     /// Reads the VM's link until it closes: each member's end and the command's readiness
-    /// to the orchestrator as they come (`super::relayed`), each exec's client end let go of
-    /// as the VM takes it, each member's MCP connection held for its controller's asks, its
-    /// watcher on a thread of `scope`'s (D254), the run's end from its `DONE`
-    /// (`super::run_end`), and whether its `DONE` came.
+    /// to the orchestrator as they come (`super::relayed`), each member's end kept for its own
+    /// lanes, each exec's client end let go of as the VM takes it, each member's MCP connection
+    /// held for its controller's asks, its watcher on a thread of `scope`'s (D254), the run's
+    /// end from its `DONE` (`super::run_end`), and whether its `DONE` came.
     fn follow<'scope, 'env>(
         live: &'env Live<'env>,
         link: &Stream,
@@ -4102,6 +4219,9 @@ mod hosted {
                 told.unserved = Some(String::from_utf8_lossy(&m.payload).into_owned());
             } else if m.kind == kind::STARTED {
                 told.started = true;
+                if let Some(agent) = &live.agent {
+                    agent.stands(Begun::Started);
+                }
                 // Its guest told what its host changes in its shares from now on (D235).
                 if let Some(pipe) = lock(&live.notices_due).take() {
                     match notice_exec(live, pipe) {
@@ -4143,8 +4263,19 @@ mod hosted {
                         super::say(format_args!("a member's MCP connection has no thread: {e}"));
                     }
                 }
-            } else if let Some((answer, payload)) = super::relayed(m.kind, &m.payload) {
-                let _ = live.answers.send(answer, &[&payload]);
+            } else {
+                // A member's end (D231), kept for its own lanes (D238), and told its
+                // orchestrator as each relayed message is.
+                if m.kind == kind::MEMBER_ENDED
+                    && let Some(agent) = &live.agent
+                    && let Some(ended) = protocol::members::Ended::decode(&m.payload)
+                    && let Err(e) = agent.ends.told(ended.member, ended.status)
+                {
+                    super::say(format_args!("a member's end its guest told: {e}"));
+                }
+                if let Some((answer, payload)) = super::relayed(m.kind, &m.payload) {
+                    let _ = live.answers.send(answer, &[&payload]);
+                }
             }
         };
         // No VM takes an exec now: their clients' ends go, and each waiting for its exit
@@ -4158,7 +4289,8 @@ mod hosted {
         lock(&live.saving).gone();
         // Socket lanes no answer will come for: their asks hear the VM has gone.
         lock(&live.lanes).take();
-        // Its VM gone: what its members' bridges held is let go, and every ask waiting ends.
+        // Its VM gone: its own lanes hear the run is over, and what its members' bridges held
+        // is let go.
         if let Some(agent) = &live.agent {
             agent.over();
         }
@@ -4860,25 +4992,14 @@ mod hosted {
                 let (out_r, out_w) = std::io::pipe().map_err(|e| e.to_string())?;
                 let (err_r, err_w) = std::io::pipe().map_err(|e| e.to_string())?;
                 let null = std::fs::File::open(crate::os::NULL).map_err(|e| e.to_string())?;
-                let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let mut payload = number.to_be_bytes().to_vec();
-                payload.push(0);
-                spec.encode_into(&mut payload);
-                let handed = shards_ipc::handed(&theirs).map_err(|e| e.to_string())?;
-                let fds = [handed.as_fd(), null.as_fd(), out_w.as_fd(), err_w.as_fd()];
-                // Held until the VM says it has it; none once its link has closed.
-                match lock(&live.held).as_mut() {
-                    Some(held) => {
-                        held.insert(number, theirs.try_clone().map_err(|e| e.to_string())?);
-                    }
-                    None => return Err("the run has ended".into()),
-                }
-                if let Err(e) = shards_ipc::send(&lock(&live.link), kind::EXEC_RUN, &payload, &fds) {
-                    if let Some(held) = lock(&live.held).as_mut() {
-                        held.remove(&number);
-                    }
-                    return Err(e.to_string());
-                }
+                send_exec(
+                    live,
+                    &spec,
+                    0,
+                    [null.as_fd(), out_w.as_fd(), err_w.as_fd()],
+                    &theirs,
+                )
+                .map_err(|e| e.to_string())?;
                 Ok((client, out_r, err_r))
             })()?;
         let bound = u64::from(protocol::MAX_PAYLOAD);
@@ -4906,26 +5027,15 @@ mod hosted {
             ..Default::default()
         };
         let (client, theirs) = Stream::pair().map_err(|e| e.to_string())?;
-        let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut payload = number.to_be_bytes().to_vec();
-        payload.push(shards_ipc::EXEC_INTERACTIVE);
-        spec.encode_into(&mut payload);
-        let handed = shards_ipc::handed(&theirs).map_err(|e| e.to_string())?;
         let err = io::stderr();
-        let fds = [handed.as_fd(), pipe.as_fd(), err.as_fd(), err.as_fd()];
-        // Held until the VM says it has it; none once its link has closed.
-        match lock(&live.held).as_mut() {
-            Some(held) => {
-                held.insert(number, theirs.try_clone().map_err(|e| e.to_string())?);
-            }
-            None => return Err("the run has ended".into()),
-        }
-        if let Err(e) = shards_ipc::send(&lock(&live.link), kind::EXEC_RUN, &payload, &fds) {
-            if let Some(held) = lock(&live.held).as_mut() {
-                held.remove(&number);
-            }
-            return Err(e.to_string());
-        }
+        send_exec(
+            live,
+            &spec,
+            shards_ipc::EXEC_INTERACTIVE,
+            [pipe.as_fd(), err.as_fd(), err.as_fd()],
+            &theirs,
+        )
+        .map_err(|e| e.to_string())?;
         Ok(client)
     }
 
@@ -5332,30 +5442,36 @@ mod hosted {
             );
         }
 
-        /// D252, D254: an orchestrator's run carries its members' MCP connections as the
-        /// daemon's runs do. Through its endpoint, of no member stream, a controller asks in the
-        /// zero run: member 1's connection, held as its VM handed it over (`LANE_HELD` said), is
-        /// paired with its ask, the harness's bytes reaching the controller exactly and the
-        /// controller's the harness, its end told once the harness's side has ended; member 0,
-        /// given no bridge, is refused `Refused`; an exec, which this host runs none of, `Failed`;
-        /// a member's own lane, which it hosts none of, is refused by the endpoint (`Closed`); and
-        /// an ask after the run's end is refused `Failed`.
+        /// D238, D252, D254: an orchestrator's run hosts its own lanes as the daemon hosts its
+        /// runs'. Through its endpoint, of no member stream, a controller asks in the zero run:
+        /// its members 1 and 2 run; a TERM to member 1 and a KILL to member 2 each go to its VM
+        /// as init's SIGNAL built-in, told (`EXEC_TOLD`), once its command has started, and are
+        /// taken; a resize of member 1, which has no terminal of its own, is refused `Terminal`;
+        /// each one's end as its init told it (143 and 137) reaches its lane; member 0, files alone, is refused `Refused`; its MCP connection, held as its VM
+        /// handed it over, carries the harness's bytes to the controller and back; and once the
+        /// run is over a member's lane is refused `Failed`.
         #[test]
-        fn an_orchestrators_run_carries_its_members_mcp_connections() {
-            use shards_remote::control::exec::Unstarted;
-            use shards_remote::control::{Controller, Fault, Got, McpConnection, Subscriptions};
-            use shards_remote::managed::Reason;
+        fn an_orchestrators_run_hosts_its_lanes_as_the_daemons_runs() {
+            use shards_remote::control::exec::{Unstarted, Unsteered};
+            use shards_remote::control::{
+                Controller, Fault, Got, McpConnection, Member, MemberControl, Subscriptions,
+            };
             use std::io::Read as _;
-            let dir = shards_testdir::TempDir::new("api-mcp").unwrap();
+            let dir = shards_testdir::TempDir::new("api-lanes").unwrap();
             let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
             let (link, vm) = Stream::pair().unwrap();
             let kiln = shards_remote::identity::Identity::generate().unwrap();
-            let admissions = hosts::exec_admissions().unwrap();
+            let admissions = shards_api::control::exec_admissions();
             let budget = std::sync::Arc::new(Mutex::new(Some(0)));
             let charge = std::sync::Arc::new(Charge::reserve(&budget, 0).unwrap());
             let agent = Agent {
                 admissions,
                 charge: std::sync::Arc::clone(&charge),
+                begun: Mutex::new(Begun::Awaited),
+                began: std::sync::Condvar::new(),
+                ends: members::Ends::new(3).unwrap(),
+                active: vec![1, 2],
+                terminals: Vec::new(),
                 bridges: Some(mcp::Bridges::new(vec![1], protocol::CHUNK, charge)),
             };
             let live = Live {
@@ -5369,18 +5485,28 @@ mod hosted {
             };
             let (endpoint, served) = bind_control(&ask, admissions).unwrap();
             let (key, address) = (endpoint.fingerprint, endpoint.address);
-            let shards_remote::control::Served {
-                execs: starts,
-                members,
-                revoke,
-                ..
-            } = served;
-            // No host takes a member's own lane, as `serve` lets them go.
-            drop(members);
             let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
             std::thread::scope(|scope| {
                 let serving = scope.spawn(move || endpoint.run());
-                host_lanes(agent, starts, scope);
+                host_lanes(&live, agent, served.execs, served.members, scope);
+                // Its VM: the built-ins it is handed, a TERM to member 1 and a KILL to member 2,
+                // each taken.
+                let process = scope.spawn(|| {
+                    for (number, member, signal) in [(0, 1, 15), (1, 2, 9)] {
+                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                        assert_eq!(m.kind, kind::EXEC_RUN);
+                        let (n, rest) = m.payload.split_first_chunk::<8>().unwrap();
+                        assert_eq!((u64::from_be_bytes(*n), rest[0]), (number, shards_ipc::EXEC_TOLD));
+                        let spec = protocol::Spec::decode(&rest[1..]).unwrap();
+                        assert_eq!(spec.builtin, protocol::builtin::SIGNAL);
+                        assert_eq!(spec.argv, protocol::members::signal_args(member, signal));
+                        let mut fds = m.fds.into_iter();
+                        let conn = Stream::from(fds.next().unwrap());
+                        drop(fds);
+                        shards_ipc::send(&conn, kind::STARTED, &[], &[]).unwrap();
+                        shards_ipc::send(&conn, kind::EXIT, &[0], &[]).unwrap();
+                    }
+                });
                 let (controller, dialed) = Controller::dial(
                     &kiln,
                     key,
@@ -5395,7 +5521,35 @@ mod hosted {
                 .unwrap();
                 let driver = scope.spawn(move || controller.run());
                 let execs = dialed.execs.as_ref().unwrap();
-                // Member 1's connection, as its VM hands it over.
+                agent.stands(Begun::Started);
+                let Member::Running(MemberControl {
+                    mut steering,
+                    mut end,
+                }) = execs.member(1).unwrap()
+                else {
+                    panic!("member 1 runs");
+                };
+                assert_eq!(steering.signal(15), Ok(()));
+                let Member::Running(MemberControl {
+                    steering: mut killed,
+                    end: mut kill_end,
+                }) = execs.member(2).unwrap()
+                else {
+                    panic!("member 2 runs");
+                };
+                assert_eq!(killed.signal(9), Ok(()));
+                process.join().unwrap();
+                let size = protocol::Size { rows: 50, cols: 132 };
+                assert_eq!(steering.resize(size), Err(Fault::Unsteered(Unsteered::Terminal)));
+                agent.ends.told(1, 143).unwrap();
+                agent.ends.told(2, 137).unwrap();
+                assert_eq!(end.wait(), Ok(143));
+                assert_eq!(kill_end.wait(), Ok(137));
+                assert_eq!(
+                    execs.member(0).map(|_| ()),
+                    Err(Fault::Unstarted(Unstarted::Refused))
+                );
+                // Its MCP connection, as its VM hands it over.
                 let (conn, mut harness) = Stream::pair().unwrap();
                 let first = shards_abi::run::mcp::ACCEPTED_FIRST;
                 let accepted = shards_ipc::Accepted {
@@ -5440,22 +5594,17 @@ mod hosted {
                     execs.mcp(0).map(|_| ()),
                     Err(Fault::Unstarted(Unstarted::Refused))
                 );
-                let spec = protocol::Spec {
-                    argv: vec![b"true".to_vec()],
-                    ..Default::default()
-                };
+                agent.over();
                 assert_eq!(
-                    execs.exec(1, spec).map(|_| ()),
+                    execs.member(1).map(|_| ()),
                     Err(Fault::Unstarted(Unstarted::Failed))
                 );
-                assert_eq!(execs.member(1).map(|_| ()), Err(Fault::Refused(Reason::Closed)));
-                agent.over();
                 assert_eq!(execs.mcp(1).map(|_| ()), Err(Fault::Unstarted(Unstarted::Failed)));
-                revoke.revoke();
+                served.revoke.revoke();
                 serving.join().unwrap().unwrap();
                 let _ = driver.join();
             });
-            assert_eq!(*lock(&budget), Some(0), "an MCP connection's charge outlived it");
+            assert_eq!(*lock(&budget), Some(0), "its lanes' charge outlived them");
         }
 
         /// D254: a member's MCP connection its VM hands over unprompted is answered as taken
@@ -7096,7 +7245,7 @@ mod tests {
                 window: 4096,
             }),
         };
-        let execs = crate::daemon::managed::exec_admissions().unwrap();
+        let execs = shards_api::control::exec_admissions();
         let (first, served) = hosted::bind_control(&ask, execs).unwrap();
         assert!(first.address.ip().is_loopback(), "{:?}", first.address);
         assert!(served.sockets.is_some());

@@ -5,7 +5,7 @@ mod drain;
 pub(crate) mod execs;
 mod log_lanes;
 pub(crate) mod mcp;
-mod members;
+pub(crate) mod members;
 #[cfg(test)]
 mod terminal_order_tests;
 
@@ -25,6 +25,7 @@ use shards_abi::run::{
     self,
     managed::{Channel, Event, Record, StreamState},
 };
+use shards_api::control::{HANDSHAKE_BYTES, INPUT_ROOM, exec_admissions};
 use shards_ipc::Stream;
 use shards_ipc::fd::AsRawFd as _;
 use shards_remote::{
@@ -55,8 +56,6 @@ pub(super) fn vm_key(dir: &Path) -> Option<Fingerprint> {
 }
 
 const GENERATION: &str = "managed-generation";
-// RFC 8446 §4: Handshake's uint24 length and four-byte type/length head.
-const HANDSHAKE_BYTES: usize = (1 << 24) - 1 + 4;
 /// The run's annotation naming the members whose stdin its owner writes (plan step 5, D231
 /// decision §3.3): each `KIND:NAME` as the image's Agentfile declares it (`agent` or
 /// `harness`), comma-separated. shards' own key, as `shards.egress` is a network's (D192):
@@ -68,10 +67,6 @@ pub(super) const STDIN_ANNOTATION: &str = "shards.stdin";
 /// not name the daemon reads itself, into its member's log as it comes, so that none waits on
 /// a reader (drain.rs): the members of a detached run, or of one whose client has gone.
 pub(super) const OUTPUT_ANNOTATION: &str = "shards.output";
-/// The most one input record carries: one `STDIN` frame to the member's init, which carries
-/// at most what the guest reads of a stream at once (`run::CHUNK`), as a command's and an
-/// exec's stdin frames do.
-const INPUT_ROOM: usize = run::CHUNK;
 
 /// The members a run's annotations give an input, by their declared index: each named
 /// once, each one of the image's members that runs a program (`active`), refused by name
@@ -741,28 +736,6 @@ fn bind_agent(
         },
     )
     .map_err(Failure::Endpoint)
-}
-
-/// What each exec's and MCP connection's streams are admitted (D238, D254), the daemon's runs'
-/// and an orchestrator's (api_run.rs) alike: an output's record is what one of its guest's
-/// output frames carries at most (`run::CHUNK`), its window that record with its data frame's
-/// head, as a member's is; its stdin's is a member's stdin's ([`INPUT_ROOM`], its taken
-/// frames' window). Their handshake and datagrams are a member stream's connection's.
-pub(crate) fn exec_admissions() -> io::Result<control::exec::Admissions> {
-    let window = |n: usize| u64::try_from(n).map_err(|_| io::Error::other("an exec's window overflows"));
-    let link = |record_bytes, transport_bytes| Admitted {
-        record_bytes,
-        transport_bytes,
-        handshake_bytes: HANDSHAKE_BYTES,
-        datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
-    };
-    let output = run::CHUNK
-        .checked_add(shards_remote::managed::DATA_HEAD)
-        .ok_or_else(|| io::Error::other("an exec's window overflows"))?;
-    Ok(control::exec::Admissions {
-        output: link(run::CHUNK, window(output)?),
-        input: link(INPUT_ROOM, window(input::TAKEN_BYTES)?),
-    })
 }
 
 impl Owner {
@@ -1688,7 +1661,7 @@ impl<D: Disk> Daemon<D> {
                 };
                 input_lanes.push((scope, input_admitted));
             }
-            let exec_admitted = exec_admissions()?;
+            let exec_admitted = exec_admissions();
             let (endpoint, served) = bind_agent(key, &lanes, &input_lanes, exec_admitted)?;
             // One driver's socket, and the waker every stream's control shares.
             let mut kernel = endpoint.kernel_buffer_bytes().map_err(Failure::Endpoint)?;
@@ -2106,6 +2079,11 @@ impl<D: Disk> Daemon<D> {
                 .try_reserve_exact(terminals.len())
                 .map_err(io::Error::other)?;
             sized.extend_from_slice(terminals);
+            let mut running = Vec::new();
+            running
+                .try_reserve_exact(active.len())
+                .map_err(io::Error::other)?;
+            running.extend_from_slice(active);
             std::thread::Builder::new()
                 .name("agent-members".into())
                 .spawn_scoped(threads, move || {
@@ -2113,6 +2091,7 @@ impl<D: Disk> Daemon<D> {
                         &lanes,
                         &members::Hosting {
                             ends: &member_ends,
+                            active: &running,
                             terminals: &sized,
                             charge: &member_charge,
                             started: &|| {
@@ -2120,6 +2099,7 @@ impl<D: Disk> Daemon<D> {
                                 self.running(&run_id)
                             },
                             builtin: &|spec, stdio, theirs| self.launch_builtin(&run_id, spec, stdio, theirs),
+                            say: &|line| log(line),
                         },
                     );
                 })?;
@@ -3393,7 +3373,7 @@ mod tests {
 
     /// The admissions a run's execs get, as `start_managed_capture` gives them.
     fn exec_admitted() -> control::exec::Admissions {
-        exec_admissions().unwrap()
+        exec_admissions()
     }
 
     /// What a run's exec host hands its VM process (`Daemon::launch_exec`): the member's exec,
@@ -3968,10 +3948,12 @@ mod tests {
         std::thread::scope(|s| {
             let hosting = members::Hosting {
                 ends: &ends,
+                active: &[0, 1],
                 terminals: &[],
                 charge: &charge,
                 started: &|| true,
                 builtin: &builtin,
+                say: &|_: &str| {},
             };
             let host = s.spawn(move || members::host(&lanes, &hosting));
             // Its VM process: the first SIGNAL it is handed exits 0, the second SIGNAL_ENDED.

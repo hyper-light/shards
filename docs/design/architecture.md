@@ -25328,7 +25328,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built; log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built, the daemon's runs' and an orchestrator's (api-run); log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -25861,6 +25861,39 @@ steer once the end has come. `MemberEnd::wait` gives the member's status.
 - *Its cost, unmeasured*: one built-in exec per steer (a connection to the VM process, the
   guest's dial of `EXEC_PORT`, a fork of init's). Signals and resizes come at a person's or an
   orchestrator's pace; their real-VM cost is owed to ROOT (R14).
+- *A member it has not* (as api-run's endpoint has no member stream to scope one by): a lane to
+  a member the run has not, or to one of files alone, is refused `Refused`, as its init refuses
+  an exec in one (D243), before it waits on the run's start (`members::Hosting::active`).
+
+*An orchestrator's run's member lanes* (goal 58; api-run, D252). kiln's harnesses run through
+api-run, whose endpoint admits execs (D254's pairing), and with them it hosts its members' own
+lanes and its execs through the daemon's hosts (`members::host`, `execs::host`; shared, not
+copied):
+- *Its ends*: api-run asks `member-ends` of every run already (D231); its `follow` keeps each
+  `MEMBER_ENDED` its VM relays in the run's end table (`members::Ends`), beside relaying it to its
+  orchestrator, and the run's end (its VM's link closing) closes the table and every wait.
+- *Its start*: each lane, exec and steer waits for its command's `STARTED` (`Agent::started`, a
+  condvar over `Begun`: `Awaited`, `Started`, `Over`; an event wait, no probe), and is refused
+  `Failed` once the run is over, started or not. api-run has no pause, so no steer waits on one.
+- *Its steering and execs*: a signal goes as the daemon's do, init's `SIGNAL` built-in handed to
+  its VM as `EXEC_RUN` with `EXEC_TOLD`, and a resize of a member with a terminal of its own
+  (`MemberSpec::terminal`) as D244's `RESIZE`; a controller's exec as `EXEC_RUN` with its own
+  flags. Each goes through `hand_exec`, then `send_exec`, the one sender api-run's own built-ins
+  (`builtin`, `notice_exec`) use too: its client's end held until `EXEC_TAKEN` (M24), let go
+  where its link has closed. Its answer comes by its exit, as the daemon's does;
+  `Fault::Unsteered` is the refusal its controller matches.
+- *Its budget*: the run host's own (`Charge`, held to the host's available memory as the daemon's
+  managed budget is), which its execs, its MCP connections and its member lanes are charged to.
+  No new literal: a payload's size is its number's eight bytes, its flags' one and its spec's
+  encoded length.
+
+Tested: `api_run::hosted::tests::an_orchestrators_run_hosts_its_lanes_as_the_daemons_runs`
+(through api-run's endpoint, its controller in the zero run: member 1 told running once its
+command started, `signal(15)` handed to its VM as `SIGNAL` with `EXEC_TOLD` and taken, a resize
+of it, with no terminal, refused `Terminal`, its end as its init told it read from its lane,
+member 0, files alone, refused `Refused`, its MCP connection carried both ways, a lane and an
+MCP ask after the run's end refused `Failed`, its budget given back whole). Real-VM runs owed to
+ROOT.
 
 *The signal's alternatives* (R02). (a) A run-protocol kind of its own, a member's signal on the
 signal connection answered on the workload connection, through an IPC kind its VM process
@@ -28479,10 +28512,9 @@ be Shards' own code. Hex's acceptance (step11-b-run-host-endpoint) is held to he
   `Transport(Peer)`: typed, never `Silent`. (g) asks never `Silent`, as (f) does.
 
 **Amended** (goal 58). The run host's endpoint admits execs too, as the daemon's runs do
-(`managed::exec_admissions`), so that it hosts its members' MCP connections (D254) through the
-daemon's exec host; an exec, which it runs none of yet, is refused `Failed`, and a member's own
-lane, which it hosts none of yet, is refused by its endpoint (`Closed`), until goal 58's
-member-lanes slice. Its asks name the zero run and generation 0, as its socket lanes do, its
+(`shards_api::control::exec_admissions`), so that it hosts its members' MCP connections (D254) through the
+daemon's exec host, and hosts its execs and its members' own lanes (D238) through the daemon's
+hosts too. Its asks name the zero run and generation 0, as its socket lanes do, its
 endpoint serving no member stream (D238).
 
 **Literals.** None new. The window and lanes are the caller's (R03). Loopback is where step 5's
@@ -28862,11 +28894,11 @@ hosts' stubs (`daemon` through a stand-in VM, api-run's `mcp_accepted`).
   bridge, or that its budget has no room for, is let go, logged by its typed cause (`Unheld`).
 - *api-run's hand-off and endpoint.* Its `follow` holds each connection as the daemon does
   (`mcp_accepted`, its watcher on a thread of the run's scope), its Windows leg as D251's lanes'.
-  Its endpoint now admits execs as the daemon's runs do (`managed::exec_admissions`, one source
+  Its endpoint now admits execs as the daemon's runs do (`shards_api::control::exec_admissions`, one source
   for both: an output's record `run::CHUNK`, a stdin's a member's), so that an MCP ask reaches
   its host, the daemon's exec host (`host_lanes`), its budget its own (`Charge`, held to the
-  host's available memory); an exec it runs none of yet is refused `Failed`, a member's own lane
-  `Closed` (D252's amendment). An endpoint of no member stream takes asks in the zero run (D238).
+  host's available memory); its execs and its members' own lanes go through the daemon's hosts
+  as well (D238's orchestrator's member lanes). An endpoint of no member stream takes asks in the zero run (D238).
 - *A run moved or resumed* (D176). A save keeps the run's MCP token beside its engine's
   (`Resume::mcp`, hex), its restore reads it back (`Resumable::mcp`), and a resumed request
   brings, after the save's tokens, a spec of what the save kept of its tokens, `engine=` and
@@ -28880,10 +28912,10 @@ Tested (adas-mac-studio-2.local, macOS arm64): `daemon::managed::tests::a_runs_m
 the controller's end the harness's half-close, its end told `Exited(0)` once the harness's side
 ended; a member with no bridge refused `Refused`; one its budget has no room for let go
 `Capacity`; the run's end letting go what is held and refusing the next ask `Failed`; every
-charge given back), `api_run::hosted::tests::an_orchestrators_run_carries_its_members_mcp_connections`
+charge given back), `api_run::hosted::tests::an_orchestrators_run_hosts_its_lanes_as_the_daemons_runs`
 (api-run's endpoint, its controller in the zero run: an MCP connection held as its VM handed it
-over and carried both ways; a member given no bridge refused `Refused`, an exec `Failed`, a
-member's own lane `Closed`, an ask after the run's end `Failed`; its budget given back whole),
+over and carried both ways; a member given no bridge refused `Refused`, an ask after the run's
+end `Failed`; its budget given back whole; its member lanes, D238),
 `api_run::hosted::tests::a_members_mcp_connection_is_held_where_its_run_gave_it_a_bridge`,
 `api_run::tests::a_bridge_is_a_running_members_once_and_needs_the_runs_control`,
 `daemon::tests::a_members_mcp_connection_its_run_gave_no_bridge_is_answered_and_let_go`,
