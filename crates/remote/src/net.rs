@@ -509,26 +509,10 @@ impl Liveness {
     /// death a whole window with no progress past the later of its last progress and that
     /// timeout.
     pub fn look(&mut self, now: Instant, sent: u64, acked: u64) -> Look {
-        let Some(connected) = self.connected else {
+        if self.connected.is_none() {
             return Look::Fine;
-        };
-        if let Some(wait) = self.wait
-            && acked > wait.acked
-        {
-            self.answer = self.answer.max(now.saturating_duration_since(wait.since));
-            self.wait = None;
         }
-        if sent > self.sent && self.wait.is_none() {
-            let last = self.heard.map_or(connected, |heard| heard.max(connected));
-            self.wait = Some(Wait {
-                since: now,
-                acked,
-                quiet: now.saturating_duration_since(last),
-                told: false,
-            });
-        }
-        self.sent = sent;
-        self.acked = acked;
+        self.note(now, sent, acked);
         // Cold, a wait follows its peer's liveness and progress for as long as it takes.
         let Some(window) = self.window() else {
             return Look::Fine;
@@ -552,6 +536,35 @@ impl Liveness {
             return Look::RanOut { waited, window };
         }
         Look::Fine
+    }
+
+    /// Takes in what its transport has sent and had acknowledged by `now`, `sent` ack-eliciting
+    /// frames and `acked` bytes in all: an answer raises the slowest and ends the wait it
+    /// answers; a send with none waiting begins one, as of `now`. Taken in as a send goes, before
+    /// anything more is read (as its driver sends between reads, [`Driver::take_in`]): taken in
+    /// after its answer had come, a send would begin a wait that answer had already ended, and
+    /// its quiet peer, with nothing more to answer, would be taken for dead.
+    pub fn note(&mut self, now: Instant, sent: u64, acked: u64) {
+        let Some(connected) = self.connected else {
+            return;
+        };
+        if let Some(wait) = self.wait
+            && acked > wait.acked
+        {
+            self.answer = self.answer.max(now.saturating_duration_since(wait.since));
+            self.wait = None;
+        }
+        if sent > self.sent && self.wait.is_none() {
+            let last = self.heard.map_or(connected, |heard| heard.max(connected));
+            self.wait = Some(Wait {
+                since: now,
+                acked,
+                quiet: now.saturating_duration_since(last),
+                told: false,
+            });
+        }
+        self.sent = sent;
+        self.acked = acked;
     }
 
     /// When [`Liveness::look`] must look again for what waits to change: its window's end (its
@@ -1185,18 +1198,41 @@ impl<H: Handler> Driver<H> {
                 }
                 let now = Instant::now();
                 let bytes = BytesMut::from(datagram.get(..n).unwrap_or_default());
-                self.receive(now, from, bytes)?;
-                // Whatever else came meanwhile, before a turn sends anything.
+                let mut fed = self.receive(now, from, bytes)?;
+                // Whatever else came meanwhile, each heard as it is read, and what a connection it
+                // fed has to send sent before more is read: its acknowledgement above all, which
+                // its peer awaits at once from its second ack-eliciting packet (RFC 9000
+                // §13.2.2), within its max_ack_delay at the latest (§13.2.1). Drained whole before
+                // any was sent, a backlog at a peer's full rate held every acknowledgement back
+                // and heard each datagram as of the drain's start, its silence as long as the
+                // drain (moved.rs's live move on HVF: an import's connection taken for dead
+                // mid-stream).
                 let turns = self
                     .limits
                     .map_or(usize::MAX, |l| l.queued_datagram_bytes / DATAGRAM);
+                let mut buffer = Vec::new();
                 for _ in 1..turns {
+                    if let Some(key) = fed.take() {
+                        self.transmit_conn(Instant::now(), key, &mut buffer)?;
+                        self.flush_datagrams();
+                        // What it sent, taken in before what answers it is read.
+                        if let Some(conn) = self.conns.get_mut(&key)
+                            && conn.connected
+                        {
+                            let stats = conn.quic.stats();
+                            conn.liveness.note(
+                                Instant::now(),
+                                eliciting(&stats.frame_tx),
+                                stats.path.acked_bytes,
+                            );
+                        }
+                    }
                     let Ok((n, from)) = self.socket.recv_from(datagram) else {
                         break;
                     };
                     if from != self.waker {
                         let bytes = BytesMut::from(datagram.get(..n).unwrap_or_default());
-                        self.receive(now, from, bytes)?;
+                        fed = self.receive(Instant::now(), from, bytes)?;
                     }
                 }
                 Ok(())
@@ -1282,7 +1318,8 @@ impl<H: Handler> Driver<H> {
         }
     }
 
-    fn receive(&mut self, now: Instant, from: SocketAddr, bytes: BytesMut) -> Result<(), Error> {
+    /// Feeds `bytes` from `from` to its connection, or to a new one: the connection fed, if any.
+    fn receive(&mut self, now: Instant, from: SocketAddr, bytes: BytesMut) -> Result<Option<ConnKey>, Error> {
         let mut response = Vec::new();
         match self.endpoint.handle(now, from, None, None, bytes, &mut response) {
             Some(DatagramEvent::NewConnection(incoming)) => {
@@ -1309,7 +1346,7 @@ impl<H: Handler> Driver<H> {
                             response.get(..transmit.size).unwrap_or_default(),
                         )?;
                     }
-                    return Ok(());
+                    return Ok(None);
                 }
                 self.make_room(now);
                 match self.endpoint.accept(incoming, now, &mut response, None, None) {
@@ -1328,6 +1365,7 @@ impl<H: Handler> Driver<H> {
                             },
                         );
                         self.pump(now, key);
+                        return Ok(Some(key));
                     }
                     Err(e) => {
                         if let Some(transmit) = e.response {
@@ -1346,6 +1384,7 @@ impl<H: Handler> Driver<H> {
                         conn.quic.handle_event(event, self.endpoint.configs_mut());
                     }
                     self.pump(now, key);
+                    return Ok(Some(key));
                 }
             }
             Some(DatagramEvent::Response(transmit)) => {
@@ -1356,7 +1395,7 @@ impl<H: Handler> Driver<H> {
             }
             None => {}
         }
-        Ok(())
+        Ok(None)
     }
 
     fn key_of(&self, handle: ConnectionHandle) -> Option<ConnKey> {
@@ -1776,31 +1815,35 @@ impl<H: Handler> Driver<H> {
             let Some(&key) = self.keys.get(at) else {
                 break;
             };
-            loop {
-                buffer.clear();
-                let Some(conn) = self.conns.get_mut(&key) else {
-                    break;
-                };
-                let Some(transmit) = conn
-                    .quic
-                    .poll_transmit(now, 1, &mut buffer, self.endpoint.configs())
-                else {
-                    break;
-                };
-                self.queue_datagram(
-                    transmit.destination,
-                    buffer.get(..transmit.size).unwrap_or_default(),
-                )?;
-                if self.limits.is_some() {
-                    self.flush_datagrams();
-                    if !self.out.is_empty() {
-                        break;
-                    }
-                }
-                self.pump(now, key);
-            }
+            self.transmit_conn(now, key, &mut buffer)?;
         }
         self.flush_datagrams();
+        Ok(())
+    }
+
+    /// Queues what connection `key` has to send, a bounded driver sending each as its socket
+    /// takes it.
+    fn transmit_conn(&mut self, now: Instant, key: ConnKey, buffer: &mut Vec<u8>) -> Result<(), Error> {
+        loop {
+            buffer.clear();
+            let Some(conn) = self.conns.get_mut(&key) else {
+                break;
+            };
+            let Some(transmit) = conn.quic.poll_transmit(now, 1, buffer, self.endpoint.configs()) else {
+                break;
+            };
+            self.queue_datagram(
+                transmit.destination,
+                buffer.get(..transmit.size).unwrap_or_default(),
+            )?;
+            if self.limits.is_some() {
+                self.flush_datagrams();
+                if !self.out.is_empty() {
+                    break;
+                }
+            }
+            self.pump(now, key);
+        }
         Ok(())
     }
 }
@@ -2183,6 +2226,27 @@ mod tests {
             (Some(ms(14)), false),
             "seven times the slowest, within its probe timeout"
         );
+    }
+
+    /// A send taken in as it goes (`Liveness::note`), before what answers it is read, is
+    /// answered by that answer, its quiet peer living on. Taken in only after its answer was
+    /// read, it began a wait that answer had already ended, and its peer, with nothing more to
+    /// answer, was taken for dead a window on: what failed `tests/loopback.rs` (2 to 3 of 26 on
+    /// adacachy2, 7 on macOS) as its driver first sent between its socket's reads.
+    #[test]
+    fn a_send_taken_in_before_its_answer_is_read_is_answered_by_it() {
+        let t0 = Instant::now();
+        let mut l = Liveness::new(t0, None, ms(2));
+        l.heard(t0);
+        l.connected(t0, 0, 0);
+        l.peer_ack_delay(ms(5));
+        l.probe_timeout(ms(10));
+        assert_eq!(l.look(t0 + ms(1), 1, 0), Look::Fine, "a first send waits");
+        l.note(t0 + ms(2), 2, 0);
+        l.heard(t0 + ms(3));
+        assert_eq!(l.look(t0 + ms(3), 2, 200), Look::Fine, "both answered at once");
+        assert_eq!(l.wait, None, "nothing waits");
+        assert_eq!(l.look(t0 + ms(100), 2, 200), Look::Fine, "its quiet peer lives");
     }
 
     /// A wait is judged on the time its side was there to hear (`Liveness::absent`): its driver

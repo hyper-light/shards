@@ -24,15 +24,9 @@ sha2 = "0.11"
 shards-image = { path = "../image" }
 time = { version = "0.3.55", features = ["parsing"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-shards-apple = { path = "../apple" }
-
-[target.'cfg(not(target_os = "macos"))'.dependencies]
-rustls-platform-verifier = "0.7.1"
-
-[target.'cfg(target_os = "macos")'.dev-dependencies]
-# What the macOS verifier is held to: it trusts and refuses as this one did (apple.rs).
-rustls-platform-verifier = "0.7.1"
+# Servers' certificates verified as Docker's Go code verifies them (D19), as the credential
+# injector's upstream side verifies too (D242).
+shards-verify = { path = "../verify" }
 
 [target.'cfg(unix)'.dependencies]
 # The daemon's children, credential helpers among them, made by its spawner (PM M158).

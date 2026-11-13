@@ -77,19 +77,14 @@ const UDP_STREAM: Duration = Duration::from_secs(120);
 const UDP_STREAM_AFTER: Duration = Duration::from_secs(2);
 /// The largest UDP datagram (RFC 768: its length a 16-bit field).
 const DATAGRAM: usize = 65_536;
-/// How long the relays have, once the run has ended, to pass on what its servers sent
-/// before they ended, as the kernel sends what a closed socket holds: the second the run's
-/// network process was given to end (shards `netproc::GRACE`, until PM M546, which follows
-/// that process for as long as it goes on). Its own basis is owed (R03).
-const DRAIN: Duration = Duration::from_secs(1);
 /// What each init's message to this process starts with: a listener, with it; or the
 /// host's answer, after it.
 pub const LISTENER: u8 = b'L';
 const ANSWER: u8 = b'A';
 
 /// Init's end of the process that makes the run's binds the host's, and its PID. Dropped,
-/// it closes the process's end: the process takes no more, finishes its relays' connections
-/// (at most [`DRAIN`]), and ends.
+/// it closes the process's end: the process takes no more, passes on what its relays'
+/// connections hold of their servers' ([`Pair::drain`]), each until its own end, and ends.
 #[derive(Debug)]
 pub struct Supervisor {
     sock: OwnedFd,
@@ -521,6 +516,14 @@ struct Half {
     shut: bool,
 }
 
+/// How one way's read or write went: on, whatever was ready moved (nothing, where nothing
+/// was), or its socket failed, with its errno.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Moved {
+    On,
+    Failed(i32),
+}
+
 impl Half {
     fn new() -> Half {
         Half {
@@ -540,29 +543,29 @@ impl Half {
         self.start < self.end
     }
 
-    /// Reads what `from` has; false on its error.
-    fn fill(&mut self, from: RawFd) -> bool {
+    /// Reads what `from` has, its end where it has ended.
+    fn fill(&mut self, from: RawFd) -> Moved {
         if self.start == self.end {
             (self.start, self.end) = (0, 0);
         }
         if self.eof {
-            return true;
+            return Moved::On;
         }
         let Some(room) = self.buf.get_mut(self.end..).filter(|r| !r.is_empty()) else {
-            return true;
+            return Moved::On;
         };
         // SAFETY: recv(2) into a buffer of ours, of its length.
         let n = unsafe { libc::recv(from, room.as_mut_ptr().cast(), room.len(), libc::MSG_DONTWAIT) };
         match usize::try_from(n) {
             Ok(0) => self.eof = true,
             Ok(n) => self.end += n,
-            Err(_) => return io::Error::last_os_error().kind() == io::ErrorKind::WouldBlock,
+            Err(_) => return failed(),
         }
-        true
+        Moved::On
     }
 
-    /// Writes what it holds to `to`, and its end once all is written; false on an error.
-    fn drain(&mut self, to: RawFd) -> bool {
+    /// Writes what it holds to `to`.
+    fn write(&mut self, to: RawFd) -> Moved {
         if let Some(data) = self.buf.get(self.start..self.end).filter(|d| !d.is_empty()) {
             // SAFETY: send(2) of a buffer of ours, of its length.
             let n = unsafe {
@@ -575,26 +578,209 @@ impl Half {
             };
             match usize::try_from(n) {
                 Ok(n) => self.start += n,
-                Err(_) => return io::Error::last_os_error().kind() == io::ErrorKind::WouldBlock,
+                Err(_) => return failed(),
             }
         }
-        if self.eof && !self.has_data() && !self.shut {
+        Moved::On
+    }
+
+    /// Writes what it holds to `to`, and its end once all is written.
+    fn drain(&mut self, to: RawFd) -> Moved {
+        let moved = self.write(to);
+        if moved == Moved::On && self.eof && !self.has_data() && !self.shut {
             // SAFETY: shutdown(2) of a socket of ours.
             unsafe { libc::shutdown(to, libc::SHUT_WR) };
             self.shut = true;
         }
-        true
+        moved
+    }
+
+    /// Lets go of what it holds.
+    fn clear(&mut self) {
+        (self.start, self.end) = (0, 0);
     }
 }
 
+/// The last call's failure: none where it would have waited (EAGAIN), which a socket that
+/// does not block says for nothing ready, or no room.
+fn failed() -> Moved {
+    match errno() {
+        libc::EAGAIN => Moved::On,
+        e => Moved::Failed(e),
+    }
+}
+
+/// Which socket of a relayed connection: the network process's, whose peer is the host's
+/// client, or this process's to the guest's server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    Net,
+    Local,
+}
+
+/// How a relayed connection ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ended {
+    /// Both ways ended, each end passed on.
+    Closed,
+    /// The run ended, and its server with it: all the server sent before its end passed on,
+    /// sent, and its end told the client ([`Pair::drain`]).
+    Drained,
+    /// A socket failed, with its errno: what the other had not taken goes with it.
+    Failed(Side, i32),
+    /// Its drain could not wait on it: poll(2) failed, with this errno.
+    Unwatched(i32),
+}
+
 /// A relayed connection: the network process's, and this process's to the socket it
-/// reaches, connecting until `connected`.
+/// reaches, connecting until `connected`; drained once the run has ended.
 struct Pair {
     net: OwnedFd,
     local: OwnedFd,
     connected: bool,
     up: Half,
     down: Half,
+    drain: Drain,
+}
+
+/// Whether a relayed connection's run has ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Drain {
+    /// Its run goes on: each way relayed, each end passed on.
+    No,
+    /// Its run has ended, and its server with it ([`Pair::drain`]); `sent`: whether its net
+    /// socket says POLLOUT only once all it was given is sent (TCP_NOTSENT_LOWAT of one
+    /// byte, since Linux 3.12), so that its server's end is told only then.
+    Yes { sent: bool },
+}
+
+impl Pair {
+    /// Its net and its local socket, each with what it waits for there: a socket it waits on
+    /// no more as -1, which poll(2) passes over, so that a reset one's POLLERR and POLLHUP,
+    /// which poll(2) says whatever is asked, do not wake it again and again.
+    fn watched(&self) -> [(RawFd, libc::c_short); 2] {
+        let (up, down) = (&self.up, &self.down);
+        let when = |yes: bool, event: libc::c_short| if yes { event } else { 0 };
+        let (net, local) = (self.net.as_raw_fd(), self.local.as_raw_fd());
+        if !self.connected {
+            return [(net, 0), (local, libc::POLLOUT)];
+        }
+        match self.drain {
+            Drain::No => [
+                (
+                    net,
+                    when(up.has_room(), libc::POLLIN) | when(down.has_data(), libc::POLLOUT),
+                ),
+                (
+                    local,
+                    when(up.has_data(), libc::POLLOUT) | when(down.has_room(), libc::POLLIN),
+                ),
+            ],
+            // The client's bytes, read and dropped; the server's, read until its end, written,
+            // and, all of them written, net's word that it has sent them all.
+            Drain::Yes { .. } => [
+                (
+                    net,
+                    when(!up.eof, libc::POLLIN) | when(down.has_data() || down.eof, libc::POLLOUT),
+                ),
+                (if down.has_room() { local } else { -1 }, libc::POLLIN),
+            ],
+        }
+    }
+
+    /// Moves what it can, each way: its end, where it has ended.
+    fn pump(&mut self) -> Option<Ended> {
+        let (net, local) = (self.net.as_raw_fd(), self.local.as_raw_fd());
+        if !self.connected {
+            match sockopt_raw(local, libc::SOL_SOCKET, libc::SO_ERROR) {
+                Some(0) if peer_known(local) => self.connected = true,
+                Some(0) => return None,
+                Some(e) => return Some(Ended::Failed(Side::Local, e)),
+                None => return Some(Ended::Failed(Side::Local, errno())),
+            }
+        }
+        if let Drain::Yes { sent } = self.drain {
+            return self.drain(net, local, sent);
+        }
+        if let Moved::Failed(e) = self.up.fill(net) {
+            return Some(Ended::Failed(Side::Net, e));
+        }
+        if let Moved::Failed(e) = self.up.drain(local) {
+            return Some(Ended::Failed(Side::Local, e));
+        }
+        if let Moved::Failed(e) = self.down.fill(local) {
+            return Some(Ended::Failed(Side::Local, e));
+        }
+        if let Moved::Failed(e) = self.down.drain(net) {
+            return Some(Ended::Failed(Side::Net, e));
+        }
+        (self.up.shut && self.down.shut).then_some(Ended::Closed)
+    }
+
+    /// Its run ended, and its server with it, killed with the run's every other process:
+    /// what the server sent before its end is passed on, and its end then, as the kernel
+    /// sends what a socket was given before it closed; nothing bounds it but the
+    /// connection's own peers. Each run's relay drains once, so no drain of its own could
+    /// tell it how long another took (PM M556). What the client sends reaches no one now:
+    /// read, and dropped, so that none is left unread as net closes, which would make that a
+    /// reset (Linux's tcp_close()). The server's end is its FIN, or its reset once what it
+    /// held was read, as its socket closed with bytes of the client's unread (tcp_recvmsg()
+    /// gives what was queued before the reset's error). Told once net has sent all of it, where
+    /// `sent`: so that the run's end, said once its relays have ended, comes after the last
+    /// of it has left the guest. Its end is the client's where net fails.
+    fn drain(&mut self, net: RawFd, local: RawFd, sent: bool) -> Option<Ended> {
+        for _ in 0..BUDGET {
+            if let Moved::Failed(e) = self.up.fill(net) {
+                return Some(Ended::Failed(Side::Net, e));
+            }
+            let read = self.up.has_data();
+            self.up.clear();
+            if !read {
+                break;
+            }
+        }
+        if let Moved::Failed(_) = self.down.fill(local) {
+            self.down.eof = true;
+        }
+        if let Moved::Failed(e) = self.down.write(net) {
+            return Some(Ended::Failed(Side::Net, e));
+        }
+        if !self.down.eof || self.down.has_data() || (sent && unsent(net).is_some_and(|n| n > 0)) {
+            return None;
+        }
+        // SAFETY: shutdown(2) of a socket of ours.
+        unsafe { libc::shutdown(net, libc::SHUT_WR) };
+        self.down.shut = true;
+        Some(Ended::Drained)
+    }
+
+    /// Its run has ended: from now on, drained ([`Pair::drain`]).
+    fn draining(&mut self) {
+        let one: libc::c_int = 1;
+        // SAFETY: setsockopt(2) of an int of ours, its length given.
+        let sent = unsafe {
+            libc::setsockopt(
+                self.net.as_raw_fd(),
+                libc::IPPROTO_TCP,
+                libc::TCP_NOTSENT_LOWAT,
+                (&raw const one).cast(),
+                size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        } == 0;
+        self.drain = Drain::Yes { sent };
+    }
+}
+
+/// What `sock` holds that it has not sent yet (SIOCOUTQNSD, tcp_ioctl()); none where it
+/// cannot say.
+fn unsent(sock: RawFd) -> Option<usize> {
+    let mut n: libc::c_int = 0;
+    // SAFETY: ioctl(2) SIOCOUTQNSD into an int of ours.
+    let r = unsafe { libc::ioctl(sock, libc::SIOCOUTQNSD as _, &raw mut n) };
+    if r != 0 {
+        return None;
+    }
+    usize::try_from(n).ok()
 }
 
 /// A relayed UDP flow: the network process's peer, from relay `relay` (a held socket's
@@ -678,18 +864,10 @@ fn serve(ctl: OwnedFd, diag: OwnedFd) {
     };
     let mut watched: Vec<(RawFd, libc::c_short, Owner)> = Vec::new();
     let mut set: Vec<libc::pollfd> = Vec::new();
-    // Init gone, the run has ended: what its relays hold, passed on until this.
-    let mut until: Option<Instant> = None;
-    loop {
-        if let Some(until) = until
-            && (s.pairs.iter().all(Option::is_none) || Instant::now() >= until)
-        {
-            return;
-        }
+    let mut ended = false;
+    while !ended {
         watched.clear();
-        if until.is_none() {
-            watched.push((s.ctl.as_raw_fd(), libc::POLLIN, Owner::Ctl));
-        }
+        watched.push((s.ctl.as_raw_fd(), libc::POLLIN, Owner::Ctl));
         watched.push((s.diag.as_raw_fd(), libc::POLLIN, Owner::Diag));
         for (i, l) in s.listeners.iter().enumerate() {
             if let Some((l, _)) = l {
@@ -703,19 +881,9 @@ fn serve(ctl: OwnedFd, diag: OwnedFd) {
         }
         for (i, p) in s.pairs.iter().enumerate() {
             let Some(p) = p else { continue };
-            let net = if p.up.has_room() { libc::POLLIN } else { 0 }
-                | if p.down.has_data() { libc::POLLOUT } else { 0 };
-            let local = if !p.connected || p.up.has_data() {
-                libc::POLLOUT
-            } else {
-                0
-            } | if p.connected && p.down.has_room() {
-                libc::POLLIN
-            } else {
-                0
-            };
-            watched.push((p.net.as_raw_fd(), net, Owner::Pair(i)));
-            watched.push((p.local.as_raw_fd(), local, Owner::Pair(i)));
+            for (fd, events) in p.watched() {
+                watched.push((fd, events, Owner::Pair(i)));
+            }
         }
         for (i, f) in s.flows.iter().enumerate() {
             if let Some(f) = f {
@@ -734,7 +902,6 @@ fn serve(ctl: OwnedFd, diag: OwnedFd) {
             .iter()
             .flatten()
             .map(|f| f.until)
-            .chain(until)
             .map(|t| t.saturating_duration_since(now))
             .min()
             .map_or(-1, |d| {
@@ -754,7 +921,7 @@ fn serve(ctl: OwnedFd, diag: OwnedFd) {
                         // No more binds, connections nor datagrams: the run has ended.
                         // What its servers answered its relays' peers before they ended is
                         // passed on first, as the kernel sends what a socket was given.
-                        until = Some(Instant::now() + DRAIN);
+                        ended = true;
                         s.listeners.clear();
                         for i in 0..s.flows.len() {
                             s.replied(i);
@@ -782,6 +949,50 @@ fn serve(ctl: OwnedFd, diag: OwnedFd) {
         }
         s.expire(Instant::now());
     }
+    // Init gone, the run has ended: what its relayed connections hold of their servers' is
+    // passed on, each until its own end, and then the process ends.
+    drain(std::mem::take(&mut s.pairs).into_iter().flatten().collect());
+}
+
+/// Drains the relayed connections of a run that has ended, each until its own end
+/// ([`Pair::drain`]), with no clock: woken by their sockets alone. What each ended with.
+fn drain(mut pairs: Vec<Pair>) -> Vec<Ended> {
+    let mut ended = Vec::with_capacity(pairs.len());
+    for p in &mut pairs {
+        p.draining();
+    }
+    let mut set: Vec<libc::pollfd> = Vec::with_capacity(pairs.len().saturating_mul(2));
+    while !pairs.is_empty() {
+        set.clear();
+        for p in &pairs {
+            for (fd, events) in p.watched() {
+                set.push(libc::pollfd {
+                    fd,
+                    events,
+                    revents: 0,
+                });
+            }
+        }
+        // SAFETY: poll(2) on pollfds of descriptors this process holds, as many as given.
+        if unsafe { libc::poll(set.as_mut_ptr(), set.len() as libc::nfds_t, -1) } < 0 {
+            let e = errno();
+            if e == libc::EINTR {
+                continue;
+            }
+            ended.extend(pairs.iter().map(|_| Ended::Unwatched(e)));
+            return ended;
+        }
+        let ready = set.chunks(2).map(|both| both.iter().any(|p| p.revents != 0));
+        let mut kept = Vec::with_capacity(pairs.len());
+        for (mut p, ready) in std::mem::take(&mut pairs).into_iter().zip(ready) {
+            match ready.then(|| p.pump()).flatten() {
+                Some(end) => ended.push(end),
+                None => kept.push(p),
+            }
+        }
+        pairs = kept;
+    }
+    ended
 }
 
 impl Supervise {
@@ -1493,31 +1704,22 @@ impl Supervise {
                         connected: false,
                         up: Half::new(),
                         down: Half::new(),
+                        drain: Drain::No,
                     },
                 );
             }
         }
     }
 
-    /// Moves what relayed connection `i` can, each way; ends it once both ways have ended,
-    /// or on an error.
+    /// Moves what relayed connection `i` can, each way; ends it once it has ended
+    /// ([`Pair::pump`]).
     fn pump(&mut self, i: usize) {
-        let Some(p) = self.pairs.get_mut(i).and_then(Option::as_mut) else {
-            return;
-        };
-        let (net, local) = (p.net.as_raw_fd(), p.local.as_raw_fd());
-        if !p.connected {
-            match sockopt_raw(local, libc::SOL_SOCKET, libc::SO_ERROR) {
-                Some(0) if peer_known(local) => p.connected = true,
-                Some(0) => return,
-                _ => {
-                    self.end_pair(i);
-                    return;
-                }
-            }
-        }
-        let ok = p.up.fill(net) && p.up.drain(local) && p.down.fill(local) && p.down.drain(net);
-        if !ok || (p.up.shut && p.down.shut) {
+        let ended = self
+            .pairs
+            .get_mut(i)
+            .and_then(Option::as_mut)
+            .and_then(Pair::pump);
+        if ended.is_some() {
             self.end_pair(i);
         }
     }
@@ -2054,6 +2256,229 @@ fn sockets() -> Option<HashSet<u64>> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    /// A client of the host's whose receive window is `window` bytes, set before it
+    /// connects, as a slow reader's stays small; the kernel's own where none.
+    fn client(to: SocketAddr, window: Option<libc::c_int>) -> TcpStream {
+        // SAFETY: socket(2) with constant arguments.
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+        assert!(fd >= 0, "{}", io::Error::last_os_error());
+        // SAFETY: a descriptor just made, owned here alone.
+        let sock = unsafe { OwnedFd::from_raw_fd(fd) };
+        if let Some(window) = window {
+            // SAFETY: setsockopt(2) of an int of ours, its length given.
+            let set = unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVBUF,
+                    (&raw const window).cast(),
+                    size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            };
+            assert_eq!(set, 0, "{}", io::Error::last_os_error());
+        }
+        let (ss, len) = sockaddr(to);
+        // SAFETY: connect(2) of a socket of ours with a sockaddr of ours.
+        let connected = unsafe { libc::connect(fd, (&raw const ss).cast(), len) };
+        assert_eq!(connected, 0, "{}", io::Error::last_os_error());
+        TcpStream::from(sock)
+    }
+
+    /// A relayed connection on loopback, as a relay of the host's network makes one: its
+    /// pair (net, the network process's side; local, this process's to the server), the
+    /// host's client and the guest's server.
+    fn relayed(window: Option<libc::c_int>) -> (Pair, TcpStream, TcpStream) {
+        let clients = TcpListener::bind("127.0.0.1:0").unwrap();
+        let servers = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = client(clients.local_addr().unwrap(), window);
+        let (net, _) = clients.accept().unwrap();
+        let local = TcpStream::connect(servers.local_addr().unwrap()).unwrap();
+        let (server, _) = servers.accept().unwrap();
+        net.set_nonblocking(true).unwrap();
+        local.set_nonblocking(true).unwrap();
+        let pair = Pair {
+            net: OwnedFd::from(net),
+            local: OwnedFd::from(local),
+            connected: false,
+            up: Half::new(),
+            down: Half::new(),
+            drain: Drain::No,
+        };
+        (pair, client, server)
+    }
+
+    /// Relays `pair` as its run goes on until `server` holds `n` bytes unread: woken by the
+    /// pair's sockets and the server's.
+    fn relay_until(pair: &mut Pair, server: &TcpStream, n: usize) {
+        while unread(server) < n {
+            let mut set: Vec<libc::pollfd> = pair
+                .watched()
+                .iter()
+                .chain(&[(server.as_raw_fd(), libc::POLLIN)])
+                .map(|&(fd, events)| libc::pollfd {
+                    fd,
+                    events,
+                    revents: 0,
+                })
+                .collect();
+            // SAFETY: poll(2) on pollfds of ours, as many as given.
+            unsafe { libc::poll(set.as_mut_ptr(), set.len() as libc::nfds_t, -1) };
+            assert_eq!(pair.pump(), None, "the pair ended as its run went on");
+        }
+    }
+
+    /// What `sock` holds unread (FIONREAD).
+    fn unread(sock: &TcpStream) -> usize {
+        let mut n: libc::c_int = 0;
+        // SAFETY: ioctl(2) FIONREAD into an int of ours.
+        unsafe { libc::ioctl(sock.as_raw_fd(), libc::FIONREAD, &raw mut n) };
+        usize::try_from(n).unwrap_or(0)
+    }
+
+    /// `n` bytes a server sends, each told from its place.
+    fn sent(n: usize) -> Vec<u8> {
+        (0..n).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// The run's end, drained on a thread of its own: its pairs' ends and when it returned,
+    /// waited for as the drain lives, with no clock of the test's.
+    fn drained(pairs: Vec<Pair>) -> std::sync::mpsc::Receiver<(Vec<Ended>, Instant)> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let ends = drain(pairs);
+            let _ = tx.send((ends, Instant::now()));
+        });
+        rx
+    }
+
+    /// What a client reads to its end, from `after` on, and when it began.
+    fn read_after(mut client: TcpStream, after: Duration) -> (Vec<u8>, Instant) {
+        std::thread::sleep(after);
+        let began = Instant::now();
+        let mut got = Vec::new();
+        client.read_to_end(&mut got).unwrap();
+        (got, began)
+    }
+
+    /// The run's end with its server's 4 MiB still to come and its client reading only
+    /// after 1.5 s, past the second the relays had (`DRAIN`, PM M556): all of it passes on,
+    /// then its end; the drain follows its peers, no clock (D124).
+    #[test]
+    fn a_relay_drains_its_servers_bytes_however_long_its_client_takes() {
+        let (pair, client, mut server) = relayed(Some(4096));
+        let all = sent(4 << 20);
+        let theirs = all.clone();
+        let serving = std::thread::spawn(move || {
+            server.write_all(&theirs).unwrap();
+        });
+        let rx = drained(vec![pair]);
+        let (got, _) = read_after(client, Duration::from_millis(1500));
+        serving.join().unwrap();
+        let (ends, _) = rx.recv().unwrap();
+        assert_eq!(got.len(), all.len());
+        assert!(got == all, "passed on as sent");
+        assert_eq!(ends, [Ended::Drained]);
+    }
+
+    /// The run's end with 256 KiB of its server's that the relay can write at once, its
+    /// client's window 4 KiB: the drain ends only once net has sent all of it, past the
+    /// client's reading it, so that the run's end is said after the last of it has left the
+    /// guest (TCP_NOTSENT_LOWAT, D124).
+    #[test]
+    fn a_relays_drain_ends_once_its_servers_bytes_are_sent() {
+        let (pair, client, mut server) = relayed(Some(4096));
+        let all = sent(256 << 10);
+        let rx = drained(vec![pair]);
+        let theirs = all.clone();
+        let serving = std::thread::spawn(move || {
+            server.write_all(&theirs).unwrap();
+        });
+        let (got, reading) = read_after(client, Duration::from_millis(1500));
+        serving.join().unwrap();
+        let (ends, returned) = rx.recv().unwrap();
+        assert!(got == all, "passed on as sent: {} bytes", got.len());
+        assert_eq!(ends, [Ended::Drained]);
+        assert!(
+            returned > reading,
+            "ended before its client took what it had not sent"
+        );
+    }
+
+    /// A server killed with its client's bytes unread resets its connection: what it sent
+    /// before passes on all the same, then its end (tcp_recvmsg() gives what was queued
+    /// before the reset's error); before, the reset ended the relay at once, what it held
+    /// lost (D124).
+    #[test]
+    fn a_reset_servers_bytes_are_drained_too() {
+        let (mut pair, mut client, mut server) = relayed(Some(4096));
+        client.write_all(b"hello").unwrap();
+        relay_until(&mut pair, &server, 5);
+        let all = sent(64 << 10);
+        server.write_all(&all).unwrap();
+        // All of it with the relay's socket before the reset, which takes what is unsent.
+        while unsent_or_unacked(&server) > 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        drop(server);
+        let rx = drained(vec![pair]);
+        let (got, _) = read_after(client, Duration::from_millis(500));
+        let (ends, _) = rx.recv().unwrap();
+        assert!(got == all, "passed on as sent: {} bytes", got.len());
+        assert_eq!(ends, [Ended::Drained]);
+    }
+
+    /// What `sock` holds that its peer has not acknowledged (SIOCOUTQ).
+    fn unsent_or_unacked(sock: &TcpStream) -> usize {
+        let mut n: libc::c_int = 0;
+        // SAFETY: ioctl(2) SIOCOUTQ into an int of ours.
+        unsafe { libc::ioctl(sock.as_raw_fd(), libc::TIOCOUTQ, &raw mut n) };
+        usize::try_from(n).unwrap_or(0)
+    }
+
+    /// A drain waits on no client that holds its connection open, reading nothing more and
+    /// sending nothing: its server's end told, the relay is done. One whose client resets
+    /// it ends with its client's end (D124).
+    #[test]
+    fn a_relays_drain_ends_with_its_server_or_its_client() {
+        let (pair, client, mut server) = relayed(None);
+        server.write_all(b"bye").unwrap();
+        drop(server);
+        let rx = drained(vec![pair]);
+        let (ends, _) = rx.recv().unwrap();
+        assert_eq!(ends, [Ended::Drained]);
+        let mut got = [0u8; 3];
+        let mut client = client;
+        client.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"bye");
+        let (pair, client, mut server) = relayed(Some(4096));
+        server.write_all(&sent(64 << 10)).unwrap();
+        let rx = drained(vec![pair]);
+        // A reset: SO_LINGER of no time, then its close.
+        let linger = libc::linger {
+            l_onoff: 1,
+            l_linger: 0,
+        };
+        // SAFETY: setsockopt(2) of a linger of ours, its length given.
+        unsafe {
+            libc::setsockopt(
+                client.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_LINGER,
+                (&raw const linger).cast(),
+                size_of::<libc::linger>() as libc::socklen_t,
+            )
+        };
+        drop(client);
+        let (ends, _) = rx.recv().unwrap();
+        assert!(
+            matches!(ends.as_slice(), [Ended::Failed(Side::Net, e)] if [libc::ECONNRESET, libc::EPIPE].contains(e)),
+            "{ends:?}"
+        );
+        drop(server);
+    }
 
     /// Where a bind of the guest's goes on the host (D124): its every address and its own
     /// address the host's every one, reached on eth0; its loopback the host's, relayed;

@@ -103,6 +103,20 @@ pub(crate) fn demanding_registry() -> (CertificateDer<'static>, String, String, 
     )
 }
 
+/// A client of a test's whose server answers from a script, each answer the next request's:
+/// its waits follow their connections' liveness alone, as a path's that has shown nothing
+/// do (D222), so that no asking again past a run-out takes a scripted answer out of turn. A
+/// fresh path's k-th answer is the slowest it has shown with chance 1/k where its times are
+/// alike (Glick, "Breaking records and breaking boards", Amer. Math. Monthly 85(1), 1978),
+/// and runs out past its slowest; the waits' own tests use clients of their own.
+pub(crate) fn client() -> crate::http::Client {
+    crate::http::Client::new(
+        Box::new(|_| crate::tls::client_config(Vec::new(), None)),
+        "shards-test",
+    )
+    .following_liveness()
+}
+
 /// What the server does with a connection after a scripted response.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum After {
