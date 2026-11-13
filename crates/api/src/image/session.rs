@@ -2036,6 +2036,8 @@ mod tests {
             } else {
                 ask(&mut h.host, 1, if lessor { "github/token" } else { CLAUDE });
             }
+            // Its channel then closes: a run its ask did not break ends with no end of its own.
+            drop(h.host);
             h.reader.join().unwrap();
             assert!(
                 matches!(lock(&h.shared.state).end, Some(RunEnd::Failed(_))),
