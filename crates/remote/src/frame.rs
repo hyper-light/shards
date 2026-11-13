@@ -26,6 +26,10 @@ pub enum Tag {
     /// Controller, on an agent-control endpoint's exec lane (D238): run a command in one of a
     /// microVM's members (`control::exec::Ask`).
     MemberExec = 4,
+    /// Controller, on an agent-control endpoint's socket lane (D251): connect to a socket of
+    /// the run's own command, by its name in the run's socket directory
+    /// (`control::unix::ask_frame`).
+    UnixConnect = 5,
     /// Controller, on an agent-control endpoint (D238): open the connection's control lane,
     /// which the endpoint first answers with what its TLS negotiated ([`Tag::Negotiated`]).
     Control = 6,
@@ -57,6 +61,11 @@ pub enum Tag {
     /// Agent-control endpoint, on the control lane (D238): the cipher suite and key exchange
     /// group its own TLS handshake negotiated, IANA's codes (two bytes each, big endian).
     Negotiated = 39,
+    /// Agent-control endpoint, on a socket lane (D251): connected; the socket's bytes follow.
+    Connected = 40,
+    /// Agent-control endpoint, on a socket lane (D251): its host's connect failed, with this
+    /// errno (four bytes, big endian); the lane's end follows.
+    Unreached = 41,
 }
 
 impl Tag {
@@ -66,6 +75,7 @@ impl Tag {
             2 => Tag::Join,
             3 => Tag::Controls,
             4 => Tag::MemberExec,
+            5 => Tag::UnixConnect,
             6 => Tag::Control,
             16 => Tag::Stdin,
             17 => Tag::StdinEnd,
@@ -79,6 +89,8 @@ impl Tag {
             37 => Tag::Made,
             38 => Tag::Started,
             39 => Tag::Negotiated,
+            40 => Tag::Connected,
+            41 => Tag::Unreached,
             _ => return None,
         })
     }

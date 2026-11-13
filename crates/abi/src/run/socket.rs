@@ -184,7 +184,6 @@ pub fn read_refused(payload: &[u8]) -> Option<(u32, core::num::NonZeroU32)> {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
-    use alloc::vec;
 
     /// A run's directory is absolute and plain, as a member's working directory is.
     #[test]
@@ -193,7 +192,7 @@ mod tests {
             assert!(dir_ok(ok), "{ok:?}");
             assert_eq!(grant(ok).unwrap(), [DIR, ok].concat());
         }
-        let past = [b"/".as_slice(), &vec![b'a'; PATH_MOST]].concat();
+        let past = [b"/".as_slice(), &[b'a'; PATH_MOST]].concat();
         for bad in [
             &b""[..],
             b"run/hex",
@@ -219,7 +218,7 @@ mod tests {
             b"/run/hex/channel/control.sock"
         );
         assert_eq!(path(b"/", b"s").unwrap(), b"/s");
-        let long = vec![b'x'; 256];
+        let long = [b'x'; 256];
         for bad in [
             &b""[..],
             b".",
@@ -235,7 +234,7 @@ mod tests {
         }
         assert!(name_ok(&long[..NAME_MOST]));
         // Its NUL counted: 107 bytes of path fit, 108 do not.
-        let dir = [b"/".as_slice(), &vec![b'd'; 100]].concat();
+        let dir = [b"/".as_slice(), &[b'd'; 100]].concat();
         assert!(path(&dir, b"abcde").is_some_and(|p| p.len() == SUN_PATH - 1));
         assert_eq!(path(&dir, b"abcdef"), None);
         assert_eq!(path(b"run", b"s"), None);
@@ -245,7 +244,7 @@ mod tests {
     /// anything else left to the rest of the run.
     #[test]
     fn a_runs_grant_is_read_as_written() {
-        let setup = vec![
+        let setup = [
             b"readonly".to_vec(),
             grant(b"/run/hex/channel").unwrap(),
             b"nesting".to_vec(),

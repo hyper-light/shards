@@ -603,13 +603,13 @@ pub mod kind {
     /// held by the VM until its owner says it has it with [`LANE_HELD`] (M24), and on
     /// Windows, where a VM gives its owner no handle, none, its owner answering
     /// [`LANE_HELD`] with the socket the VM relays the lane onto.
-    pub const LANE_OPEN: u8 = 97;
+    pub const LANE_OPEN: u8 = 98;
     /// Its owner → a VM, by a lane's number (8, big-endian): the owner has the lane's
     /// connection a VM handed it ([`LANE_OPEN`]'s answer, or any lane a VM hands it by
     /// number), and the VM lets go of its copy (M24); on Windows beside it the socket the VM
     /// relays the lane onto, or none for a lane its owner closes. Numbers its owner chose
     /// ([`LANE_OPEN`]) are below 2^63; a VM's own, for lanes its guest begins, at or above.
-    pub const LANE_HELD: u8 = 98;
+    pub const LANE_HELD: u8 = 99;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the

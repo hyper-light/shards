@@ -70,6 +70,8 @@ pub enum Reason {
     Stale = 3,
     Closed = 4,
     Auth = 5,
+    /// More lanes than the run admits at once: refused, never queued (D251).
+    Capacity = 6,
 }
 
 impl TryFrom<u32> for Reason {
@@ -81,6 +83,7 @@ impl TryFrom<u32> for Reason {
             3 => Ok(Self::Stale),
             4 => Ok(Self::Closed),
             5 => Ok(Self::Auth),
+            6 => Ok(Self::Capacity),
             _ => Err(ProtocolError::CloseReason),
         }
     }
