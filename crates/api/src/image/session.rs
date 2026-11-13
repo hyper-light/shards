@@ -458,7 +458,7 @@ impl Begun {
             said,
         } = start_host(&binary, &[OsStr::new("api-run")], env)?;
         let shared = Arc::new(Shared {
-            state: Mutex::new(State::asking(&request.members)),
+            state: Mutex::new(State::default()),
             changed: Condvar::new(),
             to_host: Mutex::new(Some(to_host)),
         });
@@ -505,12 +505,17 @@ impl Begun {
         lock(&self.shared.to_host).take();
     }
 
-    /// Sends the host `request`, as a run's (`CREATE`) or a warm host's exemplar (`WARM`).
+    /// Sends the host `request`, as a run's (`CREATE`) or a warm host's exemplar (`WARM`): a
+    /// run's members whose stdin it asks for named first, for their flows to be made with its
+    /// start (`take`), which can come no sooner than the request.
     pub(super) fn send(&self, kind: u8, request: &wire::Request) -> Result<(), ImageRefusal> {
         let payload = request.encode().map_err(|e| ImageRefusal::Spec {
             what: "the spec",
             why: e.to_string(),
         })?;
+        if kind == wire::to_host::CREATE {
+            lock(&self.shared.state).asked_inputs = State::asking(&request.members).asked_inputs;
+        }
         self.shared.send(kind, &payload).map_err(|e| ImageRefusal::Os {
             what: "the run host's request",
             kind: e.kind(),
