@@ -6314,10 +6314,11 @@ meanwhile. The patience reused D180's `QUIET`, derived for contexts over real li
 replaced by D180's liveness at use (its "Its values derived", ROOT's call C): neither side
 has an idle timeout or a keep-alive, so a quiet subscription lives however long its harness
 says nothing (`a_quiet_subscription_lives_with_no_idle_timeout_or_keep_alive`); a vanished
-owner is found so at its endpoint's next send, unanswered a whole window past its probe
-timeout (`a_vanished_owner_is_let_go_at_its_endpoints_next_send`), or as a restarted owner
-contends for its endpoint's one place, each connection holding one then asked for an answer
-(a PING, net.rs), its place freed once that goes unanswered; and no `Admitted::patience` or
+owner's next send stalls, told, and its place is kept until a restarted owner contends for
+its endpoint's one place: each connection holding one is then asked for an answer (a PING,
+net.rs), and its place goes to the contender's next attempt once that goes unanswered and
+stalled (`a_vanished_owners_place_goes_to_its_successor_as_it_dials`; ROOT's ruling A, below);
+and no `Admitted::patience` or
 `DriverLimits::handshake_patience` is admitted, a handshake waiting as long as its probing
 goes on, its caller's to end.
 
@@ -6425,8 +6426,9 @@ while the socket holds back an earlier one, and its endpoint is told it drained
 faster resource recovery", at the cost it names: a late packet of its peer's is answered by a
 stateless reset (§10.3), which ends the connection for that peer as its close would. An open
 connection, its handshake's or established, keeps its place: a vanished owner's is freed only
-as liveness at use finds it dead (above), its successor refused and dialing again meanwhile;
-a stranger's handshake in flight holds it too. Every bounded endpoint shares the driver, so an
+as its successor contends for it and it has not answered the PING an earlier attempt sent it
+(`Driver::reclaim`, below), its successor refused and dialing again meanwhile; a stranger's
+handshake in flight holds it too. Every bounded endpoint shares the driver, so an
 output endpoint's observer resubscribing after its close is taken at once, and so is the
 agent-control endpoint's third connection while the older drains (D238's `CONNECTIONS`). No
 literal: the places are the caller's admission, the close period the transport's own. Red at
@@ -6515,8 +6517,16 @@ replaced by:
   handshake's probes, not its peer's answer, whose work (its key exchange and signature) and
   host's scheduling it does not measure.
 - *An established connection's liveness, at use* (was the idle timeout: `IDLE`, 10 s, then
-  `QUIET`, 100 s). Its transport has no idle timeout (`max_idle_timeout` none) and sends no
-  keep-alive of its own. A send that waits for its acknowledgment is held to a window, the slowest
+  `QUIET`, 100 s). Its transport has no idle timeout and sends no keep-alive of its own: both
+  ends advertise no `max_idle_timeout` (`tls::transport`; managed.rs's `transport`, which the
+  agent-control links take too), which RFC 9000 §18.2 reads as none ("Idle timeout is disabled when both endpoints
+  omit this transport parameter or specify a value of 0"), so between two shards ends nothing
+  of QUIC's bounds a wait (`net::Seen::idle`, none). A peer that advertises one of its own (a
+  build that still does) still bounds it: §10.1 makes the effective timeout "the minimum of
+  the two advertised values (or the sole advertised value, if only one endpoint advertises a
+  non-zero value)", and this side's sends restart its timer only once after each packet heard,
+  so such a connection unheard that long, or three probe timeouts where longer (§10.1), ends
+  silently (`ConnectionError::TimedOut`), told as its end. A send that waits for its acknowledgment is held to a window, the slowest
   answer seen on its path (the record's, then this connection's sends') plus the peer's own
   `max_ack_delay`, its declared transport parameter, as RFC 9002 §6.2.1's PTO adds it
   (`Liveness::look`). Cold, before any send's answer has been seen on its path, there is no
@@ -6527,13 +6537,45 @@ replaced by:
   its window seeded by its handshake while the daemon synced the client's record). Past the window, while the peer makes progress (acknowledges
   more, or is heard at all), the wait has run out: told typed, once (`Handler::ran_out`), the
   record marked, and the connection goes on; the answer that comes raises the slowest seen. A
-  whole window with no progress is its death (`Look::Dead`, told as QUIC's `TimedOut`), and the
-  silence before the send that went unanswered is recorded as the path's lost silence. The
-  daemon's commands for a vanished client end so too, at their own next send. No wait is
+  whole window with no progress is a stall, not a death (ROOT's ruling A, 2026-11-13: the
+  person's "every wait after a run-out follows the party's liveness and progress", applied as
+  D222 applies it): marked, told typed, once (`RanOut::Stalled { unheard, window }`), and the
+  wait then follows the peer's liveness with no window while QUIC keeps probing it (§6.2's
+  backoff); its answer, whenever it comes, ends the stall, told once (`RanOut::Answered`), and
+  is the slowest answer seen, so that the path's window covers such a stall from then on. Before, a stall was the
+  connection's death (`Look::Dead`): a peer its host did not schedule for about 55 ms (a quick
+  first answer of 0.3-4 ms, the peer's 25 ms `max_ack_delay`, then a whole window past the
+  ~26 ms probe timeout) was closed "unanswered past the slowest answer seen", as a `shards move`
+  of a shared volume's import was on a loaded Mac (ROOT's HVF run at ea6f4b53b, load1 about
+  44). Said once where a person sees it: the CLI prints `shards: NAME: the daemon at ADDR
+  hasn't been heard for T; still waiting (it may be busy or gone; ^C ends this)` on stderr
+  (context.rs, `client::Stall::Unheard`), and until its daemon answers (`Stall::Answered`) a
+  signal that would end it ends it, as one with no command to take it does, rather than going
+  to the command it forwards signals to (context.rs `STALLED`; with the daemon gone, a ^C
+  forwarded would wait on it too); a daemon's relay logs the same of its machine, and the
+  daemon logs `client NAME at ADDR hasn't been heard for T; still waiting` of a client
+  (`Host::unheard`). Nothing then takes a vanished client for gone: its commands run to their
+  own end, as `docker exec`'s over a dead SSH session do, nothing of sshd's noticing a peer
+  that is gone without a word until TCP itself gives up (RFC 1122 §4.2.3.5's R2; its
+  keep-alives off for two hours, §4.2.3.6); one that writes past what its stream and pipe hold
+  waits on its output, as that one does, and a client that closes its connection still hangs
+  its commands up (`Controls::hang_up`). A stall still unanswered as its connection ends is the
+  path's lost silence (`Liveness::lost`: the silence before the send that stalled); one its
+  answer ended is the peer's slowness, and records none. What bounds a bounded endpoint's
+  resources is the reclaim as a newcomer contends (`Driver::reclaim`): it asks each holder
+  for an answer (a PING) and refuses the newcomer, and at a later attempt lets go of the
+  holder unheard longest of those that have not answered that PING and are stalled, its
+  handler told as QUIC's `TimedOut`; a holder that answers, however late, keeps its place,
+  and newcomers dialing again put off no judgement, as an ask still unanswered stands
+  (`Liveness::ask`). A daemon's listener for contexts holds no such bound on established
+  connections: a vanished client's is kept, probed at QUIC's backoff, until the daemon stops
+  (owed: whether the descriptors `Host::handshakes` counts should bound them too). A holder
+  whose path never showed an answer (gone within its first exchange) has no window and never
+  stalls, so no newcomer takes its place: the cold start's rule. No wait is
   judged sooner than QUIC's own loss recovery judges its send, at its probe timeout (§6.2.1,
   the smoothed RTT, four times its variation and the peer's `max_ack_delay`;
   `Connection::probe_timeout`, hyper-quic's patch Q7): a run-out is past the window and that
-  timeout both, and a death a whole window with no progress past the later of its last
+  timeout both, and a stall a whole window with no progress past the later of its last
   progress and that timeout. A peer acknowledges application data up to its `max_ack_delay`
   late, and later as its timer fires late, where its handshake's packets it acknowledges at
   once (RFC 9000 §13.2.1), so a window its handshake seeded alone took a peer's first delayed
@@ -6637,7 +6679,8 @@ their owners and controllers, goal 75's `unix::link()` among them, follow the sa
 (ROOT's call C): their admissions carry no patience, their bounded drivers no handshake
 deadline, their transports no idle timeout or keep-alive, `tls::QUIET` and its quarter gone;
 an endpoint whose one place a newcomer contends for asks each connection holding one for an
-answer (a PING), so that one whose owner vanished is found so at that use. A relay whose
+answer (a PING), and a later attempt takes the place of one that has not answered it and is
+stalled (`Driver::reclaim`, above). A relay whose
 engine client leaves while its handshake waits on a daemon never reached is let go at its
 next probe, its client's connection seen ended there (relay.rs `gone`: recv(2) with MSG_PEEK
 and MSG_DONTWAIT, which takes nothing and leaves the reader's descriptor blocking; on Windows,
@@ -6660,7 +6703,11 @@ peer follows what its path showed), `net::tests` (a handshake judged by its wind
 on, its silences measured; a handshake run out a whole window unheard past its probe timeout,
 going on with no window, red with its window kept, one heard living on past both, red with its
 window a deadline from its start; a send's window,
-its run-out with progress and its death without; a cold wait following its peer however long
+its run-out with progress and its stall without, told once and followed with no window until
+its answer, the slowest from then on, red with the stall its death; a stalled holder unheard
+since a newcomer asked giving way, judged afresh; a bounded endpoint's stalled holder giving
+its place to a newcomer and one that answers keeping it, over the real transport, red with the
+stall its death and with no reclaim; a cold wait following its peer however long
 its first answer takes; a wait judged no sooner than its probe timeout; a wait judged on the
 time its side was there to hear, red with no absence taken; a send taken in before its
 answer is read answered by it; what its handshake sent no wait; the keep-alive
@@ -6677,7 +6724,9 @@ end; a daemon reached before slower to shake hands than ever, by more than its s
 within a probe timeout, answered, a relay holding what it sends back, red with the slowest
 handshake a deadline; one unheard past its probe timeout and window, run out and answered as the
 relay lets its answers go, red with the run-out its end; a process frozen 200 ms (SIGSTOP) while a command trickles
-through it keeping its connections, red with no absence taken; a daemon slow to answer a fresh
+through it keeping its connections, red with no absence taken; a client stopped mid-import
+(SIGSTOP) until its daemon told it unheard past its window keeping its connection, its import
+whole, red with the stall its death; a daemon slow to answer a fresh
 client waited for (a stand-in's driver held in its handler), red with its handshake seeding the
 window; a slow start, a slow join and a slow verdict on one key holding up no other client, the
 stranger refused once its verdict is let go, red with each on the driver; and the relays'

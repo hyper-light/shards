@@ -6,14 +6,14 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use hyper_quic::{StreamId, VarInt};
 
 use crate::frame::{self, Request, Tag};
 use crate::identity::Identity;
 use crate::invite;
-use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Sender};
+use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, RanOut, Read as StreamRead, Sender};
 use crate::{Error, tls};
 
 /// What one read of a command's output takes at most: what a pipe holds to be read at once,
@@ -72,6 +72,11 @@ pub trait Host: Send + Sync {
     /// bound, past which the oldest unanswered is given up for the newest (the person's ruling,
     /// 2026-11-13).
     fn handshakes(&self) -> usize;
+    /// A peer at `at` went `unheard` past the window its path has shown, a send of the daemon's
+    /// unanswered (`net::RanOut::Stalled`): told once a stall, for the machine's log, as its
+    /// connection waits on with no window and its commands run on (ROOT's ruling A). `client`,
+    /// the name it enrolled, where the machine has said whom its key is. Nothing, by default.
+    fn unheard(&self, _client: Option<&str>, _at: SocketAddr, _unheard: Duration) {}
 }
 
 /// The daemon's answer to any join that failed, whatever made it fail: a refusal tells
@@ -893,8 +898,20 @@ impl<H: Host> Handler for Server<'_, '_, H> {
         self.settle(io, conn, id);
     }
 
+    /// A client unheard past its window is said once to the machine's log ([`Host::unheard`]),
+    /// and waited for with no window: nothing here takes it for gone, so that its commands run
+    /// to their own end, as `docker exec`'s over a dead SSH session do.
+    fn ran_out(&mut self, io: &mut Io<'_>, conn: ConnKey, what: RanOut) {
+        if let RanOut::Stalled { unheard, .. } = what
+            && let Some(at) = io.peer(conn)
+        {
+            let client = self.peers.get(&conn).and_then(|p| p.client.as_deref());
+            self.host.unheard(client, at, unheard);
+        }
+    }
+
     fn lost(&mut self, _io: &mut Io<'_>, conn: ConnKey, _why: &str, _code: Option<u64>) {
-        // Its commands lose their terminal.
+        // Its commands lose their terminal: its client closed it, or its own end did.
         if let Some(peer) = self.peers.remove(&conn) {
             for stream in peer.streams.values() {
                 if stream.running()

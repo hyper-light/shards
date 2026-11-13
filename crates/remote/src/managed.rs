@@ -1753,6 +1753,10 @@ mod tests {
     struct Pair {
         producer: Producer,
         control: Control,
+        /// Where its endpoint is, its key, and its owner's identity: a successor's dial.
+        address: SocketAddr,
+        server: crate::identity::Fingerprint,
+        owner_identity: Identity,
         owner: Sender<Ask>,
         owner_driver: Option<std::thread::JoinHandle<Result<(), crate::Error>>>,
         endpoint_driver: Option<std::thread::JoinHandle<Result<(), Error>>>,
@@ -1789,6 +1793,7 @@ mod tests {
             )
             .unwrap();
             let address = bound.address;
+            let server = server.fingerprint();
             let endpoint_driver = std::thread::Builder::new()
                 .name("managed-endpoint".into())
                 .spawn(move || bound.run())
@@ -1801,6 +1806,9 @@ mod tests {
             let pair = Pair {
                 producer,
                 control,
+                address,
+                server,
+                owner_identity,
                 owner: asks,
                 owner_driver: Some(owner_driver),
                 endpoint_driver: Some(endpoint_driver),
@@ -1894,23 +1902,64 @@ mod tests {
         assert_eq!(got, frame);
     }
 
-    /// An owner that vanishes without a word is let go by its endpoint at the endpoint's next
-    /// send, which waits a whole window unanswered past its probe timeout (D180's liveness at
-    /// use): its slot waits for a subscription again. A quiet endpoint keeps it till then, as
-    /// nothing it has to say is lost.
+    /// An owner that vanishes without a word keeps its place through its endpoint's next send,
+    /// which stalls unanswered a whole window past its probe timeout and is told, not taken for
+    /// the owner's death (D180, ROOT's ruling A): a successor that dials for the one place is
+    /// refused, the holder asked for an answer (a PING), and once that goes unanswered past its
+    /// window the successor's next attempt takes the place, the record that waited for the
+    /// vanished owner its first (`net::Driver::reclaim`). Each attempt a driver of its own, as a
+    /// restarted owner's, dialing again as managed/input.rs's successor does.
     #[test]
-    fn a_vanished_owner_is_let_go_at_its_endpoints_next_send() {
+    fn a_vanished_owners_place_goes_to_its_successor_as_it_dials() {
         let mut pair = Pair::subscribed();
         pair.owner.send(Command::Handler(Ask::Vanish)).unwrap();
         pair.owner_driver.take().unwrap().join().unwrap().unwrap();
         let mut bytes = pair.producer.take_buffer().unwrap().unwrap();
         bytes.extend_from_slice(b"to nobody\n");
         pair.producer.submit(bytes).unwrap();
-        let took = pair.until(PATIENCE, |state| matches!(state, State::Pending(_)));
-        println!("a vanished owner's subscription let go after {took:?}, within {PATIENCE:?}");
-        assert!(
-            took.is_ok(),
-            "an owner gone without a word still held its endpoint after {PATIENCE:?}: {took:?}"
+        let start = Instant::now();
+        let mut refused = 0;
+        let heard = loop {
+            let (hears, heard) = mpsc::channel();
+            let config = client_config(&pair.owner_identity, pair.server, admitted()).unwrap();
+            let (mut driver, asks) = Driver::bind_bounded(
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                None,
+                Owner {
+                    config: Some(config),
+                    pending: Vec::new(),
+                    heard: hears,
+                    vanished: false,
+                },
+                DriverLimits {
+                    connections: 1,
+                    command_slots: 1,
+                    queued_datagram_bytes: DATAGRAM_BYTES,
+                },
+            )
+            .unwrap();
+            let running = std::thread::spawn(move || driver.run());
+            asks.send(Command::Handler(Ask::Connect(pair.address))).unwrap();
+            let got = heard.recv_timeout(PATIENCE);
+            asks.request_stop();
+            running.join().unwrap().unwrap();
+            match got {
+                // Dialing again at managed/input.rs's successor's pace.
+                Ok(Heard::Lost(_)) if start.elapsed() < PATIENCE => {
+                    refused += 1;
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                other => break other,
+            }
+        };
+        println!(
+            "its successor subscribed after {refused} refusals, {:?}",
+            start.elapsed()
         );
+        assert!(refused > 0, "the vanished owner's place was free at once");
+        match heard {
+            Ok(Heard::Bytes(bytes)) => assert!(bytes.windows(10).any(|w| w == b"to nobody\n"), "{bytes:?}"),
+            other => panic!("its successor never subscribed: {other:?}"),
+        }
     }
 }

@@ -55,8 +55,9 @@ enum Commands<C> {
 #[derive(Debug, Clone, Copy)]
 pub struct DriverLimits {
     /// The connections it holds at once. One open, its handshake's or established, holds its
-    /// place until it closes; one closed (closing or draining, RFC 9000 §10.2) until a newcomer
-    /// needs the place (the driver's `free_closed`).
+    /// place until it closes, or, established and stalled, until a newcomer needs the place
+    /// (the driver's `reclaim`); one closed (closing or draining, RFC 9000 §10.2) until a
+    /// newcomer needs the place (the driver's `free_closed`).
     pub connections: usize,
     pub command_slots: usize,
     pub queued_datagram_bytes: usize,
@@ -222,15 +223,16 @@ pub trait Handler {
     fn lost(&mut self, io: &mut Io<'_>, conn: ConnKey, why: &str, code: Option<u64>);
     /// Why a connection ended, as QUIC told it (RFC 9000 §20, RFC 9001 §4.8), just before
     /// [`Handler::lost`] tells of it: for a handler that types its peer's refusals, which
-    /// `lost`'s words and application code do not carry. Nothing, by default; a connection
-    /// taken for dead at use ([`Liveness::look`]) is QUIC's `TimedOut`.
+    /// `lost`'s words and application code do not carry. Nothing, by default; a stalled
+    /// connection let go for a newcomer ([`Driver::reclaim`]) is QUIC's `TimedOut`.
     fn cause(&mut self, _conn: ConnKey, _error: &ConnectionError) {}
     /// A connection whose handshake has not ended sent another probe (RFC 9002 §6.2): `probes`
     /// datagrams in all, `waited` since it began. Its handshake waits on, with no window of its
     /// own where it has none or its window ran out ([`RanOut::Handshake`]), for as long as its
     /// handler does: one that gives up closes it.
     fn unanswered(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _probes: u64, _waited: Duration) {}
-    /// A wait of `conn`'s ran out ([`RanOut`]): told once a wait, and the connection goes on.
+    /// A wait of `conn`'s ran out ([`RanOut`]): told once a wait at each stage, and the
+    /// connection goes on.
     fn ran_out(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _what: RanOut) {}
     /// Another thread's command.
     fn command(&mut self, io: &mut Io<'_>, command: Self::Command);
@@ -278,7 +280,7 @@ struct Conn {
     liveness: Liveness,
 }
 
-/// When a connection was last heard from, and whether it lives on (the person's ruling,
+/// When a connection was last heard from, and how its waits stand (the person's ruling,
 /// 2026-11-13: a cold start, and every wait after a run-out, follows the peer's liveness and
 /// progress, and after that a wait's bound is the slowest answer seen). Its handshake, with a
 /// peer reached before, is judged as a send is ([`Liveness::due`]): by a window of the slowest
@@ -294,8 +296,11 @@ struct Conn {
 /// of how long it takes to answer a request, its work and its host's scheduling with it (a join's
 /// record synced to disk took a daemon 123-152 ms, past a window its handshake seeded). Past the
 /// window a wait goes on while the peer makes progress (it is heard, or acknowledges), told once
-/// as a run-out; a whole window with no progress ends the connection. The longest silence it
-/// lived through is kept.
+/// as a run-out; a whole window with no progress is a stall, told once, and the wait follows the
+/// peer's liveness with no window from then on, QUIC probing it (ROOT's ruling A, 2026-11-13):
+/// its answer, whenever it comes, ends the stall and is the slowest seen, so that the path's
+/// window covers such a stall from then on. Nothing here ends a connection. The longest silence
+/// it lived through is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Liveness {
     began: Instant,
@@ -318,9 +323,8 @@ pub struct Liveness {
     /// Its transport's ack-eliciting frames sent and bytes acknowledged, as last looked at.
     sent: u64,
     acked: u64,
-    /// The silence after which it was found dead, its next send unanswered.
-    lost: Option<Duration>,
-    /// A wait of its ran out: its handshake past its deadline, or a send past its window.
+    /// A wait of its ran out: its handshake past its deadline, or a send past its window, or one
+    /// stalled.
     ran_out: bool,
     /// Its peer refused it, definitely: an ICMP port-unreachable told its connected socket.
     refused: bool,
@@ -328,6 +332,12 @@ pub struct Liveness {
     flight: Option<u64>,
     /// The datagrams sent as its first look, or its last probe told, found them.
     probes: u64,
+    /// When a newcomer that found its driver's places taken asked it for an answer (a PING), the
+    /// first such ask it has not answered since ([`Liveness::ask`]).
+    asked: Option<Instant>,
+    /// A stalled send's answer came this long after it was sent, not yet told
+    /// ([`Look::Answered`]).
+    answered: Option<Duration>,
 }
 
 /// A send waiting for its answer.
@@ -338,8 +348,21 @@ struct Wait {
     acked: u64,
     /// The silence before it, since the peer was last heard.
     quiet: Duration,
-    /// Its run-out has been told.
-    told: bool,
+    /// How far it has gone unanswered, each stage told as it is reached.
+    stage: Stage,
+}
+
+/// How far a send's wait has gone unanswered (R04): each stage told once ([`Look`]), and the
+/// wait ends, whatever its stage, as its answer comes ([`Liveness::note`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    /// Within its window, or past it with nothing told yet.
+    Waiting,
+    /// Past its window and probe timeout while its peer made progress: told.
+    RanOut,
+    /// A whole window with no progress past its probe timeout: told, and followed with no
+    /// window until its answer comes.
+    Stalled,
 }
 
 /// A wait of a connection's that ran out, told once ([`Handler::ran_out`]) as the connection goes
@@ -354,19 +377,30 @@ pub enum RanOut {
     /// A send, its connection established: unanswered past its window and probe timeout while its
     /// peer still makes progress ([`Look::RanOut`]).
     Send { waited: Duration, window: Duration },
+    /// A send, its connection established: a whole window (`window`) with no progress past its
+    /// probe timeout, its peer `unheard` that long ([`Look::Stalled`]). The peer may be busy,
+    /// frozen or gone: the wait follows its liveness with no window, QUIC probing it, until its
+    /// answer comes ([`RanOut::Answered`]), which is the slowest seen from then on, or its holder
+    /// gives up.
+    Stalled { unheard: Duration, window: Duration },
+    /// A stalled send's answer came at last, `after` it was sent: the stall is over, and its
+    /// time is the slowest answer seen from then on ([`Look::Answered`]).
+    Answered { after: Duration },
 }
 
 /// What looking at an established connection found (R04).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Look {
-    /// Nothing waits, or what waits is within its window.
+    /// Nothing waits, or what waits is within its window, or stalled and told.
     Fine,
     /// A send has waited past its window, its peer still making progress: told once, and the
     /// connection goes on.
     RanOut { waited: Duration, window: Duration },
-    /// A whole window passed with no progress: the connection is dead, found so after `quiet`
-    /// of silence before the send that went unanswered.
-    Dead { quiet: Duration, window: Duration },
+    /// A whole window passed with no progress, its peer `unheard` that long: told once, and the
+    /// wait goes on with no window ([`RanOut::Stalled`]).
+    Stalled { unheard: Duration, window: Duration },
+    /// A stalled send was answered, `after` it was sent: told once ([`RanOut::Answered`]).
+    Answered { after: Duration },
 }
 
 impl Liveness {
@@ -386,11 +420,12 @@ impl Liveness {
             wait: None,
             sent: 0,
             acked: 0,
-            lost: None,
             ran_out: false,
             refused: false,
             flight: None,
             probes: 0,
+            asked: None,
+            answered: None,
         }
     }
 
@@ -472,6 +507,7 @@ impl Liveness {
         self.began = on(self.began);
         self.heard = self.heard.map(on);
         self.connected = self.connected.map(on);
+        self.asked = self.asked.map(on);
         if let Some(wait) = self.wait.as_mut() {
             wait.since = on(wait.since);
         }
@@ -521,46 +557,68 @@ impl Liveness {
     /// Looks at it at `now`, its transport's ack-eliciting frames sent and bytes acknowledged in
     /// all being `sent` and `acked`: an answer raises the slowest; a send with none waiting
     /// begins a wait; a wait past its window with progress is a run-out, told once; a whole
-    /// window with no progress, its death. Neither is judged before its probe timeout
-    /// ([`Liveness::probe_timeout`]): a run-out is past the window and that timeout both, and a
-    /// death a whole window with no progress past the later of its last progress and that
-    /// timeout.
+    /// window with no progress, a stall, told once, after which the wait has no window until its
+    /// answer comes. Neither is judged before its probe timeout ([`Liveness::probe_timeout`]): a
+    /// run-out is past the window and that timeout both, and a stall a whole window with no
+    /// progress past the later of its last progress and that timeout.
     pub fn look(&mut self, now: Instant, sent: u64, acked: u64) -> Look {
-        if self.connected.is_none() {
+        let Some(connected) = self.connected else {
             return Look::Fine;
-        }
+        };
         self.note(now, sent, acked);
+        if let Some(after) = self.answered.take() {
+            return Look::Answered { after };
+        }
         // Cold, a wait follows its peer's liveness and progress for as long as it takes.
         let Some(window) = self.window() else {
             return Look::Fine;
         };
+        let stalled = self.stalled(now);
+        let last = self.heard.map_or(connected, |heard| heard.max(connected));
         let Some(wait) = self.wait.as_mut() else {
             return Look::Fine;
         };
-        let progress = judged_from(self.heard, wait.since, self.pto);
-        if now.saturating_duration_since(progress) > window {
-            self.ran_out = true;
-            self.lost = Some(wait.quiet);
-            return Look::Dead {
-                quiet: wait.quiet,
-                window,
-            };
+        match wait.stage {
+            // Followed with no window, its answer to come.
+            Stage::Stalled => Look::Fine,
+            _ if stalled => {
+                wait.stage = Stage::Stalled;
+                self.ran_out = true;
+                Look::Stalled {
+                    unheard: now.saturating_duration_since(last),
+                    window,
+                }
+            }
+            Stage::Waiting if now.saturating_duration_since(wait.since) > window.max(self.pto) => {
+                wait.stage = Stage::RanOut;
+                self.ran_out = true;
+                Look::RanOut {
+                    waited: now.saturating_duration_since(wait.since),
+                    window,
+                }
+            }
+            Stage::Waiting | Stage::RanOut => Look::Fine,
         }
-        let waited = now.saturating_duration_since(wait.since);
-        if waited > window.max(self.pto) && !wait.told {
-            wait.told = true;
-            self.ran_out = true;
-            return Look::RanOut { waited, window };
-        }
-        Look::Fine
+    }
+
+    /// Whether a send of its has gone a whole window with no progress, past the later of its
+    /// last progress and its probe timeout, by `now`: what a stall is ([`Liveness::look`]), told
+    /// or not, judged afresh, so that a peer heard since its stall was told is not one. None
+    /// cold, with no window.
+    pub fn stalled(&self, now: Instant) -> bool {
+        let (Some(wait), Some(window)) = (self.wait, self.window()) else {
+            return false;
+        };
+        now.saturating_duration_since(judged_from(self.heard, wait.since, self.pto)) > window
     }
 
     /// Takes in what its transport has sent and had acknowledged by `now`, `sent` ack-eliciting
     /// frames and `acked` bytes in all: an answer raises the slowest and ends the wait it
-    /// answers; a send with none waiting begins one, as of `now`. Taken in as a send goes, before
-    /// anything more is read (as its driver sends between reads, [`Driver::take_in`]): taken in
-    /// after its answer had come, a send would begin a wait that answer had already ended, and
-    /// its quiet peer, with nothing more to answer, would be taken for dead.
+    /// answers, a stalled one's too, whose answer takes in its stall; a send with none waiting
+    /// begins one, as of `now`. Taken in as a send goes, before anything more is read (as its
+    /// driver sends between reads, [`Driver::take_in`]): taken in after its answer had come, a
+    /// send would begin a wait that answer had already ended, and its quiet peer, with nothing
+    /// more to answer, would be taken for stalled.
     pub fn note(&mut self, now: Instant, sent: u64, acked: u64) {
         let Some(connected) = self.connected else {
             return;
@@ -568,7 +626,11 @@ impl Liveness {
         if let Some(wait) = self.wait
             && acked > wait.acked
         {
-            self.answer = self.answer.max(now.saturating_duration_since(wait.since));
+            let took = now.saturating_duration_since(wait.since);
+            self.answer = self.answer.max(took);
+            if wait.stage == Stage::Stalled {
+                self.answered = Some(took);
+            }
             self.wait = None;
         }
         if sent > self.sent && self.wait.is_none() {
@@ -577,7 +639,7 @@ impl Liveness {
                 since: now,
                 acked,
                 quiet: now.saturating_duration_since(last),
-                told: false,
+                stage: Stage::Waiting,
             });
         }
         self.sent = sent;
@@ -586,18 +648,50 @@ impl Liveness {
 
     /// When [`Liveness::look`] must look again for what waits to change: its window's end (its
     /// probe timeout's, where that is later), and a whole window past its last progress (or past
-    /// its probe timeout).
+    /// its probe timeout); none once it stalled, its answer what changes it.
     pub fn next(&self) -> Option<Instant> {
         let wait = self.wait?;
         let window = self.window()?;
-        let dead = judged_from(self.heard, wait.since, self.pto).checked_add(window)?;
-        match wait.told {
-            true => Some(dead),
-            false => wait
+        let stall = judged_from(self.heard, wait.since, self.pto).checked_add(window)?;
+        match wait.stage {
+            Stage::Stalled => None,
+            Stage::RanOut => Some(stall),
+            Stage::Waiting => wait
                 .since
                 .checked_add(window.max(self.pto))
-                .map(|out| out.min(dead)),
+                .map(|out| out.min(stall)),
         }
+    }
+
+    /// A newcomer found its driver's places taken at `now` and asks it for an answer (its driver
+    /// sends a PING): the ask it has to answer, unless an earlier one is still unanswered, which
+    /// stands, so that newcomers dialing again put off no judgement of it.
+    pub fn ask(&mut self, now: Instant) {
+        if self.answered_ask() {
+            self.asked = Some(now);
+        }
+    }
+
+    /// Whether it has answered the last ask, or none was made: its peer heard since.
+    fn answered_ask(&self) -> bool {
+        self.asked
+            .is_none_or(|asked| self.heard.is_some_and(|heard| heard > asked))
+    }
+
+    /// Whether a newcomer may take its place at `now` ([`Driver::reclaim`]): unheard since an
+    /// earlier newcomer asked it for an answer, and stalled ([`Liveness::stalled`]), a whole
+    /// window with no progress past its probe timeout. One that answers, however late, keeps it.
+    pub fn unanswering(&self, now: Instant) -> bool {
+        !self.answered_ask() && self.stalled(now)
+    }
+
+    /// The silence after which a send of its stalled and is still unanswered, its path maybe
+    /// lost (a middlebox's state gone, or its peer): none where no send waits stalled, a stall
+    /// its answer ended being its peer's slowness, not the path's.
+    pub fn lost(&self) -> Option<Duration> {
+        self.wait
+            .filter(|wait| wait.stage == Stage::Stalled)
+            .map(|wait| wait.quiet)
     }
 
     /// When a keep-alive goes, where its path must be kept alive within `keep` of silence (the
@@ -631,10 +725,11 @@ impl Liveness {
 /// What a connection saw of the path it crossed, for its caller's record: the longest its
 /// peer went unheard and when it was last heard ([`Liveness`]), its round trip as last
 /// estimated (RFC 9002 §5), the bytes it sent in UDP datagrams and the bytes of them its peer
-/// acknowledged, and the packets it took for lost; and what its peer's record learns from it
-/// (`tls::Known::after`): how long its handshake took, where it ended, the slowest answer it
-/// waited for, the silence after which it was found dead, whether a wait of it ran out, and
-/// whether its peer refused it.
+/// acknowledged, the packets it took for lost, and the idle timeout it ran on (RFC 9000 §10.1:
+/// none between two shards ends, which advertise none); and what its peer's record learns from
+/// it (`tls::Known::after`): how long its handshake took, where it ended, the slowest answer it
+/// waited for, the silence after which a send of its stalled and was never answered
+/// ([`Liveness::lost`]), whether a wait of it ran out, and whether its peer refused it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Seen {
     pub longest_silence: Duration,
@@ -645,6 +740,12 @@ pub struct Seen {
     pub sent_bytes: u64,
     pub acked_bytes: u64,
     pub lost_packets: u64,
+    /// The idle timeout its transport ran on, as both ends negotiated it (hyper-quic's patch
+    /// Q34): a peer's own, where it advertised one, bounds a stalled wait (D180).
+    pub idle: Option<Duration>,
+    /// Its transport's probe timeout as it ended (RFC 9002 §6.2.1, patch Q7's), which its waits
+    /// were judged no sooner than.
+    pub pto: Duration,
     pub handshake: Option<Duration>,
     pub answer: Duration,
     pub lost: Option<Duration>,
@@ -717,12 +818,19 @@ impl Io<'_> {
             sent_bytes: stats.udp_tx.bytes,
             acked_bytes: stats.path.acked_bytes,
             lost_packets: stats.path.lost_packets,
+            idle: conn.quic.idle_timeout(),
+            pto: conn.quic.probe_timeout(),
             handshake: conn.liveness.handshake_took(),
             answer: conn.liveness.answer,
-            lost: conn.liveness.lost,
+            lost: conn.liveness.lost(),
             ran_out: conn.liveness.ran_out || conn.liveness.outran(now),
             refused: conn.liveness.refused,
         })
+    }
+
+    /// Where `conn`'s peer is, as its packets last came from (RFC 9000 §9: a peer may move).
+    pub fn peer(&mut self, conn: ConnKey) -> Option<SocketAddr> {
+        self.conn(conn).ok().map(|c| c.quic.remote_address())
     }
 
     /// What `conn`'s own TLS handshake negotiated, once it has chosen its suite and its group
@@ -1344,15 +1452,20 @@ impl<H: Handler> Driver<H> {
                     && !self.stopping
                 {
                     self.free_closed(now, limits.connections)?;
+                    if self.conns.len() >= limits.connections && self.reclaim(now) {
+                        self.free_closed(now, limits.connections)?;
+                    }
                 }
                 if self.stopping || self.limits.is_some_and(|l| self.conns.len() >= l.connections) {
                     // Its places still taken, each open connection holding one is asked for an
-                    // answer (a PING), so that one whose peer is gone is found so at this use of
-                    // its place, a whole window unanswered past its probe timeout, and the place
-                    // is free for a newcomer's next attempt; this one is refused.
+                    // answer (a PING): one whose peer does not answer stalls, a whole window
+                    // unanswered past its probe timeout, and its place goes to a newcomer's next
+                    // attempt ([`Driver::reclaim`]); one that answers, however late, keeps it.
+                    // This one is refused.
                     if !self.stopping {
                         for conn in self.conns.values_mut() {
                             if conn.connected && !conn.quic.is_closed() {
+                                conn.liveness.ask(now);
                                 conn.quic.ping();
                             }
                         }
@@ -1462,6 +1575,40 @@ impl<H: Handler> Driver<H> {
         Ok(())
     }
 
+    /// A newcomer finds every place taken: of the established connections holding them, the one
+    /// unheard longest of those that have not answered the PING an earlier newcomer sent them
+    /// and are stalled ([`Liveness::unanswering`]) is let go for it, its handler told as QUIC
+    /// tells a peer unheard past its bound (RFC 9000 §10.1), for a handler that types its ends;
+    /// whether one was. A stall alone ends no connection (ROOT's ruling A): one is let go only
+    /// as a newcomer needs its place, so that a bounded endpoint's resources stay its owner's
+    /// admission, and a holder that answers, however late, keeps its place.
+    fn reclaim(&mut self, now: Instant) -> bool {
+        let Some(key) = self
+            .conns
+            .iter()
+            .filter(|(_, c)| c.connected && !c.quic.is_closed() && c.liveness.unanswering(now))
+            .min_by_key(|(_, c)| c.liveness.last_heard())
+            .map(|(key, _)| *key)
+        else {
+            return false;
+        };
+        let (mut io, handler) = self.io(now);
+        io.close(
+            key,
+            0,
+            "unanswered past the slowest answer seen, its place needed",
+        );
+        handler.cause(key, &ConnectionError::TimedOut);
+        handler.lost(
+            &mut io,
+            key,
+            "no answer within the slowest answer seen on its path, its place needed by a newcomer",
+            None,
+        );
+        self.client = io.client;
+        true
+    }
+
     /// A handshake comes: where the handshakes held fill their slots, the oldest still
     /// unanswered is given up ([`given_up`]), its handler told.
     fn make_room(&mut self, now: Instant) {
@@ -1507,8 +1654,8 @@ impl<H: Handler> Driver<H> {
     }
 
     /// Each connection's liveness: a handshake's probes told; an established connection's,
-    /// where the driver checks it, looked at (a run-out told, a death ended) and kept alive where
-    /// its path or its peer's idle timer has shown it must be.
+    /// where the driver checks it, looked at (a run-out told, a stall told, neither ending it)
+    /// and kept alive where its path or its peer's idle timer has shown it must be.
     fn watch(&mut self, now: Instant) {
         self.keys.clear();
         self.keys.extend(self.conns.keys());
@@ -1537,28 +1684,16 @@ impl<H: Handler> Driver<H> {
             let look = conn
                 .liveness
                 .look(now, eliciting(&stats.frame_tx), stats.path.acked_bytes);
-            match look {
-                Look::Fine => {}
-                Look::RanOut { waited, window } => {
-                    let (mut io, handler) = self.io(now);
-                    handler.ran_out(&mut io, key, RanOut::Send { waited, window });
-                    self.client = io.client;
-                }
-                // Typed as QUIC types a peer unheard past its bound (RFC 9000 §10.1), for a
-                // handler that types its ends.
-                Look::Dead { .. } => {
-                    let (mut io, handler) = self.io(now);
-                    io.close(key, 0, "unanswered past the slowest answer seen");
-                    handler.cause(key, &ConnectionError::TimedOut);
-                    handler.lost(
-                        &mut io,
-                        key,
-                        "no answer within the slowest answer seen on its path",
-                        None,
-                    );
-                    self.client = io.client;
-                    continue;
-                }
+            let told = match look {
+                Look::Fine => None,
+                Look::RanOut { waited, window } => Some(RanOut::Send { waited, window }),
+                Look::Stalled { unheard, window } => Some(RanOut::Stalled { unheard, window }),
+                Look::Answered { after } => Some(RanOut::Answered { after }),
+            };
+            if let Some(what) = told {
+                let (mut io, handler) = self.io(now);
+                handler.ran_out(&mut io, key, what);
+                self.client = io.client;
             }
             let Some(conn) = self.conns.get_mut(&key) else {
                 continue;
@@ -2333,13 +2468,16 @@ mod tests {
         assert_eq!(h.due(), t0.checked_add(ms(228)));
     }
 
-    /// Liveness at use (the person's ruling, 2026-11-13): a send waits for the peer to
-    /// acknowledge any of it, within the slowest answer seen and the peer's max_ack_delay; an
-    /// answer raises the slowest; past the window, a wait whose peer is still heard is told once
-    /// as a run-out and goes on; a whole window with nothing heard is its death, after the
-    /// silence that came before the send.
+    /// Liveness at use (the person's ruling, 2026-11-13, and ROOT's ruling A): a send waits for
+    /// the peer to acknowledge any of it, within the slowest answer seen and the peer's
+    /// max_ack_delay; an answer raises the slowest; past the window, a wait whose peer is still
+    /// heard is told once as a run-out and goes on; a whole window with nothing heard is a stall,
+    /// told once with how long its peer went unheard, and followed with no window: its answer,
+    /// however late, ends it and is the slowest seen, so that the window covers such a stall
+    /// from then on. Red with a stall the connection's death (`Look::Dead` before): a client
+    /// frozen 200 ms mid-import taken for dead by its daemon (tests/loopback.rs).
     #[test]
-    fn a_send_waits_its_window_runs_out_with_progress_and_dies_without() {
+    fn a_send_waits_its_window_runs_out_with_progress_and_stalls_without() {
         let t0 = Instant::now();
         let mut l = Liveness::new(t0, None, Duration::ZERO);
         assert_eq!(
@@ -2373,13 +2511,84 @@ mod tests {
         assert_eq!(l.look(t0 + ms(146), 2, 100), Look::Fine);
         assert_eq!(
             l.look(t0 + ms(148), 2, 100),
-            Look::Dead {
-                quiet: ms(88),
+            Look::Stalled {
+                unheard: ms(18),
                 window: ms(17)
             }
         );
-        let seen = (l.answer, l.lost, l.ran_out);
-        assert_eq!(seen, (ms(12), Some(ms(88)), true));
+        assert_eq!(
+            l.look(t0 + ms(10_000), 2, 100),
+            Look::Fine,
+            "a stall is told once, and followed with no window"
+        );
+        assert_eq!(l.next(), None, "its answer is what changes it");
+        assert_eq!((l.lost(), l.ran_out), (Some(ms(88)), true));
+        // Its answer, 10 s after the send: the stall ends, told once, and the slowest answer
+        // covers it.
+        l.heard(t0 + ms(10_120));
+        assert_eq!(
+            l.look(t0 + ms(10_120), 2, 200),
+            Look::Answered { after: ms(10_000) }
+        );
+        assert_eq!(l.look(t0 + ms(10_121), 2, 200), Look::Fine);
+        let seen = (l.answer, l.window(), l.lost(), l.ran_out);
+        assert_eq!(seen, (ms(10_000), Some(ms(10_005)), None, true));
+        // As long a silence again is within its window.
+        assert_eq!(l.look(t0 + ms(10_200), 3, 200), Look::Fine);
+        assert_eq!(l.look(t0 + ms(20_000), 3, 200), Look::Fine);
+        assert_eq!(l.next(), Some(t0 + ms(20_205)));
+    }
+
+    /// A stall is judged afresh as a newcomer needs a place (`Liveness::stalled`): a send
+    /// unanswered a whole window past its probe timeout is stalled, told or not; one whose peer
+    /// was heard since is not, whatever was told, until a whole window passes unheard again;
+    /// cold, with no window, none is. A holder gives its place to a newcomer only once it has
+    /// not answered the PING an earlier newcomer sent it and is stalled
+    /// (`Liveness::unanswering`); a later newcomer's ask puts off no judgement of an earlier one
+    /// still unanswered, and one answered is asked again.
+    #[test]
+    fn a_stalled_holder_unheard_since_a_newcomer_asked_gives_way() {
+        let t0 = Instant::now();
+        let mut l = Liveness::new(t0, None, ms(2));
+        l.heard(t0);
+        l.connected(t0, 0, 0);
+        l.peer_ack_delay(ms(5));
+        l.probe_timeout(ms(10));
+        assert!(!l.stalled(t0 + ms(100)), "nothing waits");
+        assert_eq!(l.look(t0 + ms(1), 1, 0), Look::Fine);
+        // Its window 7 ms, judged from its probe timeout, 11 ms in.
+        assert!(!l.stalled(t0 + ms(18)));
+        assert!(
+            l.stalled(t0 + ms(19)),
+            "a whole window unanswered past its probe timeout"
+        );
+        assert!(
+            !l.unanswering(t0 + ms(19)),
+            "stalled, but no newcomer asked it yet"
+        );
+        assert!(matches!(l.look(t0 + ms(19), 1, 0), Look::Stalled { .. }));
+        l.ask(t0 + ms(20));
+        assert!(l.unanswering(t0 + ms(21)), "unheard since asked, and stalled");
+        l.ask(t0 + ms(25));
+        assert_eq!(l.asked, Some(t0 + ms(20)), "the ask unanswered stands");
+        l.heard(t0 + ms(30));
+        assert!(
+            !l.stalled(t0 + ms(31)),
+            "its peer heard since: answering, however late"
+        );
+        assert!(!l.unanswering(t0 + ms(38)), "it answered the ask");
+        assert!(l.stalled(t0 + ms(38)), "and unheard a whole window again");
+        l.ask(t0 + ms(40));
+        assert_eq!(l.asked, Some(t0 + ms(40)), "asked again");
+        assert!(l.unanswering(t0 + ms(41)));
+        let mut cold = Liveness::new(t0, None, Duration::ZERO);
+        cold.heard(t0);
+        cold.connected(t0, 0, 0);
+        cold.peer_ack_delay(ms(5));
+        assert_eq!(cold.look(t0, 1, 0), Look::Fine);
+        cold.ask(t0);
+        assert!(!cold.stalled(t0 + ms(100_000)), "cold: no window to judge by");
+        assert!(!cold.unanswering(t0 + ms(100_000)));
     }
 
     /// What its handshake sent, answered as it ends, is no send waiting: a wait begun for it
@@ -2426,8 +2635,8 @@ mod tests {
     /// A wait is judged no sooner than QUIC's loss recovery judges its send (its probe timeout,
     /// RFC 9002 §6.2.1): a peer's acknowledgement delayed by its max_ack_delay and a late timer,
     /// past a window its path's record seeded (a 2 ms answer) but within the probe timeout, has
-    /// not run out, and is the slowest answer from then on; a send nothing answers runs out past its window and dies
-    /// a whole window past its probe timeout. Red before: 10 of tests/loopback.rs's 19 died on a
+    /// not run out, and is the slowest answer from then on; a send nothing answers runs out past
+    /// its window and stalls a whole window past its probe timeout. Red before: 10 of tests/loopback.rs's 19 died on a
     /// send 28.9 ms unanswered, their window 26.9 ms (a handshake of 1.9 ms and 25 ms of
     /// max_ack_delay), their probe timeout 30.7 ms.
     #[test]
@@ -2462,11 +2671,12 @@ mod tests {
         assert_eq!(l.look(t0 + ms(125), 2, 100), Look::Fine);
         assert_eq!(
             l.look(t0 + ms(126), 2, 100),
-            Look::Dead {
-                quiet: ms(9),
+            Look::Stalled {
+                unheard: ms(95),
                 window: ms(54)
             }
         );
+        assert_eq!(l.lost(), Some(ms(9)), "the silence before the send that stalled");
     }
 
     /// A keep-alive goes before the silence its path is kept within, early by the window so
@@ -2493,6 +2703,225 @@ mod tests {
         assert_eq!(keep_within(None, Some(ms(10_000))), Some(ms(10_000)));
         assert_eq!(keep_within(Some(ms(90_000)), None), Some(ms(90_000)));
         assert_eq!(keep_within(None, None), None);
+    }
+
+    /// What a test's party heard of its connections.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Heard {
+        Connected(ConnKey),
+        Bytes(ConnKey),
+        Stalled(ConnKey),
+        Lost(ConnKey, String),
+        Frozen,
+    }
+
+    /// What a test asks of a party's driver.
+    enum Ask {
+        Connect(SocketAddr, Box<ClientConfig>),
+        /// Holds its driver's thread, as a process stopped or descheduled is held, until let go.
+        Freeze(mpsc::Receiver<()>),
+        /// A byte on a stream of its own, which its peer hears.
+        Say(ConnKey),
+        /// Ends its driver without a word to its peers, as a killed process's ends.
+        Vanish,
+    }
+
+    /// A bounded endpoint or a client of one, on the real transport: it tells what its driver
+    /// tells it.
+    struct Party {
+        heard: mpsc::Sender<Heard>,
+        vanished: bool,
+    }
+
+    impl Handler for Party {
+        type Command = Ask;
+        fn connected(&mut self, _: &mut Io<'_>, conn: ConnKey, _: &[u8]) -> Result<(), Close> {
+            let _ = self.heard.send(Heard::Connected(conn));
+            Ok(())
+        }
+        fn opened(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) {
+            self.readable(io, conn, stream);
+        }
+        fn readable(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) {
+            let mut any = false;
+            while let Read::Bytes(bytes) | Read::End(bytes) = io.read(conn, stream) {
+                if bytes.is_empty() {
+                    break;
+                }
+                any = true;
+            }
+            if any {
+                let _ = self.heard.send(Heard::Bytes(conn));
+            }
+        }
+        fn writable(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+        fn stopped(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+        fn lost(&mut self, _: &mut Io<'_>, conn: ConnKey, why: &str, _: Option<u64>) {
+            let _ = self.heard.send(Heard::Lost(conn, why.to_string()));
+        }
+        fn ran_out(&mut self, _: &mut Io<'_>, conn: ConnKey, what: RanOut) {
+            if let RanOut::Stalled { .. } = what {
+                let _ = self.heard.send(Heard::Stalled(conn));
+            }
+        }
+        fn command(&mut self, io: &mut Io<'_>, ask: Ask) {
+            match ask {
+                Ask::Connect(to, config) => {
+                    if let Err(e) = io.connect(to, *config) {
+                        let _ = self.heard.send(Heard::Lost(ConnKey::MAX, e.to_string()));
+                    }
+                }
+                Ask::Freeze(until) => {
+                    let _ = self.heard.send(Heard::Frozen);
+                    let _ = until.recv();
+                }
+                Ask::Say(conn) => {
+                    let stream = io.open(conn).unwrap();
+                    assert_eq!(io.write(conn, stream, b"x").unwrap(), 1);
+                    io.finish(conn, stream).unwrap();
+                }
+                Ask::Vanish => self.vanished = true,
+            }
+        }
+        fn done(&self) -> bool {
+            self.vanished
+        }
+    }
+
+    /// A party's driver as bound, and what reaches it.
+    type Bound = Result<(Driver<Party>, Sender<Ask>), Error>;
+
+    /// A party running: what reaches it, what it hears, where it is, and its driver's thread.
+    type Running = (
+        Sender<Ask>,
+        mpsc::Receiver<Heard>,
+        SocketAddr,
+        std::thread::JoinHandle<Result<(), Error>>,
+    );
+
+    /// A party on a driver and a thread of its own.
+    fn party(bound: impl FnOnce(Party) -> Bound) -> Running {
+        let (heard, hears) = mpsc::channel();
+        let (mut driver, asks) = bound(Party {
+            heard,
+            vanished: false,
+        })
+        .unwrap();
+        let at = driver.local().unwrap();
+        let running = std::thread::spawn(move || driver.run());
+        (asks, hears, at, running)
+    }
+
+    /// The next of what `hears` hears that `want` takes, the rest of it told if it never comes.
+    fn next_heard(hears: &mpsc::Receiver<Heard>, want: impl Fn(&Heard) -> bool) -> Heard {
+        let patience = Duration::from_secs(60);
+        let mut other = Vec::new();
+        loop {
+            match hears.recv_timeout(patience) {
+                Ok(heard) if want(&heard) => return heard,
+                Ok(heard) => other.push(heard),
+                Err(_) => panic!("nothing wanted within {patience:?}; heard {other:?}"),
+            }
+        }
+    }
+
+    /// A bounded endpoint's one place, held by an established connection (step 5's output and
+    /// input endpoints and D238's agent-control endpoint share this driver): a newcomer that
+    /// finds it taken is refused and the holder asked for an answer (a PING). A holder frozen
+    /// past its window stalls, told once, and keeps its place: let go, it answers, and the next
+    /// newcomer is refused again. A holder gone without a word stalls the same, and the next
+    /// newcomer takes its place (ROOT's ruling A, its third condition: the reclaim on contention
+    /// bounds the endpoint's resources). Red with a stall the holder's death: the frozen holder
+    /// let go at its stall, before any newcomer needed its place.
+    #[test]
+    fn a_stalled_holder_gives_its_place_to_a_newcomer_and_one_that_answers_keeps_it() {
+        let server = crate::identity::Identity::generate().unwrap();
+        let config = |of: &crate::identity::Identity| {
+            Box::new(crate::tls::client(of, server.fingerprint(), crate::tls::Known::Never).unwrap())
+        };
+        let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let tls = crate::tls::server(&server).unwrap();
+        let limits = DriverLimits {
+            connections: 1,
+            command_slots: 8,
+            queued_datagram_bytes: DATAGRAM * 8,
+        };
+        let (endpoint, at_endpoint, address, serving) =
+            party(|p| Driver::bind_bounded(any, Some(tls), p, limits));
+        let bind = |p: Party| Driver::bind(any, None, p, crate::tls::Known::Never);
+        let (holder, at_holder, _, holding) = party(bind);
+        let (newcomer, at_newcomer, _, _coming) = party(bind);
+        let (holder_id, newcomer_id) = (
+            crate::identity::Identity::generate().unwrap(),
+            crate::identity::Identity::generate().unwrap(),
+        );
+        let connected = |h: &Heard| matches!(h, Heard::Connected(_));
+        holder
+            .send(Command::Handler(Ask::Connect(address, config(&holder_id))))
+            .unwrap();
+        let Heard::Connected(held) = next_heard(&at_endpoint, connected) else {
+            panic!("not connected")
+        };
+        let Heard::Connected(mine) = next_heard(&at_holder, connected) else {
+            panic!("not connected")
+        };
+        // Heard by its endpoint, which has an answer of the holder's by then, its window.
+        holder.send(Command::Handler(Ask::Say(mine))).unwrap();
+        assert_eq!(next_heard(&at_endpoint, |_| true), Heard::Bytes(held));
+
+        // Frozen: a newcomer is refused, and the holder, asked for an answer, stalls.
+        let (thaw, frozen) = mpsc::channel();
+        holder.send(Command::Handler(Ask::Freeze(frozen))).unwrap();
+        assert_eq!(next_heard(&at_holder, |_| true), Heard::Frozen);
+        let lost = |h: &Heard| matches!(h, Heard::Lost(..));
+        newcomer
+            .send(Command::Handler(Ask::Connect(address, config(&newcomer_id))))
+            .unwrap();
+        let refused = next_heard(&at_newcomer, |h| lost(h) || connected(h));
+        assert!(matches!(refused, Heard::Lost(..)), "{refused:?}");
+        assert_eq!(
+            next_heard(&at_endpoint, |_| true),
+            Heard::Stalled(held),
+            "its holder stalls, and keeps its place"
+        );
+        // Let go, it answers; the next newcomer is refused, its place kept.
+        thaw.send(()).unwrap();
+        holder.send(Command::Handler(Ask::Say(mine))).unwrap();
+        assert_eq!(next_heard(&at_endpoint, |_| true), Heard::Bytes(held));
+        newcomer
+            .send(Command::Handler(Ask::Connect(address, config(&newcomer_id))))
+            .unwrap();
+        let refused = next_heard(&at_newcomer, |h| lost(h) || connected(h));
+        assert!(matches!(refused, Heard::Lost(..)), "{refused:?}");
+        holder.send(Command::Handler(Ask::Say(mine))).unwrap();
+        assert_eq!(
+            next_heard(&at_endpoint, |_| true),
+            Heard::Bytes(held),
+            "a holder that answered keeps its place"
+        );
+
+        // Gone without a word: the next newcomer finds it stalled, and takes its place.
+        holder.send(Command::Handler(Ask::Vanish)).unwrap();
+        holding.join().unwrap().unwrap();
+        newcomer
+            .send(Command::Handler(Ask::Connect(address, config(&newcomer_id))))
+            .unwrap();
+        let refused = next_heard(&at_newcomer, |h| lost(h) || connected(h));
+        assert!(matches!(refused, Heard::Lost(..)), "{refused:?}");
+        assert_eq!(next_heard(&at_endpoint, |_| true), Heard::Stalled(held));
+        newcomer
+            .send(Command::Handler(Ask::Connect(address, config(&newcomer_id))))
+            .unwrap();
+        let taken = next_heard(&at_newcomer, |h| lost(h) || connected(h));
+        assert!(matches!(taken, Heard::Connected(_)), "{taken:?}");
+        let Heard::Lost(gone, _) = next_heard(&at_endpoint, |_| true) else {
+            panic!("its holder was not let go");
+        };
+        assert_eq!(gone, held);
+        assert!(matches!(next_heard(&at_endpoint, |_| true), Heard::Connected(_)));
+        endpoint.send(Command::Stop).unwrap();
+        serving.join().unwrap().unwrap();
+        newcomer.send(Command::Handler(Ask::Vanish)).unwrap();
     }
 
     /// A handshake past the slots its driver's owner holds takes the place of the oldest still

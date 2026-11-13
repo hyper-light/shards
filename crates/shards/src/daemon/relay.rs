@@ -514,6 +514,16 @@ impl<D: Disk> Daemon<D> {
                     ));
                     waits
                 };
+                // A machine unheard past its path's window is logged once a stall, and waited for
+                // as its client waits (D180, ROOT's ruling A).
+                let stalled = |stall: shards_remote::client::Stall| {
+                    if let shards_remote::client::Stall::Unheard { unheard, .. } = stall {
+                        log(format!(
+                            "context {}: the daemon at {} hasn't been heard for {unheard:.1?}; still waiting (it may be busy or gone)",
+                            context.name, context.address
+                        ));
+                    }
+                };
                 let held = |hang_up| self.engine.hold_relayed(number, hang_up, &self.stopping);
                 let (ran, seen) = shards_remote::client::exec_with(
                     &identity,
@@ -525,6 +535,7 @@ impl<D: Disk> Daemon<D> {
                     |_| {},
                     |_| {},
                     told,
+                    stalled,
                     held,
                 );
                 if let Err(e) = crate::context::keep(&self.home, &context, before, &seen) {
