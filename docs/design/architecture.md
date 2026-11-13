@@ -23164,8 +23164,9 @@ named a host (D59 part seven); a run's command had D192's.
   the image is refused, naming both members and what each reaches. Remote MCP servers beside
   another member's other grants on one port, which passed before, are refused alike.
 - *Orchestrators* keep or drop destinations (`Narrowing.destinations`, D231, channel version
-  3), never add one. The build labels them (`vnd.osi.agentfile.destinations`) for Docker and
-  Kubernetes; the daemon holds a run to its own reading of the image (D109).
+  3), never add one, and may hold each member to its own of those kept (D246, version 12). The
+  build labels them (`vnd.osi.agentfile.destinations`) for Docker and Kubernetes; the daemon
+  holds a run to its own reading of the image (D109).
 
 ```dockerfile
 HARNESS codex FROM ./codex
@@ -24351,6 +24352,94 @@ M497).
 different CPUs on KVM x86-64 and on Macs (two-hosts.sh `BASELINE=1`); the arm64 unit tests
 (CI on main); WHP x86-64's move refused at `ready` between two Windows hosts of different
 CPUs (two-hosts.sh on each; none here), and the WHP baseline's deciding runs above.
+
+### D246. Members held apart by an orchestrator: each member's reach of the names kept, named in its request and held by the run host before the microVM starts (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 15 (Hex's): a harness Hex launches
+reaches exactly its granted providers and kiln's endpoint. D236 lets an orchestrator keep or
+drop each destination for the whole microVM (`Narrowing.destinations`): the network process
+holds the microVM to the union of the names kept, each member's init lets it out on its own
+destinations' ports, and `held` makes the members that reach a port by name reach it alike.
+So a destination kept for one member is reached as well by every other member whose image
+names it, and shards-api names no member's destinations before a boot or after it
+(`Started` holds the members and each published port's receivers, `Bound::to`, alone). Hex's
+grants each name who, to whom, which port and which way, so Hex refused every destination
+(`Awaits(MemberDestinations)`) until a run could be held to them member by member.
+
+**Alternatives** (R02):
+- *Keep, then hold the run as its boot returns*, as an orchestrator holds a publish to
+  `Bound::to`: stop a run in which a member the grants don't name is let out on a kept
+  destination's port. That member could reach the destination between its start and its
+  stop. Not taken (Hex's lead, 2026-11-12).
+- *The orchestrator reads an image's members and their reach before its boot.* A member's
+  destinations live in the image's normalized Agentfile (`/.agentfile.json`, in its EROFS
+  root in the store; `agentfile::agentfile`), and shards-api holds no store, EROFS or
+  Agentfile code: every orchestrator would take on the run host's own reading of the image
+  (D109). Not taken.
+- *Each member's addresses held apart in the network process*, D236's own deferred
+  alternative (Cilium's toFQDNs programs each endpoint's allowed addresses from the answers
+  its DNS proxy relays, `Documentation/security/policy/layer3.rst`): a change to init, the
+  switch and the network process, where `held` already makes a port's names alike across its
+  members, which is what lets one comparison at the run host be exact. Not taken here; it
+  stays D236's route to lifting `held`.
+- *Each member's reach in the request, held by the run host* (taken). Hex built it first as
+  its vendored changes 0002 (shards-api's `Narrowing::members`; the run host's
+  `held_apart`, through Hex's shards-gpu), on Shards 66113379 as channel version 5 (Hex's
+  cp/t7-goal15-network-grants-r3, ec729e9d and 13ad751f; ROOT's ruling (b') of 2026-11-12).
+  Upstream it is version 12, and it holds the remote MCP servers kept beside the
+  destinations, since the network process holds the microVM to both alike.
+
+**Decided.**
+- *Wire* (image channel version 12): after each member's terminal (version 11, D244), a flag,
+  then where it is set each member's kind, name and names (`MemberReach { kind, name,
+  destinations }`, each `host:port` as the narrowing keeps it). Unset (`members: None`): no
+  member held apart, the names kept are every member's whose image names them, as through
+  version 11. A request of version 11 is refused by its version, as every older one is.
+- *What a member reaches* (`agentfile::named_reach`): of each member its Agentfile declares,
+  its networks' destinations (D236) and its remote MCP servers' (§4.4), as its init lets it
+  out to them; the reading `held` makes (`tcp_reach`). The run host reads it with the
+  Agentfile it holds a run to (`Agentfile::named`). Of those a member reaches the ones kept,
+  destinations and remote MCP servers alike.
+- *Held* (`api_run::held_apart`, before anything starts): every member the image declares,
+  named in the request or not, reaches of the names kept exactly its entry's names (sorted,
+  each once; a member in no entry, nothing). Else the run is refused as a widening of what was
+  asked (`Cause::Widening`, `ImageRefusal::Widening`), naming the member, what it would reach
+  and what it was let. An entry for a member the image declares not is the image's refusal
+  (`Cause::Image`), and a member's second entry the request's (`Cause::Request`). Init, the
+  switch and the network process are unchanged: under `held`, a member that reaches a kept name
+  is let out on its port by its init, and the network process admits only the kept names'
+  addresses there, so equal reaches mean each member reaches exactly what it is let.
+- *Ports to any address* (`Narrowing.egress`) stay the whole microVM's: the hold is of names.
+  An orchestrator that holds its members apart keeps no such port (Hex keeps none).
+
+**Literals.** Version 12, the channel's next version above the one on main as it landed (11,
+D244's): a version only appends, so it is the next number up, whichever lane lands first. A
+member's entry is at least nine bytes on the wire (its kind, its name's length, its names'
+count) and a name at least four (its length): the least sizes `count` refuses a hostile count
+by, read off the encoding. No bound, wait or size of its own.
+
+**Tests** (unit, one macOS arm64 host). The wire,
+`each_members_reach_rides_the_request_last`: none held apart, an empty list, one member and
+two (one reaching nothing) read back as written, every cut refused, a flag that is no flag, a
+member of no kind and a hostile count refused by type; `unknown_versions_and_tags_are_refused`
+refuses version 8. The Agentfile, `each_member_reaches_its_own_names`: a harness's provider and
+the host, an agent's provider and its own remote MCP server, a server every agent is granted,
+an agent joining no network, each member's the same read back as the run host reads it. The run host,
+`each_member_is_held_to_its_reach_of_the_names_kept`: exact reaches pass; a member left out,
+let nothing, let more, or let less than a kept remote MCP server, refused as a widening in
+those words; an undeclared member the image's refusal, a second entry the request's; no hold,
+nothing kept, and no Agentfile with no entry pass.
+
+**Evidence owed** (ROOT, real VMs: KVM, HVF, WHP).
+`cargo test -p shards --profile test-release --test api_image what_the_image_does_not_grant_is_refused_before_boot`:
+members held apart that would reach other than asked, and an undeclared member, refused
+before boot. A boot whose members are held exactly runs, its harness reaching its kept
+provider and the host's service and nothing else, another member none of them: Hex's
+image_grants_real, once Hex vendors this revision.
+
+**What would falsify it.** A member that reaches a kept name its entry does not let it (then
+`named_reach` misses a rule init's netplan follows); a run refused where every member's reach is
+exact (then the narrowing's names and the build's `host:port` are written apart).
 
 ## 4. Start path (≤ 5 ms budget)
 
