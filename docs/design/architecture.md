@@ -23500,7 +23500,8 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   warm link for that one run (`READY`, `RUN`, `TAKEN`, `STOP_ORDER` of SIGKILL so that the
   run ends with its host, the run's messages, execs). It owns the run's managed output (P3)
   and relays each member's channels and end to the orchestrator. Its channel closing ends
-  the run.
+  the run: `STOP` alone ends it `Stopped`; its channel closed without it, or broken, ends it
+  failed, saying why (D258).
 - *Members' streams and ends.* stdout and stderr are managed capture's, credited per
   channel by the orchestrator's reads; a member's end is `MEMBER_ENDED` (its status as
   `docker run` reports one), sent by init once, when its population has ended. stdin is
@@ -23561,7 +23562,8 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 - *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
   the members start.
 - *Its end* (`RunEnd`): `Exited` with the status its own command or `ATTEND`'s holder ended
-  with; a command that never started, `Failed` in its VM's words (D249).
+  with; a command that never started, `Failed` in its VM's words (D249); a run its VM could
+  not serve, `Failed` in its words (D258).
 
 **Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
 `docker run`'s `128 + signal`; every wait is on a fact.
@@ -25167,7 +25169,8 @@ docs/research/s33-veil-creds/STEP4.md.
   (`Ungranted`), a second lease of a credential while one lives (`Live`), and anything after
   the run's release (`Ended`). Every end of a run passes `end_run`, which releases the ledger
   and says `RELEASED` before `ENDED`: the run's command's exit, `STOP`, the owner's channel
-  closing (both end the run `Stopped`), and its VM failing. On the orchestrator's side
+  closing or breaking (`STOP` ends it `Stopped`, the rest `Failed`, saying why: D258), and its
+VM failing. On the orchestrator's side
   (`image::session`): each ask is put to the run's `Lessor` on a thread of its own, and each
   lease it gave is released once: as the host says `RELEASED`, as the channel ends where it
   never says it, or at once where given after the run's release or with none of its life left
@@ -26715,6 +26718,82 @@ abi's, so D28 already covers them; the literals were the gap (ROOT's go, 2026-11
 entry of an unregistered key started, applied or silently ignored; a file writing a spec's
 setup that the census does not read; an init of another build that accepts a key it has no
 reader for.
+
+### D258. An orchestrator's run ends saying why: its asks' end typed, its VM's failure to serve it told, its end kept once seen, its host's diagnostics whole where asked (built; real-VM runs owed)
+
+**Why.** Four ways a run for an orchestrator (D231) ended without saying why, three of them
+seen on real runs:
+- Hex's grants-none run ended `Stopped`, nothing said (the Hex lead, 2026-11-13). api-run's asks
+  loop broke on every frame it could not read or act on (one cut short or malformed, a kind no
+  ask has, a credit it could not pass on, an input past its room) as it broke on `STOP` and at
+  its channel's end, and every break ended the run `Stopped`; that `Stopped` also overrode an
+  end its VM had said first. The cause there was the member-stdin refusal (22101e85e).
+- api_image's `a_share_at_a_granted_volume_reaches_the_harness` ended `Exited(125)` once on HVF
+  under load (ROOT, 2b89e8504), its harness's output read whole and its end `WithRun`. 125 is
+  `spec::NOT_RUN`. Where a VM's serve fails, warm.rs `finish` writes `shards: {e}` to the VM's
+  stderr, its run host's, and sends `DONE` [125] with no words, which the run host read as the
+  command's own exit (as `docker run` exits 125 for dockerd's own failures).
+- A run whose host exited without its run's end read `Failed`, in the host's last words, to
+  `wait_for`, then `Stopped` after `stop()`: `wait_for` made that failure up at each look and
+  kept none of it, and `stop()` put `Stopped` where nothing was kept (the Hex lead).
+- The run host's diagnostics, its VM's among them, were kept only as the last bytes a refusal
+  or a failed end quotes (`said_kept`): the cause of a run that went wrong long before its end
+  is gone from them (the Hex lead's ask).
+
+**Decided and built.**
+- *The asks' end, typed* (`api_run::AsksEnd`, `read_ask`, `judged`, `ended_by`). `STOP` alone
+  ends the run `Stopped`. Its channel's end without `STOP` (its owner gone) ends it
+  `Failed("its orchestrator's channel ended without STOP")`. A frame cut short, a malformed ask
+  (by its kind's name and the wire's words), a kind that is no ask, an input past its room,
+  after its end, or for a member with no stdin, an input ended twice, and a lease's answer the
+  run cannot take end it `Failed("its orchestrator's channel broke: …")`. An answer the host
+  could not send its orchestrator, or a credit it could not pass to its VM's capture, ends it
+  `Failed`, saying so. Each failed end is said on the host's stderr too. An end the VM said
+  first (its `DONE` came) stands, whatever the asks did meanwhile. Frames are read in place
+  and wiped as they go (D242's channel), and a lease's answer is served from its frame.
+- *A VM that could not serve its run tells why* (`shards_ipc::kind::UNSERVED`, 101), before
+  its `DONE` (warm.rs `finish`). The run host keeps it (`api_run::Told`), and the run ends
+  `Failed("its VM could not serve its run: …")`, whether its command had started and whether
+  its link broke after. A VM that served its run keeps its command's end. The daemon logs it
+  for the run; its client heard it as it exited.
+- *An end, once seen, is kept* (shards-api `State::end_seen`, `State::stopped`): its host's
+  word, or its host gone without one, `Failed` in its last words, as first seen. `stop()` keeps
+  it, and every later `wait_for` reads the same. `ImageGuest::stop` says so.
+- *The run host's diagnostics, whole* (`ImageGuest::keep_diagnostics(File)`): written to the
+  file named from then on, after what the session kept of them until then. Each part is kept
+  and written under that file's lock, which naming a file takes first, so it lands once, in the
+  part written first or after. A part the file refuses is lost to it alone. The tail is kept to
+  quote as before. api_image's harness-end tests keep theirs in the test's home, which a failing
+  test shows as its home goes.
+
+**Literals.** The kind's number, 101: the next free above main's at landing (NET_LEASE 100).
+No other.
+
+**Cold start** (R03). Nothing is learned or chosen.
+
+**Tested** (light, red then green; adas-mac-studio.local, Darwin 26.2 arm64, rustc 1.98.1):
+- `api_run::tests::an_orchestrators_channel_that_breaks_ends_its_run_failed_saying_why` and
+  `a_vm_that_could_not_serve_its_run_ends_it_failed_in_its_words`. Red at 226f7bf41 and
+  7d7cc6e62: both failed ("Stopped after the VM's own end"; `Exited(125)`). As built,
+  `cargo test -p shards --bin shards api_run::` passed 34 of 34.
+- shards-api `image::session::tests::a_runs_end_once_seen_is_kept_through_its_stop` and
+  `a_hosts_diagnostics_are_written_whole_to_the_file_its_caller_names`. Red at c344f5a6f and
+  19e122a2a: both failed. As built, `cargo test -p shards-api --lib image::` passed 56 of 56.
+- `shards-ipc every_message_kind_has_its_own_number`, and clippy `-D warnings` for shards,
+  shards-api, shards-vm-process and shards-ipc, all targets: clean.
+
+**Owed** (ROOT).
+- The real-VM suites on HVF, KVM and WHP: api_image whole, member_exec, and boot.rs
+  `shards_api_*`. Hex's grants rerun, its run's end now saying why.
+- The share test's `Exited(125)` under load, run again in a loop. Its end now names the VM's
+  words where its VM could not serve the run, and its home shows its run host's diagnostics.
+- These light tests on Linux and Windows (CI), and `scripts/lint` on every target of the
+  matrix.
+
+**What would falsify it.** A run ended `Stopped` that its orchestrator never stopped. A run
+ended by an orchestrator's broken channel, or by a VM that could not serve it, whose end does
+not say why. A run's end read once as one thing and later as another. A host's diagnostic that
+its named file lacks, or holds twice.
 
 ## 4. Start path (≤ 5 ms budget)
 
