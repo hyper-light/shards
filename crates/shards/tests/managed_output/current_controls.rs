@@ -531,7 +531,7 @@ fn invalid_application_ack_after_record_preserves_credit_neighbor_and_main() {
         remove_run(&fixture, base, deadlines.cleanup)
     }));
     let stopped = fixture.shutdown(deadlines.cleanup);
-    let fds = std::fs::read_dir("/proc/self/fd").map(|entries| entries.count());
+    let fds = descriptors();
     base.write("teardown.json", &json!({"protocol_complete":result.is_ok(),"protocol_failure":result.as_ref().err().map(|e|panic_text(e.as_ref())),"metadata_copy":copied.as_ref().map(|copy|json!({"complete":copy.is_ok(),"error":copy.as_ref().err().map(ToString::to_string)})),"run_removed":removed.is_ok(),"remove_failure":removed.as_ref().err().map(|e|panic_text(e.as_ref())),"owner_stop_observer_join":{"complete":stopped.is_ok(),"error":stopped.as_ref().err()},"observer_fds":{"before":fixture.initial_fds,"after":fds.as_ref().ok(),"error":fds.as_ref().err().map(ToString::to_string)},"population_reaping_kernel_return":"Unknown; stop/PID0/FD return do not prove full return"}));
     if let Err(error) = result {
         std::panic::resume_unwind(error);

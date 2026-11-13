@@ -86,10 +86,34 @@ fn encoded(scope: Scope, offset: u64, event: CaptureEvent<'_>) -> Vec<u8> {
     bytes
 }
 
+/// What wakes [`Worker::ready`]: its producer's credit, or its endpoint failing first.
+enum Woken {
+    Credit,
+    EndpointFailed,
+}
+
+/// Held by the endpoint's thread: an endpoint that fails, by its error or its panic, ends the
+/// waits beside it at once, its observer's read (stopped) and [`Worker::ready`]'s (told),
+/// instead of leaving them to the phase deadline.
+struct Failing {
+    observer: shards_remote::net::Sender<Ask>,
+    wake: mpsc::Sender<Woken>,
+    failed: bool,
+}
+
+impl Drop for Failing {
+    fn drop(&mut self) {
+        if self.failed || std::thread::panicking() {
+            self.observer.request_stop();
+            let _ = self.wake.send(Woken::EndpointFailed);
+        }
+    }
+}
+
 struct Worker {
     producer: Producer,
     control: Control,
-    credits: mpsc::Receiver<()>,
+    credits: mpsc::Receiver<Woken>,
     ended: mpsc::Receiver<Result<(), managed::Error>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -106,7 +130,10 @@ impl Worker {
                 State::Capturing(_) => panic!("native owned-submit fixture has an outstanding capture loan"),
                 State::Pending(_) => {}
             }
-            self.credits.recv_timeout(left(until)).unwrap();
+            match self.credits.recv_timeout(left(until)).unwrap() {
+                Woken::Credit => {}
+                Woken::EndpointFailed => panic!("the native endpoint failed before its credit came"),
+            }
         }
     }
 }
@@ -157,15 +184,25 @@ impl Native {
         };
         assert_eq!(metadata.scope(scope.member, scope.channel), scope);
         let address = endpoint.address;
-        let (wake, credits) = mpsc::sync_channel(1);
+        let (wake, credits) = mpsc::channel();
+        let told = wake.clone();
         producer.on_credit(move || {
-            let _ = wake.try_send(());
+            let _ = wake.send(Woken::Credit);
         });
+        // Started before the endpoint's thread, which stops it should the endpoint fail.
+        self.observer = Some(Observer::start(&owner, &metadata, scope, address, input.until));
+        let stop = self.observer.as_ref().unwrap().sender.try_clone().unwrap();
         let (finished, ended) = mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("adversarial-native-owner".into())
             .spawn(move || {
+                let mut failing = Failing {
+                    observer: stop,
+                    wake: told,
+                    failed: false,
+                };
                 let result = endpoint.run();
+                failing.failed = result.is_err();
                 let _ = finished.send(result);
             })
             .unwrap();
@@ -176,7 +213,6 @@ impl Native {
             ended,
             thread: Some(thread),
         });
-        self.observer = Some(Observer::start(&owner, &metadata, scope, address, input.until));
         input.write("bound.json", &json!({"address":address,"capacity":capacity,"transport_bytes":admitted.transport_bytes,"handshake_bytes":admitted.handshake_bytes,"metadata_provenance":"constructed from this actual Endpoint; no daemon append","control":snapshot(&self.worker.as_ref().unwrap().control)}));
         let worker = self.worker.as_ref().unwrap();
         let observer = self.observer.as_ref().unwrap();
@@ -309,6 +345,12 @@ impl Native {
                         errors.push("native endpoint panicked".into());
                     }
                 }
+                // Its thread ended with no result: it panicked, and is joined to be told so.
+                Err(mpsc::RecvTimeoutError::Disconnected) => match worker.thread.take().map(JoinHandle::join)
+                {
+                    Some(Err(_)) => errors.push("native endpoint panicked".into()),
+                    _ => errors.push("native endpoint ended without its result".into()),
+                },
                 Err(error) => errors.push(format!("native endpoint join not established: {error}")),
             }
         }
@@ -321,11 +363,11 @@ impl Native {
 fn exercise(control: TerminalControl) {
     let began = Instant::now();
     let input = NativeInput::read(began, control);
-    let before = std::fs::read_dir("/proc/self/fd").unwrap().count();
+    let before = descriptors().unwrap();
     let mut native = Native::default();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| native.run(&input)));
     let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| native.cleanup(&input)));
-    let after = std::fs::read_dir("/proc/self/fd").unwrap().count();
+    let after = descriptors().unwrap();
     input.write("teardown.json", &json!({"protocol_complete":result.is_ok(),"protocol_failure":result.as_ref().err().map(|e|panic_text(e.as_ref())),"cleanup_completed":matches!(&cleanup,Ok(errors) if errors.is_empty()),"cleanup_errors":cleanup.as_ref().ok(),"cleanup_panic":cleanup.as_ref().err().map(|e|panic_text(e.as_ref())),"observer_fds":{"before":before,"after":after},"population_kernel_return":"Unknown; this fixture has no guest or daemon lifecycle"}));
     if let Err(error) = result {
         std::panic::resume_unwind(error);
