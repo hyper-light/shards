@@ -1,6 +1,7 @@
 //! How many warm VMs a template's pool keeps ready: as many as the largest burst of runs
 //! it has seen arrive within one refill, while it is in use, and none once it has gone
-//! idle for its keep-alive (audit A13).
+//! idle for its keep-alive (audit A13). The daemon's pools (D26) and an orchestrator's (D253)
+//! keep theirs by this one rule.
 //!
 //! - A refill takes as long as a warm VM takes to restore and say it is ready. Its time is
 //!   estimated as TCP estimates a round trip's, and its window is that estimate's

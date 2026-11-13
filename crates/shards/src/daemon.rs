@@ -43,7 +43,6 @@ mod builder_prune;
 mod commit;
 #[cfg(target_os = "linux")]
 mod cuts;
-mod demand;
 mod devices;
 mod ends;
 mod engine;
@@ -754,7 +753,7 @@ struct Pool {
     waiting: usize,
     /// Its runs' arrivals and its refills' times, which say how many VMs it keeps; its
     /// last claim orders eviction, least recent first.
-    demand: demand::Demand,
+    demand: shards_api::demand::Demand,
 }
 
 /// Collections due, for the collector's thread ([`Daemon::collect_all`]).
