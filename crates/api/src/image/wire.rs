@@ -2772,7 +2772,7 @@ mod tests {
         // credential grants' count, the member's terminal and the members' reach: no list of
         // version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 10;
+        let at = list.len() - 14;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -3217,7 +3217,7 @@ mod tests {
     /// grant's directory and both its numbers are read back exactly.
     #[test]
     fn a_runs_control_ask_crosses_the_image_channel_whole() {
-        assert!(VERSION >= 15, "the channel's version 15 carries the control ask");
+        const { assert!(VERSION >= 15, "the channel's version 15 carries the control ask") };
         for control in [
             None,
             Some(ControlAsk {
