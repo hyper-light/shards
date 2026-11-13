@@ -37,6 +37,9 @@ pub struct Terminal {
     dir: super::TempDir,
     /// What its home's daemon has said, for a wait past its deadline ([`super::Said`]).
     said: super::Said,
+    /// Its home, whose microVMs' processes a wait past its deadline shows
+    /// ([`super::guests_processes`]).
+    home: std::path::PathBuf,
 }
 
 /// How much of what a console wrote [`Terminal`] keeps to say as its test fails.
@@ -220,6 +223,7 @@ impl Terminal {
             raw: String::new(),
             dir,
             said: super::Said::of(home),
+            home: home.to_path_buf(),
         }
     }
 }
@@ -298,8 +302,9 @@ impl Terminal {
                 }
                 Err(_) => assert!(
                     Instant::now() < deadline || self.said.lately(),
-                    "{text:?} did not come; the terminal showed {:?}",
-                    self.seen
+                    "{text:?} did not come; the terminal showed {:?}{}",
+                    self.seen,
+                    super::guests_processes(&self.home)
                 ),
             }
         }

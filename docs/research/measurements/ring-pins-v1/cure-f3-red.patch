@@ -1,0 +1,177 @@
+diff --git a/crates/init/src/ring.rs b/crates/init/src/ring.rs
+index 05c7d0a58..cf5071937 100644
+--- a/crates/init/src/ring.rs
++++ b/crates/init/src/ring.rs
+@@ -418,7 +418,17 @@ impl Pool {
+     fn supply(&self) -> Supply {
+         #[cfg(test)]
+         if let Some(supply) = self.supply {
+-            return supply;
++            // A test's run as its kernel reads it: the slots made among what the run's cgroup
++            // holds once the relay is in it, and out of what the guest has available.
++            return Supply {
++                held: if self.joined == Joined::In {
++                    supply.held.saturating_add(self.pinned)
++                } else {
++                    supply.held
++                },
++                available: supply.available.saturating_sub(self.pinned),
++                ..supply
++            };
+         }
+         Supply::read()
+     }
+@@ -1966,6 +1976,44 @@ mod tests {
+         /// On a swap, the device's last positions of the old slot past belief: its tail of the
+         /// ring for the host past all the relay put in it.
+         garble: bool,
++        /// Streams released at once ([`Hold`]): the relay says its hello once every stream
++        /// has come to it, and the stand-in holds its answer until every stream has started
++        /// and the test has looked at the pool.
++        at_once: Option<&'static Hold>,
++    }
++
++    /// Streams released at once, and held while the test looks at their pool: a barrier of
++    /// `of` (the streams and the test), each `wait` returning once all have come as often,
++    /// failing the test where they do not within its deadline. Its rounds: the relays'
++    /// start, with the test; every device stand-in come with its hello, and the test; the
++    /// test's look done.
++    #[derive(Debug)]
++    struct Hold {
++        of: usize,
++        came: Mutex<usize>,
++        moved: std::sync::Condvar,
++    }
++
++    impl Hold {
++        fn new(of: usize) -> &'static Hold {
++            Box::leak(Box::new(Hold {
++                of,
++                came: Mutex::new(0),
++                moved: std::sync::Condvar::new(),
++            }))
++        }
++
++        fn wait(&self) {
++            let mut came = self.came.lock().unwrap();
++            *came += 1;
++            let all = came.div_ceil(self.of) * self.of;
++            self.moved.notify_all();
++            let (came, waited) = self
++                .moved
++                .wait_timeout_while(came, Duration::from_secs(20), |came| *came < all)
++                .unwrap();
++            assert!(!waited.timed_out(), "{} of {all} came", *came);
++        }
+     }
+ 
+     /// What the device stand-in saw.
+@@ -2080,6 +2128,11 @@ mod tests {
+         assert_eq!(kind, run::kind::HELLO);
+         let hello = wire.take(len as usize);
+         assert_eq!(hello[..run::TOKEN], TOKEN);
++        if let Some(hold) = script.at_once {
++            // Every stream past its start, holding its slot or none, while the test looks.
++            hold.wait();
++            hold.wait();
++        }
+         if hello.len() == run::TOKEN {
+             saw.plain = true;
+             wire.say(&script.answer);
+@@ -2245,6 +2298,7 @@ mod tests {
+     fn connection(pool: &'static Mutex<Pool>, request: &[u8], script: Script) -> (Vec<u8>, Saw, Offered) {
+         let (client, relay_side) = UnixStream::pair().unwrap();
+         let (vsock_guest, vsock_host) = UnixStream::pair().unwrap();
++        let at_once = script.at_once;
+         std::thread::scope(|s| {
+             let device = s.spawn(move || device(vsock_host, script));
+             // A connection the host's side ends first may refuse what is left of the
+@@ -2255,6 +2309,9 @@ mod tests {
+             });
+             let relay = s.spawn(move || {
+                 let host = File::from(OwnedFd::from(vsock_guest));
++                if let Some(start) = at_once {
++                    start.wait();
++                }
+                 let offered = hello_in(pool, &relay_side, &host, &TOKEN).unwrap();
+                 if offered != Offered::Done {
+                     plain(&relay_side, &host, offered == Offered::Plain);
+@@ -2569,6 +2626,78 @@ mod tests {
+         assert_eq!(held(pool), (0, 0));
+     }
+ 
++    /// Streams that start at once pin no more than their room (D188; review.md, F3): each
++    /// reads the room and reserves its slot in one hold of the pool's lock, so that no slot
++    /// another stream makes between the two is missed. Many streams, released together into
++    /// their hellos, against a room for fewer slots than streams: with a budget, the relay in
++    /// the run's cgroup (its slots among what the run holds, as `memory.current` counts them),
++    /// and with none (its slots out of what the guest has available). Each holds its slot, or
++    /// goes plain, until every stream has started and the test has looked: the pool's pins
++    /// never past the room, and every stream's bytes whole.
++    #[test]
++    fn streams_started_at_once_pin_no_more_than_their_room() {
++        const STREAMS: usize = 64;
++        const FITS: u64 = 4;
++        const ROUNDS: usize = 8;
++        let slot = abi::slot_len(abi::MIN_RING);
++        let room = FITS * slot + slot - 1;
++        let (base, working) = (1 << 30, 1 << 20);
++        let budget = Supply {
++            cap: Some(base + working + room),
++            held: base,
++            available: 0,
++            working,
++        };
++        let none = Supply {
++            cap: None,
++            held: 0,
++            available: working + room,
++            working,
++        };
++        for (supply, joined) in [(budget, Joined::In), (none, Joined::NotYet)] {
++            for round in 0..ROUNDS {
++                let pool = pool(supply);
++                lock(pool).joined = joined;
++                let hold = Hold::new(STREAMS + 1);
++                let pins = std::thread::scope(|s| {
++                    let streams: Vec<_> = (0..STREAMS)
++                        .map(|i| {
++                            s.spawn(move || {
++                                let request = pattern(1000 + i, i as u8);
++                                let answer = pattern(2000 + i, (i as u8).wrapping_add(50));
++                                let (got, saw, _) = connection(
++                                    pool,
++                                    &request,
++                                    Script {
++                                        answer: answer.clone(),
++                                        end: true,
++                                        at_once: Some(hold),
++                                        ..Script::default()
++                                    },
++                                );
++                                assert_eq!((got, saw.took), (answer, request), "stream {i}");
++                            })
++                        })
++                        .collect();
++                    // Their start; every one past it; the look, then their release.
++                    hold.wait();
++                    hold.wait();
++                    let pins = lock(pool).pinned;
++                    hold.wait();
++                    for t in streams {
++                        t.join().unwrap();
++                    }
++                    pins
++                });
++                assert!(
++                    pins <= room,
++                    "{joined:?} {supply:?}, round {round}: {pins} bytes pinned at once, past the room's {room}"
++                );
++                assert_eq!(held(pool), (0, 0));
++            }
++        }
++    }
++
+     /// A give-back lets every idle slot go; a live stream keeps its slot until it is idle,
+     /// and the told room's debt is paid by idle slots only.
+     #[test]

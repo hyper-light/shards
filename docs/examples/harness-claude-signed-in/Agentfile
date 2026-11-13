@@ -6,7 +6,7 @@
 # of a signed-in Claude Code config directory (its .credentials.json), and a project:
 #   shards build image -t harness-claude-signed-in:1 docs/examples/harness-claude-signed-in
 #   shards run vm -d -v PRIVATE_CLAUDE_CONFIG:/run/claude-home -v PROJECT:/work:ro \
-#     --name claude harness-claude-signed-in:1 sleep 600
+#     --name claude harness-claude-signed-in:1 sleep infinity
 # The harness reads and writes that copy (it refreshes its tokens there): copy back what
 # it refreshed (docs/research/measurements/harness-bringup-v2/credentials.py settle).
 FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
