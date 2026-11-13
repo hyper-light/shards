@@ -9866,20 +9866,34 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   holds who is looked at and the slice (a sixth of `READY_TIMEOUT`), and
   `a_busy_process_is_seen_running_with_its_cpu_and_faults` the look on the host's own
   process times.
-- **Amended (2026-11-13, ROOT's R03 ruling): a microVM's heartbeat is no progress of a
-  test's subject.** A nesting test whose runc hung waited on it to Linux CI's 56-minute
-  limit (8a50a9742, run 43391975331), and HVF's past its own bound (fafe35efc): the daemon
-  says it each `READY_STALL` while that microVM's CPU runs, whatever it runs, and the guest
-  of a runtime that hangs runs. Past its bound a wait goes on only while its subject
-  progresses: `common::Said` takes each whole line its home's daemon says but that heartbeat
-  (`common::HEARTBEAT`) for progress, a microVM's start said slowly among them, as liveness
-  governs a cold start, which the daemon gives up on itself past `READY_TIMEOUT`. The daemon
-  still logs it, a slow workload's durable evidence; a test's client is waited on past its
-  deadline through what the daemon says of its run, never through its microVM's CPU alone.
-  Held by tests/harness.rs's stand-ins: `a_daemons_heartbeat_is_no_progress_and_its_other_lines_are`,
-  `a_wait_whose_daemon_says_only_its_heartbeat_ends_at_its_bound`, red before the change and
-  red again with the heartbeat's distinction taken out. `common::Ran`, which judges a client's
-  own microVMs by their CPU, is unchanged.
+- **Amended (2026-11-13, ROOT's R03 rulings): a microVM's heartbeat counts by what it did,
+  as D215's judge judges a wait.** A nesting test whose runc hung waited on its microVM's
+  heartbeat to Linux CI's 56-minute limit (8a50a9742, run 43391975331), and HVF's past its
+  own bound (fafe35efc): the daemon says it each `READY_STALL` while that microVM's CPU runs
+  past an idle one's (`progressed`), and a hung runtime's guest's timers run that much
+  (63-110 ms in 10 s on HVF). First ruling (c06854111): past a wait's bound, `common::Said`
+  takes each whole line its home's daemon says but that heartbeat (`common::HEARTBEAT`) for
+  progress, a start said slowly among them, as liveness governs a cold start. Second ruling,
+  which replaces "never counts": a heartbeat counts by its deltas. `common::Floor` learns, for
+  each microVM the test process follows (by its home, its run's container and VM process; or
+  by its VM process), the least CPU rate at which its run still answered (a
+  `shards_api::Record`'s R*, taught by each window its run answered within: its client's
+  output, which `run_command` tells `Said` and `Ran` as it comes, or a daemon line naming its
+  container). During its cold start, before its run has answered, a slice counts by liveness
+  alone; past it, only where its rate is not below that floor (`Rate::below`,
+  cross-multiplication): an idle microVM's timer ticks are no progress, and a workload's CPU
+  past what its run answered at is. `common::Ran` judges each VM process's slice the same way,
+  so a build step that prints nothing for a while but works stays waited on. On HVF's nesting
+  microVM the floor its first heartbeat taught once its run had answered was 110 ms in 10 s,
+  and every idle heartbeat after it fell below. Held by tests/harness.rs's stand-ins:
+  `a_cold_heartbeat_and_a_daemons_other_lines_are_progress`,
+  `a_wait_on_idle_heartbeats_ends_at_its_bound_and_one_on_work_goes_on` (HVF's heartbeats as
+  its runc hung) and `a_vm_processes_slices_count_past_its_cold_start_only_above_its_floor`,
+  red before the judge and red again with it removed. What would falsify it: a wait held past
+  its bound by a microVM idling below its floor, or one refused while its microVM works at or
+  above it. Not caught: a run that never answers keeps its cold start, and its heartbeats count
+  by liveness, as a wait begun before its kind's first answer does; and a workload that, silent,
+  works below every rate its run answered at is taken for idle.
 - **A test's own waits on pools and microVMs follow them too** (M424). daemon.rs' rerun at
   b57cad27 failed 7 of 38, each a wait of the test's own past a fixed minute (a pool
   filled, a restored run's VM up) while its daemon's log showed templates saved, 264 MiB
