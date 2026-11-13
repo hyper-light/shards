@@ -293,6 +293,91 @@ it red, with the 2a guard of the same name still red. 10 of 10. Slice 1's and 2a
   targets.
 - R15: implementer scope only; R16: the target dir on the runner removed after landing.
 
+## A sign-in's token host over HTTP/2 (#74 steps 7 and 8)
+
+Role: implementer for ROOT (g121). Policy read at origin/main 2c9a97b8e: AGENTS.md sha256 f66d304c…, docs/development-
+rules.md df2acf47…, docs/development-evidence.md 61613a24…, and /tmp/g121-shot/brief-common.md. Worktree
+`s33-h2-signin`, branch `p/s33-h2-signin-v1`. Design and decisions: D242's "Built: a sign-in's token host over HTTP/2".
+
+### Change
+
+- `crates/net/src/inject.rs`:
+  - `Opening::new` offers a token host what its guest offered (the `h2` filter for token hosts gone); `H2` takes the
+    flow's sign-in.
+  - `H2`: `Upward::Reading` and `Upward::Refreshing`; `TokenResponse` (`Reading`, `Capturing`, `Written`) on each
+    stream; `signing`, `read_whole`, `refreshed`, `finish_token`, `captured`, `give`, `token_bodies`; `answer` made of
+    `answer_with`, which says the injector's HTTP/1.1 answer bytes on a stream (`said_on_h2`) and cancels a host
+    stream still open; streams let go of while asking forget their answers (`gone`, `SignIns::forget`).
+  - The HTTP/1.1 path's token code factored out for both: `ask_whole`, `revoke_here`, `signed_as`, `capture_tokens`,
+    `capture_written`, `refresh_answer`; `token_post` reads an HTTP/2 request as `read_head` reads a token POST.
+- `crates/net/src/signin.rs`: `Asker` (a flow and its stream, `From<Waiter>` for stream 0) keys asks and answers;
+  `forget`; `readable_fields` (the coding check over decoded fields, `readable` over it).
+- Tests in inject.rs: `h2_serving` (slice (b)'s HTTP/2 host, its answer a function; `h2_host` over it), a token host's
+  answer (`h2_token_answer`), `h2_token_bench`, `h2_drive` (the broker served each turn, no deadline), the broker's
+  `refuse`, and four tests.
+
+### Tests (adalundhe-macbook-pro, macOS arm64, cargo 1.98.1; carrier `/tmp/g121-shot/s33h2-carrier`)
+
+`run.sh BUNDLE REF test` clones the repo into `~/g121-tmp/s33h2`, fetches the bundle and runs `cargo test --locked -p
+shards-net --profile test-release --lib -- hpack:: http2:: inject:: signin` (`CARGO_INCREMENTAL=0`). adas-mac-studio.local
+had no DNS for the first runs, so the tests ran on adalundhe-macbook-pro.
+
+- **Red at 32196c665** (the tests alone), kiln run r975: 4 failed, 51 passed, 2 ignored. Three failed "the guest was
+  not served HTTP/2" (the token host offered HTTP/1.1 alone); `a_guest_offering_h2_alone_to_a_token_host_is_served_h2`
+  failed at its guest's handshake (refused, no protocol in common).
+- **Green at 3ad5e9d3a**, kiln run r977: 55 passed, 0 failed, 2 ignored (step 10 part B's measurement). With the
+  per-stream unit test (written after the change, below): GREEN2_RESULT.
+  - `an_h2_token_response_is_captured_on_its_stream_and_the_guest_sees_placeholders`: the host asked `identity`, the
+    body as sent; the broker keeps the issued tokens; the guest gets the placeholders, `content-length` the new length,
+    no real token in any byte or decoded field; `Did::Captured`; no stream reset.
+  - `an_h2_refresh_is_answered_outside_on_its_stream_with_placeholders`: one provider call; 200, `no-store`, `no-cache`,
+    the placeholders, no issued or rotated token; the held lease let go; the host's first request is the GET sent
+    after, so the refresh never reached it; `Did::Refreshed`.
+  - `a_refused_h2_refresh_is_answered_on_its_stream_while_another_completes`: stream 1 gets the HTTP/1.1 path's
+    `invalid_grant` 400 body byte for byte; stream 3's GET answered by the host; no reset; the connection stays.
+  - `a_guest_offering_h2_alone_to_a_token_host_is_served_h2`: HTTP/2; the revocation answered 200 on its stream, the
+    kept tokens as they were; the GET answered; `Did::Revoked`.
+- **Clippy**: `cargo clippy --locked -p shards-net --all-targets -- -D warnings` on aarch64-apple-darwin,
+  x86_64-unknown-linux-gnu (zig) and x86_64-pc-windows-msvc (xwin), adas-mac-studio.local (kiln run r979, at 3ad5e9d3a): clean.
+
+### Guard-removal mutations (ROOT's; on the green tree, `cargo test -p shards-net --profile test-release --lib -- inject::tests::<test>`, then `git checkout -- crates/net/src` and touch the file)
+
+1. The token host offered `h2`. Fails all four (three "not served HTTP/2", the h2-alone guest refused):
+   `perl -0pi -e 's/filter\(\|p\| p == HTTP_1_1 \|\| p == H2\)/filter(|p| p == HTTP_1_1)/' crates/net/src/inject.rs`
+2. A token response held and read whole. Fails `an_h2_token_response_is_captured_on_its_stream_and_the_guest_sees_placeholders` (a real token reaches the guest):
+   `perl -0pi -e 's/if self\.sign_in\.is_some\(\) && !informational/if false \&\& !informational/' crates/net/src/inject.rs`
+3. Its Content-Length rewritten. Fails the same test (`content-length` the host's):
+   `perl -0pi -e 's/fields\.retain\(\|f\| f\.name != b"content-length"\);//' crates/net/src/inject.rs`
+4. `identity` asked. Fails the same test ("the token host was not asked `identity`"):
+   `perl -0pi -e 's/go\.fields\.retain\(\|f\| f\.name != b"accept-encoding"\);//' crates/net/src/inject.rs`
+5. A refresh answered outside. Fails `an_h2_refresh_is_answered_outside_on_its_stream_with_placeholders`:
+   `perl -0pi -e 's/Some\(\(index, signin::Ask::Refresh\(_\)\)\) => \{/Some((index, signin::Ask::Refresh(_))) if false => {/' crates/net/src/inject.rs`
+6. Answers kept per stream. Fails `signin::tests::each_stream_of_a_flow_takes_its_own_answer_and_one_let_go_of_none`
+   (`cargo test -p shards-net --profile test-release --lib -- signin::tests::each_stream`; no inject.rs test has two
+   streams of one connection asking at once, so this unit test is the guard):
+   `perl -0pi -e 's/self\.answers\.insert\(asker, answer\);/self.answers.insert(Asker::from(asker.flow), answer);/' crates/net/src/signin.rs`
+7. A stream let go of waits no more. Fails the same test ("one refresh, two streams waiting"):
+   `perl -0pi -e 's/Asking::Refresh \{ waiting, \.\. \} => waiting\.retain\(\|a\| \*a != asker\),/Asking::Refresh { .. } => {}/' crates/net/src/signin.rs`
+
+That unit test was written after the change (with it, not red first): its red is mutation 6's and 7's, ROOT's to run.
+
+### R01-R16
+
+- R01: no unwrap, expect, indexing or unchecked arithmetic in the new production code (`split_at_checked`, `get`,
+  `saturating_add`, `parse` into a typed `Option`); tests alone assert.
+- R02: the design reuses step 8's reading (D242) and slice (b)'s stream machine; no new crate or mechanism.
+- R03: no literal of its own (stream 0 and §8.1.1 are RFC 9113's; the bounds `TO_HOST`, `TO_GUEST` are the
+  connection's). The tests wait on progress, never a deadline.
+- R04: `Upward::Reading`/`Refreshing`, `TokenResponse`'s three states, `Asker`; refusals stay `Refusal`, typed to the
+  wire through one rendering (`said_on_h2`).
+- R05: no cache; a held body is bounded with the others by `TO_GUEST`; answers are dropped as their streams go.
+- R06/R07/R13: focused functions per state; comments carry the RFCs and the step-8 reasons.
+- R08/R14: no performance claim (unmeasured; ROOT's).
+- R09: no defect claimed; the red is the missing behaviour itself.
+- R10: red and green above; mutations listed for ROOT.
+- R11/R12: platform-independent code, one implementation shared by HTTP/1.1 and HTTP/2; clippy on three targets.
+- R15: implementer scope; R16: the runners' target dirs removed after landing.
+
 ## Owed
 
 - Slice 3 (kiln): `RunLessor` answering capture, refresh and revoke from the broker.

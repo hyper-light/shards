@@ -26047,7 +26047,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2, kiln's broker answering sign-ins and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; kiln's broker answering sign-ins and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -26911,9 +26911,8 @@ record docs/research/s33-veil-creds/STEP7.md).
   so holding the guest's handshake for it adds no wait. A ClientHello that says plainly this side cannot serve it (no
   protocol or no cipher suite in common, RFC 8446 §4.1.1) is refused at once, no host's TLS begun for it. A host whose
   TLS fails first has the guest accepted in its own first choice, its requests answered 502 in it. A sign-in's token host
-  is offered HTTP/1.1 alone: step 8 reads its tokens from HTTP/1.1's messages, and the CLIs it serves offer
-  `http/1.1` (f41), so a token host's flow is the HTTP/1.1 path's as before; reading a token response per HTTP/2
-  stream is owed (below).
+  was offered HTTP/1.1 alone in this slice (step 8 read its tokens from HTTP/1.1's messages); it is offered what its
+  guest offered since the block below.
 - *An HTTP/2 flow state beside `Ended` (R04).* `H2` is the injector's end of each hop: an `http2::Hop` for each, with
   its own settings, windows and HPACK contexts. `Phase` per hop: the guest's preface octets, then each peer's first
   frame, its SETTINGS (§3.4), then open, then away once a GOAWAY goes either way (§6.8). Each side's preface is sent as
@@ -26962,13 +26961,64 @@ record docs/research/s33-veil-creds/STEP7.md).
   completes. A guest offering `h2` to an HTTP/1.1-only host is served HTTP/1.1, filled. inject.rs' HTTP/1.1 tests pass
   as before, the AES-128-only guest refused at once. `cargo clippy -p shards-net --all-targets -- -D warnings` clean
   for aarch64-apple-darwin, x86_64-unknown-linux-gnu (zig) and x86_64-pc-windows-msvc (xwin).
-- *Owed.* A sign-in's token host over HTTP/2: its token POST and response read whole per stream, as the HTTP/1.1 path
-  reads them (step 8's reading on HTTP/2's messages). ROOT: CI's matrix on main; the guard-removal mutations in
+- *Owed.* A sign-in's token host over HTTP/2, built below. ROOT: CI's matrix on main; the guard-removal mutations in
   STEP7.md; the real-VM runs: an api run with a credential grant toward a host speaking HTTP/2, on KVM, HVF and WHP,
   under step 10's leak scan.
 
-**Owed (later slices of step 33, this plan's steps 7, 8 and 10).** A sign-in's token host over
-HTTP/2 (step 7's second slice offers it HTTP/1.1 alone); kiln's broker answering the sign-ins' words (step 8's third slice;
+**Built: a sign-in's token host over HTTP/2, step 8's token handling per stream** (`crates/net/src/inject.rs`,
+`crates/net/src/signin.rs`; kiln plan 01a1d2b88be57304b972761e2a5c6781 steps 7 and 8, "#74 credentials"; record
+docs/research/s33-veil-creds/STEP7.md and STEP8.md).
+- *ALPN.* A sign-in's token host is offered what its guest offered of `h2` and `http/1.1`, as any granted host is, and
+  its guest accepted in the host's choice: a guest offering `h2` alone is served HTTP/2, no longer refused at its
+  handshake.
+- *Requests, per stream, as the HTTP/1.1 path reads them.* No value is filled toward the token host (its fills
+  dropped), and each request asks `accept-encoding: identity` in place of its own (RFC 9110 §12.5.3). A POST to the
+  profile's token or revocation path with one Content-Length of no more than the connection holds (`TO_HOST`, the
+  HTTP/1.1 path's bound) is held (`Upward::Reading`) until its END_STREAM, its body then asked of `signin::ask`; a
+  body not of its Content-Length is malformed (RFC 9113 §8.1.1), its stream reset PROTOCOL_ERROR. A refresh of the
+  sign-in's placeholder is asked outside (`Upward::Refreshing`), joined to one under way, and answered on its stream
+  from the broker's answer, its tokens the sign-in's placeholders; a revocation is answered 200 on its stream
+  (RFC 7009 §2.2), never sent; anything else goes on as any request. Such a POST without a Content-Length goes on
+  as any request, as a chunked one does over HTTP/1.1, its response read all the same.
+- *Responses, per stream.* Each final response with a body (`TokenResponse`, R04: `Reading`, `Capturing`,
+  `Written`) has its head held and its body read whole, none of it to the guest before; one coded otherwise than as
+  its sender wrote it is refused 502 on its stream (`signin::readable_fields`, the HTTP/1.1 check over decoded
+  fields). At its END_STREAM (or its trailers) a body naming no token goes on as it came; one with tokens is held while
+  its run host keeps them, then given with the sign-in's placeholders in their places (`signin::write`, as before), its
+  `content-length` saying the new length (RFC 9113 §8.1.1), its trailers after it. Informational responses pass. Each
+  field the guest is sent is encoded on the guest's hop as any response's; the placeholders lie in DATA.
+- *Flow control and bounds.* A held body's octets are given back to the host's windows as they are read, and the
+  bodies a connection's streams hold are bounded together by `TO_GUEST`, the HTTP/1.1 path's bound for its one body:
+  past it, that stream is refused 502 and its host stream cancelled. What a written body sends the guest is none of the
+  host's octets, so no credit goes back for it twice (`TokenResponse::Written`).
+- *One stream at a time, each its own.* A sign-in's asks and answers are kept per flow and stream (`signin::Asker`;
+  an HTTP/1.1 flow's stream 0, which no HTTP/2 request uses, §5.1.1), so two streams of one connection asking at once
+  each get their own answer. A stream let go of before its answer forgets it (`SignIns::forget`); its ask stays under way
+  for the other askers and the grants. Every other stream on the connection goes on unaffected.
+- *Refusals on their stream alone.* `Denied`, `Unavailable`, `Ended` and `Unanswered` are answered on the stream with
+  the HTTP/1.1 path's status and text (a refused refresh `invalid_grant` 400, else 503; a capture not kept 502), as the
+  injector's own answers are made once, as HTTP/1.1's bytes, and said on a stream by `said_on_h2` (`:status`, the
+  fields lowered, the connection-specific ones dropped, RFC 9113 §8.2). A refusal of a stream whose host stream is
+  still open cancels it there (CANCEL).
+- *Shared, not duplicated (R12).* The token code both paths run is factored out of the HTTP/1.1 path: what a request
+  read whole asks (`ask_whole`), a revocation answered here (`revoke_here`), the sign-in's placeholders
+  (`signed_as`), a response's tokens asked outside (`capture_tokens`) and written (`capture_written`), and a
+  refresh's answer (`refresh_answer`).
+- *Literals.* None of its own: RFC 9113's stream 0 and §8.1.1's Content-Length rule; RFC 7009's 200; the bounds are the
+  connection's `TO_HOST` and `TO_GUEST`.
+- *Tests (macOS arm64, adalundhe-macbook-pro; STEP8.md).* `cargo test -p shards-net --profile test-release --lib --
+  hpack:: http2:: inject:: signin` red at the tests' commit (32196c665: 4 failed, 51 passed, 2 ignored; three served
+  HTTP/1.1, the h2-alone guest refused at its handshake) and green at the change's (3ad5e9d3a: 55 passed, 2 ignored),
+  over slice (b)'s in-process HTTP/2 host and step 8's test broker: a token response captured on its stream, the
+  guest given placeholders under a new Content-Length and the host asked `identity`; a refresh answered outside on
+  its stream, the host's first request the GET after it; a refused refresh answered 400 `invalid_grant` on its stream
+  while a GET on another completes, no stream reset; a guest offering `h2` alone served HTTP/2, its revocation answered
+  200 there. The tests wait on the bench's own progress, no deadline (R03).
+- *Owed.* ROOT: CI's matrix on main; the guard-removal mutations in STEP8.md; the real-VM runs (a sign-in's CLI over
+  HTTP/2 in a microVM, under step 10's leak scan). A flow that ends with an ask under way leaves its answer in
+  `SignIns` until the run's end, for HTTP/1.1 as for HTTP/2 (each stream let go of forgets its own).
+
+**Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
 the network process telling its run host of a capture, a refresh and a revocation, the run host its
 orchestrator, and the injector capturing and answering outside are built, its second); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
 (its harness built, D259), the injector's measured cost (step 10), and a real sign-in of each
