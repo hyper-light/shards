@@ -236,7 +236,17 @@ fn probe_gpu(
         .ok_or(Refusal::GpuProbe(crate::GpuProbeError::Pending))?;
     match guest.wait_for(left)? {
         Some(End::PowerOff) => {}
-        Some(end) => return Err(Refusal::Ended(end)),
+        // A VM process that refuses its selection prints the refusal in place of a receipt
+        // and fails (D232): typed where that record is all it said.
+        Some(end) => {
+            let mut tail = lock(&guest.shared.tail);
+            let refused = tail
+                .probe_error
+                .is_none()
+                .then(|| crate::physical::refused(tail.bytes.make_contiguous()))
+                .flatten();
+            return Err(refused.map_or(Refusal::Ended(end), Refusal::GpuProbe));
+        }
         None => {
             guest.stop()?;
             return Err(Refusal::GpuProbe(crate::GpuProbeError::Pending));
