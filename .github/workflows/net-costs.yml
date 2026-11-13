@@ -21,6 +21,11 @@ env:
   CARGO_TERM_COLOR: always
   TOOLCHAIN: 1.98.1 # keep in sync with rust-toolchain.toml
 
+# Runs give way to newer ones, as ci.yml says (PM M539).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
+
 jobs:
   measure:
     name: ${{ matrix.os }}
