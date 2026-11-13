@@ -7361,6 +7361,29 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     (`--memory-swap` its memory): its guest's `memory.high` slows it and refuses it nothing
     (cgroup-v2.rst), so it passes `memory.max` whether its room comes before its growth or
     after, as nothing it holds can go to swap.
+  - **Each microVM's words its own** (built, macOS and Windows). The groups' thread told
+    each member its room and asked each to give back one after another, each waited for
+    while its VM process lived (`Wait::WhileRuns`): a member whose guest never answered a
+    room told before any room was answered, which a wait follows while its VM process
+    lives, held every other member's words and every group's stop for as long as its VM
+    process lived: `a_member_that_never_answers_holds_up_no_other_member_or_group`, red at
+    1e391c093 (adas-mac-studio.local, macOS 26.2 arm64: group two's member never stopped
+    in 20 s), plays it.
+    Now each member's word, its room told and then, for a round, what it holds cold asked
+    back, goes on a thread of its own, one word at a time, judged as D215's judge judges a
+    wait, its give-back waiting out one of its host's pressure under way as a budget's does
+    (reclaim.rs `give_after`); an ask made meanwhile waits behind it, its newest room and
+    any give-back kept. The groups' thread asks at its passes, hears each answer as it
+    comes (its condvar), and waits on none. A group found short with no round under way
+    begins one, each member asked once; it is judged once each has answered, ended, or run
+    past the slowest answer of its kind this daemon has seen with none (`Record::stalled`,
+    in memory: no figure of ours, and before its kind's first answer a member's word
+    follows its microVM's liveness alone, as its own wait does), the groups' thread waking
+    at that moment if nothing wakes it sooner; past `memory.max` with nothing given back,
+    its largest is stopped. So a member that never answers holds up no other member and no
+    other group, and its own group's stop comes once its word has run past the slowest
+    room answered (the same test: each group's largest stopped, OOM-killed). A group whose
+    budget goes tells each member it told a room that it has none, its hold let go of.
   - **Windows** (built): every process of a microVM under NAME is made in a job object of
     NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST, the
     group's first; Job Objects, "Nested Jobs", Windows 8 on), its warm VMs too: a VM
