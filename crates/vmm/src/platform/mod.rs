@@ -144,7 +144,7 @@ pub enum Unprioritized {
     /// Windows took a raise of the thread's priority to `asked` (SetThreadPriority succeeded)
     /// and left the thread at `got`, its process in priority class `class`
     /// (GetPriorityClass): as it leaves every thread of a process that a job, or a job that job
-    /// is nested in, holds to a priority class (JOB_OBJECT_LIMIT_PRIORITY_CLASS, PM M536).
+    /// is nested in, holds to a priority class (JOB_OBJECT_LIMIT_PRIORITY_CLASS, PM M538).
     NotRaised { asked: i32, got: i32, class: u32 },
 }
 

@@ -23,10 +23,17 @@
 //!   thread as thread_limit counts one;
 //! - `--priority`: the priority limits of the job this process is in, and what each of
 //!   SetThreadPriority's levels does to the calling thread under them (its return, its error,
-//!   and the priority read back).
+//!   and the priority read back);
+//! - `--priority-class CLASS`: the same, once SetPriorityClass has set this process at CLASS
+//!   (hex, as winbase.h's `*_PRIORITY_CLASS`), in no job of its own making;
+//! - `--in-priority-job CLASS -- CMD [ARG]...`: CMD run in a job of this process's making that
+//!   holds its processes to CLASS (JOB_OBJECT_LIMIT_PRIORITY_CLASS, which needs
+//!   SeIncreaseBasePriorityPrivilege enabled), nested in any job this process is in; exits
+//!   as CMD does.
 //!
 //! Usage: win-thread-limits [--image PATH] [--burst N] [--rounds R] [--job-limit MIB]
-//!        win-thread-limits --suspended N | --priority
+//!        win-thread-limits --suspended N | --priority | --priority-class CLASS
+//!        win-thread-limits --in-priority-job CLASS -- CMD [ARG]...
 
 use std::io::{BufRead as _, Read as _, Write as _};
 use std::os::windows::io::AsRawHandle as _;
@@ -59,6 +66,27 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("--priority") {
         return priority();
+    }
+    if args.first().map(String::as_str) == Some("--priority-class") {
+        let class = args.get(1).and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok());
+        let Some(class) = class else {
+            eprintln!("--priority-class CLASS, in hex");
+            std::process::exit(2);
+        };
+        // SAFETY: this process's pseudo-handle.
+        let set = unsafe { windows_sys::Win32::System::Threading::SetPriorityClass(GetCurrentProcess(), class) };
+        // SAFETY: no arguments.
+        println!("SetPriorityClass({class:#x}) -> {set} (last error {})", unsafe { GetLastError() });
+        return priority();
+    }
+    if args.first().map(String::as_str) == Some("--in-priority-job") {
+        let class = args.get(1).and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok());
+        let command = args.iter().position(|a| a == "--").map(|i| &args[i + 1..]);
+        let (Some(class), Some([cmd, rest @ ..])) = (class, command) else {
+            eprintln!("--in-priority-job CLASS -- CMD [ARG]...");
+            std::process::exit(2);
+        };
+        std::process::exit(in_priority_job(class, cmd, rest));
     }
     if args.first().map(String::as_str) == Some("--regions") {
         return regions();
@@ -725,5 +753,56 @@ fn regions() {
     }
     if quiet {
         println!("{usual} of {rounds} rounds the usual: 28672 B charged, the stack's allocation new, one other grown 8192 B");
+    }
+}
+
+/// Runs `cmd` with `args` in a job of this process's making that holds its processes to
+/// priority class `class` (JOB_OBJECT_LIMIT_PRIORITY_CLASS), nested in any job this process is
+/// in: this process joins it first, and `cmd`, its child, is in it from its start. Its exit
+/// code, or 1 where the job could not be made so.
+fn in_priority_job(class: u32, cmd: &str, args: &[String]) -> i32 {
+    use windows_sys::Win32::System::JobObjects::{
+        JOB_OBJECT_LIMIT_PRIORITY_CLASS, JOBOBJECT_BASIC_LIMIT_INFORMATION, JobObjectBasicLimitInformation,
+    };
+    // SAFETY: an anonymous job, which this process stays in until it ends.
+    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if job.is_null() {
+        // SAFETY: no arguments.
+        eprintln!("CreateJobObjectW: {}", unsafe { GetLastError() });
+        return 1;
+    }
+    let limits = JOBOBJECT_BASIC_LIMIT_INFORMATION {
+        LimitFlags: JOB_OBJECT_LIMIT_PRIORITY_CLASS,
+        PriorityClass: class,
+        ..Default::default()
+    };
+    // SAFETY: basic limits of their own size, on the job just made.
+    let set = unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectBasicLimitInformation,
+            (&raw const limits).cast(),
+            size_of::<JOBOBJECT_BASIC_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if set == 0 {
+        // SAFETY: no arguments.
+        eprintln!("SetInformationJobObject(PRIORITY_CLASS {class:#x}): {}", unsafe { GetLastError() });
+        return 1;
+    }
+    // SAFETY: this process's pseudo-handle, into the job, nested in any it is in already.
+    if unsafe { AssignProcessToJobObject(job, GetCurrentProcess()) } == 0 {
+        // SAFETY: no arguments.
+        eprintln!("AssignProcessToJobObject: {}", unsafe { GetLastError() });
+        return 1;
+    }
+    println!("in a job holding its processes to priority class {class:#x}: {cmd} {}", args.join(" "));
+    let _ = std::io::stdout().flush();
+    match Command::new(cmd).args(args).status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("{cmd}: {e}");
+            1
+        }
     }
 }

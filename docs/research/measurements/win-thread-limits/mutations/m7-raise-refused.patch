@@ -1,0 +1,11 @@
+--- a/crates/vmm/src/platform/windows_thread.rs
++++ b/crates/vmm/src/platform/windows_thread.rs
+@@ -211,7 +211,7 @@
+             io::Error::last_os_error()
+         )));
+     }
+-    if got != priority {
++    if true {
+         // SAFETY: this process's pseudo-handle.
+         let class = unsafe { GetPriorityClass(GetCurrentProcess()) };
+         return Err(Unprioritized::NotRaised {

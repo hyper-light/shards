@@ -641,15 +641,15 @@ mod tests {
         );
     }
 
-    /// What a thread is counted is what Windows commits for each thread it makes, read as it
-    /// makes one (PM M529): a thread made suspended, its stack reserved as std reserves it, is
-    /// committed Windows' guard pages and the image's initial commit in its stack's
-    /// allocation and, past it, its TEB, which the count takes as winternl.h declares it; std's
-    /// stack guarantee then widens the guard to the count's. So the limit holds no more
-    /// threads than the commit holds of each part as Windows commits it: a count without its
-    /// TEB, or a part short, holds more. What no region of the thread's shows (its stack's
-    /// page of page table, PM M529) is said, not counted. Run alone in a child, so that its
-    /// address space changes by the thread alone.
+    /// The threads a commit is said to hold are no more than it holds of a thread as Windows
+    /// commits one: std's guard pages, as the count reads them, and the initial commit and TEB
+    /// Windows commits for a thread it makes, read as it makes one (PM M529). A thread made
+    /// suspended, its stack reserved as std reserves it, is committed Windows' guard pages and
+    /// the image's initial commit in its stack's allocation and, past it, its TEB, which the
+    /// count takes as winternl.h declares it; std's stack guarantee then widens the guard to
+    /// the count's. A count without its TEB, or a part short, says more threads than that. What
+    /// no region of the thread's shows (its stack's page of page table, PM M529) is said, not
+    /// counted. Run alone in a child, so that its address space changes by the thread alone.
     #[test]
     fn a_thread_is_counted_what_windows_commits_for_one_it_makes() {
         use std::collections::BTreeMap;
@@ -760,6 +760,14 @@ mod tests {
             teb += all - had;
         }
         let charged = c1 - c0;
+        let room = Room::now().unwrap();
+        let said = room.threads(&thread).unwrap();
+        let most = room.commit / (thread.guard + initial + teb);
+        assert!(
+            said <= most,
+            "{said} threads said of {room:?}, more than its commit holds of a thread as Windows \
+             commits one, {most}: {thread:?}, Windows' initial commit {initial} B and TEB {teb} B"
+        );
         assert_eq!(
             initial, thread.initial,
             "the initial commit Windows gave it, and the image's"
@@ -778,7 +786,8 @@ mod tests {
         );
         println!(
             "{SAID}charged {charged} B: in its stack {in_stack} (guard {guard}, initial {initial}), its TEB \
-             {teb}, and {} B no region of it shows; counted {thread:?}",
+             {teb}, and {} B no region of it shows; counted {thread:?}; {said} threads said of {room:?}, \
+             at most {most}",
             charged - in_stack - teb
         );
     }

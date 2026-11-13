@@ -10848,7 +10848,7 @@ the user told).
   job that job is nested in (JOB_OBJECT_LIMIT_PRIORITY_CLASS; kiln's runs,
   BELOW_NORMAL_PRIORITY_CLASS, and under `cargo test` cargo's own job nested in kiln's), has
   none of its threads raised: Windows takes SetThreadPriority's raise, says it succeeded,
-  and leaves the thread at normal, where it takes a lowering (PM M536). A process reads
+  and leaves the thread at normal, where it takes a lowering (PM M538). A process reads
   none of its jobs' limits past its immediate job's ("the immediate job of the calling
   process", QueryInformationJobObject), so each priority set is read back
   (GetThreadPriority), and a raise not taken is refused, `platform::Unprioritized::NotRaised`
