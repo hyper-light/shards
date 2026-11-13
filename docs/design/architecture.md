@@ -12419,6 +12419,26 @@ peer", each going on here as it should. What changed for them:
   move between two machines takes in each connection's `Seen` so
   (`a_microvm_moves_to_another_host_saved_and_live`, tests/moved.rs); no test leaves a restore
   unanswered, a fault case owed.
+- **A restore refused at that machine's gate never ran there** (cli/moves.rs `resumed`;
+  2026-11-13). That machine's daemon refuses a command before it starts it
+  (`Answer::Refused`, typed on the wire): a client it no longer enrolls, words it refuses, a
+  command it could not start (daemon/remote.rs `Machine::start`, shards-remote server.rs).
+  The step's `there` flattened that refusal into its error, as it does an unanswered
+  restore's, so it went to `running_there`, whose asks that machine refused too. A move
+  whose restore was refused before it ran thus ended "not known", its copy held here.
+  - The restore's answer now stays typed (`Asked`). Refused there, by its own failure or at
+    the gate, what was made there of it is removed and the move goes on here. Only a restore
+    left unanswered is asked about.
+  - Held by `a_restore_refused_at_the_other_daemons_gate_goes_on_here`, with a fake `there`:
+    red at e0cc059c7 (`NotKnown(..)` where `Here(..)` was due), green since, nothing asked
+    of whether it runs there. A restore that failed, one done and one unanswered go as
+    before.
+  - Its gap: the remote server's relay can fail after `Host::start` has started a command
+    (a thread or a handle it could not make; server.rs `relay`, or no listener's sender).
+    It refuses that command though it goes on, its stdio closed, and a move takes it for a
+    restore that never ran. The wire tells the two apart nowhere. Owed to ROOT: the
+    refusal's kind on the wire (before the command started, or after), or the relay ending
+    what it started.
 - **What a move sends**, cold: the move's stream (`Writer`), its plan, then its directory
   but its other snapshots and its kept layer, its snapshot's state, memory, layer and swap
   among it; its volumes; and the files its snapshot restores against that the other machine
