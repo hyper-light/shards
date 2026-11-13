@@ -10070,7 +10070,9 @@ mod tests {
         party: fn() -> i128,
         judge: Judge<'r>,
         began: Instant,
-        /// What [`others`] were as it began, and at the look before.
+        /// What its party had run as it began (Unix: Windows keeps no rate in cycles), and at
+        /// the look before.
+        #[cfg(unix)]
         from: i128,
         others: i128,
         /// This thread's CPU as it last added its own to [`WAITERS`].
@@ -10092,6 +10094,7 @@ mod tests {
                 party,
                 judge: Judge::begin(record),
                 began,
+                #[cfg(unix)]
                 from: others,
                 others,
                 mine,
