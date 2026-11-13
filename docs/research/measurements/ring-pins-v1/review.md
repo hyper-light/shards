@@ -373,3 +373,26 @@ and is untouched here.
    pages pinned, not M, after …: none released over the last …, its window …", one to two windows after
    the setup, where before it waited 600 s. Then `git checkout crates/init/src/ring.rs`.
 3. **F3's test on Linux arm64** (CI on main runs it), and R14's measure of how long the lock is held.
+
+## Cures, F5 (goal 52's agent, 2026-11-13)
+
+F3's child saw F5 in the source. Before this cure, `Pool::made`'s failure arm (crates/init/src/ring.rs) gave a failed
+slot's bytes back to the room (`making` lessened, its table entry freed) without moving `room_gen`. A stream refused
+growth while that slot was being made (`swap`: `refused_at = room_gen`, read before the room) never asked again until
+an unrelated free or a word of the run's room. So growth came late, though pins never passed the room.
+
+- **Cure:** the failure arm moves `room_gen` as `release`, `lose` and `heard` do, where the bytes come back.
+- **Test:** `ring::tests::a_slot_whose_making_fails_moves_the_room_a_refused_growth_waits_on` uses a pool with room
+  for one `MIN_RING` slot. It reserves that slot, sees a second reserve refused, fails the making (`Unmade::Short`),
+  then needs `room_gen` moved and the room back. It waits on facts and has no constant beyond the ABI's own
+  `slot_len(MIN_RING)`.
+- On adacachy2 (Linux 7.3.3 x86_64, rustc 1.98.1), at main 454aa9a70:
+
+| Run | Code | Result |
+|---|---|---|
+| Red | the test alone | FAILED: "a growth refused at 0 would never ask again" (left 0, right 0) |
+| Green | the test and the cure | 1 passed; `ring::` 23 passed |
+| Guard removed | the cure's `room_gen` move taken out, which is the red run's code | FAILED, as red |
+| Lint | `cargo clippy -p shards-init --all-targets -- -D warnings`, for x86_64-gnu, x86_64-musl and aarch64-musl | clean |
+
+`cargo fmt -p shards-init -- --check` is clean. Owed to ROOT: the test on Linux arm64 (CI on main).

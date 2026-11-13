@@ -116,6 +116,12 @@ fn assert_ended(guest: &dyn ImageGuest, expected: MemberEnd) {
 
 /// Reads `channel` of the harness to its end, within the test's bound.
 fn read_all(guest: &dyn ImageGuest, channel: Channel) -> Vec<u8> {
+    read_within(guest, channel).expect("the member's channel did not end")
+}
+
+/// What `channel` of the harness says to its end; none where it does not end within the
+/// test's bound.
+fn read_within(guest: &dyn ImageGuest, channel: Channel) -> Option<Vec<u8>> {
     let mut pipe = guest.take_output(&codex(), channel).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -123,8 +129,7 @@ fn read_all(guest: &dyn ImageGuest, channel: Channel) -> Vec<u8> {
         let _ = pipe.read_to_end(&mut bytes);
         let _ = tx.send(bytes);
     });
-    rx.recv_timeout(TIMEOUT)
-        .expect("the member's channel did not end")
+    rx.recv_timeout(TIMEOUT).ok()
 }
 
 /// What an orchestrator stages into its harness at create reaches it alone, exactly, never
@@ -613,6 +618,67 @@ fn a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs() {
     guest.stop().unwrap();
 }
 
+/// The example harness image (docs/examples/harness-codex), built in `home` as `tag`: its
+/// Agentfile and harness.json as the repository holds them, FROM its pinned alpine, and the
+/// test guest as its `codex`, as OpenAI's binaries are no part of the repository (its
+/// .gitignore).
+fn build_example(home: &TempDir, tag: &str) {
+    let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples/harness-codex");
+    let ctx = TempDir::new("api-example-ctx");
+    std::fs::create_dir_all(ctx.join("codex/bin")).unwrap();
+    std::fs::copy(example.join("Agentfile"), ctx.join("Agentfile")).unwrap();
+    std::fs::copy(example.join("codex/harness.json"), ctx.join("codex/harness.json")).unwrap();
+    std::fs::copy(common::test_guest(), ctx.join("codex/bin/codex")).unwrap();
+    // A context's files keep their modes on a Unix host, as fsutil walks them; a Windows
+    // host's context gives every file 0755.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(
+            ctx.join("codex/bin/codex"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let built = run_shards_env(
+        &["build", "image"],
+        &["-t", tag, ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+}
+
+/// Hex's HEX-IMG-3 (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 12): an orchestrator's
+/// run of the example harness image with a command of its own, keeping nothing the image
+/// grants past the microVM (D250) and holding its members apart with no reach (D246), ends
+/// with its command's status, as `shards run` of the same command does; a command that never
+/// started ends the run failed in its guest's words (D249), which the assertion says.
+#[test]
+fn an_images_own_command_ends_its_run_with_its_status() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-own-home");
+    build_example(&home, "api-own:1");
+    let mut s = spec(&home, "api-own:1");
+    s.command = Some(["/bin/sh", "-c", "exit 3"].map(String::from).to_vec());
+    s.egress = Narrowing {
+        egress: Keep::Only(Vec::new()),
+        mcp: Keep::Only(Vec::new()),
+        destinations: Keep::Only(Vec::new()),
+        dns: false,
+        members: Some(Vec::new()),
+    };
+    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Exited(3)));
+}
+
 /// Stop ends the run at once, whatever its members do, and its end says so.
 #[test]
 fn stop_ends_the_run_at_once() {
@@ -663,8 +729,19 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
     assert!(guest.take_input(&codex()).is_err(), "taken once");
     let echoed = std::thread::scope(|scope| {
         let reading = scope.spawn(|| read_all(guest.as_ref(), Channel::Stdout));
-        writer.write_all(&input).unwrap();
+        let written = writer.write_all(&input);
         drop(writer);
+        // Its stdin taking no more: how far the harness read it (its stderr says so as its
+        // stdin ends), and how it and the run ended.
+        if let Err(e) = written {
+            let said = read_within(guest.as_ref(), Channel::Stderr);
+            panic!(
+                "its stdin took no more ({e}): the harness said {:?} and ended {:?}; the run's end {:?}",
+                said.as_deref().map(String::from_utf8_lossy),
+                guest.wait_member(&codex(), TIMEOUT),
+                guest.wait_for(Duration::ZERO)
+            );
+        }
         reading.join().unwrap()
     });
     assert_eq!(echoed.len(), input.len());

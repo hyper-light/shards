@@ -1262,7 +1262,8 @@ for the exit status.
       larger than all pools may keep, or more than 256 warm VMs (the clients' bound, for
       the same threads and descriptors) stop it, and `shards daemon --detached` says
       why to the client that started it, at once.
-    - **A pool keeps what its runs need while they come** (`daemon/demand.rs`).
+    - **A pool keeps what its runs need while they come** (`daemon/demand.rs`, since D253
+      shards-api's `demand.rs`, which an orchestrator's pools keep theirs by too).
       - Its size is the largest burst of runs seen within its keep-alive, at least one
         and at most SHARDS_POOL. A burst is the runs that arrive within one refill of
         each other, the refill's time, from a warm VM's start to its `READY`, estimated
@@ -4568,7 +4569,12 @@ microVMs, from a git daemon and from smart HTTP served by git's own upload-pack.
   4095. The walk keeps the trees open on a stack of its own, a chain is followed in a loop,
   and the walk refuses what git refuses (`trees_nest_as_deep_as_git_checks_out_and_no_deeper`:
   2048 levels walked on a 256 KiB thread and 2049 refused, as git's read-tree takes and
-  refuses the same trees).
+  refuses the same trees). The host's git is asked at 2048 only where its own
+  core.maxTreeDepth reaches it: Git for Windows' MSVC and arm64 clang builds stop at 512
+  and 1280, as their stacks hold no deeper (git v2.56.0 git-compat-util.h:594-616,
+  `DEFAULT_MAX_ALLOWED_TREE_DEPTH`), and held to 2048, CI's arm64 git (2.56.0.windows.4)
+  died of STATUS_STACK_OVERFLOW (0xC00000FD) instead of answering; there the walk alone is
+  checked, and the test says so.
 
   | Literal | Was | Now | Source |
   |---|---|---|---|
@@ -7029,7 +7035,7 @@ pins E2E on WHP arm64, and on WHP x86_64 past that bound; and throughput, small-
 latency (paced and back to back), connection setup with its slot's making, a ring's ramp, CPU
 and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
 
-**Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2 fixed by ROOT, a6edfb8e9; F3 cured, 6557c8597, and F4, a2c887eeb: its "Cures, F3 and F4", with the real-VM runs F4 owes).
+**Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2 fixed by ROOT, a6edfb8e9; F3 cured, 6557c8597, and F4, a2c887eeb: its "Cures, F3 and F4", with the real-VM runs F4 owes; F5, a failed slot's room given back without moving `room_gen`, cured: its "Cures, F5").
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
@@ -16405,7 +16411,16 @@ download.
     listening to the asking instead of asleep: an answer cut by its wait is overdue
     (`Error::is_overdue`) and asked again at once, at the moment the pause would have
     ended, and one that comes meanwhile is taken. A stalled download already resumes at
-    once once it brought bytes (fetch.rs).
+    once once it brought bytes (fetch.rs). The cut is its read's own stop, the socket's
+    timeout set to what is left of the wait or the wait's deadline (http.rs `read_head`),
+    as a silence's is (`Silenced::timed_out`), never the time `Instant` says passed: a
+    system wait "can be anywhere between one and two ticks" of a timeout between them
+    (Microsoft Learn, Wait Functions), so ends before its time by the clock, and on CI's
+    arm64 Windows (main cc439a2a7) a first cut so ended went uncounted, its asking again
+    paused and its wait not doubled: 3 asks where 2 were due, in 4.47 s from the test's
+    start, the 1.25 s + a pause + 1.25 + 1.5 s an uncounted cut takes and not the 5.25 s
+    a second cut would (`a_paths_answers_are_waited_for_as_long_as_it_shows`;
+    `a_read_its_wait_stops_is_overdue_by_the_stop_itself`).
   - **At least a second** (RFC 6298 §2.4's least timeout, which keeps it conservative
     against what its samples do not show; RFC 6298 cites Allman and Paxson, SIGCOMM
     1999: a large minimum avoids spurious retransmissions). Without it, this crate's
@@ -16652,7 +16667,7 @@ progress; D222's estimators).
 | `STOP_GRACE` (daemon.rs) | 10 s | cited | moby v28.5.1 container/container_unix.go l. 26, container/container.go l. 601; Compose spec |
 | `PATIENCE` (daemon.rs tests) | 20 s | kept, a test's hang bound | no daemon wait; tests may bound a hang |
 | `TOP_LIMIT` (daemon/commands.rs) | 16 MiB | `build::holdable()` | init procs.rs `dump` (whole in guest memory) |
-| `KEEP` (daemon/demand.rs tests) | 600 s | kept, a test's input | past the test's longest step |
+| `KEEP` (shards-api demand.rs tests) | 600 s | kept, a test's input | past the test's longest step |
 | `BODY_MOST` (daemon/engine.rs) | 8 MiB | `build::holdable()` | moby v28.5.1 api/server/httputils ReadJSON (unbounded) |
 | `MAX_PATH` (daemon/moves.rs) | 4096 | cited | Linux 6.18 include/uapi/linux/limits.h l. 13 |
 | `MAX_PLAN` (daemon/moves.rs) | 16 MiB | `shards_remote::frame::MAX_FRAME` | the `ready` step's request frame (cli/moves.rs) |
@@ -18336,7 +18351,9 @@ Built since (goal 75, Hex's step 39): `gpus=` for an orchestrator's run. shards-
 `check_selection` before a run host starts. It rides the image channel's version 16
 (`Request::gpu_devices`, each in `--gpu-device`'s text, parsed and checked again as read). The
 run host starts the GPU's VM process (D144) with `--gpu` and each `--gpu-device`, as shards-api's
-direct boot does, with MoltenVK saying its errors alone, as the daemon starts a GPU's. Under the
+direct boot does, with MoltenVK saying its errors alone, as the daemon starts a GPU's, and boots
+the GPU's guest kernel in it, its command given the GPU's render node, as `--gpus 1` asks them
+(D232's record says how 2d60abb24 missed both). Under the
 grant it sends `gpus=` with the same identities, which init checks and writes to
 `/run/shards/gpus` (0444, one a line; init's side was built at step 4). Without the grant, the VM
 renders on them and the run has no file. Tested (unit): the channel's round trip and refusals,
@@ -23337,8 +23354,15 @@ reboots, driver updates or hot plug; a device's own identity does.
 
 - *Through an orchestrator's run* (D231; goal 75): `ImageSpec::gpu_devices`, checked by
   `check_selection` before a run host starts and again as the image channel reads it (version
-  16). The run host starts the GPU's VM process with `--gpu` and each `--gpu-device`, and under
-  the nesting grant the command reads them in `/run/shards/gpus` (D234's `gpus=`).
+  16). The run host asks for the microVM's GPU as `--gpus 1` asks it, so that `run::prepare`
+  gives it the GPU's guest kernel, DRM's virtio-gpu driver built in (D144), and its command
+  the GPU's render node, as `--gpus` gives a run's; it boots that kernel in the GPU's VM
+  process with `--gpu` and each `--gpu-device`. (2d60abb24 booted the stored guest's kernel,
+  which has no GPU driver, and gave the command no render node: fixed with
+  `a_run_naming_gpus_asks_for_the_gpu_guest_and_its_render_node` and
+  `a_run_given_its_gpu_boots_the_gpu_guests_kernel`, red first.) A host
+  that gives a microVM no GPU (`run::GIVES_GPU`) refuses GPUs named, `Unsupported`. Under the
+  nesting grant the command reads them in `/run/shards/gpus` (D234's `gpus=`).
 
 **Literals.** `MAX_PHYSICAL_GPUS`, 65,536: the renderer's patches' bound, `1 + UINT16_MAX`,
 from Hex's scheduler's u16 device index, to which they hold a context's selection
@@ -25796,6 +25820,38 @@ endpoints bind.
 - A run's key reached by another run's controller.
 - An endpoint outliving its run.
 - A grant shards-api takes and init refuses, or the other way round.
+
+### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (in progress: the shared shape and words built; the run host's templates and shards-api's pools owed)
+
+**Why.** An orchestrator's run (D231) boots its microVM cold every time, where a daemon's run
+restores its image's template (D25) and takes a warm VM from its pool (D26). Hex boots its node
+through it (Hex step 39), so every one of Hex's starts pays a boot.
+
+**Decided so far.**
+- *One shape.* Every microVM a run boots has one shape beside its guest, the daemon's and a run
+  host's alike, so that a template's name (`run::template`) means one machine whichever
+  process saved it:
+  - `run::Shape::give` is the daemon's composition, moved out of `warm_for`: size, CPU
+    baseline, memory to plug and its swap window, reporting, the in-VM server's and the
+    emulator's devices, shares and their DAX windows, PCI slots, bridge;
+  - `run::boot_args` is `cold`'s words;
+  - `run::restore_args` (with `run::Backings`) is `plan_refill`'s;
+  - the share window's setting is `daemon::share_window_mib`, out of `settings`.
+
+  The daemon calls each of them, its words unchanged. `a_runs_microvm_is_shaped_alike_wherever_it_boots`,
+  `a_boots_words_are_its_configs` and `a_restores_words_are_its_templates` pin them.
+- *One demand rule.* D26's rule for how many warm VMs a pool keeps (the largest burst within an
+  RFC 6298 refill window, within the keep-alive) is `shards_api::demand`, moved from the daemon,
+  never copied. The daemon's pools keep theirs by it, and an orchestrator's will too.
+
+**Owed** (the next slices; then ROOT's real-VM runs):
+- The run host takes this shape, its words from these functions rather than its own: a join
+  disk and share, a writable layer's file, swap and share windows, memory to plug, the CPU
+  baseline. It restores its image's template, or boots and saves it, through the one VM
+  launch (R12; goal 52's step 10).
+- A template that fails to restore is removed, the run boots, and its orchestrator is told so,
+  typed. Its files are held open for the run's life.
+- shards-api keeps warm run hosts per template, sized by `shards_api::demand`.
 
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller; the member's listener and bridge, the run hosts' pairing, kiln's side and every real-VM run owed)
 
