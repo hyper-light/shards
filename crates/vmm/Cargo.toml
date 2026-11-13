@@ -56,6 +56,10 @@ windows-sys = { workspace = true, features = [
   # A DAX window's answer must name a section or a file (NtQueryObject's type record).
   "Wdk_Foundation",
   "Win32_System_WindowsProgramming",
+  # The host's edition, which says whose limit a refused device assignment is (D154):
+  # RtlGetVersion's OSVERSIONINFOEXW.
+  "Wdk_System_SystemServices",
+  "Win32_System_SystemInformation",
 ] }
 
 [dev-dependencies]
