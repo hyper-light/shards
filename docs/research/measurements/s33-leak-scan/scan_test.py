@@ -22,7 +22,9 @@ _spec = importlib.util.spec_from_file_location("scan", os.path.join(HERE, "scan.
 scan = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(scan)
 
-RUN = scan.RUN
+# The bring-up's run, which credentials_test.py holds to harness-bringup-v1's record of what a
+# provider shows: the scan's own must be it, not one of its own.
+RUN = scan.credentials.RUN
 
 
 def fake(label, length):

@@ -160,7 +160,8 @@ All on adas-mac-studio-3.local, through the carrier:
 - **The bring-up's check, unchanged.**
   `python3 -I docs/research/measurements/harness-bringup-v2/credentials_test.py`: 15 passed,
   with credentials.py's `secrets` now built on `named_secrets`.
-- The save's Rust tests are listed in D259.
+- **Guard removals** (R10, by hand, each test run on its own): 13 of 13 failed, the scan's seven
+  among them. They are listed in D259.
 
 ## Owed
 
