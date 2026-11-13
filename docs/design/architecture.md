@@ -22867,6 +22867,13 @@ host here runs WHP on arm64 (GitHub's windows-11-arm has no hypervisor platform,
 nested Windows 11 arm64 on an M-series Mac gets no partition, D209); the run host's resident,
 CPU and kernel cost per microVM against the daemon's per run and Firecracker's (R14).
 
+**Review (plan step 2, goal 52's step 4).** The lane's 16 commits, read against R01-R16, have
+no code defect. Refusals are typed by cause end to end, through Hex's mapping of them. Its
+Open `taken::linux` failures are 037866828's (already on main). Main CI's six api_image failures
+at d35c4cf79 were each the Windows host's absence, which 731b5e54f added. R12's third launch copy
+stays owed as a slice of its own, with every backend's runs and R14's cold start. The review is
+in runtime-image-boot-v1/README.md, "Review (plan step 2)".
+
 **What would falsify it.** A run host costing more per microVM than the daemon per run (then
 one host per orchestrator); an orchestrator needing to link the VMM; credentials a member
 must not read (then plan P10's opaque broker).
