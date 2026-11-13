@@ -27,7 +27,7 @@ impl Rate {
     /// `cpu × other.over < other.cpu × over` in nanoseconds, with no division and no float.
     /// Each side is the product of two u64s, which no u128 overflows; a duration past u64's
     /// nanoseconds (584 years) counts as its most.
-    pub(crate) fn below(&self, other: &Rate) -> bool {
+    pub fn below(&self, other: &Rate) -> bool {
         let ns = |d: Duration| u128::from(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
         ns(self.cpu).saturating_mul(ns(other.over)) < ns(other.cpu).saturating_mul(ns(self.over))
     }

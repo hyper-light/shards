@@ -45,6 +45,29 @@ fn millis(timeout: Option<Duration>) -> libc::c_int {
     })
 }
 
+/// Lets socket `fd` go from the waits of this module's, so that whoever it is handed to may
+/// have it block. On Windows a wait associates each socket with its event (WSAEventSelect),
+/// which holds the socket non-blocking: setting it blocking fails WSAEINVAL until the
+/// association is cleared, "by calling WSAEventSelect with the lNetworkEvents parameter
+/// equal to zero" (WSAEventSelect, Microsoft's Winsock reference). Elsewhere nothing:
+/// neither poll(2) nor kqueue(2) sets a mode of a descriptor's.
+#[cfg(windows)]
+pub fn release(fd: RawSocket) -> io::Result<()> {
+    use windows_sys::Win32::Networking::WinSock::{SOCKET_ERROR, WSAEventSelect, WSAGetLastError};
+    // SAFETY: a socket of the caller's, associated with no event and no network events.
+    if unsafe { WSAEventSelect(fd, 0, 0) } == SOCKET_ERROR {
+        // SAFETY: a getter of this thread's last Winsock error.
+        return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
+    }
+    Ok(())
+}
+
+/// [`release`] where no wait sets a mode of a socket's: nothing to let go of.
+#[cfg(not(windows))]
+pub fn release(_fd: RawSocket) -> io::Result<()> {
+    Ok(())
+}
+
 /// Waits for a worker's sockets. It keeps what its waits need between them: on macOS
 /// one kqueue, whose registrations follow the interests (audit D06, PM M57).
 pub struct Poller {

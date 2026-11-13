@@ -1763,6 +1763,88 @@ pub fn serve_engine(
         .map_err(|e| format!("its engine's thread: {e}"))
 }
 
+/// The token the run's members' MCP connections are carried by (D254), its spec's `mcp=`
+/// entry, where it has one whole: its guest's init refuses a run whose entry is not.
+pub fn mcp_token(spec: &Spec) -> Option<[u8; shards_abi::run::TOKEN]> {
+    shards_abi::run::mcp::token(&spec.setup).ok().flatten()
+}
+
+/// Serves the run's MCP port (D254) on a thread of its own: each guest connection whose
+/// hello says `token`, which only the guest's init was given, is a member's connection to
+/// its MCP socket ([`mcp_heard`]); any other is closed.
+pub fn serve_mcp(
+    link: &Link,
+    token: [u8; shards_abi::run::TOKEN],
+    port: workload::EnginePort,
+) -> Result<(), String> {
+    let owner = link
+        .daemon
+        .try_clone()
+        .map_err(|e| format!("the owner's connection: {e}"))?;
+    let heard = move |conn: GuestConn,
+                      _: shards_vmm::devices::virtio::vsock::ring::RingHandle,
+                      hello: workload::Hello| drop(mcp_heard(&owner, conn, hello));
+    std::thread::Builder::new()
+        .name("mcp".into())
+        .spawn(move || workload::accept_hellos(port, "mcp-hellos", token, heard))
+        .map(drop)
+        .map_err(|e| format!("its MCP port's thread: {e}"))
+}
+
+/// The next number this VM gives a member's MCP connection (D254): its own, from
+/// `ACCEPTED_FIRST` up, apart from every lane its owner opens. One workload a process (M34).
+static ACCEPTED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(shards_abi::run::mcp::ACCEPTED_FIRST);
+
+/// What a connection to the run's MCP port, its hello saying the run's token, comes to: a
+/// plain one is its owner's, unprompted ([`accept_mcp`]), on the thread returned, as its
+/// member is said after its hello and a relay slow to say it holds no other connection up;
+/// one whose hello offers a ring, which its guest's relay never does on this port, is closed.
+fn mcp_heard(
+    owner: &UnixStream,
+    conn: GuestConn,
+    hello: workload::Hello,
+) -> Option<std::thread::JoinHandle<()>> {
+    let (workload::Hello::Plain, Ok(owner)) = (hello, owner.try_clone()) else {
+        return None;
+    };
+    let number = ACCEPTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::thread::Builder::new()
+        .name("mcp-accepted".into())
+        .spawn(move || accept_mcp(&owner, number, conn))
+        .ok()
+}
+
+/// Hands lane `number`, a member's MCP connection whose hello has been heard, to the run's
+/// owner (`LANE_ACCEPTED`): its number, then the member its guest's relay names after its
+/// hello. Beside the message on Unix, a copy held until the owner says it has it
+/// (`LANE_HELD`, M24); on Windows held until the owner's `LANE_HELD` brings the socket it is
+/// relayed onto. One that names no member, or whose owner cannot be told, is closed.
+fn accept_mcp(owner: &UnixStream, number: u64, conn: GuestConn) {
+    use std::io::Read as _;
+    let mut said = [0u8; shards_abi::run::mcp::PREAMBLE];
+    // Read as a lane's status is (`workload::open_socket`): a relay's half-close a read
+    // sleeps through on macOS is seen (M236).
+    let read = conn
+        .set_nonblocking(false)
+        .and_then(|()| shards_ipc::Polled(&conn).read_exact(&mut said));
+    if read.is_err() {
+        return;
+    }
+    let member = shards_abi::run::mcp::read_preamble(said);
+    let payload = shards_ipc::Accepted { number, member }.encode();
+    #[cfg(unix)]
+    let (Ok(held), handed) = (conn.try_clone(), [std::os::fd::AsFd::as_fd(&conn)]) else {
+        return;
+    };
+    #[cfg(windows)]
+    let (held, handed) = (conn, []);
+    lanes_held().insert(number, held);
+    if to_daemon(owner, kind::LANE_ACCEPTED, &payload, &handed).is_err() {
+        lanes_held().remove(&number);
+    }
+}
+
 /// Relays a guest's connection to its run's engine, or a member's input connection, onto the
 /// pipe its daemon gave for it (Windows, where a VM gives its daemon no handle): each way on
 /// a thread of its own, the
@@ -1884,6 +1966,12 @@ pub fn finish(
             (NOT_RUN, None)
         }
     };
+    // Why this VM could not serve its run, for its daemon or run host, whose `DONE` carries
+    // the status its client exits with for that, no command's.
+    let unserved = match (saved, served) {
+        (None, Err(e)) => Some(e.as_str()),
+        _ => None,
+    };
     // A command that never started: what dockerd would say, and the exit code its
     // microVM keeps (shards_cmdline::commands::start_failed).
     let failed = not_run.map(shards_cmdline::commands::start_failed);
@@ -1924,6 +2012,9 @@ pub fn finish(
         let _ = to_daemon(&link.daemon, kind::PORTS_FREE, &[], &[]);
     }
     release_host(0);
+    if let Some(why) = unserved {
+        let _ = to_daemon(&link.daemon, kind::UNSERVED, why.as_bytes(), &[]);
+    }
     let _ = to_daemon(&link.daemon, kind::DONE, &done, &[]);
     if let Some(client) = client {
         let mut payload = vec![said_status];
@@ -2431,5 +2522,128 @@ mod tests {
             read
         });
         assert_eq!(read, Ok(()));
+    }
+
+    /// D254: what a relay's connection to the MCP port, its hello heard, comes to on this side.
+    #[cfg(unix)]
+    mod mcp {
+        use super::*;
+        use std::io::Read as _;
+
+        /// Closed: its far end reads its end, nothing of it unread there.
+        fn closed(mut relay: GuestConn) {
+            let mut rest = Vec::new();
+            relay.read_to_end(&mut rest).unwrap();
+            assert_eq!(rest, b"");
+        }
+
+        /// Nothing said to the owner, whose end is `ours`, of what was done before this.
+        fn told_nothing(ours: &UnixStream) {
+            ours.set_nonblocking(true).unwrap();
+            let said = shards_ipc::recv(ours);
+            assert!(
+                matches!(&said, Err(e) if e.kind() == io::ErrorKind::WouldBlock),
+                "{said:?}"
+            );
+            ours.set_nonblocking(false).unwrap();
+        }
+
+        /// A member's connection goes to the run's owner as its relay named it, numbered as the
+        /// VM's own (`LANE_ACCEPTED`), the connection itself beside it and a copy held until
+        /// its owner says it has it (M24); one whose relay ends before naming its member is
+        /// closed, its owner told nothing.
+        #[test]
+        fn a_members_connection_goes_to_its_owner_as_its_relay_named_it() {
+            let first = shards_abi::run::mcp::ACCEPTED_FIRST;
+            let (owner, ours) = UnixStream::pair().unwrap();
+            let (conn, relay) = GuestConn::pair().unwrap();
+            relay.shutdown(std::net::Shutdown::Write).unwrap();
+            accept_mcp(&owner, first + 10, conn);
+            assert!(!lanes_held().contains_key(&(first + 10)));
+            told_nothing(&ours);
+            closed(relay);
+            let (conn, mut relay) = GuestConn::pair().unwrap();
+            relay.write_all(&shards_abi::run::mcp::preamble(3)).unwrap();
+            accept_mcp(&owner, first + 11, conn);
+            let m = shards_ipc::recv(&ours).unwrap().unwrap();
+            assert_eq!(
+                (m.kind, shards_ipc::Accepted::decode(&m.payload)),
+                (
+                    kind::LANE_ACCEPTED,
+                    Some(shards_ipc::Accepted {
+                        number: first + 11,
+                        member: 3
+                    })
+                )
+            );
+            let [handed] = <[OwnedFd; 1]>::try_from(m.fds).unwrap();
+            let handed = UnixStream::from(handed);
+            (&handed).write_all(b"{}\n").unwrap();
+            let mut said = [0u8; 3];
+            relay.read_exact(&mut said).unwrap();
+            assert_eq!(&said, b"{}\n");
+            // Its VM's copy held until its owner has it, and the connection gone with both.
+            let held = lanes_held().remove(&(first + 11));
+            assert!(held.is_some());
+            drop((held, handed));
+            closed(relay);
+        }
+
+        /// A connection whose hello offers a ring, which its guest's relay never does on this
+        /// port, is closed, its owner told nothing; a plain one is its owner's.
+        #[test]
+        fn a_hello_offering_a_ring_is_closed_and_a_plain_one_handed() {
+            let (owner, ours) = UnixStream::pair().unwrap();
+            let (conn, relay) = GuestConn::pair().unwrap();
+            let offered = workload::Hello::Offered(Err(shards_abi::ring::Malformed::Length));
+            assert!(mcp_heard(&owner, conn, offered).is_none());
+            told_nothing(&ours);
+            closed(relay);
+            let (conn, mut relay) = GuestConn::pair().unwrap();
+            relay.write_all(&shards_abi::run::mcp::preamble(0)).unwrap();
+            mcp_heard(&owner, conn, workload::Hello::Plain)
+                .unwrap()
+                .join()
+                .unwrap();
+            let m = shards_ipc::recv(&ours).unwrap().unwrap();
+            let accepted = shards_ipc::Accepted::decode(&m.payload).unwrap();
+            assert_eq!(
+                (m.kind, accepted.member, m.fds.len()),
+                (kind::LANE_ACCEPTED, 0, 1)
+            );
+            drop((lanes_held().remove(&accepted.number), m.fds));
+            closed(relay);
+        }
+
+        /// The run's MCP port takes its relay's connections by the run's token: what its relay
+        /// says after its hello reaches the owner as said.
+        #[test]
+        fn the_runs_mcp_port_hands_its_relays_connections_to_its_owner() {
+            use shards_abi::run;
+            let token = [5u8; run::TOKEN];
+            let (link, ours) = UnixStream::pair().unwrap();
+            let (port, connections) = std::sync::mpsc::channel();
+            serve_mcp(&Link::new(link), token, connections).unwrap();
+            let memory =
+                std::sync::Arc::new(shards_vmm::memory::GuestMemory::anonymous(&[(0, 1 << 20)]).unwrap());
+            let (conn, mut relay) = GuestConn::pair().unwrap();
+            port.send((
+                conn,
+                shards_vmm::devices::virtio::vsock::ring::RingHandle::new(memory),
+            ))
+            .unwrap();
+            let hello = run::header(run::kind::HELLO, run::TOKEN as u32);
+            relay
+                .write_all(&[&hello[..], &token, &run::mcp::preamble(2)].concat())
+                .unwrap();
+            let m = shards_ipc::recv(&ours).unwrap().unwrap();
+            let accepted = shards_ipc::Accepted::decode(&m.payload).unwrap();
+            assert_eq!(
+                (m.kind, accepted.member, m.fds.len()),
+                (kind::LANE_ACCEPTED, 2, 1)
+            );
+            drop((lanes_held().remove(&accepted.number), m.fds));
+            closed(relay);
+        }
     }
 }
