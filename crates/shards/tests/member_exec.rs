@@ -22,12 +22,12 @@ use std::io::{BufRead as _, BufReader};
 use std::time::Duration;
 
 use common::terminal::Terminal;
-use common::{Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
-use shards_api::image::{
-    Channel, ImageGuest, ImageShards, ImageSpec, Images as _, MemberName, MemberSpec, Narrowing, RunEnd,
+use common::{
+    Party, Patience, Run, TempDir, ask, booted, cannot_run_vms, guest_init, kernel, run_shards_env, served,
 };
-
-const TIMEOUT: Duration = Duration::from_secs(120);
+use shards_api::image::{
+    Channel, ImageGuest, ImageShards, ImageSpec, MemberName, MemberSpec, Narrowing, RunEnd,
+};
 
 /// The variables a test's run host is given: its home, this build's guest, and the tests'
 /// own docker config and local store (`common::as_tests_run`'s).
@@ -77,12 +77,14 @@ fn build(home: &TempDir, tag: &str, options: &[&str]) {
 }
 
 /// `image` booted from `home` with its harness running as the image declares it.
+#[track_caller]
 fn boot(home: &TempDir, image: &str) -> Box<dyn ImageGuest> {
     boot_member(home, image, false, false)
 }
 
 /// `image` booted from `home`, its harness given a terminal of its own and its stdin as
 /// asked (D244).
+#[track_caller]
 fn boot_member(home: &TempDir, image: &str, terminal: bool, stdin: bool) -> Box<dyn ImageGuest> {
     let spec = ImageSpec {
         image: image.into(),
@@ -112,29 +114,35 @@ fn boot_member(home: &TempDir, image: &str, terminal: bool, stdin: bool) -> Box<
         gpu_devices: Vec::new(),
         sign_ins: Vec::new(),
     };
-    ImageShards::new().boot(&spec, TIMEOUT).unwrap()
+    booted(&ImageShards::new(), &spec).unwrap()
 }
 
 /// The lines the harness writes on its stdout up to the first that begins with `last`,
-/// that one included: `confined` says it all at once, then waits to be ended.
+/// that one included: `confined` says it all at once, then waits to be ended. Read while its
+/// run goes on (`common::judged`, its kind its call site): refused, its run is stopped.
+#[track_caller]
 fn lines_until(guest: &dyn ImageGuest, last: &str) -> Vec<String> {
     let pipe = guest.take_output(&codex(), Channel::Stdout).unwrap();
-    let last = last.to_string();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut said = Vec::new();
-        for line in BufReader::new(pipe).lines() {
-            let Ok(line) = line else { break };
-            let done = line.starts_with(&last);
-            said.push(line);
-            if done {
-                break;
+    common::judged(
+        Party::started(None),
+        "the harness's lines",
+        || {
+            let _ = guest.stop();
+        },
+        move || {
+            let mut said = Vec::new();
+            for line in BufReader::new(pipe).lines() {
+                let Ok(line) = line else { break };
+                let done = line.starts_with(last);
+                said.push(line);
+                if done {
+                    break;
+                }
             }
-        }
-        let _ = tx.send(said);
-    });
-    rx.recv_timeout(TIMEOUT)
-        .expect("the harness said nothing in time")
+            said
+        },
+    )
+    .unwrap_or_else(|refused| panic!("the harness said nothing in time: {refused}"))
 }
 
 /// A member's process starts with its signals as an exec's does (shards-init's
@@ -162,7 +170,10 @@ fn a_member_starts_with_every_signal_at_its_default() {
         );
     }
     guest.stop().unwrap();
-    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+    assert_eq!(
+        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        Some(RunEnd::Stopped)
+    );
 }
 
 /// `shards ARGS` in `home`, with this build's guest.
@@ -432,24 +443,36 @@ fn terminal_lines(guest: &dyn ImageGuest) -> std::sync::mpsc::Receiver<String> {
     rx
 }
 
-/// The lines `lines` gives up to the first that begins with `last`, that one included;
-/// where none comes, how the harness and the run ended is said beside what came: its end
-/// waited for where its terminal closed, which it follows.
+/// The lines `lines` gives up to the first that begins with `last`, that one included,
+/// waited for while its run goes on (`Patience` of what this test started, its kind its
+/// call site); where none comes, how the harness and the run ended is said beside what came:
+/// its end waited for where its terminal closed, which it follows.
+#[track_caller]
 fn until(guest: &dyn ImageGuest, lines: &std::sync::mpsc::Receiver<String>, last: &str) -> Vec<String> {
+    let mut patience = Patience::started();
     let mut said = Vec::new();
     loop {
-        let line = lines.recv_timeout(TIMEOUT).unwrap_or_else(|e| {
-            let closed = matches!(e, std::sync::mpsc::RecvTimeoutError::Disconnected);
-            panic!(
-                "no {last:?} in time ({e}) after:\n{}\nthe harness's end: {:?}; the run's: {:?}",
-                said.join("\n"),
-                guest.wait_member(&codex(), if closed { TIMEOUT } else { Duration::ZERO }),
-                guest.wait_for(Duration::ZERO)
-            )
-        });
+        let line = match lines.recv_timeout(patience.next_look()) {
+            Ok(line) => line,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if patience.holds() => continue,
+            Err(e) => {
+                let closed = matches!(e, std::sync::mpsc::RecvTimeoutError::Disconnected);
+                panic!(
+                    "no {last:?} ({e}) after:\n{}\nthe harness's end: {:?}; the run's: {:?}",
+                    said.join("\n"),
+                    if closed {
+                        ask(guest, |g| g.wait_member(&codex(), Duration::MAX))
+                    } else {
+                        guest.wait_member(&codex(), Duration::ZERO)
+                    },
+                    guest.wait_for(Duration::ZERO)
+                )
+            }
+        };
         let done = line.starts_with(last);
         said.push(line);
         if done {
+            patience.done();
             return said;
         }
     }
@@ -483,11 +506,14 @@ fn a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner() {
     ] {
         assert!(said.iter().any(|l| l == want), "no {want:?} in {said:?}");
     }
-    guest.resize(&codex(), 40, 120, TIMEOUT).unwrap();
+    ask(&*guest, |g| g.resize(&codex(), 40, 120, Duration::MAX)).unwrap();
     let said = until(&*guest, &lines, "resized");
     assert_eq!(said.last().map(String::as_str), Some("resized 40 120"));
     guest.stop().unwrap();
-    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+    assert_eq!(
+        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        Some(RunEnd::Stopped)
+    );
 }
 
 /// What a harness's owner writes to its stdin is typed into its terminal (D244): the
@@ -511,5 +537,8 @@ fn a_harness_on_a_terminal_of_its_own_reads_what_its_owner_types() {
         "the terminal echoes what is typed: {said:?}"
     );
     guest.stop().unwrap();
-    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+    assert_eq!(
+        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        Some(RunEnd::Stopped)
+    );
 }

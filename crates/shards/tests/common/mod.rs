@@ -84,14 +84,16 @@ pub fn recv_from(socket: &std::net::UdpSocket, buf: &mut [u8]) -> io::Result<(us
 
 /// `command` spawned, though its program was written a moment ago: a child another
 /// thread forked meanwhile holds the file open to write until it execs, and exec says
-/// ETXTBSY until then (Linux; the fork window of every multithreaded process).
+/// ETXTBSY until then (Linux; the fork window of every multithreaded process). That window
+/// is its host's to end, as the other thread's child execs: asked again until it has, each
+/// try paced as D215 paces a wait's looks (`shards_api::pause`).
 pub fn spawn(command: &mut std::process::Command) -> io::Result<std::process::Child> {
-    let mut tries = 0;
+    let began = Instant::now();
     loop {
+        let tried = Instant::now();
         match command.spawn() {
-            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && tries < 1000 => {
-                tries += 1;
-                std::thread::sleep(std::time::Duration::from_millis(1));
+            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(shards_api::pause(tried.elapsed(), began.elapsed(), Duration::MAX));
             }
             got => return got,
         }
@@ -1395,16 +1397,17 @@ pub const PROXIED: (&str, u8) = if cfg!(windows) { ("INT", 2) } else { ("TERM", 
 
 /// Waits until no daemon serves `home`'s slots: a daemon killed holds its lists until the
 /// kernel has closed all its descriptors, which may be after a client sees its own slot
-/// end, as the kernel closes the dead process's descriptors one by one.
+/// end, as the kernel closes the dead process's descriptors one by one. That is its host's
+/// work, no party's of the test's: waited out however long it takes, each look paced as
+/// D215 paces a wait's looks (`shards_api::pause`).
 pub fn until_unserved(home: &Path) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while shards_ipc::slots::served(home) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{} is still served",
-            home.display()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    let began = Instant::now();
+    loop {
+        let look = Instant::now();
+        if !shards_ipc::slots::served(home) {
+            return;
+        }
+        std::thread::sleep(shards_api::pause(look.elapsed(), began.elapsed(), Duration::MAX));
     }
 }
 
@@ -1860,14 +1863,14 @@ pub fn run_shards_env<S: AsRef<std::ffi::OsStr>>(
 /// the reaper passes it on to a command that it would end. (`blocked` cannot say: the
 /// kernel takes a signal waited for out of the blocked set while it waits, into
 /// `real_blocked`.) `ready`, once it says so, is asked no more: what it kept of the rows
-/// is of that moment.
+/// is of that moment. It watches for as long as the run goes on, whose own wait is judged
+/// ([`run_command`]): no bound of its own.
 pub fn run_watching(
     env: &[(&str, &std::ffi::OsStr)],
     args: &[&str],
     container: &str,
     fields: &str,
     ready: &mut dyn FnMut(&[Vec<String>]) -> bool,
-    timeout: Duration,
 ) -> Run {
     // `shards top`'s table needs a `pid` column to key its rows (procps ps), so every
     // field list leads with it; then the caught signals and the name, which say whether
@@ -1879,7 +1882,8 @@ pub fn run_watching(
         let mut last = String::new();
         let mut signalled = false;
         let mut was_ready = false;
-        while !ran.is_finished() && start.elapsed() < timeout {
+        while !ran.is_finished() {
+            let look = Instant::now();
             let top = run_shards_env(&["top"], &[container, "-o", &with_pid], env);
             let all: Vec<Vec<String>> = top
                 .stdout
@@ -1912,9 +1916,9 @@ pub fn run_watching(
                 top.stderr.trim()
             );
             // Each look is a whole `shards top`: the client, the daemon, and an exec in the
-            // microVM that reads its /proc. Agents take hundreds of milliseconds to come up,
-            // so a look every 250 ms costs little and loads no parallel test's daemon or VM.
-            std::thread::sleep(Duration::from_millis(250));
+            // microVM that reads its /proc. Paced as D215 paces a wait's looks, by a look's
+            // own cost against the wait so far (`shards_api::pause`: sqrt(2 c w)).
+            std::thread::sleep(shards_api::pause(look.elapsed(), start.elapsed(), Duration::MAX));
         }
         if !signalled {
             // Straight to stderr: a helper is not a `#[test]`, where clippy allows the
@@ -1932,7 +1936,6 @@ pub fn run_awaiting(
     args: &[&str],
     container: &str,
     ready: (&str, usize),
-    timeout: Duration,
 ) -> Run {
     let (name, count) = ready;
     let mut seen = |rows: &[Vec<String>]| {
@@ -1941,7 +1944,7 @@ pub fn run_awaiting(
             .count()
             >= count
     };
-    run_watching(env, args, container, "comm", &mut seen, timeout)
+    run_watching(env, args, container, "comm", &mut seen)
 }
 
 /// [`run_shards_env`], in the working directory `dir`.
@@ -1961,69 +1964,123 @@ pub fn run_shards_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, command: &[&str], ar
     run_shards_with(command, args, &[], Some(dir))
 }
 
-/// `cmd`'s output, as [`Command::output`] gives it, within `timeout`: a client of shards'
-/// (docker, Compose) that hangs fails its test with what it said, rather than hold the
-/// suite. Past `timeout` it is sent SIGQUIT first, on which a Go program writes where each
-/// of its goroutines waits and exits, then killed.
-pub fn output_within(cmd: &mut Command, timeout: Duration) -> std::process::Output {
-    let start = Instant::now();
+/// `cmd`'s output, as [`Command::output`] gives it: a client of shards' (docker, Compose) or
+/// a host's tool, waited on as [`run_command`] waits on a command ([`Wait`], D215's judge),
+/// its kind its call site, its party the client and what descends from it, and `home`'s
+/// daemon where it talks to one. A client its judge refuses fails its test with what it
+/// said, rather than hold the suite: it is sent SIGQUIT first, on which a Go program writes
+/// where each of its goroutines waits and exits, its exit waited on as judged, then killed.
+/// A stream another process holds open past the client's end is what came of it by its
+/// judge's look.
+#[track_caller]
+pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Output {
+    let kind = WaitKind::at(std::panic::Location::caller());
+    let asked = format!("{cmd:?}");
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawning a client");
-    // Each read on a thread of its own, handed over as it comes: a process the client
-    // started may hold its pipes past it, and what came before is kept.
-    let collect = |mut r: Box<dyn Read + Send>| {
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        std::thread::spawn(move || {
-            let mut b = vec![0u8; 64 * 1024];
-            while let Ok(n @ 1..) = r.read(&mut b) {
-                if tx.send(b[..n].to_vec()).is_err() {
-                    return;
-                }
-            }
-        });
-        rx
-    };
     let out = collect(Box::new(child.stdout.take().unwrap()));
     let err = collect(Box::new(child.stderr.take().unwrap()));
-    let took = |rx: &std::sync::mpsc::Receiver<Vec<u8>>| {
-        let until = Instant::now() + Duration::from_secs(10);
-        let mut got = Vec::new();
-        while let Ok(chunk) = rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
-            got.extend_from_slice(&chunk);
+    let (mut out_got, mut err_got) = ((Vec::new(), false), (Vec::new(), false));
+    let mut wait = Wait::begin(kind, child.id(), home, &asked);
+    let mut status = None;
+    loop {
+        if status.is_none()
+            && let Some(st) = child.try_wait().unwrap()
+        {
+            wait.answered();
+            status = Some(st);
         }
-        got
-    };
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
+        let output = more(&out, &mut out_got) | more(&err, &mut err_got);
+        if let Some(status) = status.filter(|_| out_got.1 && err_got.1) {
+            break std::process::Output {
+                status,
+                stdout: out_got.0,
+                stderr: err_got.0,
+            };
         }
-        if start.elapsed() > timeout {
-            #[cfg(unix)]
-            {
-                // SAFETY: kill(2) of the child this holds, not yet waited for.
-                unsafe { libc::kill(i32::try_from(child.id()).unwrap(), libc::SIGQUIT) };
-                let quit = Instant::now();
-                while child.try_wait().unwrap().is_none() && quit.elapsed() < Duration::from_secs(5) {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
+        match (wait.look(output), status) {
+            (Ok(()), _) => {}
+            (Err(_), Some(status)) => {
+                break std::process::Output {
+                    status,
+                    stdout: out_got.0,
+                    stderr: err_got.0,
+                };
             }
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!(
-                "{cmd:?} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}",
-                String::from_utf8_lossy(&took(&out)),
-                String::from_utf8_lossy(&took(&err))
-            );
+            (Err(stall), None) => {
+                let said = wait.refused(&stall);
+                quit(&mut child, home);
+                more(&out, &mut out_got);
+                more(&err, &mut err_got);
+                panic!(
+                    "{said}\n--- stdout\n{}\n--- stderr\n{}",
+                    String::from_utf8_lossy(&out_got.0),
+                    String::from_utf8_lossy(&err_got.0)
+                );
+            }
         }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    std::process::Output {
-        status,
-        stdout: took(&out),
-        stderr: took(&err),
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// A refused client ended: on Unix sent SIGQUIT, on which a Go program writes where each of
+/// its goroutines waits and exits, its exit waited on as judged (its kind this call site's);
+/// then killed.
+fn quit(child: &mut std::process::Child, home: Option<&Path>) {
+    #[cfg(unix)]
+    {
+        let kind = WaitKind::at(std::panic::Location::caller());
+        let mut wait = Wait::begin(kind, child.id(), home, "its exit on SIGQUIT");
+        // SAFETY: kill(2) of the child this holds, not yet waited for.
+        unsafe { libc::kill(i32::try_from(child.id()).unwrap(), libc::SIGQUIT) };
+        while child.try_wait().unwrap().is_none() && wait.look(false).is_ok() {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        if child.try_wait().unwrap().is_some() {
+            wait.answered();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = home;
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A stream read on a thread of its own and handed over by channel as it comes, so that a
+/// pipe another process still holds (a VM given a client's stdio) never holds a wait, and
+/// what came before it is kept.
+fn collect(mut r: Box<dyn Read + Send>) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut b = vec![0u8; 64 * 1024];
+        while let Ok(n @ 1..) = r.read(&mut b) {
+            if tx.send(b[..n].to_vec()).is_err() {
+                return;
+            }
+        }
+    });
+    rx
+}
+
+/// Whether more came of a stream [`collect`] reads since the call before, kept in `got`
+/// with whether it has ended, its every writer gone.
+fn more(rx: &std::sync::mpsc::Receiver<Vec<u8>>, got: &mut (Vec<u8>, bool)) -> bool {
+    let mut came = false;
+    loop {
+        match rx.try_recv() {
+            Ok(chunk) => {
+                got.0.extend_from_slice(&chunk);
+                came = true;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                got.1 = true;
+                return came;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => return came,
+        }
     }
 }
 
@@ -2056,16 +2113,17 @@ fn stuck(pid: u32, home: Option<&Path>) -> String {
     stacks_of(&[("its client", pid)], home)
 }
 
-/// What `cmd` said by `timeout`, its stdout then its stderr; a word that it said nothing
-/// where it never ended, so that the failure this adds to is never lost to one of its own.
-fn said_within(cmd: &mut Command, timeout: Duration) -> String {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| output_within(cmd, timeout))) {
+/// What `cmd` said, its stdout then its stderr, waited on as [`client_output`] waits, `home`'s
+/// daemon in its party where it has one; a word that it said nothing where its wait was
+/// refused, so that the failure this adds to is never lost to one of its own.
+fn said_by(cmd: &mut Command, home: Option<&Path>) -> String {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| client_output(cmd, home))) {
         Ok(out) => format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         ),
-        Err(_) => format!("(it did not end within {timeout:?})"),
+        Err(_) => "(its wait was refused: it made no progress past the slowest end of its kind)".to_string(),
     }
 }
 
@@ -2078,7 +2136,7 @@ pub fn guests_processes(home: &Path) -> String {
     ids.args(["ps", "-q", "--no-trunc"])
         .env("SHARDS_HOME", home)
         .stdin(Stdio::null());
-    let listed = said_within(&mut ids, Duration::from_secs(20));
+    let listed = said_by(&mut ids, Some(home));
     let mut said = String::new();
     for id in listed
         .lines()
@@ -2092,7 +2150,7 @@ pub fn guests_processes(home: &Path) -> String {
         said.push_str(&format!(
             "\n--- the processes of its microVM {}\n{}",
             id.get(..12).unwrap_or(id),
-            said_within(&mut top, Duration::from_secs(20))
+            said_by(&mut top, Some(home))
         ));
     }
     said
@@ -2110,7 +2168,7 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
             .stdin(Stdio::null());
         said.push_str(&format!(
             "\n--- ps -a in its home\n{}",
-            said_within(&mut ps, Duration::from_secs(20))
+            said_by(&mut ps, Some(home))
         ));
         said.push_str(&guests_processes(home));
         // What its daemon said last, of its runs and their groups' budgets: a run held or
@@ -2153,7 +2211,7 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
                     .stdin(Stdio::null());
                 said.push_str(&format!(
                     "\n--- {who} ({pid}): its threads' stacks (cdb)\n{}",
-                    said_within(&mut stacks, Duration::from_secs(120))
+                    said_by(&mut stacks, home)
                 ));
             }
         } else {
@@ -2253,9 +2311,21 @@ impl Patience {
         Patience::with(None, std::panic::Location::caller())
     }
 
+    /// Patience with every process this test's process started ([`Party::started`]): the run
+    /// hosts shards-api's `ImageShards` starts and their VM processes, where no daemon serves
+    /// them.
+    #[track_caller]
+    pub fn started() -> Patience {
+        Patience::on(Party::started(None), std::panic::Location::caller())
+    }
+
     fn with(home: Option<&Path>, site: &'static std::panic::Location<'static>) -> Patience {
+        Patience::on(Party::own(home), site)
+    }
+
+    fn on(party: Party, site: &'static std::panic::Location<'static>) -> Patience {
         Patience {
-            wait: Wait::on(WaitKind::at(site), Party::own(home), "a state its party comes to"),
+            wait: Wait::on(WaitKind::at(site), party, "a state its party comes to"),
             state: Patient::Holds,
         }
     }
@@ -2340,12 +2410,21 @@ fn vm_processes_among(listed: &[(u32, u32, String)], client: u32) -> Vec<u32> {
         .collect()
 }
 
-/// Every process, its parent and its command's name, from `ps`.
+/// Every process, its parent and its command's name, from `ps`: the `ps` that lists them
+/// not among them, which is this process's child as it lists ([`Party::started`]).
 #[cfg(unix)]
 pub fn processes() -> Vec<(u32, u32, String)> {
-    Command::new("ps")
+    let Ok(lister) = Command::new("ps")
         .args(["-A", "-o", "pid=,ppid=,comm="])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    let own = lister.id();
+    lister
+        .wait_with_output()
         .map(|o| {
             String::from_utf8_lossy(&o.stdout)
                 .lines()
@@ -2357,6 +2436,7 @@ pub fn processes() -> Vec<(u32, u32, String)> {
                         w.collect::<Vec<_>>().join(" "),
                     ))
                 })
+                .filter(|(pid, ..)| *pid != own)
                 .collect()
         })
         .unwrap_or_default()
@@ -2434,42 +2514,12 @@ fn run_ending(
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawning shards");
-    // Read on threads of their own and handed over by channel as it comes, so that a pipe
-    // another process still holds (a VM given the client's stdio) never holds the wait, and
-    // what came before it is kept: a command that never ends shows how far it got.
-    let collect = |mut r: Box<dyn Read + Send>| {
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        std::thread::spawn(move || {
-            let mut b = vec![0u8; 64 * 1024];
-            while let Ok(n @ 1..) = r.read(&mut b) {
-                if tx.send(b[..n].to_vec()).is_err() {
-                    return;
-                }
-            }
-        });
-        rx
-    };
+    // Read as it comes ([`collect`]): a command that never ends shows how far it got.
     let out = collect(Box::new(child.stdout.take().unwrap()));
     let err = collect(Box::new(child.stderr.take().unwrap()));
     // What it wrote, each stream with whether it has ended, its every writer gone.
     let (mut out_got, mut err_got) = ((Vec::new(), false), (Vec::new(), false));
-    // Whether more came of a stream since the call before.
-    let came = |rx: &std::sync::mpsc::Receiver<Vec<u8>>, got: &mut (Vec<u8>, bool)| {
-        let mut came = false;
-        loop {
-            match rx.try_recv() {
-                Ok(chunk) => {
-                    got.0.extend_from_slice(&chunk);
-                    came = true;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    got.1 = true;
-                    return came;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => return came,
-            }
-        }
-    };
+    let came = more;
     // Lossily: a step's output is printed as it came, bytes that are no UTF-8 included,
     // which a strict conversion would drop the whole of.
     let text = |got: &(Vec<u8>, bool)| {
@@ -2687,6 +2737,10 @@ enum Members {
     /// its other tests' and its waits' own, and whose liveness is its caller's (its
     /// `running.wait()`): its words alone ([`Heard::console`]).
     Machine,
+    /// Every process this test's process started and what descends from them: the run host
+    /// shards-api's `ImageShards` starts and its VM process, which a call of the API's waits
+    /// on ([`judged`]), the host's work before its VM starts among them.
+    Started,
 }
 
 /// What a [`Party`]'s processes' CPU time says of it.
@@ -2729,6 +2783,12 @@ impl Party {
         Party::with(Members::Machine, None)
     }
 
+    /// The party of every process this test's process started, and of `home`'s daemon where
+    /// it has one.
+    pub fn started(home: Option<&Path>) -> Party {
+        Party::with(Members::Started, home)
+    }
+
     fn with(members: Members, home: Option<&Path>) -> Party {
         Party {
             members,
@@ -2763,12 +2823,17 @@ impl Party {
         let listed = match self.members {
             Members::Machine => Vec::new(),
             Members::Client(_) if cfg!(windows) => Vec::new(),
-            Members::Client(_) | Members::Own => processes(),
+            Members::Client(_) | Members::Own | Members::Started => processes(),
         };
         let own = match self.members {
             Members::Client(client) => vec![client],
             Members::Own => vm_processes_among(&listed, std::process::id()),
             Members::Machine => Vec::new(),
+            Members::Started => listed
+                .iter()
+                .filter(|(_, ppid, _)| *ppid == std::process::id())
+                .map(|(pid, ..)| *pid)
+                .collect(),
         };
         let roots: Vec<u32> = own.into_iter().chain(self.daemon()).collect();
         #[cfg(windows)]
@@ -2858,6 +2923,7 @@ impl Party {
             Members::Client(c) => format!("client {c}"),
             Members::Own => "this test's own VM processes".to_string(),
             Members::Machine => "a machine of this test's process".to_string(),
+            Members::Started => "the processes this test's process started".to_string(),
         };
         let who = match self.cpu {
             Cpu::Progress => who,
@@ -4213,6 +4279,92 @@ pub fn within<T: Send + 'static>(what: &str, vm: &Vm, f: impl FnOnce() -> T + Se
     }
 }
 
+/// A call that blocks until its answer or its party's end (shards-api's `ImageShards` and
+/// `ImageGuest` calls given `Duration::MAX`, until it answers or its run ends; a read of a
+/// pipe its run holds), judged as [`run_command`]'s wait is ([`Wait`], D215's judge), its
+/// kind its call site: run on a thread of its own, its return both its answer and its
+/// liveness, `party`'s processes and words its progress. Cold, its return alone ends it;
+/// learned, it is refused at a look past W* that finds `party` made no progress since the
+/// look before, its host not holding it. Refused, `stop` ends the call (a boot's
+/// `BootStop::stop`, a guest's `stop`), which is waited for, and what its wait says of
+/// itself comes back.
+#[track_caller]
+pub fn judged<T: Send>(
+    party: Party,
+    asked: &str,
+    stop: impl FnOnce(),
+    call: impl FnOnce() -> T + Send,
+) -> Result<T, String> {
+    let mut wait = Wait::on(WaitKind::at(std::panic::Location::caller()), party, asked);
+    std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = scope.spawn(move || {
+            let _ = tx.send(call());
+        });
+        let refused = loop {
+            match rx.recv_timeout(wait.next_look()) {
+                Ok(answer) => {
+                    wait.answered();
+                    return Ok(answer);
+                }
+                // Ended without sending: it panicked, and says why.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match worker.join() {
+                    Err(panic) => std::panic::resume_unwind(panic),
+                    Ok(()) => return Err(format!("{asked}: ended with no answer")),
+                },
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if let Err(stall) = wait.look(false) {
+                break wait.refused(&stall);
+            }
+        };
+        stop();
+        let _ = worker.join();
+        Err(refused)
+    })
+}
+
+/// `s` booted by `images`, waited for until its run starts or its host ends (`Duration::MAX`)
+/// and judged as the tests' waits are ([`judged`]), its kind its call site, its party
+/// what this test's process started: refused, its boot is stopped.
+#[track_caller]
+#[allow(
+    clippy::panic_in_result_fn,
+    reason = "a refused wait fails its test; the boot's own refusal is its caller's"
+)]
+pub fn booted(
+    images: &dyn shards_api::image::Images,
+    s: &shards_api::image::ImageSpec,
+) -> Result<Box<dyn shards_api::image::ImageGuest>, shards_api::image::ImageRefusal> {
+    let stop = shards_api::image::BootStop::new();
+    judged(
+        Party::started(None),
+        "a boot",
+        || stop.stop(),
+        || images.boot_stoppable(s, Duration::MAX, &stop),
+    )
+    .unwrap_or_else(|refused| panic!("{refused}"))
+}
+
+/// What `call` of `guest`'s answers, given `Duration::MAX` (until it answers or its run ends)
+/// and judged as the tests' waits are ([`judged`]), its kind its call site, its party
+/// what this test's process started: refused, its run is stopped, which ends the call.
+#[track_caller]
+pub fn ask<T: Send>(
+    guest: &dyn shards_api::image::ImageGuest,
+    call: impl FnOnce(&dyn shards_api::image::ImageGuest) -> T + Send,
+) -> T {
+    judged(
+        Party::started(None),
+        "a call of its run's",
+        || {
+            let _ = guest.stop();
+        },
+        || call(guest),
+    )
+    .unwrap_or_else(|refused| panic!("{refused}"))
+}
+
 impl Vm {
     pub fn spawn<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Vm {
         Vm::spawn_env(args, &[])
@@ -4596,27 +4748,61 @@ fn vsock_handshake(
 /// that holds the stream's other end closes it as it ends); learned, each read waits until
 /// its judge's look, which refuses a stream that carried nothing over a whole W* past the
 /// look before. What it reads is added to `carried`, where a wait on its guest follows it
-/// ([`Vm::wait_exit_streamed`]).
-pub struct Following<'a> {
-    stream: &'a shards_vmm::platform::UnixStream,
+/// ([`Vm::wait_exit_streamed`]). A stream a home's daemon carries to its guest (a published
+/// port's) is read with that daemon in its party ([`Following::of_home`]).
+pub struct Following<'a, S: Timed = shards_vmm::platform::UnixStream> {
+    stream: &'a S,
     carried: Option<&'a AtomicU64>,
     wait: Wait,
 }
 
-impl<'a> Following<'a> {
+/// A stream whose reads wait at most a time of its caller's: a guest's vsock stream, or a
+/// TCP stream to a port its daemon publishes.
+pub trait Timed {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
+}
+
+impl Timed for shards_vmm::platform::UnixStream {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        shards_vmm::platform::UnixStream::set_read_timeout(self, timeout)
+    }
+}
+
+impl Timed for std::net::TcpStream {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        std::net::TcpStream::set_read_timeout(self, timeout)
+    }
+}
+
+impl<'a, S: Timed> Following<'a, S>
+where
+    &'a S: Read,
+{
     /// Reads of `stream` from now on.
     #[track_caller]
-    pub fn of(stream: &'a shards_vmm::platform::UnixStream, carried: Option<&'a AtomicU64>) -> Following<'a> {
-        let mut party = Party::own(None);
+    pub fn of(stream: &'a S, carried: Option<&'a AtomicU64>) -> Following<'a, S> {
+        Following::with(stream, carried, None, std::panic::Location::caller())
+    }
+
+    /// Reads of `stream`, which `home`'s daemon carries to its guest, from now on: that
+    /// daemon's words and its holds its party's too.
+    #[track_caller]
+    pub fn of_home(stream: &'a S, home: &Path) -> Following<'a, S> {
+        Following::with(stream, None, Some(home), std::panic::Location::caller())
+    }
+
+    fn with(
+        stream: &'a S,
+        carried: Option<&'a AtomicU64>,
+        home: Option<&Path>,
+        site: &'static std::panic::Location<'static>,
+    ) -> Following<'a, S> {
+        let mut party = Party::own(home);
         party.read_cpu(Cpu::Liveness);
         Following {
             stream,
             carried,
-            wait: Wait::on(
-                WaitKind::at(std::panic::Location::caller()),
-                party,
-                "a guest's stream",
-            ),
+            wait: Wait::on(WaitKind::at(site), party, "a guest's stream"),
         }
     }
 
@@ -4626,7 +4812,10 @@ impl<'a> Following<'a> {
     }
 }
 
-impl Read for Following<'_> {
+impl<'a, S: Timed> Read for Following<'a, S>
+where
+    &'a S: Read,
+{
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         loop {
             let left = self.wait.next_look();
@@ -4634,10 +4823,11 @@ impl Read for Following<'_> {
             let read = if left.is_zero() {
                 None
             } else {
+                let mut stream = self.stream;
                 Some(
-                    self.stream
+                    stream
                         .set_read_timeout(self.wait.judged().then_some(left))
-                        .and_then(|()| self.stream.read(buf)),
+                        .and_then(|()| stream.read(buf)),
                 )
             };
             match read {
@@ -5973,8 +6163,11 @@ pub struct Oplocked {
 
 #[cfg(windows)]
 impl Oplocked {
-    /// `path` held so, waiting out at most `timeout` another's handle that shares nothing.
-    pub fn new(path: &Path, timeout: Duration) -> Oplocked {
+    /// `path` held so, waiting out another's handle that shares nothing: a scanner's
+    /// (Defender's), its host's hold, waited out however long it holds, each attempt paced
+    /// as D215 paces a wait's looks (`shards_api::pause`: its own cost against the wait so
+    /// far).
+    pub fn new(path: &Path) -> Oplocked {
         use std::os::windows::fs::OpenOptionsExt as _;
         use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
         use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, ERROR_SHARING_VIOLATION};
@@ -5988,8 +6181,9 @@ impl Oplocked {
         use windows_sys::Win32::System::Threading::CreateEventW;
         // A handle that shares nothing is refused while another reads the file: Defender's,
         // scanning the copy just written, is waited out.
-        let deadline = Instant::now() + timeout;
+        let began = Instant::now();
         let file = loop {
+            let tried = Instant::now();
             match std::fs::OpenOptions::new()
                 .read(true)
                 .share_mode(0)
@@ -5997,11 +6191,8 @@ impl Oplocked {
                 .open(path)
             {
                 Ok(file) => break file,
-                Err(e)
-                    if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION.cast_signed())
-                        && Instant::now() < deadline =>
-                {
-                    std::thread::sleep(Duration::from_millis(10));
+                Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION.cast_signed()) => {
+                    std::thread::sleep(shards_api::pause(tried.elapsed(), began.elapsed(), Duration::MAX));
                 }
                 Err(e) => panic!("{}: {e}", path.display()),
             }

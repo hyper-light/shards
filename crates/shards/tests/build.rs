@@ -8951,7 +8951,6 @@ fn supplied_agents_and_harness_archives_start_their_declared_entrypoints() {
         ],
         "supplied-startup",
         ("confined-ready", 2),
-        TIMEOUT,
     );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
 }
@@ -9017,7 +9016,6 @@ fn supplied_member_output_does_not_rewrite_the_main_protocol() {
         ],
         "capture-protocol",
         ("capture-ready", 2),
-        TIMEOUT,
     );
     assert_eq!(ran.status, Some(0), "{ran}");
     assert_eq!(ran.stdout, r#"{"jsonrpc":"2.0","id":1,"result":"main"}"#, "{ran}");
@@ -9982,7 +9980,6 @@ fn agents_run_in_their_domains() {
         ],
         "aw-confined",
         ("confined-ready", 2),
-        TIMEOUT,
     );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.stdout, "", "the workload's stdout is its own");
@@ -10164,7 +10161,6 @@ fn agents_reach_by_ipv6_only_what_connect_grants() {
         ],
         "aw-links6",
         ("confined-ready", 3),
-        TIMEOUT,
     );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     let said = |who: &str| -> Vec<String> {
@@ -10362,7 +10358,6 @@ fn agents_reach_past_the_microvm_by_ipv6_what_their_networks_grant() {
             ],
             &name,
             ("confined-ready", 1),
-            TIMEOUT,
         );
         assert_eq!(ran.status, Some(0), "{network}: {}{}", ran.stdout, ran.stderr);
         for want in [
@@ -10491,7 +10486,6 @@ fn agents_reach_only_what_connect_grants() {
         ],
         "aw-links",
         ("confined-ready", 4),
-        TIMEOUT,
     );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     let said = |who: &str| -> Vec<String> {
@@ -10929,7 +10923,6 @@ fn agents_reach_past_the_microvm_what_their_networks_grant() {
         ],
         "aw-egress",
         ("confined-ready", 4),
-        TIMEOUT,
     );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     let said = |who: &str| -> Vec<String> {
@@ -11809,7 +11802,6 @@ fn a_remote_mcp_server_is_a_grant_of_that_server_alone() {
         ],
         "aw-mcp",
         ("confined-ready", 3),
-        TIMEOUT,
     );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     let said = |who: &str| -> Vec<String> {
@@ -12075,7 +12067,6 @@ fn an_agent_reaches_no_socket_of_the_runs_own() {
         ],
         "unix",
         ("confined-ready", 1),
-        TIMEOUT,
     );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
     let said: Vec<&str> = ran
@@ -12129,7 +12120,6 @@ fn an_awaiting_command_is_signalled_once_it_waits() {
         "aw-late",
         "comm",
         &mut |_| true,
-        TIMEOUT,
     );
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
 }
@@ -12256,7 +12246,6 @@ fn agents_out_of_memory_end_whole_and_spare_the_run() {
             name,
             "time,comm",
             &mut ready,
-            TIMEOUT,
         );
         let all = format!("{}{}", ran.stdout, ran.stderr);
         assert!(
@@ -12407,7 +12396,6 @@ fn agents_reach_only_the_unix_sockets_granted() {
         ],
         "aw-sock",
         ("confined-ready", 4),
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
@@ -12494,7 +12482,6 @@ fn an_agents_flood_of_flows_takes_no_others() {
         ],
         "aw-flood",
         ("confined-ready", 3),
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
@@ -12586,7 +12573,6 @@ fn an_agents_assured_flows_take_no_others() {
         ],
         "aw-assured",
         ("confined-ready", 4),
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
@@ -12695,7 +12681,6 @@ fn an_agents_own_flows_take_no_port_it_accepts() {
         ],
         "aw-ports",
         ("confined-ready", 3),
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
@@ -12797,7 +12782,6 @@ fn an_agent_reaches_nothing_past_its_grants() {
         ],
         "aw-sweep",
         ("confined-ready", 3),
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
@@ -12905,7 +12889,6 @@ fn an_agents_daemon_ends_with_it() {
         "aw-daemon",
         "comm",
         &mut watch,
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert!(
@@ -12973,7 +12956,6 @@ fn no_kernel_channel_joins_two_agents() {
         ],
         "aw-chan",
         ("confined-ready", 2),
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
@@ -13060,7 +13042,6 @@ fn the_in_vm_server_knows_each_agent() {
         "aw-server",
         fields,
         &mut ready,
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
@@ -13168,7 +13149,6 @@ fn agents_message_one_another_as_granted() {
         ],
         "aw-msg",
         ("confined-ready", 3),
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
@@ -13599,7 +13579,6 @@ fn a_harness_is_handed_files_and_no_link_fifo_or_giant() {
         ],
         "aw-hand",
         ("confined-ready", 2),
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
@@ -13685,7 +13664,6 @@ fn the_in_vm_server_speaks_each_revision() {
         ],
         "aw-revisions",
         ("confined-ready", 1),
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
@@ -13804,7 +13782,6 @@ fn code_mode_costs_in_microvms() {
         ],
         "aw-code-cost",
         ("confined-ready", 1),
-        Duration::from_secs(600),
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
@@ -13879,7 +13856,6 @@ fn mcp_servers_are_offered_to_those_in_scope() {
         ],
         "aw-offer",
         ("confined-ready", 2),
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
@@ -16742,7 +16718,6 @@ fn harnesses_message_their_attached_agents() {
         ],
         "aw-attach",
         ("confined-ready", 3),
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");
@@ -16840,7 +16815,7 @@ fn agentfile_volumes_reach_whom_they_are_for() {
         let mut args = vec!["run", "--rm", "--name", "aw-agvol"];
         args.extend_from_slice(extra);
         args.extend_from_slice(&["agvol:1", "await", "confined-ready", "2"]);
-        let ran = common::run_awaiting(&env, &args, "aw-agvol", ("confined-ready", 2), TIMEOUT);
+        let ran = common::run_awaiting(&env, &args, "aw-agvol", ("confined-ready", 2));
         let all = format!("{}{}", ran.stdout, ran.stderr);
         assert_eq!(ran.status, Some(0), "{all}");
         all
@@ -17045,7 +17020,6 @@ fn agentfile_volumes_reach_whom_they_are_for() {
         &["start", "-a", "agvol-cp"],
         "agvol-cp",
         ("confined-ready", 2),
-        TIMEOUT,
     );
     let all = format!("{}{}", started.stdout, started.stderr);
     assert_eq!(started.status, Some(0), "{all}");
@@ -17127,7 +17101,7 @@ fn a_run_reaches_none_of_its_images_agents() {
         let mut args = vec!["run", "--rm", "--name", name];
         args.extend(init);
         args.extend(["beside:1", "beside", "confined-ready", "1"]);
-        let ran = common::run_awaiting(&env, &args, name, ("confined-ready", 1), TIMEOUT);
+        let ran = common::run_awaiting(&env, &args, name, ("confined-ready", 1));
         let all = format!("{}{}", ran.stdout, ran.stderr);
         assert_eq!(ran.status, Some(0), "{all}");
         let rows: Vec<Vec<&str>> = all

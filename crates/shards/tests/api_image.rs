@@ -15,15 +15,15 @@ use std::io::{Read as _, Write as _};
 use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
-use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
+use common::{
+    Party, Patience, TempDir, ask, booted, cannot_run_vms, guest_init, kernel, run_shards_env, served,
+};
 use shards_api::image::{
     BootStop, Captured, Channel, Cli, CredentialGrant, ImageGuest, ImagePools, ImageRefusal, ImageShards,
     ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased, Lessor, MemberEnd, MemberFile,
     MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto, Publish, RunEnd,
     RunLessor, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, StartedFrom, StatsScope,
 };
-
-const TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The variables a test's run host is given: its home, this build's guest, and the tests'
 /// own docker config and local store (`common::as_tests_run`'s).
@@ -72,6 +72,20 @@ fn build(home: &TempDir, tag: &str, options: &[&str], agentfile: &str) {
     assert_eq!(built.status, Some(0), "{}", built.stderr);
 }
 
+/// The longest life a lease is told, its wire's (a u64 of nanoseconds: shards-api's
+/// image/session.rs), as far as this host's clock reaches: a lease of the test's broker
+/// that does not lapse while its test runs.
+fn longest_lease() -> Instant {
+    let now = Instant::now();
+    let mut life = Duration::from_nanos(u64::MAX);
+    loop {
+        if let Some(until) = now.checked_add(life) {
+            return until;
+        }
+        life /= 2;
+    }
+}
+
 fn spec(home: &TempDir, image: &str) -> ImageSpec {
     ImageSpec {
         image: image.into(),
@@ -106,8 +120,9 @@ fn diagnostics(home: &TempDir) -> std::path::PathBuf {
 }
 
 /// `s` booted, its run host's diagnostics kept whole in [`diagnostics`] from its start.
+#[track_caller]
 fn boot(home: &TempDir, s: &ImageSpec) -> Box<dyn ImageGuest> {
-    let guest = ImageShards::new().boot(s, TIMEOUT).unwrap();
+    let guest = booted(&ImageShards::new(), s).unwrap();
     let kept = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -122,8 +137,9 @@ fn boot(home: &TempDir, s: &ImageSpec) -> Box<dyn ImageGuest> {
 /// exited (CI run 43303186680: `WithRun` where `Exited(3)` was expected, its cause unsaid),
 /// and the home shows its run hosts' diagnostics, their VMs' among them, as it goes ([`boot`]:
 /// HVF at 2b89e8504, `WithRun` and `Exited(125)`, nothing more said).
+#[track_caller]
 fn assert_ended(guest: &dyn ImageGuest, expected: MemberEnd) {
-    let ended = guest.wait_member(&codex(), TIMEOUT).unwrap();
+    let ended = ask(guest, |g| g.wait_member(&codex(), Duration::MAX)).unwrap();
     assert_eq!(
         ended,
         Some(expected),
@@ -132,22 +148,31 @@ fn assert_ended(guest: &dyn ImageGuest, expected: MemberEnd) {
     );
 }
 
-/// Reads `channel` of the harness to its end, within the test's bound.
+/// Reads `channel` of the harness to its end ([`read_within`]).
+#[track_caller]
 fn read_all(guest: &dyn ImageGuest, channel: Channel) -> Vec<u8> {
-    read_within(guest, channel).expect("the member's channel did not end")
+    read_within(guest, channel)
+        .unwrap_or_else(|refused| panic!("the member's channel did not end: {refused}"))
 }
 
-/// What `channel` of the harness says to its end; none where it does not end within the
-/// test's bound.
-fn read_within(guest: &dyn ImageGuest, channel: Channel) -> Option<Vec<u8>> {
+/// What `channel` of the harness says to its end, read for as long as its run goes on: a
+/// wait judged as the tests' waits are (`common::judged`), its kind its call site. Refused,
+/// its run is stopped, which ends the channel, and what its wait said of itself comes back.
+#[track_caller]
+fn read_within(guest: &dyn ImageGuest, channel: Channel) -> Result<Vec<u8>, String> {
     let mut pipe = guest.take_output(&codex(), channel).unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = pipe.read_to_end(&mut bytes);
-        let _ = tx.send(bytes);
-    });
-    rx.recv_timeout(TIMEOUT).ok()
+    common::judged(
+        Party::started(None),
+        "a member's channel",
+        || {
+            let _ = guest.stop();
+        },
+        move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            bytes
+        },
+    )
 }
 
 /// What an orchestrator stages into its harness at create reaches it alone, exactly, never
@@ -202,7 +227,10 @@ fn staged_credentials_reach_the_harness_and_its_output_and_end_come_back() {
     let found = holding(&home, b"t0p-secret");
     assert!(found.is_empty(), "the secret is in {found:?}");
     guest.stop().unwrap();
-    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+    assert_eq!(
+        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        Some(RunEnd::Stopped)
+    );
 }
 
 /// What would widen the image's grants, or names a member it does not declare or one of
@@ -227,7 +255,7 @@ fn what_the_image_does_not_grant_is_refused_before_boot() {
         args: Vec::new(),
         mcp: false,
     };
-    let refused = |s: ImageSpec| match ImageShards::new().boot(&s, TIMEOUT) {
+    let refused = |s: ImageSpec| match booted(&ImageShards::new(), &s) {
         Err(e) => e,
         Ok(_) => panic!("booted"),
     };
@@ -364,7 +392,7 @@ fn a_published_ingress_port_reaches_its_member() {
         host: Some("127.0.0.1".parse().unwrap()),
         host_port: 0,
     }];
-    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    let guest = booted(&ImageShards::new(), &s).unwrap();
     let bound = guest.published().first().cloned().expect("a bound port");
     assert_eq!((bound.guest_port, bound.proto), (7100, Proto::Tcp));
     // It names whom it reaches: the harness, at its own port.
@@ -376,25 +404,23 @@ fn a_published_ingress_port_reaches_its_member() {
         (member.kind, member.name.as_str(), to.port),
         (MemberKind::Harness, "codex", 7100)
     );
-    // The listener comes up once its member runs: asked until it answers, within the bound.
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    // The listener comes up once its member runs: asked until it answers, while its run
+    // goes on (`Patience` of what this test started), each answer read as a stream its run
+    // carries (`common::Following`).
+    let mut patience = Patience::started();
     let answer = loop {
         if let Ok(mut c) = std::net::TcpStream::connect(bound.host) {
-            c.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
             let _ = c.write_all(b"hello\n");
             let mut got = Vec::new();
-            let _ = c.read_to_end(&mut got);
+            let _ = common::Following::of(&c, None).read_to_end(&mut got);
             if !got.is_empty() {
                 break got;
             }
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no answer on {}",
-            bound.host
-        );
-        std::thread::sleep(Duration::from_millis(100));
+        assert!(patience.holds(), "no answer on {}", bound.host);
+        std::thread::sleep(patience.next_look());
     };
+    patience.done();
     assert!(!answer.is_empty());
     guest.stop().unwrap();
 }
@@ -428,8 +454,10 @@ fn a_project_is_plugged_into_the_running_harness() {
         at: "/bound".into(),
         read_only: true,
     }];
-    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
-    match guest.plug(&codex(), &proj, "/outside/proj", false, TIMEOUT) {
+    let guest = booted(&ImageShards::new(), &s).unwrap();
+    match ask(&*guest, |g| {
+        g.plug(&codex(), &proj, "/outside/proj", false, Duration::MAX)
+    }) {
         Err(ImageRefusal::Plug(PlugRefusal::Outside, why)) => {
             assert!(why.contains(roots[0].as_str()), "{why}");
         }
@@ -441,25 +469,22 @@ fn a_project_is_plugged_into_the_running_harness() {
     };
     assert!(
         matches!(
-            guest.plug(&helper, &proj, &dest, false, TIMEOUT),
+            ask(&*guest, |g| g.plug(&helper, &proj, &dest, false, Duration::MAX)),
             Err(ImageRefusal::Plug(PlugRefusal::Member, _))
         ),
         "a member of files alone"
     );
-    guest.plug(&codex(), &proj, &dest, false, TIMEOUT).unwrap();
+    ask(&*guest, |g| g.plug(&codex(), &proj, &dest, false, Duration::MAX)).unwrap();
     let seen_at = proj.join("seen");
-    let started = std::time::Instant::now();
+    let mut patience = Patience::started();
     let seen = loop {
         if let Ok(seen) = std::fs::read_to_string(&seen_at) {
             break seen;
         }
-        assert!(
-            started.elapsed() < TIMEOUT,
-            "the harness wrote no {}",
-            seen_at.display()
-        );
-        std::thread::sleep(Duration::from_millis(20));
+        assert!(patience.holds(), "the harness wrote no {}", seen_at.display());
+        std::thread::sleep(patience.next_look());
     };
+    patience.done();
     for root in &roots {
         let line = format!("root {root} mkdir errno 30 create errno 30");
         assert!(seen.lines().any(|l| l == line), "no {line:?} in\n{seen}");
@@ -469,13 +494,16 @@ fn a_project_is_plugged_into_the_running_harness() {
         std::fs::read_to_string(proj.join("from-member")).unwrap(),
         "member\n"
     );
-    guest.unplug(&dest, TIMEOUT).unwrap();
+    ask(&*guest, |g| g.unplug(&dest, Duration::MAX)).unwrap();
     assert!(matches!(
-        guest.unplug(&dest, TIMEOUT),
+        ask(&*guest, |g| g.unplug(&dest, Duration::MAX)),
         Err(ImageRefusal::Plug(PlugRefusal::Unknown, _))
     ));
     guest.stop().unwrap();
-    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+    assert_eq!(
+        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        Some(RunEnd::Stopped)
+    );
 }
 
 /// Stats read the run's cgroup and a running member's, typed; a member that does not run
@@ -487,10 +515,8 @@ fn stats_read_the_run_and_a_member() {
     }
     let home = TempDir::new("api-stats-home");
     build(&home, "api-stats:1", &["sleep-for", "60000"], "");
-    let guest = ImageShards::new()
-        .boot(&spec(&home, "api-stats:1"), TIMEOUT)
-        .unwrap();
-    let run = guest.stats(StatsScope::Run, TIMEOUT).unwrap();
+    let guest = booted(&ImageShards::new(), &spec(&home, "api-stats:1")).unwrap();
+    let run = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
     assert!(run.memory_bytes.is_some_and(|m| m > 0), "{run:?}");
     assert!(run.cpu_ns.is_some(), "{run:?}");
     // The run's microVM beside its guest's cgroup (D241): its VM process's use, and what its
@@ -508,12 +534,15 @@ fn stats_read_the_run_and_a_member() {
         [(0, true)],
         "{times:?}"
     );
-    let member = guest.stats(StatsScope::Member(1), TIMEOUT).unwrap();
+    let member = ask(&*guest, |g| g.stats(StatsScope::Member(1), Duration::MAX)).unwrap();
     assert!(member.pids.is_some_and(|p| p >= 1), "{member:?}");
     assert_eq!(member.microvm, None, "a member's scope is inside the microVM");
-    assert!(guest.stats(StatsScope::Member(9), TIMEOUT).is_err());
+    assert!(ask(&*guest, |g| g.stats(StatsScope::Member(9), Duration::MAX)).is_err());
     guest.stop().unwrap();
-    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+    assert_eq!(
+        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        Some(RunEnd::Stopped)
+    );
 }
 
 /// The room an orchestrator's budget leaves its run (D241) reaches the run's init through
@@ -527,24 +556,25 @@ fn the_orchestrators_room_holds_its_run_within_it() {
     }
     let home = TempDir::new("api-room-home");
     build(&home, "api-room:1", &["sleep-for", "60000"], "");
-    let guest = ImageShards::new()
-        .boot(&spec(&home, "api-room:1"), TIMEOUT)
-        .unwrap();
+    let guest = booted(&ImageShards::new(), &spec(&home, "api-room:1")).unwrap();
     let room: u64 = 64 << 20;
-    let held = guest
-        .room(Some(i64::try_from(room).unwrap()), TIMEOUT)
-        .unwrap()
-        .expect("held within the room told");
+    let held = ask(&*guest, |g| {
+        g.room(Some(i64::try_from(room).unwrap()), Duration::MAX)
+    })
+    .unwrap()
+    .expect("held within the room told");
     // Whole pages, as `memory.high` and `memory.current` are kept: exactly the room told.
     assert_eq!(held, room);
-    let least = guest
-        .room(Some(0), TIMEOUT)
+    let least = ask(&*guest, |g| g.room(Some(0), Duration::MAX))
         .unwrap()
         .expect("held within the least room");
     assert!(least > 0 && least < held, "held within {least}, short of {held}");
-    assert_eq!(guest.room(None, TIMEOUT).unwrap(), None);
+    assert_eq!(ask(&*guest, |g| g.room(None, Duration::MAX)).unwrap(), None);
     guest.stop().unwrap();
-    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+    assert_eq!(
+        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        Some(RunEnd::Stopped)
+    );
 }
 
 /// The CPU rate an orchestrator holds its run's vCPUs to (D247) reaches its VM through its
@@ -560,15 +590,16 @@ fn the_orchestrators_rate_holds_its_run_to_it() {
     }
     let home = TempDir::new("api-rate-home");
     build(&home, "api-rate:1", &["spin"], "");
-    let guest = ImageShards::new()
-        .boot(&spec(&home, "api-rate:1"), TIMEOUT)
-        .unwrap();
+    let guest = booted(&ImageShards::new(), &spec(&home, "api-rate:1")).unwrap();
     let period = guest.rate_period();
     assert_eq!(period, shards_vmm::vm::hold_period());
     let quarter = NonZeroU64::new(250).unwrap();
-    assert_eq!(guest.rate(Some(quarter), TIMEOUT).unwrap(), Some(quarter));
+    assert_eq!(
+        ask(&*guest, |g| g.rate(Some(quarter), Duration::MAX)).unwrap(),
+        Some(quarter)
+    );
     let ran = || {
-        let stats = guest.stats(StatsScope::Run, TIMEOUT).unwrap();
+        let stats = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
         stats.microvm.unwrap().guest.unwrap().total_ns()
     };
     let (start, before) = (Instant::now(), ran());
@@ -586,13 +617,16 @@ fn the_orchestrators_rate_holds_its_run_to_it() {
         "{used} ns of guest in {wall} ns: held, and never let go"
     );
     assert_eq!(
-        guest.rate(NonZeroU64::new(1000), TIMEOUT).unwrap(),
+        ask(&*guest, |g| g.rate(NonZeroU64::new(1000), Duration::MAX)).unwrap(),
         None,
         "its one vCPU's whole CPU holds nothing"
     );
-    assert_eq!(guest.rate(None, TIMEOUT).unwrap(), None);
+    assert_eq!(ask(&*guest, |g| g.rate(None, Duration::MAX)).unwrap(), None);
     guest.stop().unwrap();
-    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+    assert_eq!(
+        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        Some(RunEnd::Stopped)
+    );
 }
 
 /// A run that keeps nothing of what the image grants its harness past the microVM, as Hex's
@@ -677,8 +711,11 @@ fn an_images_own_command_ends_its_run_with_its_status() {
         dns: false,
         members: Some(Vec::new()),
     };
-    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
-    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Exited(3)));
+    let guest = booted(&ImageShards::new(), &s).unwrap();
+    assert_eq!(
+        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        Some(RunEnd::Exited(3))
+    );
 }
 
 /// D253: an orchestrator's run restores its image's template, as a daemon's run does. In a
@@ -708,9 +745,12 @@ fn an_images_next_run_restores_the_template_its_first_saved() {
         .env
         .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
     let run = |s: &ImageSpec| {
-        let guest = ImageShards::new().boot(s, TIMEOUT).unwrap();
+        let guest = booted(&ImageShards::new(), s).unwrap();
         let from = guest.started_from();
-        assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Exited(3)));
+        assert_eq!(
+            ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+            Some(RunEnd::Exited(3))
+        );
         from
     };
     if !shards_vmm::vm::restores_here() {
@@ -760,9 +800,12 @@ fn an_images_next_run_takes_a_warm_host_of_its_pool() {
         .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
     let pools = ImagePools::new(2, ImagePools::KEEP).unwrap();
     let run = |s: &ImageSpec| {
-        let guest = pools.boot(s, TIMEOUT).unwrap();
+        let guest = booted(&pools, s).unwrap();
         let from = guest.started_from();
-        assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Exited(3)));
+        assert_eq!(
+            ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+            Some(RunEnd::Exited(3))
+        );
         from
     };
     assert_ne!(
@@ -771,17 +814,13 @@ fn an_images_next_run_takes_a_warm_host_of_its_pool() {
         "nothing is warm before a pool's first run"
     );
     // The warm host its first run's pool started is taken by the first run that comes once
-    // it is ready: each run before that starts a host of its own.
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        if run(&s) == StartedFrom::Warm {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "no run took a warm host within {TIMEOUT:?}"
-        );
+    // it is ready: each run before that starts a host of its own. Asked while the pool's
+    // hosts go on (`Patience` of what this test started).
+    let mut patience = Patience::started();
+    while run(&s) != StartedFrom::Warm {
+        assert!(patience.holds(), "no run took a warm host");
     }
+    patience.done();
     let other = ImageSpec {
         vcpus: 2,
         ..s.clone()
@@ -797,9 +836,7 @@ fn stop_ends_the_run_at_once() {
     }
     let home = TempDir::new("api-stop-home");
     build(&home, "api-stop:1", &["sleep-for", "600000"], "");
-    let guest = ImageShards::new()
-        .boot(&spec(&home, "api-stop:1"), TIMEOUT)
-        .unwrap();
+    let guest = booted(&ImageShards::new(), &spec(&home, "api-stop:1")).unwrap();
     assert_eq!(guest.wait_member(&codex(), Duration::ZERO).unwrap(), None);
     guest.stop().unwrap();
     assert_eq!(guest.wait_for(Duration::ZERO).unwrap(), Some(RunEnd::Stopped));
@@ -887,7 +924,7 @@ impl Gate {
         use windows_sys::Win32::System::Threading::CreateEventW;
         let dir = TempDir::new("api-gate");
         std::fs::copy(guest_init(), dir.join("init")).unwrap();
-        let held = common::Oplocked::new(&dir.join("init"), TIMEOUT);
+        let held = common::Oplocked::new(&dir.join("init"));
         // SAFETY: an unnamed manual-reset event, owned from here.
         let raw = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
         assert!(!raw.is_null(), "an event: {}", std::io::Error::last_os_error());
@@ -1021,7 +1058,10 @@ fn a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run() {
     // leaves no run host waiting out its patience on the gate.
     let (reached, hosts, run, booted) = std::thread::scope(|scope| {
         let booting = scope.spawn(|| {
-            let booted = ImageShards::new().boot_stoppable(&s, TIMEOUT, &stop).map(drop);
+            // No patience of its own: the test's stop below ends it, whatever is seen.
+            let booted = ImageShards::new()
+                .boot_stoppable(&s, Duration::MAX, &stop)
+                .map(drop);
             returning.say();
             booted
         });
@@ -1107,7 +1147,7 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
             panic!(
                 "its stdin took no more ({e}): the harness said {:?} and ended {:?}; the run's end {:?}",
                 said.as_deref().map(String::from_utf8_lossy),
-                guest.wait_member(&codex(), TIMEOUT),
+                ask(&*guest, |g| g.wait_member(&codex(), Duration::MAX)),
                 guest.wait_for(Duration::ZERO)
             );
         }
@@ -1125,9 +1165,7 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
     // Not asked for: no stdin.
     let home = TempDir::new("api-nostdin-home");
     build(&home, "api-nostdin:1", &["managed-capture", "codex", "echo"], "");
-    let guest = ImageShards::new()
-        .boot(&spec(&home, "api-nostdin:1"), TIMEOUT)
-        .unwrap();
+    let guest = booted(&ImageShards::new(), &spec(&home, "api-nostdin:1")).unwrap();
     assert!(guest.take_input(&codex()).is_err());
     guest.stop().unwrap();
 }
@@ -1178,8 +1216,11 @@ fn a_members_arguments_follow_its_images_command_in_order() {
     );
     assert_ended(&*guest, MemberEnd::Exited(0));
     guest.stop().unwrap();
-    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
-    let refused = |s: ImageSpec| match ImageShards::new().boot(&s, TIMEOUT) {
+    assert_eq!(
+        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        Some(RunEnd::Stopped)
+    );
+    let refused = |s: ImageSpec| match booted(&ImageShards::new(), &s) {
         Err(e) => e,
         Ok(_) => panic!("booted"),
     };
@@ -1277,7 +1318,7 @@ fn a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it() 
     };
     echo(b"before\n");
     let outside = TempDir::new("api-save-out");
-    match guest.save(&outside.join("s1"), TIMEOUT) {
+    match ask(&*guest, |g| g.save(&outside.join("s1"), Duration::MAX)) {
         Err(ImageRefusal::Save(SaveRefusal::Destination, why)) => {
             assert!(why.contains("outside the run's home"), "{why}")
         }
@@ -1285,7 +1326,7 @@ fn a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it() 
     }
     assert!(!outside.join("s1").exists());
     let saved = home.join("leak-save");
-    guest.save(&saved, TIMEOUT).unwrap();
+    ask(&*guest, |g| g.save(&saved, Duration::MAX)).unwrap();
     // Its memory as the store reads it, through the generation its pointer names: on Windows
     // that pointer is the newest version of `current` (platform `write_in`, PM M345), never a
     // file of that name (WHP at 5af644eab).
@@ -1780,7 +1821,7 @@ impl Lessor for TestLessor {
         Ok(Leased {
             lease: format!("lease-{n}"),
             value: Secret::from(value.as_str()),
-            until: Instant::now() + TIMEOUT,
+            until: longest_lease(),
         })
     }
 
@@ -1881,7 +1922,10 @@ fn answers(guest: &dyn ImageGuest) -> Vec<String> {
 /// The run stopped, and every lease its lessor gave released by its end (D242).
 fn stop_releasing(guest: &dyn ImageGuest, lessor: &TestLessor) {
     guest.stop().unwrap();
-    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+    assert_eq!(
+        ask(guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        Some(RunEnd::Stopped)
+    );
     assert_eq!(
         lessor.released.lock().unwrap().len(),
         lessor.given(),

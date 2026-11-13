@@ -12,9 +12,10 @@
 mod common;
 
 use std::ffi::OsStr;
-use std::time::{Duration, Instant};
 
-use common::{TempDir, Vm, cannot_run_vms, guest_init, kernel, run_shards_env, served, test_guest, vm_run};
+use common::{
+    Patience, TempDir, Vm, cannot_run_vms, guest_init, kernel, run_shards_env, served, test_guest, vm_run,
+};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree, WAIT_OBJECT_0};
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Isolation::{CreateAppContainerProfile, DeleteAppContainerProfile};
@@ -29,8 +30,6 @@ use windows_sys::Win32::System::Threading::{
     ProcessExtensionPointDisablePolicy, ProcessImageLoadPolicy, ProcessStrictHandleCheckPolicy,
     ProcessSystemCallDisablePolicy, WaitForSingleObject,
 };
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A handle, closed as it drops.
 struct Handle(HANDLE);
@@ -306,12 +305,20 @@ fn the_network_process_is_confined() {
         assert_eq!(mitigation(&process, policy) & bits, bits, "{what}");
     }
 
-    // Its VM ended, it ends, and its profile's record goes with it.
+    // Its VM ended, it ends, and its profile's record goes with it: each a state its home's
+    // daemon comes to, waited on as it works.
     let removed = shards(&["rm", "-f", "net"]);
     assert_eq!(removed.status, Some(0), "{removed}");
-    // SAFETY: the process's handle.
-    let waited = unsafe { WaitForSingleObject(process.0, 20_000) };
-    assert_eq!(waited, WAIT_OBJECT_0, "the network process outlived its VM");
+    let mut patience = Patience::of(&home);
+    loop {
+        let left = u32::try_from(patience.next_look().as_millis()).unwrap_or(u32::MAX);
+        // SAFETY: the process's handle.
+        if unsafe { WaitForSingleObject(process.0, left) } == WAIT_OBJECT_0 {
+            break;
+        }
+        assert!(patience.holds(), "the network process outlived its VM");
+    }
+    patience.done();
     let records = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
         .join("shards")
         .join("containers");
@@ -325,15 +332,12 @@ fn the_network_process_is_confined() {
             .filter(|n| n.starts_with(&prefix))
             .collect()
     };
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home);
     while !left().is_empty() {
-        assert!(
-            Instant::now() < deadline,
-            "its profile's record left: {:?}",
-            left()
-        );
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(patience.holds(), "its profile's record left: {:?}", left());
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
     let stopped = shards(&["stop", "daemon"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }

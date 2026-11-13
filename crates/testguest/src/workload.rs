@@ -54,7 +54,7 @@ pub fn main() -> ! {
         "managed-limits-nonce" => crate::managed_limits::nonce(arg(1)),
         "managed-lifecycle-exit" => crate::managed_lifecycle::exit_after_report(arg(1)),
         "managed-lifecycle-challenge" => crate::managed_lifecycle::challenge(arg(1), arg(2)),
-        "managed-reap" => crate::managed_reap::run(arg(1), arg(2), arg(3)),
+        "managed-reap" => crate::managed_reap::run(arg(1), arg(2)),
         "managed-reap-child" => crate::managed_reap::child(arg(1), arg(2)),
         "cat" => cat(),
         "plugged" => crate::plugged::main(args.get(1..).unwrap_or_default()),
