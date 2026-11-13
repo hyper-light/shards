@@ -144,6 +144,20 @@ fn socket_grant(grant: &wire::SocketGrant, command: bool) -> Result<(), No> {
     Ok(())
 }
 
+/// The VM process's arguments for the run's GPUs (D232), as shards-api's direct boot gives
+/// them: `--gpu`, then each identity's `--gpu-device`; none for none.
+fn gpu_args(gpus: &[shards_api::PhysicalGpu]) -> Vec<std::ffi::OsString> {
+    if gpus.is_empty() {
+        return Vec::new();
+    }
+    let mut args = vec![std::ffi::OsString::from("--gpu")];
+    for gpu in gpus {
+        args.push("--gpu-device".into());
+        args.push(gpu.to_string().into());
+    }
+    args
+}
+
 /// What the run's command is given of the nesting grant (D234), decided as the daemon
 /// decides it for a run of its own (`agentfile::nesting`), refused typed, in its words: the
 /// grant asked of an image whose Agentfile declares no `NESTING` a widening of its grants;
@@ -775,6 +789,7 @@ mod hosted {
     use shards_ipc::kind;
 
     use super::{Answers, No, no};
+    use crate::daemon::ends::Ends;
     use crate::daemon::publish;
 
     fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -810,6 +825,8 @@ mod hosted {
         roots: Vec<Vec<u8>>,
         /// Its agent-control endpoint's ask (D252), where its orchestrator made one.
         control: Option<wire::ControlAsk>,
+        /// The host GPUs its VM renders on (D232); none, no GPU.
+        gpu_devices: Vec<shards_api::PhysicalGpu>,
     }
 
     pub(super) fn run(
@@ -923,7 +940,12 @@ mod hosted {
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
         let egress = super::network(agentfile.as_ref(), request, &mut run)?;
         let credentials = super::credentials(&request.credentials, egress.as_deref())?;
-        let nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
+        let mut nesting = super::nesting(agentfile.as_ref(), &run, &say)?;
+        // The run's GPUs, its command's to read under the grant (D234's `gpus=`), as its VM
+        // process binds them (D232).
+        if let crate::agentfile::Nesting::Granted(grant) = &mut nesting {
+            grant.gpus = request.gpu_devices.clone();
+        }
         let bridge = if run.network == "bridge" {
             Some(
                 shards_net::bridge::elected_here(&mut |note| say(&note))
@@ -1045,7 +1067,12 @@ mod hosted {
             );
         }
         prepared.spec.setup = setup;
-        prepared.spec.cgroup = crate::resources::cgroup(&run.resources, prepared.cpus)
+        // Of its microVM's CPUs, which its spec sizes (`size.0`): not the host's, which a
+        // run asking fewer vCPUs than the host has would name past its guest's, and a guest
+        // whose workload has the cpuset controller (the nesting grant, D234) refuses.
+        let vcpus = usize::try_from(prepared.size.0)
+            .map_err(|_| No(Cause::Request, "its vCPUs pass what this host counts".into()))?;
+        prepared.spec.cgroup = crate::resources::cgroup(&run.resources, vcpus)
             .map_err(|e| No(Cause::Request, e.message(format_args!("its limits"))))?;
         if bridge.is_some() {
             prepared.spec.resolv = Some(crate::build::step::resolv_with(
@@ -1077,6 +1104,7 @@ mod hosted {
             inputs,
             roots,
             control: request.control.clone(),
+            gpu_devices: request.gpu_devices.clone(),
         })
     }
 
@@ -1110,10 +1138,11 @@ mod hosted {
     impl Shares {
         /// Its end, its VM's gone: what of it this process holds let go of, the last of its
         /// streams where the VM never took them (a run refused before `TAKEN`), then waited
-        /// for as a network process is, [`crate::netproc::GRACE`] at most, and ended. Waited
-        /// for with its door still held here, it never went (CI run 43230466376,
+        /// for as a network process is, while it goes on with its end, and ended once it does
+        /// not (`netproc::reap`, the home's `record` of this host's ends). Waited for with its
+        /// door still held here, it never went (CI run 43230466376,
         /// `a_share_at_a_granted_volume_reaches_the_harness`, this process in `do_wait`).
-        fn end(self) {
+        fn end(self, record: &Ends) {
             let Shares {
                 child,
                 #[cfg(unix)]
@@ -1127,7 +1156,7 @@ mod hosted {
             drop(door);
             #[cfg(windows)]
             drop(ends);
-            crate::netproc::reap(&child);
+            crate::netproc::reap(&child, record);
         }
     }
 
@@ -1170,7 +1199,18 @@ mod hosted {
         if !plan.dirs.is_empty() {
             args.extend(["--shares".into(), plan.dirs.len().to_string().into()]);
         }
+        args.extend(super::gpu_args(&plan.gpu_devices));
         args
+    }
+
+    /// The VM process to start: the GPU's (D144) where the run names its GPUs (D232), with
+    /// MoltenVK saying its errors alone, as the daemon starts a GPU's; else the plain one.
+    fn vm_binary(plan: &Plan, env: &mut Vec<(&'static str, OsString)>) -> Result<PathBuf, String> {
+        if plan.gpu_devices.is_empty() {
+            return crate::helpers::vm();
+        }
+        env.push(("MVK_CONFIG_LOG_LEVEL", "1".into()));
+        crate::helpers::vm_gpu()
     }
 
     /// The home's private directory, made if it is not there: where a share process keeps
@@ -1256,15 +1296,15 @@ mod hosted {
             ]);
         }
         let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
-        let env = crate::netproc::child_env();
-        let binary = crate::helpers::vm().map_err(boot)?;
+        let mut env = crate::netproc::child_env();
+        let binary = vm_binary(plan, &mut env).map_err(boot)?;
         let spawned = shards_ipc::spawn_in(&binary, &argv, &fds, false, &crate::netproc::env_pairs(&env));
         drop(fds);
         let vm = match spawned {
             Ok(vm) => vm,
             Err(e) => {
                 if let Some((child, _)) = &net {
-                    crate::netproc::reap(child);
+                    crate::netproc::reap(child, &Ends::kept_in(home));
                 }
                 return Err(boot(format!("starting {}: {e}", binary.display())));
             }
@@ -1382,8 +1422,8 @@ mod hosted {
         }
         let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
         let err = io::stderr();
-        let env = crate::netproc::child_env();
-        let binary = crate::helpers::vm().map_err(boot)?;
+        let mut env = crate::netproc::child_env();
+        let binary = vm_binary(plan, &mut env).map_err(boot)?;
         let suspended = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
             program: &binary,
             args: &argv,
@@ -1666,6 +1706,9 @@ mod hosted {
     /// What the serving threads share.
     struct Live<'a> {
         answers: &'a Answers,
+        /// The home's record of this host's ends, by which a share process plugged in is
+        /// followed to its end ([`Shares::end`]).
+        ends: Ends,
         flows: Mutex<Flows>,
         /// Each input member's stdin, by its index.
         feeds: Mutex<HashMap<u32, Feed>>,
@@ -1952,6 +1995,9 @@ mod hosted {
                     address: endpoint.address,
                     vm: endpoint.fingerprint,
                 }),
+                // The period its VM's governor holds a rate over: this build's hold's, which
+                // the VM process it carries holds by (D36, D247).
+                rate_period: shards_vmm::vm::hold_period(),
             }
             .encode()
             .map_err(|e| boot(e.to_string()))?;
@@ -1961,6 +2007,7 @@ mod hosted {
                 .map_err(|e| boot(format!("the VM's link: {e}")))?;
             let live = Live {
                 answers,
+                ends: Ends::kept_in(home),
                 flows: Mutex::new(Flows::default()),
                 feeds: Mutex::new(plan.inputs.iter().map(|m| (*m, Feed::default())).collect()),
                 fed: std::sync::Condvar::new(),
@@ -1990,7 +2037,7 @@ mod hosted {
             // What was plugged in goes with the VM: each share process ends as its streams
             // close (`Shares::end`).
             for (_, p) in std::mem::take(&mut *lock(&live.plugged)) {
-                p.share.end();
+                p.share.end(&live.ends);
             }
             Ok(())
         })();
@@ -2010,12 +2057,13 @@ mod hosted {
         let _ = vm.kill(shards_ipc::signal::SIGKILL);
         let _ = vm.wait();
         drop(link);
+        let record = Ends::kept_in(home);
         if let Some((child, control)) = net {
             drop(control);
-            crate::netproc::reap(&child);
+            crate::netproc::reap(&child, &record);
         }
         if let Some(shares) = shares {
-            shares.end();
+            shares.end(&record);
         }
         #[cfg(windows)]
         drop(job);
@@ -2219,7 +2267,7 @@ mod hosted {
         #[cfg(windows)]
         let lane = {
             drop(fds);
-            (|| {
+            (|| -> Result<_, String> {
                 let (ours, theirs) = handed_pair().map_err(|e| e.to_string())?;
                 let shared = theirs.share().map_err(|e| e.to_string())?;
                 shards_ipc::send(&lock(&live.link), kind::LANE_HELD, &held, &[shared.as_fd()])
@@ -2444,7 +2492,7 @@ mod hosted {
                                     plugged(live, id, result);
                                     // Its share process ends as its device's stream closes.
                                     if let Some(share) = share {
-                                        share.end();
+                                        share.end(&live.ends);
                                     }
                                 }),
                         )
@@ -3034,7 +3082,7 @@ mod hosted {
         let (devfn, address) = match placed {
             Ok(placed) => placed,
             Err(e) => {
-                share.end();
+                share.end(&live.ends);
                 return Err((R::Device, e));
             }
         };
@@ -3044,7 +3092,7 @@ mod hosted {
             // Taken off again, its guest having found it or not.
             let _ = guest_device(live, &["unmount", &address, &ask.at, "member", &index]);
             let _ = ask_device(live, &[shards_ipc::device::UNPLUG, devfn], &[]);
-            share.end();
+            share.end(&live.ends);
             return Err((R::Device, e));
         }
         // Its guest told what its host changes beneath it from now on (D235).
@@ -3215,7 +3263,7 @@ mod hosted {
                 door,
                 notices: None,
             }
-            .end();
+            .end(&Ends::kept_in(&dir));
             assert!(
                 said.exists(),
                 "the share process was ended at the grace's end, not by its door's"
@@ -3339,6 +3387,7 @@ mod tests {
             ready_by: None,
             credentials: Vec::new(),
             control: None,
+            gpu_devices: Vec::new(),
         }
     }
 
@@ -4126,5 +4175,33 @@ mod tests {
         assert!(served.sockets.is_some());
         let (second, _) = hosted::bind_control(&ask).unwrap();
         assert_ne!(first.fingerprint, second.fingerprint, "two runs share one key");
+    }
+
+    /// D232 through D231: a run naming GPUs gives its VM process `--gpu` and each identity's
+    /// `--gpu-device` in D232's grammar, as shards-api's direct boot does; one naming none, none.
+    #[test]
+    fn a_runs_gpus_reach_its_vm_process_as_the_direct_boot_gives_them() {
+        use shards_api::PhysicalGpu;
+        assert!(gpu_args(&[]).is_empty());
+        let args = gpu_args(&[
+            PhysicalGpu::Pci {
+                domain: 0,
+                bus: 1,
+                device: 0,
+                function: 0,
+            },
+            PhysicalGpu::MetalRegistry(0x1_0000_02a1),
+        ]);
+        assert_eq!(
+            args,
+            [
+                "--gpu",
+                "--gpu-device",
+                "pci:00000000:01:00.0",
+                "--gpu-device",
+                "metal:00000001000002a1"
+            ]
+            .map(std::ffi::OsString::from)
+        );
     }
 }

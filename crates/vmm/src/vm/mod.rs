@@ -202,6 +202,18 @@ pub use guest_time::{GuestTimes, VcpuTime};
 /// CPU resource units), and as Hex charges and caps a microVM (`hex_api::MIN_CPU_MILLI`). A
 /// unit, not a tuning: a daemon's whole CPUs are this many of it (D191, D247).
 pub const MILLI_PER_CPU: u64 = 1000;
+/// The period a machine's hold holds its vCPUs to their rate over (D191, D247): CFS
+/// bandwidth control's default, `cpu.max`'s 100000 µs (kernel/sched/sched.h l. 445-447,
+/// `default_bw_period_us`, Linux 1590cf03), which Docker's `--cpus` is a quota of. Its
+/// derivation from what the governor resolves is decided, waiting on a measurement (D191).
+const HOLD_PERIOD: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The period this build's hold holds a machine's vCPUs to their rate over: what a run's
+/// host tells its orchestrator (D247), which derives its own window from it rather than
+/// copying a number.
+pub fn hold_period() -> std::time::Duration {
+    HOLD_PERIOD
+}
 #[cfg(any(hv, test))]
 mod hold;
 pub mod live;
@@ -2364,6 +2376,12 @@ pub struct VsockHost {
     ///
     /// [`ports`]: VsockHost::ports
     pub every: Vec<(u32, ServedPort)>,
+    /// A managed machine's rate (D255): a host client's `RATE <milli>` line on
+    /// [`path`](VsockHost::path)'s socket comes here with its connection, for this process
+    /// to hold the vCPUs to and answer on (`shards_abi::rate`). Only a dial on that socket
+    /// says one: a guest's connections arrive as its packets. None for every other
+    /// machine, whose muxer closes such a dial unanswered.
+    pub rate: Option<std::sync::mpsc::Sender<(crate::platform::UnixStream, u64)>>,
 }
 
 /// What a [`ServedPort::Admitted`] port's owner did with a guest's connection: took it, or
@@ -2458,6 +2476,7 @@ impl VsockHost {
             path: Some(path),
             ports: Vec::new(),
             every: Vec::new(),
+            rate: None,
         }
     }
 }

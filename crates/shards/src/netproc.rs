@@ -4,8 +4,11 @@
 //! confined, in an AppContainer that holds the network's capabilities, once its VM's
 //! process exists, whose end it watches for.
 
+use std::io::Write as _;
 #[cfg(unix)]
 use std::os::fd::{AsFd, OwnedFd};
+
+use crate::daemon::ends::{End, Ends, Followed};
 
 /// A socket handed to a network process (a published port's host socket, a peer's link):
 /// a descriptor on Unix; on Windows a socket, which Winsock closes (closesocket).
@@ -341,15 +344,41 @@ fn serve_dials(link: &std::os::unix::net::UnixStream, socket: &std::path::Path) 
     }
 }
 
-/// How long a network process whose VM is gone has to go before it is ended: it goes as
-/// its doorbell hangs up.
-pub const GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+/// Waits for a network or share process whose VM is gone, and which its spawner holds
+/// nothing of, for as long as it goes on with its end (D217's [`Followed`], PM M546): it
+/// goes as its VM's links close, which it is woken by. Looked at once each slice of this
+/// host's passes (`End::Helper`), it is waited on for another while it runs or frees what
+/// it holds, and ended only once it has done neither for a slice. Its end, where it came of
+/// itself, is kept as this host's (`ends`). It was a second, picked (`GRACE`).
+pub fn reap(net: &NetProcess, ends: &Ends) {
+    reap_by(net, ends, ends.slice(End::Helper));
+}
 
-/// Waits for a network process whose VM is gone, [`GRACE`] at most, then ends it: woken by
-/// its end (`Poller::add_exit`), where one cannot be watched by a look every millisecond.
+/// [`reap`], each look `slice` apart.
+fn reap_by(net: &NetProcess, ends: &Ends, slice: std::time::Duration) {
+    let began = std::time::Instant::now();
+    let mut followed = Followed::of(Some(net.id()));
+    loop {
+        if ended_within(net, slice) {
+            if let Err(e) = ends.heard(End::Helper, began.elapsed()) {
+                let _ = writeln!(std::io::stderr(), "shards: {e}");
+            }
+            return;
+        }
+        if followed.goes_on().is_none() {
+            break;
+        }
+    }
+    let _ = net.kill(shards_ipc::signal::SIGKILL);
+    let _ = net.wait();
+}
+
+/// Whether `net` ends within `slice`: woken by its end (`Poller::add_exit`), where one
+/// cannot be watched by a look every millisecond.
 #[cfg(unix)]
-pub fn reap(net: &shards_ipc::Child) {
-    let deadline = std::time::Instant::now() + GRACE;
+fn ended_within(net: &NetProcess, slice: std::time::Duration) -> bool {
+    let now = std::time::Instant::now();
+    let deadline = now.checked_add(slice).unwrap_or(now);
     let watched = shards_vmm::platform::Poller::new()
         .and_then(|poller| poller.add_exit(net.id(), 0).map(|watch| (poller, watch)));
     match watched {
@@ -371,10 +400,13 @@ pub fn reap(net: &shards_ipc::Child) {
             }
         }
     }
-    if net.try_wait().is_none() {
-        let _ = net.kill(libc::SIGKILL);
-        let _ = net.wait();
-    }
+    net.try_wait().is_some()
+}
+
+/// Whether `net` ends within `slice` (Windows): it goes as it sees its VM's process end.
+#[cfg(windows)]
+fn ended_within(net: &NetProcess, slice: std::time::Duration) -> bool {
+    net.ended_within(u32::try_from(slice.as_millis()).unwrap_or(u32::MAX))
 }
 
 /// The VM's side of its network (Windows, D142): the ring and its two doorbells, handed
@@ -809,13 +841,64 @@ fn not_the_hosts(e: std::io::Error) -> std::io::Error {
     }
 }
 
-/// Waits for a network process whose VM is gone, [`GRACE`] at most, then ends it (Windows):
-/// it goes as it sees its VM's process end.
-#[cfg(windows)]
-pub fn reap(net: &NetProcess) {
-    let grace = u32::try_from(GRACE.as_millis()).unwrap_or(u32::MAX);
-    if !net.ended_within(grace) {
-        let _ = net.kill(shards_ipc::signal::SIGKILL);
-        let _ = net.wait();
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
+mod reap_tests {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    /// The helper end a home's record keeps, in milliseconds: none where it keeps none.
+    fn kept(home: &Path) -> Option<u64> {
+        std::fs::read_to_string(home.join(crate::daemon::ends::RECORD))
+            .unwrap_or_default()
+            .lines()
+            .find_map(|line| line.strip_prefix("helper ")?.parse().ok())
+            .filter(|&ms| ms > 0)
+    }
+
+    /// A shell running `script` with `arg` as its `$0`, given nothing else: a network or
+    /// share process's stand-in.
+    fn sh(script: &str, arg: &Path) -> NetProcess {
+        let args = [OsStr::new("-c"), OsStr::new(script), arg.as_os_str()];
+        shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap()
+    }
+
+    /// A network or share process whose VM has gone is waited on past its slice while it
+    /// goes on with its end, and its end, its own, is kept as this host's; one that does
+    /// nothing for a slice is ended at its first look, and that end, the reaper's, is kept
+    /// as none (D217, PM M546). Before, each was ended a second after its VM, picked.
+    #[test]
+    fn a_helper_is_waited_on_while_it_goes_on_with_its_end() {
+        let slice = Duration::from_millis(200);
+        let home = shards_testdir::TempDir::new("reap-busy").unwrap();
+        let ends = Ends::kept_in(&home);
+        // Busy, as one finishing its work is, until its file comes: then it ends. A file,
+        // not a signal, so that nothing is sent to an ID its process may no longer hold.
+        let stop = home.join("stop");
+        let busy = sh("while [ ! -e \"$0\" ]; do :; done", &stop);
+        let began = Instant::now();
+        let took = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(slice * 5);
+                std::fs::write(&stop, b"").unwrap();
+            });
+            reap_by(&busy, &ends, slice);
+            began.elapsed()
+        });
+        assert!(took >= slice * 5, "ended while it went on: {took:?}");
+        let ms = kept(&home).expect("its own end was not kept");
+        assert!(ms >= 1000, "{ms} ms kept");
+        // Asleep, as one waiting on what never comes: ended at its first look, its end
+        // none of its own.
+        let home = shards_testdir::TempDir::new("reap-asleep").unwrap();
+        let ends = Ends::kept_in(&home);
+        let asleep = sh("exec /bin/sleep 60", &home);
+        let began = Instant::now();
+        reap_by(&asleep, &ends, slice);
+        let took = began.elapsed();
+        assert!(took >= slice && took < slice * 4, "{took:?}");
+        assert_eq!(kept(&home), None);
     }
 }

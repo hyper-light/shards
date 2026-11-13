@@ -45,7 +45,7 @@ mod commit;
 mod cuts;
 mod demand;
 mod devices;
-mod ends;
+pub(crate) mod ends;
 mod engine;
 /// The Engine API's socket in the home (D170), relative to it: what Docker's clients reach;
 /// on Windows the file that names its named pipe.
@@ -126,8 +126,9 @@ const USAGE: &str = "usage: shards run daemon [--detached] [--listen ADDR:PORT]
 /// waited for as long as it takes its host, whose speed sets a boot's cost (PM M357).
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a VM's network process may take to say it has a run's published ports: a
-/// round trip on a socket pair to a process polling it, the grace one is given to end
-/// (`netproc::GRACE`).
+/// round trip on a socket pair to a process polling it. It was the second a network
+/// process was given to end, `netproc::GRACE`, which a network process's own progress
+/// replaced (PM M546); its own basis is owed (R03).
 const PUBLISH_PATIENCE: Duration = Duration::from_secs(1);
 /// A template whose warm VMs fail this many times in a row is removed and saved again.
 const MAX_FAILURES: u32 = 3;
@@ -4433,8 +4434,9 @@ impl<D: Disk> Daemon<D> {
 
     /// Whose host address `at`, found in use, is: the host's; a running microVM's of
     /// this daemon, which knows its own bindings (`published`); or a run's that ended, waited
-    /// for until its network process has gone (its grace, `netproc::GRACE`, and as long
-    /// again), where that process never said it closed the run's ports. A run's VM says
+    /// for until its network process has gone, for as long as this host gives one before it
+    /// looks at it (`ends::End::Helper`, `netproc::reap`), where that process never said it
+    /// closed the run's ports. A run's VM says
     /// PORTS_FREE, as that process has, and DONE, before it tells its client (warm.rs
     /// `finish`), whose next program may bind the port at once: what the holder's run has
     /// sent is taken first, as a name's holder's is (`create`), so that a run its client
@@ -4442,7 +4444,9 @@ impl<D: Disk> Daemon<D> {
     /// free (PM M134, M158).
     fn in_use(&self, at: std::net::SocketAddr, proto: u8) -> publish::InUse {
         let began = Instant::now();
-        let deadline = began + crate::netproc::GRACE.saturating_mul(2);
+        let deadline = began
+            .checked_add(self.ends.slice(ends::End::Helper))
+            .unwrap_or(began);
         let mut held = lock(&self.ports_held);
         // A run of this daemon's held it: gone from every run, it was freed, while this
         // waited or while it took the holder's messages without the lock.
@@ -8515,7 +8519,7 @@ impl<D: Disk> Daemon<D> {
             Err(e) => {
                 if let Some((net, side)) = network {
                     drop(side);
-                    crate::netproc::reap(&net);
+                    crate::netproc::reap(&net, &self.ends);
                 }
                 return Err(format!("starting {}: {e}", binary.display()));
             }
@@ -11909,70 +11913,81 @@ mod tests {
         assert!(matches!(e, Untaken::Surely(_)), "{e:?}");
     }
 
-    /// A client whose request does not come whole within its wait is cut, and told to ask
-    /// again (RESTART), as a request is cut only where asking again is a restart (D222's
-    /// cutoff, `slots::Seen`); the cut is learned, the next wait doubled (RFC 6298 §5.5).
-    /// Before, its slot ended unanswered after 10 s, which its client took for its
-    /// command's end.
+    /// A request's rest is waited for while its client goes on with it (D185, PM M545). A
+    /// request whole at once is answered, and the daemon learns how long a rest takes. A
+    /// client whose rest has begun is not cut, however long it then pauses: past the old
+    /// cutoff's longest draw (a second at least before any cut, from [1 s, 2 s)), it has
+    /// heard nothing; told to ask again (RESTART) only as the daemon ends its clients, as one
+    /// whose request no thread had taken is. Before, a request not whole within a second or
+    /// more of its first byte was cut, and the next wait doubled for each cut in a row.
     #[test]
-    fn a_request_cut_tells_its_client_to_ask_again() {
+    fn a_request_is_waited_for_while_its_client_goes_on_with_it() {
         use shards_ipc::slots as s;
         let t = Test::new("cut");
         t.run(|t| {
             t.t.daemon
                 .serve_slots(t.threads, s::Requests::open(&t.home).unwrap());
-            let s::Taken::Slot(client) = s::take(&t.home, 0).unwrap() else {
-                panic!("no daemon");
+            let take = || {
+                let s::Taken::Slot(client) = s::take(&t.home, 0).unwrap() else {
+                    panic!("no daemon");
+                };
+                client
             };
-            // Its first byte and a part of the rest: a request begun, never whole (no
-            // streams, no descriptors, a frame of kind 0 whose length is two bytes short).
-            let t0 = Instant::now();
-            client.sender().unwrap().send(0, &[]).unwrap();
-            let said = client.recv().unwrap().expect("its slot ended unanswered");
-            let took = t0.elapsed();
-            assert_eq!(said.kind, kind::RESTART);
-            // Before any request was whole, a second, drawn from [1 s, 2 s).
-            assert!(took >= Duration::from_secs(1) && took < PATIENCE, "{took:?}");
-            {
-                let seen = lock(&t.daemon.seen);
-                assert_eq!(seen.cuts, 1);
-                assert!(seen.request_wait(0.0) >= Duration::from_secs(2));
+            // An inspect of a microVM there is none of, which the daemon answers alone.
+            let command = shards_ipc::Command {
+                argv: vec!["inspect".to_string(), "none".to_string()],
+                registry_env: Vec::new(),
+                east_asian: false,
+                now: 0,
+                utc_offset: 0,
+                terminal: false,
+                width: 0,
+                color: false,
+                daemon: Identity::default(),
+                client: String::new(),
+            };
+            let whole = take();
+            whole.ask(kind::CONTAINER, &command.encode(), &[]).unwrap();
+            let end = loop {
+                match whole.recv().unwrap() {
+                    Some(f) if f.kind == kind::END => break f.payload,
+                    Some(f) => assert_ne!(f.kind, kind::RESTART, "a whole request told to ask again"),
+                    None => panic!("a whole request's answer ended unsaid"),
+                }
+            };
+            assert_eq!(end, [1]);
+            assert!(lock(&t.daemon.seen).request_stall().is_some(), "no rest learned");
+            drop(whole);
+            // Its first byte and a part of the rest (no streams, no descriptors, a frame of
+            // kind 0 whose length is two bytes short), then nothing.
+            let begun = take();
+            begun.sender().unwrap().send(0, &[]).unwrap();
+            match begun.recv_within(Duration::from_millis(2500)) {
+                Err(e) if e.kind() == io::ErrorKind::TimedOut => {}
+                said => panic!("a client whose rest had begun heard {said:?}"),
             }
-            drop(client);
+            t.daemon.end_clients();
+            let said = begun.recv().unwrap().expect("its slot ended unanswered");
+            assert_eq!(said.kind, kind::RESTART);
+            drop(begun);
             // Its slots' maker ends as the daemon closes.
             t.daemon.close();
         });
     }
 
-    /// A request's rest is waited for as its clients' requests have shown makes them come
-    /// soonest when a cut is asked again (D222's cutoff): a second before any, drawn from
-    /// [t, 2t); doubled for each cut in a row, and no longer once one comes whole; the least
-    /// second where requests come whole at once (RFC 6298 §2.4); past what slow clients take.
-    /// A client that takes nothing of its answer is waited for twice the longest one took a
-    /// piece in, RFC 1122's R2 at least.
+    /// While none of a request's rest has come, it is waited for as long as the slowest
+    /// rest seen whole (D185, PM M545): none before any, the client's end alone then; a
+    /// slower rest raises it, a faster one leaves it. A client that takes nothing of its
+    /// answer is waited for twice the longest one took a piece in, RFC 1122's R2 at least.
     #[test]
     fn a_requests_wait_is_learned_from_its_clients() {
         let mut seen = slots::Seen::default();
-        assert_eq!(seen.request_wait(0.0), Duration::from_secs(1));
-        assert_eq!(seen.request_wait(0.5), Duration::from_millis(1500));
-        seen.cut(Duration::from_secs(1));
-        assert_eq!(seen.request_wait(0.0), Duration::from_secs(2));
-        seen.cut(Duration::from_secs(2));
-        assert_eq!(seen.request_wait(0.0), Duration::from_secs(4));
-        for _ in 0..100 {
-            seen.whole(Duration::from_micros(300));
-        }
-        assert_eq!(seen.cuts, 0);
-        assert_eq!(seen.request_wait(0.0), Duration::from_secs(1));
-        let mut slow = slots::Seen::default();
-        for _ in 0..100 {
-            slow.whole(Duration::from_secs(3));
-        }
-        let wait = slow.request_wait(0.0);
-        assert!(
-            wait >= Duration::from_secs(3) && wait < Duration::from_secs(4),
-            "{wait:?}"
-        );
+        assert_eq!(seen.request_stall(), None);
+        seen.whole(Duration::from_micros(300));
+        assert_eq!(seen.request_stall(), Some(Duration::from_micros(300)));
+        seen.whole(Duration::from_secs(3));
+        seen.whole(Duration::from_micros(40));
+        assert_eq!(seen.request_stall(), Some(Duration::from_secs(3)));
         assert_eq!(seen.answer_wait(), Duration::from_secs(100));
     }
 
@@ -13152,7 +13167,8 @@ mod tests {
             );
             let asked = Instant::now();
             assert_eq!(t.daemon.in_use(at, publish::TCP), publish::InUse::Host);
-            assert!(asked.elapsed() < crate::netproc::GRACE, "{:?}", asked.elapsed());
+            let slice = t.daemon.ends.slice(ends::End::Helper);
+            assert!(asked.elapsed() < slice, "{:?}", asked.elapsed());
             say(&vm, kind::DONE, &[0]);
             t.until("the run did not end", |d| {
                 !matches!(lock(&d.runs).get(&id), Some(RunState::Tracked(_)))
@@ -13161,10 +13177,12 @@ mod tests {
         });
     }
 
-    /// A VM's network process is given its grace once the VM has ended, then ended, and
-    /// the VM's ports are freed once both have gone, not before.
+    /// A VM's network process is given a slice of this host's once the VM has ended,
+    /// looked at, and ended once it has run nothing and freed nothing for it (D217, PM
+    /// M546): a sleeping one is, at its first look. The VM's ports are freed once both have
+    /// gone, not before, and an end the daemon made is kept as no end of the host's.
     #[test]
-    fn a_network_process_is_ended_past_its_grace_and_the_ports_freed() {
+    fn a_network_process_is_ended_once_it_goes_on_no_more_and_the_ports_freed() {
         let t = Test::new("net-end");
         t.run(|t| {
             let (ready, _theirs) = t.warm_vm(None);
@@ -13181,8 +13199,14 @@ mod tests {
             let ended = Instant::now();
             let _ = vm.kill(shards_ipc::signal::SIGKILL);
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
-            assert!(ended.elapsed() >= crate::netproc::GRACE, "freed within the grace");
+            let slice = t.daemon.ends.slice(ends::End::Helper);
+            assert!(ended.elapsed() >= slice, "freed within its slice");
             assert!(reaped(net_pid), "the network process was not reaped");
+            let kept = std::fs::read_to_string(t.home.join(ends::RECORD)).unwrap_or_default();
+            assert!(
+                !kept.lines().any(|l| l.starts_with("helper ") && l != "helper 0"),
+                "an end the daemon made was kept as the host's: {kept}"
+            );
             // The VM is reaped once its ports are freed (follow.rs), which the wait above
             // could see first.
             t.until("the VM was not reaped", |_| reaped(vm.id()));
@@ -13212,7 +13236,8 @@ mod tests {
             let ended = Instant::now();
             let _ = vm.kill(shards_ipc::signal::SIGKILL);
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
-            assert!(ended.elapsed() < crate::netproc::GRACE, "{:?}", ended.elapsed());
+            let slice = t.daemon.ends.slice(ends::End::Helper);
+            assert!(ended.elapsed() < slice, "{:?}", ended.elapsed());
         });
     }
 
