@@ -260,7 +260,7 @@ impl Flow {
     pub fn from_guest(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         match &mut self.state {
             State::Hello { .. } => self.hello(bytes, run, q),
-            State::Ended(e) => e.from_guest(bytes, run, q),
+            State::Ended(e) => e.guest_bytes(bytes, run, q),
             State::Gone => Said::Going,
         }
     }
@@ -270,7 +270,7 @@ impl Flow {
     pub fn from_host(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         match &mut self.state {
             State::Hello { .. } => self.pass(),
-            State::Ended(e) => e.from_host(bytes, run, q),
+            State::Ended(e) => e.host_bytes(bytes, run, q),
             State::Gone => Said::Going,
         }
     }
@@ -1133,9 +1133,7 @@ impl Ended {
             mask: Mask::default(),
             failed: None,
         };
-        if let Err(said) = e.take_guest(rest, q) {
-            return Err(said);
-        }
+        e.take_guest(rest, q)?;
         Ok(e)
     }
 
@@ -1184,7 +1182,7 @@ impl Ended {
         let _ = send(&mut self.host, q.to_host);
     }
 
-    fn from_guest(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+    fn guest_bytes(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         if let Err(said) = self.take_guest(bytes, q) {
             return said;
         }
@@ -1198,7 +1196,7 @@ impl Ended {
     }
 
     /// The host's TLS bytes: its plaintext answered to the guest as it comes.
-    fn from_host(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+    fn host_bytes(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         let mut rest = bytes;
         let mut closed = false;
         while !rest.is_empty() {
@@ -2051,7 +2049,7 @@ mod tests {
     }
 
     /// The mask an echo of the value is given: its placeholder's bytes, cycled to its length.
-    fn mask() -> Vec<u8> {
+    fn echo_mask() -> Vec<u8> {
         PLACEHOLDER.bytes().cycle().take(VALUE.len()).collect()
     }
 
@@ -2111,7 +2109,7 @@ mod tests {
         assert_eq!(one.suite, Some(CipherSuite::TLS13_AES_256_GCM_SHA384));
         assert!(!holds(&bench.got, VALUE), "the value reached the guest");
         assert!(
-            holds(&bench.got, &mask()),
+            holds(&bench.got, &echo_mask()),
             "the echo was not masked with its placeholder"
         );
         assert_eq!(
@@ -2251,7 +2249,7 @@ mod tests {
             "the request changed on its way"
         );
         let echoed = &bench.got[bench.got.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4..];
-        let masked = swapped(&head, PLACEHOLDER.as_bytes(), &mask());
+        let masked = swapped(&head, PLACEHOLDER.as_bytes(), &echo_mask());
         assert!(
             echoed[..masked.len()] == masked[..],
             "the echoed head is not the masked one"
@@ -2462,9 +2460,9 @@ mod tests {
         push(b"\"}", true, &mut out);
         let want = [
             &b"{\"key\":\""[..],
-            &mask()[..10],
+            &echo_mask()[..10],
             b"\r\n1f\r\n",
-            &mask()[10..],
+            &echo_mask()[10..],
             b"\"}",
         ]
         .concat();

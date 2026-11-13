@@ -1087,7 +1087,7 @@ impl Conn {
             self.guest_fin = true;
             self.rcv_nxt = self.rcv_nxt.wrapping_add(1);
             answer = true;
-            if !self.inject_step(out, run.as_deref_mut(), None, |f, run, q| f.guest_ended(run, q)) {
+            if !self.inject_step(out, run, None, |f, run, q| f.guest_ended(run, q)) {
                 return;
             }
         }
