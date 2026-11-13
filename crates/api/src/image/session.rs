@@ -2767,12 +2767,8 @@ mod tests {
         use std::os::unix::ffi::OsStrExt as _;
         let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
         // SAFETY: mkfifo(3) of a NUL-terminated path this function holds.
-        assert_eq!(
-            unsafe { libc::mkfifo(c.as_ptr(), 0o600) },
-            0,
-            "{}",
-            io::Error::last_os_error()
-        );
+        let made = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+        assert_eq!(made, 0, "{}", io::Error::last_os_error());
     }
 
     /// SIGKILLs `pid` as it drops, unless let go of: a stand-in VM a failed stop left running,
