@@ -23845,6 +23845,50 @@ for the wire round-trip, the decision at its edges, and that no value prints.
 A value type stays redacted: `wire::Secret`'s `Debug` prints its length alone, and a
 `CredentialGrant` carries no value to print.
 
+**Built: step 2's first slice, the run's CA in its network process.** The run host (`shards
+api-run`) checks each grant against the run's egress grants, refusing one toward no host or
+toward a host they do not reach (`shards_net::reaches`: a destination they name, or any host
+on a TCP port they open; `Cause::Request`). It starts the network process with
+`--credentials` and, after `NET_POLICY`, sends it the grants by reference
+(`NET_CREDENTIALS`, kind 94; `shards_net::encode_grants`). The network process checks them
+again against its policy (D109), once, and answers the run's CA's certificate (DER). The run
+host logs its SHA-256 and holds it for the members' trust (the next slice). shards-api's
+check refuses a grant toward no host as well.
+- *The CA (`shards_net::ca`).* Self-signed, `pathLenConstraint` 0 (it signs leaves alone),
+  `keyCertSign`, ECDSA over P-256 with SHA-256 (the signature every TLS 1.3 client must
+  verify, RFC 8446 §9.1). Name constraints are the grants' hosts as dNSName subtrees, written
+  critical (RFC 5280 §4.2.1.10). A leaf (`Ca::leaf`, the injector's, step 3) has a key of its
+  own and `serverAuth`.
+- *Its key is made as the process starts, before it confines itself.* AWS-LC's first draw
+  from its random generator opens the VM-generation device (`crypto/ube/vm_ube_detect.c`,
+  `open`) and marks a page `MADV_WIPEONFORK` (`crypto/ube/fork_ube_detect.c`), once per
+  process. The network process's seccomp filter allows neither, and ends the process at any
+  call it does not allow (`confine.rs`, `SECCOMP_RET_KILL_PROCESS`). So the key comes first,
+  and only for a run its spawner says has grants: a run with none makes no key and pays
+  nothing. Every later draw reads what that first one set up.
+- *Validity.* From 1970-01-01T00:00:00Z to 99991231235959Z, for the CA and its leaves. The
+  first is the Unix epoch, the earliest time every harness's TLS stack reads in a
+  certificate: rustls-webpki 0.103.16 refuses earlier ones as a bad time ("We don't support
+  dates before January 1, 1970", `time.rs`). This slice's own unit test found it, as a leaf
+  from 1950 came back `BadEncoding`. The second is RFC 5280's value of no well-defined end
+  (§4.1.2.5). No clock a guest may read falls outside the range, and the key, which dies with
+  the process, bounds the life of what it signs instead of a date.
+- *Literals.* Kind 94 is a sequence number. The grants' length fields, two bytes for a
+  reference and one for a host, hold every reference a store names (kiln-seams `NAME_MAX`,
+  512) and every DNS name (255, RFC 1035 §2.3.4); a longer one is refused, typed. P-256,
+  `pathLenConstraint` 0 and the validity bounds are as cited above. No learned value enters
+  this slice.
+- *Tests (macOS arm64).* `shards_net::ca`: a leaf holds for a granted host alone, refused for
+  `evil.example`, `anthropic.com` and `chatgpt.com.evil.example` (rustls' verifier trusting
+  the CA alone); the validity bounds as written; no CA of no host. `shards_net`: the grants'
+  codec round-trips and refuses a cut payload, a grant toward no host and an over-long name;
+  `reaches` by name and by TCP port. `api_run`: grants reach the network process by
+  reference, refused toward an unreached host, toward none, or with no egress.
+- *Owed (ROOT).* A run with a credential grant on KVM x86_64, under the seccomp filter: its
+  network process makes its CA and serves, not ended by SIGSYS, and the run host logs the
+  CA's SHA-256. The cost of the key at the network process's start, measured (unmeasured
+  here). The CA reaching the granted members' trust is the next slice.
+
 **Owed (later slices of step 33, this plan's steps 2–10).** The per-VM CA in the network
 process and the granted members' trust (step 2); the injector that terminates TLS and fills
 HTTP/1.1 then HTTP/2 headers (steps 3, 7); the grants through the run host and the just-in-

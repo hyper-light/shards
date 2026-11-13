@@ -343,6 +343,11 @@ pub mod kind {
     /// Agentfile's egress grants (D59, shards_net::Ports::encode); answered with the same
     /// kind once taken.
     pub const NET_POLICY: u8 = 40;
+    /// Run host → network process: the run's credential grants (D242), each by reference
+    /// with the hosts it may be filled in toward and never a value
+    /// (shards_net::encode_grants), after its `NET_POLICY`, once; answered with the same kind
+    /// and the run's CA's certificate (DER), made for those hosts alone.
+    pub const NET_CREDENTIALS: u8 = 94;
     /// Daemon → a running microVM's VM process: a run joins its network (D119). Its number
     /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
     /// own connection to the daemon, on which the joiner's run goes as a warm VM's does

@@ -408,6 +408,15 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
                 why: "a grant names a credential by reference, which is empty".into(),
             });
         }
+        if grant.toward.is_empty() {
+            return Err(ImageRefusal::Spec {
+                what: "a credential grant",
+                why: format!(
+                    "{}: a grant toward no host could never be filled",
+                    grant.reference
+                ),
+            });
+        }
         let mut toward = Vec::with_capacity(grant.toward.len());
         for host in &grant.toward {
             let lowered = host.to_ascii_lowercase();
@@ -525,6 +534,10 @@ mod tests {
         // An empty reference is refused.
         let mut bad = spec.clone();
         bad.credentials[0].reference = String::new();
+        assert!(matches!(request(&bad), Err(ImageRefusal::Spec { .. })));
+        // A grant toward no host, which could never be filled, is refused.
+        let mut bad = spec.clone();
+        bad.credentials[0].toward.clear();
         assert!(matches!(request(&bad), Err(ImageRefusal::Spec { .. })));
         // A host with a port, localhost, or an address (which no SNI names, RFC 6066 §3) is
         // not a host a credential fills toward.
