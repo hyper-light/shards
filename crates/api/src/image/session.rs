@@ -501,7 +501,11 @@ fn start_host(program: &Path, args: &[&OsStr], env: &[(OsString, OsString)]) -> 
             (child_err.as_handle(), 2),
         ]
     };
-    let process = shards_ipc::spawn_with(&found, args, &ends, false, &set).map_err(boot)?;
+    // On Unix it leads a session and a process group of its own, which `kill` ends whole; a
+    // terminal's signals to this process's group no longer reach it, and its run ends with
+    // this process all the same, its stdin closing. On Windows `detach` would take it out of
+    // this process's job, so it is not asked.
+    let process = shards_ipc::spawn_with(&found, args, &ends, cfg!(unix), &set).map_err(boot)?;
     // The host holds its ends now; this process's go, so that each pipe ends with it.
     drop((child_in, child_out, child_err));
     Ok(Host {
@@ -538,9 +542,12 @@ fn on_path(program: &Path) -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "in no directory of PATH"))
 }
 
-/// Kills the host at once, unless it is reaped (`shards_ipc::Child::kill`).
-fn kill(host: &shards_ipc::Child) {
-    let _ = host.kill(shards_ipc::signal::SIGKILL);
+/// Kills the host at once, and every process it started, unless it is reaped: on Unix its
+/// process group, which it leads (`start_host`), and which its VM, network and share
+/// processes are in (api_run.rs starts each in it); on Windows the host alone, whose job,
+/// whose last handle it holds, ends them as it ends (D141, D197).
+pub(super) fn kill(host: &shards_ipc::Child) {
+    let _ = host.kill_group(shards_ipc::signal::SIGKILL);
 }
 
 /// One image run, as its client holds it.
@@ -696,11 +703,14 @@ impl Begun {
 
     /// Waits at most `patience` for the start of the run `request` it was sent: the run's
     /// session; else why not, the host ended, and whether it refused the run as one of
-    /// another microVM's than its warm one (`Cause::Unfit`, D253's pools).
+    /// another microVM's than its warm one (`Cause::Unfit`, D253's pools). `stop` holds the
+    /// host meanwhile: stopped, it kills the host and all the host started, and the run is
+    /// `Ended(Stopped)` once they are gone.
     pub(super) fn started(
         mut self,
         request: &wire::Request,
         patience: Duration,
+        stop: &super::BootStop,
     ) -> Result<Session, (ImageRefusal, bool)> {
         // The host is the session's from here, ended by it, or here where its run does not
         // start.
@@ -712,6 +722,10 @@ impl Begun {
             lock(&shared.to_host).take();
         };
         let unfit = |shared: &Shared| lock(&shared.state).unfit;
+        if let Err(e) = stop.hold(&host) {
+            end_it(&shared);
+            return Err((e, false));
+        }
         // Started, refused, or gone: whichever comes first, within the caller's patience. A
         // refusal is the host's last word, told once it has exited and said all it will.
         let outcome = shared.wait(patience, |s| {
@@ -737,6 +751,14 @@ impl Begun {
                 )))
             })
         });
+        if stop.release() {
+            end_it(&shared);
+            // Followed to its end, never timed (D215, D217): the host exited and reaped by its
+            // watcher, its answers ended, and its diagnostics, which the VM, network and share
+            // processes it started hold as their stderr, closed by every one of them.
+            shared.wait(Duration::MAX, |s| (s.gone() && s.said_all).then_some(()));
+            return Err((ImageRefusal::Ended(RunEnd::Stopped), false));
+        }
         let started = match outcome {
             Some(Ok(started)) => started,
             Some(Err(e)) => {
@@ -837,13 +859,14 @@ impl super::pool::Hosts for ShardsHosts {
         spec: &ImageSpec,
         request: &wire::Request,
         patience: Duration,
+        stop: &super::BootStop,
     ) -> Result<Box<dyn ImageGuest>, super::pool::Taken> {
         use super::pool::Taken;
         if let Err(e) = warm.create(spec.lessor.clone(), request) {
             warm.end();
             return Err(Taken::Refused(e));
         }
-        match warm.started(request, patience) {
+        match warm.started(request, patience, stop) {
             Ok(session) => Ok(Box::new(session)),
             Err((_, true)) => Err(Taken::Unfit),
             Err((refused, false)) => Err(Taken::Refused(refused)),
@@ -855,8 +878,9 @@ impl super::pool::Hosts for ShardsHosts {
         spec: &ImageSpec,
         request: &wire::Request,
         patience: Duration,
+        stop: &super::BootStop,
     ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
-        Ok(Box::new(Session::start(spec, request, patience)?))
+        Ok(Box::new(Session::start(spec, request, patience, stop)?))
     }
 }
 
@@ -876,10 +900,13 @@ impl Session {
         spec: &ImageSpec,
         request: &wire::Request,
         patience: Duration,
+        stop: &super::BootStop,
     ) -> Result<Session, ImageRefusal> {
         let begun = Begun::begin(spec.binary.as_deref(), &spec.env)?;
         begun.create(spec.lessor.clone(), request)?;
-        begun.started(request, patience).map_err(|(refused, _)| refused)
+        begun
+            .started(request, patience, stop)
+            .map_err(|(refused, _)| refused)
     }
 
     /// Its running members' outputs ([`pumped`]).
@@ -1985,7 +2012,6 @@ mod tests {
 
     /// Whether every write end of `read`'s pipe is gone, every process's: a read that would
     /// wait finds its end (Unix), or a look at it finds it broken (Windows), at once.
-    #[cfg(any(target_os = "macos", windows))]
     fn writers_gone(read: &io::PipeReader) -> bool {
         #[cfg(unix)]
         {
@@ -2695,5 +2721,159 @@ mod tests {
             assert_eq!(l.given.len(), usize::from(twice));
             assert_eq!(l.released, l.given, "a lease outlived its channel");
         }
+    }
+
+    /// How long a stand-in's boot may take before it is refused, so that a stop that is not
+    /// heard fails its test rather than holding it: the test's bound alone.
+    #[cfg(unix)]
+    const BOOT_BOUND: Duration = Duration::from_secs(10);
+
+    /// An image spec for run host `binary`, its environment `env`, with nothing to run.
+    #[cfg(unix)]
+    fn stand_in_spec(binary: &Path, env: Vec<(OsString, OsString)>) -> ImageSpec {
+        ImageSpec {
+            image: "stand-in:local".into(),
+            vcpus: 1,
+            memory_mib: 256,
+            command: None,
+            members: Vec::new(),
+            publish: Vec::new(),
+            egress: wire::Narrowing::default(),
+            credentials: Vec::new(),
+            lessor: None,
+            shares: Vec::new(),
+            nesting: false,
+            ready_by: None,
+            binary: Some(binary.to_path_buf()),
+            env,
+            control: None,
+            gpu_devices: Vec::new(),
+        }
+    }
+
+    /// `script` written to `dir` as an executable stand-in for `shards api-run`.
+    #[cfg(unix)]
+    fn stand_in(dir: &Path, script: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dir.join("host");
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// A FIFO at `path`.
+    #[cfg(unix)]
+    fn fifo(path: &Path) {
+        use std::os::unix::ffi::OsStrExt as _;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: mkfifo(3) of a NUL-terminated path this function holds.
+        let made = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+        assert_eq!(made, 0, "{}", io::Error::last_os_error());
+    }
+
+    /// SIGKILLs `pid` as it drops, unless let go of: a stand-in VM a failed stop left running,
+    /// never one already seen gone (whose pid may be another's by then).
+    #[cfg(unix)]
+    struct Leftover(Option<libc::pid_t>);
+
+    #[cfg(unix)]
+    impl Drop for Leftover {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0 {
+                // SAFETY: kill(2) of the stand-in VM, seen still running.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+    }
+
+    /// The stand-in run host of a boot that never starts: it holds `$HOST_SEEN` open as long
+    /// as it runs, starts a stand-in VM that never looks at its host (as a VM mid-boot does
+    /// not) and holds `$VM_SEEN` open as long as it runs, tells the VM's pid, and never answers.
+    #[cfg(unix)]
+    const NEVER_STARTS: &str = "#!/bin/sh\n\
+        exec 3>\"$HOST_SEEN\"\n\
+        tail -f /dev/null >\"$VM_SEEN\" 3>&- &\n\
+        echo \"$!\" >&3\n\
+        wait\n";
+
+    /// Do boot through a run host that starts a VM of its own and never says the run started,
+    /// and stop the boot once both run. Expect: the boot returns `Ended(Stopped)`, well within
+    /// its bound, the run host gone and the VM it started gone with it, no orphan left.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started() {
+        use std::io::BufRead as _;
+        let dir = shards_testdir::TempDir::new("bstop").unwrap();
+        let (host_seen, vm_seen) = (dir.path().join("h"), dir.path().join("v"));
+        fifo(&host_seen);
+        fifo(&vm_seen);
+        let host = stand_in(dir.path(), NEVER_STARTS);
+        let spec = stand_in_spec(
+            &host,
+            vec![
+                ("HOST_SEEN".into(), host_seen.clone().into()),
+                ("VM_SEEN".into(), vm_seen.clone().into()),
+            ],
+        );
+        let request = super::super::request(&spec).unwrap();
+        let stop = super::super::BootStop::new();
+        let mut leftover = Leftover(None);
+        std::thread::scope(|s| {
+            let booting = s.spawn(|| Session::start(&spec, &request, BOOT_BOUND, &stop).map(drop));
+            // Each open waits for its writer: the host, then its VM, both running once open.
+            let host_end = std::fs::File::open(&host_seen).unwrap();
+            let vm_end = std::fs::File::open(&vm_seen).unwrap();
+            let mut said = String::new();
+            io::BufReader::new(&host_end).read_line(&mut said).unwrap();
+            leftover.0 = Some(said.trim().parse().unwrap());
+            let stopped_at = Instant::now();
+            stop.stop();
+            let booted = booting.join().unwrap();
+            let took = stopped_at.elapsed();
+            let ends = |f: std::fs::File| io::PipeReader::from(std::os::fd::OwnedFd::from(f));
+            let (host_gone, vm_gone) = (writers_gone(&ends(host_end)), writers_gone(&ends(vm_end)));
+            if vm_gone {
+                leftover.0 = None;
+            }
+            assert_eq!(
+                booted,
+                Err(ImageRefusal::Ended(RunEnd::Stopped)),
+                "after {took:?}"
+            );
+            assert!(took < BOOT_BOUND, "the stop took {took:?}");
+            assert!(host_gone, "the run host outlived its boot's stop");
+            assert!(vm_gone, "the VM its run host started outlived the boot's stop");
+        });
+        assert!(stop.is_stopped());
+    }
+
+    /// Do boot through a run host that never answers, with a stop never stopped and no
+    /// patience. Expect: the boot refused as one with no stop is, not started within it. Do
+    /// the same with a stop already stopped and patience to spare. Expect: `Ended(Stopped)`
+    /// well within it.
+    #[cfg(unix)]
+    #[test]
+    fn a_boot_not_stopped_answers_as_before_and_one_stopped_first_ends_stopped() {
+        let dir = shards_testdir::TempDir::new("bstop2").unwrap();
+        let host = stand_in(dir.path(), "#!/bin/sh\nexec tail -f /dev/null\n");
+        let spec = stand_in_spec(&host, Vec::new());
+        let request = super::super::request(&spec).unwrap();
+        let stop = super::super::BootStop::new();
+        let refused = Session::start(&spec, &request, Duration::ZERO, &stop).map(drop);
+        assert!(
+            matches!(&refused, Err(ImageRefusal::Boot(why)) if why.contains("did not start within")),
+            "{refused:?}"
+        );
+        assert!(!stop.is_stopped());
+        stop.stop();
+        let asked = Instant::now();
+        let stopped = Session::start(&spec, &request, BOOT_BOUND, &stop).map(drop);
+        let took = asked.elapsed();
+        assert_eq!(
+            stopped,
+            Err(ImageRefusal::Ended(RunEnd::Stopped)),
+            "after {took:?}"
+        );
+        assert!(took < BOOT_BOUND, "the stop took {took:?}");
     }
 }
