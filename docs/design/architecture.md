@@ -7183,6 +7183,47 @@ and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
 
 **Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2 fixed by ROOT, a6edfb8e9; F3 cured, 6557c8597, and F4, a2c887eeb: its "Cures, F3 and F4", with the real-VM runs F4 owes; F5, a failed slot's room given back without moving `room_gen`, cured: its "Cures, F5").
 
+**The pins E2E's waits** (goal 71's CI cluster 9, 2026-11-13; review.md "Cures, goal 71"). They
+follow the person's ruling of 2026-11-13: "No record seeds. The cold start, and every wait after
+a run-out, follows the party's liveness and progress. After that the bound is the slowest answer
+seen. No ×2."
+- *The settle*, the wait for a guest's pinned pages to come back to what it pinned idle once the
+  device has let go of every ring, is D215's judge, shared, its progress a slot freed (the pins
+  at a new low).
+  - Its kind is a work (the setup's connections, one at a time, or the streams', V at once and
+    then 2V) at a microVM's vCPU count, each kind's record its own, in the test's memory. The
+    release is as large as the slots the work leaves the relay and as quick as the vCPUs that
+    run the relay's streams free them, and the work and the size set both.
+  - A kind not yet seen follows its microVM's liveness alone: each look an exec it answers, one
+    unanswered failing the test. A kind seen is looked at once each W* and refused where no slot
+    was freed since the look before. In one run each kind settles once, so each settle is a cold
+    start.
+  - Its looks are paced by D215's `sqrt(2 c w)` (`shards_api::pause`, shared), `c` a look's own
+    time. Its progress is told on stderr as it comes, and each settle's time is reported per
+    size.
+  - It was refused before once a window as long as its own work had passed with no slot freed
+    (a2c887eeb), a seed of no answer of its own. At dc7f45bc6 on HVF that refused 18 vCPUs, 21
+    pages pinned 207 ms into their settle where their streams had taken 177 ms, after 1 and 2
+    vCPUs had passed. Nothing on the ring's path changed between HVF's green batch at 9483b5a84
+    and that run (init's ring.rs and engine.rs, the vsock device, the ABI's ring.rs, the test
+    guest's engine_bulk.rs, engine_ring.rs and tests/common/mod.rs), and the test's binary ran
+    its tests at once, as libtest does.
+- *Its gap.* A slot never freed while its microVM lives is not refused on its kind's first
+  settle: its looks go on, ever further apart, its last progress told, until its caller ends it.
+  A learned settle's looks read the guest's pins alone, not its host's hold on its VM process,
+  which shards-api's followers read privately. So a host that held the relay's vCPUs for a whole
+  W* would refuse it.
+- *The held connection* of the give-back and shrinking-room tests is awaited by the device's word
+  that its ring attached, which the log keeps, not by its ring attached still, which a give-back
+  ends. At f5c0c8b04 (CI run 43435318858, x86_64-unknown-linux-gnu) the daemon's give-back for
+  its runner's own memory pressure let it go 31 ms after it attached, between two looks, and the
+  test waited 600 s. Each test now checks that its ring was not let go before it asks for the
+  slot. The shrinking-room test hears its host's pressure only through a pipe of its own, never
+  said, as the give-back test does; `common::Told` is named per instance on Windows, so both live
+  at once.
+- Owed to ROOT, on real VMs: the four E2E tests on HVF arm64 (the pins test at 1, 2 and every CPU
+  of the host), KVM x86_64 (glibc and musl jobs), KVM arm64 through L1 and WHP x86_64.
+
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
 Decided by the user on 2026-10-14 ("so long as they apply appropriately to microvms").

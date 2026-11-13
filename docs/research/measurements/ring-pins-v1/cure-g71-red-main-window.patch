@@ -1,0 +1,14 @@
+diff --git a/crates/shards/tests/engine_ring.rs b/crates/shards/tests/engine_ring.rs
+index dac817f9a..5ee5d2026 100644
+--- a/crates/shards/tests/engine_ring.rs
++++ b/crates/shards/tests/engine_ring.rs
+@@ -335,6 +335,9 @@ impl Settles {
+     /// a seed of no answer of the kind's own, which refused 18 vCPUs on HVF at dc7f45bc6.
+     fn begin(&mut self, kind: SettleKind, want: u64, work: Duration) -> Settle<'_> {
+         let record: &Record = self.records.entry(kind).or_default();
++        if record.seen() == Seen::Cold {
++            record.teach(work, Duration::ZERO);
++        }
+         Settle {
+             judge: Judge::begin(record),
+             record,
