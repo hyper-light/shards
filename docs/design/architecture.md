@@ -24261,7 +24261,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process built, step 2's first slice; the granted members' trust, the leases, the injector, the broker and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; the leases, the injector, the broker and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -24386,10 +24386,67 @@ check refuses a grant toward no host as well.
 - *Owed (ROOT).* A run with a credential grant on KVM x86_64, under the seccomp filter: its
   network process makes its CA and serves, not ended by SIGSYS, and the run host logs the
   CA's SHA-256. The cost of the key at the network process's start, measured (unmeasured
-  here). The CA reaching the granted members' trust is the next slice.
+  here). The CA reaching the granted members' trust is the second slice, below.
 
-**Owed (later slices of step 33, this plan's steps 2–10).** The per-VM CA in the network
-process and the granted members' trust (step 2); the injector that terminates TLS and fills
+**Built: step 2's second slice, the granted members' trust.** Once the network process
+answers the run's grants with its CA's certificate, the run host adds two kinds of setup
+entry to the run it hands its VM (`shards_abi::run::trust`): `run-ca=`, the certificate in
+PEM (RFC 7468), once, and `run-ca-host=`, each host the grants name, once. The spec is
+checked again (`spec::fits`), as it grew after it was built. init checks both again (D109):
+the certificate a PEM certificate (`proxyca::first_certificate`), each host a host's lowered
+name as shards-api checks it (`shards_dns::host_name`, never loopback's); a certificate
+without hosts, hosts without one, or a second certificate is refused, typed
+(`run::trust::Error`, init's `trust::Refused`).
+- *Who.* A member is granted where its link reaches a host the grants name past the
+  microVM, by name or on any TCP port: `shards_net::reaches`, which holds the whole run to
+  its members' grants, held here member by member from init's own plan of each member's
+  link (its `named` and `egress`, after D246's holding apart). A member that reaches none is
+  given nothing: its bundle, environment and mounts stay its image's. A run with no grant
+  sends no entry, and init lays nothing.
+- *What.* The image's own trust bundle, the first of BuildKit's `linuxSystemCertFiles`
+  (`proxyca::BUNDLES`) that is a regular file, found and read in the image as a build step's
+  is (build.rs `find_bundle` and `read_bundle`, now shared: symlinks resolved in the image, at
+  most `proxyca::MOST`, a FIFO refused), with the CA appended between marker lines that name
+  it (`# shards run CA (D242) begin` and `end`), so that a member reading its bundle sees
+  whose CA it holds (the change explicit, never silent: G18). The kiln harness images' is
+  Debian trixie's `/etc/ssl/certs/ca-certificates.crt`. Made once for the run, it is laid
+  for each granted member read-only over the bundle, as its `/etc/hosts` and
+  `/etc/resolv.conf` are (written in its scratch, bound over, remounted read-only, unlinked);
+  the image's file is never written. Then `NODE_EXTRA_CA_CERTS` (Node's and Bun's added
+  certificates, which Claude Code reads), `SSL_CERT_FILE` (OpenSSL's file, which
+  rustls-native-certs reads too) and `CODEX_CA_CERTIFICATE` (Codex's own) name the bundle.
+- *Refused, never replaced.* A granted member whose environment (its image's, its config's or
+  its stager's) names another file in one of those variables: a file of roots of its own,
+  which this never replaces (one naming the bundle itself stays). A granted member whose
+  image has no `/tmp`, where its bundle is written to be laid. An image with no bundle at
+  all. Each refuses the run before its member starts, in words naming it.
+- *Literals.* 64, the characters of a PEM line (RFC 7468 §2: "exactly 64 characters except for
+  the final line"); 6, TCP's protocol number (RFC 9293; IANA's protocol numbers), as a link's
+  egress names TCP. The marker lines are names. No learned value enters this slice.
+- *Tests (macOS arm64, and arm64 Linux in Docker on the same Mac; STEP2.md).*
+  `shards_abi::run::trust`: the entries read back as written, a host named twice kept once,
+  none without a grant; a second certificate, one without hosts or hosts without one, and an
+  empty or NUL-holding one refused. init's `trust`: a run without grants has no CA; a
+  certificate holding none and hosts that are no host's lowered name (`Chatgpt.com`,
+  `localhost`, `a.localhost`, `10.0.0.1`, `a..b`, `-a.com`) refused; a member granted by a
+  granted host's name, in any case and on any port, or by any TCP port, never by another name,
+  by UDP alone or with no link; the composed bundle every byte of the image's, then the CA
+  between its markers; the variables naming the bundle, one already naming it kept, one naming
+  another file refused and never replaced; on Linux, the bundle found through an absolute
+  symlink in the image, never the host's, the image's file left as it was, and an image with
+  none refused. build.rs's CA-injection tests pass unchanged over the shared `find_bundle`.
+  `api_run`: the CA goes to the guest in PEM of 64-character lines, which rustls' own PEM
+  reader reads back to the DER, each host once. Each guard removed in turn fails its test:
+  any name granting a member, a member's own roots replaced, the bundle without the image's
+  roots, a second certificate taken, PEM lines of 65.
+- *Owed (ROOT).* A run with a credential grant on KVM, HVF and WHP: its granted member reads
+  the run's CA at the end of its `/etc/ssl/certs/ca-certificates.crt`, read-only, and the
+  three variables name it; an ungranted member of the same run reads its image's bundle,
+  unchanged, and none of the three. The cost of `NODE_EXTRA_CA_CERTS` naming a whole bundle to
+  Claude Code (its added roots read at start, and the request-body compression it turns off,
+  plan step 33's finding f70), measured against a run without the CA.
+
+**Owed (later slices of step 33, this plan's steps 2–10).** The injector that terminates TLS and fills
 HTTP/1.1 then HTTP/2 headers (steps 3, 7); the grants through the run host and the just-in-
 time fetch and release (step 4); kiln's broker over kiln-seams' `Secrets` with per-run
 leases, single-flight refresh and sign-in capture outside the VM (step 5); Hex wiring the
