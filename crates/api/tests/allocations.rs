@@ -63,12 +63,12 @@ fn largest<T>(f: impl FnOnce() -> T) -> (T, usize) {
 #[test]
 fn a_hostile_vcpu_count_allocates_nothing_its_bytes_cannot_fill() {
     let microvm = Microvm {
-        host: Some(HostUse {
+        host: Ok(HostUse {
             cpu_ns: 1,
             resident_bytes: 2,
             footprint_bytes: 3,
         }),
-        guest: Some(GuestTimes::default()),
+        guest: Ok(GuestTimes::default()),
     };
     let mut bytes = StatsAnswer::encode(1, Ok((b"cpu 10\n", Some(&microvm)))).unwrap();
     // Where it says no vCPU, their count is its last four bytes.

@@ -23153,9 +23153,10 @@ guest-cpu-time-v1), an image run's carried only its guest's cgroup, so Hex refus
   departed vCPUs ran (its VM asked `GUEST_TIME` on its link, as the daemon asks it), then its
   VM process's CPU time, resident and own memory (`platform::process_usage`), read after
   them, so that its CPU time less their total is its VMM's own and never less than none past
-  the clocks' steps. Either part is none, said on the host's diagnostics, where it could not
-  be read; a member's or the command's stats carry none, their cgroups being inside the
-  microVM. The run host matches the VM's answers by number, as its device steps' (`DEVICED`),
+  the clocks' steps. Each part is its reading or why its run host has none (on the channel,
+  0 and the reading, or 1 and why: R04), so its orchestrator tells a part not read from one
+  read as nothing; a member's or the command's stats carry no microVM, their cgroups being
+  inside it. The run host matches the VM's answers by number, as its device steps' (`DEVICED`),
   one matcher for both; an answer for no ask is dropped.
 - *The channel.* Version 7, `ROOM` 10 and `HELD` 27, after every kind before, and the stats
   answer's microVM after its lines: a host of version 6 ends a run at a frame it has no kind
@@ -23167,13 +23168,28 @@ guest-cpu-time-v1), an image run's carried only its guest's cgroup, so Hex refus
 **Literals.** None new: init's `builtin::ROOM`, `run::MAX_PAYLOAD`; the kinds are the next
 free numbers; a vCPU's least bytes on the channel (13) are its fields' widths.
 
+**Cold start** (R03, the person, 2026-11-13: learned and data-derived values, cold starts
+accounted for). Nothing here is learned or estimated, so nothing here warms. The room is the
+orchestrator's number, told when its budget or the run's use moves; until it tells one, init
+holds the run within nothing, so the run is held by its microVM's size alone, the envelope the
+person made the ceiling: the state a daemon run is in before its budget's first room (D188).
+The stats are the hypervisor's and the host's own cumulative counters, read when asked: a
+run's first read is each vCPU's time from its boot, monotone from none, with no history to
+fill; a vCPU this read missed says why and keeps the most read before (none before its first);
+a part not read says why. The real-VM tests ask both of a run once, as it starts: its first
+room (64 MiB, held exactly), and its first stats.
+
 **Tested** (light): `image::wire`'s `rooms_and_their_answers_read_back_as_said` (each bound
 of a room, each answer, cut short, padded, unknown tags),
 `a_runs_microvm_reads_back_as_its_host_said_it` (each part absent or present, a vCPU unread,
 the largest numbers, vCPUs out of order, unknown tags, a hostile count, every cut) and its
 version 6 refused; `image::session`'s `a_rooms_answer_is_kept_for_its_awaited_ask_alone` and
-`a_room_no_host_hears_is_refused_and_leaves_no_ask`; `api_run`'s
-`a_rooms_answer_reads_as_it_was_asked`. Real VMs: `api_image.rs`
+`a_room_no_host_hears_is_refused_and_leaves_no_ask`; `tests/allocations.rs`'s
+`a_hostile_vcpu_count_allocates_nothing_its_bytes_cannot_fill` (four billion vCPUs said in
+55 bytes: refused short, having asked for no more than those bytes could fill; the refusal
+alone did not show the bound, as Linux grants the 160 GiB it would ask lazily); `api_run`'s
+`a_rooms_answer_reads_as_it_was_asked`. Each guard taken out fails its test
+(`mutants.py`, six of six). Real VMs: `api_image.rs`
 `the_orchestrators_room_holds_its_run_within_it` (a room of 64 MiB held exactly, none left
 held within the least and short of it, no budget answered none) and
 `stats_read_the_run_and_a_member` (the run's microVM: its VM process's use, its one vCPU's

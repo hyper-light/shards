@@ -434,13 +434,11 @@ pub struct Stats {
 /// stats say it of its own runs (D43, D170's `microvm`; guest-cpu-time-v1): its VM process's
 /// use of the host, and what each of its vCPUs has run of its guest, read before that use,
 /// so that the process's CPU time less its vCPUs' is its VMM's own and never less than none
-/// past the clocks' steps (D241).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// past the clocks' steps (D241). Each part is its reading, or why its run host has none.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Microvm {
-    /// None where its run host could not read its VM process.
-    pub host: Option<HostUse>,
-    /// None where its VM did not say.
-    pub guest: Option<GuestTimes>,
+    pub host: Result<HostUse, String>,
+    pub guest: Result<GuestTimes, String>,
 }
 
 /// What a VM process uses of its host, as the host counts it (`platform::process_usage`).
@@ -735,20 +733,26 @@ impl Writer {
             return Ok(());
         };
         self.u8(1);
-        match m.host {
-            None => self.u8(0),
-            Some(h) => {
-                self.u8(1);
+        match &m.host {
+            Ok(h) => {
+                self.u8(0);
                 self.u64(h.cpu_ns);
                 self.u64(h.resident_bytes);
                 self.u64(h.footprint_bytes);
             }
+            Err(why) => {
+                self.u8(1);
+                self.text(why)?;
+            }
         }
-        let Some(g) = &m.guest else {
-            self.u8(0);
-            return Ok(());
+        let g = match &m.guest {
+            Ok(g) => g,
+            Err(why) => {
+                self.u8(1);
+                return self.text(why);
+            }
         };
-        self.u8(1);
+        self.u8(0);
         self.u64(g.departed_ns);
         self.count(g.vcpus.len())?;
         for v in &g.vcpus {
@@ -872,12 +876,12 @@ impl<'a> Reader<'a> {
             }
         }
         let host = match self.u8()? {
-            0 => None,
-            1 => Some(HostUse {
+            0 => Ok(HostUse {
                 cpu_ns: self.u64()?,
                 resident_bytes: self.u64()?,
                 footprint_bytes: self.u64()?,
             }),
+            1 => Err(self.text()?),
             tag => {
                 return Err(WireError::Tag {
                     what: "a VM process's use",
@@ -886,8 +890,7 @@ impl<'a> Reader<'a> {
             }
         };
         let guest = match self.u8()? {
-            0 => None,
-            1 => {
+            0 => {
                 let departed_ns = self.u64()?;
                 // Each vCPU at least its index, its time and its flag.
                 let n = self.count(4 + 8 + 1)?;
@@ -916,8 +919,9 @@ impl<'a> Reader<'a> {
                         unread,
                     });
                 }
-                Some(GuestTimes { vcpus, departed_ns })
+                Ok(GuestTimes { vcpus, departed_ns })
             }
+            1 => Err(self.text()?),
             tag => {
                 return Err(WireError::Tag {
                     what: "a microVM's guest time",
@@ -1519,9 +1523,10 @@ impl MemberEnded {
 
 impl StatsAnswer {
     /// Its id, then 0, init's lines as it said them and the run's microVM (0 for none, or 1
-    /// and what it costs: its VM process's use, 0 or 1 and its CPU time, resident and own
-    /// memory; its vCPUs' guest time, 0 or 1, what departed vCPUs ran, and each vCPU's index,
-    /// time and 0, or 1 and why it went unread), or 1 and why none came.
+    /// and what it costs: its VM process's use, 0 and its CPU time, resident and own memory,
+    /// or 1 and why none was read; its vCPUs' guest time, 0, what departed vCPUs ran and each
+    /// vCPU's index, time and 0, or 1 and why it went unread; or 1 and why none was read), or
+    /// 1 and why none came.
     pub fn encode(id: u32, result: Result<(&[u8], Option<&Microvm>), &str>) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
         w.u32(id);
@@ -2226,8 +2231,8 @@ mod tests {
     }
 
     /// The run's stats carry what its microVM costs its host and what its vCPUs ran of its
-    /// guest (D241) as its run host read them: either part absent, a vCPU unread and why, the
-    /// largest numbers a u64 holds. vCPUs out of index order, a part's unknown tag, a count
+    /// guest (D241) as its run host read them: either part unread and why, a vCPU unread and
+    /// why, the largest numbers a u64 holds. vCPUs out of index order, a part's unknown tag, a count
     /// past what the bytes left could hold, cut short or padded: refused, never read as a
     /// cost.
     #[test]
@@ -2254,19 +2259,24 @@ mod tests {
             footprint_bytes: u64::MAX,
         };
         let lines = b"cpu 10\nmemory 7\n";
+        let gone = || Err::<HostUse, String>("its VM process: no such process".into());
+        let stopped = || Err::<GuestTimes, String>("its microVM stopped".into());
         for microvm in [
-            Microvm::default(),
             Microvm {
-                host: Some(host),
-                guest: None,
+                host: gone(),
+                guest: stopped(),
             },
             Microvm {
-                host: None,
-                guest: Some(times.clone()),
+                host: Ok(host),
+                guest: stopped(),
             },
             Microvm {
-                host: Some(host),
-                guest: Some(times.clone()),
+                host: gone(),
+                guest: Ok(times.clone()),
+            },
+            Microvm {
+                host: Ok(host),
+                guest: Ok(times.clone()),
             },
         ] {
             let bytes = StatsAnswer::encode(3, Ok((lines, Some(&microvm)))).unwrap();
@@ -2281,8 +2291,8 @@ mod tests {
             assert_eq!(StatsAnswer::decode(&padded), Err(WireError::Trailing));
         }
         let both = Microvm {
-            host: Some(host),
-            guest: Some(times),
+            host: Ok(host),
+            guest: Ok(times),
         };
         let bytes = StatsAnswer::encode(3, Ok((lines, Some(&both)))).unwrap();
         // The second vCPU's index, after the stats' id, tag, lines, the microVM's tag, its

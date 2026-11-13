@@ -2114,17 +2114,14 @@ mod hosted {
             }
         };
         let microvm = || wire::Microvm {
-            guest: guest_times(live)
-                .map_err(|e| super::say(format_args!("its microVM's guest time: {e}")))
-                .ok(),
+            guest: guest_times(live),
             host: shards_vmm::platform::process_usage(vm)
-                .map_err(|e| super::say(format_args!("its VM process's use: {e}")))
-                .ok()
                 .map(|u| wire::HostUse {
                     cpu_ns: u.cpu_ns,
                     resident_bytes: u.resident,
                     footprint_bytes: u.footprint,
-                }),
+                })
+                .map_err(|e| format!("its VM process: {e}")),
         };
         let args: Vec<Vec<u8>> = match ask.scope {
             wire::StatsScope::Command => Vec::new(),

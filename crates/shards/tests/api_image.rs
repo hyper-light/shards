@@ -435,7 +435,7 @@ fn stats_read_the_run_and_a_member() {
     // The run's microVM beside its guest's cgroup (D241): its VM process's use, and what its
     // one vCPU has run of its guest, by its index.
     let microvm = run.microvm.as_ref().expect("the run's microVM");
-    let host = microvm.host.expect("its VM process's use");
+    let host = microvm.host.as_ref().expect("its VM process's use");
     assert!(host.cpu_ns > 0 && host.footprint_bytes > 0, "{host:?}");
     let times = microvm.guest.as_ref().expect("its vCPUs' guest time");
     assert_eq!(
