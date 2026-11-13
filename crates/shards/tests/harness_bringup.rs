@@ -235,9 +235,9 @@ fn bring_up(case: &Case<'_>) -> Option<Seen> {
 
     // Each channel is subscribed as it is read, as stderr may say nothing while stdout is
     // read, and read with no deadline of the owner's own: its subscription ends at its end
-    // record or at its connection's typed end, held to the endpoint's own liveness. While the
-    // fixture takes a patience it is `until`'s, past any endpoint's, and a connection takes
-    // the lesser of its two sides' idle timeouts (RFC 9000 §10.1).
+    // record or at its connection's typed end, held to the endpoint's own liveness: neither
+    // side has an idle timeout (D180's liveness at use), and the fixture's `until` is its
+    // client's own deadline alone, the far instant none.
     let subscribe = |channel: Channel| {
         Observer::start(
             &owner,
@@ -846,15 +846,20 @@ fn quiet_for(silence: u64, record: &str) -> Option<Seen> {
     })
 }
 
+/// The owner endpoint's idle bound when finding H1 was made (its transport's
+/// `max_idle_timeout`, 100 s): the silences H1 brackets are around it. Its endpoints have no
+/// idle bound since (D180's liveness at use), so a subscription outlives each.
+const H1_BOUND: u64 = 100;
+
 /// Finding H1: an owner's subscription outlives a harness that writes nothing for longer than
-/// the owner endpoint's idle bound (`shards_remote::tls::QUIET`, its transport's
-/// `max_idle_timeout`) by a quarter of it. A model's long turn is such a silence. Red at v1
-/// (records/probe-quiet: lost at 102.9 s); fixed on main since owner-keepalive-v1 (D180's
-/// managed output), so expected green.
+/// the owner endpoint's idle bound then ([`H1_BOUND`]) by a quarter of it. A model's long turn
+/// is such a silence. Red at v1 (records/probe-quiet: lost at 102.9 s); fixed on main since
+/// owner-keepalive-v1 (D180's managed output), and no bound since D180's liveness at use, so
+/// expected green.
 #[test]
 #[ignore = "real VM: finding H1's live check, red at v1, fixed since owner-keepalive-v1"]
 fn an_owners_subscription_outlives_a_quiet_harness() {
-    let quiet = shards_remote::tls::QUIET.as_secs();
+    let quiet = H1_BOUND;
     let Some(seen) = quiet_for(quiet + quiet / 4, "probe-quiet") else {
         return;
     };
@@ -863,12 +868,12 @@ fn an_owners_subscription_outlives_a_quiet_harness() {
     assert_eq!(seen.text(), "after-quiet\n", "{all}");
 }
 
-/// H1's twin: a silence a quarter of the idle bound short of it, which the same subscription
-/// outlived at v1 too.
+/// H1's twin: a silence a quarter of the idle bound then short of it, which the same
+/// subscription outlived at v1 too.
 #[test]
 #[ignore = "real VM: H1's control, a silence within the owner endpoint's idle bound"]
 fn an_owners_subscription_outlives_a_silence_within_its_idle_bound() {
-    let quiet = shards_remote::tls::QUIET.as_secs();
+    let quiet = H1_BOUND;
     let Some(seen) = quiet_for(quiet - quiet / 4, "probe-within") else {
         return;
     };

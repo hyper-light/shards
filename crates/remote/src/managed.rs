@@ -5,7 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
-use hyper_quic::{ClientConfig, IdleTimeout, StreamId, TransportConfig, VarInt};
+use hyper_quic::{ClientConfig, StreamId, TransportConfig, VarInt};
 use shards_abi::run::managed::Channel;
 
 use crate::frame::{self, Tag};
@@ -31,7 +31,6 @@ pub enum AdmissionError {
     Capacity,
     Allocation,
     Window,
-    Patience,
     ExcludedPort,
 }
 
@@ -220,7 +219,6 @@ pub struct Admitted {
     pub transport_bytes: u64,
     pub handshake_bytes: usize,
     pub datagram_bytes: usize,
-    pub patience: std::time::Duration,
 }
 
 #[derive(Debug)]
@@ -710,10 +708,11 @@ impl std::fmt::Debug for Endpoint {
     }
 }
 
-/// Each side's transport, held to its own patience and kept alive at a quarter of it
-/// ([`tls::keep_alive`]): a quiet channel is no idle connection, as its owner awaits its output
-/// (RFC 9000 §10.1.2) however long a harness says nothing. The connection takes the lesser
-/// patience (§10.1), which that side's own keep-alive holds whatever the other's.
+/// Each side's transport, with no idle timeout and no keep-alive of its own (D180's liveness
+/// at use): a quiet channel is no idle connection, as its owner awaits its output however long
+/// a harness says nothing, and its driver judges each send by what its peer acknowledges
+/// (`net::Liveness`), a peer gone found so as the next record waits a whole window unanswered
+/// past its probe timeout.
 fn transport(admitted: Admitted, receive_bytes: usize) -> Result<TransportConfig, Error> {
     transport_of(
         &admitted,
@@ -737,14 +736,9 @@ pub(crate) struct Windows {
     pub(crate) streams: u32,
 }
 
-/// The transport of a connection that carries `windows`, held to `admitted`'s patience, its
-/// handshake and no datagrams, as [`transport`] has it for one stream.
+/// The transport of a connection that carries `windows`, `admitted`'s handshake and no
+/// datagrams, as [`transport`] has it for one stream.
 pub(crate) fn transport_of(admitted: &Admitted, windows: Windows) -> Result<TransportConfig, Error> {
-    // An idle timeout is whole milliseconds, and 0 is none (RFC 9000 §18.2): a patience under
-    // one would hold the connection to no bound, its keep-alive pinging as fast as the host runs.
-    if admitted.patience.as_millis() == 0 {
-        return Err(Error::Admission(AdmissionError::Patience));
-    }
     let window = |bytes: usize| {
         VarInt::from_u64(u64::try_from(bytes).map_err(|_| Error::Admission(AdmissionError::Window))?)
             .map_err(|_| Error::Admission(AdmissionError::Window))
@@ -759,11 +753,8 @@ pub(crate) fn transport_of(admitted: &Admitted, windows: Windows) -> Result<Tran
         .crypto_buffer_size(admitted.handshake_bytes)
         .datagram_receive_buffer_size(None)
         .datagram_send_buffer_size(0)
-        .max_idle_timeout(Some(
-            IdleTimeout::try_from(admitted.patience)
-                .map_err(|_| Error::Admission(AdmissionError::Patience))?,
-        ))
-        .keep_alive_interval(Some(tls::keep_alive(admitted.patience)));
+        .max_idle_timeout(None)
+        .keep_alive_interval(None);
     Ok(transport)
 }
 
@@ -807,7 +798,6 @@ impl Endpoint {
                 connections: 1,
                 command_slots: 1,
                 queued_datagram_bytes: admitted.datagram_bytes,
-                handshake_patience: admitted.patience,
             },
         )?;
         let address = driver.local()?;
@@ -834,15 +824,12 @@ impl Endpoint {
 }
 
 /// Whether one stream's admission can hold its protocol: a record of one byte or more and no
-/// more than a frame carries, a window and a handshake to send, and a patience a clock can
-/// reach.
+/// more than a frame carries, and a window and a handshake to send.
 pub(crate) fn admissible(admitted: &Admitted) -> Result<(), Error> {
     if admitted.record_bytes == 0
         || admitted.record_bytes > RECORD_MOST
         || admitted.transport_bytes == 0
         || admitted.handshake_bytes == 0
-        || admitted.patience.is_zero()
-        || std::time::Instant::now().checked_add(admitted.patience).is_none()
     {
         return Err(Error::Admission(AdmissionError::Capacity));
     }
@@ -1216,8 +1203,7 @@ mod tests {
 
     use super::*;
 
-    /// How long a test waits for what it awaits: a patience of its own, shorter than
-    /// [`tls::QUIET`].
+    /// How long a test waits for what it awaits: a patience of its own.
     const PATIENCE: Duration = Duration::from_secs(10);
 
     fn waiting(at: u64) -> Slot {
@@ -1234,14 +1220,13 @@ mod tests {
         }
     }
 
-    fn admitted(patience: Duration) -> Admitted {
+    fn admitted() -> Admitted {
         Admitted {
             record_bytes: CONTROL_BYTES,
             transport_bytes: u64::try_from(CONTROL_BYTES + DATA_HEAD).unwrap(),
             // RFC 8446: uint24 handshake length plus its four-byte header.
             handshake_bytes: (1 << 24) - 1 + 4,
             datagram_bytes: DATAGRAM_BYTES,
-            patience,
         }
     }
 
@@ -1257,13 +1242,7 @@ mod tests {
     fn native_endpoint() -> (Endpoint, Producer, Control) {
         let identity = Identity::generate().unwrap();
         // Finite setup admission only; the driver is never run by these tests.
-        Endpoint::bind(
-            &identity,
-            identity.fingerprint(),
-            scope(),
-            admitted(Duration::from_secs(1)),
-        )
-        .unwrap()
+        Endpoint::bind(&identity, identity.fingerprint(), scope(), admitted()).unwrap()
     }
 
     #[test]
@@ -1692,62 +1671,6 @@ mod tests {
         }
     }
 
-    /// The keep-alive's basis (tls.rs `keep_alive`): the longest interval four of which an idle
-    /// bound holds, so that three fall within it, for every bound QUIC carries (RFC 9000 §18.2:
-    /// whole milliseconds, up to a variable-length integer's most, §16).
-    #[test]
-    fn three_keep_alives_fall_within_every_idle_bound_quic_carries() {
-        let most = Duration::from_millis(VarInt::MAX.into_inner());
-        for bound in [Duration::from_millis(1), PATIENCE, tls::QUIET, most] {
-            let interval = tls::keep_alive(bound);
-            assert!(interval > Duration::ZERO, "{bound:?}");
-            assert!(interval * 3 < bound, "{bound:?}: {interval:?}");
-            assert!(interval * 4 <= bound, "{bound:?}: {interval:?}");
-            assert!(
-                (interval + Duration::from_nanos(1)) * 4 > bound,
-                "{bound:?}: {interval:?}"
-            );
-        }
-    }
-
-    /// A patience QUIC would carry as no idle timeout at all (RFC 9000 §18.2: whole
-    /// milliseconds, and 0 is none), whose keep-alive would ping as fast as the host runs, is
-    /// refused on either side.
-    #[test]
-    fn a_patience_under_a_millisecond_is_refused() {
-        let identity = Identity::generate().unwrap();
-        for patience in [
-            Duration::ZERO,
-            Duration::from_nanos(1),
-            Duration::from_micros(999),
-        ] {
-            assert!(
-                matches!(
-                    client_config(&identity, identity.fingerprint(), admitted(patience)),
-                    Err(Error::Admission(AdmissionError::Patience))
-                ),
-                "{patience:?}"
-            );
-        }
-        assert!(matches!(
-            Endpoint::bind(
-                &identity,
-                identity.fingerprint(),
-                scope(),
-                admitted(Duration::from_nanos(1))
-            ),
-            Err(Error::Admission(AdmissionError::Patience))
-        ));
-        assert!(
-            client_config(
-                &identity,
-                identity.fingerprint(),
-                admitted(Duration::from_millis(1))
-            )
-            .is_ok()
-        );
-    }
-
     /// What an owner's stream brought it, or that its connection was lost.
     #[derive(Debug)]
     enum Heard {
@@ -1824,9 +1747,9 @@ mod tests {
         }
     }
 
-    /// A channel's endpoint, held to its patience, and an owner, held to its own, subscribed
-    /// to it over loopback, each driven on a thread of its own as the daemon's endpoints and
-    /// their owners are. Both drivers end as it drops.
+    /// A channel's endpoint and an owner subscribed to it over loopback, each driven on a
+    /// thread of its own as the daemon's endpoints and their owners are, neither with an idle
+    /// timeout or a keep-alive of its own. Both drivers end as it drops.
     struct Pair {
         producer: Producer,
         control: Control,
@@ -1838,17 +1761,17 @@ mod tests {
     }
 
     impl Pair {
-        fn subscribed(endpoint: Duration, owner: Duration) -> Pair {
+        fn subscribed() -> Pair {
             let server = Identity::generate().unwrap();
             let owner_identity = Identity::generate().unwrap();
             let (bound, producer, control) =
-                Endpoint::bind(&server, owner_identity.fingerprint(), scope(), admitted(endpoint)).unwrap();
+                Endpoint::bind(&server, owner_identity.fingerprint(), scope(), admitted()).unwrap();
             let (changes, changed) = mpsc::channel();
             producer.on_credit(move || {
                 let _ = changes.send(());
             });
             let (hears, heard) = mpsc::channel();
-            let config = client_config(&owner_identity, server.fingerprint(), admitted(owner)).unwrap();
+            let config = client_config(&owner_identity, server.fingerprint(), admitted()).unwrap();
             let (mut driver, asks) = Driver::bind_bounded(
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
                 None,
@@ -1862,7 +1785,6 @@ mod tests {
                     connections: 1,
                     command_slots: 1,
                     queued_datagram_bytes: DATAGRAM_BYTES,
-                    handshake_patience: owner,
                 },
             )
             .unwrap();
@@ -1885,7 +1807,7 @@ mod tests {
                 heard,
                 changed,
             };
-            let subscribed = pair.until(endpoint.min(owner), |state| matches!(state, State::Ready(_)));
+            let subscribed = pair.until(PATIENCE, |state| matches!(state, State::Ready(_)));
             assert!(
                 subscribed.is_ok(),
                 "never subscribed: {subscribed:?}; its owner heard {:?}",
@@ -1940,21 +1862,18 @@ mod tests {
         }
     }
 
-    /// A subscription quiet for its connection's idle bound and one keep-alive interval more
-    /// (the bracket H1 was red at live, `QUIET + QUIET/4`), then given one record: it lives
-    /// through the silence and carries the record whole. The connection takes the lesser of
-    /// the two patiences (RFC 9000 §10.1); the other side's keep-alive, a quarter of its own,
-    /// sends nothing within the silence, so the lesser side's own keep-alive alone holds it.
-    fn outlives_a_silence_past_its_bound(endpoint: Duration, owner: Duration) {
-        let bound = endpoint.min(owner);
-        let silence = bound + tls::keep_alive(bound);
-        let pair = Pair::subscribed(endpoint, owner);
-        std::thread::sleep(silence);
+    /// A subscription quiet for many of its windows (finding H1, docs/research/measurements/
+    /// harness-bringup-v1: a channel a harness says nothing on is no idle connection), then
+    /// given one record: neither side has an idle timeout or a keep-alive to hold it (D180's
+    /// liveness at use), it lives through the silence, and carries the record whole.
+    #[test]
+    fn a_quiet_subscription_lives_with_no_idle_timeout_or_keep_alive() {
+        let pair = Pair::subscribed();
+        std::thread::sleep(PATIENCE);
         let state = pair.control.state();
         assert!(
             matches!(state, State::Ready(_)),
-            "a subscription held to {endpoint:?} by its endpoint and {owner:?} by its owner was \
-             let go in {silence:?} of silence: {state:?}; its owner heard {:?}",
+            "a subscription was let go in {PATIENCE:?} of silence: {state:?}; its owner heard {:?}",
             pair.heard()
         );
         let record = b"after-quiet\n";
@@ -1967,7 +1886,7 @@ mod tests {
         frame.extend_from_slice(record);
         let mut got = Vec::new();
         while got.len() < frame.len() {
-            match pair.heard.recv_timeout(bound) {
+            match pair.heard.recv_timeout(PATIENCE) {
                 Ok(Heard::Bytes(bytes)) => got.extend_from_slice(&bytes),
                 other => panic!("the record after the silence: {other:?}, after {got:?}"),
             }
@@ -1975,39 +1894,23 @@ mod tests {
         assert_eq!(got, frame);
     }
 
-    /// Finding H1 (docs/research/measurements/harness-bringup-v1): a channel quiet past its
-    /// endpoint's patience keeps its owner's subscription, the endpoint's keep-alive holding
-    /// it, as the daemon's endpoint (patience `QUIET`) must for an owner as patient as the
-    /// harness test's. The bound is [`PATIENCE`], a test's patience shorter than the other
-    /// side's [`tls::QUIET`].
+    /// An owner that vanishes without a word is let go by its endpoint at the endpoint's next
+    /// send, which waits a whole window unanswered past its probe timeout (D180's liveness at
+    /// use): its slot waits for a subscription again. A quiet endpoint keeps it till then, as
+    /// nothing it has to say is lost.
     #[test]
-    fn a_quiet_subscription_outlives_its_endpoints_patience() {
-        outlives_a_silence_past_its_bound(PATIENCE, tls::QUIET);
-    }
-
-    /// An owner less patient than its endpoint holds its subscription by its own keep-alive.
-    #[test]
-    fn a_quiet_subscription_outlives_its_owners_patience() {
-        outlives_a_silence_past_its_bound(tls::QUIET, PATIENCE);
-    }
-
-    /// A keep-alive keeps no dead owner: one that vanishes without a word is let go by its
-    /// endpoint within the endpoint's patience past the endpoint's first unanswered packet,
-    /// which alone restarts its idle timer (RFC 9000 §10.1), and its slot waits for a
-    /// subscription again. Given a keep-alive interval more for the host to run the
-    /// endpoint's turn.
-    #[test]
-    fn a_vanished_owner_is_let_go_within_its_endpoints_patience() {
-        let patience = PATIENCE;
-        let mut pair = Pair::subscribed(patience, tls::QUIET);
+    fn a_vanished_owner_is_let_go_at_its_endpoints_next_send() {
+        let mut pair = Pair::subscribed();
         pair.owner.send(Command::Handler(Ask::Vanish)).unwrap();
         pair.owner_driver.take().unwrap().join().unwrap().unwrap();
-        let within = patience + tls::keep_alive(patience) * 2;
-        let took = pair.until(within, |state| matches!(state, State::Pending(_)));
-        println!("a vanished owner's subscription let go after {took:?}, within {within:?}");
+        let mut bytes = pair.producer.take_buffer().unwrap().unwrap();
+        bytes.extend_from_slice(b"to nobody\n");
+        pair.producer.submit(bytes).unwrap();
+        let took = pair.until(PATIENCE, |state| matches!(state, State::Pending(_)));
+        println!("a vanished owner's subscription let go after {took:?}, within {PATIENCE:?}");
         assert!(
             took.is_ok(),
-            "an owner gone without a word still held its endpoint after {within:?}: {took:?}"
+            "an owner gone without a word still held its endpoint after {PATIENCE:?}: {took:?}"
         );
     }
 }

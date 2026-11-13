@@ -6286,8 +6286,17 @@ either side's keep-alive; red without it, at the patience). A dead owner is stil
 most a quarter of the patience past it (`QUIET` + `QUIET`/4 = 125 s; it was `QUIET`), as only
 the first packet sent since the last one heard restarts the endpoint's idle timer (RFC 9000
 §10.1); its endpoint's one connection is held that long, and a restarted owner refused
-meanwhile. The patience reuses D180's `QUIET`, derived for contexts over real links (RFC 1122
-§4.2.3.5's R2, D176 part 6), without a derivation of its own for a loopback owner.
+meanwhile. The patience reused D180's `QUIET`, derived for contexts over real links (RFC 1122
+§4.2.3.5's R2, D176 part 6), without a derivation of its own for a loopback owner. Since
+replaced by D180's liveness at use (its "Its values derived", ROOT's call C): neither side
+has an idle timeout or a keep-alive, so a quiet subscription lives however long its harness
+says nothing (`a_quiet_subscription_lives_with_no_idle_timeout_or_keep_alive`); a vanished
+owner is found so at its endpoint's next send, unanswered a whole window past its probe
+timeout (`a_vanished_owner_is_let_go_at_its_endpoints_next_send`), or as a restarted owner
+contends for its endpoint's one place, each connection holding one then asked for an answer
+(a PING, net.rs), its place freed once that goes unanswered; and no `Admitted::patience` or
+`DriverLimits::handshake_patience` is admitted, a handshake waiting as long as its probing
+goes on, its caller's to end.
 
 #### A member's stdin, a stream its owner writes (plan step 5; P3's input, G24)
 
@@ -6354,7 +6363,7 @@ a member, `Awaited → Here → Gone`). All of what a member is given is D240.
 | Frames: subscribe 58 bytes, record head 13, end 17, taken and ended 17 | tag + u32 length (crate::frame), then the run ID (32), u64 generation, u32 member, u8 channel, u64 offset; a u64 offset; a u64 and an i32; a u64 and a u32 |
 | An end's errno 0, an abort's above 0 | `InputEnd::Closed`, `InputEnd::Aborted(errno)`, typed on every wire |
 | The endpoint's receive window: a record's head, the record and an end, at least a subscription | what the owner may send before the endpoint reads it |
-| Patience `QUIET`, keep-alive a quarter of it | the output endpoint's (above) |
+| No patience, no keep-alive | D180's liveness at use, as the output endpoint's (above) |
 
 Tested: abi `run::managed` (the input entries, one token a member, the end's codec); init
 `input` (binary, no newline, invalid UTF-8 across split frames reach the pipe exactly; an
@@ -6474,13 +6483,16 @@ replaced by:
 Left as hyper-quic sets them, and owed: quinn-proto's stream and connection receive windows,
 its send window, and the 100 streams a daemon's client may open at once (one command and its
 control stream, or one join, is all a connection opens; holding it there needs the raw test
-client in `tests/loopback.rs` to wait for stream credit). Owed too: the same rule for step 5's
-and D238's endpoints, which still admit `QUIET` as their patience (managed.rs, control.rs,
-daemon/managed.rs), and goal 75's `unix::link()`; and a relay whose engine client leaves while
+client in `tests/loopback.rs` to wait for stream credit). Step 5's and D238's endpoints and
+their owners and controllers, goal 75's `unix::link()` among them, follow the same rule
+(ROOT's call C): their admissions carry no patience, their bounded drivers no handshake
+deadline, their transports no idle timeout or keep-alive, `tls::QUIET` and its quarter gone;
+an endpoint whose one place a newcomer contends for asks each connection holding one for an
+answer (a PING), so that one whose owner vanished is found so at that use. Owed: a relay
+whose engine client leaves while
 its handshake waits on a daemon never reached is let go as that daemon answers or this one
 stops, not as its client leaves, as its client's input is read no further than its first
-chunk before the daemon's flow control lets it (a quiet managed connection's vanished owner
-is the same case). A host's start runs on a worker of its own (server.rs `start_apart`,
+chunk before the daemon's flow control lets it. A host's start runs on a worker of its own (server.rs `start_apart`,
 `Event::Started`), apart from the driver, which acknowledges every client's packets
 meanwhile: what the client sends after its request, and on the control streams that steer the
 command, is read once the start has ended, its flow control holding it back. On the driver, a
@@ -18580,6 +18592,23 @@ none of the test, every
 case returning at "Hypervisor.framework is unavailable". The CI logs are in the record's
 step7/.
 
+**Its next runs: every runc case hung.** On HVF (ROOT, 308895ef4 and 27ed7cccd, macOS 26
+arm64) and on CI's KVM x86_64 (8a50a9742, run 43391975331, its Tests step timed out at 56
+minutes), each case that runs runc (`limits`, `first-step`, `exit 7`, the exec's `limits`)
+never ended: the foreground runc parked (futex_wait) beside its box's init, exited and never
+reaped (Zs, its parent runc), the detached one parked with its box running; `contain`,
+`ready`, the vsock and the deadline cases passed. The test's nested runtime handed runc the
+grant's `NOTIFY_SOCKET` (init's readiness environment, above), which runc takes for its own
+supervisor's: it proxies its container's sd_notify, bind-mounting a socket of its own into
+the box, and waits for the box's `READY=1` before its signal loop (runc v1.5.2
+notify_socket.go `run`, signals.go `forward`): `run --detach` until the box says it or ends,
+`run` until it says it, as it watches its own pid there. No box of the test says it. So the
+grant's readiness socket is the command's to answer for, as systemd's is a service's, and a
+nested runtime keeps it from the children that do not answer for it (sd_notify(3),
+`unset_environment`): the test's runtime now runs runc without it (testguest nesting.rs
+`runc`), and gives each runc a bound past which SIGQUIT has Go write where its goroutines
+wait (e613ff4d7). Hex's node, as a granted command, meets the same rule.
+
 **Evidence owed** (ROOT):
 - the real-VM E2E (`crates/shards/tests/nesting.rs`, plan step 5): its green at 231bbdf6d
   or later on KVM x86_64 (CI's next main run that reaches it, or ROOT's own), and its runs
@@ -24384,8 +24413,8 @@ The transport's every value is its streams' (R03; the person, 2026-11-13: "we do
 arbitrary constants"): each lane's windows as its endpoint of one stream bounds them, summed for
 the connection, the largest per stream; what the endpoint sends unacknowledged, each stream's
 admitted window and a refusal frame for each stream the controller may open; one stream each;
-the connection's patience the least its streams admitted (D180's `QUIET` where the daemon
-admits it, a quarter of it the keep-alive), and its handshake and datagram buffers the most.
+and its handshake and datagram buffers the most; its liveness judged at use, as D180's links
+are, with no idle timeout or keep-alive (D180's `QUIET` and a quarter of it before).
 D180's driver tells a handler when its peer allows more streams (`Handler::available`), so that
 a controller opens a lane as the endpoint's limit allows.
 
@@ -25930,8 +25959,8 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
 
 **Literals.** None chosen. `NAME_MAX` (255) and `PATH_MAX` (include/uapi/linux/limits.h);
 `sun_path`'s 108 bytes (unix(7)); TLS 1.3's largest handshake message, a uint24 and its
-four-byte head (RFC 8446 §4), with D180's datagrams and `tls::QUIET` (RFC 1122's R2) for a link
-of socket lanes alone, as the daemon's endpoints take them. The asks' bounds are the frame's
+four-byte head (RFC 8446 §4), with D180's datagrams for a link of socket lanes alone, as the
+daemon's endpoints take them, its liveness judged at use (D180; `tls::QUIET` before). The asks' bounds are the frame's
 own: its head, the run (32), the generation (8) and the name. Linux's errnos are
 asm-generic's, which every guest architecture shares. The window, the lanes and so every
 buffer are the caller's admission (R03).
