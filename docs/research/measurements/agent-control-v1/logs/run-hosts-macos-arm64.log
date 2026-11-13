@@ -1,0 +1,153 @@
+# D254 run hosts' MCP pairing: light tests, kiln runner adas-mac-studio.local (Adas-Mac-Studio-3.local, macOS arm64),
+# 2026-11-13. Each command ran in a clone of a939a2b19 with p/s11-hosts-v1's diff over it applied (carrier run.sh),
+# CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/usr/bin/true SHARDS_SERVER_BINARY=/usr/bin/true.
+# Compile lines and the tests' own stderr are left out; every test line and result line is kept.
+
+######## clippy
+== a939a2b19a499a9be7a62fe5a52a774f4d5344f2 + hosts.diff on Adas-Mac-Studio-3.local: cargo clippy -j 6 -p shards -p shards-api -p shards-vm-process --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 37.97s
+CLIPPY_EXIT=0
+
+######## shards
+== a939a2b19a499a9be7a62fe5a52a774f4d5344f2 + hosts.diff on Adas-Mac-Studio-3.local: cargo test -j 6 -p shards --bin shards -- daemon::managed:: daemon::snapshots:: api_run:: a_members_mcp_connection
+running 114 tests
+test api_run::tests::a_command_that_never_started_ends_its_run_failed_saying_why ... ok
+test api_run::tests::a_deadline_is_its_budget_past_the_clock_as_the_request_arrives ... ok
+test api_run::tests::a_rates_answer_reads_as_it_was_asked ... ok
+test api_run::tests::a_rooms_answer_reads_as_it_was_asked ... ok
+test api_run::tests::a_bridge_is_a_running_members_once_and_needs_the_runs_control ... ok
+test api_run::tests::a_leased_frame_leaves_nothing_of_its_value_in_the_channels_buffer ... ok
+test api_run::tests::a_members_arguments_are_staged_after_its_own_in_order ... ok
+test api_run::hosted::tests::members_output_its_host_cannot_take_ends_its_run_failed_saying_why ... ok
+test api_run::tests::a_name_holding_no_snapshot_is_cleared_for_the_save ... ok
+test api_run::tests::a_boot_that_fails_leaves_no_save_and_another_runs_save_wins ... ok
+test api_run::hosted::tests::a_share_process_goes_as_its_door_is_let_go_of ... ok
+test api_run::hosted::tests::room_its_vm_takes_no_more_of_leaves_its_end_to_its_vm ... ok
+test api_run::hosted::tests::a_members_mcp_connection_is_held_where_its_run_gave_it_a_bridge ... ok
+test api_run::tests::a_runs_ledger_holds_one_lease_of_a_credential_and_releases_them_all ... ok
+test api_run::tests::a_runs_ledger_relays_its_own_sign_ins_and_lets_a_refreshed_lease_go ... ok
+test api_run::tests::a_save_is_served_on_its_run_owners_channel_alone ... ok
+test api_run::tests::a_socket_grant_is_held_as_shards_api_holds_it ... ok
+test api_run::tests::a_runs_template_restores_where_saved_else_its_boot_saves_it ... ok
+test api_run::tests::a_save_is_made_only_where_its_owner_may_have_it ... ok
+test api_run::tests::a_terminal_is_a_running_members_once ... ok
+test api_run::tests::a_vm_that_could_not_serve_its_run_ends_it_failed_in_its_words ... ok
+test api_run::tests::a_runs_saves_go_one_at_a_time_and_end_with_its_vm ... ok
+test api_run::tests::an_answer_to_no_ask_breaks_the_channel ... ok
+test api_run::tests::an_orchestrators_channel_that_breaks_ends_its_run_failed_saying_why ... ok
+test api_run::tests::a_run_whose_request_grants_a_sign_in_tells_its_network_process_and_one_that_grants_none_tells_none ... ok
+test api_run::tests::a_run_keeping_nothing_past_the_microvm_has_its_members_network_and_no_policy ... ok
+test api_run::tests::a_runs_endpoint_is_bound_on_loopback_under_a_key_of_its_own ... ok
+test api_run::tests::credential_grants_reach_the_network_process_by_reference ... ok
+test api_run::tests::credential_grants_ca_goes_to_the_guest_in_pem_with_each_host_once ... ok
+test api_run::tests::a_crafted_image_is_refused_in_its_builds_words_before_its_grant_is_decided ... ok
+test api_run::tests::its_request_is_one_a_warm_vm_takes ... ok
+test api_run::tests::grants_narrow_and_never_widen ... ok
+test api_run::tests::members_are_the_images_labels ... ok
+test api_run::tests::each_member_is_held_to_its_reach_of_the_names_kept ... ok
+test api_run::tests::ports_need_a_receiver_without_a_command ... ok
+test api_run::tests::published_ports_name_whom_they_reach ... ok
+test api_run::tests::a_granted_runs_lease_is_relayed_on_first_use_and_released_as_it_ends ... ok
+test api_run::tests::an_orchestrators_runs_microvm_is_the_daemons_for_the_same_inputs ... ok
+test api_run::tests::a_sign_in_is_relayed_its_placeholders_kept_through_a_refresh_and_its_lease_released_at_the_runs_end ... ok
+test api_run::tests::the_audit_names_leases_never_their_values ... ok
+test api_run::tests::staging_names_a_running_member ... ok
+test api_run::tests::the_nesting_grant_is_asked_and_decided_as_the_command_line_asks_it ... ok
+test api_run::tests::the_vms_link_is_relayed_to_the_orchestrator_as_its_guest_said_it ... ok
+test api_run::tests::a_run_naming_gpus_asks_for_the_gpu_guest_and_its_render_node ... ok
+test api_run::tests::a_template_that_does_not_restore_is_replaced_and_the_run_told_so ... ok
+test api_run::hosted::tests::an_orchestrators_run_carries_its_members_mcp_connections ... ok
+test daemon::managed::drain::tests::a_run_that_keeps_no_log_keeps_none_of_its_members ... ok
+test daemon::managed::execs::tests::a_guests_refusal_is_typed_by_its_class ... ok
+test daemon::managed::execs::tests::a_members_exec_takes_its_command_and_stdio_alone ... ok
+test daemon::managed::execs::tests::a_pipes_buffer_is_measured_or_bounded ... ok
+test daemon::managed::members::tests::a_members_end_is_kept_and_told_as_it_comes ... ok
+test daemon::managed::members::tests::a_status_is_told_as_its_init_said_it ... ok
+test daemon::managed::terminal_order_tests::native_completion_wins_then_owner_stops_while_metadata_locked ... ignored, ROOT native fixture: pauses the explicit resolve-to-publish seam
+test daemon::managed::terminal_order_tests::native_file_limit_cuts_back_a_partial_append_and_keeps_known_canonical_errno ... ignored, ROOT isolated child only: caller sets RLIMIT_FSIZE and ignores SIGXFSZ
+test daemon::managed::terminal_order_tests::native_owner_stop_after_finish_while_metadata_locked ... ignored, ROOT native fixture: requires exact caller binary, directory and deadlines
+test daemon::managed::terminal_order_tests::native_owner_stop_before_finish_while_metadata_locked ... ignored, ROOT native fixture: requires exact caller binary, directory and deadlines
+test daemon::managed::terminal_order_tests::native_readonly_file_error_keeps_logical_completion_and_retires_driver ... ignored, ROOT native fixture: real read-only File append error
+test daemon::managed::drain::tests::a_drained_members_output_is_kept_whole_in_its_log ... ok
+test daemon::managed::terminal_tests::captured_storage_submits_while_its_endpoint_is_the_explicit_borrower ... ok
+test daemon::managed::terminal_tests::drain_wait_rechecks_the_predicate_across_the_atomic_condvar_release ... ok
+test daemon::managed::terminal_tests::draining_completion_is_actionable_without_capacity_and_only_once ... ok
+test daemon::managed::terminal_tests::endpoint_loss_in_serving_or_drain_converges_without_waiting_for_capacity ... ok
+test daemon::managed::terminal_tests::fully_consumed_canonical_abort_keeps_errno_and_unknown_tail ... ok
+test daemon::managed::terminal_tests::issued_capture_storage_survives_revocation_until_its_record_is_drained ... ok
+test daemon::managed::terminal_tests::known_normal_completion_survives_stop_before_the_worker_publishes ... ok
+test daemon::managed::terminal_tests::a_record_that_cannot_be_cut_back_takes_no_more_lines ... ok
+test daemon::managed::terminal_tests::pending_or_aborted_equal_cursors_cannot_publish_normal_completion ... ok
+test daemon::managed::terminal_tests::prepared_growth_rolls_back_or_commits_the_replacement_charge ... ok
+test daemon::managed::terminal_tests::readiness_is_derived_and_a_spurious_wake_does_not_issue_credit ... ok
+test daemon::managed::terminal_tests::revocation_and_close_wake_a_drain_without_reopening_it ... ok
+test daemon::managed::terminal_tests::stop_before_ack_is_sticky_and_retains_the_known_canonical_failure ... ok
+test daemon::managed::terminal_tests::metadata_failure_is_returned_without_changing_the_logical_winner ... ok
+test daemon::managed::terminal_tests::the_widest_terminal_record_fits_its_buffer ... ok
+test daemon::managed::tests::a_blocked_channel_does_not_take_another_channels_credit ... ok
+test daemon::managed::drain::tests::a_run_started_again_goes_on_in_its_members_logs ... ok
+test daemon::managed::drain::tests::a_viewer_whose_client_has_gone_stops ... ok
+test daemon::managed::drain::tests::a_viewer_writes_each_line_at_once ... ok
+test daemon::managed::drain::tests::a_viewer_shows_each_line_after_its_member ... ok
+test daemon::managed::tests::a_climbed_capture_credit_fits_one_endpoint_record_and_aborts_no_channel ... ok
+test daemon::managed::log_lanes::tests::a_lane_from_the_oldest_says_what_the_cap_let_go ... ok
+test daemon::managed::drain::tests::a_runs_member_logs_are_found_with_their_labels ... ok
+test daemon::managed::tests::a_runs_agent_control_endpoint_has_its_own_key_and_serves_its_owner_alone ... ok
+test daemon::managed::tests::a_runs_exec_host_runs_a_members_exec_through_its_vm_process ... ok
+test daemon::managed::cap::tests::each_log_loses_its_oldest_first_and_keeps_its_newest ... ok
+test daemon::managed::tests::a_capture_cut_short_keeps_all_it_brought ... ok
+test daemon::managed::tests::agent_control_is_asked_for_by_its_annotation_alone ... ok
+test daemon::managed::tests::an_unknown_remote_owner_never_falls_back_to_the_home_key ... ok
+test api_run::hosted::tests::a_save_is_handed_to_its_vm_and_committed_once_its_vm_filled_it ... ok
+test daemon::managed::tests::a_runs_mcp_connections_are_held_and_paired_with_its_controllers_asks ... ok
+test daemon::managed::tests::image_identity_and_channel_offsets_are_checked_independently ... ok
+test daemon::managed::tests::input_members_are_named_by_kind_and_name_and_each_runs_a_program ... ok
+test daemon::managed::tests::a_runs_member_host_tells_a_members_state_steers_it_and_tells_its_end ... ok
+test daemon::managed::tests::an_inputs_connection_comes_once_and_its_revocation_lets_its_relay_go ... ok
+test daemon::managed::tests::terminal_members_are_named_as_inputs_are ... ok
+test daemon::managed::tests::the_initial_record_fits_actual_metadata_and_terminal_errno ... ok
+test daemon::managed::tests::torn_append_child ... ignored, child of a_terminal_record_that_fails_part_way_leaves_whole_lines: sets its process's RLIMIT_FSIZE
+test daemon::snapshots::tests::a_saves_ask_reads_as_its_vm_reads_it ... ok
+test daemon::snapshots::tests::a_resume_record_is_within_the_longest_this_build_writes ... ok
+test daemon::snapshots::tests::a_saves_mcp_token_reads_back_beside_its_engines ... ok
+test daemon::snapshots::tests::snapshots_are_named_as_checkpoints_are ... ok
+test daemon::managed::tests::growth_the_endpoint_refuses_keeps_the_current_window ... ok
+test daemon::managed::cap::tests::a_drop_across_owners_records_the_loss_per_owner ... ok
+test daemon::managed::tests::a_terminal_record_that_fails_part_way_leaves_whole_lines ... ok
+test daemon::managed::tests::a_runs_end_lets_its_capture_keep_what_comes_after_it ... ok
+test daemon::managed::tests::a_runs_end_waits_for_its_members_logs_and_never_for_its_viewer ... ok
+test daemon::managed::tests::generation_is_persisted_and_never_wraps_or_reuses_a_bad_record ... ok
+test daemon::snapshots::tests::a_crashs_ghosts_are_removed_and_nothing_else ... ok
+test daemon::managed::drain::tests::a_members_log_is_kept_and_counted_in_its_runs_cap ... ok
+test daemon::managed::tests::a_runs_log_host_serves_its_logs_from_the_store ... ok
+test daemon::managed::tests::a_drained_channel_is_credited_again_as_soon_as_its_record_is_kept ... ok
+test daemon::managed::cap::tests::the_newest_segment_rotation_keeps_the_bound_within_one_segment ... ok
+test daemon::tests::a_members_mcp_connection_its_run_gave_no_bridge_is_answered_and_let_go ... ok
+test daemon::snapshots::tests::a_start_removes_snapshots_cut_short ... ok
+test daemon::managed::drain::tests::a_members_rotated_segment_is_compressed_when_the_runs_options_say_so ... ok
+test result: ok. 108 passed; 0 failed; 6 ignored; 0 measured; 771 filtered out; finished in 0.17s
+
+######## shards-api
+== a939a2b19a499a9be7a62fe5a52a774f4d5344f2 + hosts.diff on Adas-Mac-Studio-3.local: cargo test -j 6 -p shards-api --lib image::
+running 66 tests
+test image::tests::a_members_mcp_bridge_needs_the_runs_control_and_is_carried_with_it ... ok
+test image::wire::tests::a_runs_control_ask_crosses_the_image_channel_whole ... ok
+test image::wire::tests::unknown_versions_and_tags_are_refused ... ok
+test image::wire::tests::messages_round_trip ... ok
+test image::wire::tests::each_members_reach_rides_the_request_last ... ok
+test image::wire::tests::each_members_arguments_ride_the_request_last ... ok
+(and the other 60 image:: tests, each ok)
+test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 110 filtered out; finished in 0.69s
+
+######## shards-vm-process
+== a939a2b19a499a9be7a62fe5a52a774f4d5344f2 + hosts.diff on Adas-Mac-Studio-3.local: cargo test -j 6 -p shards-vm-process --bin shards-vm a_resumed_runs_tokens
+running 1 test
+test warm::tests::mcp::a_resumed_runs_tokens_bring_its_engines_and_its_mcp_connections ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 76 filtered out; finished in 0.00s
+
+######## red (earlier run, same host class, hosts-red.diff: the exec host's hand-off to mcp::carry removed)
+RED_EXIT=142
+perl -e 'alarm shift; exec @ARGV' 120 "$bin" a_runs_mcp_connections_are_held_and_paired_with_its_controllers_asks --nocapture
+thread 'daemon::managed::tests::a_runs_mcp_connections_are_held_and_paired_with_its_controllers_asks' panicked at crates/shards/src/daemon/managed.rs:3851:30:
+called `Result::unwrap()` on an `Err` value: Unstarted(Failed)
+(the process then held until its 120 s alarm: exit 142, SIGALRM)
