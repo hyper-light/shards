@@ -35,8 +35,11 @@ use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::{Mutex, PoisonError};
 use std::thread::Thread;
 
+use shards_abi::gpu::{GpuProbeError, GpuRefusal, JoinError};
+
 use super::protocol::{Refused, resp};
 use super::{Blob, Capset, HostMemory, Pages, Renderer, Signal};
+use crate::vm::StartError;
 use crate::vm::gpu_selection::{self as selection, PhysicalGpu};
 
 /// The capability set of Venus (virglrenderer_hw.h, VIRGL_RENDERER_CAPSET_VENUS).
@@ -591,8 +594,18 @@ impl Drop for HeldDriver {
     }
 }
 
-fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<SelectedGpu>, HeldDriver), String> {
-    selection::check_selection(selected).map_err(|e| e.to_string())?;
+/// A refusal of the selection, typed for the VM process's client (D232).
+fn selection_refused(why: GpuRefusal) -> StartError {
+    StartError::GpuProbe(GpuProbeError::Refused(why))
+}
+
+/// A join's refusal of the selection.
+fn unjoined(why: JoinError) -> StartError {
+    selection_refused(GpuRefusal::Join(why))
+}
+
+fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<SelectedGpu>, HeldDriver), StartError> {
+    selection::check_selection(selected).map_err(|why| unjoined(JoinError::Selection(why)))?;
     let vk = Vulkan::open()?;
     // Vulkan 1.1 defines ID properties and Properties2. Venus itself requires
     // Vulkan's device/driver capabilities; no older identity fallback is allowed.
@@ -619,18 +632,18 @@ fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<SelectedGpu>, Held
     // SAFETY: complete ABI structures and a live output, held as the driver below.
     let result = unsafe { (vk.create_instance)(&raw const info, std::ptr::null(), &raw mut instance) };
     if result != 0 || instance.is_null() {
-        return Err(format!("Vulkan made no instance ({result})"));
+        return Err(format!("Vulkan made no instance ({result})").into());
     }
     // Destroyed as it drops, on every path: kept, it holds the driver for the renderer.
     let held = HeldDriver { vk, instance };
     let vk = &held.vk;
-    let checked = (|| {
+    let checked = (|| -> Result<(u64, Vec<SelectedGpu>), StartError> {
         let mut count = 0u32;
         // SAFETY: count-only enumeration of this instance.
         let result =
             unsafe { (vk.enumerate_physical_devices)(instance, &raw mut count, std::ptr::null_mut()) };
         if result != 0 || count == 0 {
-            return Err(format!("Vulkan has no complete device list ({result})"));
+            return Err(format!("Vulkan has no complete device list ({result})").into());
         }
         let count_usize = usize::try_from(count).map_err(|_| "Vulkan device count overflows")?;
         if count_usize > selection::MAX_PHYSICAL_GPUS {
@@ -646,7 +659,7 @@ fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<SelectedGpu>, Held
             unsafe { (vk.enumerate_physical_devices)(instance, &raw mut count, devices.as_mut_ptr()) };
         let written = usize::try_from(count).map_err(|_| "Vulkan device count overflows")?;
         if result != 0 || written > devices.len() {
-            return Err(format!("Vulkan device enumeration changed ({result})"));
+            return Err(format!("Vulkan device enumeration changed ({result})").into());
         }
         devices.truncate(written);
         if devices.iter().any(|device| device.is_null()) {
@@ -670,7 +683,7 @@ fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<SelectedGpu>, Held
                     )
                 };
                 if result != 0 {
-                    return Err(format!("Vulkan native GPU identity query failed ({result})"));
+                    return Err(format!("Vulkan native GPU identity query failed ({result})").into());
                 }
                 properties.push(props);
             }
@@ -683,7 +696,7 @@ fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<SelectedGpu>, Held
             indices.extend(0..devices.len());
             indices
         } else {
-            selection::resolve(selected, &properties, cfg!(target_os = "macos")).map_err(|e| e.to_string())?
+            selection::resolve(selected, &properties, cfg!(target_os = "macos")).map_err(unjoined)?
         };
         let mut uuids = Vec::new();
         uuids
@@ -697,10 +710,7 @@ fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<SelectedGpu>, Held
                     .get(index)
                     .ok_or("Vulkan selection identity is missing")?;
                 let physical = selected.get(position).ok_or("Vulkan selection order changed")?;
-                Some(
-                    selection::resolved(*physical, props, cfg!(target_os = "macos"))
-                        .map_err(|error| error.to_string())?,
-                )
+                Some(selection::resolved(*physical, props, cfg!(target_os = "macos")).map_err(unjoined)?)
             } else {
                 None
             };
@@ -740,7 +750,7 @@ fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<SelectedGpu>, Held
                             .iter()
                             .map(|heap| (heap.size, heap.flags & MEMORY_HEAP_DEVICE_LOCAL != 0)),
                     )
-                    .map_err(|error| error.to_string())?,
+                    .map_err(unjoined)?,
                 );
                 uuids.push(SelectedGpu {
                     text: uuid_text(&native.uuid)?,
@@ -915,20 +925,32 @@ impl std::fmt::Display for SelectionReportError {
 }
 impl std::error::Error for SelectionReportError {}
 
+/// The renderer's refusal of the selection's exact filter is the selection's refusal (D232);
+/// the report's own checks failing are the probe's.
+impl From<SelectionReportError> for StartError {
+    fn from(why: SelectionReportError) -> Self {
+        match why {
+            SelectionReportError::Acknowledgment(code) => selection_refused(GpuRefusal::Acknowledgment(code)),
+            SelectionReportError::Probe(why) => StartError::GpuProbe(why),
+            SelectionReportError::ActiveContexts => StartError::Legacy(why.to_string()),
+        }
+    }
+}
+
 impl Venus {
     /// Starts the renderer, Venus alone: once a process.
     pub fn new() -> Result<Venus, String> {
-        Self::new_selected(&[])
+        Self::new_selected(&[]).map_err(|why| why.to_string())
     }
 
     /// A native query through the same renderer/context selection path as a VM.
     /// No guest commands or VkDevice workloads are submitted by this probe.
-    pub fn probe_gpu(selected: &[PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, String> {
+    pub fn probe_gpu(selected: &[PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, StartError> {
         if selected.is_empty() {
             return Err("an exact GPU probe requires a nonempty native selection".into());
         }
         let mut venus = Self::new_selected(selected)?;
-        venus.selection_report(selected).map_err(|why| why.to_string())
+        Ok(venus.selection_report(selected)?)
     }
 
     /// Read the SAME renderer's native selection before any guest context exists.
@@ -937,7 +959,7 @@ impl Venus {
         &mut self,
         selected: &[PhysicalGpu],
     ) -> Result<shards_abi::gpu::GpuProbe, SelectionReportError> {
-        use shards_abi::gpu::{GpuProbe, GpuProbeError};
+        use shards_abi::gpu::GpuProbe;
         if selected.is_empty() || self.selected.len() != selected.len() {
             return Err(SelectionReportError::Probe(GpuProbeError::Empty));
         }
@@ -962,14 +984,16 @@ impl Venus {
         Ok(probe)
     }
 
-    pub fn new_selected(selected: &[PhysicalGpu]) -> Result<Venus, String> {
+    /// The renderer of `selected`, the selection's refusals typed for the VM process's client
+    /// ([`StartError::gpu_refusal`]), its host's failures said.
+    pub fn new_selected(selected: &[PhysicalGpu]) -> Result<Venus, StartError> {
         if STARTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return Err("the GPU renderer runs once a process".into());
         }
         let page = crate::platform::page_size().map_err(|e| format!("the host's page size: {e}"))? as u64;
         let (host_visible, selected, driver) = host_visible(selected)
             .and_then(|b| match b {
-                (0, _, _) => Err("the selected GPU has no memory the host can map, which Venus needs".into()),
+                (0, _, _) => Err(selection_refused(GpuRefusal::NoHostMemory)),
                 b => Ok(b),
             })
             .inspect_err(|_| STARTED.store(false, std::sync::atomic::Ordering::Release))?;
@@ -984,7 +1008,7 @@ impl Venus {
             }
             Err(e) => {
                 STARTED.store(false, std::sync::atomic::Ordering::Release);
-                return Err(e);
+                return Err(e.into());
             }
         };
         let mut callbacks = Callbacks {
@@ -1021,7 +1045,7 @@ impl Venus {
                 }
             }
             STARTED.store(false, std::sync::atomic::Ordering::Release);
-            return Err(format!("the GPU renderer did not start: {}", errno(r)));
+            return Err(format!("the GPU renderer did not start: {}", errno(r)).into());
         }
         let (mut version, mut size) = (0u32, 0u32);
         // SAFETY: two outputs of the renderer's.
@@ -1521,7 +1545,7 @@ mod tests {
     /// host can map.
     #[cfg(not(target_os = "macos"))]
     fn has_gpu() -> Result<(), String> {
-        match host_visible(&[])?.0 {
+        match host_visible(&[]).map_err(|why| why.to_string())?.0 {
             0 => Err("this host's Vulkan devices have no memory the host can map".into()),
             _ => Ok(()),
         }

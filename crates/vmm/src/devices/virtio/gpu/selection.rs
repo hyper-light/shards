@@ -1,7 +1,7 @@
 //! Exact native identity -> live Vulkan device UUID correlation. The renderer owns
 //! immutable UUID selection; this module does not choose devices or own holders.
 
-pub use shards_abi::gpu::{MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError, check_selection};
+pub use shards_abi::gpu::{JoinError, MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError, check_selection};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,19 +81,6 @@ pub fn resolved(
         // The actual memory query fills this independently after exact identity resolution.
         device_local_bytes: None,
     })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JoinError {
-    Selection(PhysicalGpuError),
-    Count,
-    Allocation,
-    Missing,
-    Ambiguous,
-    Aliased,
-    InvalidUuid,
-    InvalidNative,
-    Memory,
 }
 
 /// Vulkan DEVICE_LOCAL heaps are distinct entries, not memory types (which may
@@ -205,25 +192,6 @@ pub fn copy_selection(selected: &[PhysicalGpu]) -> Result<Vec<PhysicalGpu>, Phys
     copy.extend_from_slice(selected);
     Ok(copy)
 }
-
-impl std::fmt::Display for JoinError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Selection(error) => error.fmt(f),
-            Self::Count => f.write_str("Vulkan device count exceeds the physical device-index space"),
-            Self::Allocation => f.write_str("native GPU join storage is unavailable"),
-            Self::Missing => f.write_str("a selected native GPU has no exact live Vulkan identity"),
-            Self::Ambiguous => f.write_str("native GPU or Vulkan UUID correspondence is ambiguous"),
-            Self::Aliased => f.write_str("multiple native selectors resolve to the same physical GPU"),
-            Self::InvalidUuid => f.write_str("selected Vulkan GPU has no nonzero device UUID"),
-            Self::InvalidNative => {
-                f.write_str("native Vulkan GPU properties exceed their identity representation")
-            }
-            Self::Memory => f.write_str("selected device-local Vulkan heap sizes overflow"),
-        }
-    }
-}
-impl std::error::Error for JoinError {}
 
 #[cfg(test)]
 mod tests {
