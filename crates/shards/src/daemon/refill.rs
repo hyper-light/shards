@@ -226,7 +226,7 @@ impl<D: Disk> Daemon<D> {
             server: server.as_deref(),
             emulator: emulator.as_deref(),
         };
-        let args = crate::run::restore_args(dir, &backings, gpu, super::VM_LINK);
+        let args = crate::run::restore_args(dir, &backings, gpu, crate::launch::LINK);
         Some(Planned {
             key: key.clone(),
             args,

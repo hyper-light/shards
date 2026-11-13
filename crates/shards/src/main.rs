@@ -37,6 +37,7 @@ mod guest;
 mod helpers;
 mod kernel;
 mod keyless;
+mod launch;
 mod local_store;
 mod log_writer;
 mod logging;
