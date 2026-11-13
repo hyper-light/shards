@@ -491,6 +491,7 @@ pub fn main() -> ! {
         "spawns" => spawns(arg(1).parse().unwrap_or(1), args.get(2..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
         "fetch" => fetch(args.get(1..).unwrap_or_default()),
+        "tls-ask" => crate::tls_ask::main(args.get(1..).unwrap_or_default()),
         // One call of the Engine API at $DOCKER_HOST, as a program in a run reaches its
         // microVM's own engine (D181): `api METHOD PATH [BODY [upgrade]]`, `upgrade` asking
         // for the connection to be taken over for a stream, as attaches and execs ask.
