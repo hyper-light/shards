@@ -156,6 +156,24 @@ impl State {
     fn gone(&self) -> bool {
         self.exited && self.answered
     }
+
+    /// The run's end, once it has come: its host's word, or its host gone without one.
+    fn end_seen(&mut self) -> Option<RunEnd> {
+        if let Some(end) = &self.end {
+            return Some(end.clone());
+        }
+        self.gone().then(|| {
+            RunEnd::Failed(format!(
+                "the run host exited without its run's end{}",
+                quoted(&self.said)
+            ))
+        })
+    }
+
+    /// The run's end once its stop has been waited for ([`Session::stop`]).
+    fn stopped(&mut self) -> RunEnd {
+        self.end.get_or_insert(RunEnd::Stopped).clone()
+    }
 }
 
 /// `refused` with the host's last diagnostics, where its run did not boot: what its VM said
@@ -1507,33 +1525,21 @@ impl ImageGuest for Session {
         // Asked of the host, which kills its VM at once and says the run's end; a host that
         // cannot be asked is killed itself, and its VM's link closing ends the VM's run
         // (`STOP_ORDER`). A run that has ended is not asked: its host is cleaning up.
-        let ended = lock(&self.shared.state).end.is_some();
+        let ended = lock(&self.shared.state).end_seen().is_some();
         if !ended && self.shared.send(wire::to_host::STOP, &[]).is_err() {
             kill(&self.host);
         }
         // The run's end comes as its VM goes, which the host kills at once; or the host is
         // gone. The host's own exit after (its cleanup) is the watcher's to reap.
-        self.shared
-            .wait(Duration::MAX, |s| (s.end.is_some() || s.gone()).then_some(()));
+        self.shared.wait(Duration::MAX, |s| s.end_seen().map(|_| ()));
         lock(&self.shared.to_host).take();
-        let mut state = lock(&self.shared.state);
-        state.end.get_or_insert(RunEnd::Stopped);
+        lock(&self.shared.state).stopped();
         self.shared.changed.notify_all();
         Ok(())
     }
 
     fn wait_for(&self, timeout: Duration) -> Result<Option<RunEnd>, ImageRefusal> {
-        Ok(self.shared.wait(timeout, |s| {
-            if let Some(end) = &s.end {
-                return Some(end.clone());
-            }
-            s.gone().then(|| {
-                RunEnd::Failed(format!(
-                    "the run host exited without its run's end{}",
-                    quoted(&s.said)
-                ))
-            })
-        }))
+        Ok(self.shared.wait(timeout, State::end_seen))
     }
 }
 
@@ -1566,6 +1572,38 @@ mod tests {
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Do see a run's host gone without its run's end, as `wait_for` sees it, then stop the
+    /// run, as `stop` does once its wait is over; and stop one whose host said its end. Expect:
+    /// the end first seen, in the host's last words, kept through the stop and after, never
+    /// `Stopped` (Hex: `wait_for` read the host's failure, then `stop` turned it `Stopped`);
+    /// the host's own end kept likewise.
+    #[test]
+    fn a_runs_end_once_seen_is_kept_through_its_stop() {
+        let mut state = State {
+            exited: true,
+            answered: true,
+            said: b"shards api-run: its VM's link: reset\n"
+                .iter()
+                .copied()
+                .collect(),
+            ..State::default()
+        };
+        let seen = RunEnd::Failed(
+            "the run host exited without its run's end: shards api-run: its VM's link: reset".into(),
+        );
+        assert_eq!(state.end_seen(), Some(seen.clone()));
+        assert_eq!(state.stopped(), seen);
+        assert_eq!(state.end_seen(), Some(seen));
+        let mut said = State {
+            end: Some(RunEnd::Exited(3)),
+            exited: true,
+            answered: true,
+            ..State::default()
+        };
+        assert_eq!(said.stopped(), RunEnd::Exited(3));
+        assert_eq!(said.end_seen(), Some(RunEnd::Exited(3)));
     }
 
     /// A member's stdin has its flow as the run's start is taken, under the lock that answer
