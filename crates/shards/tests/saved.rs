@@ -669,6 +669,66 @@ fn until(home: &Path, what: &str, done: &mut dyn FnMut() -> bool, said: &dyn Fn(
     }
 }
 
+/// What is asked of a microVM's command as it is restored goes on the signal connection its
+/// guest dials again, by the save's token (D176): execs sent as the restore begins, each held
+/// for that dial where it came first (an exec waits for a run's start, and its VM takes the
+/// run before its guest dials), each run, none waiting for ever; then a signal reaches its
+/// command, which it ends, under `--init`, whose reaper passes it on (SIGUSR1's default).
+#[test]
+fn what_a_restoring_microvm_is_sent_goes_on_its_guests_dial() {
+    let Some((home, image)) = home("restored-redial") else {
+        return;
+    };
+    if cannot_pool() {
+        return;
+    }
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let run = shards(&[
+        "run", "-d", "--init", "--pull", "never", "--name", "redial", &image, "sleep",
+    ]);
+    assert_eq!(run.status, Some(0), "{run}");
+    let log = || logs(&home, "redial");
+    until(&home, "ready", &mut || log().contains("ready"), &log);
+    let saved = shards(&["save", "vm", "redial", "one"]);
+    assert_eq!(saved.status, Some(0), "{saved}");
+    std::thread::scope(|s| {
+        let restoring = s.spawn(|| shards(&["restore", "vm", "redial"]));
+        let execs: Vec<_> = (0..4)
+            .map(|_| {
+                s.spawn(|| {
+                    let deadline = Instant::now() + TIMEOUT;
+                    loop {
+                        let ran = shards(&["exec", "redial", "/bin/testguest", "exit", "0"]);
+                        // Asked before its restore was under way, it found it stopped.
+                        if ran.status == Some(0) || !ran.stderr.contains("is not running") {
+                            return ran;
+                        }
+                        assert!(Instant::now() < deadline, "{ran}");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                })
+            })
+            .collect();
+        let restored = restoring.join().unwrap();
+        assert_eq!(
+            (restored.status, restored.stdout.as_str()),
+            (Some(0), "redial\n"),
+            "{restored}"
+        );
+        for exec in execs {
+            let ran = exec.join().unwrap();
+            assert_eq!(ran.status, Some(0), "{ran}");
+        }
+    });
+    assert_eq!(shards(&["kill", "-s", "USR1", "redial"]).status, Some(0));
+    let waited = shards(&["wait", "redial"]);
+    assert_eq!(
+        (waited.status, waited.stdout.as_str()),
+        (Some(0), "138\n"),
+        "{waited}"
+    );
+}
+
 /// A microVM its save stopped resumes where it was saved, from its newest snapshot or the
 /// one named: its counter goes on from the count it had, its log holding each count once
 /// up to the save and then each after it once more for each restore, nothing of its output

@@ -62,3 +62,35 @@ its second, a new copy of /usr/bin/true, and /bin/sh reading a new script.
 | fix less `--warm` (patch 70959f71…) | 5639db51a90a5f21… (sim) | alone | | 0 of 200 |
 | fix less `--warm`, at c2c4547c1 | f149a175382fae3b… (sim) | alone | 0 of 200 | 1 of 200, past 8.8 s |
 | fix with a guest's bound (patch 32f2790e…) | 293307ee78953771… (sim) | alone | | 0 of 200 |
+
+## macOS and Linux: the zero-patience test's socket, held open (PM M535)
+
+`spawns.rs` (`client::spawns::a_refused_sockets_end_beside_spawns`, ignored) runs the test's
+check `SHARDS_API_SPAWN_ROUNDS` times (5,000) beside processes `SHARDS_API_SPAWNS` names
+(`none`, `sleep`, `fresh`). Builds at main 99d88fccf, macOS (adas-mac-studio.local-2):
+
+| build | binary sha256 | the whole library, runs failed in this test |
+|---|---|---|
+| main (lib) | 062247244d680404… | 8 of 100 |
+| fix (patch ed2c72a2…, with M534's) | d74424e668239cf2… | 0 of 200 (kiln's shell), 0 of 100 (launchd) |
+| fix, its check in-process (patch 4c67b9e8…) | b6fe4d93540766d5… | 2 of 100 |
+
+Linux (adacachy2), the whole library, 20 runs each: main db72dc4ccbf15e34… 1 failed;
+the fix 03c5ca3492b4e15b… none.
+
+## Windows: a blocking AF_UNIX read sleeping through its peer's end (PM M536)
+
+`hang.sh LABEL N LIMIT ARGS...` runs a build's test binary N times and, at LIMIT seconds,
+has cdb (WinDbg's console debugger, `winget install Microsoft.WinDbg`; `cdbX64.exe`)
+attach noninvasively and print every thread's stack into `stacks-RUN.txt` before it ends
+the run; symbolize them from the build's PDB with `cdbX64.exe -z api.exe -cf` a script of
+`.sympath <deps dir>`, `.lines -e`, `.reload /f` and `ln`/`lsa` of each `api+0x…`.
+`half-close.rs` (`half_close::a_waiting_reads_end_beside_its_peers_half_close`, in
+shards-afunix's tests, ignored) is the read-beside-an-end measurement,
+`SHARDS_AFUNIX_ROUNDS` rounds a way (2,000).
+
+On jupiter, beside ROOT's WHP gate (CPU load 29% to 100%), at main 99d88fccf with
+patches `hc-red` (the measurement), `hc-green` (the fix), `hc-mutant` (the fix less its
+WSAPoll before a read with no timeout): shards-api's library c2d0c8c577d98bd8…,
+c55ed033cd182014…, 4bda611df6bb80c0…; the flaky test alone with a 20 s limit, red 7 of
+300 hung, green 0 of 1,000, mutant 26 of 300; the fix's whole library, 0 of 20.

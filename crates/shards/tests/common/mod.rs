@@ -502,6 +502,25 @@ pub fn foreign_init() -> &'static Path {
     })
 }
 
+/// The signal whose frame [`lossy_init`] takes for a malformed one: SIGRTMAX, which no test
+/// sends for its own sake.
+pub const LOSES_SIGNALS_ON: &str = "64";
+
+/// shards-init built to take a signal frame of [`LOSES_SIGNALS_ON`] for a malformed one,
+/// losing its signal connection as a malformed frame loses it, unsaid: a loss of the
+/// workload's control that tests provoke (D16).
+pub fn lossy_init() -> &'static Path {
+    static L: OnceLock<PathBuf> = OnceLock::new();
+    L.get_or_init(|| {
+        guest_binary_in(
+            "shards-init",
+            "shards-init",
+            "target/guest-lossy",
+            &[("SHARDS_TEST_LOSE_SIGNALS_ON", LOSES_SIGNALS_ON)],
+        )
+    })
+}
+
 /// Builds guest package `package`'s binary `name` into `target_dir` with `env` added.
 fn guest_binary_in(package: &str, name: &str, target_dir: &str, env: &[(&str, &str)]) -> PathBuf {
     guest_binary_with(package, name, target_dir, "guest", env)

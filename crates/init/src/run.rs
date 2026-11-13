@@ -2215,6 +2215,14 @@ pub(crate) fn connect_result(fd: RawFd) -> io::Result<()> {
     }
 }
 
+/// The signal whose frame an init built for tests takes for a malformed one, losing its signal
+/// connection as a malformed frame loses it, unsaid: a loss its host's E2E tests provoke
+/// (tests/containers.rs, D16). Named by the build's `SHARDS_TEST_LOSE_SIGNALS_ON`; none in any
+/// other build, whose frames this never touches.
+fn loses_signals_on() -> Option<u32> {
+    option_env!("SHARDS_TEST_LOSE_SIGNALS_ON").and_then(|n| n.parse().ok())
+}
+
 /// Says the relay's end, last, on the signal connection `signals` ([`kind::SIGNALS_END`]):
 /// nothing reads it from now on, and the host tells the run's end by it from the
 /// connection's loss (D16). A connect still under way, as a run can end before its first
@@ -5553,12 +5561,23 @@ impl Workload {
                                 let running = status.is_none();
                                 let pty = self.stdout.as_ref().filter(|_| self.tty).map(AsRawFd::as_raw_fd);
                                 let hosts = self.hosts.as_ref();
+                                let mut taken_for_malformed = false;
                                 let whole = each_frame(&mut from_signals, |which, payload| {
                                     let id_and = |p: &[u8]| {
                                         let (id, rest) = p.split_at_checked(4)?;
                                         Some((u32::from_be_bytes(id.try_into().ok()?), rest.to_vec()))
                                     };
                                     let sig = |p: &[u8]| <[u8; 4]>::try_from(p).map(u32::from_be_bytes).ok();
+                                    // Nothing past a malformed frame is read, as `each_frame` reads
+                                    // none past one.
+                                    if taken_for_malformed
+                                        || (which == kind::SIGNAL
+                                            && sig(payload).is_some()
+                                            && sig(payload) == loses_signals_on())
+                                    {
+                                        taken_for_malformed = true;
+                                        return;
+                                    }
                                     match which {
                                         kind::RESIZE => {
                                             if let (Some(fd), Some(size)) = (pty, Size::decode(payload)) {
@@ -5626,7 +5645,7 @@ impl Workload {
                                         _ => {}
                                     }
                                 });
-                                if !whole {
+                                if !whole || taken_for_malformed {
                                     signals = None;
                                 }
                             }
@@ -6700,6 +6719,13 @@ mod signals_end_tests {
         let (signals, host) = ours();
         drop(host);
         say_signals_end(&signals, false);
+    }
+
+    /// An init built without the tests' knob (`SHARDS_TEST_LOSE_SIGNALS_ON`), as every one
+    /// but theirs is, takes no signal's frame for a malformed one.
+    #[test]
+    fn an_init_built_for_runs_takes_no_signal_for_a_malformed_frame() {
+        assert_eq!(loses_signals_on(), None);
     }
 }
 

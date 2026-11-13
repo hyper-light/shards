@@ -1,0 +1,4 @@
+# tests/saved.rs what_a_restoring_microvm_is_sent_goes_on_its_guests_dial: e8d19fc683cc, 5 files changed (crates/init/src/run.rs crates/shards/src/workload.rs crates/shards/tests/common/mod.rs crates/shards/tests/containers.rs crates/shards/tests/saved.rs ); 2026-11-12T23:34:48Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 49.64 70.64 78.22
+test what_a_restoring_microvm_is_sent_goes_on_its_guests_dial ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 3.07s
+## exit 0 after 7 s, 23:34:55
