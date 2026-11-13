@@ -98,16 +98,18 @@ D242.
 
 ### Light results
 
-One host, as the person's rule of 2026-11-13 has it: Linux x86_64 (adacachy, CachyOS 7.2.9,
-rustc 1.98.1), at bb88be4c8, the tree that lands.
+At 634d7f22d, this slice merged with main (the person's rule of 2026-11-13: focused tests,
+init's on Linux, where alone it runs, the rest on one host; ROOT's host rule moved them off
+adacachy). An earlier round at bb88be4c8 on adacachy, before the last merge, passed the same.
 
-| what ran | result |
-| --- | --- |
-| `cargo fmt --all --check` | clean |
-| `cargo clippy -p shards-init -p shards-abi -p shards-ipc -p shards-cmdline -p shards-testguest -p shards --all-targets -- -D warnings` | clean (tests/member_exec.rs's real-VM tests among what it compiled) |
-| `cargo test -p shards-init` | 235 passed, 1 ignored (the five `enter::tests` among them) |
-| `cargo test -p shards-abi -p shards-ipc -p shards-cmdline` | all pass (abi's `members::tests` among them) |
-| `cargo test -p shards --bin shards -- devices:: spec:: commands:: workload::` | 22 passed (`a_member_exec_takes_nothing_its_member_has_not`, `a_member_is_found_by_its_name`, `a_member_commands_variables_go_as_given_for_init_to_lay_over_its_members` among them) |
+| host | what ran | result |
+| --- | --- | --- |
+| Linux x86_64 (adacachy2, rustc 1.98.1) | `cargo clippy -p shards-init --all-targets -- -D warnings` | clean |
+| the same | `cargo test -p shards-init` | 235 passed, 1 ignored (the five `enter::tests` among them) |
+| macOS arm64 (adas-mac-studio-3, M4 Max) | `cargo fmt --all --check` | clean |
+| the same | `cargo clippy -p shards-abi -p shards-ipc -p shards-cmdline -p shards --all-targets -- -D warnings` | clean (tests/member_exec.rs's real-VM tests among what it compiled) |
+| the same | `cargo test -p shards-abi -p shards-ipc -p shards-cmdline` | all pass (abi's `members::tests` among them) |
+| the same | `cargo test -p shards --bin shards -- devices:: spec:: commands:: workload::` | 22 passed (`a_member_exec_takes_nothing_its_member_has_not`, `a_member_is_found_by_its_name`, `a_member_commands_variables_go_as_given_for_init_to_lay_over_its_members` among them) |
 
 ### Guards removed (R10)
 
@@ -166,8 +168,9 @@ KVM arm64 (the nested L1 path), HVF and WHP; shards-init's unit tests on arm64 L
   member's confinement steps, unmeasured here.
 - R09: a feature, not a defect: no defect to reproduce.
 - R10: above, every guard removed fails its test; the real-VM tests are ROOT's.
-- R11: init's code is Linux's, the same in every guest. Tested and linted on one host, as
-  the person's rule of 2026-11-13 has it (Linux x86_64, adacachy); CI on main runs the
-  eight-target matrix, ROOT's to watch; the real-VM legs owed above.
+- R11: init's code is Linux's, the same in every guest. Its tests and clippy ran on Linux
+  x86_64, the host's code's on macOS arm64, as the person's rule of 2026-11-13 has it; CI on
+  main runs the eight-target matrix, ROOT's to watch; the real-VM legs owed above.
 - R15: implementer's light runs only.
-- R16: build output under `~/g121-tmp/s6-exec-tty` (adacachy), removed when the step ends.
+- R16: build output under `~/g121-tmp/s6-exec-tty` (adacachy, removed), `~/g121-tmp/s6-member-exec`
+  (adacachy2) and `~/s6-member-exec` (adas-mac-studio-3), removed when the step ends.
