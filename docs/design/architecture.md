@@ -25011,6 +25011,119 @@ WHP; Hex's image_real with a box of no grants once Hex vendors this.
 **What would falsify it.** A member of such a run reaching anything past the microVM (then a
 network process told no policy is not at `DenyAll`), or one killed for its link.
 
+### D251. A lane to a socket of a run's own command: the agent-control endpoint's socket lane, carried over vsock by shards-init's relay (built: the endpoint, its controller, the VM process's leg and init's; the run host's endpoint is D252's; real-VM runs owed)
+
+**Why.** Hex's node runs under shards-init as the run's own command, its PID 1 kept (kiln plan
+01a1cd8e862e7169a074db3d5fa33f3d, step 39; Hex's `docs/design/node-under-shards-init.md` §5).
+Its host reaches the node through four AF_UNIX stream sockets its relay listens on in
+`/run/hex/channel`. The workload cannot reach vsock itself: the Docker default filter
+shards-init gives a run's command refuses `socket(AF_VSOCK)` (D238). D238 decided that a lane
+reaches its microVM over vsock and that shards-init's relay carries it on. This entry is that
+lane: OpenSSH's `direct-streamlocal@openssh.com` (PROTOCOL §2.4) in the endpoint's own terms.
+Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held to here.
+
+**Decided.**
+- *Its grant (default deny).* The run names one directory of its own command's sockets
+  (`sockets=<dir>`, `shards_abi::run::socket`): absolute and plain, as a member's working
+  directory is. A lane names one file in it: nonempty, no `.`, `..`, `/` or NUL, within
+  `NAME_MAX`. A run that names none opens no lane, and only the run's own command's root is
+  reached, never a member's. Init reads the grant as the run starts and refuses it in a run
+  without a command of its own (`ATTEND`).
+- *The endpoint* (`shards_remote::control::unix`). The lane's first frame is `UnixConnect`
+  (tag 5): the run, its generation and the name. A name that is no file name is refused
+  `Protocol` before the endpoint's host is asked. An endpoint that admits no socket lane, or
+  another run, is refused `Scope`, and another generation `Stale`. A lane past the run's
+  admitted `lanes` is refused `Capacity` (a new `Reason`, 6), never queued; the lanes its
+  controller already reset are let go first. The endpoint hands its host the ask
+  (`unix::Connect`). The host answers with the connected socket (`Connected`, tag 40, then the
+  socket's bytes raw both ways) or with its connect's errno (`Unreached`, tag 41, then the
+  lane's end).
+- *Its bytes.* Each way holds at most the admitted `window` in flight: the endpoint reads no
+  more of the controller than the socket's writer has room for, and the socket's reader reads
+  no more than the controller has taken. A stalled reader holds up its own lane alone (RFC 9000
+  §2.2, §4.1). Each way's end is that way's half-close: a FIN, the socket's
+  `shutdown(SHUT_WR)`. An abort either way is the other's: RESET_STREAM or STOP_SENDING; the
+  socket ended with `shards_ipc::end`, as M236 asks of a Mac. A write that fails resets the
+  lane, never ending it in order. The socket's writer and reader run on threads of their own,
+  woken into the endpoint's driver as exec's host is; the endpoint's end ends every socket.
+- *The controller* (`control::drive`). `Subscriptions::sockets` and `Dialed::sockets`;
+  `Sockets::connect(name)` answers a `Socket` or a typed `Fault`, `Fault::Unreached(errno)`
+  among them. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
+  reader and a writer for two threads). `Ok(0)` comes only at the socket's own FIN; a reset
+  reads as `ConnectionReset`, its `Fault` its source.
+- *Its scope.* An endpoint that serves its run's member streams knows its run and
+  generation, which an ask names. One that serves sockets alone knows only the keys its
+  connection pinned, and an ask there names the zero run and generation 0, as a controller of
+  sockets alone sends it.
+- *The VM process's leg.* Its owner asks with `LANE_OPEN` (shards_ipc 98: the lane's number
+  below 2^63, the name). The VM process asks its guest on the signal connection (run kind
+  `SOCKET`, 52: a fresh token, the lane's id and the name). The guest's connection to the exec
+  port, whose HELLO names that token, is the lane: it is matched in the exec port's registry as
+  an exec's is (`Target::Socket`), then the lane's status is read (an errno; 0 connected). On
+  Unix the connection is handed to the owner beside the answer, held until `LANE_HELD` (99)
+  says the owner has it (M24). On Windows, where a VM hands its owner no handle, it is relayed
+  onto the socket the owner's `LANE_HELD` gives, as `MANAGED_INPUT` is. What init refuses
+  before connecting anything comes back as `SOCKET_REFUSED` (53: id, errno), as `EXEC_FAILED`
+  does.
+- *shards-init's leg* (`crates/init/src/lanes.rs`). Each ask runs on a thread of its own, so a
+  connect waiting on a full backlog holds that lane alone. The thread resolves the path inside
+  the command's root (`/proc/PID/root` opened `O_PATH`, then openat2 `RESOLVE_IN_ROOT |
+  RESOLVE_NO_MAGICLINKS`, `crate::inroot`), so no link the command planted leads elsewhere. It
+  connects through the descriptor (`/proc/self/fd/N`), so the path is not resolved again and
+  `sun_path` bounds nothing. Then it dials the exec port, says its HELLO and status, and pumps
+  with relay.rs's pump, each way ended independently. Init's own refusals are errnos: EACCES
+  (no grant), EINVAL (no file name), ENAMETOOLONG (past `sun_path`, where nothing could be
+  bound), ESRCH (the command not running).
+- *The lanes of D254.* kiln's MCP lane (goal 58) reuses this relay in the other direction: a
+  listener init makes in the asking member's view, each accepted connection carried out the
+  same way, its number at or above 2^63 (`LANE_ACCEPTED`, 100, reserved).
+
+**Alternatives, and why not.**
+- *Host-initiated vsock* (`CONNECT <port>`, Firecracker's form, D238's wording): it needs a
+  host socket file per VM for the muxer to take clients on. Warm and orchestrated VMs have
+  none, and shards' interfaces are files the home holds (the filesystem rule). The guest's dial
+  to the exec port, token-gated, carries the same bytes through the same muxer, with the
+  registry, hand-off and Windows relay execs already use.
+- *An exec lane per connection* (D238's design (B)): a guest process for each of Hex's
+  connections, three per call in flight (Hex's §5).
+- *A published port into the workload*: the network path D238 declined for control.
+
+**Literals.** None chosen. `NAME_MAX` (255) and `PATH_MAX` (include/uapi/linux/limits.h);
+`sun_path`'s 108 bytes (unix(7)); TLS 1.3's largest handshake message, a uint24 and its
+four-byte head (RFC 8446 §4), with D180's datagrams and `tls::QUIET` (RFC 1122's R2) for a link
+of socket lanes alone, as the daemon's endpoints take them. The asks' bounds are the frame's
+own: its head, the run (32), the generation (8) and the name. Linux's errnos are
+asm-generic's, which every guest architecture shares. The window, the lanes and so every
+buffer are the caller's admission (R03).
+
+**Built and tested** (unit, focused).
+- shards-init on adacachy2 (Linux 7.3 x86_64, rustc 1.98.1): `lanes::tests`, 3 tests, among
+  them a root whose own path is past `sun_path`, a link out of the root, `..` past it, a file
+  that is no socket (ECONNREFUSED, af_unix.c `unix_find_bsd`), a socket nothing listens on, and
+  a root gone (ESRCH). Plus `run::` 17 and clippy for gnu and musl: clean.
+- adalundhe-macbook-pro (macOS arm64): shards-abi `run::socket` 5; shards-ipc's lib 57
+  (`every_message_kind_has_its_own_number` among them); the VM process's
+  `a_lane_is_the_connection_its_token_names_once_its_status_says_connected` and
+  `a_lanes_answer_says_its_status_by_its_number`, among workload and warm's 35; and
+  `daemon::managed` 37.
+- shards-remote `control::unix::tests`, Hex's six red tests: bytes exact both ways with each
+  half-close; ENOENT and ECONNREFUSED typed; bad names refused before the host is asked; a
+  reset each way; lanes past the admitted most refused `Capacity` until one ends; a stranger
+  `NotEnrolled`. Plus an endpoint of no socket lanes refusing one `Scope`, and the frames' own
+  tests.
+
+**Evidence owed** (ROOT, real VMs).
+- Hex's case (f), `nesting::a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller`
+  (with the run host's endpoint, D252), on HVF, KVM x86_64 and WHP.
+- The lane's throughput and round trip against D238's arm h numbers (control-end's harness).
+- Mutation of the grant's and the name's checks.
+
+**What would falsify it.**
+- A workload reaching a socket outside its root.
+- A lane's bytes reordered or lost.
+- A half-close turned into a full close.
+- A lane held past its window.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM

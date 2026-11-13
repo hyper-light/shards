@@ -43,6 +43,9 @@ pub const SUN_PATH: usize = 108;
 pub mod errno {
     /// The run's own command is not running: not yet started, or ended.
     pub const ESRCH: u32 = 3;
+    /// The lane's host could not carry what its guest connected (its descriptor, or a word
+    /// it could read).
+    pub const EIO: u32 = 5;
     /// The lane's relay could not have its buffers.
     pub const ENOMEM: u32 = 12;
     /// The run grants no sockets.

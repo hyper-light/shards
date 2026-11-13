@@ -44,7 +44,7 @@ pub mod unix;
 pub use crate::tls::Negotiated;
 pub use drive::{
     Controller, Dialed, Exec, ExecControl, Execs, Fault, Got, Hangup, Input, Link, Linked, Output, Socket,
-    Sockets, Subscriptions,
+    SocketReader, SocketWriter, Sockets, Subscriptions,
 };
 pub use unix::Admission as SocketAdmission;
 

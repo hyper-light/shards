@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 mod client;
 pub mod conformance;
+pub mod control;
 pub mod image;
 mod native;
 pub mod physical;

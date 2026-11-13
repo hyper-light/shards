@@ -35,8 +35,9 @@ pub use shards_abi::run::nesting::Ready;
 /// to before its microVM starts; 13, the CPU rate its orchestrator holds the run's vCPUs to
 /// (`RATE`, answered `RATED`; D191, D247), so that a side that holds none refuses the run as
 /// it is asked, before any rate is: a host of an earlier version ends a run at a frame it has
-/// no kind for.
-pub const VERSION: u8 = 13;
+/// no kind for; 14, the run's agent-control endpoint ([`Request::control`], [`Started::control`];
+/// D238, D251, D252), so that a side that binds none refuses the run as it is asked.
+pub const VERSION: u8 = 14;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -354,6 +355,40 @@ pub struct Request {
     /// hosts the injector may fill it in toward. Empty for a run with none, as every run
     /// is until an orchestrator asks for one (default deny).
     pub credentials: Vec<CredentialGrant>,
+    /// The run's agent-control endpoint (D252), bound by its host for this run alone; none,
+    /// and it has none. Appended in version 14.
+    pub control: Option<ControlAsk>,
+}
+
+/// What a run's agent-control endpoint takes and serves (D252): the one key it takes, its
+/// controller's, and the lanes to the run's own command's sockets (D251).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlAsk {
+    /// The SHA-256 of the controller's key (D180's raw public key, RFC 7250): the one key the
+    /// endpoint takes.
+    pub controller: [u8; 32],
+    /// The run's socket directory and what it admits of lanes to it; none, and none.
+    pub sockets: Option<SocketGrant>,
+}
+
+/// The one directory of the run's own command's sockets its controller may reach (D251), and
+/// what the run admits of lanes to them (R03: the caller's numbers).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SocketGrant {
+    /// Absolute and plain, in the command's root (`shards_abi::run::socket::dir_ok`).
+    pub dir: String,
+    /// The most lanes open at once.
+    pub lanes: u32,
+    /// Each lane's bytes in flight each way.
+    pub window: u32,
+}
+
+/// Where a run's agent-control endpoint is bound, and the SHA-256 of its microVM's own key,
+/// which its controller pins (D252).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlAt {
+    pub address: SocketAddr,
+    pub vm: [u8; 32],
 }
 
 /// Room for `bytes` more of member `member`'s `channel`.
@@ -420,6 +455,9 @@ pub struct Receiving {
 pub struct Started {
     pub members: Vec<MemberInfo>,
     pub published: Vec<Bound>,
+    /// Where the run's endpoint is bound, where it asked for one (D252); appended in version
+    /// 14.
+    pub control: Option<ControlAt>,
 }
 
 /// Why the run host will not run it, typed by what failed: the client maps each to its
@@ -1208,6 +1246,24 @@ impl Request {
                 }
             }
         }
+        // The run's agent-control endpoint, appended in version 14 (D252): whether it asks one,
+        // its controller's key, then whether it grants sockets, their directory and admission.
+        match &self.control {
+            None => w.u8(0),
+            Some(control) => {
+                w.u8(1);
+                w.0.extend_from_slice(&control.controller);
+                match &control.sockets {
+                    None => w.u8(0),
+                    Some(grant) => {
+                        w.u8(1);
+                        w.text(&grant.dir)?;
+                        w.u32(grant.lanes);
+                        w.u32(grant.window);
+                    }
+                }
+            }
+        }
         w.done()
     }
 
@@ -1344,6 +1400,22 @@ impl Request {
         } else {
             None
         };
+        // The run's agent-control endpoint, appended in version 14 (D252).
+        let control = if r.flag()? {
+            let controller = r.array::<32>()?;
+            let sockets = if r.flag()? {
+                Some(SocketGrant {
+                    dir: r.text()?,
+                    lanes: r.u32()?,
+                    window: r.u32()?,
+                })
+            } else {
+                None
+            };
+            Some(ControlAsk { controller, sockets })
+        } else {
+            None
+        };
         r.end()?;
         Ok(Request {
             image,
@@ -1357,6 +1429,7 @@ impl Request {
             nesting,
             ready_by,
             credentials,
+            control,
         })
     }
 }
@@ -1516,6 +1589,16 @@ impl Started {
                 w.u16(r.port);
             }
         }
+        // Where the run's endpoint is bound and its microVM's key, appended in version 14.
+        match &self.control {
+            None => w.u8(0),
+            Some(at) => {
+                w.u8(1);
+                w.ip(Some(at.address.ip()));
+                w.u16(at.address.port());
+                w.0.extend_from_slice(&at.vm);
+            }
+        }
         w.done()
     }
 
@@ -1556,8 +1639,25 @@ impl Started {
                 to,
             });
         }
+        let control = if r.flag()? {
+            let ip = r.ip()?.ok_or(WireError::Tag {
+                what: "an endpoint's address",
+                tag: 0,
+            })?;
+            let port = r.u16()?;
+            Some(ControlAt {
+                address: SocketAddr::new(ip, port),
+                vm: r.array::<32>()?,
+            })
+        } else {
+            None
+        };
         r.end()?;
-        Ok(Started { members, published })
+        Ok(Started {
+            members,
+            published,
+            control,
+        })
     }
 }
 
@@ -2195,6 +2295,7 @@ mod tests {
             nesting: false,
             ready_by: None,
             credentials: Vec::new(),
+            control: None,
         }
     }
 
@@ -2345,6 +2446,7 @@ mod tests {
                     ],
                 },
             ],
+            control: None,
         };
         assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
         let bytes = started.encode().unwrap();
@@ -3031,5 +3133,78 @@ mod tests {
         let mut long = run::header(1, run::MAX_PAYLOAD).to_vec();
         long[4..8].copy_from_slice(&(run::MAX_PAYLOAD + 1).to_be_bytes());
         assert!(read_frame(&mut &long[..]).is_err());
+    }
+
+    /// A run asked of `control`, otherwise as Hex asks for its node VM (joint plan step 39):
+    /// its init the run's own command under the nesting grant.
+    fn asked(control: Option<ControlAsk>) -> Request {
+        Request {
+            image: "hex-node@sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+            vcpus: 2,
+            memory_mib: 2048,
+            command: Some(vec!["/init".into()]),
+            members: Vec::new(),
+            publish: Vec::new(),
+            egress: Narrowing::default(),
+            shares: Vec::new(),
+            nesting: true,
+            ready_by: None,
+            credentials: Vec::new(),
+            control,
+        }
+    }
+
+    /// Step 11 (b), D252 (Hex's acceptance): the run's control ask crosses the image channel
+    /// whole, at its next version, and a run that asks none encodes as one at v13 did but for
+    /// its version byte: control is absent, never a default. The controller's key, the socket
+    /// grant's directory and both its numbers are read back exactly.
+    #[test]
+    fn a_runs_control_ask_crosses_the_image_channel_whole() {
+        assert_eq!(VERSION, 14, "the channel's next version carries the control ask");
+        for control in [
+            None,
+            Some(ControlAsk {
+                controller: [9u8; 32],
+                sockets: None,
+            }),
+            Some(ControlAsk {
+                controller: [9u8; 32],
+                sockets: Some(SocketGrant {
+                    dir: "/run/hex/channel".into(),
+                    lanes: 8,
+                    window: 65_536,
+                }),
+            }),
+        ] {
+            let request = asked(control);
+            assert_eq!(Request::decode(&request.encode().unwrap()).unwrap(), request);
+        }
+        // None asked: one byte past v13's encoding, its absence.
+        let none = asked(None).encode().unwrap();
+        assert_eq!(none.last(), Some(&0));
+    }
+
+    /// Step 11 (b), D252: a started run tells where its endpoint is bound and the microVM's own
+    /// key, which the controller pins; a run asked for no endpoint tells none.
+    #[test]
+    fn a_started_run_tells_where_its_endpoint_is_and_its_vms_key() {
+        for control in [
+            None,
+            Some(ControlAt {
+                address: "127.0.0.1:40123".parse().unwrap(),
+                vm: [3u8; 32],
+            }),
+            Some(ControlAt {
+                address: "[::1]:40123".parse().unwrap(),
+                vm: [4u8; 32],
+            }),
+        ] {
+            let started = Started {
+                members: Vec::new(),
+                published: Vec::new(),
+                control,
+            };
+            assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
+        }
     }
 }
