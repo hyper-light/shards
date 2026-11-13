@@ -1700,7 +1700,7 @@ impl<'a> Parser<'a> {
         };
         if too_big {
             let l = self.loc();
-            self.error(l, number::TOO_BIG.0.into());
+            self.error(l, number::TOO_BIG.to_string());
             return None;
         }
         Some(Term::new(TermValue::Number(Number(s.into())), loc))

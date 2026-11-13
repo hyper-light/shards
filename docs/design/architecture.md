@@ -19827,6 +19827,12 @@ Measured differences, kept:
 - Rule indices with more than 8 distinct refs or keys range over Go's larger maps in
   hash order, which can't be reproduced. Lookups there may list rules in another of the
   orders OPA could take.
+- A number whose text would take more to write than the evaluation can hold is refused
+  (`number too large to write: …`, below). OPA writes it, in minutes to hours and
+  gigabytes, or ends as its memory runs out (`bits.lsh` past it: `makeslice`). Up to the
+  bound, OPA's answer, byte for byte (M537).
+- Go reads a number past its exponents (1e646456993 on) as ±Inf, which OPA writes as
+  `+Inf`; shards refuses it ("exponent overflow"), making no infinities.
 
 Hostile policies. A policy may be anyone's (a remote context's, D111), so the engine is
 held to more than OPA's answers:
@@ -19867,7 +19873,7 @@ held to more than OPA's answers:
   `number.rs`'s tests hold the leading digits and the shortest decimal to the exact
   decimals, and the bounds to the powers they bound. M524's Open (`floor`, `ceil`, `round`
   and integer formatting of such a number, whose answer is all of an integer's digits;
-  numbers past 1e536870938 refused where Go reads them) is closed below (M526).
+  numbers past 1e536870938 refused where Go reads them) is closed below (M526, M537).
 - The rewrite of local variables walked as OPA's does, and OPA's way is exponential:
   rewriteEveryStatement (ast/compile.go) rewrites a statement's body, then walks the
   whole statement again (rewriteDeclaredVarsInExpr), whose walk rewrites each
@@ -19924,31 +19930,96 @@ held to more than OPA's answers:
     failed (M524's Open). A 5^n past Go's exponents is +Inf, and z over it zero, so
     `-1e-1000000000` reads as -0. The parser says "number too big" for a literal Go reads
     as ±Inf, as OPA's does.
-  - An exact integer whose MantExp is past 10^5 (`number::MAX_EXPONENT`) is not made: its
-    decimal is all its digits, a num-bigint conversion growing faster than their count
-    (near n^1.8 here), where the text above writes leading digits and zeros. `floor`,
-    `ceil`, `round`, `rem`, `bits.*`, `numbers.range*`, `format_int` and `units.parse*`
-    fail with "number too big", the error OPA's parser gives such a literal
-    (`ast/parser.go` `parseNumber`, v1.14.1); `time.*` keep OPA's "timestamp too big".
-    The bound is OPA's own on a number in Rego source, set for this cost
-    (golang/go#11068), so no builtin makes an integer a policy could not write. At it,
-    `ceil` and `round` answer in about 80 ms. Past it OPA's cost grows with the
-    exponent's value: 41.7 s for `ceil(1e3000000)`, 10.4 s for the fuzzer's
-    `ceil(266000000e2028020)`; ASan's fuzzer passed 2 GB on such integers (M524's Open).
-    Alternatives: Go's big.Float range (MaxExp 2^31: integers of 646 million digits, hours
-    in OPA and here); Go's big.Rat limits (10^7 bits: 23 s for one conversion here); a
-    conversion lean in memory (M524's Open), which bounds memory but not the time a
-    number's size asks. The difference from OPA: OPA writes those integers, in time
-    growing with the exponent's value, or panics (`bits.lsh` past its memory,
-    `makeslice`); shards refuses them. `bits.lsh`'s chosen limit of 2^32 bits gives way
-    to the same bound.
+  - An exact integer was capped here at a MantExp of 10^5 (`number::MAX_EXPONENT`,
+    "number too big" from `floor`, `ceil`, `round`, `rem`, `bits.*`, `numbers.range*`,
+    `format_int` and `units.parse*`; ci-rego's 944f16220, merged at 5e53d5e3a). That
+    cap is superseded (M537, the next bullet): 10^5 is OPA's parser's limit on Rego
+    source literals, not on numbers from input or data, whose integers OPA does write
+    (`ceil(266000000e2028020)` in 10.4 s, the fuzzer's `abs` in 63.4 s and 447 MB). A
+    cap on outputs changed answers OPA gives, on an upstream constant with no basis in
+    shards' resources (R03). Every digit is now written as far as the evaluation can
+    hold them, and refused past that by name. `number::MAX_EXPONENT` bounds the parser's
+    literals alone, as OPA's does; `time.*` keep OPA's "timestamp too big".
   - `numbers.range` stays unbounded, as OPA's. The fuzz target asks it for at most one
     number per byte of its input.
+- An integer's every digit, and what writing a number may hold (M537; `digits.rs`).
+  `floor`, `ceil`, `round` and `format_int` of a float past its halves answer all of its
+  integer's digits, as do `rem`, `bits.*`, `numbers.range*` and `units.parse*` of such
+  numbers. Go's `Text` made the integer's decimal and both neighbours' whole: three
+  num-bigint conversions of the fuzzer's 96.9-Mbit integer, whose Burnikel-Ziegler
+  division clones its operands at each level, ASan's fuzzer past 2 GB (M524's Open).
+  - One conversion: an integer whose precision holds it whole is its own shortest
+    decimal, as no other integer lies within half an ulp of it, and no decimal of as
+    few digits but an integer.
+  - Lean: Brent and Zimmermann's FastIntegerInput (Modern Computer Arithmetic, 2010,
+    §1.7.2, algorithm 1.25) computing in base 10^19 on the 64-bit limbs. A block of
+    2^(k+1) limbs is its upper half times T[k] = 2^(64·2^k), plus its lower half.
+    Products with an operand past `SCHOOL` (163) limbs are cyclic convolutions by
+    number-theoretic transforms modulo the three largest primes c·2^32 + 1 below 2^62
+    (transforms to 2^32 points; their product, past 2^185, exceeds any coefficient of
+    such a transform), joined by Garner's algorithm; Möller and Granlund's reciprocal
+    divides by 10^19. One scratch, made once for the largest transform, serves every
+    product. Blocks of zero or one bits cost no product: the integers here are a
+    mantissa times a power of two, or a few of them joined. `SCHOOL` is the least size
+    past which the transforms measured cheaper at every size, s by s and s by 64·s, on
+    both hosts: 73 on arm64 macOS, 164 on x86_64 Linux (M537).
+  - The converter writes every size. num-bigint's `to_str_radix` measured the cheaper
+    for most dense random integers below 44,842 limbs on macOS (the converter the
+    cheaper at every size from there), and to 2^19 limbs at least on x86_64, whose `div`
+    instruction it divides by a limb with. It was not taken there: its division clones
+    its operands at each level, which this decision rules out, and where it wrote below
+    2^20 limbs, 56 of the 108 integers `tests/text_memory.rs` holds to the bound passed
+    the bound as it then stood (the larger of the two phases below), by up to 18%. For
+    the integers builtins write, sparse, the converter is the cheaper: `floor(1e10000000)`
+    0.49 s here, 5.9 s through num-bigint, on one Mac (M537).
+  - The bound. No budget bounds an evaluation: OPA's sets none, buildx's none, and
+    this record's evaluation none. So the bound is the evaluation's own memory,
+    `funcs::Context::holdable`. The policy layer sets it, as each query starts, to
+    `build::holdable()`: what the host has available, its memory where it says not
+    (Linux's MemAvailable, macOS's `kern.memorystatus_level` of its memory, Windows'
+    `ullAvailPhys`). The daemon bounds a read it cannot size beforehand by the same
+    measure. The fuzz targets set it to libFuzzer's `-rss_limit_mb` (2048 by default, as
+    CI passes it), less the process's peak RSS, which libFuzzer holds to that limit,
+    less AddressSanitizer's quarantine (`quarantine_size_mb`, 256 MiB by default), and
+    less its shadow, a byte for every 8 (`fuzz_targets/holdable.rs`).
+  - What writing takes, against it: `digits::need(bits)`, an upper bound on every byte a
+    write allocates, each vector by its capacity. While converting: the powers T[k], the
+    value's limbs three times (the parts held, a product of them, and what the
+    allocator keeps of a chain's freed results), a copy of the largest power for a block
+    of ones, and the scratch at 4.5 words a point. Then, on top of those, as an allocator
+    may keep what the conversion gave back (macOS's did: 170.1 MiB of physical footprint
+    for the fuzzer's number, against 131.5 MiB, the larger of the two phases), the text
+    and its caller's copy (`Rc<str>` from a String). `tests/text_memory.rs` counts every
+    allocation through a global allocator, at 108 integers dense, sparse and of ones
+    about each level's size: each peak within 0.65 of the bound on macOS arm64, and the
+    test, which holds each to the bound, passed on x86_64 Linux too. Whole calls, one a
+    process (`text/run.sh`), decimal writes from 10^6 digits to Go's last finite power
+    of ten, the process's parse and the harness's JSON copy of the answer counted, past
+    its start: macOS's physical footprint 0.64 to 0.96 of the bound, Linux's resident
+    0.57 to 0.67. A float's text from its leading digits (`abs` and the arithmetic) takes
+    twice its length; `format_int` in bases 2, 8 and 16 twice its length (the text, reserved
+    exactly, and its copy); `bits.*` and `numbers.range*` need and their operands' limbs,
+    refused before those are made; `number::int`, its limbs. What a caller makes of an
+    answer afterwards (a JSON copy of it) is the caller's.
+  - Past the bound, refused, typed (`number::Error::Unholdable`) and named:
+    `number too large to write: the text of a N-bit number takes M bytes to make, more
+    than the L bytes this evaluation can hold`, an eval_builtin_error of the builtin.
+    No answer is cut short, and none is made past what the evaluation can hold.
+  - Byte for byte OPA's (`scripts/rego/generate numbers`, OPA v1.14.1, Go 1.26.1): 131
+    builtin calls on numbers of up to the fuzzer's 29 million digits, among them
+    floor, ceil, round, format_int, bits, rem and units, and 73 readings, Go's
+    `Text('p', 0)`, across Go's finite exponents. 1e536870939 through 1e646456992 read as
+    Go reads them (ci-rego's `pow5` above). The fuzzer's number through `floor`: 1.7 s
+    and 170 MiB on macOS arm64 (M4 Max), 4.9 s and 111 MiB on x86_64 Linux (i9-14900HX);
+    Go's `Text` of it took 63.4 s and 447 MB (M524, an M5 Max). `floor` of Go's largest
+    finite power of ten, 646,456,993 digits: 76 s and 4.2 GiB on macOS, 205 s and 2.9 GiB
+    on Linux (M537).
 - Left: a rule whose local-variable rewrite errs is rewritten OPA's way, so an
   erroring rule of `every` statements and comprehensions alternating takes OPA's time.
-  Evaluation asks no bound of a policy, as OPA's does not (`numbers.range` over any
-  span); a build's policies run in its own process, which Ctrl-C ends, as buildx's end
-  with its build's context.
+  Evaluation asks no bound of a policy's time, as OPA's does not (`numbers.range` over
+  any span); its memory bounds what writing a number may hold (above). A build's
+  policies run in its own process, which Ctrl-C ends, as buildx's end with its build's
+  context.
 
 ### D97. OSI artifacts of several platforms: an index
 

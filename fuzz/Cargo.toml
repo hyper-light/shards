@@ -13,6 +13,8 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
+# fuzz_targets/holdable.rs: the process's peak RSS, which libFuzzer limits (getrusage).
+libc = "0.2"
 libfuzzer-sys = "0.4"
 shards-cmdline = { path = "../crates/cmdline" }
 shards-image = { path = "../crates/image" }

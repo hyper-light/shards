@@ -711,6 +711,7 @@ version = "0.1.0"
 name = "shards-fuzz"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "libfuzzer-sys",
  "shards-cmdline",
  "shards-image",

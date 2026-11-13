@@ -34,9 +34,12 @@ impl Number {
         Float::parse(&self.0)
     }
 
-    /// `builtins.FloatToNumber`.
-    pub fn from_float(f: &Float) -> Number {
-        Number(f.text(if f.is_int() { b'f' } else { b'g' }).into())
+    /// `builtins.FloatToNumber`; refused where its text would hold more than `holdable`
+    /// bytes (D98's number-text bound).
+    pub fn from_float(f: &Float, holdable: u64) -> Result<Number, number::Error> {
+        Ok(Number(
+            f.text(if f.is_int() { b'f' } else { b'g' }, holdable)?.into(),
+        ))
     }
 }
 
