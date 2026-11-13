@@ -110,6 +110,20 @@ pub(crate) struct Plan {
     /// where it was told none, its host's own CPU.
     #[serde(default)]
     pub baseline: shards_vmm::arch::cpu::Id,
+    /// The CPU its snapshot was saved on, where its hypervisor restores a snapshot only on
+    /// that CPU (WHP: `cpuid::IDENTITY`'s leaves, D245), for the machine moved to to check
+    /// before anything moves. Empty elsewhere, and from a daemon of an earlier build.
+    #[serde(default)]
+    pub cpu_identity: shards_vmm::arch::cpu::Id,
+    /// The ports its run publishes on its machine's addresses, as its run asked for them
+    /// (`run -p`), which its restore binds again as a start does, and the network whose host
+    /// address a binding that names none takes: for the machine moved to to check before
+    /// anything moves. None where it bound no host port, and from a daemon of an earlier
+    /// build.
+    #[serde(default)]
+    pub published: Vec<Published>,
+    #[serde(default)]
+    pub network: String,
 }
 
 /// What a run keeps the CPU baseline its guest was told in, in its container's directory
@@ -299,6 +313,17 @@ fn cpu_lacks<'a>(ran_on: &'a [String], here: &[String]) -> Vec<&'a str> {
         .collect()
 }
 
+/// A port a run publishes on its machine's addresses, as `run -p` asked for it (its
+/// request's `shards_ipc::Publish`): the guest's port and protocol, and the host's address
+/// and port or range, empty where not given.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Published {
+    pub port: u16,
+    pub proto: String,
+    pub host_ip: String,
+    pub host_port: String,
+}
+
 /// A file a snapshot restores against, by its name relative to the home, its length and
 /// its bytes' SHA-256.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,6 +374,9 @@ pub(crate) enum Refused {
     Cpu { name: String, short: Vec<CpuShort> },
     /// The CPU baseline its guest was told is another vendor's than this machine's CPU.
     CpuVendor { name: String },
+    /// This machine's CPU is not the one its snapshot was saved on, which its hypervisor
+    /// restores a snapshot only on (WHP).
+    CpuIdentity { name: String },
     /// This machine's CPU lacks these features, as its OS names them, which its guest may
     /// have used where it ran.
     Features { name: String, lacks: Vec<String> },
@@ -360,6 +388,16 @@ pub(crate) enum Refused {
     VolumeTaken { name: String, volume: String },
     /// A host path it binds is not on this machine.
     BindAbsent { name: String, path: String },
+    /// A port it publishes cannot be bound on this machine, as its restore would bind it:
+    /// the binding as its run asked for it, and why.
+    PortTaken {
+        name: String,
+        port: u16,
+        proto: String,
+        host_ip: String,
+        host_port: String,
+        why: String,
+    },
 }
 
 /// A field of the CPU a guest was told that this machine's hypervisor shows less of.
@@ -394,6 +432,21 @@ fn baseline_refused(
     shards_vmm::arch::cpu::covers(here, baseline)
         .err()
         .map(|lacks| cpu_refused(name.to_string(), lacks))
+}
+
+/// Whether this machine's hypervisor restores a snapshot only on the CPU it was taken on: WHP
+/// on x86-64 (hv::whp's state.rs), which a move checks before anything moves (D245). WHP on
+/// arm64 tells a guest its ID registers, as KVM and Hypervisor.framework do.
+fn restores_on_its_own_cpu_alone() -> bool {
+    cfg!(target_arch = "x86_64") && shards_vmm::hv::BACKEND == Some("whp")
+}
+
+/// What a machine whose hypervisor restores a snapshot only on the CPU it was taken on, and
+/// whose CPU is `here`, refuses of microVM `name`, saved on `theirs` (D245): any other CPU.
+fn identity_refused<T: PartialEq>(name: &str, here: &[T], theirs: &[T]) -> Option<Refused> {
+    (here != theirs).then(|| Refused::CpuIdentity {
+        name: name.to_string(),
+    })
 }
 
 /// What `lacks`, of this build's architecture, refuses of microVM `name`'s CPU baseline.
@@ -513,6 +566,10 @@ impl std::fmt::Display for Refused {
                 f,
                 "{name}'s CPU baseline is another vendor's CPU than this machine's: no CPUID makes one vendor's CPU another's"
             ),
+            Refused::CpuIdentity { name } => write!(
+                f,
+                "this machine's CPU is not the one {name} was saved on, and the Windows Hypervisor Platform restores a snapshot only on that CPU"
+            ),
             Refused::Features { name, lacks } => write!(
                 f,
                 "this machine's CPU lacks {}, which {name}'s guest may have used where it ran",
@@ -528,6 +585,24 @@ impl std::fmt::Display for Refused {
                 f,
                 "{path}, which {name} binds, is not on this machine: a move takes a bind's host path shared at the same place"
             ),
+            Refused::PortTaken {
+                name,
+                port,
+                proto,
+                host_ip,
+                host_port,
+                why,
+            } => {
+                let at = if host_ip.is_empty() {
+                    format!("port {host_port}")
+                } else {
+                    format!("{host_ip}:{host_port}")
+                };
+                write!(
+                    f,
+                    "{name} publishes its port {port}/{proto} at {at}, which this machine cannot bind: {why}"
+                )
+            }
         }
     }
 }
@@ -565,9 +640,10 @@ fn platform_refused(plan: &Plan, arch: &str, hypervisor: Option<&str>, format: u
     None
 }
 
-/// Why `ready` answers no [`Needs`]: it refuses the move, or it could not tell.
+/// Why `ready` answers no [`Needs`]: it refuses the move, or it could not tell. A refusal is
+/// boxed, as its variants carry what refused it whole and the answer is otherwise a string.
 enum Unready {
-    Refused(Refused),
+    Refused(Box<Refused>),
     Failed(String),
 }
 
@@ -579,7 +655,7 @@ impl From<String> for Unready {
 
 impl From<Refused> for Unready {
     fn from(refused: Refused) -> Unready {
-        Unready::Refused(refused)
+        Unready::Refused(Box::new(refused))
     }
 }
 
@@ -1131,6 +1207,9 @@ impl<D: Disk> Daemon<D> {
                     return 1;
                 }
             },
+            Some("cpu") if restores_on_its_own_cpu_alone() => {
+                Err(shards_vmm::vm::NO_BASELINE_ON_WHP.to_string())
+            }
             Some("cpu") => self.host_cpu_id().map(|id| shards_vmm::arch::cpu::encode(&id)),
             Some("export") => self.move_export(args.get(1..).unwrap_or_default(), asker),
             Some("import") => self.move_import(args.get(1..).unwrap_or_default(), asker),
@@ -1155,6 +1234,9 @@ impl<D: Disk> Daemon<D> {
     fn move_save(&self, reference: &str) -> Result<String, String> {
         let id = self.resolve(reference)?;
         self.await_start(&id);
+        // On WHP its plan names this CPU (`exact_cpu`), asked of the VM process once a
+        // daemon: asked before the save, not in the time the microVM runs nowhere.
+        let _ = self.exact_cpu();
         let snapshot = if self.running(&id) {
             let (_, name) = self
                 .save_snapshot(reference, None, false)
@@ -1228,6 +1310,7 @@ impl<D: Disk> Daemon<D> {
             "moved-{}",
             shards_cmdline::format::rfc3339_at(now, 0).replace(':', "-")
         );
+        let (published, network) = self.published_of(&c);
         let plan = Plan {
             id: c.id.clone(),
             name: c.name.clone(),
@@ -1244,6 +1327,9 @@ impl<D: Disk> Daemon<D> {
             cpu: host_cpu(),
             guest: self.boots_stored_guest(&c.id),
             baseline: read_baseline(&lock(&self.containers).dir(&c.id).join(RUN_BASELINE)),
+            cpu_identity: self.exact_cpu(),
+            published,
+            network,
         };
         serde_json::to_string(&plan).map_err(|e| e.to_string())
     }
@@ -1456,6 +1542,7 @@ impl<D: Disk> Daemon<D> {
         }
         volumes.sort();
         volumes.dedup();
+        let (published, network) = self.published_of(&c);
         Ok(Plan {
             id: c.id.clone(),
             name: c.name.clone(),
@@ -1472,6 +1559,23 @@ impl<D: Disk> Daemon<D> {
             cpu: host_cpu(),
             guest: self.boots_stored_guest(id),
             baseline: read_baseline(&lock(&self.containers).dir(id).join(RUN_BASELINE)),
+            cpu_identity: self.exact_cpu(),
+            published,
+            network,
+        })
+    }
+
+    /// The CPU a snapshot saved here may be restored on alone, for a plan to carry (D245):
+    /// this machine's, where its hypervisor restores a snapshot only on the CPU it was taken
+    /// on (WHP on x86-64); none elsewhere. Where its VM process cannot say, none: the machine moved to
+    /// then finds another CPU at the restore, as with a plan of an earlier build.
+    fn exact_cpu(&self) -> shards_vmm::arch::cpu::Id {
+        if !restores_on_its_own_cpu_alone() {
+            return Default::default();
+        }
+        self.host_cpu_id().unwrap_or_else(|e| {
+            super::log(format!("a move's plan names no CPU: {e}"));
+            Default::default()
         })
     }
 
@@ -1508,6 +1612,66 @@ impl<D: Disk> Daemon<D> {
         Ok(HOST.get_or_init(|| asked).clone())
     }
 
+    /// The ports container `c`'s run publishes on this machine's addresses, as its request
+    /// asked for them, and its network: none where its run bound no host port (no `-p`, or a
+    /// network whose members' ports are not the host's).
+    fn published_of(&self, c: &Container) -> (Vec<Published>, String) {
+        if !c.ports.iter().any(|p| p.public != 0) {
+            return (Vec::new(), String::new());
+        }
+        let dir = lock(&self.containers).dir(&c.id);
+        let Some(run) = std::fs::read(dir.join(super::REQUEST))
+            .ok()
+            .and_then(|b| shards_ipc::Run::decode(&b))
+        else {
+            return (Vec::new(), String::new());
+        };
+        let published = run
+            .publish
+            .iter()
+            .map(|p| Published {
+                port: p.port,
+                proto: p.proto.clone(),
+                host_ip: p.host_ip.clone(),
+                host_port: p.host_port.clone(),
+            })
+            .collect();
+        (published, run.network)
+    }
+
+    /// The first port `plan`'s microVM publishes that this machine cannot bind as a start
+    /// binds it (`publish::bind`: the address its binding names, else its network's, else
+    /// every one; a port of its range; this daemon's own runs' addresses as `in_use` says),
+    /// refused by what it is. The sockets go at once: its restore binds them again, and stays
+    /// what fails the move should another program take one meanwhile.
+    fn ports_refused(&self, plan: &Plan) -> Option<Refused> {
+        let default = self.user_network(&plan.network).and_then(|n| n.host_binding());
+        plan.published.iter().find_map(|p| {
+            let binding = shards_ipc::Publish {
+                port: p.port,
+                proto: p.proto.clone(),
+                host_ip: p.host_ip.clone(),
+                host_port: p.host_port.clone(),
+            };
+            super::publish::bind(
+                std::slice::from_ref(&binding),
+                &[],
+                default,
+                super::publish::v6_listenable(),
+                |at, proto| self.in_use(at, proto),
+            )
+            .err()
+            .map(|why| Refused::PortTaken {
+                name: plan.name.clone(),
+                port: p.port,
+                proto: p.proto.clone(),
+                host_ip: p.host_ip.clone(),
+                host_port: p.host_port.clone(),
+                why,
+            })
+        })
+    }
+
     /// Whether container `id`'s run boots the guest its home stores: its request names no
     /// kernel (`--kernel`, `SHARDS_KERNEL`).
     fn boots_stored_guest(&self, id: &str) -> bool {
@@ -1530,6 +1694,14 @@ impl<D: Disk> Daemon<D> {
             shards_vmm::hv::BACKEND,
             shards_vmm::snapshot::FORMAT,
         ) {
+            return Err(refused.into());
+        }
+        // On WHP its CPU first: a restore there takes only the CPU its snapshot was saved on
+        // (hv::whp's state.rs), checked here rather than after the whole stream (D245).
+        if !plan.cpu_identity.is_empty()
+            && restores_on_its_own_cpu_alone()
+            && let Some(refused) = identity_refused(&plan.name, &self.host_cpu_id()?, &plan.cpu_identity)
+        {
             return Err(refused.into());
         }
         // Its CPU: every feature of the machine it ran on, as its guest may have used any.
@@ -1570,6 +1742,11 @@ impl<D: Disk> Daemon<D> {
                 path: bind.clone(),
             }
             .into());
+        }
+        // Its published ports, which its restore binds again as a start does: one this
+        // machine cannot bind failed the move only after the whole stream.
+        if let Some(refused) = self.ports_refused(&plan) {
+            return Err(refused.into());
         }
         // Its image, by the digest its name resolved to: here, or pulled by it.
         let image = self.moved_image(&plan, asker, reply);
@@ -2088,6 +2265,9 @@ mod tests {
             cpu: Vec::new(),
             guest: false,
             baseline: Vec::new(),
+            cpu_identity: Vec::new(),
+            published: Vec::new(),
+            network: String::new(),
         }
     }
 
@@ -2139,6 +2319,31 @@ mod tests {
                 here: format + 1,
             })
         );
+    }
+
+    /// A machine whose hypervisor restores a snapshot only on the CPU it was taken on (WHP)
+    /// refuses a microVM saved on another, by name, and takes one saved on its own; a plan of
+    /// an earlier build, which names no CPU, reads back naming none, which no machine checks
+    /// before its restore (D245).
+    #[test]
+    fn a_microvm_saved_on_another_cpu_is_refused_where_a_restore_takes_only_its_own() {
+        let (here, other) = (
+            [[1u32, 0, 0, 0x00a6_0f12, 0, 0, 0]],
+            [[1u32, 0, 0, 0x00b4_0f40, 0, 0, 0]],
+        );
+        assert_eq!(identity_refused("web", &here, &here), None);
+        assert_eq!(
+            identity_refused("web", &here, &other),
+            Some(Refused::CpuIdentity { name: "web".into() })
+        );
+        assert_eq!(
+            identity_refused("web", &here, &here[..0]),
+            Some(Refused::CpuIdentity { name: "web".into() })
+        );
+        let mut earlier = serde_json::to_value(plan()).unwrap();
+        earlier.as_object_mut().unwrap().remove("cpu_identity");
+        let earlier: Plan = serde_json::from_value(earlier).unwrap();
+        assert!(earlier.cpu_identity.is_empty());
     }
 
     /// A refusal goes as JSON, tagged by what refused it, and reads back as it went; its
@@ -2201,6 +2406,23 @@ mod tests {
                 Refused::CpuVendor { name: "web".into() },
                 "web's CPU baseline is another vendor's CPU than this machine's: no CPUID makes \
                  one vendor's CPU another's",
+            ),
+            (
+                Refused::PortTaken {
+                    name: "web".into(),
+                    port: 80,
+                    proto: "tcp".into(),
+                    host_ip: "127.0.0.1".into(),
+                    host_port: "8080".into(),
+                    why: "Bind for 127.0.0.1:8080 failed: port is already allocated".into(),
+                },
+                "web publishes its port 80/tcp at 127.0.0.1:8080, which this machine cannot \
+                 bind: Bind for 127.0.0.1:8080 failed: port is already allocated",
+            ),
+            (
+                Refused::CpuIdentity { name: "web".into() },
+                "this machine's CPU is not the one web was saved on, and the Windows Hypervisor \
+                 Platform restores a snapshot only on that CPU",
             ),
             (
                 Refused::Features {

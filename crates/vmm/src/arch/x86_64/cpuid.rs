@@ -456,6 +456,24 @@ const FEATURES: &[(u32, u32, &[u8])] = &[
     (0x8000_0021, 0, &[3]),
 ];
 
+/// The CPUID leaves that say which CPU a snapshot was taken on, as the Windows Hypervisor
+/// Platform describes it to a partition's guest: its vendor and family, its features, its
+/// XSAVE components and its address sizes. Not its caches, which a hybrid host's cores
+/// describe apart (PM M258). WHP restores a snapshot only where these are the same (hv::whp's
+/// state.rs), which a move checks before anything moves (D245).
+pub const IDENTITY: &[(u32, u32)] = &[
+    (0, 0),
+    (1, 0),
+    (7, 0),
+    (7, 1),
+    (0xD, 0),
+    (0xD, 1),
+    (0x8000_0000, 0),
+    (0x8000_0001, 0),
+    (0x8000_0007, 0),
+    (0x8000_0008, 0),
+];
+
 /// The registers [`FEATURES`] names of leaf `function`.`index`; none for another leaf.
 fn feature_places(function: u32, index: u32) -> Option<&'static [u8]> {
     FEATURES
@@ -657,15 +675,13 @@ pub fn encode(id: &[[u32; 7]]) -> String {
 }
 
 /// [`encode`]'s text read back; empty for none. A baseline names leaf 0 and each leaf of
-/// [`FEATURES`] once ([`identity`], [`meet`]), so a text of more leaves is none's.
+/// [`FEATURES`] once ([`identity`], [`meet`]), and WHP's CPU the leaves of [`IDENTITY`], so a
+/// text of more leaves than either is neither's.
 pub fn decode(text: &str) -> Result<Vec<[u32; 7]>, String> {
     let leaves: Vec<&str> = text.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
-    let most = FEATURES.len().saturating_add(1);
+    let most = FEATURES.len().saturating_add(1).max(IDENTITY.len());
     if leaves.len() > most {
-        return Err(format!(
-            "{} CPUID leaves, more than a CPU baseline's {most}",
-            leaves.len()
-        ));
+        return Err(format!("{} CPUID leaves, more than a CPU's {most}", leaves.len()));
     }
     leaves
         .into_iter()
