@@ -638,18 +638,34 @@ pub fn in_app_container() -> bool {
 /// big-endian u32) and its payload, framed as Unix's messages are, without handles: what a
 /// VM's grants and a network process's links carry (D141, D142).
 pub fn write_message(mut to: impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
-    if payload.len() > crate::MAX_PAYLOAD {
+    let header = message_header(kind, payload.len())?;
+    let mut frame = Vec::with_capacity(header.len() + payload.len());
+    frame.extend(header);
+    frame.extend(payload);
+    to.write_all(&frame)
+}
+
+/// [`write_message`] in two writes, its header and then its payload as it lies, so that no
+/// copy of the payload is made: for one its caller wipes (a credential's value, D242), on a
+/// socket one thread writes at a time, as another writer's message could come between them.
+pub fn write_message_parts(mut to: impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
+    to.write_all(&message_header(kind, payload.len())?)?;
+    to.write_all(payload)
+}
+
+/// A message's header as [`read_message`] reads it: its kind, then its payload's length, `len`
+/// (a big-endian u32); refused past [`crate::MAX_PAYLOAD`].
+fn message_header(kind: u8, len: usize) -> io::Result<[u8; 5]> {
+    if len > crate::MAX_PAYLOAD {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "message payload too large",
         ));
     }
-    let len = u32::try_from(payload.len()).map_err(|_| io::Error::other("payload length"))?;
-    let mut frame = Vec::with_capacity(5 + payload.len());
-    frame.push(kind);
-    frame.extend(len.to_be_bytes());
-    frame.extend(payload);
-    to.write_all(&frame)
+    let [l0, l1, l2, l3] = u32::try_from(len)
+        .map_err(|_| io::Error::other("payload length"))?
+        .to_be_bytes();
+    Ok([kind, l0, l1, l2, l3])
 }
 
 /// A message coming in parts on a socket that does not wait: what [`Incoming::take`] holds of
@@ -2789,6 +2805,11 @@ mod tests {
         assert!(read_message(&wire[..3]).is_err());
         let too_long = [1u8, 0xff, 0xff, 0xff, 0xff];
         assert!(read_message(&too_long[..]).is_err());
+        // Written in its two parts (D242), the same message, byte for byte.
+        let mut parts = Vec::new();
+        write_message_parts(&mut parts, 7, b"payload").unwrap();
+        write_message_parts(&mut parts, 8, b"").unwrap();
+        assert_eq!(parts, wire);
     }
 
     /// A message read a byte at a time, as a socket that does not wait gives it, is taken
