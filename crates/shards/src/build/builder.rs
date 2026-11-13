@@ -575,7 +575,7 @@ fn launch(
     attach: UnixStream,
     said_to: io::PipeWriter,
 ) -> Result<Launched, String> {
-    let (net, side) = crate::netproc::start(policy, mac, bridge, None)?;
+    let (net, side) = crate::netproc::start(policy, mac, bridge, None, false)?;
     let grants = if cfg!(target_os = "macos") {
         Some(UnixStream::pair().map_err(|e| format!("the builder's grants: {e}"))?)
     } else {
@@ -660,7 +660,7 @@ fn launch(
     said_to: io::PipeWriter,
 ) -> Result<Launched, String> {
     use std::os::windows::io::{AsHandle as _, OwnedHandle};
-    let (ready, side) = crate::netproc::prepare(policy, mac, bridge)?;
+    let (ready, side) = crate::netproc::prepare(policy, mac, bridge, false)?;
     // A GPU's builder is the GPU's VM process, which runs its host's GPU driver (D144,
     // D202).
     let gpu = args.iter().any(|a| *a == "--gpu");

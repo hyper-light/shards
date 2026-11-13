@@ -580,6 +580,18 @@ the client, and Windows' API can hold it.
 - In b4548fcf6, the conformance suite's case and the simulator take a guest back on every
   host as well.
 
+Step 14's own runs, as its agent gave them when kiln marked the step met (ROOT's goal stack,
+kiln agent `01a148884a4770fdaf0111f3f792a248`: goal `01a17b1beb75724ab5ead1ffa61d0b4e`, step 14
+of plan `01a17b18aa0676509a394733d1471f4a`, its evidence at 2026-11-13T05:23:16Z), as written:
+
+> Tests: macOS arm64 (adas-mac-studio.local) at 3e76620e7: shards-api sim conformance 1/1,
+> take-back/borrowed tests 18 passed and 1 ignored by design, clippy -D warnings exit 0.
+> jupiter (Windows x86_64) at 5a6255b9c: 10/10, clippy 0.
+
+The parity goal's own evidence (goal `efa444a23c94830c90c053a68a6e5a56`, at
+2026-11-13T05:23:26Z) says of them, as written: "Tests: macOS arm64 shards-api tests and clippy
+green at 3e76620e7; jupiter 10/10 at 5a6255b9c."
+
 ROOT closed the audit with step 14. Every row's code is built on each host whose OS allows
 it, and a refusal names the OS's own limit where it doesn't (row 9, step 13). Rows 5, 6 and 9
 stay open above for runs, not code. A run that fails reopens its row:
