@@ -41,6 +41,11 @@ pub struct Options {
     /// command a pty: TERM's where the environment gives none ([`spec`]); none where the
     /// client said none, as an Engine API client does.
     pub terms: Vec<String>,
+    /// A command run in one of its image's agents or harnesses (D241): none of the
+    /// microVM's defaults laid under its variables, which init lays over the member's own
+    /// as they are given, a name alone unsetting the member's; its TERM, where neither names
+    /// one, init's to choose in the member's root, xterm last.
+    pub member: bool,
 }
 
 /// The workload `docker run` would start. Its environment is Docker's PATH and HOSTNAME,
@@ -61,14 +66,21 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
             id.iter().map(|b| format!("{b:02x}")).collect()
         }
     };
-    let mut defaults = vec![format!("PATH={DEFAULT_PATH}"), format!("HOSTNAME={hostname}")];
+    let mut defaults = if o.member {
+        Vec::new()
+    } else {
+        vec![format!("PATH={DEFAULT_PATH}"), format!("HOSTNAME={hostname}")]
+    };
     // With a terminal, TERM: the environment's (the image's, the user's), and xterm where
     // neither names it (D16). Where the client said what its terminal is, the
     // command is told the first of its types its root describes instead, else xterm, which
     // init chooses there (Spec::terms).
     let names_term = |list: &[String]| list.iter().any(|e| e.split('=').next() == Some("TERM"));
-    let choose = o.tty.is_some() && !o.terms.is_empty() && !names_term(&o.env) && !names_term(&o.exec_env);
-    if o.tty.is_some() && !choose {
+    let choose = o.tty.is_some()
+        && (o.member || !o.terms.is_empty())
+        && !names_term(&o.env)
+        && !names_term(&o.exec_env);
+    if o.tty.is_some() && !choose && !o.member {
         defaults.push("TERM=xterm".into());
     }
     let terms: Vec<Vec<u8>> = if choose {
@@ -100,9 +112,12 @@ pub fn spec(o: &Options, lookup: impl Fn(&str) -> Option<std::ffi::OsString>) ->
             .collect()
     };
     let defaults = defaults.into_iter().map(String::into_bytes).collect();
-    // The microVM's (CreateDaemonEnvironment), then an exec's over it whole.
+    // The microVM's (CreateDaemonEnvironment), then an exec's over it whole; a member's
+    // command's as given, for init to lay over the member's.
     let mut env = replace_or_append(defaults, given(&o.env)?);
-    if !o.exec_env.is_empty() {
+    if o.member {
+        env.extend(given(&o.exec_env)?);
+    } else if !o.exec_env.is_empty() {
         env = replace_or_append(env, given(&o.exec_env)?);
     }
     let spec = Spec {
@@ -448,6 +463,44 @@ mod tests {
         assert_eq!(made(&["TERM"], true, &client), (None, Vec::new()));
         assert_eq!(made(&[], true, &[]), (Some("TERM=xterm".into()), Vec::new()));
         assert_eq!(made(&[], false, &client), (None, Vec::new()));
+    }
+
+    /// A command run in a member (D241) gets none of the microVM's variables under its own:
+    /// they go as given, a name alone among them, for init to lay over its member's. With a
+    /// terminal and no TERM of its own, init chooses one in the member's root from its
+    /// client's types, xterm last, whether or not its client said any.
+    #[test]
+    fn a_member_commands_variables_go_as_given_for_init_to_lay_over_its_members() {
+        let made = |exec_env: &[&str], tty: bool, terms: &[&str]| {
+            let o = Options {
+                argv: vec!["x".into()],
+                exec_env: exec_env.iter().map(|s| (*s).to_string()).collect(),
+                hostname: Some("box".into()),
+                tty: tty.then(Size::default),
+                terms: terms.iter().map(|s| (*s).to_string()).collect(),
+                member: true,
+                ..Options::default()
+            };
+            let s = spec(&o, |_| None).unwrap();
+            let text = |list: Vec<Vec<u8>>| -> Vec<String> {
+                list.into_iter().map(|e| String::from_utf8(e).unwrap()).collect()
+            };
+            (text(s.env), text(s.terms))
+        };
+        let strings = |l: &[&str]| -> Vec<String> { l.iter().map(|s| (*s).to_string()).collect() };
+        assert_eq!(
+            made(&["A=1", "PATH", "A=2"], false, &[]),
+            (strings(&["A=1", "PATH", "A=2"]), Vec::new())
+        );
+        assert_eq!(made(&[], true, &[]), (Vec::new(), strings(&["xterm"])));
+        assert_eq!(
+            made(&[], true, &["screen"]),
+            (Vec::new(), strings(&["screen", "xterm"]))
+        );
+        assert_eq!(
+            made(&["TERM=vt100"], true, &["screen"]),
+            (strings(&["TERM=vt100"]), Vec::new())
+        );
     }
 
     #[test]

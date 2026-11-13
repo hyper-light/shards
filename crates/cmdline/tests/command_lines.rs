@@ -94,6 +94,11 @@ const EXTENDED: &[(&str, &str)] = &[
         "remove",
         "\nShards options:\n      --vms   Remove stopped microVMs\n",
     ),
+    // A command run in one of its image's agents or harnesses (D241).
+    (
+        "exec",
+        "\nShards options:\n      --for string   Run it in the agent or harness of this name,\n                     confined as it is\n",
+    ),
     // shards' grammar asks these to convert an image first (`--convert`).
     ("inspect", CONVERT),
     ("history", CONVERT),
