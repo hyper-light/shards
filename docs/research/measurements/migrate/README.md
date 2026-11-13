@@ -210,6 +210,18 @@ answer waits for a restore that takes a managed scope (D238), and its E2E with i
 tests that call `another_machine`, and this sheet to naming each. No microVM boots. Its
 mutant is M15 of `light-gate.sh`, the coordinator's to run.
 
+Checked at d07c49d09, step 5 merged with main 24d64a414, on one host (adas-mac-studio.local:
+Apple M4 Max, macOS 26.2, rustc 1.98.1, 2026-11-13T06:23Z; the tree carried there as a git
+bundle onto a clone of main, `SHARDS_HELPERS=skip` and empty stand-ins for the guest
+binaries, as `light-gate.sh` runs): `cargo test -p shards --test moved
+the_harness_runs_every_test_of_another_machine` built the test binary, every test of
+moved.rs in it, and passed (1 passed, 17 filtered out); `cargo clippy -p shards
+--all-targets -- -D warnings` clean. Before it, two-hosts.sh's `invite` and `e2e` were run
+here with stand-ins for `shards` and `cargo`: each test got the next invitation, a test that
+failed left the rest running and the exit 1, and too few invitations were refused naming how
+many to make. None of the tests of another machine has run on a microVM: the run sheet
+below is ROOT's.
+
 ### The run sheet (ROOT's)
 
 Every machine is at one revision R of main. Build before any invitation, since each lapses
