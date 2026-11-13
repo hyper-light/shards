@@ -326,7 +326,7 @@ had no DNS for the first runs, so the tests ran on adalundhe-macbook-pro.
   not served HTTP/2" (the token host offered HTTP/1.1 alone); `a_guest_offering_h2_alone_to_a_token_host_is_served_h2`
   failed at its guest's handshake (refused, no protocol in common).
 - **Green at 3ad5e9d3a**, kiln run r977: 55 passed, 0 failed, 2 ignored (step 10 part B's measurement). With the
-  per-stream unit test (written after the change, below): GREEN2_RESULT.
+  per-stream unit test (written after the change, below), on the tree merged with main (b1e22ee77, adas-mac-studio.local, kiln run r1012): 56 passed, 0 failed, 2 ignored; clippy clean on the three targets there.
   - `an_h2_token_response_is_captured_on_its_stream_and_the_guest_sees_placeholders`: the host asked `identity`, the
     body as sent; the broker keeps the issued tokens; the guest gets the placeholders, `content-length` the new length,
     no real token in any byte or decoded field; `Did::Captured`; no stream reset.
