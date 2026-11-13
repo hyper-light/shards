@@ -49,8 +49,9 @@ mod while_runs;
 mod proc_allocation;
 
 pub use client::{
-    ConfiguredShards, ManagedGuest, Shards, attach_managed, boot_managed, connect_borrowed, connect_prepared,
-    pause, prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at,
+    ConfiguredShards, ManagedGuest, ManagedUse, Shards, attach_managed, boot_managed, connect_borrowed,
+    connect_prepared, pause, prepare_boot, prepare_native_boot, recorded_console_bytes,
+    recorded_console_bytes_at,
 };
 pub use judge::{Found, Judge, Rate, Record, Seen, Stall};
 pub use native::{ImageIdentity, NativeBoot, NativeImages, NativeStartup, verify_native_image};
@@ -595,6 +596,9 @@ pub enum Refusal {
     /// words: its microVM not started, its governor's thread not made, or an answer none of
     /// the rate's protocol's (`shards_abi::rate`).
     Rate(String),
+    /// A managed guest's VM process answered its use (D260) with none of the protocol's
+    /// words, by what broke it (`shards_abi::rate::read_used`).
+    HostUse(shards_abi::rate::UseBroken),
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -654,6 +658,7 @@ impl std::fmt::Display for Refusal {
                 stall.least().over
             ),
             Refusal::Rate(why) => write!(f, "the guest's rate: {why}"),
+            Refusal::HostUse(broken) => write!(f, "the guest's use: its VM process answered {broken}"),
         }
     }
 }
