@@ -146,6 +146,7 @@ impl<D: Disk> Daemon<D> {
             .resolve(given)
             .map_err(|e| e.strip_prefix("shards: ").unwrap_or(&e).to_string())?;
         let cannot = |e: String| format!("cannot update {given}: {e}");
+        let _turn = self.request_turn(&id);
         if lock(&self.removing).contains(&id) {
             return Err(cannot("it is being removed".into()));
         }
