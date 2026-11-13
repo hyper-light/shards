@@ -22605,13 +22605,23 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   it on every host (a vCPU at least, memory even and at least the least); the vCPUs a host
   runs are its hypervisor's, and shards' own refusal comes back as `Refusal::Bounds`. Its
   waits wait on facts: the VM process's exit (reaped by its watcher), its output read to an
-  end mark written after that exit, `Duration::MAX` as no clock. What remains timed is
-  twice the slowest recorded run on the host class (`shards_api::record`, PM M463, M464,
-  M515); a class without a record has no bound, and its timed tests fail naming the record
-  due. A record of one host bounds no other's (R03): CI's runner went past twice fedora's
-  slowest boot and refusal (PM M541), and ROOT decided on 2026-11-13 that these bounds are
-  learned where they run (docs/research/s37-decision-inventory.md, row 2). An attach of a
-  guest whose first client reaps it as it is held is refused `Exited` (PM M541).
+  end mark written after that exit, `Duration::MAX` as no clock. A record of one host
+  bounds no other's (R03): CI's x86_64 KVM went past twice fedora's slowest boot and
+  refusal (PM M541; `shards_api_conforms_on_real_guests`, "no OK within 2.41364452s", and
+  `shards_api_shares_a_directory_and_a_read_only_one` at d35c4cf79), and ROOT decided on
+  2026-11-13 that these bounds are learned where they run
+  (docs/research/s37-decision-inventory.md, row 2). So boot.rs's and tests/sim.rs's own
+  bounds are gone: they give the suite no clock and wait on facts (a stand-in's end told
+  through a FIFO, a holder of shards' output still running as the refusal comes), and
+  boot.rs's deadline for a direct boot is this host's own boot of the test guest to its
+  answer, measured just before. What remains timed is the suite's and the crate's unit
+  tests', twice the slowest recorded run on the host class (`shards_api::record`:
+  `conformance::PATIENCE`, an unserved port's `OVERSHOOT`; PM M463, M464, M515). It goes
+  with the API's waits, which ROOT decided follow the guest's VM process: a wait goes on
+  while that process advances (its CPU time each quiet period, as the daemon's
+  `Wait::WhileRuns`), refuses a stall typed, and takes the slowest answer seen on the host
+  as the point past which a stall fails (owed, plan step 2's review). An attach of a guest
+  whose first client reaps it as it is held is refused `Exited` (PM M541).
 - On Windows a guest's process is the `shards` that booted its VM, which holds the VM in a
   Job that ends with it (D141); it outlives a client that crashes or loses its guest, so
   `attach` takes it back as on Unix (parity step 14): held by a handle of its own with query,
