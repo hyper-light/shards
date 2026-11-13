@@ -2175,12 +2175,13 @@ fn a_parent_that_started_after_its_child_is_not_its_parent() {
 
 /// shards-api's client of this build's `shards` conforms: every case of its conformance
 /// suite against real guests, the test guest as PID 1 (`echo` serves port 1234, `kmsg`
-/// powers off), its patience no clock (`Duration::MAX`): each wait returns at its fact,
-/// the guest's listening, however long this host takes to boot it beside the suite's other
-/// boots, or its end, which refuses the wait as it comes. Twice a boot recorded on another
-/// host was no bound for this one's (CI's x86_64 KVM at d35c4cf79: "no OK within
-/// 2.41364452s", PM M465's Linux-KVM record doubled; R03). A guest kernel's panic resets it
-/// at once (`panic=-1`), its case failing then.
+/// powers off), each wait for a guest's answer following its VM process (D215): it returns
+/// at the guest's listening, however long this host takes to boot it beside the suite's
+/// other boots, or at its end, which refuses the wait as it comes, and is refused `Stalled`
+/// only where the VM process ran nothing for as long as the slowest answer this test process
+/// has seen. Twice a boot recorded on another host was no bound for this one's (CI's x86_64
+/// KVM at d35c4cf79: "no OK within 2.41364452s", PM M465's Linux-KVM record doubled; R03). A
+/// guest kernel's panic resets it at once (`panic=-1`), its case failing then.
 #[test]
 fn shards_api_conforms_on_real_guests() {
     if cannot_run_vms() {
@@ -2193,7 +2194,6 @@ fn shards_api_conforms_on_real_guests() {
         port: 1234,
         unserved: 1236,
         powering_off: spec("kmsg"),
-        patience: Duration::MAX,
     })
     .unwrap();
 }
@@ -2225,10 +2225,7 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
         ..api_spec("console=ttyS0 quiet panic=-1 shards_test=share")
     };
     let guest = shards_api::Shards.boot(&spec).unwrap();
-    assert_eq!(
-        guest.wait_for(Duration::MAX).unwrap(),
-        Some(shards_api::End::PowerOff)
-    );
+    assert_eq!(guest.wait_while_runs().unwrap(), shards_api::End::PowerOff);
     assert_eq!(
         std::fs::read_to_string(rw.join("from-guest")).unwrap(),
         "written by a shards guest through --share\n"
@@ -2237,8 +2234,9 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
 }
 
 /// Measures shards-api's boot of the test guest to its echo port answering, here, side by
-/// side with this file's other boots as the suite runs them: what such a boot costs here,
-/// `SHARDS_API_E2E_N` (default 5) boots, printed as n, p50 and max with `--nocapture`.
+/// side with this file's other boots as the suite runs them, each wait following its VM
+/// process (D215): what such a boot costs here, `SHARDS_API_E2E_N` (default 5) boots, printed
+/// as n, p50 and max with `--nocapture`.
 #[test]
 fn shards_api_boot_under_the_suites_load() {
     if cannot_run_vms() {
@@ -2254,7 +2252,7 @@ fn shards_api_boot_under_the_suites_load() {
             let guest = shards_api::Shards
                 .boot(&api_spec("console=ttyS0 quiet shards_test=echo"))
                 .unwrap();
-            drop(guest.connect(1234, Duration::MAX).unwrap());
+            drop(guest.connect_while_runs(1234).unwrap());
             start.elapsed()
         })
         .collect();
@@ -2281,10 +2279,7 @@ fn shards_api_boot_under_the_suites_load() {
             };
             let start = std::time::Instant::now();
             let guest = shards_api::Shards.boot(&spec).unwrap();
-            assert_eq!(
-                guest.wait_for(Duration::MAX).unwrap(),
-                Some(shards_api::End::PowerOff)
-            );
+            assert_eq!(guest.wait_while_runs().unwrap(), shards_api::End::PowerOff);
             start.elapsed()
         })
         .collect();
@@ -2304,7 +2299,7 @@ fn shards_api_boot_under_the_suites_load() {
 }
 
 /// This host's own time for shards-api's boot of the test guest to its echo port answering,
-/// waited for with no clock (`Duration::MAX`): a deadline learned where the test runs, as it
+/// waited for while its VM process runs (D215): a deadline learned where the test runs, as it
 /// runs, never a number of ours (R03).
 fn answered_boot() -> Duration {
     let start = std::time::Instant::now();
@@ -2313,7 +2308,7 @@ fn answered_boot() -> Duration {
         .unwrap_or_else(|e| panic!("boot: {e}"));
     drop(
         guest
-            .connect(1234, Duration::MAX)
+            .connect_while_runs(1234)
             .unwrap_or_else(|e| panic!("connect: {e}")),
     );
     let took = start.elapsed();
