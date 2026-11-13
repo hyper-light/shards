@@ -718,7 +718,9 @@ pub fn main() -> ! {
                 }
             };
             let sent = match bridge.stdin.as_mut() {
-                Some(to) => to.write_all(shards_testguest::MCP_INITIALIZE).and_then(|()| to.flush()),
+                Some(to) => to
+                    .write_all(shards_testguest::MCP_INITIALIZE)
+                    .and_then(|()| to.flush()),
                 None => Err(io::Error::other("no stdin")),
             };
             if let Err(e) = sent {

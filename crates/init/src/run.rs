@@ -5041,7 +5041,10 @@ impl Workload {
             if !exited && MEMBER_ENDS.load(std::sync::atomic::Ordering::Relaxed) {
                 for d in self.domains.iter_mut().filter(|d| !d.end_told) {
                     if let Some(end) = d.lifecycle.ended_status() {
-                        let ended = run::members::Ended { member: d.member, end }
+                        let ended = run::members::Ended {
+                            member: d.member,
+                            end,
+                        }
                         .encode();
                         to_host.extend(&[&run::header(kind::MEMBER_ENDED, ended.len() as u32), &ended]);
                         d.end_told = true;
