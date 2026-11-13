@@ -23,6 +23,9 @@ pub enum Tag {
     /// Client: what follows steers the command on the stream this names (eight bytes, big
     /// endian): its control stream.
     Controls = 3,
+    /// Controller, on an agent-control endpoint's exec lane (D238): run a command in one of a
+    /// microVM's members (`control::exec::Ask`).
+    MemberExec = 4,
     /// Client: bytes of the command's stdin.
     Stdin = 16,
     /// Client: the end of the command's stdin.
@@ -45,6 +48,9 @@ pub enum Tag {
     /// Daemon: the ID of the microVM the command made, for its client's `--cidfile`, which
     /// the client writes (D180).
     Made = 37,
+    /// Agent-control endpoint, on an exec lane (D238): the exec started, its streams numbered
+    /// so (four bytes, big endian).
+    Started = 38,
 }
 
 impl Tag {
@@ -53,6 +59,7 @@ impl Tag {
             1 => Tag::Exec,
             2 => Tag::Join,
             3 => Tag::Controls,
+            4 => Tag::MemberExec,
             16 => Tag::Stdin,
             17 => Tag::StdinEnd,
             18 => Tag::Resize,
@@ -63,6 +70,7 @@ impl Tag {
             35 => Tag::Refused,
             36 => Tag::Joined,
             37 => Tag::Made,
+            38 => Tag::Started,
             _ => return None,
         })
     }
