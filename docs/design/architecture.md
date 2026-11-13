@@ -6391,12 +6391,16 @@ replaced by:
   the previous connection's final smoothed RTT value"): another daemon or address, a record
   that does not read, or none, is a daemon never reached. A context's join writes its first;
   its removal takes it. Every command a context sends goes through it (`context::exec`), the
-  daemon's relays of its engine (relay.rs) and a move's steps (cli/moves.rs) too.
+  daemon's relays of its engine (relay.rs) and a move's steps (cli/moves.rs) too. A record not
+  kept leaves the next connection to start from the one kept before, and the CLI says nothing
+  of it, its stderr being the command's (a file size limit failing the write, in
+  `context_client`'s test of a save cut short, would otherwise have said so first).
 - *The cold start* (a daemon never reached). Its handshake starts from §6.2.2's 333 ms ("When no
   previous RTT is available, the initial RTT SHOULD be set to 333 milliseconds"), the only
   figure here, the protocol's own, and has no deadline: QUIC probes it as §6.2 does, its
-  backoff doubling each probe timeout, and each probe is told typed to whoever waits
-  (`Handler::unanswered`, `client::Unanswered { probes, waited }`). The CLI says each on stderr
+  backoff doubling each probe timeout, and each probe past its first flight, while nothing of
+  the daemon's has been heard, is told typed to whoever waits (`Handler::unanswered`,
+  `client::Unanswered { probes, waited }`). The CLI says each on stderr
   (`shards: NAME: no answer yet from ADDR: N probes over T`) and waits as long as its user
   does; a daemon's relay logs each, and waits until that daemon answers or this one stops,
   which hangs it up at once from its start (`client::HangUp`), as a probe its backoff puts ever
@@ -6419,7 +6423,17 @@ replaced by:
   record marked, and the connection goes on; the answer that comes raises the slowest seen. A
   whole window with no progress is its death (`Look::Dead`, told as QUIC's `TimedOut`), and the
   silence before the send that went unanswered is recorded as the path's lost silence. The
-  daemon's commands for a vanished client end so too, at their own next send.
+  daemon's commands for a vanished client end so too, at their own next send. No wait is
+  judged sooner than QUIC's own loss recovery judges its send, at its probe timeout (§6.2.1,
+  the smoothed RTT, four times its variation and the peer's `max_ack_delay`;
+  `Connection::probe_timeout`, hyper-quic's patch Q7): a run-out is past the window and that
+  timeout both, and a death a whole window with no progress past the later of its last
+  progress and that timeout. A peer acknowledges application data up to its `max_ack_delay`
+  late, and later as its timer fires late, where its handshake's packets it acknowledges at
+  once (RFC 9000 §13.2.1), so a window its handshake seeded alone took a peer's first delayed
+  acknowledgement for none: 10 of `tests/loopback.rs`'s 19 died so before (a send 28.9 ms
+  unanswered, its window 26.9 ms, its probe timeout 30.7 ms). What its handshake sent, answered
+  as it ends, is no wait (`Liveness::connected` takes its transport's counts then).
 - *The keep-alive* (was a quarter of `QUIET`): none on a path where no connection was found
   dead. Where one was, after an idle silence, the next is kept alive within the shortest such
   silence seen, a window before it (`keep_within`, `Liveness::keep_alive`), so that the first
@@ -6449,9 +6463,13 @@ replaced by:
   default 16 pages (`PIPE_DEF_BUFFERS`; pipe(7): 65536 bytes on 4 KiB pages) and macOS's
   `BIG_PIPE_SIZE`, as synced.rs's frames and the exec host's pipes cite them; a source that
   holds more gives the rest to the next read.
-- *The driver's wait* (was `IDLE` with nothing due, and at least 100 µs): until its next timer,
-  no shorter than a nanosecond, the least a socket's timeout takes; with none due, until a
-  datagram or a wake comes, which every command and stop sends (`net::Sender`).
+- *The driver's wait* (was `IDLE` with nothing due, and at least 100 µs): until its next timer;
+  with none due, until a datagram or a wake comes, which every command and stop sends
+  (`net::Sender`) to a wake socket of the driver's own, beside the one it serves on, both waited
+  on at once (poll(2); WSAPoll), as a socket aimed at its peer takes datagrams from that peer
+  alone (connect(2): Linux udp(7), XNU `udp_input`): a wake sent there never came, and a
+  client's resize waited for the daemon's next packet. poll waits whole milliseconds, a wait
+  under one taken as one, so that a timer is looked at no sooner than it is due.
 
 Left as hyper-quic sets them, and owed: quinn-proto's stream and connection receive windows,
 its send window, and the 100 streams a daemon's client may open at once (one command and its
@@ -6462,11 +6480,18 @@ daemon/managed.rs), and goal 75's `unix::link()`; and a relay whose engine clien
 its handshake waits on a daemon never reached is let go as that daemon answers or this one
 stops, not as its client leaves, as its client's input is read no further than its first
 chunk before the daemon's flow control lets it (a quiet managed connection's vanished owner
-is the same case). Tested, each test red before its code: `tls::tests` (what is known of a
+is the same case). And a host's start runs on the daemon's driver (server.rs, `Host::start`),
+which answers nothing meanwhile: a start longer than a client's probe timeout and window ends
+that client's connection, every other client's waits held up with it. The tests' commands'
+program, built by cargo at its first start, did so to every test that started one first
+(`tests/loopback.rs` builds it before its daemon serves); the daemon's own starts' times are
+unmeasured (ROOT's), and starting off the driver is owed with them. Tested, each test red
+before its code: `tls::tests` (what is known of a
 peer follows what its path showed), `net::tests` (a handshake held to its deadline or probing
 on, its silences measured; a send's window, its run-out with progress and its death without;
-the keep-alive early by the window and none while a send waits; a handshake past its slots
-taking the oldest unanswered place), `context::tests` (a daemon's path read back for its
+a wait judged no sooner than its probe timeout; what its handshake sent no wait; the keep-alive
+early by the window and none while a send waits; a handshake past its slots taking the oldest
+unanswered place), `context::tests` (a daemon's path read back for its
 daemon and address alone, kept only where it changed, removed with its context),
 `tests/loopback.rs` (a machine holding as many strangers as invitations, the oldest giving
 way; an enrolled client's silent command living with no keep-alive; no daemon answering
