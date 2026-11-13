@@ -238,6 +238,12 @@ impl Watch {
         };
         let before = std::mem::replace(&mut self.last, look);
         let hold = std::mem::replace(&mut self.hold, self.followed.hold());
+        // A diagnosis of what Windows shows of a VM process a look judges (W2: one inside
+        // WHP's partition calls, cut as stalled on CI's windows-2022).
+        #[cfg(windows)]
+        if std::env::var_os("SHARDS_JUDGE_TRACE").is_some() {
+            self.followed.trace(&look);
+        }
         Ok(found(look.ran_since(&before), look.ending, &hold, &self.hold))
     }
 
@@ -819,10 +825,11 @@ mod os {
                 return Hold::default();
             };
             let (mut runnable, mut threads, mut suspended) = (false, 0usize, 0usize);
-            each_thread(&records, |pid, state, reason| {
+            each_thread(&records, |pid, t| {
                 if !self.members.iter().any(|m| m.pid == pid && !m.exited) {
                     return;
                 }
+                let (state, reason) = (t.ThreadState, t.WaitReason);
                 threads = threads.saturating_add(1);
                 let waiting = state == WAITING;
                 runnable |=
@@ -833,6 +840,36 @@ mod os {
                 runnable,
                 stopped: threads > 0 && suspended == threads,
             }
+        }
+
+        /// Says on stderr what a look found of its processes, for a diagnosis of a wait on
+        /// Windows (SHARDS_JUDGE_TRACE set): the look's CPU and cycles (GetProcessTimes,
+        /// QueryProcessCycleTime) and each thread of its live processes as the system's records
+        /// show it now: its process and thread, state and wait reason (KWAIT_REASON), context
+        /// switches, and kernel and user time in 100 ns units. What cannot be read is said so.
+        pub(super) fn trace(&self, look: &Look) {
+            use std::io::Write as _;
+            let mut said = format!(
+                "shards judge: VM process {}: cpu {:?}, cycles {}, ending {}",
+                self.pid, look.cpu, look.cycles, look.ending
+            );
+            match records() {
+                None => said.push_str("; its threads unread"),
+                Some(records) => each_thread(&records, |pid, t| {
+                    if self.members.iter().any(|m| m.pid == pid && !m.exited) {
+                        said.push_str(&format!(
+                            "\n  pid {pid} tid {} state {} reason {} switches {} kernel {} user {}",
+                            t.ClientId.UniqueThread as usize,
+                            t.ThreadState,
+                            t.WaitReason,
+                            t.Reserved3,
+                            t.Reserved1[0],
+                            t.Reserved1[1]
+                        ));
+                    }
+                }),
+            }
+            let _ = writeln!(std::io::stderr(), "{said}");
         }
 
         /// What its processes have run, now: their handles read them, gone or not.
@@ -1086,9 +1123,10 @@ mod os {
         }
     }
 
-    /// Each thread the records in `words` hold: its process's id, its state and its wait
-    /// reason. A record that would pass the records' end ends them.
-    fn each_thread(words: &[u64], mut thread: impl FnMut(u32, u32, u32)) {
+    /// Each thread the records in `words` hold: its process's id and its thread's record
+    /// (state, wait reason, times, context switches). A record that would pass the records'
+    /// end ends them.
+    fn each_thread(words: &[u64], mut thread: impl FnMut(u32, &SYSTEM_THREAD_INFORMATION)) {
         let Some(len) = words.len().checked_mul(size_of::<u64>()) else {
             return;
         };
@@ -1124,7 +1162,7 @@ mod os {
                         .cast::<SYSTEM_THREAD_INFORMATION>()
                         .read_unaligned()
                 };
-                thread(pid, t.ThreadState, t.WaitReason);
+                thread(pid, &t);
             }
             let next = usize::try_from(info.NextEntryOffset).unwrap_or(0);
             match at.checked_add(next) {
