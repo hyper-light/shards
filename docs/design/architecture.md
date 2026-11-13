@@ -12010,6 +12010,24 @@ other's but what the move sends, and what the other takes by content:
   (`a_cpu_lacking_what_its_guest_may_have_used_is_named`, moves.rs).
 - **Its connections**, dialed again by its init there as a restore here redials them
   (part 3), and its address on its network asked for again.
+- **Refused before anything moves, by what refuses it** (R04). The machine moved to answers
+  `ready` with a `Refused` (daemon/moves.rs) as JSON on stdout, beside its words on
+  stderr, which a mover of an earlier build prints as before; this build's mover reads it
+  typed (cli/moves.rs `unready`). It is one of: another architecture; another hypervisor
+  (`Plan::hypervisor`, `hv::BACKEND`), whose own a snapshot's vCPUs, interrupt controller
+  and devices are (KVM's x86-64 state is not WHP's, nor Hypervisor.framework's arm64 state
+  KVM's), which a snapshot's head, naming its architecture alone, does not tell apart;
+  another snapshot format; the fields of its CPU baseline this machine's hypervisor shows
+  less of, each by register, field and both levels (`arch::aarch64::cpu::Short`); the
+  features its guest may have used that this CPU lacks, by name; its ID, its name or a
+  volume of its name here already; a bind's host path absent. A plan of an earlier build
+  names no hypervisor, and is taken as before. Held by
+  `a_microvm_of_another_hypervisor_is_refused_before_anything_moves` and
+  `a_refusal_is_typed_on_the_wire_and_says_what_it_said` (moves.rs),
+  `a_move_of_another_hypervisors_microvm_is_refused_typed` (daemon.rs, the daemon's own
+  step) and `a_refusal_is_said_from_its_type_and_else_in_the_steps_words` (cli/moves.rs);
+  mutation-checked: without the hypervisor's check, `ready` took such a plan and answered
+  what this machine lacked of it (docs/research/measurements/migrate/README.md).
 
 What fails before it runs there leaves it here as it was, resumed from the snapshot it
 was saved as, and what was made of it there removed: a move the other machine refuses
