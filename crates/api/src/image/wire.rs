@@ -22,10 +22,10 @@ pub use shards_abi::run::nesting::Ready;
 /// the run as it is asked, before any plug is; 5, each member's working directory
 /// ([`MemberStage::workdir`]); 6, whether each member's stdin is the orchestrator's
 /// ([`MemberStage::input`], plan step 5); 7, the room its orchestrator's budget leaves the
-/// run (`ROOM`, answered `HELD`; D188, D238), so that a side that tells none refuses the run
+/// run (`ROOM`, answered `HELD`; D188, D241), so that a side that tells none refuses the run
 /// as it is asked, before any room is: a host of version 6 ends a run at a frame it has no
 /// kind for; and the run's stats carry what its microVM costs its host and what its vCPUs ran
-/// of its guest ([`Stats::microvm`], D238).
+/// of its guest ([`Stats::microvm`], D241).
 pub const VERSION: u8 = 7;
 
 /// What the orchestrator's side sends.
@@ -49,7 +49,7 @@ pub mod to_host {
     /// abort.
     pub const INPUT_END: u8 = 9;
     /// A [`RoomAsk`](super::RoomAsk): the room the orchestrator's budget leaves the run
-    /// (D188, D238).
+    /// (D188, D241).
     pub const ROOM: u8 = 10;
 }
 
@@ -434,7 +434,7 @@ pub struct Stats {
 /// stats say it of its own runs (D43, D170's `microvm`; guest-cpu-time-v1): its VM process's
 /// use of the host, and what each of its vCPUs has run of its guest, read before that use,
 /// so that the process's CPU time less its vCPUs' is its VMM's own and never less than none
-/// past the clocks' steps (D238).
+/// past the clocks' steps (D241).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Microvm {
     /// None where its run host could not read its VM process.
@@ -518,7 +518,7 @@ pub struct StatsAnswer {
     pub result: Result<Stats, String>,
 }
 
-/// The room the orchestrator's budget leaves the run (D188, D238), as a daemon's budget
+/// The room the orchestrator's budget leaves the run (D188, D241), as a daemon's budget
 /// tells a run of its own: the bytes it may use past what it uses, negative where the
 /// budget is short of what it holds; none where no budget holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2051,7 +2051,7 @@ mod tests {
         v5[0] = 5;
         assert_eq!(Request::decode(&v5), Err(WireError::Version(5)));
         // One of version 6 carries every field this one does, but its host ends the run at
-        // a room: refused by its version, before any room is told (D238).
+        // a room: refused by its version, before any room is told (D241).
         let mut v6 = request().encode().unwrap();
         v6[0] = 6;
         assert_eq!(Request::decode(&v6), Err(WireError::Version(6)));
@@ -2162,7 +2162,7 @@ mod tests {
         }
     }
 
-    /// A room and its answer read back as they were said (D238): no budget, none left, one
+    /// A room and its answer read back as they were said (D241): no budget, none left, one
     /// past what a run holds, one short of it, each bound of an i64; none held, the bytes
     /// held within and why not. Cut short, padded or of a tag no version has, refused.
     #[test]
@@ -2226,7 +2226,7 @@ mod tests {
     }
 
     /// The run's stats carry what its microVM costs its host and what its vCPUs ran of its
-    /// guest (D238) as its run host read them: either part absent, a vCPU unread and why, the
+    /// guest (D241) as its run host read them: either part absent, a vCPU unread and why, the
     /// largest numbers a u64 holds. vCPUs out of index order, a part's unknown tag, a count
     /// past what the bytes left could hold, cut short or padded: refused, never read as a
     /// cost.

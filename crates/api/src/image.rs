@@ -161,7 +161,7 @@ pub enum ImageRefusal {
     },
     /// A plug or an unplug its run's host refused (D235), by what refused it.
     Plug(PlugRefusal, String),
-    /// The run's init held it within no room it was told (D238), in its words.
+    /// The run's init held it within no room it was told (D241), in its words.
     Room(String),
 }
 
@@ -212,10 +212,10 @@ pub trait ImageGuest: Send + Sync {
     fn wait_member(&self, member: &MemberName, timeout: Duration) -> Result<Option<MemberEnd>, ImageRefusal>;
     /// The use of the run, of its own command or of a member, as its init reads its cgroup,
     /// waiting at most `patience` (`Duration::MAX`: until it answers or the run ends). The
-    /// run's carries what its microVM costs its host beside it ([`Stats::microvm`], D238):
+    /// run's carries what its microVM costs its host beside it ([`Stats::microvm`], D241):
     /// its VM process's CPU time and memory, and each vCPU's guest time, read before them.
     fn stats(&self, scope: StatsScope, patience: Duration) -> Result<Stats, ImageRefusal>;
-    /// The room the orchestrator's budget leaves the run (D188, D238), told its init as a
+    /// The room the orchestrator's budget leaves the run (D188, D241), told its init as a
     /// daemon's budget tells a run of its own: the bytes the run may use past what it uses
     /// now, every member's and its engine's ring slots among them (D230), negative where the
     /// budget is short of what it holds, which its init then reclaims of its file pages; none

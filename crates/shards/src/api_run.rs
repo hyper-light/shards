@@ -467,7 +467,7 @@ fn run_request(spec: &shards_abi::run::Spec, published: bool) -> Vec<u8> {
     payload
 }
 
-/// What init said it held a run within past what it uses (`builtin::ROOM`'s answer, D238),
+/// What init said it held a run within past what it uses (`builtin::ROOM`'s answer, D241),
 /// as asked with `room`: a decimal where it was told one, nothing where it was told none.
 fn held_of(room: Option<i64>, out: &[u8]) -> Result<Option<u64>, String> {
     match (room, std::str::from_utf8(out).map(str::trim)) {
@@ -2104,7 +2104,7 @@ mod hosted {
 
     /// Answers `ask` with init's `STATS` of its scope, through an exec on the VM's link as
     /// a health check's exec is sent (daemon/health.rs `send_exec`), on a thread of its own;
-    /// for the run's, beside it what its microVM costs its host (D43's `microvm`, D238): its
+    /// for the run's, beside it what its microVM costs its host (D43's `microvm`, D241): its
     /// vCPUs' guest time, then its VM process `vm`'s use, which holds that time, so that the
     /// later read is never the less.
     fn stats(live: &Live<'_>, ask: wire::StatsAsk, vm: u32) {
@@ -2146,7 +2146,7 @@ mod hosted {
         }
     }
 
-    /// The room its orchestrator's budget leaves the run (D238), told its init as the
+    /// The room its orchestrator's budget leaves the run (D241), told its init as the
     /// daemon tells a run of its budget's (daemon/budget.rs, `builtin::ROOM`): what init
     /// holds it within past what it uses, none where no budget holds it, or why not.
     fn room(live: &Live<'_>, room: Option<i64>) -> Result<Option<u64>, String> {
@@ -2962,7 +2962,7 @@ mod tests {
         }
     }
 
-    /// What init says it held a run within reads as it was asked (D238): a number where it
+    /// What init says it held a run within reads as it was asked (D241): a number where it
     /// was told a room, nothing where it was told none; anything else is a broken word from
     /// its init, never a hold.
     #[test]

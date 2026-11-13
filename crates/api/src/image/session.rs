@@ -65,7 +65,7 @@ struct State {
     /// Each plug's or unplug's answer, by its ask's id (D235).
     plugs: HashMap<u32, Result<(), (wire::PlugRefusal, String)>>,
     /// Each room asked and still awaited, by its ask's id, and its answer once it came
-    /// (D238): an answer to an ask no longer awaited, its patience run out, is dropped, so
+    /// (D241): an answer to an ask no longer awaited, its patience run out, is dropped, so
     /// that it holds the asks in flight alone.
     rooms: HashMap<u32, Option<Result<Option<u64>, String>>>,
     next_ask: u32,
@@ -125,7 +125,7 @@ impl Shared {
         self.send(wire::to_host::CREDIT, &credit.encode())
     }
 
-    /// Tells the run `room` (D238) and waits at most `patience` for what its init held it
+    /// Tells the run `room` (D241) and waits at most `patience` for what its init held it
     /// within; its ask awaited from before it is sent until it is answered or given up, so
     /// that no answer outlives its ask.
     fn room(&self, room: Option<i64>, patience: Duration) -> Result<Option<u64>, ImageRefusal> {
@@ -1099,7 +1099,7 @@ mod tests {
         }
     }
 
-    /// A room's answer is kept for the ask awaiting it alone (D238): one for an ask no
+    /// A room's answer is kept for the ask awaiting it alone (D241): one for an ask no
     /// longer awaited, its patience run out, is dropped, so that the session holds the asks
     /// in flight and nothing more; one that is no answer breaks the channel.
     #[test]
@@ -1121,7 +1121,7 @@ mod tests {
     }
 
     /// A room no host hears is refused, typed, and leaves no ask awaited; a run that has
-    /// ended is told none (D238).
+    /// ended is told none (D241).
     #[test]
     fn a_room_no_host_hears_is_refused_and_leaves_no_ask() {
         let s = shared();

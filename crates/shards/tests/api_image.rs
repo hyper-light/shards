@@ -432,7 +432,7 @@ fn stats_read_the_run_and_a_member() {
     let run = guest.stats(StatsScope::Run, TIMEOUT).unwrap();
     assert!(run.memory_bytes.is_some_and(|m| m > 0), "{run:?}");
     assert!(run.cpu_ns.is_some(), "{run:?}");
-    // The run's microVM beside its guest's cgroup (D238): its VM process's use, and what its
+    // The run's microVM beside its guest's cgroup (D241): its VM process's use, and what its
     // one vCPU has run of its guest, by its index.
     let microvm = run.microvm.as_ref().expect("the run's microVM");
     let host = microvm.host.expect("its VM process's use");
@@ -455,7 +455,7 @@ fn stats_read_the_run_and_a_member() {
     assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
 }
 
-/// The room an orchestrator's budget leaves its run (D238) reaches the run's init through
+/// The room an orchestrator's budget leaves its run (D241) reaches the run's init through
 /// its host: told a room past the least a run goes on in, the run is held within it, in
 /// whole pages; told none left, within the least, short of what it had; told no budget,
 /// its hold is lifted and nothing is answered.
