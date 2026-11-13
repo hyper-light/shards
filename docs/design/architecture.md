@@ -22993,6 +22993,40 @@ cost), M464 (what a refused dial costs, the pacing's `c`); the conformance suite
 HVF; and the waits' own unit tests (`progress::tests`, client.rs's stand-in tests), with
 their runs below.
 
+**Part B's runs** (goal 52's child, 2026-11-13). They ran on adalundhe-macbook-pro (macOS on
+arm64, rustc 1.98.1), through kiln run, on a clone of each tree with `SHARDS_HELPERS=skip`
+and placeholder init and server binaries:
+- `cargo test -p shards-api`;
+- `cargo clippy -p shards-api -p shards --all-targets -- -D warnings`.
+
+Results:
+- At 831854804 with the predecessor's reused tests (r243), the new tests passed: progress's
+  five, and the four stand-in tests (a VM process that runs nothing refused `Stalled`; one
+  that spins waited for to its answer and end; a cold record never judging; answers teaching
+  their kind). The reused tests were red:
+  - `single_attempt_to_a_silent_listener_is_refused_by_its_deadline` and
+    `a_write_to_a_peer_that_stops_reading_ends_at_its_timeout` failed;
+  - `borrowed_tests::withheld_reply_expires_before_fixture_release` and
+    `dribbled_reply_does_not_renew_deadline` hung, stopped after 24 minutes.
+  The cause: `kept_wait` is microseconds where the streams keep a timeout to its
+  nanosecond, too short for a dial and its CONNECT, and `while_runs::answer` looked at a
+  blocked thread that often.
+- After those fixes (r349): the lib's tests 113 passed and 5 ignored, tests/allocations.rs 1
+  passed, tests/real.rs 1 ignored, tests/sim.rs 17 passed and 1 ignored. Clippy failed
+  `result_large_err` at tests/sim.rs, which `Stall` fixed.
+- On the merged tree, 2593305f0 (origin/main 94be8818b and this lane; r375): the lib's 116
+  passed and 5 ignored, the rest the same; clippy clean.
+- Guard-removal mutations, each test run once:
+  - M1, the stall verdict removed: `a_vm_process_that_runs_nothing_is_refused_stalled_once_its_kind_has_an_answer`
+    failed, its boot's connect waiting to the stand-in's end, `Some(Ended(PowerOff))`.
+  - M2, an expired finite retry let through to the unbounded handshake:
+    `finite_owned_retry_expiry_cannot_start_an_unbounded_handshake` failed, counting a late
+    dial (1, not 0).
+
+Not run: these on Linux and Windows (Linux's CPU clock reader, Windows' process tree, the
+Windows report test; CI's matrix); boot.rs's real-VM tests on HVF, KVM x86_64, KVM arm64 (L1)
+and WHP (ROOT's); scripts/lint.
+
 **What would falsify it.** A conforming client that needs to link the VMM. A VM process that
 ran no CPU for a whole W* of its kind and would still have answered: a working guest
 refused.
