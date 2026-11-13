@@ -714,6 +714,7 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         change: impl FnOnce(&mut shards_ipc::Run) -> Result<(), (u16, String)>,
     ) -> Result<(), (u16, String)> {
+        let _turn = self.request_turn(id);
         let dir = lock(&self.containers).dir(id);
         let path = dir.join(crate::daemon::REQUEST);
         let mut run = std::fs::read(&path)

@@ -1529,11 +1529,9 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         }
     };
     match mode {
-        Mode::GpuProbe => match vm::probe_gpu(&cfg.gpu_devices)
-            .and_then(|probe| probe.encode().map_err(|error| error.to_string()))
-        {
-            Ok(text) => match std::io::stdout().lock().write_all(text.as_bytes()) {
-                Ok(()) => ExitCode::SUCCESS,
+        Mode::GpuProbe => match probe_answer(vm::probe_gpu(&cfg.gpu_devices)) {
+            Ok((text, code)) => match std::io::stdout().lock().write_all(text.as_bytes()) {
+                Ok(()) => code,
                 Err(error) => {
                     report(error);
                     ExitCode::FAILURE
@@ -2405,28 +2403,46 @@ fn start_reported(
         None => vm::start(cfg),
         Some((scope, writer)) => {
             let mut writer = Some(writer);
-            vm::start_gpu_report(cfg, &mut |probe| write_report(&mut writer, scope, probe))
+            vm::start_gpu_report(cfg, &mut |selection| write_report(&mut writer, scope, selection))
         }
     }
 }
 
 /// A managed boot's report (D232, D233), written once by its sole writer: the selection's
-/// frame, scoped to its launch, and the writer closed, before any guest vCPU starts. Taken
-/// again, it is refused as taken.
+/// receipt, or the refusal its renderer typed, in a frame scoped to its launch, and the
+/// writer closed, before any guest vCPU starts. Taken again, it is refused as taken.
 fn write_report(
     writer: &mut Option<impl Write>,
     scope: [u8; 16],
-    probe: shards_abi::gpu::GpuProbe,
+    selection: Result<shards_abi::gpu::GpuProbe, shards_abi::gpu::GpuRefusal>,
 ) -> Result<(), String> {
     let mut to = writer
         .take()
         .ok_or_else(|| shards_abi::gpu::GpuProbeError::ReportTaken.to_string())?;
-    let frame = shards_abi::gpu::GpuReport { scope, probe }
-        .encode()
-        .map_err(|why| why.to_string())?;
+    let frame = match selection {
+        Ok(probe) => shards_abi::gpu::GpuReport { scope, probe }.encode(),
+        Err(refusal) => shards_abi::gpu::GpuReport::refusal(scope, refusal),
+    }
+    .map_err(|why| why.to_string())?;
     to.write_all(frame.as_bytes()).map_err(|why| why.to_string())?;
     drop(to);
     Ok(())
+}
+
+/// What `--gpu-probe` prints on stdout, and how it exits (D232): its selection's receipt; or
+/// the refusal its renderer typed, the probe failing; or, any other failure, nothing, that
+/// failure its own report.
+fn probe_answer(
+    probed: Result<shards_abi::gpu::GpuProbe, vm::StartError>,
+) -> Result<(String, ExitCode), String> {
+    let (answer, code) = match probed {
+        Ok(probe) => (probe.encode(), ExitCode::SUCCESS),
+        Err(why) => match why.gpu_refusal() {
+            Some(refusal) => (refusal.encode(), ExitCode::FAILURE),
+            None => return Err(why.to_string()),
+        },
+    };
+    Ok((answer.map_err(|why| why.to_string())?, code))
 }
 
 /// A host whose microVMs take no snapshots, arm64 KVM's (D154), says so before a VM starts
@@ -3404,15 +3420,12 @@ mod managed_report_tests {
         );
     }
 
-    /// D232: a managed boot's report is written once, by its one writer, and taken again
-    /// says it was taken (`ReportTaken`), not that its frame's scope differs (`Scope`).
-    #[test]
-    fn a_report_written_once_is_refused_as_taken() {
-        use shards_abi::gpu::{GpuProbe, GpuProbeError, GpuReport, ResolvedGpu};
-        let physical = vm::gpu_selection::PhysicalGpu::MetalRegistry(7);
-        let probe = || GpuProbe {
-            devices: vec![ResolvedGpu {
-                physical,
+    const PHYSICAL: vm::gpu_selection::PhysicalGpu = vm::gpu_selection::PhysicalGpu::MetalRegistry(7);
+
+    fn probe() -> shards_abi::gpu::GpuProbe {
+        shards_abi::gpu::GpuProbe {
+            devices: vec![shards_abi::gpu::ResolvedGpu {
+                physical: PHYSICAL,
                 uuid: [1; 16],
                 pci: None,
                 luid: Some(7u64.to_be_bytes()),
@@ -3420,16 +3433,62 @@ mod managed_report_tests {
                 device_local_bytes: None,
             }],
             host_visible_bytes: 4096,
-        };
+        }
+    }
+
+    /// D232: a managed boot's report is written once, by its one writer, and taken again
+    /// says it was taken (`ReportTaken`), not that its frame's scope differs (`Scope`).
+    #[test]
+    fn a_report_written_once_is_refused_as_taken() {
+        use shards_abi::gpu::{GpuProbeError, GpuReport};
         let mut frame = Vec::new();
         let mut writer = Some(&mut frame);
-        write_report(&mut writer, [3; 16], probe()).unwrap();
+        write_report(&mut writer, [3; 16], Ok(probe())).unwrap();
         assert_eq!(
-            write_report(&mut writer, [3; 16], probe()),
+            write_report(&mut writer, [3; 16], Ok(probe())),
             Err(GpuProbeError::ReportTaken.to_string())
         );
-        let written = GpuReport::parse(std::str::from_utf8(&frame).unwrap(), [3; 16], &[physical]).unwrap();
+        let written = GpuReport::parse(std::str::from_utf8(&frame).unwrap(), [3; 16], &[PHYSICAL]).unwrap();
         assert_eq!(written.probe, probe());
+    }
+
+    /// D232: a selection its renderer refused is reported as that refusal, in its launch's
+    /// scoped frame, by the same one writer, where the writer was closed unwritten.
+    #[test]
+    fn a_refused_selection_is_reported_as_its_refusal() {
+        use shards_abi::gpu::{GpuProbeError, GpuRefusal, GpuReport, JoinError};
+        let refusal = GpuRefusal::Join(JoinError::Missing);
+        let mut frame = Vec::new();
+        let mut writer = Some(&mut frame);
+        write_report(&mut writer, [3; 16], Err(refusal)).unwrap();
+        assert_eq!(
+            write_report(&mut writer, [3; 16], Err(refusal)),
+            Err(GpuProbeError::ReportTaken.to_string())
+        );
+        assert_eq!(
+            GpuReport::parse(std::str::from_utf8(&frame).unwrap(), [3; 16], &[PHYSICAL]),
+            Err(GpuProbeError::Refused(refusal))
+        );
+    }
+
+    /// D232: `--gpu-probe` prints its receipt and succeeds, or prints the refusal its
+    /// renderer typed and fails; any other failure it reports itself, printing nothing.
+    #[test]
+    fn a_probe_answers_its_receipt_or_its_refusal() {
+        use shards_abi::gpu::{GpuProbe, GpuProbeError, GpuRefusal, JoinError};
+        let refusal = GpuRefusal::Join(JoinError::Ambiguous);
+        let (text, code) =
+            probe_answer(Err(vm::StartError::GpuProbe(GpuProbeError::Refused(refusal)))).unwrap();
+        assert_eq!(GpuProbe::parse(&text), Err(GpuProbeError::Refused(refusal)));
+        assert_eq!(code, ExitCode::FAILURE);
+        let (text, code) = probe_answer(Ok(probe())).unwrap();
+        assert_eq!(GpuProbe::parse(&text).unwrap(), probe());
+        assert_eq!(code, ExitCode::SUCCESS);
+        let failed = vm::StartError::Legacy("this host has no Vulkan loader".into());
+        assert_eq!(
+            probe_answer(Err(failed)),
+            Err("this host has no Vulkan loader".to_string())
+        );
     }
 
     #[test]

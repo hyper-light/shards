@@ -515,18 +515,19 @@ impl<D: Disk> Daemon<D> {
         all
     }
 
-    /// MicroVM `given`'s kept request, and its ID, for connect and disconnect; dockerd's
-    /// words where there is none.
-    fn request_of(&self, given: &str) -> Result<(String, shards_ipc::Run), String> {
+    /// MicroVM `given`'s kept request, its ID and its turn to change it (D37), held until
+    /// what changed is kept, for connect and disconnect; dockerd's words where there is none.
+    fn request_of(&self, given: &str) -> Result<(super::RequestTurn<'_>, String, shards_ipc::Run), String> {
         let id = self
             .resolve(given)
             .map_err(|e| e.strip_prefix("shards: ").unwrap_or(&e).to_string())?;
+        let turn = self.request_turn(&id);
         let dir = lock(&self.containers).dir(&id);
         let run = std::fs::read(dir.join(super::REQUEST))
             .ok()
             .and_then(|b| shards_ipc::Run::decode(&b))
             .ok_or_else(|| format!("container {id}: its request is not kept"))?;
-        Ok((id, run))
+        Ok((turn, id, run))
     }
 
     fn keep_request(&self, id: &str, run: &shards_ipc::Run) -> Result<(), String> {
@@ -547,7 +548,7 @@ impl<D: Disk> Daemon<D> {
             reply.err(&format!("shards: {e}"));
             1
         };
-        let (id, mut run) = match self.request_of(given) {
+        let (_turn, id, mut run) = match self.request_of(given) {
             Ok(r) => r,
             Err(e) => return daemon(&e),
         };
@@ -673,7 +674,7 @@ impl<D: Disk> Daemon<D> {
             }
             Found::None => None,
         };
-        let (id, mut run) = match self.request_of(given) {
+        let (_turn, id, mut run) = match self.request_of(given) {
             Ok(r) => r,
             Err(_) if parsed.bool("force") => {
                 return match found {

@@ -112,6 +112,7 @@ fn boot_member(home: &TempDir, image: &str, terminal: bool, stdin: bool) -> Box<
         binary: Some(common::shards().to_path_buf()),
         env: host_env(home),
         control: None,
+        gpu_devices: Vec::new(),
     };
     ImageShards::new().boot(&spec, TIMEOUT).unwrap()
 }
@@ -185,6 +186,18 @@ fn run_two(home: &TempDir, name: &str) {
     let binary = std::fs::read(common::test_guest()).unwrap();
     std::fs::create_dir_all(ctx.join("other/bin")).unwrap();
     std::fs::write(ctx.join("other/bin/testguest"), &binary).unwrap();
+    // A context's files keep their modes on a Unix host, as fsutil walks them, and a
+    // written file is no program (0644 under the usual umask): its member's launch would
+    // be refused (EACCES). A Windows host's context gives every file 0755.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(
+            ctx.join("other/bin/testguest"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
     std::fs::write(ctx.join("other/secret"), "the other member's\n").unwrap();
     std::fs::write(
         ctx.join("other/agent.json"),

@@ -447,6 +447,9 @@ pub(super) struct Session {
     nesting: bool,
     /// Each member whose spec asked for a terminal of its own (D244), by its index.
     terminals: Vec<u32>,
+    /// The period its VM's governor holds a rate over, as its host said it as the run
+    /// started (D247).
+    rate_period: Duration,
 }
 
 impl Session {
@@ -595,6 +598,7 @@ impl Session {
             outputs: Mutex::new(HashMap::new()),
             nesting: request.nesting,
             terminals,
+            rate_period: started.rate_period,
         };
         session.pump_outputs()?;
         Ok(session)
@@ -1213,6 +1217,10 @@ impl ImageGuest for Session {
 
     fn rate(&self, rate: Option<NonZeroU64>, patience: Duration) -> Result<Option<NonZeroU64>, ImageRefusal> {
         self.shared.rate(rate, patience)
+    }
+
+    fn rate_period(&self) -> Duration {
+        self.rate_period
     }
 
     fn resize(
@@ -2036,6 +2044,7 @@ mod tests {
                     address: "127.0.0.1:4433".parse().unwrap(),
                     vm,
                 }),
+                rate_period: Duration::from_millis(100),
             };
             says(&mut h.host, wire::to_client::STARTED, &started.encode().unwrap());
             ask(&mut h.host, 1, CLAUDE);
