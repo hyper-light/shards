@@ -428,6 +428,39 @@ fn credentials(grants: &[wire::CredentialGrant], egress: Option<&[u8]>) -> Resul
     })
 }
 
+/// The characters of a PEM line: "Generators MUST wrap the base64-encoded lines so that each
+/// line consists of exactly 64 characters except for the final line" (RFC 7468 §2).
+const PEM_LINE: usize = 64;
+
+/// The setup entries giving the run's members its CA (D242, `shards_abi::run::trust`), once
+/// its network process has answered `grants` (as `NET_CREDENTIALS` carries them) with the
+/// CA's certificate `der`: the certificate in PEM (RFC 7468), and each host the grants name,
+/// once. init lays it in the trust of each member whose link reaches one of those hosts.
+fn trust(der: &[u8], grants: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    use base64::Engine as _;
+    use shards_abi::run::trust as entries;
+    let grants = shards_net::decode_grants(grants).ok_or("the run's credential grants are malformed")?;
+    let base64 = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut pem = b"-----BEGIN CERTIFICATE-----\n".to_vec();
+    for line in base64.as_bytes().chunks(PEM_LINE) {
+        pem.extend_from_slice(line);
+        pem.push(b'\n');
+    }
+    pem.extend_from_slice(b"-----END CERTIFICATE-----\n");
+    let mut hosts: Vec<&str> = Vec::new();
+    for host in grants.iter().flat_map(|g| &g.toward) {
+        if !hosts.contains(&host.as_str()) {
+            hosts.push(host);
+        }
+    }
+    let said = |e: entries::Error| format!("the run's CA: {e}");
+    let mut out = vec![entries::ca(&pem).map_err(said)?];
+    for host in hosts {
+        out.push(entries::host(host.as_bytes()).map_err(said)?);
+    }
+    Ok(out)
+}
+
 /// Each member held to its reach of the names kept, where the request holds its members
 /// apart (`Narrowing::members`, version 12, D246). A member reaches each destination and
 /// remote MCP server kept that it reaches by name (`Agentfile::named`): its init lets it out
@@ -1724,10 +1757,12 @@ mod hosted {
     /// Hands the VM its run, as the daemon hands a warm VM one (daemon.rs `hand_over`): once
     /// it is `READY`, `RUN` with the run's head, spec and descriptors, on Windows its
     /// shares' streams after it (D197), then `TAKEN`; then `STOP_ORDER`, SIGKILL with no
-    /// grace, so that a VM whose link closes, this process gone, ends its run.
+    /// grace, so that a VM whose link closes, this process gone, ends its run. `trust` joins
+    /// its setup: the run's CA for its members' trust (D242), known only now.
     fn hand_over(
         link: &Stream,
         plan: &Plan,
+        trust: &[Vec<u8>],
         client: &Stream,
         shares: Option<&Shares>,
         capture: Option<&Stream>,
@@ -1740,7 +1775,14 @@ mod hosted {
         }
         let null = std::fs::File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let err = io::stderr();
-        let payload = super::run_request(&plan.prepared.spec, !plan.listeners.is_empty());
+        let payload = if trust.is_empty() {
+            super::run_request(&plan.prepared.spec, !plan.listeners.is_empty())
+        } else {
+            let mut spec = plan.prepared.spec.clone();
+            spec.setup.extend_from_slice(trust);
+            crate::spec::fits(&spec)?;
+            super::run_request(&spec, !plan.listeners.is_empty())
+        };
         // A stream's end as a message hands it on: borrowed on Unix, a handle of its own on
         // Windows (`shards_ipc::handed`).
         let client = shards_ipc::handed(client).map_err(|e| format!("the run's client: {e}"))?;
@@ -1802,6 +1844,8 @@ mod hosted {
         // Its share process's notices (D235), given its guest as its run starts.
         let due = launched.shares.as_mut().and_then(|s| s.notices.take());
         let served = (|| -> Result<(), No> {
+            // The run's CA for its members' trust (D242), once its network process made it.
+            let mut trust = Vec::new();
             if let Some((_, control)) = &launched.net {
                 let ca = tell_net(
                     control,
@@ -1810,12 +1854,13 @@ mod hosted {
                     plan.credentials.as_deref(),
                 )
                 .map_err(boot)?;
-                if let Some(der) = &ca {
+                if let (Some(der), Some(grants)) = (&ca, plan.credentials.as_deref()) {
                     let digest = <sha2::Sha256 as sha2::Digest>::digest(der);
                     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
                     super::say(format_args!(
                         "its credential grants taken; its CA's SHA-256 {hex}"
                     ));
+                    trust = super::trust(der, grants).map_err(boot)?;
                 }
             }
             let (client, client_theirs) =
@@ -1827,6 +1872,7 @@ mod hosted {
             hand_over(
                 &launched.link,
                 &plan,
+                &trust,
                 &client_theirs,
                 launched.shares.as_ref(),
                 capture.as_ref().map(|(_, theirs)| theirs),
@@ -3246,6 +3292,43 @@ mod tests {
         // A TCP port granted reaches every host on it.
         let any443 = shards_net::encode_policy(&shards_net::Ports::parse("443/tcp").unwrap(), &[], false);
         assert!(credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&any443)).is_ok());
+    }
+
+    /// The run's CA goes to its guest for its members' trust (D242): its certificate in PEM,
+    /// its base64 in lines of 64 characters but the last (RFC 7468 §2), read back to the DER
+    /// by rustls' own PEM reader; and each host the grants name, once. Malformed grants
+    /// give nothing.
+    #[test]
+    fn credential_grants_ca_goes_to_the_guest_in_pem_with_each_host_once() {
+        let der: Vec<u8> = (0..=255u8).cycle().take(700).collect();
+        let grants = shards_net::encode_grants(&[
+            shards_net::Grant {
+                reference: "anthropic/claude-max".into(),
+                toward: vec!["api.anthropic.com".into(), "claude.ai".into()],
+            },
+            shards_net::Grant {
+                reference: "anthropic/console".into(),
+                toward: vec!["api.anthropic.com".into()],
+            },
+        ])
+        .unwrap();
+        let entries = trust(&der, &grants).unwrap();
+        let got = shards_abi::run::trust::of(&entries).unwrap().unwrap();
+        assert_eq!(got.hosts, [b"api.anthropic.com".as_slice(), b"claude.ai"]);
+        let pem = std::str::from_utf8(got.pem).unwrap();
+        let lines: Vec<&str> = pem.lines().collect();
+        assert_eq!(lines.first(), Some(&"-----BEGIN CERTIFICATE-----"));
+        assert_eq!(lines.last(), Some(&"-----END CERTIFICATE-----"));
+        let body = &lines[1..lines.len() - 1];
+        assert!(
+            body[..body.len() - 1].iter().all(|l| l.len() == PEM_LINE),
+            "{body:?}"
+        );
+        assert!((1..=PEM_LINE).contains(&body[body.len() - 1].len()));
+        use rustls::pki_types::pem::PemObject as _;
+        let back = rustls::pki_types::CertificateDer::from_pem_slice(got.pem).unwrap();
+        assert_eq!(back.as_ref(), der.as_slice());
+        assert!(trust(&der, b"\x00").is_err());
     }
 
     /// Each member held to its reach of the names kept (D246). Do: keep a destination that
