@@ -1191,6 +1191,7 @@ mod tests {
             workdir: None,
             input,
             terminal: false,
+            args: Vec::new(),
         };
         let s = Shared {
             state: Mutex::new(State::asking(&[stage("codex", true), stage("other", false)])),
