@@ -161,4 +161,5 @@ e72239dd3 (`cure.sh` in the carrier; the guard's removal is the 17th entry of `s
   reference and id, and no value in them. Nothing in a run asks until the injector (step 3) calls `Leases::ask`.
 - Hex's vendored shards-api takes `ImageSpec::lessor` (step 6), and its `Lessor` is kiln's broker (step 5).
 - The daemon's runs have no credential grants: their lease relay, and a move's release there, are owed by the first
-  change that gives a daemon's run grants, which none of this plan's ten steps does.
+  change that gives a daemon's run grants. No step brings them: not this plan's ten, nor the 39 of kiln plan
+  01a1cd8e862e7169a074db3d5fa33f3d (its steps 9 and 15 grant names on the network, not credentials).

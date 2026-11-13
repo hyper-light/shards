@@ -25151,7 +25151,8 @@ docs/research/s33-veil-creds/STEP4.md.
   (`ImageRefusal::Spec`, "the run's lessor"). The daemon gives no network process grants, so
   none of its runs asks.
 - *The run's identity: its own key where it has one, else its channel* (the implementer's
-  decision, for ROOT to confirm). D238's key is made where a run's agent-control endpoint
+  decision, confirmed by ROOT on 2026-11-13: the run's D252 key where it binds an endpoint,
+  else its channel, no key made for leases alone, `KeyReplaced` carried end to end). D238's key is made where a run's agent-control endpoint
   binds: by the daemon as a run's managed scope begins (daemon/managed.rs `bind_agent`, its
   SHA-256 the `vm` line of the run's managed metadata), and by `shards api-run` once the run's
   VM has started, where its orchestrator asks for an endpoint (D252: `ImageSpec::control`, told
@@ -25226,9 +25227,11 @@ docs/research/s33-veil-creds/STEP4.md.
   saying each and no value. That needs the injector (step 3), the first caller of
   `Leases::ask`; until it lands, nothing in a run asks. Hex's vendored shards-api takes
   `ImageSpec::lessor` (step 6). The daemon's runs have no credential grants: their lease relay
-  and a move's release there are owed by the first change that gives a daemon's run grants,
-  which none of this plan's ten steps does (each run here is an orchestrator's, through
-  `shards api-run`).
+  and a move's release there are owed by the first change that gives a daemon's run grants.
+  No step brings them: not this plan's ten, nor the 39 of kiln plan
+  01a1cd8e862e7169a074db3d5fa33f3d, whose harness runs are all an orchestrator's, through
+  `shards api-run` (D231; its steps 9 and 15 grant names on the network, D236, not
+  credentials).
 
 **Owed (later slices of step 33, this plan's steps 3 and 5–10).** The injector that
 terminates TLS and fills HTTP/1.1 then HTTP/2 headers (steps 3, 7); kiln's broker over
