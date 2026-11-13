@@ -58,6 +58,90 @@ fn say(what: std::fmt::Arguments<'_>) {
     let _ = writeln!(io::stderr(), "shards api-run: {what}");
 }
 
+/// The run's channel from its orchestrator, this process's stdin (D231), read a frame at a
+/// time into a buffer of its own (`wire::read_frame_into`), each frame's bytes wiped as it is
+/// let go of ([`Frame`]), so that between frames the buffer is all zeros: never through
+/// std's `Stdin`, whose buffer reads ahead and keeps what it read (a lease's value, D242; a
+/// staged credential; a member's typed input) until later frames overwrite it.
+struct Channel<R> {
+    from: R,
+    buf: Vec<u8>,
+}
+
+/// A frame of the [`Channel`]'s: its kind, and its payload in the channel's buffer, wiped
+/// there as the frame is let go of.
+struct Frame<'a> {
+    kind: u8,
+    payload: &'a mut [u8],
+}
+
+impl Drop for Frame<'_> {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut *self.payload);
+    }
+}
+
+impl std::ops::Deref for Frame<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.payload
+    }
+}
+
+impl<R: io::Read> Channel<R> {
+    fn new(from: R) -> Channel<R> {
+        Channel {
+            from,
+            buf: Vec::new(),
+        }
+    }
+
+    /// The next frame, none at a clean end before its header; refused past the channel's
+    /// bound or cut short.
+    fn next(&mut self) -> io::Result<Option<Frame<'_>>> {
+        match wire::read_frame_into(&mut self.from, &mut self.buf) {
+            Ok(Some((kind, len))) => {
+                let payload = self
+                    .buf
+                    .get_mut(..len)
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?;
+                Ok(Some(Frame { kind, payload }))
+            }
+            Ok(None) => Ok(None),
+            // What came of a frame cut short is wiped as well.
+            Err(e) => {
+                zeroize::Zeroize::zeroize(self.buf.as_mut_slice());
+                Err(e)
+            }
+        }
+    }
+
+    /// Lets go of its buffer's memory: after the run's request, which may be far the largest
+    /// frame it reads.
+    fn shed(&mut self) {
+        self.buf = Vec::new();
+    }
+}
+
+/// The run's channel, as this process reads it.
+type Input = Channel<std::fs::File>;
+
+/// This process's stdin as the run's [`Channel`] reads it: its own descriptor (on Windows its
+/// own handle), read unbuffered.
+fn stdin() -> io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsFd as _;
+        Ok(std::fs::File::from(io::stdin().as_fd().try_clone_to_owned()?))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsHandle as _;
+        Ok(std::fs::File::from(io::stdin().as_handle().try_clone_to_owned()?))
+    }
+}
+
 /// `shards api-run`: not for people to run. The run's end is said as its VM ends, before
 /// its owner closes the channel; a run that never started is refused instead.
 pub fn command() -> ExitCode {
@@ -76,25 +160,26 @@ pub fn command() -> ExitCode {
 }
 
 fn host(answers: &Answers) -> Result<(), No> {
-    let mut input = io::stdin();
-    let request = match wire::read_frame(&mut input) {
-        Ok(Some((wire::to_host::CREATE, payload))) => {
-            wire::Request::decode(&payload).map_err(|e| No(Cause::Request, e.to_string()))?
+    let mut input = Channel::new(stdin().map_err(|e| No(Cause::Boot, format!("its stdin: {e}")))?);
+    let (kind, request) = match input.next() {
+        Ok(Some(frame)) if frame.kind == wire::to_host::CREATE || frame.kind == wire::to_host::WARM => {
+            let request = wire::Request::decode(&frame).map_err(|e| No(Cause::Request, e.to_string()))?;
+            (frame.kind, request)
         }
-        // A warm host's exemplar (D253's pools): its run comes once its microVM is ready.
-        Ok(Some((wire::to_host::WARM, payload))) => {
-            let exemplar = wire::Request::decode(&payload).map_err(|e| No(Cause::Request, e.to_string()))?;
-            return hosted::warm(answers, &exemplar, input);
-        }
-        Ok(Some((kind, _))) => {
+        Ok(Some(frame)) => {
             return Err(No(
                 Cause::Request,
-                format!("message kind {kind} before the request"),
+                format!("message kind {} before the request", frame.kind),
             ));
         }
         Ok(None) => return Err(No(Cause::Request, "the channel closed before its request".into())),
         Err(e) => return Err(No(Cause::Request, format!("the request: {e}"))),
     };
+    input.shed();
+    // A warm host's exemplar (D253's pools): its run comes once its microVM is ready.
+    if kind == wire::to_host::WARM {
+        return hosted::warm(answers, &request, input);
+    }
     let ready_by = deadline(request.ready_by, SystemTime::now())?;
     hosted::run(answers, &request, ready_by, input)
 }
@@ -834,6 +919,102 @@ fn run_end(failed: Option<String>, done: Option<&[u8]>, started: bool) -> wire::
     }
 }
 
+/// What a run's VM told of its end on its link (warm.rs `finish`): whether its command started
+/// (`STARTED`), why the VM could not serve its run, where it could not (`UNSERVED`), and its
+/// `DONE`.
+#[derive(Debug, Default)]
+struct Told {
+    started: bool,
+    unserved: Option<String>,
+    done: Option<Vec<u8>>,
+}
+
+impl Told {
+    /// The run's end, its VM's link closed, or broken as `failed` says. A VM that could not
+    /// serve its run failed it, in its words: the status it gives its client then
+    /// (`spec::NOT_RUN`, which `docker run` gives for dockerd's own failures) is no
+    /// command's, and a link broken after it is its consequence.
+    fn end(self, failed: Option<String>) -> wire::RunEnd {
+        let failed = self
+            .unserved
+            .map(|why| format!("its VM could not serve its run: {why}"))
+            .or(failed);
+        run_end(failed, self.done.as_deref(), self.started)
+    }
+}
+
+/// How the orchestrator's asks of a run ended (D231): its `STOP`; or the run failed as they
+/// were served, for the reason given: its channel ended without `STOP` (its owner gone), or
+/// broke (a frame this host cannot read, or an ask that breaks its contract), or what an ask
+/// needed failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AsksEnd {
+    Stopped,
+    Failed(String),
+}
+
+/// The run's end: as its VM said it (`vm`; `said`, its `DONE` came), whatever its asks did
+/// meanwhile; else as its orchestrator's asks ended it ([`AsksEnd`]), its VM killed for them,
+/// which leaves it no end of its own to say.
+fn ended_by(asks: Option<&AsksEnd>, vm: wire::RunEnd, said: bool) -> wire::RunEnd {
+    match asks {
+        Some(AsksEnd::Stopped) if !said => wire::RunEnd::Stopped,
+        Some(AsksEnd::Failed(why)) if !said => wire::RunEnd::Failed(why.clone()),
+        _ => vm,
+    }
+}
+
+/// An orchestrator's ask, as its frame reads (D231): a lease's answer as its frame holds it.
+enum Ask<'a> {
+    Credit(wire::Credit),
+    Input(wire::Input),
+    InputEnd(wire::InputEnd),
+    Leased(&'a [u8]),
+    Stats(wire::StatsAsk),
+    Room(wire::RoomAsk),
+    Rate(wire::RateAsk),
+    Resize(wire::ResizeAsk),
+    Plug(wire::PlugAsk),
+    Unplug(wire::UnplugAsk),
+}
+
+/// The orchestrator's next ask, from what reading its next frame gave (`read`: its kind and
+/// payload), or how that frame ends its asks.
+fn read_ask<'a>(read: Result<Option<(u8, &'a [u8])>, &io::Error>) -> Result<Ask<'a>, AsksEnd> {
+    match read {
+        Ok(Some((which, payload))) => judged(which, payload),
+        Ok(None) => Err(AsksEnd::Failed(
+            "its orchestrator's channel ended without STOP".into(),
+        )),
+        Err(e) => Err(broke(format_args!("{e}"))),
+    }
+}
+
+/// The run failed as its orchestrator broke its channel, as `why` says.
+fn broke(why: std::fmt::Arguments<'_>) -> AsksEnd {
+    AsksEnd::Failed(format!("its orchestrator's channel broke: {why}"))
+}
+
+/// The ask frame `which` carries, or how it ends the asks: `STOP`; or a payload its kind does
+/// not read, or a kind that is no ask, which breaks the channel.
+fn judged(which: u8, payload: &[u8]) -> Result<Ask<'_>, AsksEnd> {
+    let (what, ask) = match which {
+        wire::to_host::STOP => return Err(AsksEnd::Stopped),
+        wire::to_host::CREDIT => ("CREDIT", wire::Credit::decode(payload).map(Ask::Credit)),
+        wire::to_host::INPUT => ("INPUT", wire::Input::decode(payload).map(Ask::Input)),
+        wire::to_host::INPUT_END => ("INPUT_END", wire::InputEnd::decode(payload).map(Ask::InputEnd)),
+        wire::to_host::LEASED => ("LEASED", Ok(Ask::Leased(payload))),
+        wire::to_host::STATS => ("STATS", wire::StatsAsk::decode(payload).map(Ask::Stats)),
+        wire::to_host::ROOM => ("ROOM", wire::RoomAsk::decode(payload).map(Ask::Room)),
+        wire::to_host::RATE => ("RATE", wire::RateAsk::decode(payload).map(Ask::Rate)),
+        wire::to_host::RESIZE => ("RESIZE", wire::ResizeAsk::decode(payload).map(Ask::Resize)),
+        wire::to_host::PLUG => ("PLUG", wire::PlugAsk::decode(payload).map(Ask::Plug)),
+        wire::to_host::UNPLUG => ("UNPLUG", wire::UnplugAsk::decode(payload).map(Ask::Unplug)),
+        other => return Err(broke(format_args!("a frame of kind {other}, which is no ask"))),
+    };
+    ask.map_err(|e| broke(format_args!("a malformed {what}: {e}")))
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -1028,12 +1209,17 @@ struct Leasing<'a> {
 
 impl Leasing<'_> {
     /// Tells the network process its ask `asked_as`'s answer: the value and its lease's
-    /// life, or why not. The message's copy of a value is wiped once sent.
+    /// life, or why not. The message's copy of a value is wiped once sent, and sent as it
+    /// lies, no other copy made: on Unix in one sendmsg of its parts, on Windows in two writes
+    /// (`shards_ipc::write_message_parts`), as this one thread at a time writes the control.
     fn tell(&self, asked_as: u32, answer: Result<(NonZeroU64, &[u8]), &Refusal>) -> io::Result<()> {
         let payload = shards_net::lease::encode_answer(asked_as, answer)
             .ok_or_else(|| io::Error::other("a lease's answer past what its lengths count"))?;
         let _one = lock(&self.sending);
-        crate::netproc::send(self.net, kind::NET_LEASE, &payload, &[])
+        #[cfg(unix)]
+        return crate::netproc::send(self.net, kind::NET_LEASE, &payload, &[]);
+        #[cfg(windows)]
+        return shards_ipc::write_message_parts(&self.net.socket, kind::NET_LEASE, &payload);
     }
 }
 
@@ -1380,7 +1566,7 @@ mod hosted {
         answers: &Answers,
         request: &wire::Request,
         ready_by: Option<u64>,
-        input: io::Stdin,
+        input: super::Input,
     ) -> Result<(), No> {
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
         let shaped = shape(request, &home)?;
@@ -2257,11 +2443,13 @@ mod hosted {
 
     /// A member's stdin, which its orchestrator writes (plan step 5): its guest's input
     /// connection once its VM hands it over, what the orchestrator sent and its writer has
-    /// not yet written, the room it was given and has not used, and its end.
+    /// not yet written, the room it was given and has not used, and its end. What it sent is
+    /// what a person typed, a credential as often as not: each part a [`wire::Secret`], wiped
+    /// as it is written, cleared or let go of (D242).
     #[derive(Default)]
     struct Feed {
         conn: Conn,
-        queued: std::collections::VecDeque<Vec<u8>>,
+        queued: std::collections::VecDeque<wire::Secret>,
         room: u64,
         /// The orchestrator's end or abort, to go after what is queued.
         end: Option<wire::StreamEnd>,
@@ -2303,8 +2491,8 @@ mod hosted {
         /// (`EXEC_TAKEN`), as the daemon holds an exec's (M24): none once the link has
         /// closed, when no VM will.
         held: Mutex<Option<HashMap<u64, Stream>>>,
-        /// `STOP` asked, or the owner gone: the run's end is `Stopped`.
-        stopping: std::sync::atomic::AtomicBool,
+        /// How the orchestrator's asks ended, where they did ([`super::ended_by`]).
+        asks_end: Mutex<Option<super::AsksEnd>>,
         next_exec: std::sync::atomic::AtomicU64,
         /// The home, whose private directory each share process keeps its ghosts in.
         home: &'a Path,
@@ -2500,7 +2688,7 @@ mod hosted {
         Stream::plain_pair()
     }
 
-    fn launch_and_serve(answers: &Answers, input: io::Stdin, home: &Path, plan: Plan) -> Result<(), No> {
+    fn launch_and_serve(answers: &Answers, input: super::Input, home: &Path, plan: Plan) -> Result<(), No> {
         super::say(format_args!(
             "prepared {}, {} vCPUs, {} MiB; starting its VM",
             plan.prepared.image_id, plan.prepared.size.0, plan.prepared.size.1
@@ -2514,7 +2702,11 @@ mod hosted {
     /// process is, its start said `Warm`. A run of another microVM's than its exemplar's is
     /// refused `Unfit`, for its orchestrator to start a host of its own for it; its channel
     /// closed first ends it, its pool having let it go.
-    pub(super) fn warm(answers: &Answers, exemplar: &wire::Request, mut input: io::Stdin) -> Result<(), No> {
+    pub(super) fn warm(
+        answers: &Answers,
+        exemplar: &wire::Request,
+        mut input: super::Input,
+    ) -> Result<(), No> {
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
         let shaped = shape(exemplar, &home)?;
         let launched = match launch(&home, &shaped.launch()) {
@@ -2535,19 +2727,20 @@ mod hosted {
             answers
                 .send(wire::to_client::WARMED, &[&wire::warmed(launched.from)])
                 .map_err(|e| No(Cause::Boot, format!("its orchestrator: {e}")))?;
-            let request = match wire::read_frame(&mut input) {
-                Ok(Some((wire::to_host::CREATE, payload))) => {
-                    wire::Request::decode(&payload).map_err(|e| No(Cause::Request, e.to_string()))?
+            let request = match input.next() {
+                Ok(Some(frame)) if frame.kind == wire::to_host::CREATE => {
+                    wire::Request::decode(&frame).map_err(|e| No(Cause::Request, e.to_string()))?
                 }
-                Ok(Some((kind, _))) => {
+                Ok(Some(frame)) => {
                     return Err(No(
                         Cause::Request,
-                        format!("message kind {kind} before the run's request"),
+                        format!("message kind {} before the run's request", frame.kind),
                     ));
                 }
                 Ok(None) => return Ok(None),
                 Err(e) => return Err(No(Cause::Request, format!("the request: {e}"))),
             };
+            input.shed();
             if request.exemplar() != *exemplar {
                 return Err(No(
                     Cause::Unfit,
@@ -2629,7 +2822,7 @@ mod hosted {
     /// ended.
     fn serve_launched(
         answers: &Answers,
-        input: io::Stdin,
+        input: super::Input,
         home: &Path,
         plan: Plan,
         mut launched: Launched,
@@ -2734,7 +2927,7 @@ mod hosted {
                 capture: capture.map(|(ours, _)| Mutex::new(ours)),
                 link: Mutex::new(link),
                 held: Mutex::new(Some(HashMap::new())),
-                stopping: std::sync::atomic::AtomicBool::new(false),
+                asks_end: Mutex::new(None),
                 next_exec: std::sync::atomic::AtomicU64::new(0),
                 home,
                 members: &plan.members,
@@ -2777,7 +2970,7 @@ mod hosted {
     /// channel closed first, kills the VM, whose end then says `Stopped`.
     fn serve(
         live: &Live<'_>,
-        input: io::Stdin,
+        input: super::Input,
         launched: &Launched,
         client: Stream,
         control: Option<(shards_remote::control::Endpoint, shards_remote::control::Served)>,
@@ -2851,16 +3044,12 @@ mod hosted {
                     // Its clone taken and the lock let go of before it is read: a match's
                     // guard would be held through `follow`, and an exec's send wait out the run.
                     let link = lock(&live.link).try_clone();
-                    let end = match link {
+                    let (end, said) = match link {
                         Ok(link) => follow(live, &link),
-                        Err(e) => RunEnd::Failed(format!("the VM's link: {e}")),
+                        Err(e) => (RunEnd::Failed(format!("the VM's link: {e}")), false),
                     };
                     let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
-                    let end = if live.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-                        RunEnd::Stopped
-                    } else {
-                        end
-                    };
+                    let end = super::ended_by(lock(&live.asks_end).as_ref(), end, said);
                     // Every end of the run's comes here, its leases released before it is said:
                     // its own command's, `STOP`, its owner's channel closed, its VM gone.
                     super::end_run(live.answers, live.leasing.as_ref(), &end);
@@ -2868,7 +3057,6 @@ mod hosted {
                 });
             if following.is_err() {
                 // Nothing would say its end: the run is ended now, and said so.
-                live.stopping.store(true, std::sync::atomic::Ordering::SeqCst);
                 let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
                 lock(&live.held).take();
                 let end = RunEnd::Failed("the run host could not follow its VM".into());
@@ -3036,10 +3224,10 @@ mod hosted {
 
     /// Reads the VM's link until it closes: each member's end and the command's readiness
     /// to the orchestrator as they come (`super::relayed`), each exec's client end let go of
-    /// as the VM takes it, the run's end from its `DONE` (`super::run_end`).
-    fn follow(live: &Live<'_>, link: &Stream) -> RunEnd {
-        let mut done = None;
-        let mut started = false;
+    /// as the VM takes it, the run's end from its `DONE` (`super::run_end`), and whether its
+    /// `DONE` came.
+    fn follow(live: &Live<'_>, link: &Stream) -> (RunEnd, bool) {
+        let mut told = super::Told::default();
         let failed = loop {
             let m = match shards_ipc::recv(link) {
                 Ok(Some(m)) => m,
@@ -3047,9 +3235,11 @@ mod hosted {
                 Err(e) => break Some(format!("the VM's link: {e}")),
             };
             if m.kind == kind::DONE {
-                done = Some(m.payload);
+                told.done = Some(m.payload);
+            } else if m.kind == kind::UNSERVED {
+                told.unserved = Some(String::from_utf8_lossy(&m.payload).into_owned());
             } else if m.kind == kind::STARTED {
-                started = true;
+                told.started = true;
                 // Its guest told what its host changes in its shares from now on (D235).
                 if let Some(pipe) = lock(&live.notices_due).take() {
                     match notice_exec(live, pipe) {
@@ -3098,161 +3288,149 @@ mod hosted {
         for member in members {
             end_input(live, member);
         }
-        super::run_end(failed, done.as_deref(), started)
+        let said = told.done.is_some();
+        (told.end(failed), said)
     }
 
-    /// The orchestrator's asks, until its channel closes: credit, stats, stop. A channel
-    /// closed without `STOP` is its owner gone, which ends the run as `STOP` does; one
-    /// closed after the run's end is its owner having heard it.
+    /// The orchestrator's asks, until its channel closes: credit, stats, stop. `STOP` ends
+    /// the run `Stopped`; its channel closed without one (its owner gone), or broken, ends it
+    /// failed, saying why, as an ask whose need fails does ([`super::AsksEnd`]); one closed
+    /// after the run's end is its owner having heard it.
     fn asks<'scope, 'env>(
         live: &'env Live<'env>,
-        mut input: io::Stdin,
+        mut input: super::Input,
         vm: &'env shards_ipc::Child,
         scope: &'scope std::thread::Scope<'scope, 'env>,
     ) {
-        while let Ok(Some((which, payload))) = wire::read_frame(&mut input) {
-            match which {
-                wire::to_host::CREDIT => {
-                    let Ok(credit) = wire::Credit::decode(&payload) else {
-                        break;
-                    };
-                    let key = (credit.member, credit.channel);
-                    let mut flows = lock(&live.flows);
-                    let room = flows.room.entry(key).or_insert(0);
-                    *room = room.saturating_add(credit.bytes);
-                    if live.flush(&mut flows, key).is_err() || live.grant(&mut flows, key).is_err() {
-                        break;
-                    }
+        let ended = loop {
+            // Each frame read into the channel's own buffer, and wiped there as it goes once
+            // its ask is served (`super::Frame`): a lease's value is never copied.
+            let next = input.next();
+            let ask = super::read_ask(next.as_ref().map(|f| f.as_ref().map(|f| (f.kind, &**f))));
+            if let Err(end) = ask.and_then(|ask| take(live, ask, vm, scope)) {
+                break end;
+            }
+        };
+        if let super::AsksEnd::Failed(why) = &ended {
+            super::say(format_args!("its asks ended: {why}"));
+        }
+        *lock(&live.asks_end) = Some(ended);
+        let _ = vm.kill(shards_ipc::signal::SIGKILL);
+    }
+
+    /// Serves the orchestrator's ask `ask`, or says how it ends its asks.
+    fn take<'scope, 'env>(
+        live: &'env Live<'env>,
+        ask: super::Ask<'_>,
+        vm: &'env shards_ipc::Child,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+    ) -> Result<(), super::AsksEnd> {
+        use super::{Ask, AsksEnd};
+        match ask {
+            Ask::Credit(credit) => {
+                let key = (credit.member, credit.channel);
+                let mut flows = lock(&live.flows);
+                let room = flows.room.entry(key).or_insert(0);
+                *room = room.saturating_add(credit.bytes);
+                live.flush(&mut flows, key)
+                    .map_err(|e| AsksEnd::Failed(format!("its answers to its orchestrator: {e}")))?;
+                live.grant(&mut flows, key)
+                    .map_err(|e| AsksEnd::Failed(format!("its members' output's credit to its VM: {e}")))?;
+            }
+            Ask::Input(given) => {
+                input_given(live, given).map_err(|why| super::broke(format_args!("{why}")))?
+            }
+            Ask::InputEnd(end) => input_end(live, end).map_err(|why| super::broke(format_args!("{why}")))?,
+            // A lease the orchestrator answered (D242), relayed to the network process
+            // that asked it from the frame itself, wiped as it goes. One of a run with no
+            // grants, or to no ask, breaks the channel.
+            Ask::Leased(payload) => {
+                let Some(leasing) = &live.leasing else {
+                    return Err(super::broke(format_args!(
+                        "a lease's answer, of a run that asks none"
+                    )));
+                };
+                super::leased(leasing, payload).map_err(|e| super::broke(format_args!("{e}")))?;
+            }
+            // On a thread of its own: an exec its guest is slow to answer holds up no
+            // credit and no stop.
+            Ask::Stats(ask) => {
+                let vm = vm.id();
+                let asked = std::thread::Builder::new()
+                    .name("api-run stats".into())
+                    .spawn_scoped(scope, move || stats(live, ask, vm));
+                if asked.is_err()
+                    && let Ok(answer) = wire::StatsAnswer::encode(ask.id, Err("no thread to ask it on"))
+                {
+                    let _ = live.answers.send(wire::to_client::STATS, &[&answer]);
                 }
-                wire::to_host::INPUT => {
-                    let Ok(given) = wire::Input::decode(&payload) else {
-                        break;
-                    };
-                    if input_given(live, given).is_err() {
-                        break;
-                    }
+            }
+            // On a thread of its own, as stats: a guest slow to hold its run holds up
+            // nothing else.
+            Ask::Room(ask) => {
+                let asked = std::thread::Builder::new()
+                    .name("api-run room".into())
+                    .spawn_scoped(scope, move || held(live, ask.id, room(live, ask.room)));
+                if asked.is_err() {
+                    held(live, ask.id, Err("no thread to ask it on".into()));
                 }
-                wire::to_host::INPUT_END => {
-                    let Ok(end) = wire::InputEnd::decode(&payload) else {
-                        break;
-                    };
-                    if input_end(live, end).is_err() {
-                        break;
-                    }
+            }
+            // On a thread of its own, as a room: a VM slow to answer holds up nothing
+            // else.
+            Ask::Rate(ask) => {
+                let asked = std::thread::Builder::new()
+                    .name("api-run rate".into())
+                    .spawn_scoped(scope, move || rated(live, ask.id, rate(live, ask.rate)));
+                if asked.is_err() {
+                    rated(live, ask.id, Err("no thread to ask it on".into()));
                 }
-                // A lease the orchestrator answered (D242), relayed to the network process
-                // that asked it; the frame's copy of a value wiped as it goes. One of a run
-                // with no grants, or to no ask, breaks the channel.
-                wire::to_host::LEASED => {
-                    let payload = zeroize::Zeroizing::new(payload);
-                    let Some(leasing) = &live.leasing else {
-                        break;
-                    };
-                    if let Err(e) = super::leased(leasing, &payload) {
-                        super::say(format_args!("its orchestrator broke its channel: {e}"));
-                        break;
-                    }
+            }
+            // On a thread of its own, as a room: a guest slow to size a member's terminal
+            // holds up nothing else (D244).
+            Ask::Resize(ask) => {
+                let asked = std::thread::Builder::new()
+                    .name("api-run resize".into())
+                    .spawn_scoped(scope, move || resized(live, ask.id, resize(live, ask)));
+                if asked.is_err() {
+                    resized(live, ask.id, Err("no thread to ask it on".into()));
                 }
-                // On a thread of its own: an exec its guest is slow to answer holds up no
-                // credit and no stop.
-                wire::to_host::STATS => {
-                    let Ok(ask) = wire::StatsAsk::decode(&payload) else {
-                        break;
-                    };
-                    let vm = vm.id();
-                    let asked = std::thread::Builder::new()
-                        .name("api-run stats".into())
-                        .spawn_scoped(scope, move || stats(live, ask, vm));
-                    if asked.is_err()
-                        && let Ok(answer) = wire::StatsAnswer::encode(ask.id, Err("no thread to ask it on"))
-                    {
-                        let _ = live.answers.send(wire::to_client::STATS, &[&answer]);
-                    }
+            }
+            // On a thread of its own, as stats: a plug's guest steps hold up nothing else.
+            Ask::Plug(ask) => {
+                let id = ask.id;
+                let asked = std::thread::Builder::new()
+                    .name("api-run plug".into())
+                    .spawn_scoped(scope, move || plugged(live, id, plug(live, &ask)));
+                if asked.is_err() {
+                    plugged(
+                        live,
+                        id,
+                        Err((wire::PlugRefusal::Device, "no thread to ask it on".into())),
+                    );
                 }
-                // On a thread of its own, as stats: a guest slow to hold its run holds up
-                // nothing else.
-                wire::to_host::ROOM => {
-                    let Ok(ask) = wire::RoomAsk::decode(&payload) else {
-                        break;
-                    };
-                    let asked = std::thread::Builder::new()
-                        .name("api-run room".into())
-                        .spawn_scoped(scope, move || held(live, ask.id, room(live, ask.room)));
-                    if asked.is_err() {
-                        held(live, ask.id, Err("no thread to ask it on".into()));
-                    }
+            }
+            Ask::Unplug(ask) => {
+                let id = ask.id;
+                let asked = std::thread::Builder::new()
+                    .name("api-run unplug".into())
+                    .spawn_scoped(scope, move || {
+                        let (result, share) = unplug(live, &ask);
+                        plugged(live, id, result);
+                        // Its share process ends as its device's stream closes.
+                        if let Some(share) = share {
+                            share.end(&live.ends);
+                        }
+                    });
+                if asked.is_err() {
+                    plugged(
+                        live,
+                        id,
+                        Err((wire::PlugRefusal::Device, "no thread to ask it on".into())),
+                    );
                 }
-                // On a thread of its own, as a room: a VM slow to answer holds up nothing
-                // else.
-                wire::to_host::RATE => {
-                    let Ok(ask) = wire::RateAsk::decode(&payload) else {
-                        break;
-                    };
-                    let asked = std::thread::Builder::new()
-                        .name("api-run rate".into())
-                        .spawn_scoped(scope, move || rated(live, ask.id, rate(live, ask.rate)));
-                    if asked.is_err() {
-                        rated(live, ask.id, Err("no thread to ask it on".into()));
-                    }
-                }
-                // On a thread of its own, as a room: a guest slow to size a member's terminal
-                // holds up nothing else (D244).
-                wire::to_host::RESIZE => {
-                    let Ok(ask) = wire::ResizeAsk::decode(&payload) else {
-                        break;
-                    };
-                    let asked = std::thread::Builder::new()
-                        .name("api-run resize".into())
-                        .spawn_scoped(scope, move || resized(live, ask.id, resize(live, ask)));
-                    if asked.is_err() {
-                        resized(live, ask.id, Err("no thread to ask it on".into()));
-                    }
-                }
-                // On a thread of its own, as stats: a plug's guest steps hold up nothing else.
-                wire::to_host::PLUG | wire::to_host::UNPLUG => {
-                    let asked = if which == wire::to_host::PLUG {
-                        let Ok(ask) = wire::PlugAsk::decode(&payload) else {
-                            break;
-                        };
-                        let id = ask.id;
-                        (
-                            id,
-                            std::thread::Builder::new()
-                                .name("api-run plug".into())
-                                .spawn_scoped(scope, move || plugged(live, id, plug(live, &ask))),
-                        )
-                    } else {
-                        let Ok(ask) = wire::UnplugAsk::decode(&payload) else {
-                            break;
-                        };
-                        let id = ask.id;
-                        (
-                            id,
-                            std::thread::Builder::new()
-                                .name("api-run unplug".into())
-                                .spawn_scoped(scope, move || {
-                                    let (result, share) = unplug(live, &ask);
-                                    plugged(live, id, result);
-                                    // Its share process ends as its device's stream closes.
-                                    if let Some(share) = share {
-                                        share.end(&live.ends);
-                                    }
-                                }),
-                        )
-                    };
-                    if let (id, Err(_)) = asked {
-                        plugged(
-                            live,
-                            id,
-                            Err((wire::PlugRefusal::Device, "no thread to ask it on".into())),
-                        );
-                    }
-                }
-                _ => break,
             }
         }
-        live.stopping.store(true, std::sync::atomic::Ordering::SeqCst);
-        let _ = vm.kill(shards_ipc::signal::SIGKILL);
+        Ok(())
     }
 
     /// A member's input connection, as its VM handed it over (`MANAGED_INPUT`): on Unix beside
@@ -3355,13 +3533,24 @@ mod hosted {
     }
 
     /// The orchestrator's bytes for a member's stdin, within the room it was given: queued
-    /// for its writer. Past its room, or for a member with no input, its contract is broken.
-    fn input_given(live: &Live<'_>, given: wire::Input) -> Result<(), ()> {
+    /// for its writer. Past its room, after its end, or for a member with no input, its
+    /// contract is broken, as said.
+    fn input_given(live: &Live<'_>, given: wire::Input) -> Result<(), String> {
+        let member = given.member;
         let mut feeds = lock(&live.feeds);
-        let feed = feeds.get_mut(&given.member).ok_or(())?;
-        let n = u64::try_from(given.bytes.len()).map_err(|_| ())?;
-        if n > feed.room || feed.end.is_some() {
-            return Err(());
+        let feed = feeds
+            .get_mut(&member)
+            .ok_or_else(|| format!("an INPUT for member {member}, whose stdin its run did not ask for"))?;
+        let n = u64::try_from(given.bytes.0.len())
+            .map_err(|_| format!("member {member}'s INPUT has no length"))?;
+        if n > feed.room {
+            return Err(format!(
+                "member {member}'s INPUT of {n} bytes, past the {} its room holds",
+                feed.room
+            ));
+        }
+        if feed.end.is_some() {
+            return Err(format!("member {member}'s INPUT after its end"));
         }
         feed.room -= n;
         if !feed.ended && n > 0 {
@@ -3374,11 +3563,14 @@ mod hosted {
 
     /// The orchestrator's end of a member's stdin, or its abort, which ends its connection at
     /// once, so that a writer held by a member that does not read lets go.
-    fn input_end(live: &Live<'_>, end: wire::InputEnd) -> Result<(), ()> {
+    fn input_end(live: &Live<'_>, end: wire::InputEnd) -> Result<(), String> {
+        let member = end.member;
         let mut feeds = lock(&live.feeds);
-        let feed = feeds.get_mut(&end.member).ok_or(())?;
+        let feed = feeds.get_mut(&member).ok_or_else(|| {
+            format!("an INPUT_END for member {member}, whose stdin its run did not ask for")
+        })?;
         if feed.end.replace(end.end).is_some() {
-            return Err(());
+            return Err(format!("member {member}'s input ended twice"));
         }
         if matches!(end.end, wire::StreamEnd::Aborted(_)) {
             feed.queued.clear();
@@ -3393,7 +3585,7 @@ mod hosted {
 
     /// What a member's input writer does next.
     enum Write {
-        Part(Stream, Vec<u8>),
+        Part(Stream, wire::Secret),
         End(Stream),
         Done,
     }
@@ -3430,10 +3622,10 @@ mod hosted {
             };
             match next {
                 Write::Part(conn, part) => {
-                    let sent = u32::try_from(part.len()).ok().filter(|len| {
+                    let sent = u32::try_from(part.0.len()).ok().filter(|len| {
                         (&conn)
                             .write_all(&protocol::header(protocol::kind::STDIN, *len))
-                            .and_then(|()| (&conn).write_all(&part))
+                            .and_then(|()| (&conn).write_all(&part.0))
                             .is_ok()
                     });
                     let Some(len) = sent else {
@@ -4078,6 +4270,86 @@ mod tests {
             wire::RunEnd::Failed("the VM's link: reset".into())
         );
         assert!(matches!(run_end(None, None, false), wire::RunEnd::Failed(_)));
+    }
+
+    /// Do end a run whose VM could not serve it, as warm.rs `finish` tells it: why, then a
+    /// `DONE` of the status a client exits with then (125), its command started or not; and
+    /// one whose link broke after the VM said why. Expect: a failure in the VM's words each
+    /// time, never the command's exit (api_image on HVF at 2b89e8504: `Exited(125)`, nothing
+    /// said, its harness's output read whole).
+    #[test]
+    fn a_vm_that_could_not_serve_its_run_ends_it_failed_in_its_words() {
+        let why = "the guest stopped before the command ended: Connection reset by peer";
+        let unserved = |started: bool| Told {
+            started,
+            unserved: Some(why.into()),
+            done: Some(vec![125]),
+        };
+        let failed = wire::RunEnd::Failed(format!("its VM could not serve its run: {why}"));
+        assert_eq!(unserved(true).end(None), failed);
+        assert_eq!(unserved(false).end(None), failed);
+        assert_eq!(unserved(true).end(Some("the VM's link: reset".into())), failed);
+        // One that served its run has its command's end, as before.
+        let served = Told {
+            started: true,
+            unserved: None,
+            done: Some(vec![125]),
+        };
+        assert_eq!(served.end(None), wire::RunEnd::Exited(125));
+    }
+
+    /// Do end the orchestrator's asks by its `STOP`; by its channel's end without one; by a
+    /// frame cut short; by a malformed credit; and by a frame of no ask's kind: each before
+    /// the run's VM said its end, and after. Expect: `Stopped` for `STOP` alone; each other a
+    /// failure naming its frame and why, never a silent `Stopped` (Hex's grants-none run
+    /// ended `Stopped`, nothing said); and the VM's own end wherever it said one first.
+    #[test]
+    fn an_orchestrators_channel_that_breaks_ends_its_run_failed_saying_why() {
+        // What a VM killed for its asks leaves its run host: no `DONE`.
+        let killed = run_end(None, None, true);
+        let ends = |read: io::Result<Option<(u8, Vec<u8>)>>| {
+            let asks = read_ask(
+                read.as_ref()
+                    .map(|f| f.as_ref().map(|(kind, p)| (*kind, p.as_slice()))),
+            )
+            .err()
+            .unwrap();
+            assert_eq!(
+                ended_by(Some(&asks), wire::RunEnd::Exited(0), true),
+                wire::RunEnd::Exited(0),
+                "{asks:?} after the VM's own end"
+            );
+            ended_by(Some(&asks), killed.clone(), false)
+        };
+        let frame = |which: u8, payload: &[u8]| {
+            let bytes = wire::frame(which, payload).unwrap();
+            wire::read_frame(&mut bytes.as_slice())
+        };
+        assert_eq!(ends(frame(wire::to_host::STOP, &[])), wire::RunEnd::Stopped);
+        assert_eq!(
+            ends(Ok(None)),
+            wire::RunEnd::Failed("its orchestrator's channel ended without STOP".into())
+        );
+        let cut = wire::read_frame(&mut &[wire::to_host::CREDIT, 0, 0][..]);
+        let why = cut.as_ref().err().map(ToString::to_string).unwrap();
+        assert_eq!(
+            ends(cut),
+            wire::RunEnd::Failed(format!("its orchestrator's channel broke: {why}"))
+        );
+        let malformed = wire::Credit::decode(&[1]).err().unwrap();
+        assert_eq!(
+            ends(frame(wire::to_host::CREDIT, &[1])),
+            wire::RunEnd::Failed(format!(
+                "its orchestrator's channel broke: a malformed CREDIT: {malformed}"
+            ))
+        );
+        assert_eq!(
+            ends(frame(wire::to_host::CREATE, &[])),
+            wire::RunEnd::Failed(format!(
+                "its orchestrator's channel broke: a frame of kind {}, which is no ask",
+                wire::to_host::CREATE
+            ))
+        );
     }
 
     /// A run that keeps nothing past the microVM of what the image grants its members has
@@ -5091,6 +5363,44 @@ mod tests {
             orchestrator.read_to_end(&mut rest).unwrap();
             assert!(rest.is_empty(), "{end:?}: told the orchestrator more: {rest:?}");
         }
+    }
+
+    /// A frame that carried a lease's value (D242) leaves nothing of it in the run host's own
+    /// buffer once let go of. Do: read a `LEASED` frame through the run host's channel, decode
+    /// it, let it go, then read the frame after it. Expect: the value read whole; then not one
+    /// byte of the channel's buffer other than zero, so nothing of the value left in it; and
+    /// the next frame read whole after it, the channel having read nothing past its frame.
+    #[test]
+    fn a_leased_frame_leaves_nothing_of_its_value_in_the_channels_buffer() {
+        let value = VALUE.as_bytes();
+        let answer = wire::LeaseAnswer {
+            id: 7,
+            result: Ok(wire::Lease {
+                value: wire::Secret::from(VALUE),
+                lives: NonZeroU64::MIN,
+            }),
+        };
+        let mut sent = wire::frame(wire::to_host::LEASED, &answer.encode().unwrap()).unwrap();
+        sent.extend(wire::frame(wire::to_host::STOP, &[]).unwrap());
+        let mut channel = Channel::new(&sent[..]);
+        {
+            let frame = channel.next().unwrap().unwrap();
+            assert_eq!(frame.kind, wire::to_host::LEASED);
+            let lease = wire::LeaseAnswer::decode(&frame).unwrap().result.unwrap();
+            assert_eq!(lease.value.0, value);
+        }
+        assert!(
+            !channel.buf.windows(value.len()).any(|w| w == value),
+            "the lease's value left in the run host's buffer"
+        );
+        assert!(
+            channel.buf.iter().all(|&b| b == 0),
+            "a frame's bytes left in the run host's buffer"
+        );
+        let frame = channel.next().unwrap().unwrap();
+        assert_eq!((frame.kind, frame.len()), (wire::to_host::STOP, 0));
+        drop(frame);
+        assert!(channel.next().unwrap().is_none());
     }
 
     /// An answer to no ask of the run's breaks the orchestrator's channel; one of a run that

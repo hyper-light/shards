@@ -242,12 +242,13 @@ impl Reader {
         }
     }
 
+    /// The frame its writer sends, read to the writer's end. Its deadline is judged where a
+    /// read waits (`await_read`), so that a read is always under way by then: one the
+    /// deadline finds pending is left so, its cells kept, until its cancellation completes
+    /// (`finish`, `wait_for_completion`). Judged before a read was issued too, a deadline
+    /// already past as it was called refused with no read pending.
     pub fn frame(&mut self, deadline: Instant) -> Result<&[u8], Refusal> {
         loop {
-            if Instant::now() >= deadline {
-                self.cancel()?;
-                return Err(pending());
-            }
             match self.state {
                 Operation::Closed => return Err(Refusal::GpuProbe(GpuProbeError::Unavailable)),
                 Operation::Pending => {
@@ -449,11 +450,12 @@ mod tests {
         let (mut reader, writer) = Reader::new(64).unwrap();
         let operation = reader.operation.first().unwrap().get();
         let buffer = reader.bytes.as_ptr();
-        // The least wait this host's streams keep, measured: no frame comes, so any kept
-        // deadline shows the read left pending.
-        let deadline = Instant::now()
-            .checked_add(crate::while_runs::kept_wait())
-            .unwrap();
+        // The least wait this host's streams keep, measured, from after its measure: no frame
+        // comes, so any deadline shows the read left pending. Its now taken before the measure
+        // (`Instant::now().checked_add(kept_wait())`), the deadline was past as `frame` began,
+        // and `frame` issued no read (CI's aarch64 Windows job at f5c0c8b04).
+        let kept = crate::while_runs::kept_wait();
+        let deadline = Instant::now().checked_add(kept).unwrap();
         assert!(matches!(
             reader.frame(deadline),
             Err(Refusal::GpuProbe(GpuProbeError::Pending))

@@ -8,6 +8,7 @@ import sys
 NET = ["cargo", "test", "-p", "shards-net", "--lib", "--", "--exact"]
 API = ["cargo", "test", "-p", "shards-api", "--lib", "--", "--exact"]
 SHARDS = ["cargo", "test", "-p", "shards", "--bin", "shards", "--", "--exact"]
+WIPED = ["cargo", "test", "-p", "shards-api", "--test", "wiped", "--", "--exact"]
 
 LEASE = "crates/net/src/lease.rs"
 NETLIB = "crates/net/src/lib.rs"
@@ -90,6 +91,9 @@ REDS = [
     ("run host: nothing asked after the release", RUN,
      "        if self.released {\n            return Err(Refusal::Ended);\n        }\n", "",
      SHARDS + ["api_run::tests::a_runs_ledger_holds_one_lease_of_a_credential_and_releases_them_all"]),
+    ("run host: a frame wiped as it is let go of", RUN,
+     "        zeroize::Zeroize::zeroize(&mut *self.payload);\n", "",
+     SHARDS + ["api_run::tests::a_leased_frame_leaves_nothing_of_its_value_in_the_channels_buffer"]),
     ("run host: every end releases its leases", RUN,
      "    if let Some((held, asked)) = leasing.and_then(|l| lock(&l.ledger).release()) {\n"
      "        say(format_args!(\"{}\", Audit::Released { held, asked }));\n"
@@ -97,14 +101,25 @@ REDS = [
      "    }\n",
      "    let _ = leasing;\n",
      SHARDS + ["api_run::tests::a_granted_runs_lease_is_relayed_on_first_use_and_released_as_it_ends"]),
+    # The member-input wipe (ROOT's residual of step 4): a member's typed stdin, a credential as
+    # often as not, wiped as its decoded copy drops and where the orchestrator read it.
+    ("api: a member's typed input wiped as it drops", WIRE,
+     "        zeroize::Zeroize::zeroize(&mut self.0);\n", "",
+     WIPED + ["an_input_frames_typed_bytes_are_wiped_as_it_drops"]),
+    ("api: typed input wiped where it was read", SESSION,
+     "    zeroize::Zeroize::zeroize(typed);\n", "",
+     API + ["image::session::tests::a_members_typed_input_is_wiped_where_it_was_read_once_sent"]),
 ]
 
 KEEP = re.compile(r"^(test result|test .* FAILED|thread '.*' .*panicked at|error(\[|:))")
 
 
 def main() -> int:
+    # Given words, only the reds whose names hold one of them run.
+    only = sys.argv[1:]
+    reds = [r for r in REDS if not only or any(w in r[0] for w in only)]
     bad = 0
-    for name, path, old, new, cmd in REDS:
+    for name, path, old, new, cmd in reds:
         file = pathlib.Path(path)
         source = file.read_text()
         if source.count(old) != 1:
@@ -123,7 +138,7 @@ def main() -> int:
             if KEEP.match(line):
                 print(f"STEP   {line[:220]}", flush=True)
         bad += 0 if failed else 1
-    print(f"STEP reds: {len(REDS) - bad} of {len(REDS)} red", flush=True)
+    print(f"STEP reds: {len(reds) - bad} of {len(reds)} red", flush=True)
     return 1 if bad else 0
 
 
