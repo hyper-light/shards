@@ -295,3 +295,28 @@ fn a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold() {
     let _ = stopped.kill();
     let _ = stopped.wait();
 }
+
+/// The old shape of a call that blocks until its answer (api_image.rs' `read_within`, its
+/// readers and its calls of shards-api given its test's `TIMEOUT`): a caller's bound, here
+/// scaled to 100 ms, against a party that works for a second. Do: a stand-in busy for a
+/// second, its end waited for at that bound. Expect: its end.
+#[test]
+fn red_a_judged_call_goes_on_while_its_party_works() {
+    let busy = Duration::from_secs(1);
+    let bound = Duration::from_millis(100);
+    let mut party = stand_in_doing(&format!("busy {}", busy.as_millis()))
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let began = Instant::now();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(party.wait());
+    });
+    let ended = rx.recv_timeout(bound);
+    assert!(
+        ended.is_ok(),
+        "a party busy for {busy:?} cut {:?} into its wait",
+        began.elapsed()
+    );
+}
