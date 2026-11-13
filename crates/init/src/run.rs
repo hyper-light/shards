@@ -5012,8 +5012,15 @@ impl Workload {
             }
             if exited {
                 for domain in &mut self.domains {
-                    domain.stdout.abort();
-                    domain.stderr.abort();
+                    // What the host drains (D240) goes on to its end, which the run's end
+                    // brings it: its members are killed with the run, and their pipes hold
+                    // what they wrote. The capture is let go once each such channel has ended
+                    // and nothing of it is in flight (below). Every other member's output
+                    // ends here, aborted: its owner's credit may never come.
+                    if !self.capture.as_ref().is_some_and(|c| c.drains(domain.member)) {
+                        domain.stdout.abort();
+                        domain.stderr.abort();
+                    }
                     // An input that ended is told before the scope ends; one still open goes
                     // with the run, whose end says it.
                     if let Some(ended) = domain.input.as_ref().and_then(crate::input::Input::report)
@@ -5025,7 +5032,6 @@ impl Workload {
                     }
                     domain.input = None;
                 }
-                self.capture = None;
                 if let Some(control) = self.capture_control.as_mut()
                     && let Err(e) = control.end()
                 {
@@ -5152,6 +5158,8 @@ impl Workload {
                 && !reported
                 && self.stdout.is_none()
                 && self.stderr.is_none()
+                // What its members wrote sent whole first (D240).
+                && self.capture.is_none()
                 && self
                     .domains
                     .iter()
@@ -5192,6 +5200,8 @@ impl Workload {
                     .capture_control
                     .as_ref()
                     .is_none_or(crate::capture::ControlQueue::ended)
+                // Its members' last records sent whole, none cut in flight (D240).
+                && self.capture.is_none()
                 && cut.open()
                 && self.stdout.is_none()
                 && self.stderr.is_none()
@@ -5750,6 +5760,20 @@ impl Workload {
                             && let Err(e) = capture.progress()
                             && !e.transient()
                         {
+                            // Once the command has ended its status stands: the members'
+                            // output, drained to its end (D240), ends where its host went.
+                            if status.is_some() {
+                                let _ = writeln!(
+                                    io::stderr(),
+                                    "shards-init: the members' output as the run ends: {e}"
+                                );
+                                for domain in &mut self.domains {
+                                    domain.stdout.abort();
+                                    domain.stderr.abort();
+                                }
+                                self.capture = None;
+                                continue;
+                            }
                             fatal = Some(setup_failed(format!("managed output connection: {e}")));
                             break 'relay;
                         }

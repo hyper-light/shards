@@ -2759,7 +2759,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// the last N lines with `--tail`, of which those from `--since` on and to `--until`,
     /// each after its time with `-t`, and more as it comes until the microVM ends with
     /// `-f`. Lines carry no attributes here, so `--details` adds only the space that would
-    /// follow them (moby daemon/server/httputils/logstream/logstream.go).
+    /// follow them (moby daemon/server/httputils/logstream/logstream.go). Then its members'
+    /// that the daemon drained (D240), each line on stderr after its member's label, as a
+    /// client attached to the run is shown them, each member's log as the run's own is read.
     fn logs(&self, parsed: &Parsed, asker: &Asker, reply: &Reply<'_>) -> u8 {
         let Some(reference) = parsed.args.first() else {
             return 1;
@@ -2857,68 +2859,104 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 return 1;
             }
         };
-        let mut show = Show {
+        // Its members' kept lines (D240), each after its label on stderr, as a client attached
+        // to the run is shown them: after the run's own, each member's in its declared order.
+        let members = match super::managed::member_logs(&dir) {
+            Ok(members) => members,
+            Err(e) => {
+                reply.err(&format!("shards: {reference}: its members' logs: {e}"));
+                return 1;
+            }
+        };
+        let show = |label: Option<&str>| Show {
             reply,
-            shown,
+            shown: shown.clone(),
             window,
             admitted: [Admit::Pass, Admit::Pass],
             stream: LOG_STDOUT,
             gathered: Vec::new(),
             unsent: None,
+            label: label.map(|l| format!("[{l}] ").into_bytes()),
         };
+        let mut followed: Vec<LogSource<'_, '_>> = std::iter::once((None, log))
+            .chain(members.into_iter().map(|(label, log)| (Some(label), log)))
+            .map(|(label, log)| LogSource {
+                show: show(label.as_deref()),
+                log,
+                reader: Reader::new(),
+                watch: None,
+                watched: None,
+                done: false,
+            })
+            .collect();
         // Without -f, what is there is all there is: a line in progress too.
         let ended = !follow || !self.running(&id);
         let read = (|| -> io::Result<()> {
-            let mut reader = match tail {
-                Some(n) => Reader::from(logs::tail(&log, n as u64, ended)?),
-                None => Reader::new(),
-            };
-            if !show.read(&mut reader, &log)? {
-                return Ok(());
+            for each in &mut followed {
+                if let Some(n) = tail {
+                    each.reader = Reader::from(logs::tail(&each.log, n as u64, ended)?);
+                }
             }
             if ended {
-                show.finish(&mut reader)?;
+                for each in &mut followed {
+                    if !each.read_to_end()? {
+                        return Ok(());
+                    }
+                }
                 return Ok(());
             }
-            // Followed as it grows: woken by an append to the segment it is read from, by
+            for each in &mut followed {
+                if !each.read()? {
+                    return Ok(());
+                }
+            }
+            // Followed as they grow: woken by an append to the segment each is read from, by
             // a segment's coming, by the run's end, or by the client's hanging up, not by
             // a timer (audit A12). Each watch comes before a read, so no append between
-            // them goes unseen. Where no watch can be had (on Linux, its user's inotify
-            // instances spent: PM M257), it reads again every UNWATCHED, as the listener looks,
-            // rather than end the follow.
-            let mut watch = shards_vmm::platform::FileWatch::new(log.dir()).ok();
-            let mut watched = None;
+            // them goes unseen. Where a log has no watch (on Linux, its user's inotify
+            // instances spent: PM M257), they are read again every UNWATCHED, as the listener
+            // looks, rather than end the follow.
+            for each in &mut followed {
+                each.watch = shards_vmm::platform::FileWatch::new(each.log.dir()).ok();
+            }
             let Some((number, end)) = self.wake_at_end(&id)? else {
-                if show.read(&mut reader, &log)? {
-                    show.finish(&mut reader)?;
+                for each in &mut followed {
+                    if !each.read_to_end()? {
+                        return Ok(());
+                    }
                 }
                 return Ok(());
             };
             // Its client waits long: it shuts no other out (review 7.9).
             self.waits_long(asker.client);
-            let followed = (|| -> io::Result<()> {
+            let outcome = (|| -> io::Result<()> {
                 loop {
-                    if !show.read(&mut reader, &log)? {
+                    let mut rewatched = false;
+                    for each in &mut followed {
+                        if !each.read()? {
+                            return Ok(());
+                        }
+                        rewatched |= each.rewatch()?;
+                    }
+                    // Each past `--until`: nothing more is shown.
+                    if followed.iter().all(|each| each.done) {
                         return Ok(());
                     }
-                    if let Some(segment) = reader.segment()
-                        && watched != Some(segment.seq())
-                        && let Some(watch) = watch.as_mut()
-                    {
-                        watch.file(segment.index())?;
-                        watched = Some(segment.seq());
+                    if rewatched {
                         continue;
                     }
-                    let ready = wait_readable(
-                        watch.as_ref(),
-                        &end,
-                        reply.0,
-                        watch.is_none().then_some(super::UNWATCHED),
-                    )?;
-                    // Once the microVM has ended, what is left of a line is all of it.
+                    let watches: Vec<&shards_vmm::platform::FileWatch> =
+                        followed.iter().filter_map(|each| each.watch.as_ref()).collect();
+                    let unwatched = followed.iter().any(|each| each.watch.is_none());
+                    let ready =
+                        wait_readable(&watches, &end, reply.0, unwatched.then_some(super::UNWATCHED))?;
+                    // Once the microVM has ended, what is left of a line is all of it; and
+                    // its members' logs are whole, its end told once they are (D240).
                     if ready[1] {
-                        if show.read(&mut reader, &log)? {
-                            show.finish(&mut reader)?;
+                        for each in &mut followed {
+                            if !each.read_to_end()? {
+                                return Ok(());
+                            }
                         }
                         return Ok(());
                     }
@@ -2926,15 +2964,17 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     if ready[2] {
                         return Ok(());
                     }
-                    if let Some(watch) = &watch {
-                        watch.clear();
+                    for each in &followed {
+                        if let Some(watch) = &each.watch {
+                            watch.clear();
+                        }
                     }
                 }
             })();
             self.forget_waiter(&id, number);
-            followed
+            outcome
         })();
-        if let Some(e) = show.unsent {
+        if let Some(e) = followed.iter_mut().find_map(|each| each.show.unsent.take()) {
             return undelivered(&e, reply);
         }
         if let Err(e) = read {
@@ -2976,6 +3016,58 @@ struct Show<'r, 'a> {
     gathered: Vec<u8>,
     /// Why the client was not sent what it was to be, if it was not.
     unsent: Option<io::Error>,
+    /// A member's log's (D240): what goes before each of its lines, `[agent main] `, which
+    /// go to stderr, as a client attached to the run is shown them (drain.rs): each piece a
+    /// line, one cut short at its log's end ended.
+    label: Option<Vec<u8>>,
+}
+
+/// A log `logs` reads: its run's own, or one of its members' (D240), and how far its follow
+/// has come.
+struct LogSource<'r, 'a> {
+    show: Show<'r, 'a>,
+    log: LogFile,
+    reader: Reader,
+    watch: Option<shards_vmm::platform::FileWatch>,
+    /// The segment its watch watches.
+    watched: Option<u64>,
+    /// Its lines have passed `--until`: nothing more of it is shown.
+    done: bool,
+}
+
+impl LogSource<'_, '_> {
+    /// Shows what its log has whole: whether to go on, as long as its client takes what it
+    /// is sent.
+    fn read(&mut self) -> io::Result<bool> {
+        if !self.done && !self.show.read(&mut self.reader, &self.log)? {
+            self.done = true;
+        }
+        Ok(self.show.unsent.is_none())
+    }
+
+    /// [`read`](Self::read), and what is left of its unfinished lines: its log has ended, or
+    /// what is there is all there is.
+    fn read_to_end(&mut self) -> io::Result<bool> {
+        if !self.done && self.show.read(&mut self.reader, &self.log)? {
+            self.show.finish(&mut self.reader)?;
+        }
+        self.done = true;
+        Ok(self.show.unsent.is_none())
+    }
+
+    /// Watches the segment its reader reads, where its watch is of another: whether it does
+    /// now, and so must be read again before the follow waits.
+    fn rewatch(&mut self) -> io::Result<bool> {
+        if let Some(segment) = self.reader.segment()
+            && self.watched != Some(segment.seq())
+            && let Some(watch) = self.watch.as_mut()
+        {
+            watch.file(segment.index())?;
+            self.watched = Some(segment.seq());
+            return Ok(true);
+        }
+        Ok(false)
+    }
 }
 
 impl Show<'_, '_> {
@@ -3003,19 +3095,29 @@ impl Show<'_, '_> {
             Admit::Skip => Ok(true),
             Admit::Stop => Ok(false),
             Admit::Pass => {
-                if piece.stream != self.stream && !self.send() {
+                // A member's every piece is a line of its own, on stderr.
+                let labelled = self.label.is_some();
+                let stream = if labelled { LOG_STDERR } else { piece.stream };
+                if stream != self.stream && !self.send() {
                     return Ok(false);
                 }
-                self.stream = piece.stream;
-                if piece.first && self.shown.stamps {
+                self.stream = stream;
+                let starts = piece.first || labelled;
+                if starts && self.shown.stamps {
                     self.gathered.extend_from_slice(rfc3339_nano(piece.at).as_bytes());
                     self.gathered.push(b' ');
                 }
-                if piece.first && self.shown.details {
+                if starts && self.shown.details {
                     self.gathered.extend_from_slice(&self.shown.attributes);
                     self.gathered.push(b' ');
                 }
+                if let Some(label) = &self.label {
+                    self.gathered.extend_from_slice(label);
+                }
                 self.gathered.extend_from_slice(piece.bytes);
+                if labelled && piece.bytes.last() != Some(&b'\n') {
+                    self.gathered.push(b'\n');
+                }
                 Ok(self.gathered.len() < logs::CHUNK || self.send())
             }
         }
@@ -3157,6 +3259,7 @@ mod tests {
             stream: LOG_STDOUT,
             gathered: Vec::new(),
             unsent: None,
+            label: None,
         };
         fn piece(stream: u8, bytes: &[u8]) -> Piece<'_> {
             Piece {
@@ -3841,7 +3944,7 @@ impl Asker {
 
 /// The times `logs` shows lines between, as dockerd's log forwarder keeps them (moby
 /// daemon/logger/loggerutils/logfile.go, forwarder.Do), in nanoseconds since the epoch.
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct Window {
     since: Option<i128>,
     until: Option<i128>,
@@ -3875,35 +3978,38 @@ impl Window {
     }
 }
 
-/// Waits, for `timeout` at most, until a follow has more to do: its log's `watch` has seen
-/// a change, the run has ended (`end`), or its `client` has said more or hung up; which
-/// have.
+/// Waits, for `timeout` at most, until a follow has more to do: one of its logs' `watches`
+/// has seen a change, the run has ended (`end`), or its `client` has said more or hung up;
+/// which have, the watches as one.
 #[cfg(unix)]
 pub(super) fn wait_readable(
-    watch: Option<&shards_vmm::platform::FileWatch>,
+    watches: &[&shards_vmm::platform::FileWatch],
     end: &UnixStream,
     client: &UnixStream,
     timeout: Option<Duration>,
 ) -> io::Result<[bool; 3]> {
     use std::os::fd::AsRawFd as _;
-    let fds = [
-        watch.map(shards_vmm::platform::FileWatch::fd),
-        Some(end.as_fd()),
-        Some(client.as_fd()),
-    ];
-    // One not given is no descriptor, which poll(2) passes over.
-    let mut polled = fds.map(|fd| libc::pollfd {
-        fd: fd.map_or(-1, |fd| fd.as_raw_fd()),
+    let mut polled = Vec::new();
+    polled
+        .try_reserve_exact(watches.len().saturating_add(2))
+        .map_err(io::Error::other)?;
+    let fds = watches
+        .iter()
+        .map(|watch| watch.fd())
+        .chain([end.as_fd(), client.as_fd()]);
+    polled.extend(fds.map(|fd| libc::pollfd {
+        fd: fd.as_raw_fd(),
         events: libc::POLLIN,
         revents: 0,
-    });
+    }));
+    let count = libc::nfds_t::try_from(polled.len()).map_err(io::Error::other)?;
     // Rounded up: a wait of 0 ms would return at once, and spin.
     let ms = timeout.map_or(-1, |t| {
         libc::c_int::try_from(t.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
     });
     loop {
-        // SAFETY: poll(2) on three pollfds of descriptors the caller holds open, or none.
-        let n = unsafe { libc::poll(polled.as_mut_ptr(), 3, ms) };
+        // SAFETY: poll(2) on `count` pollfds, of descriptors the caller holds open.
+        let n = unsafe { libc::poll(polled.as_mut_ptr(), count, ms) };
         if n >= 0 {
             break;
         }
@@ -3912,26 +4018,25 @@ pub(super) fn wait_readable(
             return Err(e);
         }
     }
-    Ok(polled.map(|p| p.revents != 0))
+    let (watched, streams) = polled.split_at(watches.len());
+    let ready = |at: usize| streams.get(at).is_some_and(|p| p.revents != 0);
+    Ok([watched.iter().any(|p| p.revents != 0), ready(0), ready(1)])
 }
 
-/// Waits, for `timeout` at most, until a follow has more to do, as Unix's does: the watch's
+/// Waits, for `timeout` at most, until a follow has more to do, as Unix's does: a watch's
 /// event, and the streams by reads of no bytes (`shards_ipc::await_any`).
 #[cfg(windows)]
 pub(super) fn wait_readable(
-    watch: Option<&shards_vmm::platform::FileWatch>,
+    watches: &[&shards_vmm::platform::FileWatch],
     end: &UnixStream,
     client: &UnixStream,
     timeout: Option<Duration>,
 ) -> io::Result<[bool; 3]> {
     let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
-    let events: Vec<_> = watch
-        .map(shards_vmm::platform::FileWatch::fd)
-        .into_iter()
-        .collect();
+    let events: Vec<_> = watches.iter().map(|watch| watch.fd()).collect();
     let (streams, signalled) = shards_ipc::await_any(&[end, client], &events, deadline)?;
     Ok([
-        signalled.first().copied().unwrap_or(false),
+        signalled.iter().any(|&s| s),
         streams.first().copied().unwrap_or(false),
         streams.get(1).copied().unwrap_or(false),
     ])
