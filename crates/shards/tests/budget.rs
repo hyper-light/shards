@@ -758,11 +758,13 @@ fn judge(
 fn a_read_is_judged_by_the_pace_of_the_reads_held_to_none() {
     let home = TempDir::new("budget-judge");
     let cgroup = home.join("no-slice");
-    // A MiB each `gap`, from its first mark, `pause` after `at` MiB; then its result and end.
-    let play = |gap: Duration, pause: (u64, Duration)| {
+    // Its first mark `start` after now, then a MiB each `gap`, `pause` after `at` MiB; then
+    // its result and end.
+    let play = |start: Duration, gap: Duration, pause: (u64, Duration)| {
         let (tell, heard) = mpsc::channel();
         std::thread::spawn(move || {
             let mark = |b: u64| tell.send(Heard::Line(Instant::now(), format!("at {b}")));
+            std::thread::sleep(start);
             if mark(0).is_err() {
                 return;
             }
@@ -790,7 +792,7 @@ fn a_read_is_judged_by_the_pace_of_the_reads_held_to_none() {
     // A MiB each 50 ms or longer, 21 at most a window: refused at its second look, a window
     // past the bound.
     match judge(
-        &play(Duration::from_millis(50), (0, Duration::ZERO)),
+        &play(Duration::ZERO, Duration::from_millis(50), (0, Duration::ZERO)),
         Instant::now(),
         &home,
         &seen,
@@ -803,7 +805,7 @@ fn a_read_is_judged_by_the_pace_of_the_reads_held_to_none() {
     // About 400 MiB a second, 16 times what it must, past the bound for two windows: to its
     // end.
     let read = judge(
-        &play(Duration::from_micros(2_400), (0, Duration::ZERO)),
+        &play(Duration::ZERO, Duration::from_micros(2_400), (0, Duration::ZERO)),
         Instant::now(),
         &home,
         &seen,
@@ -820,7 +822,7 @@ fn a_read_is_judged_by_the_pace_of_the_reads_held_to_none() {
     let cold = Record::default();
     assert_eq!(cold.judging(), None);
     let read = judge(
-        &play(Duration::ZERO, (512, Duration::from_secs(1))),
+        &play(Duration::ZERO, Duration::ZERO, (512, Duration::from_secs(1))),
         Instant::now(),
         &home,
         &cold,
@@ -838,6 +840,107 @@ fn a_read_is_judged_by_the_pace_of_the_reads_held_to_none() {
         Ok(_) => panic!("not refused"),
     }
     drop(tell);
+}
+
+/// A start slower than the slowest seen is refused only once a whole slice of its microVMs
+/// has shown no progress (R03: past the bound, a wait goes on while progress shows, and is
+/// refused only after a whole window with none), and a host's hold of its slice counts as
+/// held. adacachy2 at 8bfa6150e and 9d2da923d refused a read under the budget 97.49 ms after
+/// its command began, the third look of 32.44 ms, the slowest start seen, while its daemon's
+/// warm microVMs had not been looked at once ([`common::Ran`] judges each over a slice) and
+/// its slice was at its `memory.high` (4345 `high` events). Do: a stand-in VM process under
+/// this test's, idle, and a start of 500 ms against a slowest seen of 30 ms; then a start of
+/// as long in a slice whose tasks stall on memory, as PSI counts them, no microVM to follow;
+/// then a start that never comes, the stand-in idle. Expect: the first two followed to their
+/// ends, the third refused, past a whole slice.
+#[test]
+fn a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold() {
+    let home = TempDir::new("budget-start");
+    let seen = Record {
+        read: Some(Duration::from_secs(1)),
+        block: Some(Duration::from_millis(40)),
+        start: Some(Duration::from_millis(30)),
+    };
+    // Its first mark `start` from now, then the whole gigabyte at once, its result and end.
+    let late = |start: Duration| {
+        let (tell, heard) = mpsc::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(start);
+            for mib in 0..=GIB / MIB {
+                let _ = tell.send(Heard::Line(Instant::now(), format!("at {}", mib * MIB)));
+            }
+            let _ = tell.send(Heard::Line(
+                Instant::now(),
+                format!("read /vol/big {GIB} in 1 ms"),
+            ));
+            let _ = tell.send(Heard::Exited(Some(0)));
+        });
+        heard
+    };
+    let start = Duration::from_millis(500);
+    {
+        let _vm = StandIn::under(&home);
+        let read = judge(&late(start), Instant::now(), &home, &seen, &home.join("no-slice")).unwrap_or_else(
+            |stalled| panic!("a start of {start:?} with a VM not yet judged refused: {stalled}"),
+        );
+        assert!(read.start() >= Some(start), "{:?}", read.start());
+    }
+    // A slice whose tasks stall on memory all along, as PSI says it (`some ... total=` µs).
+    let slice = home.join("held");
+    std::fs::create_dir(&slice).unwrap();
+    let holding = std::sync::atomic::AtomicBool::new(true);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let mut total = 0u64;
+            while holding.load(std::sync::atomic::Ordering::Relaxed) {
+                total += 5_000;
+                let pressure = format!(
+                    "some avg10=0.00 avg60=0.00 avg300=0.00 total={total}\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+                );
+                let staged = slice.join("pressure.new");
+                std::fs::write(&staged, pressure).unwrap();
+                std::fs::rename(&staged, slice.join("memory.pressure")).unwrap();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let read = judge(&late(start), Instant::now(), &home, &seen, &slice);
+        holding.store(false, std::sync::atomic::Ordering::Relaxed);
+        let read =
+            read.unwrap_or_else(|stalled| panic!("a start of {start:?} held by its host refused: {stalled}"));
+        assert!(read.start() >= Some(start), "{:?}", read.start());
+    });
+    let _vm = StandIn::under(&home);
+    let (tell, heard) = mpsc::channel::<Heard>();
+    match judge(&heard, Instant::now(), &home, &seen, &home.join("no-slice")) {
+        Err(Stalled::Unstarted { waited, .. }) => assert!(waited >= common::PROGRESS_SLICE, "{waited:?}"),
+        Err(other) => panic!("refused otherwise: {other}"),
+        Ok(_) => panic!("not refused"),
+    }
+    drop(tell);
+}
+
+/// An idle stand-in for a VM process under this test's: `sleep` run through a link named as
+/// `common::vm_processes_under` finds VM processes (Linux names a process after the path it
+/// ran, a link's own name; its first argument stays `sleep`, as busybox's applets need),
+/// ended as it drops.
+struct StandIn(std::process::Child);
+
+impl StandIn {
+    fn under(dir: &Path) -> StandIn {
+        use std::os::unix::process::CommandExt as _;
+        let link = dir.join("shards-vm");
+        if !link.exists() {
+            std::os::unix::fs::symlink("/bin/sleep", &link).unwrap();
+        }
+        StandIn(Command::new(&link).arg0("sleep").arg("600").spawn().unwrap())
+    }
+}
+
+impl Drop for StandIn {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 /// The slice's memory, its events and pressure, and for each process in its tree its
