@@ -958,20 +958,23 @@ mod tests {
     #[test]
     fn ends_round_trip() {
         for ended in [
-            Ended { member: 0, status: 0 },
+            Ended {
+                member: 0,
+                end: End::Exited(0),
+            },
             Ended {
                 member: 3,
-                status: 137,
+                end: End::Signaled(9),
             },
             Ended {
                 member: u32::MAX,
-                status: u32::MAX,
+                end: End::Exited(u32::MAX),
             },
         ] {
             assert_eq!(Ended::decode(&ended.encode()), Some(ended));
         }
-        assert_eq!(Ended::decode(&[0; 7]), None);
-        assert_eq!(Ended::decode(&[0; 9]), None);
+        assert_eq!(Ended::decode(&[0; 8]), None);
+        assert_eq!(Ended::decode(&[0; 10]), None);
     }
 
     /// An exec names one member at most, in the index's one spelling; an exec naming none

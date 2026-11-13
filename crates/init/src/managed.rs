@@ -988,11 +988,20 @@ mod tests {
     fn only_running_and_proven_ended_populations_are_checkpoint_ready() {
         use shards_abi::run::quiesce::Reason;
         assert_eq!(State::Running.checkpoint_block(), None);
-        assert_eq!(State::Ended { status: End::Exited(17) }.checkpoint_block(), None);
+        assert_eq!(
+            State::Ended {
+                status: End::Exited(17)
+            }
+            .checkpoint_block(),
+            None
+        );
         assert_eq!(State::Starting.checkpoint_block(), Some((Reason::Starting, 0)));
         assert_eq!(State::Stopping.checkpoint_block(), Some((Reason::Stopping, 0)));
         assert_eq!(
-            State::Draining { status: End::Exited(17) }.checkpoint_block(),
+            State::Draining {
+                status: End::Exited(17)
+            }
+            .checkpoint_block(),
             Some((Reason::Draining, 0))
         );
         for status in [None, Some(End::Exited(17))] {
@@ -1017,17 +1026,18 @@ mod tests {
 
     #[test]
     fn only_a_complete_fresh_helper_ready_record_releases_startup() {
+        let ready_of = |bytes: &[u8]| helper_ready(&mut std::fs::File::from(written(bytes)));
         let ready = [READY, 0, 0, 0, 0];
         for cut in 0..ready.len() {
-            assert!(helper_ready(written(&ready[..cut])).is_err(), "cut {cut}");
+            assert!(ready_of(&ready[..cut]).is_err(), "cut {cut}");
         }
-        assert_eq!(helper_ready(written(&ready)), Ok(()));
-        assert!(helper_ready(written(&[SPLIT, 0, 0, 0, 0])).is_err());
+        assert_eq!(ready_of(&ready), Ok(()));
+        assert!(ready_of(&[SPLIT, 0, 0, 0, 0]).is_err());
         let error = Failure {
             step: Step::Helper,
             errno: libc::EPERM,
         };
-        assert_eq!(helper_ready(written(&error.encode())), Err(error));
+        assert_eq!(ready_of(&error.encode()), Err(error));
     }
 
     #[test]
@@ -1062,16 +1072,36 @@ mod tests {
             assert_eq!(state.empty(), state);
         }
         let draining = State::Running.reaped(End::Exited(17)).unwrap();
-        assert_eq!(draining, State::Draining { status: End::Exited(17) });
-        assert_eq!(draining.empty(), State::Ended { status: End::Exited(17) });
+        assert_eq!(
+            draining,
+            State::Draining {
+                status: End::Exited(17)
+            }
+        );
+        assert_eq!(
+            draining.empty(),
+            State::Ended {
+                status: End::Exited(17)
+            }
+        );
         assert_eq!(draining.stopping(), draining);
     }
 
     #[test]
     fn a_second_completion_cannot_replace_the_owned_status() {
-        for state in [State::Draining { status: End::Exited(17) }, State::Ended { status: End::Exited(17) }] {
+        for state in [
+            State::Draining {
+                status: End::Exited(17),
+            },
+            State::Ended {
+                status: End::Exited(17),
+            },
+        ] {
             assert_eq!(state.reaped(End::Exited(17)).unwrap(), state);
-            assert_eq!(state.reaped(End::Exited(18)).unwrap_err(), BoundaryFault::StatusConflict);
+            assert_eq!(
+                state.reaped(End::Exited(18)).unwrap_err(),
+                BoundaryFault::StatusConflict
+            );
             assert_eq!(state.stopping(), state);
         }
     }
@@ -1117,7 +1147,11 @@ mod tests {
             // SAFETY: this test waits for its own fixture child.
             assert_eq!(unsafe { libc::waitpid(reaper, &raw mut status, 0) }, reaper);
             let own = ended(status);
-            assert_eq!(own, End::Exited(143), "the reaper exits as docker reports its command");
+            assert_eq!(
+                own,
+                End::Exited(143),
+                "the reaper exits as docker reports its command"
+            );
             told_end(own, read_end(&std::fs::File::from(read)))
         }
         fn term() -> ! {
@@ -1134,11 +1168,22 @@ mod tests {
         }
         assert_eq!(reaped_end(term), End::Signaled(15));
         assert_eq!(reaped_end(exit_143), End::Exited(143));
-        assert_eq!(told_end(End::Exited(143), Some(End::Signaled(9))), End::Exited(143));
-        assert_eq!(told_end(End::Signaled(9), Some(End::Signaled(9))), End::Signaled(9));
+        assert_eq!(
+            told_end(End::Exited(143), Some(End::Signaled(9))),
+            End::Exited(143)
+        );
+        assert_eq!(
+            told_end(End::Signaled(9), Some(End::Signaled(9))),
+            End::Signaled(9)
+        );
         assert_eq!(told_end(End::Signaled(9), None), End::Signaled(9));
         let draining = State::Running.reaped(End::Signaled(15)).unwrap();
-        assert_eq!(draining.empty(), State::Ended { status: End::Signaled(15) });
+        assert_eq!(
+            draining.empty(),
+            State::Ended {
+                status: End::Signaled(15)
+            }
+        );
     }
 
     struct Child {
@@ -1273,9 +1318,16 @@ mod tests {
         // Neither terminal call may issue the invalid stop controls.
         domain.kill = std::fs::File::open(dir.join("kill")).unwrap();
         let cause = QuarantineCause::Capture { errno: libc::ENOMEM };
-        domain.state = State::Ended { status: End::Exited(17) };
+        domain.state = State::Ended {
+            status: End::Exited(17),
+        };
         assert_eq!(domain.quarantine(cause), Ok(Update::Observed));
-        assert_eq!(domain.state, State::Ended { status: End::Exited(17) });
+        assert_eq!(
+            domain.state,
+            State::Ended {
+                status: End::Exited(17)
+            }
+        );
         let fault = BoundaryFault::PopulationControl { errno: libc::EBADF };
         domain.state = State::Faulted {
             status: Some(End::Exited(17)),
