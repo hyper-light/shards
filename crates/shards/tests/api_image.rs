@@ -12,7 +12,8 @@ mod common;
 
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
-use std::time::Duration;
+use std::num::NonZeroU64;
+use std::time::{Duration, Instant};
 
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 use shards_api::image::{
@@ -521,6 +522,51 @@ fn the_orchestrators_room_holds_its_run_within_it() {
         .expect("held within the least room");
     assert!(least > 0 && least < held, "held within {least}, short of {held}");
     assert_eq!(guest.room(None, TIMEOUT).unwrap(), None);
+    guest.stop().unwrap();
+    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+}
+
+/// The CPU rate an orchestrator holds its run's vCPUs to (D247) reaches its VM through its
+/// host: a run spinning its one vCPU, held to a quarter of its CPU, runs its guest a quarter
+/// of the time passing, but what a period may overrun and a period's share where the window
+/// and the periods do not line up, and is let go each period; held to its vCPU's whole CPU,
+/// nothing holds it, and the answer says so; told none, its hold is lifted.
+#[test]
+fn the_orchestrators_rate_holds_its_run_to_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-rate-home");
+    build(&home, "api-rate:1", &["spin"], "");
+    let guest = ImageShards::new()
+        .boot(&spec(&home, "api-rate:1"), TIMEOUT)
+        .unwrap();
+    let quarter = NonZeroU64::new(250).unwrap();
+    assert_eq!(guest.rate(Some(quarter), TIMEOUT).unwrap(), Some(quarter));
+    let ran = || {
+        let stats = guest.stats(StatsScope::Run, TIMEOUT).unwrap();
+        stats.microvm.unwrap().guest.unwrap().total_ns()
+    };
+    let (start, before) = (Instant::now(), ran());
+    std::thread::sleep(Duration::from_secs(2));
+    let (used, wall) = (ran() - before, u64::try_from(start.elapsed().as_nanos()).unwrap());
+    // D191's period, 100 ms: a quarter of it the share, and the period's whole share and
+    // what one vCPU overruns before its governor reads at the window's two ends.
+    let most = wall / 4 + 200_000_000;
+    assert!(
+        used <= most,
+        "{used} ns of guest in {wall} ns, held to a quarter CPU"
+    );
+    assert!(
+        used >= wall / 20,
+        "{used} ns of guest in {wall} ns: held, and never let go"
+    );
+    assert_eq!(
+        guest.rate(NonZeroU64::new(1000), TIMEOUT).unwrap(),
+        None,
+        "its one vCPU's whole CPU holds nothing"
+    );
+    assert_eq!(guest.rate(None, TIMEOUT).unwrap(), None);
     guest.stop().unwrap();
     assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
 }
