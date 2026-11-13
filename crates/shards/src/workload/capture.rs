@@ -41,6 +41,9 @@ enum Owner {
 struct Flows {
     owner: Owner,
     streams: Vec<[Flow; 2]>,
+    /// How the relay ended, as the first of its two sides to end said it ([`Relayed`]): the
+    /// other's end is that end's consequence.
+    ended: Option<Relayed>,
 }
 struct Ledger {
     flows: Mutex<Flows>,
@@ -67,6 +70,37 @@ impl Ledger {
     fn stop(&self) {
         self.lock().owner = Owner::Stopped;
         self.changed.notify_all();
+    }
+    /// The relay ends as `ended` says, where neither side ended it before.
+    fn end(&self, ended: Relayed) {
+        let mut flows = self.lock();
+        flows.ended.get_or_insert(ended);
+        flows.owner = Owner::Stopped;
+        self.changed.notify_all();
+    }
+}
+
+/// How a relay of a run's members' output ended: each of its channels' end relayed; a side's
+/// end of its connection, its guest's as its run ends, or its owner's, which is its owner's
+/// to end the run for, or its `STOP_ORDER`'s where its owner is gone (D27); or broken, its
+/// owner's frames or its guest's refused, or the relay's own failure, as said.
+enum Relayed {
+    Done,
+    Ended,
+    Broke(io::Error),
+}
+
+impl Relayed {
+    /// How `e`, the error one of a relay's sides ended on, ends it: a frame refused
+    /// (`invalid`), or the relay's own failure (its allocation, its worker), breaks it; any
+    /// other is that side's connection ended.
+    fn of(e: io::Error) -> Relayed {
+        match e.kind() {
+            io::ErrorKind::InvalidData | io::ErrorKind::OutOfMemory | io::ErrorKind::Other => {
+                Relayed::Broke(e)
+            }
+            _ => Relayed::Ended,
+        }
     }
 }
 
@@ -139,6 +173,7 @@ impl Control {
 /// on a thread of its own, once its guest dials it; `run`, a copy of the run's connection,
 /// which a relay that breaks ends ([`relay_ending`]).
 pub fn start(spec: &mut run::Spec, given: Given, run: UnixStream) -> Result<Control, String> {
+    ENDED_RUN.lock().unwrap_or_else(PoisonError::into_inner).take();
     if managed::capacity(&spec.setup).map_err(|e| e.to_string())? != Some(given.capacity)
         || managed::members(&spec.setup).map_err(|e| e.to_string())? != Some(given.members)
         || managed::token(&spec.setup).map_err(|e| e.to_string())?.is_some()
@@ -300,12 +335,22 @@ fn start_inputs(spec: &mut run::Spec, inputs: &[[u8; 4]], owner: shards_ipc::Str
     Ok(())
 }
 
-/// Why the run's managed capture ended its run, where it did ([`relay_ending`]): none, as yet.
+/// Why the run's managed capture ended the run, where its relay broke ([`relay_ending`]).
+static ENDED_RUN: Mutex<Option<String>> = Mutex::new(None);
+
+/// Why the run's managed capture ended its run, where it did ([`relay_ending`]), taken: for
+/// its serve to say, in place of the end of the run's connection it caused.
 pub fn ended_run() -> Option<String> {
-    None
+    ENDED_RUN.lock().unwrap_or_else(PoisonError::into_inner).take()
 }
 
-/// [`relay`], and how its end ends the run whose connection `run` is: not at all, as yet.
+/// [`relay`], and its run with it where it broke while its VM runs on: why kept for the
+/// run's serve to say ([`ended_run`]), then the run's connection, `run`, ended, as its guest
+/// takes for its end (it powers off) and its serve does for the guest's, which then fails the
+/// run in those words (warm.rs `finish`, `UNSERVED`, D258). Its members' output gone, a run
+/// that went on would wait for its owner's `STOP`. A relay that ended with every channel's
+/// end, or as one of its sides ended its connection, ends nothing of the run's: its run's
+/// end is its own, its owner's, or its `STOP_ORDER`'s.
 fn relay_ending(
     guest: UnixStream,
     owner: shards_ipc::Stream,
@@ -313,20 +358,26 @@ fn relay_ending(
     streams: Vec<[Flow; 2]>,
     run: &UnixStream,
 ) -> io::Result<()> {
-    let _ = run;
-    relay(guest, owner, capacity, streams)
+    match relay(guest, owner, capacity, streams) {
+        Relayed::Done => Ok(()),
+        Relayed::Ended => Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "one of its sides ended its connection",
+        )),
+        Relayed::Broke(e) => {
+            *ENDED_RUN.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.to_string());
+            super::end_guest(run);
+            Err(e)
+        }
+    }
 }
 
-fn relay(
-    guest: UnixStream,
-    owner: shards_ipc::Stream,
-    capacity: usize,
-    streams: Vec<[Flow; 2]>,
-) -> io::Result<()> {
+fn relay(guest: UnixStream, owner: shards_ipc::Stream, capacity: usize, streams: Vec<[Flow; 2]>) -> Relayed {
     let ledger = Ledger {
         flows: Mutex::new(Flows {
             owner: Owner::Running,
             streams,
+            ended: None,
         }),
         changed: Condvar::new(),
     };
@@ -334,26 +385,28 @@ fn relay(
         let credit = std::thread::Builder::new()
             .name("managed-credit".into())
             .spawn_scoped(scope, || {
-                let result = credits(&guest, &owner, capacity, &ledger);
+                if let Err(e) = credits(&guest, &owner, capacity, &ledger) {
+                    ledger.end(Relayed::of(e));
+                }
                 ledger.stop();
                 super::end_guest(&guest);
                 shards_ipc::end(&owner);
-                result
-            })?;
-        let result = records(&guest, &owner, capacity, &ledger);
-        ledger.stop();
+            });
+        let credit = match credit {
+            Ok(credit) => credit,
+            Err(e) => return Relayed::Broke(e),
+        };
+        let ended = match records(&guest, &owner, capacity, &ledger) {
+            Ok(()) => Relayed::Done,
+            Err(e) => Relayed::of(e),
+        };
+        ledger.end(ended);
         shards_ipc::end(&owner);
         super::end_guest(&guest);
-        let credit = credit
-            .join()
-            .map_err(|_| io::Error::other("managed credit worker panicked"))?;
-        match result {
-            Ok(()) => Ok(()),
-            Err(e) => match credit {
-                Err(credit) if e.kind() == io::ErrorKind::UnexpectedEof => Err(credit),
-                _ => Err(e),
-            },
+        if credit.join().is_err() {
+            ledger.end(Relayed::Broke(io::Error::other("managed credit worker panicked")));
         }
+        ledger.lock().ended.take().unwrap_or(Relayed::Ended)
     })
 }
 
@@ -570,14 +623,16 @@ mod tests {
         );
         assert_eq!(record(&mut owner), (kind::MANAGED, expected));
         drop(owner);
-        assert!(worker.join().unwrap().is_err());
+        assert!(matches!(worker.join().unwrap(), Relayed::Ended));
     }
 
     /// A relay that breaks while its VM runs on (here its owner's credit for a channel given
     /// again before the first was used, which it refuses) ends the run in the VM: the run's
     /// connection ended, so that its guest powers off and its serve returns, and why kept for
     /// that serve to say (UNSERVED, D258); goal 75's WHP case left such a run to its owner's
-    /// STOP. One whose guest ends its capture ends nothing of its run.
+    /// STOP. One whose guest ends its capture, or whose owner ends its own, ends nothing of
+    /// its run: the guest's run ends with it, and an owner's end is its owner's to end the run
+    /// for, or its STOP_ORDER's where its owner is gone.
     #[test]
     fn a_relay_that_breaks_mid_run_ends_its_run_saying_why() {
         let _serial = super::super::hellos::TESTS
@@ -616,6 +671,9 @@ mod tests {
             guest.shutdown(std::net::Shutdown::Both).unwrap();
         });
         assert!(!ended, "a guest's end of its capture ended its run");
+        assert_eq!(why, None);
+        let (ended, why) = relaying(&|owner, _| shards_ipc::end(owner));
+        assert!(!ended, "an owner's end of its capture ended its run");
         assert_eq!(why, None);
     }
 
