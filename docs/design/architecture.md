@@ -6419,19 +6419,46 @@ replaced by:
   which hangs it up at once from its start (`client::HangUp`), as a probe its backoff puts ever
   further off would not. A host that answers its port unreachable refuses at once: the
   client's socket is connected to its one peer (`Driver::aim`), so its ICMP reads as a refusal
-  (ECONNREFUSED; Windows' WSAECONNRESET), said so, and the record kept as it was. A connection
-  begins its waits from its handshake's answer.
-- *A handshake's bound, after that.* A daemon reached before, its last waits answered, is given
-  up past the slowest handshake seen from it (`Known::handshake_deadline`), told so ("no answer
-  ... within the slowest handshake seen from it"), and marked: the next waits as a cold start
+  (ECONNREFUSED; Windows' WSAECONNRESET), said so, and the record kept as it was, whichever of
+  its next send and its next read is told of it (`Driver::flush_datagrams`): Linux gives a
+  connected socket's pending error, and clears it, at either (udp(7): ECONNREFUSED, "caused by
+  a previous packet sent over the socket"), as Winsock's send does (WSAECONNRESET). On Linux's
+  loopback the refusal of a first flight's first datagram comes back before its second is
+  sent, a client hello of the hybrid post-quantum groups filling two: a send that took it and
+  let it go as a lost datagram's left the read nothing to find, and a client asking a closed
+  port waited on, its probes refused unread (ROOT's KVM run at 237f3ebe7: `tests/loopback.rs`'s
+  closed port, 22 minutes).
+- *A handshake's bound, after that.* A daemon reached before, its last waits answered, has its
+  handshake judged as a send is (`Liveness::due`), by a window of the slowest handshake seen
+  from it (`Known::handshake_window`), no sooner than its probe timeout: given up a whole window
+  with nothing heard from it (its Initial and Handshake packets count) past the later of when it
+  was last heard and that timeout, told so ("no answer from the shards daemon at ADDR: nothing
+  heard from it in T, its probe timeout (P) and then the slowest handshake seen from it (W)",
+  typed as QUIC's `TimedOut`), and marked; one that goes past its window and its probe timeout both while it is
+  heard has run out, and goes on, marked. A marked record's next handshake waits as a cold start
   does, as every wait after a run-out does, until a handshake ends again. QUIC's loss recovery
-  starts each handshake from the path's last RTT (`initial_rtt`).
+  starts each handshake from the path's last RTT (`initial_rtt`). The window alone, from its
+  start, gave up daemons whose next handshake the suite's own load slowed: ROOT's runs of
+  `tests/context.rs` at 084891178, 8 of 21 on HVF and 1 on KVM, and at c1ef455c9 6 of 21 on HVF
+  (an engine relay's 502 among them), each "within the slowest handshake seen from it" of
+  0.57-4.2 ms, one sample of which, a fresh home's join, had set it. The probe timeout here is the one a send's wait is held to (patch Q7's
+  `probe_timeout`: its RTT terms and the peer's `max_ack_delay`, 25 ms until its transport
+  parameters say otherwise, RFC 9000 §18.2), where RFC 9002 §6.2.1 arms the Initial and
+  Handshake spaces' own probe timer without `max_ack_delay`, a peer acknowledging their packets
+  at once; that one, from a loopback path's learned RTT, is a millisecond or so, and bounds a
+  handshake's probes, not its peer's answer, whose work (its key exchange and signature) and
+  host's scheduling it does not measure.
 - *An established connection's liveness, at use* (was the idle timeout: `IDLE`, 10 s, then
   `QUIET`, 100 s). Its transport has no idle timeout (`max_idle_timeout` none) and sends no
   keep-alive of its own. A send that waits for its acknowledgment is held to a window, the slowest
-  answer seen on its path (the record's, and this connection's, from its handshake on) plus
-  the peer's own `max_ack_delay`, its declared transport parameter, as RFC 9002 §6.2.1's PTO
-  adds it (`Liveness::look`). Past the window, while the peer makes progress (acknowledges
+  answer seen on its path (the record's, then this connection's sends') plus the peer's own
+  `max_ack_delay`, its declared transport parameter, as RFC 9002 §6.2.1's PTO adds it
+  (`Liveness::look`). Cold, before any send's answer has been seen on its path, there is no
+  window: a wait follows its peer's liveness and progress for as long as it takes, as a
+  handshake's packets, which a peer acknowledges at once (RFC 9000 §13.2.1), measure nothing of
+  how long it takes to answer a request, its work and its host's scheduling with it (a fresh
+  client's join died at 123-152 ms on HVF, ROOT's run at dc7f45bc6, `tests/context.rs` 16 of 21,
+  its window seeded by its handshake while the daemon synced the client's record). Past the window, while the peer makes progress (acknowledges
   more, or is heard at all), the wait has run out: told typed, once (`Handler::ran_out`), the
   record marked, and the connection goes on; the answer that comes raises the slowest seen. A
   whole window with no progress is its death (`Look::Dead`, told as QUIC's `TimedOut`), and the
@@ -6482,7 +6509,29 @@ replaced by:
   on at once (poll(2); WSAPoll), as a socket aimed at its peer takes datagrams from that peer
   alone (connect(2): Linux udp(7), XNU `udp_input`): a wake sent there never came, and a
   client's resize waited for the daemon's next packet. poll waits whole milliseconds, a wait
-  under one taken as one, so that a timer is looked at no sooner than it is due.
+  under one taken as one, so that a timer is looked at no sooner than it is due. What its socket
+  holds is read with the socket non-blocking: a receive timeout of the least, a microsecond,
+  Linux keeps in whole jiffies (SO_RCVTIMEO, net/core/sock.c `sock_set_timeout`), so that a
+  client's socket aimed at its daemon, read whatever its wait said, waited a jiffy out each turn
+  it had nothing to read.
+- *A driver's absence* (none before): a wait is judged on the time its side was there to hear.
+  The time from one of a driver's turns to the next that its thread neither ran (its CPU time,
+  POSIX's `CLOCK_THREAD_CPUTIME_ID`) nor waited as it planned (its poll, until its timer in whole
+  milliseconds or until what came) is its own absence, its process frozen, starved or
+  descheduled, in a turn's midst or past its timer; on Windows, whose thread times move at the
+  clock interrupt, how far past its timer its poll woke alone (`net::Turn::absent`). Before a
+  turn judges anything, every connection's instants move on by it (`Liveness::absent`: a
+  handshake's start, when its peer was last heard, its handshake's end, a send's wait), so that
+  its peer is not held to the absence and its record (an answer, a silence, a handshake's time)
+  does not learn it as the peer's. The time past its timer alone missed a freeze in a turn's
+  midst: a trickling client froze between a send and its wait's poll took its daemon for dead as
+  it resumed, 1 of 6 rounds on adacachy2. kiln's runners stall whole processes: on adacachy2 under kiln, 400 sleeps of 2 ms took
+  p50 2.105 ms, p90 2.113 ms, p99 123.97 ms, max 124.02 ms (timer slack 100 µs, sched_ext off);
+  one 121 ms freeze took six of `tests/loopback.rs`'s daemons' live clients for dead at once
+  ("unanswered past the slowest answer seen"), and a relay's timeline showed a handshake given up
+  as both its ends resumed from 70 ms in which neither had sent anything, its wait judged on
+  wall-clock time that held its own freeze. A connection's peer gone during an absence is found
+  so a whole window after this side is back.
 
 **hyper-raft's main under it** (2026-11-13). Shards pinned hyper-quic and hyper-tls to a branch
 of hyper-raft forked at f116ac27 (2026-10-15) and carrying nine hyper-tls experiment commits
@@ -6518,27 +6567,36 @@ next probe, its client's connection seen ended there (relay.rs `gone`: recv(2) w
 and MSG_DONTWAIT, which takes nothing and leaves the reader's descriptor blocking; on Windows,
 PeekNamedPipe's broken pipe), as its client's input is read no further than its first chunk
 before the daemon's flow control lets it. A host's start runs on a worker of its own (server.rs `start_apart`,
-`Event::Started`), apart from the driver, which acknowledges every client's packets
+`Event::Started`), and so does a join (`join_apart`, `Event::Joined`), whose record a host
+syncs to disk, apart from the driver, which acknowledges every client's packets
 meanwhile: what the client sends after its request, and on the control streams that steer the
 command, is read once the start has ended, its flow control holding it back. On the driver, a
 start longer than a client's probe timeout and window ended that client's connection and held
 up every other client's acknowledgements: the tests' commands' program, built by cargo at its
 first start, did so to every test that started one first (`tests/loopback.rs` builds it
 before its daemon serves, all the same). Tested, each test red before its code: `tls::tests` (what is known of a
-peer follows what its path showed), `net::tests` (a handshake held to its deadline or probing
-on, its silences measured; a send's window, its run-out with progress and its death without;
-a wait judged no sooner than its probe timeout; what its handshake sent no wait; the keep-alive
+peer follows what its path showed), `net::tests` (a handshake judged by its window or probing
+on, its silences measured; a handshake given up a whole window unheard past its probe timeout,
+one heard living on past both, red with its window a deadline from its start; a send's window,
+its run-out with progress and its death without; a cold wait following its peer however long
+its first answer takes; a wait judged no sooner than its probe timeout; a wait judged on the
+time its side was there to hear, red with no absence taken; what its handshake sent no wait;
+the keep-alive
 early by the window and none while a send waits; a handshake past its slots taking the oldest
 unanswered place), `context::tests` (a daemon's path read back for its
 daemon and address alone, kept only where it changed, removed with its context),
 `tests/loopback.rs` (a machine holding as many strangers as invitations, the oldest giving
 way; an enrolled client's silent command living with no keep-alive; no daemon answering
 probed until its caller gives up; a hang-up ending a command whose daemon never answered; a
-closed port refusing its client at once; a daemon reached before given up past its slowest
-handshake; a slow start holding up no other client, one start held while another client's
-command is answered whole, red with the start on the driver, that command unanswered past the
-test's deadline; and the relays' backpressure as before: 8 MiB crossing whole, a command that
-reads no stdin holding up no other).
+closed port refusing its client at once, its caller giving up past the test's deadline, red on
+Linux with a send's refusal let go; a daemon reached before given up past its slowest
+handshake, unheard; a daemon reached before slower to shake hands than ever, by more than its
+slowest but within a probe timeout, answered, a relay holding what it sends back, red with the
+slowest handshake a deadline; a process frozen 200 ms (SIGSTOP) while a command trickles
+through it keeping its connections, red with no absence taken; a daemon slow to answer a fresh
+client waited for, red with its handshake seeding the window; a slow start, and a slow join, holding up no other client, red
+with each on the driver; and the relays' backpressure as before: 8 MiB crossing whole, a
+command that reads no stdin holding up no other).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
@@ -12367,8 +12425,13 @@ other's but what the move sends, and what the other takes by content:
 - **Its image, by digest.** The other machine finds it by the digest its name resolved to
   as the microVM was made, or pulls it from its registry by that digest (`repo@sha256:…`),
   converted as a run converts one; one no registry it reaches holds goes with the move,
-  saved here and loaded there. Its request names it there by that digest, which no tag
-  there can move.
+  saved here and loaded there, and is given there the name it has here where nothing there
+  has that name; a name that cannot be given, or a step unanswered, fails the move, resumed
+  here (cli/moves.rs `name_there`). Both answers let go, a moved image was left unnamed there
+  and the move said it had moved (`a_moved_microvms_log_and_image_go_with_it` on KVM, ROOT's
+  run at 084891178), which step failed unsaid; that run's one other failure there was a
+  context's handshake given up within the slowest seen (D180). Its request names it there by
+  that digest, which no tag there can move.
 - **The files its snapshot restores against**, each named relative to the home (its root
   filesystem by its image's ChainID, D18), checked byte for byte by SHA-256 on both machines
   before anything moves: those the other machine has alike are its own; those it lacks or
