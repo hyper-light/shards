@@ -82,9 +82,16 @@ given for that run alone. Moves are the daemon's runs'; the daemon gives no netw
 - Run r543, head 0a5b70481 (merged with main 9b9da26c7, whose M546 ended `netproc::GRACE`: `net_gone` reaps through
   `netproc::reap(child, &live.ends)`): shards-net 12, shards-api `image::` 45, shards `api_run::` 26, shards-ipc 1
   passed; the four crates' clippy clean. Then r572, head 1a125a93f (merged with main 454aa9a70): the same counts, clean.
-- Run r622, head 5349fd82f (merged with main f5c0c8b04), the tree that lands: shards-net 12, shards-api `image::` 45,
-  shards `api_run::` 28 (main's two added), shards-ipc 1 passed; the four crates' clippy, `--all-targets -- -D warnings`,
-  clean (`CARGO_INCREMENTAL=0`).
+- Run r622, head 5349fd82f (merged with main f5c0c8b04): shards-net 12, shards-api `image::` 45, shards `api_run::` 28
+  (main's two added), shards-ipc 1 passed; the four crates' clippy clean (`CARGO_INCREMENTAL=0` from r454 on).
+- Main moved before each push, so each merge was tested again before the next try: r645 (a353f1b77), r709 (af15d4532:
+  D256 took version 18, the leases 19), r724 (5d0431ab7: D253 took 19, the leases 20), r742 (baba912ee: red, main's new
+  session test's `Shared` lacked the lease fields; given them in 269a4840d), r763, r770 (9483b5a84), r780 (bb814afd8),
+  r784 (5536a9fd5), each green: shards-net 12, shards-api `image::` 49 at the last, shards `api_run::` 32, shards-ipc 1,
+  the four crates' clippy clean.
+- Run r792, head bdbebd811 (merged with main fafe35efc): shards-net 12, shards-api `image::` 49, shards `api_run::` 32,
+  shards-ipc 1 passed; the four crates' clippy, `--all-targets -- -D warnings`, clean. Landed: main fast-forwarded
+  fafe35efc..bdbebd811.
 - Between r282 and r301 the runner's disk was full (116 MiB free; this lane's directory was 6.1 GB of it, other lanes'
   far more); another lane's cleanup freed 87 GiB before r301, and nothing of others' was touched here.
 
