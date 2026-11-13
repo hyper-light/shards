@@ -282,6 +282,7 @@ fn staged(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<V
     use shards_abi::run::members as staging;
     let mut entries = Vec::new();
     let mut worked = std::collections::BTreeSet::new();
+    let mut argued = std::collections::BTreeSet::new();
     for m in &request.members {
         let info = members
             .iter()
@@ -324,6 +325,20 @@ fn staged(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<V
             entries.push(
                 staging::workdir(info.index, w.as_bytes())
                     .map_err(|e| No(Cause::Request, format!("{}: {w:?}: {e}", m.name)))?,
+            );
+        }
+        // Its run-time arguments (D256), after its own command's, in their order: one list, as
+        // two would have no order between them.
+        if !m.args.is_empty() && !argued.insert(info.index) {
+            return Err(No(
+                Cause::Request,
+                format!("{:?} {}: its arguments given twice", m.kind, m.name),
+            ));
+        }
+        for (i, a) in m.args.iter().enumerate() {
+            entries.push(
+                staging::arg(info.index, a.as_bytes())
+                    .map_err(|e| No(Cause::Request, format!("{}: its argument {i}: {e}", m.name)))?,
             );
         }
     }
@@ -3539,6 +3554,7 @@ mod tests {
             workdir: Some("/Users/ada/proj".into()),
             input: false,
             terminal: false,
+            args: Vec::new(),
         }
     }
 
@@ -3627,6 +3643,51 @@ mod tests {
                 Ok(_) => panic!("{kind:?} {name} staged"),
             }
         }
+    }
+
+    /// A member's run-time arguments (D256) are staged after its other entries, one
+    /// `member-arg=` each by its index, in their order, an empty one among them, and read back
+    /// so by the guest's reader; none given, none staged. One holding a NUL, or arguments in
+    /// two of one member's stages, which have no order between them, refuse the request.
+    #[test]
+    fn a_members_arguments_are_staged_after_its_own_in_order() {
+        let none = staged(
+            &request(vec![stage(wire::MemberKind::Harness, "codex")]),
+            &members(),
+        )
+        .ok()
+        .unwrap();
+        assert_eq!(none.len(), 3);
+        let mut s = stage(wire::MemberKind::Harness, "codex");
+        s.args = vec!["--resume".into(), "s-1".into(), String::new()];
+        let entries = staged(&request(vec![s.clone()]), &members()).ok().unwrap();
+        assert_eq!(entries[..3], none[..]);
+        assert_eq!(
+            entries[3..],
+            [
+                b"member-arg=1\0--resume".to_vec(),
+                b"member-arg=1\0s-1".to_vec(),
+                b"member-arg=1\0".to_vec(),
+            ]
+        );
+        assert_eq!(
+            shards_abi::run::members::args_of(&entries, 1).unwrap(),
+            [&b"--resume"[..], b"s-1", b""]
+        );
+        let mut nul = s.clone();
+        nul.args.push("a\0b".into());
+        assert!(matches!(
+            staged(&request(vec![nul]), &members()),
+            Err(No(Cause::Request, _))
+        ));
+        let mut second = s.clone();
+        second.workdir = None;
+        assert!(matches!(
+            staged(&request(vec![s.clone(), second.clone()]), &members()),
+            Err(No(Cause::Request, why)) if why.contains("its arguments given twice")
+        ));
+        second.args.clear();
+        assert!(staged(&request(vec![s, second]), &members()).is_ok());
     }
 
     /// The image's grants are kept, narrowed or dropped by the orchestrator; any it names

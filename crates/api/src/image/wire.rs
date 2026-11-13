@@ -43,10 +43,12 @@ pub use shards_abi::run::nesting::Ready;
 /// ([`Request::gpu_devices`], D232, D234's `gpus=`), so that a side that binds none starts no
 /// run without them; 17, the period the run's governor holds its rate over
 /// ([`Started::rate_period`], D191, D247), so that its orchestrator derives its window from
-/// the run's own period, never from a number of its own; 18, how the run's microVM started
-/// ([`Started::from`], D253): from its image's template, booted saving one, or booted where
-/// its template did not restore, so that its orchestrator hears a template replaced.
-pub const VERSION: u8 = 18;
+/// the run's own period, never from a number of its own; 18, each member's run-time arguments
+/// ([`MemberStage::args`], D256), so that a side that passes none starts no member without
+/// the flags its orchestrator asked; 19, how the run's microVM started ([`Started::from`],
+/// D253): from its image's template, booted saving one, or booted where its template did not
+/// restore, so that its orchestrator hears a template replaced.
+pub const VERSION: u8 = 19;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -216,6 +218,9 @@ pub struct MemberStage {
     /// Its stdio is a terminal of its own (D244): what it shows is its stdout channel, its
     /// stdin goes to it, and [`ResizeAsk`] sizes it.
     pub terminal: bool,
+    /// Its run-time arguments (D256), on its command line after its config's `run.command`
+    /// (its entrypoint and options), in their order; none, its command alone.
+    pub args: Vec<String>,
 }
 
 /// A guest port published on the host.
@@ -480,7 +485,7 @@ pub struct Started {
     /// holds one: on the channel in nanoseconds, never none; appended in
     /// version 17.
     pub rate_period: std::time::Duration,
-    /// How its microVM started (D253); appended in version 18.
+    /// How its microVM started (D253); appended in version 19.
     pub from: StartedFrom,
 }
 
@@ -1325,6 +1330,14 @@ impl Request {
         for gpu in &self.gpu_devices {
             w.text(&gpu.to_string())?;
         }
+        // Each member's run-time arguments, in the members' order, appended in version 18
+        // (D256): its count, then each.
+        for m in &self.members {
+            w.count(m.args.len())?;
+            for a in &m.args {
+                w.text(a)?;
+            }
+        }
         w.done()
     }
 
@@ -1348,8 +1361,8 @@ impl Request {
             None
         };
         // Each member's kind, name, env and files, and, appended last, its working
-        // directory's flag, its input's and its terminal's.
-        let n = r.count(1 + 4 + 4 + 4 + 1 + 1 + 1)?;
+        // directory's flag, its input's, its terminal's and its arguments' count.
+        let n = r.count(1 + 4 + 4 + 4 + 1 + 1 + 1 + 4)?;
         let mut members = Vec::with_capacity(n);
         for _ in 0..n {
             let kind = member_kind(r.u8()?)?;
@@ -1372,11 +1385,12 @@ impl Request {
                 name,
                 env,
                 files,
-                // Read with the members' working directories, inputs and terminals, appended
-                // last.
+                // Read with the members' working directories, inputs, terminals and arguments,
+                // appended last.
                 workdir: None,
                 input: false,
                 terminal: false,
+                args: Vec::new(),
             });
         }
         let n = r.count(2 + 1 + 1 + 2)?;
@@ -1485,6 +1499,16 @@ impl Request {
             gpu_devices.push(r.text()?.parse().map_err(|_| WireError::Gpu)?);
         }
         shards_abi::gpu::check_selection(&gpu_devices).map_err(|_| WireError::Gpu)?;
+        // Each member's run-time arguments, appended in version 18 (D256): each at least its
+        // text's length (four bytes).
+        for m in &mut members {
+            let n = r.count(4)?;
+            let mut args = Vec::with_capacity(n);
+            for _ in 0..n {
+                args.push(r.text()?);
+            }
+            m.args = args;
+        }
         r.end()?;
         Ok(Request {
             image,
@@ -1671,7 +1695,7 @@ impl Started {
         }
         // The rate's period, appended in version 17 (D247).
         w.u64(u64::try_from(self.rate_period.as_nanos()).map_err(|_| WireError::TooLong)?);
-        // How its microVM started, appended in version 18 (D253).
+        // How its microVM started, appended in version 19 (D253).
         w.u8(self.from as u8);
         w.done()
     }
@@ -2323,6 +2347,7 @@ mod tests {
             workdir: None,
             input: false,
             terminal: false,
+            args: Vec::new(),
         };
         let shown = format!("{staged:?}");
         assert!(
@@ -2349,6 +2374,7 @@ mod tests {
                 workdir: None,
                 input: true,
                 terminal: false,
+                args: Vec::new(),
             }],
             publish: vec![
                 Publish {
@@ -2403,10 +2429,12 @@ mod tests {
             },
         ];
         assert_eq!(Request::decode(&credited.encode().unwrap()).unwrap(), credited);
-        // Each member's working directory, or none, in the members' order (version 5), and
-        // whether its input is the orchestrator's (version 6).
+        // Each member's working directory, or none, in the members' order (version 5),
+        // whether its input is the orchestrator's (version 6), and its run-time arguments, none,
+        // several, or an empty one among others (version 18).
         let mut worked = request();
         worked.members[0].workdir = Some("/Users/ada/proj".into());
+        worked.members[0].args = vec!["--resume".into(), "s-1".into()];
         worked.members.push(MemberStage {
             kind: MemberKind::Agent,
             name: "helper".into(),
@@ -2415,11 +2443,13 @@ mod tests {
             workdir: None,
             input: false,
             terminal: false,
+            args: Vec::new(),
         });
         worked.members.push(MemberStage {
             workdir: Some("/".into()),
             input: true,
             terminal: true,
+            args: vec![String::new(), "two words".into(), "--model=opüs".into()],
             ..worked.members[1].clone()
         });
         assert_eq!(Request::decode(&worked.encode().unwrap()).unwrap(), worked);
@@ -2453,16 +2483,18 @@ mod tests {
         }
         .encode()
         .unwrap();
-        // ... the control ask's absence (version 15) and the GPUs' count (version 16) last.
+        // ... the control ask's absence (version 15), the GPUs' count (version 16) and the
+        // member's arguments' count (version 18) last.
         assert_eq!(
-            asked.get(asked.len() - 24..).unwrap(),
+            asked.get(asked.len() - 28..).unwrap(),
             [
-                1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
             ],
             "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
              member's working directory (none) and its input, the credential grants' count \
-             (zero, version 8), the member's terminal (none, version 11), then whether the \
-             members are held apart (no, version 12)"
+             (zero, version 8), the member's terminal (none, version 11), whether the members \
+             are held apart (no, version 12), the control ask (none, version 15), the GPUs' \
+             count (zero, version 16), then the member's arguments' count (zero, version 18)"
         );
         // Destinations kept by name, the host itself among them (D236), and none.
         for destinations in [
@@ -2631,10 +2663,11 @@ mod tests {
         ));
         // A member's input flag, before the credential grants' count (version 8), its
         // terminal's flag (version 11) and the members' reach (version 12), that is no flag.
-        // One member, so its input is the twelfth byte from the end (the count's four, its
-        // terminal's one, the reach's flag, the control ask's and the GPUs' count follow it).
+        // One member, so its input is the sixteenth byte from the end (the count's four, its
+        // terminal's one, the reach's flag, the control ask's, the GPUs' count and its
+        // arguments' count follow it).
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 12;
+        let at = bad.len() - 16;
         assert_eq!(
             bad[at], 1,
             "the member's input flag precedes the credentials' count"
@@ -2713,9 +2746,10 @@ mod tests {
                 );
             }
         }
-        // The reach's flag, before the control ask's and the GPUs' count where none is held apart.
+        // The reach's flag, before the control ask's, the GPUs' count and the member's
+        // arguments' count where none is held apart.
         let mut flag = held(None).encode().unwrap();
-        let at = flag.len() - 6;
+        let at = flag.len() - 10;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -2728,8 +2762,9 @@ mod tests {
         let mut kindless = held(Some(vec![reach(MemberKind::Agent, "helper", &[])]))
             .encode()
             .unwrap();
-        // ... then the control ask's absence (version 15) and the GPUs' count (version 16).
-        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4);
+        // ... then the control ask's absence (version 15), the GPUs' count (version 16) and
+        // the one member's arguments' count (version 18).
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4);
         assert_eq!(kindless[at], MemberKind::Agent as u8);
         kindless[at] = 2;
         assert_eq!(
@@ -2739,11 +2774,75 @@ mod tests {
                 tag: 2
             })
         );
+        // Held apart, with four billion members in a few bytes, in place of the reach's flag
+        // and what follows it.
         let mut hostile = held(None).encode().unwrap();
-        hostile.pop();
+        hostile.truncate(hostile.len() - 10);
         hostile.push(1);
         hostile.extend_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(Request::decode(&hostile), Err(WireError::Short));
+    }
+
+    /// Each member's run-time arguments (version 18, D256). Do: give two members none, an
+    /// empty one, and several (a space, `=`, past ASCII). Expect: each reads back exactly, each
+    /// member's own in its order, last in the request, and one cut anywhere short refused. Do:
+    /// write an argument that is no UTF-8, and a count of four billion arguments in a few
+    /// bytes. Expect: each refused by type. Do: arguments past the channel's bound, one alone
+    /// or two halves. Expect: the request refused `TooLong` as it is written, never cut to fit.
+    #[test]
+    fn each_members_arguments_ride_the_request_last() {
+        const {
+            assert!(
+                VERSION >= 18,
+                "the channel's version 18 carries each member's arguments"
+            )
+        };
+        let with = |first: &[&str], second: &[&str]| {
+            let mut r = request();
+            let mut helper = r.members[0].clone();
+            helper.kind = MemberKind::Agent;
+            helper.name = "helper".into();
+            helper.args = second.iter().map(|a| (*a).to_string()).collect();
+            r.members[0].args = first.iter().map(|a| (*a).to_string()).collect();
+            r.members.push(helper);
+            r
+        };
+        let cases: [(&[&str], &[&str]); 3] = [
+            (&[], &[]),
+            (&[""], &[]),
+            (
+                &["--resume", "s-1", "--model", "claude-opus-4"],
+                &["--permission-mode=plan", "two words", "ü"],
+            ),
+        ];
+        for (first, second) in cases {
+            let asked = with(first, second);
+            let bytes = asked.encode().unwrap();
+            assert_eq!(Request::decode(&bytes).unwrap(), asked);
+            for cut in 0..bytes.len() {
+                assert!(
+                    Request::decode(bytes.get(..cut).unwrap()).is_err(),
+                    "cut at {cut}"
+                );
+            }
+        }
+        // The second member's one argument, "ü", last: its bytes made no UTF-8.
+        let mut bad = with(&["--resume"], &["ü"]).encode().unwrap();
+        let at = bad.len() - "ü".len();
+        bad[at] = 0xff;
+        assert_eq!(Request::decode(&bad), Err(WireError::Text));
+        // The second member's count, last, said as four billion in no bytes.
+        let mut hostile = with(&[], &[]).encode().unwrap();
+        let at = hostile.len() - 4;
+        hostile[at..].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(Request::decode(&hostile), Err(WireError::Short));
+        // Past the channel's bound, one argument alone or two halves: refused, never cut.
+        let most = run::MAX_PAYLOAD as usize;
+        let mut past = request();
+        past.members[0].args = vec!["x".repeat(most)];
+        assert_eq!(past.encode(), Err(WireError::TooLong));
+        past.members[0].args = vec!["x".repeat(most / 2), "x".repeat(most / 2)];
+        assert_eq!(past.encode(), Err(WireError::TooLong));
     }
 
     /// Unknown versions and tags are refused, never defaulted.
@@ -2755,70 +2854,81 @@ mod tests {
         // A request of version 1, without the nesting grant's fields and the destinations',
         // of version 4, without its members' working directories, or of version 5, without
         // their inputs, is no request of this one's: refused by its version, never read with
-        // them defaulted. The request's one member makes each of those one byte.
+        // them defaulted. The request's one member makes each of those one byte, and its
+        // arguments' count (version 18) four bytes, which every version before 18 lacks.
         let mut v1 = request().encode().unwrap();
-        v1.truncate(v1.len() - 16);
+        v1.truncate(v1.len() - 20);
         v1[0] = 1;
         assert_eq!(Request::decode(&v1), Err(WireError::Version(1)));
         let mut v4 = request().encode().unwrap();
-        v4.truncate(v4.len() - 13);
+        v4.truncate(v4.len() - 17);
         v4[0] = 4;
         assert_eq!(Request::decode(&v4), Err(WireError::Version(4)));
         let mut v5 = request().encode().unwrap();
-        v5.truncate(v5.len() - 12);
+        v5.truncate(v5.len() - 16);
         v5[0] = 5;
         assert_eq!(Request::decode(&v5), Err(WireError::Version(5)));
         // One of version 6 carries every field version 7 does, but its host ends the run at
         // a room: refused by its version, before any room is told (D241).
         let mut v6 = request().encode().unwrap();
-        v6.truncate(v6.len() - 11);
+        v6.truncate(v6.len() - 15);
         v6[0] = 6;
         assert_eq!(Request::decode(&v6), Err(WireError::Version(6)));
         // One of version 7, without the credential grants' count: refused by its version
         // (D242), so an older reader never reads a grant with its field defaulted.
         let mut v7 = request().encode().unwrap();
-        v7.truncate(v7.len() - 11);
+        v7.truncate(v7.len() - 15);
         v7[0] = 7;
         assert_eq!(Request::decode(&v7), Err(WireError::Version(7)));
         // One of version 8, without its members' terminals: refused by its version (D244), so
         // an older reader never starts a member with pipes where its owner asked a terminal.
         let mut v8 = request().encode().unwrap();
-        v8.truncate(v8.len() - 7);
+        v8.truncate(v8.len() - 11);
         v8[0] = 8;
         assert_eq!(Request::decode(&v8), Err(WireError::Version(8)));
         // One of version 11, without the members' reach: refused by its version (D246), so a
         // run host never takes a request that holds its members apart as one that holds none.
         let mut v11 = request().encode().unwrap();
-        v11.truncate(v11.len() - 6);
+        v11.truncate(v11.len() - 10);
         v11[0] = 11;
         assert_eq!(Request::decode(&v11), Err(WireError::Version(11)));
         // One of version 12 carries every field version 13 does, but its host ends the run at
         // a rate: refused by its version, before any rate is told (D247).
         let mut v12 = request().encode().unwrap();
+        v12.truncate(v12.len() - 9);
         v12[0] = 12;
         assert_eq!(Request::decode(&v12), Err(WireError::Version(12)));
         // One of version 14, without the control ask: refused by its version (D252), so a run
         // host never takes a run that asked an endpoint as one that asked none.
         let mut v14 = request().encode().unwrap();
-        v14.truncate(v14.len() - 5);
+        v14.truncate(v14.len() - 9);
         v14[0] = 14;
         assert_eq!(Request::decode(&v14), Err(WireError::Version(14)));
         // One of version 15, without the GPUs it names: refused by its version (D232), so a run
         // host never starts a run without the GPUs its orchestrator asked.
         let mut v15 = request().encode().unwrap();
-        v15.truncate(v15.len() - 4);
+        v15.truncate(v15.len() - 8);
         v15[0] = 15;
         assert_eq!(Request::decode(&v15), Err(WireError::Version(15)));
         // One of version 16 asks what version 17 does, but its host tells no rate's period as
         // the run starts: refused by its version, so no orchestrator waits on one (D247).
         let mut v16 = request().encode().unwrap();
+        v16.truncate(v16.len() - 4);
         v16[0] = 16;
         assert_eq!(Request::decode(&v16), Err(WireError::Version(16)));
+        // One of version 17, without its members' arguments: refused by its version (D256), so
+        // a run host never starts a member without the flags its orchestrator asked.
+        let mut v17 = request().encode().unwrap();
+        v17.truncate(v17.len() - 4);
+        v17[0] = 17;
+        assert_eq!(Request::decode(&v17), Err(WireError::Version(17)));
         // The nesting flag, before the deadline's tag, the destinations', the one member's
         // working directory's and input's, the credential grants' count (version 8), the
-        // member's terminal's (version 11) and the members' reach (version 12): no flag.
+        // member's terminal's (version 11), the members' reach (version 12), the control ask
+        // (version 15), the GPUs' count (version 16) and its arguments' count (version 18): no
+        // flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 16;
+        let at = flag.len() - 20;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -2828,10 +2938,10 @@ mod tests {
             })
         );
         // The destinations' list, before the member's working directory and input, the
-        // credential grants' count, the member's terminal and the members' reach: no list of
-        // version 3's and on.
+        // credential grants' count, the member's terminal, the members' reach, the control ask,
+        // the GPUs' count and the member's arguments' count: no list of version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 14;
+        let at = list.len() - 18;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -3043,10 +3153,11 @@ mod tests {
         };
         assert_eq!(long.encode(), Err(WireError::TooLong));
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 7;
+        let at = bad.len() - 11;
         assert_eq!(
             bad[at], 0,
-            "the member's terminal flag precedes the members' reach, the control ask and the GPUs"
+            "the member's terminal flag precedes the members' reach, the control ask, the GPUs \
+             and its arguments"
         );
         bad[at] = 2;
         assert_eq!(
@@ -3178,8 +3289,8 @@ mod tests {
     fn how_a_run_started_reads_back_as_its_host_said_it() {
         const {
             assert!(
-                VERSION >= 18,
-                "the channel's version 18 carries how a run started"
+                VERSION >= 19,
+                "the channel's version 19 carries how a run started"
             )
         };
         for from in [
@@ -3427,9 +3538,10 @@ mod tests {
         };
         let bytes = named.encode().unwrap();
         assert_eq!(Request::decode(&bytes).unwrap().gpu_devices, gpus);
-        // The last identity's text, "metal:00000001000002a1", made one D232's grammar refuses.
+        // The last identity's text, "metal:00000001000002a1", before the one member's arguments'
+        // count (version 18), made one D232's grammar refuses.
         let mut unnamed = bytes.clone();
-        let at = unnamed.len() - "metal:00000001000002a1".len();
+        let at = unnamed.len() - 4 - "metal:00000001000002a1".len();
         unnamed[at] = b'x';
         assert_eq!(Request::decode(&unnamed), Err(WireError::Gpu));
         let twice = Request {
