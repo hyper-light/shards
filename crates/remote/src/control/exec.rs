@@ -439,6 +439,14 @@ pub(super) fn added(admissions: Admissions, stderr: bool, stdin: bool) -> Option
     Some(sum)
 }
 
+/// What a started exec's lanes may hold at its endpoint while it runs, received and sent:
+/// the windows the endpoint raises its connection's by ([`added`]), for its host to charge
+/// the run's budget with (D238). None where they overflow.
+pub fn lane_bytes(admissions: Admissions, stderr: bool, stdin: bool) -> Option<u64> {
+    let added = added(admissions, stderr, stdin)?;
+    added.receive.checked_add(added.send)
+}
+
 /// A steering frame's length: its head and its four bytes.
 const STEER_BYTES: usize = FRAME_HEAD + size_of::<u32>();
 

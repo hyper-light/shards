@@ -20,12 +20,12 @@ use shards_vmm::platform::UnixStream;
 pub mod capture;
 #[path = "workload/hellos.rs"]
 mod hellos;
+pub use crate::log_writer::NextSegment;
+use crate::log_writer::Writer;
 pub use hellos::exec_port;
 use hellos::register;
 
-use crate::spec::{
-    INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT, LogRetention, now,
-};
+use crate::spec::{LOG_STDERR, LOG_STDOUT, LogRetention};
 
 /// Where the guest's connections to a host port this process serves arrive
 /// ([`shards_vmm::vm::VsockHost::ports`]).
@@ -485,40 +485,21 @@ pub struct Ended {
     pub pids: Option<Vec<u8>>,
 }
 
-/// Keeps a microVM's output (spec.rs, `LOG_STDOUT`): each record appended to its log,
-/// then its entry to the log's index once the record is whole, in segments kept as its
-/// retention says (segments.rs). A record that cannot be kept, on a full disk
-/// or a log removed, costs the log, not the run: it is taken back, so neither file holds
-/// any of it, and its bytes are counted as lost (audit A12).
+/// Keeps a microVM's output in its log ([`Writer`], log_writer.rs): each record at once,
+/// or, non-blocking (D162), through a queue of its own ([`Queue`]).
 pub struct Logger {
-    /// Makes the next segment: in a VM, its daemon, since no VM reaches a microVM's
-    /// directory (D30).
-    next: NextSegment,
-    retention: LogRetention,
-    /// The segment written, and its files.
-    seq: u64,
-    log: fs::File,
-    index: fs::File,
-    /// The log's and the index's lengths, where a record that fails is cut back to.
-    logged: u64,
-    indexed: u64,
-    lost: u64,
+    writer: Writer,
     /// Non-blocking (D162): the most bytes of output queued for it ([`Queue`]); none
     /// where the run waits for its log.
     queue: Option<u64>,
 }
 
-/// Makes a log's segment `seq`, its log and index to append to, and removes the oldest
-/// past the log's retention ([`new_segment`]).
-pub type NextSegment = Box<dyn FnMut(u64) -> io::Result<(fs::File, fs::File)> + Send>;
-
 impl std::fmt::Debug for Logger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Logger")
-            .field("seq", &self.seq)
-            .field("logged", &self.logged)
-            .field("lost", &self.lost)
-            .finish_non_exhaustive()
+            .field("writer", &self.writer)
+            .field("queue", &self.queue)
+            .finish()
     }
 }
 
@@ -533,22 +514,8 @@ impl Logger {
         retention: LogRetention,
         next: NextSegment,
     ) -> io::Result<Logger> {
-        let logged = log.metadata()?.len();
-        let mut indexed = index.metadata()?.len();
-        // A partial entry an earlier writer left is not one.
-        if indexed % 8 != 0 {
-            indexed -= indexed % 8;
-            index.set_len(indexed)?;
-        }
         Ok(Logger {
-            next,
-            retention,
-            seq,
-            log,
-            index,
-            logged,
-            indexed,
-            lost: 0,
+            writer: Writer::new(log, index, seq, retention, next)?,
             queue: None,
         })
     }
@@ -559,72 +526,13 @@ impl Logger {
         self
     }
 
-    /// Keeps `bytes` of `stream` as records: as much as the segment written has room for,
-    /// then the rest in the next, so that each segment is as long as its size and the log
-    /// keeps all its retention allows. A segment's first record takes a byte at least,
-    /// however small its size. Each record says whether it ends a line (INDEX_LINE), so a
-    /// line cut across records, or segments, is read whole. Before, a record that did not
-    /// fit went whole into the next segment: a guest's 32 KiB records left segments of
-    /// 64,000 bytes half full, and a log half its retention (CI's x86_64 Linux, D162).
-    fn keep(&mut self, stream: u8, mut bytes: &[u8]) {
-        while !bytes.is_empty() {
-            let room = self
-                .retention
-                .size
-                .saturating_sub(self.logged)
-                .saturating_sub(LOG_HEAD);
-            let room = if self.logged == 0 { room.max(1) } else { room };
-            if room == 0 {
-                if self.rotate().is_err() {
-                    // A log that cannot go on within its bound keeps nothing more.
-                    self.lost = self.lost.saturating_add(bytes.len() as u64);
-                    return;
-                }
-                continue;
-            }
-            let (part, rest) = bytes.split_at(usize::try_from(room).unwrap_or(usize::MAX).min(bytes.len()));
-            self.record(stream, part);
-            bytes = rest;
-        }
-    }
-
-    /// Writes `bytes` of `stream` as one record of the segment written.
-    fn record(&mut self, stream: u8, bytes: &[u8]) {
-        let head = log_head(stream, bytes);
-        let record_len = LOG_HEAD + bytes.len() as u64;
-        let mut entry = self.logged & INDEX_START;
-        if stream == LOG_STDERR {
-            entry |= INDEX_STDERR;
-        }
-        if bytes.last() == Some(&b'\n') {
-            entry |= INDEX_LINE;
-        }
-        let kept = write_parts(&self.log, &mut [io::IoSlice::new(&head), io::IoSlice::new(bytes)])
-            .and_then(|()| (&self.index).write_all(&entry.to_be_bytes()));
-        match kept {
-            Ok(()) => {
-                self.logged += record_len;
-                self.indexed += 8;
-            }
-            Err(_) => {
-                self.lost = self.lost.saturating_add(bytes.len() as u64);
-                let _ = self.index.set_len(self.indexed);
-                let _ = self.log.set_len(self.logged);
-            }
-        }
-    }
-
-    /// Starts the next segment.
-    fn rotate(&mut self) -> io::Result<()> {
-        let next = self.seq + 1;
-        let (log, index) = (self.next)(next)?;
-        (self.seq, self.log, self.index, self.logged, self.indexed) = (next, log, index, 0, 0);
-        Ok(())
+    fn keep(&mut self, stream: u8, bytes: &[u8]) {
+        self.writer.keep(stream, bytes);
     }
 
     /// Bytes of output not kept.
     pub fn lost(&self) -> u64 {
-        self.lost
+        self.writer.lost()
     }
 }
 
@@ -1205,28 +1113,6 @@ fn write_fd(fd: i32, mut bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// The head of a log record for `bytes` on `stream`, stamped now: its bytes follow it.
-fn log_head(stream: u8, bytes: &[u8]) -> [u8; LOG_HEAD as usize] {
-    let [t0, t1, t2, t3, t4, t5, t6, t7] = u64::try_from(now()).unwrap_or(u64::MAX).to_be_bytes();
-    let [l0, l1, l2, l3] = u32::try_from(bytes.len()).unwrap_or(u32::MAX).to_be_bytes();
-    [stream, t0, t1, t2, t3, t4, t5, t6, t7, l0, l1, l2, l3]
-}
-
-/// Writes `parts` in order with as few writes as they take, a short or interrupted one
-/// going on from where it stopped: a log record's head and bytes, without copying the
-/// bytes after their head (audit D08).
-fn write_parts(mut w: impl Write, mut rest: &mut [io::IoSlice<'_>]) -> io::Result<()> {
-    while !rest.is_empty() {
-        match w.write_vectored(rest) {
-            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-            Ok(n) => io::IoSlice::advance_slices(&mut rest, n),
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(())
-}
-
 /// Sends `layer` as [`kind::LAYER`] frames, then an empty one.
 fn send_layer(conn: &mut UnixStream, mut layer: fs::File) -> io::Result<()> {
     let mut buf = vec![0u8; run::CHUNK];
@@ -1642,6 +1528,8 @@ pub struct ExecRequest {
     pub spec: Spec,
     pub interactive: bool,
     pub detached: bool,
+    /// Its client is told its start, or why it never started (`EXEC_TOLD`, D238).
+    pub told: bool,
     /// The daemon's number for it, and its connection, told of its end (`EXEC_ENDED`).
     pub number: u64,
     pub daemon: Option<shards_ipc::Stream>,
@@ -1787,6 +1675,10 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
                     }
                 }
             }
+            // Its start, to a client that types it (the agent-control endpoint's host, D238).
+            kind::STARTED if req.told => {
+                let _ = shards_ipc::send(&req.client, shards_ipc::kind::STARTED, &[], &[]);
+            }
             kind::STARTED => {}
             // A detached exec's output goes nowhere, as `docker exec -d`'s does.
             kind::STDOUT if !req.detached => {
@@ -1806,6 +1698,12 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
                 // Ended, every copy, its stdin's too: the VMM's end on Windows is held until
                 // this one ends (PM M358).
                 end_guest(conn.get_ref().0);
+                // Why it never started, by its class, to a client that types it (D238): the
+                // guest's own failure, within what its frame carried.
+                if let (true, Some((class, why))) = (req.told, &not_started) {
+                    let said = [&[*class][..], why.as_slice()].concat();
+                    let _ = shards_ipc::send(&req.client, shards_ipc::kind::EXEC_UNSTARTED, &said, &[]);
+                }
                 return Ok(match not_started {
                     None => status,
                     Some((run::exec_failed::DAEMON, why)) => {
@@ -2642,7 +2540,9 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::log_writer::{log_head, write_parts};
     use crate::segments::{log_segment, new_segment};
+    use crate::spec::{INDEX_LINE, INDEX_STDERR};
 
     /// The exec port's tests one at a time, each with a port of its own.
     fn exec_port_test() -> (
@@ -3348,6 +3248,7 @@ mod tests {
             },
             interactive: false,
             detached: false,
+            told: false,
             number: 1,
             daemon: None,
             client,
@@ -3542,6 +3443,80 @@ mod tests {
         assert_eq!(failure(&heard), "the container is not running");
         assert_eq!(signal_guest(&TO, 15), Err(Unsent::NotRunning));
         hellos::close();
+    }
+
+    /// An exec whose client types its start (`EXEC_TOLD`, D238) is told `STARTED` as its guest
+    /// starts it, and of one its guest never starts, why, by its class and the guest's words
+    /// whole, before its end; an exec not so asked tells neither. The client's `EXIT` is
+    /// `exec`'s, sent here as it sends it.
+    #[test]
+    fn a_told_exec_hears_its_start_or_why_it_never_started() {
+        static TO: ToGuest = ToGuest::new(Signals::new());
+        let (_serial, port, acceptor) = exec_port_test();
+        let server = std::thread::spawn(move || acceptor.run());
+        let ((sending, watched), mut guest) = connected(&TO);
+        let sender = std::thread::spawn(move || send_frames(&TO, sending));
+        let frame =
+            |which: u8, payload: &[u8]| [&run::header(which, payload.len() as u32)[..], payload].concat();
+        let ended = run::members::Refusal::Ended.encode(b"member 0 has ended");
+        let refused = [&[run::exec_failed::MEMBER][..], &ended[..]].concat();
+        for (told, refusal) in [
+            (true, None),
+            (true, Some(&refused)),
+            (false, None),
+            (false, Some(&refused)),
+        ] {
+            let (client, peer) = shards_ipc::Stream::pair().unwrap();
+            let mut req = ExecRequest {
+                told,
+                client,
+                ..exec_request()
+            };
+            let session = std::thread::spawn(move || {
+                let status = exec_session(&TO, &mut req);
+                let code = *status.as_ref().unwrap_or(&1);
+                shards_ipc::send(&req.client, shards_ipc::kind::EXIT, &[code], &[]).unwrap();
+                status
+            });
+            // Its guest takes its frame and dials its connection with its token.
+            let (which, asked) = next_frame(&mut guest);
+            assert_eq!(which, kind::EXEC);
+            let (mut conn, host) = UnixStream::pair().unwrap();
+            conn.write_all(&frame(kind::HELLO, &asked[..run::TOKEN])).unwrap();
+            assert_eq!(port.accept(host), shards_vmm::vm::Admission::Accepted);
+            match refusal {
+                None => conn.write_all(&frame(kind::STARTED, &[])).unwrap(),
+                Some(why) => conn.write_all(&frame(kind::SYSTEM_ERR, why)).unwrap(),
+            }
+            conn.write_all(&frame(kind::EXIT, &0u32.to_be_bytes())).unwrap();
+            let status = session.join().unwrap().unwrap();
+            let mut heard = Vec::new();
+            loop {
+                let said = shards_ipc::recv(&peer).unwrap().unwrap();
+                let last = said.kind == shards_ipc::kind::EXIT;
+                heard.push((said.kind, said.payload));
+                if last {
+                    break;
+                }
+            }
+            let mut expected = match (told, refusal) {
+                (true, None) => vec![(shards_ipc::kind::STARTED, Vec::new())],
+                (true, Some(why)) => vec![(shards_ipc::kind::EXEC_UNSTARTED, why.clone())],
+                (false, _) => Vec::new(),
+            };
+            expected.push((shards_ipc::kind::EXIT, vec![status]));
+            assert_eq!(heard, expected, "told {told}, refused {}", refusal.is_some());
+            // A member that has ended refuses it: `docker exec`'s 1, as the daemon refuses.
+            assert_eq!(status, if refusal.is_some() { 1 } else { 0 });
+        }
+        guest.write_all(&run::header(kind::SIGNALS_END, 0)).unwrap();
+        drop(guest);
+        signal_guest(&TO, 15).unwrap();
+        sender.join().unwrap();
+        watch(&TO, &watched);
+        hellos::close();
+        drop(port);
+        server.join().unwrap();
     }
 
     /// The signal connection is taken as it comes: what waited goes on it, and its end is

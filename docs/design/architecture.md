@@ -12035,6 +12035,32 @@ other's but what the move sends, and what the other takes by content:
   another program take one between. Two homes of one machine share its host ports, so their
   test publishes on a port each home picks (`a_moved_microvms_published_port_answers_there`);
   a fixed one is the two-host test's.
+- **Its key, made anew where it lands and never carried** (decided by ROOT, 2026-11-13).
+  A run's own key (D238: made by its host's daemon as its managed scope begins, held by its
+  agent-control endpoint alone, its SHA-256 the `vm` line of the run's managed metadata) is
+  its host's, and no private key leaves the host that made it. A restore there is a new run
+  identity: its run makes a key of its own after the restore, as after every restore, since
+  a key made before a snapshot would be every run restored from it (D238, "A key per run,
+  never a template's"; D25's templates restore many runs from one). Step 33 issues a run's
+  leases to its key and relies on that key unchanged for the run's life (kiln plan
+  01a1d2b88be57304b972761e2a5c6781, steps 4 and 5), so the move replaces it: the leases
+  bound to the old key are revoked at the move and reissued to the new, by the broker, which
+  alone says which key is current. What the move does: its plan names the run's key where it
+  ran (`Plan::key`); the machine moved to keeps it as the key replaced (the run's
+  `key-replaced`, a fingerprint alone: none where the plan names none, nor what an earlier
+  move kept in the directory sent); `move step key NAME [ASKED]` answers the run's key
+  there and the one replaced (`key`, `replaces`: 64 lowercase hex digits, or null) and,
+  asked under the replaced key, refuses typed (`Refused::KeyReplaced { asked, current }`,
+  whose fields step 33's lease refusal takes); and `shards move vm` prints the microVM's
+  name, then, where
+  either is known, `{"name", "context", "key", "replaces"}` on a line of its own, for its
+  controller to pin the new key and its broker to reissue its leases. Today a run with a
+  managed scope is refused before anything moves (below), as a restore does not take a
+  managed scope; the key side runs once one does, its restore making a new key and writing
+  `vm` anew (D238). Held by
+  `a_lease_under_the_key_a_move_replaced_is_refused_and_the_run_names_its_own` (moves.rs)
+  and `a_managed_runs_move_and_a_lease_under_its_replaced_key_are_refused_typed` (daemon.rs,
+  the daemon's own `key` step).
 - **Refused before anything moves, by what refuses it** (R04). The machine moved to answers
   `ready` with a `Refused` (daemon/moves.rs) as JSON on stdout, beside its words on
   stderr, which a mover of an earlier build prints as before; this build's mover reads it
@@ -12048,14 +12074,18 @@ other's but what the move sends, and what the other takes by content:
   on that one (WHP on x86-64, `Plan::cpu_identity`, D245); the
   features its guest may have used that this CPU lacks, by name; its ID, its name or a
   volume of its name here already; a bind's host path absent; a port it publishes that this
-  machine cannot bind. A plan of an earlier build
+  machine cannot bind. Where the microVM runs, before it is saved: a run with a managed
+  scope (`Refused::Managed`), which a restore does not take yet: a cold move's save would
+  leave it stopped here, its resume refused too. A plan of an earlier build
   names no hypervisor, and is taken as before. Held by
   `a_microvm_of_another_hypervisor_is_refused_before_anything_moves` and
   `a_refusal_is_typed_on_the_wire_and_says_what_it_said` (moves.rs),
-  `a_move_of_another_hypervisors_microvm_is_refused_typed` (daemon.rs, the daemon's own
-  step) and `a_refusal_is_said_from_its_type_and_else_in_the_steps_words` (cli/moves.rs);
-  mutation-checked: without the hypervisor's check, `ready` took such a plan and answered
-  what this machine lacked of it (docs/research/measurements/migrate/README.md).
+  `a_move_of_another_hypervisors_microvm_is_refused_typed` and
+  `a_managed_runs_move_and_a_lease_under_its_replaced_key_are_refused_typed` (daemon.rs, the
+  daemon's own steps) and `a_refusal_is_said_from_its_type_and_else_in_the_steps_words`
+  (cli/moves.rs); mutation-checked: without the hypervisor's check, `ready` took such a
+  plan and answered what this machine lacked of it
+  (docs/research/measurements/migrate/README.md).
 
 What fails before it runs there leaves it here as it was, resumed from the snapshot it
 was saved as, and what was made of it there removed: a move the other machine refuses
@@ -21953,9 +21983,14 @@ JSON library into PID 1. Each domain gets:
     read-only.
   - A scratch `/tmp` of its own, mode 700 and its uid's, lost when it ends.
 - **Only a loopback**, brought up; network grants are part three.
-- **Its stdio:** stdin is `/dev/null`; stdout and stderr are one pipe that init relays a
-  line at a time on the run's **stderr**, each line prefixed `[agent main] `. It goes to
-  stderr so that the workload's stdout stays its own, for pipes. Every descriptor past 2
+- **Its stdio:** stdin is `/dev/null`; stdout and stderr are pipes of their own, which init
+  captures whole for its owner (D240). Where the run names no owner of a member's output
+  (`shards.output`), the daemon reads it itself, keeps it in the member's log
+  (`members/<index>` in the run's directory, as the run's log is kept) and shows it to a
+  client attached to the run on that client's **stderr**, each line prefixed
+  `[agent main] `; the run's own stdout, stderr and log stay its command's. No member
+  waits on a reader: the daemon credits a channel again as soon as what came is kept, a
+  detached run's and one whose client has gone alike (PM M543). Every descriptor past 2
   is closed before exec. Every descriptor init holds is close-on-exec today, which the
   mutation shows: without the close, nothing of init's reaches the agent. The close is
   there so that one descriptor not marked close-on-exec, such as the O_PATH descriptors
@@ -22743,7 +22778,10 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   names its "to whom": each member the image gives it, by declared index, at the member's
   own port (another where an `EXPOSE` maps it), several where several claim it (the one
   listening takes each connection); none where it reaches the run's own command. The rule
-  is `read ports`' (`agentfile::receiving`), one function for both.
+  is `read ports`' (`agentfile::receiving`), one function for both. The run is on a bridge
+  where anything is kept or published, or where the image links its members past the
+  microVM, whatever is kept, its network process then letting nothing past that is not kept
+  (D250).
 - *Shares.* At boot, as the run's `-v`, given to the members the image's `VOLUME` there is
   for (D109). Added while running: D214's path to the run's command, owed; to a member,
   refused (its mounts are made as it starts).
@@ -22754,6 +22792,8 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 - *Stop.* The VM process killed at once, as `Guest::stop`.
 - *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
   the members start.
+- *Its end* (`RunEnd`): `Exited` with the status its own command or `ATTEND`'s holder ended
+  with; a command that never started, `Failed` in its VM's words (D249).
 
 **Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
 `docker run`'s `128 + signal`; every wait is on a fact.
@@ -23299,7 +23339,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, and exec lanes at the endpoint and the controller built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, and exec lanes at the endpoint, the controller and the daemon built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -23689,8 +23729,44 @@ controller's handles now ask its driver through one channel and a unit wake, not
 per lane, so lanes open as execs come. A lane over is let go, its handle's later asks answered by
 none. The connection's windows rise by an exec's lanes while it runs, from the same admissions.
 
-The exec host in the daemon, which charges and pumps a member exec through the VM process, is the
-next slice.
+*The daemon's exec host* (`daemon/managed/execs.rs`). A run that asks for agent control admits
+execs on its endpoint: an exec's output record is what one of its guest's output frames carries
+(`run::CHUNK`), and its stdin's is a member's stdin's. The host takes each exec the endpoint hands
+it, on a thread of its own:
+- *As whom.* An ask whose spec sets what a member's exec does not take (a user, a builtin, the
+  run's own hostname, resolvers, hosts, domain, cgroup or setup) is refused `Refused` before
+  anything is made. What runs is the run protocol's EXEC with `in-member=N` alone in its setup,
+  as `shards exec --for` sends it (D243), and its member refuses again what it has not.
+- *What it costs.* What it holds while it runs: each output's record and its pump's buffer of the
+  same size; its stdin's record; the windows its lanes add to the connection
+  (`control::exec::lane_bytes`, the endpoint's own sums); the kernel's queues of its connection to
+  its VM process, both ends, measured as the run's capture socket is; and its pipes' (Linux's
+  `F_GETPIPE_SZ`, Windows' GetNamedPipeInfo, and on macOS, which tells no pipe's, xnu's most,
+  `BIG_PIPE_SIZE`). The run's budget has room for it or it is refused `Capacity`, and the charge
+  is given back as it ends.
+- *Its start, typed.* It is handed to the run's VM process as `EXEC_RUN` with a flag of its own,
+  `EXEC_TOLD`, once the run has started and not while it is paused (`docker exec` refuses a
+  paused container's). The VM process then tells it `STARTED` as its guest starts the command,
+  or, for one that never started, `EXEC_UNSTARTED`: the run protocol's `exec_failed` class and the
+  guest's words, before its `EXIT`. Its member's refusal or its daemon's is `Refused`; its
+  runtime's (a program not found or not executable), or an exec its VM process could not ask its
+  guest for, `Failed`. Without the flag a client could not tell a command that never started
+  from one that exited 126.
+- *Its stdio.* Pipes, as the daemon's own execs use (health.rs). Each output is read into a
+  buffer of its pump's and taken into a record only for bytes there are: a record taken and never
+  submitted would keep its stream from finishing. Its stdin is written a record at a time, each
+  told taken once the pipe has it whole, and its end or abort is the pipe's close. A write the
+  pipe refuses ends it `EPIPE` (its reader gone) or `EIO`; an exec that exits with its stdin open
+  ends it `EPIPE` at the bytes taken.
+- *Its steering.* Each resize and signal goes to the VM process on its connection as `RESIZE` and
+  `SIGNAL`, as a client's do, and is told taken.
+- *Its end.* `EXIT`'s status is told once its outputs have ended, every byte its VM process wrote
+  taken, and finished. A connection that ends without its `EXIT` (its VM process gone) aborts its
+  outputs. Its steering closed before its end (its controller's connection gone, or its lane
+  stopped) hangs it up: SIGHUP, as a terminal's hangup tells its session (POSIX.1-2024, General
+  Terminal Interface, "Modem Disconnect"), its output let go of and its stdin ended, so that
+  nothing it does waits on a controller that has gone. Its streams' controls are held until its
+  steering closes.
 
 Tested in `crates/remote` (`control::tests`, over the in-process exchange of `lib.rs`'s
 handshake tests): the enrolled controller and its pinned microVM connect,
@@ -23718,7 +23794,18 @@ sums. Through the controller over loopback:
 In the daemon (`daemon::managed::tests`): the annotation asked for by its last value, any value
 but `true` or `false` refused; a run's endpoint of a key its own, two runs two keys, serving
 its owner alone, whose controller reads a member's record through it while a stranger's ends
-`NotEnrolled`.
+`NotEnrolled`. Its exec host, through the run's endpoint, its VM process a stand-in that takes
+what `launch_exec` hands it: the owner's controller execs into member 0, handed as a member's exec
+told and reading its stdin (`EXEC_TOLD | EXEC_INTERACTIVE`, `in-member=0` its setup alone); its
+stdin reaches the exec's pipe exactly and its output comes back exactly; a resize and a signal
+reach the VM process as `RESIZE` and `SIGNAL`; its stdin's end is told, then its exit once its
+output finished; the run's budget charged while it runs and given back after. An exec its member
+refuses, one whose spec sets a user, and one the budget has no room for are each told why, typed,
+the last two handing the VM process nothing. A member's exec takes its command and stdio alone;
+a guest's refusal is typed by its class; a pipe's buffer is measured or bounded
+(`daemon::managed::execs::tests`). In the VM process (`workload::tests`): an exec told is told
+`STARTED`, or `EXEC_UNSTARTED` with its guest's class and words before its end, and one not told
+hears neither.
 
 Record:
 [agent-control-v1](../research/measurements/agent-control-v1/README.md).
@@ -23755,6 +23842,10 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | `Unstarted` 16, 17, 18 | this protocol's own, apart from `managed::Reason`'s 1 to 5 |
 | A told or steering frame, 9 bytes | a frame's head (5) and a u32 |
 | One steer in flight; per exec, its lane, one ask and its stdio lanes; their windows | as step 5 has one record in flight; each lane's own, summed as the endpoint's streams are |
+| An exec output's record, `run::CHUNK` (64 KiB) | the most one of its guest's output frames carries (abi `run::CHUNK`); its window that record and a data frame's head, as a member's |
+| `EXEC_TOLD` 4; `EXEC_UNSTARTED` 96 | `EXEC_RUN`'s flag after `EXEC_DETACHED` 2; the IPC's kind after `RATED` 95 (D247) |
+| An exec's charge | what it holds, each part measured (its records and buffers, its lanes' windows, its connection's queues, Linux's and Windows' pipes) or its kernel's own bound (macOS's pipes, `BIG_PIPE_SIZE` 64 KiB, xnu-12377.101.15 bsd/sys/pipe.h l. 80) |
+| SIGHUP 1; EPIPE 32, EIO 5 | Linux's (include/uapi/asm-generic/signal.h; errno-base.h), as the guest takes them |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 
@@ -23850,7 +23941,15 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   connections are admitted as an exec's are (D16, "An exec's connection").
 - *stdout and stderr, captured whole* (P3). Each channel apart, its bytes as the member wrote
   them, credited by its reader; an observer's going ends no member (D180's "Managed
-  owner-output transport"; D231's "Members' streams and ends").
+  owner-output transport"; D231's "Members' streams and ends"). Its reader is its owner where
+  the run names it (`shards.output`, each `KIND:NAME`, as `shards.stdin` names an input),
+  through its own endpoints or its run's agent-control lanes (D238), which serve the named
+  members' output as they serve the named members' input;
+  else the daemon, which keeps it in the member's log and credits it again at once, so that
+  no member waits for want of a subscriber, and shows it to an attached client prefixed
+  with the member's label (D59, "Its stdio"; PM M543). Before, every member's output waited
+  for an owner's subscription that no `shards run` made: a run's agents were heard by no one
+  (`tests/build.rs`'s agents in their domains, red on every CI run since 9151296a8).
 - *Its environment* (step 7, 239749c60). Init's, then the image's `Env`, then its own
   `run.env`, then what its run stages, the last given of each name winning. `PATH` keeps the
   member's own programs first; `HOME` is never the image's; `SHARDS_DOMAIN` is refused at the
@@ -24069,6 +24168,51 @@ for the wire round-trip, the decision at its edges, and that no value prints.
 `crates/api/src/image.rs`: `ImageSpec.credentials`, validated and lowered into the request.
 A value type stays redacted: `wire::Secret`'s `Debug` prints its length alone, and a
 `CredentialGrant` carries no value to print.
+
+**Built: step 2's first slice, the run's CA in its network process.** The run host (`shards
+api-run`) checks each grant against the run's egress grants, refusing one toward no host or
+toward a host they do not reach (`shards_net::reaches`: a destination they name, or any host
+on a TCP port they open; `Cause::Request`). It starts the network process with
+`--credentials` and, after `NET_POLICY`, sends it the grants by reference
+(`NET_CREDENTIALS`, kind 97; `shards_net::encode_grants`). The network process checks them
+again against its policy (D109), once, and answers the run's CA's certificate (DER). The run
+host logs its SHA-256 and holds it for the members' trust (the next slice). shards-api's
+check refuses a grant toward no host as well.
+- *The CA (`shards_net::ca`).* Self-signed, `pathLenConstraint` 0 (it signs leaves alone),
+  `keyCertSign`, ECDSA over P-256 with SHA-256 (the signature every TLS 1.3 client must
+  verify, RFC 8446 §9.1). Name constraints are the grants' hosts as dNSName subtrees, written
+  critical (RFC 5280 §4.2.1.10). A leaf (`Ca::leaf`, the injector's, step 3) has a key of its
+  own and `serverAuth`.
+- *Its key is made as the process starts, before it confines itself.* AWS-LC's first draw
+  from its random generator opens the VM-generation device (`crypto/ube/vm_ube_detect.c`,
+  `open`) and marks a page `MADV_WIPEONFORK` (`crypto/ube/fork_ube_detect.c`), once per
+  process. The network process's seccomp filter allows neither, and ends the process at any
+  call it does not allow (`confine.rs`, `SECCOMP_RET_KILL_PROCESS`). So the key comes first,
+  and only for a run its spawner says has grants: a run with none makes no key and pays
+  nothing. Every later draw reads what that first one set up.
+- *Validity.* From 1970-01-01T00:00:00Z to 99991231235959Z, for the CA and its leaves. The
+  first is the Unix epoch, the earliest time every harness's TLS stack reads in a
+  certificate: rustls-webpki 0.103.16 refuses earlier ones as a bad time ("We don't support
+  dates before January 1, 1970", `time.rs`). This slice's own unit test found it, as a leaf
+  from 1950 came back `BadEncoding`. The second is RFC 5280's value of no well-defined end
+  (§4.1.2.5). No clock a guest may read falls outside the range, and the key, which dies with
+  the process, bounds the life of what it signs instead of a date.
+- *Literals.* Kind 97 is a sequence number (94 and 95 went first to D247's `RATE` and
+  `RATED`, 96 to D238's `EXEC_UNSTARTED`). The grants' length fields, two bytes for a reference and one for a host, hold
+  every reference a store names (kiln-seams `NAME_MAX`, 512) and every DNS name (255, RFC
+  1035 §2.3.4); a longer one is refused, typed. P-256,
+  `pathLenConstraint` 0 and the validity bounds are as cited above. No learned value enters
+  this slice.
+- *Tests (macOS arm64).* `shards_net::ca`: a leaf holds for a granted host alone, refused for
+  `evil.example`, `anthropic.com` and `chatgpt.com.evil.example` (rustls' verifier trusting
+  the CA alone); the validity bounds as written; no CA of no host. `shards_net`: the grants'
+  codec round-trips and refuses a cut payload, a grant toward no host and an over-long name;
+  `reaches` by name and by TCP port. `api_run`: grants reach the network process by
+  reference, refused toward an unreached host, toward none, or with no egress.
+- *Owed (ROOT).* A run with a credential grant on KVM x86_64, under the seccomp filter: its
+  network process makes its CA and serves, not ended by SIGSYS, and the run host logs the
+  CA's SHA-256. The cost of the key at the network process's start, measured (unmeasured
+  here). The CA reaching the granted members' trust is the next slice.
 
 **Owed (later slices of step 33, this plan's steps 2–10).** The per-VM CA in the network
 process and the granted members' trust (step 2); the injector that terminates TLS and fills
@@ -24668,11 +24812,12 @@ words were lost. Hex's image_real found a run's exit wrong on a real KVM node (H
 `/bin/sh -c 'exit 3'`, where `shards run --rm --network none` of the same image and command
 exits 3; the Hex lead's notes, 2026-11-13).
 
-**Decided.** `api_run::run_end(failed, done)`: the link's failure first; a `DONE` of a status
-alone is `Exited(status)`; a status followed by words is `Failed("its command never started
-(status N): WORDS")`; no `DONE` is a failure, as before. The words are the mark: warm.rs
-writes them only for a command that never ran (`not_run`), and the daemon takes them where
-its run never started. No wire change: `RunEnd::Failed` is "its VM, its host or its guest
+**Decided.** `api_run::run_end(failed, done, started)`: the link's failure first; a `DONE`
+whose status words follow, where its guest never said `STARTED`, is `Failed("its command never
+started (status N): WORDS")`; any other `DONE` is `Exited(status)`; no `DONE` is a failure, as
+before. That is the daemon's reading (`run_ended`): warm.rs writes the words only for a
+command that never ran (`not_run`), and `STARTED` says it ran (ipc's `kind::DONE`,
+`kind::STARTED`); the Hex lead's draft made the run host track `STARTED` as the daemon does. No wire change: `RunEnd::Failed` is "its VM, its host or its guest
 failed". Whether HEX-IMG-3's command started is not known here: if it did not, its run now
 fails saying why, and that cause is its own fix.
 
@@ -24683,13 +24828,73 @@ fails saying why, and that cause is its own fix.
 adas-mac-studio.local (Darwin 25.2.0 arm64, rustc 1.98.1), `cargo test -p shards --bin shards
 -- api_run::`: with the run's end composed as `follow` composed it (`DONE`'s first byte alone),
 14 passed and that test failed ("a command that never started ended its run as Exited(128)");
-as built, 15 passed. Clippy for shards, all targets, `-D warnings`: clean.
+as built, 15 passed. Clippy for shards, all targets, `-D warnings`: clean. Its `STARTED` case
+(the Hex lead's): with the words taken whether or not the guest said `STARTED`, as first
+landed (f176b3e61), 15 passed and that test failed (`Failed(…)` where `Exited(128)` was
+expected); as built, passed.
 
 **Evidence owed** (ROOT, real VMs). Hex's image_real (HEX-IMG-3) on KVM once Hex vendors this,
 and `cargo test -p shards --profile test-release --test api_image` on a KVM host.
 
 **What would falsify it.** A run whose command started ending `Failed` for its `DONE`, or one
 whose command never started ending `Exited`.
+
+### D250. An orchestrator's run keeps the network its image links its members to, letting nothing past that the request does not keep (built; real-VM validation owed)
+
+**Why.** D231's run host gave a run a network only where the request kept something past the
+microVM or published a port. A request keeping nothing past it (Hex's image class's default:
+`Keep::Only([])` for egress, remote MCP servers and destinations, no DNS) of an image whose
+members are granted what lies past it (a harness and its provider) then ran with no network,
+which the image's own check refuses (`Agentfile::refuse`, "cannot run without a network",
+D59): Hex's image_real had Codex refused so on a real KVM node (the Hex lead, 2026-11-13).
+That check holds a fact of the guest's: init links each member as the image's
+`/.agentfile.json` grants it, whatever a request keeps (crates/init `netplan::plan`), and a
+member granted egress, ingress, names or DNS is linked through eth0 (`domains::switch`), which
+a microVM with no network has not: init kills it, "its link: the microVM has no address for
+its agents' egress".
+
+**Alternatives** (R02).
+- *Check the run against the grants the request keeps* (the Hex lead's first draft): the
+  refusal goes, the microVM boots with no NIC, and init kills each member linked past it, as
+  above. Not taken.
+- *Tell init the narrowing, so that it links no member past the microVM*: a setup entry and a
+  change to init's netplan, where every other narrowing is the network process's (D231, D236,
+  D246), and a guest older than its run host would link them all the same. Not taken.
+- *Keep the network, its network process at DenyAll* (taken; the Hex lead's goal 12 found the
+  same): the run host starts the network process at `Policy::DenyAll` ("a VM without
+  grants") and tells it a policy only where the request keeps something (`tell_net`,
+  `NET_POLICY`), so the members are linked as their image grants and nothing passes the
+  microVM that the request does not keep, as a run that only publishes has it today. Its cost
+  is a NIC and a network process for such a run (unmeasured).
+
+**Decided.** `api_run::network` decides the run's network and its policy, `plan`'s whole
+sequence: the grants as the request narrows them (`egress`), each member held apart where
+asked (`held_apart`), a bridge where something is kept or the image links its members past the
+microVM (`Agentfile::linked_past`: it grants them what lies past it, or their flows cross
+init's namespace to eth0, D59), then `Agentfile::refuse`, whose `--network none` refusal takes
+`linked_past` too, one rule for both. No wire change.
+
+**Literals.** None.
+
+**Tests** (unit, one macOS arm64 host).
+`api_run::tests::a_run_keeping_nothing_past_the_microvm_has_its_members_network_and_no_policy`
+(the Hex lead's: nothing kept of an image granting its harness egress and DNS, on a bridge
+with no policy; kept whole, on a bridge with the image's policy; an image granting nothing, on
+none). Red/green on adas-mac-studio.local (Darwin 25.2.0 arm64, rustc 1.98.1), `cargo test -p
+shards --bin shards -- api_run::`: with the network decided as `plan` decided it (a bridge only
+where something is kept), 15 passed and that test failed, refused "cannot run without a
+network: the image's Agentfile grants its agents what lies past the microVM, and --network
+none gives the microVM none"; as built, `api_run::` and `agentfile::` 24 passed. Clippy for
+shards and shards-api, all targets, `-D warnings`: clean. Real VMs, committed unrun:
+`api_image::a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs` (the Hex
+lead's).
+
+**Evidence owed** (ROOT, real VMs). `cargo test -p shards --profile test-release --test
+api_image a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs` on KVM, HVF and
+WHP; Hex's image_real with a box of no grants once Hex vendors this.
+
+**What would falsify it.** A member of such a run reaching anything past the microVM (then a
+network process told no policy is not at `DenyAll`), or one killed for its link.
 
 ## 4. Start path (≤ 5 ms budget)
 

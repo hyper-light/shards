@@ -34,7 +34,8 @@ speculative abstraction (R05).
 | The daemon's endpoint per run: `shards.control=true`, a key per run, `control`/`vm` metadata, revoked with the run's scope | built, goal #58's plan step 3 | `daemon::managed::{CONTROL_ANNOTATION, control_asked, bind_agent, Agent}` |
 | Exec lanes, the endpoint's side (design (B)): the ask, its streams, its host's start and replies, its steering, its exit | built, goal #58's plan step 4 slice (a) | `control::exec`, `net::Io::limit` |
 | The controller's execs: `Execs::exec`, the exec's stdio as `Output`/`Input`, `ExecControl` (resize, signal, wait) | built, goal #58's plan step 4 slice (b) | `control::{Execs, Exec, ExecControl}` |
-| The exec host in the daemon; signal, inspect, terminal and log lanes | goal #58's plan steps 4 (c) to 7 | — |
+| The daemon's exec host: an exec charged to the run's budget, run in its member through its VM process, its start typed (`EXEC_TOLD`), its stdio pumped, its steering passed on, hung up as its controller goes | built, goal #58's plan step 4 slice (c) | `daemon::managed::execs`, `Daemon::{launch_exec, hand_exec}`, `shards_ipc::{EXEC_TOLD, kind::EXEC_UNSTARTED}`, `workload::exec_session`, `control::exec::lane_bytes` |
+| Signal, inspect, terminal and log lanes | goal #58's plan steps 5 to 7 | — |
 | Log lane; where the endpoint runs and how its key's SHA-256 reaches the controller | held for step 10 | — |
 
 ## Decision (R02, R03, R05, R12)
@@ -175,6 +176,19 @@ steering and exit, and one not started); `cargo test -p shards --bin shards --
 daemon::managed::tests` 12 passed; `cargo clippy -p shards-remote -p shards --all-targets -- -D
 warnings` clean.
 
+The daemon's exec host, the same host (adas-mac-studio.local, macOS 26.2 arm64, rustc 1.98.1),
+on `fe353a203` with the change applied, `SHARDS_HELPERS=skip` and placeholder guest binaries:
+`cargo test -p shards-remote --lib control::` 33 passed; `cargo test -p shards --bin shards --
+daemon::managed` 31 passed, 6 ignored (ROOT's native fixtures), the four new among them (the exec
+host through the run's endpoint and a stand-in VM process; a member's exec takes its command and
+stdio alone; a guest's refusal typed by its class; a pipe's buffer measured or bounded); `cargo
+test -p shards-vm-process --bin shards-vm -- workload::tests::a_told_exec` 1 passed; `cargo clippy
+-p shards-ipc -p shards-remote -p shards -p shards-vm-process --all-targets -- -D warnings` clean;
+rustfmt clean. Again on the tree that lands, origin/main `f8d5a4913` with the change merged (its
+kind `EXEC_UNSTARTED` 96, as D247 took 94 and 95), the same host: `control::` 33 passed; `cargo
+test -p shards --bin shards -- daemon::managed daemon::health` 38 passed, 6 ignored (health.rs's
+`send_exec`, split for the host, among them); `a_told_exec` 1 passed; the same clippy clean.
+
 ## R01–R16
 
 | Rule | Evidence / gap |
@@ -201,3 +215,11 @@ warnings` clean.
 - The plan of the rest is kiln plan `01a1d2c733ea7731bb3204cad78bc94d`: the controller's side of the stdio lanes (attach is step 5's subscriptions, so these lanes are attach's), the endpoint where step 10 puts it, exec lanes on step 6's member exec, member signal and inspect, a member's own terminal, the log lane.
 - ROOT's: every real-VM run, R14's costs (handshake CPU, per-VM memory, allocations), the
   adversarial campaign (floods, slow readers, hostile frames).
+- The exec host's real-VM run, ROOT's: no E2E drives a run's agent-control endpoint yet. Its place
+  is `crates/shards/tests/managed_output.rs` (Linux; a submodule beside `member_stdin.rs`): a run
+  started with `--annotation shards.control=true`, its controller dialed at the metadata's
+  `control` and `vm` lines with the home's key, an exec in the harness member (stdin echoed, an
+  exit status, a terminal resized and `stty size` read back, a signal), and one refused by a
+  member that has ended. Its macOS, Windows and aarch64 runs with it; the slice's guard
+  mutations (`member_spec`'s refusal, `EXEC_TOLD`'s `STARTED`, the pump's buffer before its
+  record), R15 excluding them from an implementer.

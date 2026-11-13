@@ -8,6 +8,7 @@
 //! Sandbox) is still to be built (architecture.md D31).
 
 pub mod bridge;
+pub mod ca;
 #[cfg(target_os = "linux")]
 pub mod confine;
 #[cfg(windows)]
@@ -129,6 +130,76 @@ pub fn encode_policy(ports: &Ports, named: &[(String, u16)], dns_all: bool) -> V
         out.extend_from_slice(host.as_bytes());
     }
     out
+}
+
+/// A run's credential grant as its network process holds it (D242): a credential named by
+/// reference (a secret's path in the orchestrator's store, never a value) and the hosts it
+/// may be filled in toward, each a DNS name, lowered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grant {
+    pub reference: String,
+    pub toward: Vec<String>,
+}
+
+/// `NET_CREDENTIALS`'s payload: each grant as its reference's length (two bytes, network
+/// order) and the reference, its hosts' count (two bytes) and each host as its length's
+/// byte and the name. None where a reference passes 65535 bytes, or a name 255, which no DNS
+/// name does (RFC 1035 §2.3.4, 255) and no store's reference (kiln-seams' NAME_MAX, 512).
+pub fn encode_grants(grants: &[Grant]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    for g in grants {
+        out.extend_from_slice(&u16::try_from(g.reference.len()).ok()?.to_be_bytes());
+        out.extend_from_slice(g.reference.as_bytes());
+        out.extend_from_slice(&u16::try_from(g.toward.len()).ok()?.to_be_bytes());
+        for host in &g.toward {
+            out.push(u8::try_from(host.len()).ok()?);
+            out.extend_from_slice(host.as_bytes());
+        }
+    }
+    Some(out)
+}
+
+/// What [`encode_grants`] wrote; None for a malformed payload, or one of a grant toward no
+/// host, which could never be filled.
+pub fn decode_grants(mut bytes: &[u8]) -> Option<Vec<Grant>> {
+    let mut grants = Vec::new();
+    while !bytes.is_empty() {
+        let (len, rest) = bytes.split_first_chunk::<2>()?;
+        let (reference, rest) = rest.split_at_checked(usize::from(u16::from_be_bytes(*len)))?;
+        let (count, mut rest) = rest.split_first_chunk::<2>()?;
+        let mut toward = Vec::new();
+        for _ in 0..u16::from_be_bytes(*count) {
+            let (&len, after) = rest.split_first()?;
+            let (name, after) = after.split_at_checked(usize::from(len))?;
+            toward.push(String::from_utf8(name.to_vec()).ok()?);
+            rest = after;
+        }
+        if toward.is_empty() {
+            return None;
+        }
+        grants.push(Grant {
+            reference: String::from_utf8(reference.to_vec()).ok()?,
+            toward,
+        });
+        bytes = rest;
+    }
+    Some(grants)
+}
+
+/// A run's credentials as its network process holds them (D242): its grants, and its CA,
+/// made for their hosts alone. No value: a value comes by lease, as a request needs it.
+#[derive(Debug)]
+pub struct Credentials {
+    pub grants: Vec<Grant>,
+    pub ca: ca::Ca,
+}
+
+/// Whether a flow to `host` may leave the microVM under an Agentfile's egress grants (D59,
+/// D236), so a credential could be filled in toward it (D242): a destination its grants
+/// name, or any host on a TCP port they open.
+pub fn reaches(ports: &Ports, named: &[(String, u16)], host: &str) -> bool {
+    named.iter().any(|(name, _)| name.eq_ignore_ascii_case(host))
+        || ports.0.iter().any(|(proto, _, _)| *proto == Proto::Tcp)
 }
 
 /// A policy as `NET_POLICY` carries it: the ports, the names granted with their ports, and
@@ -753,6 +824,11 @@ struct Stack<'r> {
     /// Whether the process is held to an Agentfile's TCP ports already (D31, `NET_POLICY`).
     #[cfg(target_os = "linux")]
     ports_confined: bool,
+    /// The run's CA's key, made before the process confined itself, where its spawner said
+    /// the run has credential grants ([`ca::Key`]); taken as the grants come.
+    credential_key: Option<ca::Key>,
+    /// The run's credential grants and its CA, once given (`NET_CREDENTIALS`, D242).
+    credentials: Option<Credentials>,
     /// The spawner's dialer (Windows, dial.rs), and what the poller waits on it for.
     #[cfg(windows)]
     dialer: Option<Dialer>,
@@ -903,6 +979,7 @@ impl Control {
                     | shards_ipc::kind::NET_PEER
                     | shards_ipc::kind::NET_NAMES
                     | shards_ipc::kind::NET_POLICY
+                    | shards_ipc::kind::NET_CREDENTIALS
             ),
             Control::Release => kind == shards_ipc::kind::UNPUBLISH,
         }
@@ -922,6 +999,7 @@ pub fn serve(
     #[cfg(windows)] vm: std::os::windows::io::OwnedHandle,
     #[cfg(windows)] dialer: Option<Dialer>,
     cfg: Config,
+    credential_key: Option<ca::Key>,
     controls: Vec<(Control, UnixStream)>,
 ) -> io::Result<()> {
     // Each control socket keeps its place, a token's index, until it hangs up.
@@ -967,6 +1045,8 @@ pub fn serve(
         names: None,
         #[cfg(target_os = "linux")]
         ports_confined: false,
+        credential_key,
+        credentials: None,
         #[cfg(windows)]
         dialer,
         #[cfg(windows)]
@@ -1214,6 +1294,38 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             stack.cfg.named = named;
             stack.cfg.dns_all = dns_all;
             answer(sock, shards_ipc::kind::NET_POLICY)
+        } else if m.kind == shards_ipc::kind::NET_CREDENTIALS {
+            // The run's credential grants (D242), once, after its policy: each host one its
+            // egress grants name (D236), checked again here as its run host checked it
+            // (D109), as a grant toward a host the run cannot reach could never be filled.
+            let Some(grants) = decode_grants(&m.payload) else {
+                return Err(malformed());
+            };
+            let reached = |host: &str| match &stack.cfg.policy {
+                Policy::AllowAll | Policy::Host => true,
+                Policy::Ports(ports) => reaches(ports, &stack.cfg.named, host),
+                Policy::DenyAll | Policy::Proxy { .. } => false,
+            };
+            if stack.credentials.is_some()
+                || grants.is_empty()
+                || !grants.iter().flat_map(|g| &g.toward).all(|h| reached(h))
+            {
+                return Err(malformed());
+            }
+            // Its key, made as the process started, where its spawner said it would come.
+            let Some(key) = stack.credential_key.take() else {
+                return Err(malformed());
+            };
+            let mut hosts: Vec<&str> = grants
+                .iter()
+                .flat_map(|g| g.toward.iter().map(String::as_str))
+                .collect();
+            hosts.sort_unstable();
+            hosts.dedup();
+            let ca = ca::Ca::new(key, &hosts).map_err(io::Error::other)?;
+            let der = ca.der().to_vec();
+            stack.credentials = Some(Credentials { grants, ca });
+            reply(sock, shards_ipc::kind::NET_CREDENTIALS, &der)
         } else if m.kind == shards_ipc::kind::NET_LINK_LOCAL {
             let Some(addresses) = decode_addresses(&m.payload) else {
                 return Err(malformed());
@@ -1250,10 +1362,15 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
 
 /// Answers a control message of `kind`, with nothing more: that it was taken.
 fn answer(sock: &UnixStream, kind: u8) -> io::Result<()> {
+    reply(sock, kind, &[])
+}
+
+/// Answers a control message of `kind` with `payload`.
+fn reply(sock: &UnixStream, kind: u8, payload: &[u8]) -> io::Result<()> {
     #[cfg(unix)]
-    return shards_ipc::send(sock, kind, &[], &[]);
+    return shards_ipc::send(sock, kind, payload, &[]);
     #[cfg(windows)]
-    return shards_ipc::write_message(sock, kind, &[]);
+    return shards_ipc::write_message(sock, kind, payload);
 }
 
 /// Takes the guest's frames from the ring, `frames` of them at most, until it is empty or
@@ -2533,6 +2650,53 @@ impl<'r> Stack<'r> {
 mod tests {
     use super::*;
 
+    /// The run's credential grants ride `NET_CREDENTIALS` by reference, never a value, and
+    /// read back as written; a grant toward no host, which could never be filled, a payload
+    /// cut short, and a name no DNS name is long enough to be are refused.
+    #[test]
+    fn credential_grants_round_trip() {
+        let grants = vec![
+            Grant {
+                reference: "anthropic/claude-max".into(),
+                toward: vec!["api.anthropic.com".into(), "platform.claude.com".into()],
+            },
+            Grant {
+                reference: "openai/chatgpt".into(),
+                toward: vec!["chatgpt.com".into()],
+            },
+        ];
+        let bytes = encode_grants(&grants).unwrap();
+        assert_eq!(decode_grants(&bytes), Some(grants));
+        assert_eq!(
+            decode_grants(&bytes[..bytes.len() - 1]),
+            None,
+            "a host cut short was read"
+        );
+        assert_eq!(decode_grants(&bytes[..3]), None, "a reference cut short was read");
+        let toward_none = encode_grants(&[Grant {
+            reference: "x".into(),
+            toward: Vec::new(),
+        }])
+        .unwrap();
+        assert_eq!(decode_grants(&toward_none), None);
+        let long = Grant {
+            reference: "x".into(),
+            toward: vec!["a".repeat(256)],
+        };
+        assert_eq!(encode_grants(&[long]), None);
+    }
+
+    /// A credential may be filled in toward a host its egress grants reach (D242): one they
+    /// name, in any case, or any host on a TCP port they open; never one past them.
+    #[test]
+    fn a_credential_reaches_what_egress_grants_reach() {
+        let named = vec![("api.anthropic.com".to_string(), 443)];
+        assert!(reaches(&Ports::default(), &named, "API.anthropic.com"));
+        assert!(!reaches(&Ports::default(), &named, "chatgpt.com"));
+        assert!(reaches(&Ports(vec![(Proto::Tcp, 443, 443)]), &[], "chatgpt.com"));
+        assert!(!reaches(&Ports(vec![(Proto::Udp, 53, 53)]), &[], "chatgpt.com"));
+    }
+
     /// The ports the network process is held to: the grants' TCP ports and the named
     /// servers', and where names may be resolved, the port of the resolver it asks, the
     /// host's 53 or another (`SHARDS_DNS`); none where no name may be.
@@ -2615,6 +2779,8 @@ mod tests {
             names: None,
             #[cfg(target_os = "linux")]
             ports_confined: false,
+            credential_key: None,
+            credentials: None,
             #[cfg(windows)]
             dialer: None,
             #[cfg(windows)]
@@ -3477,6 +3643,7 @@ mod tests {
                     net_waits,
                     net_rings,
                     cfg,
+                    None,
                     vec![(Control::Daemon, daemons), (Control::Release, vms)],
                 )
             });
@@ -3555,6 +3722,7 @@ mod tests {
                     net_waits,
                     net_rings,
                     cfg,
+                    None,
                     vec![(Control::Daemon, daemons), (Control::Release, vms)],
                 )
             });

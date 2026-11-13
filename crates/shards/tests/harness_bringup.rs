@@ -193,7 +193,9 @@ fn bring_up(case: &Case<'_>) -> Option<Seen> {
     ]);
     save("build.log", built.to_string().as_bytes());
     assert_eq!(built.status, Some(0), "{built}");
-    let mut args = vec!["run", "vm", "-d"];
+    // Its owner reads the harness's output (D240): the daemon drains none of it.
+    let owned = format!("shards.output=harness:{name}");
+    let mut args = vec!["run", "vm", "-d", "--annotation", &owned];
     args.extend(case.run.iter().map(String::as_str));
     args.extend(["--name", name, &image, "sleep", "600"]);
     let started = shards(&args);
