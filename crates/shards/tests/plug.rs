@@ -305,7 +305,109 @@ fn a_host_edit_wakes_a_watch_in_the_guest() {
         let left: Vec<_> = std::fs::read_dir(dir).unwrap().collect();
         assert!(left.is_empty(), "{at}: {left:?}");
     }
+    // Each share process's servers were told how many events the guest's inotify holds, by
+    // the built-in its run's start and its plug started: its line in the daemon's log.
+    let started = std::time::Instant::now();
+    let told = loop {
+        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+        let told: Vec<String> = log
+            .lines()
+            .filter_map(|l| l.split("notice: ").nth(1))
+            .filter(|l| {
+                l.contains(": the guest's inotify holds ") && l.ends_with(" us after its run started")
+            })
+            .filter_map(|l| l.split(':').next())
+            .map(str::to_string)
+            .collect();
+        if told.len() >= 2 || started.elapsed() > PATIENCE {
+            break told;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(told.iter().any(|t| t == "shards0,shards1"), "{told:?}");
+    assert!(told.iter().any(|t| t.starts_with("shards-plug")), "{told:?}");
     shards(&["rm"], &["-f", "noticed"]);
+}
+
+/// How long a run's shares' cold start lasts (D235), as its guest sees it: from its run's
+/// start, after which what runs in it may watch, until its NOTICE built-in has told each
+/// share's server how many events its inotify holds, before which the share process lets no
+/// more changes wait than the nodes the guest holds. The built-in says it in the daemon's
+/// log; `SHARDS_NOTICE_COLD` runs (50 by default), each started, its line read, then
+/// removed. Prints n, p50, p90, p99 and max, then each sample, in milliseconds. A
+/// measurement: docs/research/measurements/s8-notices/run.sh runs it.
+#[test]
+#[ignore = "a measurement, run by docs/research/measurements/s8-notices/run.sh"]
+fn notices_cold_start() {
+    if cannot_run_vms() {
+        return;
+    }
+    const PATIENCE: Duration = Duration::from_secs(60);
+    let runs: usize = std::env::var("SHARDS_NOTICE_COLD")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(50);
+    let (image, _) = served();
+    let home = TempDir::new("notice-cold");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let files = TempDir::new("notice-cold-files");
+    let bind = format!("{}:/w", files.display());
+    // The microseconds each of the built-ins said, in the daemon's log, in order.
+    let said = || -> Vec<f64> {
+        std::fs::read_to_string(home.join("daemon.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                l.split(" told ")
+                    .nth(1)?
+                    .strip_suffix(" us after its run started")
+            })
+            .filter_map(|us| us.parse::<f64>().ok())
+            .collect()
+    };
+    let mut took = Vec::with_capacity(runs);
+    for i in 0..runs {
+        let name = format!("cold{i}");
+        let r = run_shards_env(
+            &["run"],
+            &["-d", "--name", &name, "-v", &bind, &image, "sleep"],
+            &env,
+            TIMEOUT,
+        );
+        assert_eq!(r.status, Some(0), "{}", r.stderr);
+        let start = std::time::Instant::now();
+        let us = loop {
+            if let Some(us) = said().get(i) {
+                break *us;
+            }
+            assert!(start.elapsed() < PATIENCE, "run {i}: no built-in said its queue");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        took.push(us / 1e3);
+        let _ = run_shards_env(&["rm"], &["-f", &name], &env, TIMEOUT);
+    }
+    let mut sorted = took.clone();
+    sorted.sort_by(f64::total_cmp);
+    let at = |q: f64| sorted[((q * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len()) - 1];
+    println!(
+        "notices cold start ms: n {} p50 {:.3} p90 {:.3} p99 {:.3} max {:.3}",
+        sorted.len(),
+        at(0.50),
+        at(0.90),
+        at(0.99),
+        sorted[sorted.len() - 1]
+    );
+    println!(
+        "samples ms: {}",
+        took.iter()
+            .map(|t| format!("{t:.3}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
 }
 
 /// How long a host's edit takes to wake a watch in the guest (D235), as its host sees it:

@@ -476,8 +476,8 @@ impl<D: Disk> Daemon<D> {
                 return Err(e);
             }
         };
-        if let Some(pipe) = notices
-            && let Err(e) = self.notice_into(id, pipe)
+        if let Some(notices) = notices
+            && let Err(e) = self.notice_into(id, notices)
         {
             super::log(format!(
                 "container {id}: its guest is told none of {path}'s changes: {e}"
@@ -516,7 +516,7 @@ impl<D: Disk> Daemon<D> {
         read_only: bool,
         tag: &str,
         whom: Whom<'_>,
-    ) -> Result<(String, Option<shards_ipc::fd::OwnedFd>), String> {
+    ) -> Result<(String, Option<crate::share::Notices>), String> {
         use shards_ipc::fd::AsFd as _;
         // A client's directory is its own, served from it (D228): the VM is given the stream
         // its client serves it on, as a run's share of it is, and no share process serves it

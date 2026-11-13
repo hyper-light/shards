@@ -173,9 +173,13 @@ type ShareEnds = UnixStream;
 type ShareEnds = Vec<OwnedFd>;
 
 /// What a share process's start gives on Windows (D197): each share's VM end, the process
-/// where one serves any of them, and the pipe it tells what its host changes on (D235).
+/// where one serves any of them, and its notices of what its host changes (D235).
 #[cfg(windows)]
-type StartedShares = (ShareEnds, Option<Arc<shards_ipc::Child>>, Option<OwnedFd>);
+type StartedShares = (
+    ShareEnds,
+    Option<Arc<shards_ipc::Child>>,
+    Option<crate::share::Notices>,
+);
 
 /// A microVM's join share's door (D119): the daemon's connection to its process, on which
 /// each joiner's link goes; on Windows with that process's handle, which every link of the
@@ -1331,9 +1335,9 @@ struct Daemon<D: Disk = Real> {
     /// go, which NTFS renames no directory beneath (D197).
     shared_by: Mutex<HashMap<String, Vec<Arc<shards_ipc::Child>>>>,
     /// Each microVM's share processes' notices of what their host changes (D235), by its
-    /// ID: the pipes they tell them on, until its run starts, when each is its guest's
-    /// NOTICE built-in's stdin.
-    noticing: Mutex<HashMap<String, Vec<shards_ipc::fd::OwnedFd>>>,
+    /// ID: the pipes they tell them on, and their shares' tags, until its run starts, when
+    /// each pipe is its guest's NOTICE built-in's stdin.
+    noticing: Mutex<HashMap<String, Vec<crate::share::Notices>>>,
     /// Each joiner's link to its microVM's join share, by its ID, with the ID of the
     /// run whose microVM it is: its volumes are served until the link closes, as it
     /// ends.
@@ -4802,7 +4806,11 @@ impl<D: Disk> Daemon<D> {
             .map(|end| end.or_else(|| made.next()))
             .collect::<Option<Vec<_>>>()
             .ok_or("a share's stream was not made")?;
-        Ok((ends, Some(child), notices.map(|(r, _)| OwnedFd::from(r))))
+        let notices = notices.map(|(r, _)| crate::share::Notices {
+            pipe: OwnedFd::from(r),
+            tags: served_tags.iter().map(|t| (*t).to_string()).collect(),
+        });
+        Ok((ends, Some(child), notices))
     }
 
     /// [`start_shares`](Self::start_shares)'s process, for `dirs`, some.
@@ -4814,7 +4822,7 @@ impl<D: Disk> Daemon<D> {
         parent: &str,
         moved: bool,
         tags: Option<&[String]>,
-    ) -> Result<(UnixStream, Arc<shards_ipc::Child>, Option<OwnedFd>), String> {
+    ) -> Result<(UnixStream, Arc<shards_ipc::Child>, Option<crate::share::Notices>), String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let (vm, share) = UnixStream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
@@ -4857,7 +4865,11 @@ impl<D: Disk> Daemon<D> {
         let child = shards_ipc::spawn_in_group(self.group_of(parent)?, &exe, &args, &fds, false, &[])
             .map_err(|e| format!("starting the share process: {e}"))?;
         let child = self.follow_share(threads, child);
-        Ok((vm, child, notices.map(|(r, _)| OwnedFd::from(r))))
+        let notices = notices.map(|(r, _)| crate::share::Notices {
+            pipe: OwnedFd::from(r),
+            tags: tags.map(<[String]>::to_vec).unwrap_or_default(),
+        });
+        Ok((vm, child, notices))
     }
 
     /// Container `id` of `run`, with the name the run gave, or one made for it, as dockerd
@@ -6461,8 +6473,8 @@ impl<D: Disk> Daemon<D> {
         inbox.started = true;
         // Its guest told what its host changes in its shares from now on (D235).
         if !inbox.visit {
-            for pipe in lock(&self.noticing).remove(id).unwrap_or_default() {
-                match self.notice_exec(inbox, pipe) {
+            for notices in lock(&self.noticing).remove(id).unwrap_or_default() {
+                match self.notice_exec(inbox, notices) {
                     Ok(told) => inbox.notices.push(told),
                     Err(e) => log(format!(
                         "container {id}: its guest is told none of its shares' changes: {e}"

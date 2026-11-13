@@ -253,6 +253,9 @@ struct State {
     /// its share process tells (D235): none where it tells none.
     #[cfg(target_os = "linux")]
     watching: Option<Watching>,
+    /// The events each of its guest's inotify instances holds, as its notice built-in said
+    /// ([`shards_abi::run::notice::QUEUE_XATTR`], D235): none until it has.
+    guest_queue: Option<u32>,
 }
 
 /// On Linux, the inotify watch of each directory node the guest holds, made as the guest
@@ -767,6 +770,7 @@ impl Server {
                 windowless: false,
                 #[cfg(target_os = "linux")]
                 watching: None,
+                guest_queue: None,
             }),
         })
     }
@@ -998,6 +1002,25 @@ impl Server {
             nodes_of: HashMap::from([(watched, vec![ROOT])]),
         });
         Ok(())
+    }
+
+    /// The events each of its guest's inotify instances holds, as the guest's notice
+    /// built-in said (D235): none until it has.
+    pub fn guest_queue(&self) -> Option<u32> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .guest_queue
+    }
+
+    /// How many of the share's nodes the guest holds: those it has looked up and not yet
+    /// forgotten, its root among them.
+    pub fn held(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .nodes
+            .len()
     }
 
     /// The shared directory's path on its host now, which its host's watcher names what
@@ -1372,6 +1395,10 @@ impl Server {
             // root, or a file bound alone's directory, takes nothing else.
             op::SETXATTR if owner_control(body).is_some() => {
                 set_default_owner(&mut state, nodeid, caller, body)
+            }
+            // The notice built-in's word of how many events its guest's inotify holds.
+            op::SETXATTR if queue_control(body).is_some() => {
+                set_guest_queue(&mut state, nodeid, caller, body)
             }
             // A notice of its host's (D235): the file as it is, nothing changed.
             _ if noticing(caller) => match self.confined(&state, opcode, nodeid, body) {
@@ -2309,6 +2336,36 @@ fn set_default_owner(s: &mut State, nodeid: u64, caller: (u32, u32), body: &[u8]
     } else {
         return Err(EINVAL);
     }
+    Ok(())
+}
+
+/// A SETXATTR's value where it names [`shards_abi::run::notice::QUEUE_XATTR`]: none for any
+/// other attribute.
+fn queue_control(body: &[u8]) -> Option<&[u8]> {
+    let mut a = Args(body);
+    let size = a.u32().ok()?;
+    let _flags = a.u32().ok()?;
+    let name = a.cstr().ok()?;
+    if name.to_bytes() != shards_abi::run::notice::QUEUE_XATTR.as_bytes() {
+        return None;
+    }
+    a.rest().get(..usize::try_from(size).ok()?)
+}
+
+/// The notice built-in's word (D235): how many events each of its guest's inotify
+/// instances holds, which bounds what of its host's changes waits to be told. Taken of the
+/// built-in alone ([`noticing`]: anyone else EPERM), on the share's root (any other node
+/// EINVAL), as decimal digits within a C `int` (else EINVAL); kept on no file. Said again,
+/// its last word holds.
+fn set_guest_queue(s: &mut State, nodeid: u64, caller: (u32, u32), body: &[u8]) -> Result<(), Errno> {
+    let value = queue_control(body).ok_or(EINVAL)?;
+    if !noticing(caller) {
+        return Err(EPERM);
+    }
+    if nodeid != ROOT {
+        return Err(EINVAL);
+    }
+    s.guest_queue = Some(shards_abi::run::notice::parse_queue(value).map_err(|_| EINVAL)?);
     Ok(())
 }
 
@@ -4065,6 +4122,55 @@ mod tests {
             let (e, _) = answer(&s, &req(op::SETATTR, f, 0, &touch));
             assert_eq!(e, if read_only { -EROFS } else { 0 });
             assert_eq!(modified() != old, !read_only);
+        }
+    }
+
+    /// The notice built-in's word of how many events its guest's inotify holds (D235):
+    /// taken on the share's root of the built-in alone, its last word holding, and nothing
+    /// of it kept on the host; refused of anyone else (EPERM), on any other node, or past
+    /// what the sysctl holds (EINVAL), each leaving what was said before.
+    #[test]
+    fn the_guests_queue_is_taken_of_the_notice_built_in_alone() {
+        let (p, s) = dir();
+        std::fs::create_dir(p.join("d")).unwrap();
+        let word = |value: &[u8]| {
+            let mut b = Vec::new();
+            b.extend_from_slice(&u32::try_from(value.len()).unwrap().to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.extend(name(shards_abi::run::notice::QUEUE_XATTR));
+            b.extend_from_slice(value);
+            b
+        };
+        assert_eq!(s.guest_queue(), None);
+        assert_eq!(answer(&s, &notice_req(op::SETXATTR, ROOT, &word(b"16384"))).0, 0);
+        assert_eq!(s.guest_queue(), Some(16384));
+        assert_eq!(answer(&s, &notice_req(op::SETXATTR, ROOT, &word(b"512"))).0, 0);
+        assert_eq!(s.guest_queue(), Some(512));
+        let (e, entry) = answer(&s, &notice_req(op::LOOKUP, ROOT, &name("d")));
+        assert_eq!(e, 0);
+        let d = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        for (request, refused) in [
+            (req(op::SETXATTR, ROOT, 0, &word(b"64")), -EPERM),
+            (req(op::SETXATTR, ROOT, 1000, &word(b"64")), -EPERM),
+            (notice_req(op::SETXATTR, d, &word(b"64")), -EINVAL),
+            (notice_req(op::SETXATTR, ROOT, &word(b"-1")), -EINVAL),
+            (notice_req(op::SETXATTR, ROOT, &word(b"2147483648")), -EINVAL),
+            (notice_req(op::SETXATTR, ROOT, &word(b"")), -EINVAL),
+        ] {
+            assert_eq!(answer(&s, &request).0, refused);
+            assert_eq!(s.guest_queue(), Some(512));
+        }
+        // Kept on no file of the host's: no name of it listed, by the guest's names.
+        let mut list = Vec::new();
+        list.extend_from_slice(&65536u32.to_le_bytes());
+        list.extend_from_slice(&0u32.to_le_bytes());
+        for node in [ROOT, d] {
+            let (e, names) = answer(&s, &req(op::LISTXATTR, node, 0, &list));
+            assert_eq!(e, 0);
+            assert!(
+                !names.windows(b"notice-queue".len()).any(|w| w == b"notice-queue"),
+                "{names:?}"
+            );
         }
     }
 

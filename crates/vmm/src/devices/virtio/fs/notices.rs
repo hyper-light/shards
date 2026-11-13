@@ -20,11 +20,43 @@ use std::sync::{Condvar, Mutex, PoisonError};
 
 use super::server::Server;
 
-/// The most changes waiting to be told: Linux's default queue of an inotify instance
-/// (`fs.inotify.max_queued_events`, 16384; fs/notify/inotify/inotify_user.c), past which
-/// the guest's own watcher would be told only that it lost events (`IN_Q_OVERFLOW`), so
-/// that a change past it is told by its directory, which a watcher reads again whole.
-pub const MOST: usize = 16384;
+/// How many of a share's changes may wait to be told before the next waits as a directory,
+/// by what its guest said its inotify holds (its server's
+/// [`guest_queue`](Server::guest_queue)). Past them, a change waits as its nearest waiting
+/// directory, else its share's root, which a watcher there reads again whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bound {
+    /// Its guest has not said yet: the cold start, from its share process's start until
+    /// the guest's notice built-in has. As many wait as nodes the guest holds of the share
+    /// ([`Server::held`]), each of which its server keeps an entry for already, so that
+    /// what waits is never more than what the guest holds and a root a share; and the few
+    /// changes of a run just started each wait as themselves.
+    Untold { held: usize },
+    /// Its guest's instances each hold this many events: as many changes wait as one holds
+    /// the touches of ([`shards_abi::run::notice::most_waiting`]), where a watcher would
+    /// otherwise be told only that it lost events (`IN_Q_OVERFLOW`).
+    Told(u32),
+}
+
+impl Bound {
+    /// What `server`'s guest has said, or what it holds where it has said nothing.
+    pub fn of(server: &Server) -> Bound {
+        match server.guest_queue() {
+            Some(queue) => Bound::Told(queue),
+            None => Bound::Untold { held: server.held() },
+        }
+    }
+
+    /// How many changes may wait.
+    fn most(self) -> usize {
+        match self {
+            Bound::Untold { held } => held,
+            Bound::Told(queue) => {
+                usize::try_from(shards_abi::run::notice::most_waiting(queue)).unwrap_or(usize::MAX)
+            }
+        }
+    }
+}
 
 /// The changes waiting to be told, each share's paths, each once, in the order first seen;
 /// each share named in its records as its place among its process's shares says
@@ -53,10 +85,12 @@ impl Pending {
     }
 
     /// Path `path` of share `share` changed: told once, however often it changes before it
-    /// is; past [`MOST`] waiting, its nearest directory that is told or the share's root.
-    pub fn tell(&self, share: u32, mut path: Vec<u8>) {
+    /// is; past what `bound` lets wait, as its nearest directory that is told or the share's
+    /// root.
+    pub fn tell(&self, share: u32, mut path: Vec<u8>, bound: Bound) {
+        let most = bound.most();
         let mut q = self.queued.lock().unwrap_or_else(PoisonError::into_inner);
-        while q.order.len() >= MOST && !path.is_empty() && !q.seen.contains(&(share, path.clone())) {
+        while q.order.len() >= most && !path.is_empty() && !q.seen.contains(&(share, path.clone())) {
             let cut = path.iter().rposition(|&b| b == b'/').unwrap_or(0);
             path.truncate(cut);
         }
@@ -146,7 +180,7 @@ fn told(w: Watched, k: usize, path: Vec<u8>) {
         None => &[][..],
     };
     if server.holds_dir(dir) || server.holds_dir(&path) {
-        w.pending.tell(share, path);
+        w.pending.tell(share, path, Bound::of(server));
     }
 }
 
@@ -170,8 +204,9 @@ mod host {
             .spawn(move || {
                 while let Ok(event) = events.recv() {
                     for (server, &share) in w.servers.iter().zip(w.shares) {
+                        let bound = Bound::of(server);
                         for path in server.noticed(&event) {
-                            w.pending.tell(share, path);
+                            w.pending.tell(share, path, bound);
                         }
                     }
                 }
@@ -347,42 +382,80 @@ mod host {
 mod tests {
     use super::*;
 
-    /// A change is told once however often it changes before it is; past the most waiting,
-    /// by its nearest directory waiting, else by its share's root, once; and records come
-    /// of it.
-    #[test]
-    fn changes_are_told_once_and_within_bounds() {
-        let pending = Pending::new(vec![b"shards0".to_vec(), b"shards-plug1".to_vec()]);
-        pending.tell(0, b"a/b".to_vec());
-        pending.tell(0, b"a/b".to_vec());
-        pending.tell(1, b"a/b".to_vec());
-        let records = pending.take();
-        let mut want = Vec::new();
-        shards_abi::run::notice::encode(b"shards0", b"a/b", &mut want);
-        shards_abi::run::notice::encode(b"shards-plug1", b"a/b", &mut want);
-        assert_eq!(records, want);
-        for n in 0..MOST {
-            pending.tell(0, format!("d/{n}").into_bytes());
-        }
-        pending.tell(0, b"d/7".to_vec());
-        pending.tell(0, b"d/7/new".to_vec());
-        pending.tell(0, b"d/new".to_vec());
-        pending.tell(0, b"e/f/g".to_vec());
-        pending.tell(1, b"e/f/g".to_vec());
+    /// The paths records name, in order.
+    fn paths_of(records: &[u8]) -> Vec<Vec<u8>> {
         let mut paths = Vec::new();
-        let records = pending.take();
-        let mut rest = records.as_slice();
+        let mut rest = records;
         while let shards_abi::run::notice::Decoded::Record { path, rest: r, .. } =
             shards_abi::run::notice::decode(rest)
         {
             paths.push(path.to_vec());
             rest = r;
         }
-        assert_eq!(paths.len(), MOST + 2);
-        // `d/7/new` stood for by `d/7`, waiting; `d/new` and `e/f/g` by the root, once a
+        paths
+    }
+
+    /// A change is told once however often it changes before it is; past what its guest's
+    /// queue holds the touches of, by its nearest directory waiting, else by its share's
+    /// root, once; and records come of it.
+    #[test]
+    fn changes_are_told_once_and_within_bounds() {
+        // A guest's instances of 8 events each: 4 touches' worth.
+        let told = Bound::Told(8);
+        let most = 4;
+        let pending = Pending::new(vec![b"shards0".to_vec(), b"shards-plug1".to_vec()]);
+        pending.tell(0, b"a/b".to_vec(), told);
+        pending.tell(0, b"a/b".to_vec(), told);
+        pending.tell(1, b"a/b".to_vec(), told);
+        let records = pending.take();
+        let mut want = Vec::new();
+        shards_abi::run::notice::encode(b"shards0", b"a/b", &mut want);
+        shards_abi::run::notice::encode(b"shards-plug1", b"a/b", &mut want);
+        assert_eq!(records, want);
+        for n in 0..most {
+            pending.tell(0, format!("d/{n}").into_bytes(), told);
+        }
+        pending.tell(0, b"d/3".to_vec(), told);
+        pending.tell(0, b"d/3/new".to_vec(), told);
+        pending.tell(0, b"d/new".to_vec(), told);
+        pending.tell(0, b"e/f/g".to_vec(), told);
+        pending.tell(1, b"e/f/g".to_vec(), told);
+        let paths = paths_of(&pending.take());
+        assert_eq!(paths.len(), most + 2);
+        // `d/3/new` stood for by `d/3`, waiting; `d/new` and `e/f/g` by the root, once a
         // share.
-        assert_eq!(paths[MOST], Vec::<u8>::new());
-        assert_eq!(paths[MOST + 1], Vec::<u8>::new());
+        assert_eq!(paths[most], Vec::<u8>::new());
+        assert_eq!(paths[most + 1], Vec::<u8>::new());
+        // A guest whose instances hold one event or none: every change by its root.
+        for queue in [0, 1] {
+            pending.tell(0, b"x/y".to_vec(), Bound::Told(queue));
+            pending.tell(0, b"z".to_vec(), Bound::Told(queue));
+            assert_eq!(paths_of(&pending.take()), [Vec::<u8>::new()], "{queue}");
+        }
+    }
+
+    /// Before its guest has said what its inotify holds (the cold start), as many changes
+    /// wait as nodes it holds, the rest as their directories, each once; once it has, as its
+    /// queue holds.
+    #[test]
+    fn before_the_guest_says_as_many_wait_as_nodes_it_holds() {
+        let pending = Pending::new(vec![b"shards0".to_vec()]);
+        let cold = Bound::Untold { held: 2 };
+        for path in ["a/b/f", "a/b/g", "a/c", "top", "a/b/h", ""] {
+            pending.tell(0, path.as_bytes().to_vec(), cold);
+        }
+        // Past them, by the root, once: no directory of theirs waits.
+        assert_eq!(
+            paths_of(&pending.take()),
+            [b"a/b/f".to_vec(), b"a/b/g".to_vec(), Vec::new()]
+        );
+        for path in ["a/b/f", "a/b/g", "a/c"] {
+            pending.tell(0, path.as_bytes().to_vec(), Bound::Told(16384));
+        }
+        assert_eq!(
+            paths_of(&pending.take()),
+            [b"a/b/f".to_vec(), b"a/b/g".to_vec(), b"a/c".to_vec()]
+        );
     }
 
     /// The host's changes beneath a share are told where the guest holds their directory,
@@ -421,9 +494,32 @@ mod tests {
             r.extend_from_slice(body);
             r
         };
+        // Its guest's word of what its inotify holds, as its notice built-in says it
+        // (`NOTICE_ID`): each change then told as itself.
+        let queue = {
+            let mut body = Vec::new();
+            body.extend_from_slice(&5u32.to_le_bytes());
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.extend_from_slice(shards_abi::run::notice::QUEUE_XATTR.as_bytes());
+            body.push(0);
+            body.extend_from_slice(b"16384");
+            let mut r = Vec::new();
+            r.extend_from_slice(&u32::try_from(40 + body.len()).unwrap().to_le_bytes());
+            r.extend_from_slice(&op::SETXATTR.to_le_bytes());
+            r.extend_from_slice(&8u64.to_le_bytes());
+            r.extend_from_slice(&1u64.to_le_bytes());
+            r.extend_from_slice(&0u32.to_le_bytes());
+            r.extend_from_slice(&shards_abi::NOTICE_ID.to_le_bytes());
+            r.extend_from_slice(&[0u8; 8]);
+            r.extend_from_slice(&body);
+            r
+        };
         // Watched as its share process watches it, before its guest asks anything.
         let pending: &'static Pending = Box::leak(Box::new(Pending::new(vec![b"shards0".to_vec()])));
         watch(server, Vec::leak(vec![0]), pending).unwrap();
+        let answered = server[0].handle(&queue).unwrap();
+        assert_eq!(i32::from_le_bytes(answered[4..8].try_into().unwrap()), 0);
+        assert_eq!(server[0].guest_queue(), Some(16384));
         let answered = server[0].handle(&lookup).unwrap();
         assert_eq!(i32::from_le_bytes(answered[4..8].try_into().unwrap()), 0);
         // Written by another process.

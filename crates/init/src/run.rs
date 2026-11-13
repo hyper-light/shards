@@ -50,6 +50,11 @@ fn setup_failed(message: impl Into<String>) -> Failure {
 /// arrives, once a boot, as init serves one run.
 static MEMBER_ENDS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// When the run's workload had started and init said so (`STARTED`), once a boot: from then
+/// on what runs in the guest may watch its shares, which the NOTICE built-in measures its
+/// shares' cold start from (D235, notice.rs).
+pub(crate) static RUN_STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
 /// `page_reporting.flush` (resources/kernel/patches/0005), where the kernel has it: opened
 /// by a template's init before its root is the workload's, whose sysfs is read-only, and
 /// by a builder's before it answers its host's asks to give back (D188); kept for
@@ -285,6 +290,7 @@ pub fn main(device: &str, template: bool) -> ! {
     let (status, reported, conn) = match started {
         Ok(workload) => {
             let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_STARTED);
+            let _ = RUN_STARTED.set(Instant::now());
             let _ = send(&conn, kind::STARTED, &[]);
             workload.relay(conn, signals)
         }
@@ -3766,7 +3772,7 @@ fn builtin(
             let code = match input {
                 Some((r, w)) => {
                     drop(w);
-                    let told = crate::notice::serve(&mut File::from(r), &mut File::from(stdout_w));
+                    let told = crate::notice::serve(&mut File::from(r), &mut File::from(stdout_w), args);
                     match told {
                         Ok(()) => 0,
                         Err(e) => {

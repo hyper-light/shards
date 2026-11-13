@@ -794,9 +794,9 @@ mod hosted {
         door: Stream,
         #[cfg(windows)]
         ends: Vec<OwnedFd>,
-        /// The pipe it tells what its host changes on (D235), until its guest's NOTICE
-        /// built-in is given it.
-        notices: Option<OwnedFd>,
+        /// Its notices of what its host changes (D235), until its guest's NOTICE built-in
+        /// is given them.
+        notices: Option<crate::share::Notices>,
     }
 
     impl Shares {
@@ -1147,7 +1147,8 @@ mod hosted {
         let (door, share) = Stream::pair().map_err(|e| format!("the share process's connection: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
         // Its notices of what its host changes (D235), on a pipe past its others.
-        let told = tags.filter(|t| t.len() == dirs.len()).map(|t| t.join(","));
+        let tags = tags.filter(|t| t.len() == dirs.len());
+        let told = tags.map(|t| t.join(","));
         let notices = match &told {
             Some(told) => {
                 args.extend([OsStr::new(crate::share::NOTICES), OsStr::new(told)]);
@@ -1175,7 +1176,10 @@ mod hosted {
         Ok(Shares {
             child,
             door,
-            notices: notices.map(|(r, _)| OwnedFd::from(r)),
+            notices: notices.map(|(r, _)| crate::share::Notices {
+                pipe: OwnedFd::from(r),
+                tags: tags.map(<[String]>::to_vec).unwrap_or_default(),
+            }),
         })
     }
 
@@ -1206,7 +1210,8 @@ mod hosted {
             .map_err(|e| format!("a share's stream: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
         // Its notices of what its host changes (D235), on a pipe past its others.
-        let told = tags.filter(|t| t.len() == dirs.len()).map(|t| t.join(","));
+        let tags = tags.filter(|t| t.len() == dirs.len());
+        let told = tags.map(|t| t.join(","));
         let notices = match &told {
             Some(told) => {
                 args.extend([OsStr::new(crate::share::NOTICES), OsStr::new(told)]);
@@ -1243,7 +1248,10 @@ mod hosted {
         Ok(Shares {
             child,
             ends: streams.into_iter().map(|(_, vm)| vm).collect(),
-            notices: notices.map(|(r, _)| OwnedFd::from(r)),
+            notices: notices.map(|(r, _)| crate::share::Notices {
+                pipe: OwnedFd::from(r),
+                tags: tags.map(<[String]>::to_vec).unwrap_or_default(),
+            }),
         })
     }
 
@@ -1357,10 +1365,10 @@ mod hosted {
         devices: Mutex<Option<Vec<Asked>>>,
         /// What is plugged into the run's members, by the path it is at.
         plugged: Mutex<HashMap<String, Plugged>>,
-        /// The pipe the run's share process tells what its host changes on (D235), until
-        /// its guest's NOTICE built-in is given it as the run starts; and the streams each
-        /// of those built-ins' ends are told on, held while the run is.
-        notices_due: Mutex<Option<OwnedFd>>,
+        /// The run's share process's notices of what its host changes (D235), until its
+        /// guest's NOTICE built-in is given them as the run starts; and the streams each of
+        /// those built-ins' ends are told on, held while the run is.
+        notices_due: Mutex<Option<crate::share::Notices>>,
         notices: Mutex<Vec<Stream>>,
         /// On Windows the run's job, which each plug's share process is made in too.
         #[cfg(windows)]
@@ -1717,8 +1725,8 @@ mod hosted {
                 status = m.payload.first().copied();
             } else if m.kind == kind::STARTED {
                 // Its guest told what its host changes in its shares from now on (D235).
-                if let Some(pipe) = lock(&live.notices_due).take() {
-                    match notice_exec(live, pipe) {
+                if let Some(notices) = lock(&live.notices_due).take() {
+                    match notice_exec(live, notices) {
                         Ok(told) => lock(&live.notices).push(told),
                         Err(e) => {
                             super::say(format_args!("its guest is told none of its shares' changes: {e}"))
@@ -2218,14 +2226,13 @@ mod hosted {
         })
     }
 
-    /// Starts the guest's NOTICE built-in (D235): its stdin `pipe`, on which a share
-    /// process tells what its host changes, its output this process's stderr; the stream
-    /// its end is told on, to be held while it runs.
-    fn notice_exec(live: &Live<'_>, pipe: OwnedFd) -> Result<Stream, String> {
-        let spec = protocol::Spec {
-            builtin: protocol::builtin::NOTICE,
-            ..Default::default()
-        };
+    /// Starts the guest's NOTICE built-in (D235): its stdin the pipe on which a share
+    /// process tells what its host changes, its arguments the tags of the shares it serves,
+    /// its output this process's stderr; the stream its end is told on, to be held while it
+    /// runs.
+    fn notice_exec(live: &Live<'_>, notices: crate::share::Notices) -> Result<Stream, String> {
+        let spec = notices.spec();
+        let pipe = notices.pipe;
         let (client, theirs) = Stream::pair().map_err(|e| e.to_string())?;
         let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut payload = number.to_be_bytes().to_vec();
@@ -2372,8 +2379,8 @@ mod hosted {
             return Err((R::Device, e));
         }
         // Its guest told what its host changes beneath it from now on (D235).
-        let told = share.notices.take().and_then(|pipe| {
-            notice_exec(live, pipe)
+        let told = share.notices.take().and_then(|notices| {
+            notice_exec(live, notices)
                 .map_err(|e| {
                     super::say(format_args!(
                         "{}: its guest is told none of its changes: {e}",

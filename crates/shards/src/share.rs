@@ -73,6 +73,27 @@ pub(crate) const MOVED: &str = "--moved";
 /// stream; as records its guest's init takes as they are (`run::builtin::NOTICE`).
 pub(crate) const NOTICES: &str = "--notices";
 
+/// What its starter keeps of a share process that tells what its host changes (D235),
+/// until its guest's NOTICE built-in is given it: the pipe it tells them on, and the tags
+/// of the shares it serves, which the built-in, as it starts, tells each server of how
+/// many events the guest's inotify holds (`run::notice::QUEUE_XATTR`).
+#[derive(Debug)]
+pub(crate) struct Notices {
+    pub(crate) pipe: shards_ipc::fd::OwnedFd,
+    pub(crate) tags: Vec<String>,
+}
+
+impl Notices {
+    /// The NOTICE built-in's exec: its arguments the tags.
+    pub(crate) fn spec(&self) -> shards_abi::run::Spec {
+        shards_abi::run::Spec {
+            builtin: shards_abi::run::builtin::NOTICE,
+            argv: self.tags.iter().map(|t| t.as_bytes().to_vec()).collect(),
+            ..Default::default()
+        }
+    }
+}
+
 /// The tags [`NOTICES`] names before the shares, taken out with it: none where it is not
 /// there; an error where it names none.
 fn take_notices(args: &mut Vec<OsString>) -> Result<Option<Vec<Vec<u8>>>, String> {

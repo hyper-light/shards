@@ -484,19 +484,17 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     }
 
     /// Starts the NOTICE built-in of the guest of the run whose inbox is `inbox`, which the
-    /// caller holds (D235): its stdin `pipe`, on which a share process tells what its host
-    /// changes, its output the daemon's log; the connection its end is told on, to be held
-    /// while it runs. Sent as [`send_exec`](Self::send_exec) sends an exec, through the
-    /// inbox itself.
+    /// caller holds (D235): its stdin the pipe on which a share process tells what its host
+    /// changes, its arguments the tags of the shares it serves, its output the daemon's
+    /// log; the connection its end is told on, to be held while it runs. Sent as
+    /// [`send_exec`](Self::send_exec) sends an exec, through the inbox itself.
     pub(super) fn notice_exec(
         &self,
         inbox: &mut super::Inbox,
-        pipe: shards_ipc::fd::OwnedFd,
+        notices: crate::share::Notices,
     ) -> std::io::Result<shards_ipc::Stream> {
-        let spec = shards_abi::run::Spec {
-            builtin: shards_abi::run::builtin::NOTICE,
-            ..Default::default()
-        };
+        let spec = notices.spec();
+        let pipe = notices.pipe;
         let (ours, theirs) = shards_ipc::Stream::pair()?;
         let held = theirs.try_clone()?;
         let handed = shards_ipc::handed(&theirs)?;
@@ -517,13 +515,13 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
     /// [`notice_exec`](Self::notice_exec) of running microVM `id`, its connection held
     /// with its run: a share plugged into it as it runs (D235).
-    pub(super) fn notice_into(&self, id: &str, pipe: shards_ipc::fd::OwnedFd) -> std::io::Result<()> {
+    pub(super) fn notice_into(&self, id: &str, notices: crate::share::Notices) -> std::io::Result<()> {
         let inbox = match lock(&self.runs).get(id) {
             Some(RunState::Tracked(run)) => run.inbox.clone(),
             _ => return Err(std::io::Error::other("the container is not running")),
         };
         let mut inbox = lock(&inbox);
-        let told = self.notice_exec(&mut inbox, pipe)?;
+        let told = self.notice_exec(&mut inbox, notices)?;
         inbox.notices.push(told);
         Ok(())
     }
