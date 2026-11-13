@@ -392,6 +392,20 @@ impl Io<'_> {
         })
     }
 
+    /// What `conn`'s own TLS handshake negotiated, once it has chosen its suite and its group
+    /// (the server's hello, RFC 8446 §4.1.3, §4.2.8): none before.
+    pub fn negotiated(&mut self, conn: ConnKey) -> Option<crate::tls::Negotiated> {
+        let conn = self.conn(conn).ok()?;
+        let data = conn.quic.crypto_session().handshake_data()?;
+        let data = data
+            .downcast::<hyper_quic::crypto::rustls::HandshakeData>()
+            .ok()?;
+        Some(crate::tls::Negotiated {
+            suite: u16::from(data.negotiated_cipher_suite?),
+            group: u16::from(data.negotiated_key_exchange_group?),
+        })
+    }
+
     /// Opens a bidirectional stream on `conn`.
     pub fn open(&mut self, conn: ConnKey) -> Result<StreamId, Error> {
         self.conn(conn)?

@@ -17,11 +17,11 @@ mod grant;
 #[path = "../../shards/src/grant_ask.rs"]
 mod grant_ask;
 // Made by the daemon alone; the logger's tests make them as it does.
+#[path = "../../shards/src/log_writer.rs"]
+mod log_writer;
 #[cfg(all(test, unix))]
 #[path = "../../shards/src/segments.rs"]
 mod segments;
-#[path = "../../shards/src/log_writer.rs"]
-mod log_writer;
 #[path = "../../shards/src/spec.rs"]
 mod spec;
 #[path = "../../shards/src/terminal.rs"]
