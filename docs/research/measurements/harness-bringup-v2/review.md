@@ -1,0 +1,82 @@
+# Harness bring-up v1 and v2: review (plan step 2)
+
+Goal 52's plan step 8, a child of goal 52's agent (`a88ba9336b2a5c118`) for ROOT's plan step 2:
+harness-bringup-v1 and -v2 (a real Codex CLI and a real Claude Code as `HARNESS` members),
+read against R01–R16 and AGENTS.md's review rules, its defects cured on main and the rest
+recorded as owed. No vendor CLI was sent a prompt, and no credential was read.
+
+## Identity
+
+| | |
+|---|---|
+| Role | implementer (goal 52's child for step 8); coordinator ROOT |
+| Policy | read at origin/main `ecd19d38cd756219238650111eb9278a312fa97e`: AGENTS.md sha256 `f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41`, docs/development-rules.md `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`, docs/development-evidence.md `61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63`, CLAUDE.md `588b00202791c500679393b9e6cda023d4cc233995198fb575806c25e5438010`; with ROOT's briefs (`/tmp/g121-shot/goal-agent-brief.md`, `brief-common.md`) and goal 52's (`/tmp/s2/child-brief.md`, its addendum of 2026-11-13, `steps/step-8.txt`, `steps/step-8-findings-so-far.md`) |
+| Worktree | `.claude/worktrees/s2-harness`, branch `p/s2-harness-v1`, landed on main fast-forward, signed |
+| Owned | `crates/shards/tests/harness_bringup.rs`; `docs/examples/harness-{codex,claude,codex-signed-in,claude-signed-in}`; `docs/research/measurements/harness-bringup-v1/` and `-v2/`; in `docs/design/architecture.md`, D236's list of examples to move and this review's pointer |
+| Runner | adas-mac-studio-3.local (kiln runner `2768d0d5…`, hostname Adas-Mac-Studio-4.local): macOS 26.2 (Darwin 25.2.0), arm64, 14 cores, 36 GiB; Python 3.9.6, rustc 1.98.1. No gpg, zig or cargo-xwin there. Every run went through a carrier of this step's (a patch over main applied to a clone of its own, `~/g121-tmp/s2-8-src` and `-py`) |
+
+## Commits reviewed
+
+Each read whole (`git show`), on main since before this review:
+
+| Commit | What it landed |
+|---|---|
+| `6e17b36b9` | v1: the examples `harness-codex`, `harness-claude`; `harness_bringup.rs`'s nine cases; `fetch.sh`, `bringup.sh`; the records |
+| `4c2fcfb08` | v2 step 1: the `-signed-in` examples, `credentials.py`, `signed-in.sh`, two signed-in cases |
+| `4c1f595f9` | v2: a tool's run is its program's exec in the kernel's record |
+| `7da26ccf4` | v2: Claude Code's prompt before its variadic options; token validity in minutes |
+| `df1d34af0` | v2: settle writes back only a refresh |
+| `ab73c9628` | v2: the two real signed-in turns recorded, README |
+
+## Secrets: none committed
+
+Goal 52's agent scanned the 162 files these six commits touch (at main `308895ef4`, with
+redaction) for API keys (`sk-…`), JWTs, bearer tokens, token or key fields, GitHub and AWS
+keys, private keys, emails, and account, organization and user IDs
+(`/tmp/s2/steps/step-8-findings-so-far.md`). Every hit was benign: the placeholder
+`sk-shards-placeholder-not-a-key` (`harness_bringup.rs`' `PLACEHOLDER` and its uses;
+`records/codex-run-env/run.log`'s `-e …_API_KEY=` is it), and v1's
+`fetch/verify.status`, a GnuPG `GOODSIG` of Anthropic's public release-signing identity. By
+key name, v2's records hold no token, key, password, account, organization or email value,
+and `credential_expires_at` is redacted. Claude Code's stream
+(`records/claude-signed-in/stdout.bin`) carries request identifiers: one `session_id`, 8
+message `uuid`s and 2 `request_id`s. These are not credentials or account IDs, and they are
+left as recorded. This review did not scan again.
+
+## Findings
+
+R-numbers are the rules each finding is held to. "Fixed" names the landing commit; each fix
+was red before, green after, and red again with its guard removed, each its one focused test.
+
+### F1. The leak check skipped short values and chose its run length (R03): fixed
+
+`credentials.py`'s `secrets` (line 68 at `ecd19d38c`) took a value under a secret's name only
+at 16 characters or more, so a shorter secret was never looked for. Its fragment check
+(lines 38–39) kept every 24-byte window of a secret and looked at every 8th offset of a file,
+which promised runs of 31 bytes. All three numbers were chosen.
+
+Now every value under a secret's name is a secret, whatever its length; an empty one holds
+none. A file leaks where it holds a whole secret, or a run of one longer than the most a
+provider itself shows of a credential. That length comes from data: OpenAI's refusal shows a
+key's first 8 and last 4 characters, the rest masked one for one
+(`harness-bringup-v1/records/codex-login-volume/stdout.bin`: `sk-shard*******************-key`
+for the 31-character placeholder). So the run is 9 bytes, looked up at every offset.
+`credentials_test.py` reads the 8 from that record itself, not from the script.
+
+v2's self-tests were never committed. `credentials_test.py` now holds them (copy, settle's
+four outcomes, scrub, validity), with the leak check's. Every fake secret is a digest of a
+label, and the leak check also runs over v1's and v2's committed records.
+
+`python3 -I docs/research/measurements/harness-bringup-v2/credentials_test.py`, on the runner
+(`~/g121-tmp/s2-8-slice-a.log`):
+
+| Tree | Result |
+|---|---|
+| this change | 14 passed |
+| red: `credentials.py` as on main, the new test | 2 failed: a 9-byte run not found at offset 0; a 12-character secret not found (`0 != 3`) |
+| M1: the 16-character floor back | `test_a_secret_however_short_is_looked_for_whole` failed |
+| M2: every 8th offset alone looked up | `test_a_run_one_longer_than_a_provider_shows_is_found_at_every_offset` failed, at offset 1 |
+| M3: an empty value taken for a secret | `test_an_empty_value_is_no_secret` failed: FOUND in every file |
+| this change again | 14 passed |
+
+The other findings land in the slices that follow, and this record is extended at each.

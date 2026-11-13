@@ -3,6 +3,10 @@
 //! - A host client connects to the device's socket, writes `CONNECT <port>\n`, and reads
 //!   `OK <host port>\n` once the guest accepts. Then the socket is the stream.
 //! - A guest connection to host port P reaches the socket `<path>_P`.
+//! - A managed machine's host client may write `RATE <milli>\n` in place of `CONNECT` (D255,
+//!   `shards_abi::rate`): its connection goes to the machine's rate ([`VsockHost::rate`]),
+//!   whose owner answers on it. Only a dial on the socket says one; a machine without a rate
+//!   closes such a dial unanswered.
 //!
 //! Host ports the VM's own process serves ([`VsockHost::ports`]) are reached without a
 //! socket file: a guest connection to one is one end of a socket pair, and the other end
@@ -40,12 +44,19 @@ use crate::vm::VsockHost;
 
 /// RSTs owed, at most, for the largest rings a guest may negotiate ([`stray_rsts_bound`]).
 const MAX_STRAY_RSTS: usize = stray_rsts_bound(super::QUEUE_SIZE, super::QUEUE_SIZE);
-/// The shortest handshake line, `CONNECT 0\n`. Reading this much first, then a byte at a
-/// time, never consumes data a client sends after its line.
+/// The shortest `CONNECT` line, `CONNECT 0\n`. Reading this much first, then a byte at a
+/// time, never consumes data a client sends after its line. A managed machine's `RATE` line
+/// may be shorter (`RATE 0\n`), but nothing follows it: its client waits for its answer
+/// (D255).
 const MIN_HANDSHAKE: usize = handshake_len(decimal_digits(0), LF);
-/// The longest handshake line: `CONNECT 4294967295\r\n`. A longer one is refused before
-/// its end: a port has at most `u32::MAX`'s digits, and its words one space between them.
-const MAX_HANDSHAKE: usize = handshake_len(decimal_digits(u32::MAX), CRLF);
+/// The longest handshake line: `CONNECT 4294967295\r\n`, or a managed machine's
+/// `RATE 18446744073709551615\r\n` (`shards_abi::rate::ASK_MOST`), the longer. A longer one is
+/// refused before its end: a port has at most `u32::MAX`'s digits, a rate `u64::MAX`'s, and
+/// their words one space between them.
+const MAX_HANDSHAKE: usize = longer(
+    handshake_len(decimal_digits(u32::MAX), CRLF),
+    shards_abi::rate::ASK_MOST,
+);
 /// Host ports for host-initiated connections come from [2^30, 2^31), as in Firecracker.
 const LOCAL_PORT_BASE: u32 = 1 << 30;
 /// What a connection's host socket is asked to buffer each way (SO_SNDBUF, SO_RCVBUF), as
@@ -82,6 +93,19 @@ const fn decimal_digits(mut n: u32) -> usize {
 /// A handshake line's length: its words, a port of `digits` digits, and `end`.
 const fn handshake_len(digits: usize, end: &[u8]) -> usize {
     CONNECT.len() + SPACE.len() + digits + end.len()
+}
+
+/// The longer of `a` and `b`.
+const fn longer(a: usize, b: usize) -> usize {
+    if a > b { a } else { b }
+}
+
+/// A host client's handshake line: a guest's port to connect to, or a managed machine's
+/// rate (D255).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Line {
+    Connect(u32),
+    Rate(u64),
 }
 
 /// RSTs owed for packets that matched no connection, beyond which more are dropped, for a
@@ -186,6 +210,9 @@ pub struct Muxer {
     served: HashMap<u32, Sender<UnixStream>>,
     /// Host ports served in this process for every connection.
     every: HashMap<u32, crate::vm::ServedPort>,
+    /// Where a host client's `RATE` line goes with its connection, on a managed machine
+    /// ([`VsockHost::rate`], D255).
+    rate: Option<Sender<(UnixStream, u64)>>,
     handshakes: Vec<Handshake>,
     conns: HashMap<Key, Conn>,
     /// Ended connections whose host sockets are held until their peers end their sides
@@ -255,6 +282,7 @@ impl Muxer {
             listener,
             served: host.ports.into_iter().collect(),
             every: host.every.into_iter().collect(),
+            rate: host.rate,
             handshakes: Vec::new(),
             conns: HashMap::new(),
             #[cfg(windows)]
@@ -692,7 +720,20 @@ impl Muxer {
         };
         match read_handshake(h) {
             Ok(None) => {}
-            Ok(Some(peer_port)) => {
+            // Its connection goes to its owner, who answers on it; with none, it closes
+            // unanswered, as a line of no handshake's does.
+            Ok(Some(Line::Rate(milli))) => {
+                let h = self.handshakes.swap_remove(i);
+                match &self.rate {
+                    Some(to) => {
+                        if to.send((h.stream, milli)).is_err() {
+                            debug!("vsock: a rate no one takes any more; its dial closed");
+                        }
+                    }
+                    None => debug!("vsock: a rate asked of a machine that takes none; its dial closed"),
+                }
+            }
+            Ok(Some(Line::Connect(peer_port))) => {
                 let h = self.handshakes.swap_remove(i);
                 let local_port = self.allocate_local_port();
                 let key = Key {
@@ -873,9 +914,9 @@ fn buffer_size(socket: crate::platform::RawSocket, option: i32) -> io::Result<us
     usize::try_from(got).map_err(io::Error::other)
 }
 
-/// Reads a handshake line without consuming anything after it. `Some(port)` once the line
-/// is complete and valid; `None` while more is to come.
-fn read_handshake(h: &mut Handshake) -> io::Result<Option<u32>> {
+/// Reads a handshake line without consuming anything after it. `Some` once the line is
+/// complete and valid; `None` while more is to come.
+fn read_handshake(h: &mut Handshake) -> io::Result<Option<Line>> {
     loop {
         let want = MIN_HANDSHAKE.saturating_sub(h.line.len()).max(1);
         let mut buf = [0u8; MIN_HANDSHAKE];
@@ -886,9 +927,9 @@ fn read_handshake(h: &mut Handshake) -> io::Result<Option<u32>> {
                 h.heard = Instant::now();
                 h.line.extend(dst.iter().take(n));
                 if h.line.contains(&b'\n') {
-                    return parse_connect(&h.line)
+                    return parse_line(&h.line)
                         .map(Some)
-                        .ok_or_else(|| io::Error::other("expected `CONNECT <port>`"));
+                        .ok_or_else(|| io::Error::other("expected `CONNECT <port>` or `RATE <milli>`"));
                 }
                 if h.line.len() >= MAX_HANDSHAKE {
                     return Err(io::Error::other("handshake line too long"));
@@ -899,6 +940,14 @@ fn read_handshake(h: &mut Handshake) -> io::Result<Option<u32>> {
             Err(e) => return Err(e),
         }
     }
+}
+
+/// A whole handshake line: `CONNECT <port>`, or a managed machine's `RATE <milli>`
+/// (`shards_abi::rate::read_ask`, D255).
+fn parse_line(line: &[u8]) -> Option<Line> {
+    parse_connect(line)
+        .map(Line::Connect)
+        .or_else(|| shards_abi::rate::read_ask(line).map(Line::Rate))
 }
 
 /// `CONNECT <port>` followed by a newline (case-insensitive, as Firecracker).
@@ -1031,6 +1080,103 @@ mod tests {
         ] {
             assert_eq!(parse_connect(bad), None, "{:?}", String::from_utf8_lossy(bad));
         }
+        assert_eq!(parse_line(b"CONNECT 52\n"), Some(Line::Connect(52)));
+        assert_eq!(parse_line(b"rate 250\r\n"), Some(Line::Rate(250)));
+        assert_eq!(parse_line(b"RATE 4294967296\n"), Some(Line::Rate(1 << 32)));
+        for bad in [&b"RATE\n"[..], b"RATE 1 2\n", b"RATED 1 2\n", b"RATE 1\nrest"] {
+            assert_eq!(parse_line(bad), None, "{:?}", String::from_utf8_lossy(bad));
+        }
+    }
+
+    /// A rate comes from a dial on the device's socket alone (D255): a host client's `RATE`
+    /// line reaches the machine's rate with its connection, which the answer goes back on.
+    /// The guest's connections, to a port this process serves and to ports none serves, and
+    /// what it sends on them (a `RATE` line among it) never do; the bytes go to the port's
+    /// owner. A machine that takes no rate closes such a dial unanswered.
+    #[test]
+    fn a_rate_comes_from_a_dial_on_the_socket_alone() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-rate").unwrap();
+        let dir = dir_guard.join("v");
+        let (served, arrived) = std::sync::mpsc::channel();
+        let (rates, rated) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            path: Some(dir.clone()),
+            ports: Vec::new(),
+            every: vec![(54, served.into())],
+            rate: Some(rates),
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        m.on_guest_packet(&request(54, 49_152), &[], &mem);
+        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RESPONSE));
+        let mut theirs = arrived.try_recv().unwrap();
+        let line = b"RATE 250\n";
+        mem.access().unwrap().write(0x8000_0000, line).unwrap();
+        let span = Span {
+            gpa: 0x8000_0000,
+            ptr: mem.host_ptr(0x8000_0000, line.len()).unwrap(),
+            len: line.len(),
+        };
+        let rw = Header {
+            op: op::RW,
+            len: line.len() as u32,
+            ..request(54, 49_152)
+        };
+        m.on_guest_packet(&rw, &[span], &mem);
+        for port in [0, 1, 1024, u32::MAX] {
+            m.on_guest_packet(&request(port, 49_153), &[], &mem);
+        }
+        assert!(rated.try_recv().is_err(), "a guest's connection reached the rate");
+        let mut got = [0u8; 9];
+        theirs.read_exact(&mut got).unwrap();
+        assert_eq!(&got, line, "the guest's bytes are its port's owner's");
+        let mut client = UnixStream::connect(&dir).unwrap();
+        m.on_events(&[Ready {
+            token: Some(Token::Listener),
+            read: true,
+            write: false,
+        }]);
+        client.write_all(b"RATE 250\n").unwrap();
+        m.on_events(&[Ready {
+            token: Some(Token::Handshake(0)),
+            read: true,
+            write: false,
+        }]);
+        let (mut asked, milli) = rated.try_recv().unwrap();
+        assert_eq!(milli, 250);
+        assert!(m.handshakes.is_empty(), "the dial is the rate's owner's");
+        assert_eq!(m.conns.len(), 1, "the guest's connection alone");
+        asked.set_nonblocking(false).unwrap();
+        asked.write_all(b"RATED 250 100000000\n").unwrap();
+        drop(asked);
+        let mut answer = String::new();
+        client.read_to_string(&mut answer).unwrap();
+        assert_eq!(answer, "RATED 250 100000000\n");
+        // A machine that takes no rate: the dial closes unanswered.
+        let none_guard = shards_testdir::TempDir::new("vsock-norate").unwrap();
+        let none_at = none_guard.join("v");
+        let mut none = Muxer::new(VsockHost::at(none_at.clone()), 3).unwrap();
+        let mut client = UnixStream::connect(&none_at).unwrap();
+        none.on_events(&[Ready {
+            token: Some(Token::Listener),
+            read: true,
+            write: false,
+        }]);
+        client.write_all(b"RATE 250\n").unwrap();
+        none.on_events(&[Ready {
+            token: Some(Token::Handshake(0)),
+            read: true,
+            write: false,
+        }]);
+        assert!(none.handshakes.is_empty());
+        let end = client.read(&mut [0u8; 1]);
+        assert!(
+            matches!(&end, Ok(0))
+                || end
+                    .as_ref()
+                    .is_err_and(|e| e.kind() == io::ErrorKind::ConnectionReset),
+            "{end:?}"
+        );
     }
 
     /// The handshake's bounds are its own words': `CONNECT 0\n` the shortest line, and
@@ -1039,7 +1185,7 @@ mod tests {
     #[test]
     fn handshake_lines_are_bounded_by_the_protocols_words() {
         assert_eq!(MIN_HANDSHAKE, b"CONNECT 0\n".len());
-        assert_eq!(MAX_HANDSHAKE, b"CONNECT 4294967295\r\n".len());
+        assert_eq!(MAX_HANDSHAKE, b"RATE 18446744073709551615\r\n".len());
         assert_eq!(decimal_digits(9), 1);
         assert_eq!(decimal_digits(10), 2);
         let read = |line: &[u8]| {
@@ -1053,9 +1199,20 @@ mod tests {
             client.write_all(line).unwrap();
             read_handshake(&mut h)
         };
-        assert_eq!(read(b"CONNECT 4294967295\r\n").unwrap(), Some(u32::MAX));
-        assert_eq!(read(b"connect 4294967295\n").unwrap(), Some(u32::MAX));
-        assert!(read(b"CONNECT  4294967295\r\n").is_err());
+        assert_eq!(
+            read(b"CONNECT 4294967295\r\n").unwrap(),
+            Some(Line::Connect(u32::MAX))
+        );
+        assert_eq!(
+            read(b"connect 4294967295\n").unwrap(),
+            Some(Line::Connect(u32::MAX))
+        );
+        assert_eq!(
+            read(b"RATE 18446744073709551615\r\n").unwrap(),
+            Some(Line::Rate(u64::MAX))
+        );
+        assert_eq!(read(b"RATE 0\n").unwrap(), Some(Line::Rate(0)));
+        assert!(read(b"RATE  18446744073709551615\r\n").is_err());
     }
 
     /// Set in the child `past_its_descriptors_a_dial_is_refused_at_once` runs.
@@ -1147,6 +1304,7 @@ mod tests {
             path: Some(dir.clone()),
             ports: Vec::new(),
             every: vec![(54, sender.into())],
+            rate: None,
         };
         let mut m = Muxer::new(host, 3).unwrap();
         // An input: one slot, which the guest's connection holds.
@@ -1228,6 +1386,7 @@ mod tests {
             path: None,
             ports: Vec::new(),
             every: Vec::new(),
+            rate: None,
         };
         let mut m = Muxer::new(host, 3).unwrap();
         assert_eq!(m.max_stray_rsts, MAX_STRAY_RSTS);
@@ -1253,7 +1412,7 @@ mod tests {
         client.write_all(b"ECT 77").unwrap();
         assert_eq!(read_handshake(&mut h).unwrap(), None);
         client.write_all(b"\npayload").unwrap();
-        assert_eq!(read_handshake(&mut h).unwrap(), Some(77));
+        assert_eq!(read_handshake(&mut h).unwrap(), Some(Line::Connect(77)));
         let mut rest = [0u8; 7];
         h.stream.read_exact(&mut rest).unwrap();
         assert_eq!(&rest, b"payload");
@@ -1336,6 +1495,7 @@ mod tests {
             path: None,
             ports: vec![(52, sender), (53, gone)],
             every: Vec::new(),
+            rate: None,
         };
         let mut m = Muxer::new(host, 3).unwrap();
         let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
@@ -1380,6 +1540,7 @@ mod tests {
             path: None,
             ports: Vec::new(),
             every: vec![(54, sender.into())],
+            rate: None,
         };
         let mut m = Muxer::new(host, 3).unwrap();
         let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
@@ -1415,6 +1576,7 @@ mod tests {
             path: None,
             ports: Vec::new(),
             every: vec![(54, sender.into())],
+            rate: None,
         };
         let mut m = Muxer::new(host, 3).unwrap();
         let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
@@ -1495,6 +1657,7 @@ mod tests {
             path: Some(dir_guard.join("v")),
             ports: Vec::new(),
             every: vec![(54, sender.into())],
+            rate: None,
         };
         let mut m = Muxer::new(host, 3).unwrap();
         // An input: few slots and small rings, which saves in a row outgrow.
@@ -1573,6 +1736,7 @@ mod tests {
             path: None,
             ports: Vec::new(),
             every: vec![(54, sender.into())],
+            rate: None,
         };
         (Muxer::new(host, 3).unwrap(), arrived)
     }

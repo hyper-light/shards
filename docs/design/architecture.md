@@ -25776,6 +25776,111 @@ microVM and the kiln runner on one machine and on two.
 connection reaching the microVM's network; a member's connection told to the controller as
 another member's.
 
+
+### D255. A managed microVM's rate: D191's hold told on its vsock socket by its host's client, its room refused (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d step 14, the Hex lead's ask. Hex holds the
+microVMs it boots through `boot_managed` (its `shards` class, D233) to its water-filled CPU
+rates with platform caps alone: macOS's native helper's managed control, a Windows job's hard
+cap, Linux's `cpu.max`. Those hold a VMM's device threads with its vCPUs, and on Windows no
+window derives from the cap's undocumented interval (Hex `learned-charge.md` C1, C4). D247
+gives an image run's orchestrator D191's governor through its run host. A managed microVM has
+no run host and no link to its VM process: its client reaches it through its vsock socket
+alone (D215).
+
+**Decided** (ROOT's go, 2026-11-13).
+- *The word* (`shards_abi::rate`). On a microVM booted `--host-managed`, a host client may
+  write `RATE <milli>\n` on its vsock socket in place of Firecracker's `CONNECT <port>`.
+  - The muxer hands that connection to the VM process (`VsockHost::rate`), whose `rates`
+    thread holds the vCPUs to it (`Handle::hold_rate`, D191's governor, as D247's `RATE`
+    does) and then answers on it.
+  - The answer is `RATED <milli> <period>\n` (what it holds them to, 0 where it lets them
+    be, and the period its governor holds over, in nanoseconds), or `REFUSED <why>\n`. Then
+    it closes the connection.
+  - One ask a connection, matched without case as `CONNECT` is; a line may end `\r\n`.
+- *Only the host.* The word is a line of a dial on the socket the VM process listens at, in
+  its client's 0700 directory (D215).
+  - A guest's connections arrive as its virtio-vsock packets, to host ports, and are never
+    read as a host client's line; the bytes it sends go to their port's owner.
+  - A microVM not booted `--host-managed` (every daemon run, every image run) closes such a
+    dial unanswered, so no rate reaches a microVM that a daemon's or a run host's limits
+    hold.
+- *The client.* `ManagedGuest::rate(rate, patience)` is the same call as `ImageGuest::rate`
+  (D247): one dial, its ask, and its answer read a byte at a time to its newline, within its
+  caller's patience.
+  - Held: the rate asked, or none, with the period kept (`ManagedGuest::rate_period`, none
+    until a rate is answered). A VM holds what it is told or nothing (D247), so a held rate
+    other than asked is a broken answer.
+  - Refused, typed: `Refusal::Rate`, in the VM process's words (its microVM not started, its
+    governor's thread not made, an answer none of the protocol's). `Unsupported`
+    (`what: "rate"`) where the VM process closes the ask unanswered (not booted
+    `--host-managed`, or a shards before this) or does not answer within the patience.
+    `ManagedIo` where the socket fails, and `Ended` once the guest has ended.
+  - Its ask is made and its answer read without allocating, and its words are allocated
+    fallibly, as the managed path's are.
+- *Why the vsock socket.* Two other paths were weighed.
+  - An inherited control descriptor from the native launcher dies with its client, so
+    `attach_managed` could not give a recovered client its rate (its GPU report has that
+    limit), and Hex's three launchers would each have to place one more handle.
+  - A second socket needs a grant of its own on macOS, where App Sandbox lets the VM process
+    neither bind nor dial (PM M67), and a path that an attach must derive.
+  - The vsock socket is the one path every managed microVM serves, which a recovered client
+    reaches by its identity, on all three OSes.
+- *Its room*: refused, typed, as `Refusal::Unsupported { what: "room" }`.
+  - D188's room is held inside the guest by shards-init's `ROOM` built-in (D241), and a
+    managed guest runs its caller's own PID 1 (D215), never shards-init.
+  - Its guest's kernel alone may drop its page cache; a host that takes it back has its guest
+    read it again (PM M309).
+  - Its caller holds its guest's memory through its own PID 1, or through the host's limits
+    of its process.
+
+**Literals.**
+- `RATE`, `RATED`, `REFUSED`: the protocol's words.
+- `ASK_MOST`, the longest ask (`RATE 18446744073709551615\r\n`, 27 bytes): its word, a u64's
+  digits, a space and a line's end. The muxer's longest handshake line is now the longer of
+  it and `CONNECT 4294967295\r\n`. Its first read stays `CONNECT 0\n`'s length, as nothing
+  follows a `RATE` line, whose client waits for its answer.
+- `ANSWER_MOST`: the run protocol's payload bound (`run::MAX_PAYLOAD`), as an image run's
+  `RATED` carries its VM's words (D247).
+- The period is D191's (`hold_period`).
+
+**Cold start** (R03). Nothing here is learned. The rate is the orchestrator's, told as it
+moves; until one is told, the vCPUs run as booted, the envelope their ceiling. The client knows
+the period from the first answer.
+
+**Tested** (light):
+- abi `rate`'s `an_ask_reads_back_as_its_rate_and_nothing_else_does`,
+  `an_answer_reads_back_as_it_was_said` and `a_broken_answer_is_refused_by_what_breaks_it`.
+- The muxer's `a_rate_comes_from_a_dial_on_the_socket_alone`: a guest's connection to a
+  served port, its `RATE` bytes on it, and its dials to ports none serves reach no rate; a
+  host's dial does, and its answer reaches its client; a machine that takes none closes it.
+  Also its `parses_connect_lines_and_nothing_else` and
+  `handshake_lines_are_bounded_by_the_protocols_words`.
+- vm_run's `a_rates_answer_is_its_hold_and_its_period` and
+  `each_rate_handed_over_is_answered_on_its_connection`.
+- shards-api's `a_managed_guests_rate_is_asked_on_its_socket_and_held_as_answered`,
+  `a_managed_rate_unanswered_within_its_patience_is_refused` and
+  `a_managed_guests_room_is_refused_and_an_ended_ones_rate_is_its_end`.
+
+**Owed** (ROOT).
+- The real-VM test on HVF, KVM and WHP: `boot.rs`'s
+  `a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket`, run as
+  `cargo test --profile test-release -p shards --test boot a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket`.
+  A guest booted `--host-managed`, spinning its one vCPU, asked a quarter CPU on its socket,
+  uses no more than a quarter of the time passing, two periods and its VMM's own CPU; its
+  vCPU's whole CPU and none hold nothing; each answer's period is its build's hold's; a guest
+  booted without `--host-managed` closes the ask unanswered.
+- Guard-removal mutants, each of which must fail its test: the muxer's `rate` gate (none:
+  closed), `read_ask`'s word, `held_of`'s asked-or-none, the client's unanswered close as
+  `Unsupported`, and vm_run's `--host-managed` flag.
+- These light tests on Linux and Windows (CI), and `scripts/lint` on the 7 targets.
+- Hex's adoption: its learner telling each managed microVM its rate through
+  `ManagedGuest::rate` on every OS, its window from `rate_period`.
+
+**What would falsify it.** A guest that reaches the rate from inside (a connection or bytes of
+its own read as a `RATE` line); a managed guest held to a rate whose CPU over a window passes it
+by more than a period's share, its vCPUs' overrun and its VMM's own.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
