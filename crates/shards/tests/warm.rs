@@ -524,6 +524,10 @@ impl Client {
 /// caller's call site, its party this test's own VM processes. Refused, the VM is ended,
 /// which ends the read.
 #[track_caller]
+#[allow(
+    clippy::panic_in_result_fn,
+    reason = "a refused wait fails its test; the read's own error is its caller's"
+)]
 fn told(stream: &Stream, vm: u32, what: &str) -> std::io::Result<Option<shards_ipc::Message>> {
     common::judged(Party::own(None), what, || end(vm), || shards_ipc::recv(stream))
         .unwrap_or_else(|refused| panic!("{refused}"))
