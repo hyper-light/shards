@@ -2530,7 +2530,11 @@ impl Patience {
 
     fn with(home: Option<&Path>, site: &'static std::panic::Location<'static>) -> Patience {
         Patience {
-            wait: Wait::on(WaitKind::at(site), Party::of(None, home), "a state its party comes to"),
+            wait: Wait::on(
+                WaitKind::at(site),
+                Party::of(None, home),
+                "a state its party comes to",
+            ),
             state: Patient::Holds,
         }
     }
@@ -3072,9 +3076,10 @@ impl Party {
 
     /// Who it is, for a wait's account of itself.
     fn named(&self) -> String {
-        let client = self
-            .client
-            .map_or_else(|| "this test's own VM processes".to_string(), |c| format!("client {c}"));
+        let client = self.client.map_or_else(
+            || "this test's own VM processes".to_string(),
+            |c| format!("client {c}"),
+        );
         match (&self.home, self.daemon()) {
             (Some(home), Some(daemon)) => format!("{client}, daemon {daemon} of {}", home.display()),
             (Some(home), None) => format!("{client}, no daemon yet in {}", home.display()),

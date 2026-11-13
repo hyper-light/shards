@@ -271,7 +271,8 @@ fn a_patient_wait_goes_on_while_its_party_works() {
         assert!(began.elapsed() >= busy, "it ended {:?} in", began.elapsed());
         // The second round's kind is the first's, which its end taught.
         assert!(
-            round == 0 || matches!(patience.seen(), shards_api::Seen::Learned { slowest, .. } if slowest >= busy),
+            round == 0
+                || matches!(patience.seen(), shards_api::Seen::Learned { slowest, .. } if slowest >= busy),
             "its kind learned no answer of a second's work: {:?}",
             patience.seen()
         );
