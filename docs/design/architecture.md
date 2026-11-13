@@ -6322,8 +6322,9 @@ has an idle timeout or a keep-alive, so a quiet subscription lives however long 
 says nothing (`a_quiet_subscription_lives_with_no_idle_timeout_or_keep_alive`); a vanished
 owner's next send stalls, told, and its place is kept until a restarted owner contends for
 its endpoint's one place: each connection holding one is then asked for an answer (a PING,
-net.rs), and its place goes to the contender's next attempt once that goes unanswered and
-stalled (`a_vanished_owners_place_goes_to_its_successor_as_it_dials`; ROOT's ruling A, below);
+net.rs), and its place goes to the contender's next attempt once that goes unanswered past
+the holder's probe timeout (`a_vanished_owners_place_goes_to_its_successor_as_it_dials`;
+ROOT's ruling A and its ruling on #72, below);
 and no `Admitted::patience` or
 `DriverLimits::handshake_patience` is admitted, a handshake waiting as long as its probing
 goes on, its caller's to end.
@@ -6432,8 +6433,8 @@ while the socket holds back an earlier one, and its endpoint is told it drained
 faster resource recovery", at the cost it names: a late packet of its peer's is answered by a
 stateless reset (§10.3), which ends the connection for that peer as its close would. An open
 connection, its handshake's or established, keeps its place: a vanished owner's is freed only
-as its successor contends for it and it has not answered the PING an earlier attempt sent it
-(`Driver::reclaim`, below), its successor refused and dialing again meanwhile; a stranger's
+as its successor contends for it and it has not answered, within its probe timeout, the PING
+an earlier attempt sent it (`Driver::reclaim`, below), its successor refused and dialing again meanwhile; a stranger's
 handshake in flight holds it too. Every bounded endpoint shares the driver, so an
 output endpoint's observer resubscribing after its close is taken at once, and so is the
 agent-control endpoint's third connection while the older drains (D238's `CONNECTIONS`). No
@@ -6567,17 +6568,35 @@ replaced by:
   waits on its output, as that one does, and a client that closes its connection still hangs
   its commands up (`Controls::hang_up`). A stall still unanswered as its connection ends is the
   path's lost silence (`Liveness::lost`: the silence before the send that stalled); one its
-  answer ended is the peer's slowness, and records none. What bounds a bounded endpoint's
-  resources is the reclaim as a newcomer contends (`Driver::reclaim`): it asks each holder
-  for an answer (a PING) and refuses the newcomer, and at a later attempt lets go of the
-  holder unheard longest of those that have not answered that PING and are stalled, its
-  handler told as QUIC's `TimedOut`; a holder that answers, however late, keeps its place,
-  and newcomers dialing again put off no judgement, as an ask still unanswered stands
-  (`Liveness::ask`). A daemon's listener for contexts holds no such bound on established
-  connections: a vanished client's is kept, probed at QUIC's backoff, until the daemon stops
-  (owed: whether the descriptors `Host::handshakes` counts should bound them too). A holder
-  whose path never showed an answer (gone within its first exchange) has no window and never
-  stalls, so no newcomer takes its place: the cold start's rule. No wait is
+  answer ended is the peer's slowness, and records none. What bounds a driver's resources is
+  the reclaim as a newcomer contends (`Driver::reclaim`): it asks each established holder for
+  an answer (a PING) and refuses the newcomer, and at a later attempt lets go of the holder
+  unheard longest of those that have not answered that PING within their own probe timeout
+  (`Liveness::unanswering`), its handler told as QUIC's `TimedOut`; a holder that answers,
+  however late, keeps its place, and newcomers dialing again put off no judgement, as an ask
+  still unanswered stands (`Liveness::ask`). ROOT's ruling on #72 (2026-11-13): under
+  contention a holder is judged by its liveness, warm or cold, stalled or not. Before, a
+  holder had to be stalled as well, and one whose path never showed an answer (an owner gone
+  before its handshake's last frames were acknowledged) has no window and never stalls, so its
+  successor was refused 9 times over 31 s and would have been for good
+  (`a_cold_holder_unheard_past_its_probe_timeout_gives_its_place_to_a_newcomer`, red so at
+  40d9af947). The probe timeout is RFC 9002 §6.2.1's, as its transport computes it with no
+  backoff (`Connection::probe_timeout`: the smoothed RTT, four times its variation, the
+  peer's `max_ack_delay`), the time within which a live peer acknowledges an ack-eliciting
+  PING (RFC 9000 §13.2.1); cold, it is the handshake's RTT samples' (RFC 9002 §5.3), and
+  before any sample the initial RTT's (§6.2.2), so no value of shards' own enters it. Its
+  failure is typed: a live peer whose acknowledgement comes later than that, on a host that
+  descheduled it, loses its place to a contender, its handler told `TimedOut`, and its owner
+  dials again, where the contender would otherwise wait on it for good; the driver's own
+  absence moves the ask on with its other instants (`Liveness::absent`), so it holds no peer
+  to its own stall. The places are the owner's: a bounded endpoint's admitted connections,
+  and a daemon's listener for contexts, which held no bound on established connections (a
+  vanished client's kept until the daemon stopped), as many connections, handshakes and
+  established alike, as its descriptors (`Driver::hold_connections`, `Host::handshakes`:
+  `platform::descriptor_limit`, as each connection served may hold a command and its stdio,
+  so no more could each be served one; red with no bound,
+  `a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer`). Owed, as for
+  handshakes: the memory a connection holds, measured, as its second term. No wait is
   judged sooner than QUIC's own loss recovery judges its send, at its probe timeout (§6.2.1,
   the smoothed RTT, four times its variation and the peer's `max_ack_delay`;
   `Connection::probe_timeout`, hyper-quic's patch Q7): a run-out is past the window and that
@@ -6685,8 +6704,8 @@ their owners and controllers, goal 75's `unix::link()` among them, follow the sa
 (ROOT's call C): their admissions carry no patience, their bounded drivers no handshake
 deadline, their transports no idle timeout or keep-alive, `tls::QUIET` and its quarter gone;
 an endpoint whose one place a newcomer contends for asks each connection holding one for an
-answer (a PING), and a later attempt takes the place of one that has not answered it and is
-stalled (`Driver::reclaim`, above). A relay whose
+answer (a PING), and a later attempt takes the place of one that has not answered it within
+its probe timeout (`Driver::reclaim`, above). A relay whose
 engine client leaves while its handshake waits on a daemon never reached is let go at its
 next probe, its client's connection seen ended there (relay.rs `gone`: recv(2) with MSG_PEEK
 and MSG_DONTWAIT, which takes nothing and leaves the reader's descriptor blocking; on Windows,
@@ -6710,8 +6729,11 @@ on, its silences measured; a handshake run out a whole window unheard past its p
 going on with no window, red with its window kept, one heard living on past both, red with its
 window a deadline from its start; a send's window,
 its run-out with progress and its stall without, told once and followed with no window until
-its answer, the slowest from then on, red with the stall its death; a stalled holder unheard
-since a newcomer asked giving way, judged afresh; a bounded endpoint's stalled holder giving
+its answer, the slowest from then on, red with the stall its death; a holder unheard past its
+probe timeout since a newcomer asked giving way, warm or cold, one heard since keeping its
+place, red with the stall a condition; a cold holder over the real transport giving its place
+to a newcomer's later attempt, red with its successor refused at every attempt; a bounded
+endpoint's stalled holder giving
 its place to a newcomer and one that answers keeping it, over the real transport, red with the
 stall its death and with no reclaim; a cold wait following its peer however long
 its first answer takes; a wait judged no sooner than its probe timeout; a wait judged on the
@@ -6721,7 +6743,8 @@ early by the window and none while a send waits; a handshake past its slots taki
 unanswered place), `context::tests` (a daemon's path read back for its
 daemon and address alone, kept only where it changed, removed with its context),
 `tests/loopback.rs` (a machine holding as many strangers as invitations, the oldest giving
-way; an enrolled client's silent command living with no keep-alive; no daemon answering
+way; a listener at its bound refusing a newcomer, keeping a holder that answers, and giving a
+vanished client's place to a later attempt, red with no bound; an enrolled client's silent command living with no keep-alive; no daemon answering
 probed until its caller gives up; a hang-up ending a command whose daemon never answered; a
 closed port refusing its client at once, its caller giving up past the test's deadline, red on
 Linux with a send's refusal let go; a daemon reached before that answers nothing running out
@@ -9130,8 +9153,19 @@ first mark to its last, a read goes on while each window as long reads what thei
 MiB keeps over it, and is refused, typed, at the first that does not (`Stalled::Slow`: how
 far it had read, what it read over the window and what it had to, and the record); before
 its first mark, past the slowest start seen, it goes on while its daemon or a microVM
-shows progress (`Stalled::Unstarted`); the first read, with nothing seen before it,
-follows its microVM's liveness alone, to its end. The record is the reads held to none
+shows progress, never refused before each of its VM processes has been judged over a whole
+slice (`common::Patience`, D209), or while its slice's tasks stalled on memory within a
+minute, as PSI's `some` total says (`memory.pressure`, Linux's
+Documentation/accounting/psi.rst: a host's hold counts as held, R03), and is refused
+otherwise (`Stalled::Unstarted`); the first read, with nothing seen before it, follows its
+microVM's liveness alone, to its end. Until #77 a start slower than three of the slowest
+start's looks was refused before any VM process had been looked at twice: under the budget
+on adacachy2 (Linux 7.3.3 x86_64) at 8bfa6150e and 9d2da923d, 97.49 ms after its command
+began against a slowest start of 32.44 ms, its slice at its `memory.high` with 4345 `high`
+events. `a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold` plays
+starts of 500 ms against a slowest of 30 ms, one with an idle stand-in VM process not yet
+judged and one in a slice whose PSI total grows, each followed to its end, and a start that
+never comes, refused past a whole slice. The record is the reads held to none
 alone, never seeded, so that a budget's reads never raise the bound they are judged by.
 Until 237f3ebe7 the medians of 3 were held within twice those under none, a multiple, and
 each read was waited on 600 s and past that while its microVM ran: on adacachy2 (32 CPUs)
@@ -10451,7 +10485,14 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   are held: their own deadline, or past it while the home's daemon says something
   (`Said`), or a VM process under that daemon or under the test's process runs (`Ran`),
   failing a minute after the last; the look that fails one begins past it, as a
-  PowerShell's look at Windows' processes may outlast a slice. daemon.rs' `eventually`
+  PowerShell's look at Windows' processes may outlast a slice. Nor does it fail one before
+  each `Ran` has judged a whole slice of every VM process it follows (R03: refused only after
+  a whole window with no progress); `Ran` looks at its first ask, a baseline, and judges a
+  slice later. Until #77 its first look came a slice after it began and its first judgment a
+  slice after that, so a bound shorter than a slice failed before anything was judged:
+  budget.rs' read under its budget was refused 97.49 ms after its command began, the third
+  look of 32.44 ms (the slowest start under none), on adacachy2 at 8bfa6150e and 9d2da923d.
+  daemon.rs' `eventually`
   and `wait`, saved.rs', containers.rs', engine.rs' and budget.rs' waits on pools,
   restored VMs and guests' answers, and warm.rs' warm VM's end take it.
 - **A guest's stream follows its bytes, and its end its output** (every host). CPU time is
@@ -26006,7 +26047,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; HTTP/2 in the injector's connections, the sign-ins' wiring and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections, kiln's broker answering sign-ins and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -26711,6 +26752,69 @@ record docs/research/s33-veil-creds/STEP8.md).
 - *Owed.* The run host's relay of `NET_SIGN_INS` and `NET_SIGN_IN` to its orchestrator, the image channel's next
   version and `Lessor` grown (this slice's second part); kiln's broker answering them (step 8's third slice).
 
+**Built: step 8's second slice, its second part: the run host's relay** (crates/api `image.rs`,
+`image/wire.rs`, `image/session.rs`; crates/shards `api_run.rs`; crates/net `signin.rs`, `inject.rs`; shards-dns
+`credential.rs`; record docs/research/s33-veil-creds/STEP8.md).
+- *The grants' way in.* An orchestrator names a run's sign-ins in its spec (`ImageSpec::sign_ins`, shards-dns'
+  `SignInGrant`), checked where its request is built (`image::sign_ins`: a name, hosts as a credential grant's, one
+  sign-in of a CLI, each placeholder a token and one credential's alone with the run's credential grants, and a
+  lessor), carried in the image channel's version 24 (`Request::sign_ins`, appended) and checked again by the run host
+  (`api_run::sign_ins`: its CLI's token host and each host its access token goes to reached by the run's egress,
+  D236). The run host tells its network process `NET_SIGN_INS` after its policy and before `NET_CREDENTIALS`, which it
+  sends for a run with sign-ins and no credential grant too, as the run's CA names the sign-ins' hosts, and lays that
+  CA in the trust of each member whose link reaches one of them (`trust`). A run with none tells none (default deny).
+- *The words.* The network process's `NET_SIGN_IN` (`Told`) rides the run channel as `CAPTURE` (36,
+  `wire::CaptureAsk`: the sign-in, its access and refresh tokens, `expires_in`, and, no credential, its ID token made
+  inert and its `scope`), `REFRESH` (37) and `REVOKE` (38); the orchestrator answers `CAPTURED` (34,
+  `wire::CaptureAnswer`: the access token's reference and the placeholders, or a typed `SignInRefusal`) and
+  `REFRESHED` (35: the token response its CLI is to have, or a refusal), which the run host hands to the network
+  process (`Answered`), each cause kept (`Denied`, `Unavailable`, `Ended`, `Unanswered`). An ask keeps the network
+  process's id. The run host's ledger (`api_run::Ledger`) holds each ask under way by its id and kind (`Signing`):
+  an answer to none or of another kind, or a second ask by an id under way, breaks the contract; an ask after the
+  run's release (`Ended`) or of a sign-in the run does not grant (`Denied`) is declined there, typed.
+- *Question 1 kept.* Nothing in the run host or the orchestrator's session calls a provider: a refresh is
+  `Lessor::refresh`, kiln's broker's `Turn` (step 8's third slice).
+- *Question 2 kept: placeholders stay, the held lease drops.* A refresh leaves the sign-in's placeholders as its
+  capture gave them: the network process writes the broker's response with them, whatever it holds. The access
+  token's held lease is let go of by each holder. The session releases to its lessor each lease of it given before
+  the refresh, before its host hears (`rotated`). The run host's ledger drops its held entry (`Ledger::refreshed`),
+  so the next ask is asked anew and not refused `Live`, which a guest would see as a 503. The network process
+  forgets the value (`Leases::forget`, the first part). An ask under way is kept by each.
+- *A captured token leased by reference, released at the run's end.* From its capture, its access token's reference
+  is one the run may lease. The session (`granted`) and the run host (`Ledger::captured`) take it in place of an
+  earlier capture's. It is leased by step 4's path and released with the rest at every end of the run (`RELEASED`,
+  the session's `release`).
+- *The Lessor, grown append-only.* `capture(sign_in, tokens, key) -> Result<Captured, SignInRefusal>`,
+  `refresh(sign_in, key) -> Result<Secret, SignInRefusal>` and `revoked(sign_in, key)`, each defaulted: an
+  orchestrator that serves no sign-in refuses `Unanswered`, which the injector renders 503. Each is called on a thread
+  of its own, as `lease` is. `release` is called too for a lease whose value a refresh rotated.
+- *ROOT's asks taken.* `Captured::refresh_placeholder` is optional: a sign-in whose response gave no refresh token
+  holds no placeholder for one, and a response that carries a refresh token with no placeholder to stand for it is
+  refused (`NoPlaceholder`), never passed. The capture carries the inert ID token and `scope`, which the orchestrator
+  stages into a later run's CLI file (Codex's `auth.json` parses its ID token for its account; Claude Code's
+  `.credentials.json` records `scopes`).
+- *Wiping.* A capture's tokens are wiped in the network process's message as the run host takes it, moved (never
+  copied) from its `Taken` into the channel's `Secret`s, encoded in one buffer wiped as it drops, and written as they
+  lie. The run host's answers now go out through its own stdout descriptor, unbuffered, in one vectored write of a
+  frame's parts (`api_run::stdout`), never through std's `Stdout`, whose buffer kept what passed through it. The
+  session wipes a `CAPTURE` frame's payload once taken. A refresh's response is a `Secret` on the channel and
+  `Zeroizing` in the run host and the network process.
+- *Literals.* Version 24, kinds 34 to 38 and the refusal tags 1 to 4 are sequence numbers and names on a wire. No bound
+  of its own: the channel's `MAX_PAYLOAD` and `shards_ipc`'s frames bound each word.
+- *Tests (macOS arm64; STEP8.md).* The run host: a run granting a sign-in tells its network process its policy, its
+  sign-in and its grants in that order, and its CA's trust names the sign-in's hosts; a run granting none tells its
+  policy alone; a sign-in its egress cannot reach is refused. The relay end to end, over a socket and pipes with the
+  network process's real `SignIns` and lease client and a simulated orchestrator: the capture's tokens reach the
+  orchestrator whole; its placeholders reach the network process; its access token is leased by the orchestrator's
+  reference; the refresh is answered with the placeholders kept and no rotated token written; the next lease is asked
+  anew; the revocation is told; the leases are released before the run's end, and a later ask is refused as ended.
+  The ledger's states. The session: the broker keeps the capture and answers the refresh once; the lease given before
+  the refresh is released by it; the one after is released at the run's end, each once; the revocation is told. The
+  wire: each word and answer round-trips, cut or unknown-tagged words are refused, and no token or placeholder is in a
+  `Debug`.
+- *Owed.* Step 8's third slice: kiln's `RunLessor` answering `capture`, `refresh` and `revoked` from its broker, and
+  Hex forwarding the three. ROOT: the real sign-ins (below).
+
 **Built: step 7's first slice, HTTP/2's layer** (`crates/net/src/http2.rs`, `crates/net/src/hpack.rs`; kiln plan
 01a1d2b88be57304b972761e2a5c6781 step 7; research f10, f22, f41, f42, f58, f67; record
 docs/research/s33-veil-creds/STEP7.md). Pure functions and state the injector's connections drive (the second
@@ -26800,10 +26904,9 @@ slice), wired into none yet: the injector still offers `http/1.1` alone.
   real-VM runs of step 10.
 
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** HTTP/2 in the injector's
-connections, its ALPN offer with it (step 7's second slice); the sign-in profiles' wiring (step 8's second slice: the network
-process telling its run host of a capture, a refresh and a revocation, the run host its
-orchestrator, the injector capturing and answering outside) and kiln's broker answering them
-(its third); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
+connections, its ALPN offer with it (step 7's second slice); kiln's broker answering the sign-ins' words (step 8's third slice;
+the network process telling its run host of a capture, a refresh and a revocation, the run host its
+orchestrator, and the injector capturing and answering outside are built, its second); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
 (its harness built, D259), the injector's measured cost (step 10), and a real sign-in of each
 CLI surviving a refresh answered outside (step 8). Step 6's own owed items are its block's,
 above.
