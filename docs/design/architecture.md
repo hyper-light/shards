@@ -23221,8 +23221,10 @@ run's identity, the SHA-256 of this key, and needs no more of it (step 33's plan
 keeps:
 - one key per run, made after the run's restore and never shared by runs restored from one
   template, since a lease keyed to a shared fingerprint would cross runs;
-- the fingerprint, known to the orchestrator before the run's first lease ask;
-- the fingerprint, unchanged for the run's life.
+- the fingerprint, known to the orchestrator before the run's first lease ask on each host;
+- the fingerprint, unchanged while the run stays on one host. A move makes a new key at its
+  destination, and step 33's leases follow it, released at the source and asked anew under the
+  new fingerprint ("A moved microVM's key", below).
 
 So, for step 11:
 - The endpoint runs in the daemon, on D180's QUIC beside the managed owner endpoint, under its
@@ -23338,18 +23340,19 @@ operating system's random numbers through aws-lc-rs), held only there, its SHA-2
 The controller pins it, and the endpoint takes only the controller's key, enrolled as the run
 starts. That fingerprint is the identity that replaces kiln's peer-process one: every lane of a
 connection it authenticated is that microVM's (step 18's git signing, credential helpers and MCP
-tokens; step 33's leases). Two rules follow, whichever arm is built:
+tokens; step 33's leases). Two rules follow:
 - *A key per run, never a template's.* A key made before a template is saved would be every run
   restored from it (D25), so the endpoint makes its key after its run's restore.
-- *A moved microVM moves its key.* In arm g the key is in guest memory, which a saved and moved
-  microVM's memory carries (D176); its pin moves with it. At the host, which step 10 chose, the
-  key is its host endpoint's, not the microVM's memory's. A move then does one of two things,
-  and which one is open, for migration:
-  - it takes the key from one host's endpoint to the other's, which the plan's "the key never
-    travels" refuses;
-  - or it gives the microVM a new key at its new host, for its controller to pin anew. That is
-    a new name, which breaks step 33's reliance on a fingerprint unchanged for the run's life
-    unless the move reissues the run's leases.
+- *A moved microVM's key.* In arm g the key would be in guest memory, which a saved and moved
+  microVM's memory carries (D176), and its pin would move with it. At the host, which step 10
+  chose, the key is the host endpoint's, and the key never travels (the plan). So a move makes
+  a new key at the destination, after the restore there, as at any run's start. Its controller
+  pins the new key, whose SHA-256 reaches it in the run's managed metadata, as at a run's start.
+  - Step 33's leases follow the move: they are released at the source, as at any run's end
+    there, and asked anew under the new fingerprint. Leases are asked just in time, so nothing
+    is carried. The orchestrator must have the destination key's SHA-256 before the
+    destination's first lease ask, as for a fresh run (step 33's owner, 2026-11-13).
+  - What kiln's other uses of the key (step 18) do at a move is step 18's.
 
 Falsified by a party that did not start the microVM having to verify it without its launcher (a
 fleet peer, a third service), or a controller that cannot take Shards' code. Then the
