@@ -60,9 +60,25 @@ of logs:
    - Each shape is classed as a secret's (already counted as a leak), a public value's, or
      unexplained. Unexplained ones are listed by where they lie.
    - Token field names (`access_token`, ...) are counted only: every harness's code holds them.
-4. **Large files read in place.** Each file is mapped (`mmap`), never copied. The secrets'
-   windows are looked up only within runs of their own bytes, at every offset of those runs:
-   a run of a secret's bytes lies inside such a run.
+4. **Large files read in place, in linear time and a bounded heap** (#74 step 10). Each file
+   is mapped (`mmap`), never copied. A run of a secret's bytes lies inside a run of its form's
+   own bytes: `RUN` or more units, each a byte, or a UTF-16LE code unit. Only those runs are
+   looked in.
+   - **The walk.** A run is found by its first `RUN` units, then walked to its end a host page
+     (`mmap.PAGESIZE`) at a time. The old scan matched each run whole, and sre keeps a frame
+     for each pass of a repeated group, so its heap grew with a UTF-16LE run. A saved memory
+     on WHP ran out of memory that way (MemoryError at scan.py:156, jupiter, 2026-11-13).
+   - **Anchors.** Inside a run, the windows are looked up through anchors: `width // 2 + 1`
+     bytes of a window, read every `stride = width + 1 - anchor` bytes. A window holds an anchor
+     at `stride` consecutive offsets, so exactly one of them is read (pigeonhole). Where an
+     anchor is held, each window that holds it there is looked up. Every window at every
+     offset is still found. Any split of `width + 1` finds the same windows; halving it keeps
+     an anchor no shorter than the stride it saves, and saves the most offsets.
+   - **Shapes.** A credential shape is tried only where a token begins (a lookbehind). A run
+     of one shape's prefixes is walked once, not once from each prefix: a JWT's was
+     quadratic. One finding differs from the old scan's, deliberately: a shape that starts a
+     token inside a match that doesn't (`x` + `eyJ0.` + a JWT) is now listed. The old scan
+     skipped that whole match, and the JWT inside it with it.
 
 **Exit codes.**
 
@@ -146,7 +162,7 @@ built). On each backend:
 
 All on adas-mac-studio-3.local, through the carrier:
 - **The scan.** `python3 -I docs/research/measurements/s33-leak-scan/scan_test.py -v`: 7
-  passed. They cover:
+  passed (9 since #74 step 10, below). They cover:
   - planted 1 MiB memory images: a value's 31-byte run found where it lies, whole; `RUN - 1`
     bytes, and none at all, found clean;
   - runs of `RUN` and of 30 bytes found at each of eight offsets;
@@ -163,10 +179,85 @@ All on adas-mac-studio-3.local, through the carrier:
 - **Guard removals** (R10, by hand, each test run on its own): 13 of 13 failed, the scan's seven
   among them. They are listed in D259.
 
+## The linear scan (#74 step 10), measured
+
+**The defect** (ROOT's E2E logs, R09):
+- WHP, jupiter, Python 3.13.0: `api_image`'s
+  `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it` ran 1185 s, then
+  died with MemoryError at scan.py:156 (`for candidate in pattern.finditer(buf)`), in the
+  UTF-16LE pass.
+- KVM: the same test passed, in 2092 s.
+
+**Reproduced** (red, committed alone): `scan_test.py`'s
+`test_long_runs_of_every_forms_bytes_scan_in_bounded_memory_and_values_in_them_are_found`. Its
+4 MiB image (`runs_image`) holds long runs of a secret's bytes in each form, with 19 values
+planted inside them. On the old scan the heap peaked at 192616128 traced bytes. Also red on the
+old scan: `test_a_shape_inside_a_word_hides_no_token_after_it`.
+
+**Before and after** on `runs_image`, one scan per process:
+
+    python3 -I measure.py image PATH SIZE
+    python3 -I measure.py scan SCAN_PY PATH time|heap
+    python3 -I measure.py prefixes SCAN_PY BYTES
+
+The old scan.py was origin/main 9d2da923d's; the new one is this commit's. Both ran on each
+host through the carrier.
+
+| Host | Image | Old: time, heap peak, resident peak | New: time, heap peak, resident peak |
+|---|---|---|---|
+| adalundhe-macbook-pro, macOS arm64, Python 3.14.6, 16 KiB pages | 16 MiB | 1.68 s, 587127800 B, 584695808 B | 0.86 s, 710268 B, 47284224 B |
+| | 64 MiB | 7.75 s, 2239349400 B, 2245115904 B | 3.51 s, 710268 B, 97845248 B |
+| adacachy2, Linux x86_64, Python 3.14.9, 4 KiB pages | 16 MiB | 1.43 s, 587127712 B, 577908736 B | 0.64 s, 281300 B, 40960000 B |
+| | 64 MiB | 6.38 s, 2239349312 B, 2239635456 B | 2.50 s, 281300 B, 90951680 B |
+
+- **Time** is from `time` runs; **heap peak** is tracemalloc's, from `heap` runs.
+- **Resident peak** is getrusage's. It includes the image's mapped pages, which are clean and
+  reclaimable.
+- **The old heap** grew at 33 to 35 bytes per byte scanned. A memory of several GiB therefore
+  runs out, as it did on WHP.
+- **The new heap** is the same at 16 and 64 MiB: the index and one page's match.
+- **The same findings.** Each pair of runs said the same lines, digest for digest: 19 of 19
+  values found, at their offsets.
+
+A run of JWT prefixes (`prefixes`, `eyJ` repeated):
+
+| Bytes | Old, Mac | New, Mac | Old, Linux | New, Linux |
+|---|---|---|---|---|
+| 30000 | 0.171 s | 0.001 s | 0.176 s | 0.001 s |
+| 60000 | 0.731 s | 0.001 s | 0.697 s | 0.001 s |
+| 120000 | 3.161 s | 0.003 s | 2.823 s | 0.002 s |
+
+The old time grew quadratically, about 4× for each doubling; the new time is linear.
+
+**Old against new, findings.** 400 random images on this Mac (Python 3.9.6) gave the same leaks
+and the same shapes, digest for digest: 1702 leak findings and 379 shape findings. The images
+mixed zeros, slices of secrets and of public values in every form, runs of one byte and of one
+UTF-16LE unit, shape prefixes, JWTs and random bytes. That harness was ad hoc and is not kept.
+The one difference is the deliberate one under "Shapes" above.
+
+**Light tests, this slice:** on adalundhe-macbook-pro and adacachy2, through a carrier (a
+bundle over origin/main in a blobless sparse clone, removed after):
+- `scan_test.py -v`: 9 passed;
+- `credentials_test.py`: 15 passed;
+- the old scan under the new tests: the two new tests failed, the other seven passed.
+
+**Guard removals** (R10, each on a copy, all 9 tests run): 6 of 6 failed:
+- the walk as one unbounded repeat;
+- the walk stopping after its first page;
+- a stride one past the pigeonhole;
+- the verify range missing its stride's first offset;
+- anchors from a window's first offset alone;
+- shapes tried anywhere, not at a token start.
+
+The walk stopping, and the stride, first survived a single plant in the middle of a run.
+`runs_image` now plants a value across each of the walk's first `RUN` steps, each at its own
+offset to its step.
+
 ## Owed
 
 - **Run 1, the harness's own check,** on KVM x86_64, HVF arm64, WHP x86_64 and KVM arm64
-  (L1). Not run here: no VM is booted in this lane.
+  (L1). Not run here: no VM is booted in this lane. Since #74 step 10, a rerun on WHP (where
+  the old scan ran out of memory) and on KVM (2092 s) shows the linear scan on a real save.
 - **Run 2, the real sessions.** It waits on step 8, on Hex's half of step 6, and on a save hook
   in Hex.
 - **Step 10's second part,** the injector's A/B latency harness, is another lane's.
