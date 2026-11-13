@@ -835,7 +835,8 @@ fn run_end(failed: Option<String>, done: Option<&[u8]>, started: bool) -> wire::
 }
 
 /// What a run's VM told of its end on its link (warm.rs `finish`): whether its command started
-/// (`STARTED`), why the VM could not serve its run, where it could not, and its `DONE`.
+/// (`STARTED`), why the VM could not serve its run, where it could not (`UNSERVED`), and its
+/// `DONE`.
 #[derive(Debug, Default)]
 struct Told {
     started: bool,
@@ -844,8 +845,15 @@ struct Told {
 }
 
 impl Told {
-    /// The run's end, its VM's link closed, or broken as `failed` says.
+    /// The run's end, its VM's link closed, or broken as `failed` says. A VM that could not
+    /// serve its run failed it, in its words: the status it gives its client then
+    /// (`spec::NOT_RUN`, which `docker run` gives for dockerd's own failures) is no
+    /// command's, and a link broken after it is its consequence.
     fn end(self, failed: Option<String>) -> wire::RunEnd {
+        let failed = self
+            .unserved
+            .map(|why| format!("its VM could not serve its run: {why}"))
+            .or(failed);
         run_end(failed, self.done.as_deref(), self.started)
     }
 }
@@ -3118,6 +3126,8 @@ mod hosted {
             };
             if m.kind == kind::DONE {
                 told.done = Some(m.payload);
+            } else if m.kind == kind::UNSERVED {
+                told.unserved = Some(String::from_utf8_lossy(&m.payload).into_owned());
             } else if m.kind == kind::STARTED {
                 told.started = true;
                 // Its guest told what its host changes in its shares from now on (D235).

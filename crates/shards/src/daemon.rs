@@ -5868,6 +5868,12 @@ impl<D: Disk> Daemon<D> {
                     self.run_started(id, inbox);
                 }
                 kind::DONE => self.run_ended(id, inbox, Some(&m.payload)),
+                // Why its VM could not serve it, before its `DONE`: its client heard it as it
+                // exited, and the log keeps it for a run that had none.
+                kind::UNSERVED => log(format!(
+                    "container {id}: its VM could not serve its run: {}",
+                    String::from_utf8_lossy(&m.payload)
+                )),
                 // Its network process has closed its published ports: the daemon's copies
                 // close, and the ports are free (PM M380).
                 kind::PORTS_FREE => self.free_ports(Some(id), None),
