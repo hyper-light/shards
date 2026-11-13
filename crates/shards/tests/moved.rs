@@ -781,7 +781,7 @@ fn a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it() {
     assert_eq!(shards_in(&there, &["rm", "-f", "told"]).status, Some(0));
 }
 
-/// The CPU baseline a home's microVMs are told on x86-64 (D176 part 6, D241): CPUID's
+/// The CPU baseline a home's microVMs are told on x86-64 (D176 part 6, D243): CPUID's
 /// feature leaves, which `configure cpu` meets across the machines its contexts reach, and
 /// which go with a microVM moved. Told this machine's own CPU less AVX2 and SHA (leaf 7
 /// EBX bits 5 and 29), a guest's /proc/cpuinfo names neither, whatever its host has; moved,

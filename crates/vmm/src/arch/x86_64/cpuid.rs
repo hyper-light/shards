@@ -427,19 +427,29 @@ mod tests {
 /// each a register's place in a leaf's `[function, index, flags, eax, ebx, ecx, edx]`
 /// (Intel SDM vol. 2A, CPUID; AMD APM vol. 3, appendix E): a set bit in each is a feature
 /// the guest may use. Leaf 0DH's subleaf 0 says in EAX and EDX the XCR0 bits the CPU
-/// supports, each an XSAVE state component a guest may enable (Intel SDM vol. 1 §13.3), as
-/// cloud-hypervisor's migration check reads them too (v54.1 arch/src/x86_64/mod.rs,
-/// `CpuidFeatureEntry`): one moved to a CPU without a component it enabled could not set
-/// it again (KVM_SET_XCRS), nor run what used it.
+/// supports, and subleaf 1 in ECX and EDX the IA32_XSS bits, each an XSAVE state component
+/// a guest may enable (Intel SDM vol. 1 §13.2, §13.3), as cloud-hypervisor's migration
+/// check reads them too (v54.1 arch/src/x86_64/mod.rs, `CpuidFeatureEntry`): one moved to a
+/// CPU without a component it enabled could not set it again (KVM_SET_XCRS, the IA32_XSS
+/// MSR), nor run what used it. Leaf 1EH's subleaf 1 says in EAX which AMX instructions past
+/// the first the CPU has, which KVM offers as features (Linux arch/x86/kvm/cpuid.c,
+/// `CPUID_1E_1_EAX`). Leaf 0x40000001's EAX is KVM's paravirtual features (Linux
+/// Documentation/virt/kvm/x86/cpuid.rst, KVM_CPUID_FEATURES), which differ from host to
+/// host (steal time only where the host keeps scheduler statistics, cpuid.c). Not here:
+/// leaves 1DH and 1EH's subleaf 0, AMX's tile sizes, numbers its leaf-7 and XCR0 bits
+/// gate; leaf 0x40000000, KVM's signature, every KVM host's alike; leaf 7's EAX, its highest
+/// subleaf, as one a host lacks reads as zeros in [`covers`].
 const FEATURES: &[(u32, u32, &[u8])] = &[
     (1, 0, &[5, 6]),
     (7, 0, &[4, 5, 6]),
     (7, 1, &[3, 4, 5, 6]),
     (7, 2, &[6]),
     (0xd, 0, &[3, 6]),
-    (0xd, 1, &[3]),
+    (0xd, 1, &[3, 5, 6]),
     (0x14, 0, &[4, 5]),
     (0x19, 0, &[4]),
+    (0x1e, 1, &[3]),
+    (0x4000_0001, 0, &[3]),
     (0x8000_0001, 0, &[5, 6]),
     (0x8000_0007, 0, &[6]),
     (0x8000_0008, 0, &[4]),
@@ -801,5 +811,61 @@ mod covers_tests {
         for bad in ["7.0=1:2:3", "7=1:2:3:4", "7.0=1:2:3:4:5", "c021=0000000000000000"] {
             assert!(decode(bad).is_err(), "{bad}");
         }
+    }
+
+    /// What a guest may use beyond the instruction-set leaves is a baseline's too: a
+    /// supervisor XSAVE component (IA32_XSS bit 11, CET's user state), an AMX instruction of
+    /// leaf 1EH's subleaf 1 (bit 4) and KVM's steal time (KVM_FEATURE_STEAL_TIME, bit 5),
+    /// which one host has and the other not. Neither host runs the other's guest, each such
+    /// register named; their meet has none of the three, and both run it.
+    #[test]
+    fn a_baseline_holds_supervisor_state_amx_and_kvms_own_features() {
+        let leaf = |function, index, eax, ebx, ecx, edx| Leaf {
+            function,
+            index,
+            flags: 0,
+            eax,
+            ebx,
+            ecx,
+            edx,
+        };
+        let host = |xss: u32, amx: u32, kvm: u32| {
+            identity(&[
+                leaf(0, 0, 0x10, AMD[4], AMD[5], AMD[6]),
+                leaf(0xd, 1, 0xf, 0, xss, 0),
+                leaf(0x1e, 1, amx, 0, 0, 0),
+                leaf(0x4000_0001, 0, kvm, 0, 0, 0),
+            ])
+        };
+        let (cet, fp8, steal) = (1 << 11, 1 << 4, 1 << 5);
+        let more = host(0x100 | cet, 0x2 | fp8, 0x1_0afb | steal);
+        let less = host(0x100, 0x2, 0x1_0afb);
+        assert_eq!(more.len(), 4, "identity keeps each leaf: {more:?}");
+        assert_eq!(
+            covers(&less, &more),
+            Err(Lacks::Bits(vec![
+                Short {
+                    function: 0xd,
+                    index: 1,
+                    register: 5,
+                    missing: cet,
+                },
+                Short {
+                    function: 0x1e,
+                    index: 1,
+                    register: 3,
+                    missing: fp8,
+                },
+                Short {
+                    function: 0x4000_0001,
+                    index: 0,
+                    register: 3,
+                    missing: steal,
+                },
+            ]))
+        );
+        let both = baseline(&[more.clone(), less.clone()]).unwrap();
+        assert!(covers(&less, &both).is_ok() && covers(&more, &both).is_ok());
+        assert_eq!(both, less);
     }
 }

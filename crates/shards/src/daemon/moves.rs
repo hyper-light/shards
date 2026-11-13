@@ -384,7 +384,7 @@ pub(crate) enum CpuShort {
 }
 
 /// What a machine whose hypervisor shows a guest `here` refuses of microVM `name`, whose
-/// guest was told `baseline` (D176 part 6, D242): each field or register of it `here` has
+/// guest was told `baseline` (D176 part 6, D243): each field or register of it `here` has
 /// less of, or another vendor's CPU.
 fn baseline_refused(
     name: &str,
@@ -2283,7 +2283,7 @@ mod tests {
 
     /// A machine whose KVM shows a guest less than the baseline a microVM's guest was told
     /// refuses it, each register by the bits it lacks, and one of another vendor by its
-    /// vendor; one with all of it takes it (D242).
+    /// vendor; one with all of it takes it (D243).
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn a_machine_short_of_a_baseline_refuses_it_by_each_register() {

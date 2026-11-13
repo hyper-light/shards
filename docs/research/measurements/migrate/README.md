@@ -36,7 +36,7 @@ before anything moves"):
 ### Linux x86_64, adacachy
 
 AMD Ryzen 9 9950X3D2 (32 threads), CachyOS, Linux 7.2.9-2-cachyos, KVM; rustc 1.98.1;
-2026-11-13T02:43Z, tree 9281f24ca; log `~/g121-tmp/cold-migrate/s1m-gate.log` there.
+2026-11-13T02:43Z, tree 9281f24ca; log [logs/s1m-gate.log](logs/s1m-gate.log).
 
 | step | result |
 |---|---|
@@ -45,3 +45,28 @@ AMD Ryzen 9 9950X3D2 (32 threads), CachyOS, Linux 7.2.9-2-cachyos, KVM; rustc 1.
 | M1 | exit 101: `a_microvm_of_another_hypervisor_is_refused_before_anything_moves` (moves.rs:2021, `None` where `Some(Hypervisor { name: "web", hypervisor: "kvm", here: Some("hvf") })` was due) and `a_move_of_another_hypervisors_microvm_is_refused_typed` (daemon.rs:14926, status 0 and what this machine lacked, `{"image":true,"files":[],"unpacks":["zstd"]}`, where status 1 was due) failed |
 | M2 | exit 101: `a_move_of_another_hypervisors_microvm_is_refused_typed` (daemon.rs:14927, nothing typed on stdout: "EOF while parsing a value") failed |
 | M3 | exit 101: `a_refusal_is_said_from_its_type_and_else_in_the_steps_words` (cli/moves.rs:597, "anything", the step's words, where "a microVM named web is here already" was due) failed |
+
+Landed as merged with main again, 4a79f7f93 (2026-11-13T03:07Z,
+[logs/s1m3.log](logs/s1m3.log)): the two unit steps as above, 45 and 10 passed, and
+`cargo clippy -p shards -p shards-vmm --all-targets -- -D warnings` clean.
+
+## Step 2: the x86-64 CPU baseline on KVM (D243)
+
+The guards (D243; mutants M4-M10 of `light-gate.sh`):
+
+- M4, `hv::kvm::x86_64` `Vm::new`: a VM not told its baseline (`cpuid::within`).
+- M5, `cpuid::meet`: every bit either machine has, not both.
+- M6, `cpuid::meet`: a meet of two vendors' CPUs.
+- M7, `cpuid::FEATURES`: XSAVE's state components not among the features.
+- M8, `cpuid::decode`: a baseline's text of any number of leaves.
+- M9, daemon/moves.rs `unmasked`: an x86-64 guest told a baseline still checked by Linux's
+  names.
+- M10, daemon/moves.rs `baseline_refused`: a baseline taken where this machine's KVM shows
+  less of it.
+
+At the predecessor's tree (adacachy, Linux x86_64, KVM, from 2026-11-13T02:05Z, tree a9cf3b94c and its uncommitted edits,
+[logs/s2-gate.log](logs/s2-gate.log)): `cargo test -p shards-vmm --lib -- arch::
+hv::kvm::x86_64::tests::a_vm_told_a_baseline_gives_its_vcpus_no_more` 48 passed (the KVM
+test makes a VM with no guest), the move's tests 11 passed, `--test moved --no-run`
+compiled, and each of M1-M10 failed its named test.
+

@@ -1,0 +1,296 @@
+# 2026-11-13T02:43:42Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); tree 9281f24ca820715125262565ade12a96617c7a81
+=== cargo test -p shards-vmm --lib arch::
+   Compiling shards-abi v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/abi)
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/vmm)
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/testdir)
+   Compiling shards-syscall-filter v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/syscall-filter)
+   Compiling shards-netring v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/netring)
+   Compiling shards-ipc v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/ipc)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.51s
+     Running unittests src/lib.rs (/home/adalundhe/g121-tmp/cold-migrate/target/debug/deps/shards_vmm-766f1eb79724ca80)
+
+running 45 tests
+test arch::aarch64::boot::tests::a_gicv2m_msi_names_one_of_its_frames_spis_at_its_doorbell ... ok
+test arch::aarch64::esr::tests::cache_maintenance_is_told_from_a_write ... ok
+test arch::aarch64::esr::tests::load_value_extends_like_hardware ... ok
+test arch::aarch64::cpu::tests::a_host_runs_a_guest_whose_every_field_it_has ... ok
+test arch::x86_64::acpi::tests::aml_encodings_match_the_spec ... ok
+test arch::aarch64::boot::tests::parses_the_bootstrap_kernel_header ... ok
+test arch::aarch64::esr::tests::decodes_measured_syndromes ... ok
+test arch::x86_64::acpi::tests::refuses_what_the_madt_cannot_hold ... ok
+test arch::aarch64::cpu::tests::a_baseline_masks_what_any_machine_lacks ... ok
+test arch::aarch64::prefetch::tests::the_table_maps_each_gib_the_list_reaches_and_the_programs ... ok
+test arch::aarch64::psci::tests::cpu_on_and_argument_width ... ok
+test arch::aarch64::psci::tests::linux_probe_sequence ... ok
+test arch::aarch64::prefetch::tests::entries_list_each_page_once_and_mark_writes_only_where_they_may_be ... ok
+test arch::aarch64::esr::tests::decodes_sysreg_trap ... ok
+test arch::aarch64::state::tests::round_trips ... ok
+test arch::x86_64::acpi::tests::the_dsdt_names_the_vm_generation_id ... ok
+test arch::x86_64::acpi::tests::a_pci_bridge_is_described_where_there_is_one ... ok
+test arch::x86_64::acpi::tests::every_table_checksums_and_links ... ok
+test arch::aarch64::boot::tests::devicetree_matches_the_boot_contract ... ok
+test arch::x86_64::boot::tests::the_initrd_goes_at_the_top_of_low_ram ... ok
+test arch::x86_64::boot::tests::a_kernels_segments_are_spans_of_its_file ... ok
+test arch::x86_64::cpuid::tests::a_hypervisor_that_keeps_cpuid_is_told_only_the_bits_that_change ... ok
+test arch::x86_64::boot::tests::e820_splits_around_firmware_and_the_mmio_gap ... ok
+test arch::x86_64::cpuid::tests::caches_are_private_to_a_core_but_the_last_level_which_all_share ... ok
+test arch::x86_64::cpuid::tests::amd_topology_is_one_package_of_single_thread_cores ... ok
+test arch::x86_64::ioapic::tests::an_edge_goes_once_per_rise_and_not_while_masked ... ok
+test arch::x86_64::ioapic::tests::a_level_goes_until_acknowledged_and_again_while_asserted ... ok
+test arch::x86_64::cpuid::tests::gives_each_vcpu_its_apic_id_and_a_flat_topology ... ok
+test arch::x86_64::ioapic::tests::it_reads_as_an_82093aa_with_24_pins ... ok
+test arch::x86_64::ioapic::tests::a_restored_ioapic_goes_on_as_the_saved_one ... ok
+test arch::x86_64::mmio::tests::the_accessors_linux_compiles_decode ... ok
+test arch::x86_64::ioapic::tests::messages_carry_their_entries_fields ... ok
+test arch::x86_64::mmio::tests::protected_mode_has_no_rex_and_no_16_bit_addressing ... ok
+test arch::x86_64::ioapic::tests::narrower_reads_take_their_bytes ... ok
+test arch::x86_64::mmio::tests::loads_and_stores_move_the_right_bytes ... ok
+test arch::x86_64::mmio::tests::what_is_not_decoded_is_refused ... ok
+test arch::x86_64::boot::tests::gdt_descriptors_decode_to_the_boot_segments ... ok
+test arch::x86_64::boot::tests::rejects_malformed_elves ... ok
+test arch::x86_64::boot::tests::zero_page_carries_the_boot_protocol_fields ... ok
+test arch::x86_64::cpuid::covers_tests::a_host_runs_a_guest_whose_every_feature_it_has ... ok
+test arch::x86_64::cpuid::tests::a_lone_tile_configuration_is_not_offered ... ok
+test arch::tests::the_guest_kernel_takes_every_vcpu_a_machine_has ... ok
+test arch::x86_64::ioapic::tests::every_threads_pulse_is_an_edge ... ok
+test arch::aarch64::state::tests::a_state_past_what_a_machine_has_is_refused ... ok
+test arch::aarch64::state::tests::every_truncation_and_corruption_is_an_error_or_a_value_never_a_panic ... ok
+
+test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 445 filtered out; finished in 0.04s
+
+=== exit 0 : cargo test -p shards-vmm --lib arch::
+=== cargo test -p shards --bin shards -- daemon::moves cli::moves a_move_of_another_hypervisors_microvm_is_refused_typed
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys)
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-rs)
+   Compiling shards-template v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/template)
+   Compiling shards-erofs v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/erofs)
+   Compiling shards-dns v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/dns)
+   Compiling shards v0.7.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/shards)
+   Compiling shards-devcgroup v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/devcgroup)
+   Compiling shards-archive v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/archive)
+   Compiling shards-flate v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/flate)
+   Compiling shards-tui v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/tui)
+   Compiling shards-user v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/user)
+   Compiling shards-bus v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/bus)
+   Compiling shards-ext4 v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/ext4)
+   Compiling shards-zstd v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/zstd)
+   Compiling shards-gateway v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/gateway)
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/vmm)
+   Compiling shards-api v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/api)
+   Compiling shards-seccomp v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/seccomp)
+   Compiling shards-git v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/git)
+   Compiling shards-net v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/net)
+   Compiling shards-image v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/image)
+   Compiling shards-cmdline v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/cmdline)
+   Compiling shards-rego v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/rego)
+   Compiling shards-agentfile v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/agentfile)
+   Compiling shards-build v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/build)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/ccCbgjRG.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/ccU3AA3r.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+   Compiling rustls v0.23.46
+   Compiling rustls-webpki v0.103.16
+   Compiling shards-gitsign v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/gitsign)
+   Compiling rcgen v0.14.10
+   Compiling shards-tuf v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/tuf)
+   Compiling hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling shards-sigstore v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/sigstore)
+   Compiling hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/testguest)
+   Compiling shards-registry v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/registry)
+   Compiling shards-remote v0.1.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/remote)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 15s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/cold-migrate/target/debug/deps/shards-fcaa81b97fba4478)
+
+running 10 tests
+test daemon::moves::tests::a_baseline_masks_the_features_of_the_registers_it_names ... ok
+test cli::moves::tests::a_refusal_is_said_from_its_type_and_else_in_the_steps_words ... ok
+test daemon::moves::tests::a_microvm_of_another_hypervisor_is_refused_before_anything_moves ... ok
+test daemon::moves::tests::a_stream_puts_only_what_its_plan_names ... ok
+test daemon::moves::tests::a_refusal_is_typed_on_the_wire_and_says_what_it_said ... ok
+test daemon::moves::tests::a_live_moves_last_round_lays_over_its_rounds_page_by_page ... ok
+test daemon::moves::tests::a_cpu_lacking_what_its_guest_may_have_used_is_named ... ok
+test daemon::tests::a_move_of_another_hypervisors_microvm_is_refused_typed ... ok
+test daemon::moves::tests::a_volumes_files_move_as_its_guest_saw_them ... ok
+test daemon::moves::tests::a_tree_moves_whole_and_as_sparse ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.02s
+
+=== exit 0 : cargo test -p shards --bin shards -- daemon::moves cli::moves a_move_of_another_hypervisors_microvm_is_refused_typed
+=== mutant: crates/shards/src/daemon/moves.rs:         && Some(theirs) != hypervisor
+ ->         && Some(theirs) != hypervisor
+        && false
+
+=== cargo test -p shards --bin shards -- a_microvm_of_another_hypervisor_is_refused_before_anything_moves a_move_of_another_hypervisors_microvm_is_refused_typed
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/ccCbgjRG.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/ccU3AA3r.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+   Compiling shards v0.7.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/shards)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.96s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/cold-migrate/target/debug/deps/shards-fcaa81b97fba4478)
+
+running 2 tests
+test daemon::moves::tests::a_microvm_of_another_hypervisor_is_refused_before_anything_moves ... FAILED
+test daemon::tests::a_move_of_another_hypervisors_microvm_is_refused_typed ... FAILED
+
+failures:
+
+---- daemon::moves::tests::a_microvm_of_another_hypervisor_is_refused_before_anything_moves stdout ----
+
+thread 'daemon::moves::tests::a_microvm_of_another_hypervisor_is_refused_before_anything_moves' (1830861) panicked at crates/shards/src/daemon/moves.rs:2021:9:
+assertion `left == right` failed
+  left: None
+ right: Some(Hypervisor { name: "web", hypervisor: "kvm", here: Some("hvf") })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- daemon::tests::a_move_of_another_hypervisors_microvm_is_refused_typed stdout ----
+
+thread 'daemon::tests::a_move_of_another_hypervisors_microvm_is_refused_typed' (1830862) panicked at crates/shards/src/daemon.rs:14926:13:
+assertion `left == right` failed: {"image":true,"files":[],"unpacks":["zstd"]}
+Unable to find image '127.0.0.1:9/absent@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' locally
+
+  left: 0
+ right: 1
+
+
+failures:
+    daemon::moves::tests::a_microvm_of_another_hypervisor_is_refused_before_anything_moves
+    daemon::tests::a_move_of_another_hypervisors_microvm_is_refused_typed
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 753 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `-p shards --bin shards`
+=== exit 101 : cargo test -p shards --bin shards -- a_microvm_of_another_hypervisor_is_refused_before_anything_moves a_move_of_another_hypervisors_microvm_is_refused_typed
+=== mutant: crates/shards/src/daemon/moves.rs:                         reply.out(&json);
+ ->                         let _ = json;
+
+=== cargo test -p shards --bin shards -- a_move_of_another_hypervisors_microvm_is_refused_typed
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/ccCbgjRG.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/ccU3AA3r.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+   Compiling shards v0.7.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/shards)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.69s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/cold-migrate/target/debug/deps/shards-fcaa81b97fba4478)
+
+running 1 test
+test daemon::tests::a_move_of_another_hypervisors_microvm_is_refused_typed ... FAILED
+
+failures:
+
+---- daemon::tests::a_move_of_another_hypervisors_microvm_is_refused_typed stdout ----
+
+thread 'daemon::tests::a_move_of_another_hypervisors_microvm_is_refused_typed' (1848555) panicked at crates/shards/src/daemon.rs:14927:76:
+called `Result::unwrap()` on an `Err` value: Error("EOF while parsing a value", line: 1, column: 0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    daemon::tests::a_move_of_another_hypervisors_microvm_is_refused_typed
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 754 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --bin shards`
+=== exit 101 : cargo test -p shards --bin shards -- a_move_of_another_hypervisors_microvm_is_refused_typed
+=== mutant: crates/shards/src/cli/moves.rs:     match serde_json::from_slice::<crate::daemon::Refused>(&answer.1) { ->     match serde_json::from_slice::<crate::daemon::Refused>(b"") {
+=== cargo test -p shards --bin shards -- a_refusal_is_said_from_its_type_and_else_in_the_steps_words
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/g121-tmp/cold-migrate/target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/ccCbgjRG.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/ccU3AA3r.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/cold-migrate/src/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+   Compiling shards v0.7.0 (/home/adalundhe/g121-tmp/cold-migrate/src/crates/shards)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.05s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/cold-migrate/target/debug/deps/shards-fcaa81b97fba4478)
+
+running 1 test
+test cli::moves::tests::a_refusal_is_said_from_its_type_and_else_in_the_steps_words ... FAILED
+
+failures:
+
+---- cli::moves::tests::a_refusal_is_said_from_its_type_and_else_in_the_steps_words stdout ----
+
+thread 'cli::moves::tests::a_refusal_is_said_from_its_type_and_else_in_the_steps_words' (1854017) panicked at crates/shards/src/cli/moves.rs:597:9:
+assertion `left == right` failed
+  left: "anything"
+ right: "a microVM named web is here already"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    cli::moves::tests::a_refusal_is_said_from_its_type_and_else_in_the_steps_words
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 754 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --bin shards`
+=== exit 101 : cargo test -p shards --bin shards -- a_refusal_is_said_from_its_type_and_else_in_the_steps_words
+GATE_DONE
