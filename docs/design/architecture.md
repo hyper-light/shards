@@ -26533,6 +26533,92 @@ are none.
 before its own options, or with one split, joined or cut; a request past the bound started
 with its arguments cut.
 
+### D257. One registry of setup keys, and an init refusing an entry of any other before it applies a spec (built; real-VM runs owed)
+
+**Why.** D28 refuses an init of another build by the identity of what the two share: shards-abi's
+sources, hashed as it is built. A spec's setup entries are shared too, but most of their keys
+were spelled as literals in the host's composers and init's readers alone (`tmpfs=`, `readonly`,
+`caps=`, `confine-eth0`, and some fifty more), outside abi, so no identity covered them. And init
+ignored an entry it had no reader for: `setup::apply` falls through to `Ok`, and `sort_setup`
+hands an unknown entry to the standby, which applies nothing of it. An init from another commit
+whose abi sources are the same would then drop a key its host's build added, saying nothing.
+This came out of a finding first reported too broadly (D256's run): the `member-*=` keys are
+abi's, so D28 already covers them; the literals were the gap (ROOT's go, 2026-11-13).
+
+**Alternatives** (R02):
+- The init's identity carried in HELLO, checked before staging: D28 already does that, on the
+  control page, before any spec, at no cost to a run. Not built twice (R12, R13).
+- A protocol number, raised as keys change: a chosen number (R03), and one a change could forget.
+- An init warning of an unknown entry and going on: the same silent drop, logged.
+- Decided: every key in one abi registry, so D28's identity moves with each, and init refusing an
+  entry of any other.
+
+**Decided and built.**
+- *The registry.* `shards_abi::run::setup::KEYS`, 74 keys, sorted. An entry's key is its bytes
+  before its first `=`, else the whole entry (`readonly`). It holds every key a host composer
+  writes, and `own-net`, which init's joiner code reads (join.rs `built_by`) and no composer
+  writes. Not `notify`, init's own entry for its standby, which its code says is never a daemon's.
+- *Init refuses.* Both frames that carry a spec read it through `host_spec`: the workload's
+  (`receive`) and an exec's (`Exec::start`), which a member's exec and a joiner's command use
+  too. An entry of an unregistered key refuses the spec before any of it is applied.
+  - `run::setup::Unregistered` names the key, never the value, which may be a credential.
+  - A run so refused ends unstarted, with init's words, as any setup it refuses does; an exec,
+    by its id.
+- *The identity follows.* The registry is abi's source, so a key added changes D28's identity,
+  and the host refuses an init built before it, before it sends any spec.
+
+**The guard against a missed key** (ROOT's (c)): host unit tests.
+- *The composers that are functions*: setup.rs's `setup`, `security_setup`, `binds`,
+  `domain_seccomp` and `plug_roots` for a run of every option they read (with the nesting grant
+  and without, privileged, on another run's namespaces); volumes' entries as `open` and `joined`
+  compose them; api-run's staging and its CA's entries. Every entry is of a registered key, and
+  the run of every option writes each of its kinds.
+- *The composers that write inline*: a census of the crate's sources.
+  - Every file writing a spec's setup must be among the census's 14. The daemon's runs,
+    joiners and execs, api-run, the warm VM and the VM process are among them, so a new one
+    fails the test until it is read. Its first run found one the inventory had missed: a
+    member's exec (`daemon/managed/execs.rs`, D243), whose one entry is abi's `exec_in`.
+  - Each key those files spell as a literal (`b"KEY=…"`, `b"KEY"`, `format!("KEY=…")`) must be
+    registered, or one of the words each file names as no entry's key (a device's throttle tags,
+    a volume's flags, a tmpfs's options).
+  - Only `volumes.rs` may choose its key as it runs, and its own tests compose that one.
+- The builder writes no setup: its steps reach the guest in the builder's own protocol.
+- abi's own test: every key constant it defines, and every entry its functions make, is
+  registered.
+
+**Literals.**
+
+| Literal | Source |
+|---|---|
+| `KEYS` | the protocol's own names, each from the composer that writes it or the reader that reads it |
+| `=` | an entry's own separator of its key and value |
+
+**Cold start** (R03). Nothing is learned or chosen.
+
+**Tested** (light, red then green):
+- abi `run::setup::tests`: the registry sorted and each a key; every entry abi makes registered;
+  an unregistered key refused by its key, its value unsaid.
+- init `host_spec_tests::a_spec_holding_an_unregistered_setup_key_is_refused_by_it`; its
+  guard-removal mutant (`host_spec` without the check, init's behavior before) fails it.
+- shards `setup::tests::every_entry_the_setup_composers_write_is_of_a_registered_key` and
+  `every_entry_the_composers_spell_is_of_a_registered_key`. With one key taken out of the
+  registry (the daemon's `mac`), the census fails naming the file and key.
+- volumes' `a_joiners_shared_directories_are_its_join_shares_volumes` and
+  `an_agentfiles_volumes_are_registered_as_it_and_the_run_say`; api-run's
+  `a_members_arguments_are_staged_after_its_own_in_order` and
+  `credential_grants_ca_goes_to_the_guest_in_pem_with_each_host_once`.
+
+**Owed** (ROOT).
+- The broad real-VM suites on HVF, then KVM and WHP: containers, api_image, nesting,
+  member_exec. A key the census and the composers' tests missed shows there as a run refused
+  "its setup: a setup entry of key …".
+- These light tests on Linux and Windows (CI), and `scripts/lint` on the 7 targets.
+
+**What would falsify it.** A spec all of whose keys are registered refused; one holding an
+entry of an unregistered key started, applied or silently ignored; a file writing a spec's
+setup that the census does not read; an init of another build that accepts a key it has no
+reader for.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
