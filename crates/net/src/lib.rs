@@ -16,6 +16,7 @@ mod dial;
 /// The answers its resolver gives a network's members (D46): shards-dns, shared with the
 /// agents' resolver in the guest (D181).
 pub use shards_dns as dns;
+pub mod lease;
 pub mod pktinfo;
 mod poll;
 mod ring;
@@ -186,12 +187,14 @@ pub fn decode_grants(mut bytes: &[u8]) -> Option<Vec<Grant>> {
     Some(grants)
 }
 
-/// A run's credentials as its network process holds them (D242): its grants, and its CA,
-/// made for their hosts alone. No value: a value comes by lease, as a request needs it.
+/// A run's credentials as its network process holds them (D242): its grants, its CA, made
+/// for their hosts alone, and their leases: a value comes by lease, asked of the run host as a
+/// request first needs it and held while its lease lives.
 #[derive(Debug)]
 pub struct Credentials {
     pub grants: Vec<Grant>,
     pub ca: ca::Ca,
+    pub leases: lease::Leases,
 }
 
 /// Whether a flow to `host` may leave the microVM under an Agentfile's egress grants (D59,
@@ -980,6 +983,7 @@ impl Control {
                     | shards_ipc::kind::NET_NAMES
                     | shards_ipc::kind::NET_POLICY
                     | shards_ipc::kind::NET_CREDENTIALS
+                    | shards_ipc::kind::NET_LEASE
             ),
             Control::Release => kind == shards_ipc::kind::UNPUBLISH,
         }
@@ -1145,8 +1149,14 @@ pub fn serve(
                         .as_mut()
                         .is_some_and(|(role, sock, incoming)| control(&mut stack, *role, sock, incoming));
                     // Hung up, or said what was not its: forgotten, and closed. What is
-                    // published stays, as the VM runs on.
-                    if !keep && let Some((_, sock, _)) = entry.take() {
+                    // published stays, as the VM runs on; the run's leases end with its
+                    // host's control, which alone answers them (D242).
+                    if !keep && let Some((role, sock, _)) = entry.take() {
+                        if role == Control::Daemon
+                            && let Some(c) = stack.credentials.as_mut()
+                        {
+                            c.leases.end();
+                        }
                         stack.forget(sock.raw_sock(), e.token, poll::Interest::READ);
                     }
                 }
@@ -1164,6 +1174,32 @@ pub fn serve(
             }
         }
         stack.timers(Instant::now());
+        ask_run_host(&mut stack, &controls);
+    }
+}
+
+/// Sends the run host the leases asked since the last pass (D242), on its control
+/// ([`Control::Daemon`]'s), so that no ask holds up the loop that made it. Where that control
+/// is gone or will not take one, no lease can come: the run's leases end, their waiting flows
+/// told so.
+fn ask_run_host(stack: &mut Stack<'_>, controls: &[Option<(Control, UnixStream, shards_ipc::Incoming)>]) {
+    let Some(c) = stack.credentials.as_mut() else {
+        return;
+    };
+    let asks = c.leases.asks();
+    if asks.is_empty() {
+        return;
+    }
+    let host = controls
+        .iter()
+        .flatten()
+        .find(|(role, ..)| *role == Control::Daemon);
+    let sent = host.is_some_and(|(_, sock, _)| {
+        asks.iter()
+            .all(|ask| reply(sock, shards_ipc::kind::NET_LEASE, ask).is_ok())
+    });
+    if !sent {
+        c.leases.end();
     }
 }
 
@@ -1177,7 +1213,7 @@ fn control(
     incoming: &mut shards_ipc::Incoming,
 ) -> bool {
     loop {
-        let m = match incoming.take(sock) {
+        let mut m = match incoming.take(sock) {
             Ok(shards_ipc::Took::Message(m)) => m,
             Ok(shards_ipc::Took::Partial) => return true,
             Ok(shards_ipc::Took::Ended) | Err(_) => return false,
@@ -1195,7 +1231,13 @@ fn control(
             };
             handed(stack, sock, m.kind, payload, fds)
         } else {
-            answer_other(stack, sock, &m)
+            let answered = answer_other(stack, sock, &m);
+            // A lease's value is held by its lease alone once taken (D242): the message's
+            // copy is wiped as it goes.
+            if m.kind == shards_ipc::kind::NET_LEASE {
+                zeroize::Zeroize::zeroize(&mut m.payload);
+            }
+            answered
         };
         if answered.is_err() {
             return false;
@@ -1334,8 +1376,20 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             hosts.dedup();
             let ca = ca::Ca::new(key, &hosts).map_err(io::Error::other)?;
             let der = ca.der().to_vec();
-            stack.credentials = Some(Credentials { grants, ca });
+            let leases = lease::Leases::new(grants.iter().map(|g| g.reference.clone()).collect());
+            stack.credentials = Some(Credentials { grants, ca, leases });
             reply(sock, shards_ipc::kind::NET_CREDENTIALS, &der)
+        } else if m.kind == shards_ipc::kind::NET_LEASE {
+            // A lease's answer (D242), to an ask of this process's: held, or refused, its
+            // waiting flows resumed. Not answered: it is the answer. One to no ask, or of a run
+            // with no grants, breaks the run host's contract.
+            let Some(credentials) = stack.credentials.as_mut() else {
+                return Err(malformed());
+            };
+            if !credentials.leases.answered(&m.payload, Instant::now()) {
+                return Err(malformed());
+            }
+            Ok(())
         } else if m.kind == shards_ipc::kind::NET_LINK_LOCAL {
             let Some(addresses) = decode_addresses(&m.payload) else {
                 return Err(malformed());
@@ -2578,6 +2632,10 @@ impl<'r> Stack<'r> {
     /// on, does nothing, or is armed again for when it ends (review 2.14).
     fn timers(&mut self, now: Instant) {
         ring::expire(now);
+        // Each credential's value goes as its lease ends (D242), wiped.
+        if let Some(c) = self.credentials.as_mut() {
+            c.leases.lapse(now);
+        }
         while let Some(&Reverse((at, named))) = self.timers.peek() {
             if at > now {
                 break;
@@ -2644,14 +2702,15 @@ impl<'r> Stack<'r> {
         }
     }
 
-    /// The earliest timer's time: a connection's, a flow's, or the memory its queues let
-    /// go of going back to the OS (ring.rs).
+    /// The earliest timer's time: a connection's, a flow's, a credential's lease's end
+    /// (D242), or the memory its queues let go of going back to the OS (ring.rs).
     fn next_timer(&self) -> Option<Instant> {
         let timer = self.timers.peek().map(|Reverse((at, _))| *at);
-        match (timer, ring::expire(Instant::now())) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let lease = self.credentials.as_ref().and_then(|c| c.leases.next_end());
+        [timer, lease, ring::expire(Instant::now())]
+            .into_iter()
+            .flatten()
+            .min()
     }
 }
 
@@ -3535,9 +3594,92 @@ mod tests {
     /// other's: a VM gives the network process nothing to serve (review 2.19).
     #[test]
     fn each_control_socket_says_only_its_own() {
-        use shards_ipc::kind::{PUBLISH, UNPUBLISH};
+        use shards_ipc::kind::{NET_LEASE, PUBLISH, UNPUBLISH};
         assert!(Control::Daemon.says(PUBLISH) && !Control::Daemon.says(UNPUBLISH));
         assert!(Control::Release.says(UNPUBLISH) && !Control::Release.says(PUBLISH));
+        // A lease is answered by the run host alone (D242), never by the VM.
+        assert!(Control::Daemon.says(NET_LEASE) && !Control::Release.says(NET_LEASE));
+    }
+
+    /// The loop's side of a lease (D242). Do: answer a lease of a stack with no grants; give
+    /// it the run's grants and ask one; send the loop's asks; answer it, then answer an ask it
+    /// never made; ask another with no run host's control left. Expect: the first refused;
+    /// the ask on the run host's control, by its reference; its answer taken and its value
+    /// held; the stray answer refused, breaking the control; and with no control left the
+    /// run's leases ended, the waiting flow told so.
+    #[cfg(unix)]
+    #[test]
+    fn a_lease_is_asked_on_the_run_hosts_control_and_taken_as_its_answer() {
+        use std::num::NonZeroU64;
+        use std::os::unix::net::UnixStream;
+        const CLAUDE: &str = "anthropic/claude-max";
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut stack = stack(
+            Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
+            region.producer(1, pr),
+        );
+        let (host, hosts) = UnixStream::pair().unwrap();
+        let controls = vec![Some((Control::Daemon, hosts, shards_ipc::Incoming::default()))];
+        let sock = &controls[0].as_ref().unwrap().1;
+        let message = |payload: &[u8]| shards_ipc::Message {
+            kind: shards_ipc::kind::NET_LEASE,
+            payload: payload.to_vec(),
+            fds: Vec::new(),
+        };
+        let ended = lease::encode_answer(0, Err(&lease::Refusal::Ended)).unwrap();
+        assert!(
+            answer_other(&mut stack, sock, &message(&ended)).is_err(),
+            "a lease answered to a run with no grants"
+        );
+        stack.credentials = Some(Credentials {
+            grants: vec![Grant {
+                reference: CLAUDE.into(),
+                toward: vec!["api.anthropic.com".into()],
+            }],
+            ca: ca::Ca::new(ca::Key::generate().unwrap(), &["api.anthropic.com"]).unwrap(),
+            leases: lease::Leases::new(vec![CLAUDE.into(), "openai/chatgpt".into()]),
+        });
+        let now = Instant::now();
+        let leases = &mut stack.credentials.as_mut().unwrap().leases;
+        assert!(matches!(leases.ask(CLAUDE, 1, now), lease::Asked::Waiting));
+        ask_run_host(&mut stack, &controls);
+        let asked = shards_ipc::recv_by(&host, now + Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert_eq!(asked.kind, shards_ipc::kind::NET_LEASE);
+        let (id, reference) = lease::decode_ask(&asked.payload).unwrap();
+        assert_eq!(reference, CLAUDE);
+        let value = b"sk-ant-lease-test-value";
+        let life = NonZeroU64::new(60_000_000_000).unwrap();
+        let answer = lease::encode_answer(id, Ok((life, value))).unwrap();
+        assert!(answer_other(&mut stack, sock, &message(&answer)).is_ok());
+        let leases = &mut stack.credentials.as_mut().unwrap().leases;
+        assert_eq!(leases.held(CLAUDE, Instant::now()), Some(&value[..]));
+        assert_eq!(leases.resumed().len(), 1);
+        let stray = lease::encode_answer(id.wrapping_add(7), Err(&lease::Refusal::Ended)).unwrap();
+        assert!(answer_other(&mut stack, sock, &message(&stray)).is_err());
+        let leases = &mut stack.credentials.as_mut().unwrap().leases;
+        assert!(matches!(
+            leases.ask("openai/chatgpt", 2, Instant::now()),
+            lease::Asked::Waiting
+        ));
+        ask_run_host(&mut stack, &[]);
+        let leases = &mut stack.credentials.as_mut().unwrap().leases;
+        assert_eq!(
+            leases.resumed(),
+            [lease::Resumed {
+                waiter: 2,
+                reference: "openai/chatgpt".into(),
+                outcome: Err(lease::Refusal::Ended),
+            }]
+        );
+        assert_eq!(
+            leases.held(CLAUDE, Instant::now()),
+            None,
+            "held past its run's end"
+        );
     }
 
     /// An initial sequence number is its connection's and its secret's alone, plus its

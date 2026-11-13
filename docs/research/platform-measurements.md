@@ -926,7 +926,13 @@ frame 3 (`base + 0x60000`) and processor number 3, and is marked Last.
 - **Consequence.** D26: `shards_ipc::take_forwarded` gives SIGWINCH and SIGIO a handler,
   which never runs while they stay blocked for `sigwait`, as Go's `os/signal` gives every
   signal it is notified of. Before, neither the client nor `vm run` forwarded them on the
-  Mac.
+  Mac. An exec's client, which forwards no other signal, still blocked SIGWINCH alone at its
+  default, so no exec's terminal followed its client's on the Mac (ROOT's HVF run at
+  41d35bde1: tty.rs `an_execs_terminal_follows_its_clients` and member_exec.rs's resize case,
+  each exec's command still in sigsuspend; Linux CI passed the member's). Since 6e33204f5 it
+  takes it through `shards_ipc::take_resizes`, which gives it the same handler
+  (`keep_for_sigwait`); `unix::tests::a_resize_taken_alone_stays_pending_for_sigwait` is red
+  without it on macOS (the signal dropped as it is sent) and green with it.
 
 ### M32. A keystroke's echo through `run -it`
 

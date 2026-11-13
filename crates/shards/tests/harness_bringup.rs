@@ -487,6 +487,54 @@ fn set_mode(path: &Path, mode: u32) {
     let _ = (path, mode);
 }
 
+/// The mode a run's share shows a guest of the host's `path`, the host's own answer for it
+/// (server.rs: a host-made file keeps the mode the host's stat gives): on Unix, the host's
+/// mode.
+#[cfg(unix)]
+fn shared_mode(path: &Path) -> u32 {
+    std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(path).unwrap().permissions())
+}
+
+/// [`shared_mode`] on Windows, which keeps no mode: what the share's Windows path reads of the
+/// host's file (`ntfs::stat`: WSL's mode where NTFS keeps one, else its kind's, 0755, or 0555
+/// for a read-only file).
+#[cfg(windows)]
+fn shared_mode(path: &Path) -> u32 {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsHandle as _;
+    // A directory opens only with backup semantics (CreateFileW).
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .unwrap();
+    shards_vmm::devices::virtio::fs::ntfs::stat(opened.as_handle())
+        .unwrap()
+        .mode
+}
+
+/// `mode` as `ls -l` writes it: its kind's letter, then its user's, group's and others' `rwx`.
+fn ls_mode(mode: u32) -> String {
+    let kind = match mode & 0o170000 {
+        0o040000 => 'd',
+        0o120000 => 'l',
+        0o010000 => 'p',
+        0o020000 => 'c',
+        0o060000 => 'b',
+        0o140000 => 's',
+        _ => '-',
+    };
+    std::iter::once(kind)
+        .chain((0..9).rev().map(|bit| {
+            if mode & (1 << bit) != 0 {
+                char::from(b"xwr"[bit % 3])
+            } else {
+                '-'
+            }
+        }))
+        .collect()
+}
+
 /// OpenAI's Codex CLI, `codex exec --json`, started by its harness.json: the kernel saw
 /// the very command line it declares, with no shell between, and the run's owner reads its
 /// JSONL events, each line JSON as Codex wrote it, to the provider's refusal: a 401 from
@@ -732,8 +780,9 @@ fn a_real_claude_code_takes_a_key_from_a_volume_given_at_run_time() {
 /// A probe harness, no binary of its own, running the base image's `sh`: a host directory
 /// given it at run time, only the host's user's to enter (0700) and its file only theirs to
 /// read (0600), is shown the harness as its own (uid and gid 200000, the first domain's),
-/// the host's modes kept, so the harness reads it: the host's modes keep the host's other
-/// users out, and the volume's `FOR` keeps every other member out.
+/// with the modes the host itself gives them ([`shared_mode`]), so the harness reads it: the
+/// host's protection keeps the host's other users out, and the volume's `FOR` keeps every
+/// other member out.
 #[test]
 #[ignore = "a measurement: what a run-time volume shows a harness"]
 fn a_volume_given_at_run_time_is_the_harness_own() {
@@ -769,10 +818,14 @@ fn a_volume_given_at_run_time_is_the_harness_own() {
             .find(|l| l.last() == Some(&name))
             .map(|l| [l[0], l[2], l[3]])
     };
-    assert_eq!(listed("."), Some(["drwx------", "200000", "200000"]), "{all}");
+    let (dir, file) = (
+        ls_mode(shared_mode(&share)),
+        ls_mode(shared_mode(&share.join("secret"))),
+    );
+    assert_eq!(listed("."), Some([dir.as_str(), "200000", "200000"]), "{all}");
     assert_eq!(
         listed("secret"),
-        Some(["-rw-------", "200000", "200000"]),
+        Some([file.as_str(), "200000", "200000"]),
         "{all}"
     );
     assert_eq!(text.lines().last(), Some("read"), "{all}");
@@ -1110,4 +1163,29 @@ fn a_follow_ends_at_the_harness_own_exit() {
     let lost =
         format!("{heading}\n2026-11-12T03:10:34.5Z  -  0  lost   events the guest's queue could not hold\n");
     assert!(followed_far_enough(&lost, program));
+}
+
+/// `ls -l`'s modes of a directory and files a run gives a harness, as `ls` writes them.
+#[test]
+fn modes_are_written_as_ls_writes_them() {
+    assert_eq!(ls_mode(0o040700), "drwx------");
+    assert_eq!(ls_mode(0o100600), "-rw-------");
+    assert_eq!(ls_mode(0o040755), "drwxr-xr-x");
+    assert_eq!(ls_mode(0o100555), "-r-xr-xr-x");
+    assert_eq!(ls_mode(0o120777), "lrwxrwxrwx");
+}
+
+/// The probe's host directory and file, made as it makes them, shown with the modes this host
+/// gives them: on Unix the modes `given` sets.
+#[test]
+fn a_shared_files_mode_is_the_hosts_own() {
+    let (_outer, share) = given(&[("secret", PLACEHOLDER, 0o600)], 0o700);
+    let (dir, file) = (
+        ls_mode(shared_mode(&share)),
+        ls_mode(shared_mode(&share.join("secret"))),
+    );
+    #[cfg(unix)]
+    assert_eq!((dir.as_str(), file.as_str()), ("drwx------", "-rw-------"));
+    #[cfg(windows)]
+    assert_eq!((dir.as_str(), file.as_str()), ("drwxr-xr-x", "-rwxr-xr-x"));
 }
