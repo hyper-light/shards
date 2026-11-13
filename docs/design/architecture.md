@@ -8761,17 +8761,38 @@ budget's word and the next left its microVM within the next, which nothing said:
 41344493548); a give-back whose answer is lost to the daemon's 10 s, its guest giving back as it
 was ended, followed by the budget's word all the same (12 runs of 12 on Fedora, where 3 of
 19 had the daemon say nothing of the budget, PM M391). tests/budget.rs
-`a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one`: runs
+`a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none`: runs
 restored from their template, its warm microVMs in the slice, read a gigabyte through FUSE
-under a `MemoryHigh` its idle microVMs leave 128 MiB of within twice the time runs under
-none took (medians of 3), alone in its test binary so other daemon tests do not compete
-between its phases (CI 41365265628: 2.06 times beside them; alone, 4 runs of 4 passed on
-Fedora 44, kernel 6.19.10, i9-14900HX, at 49ee67a5 with the host at load 24 to 45, the
-slowest phase's median 0.46 to 1.34 times its run's median under none), a run begun
-under no budget held to one set as it goes within it too, and a run alone in the slice,
-its daemon keeping no warm microVM there, held under a budget short of what the slice holds and its kernel's inactive buffer, by a mebibyte,
-within the least room a run goes on in and reading within it too (where held at what
-they used they read a gigabyte at 0.16 to 0.57 MiB/s, PM M309; with warm microVMs beside
+under a `MemoryHigh` its idle microVMs leave 128 MiB of, each read followed by the marks
+its guest prints as it reads (testguest `read-marked`: as it opens the file and at each MiB
+it crosses) and judged by the reads held to none before it (goal 71's cluster 8; D215's
+shape and the person's ruling of 2026-11-13, "No ×2"): past the slowest of them, from its
+first mark to its last, a read goes on while each window as long reads what their slowest
+MiB keeps over it, and is refused, typed, at the first that does not (`Stalled::Slow`: how
+far it had read, what it read over the window and what it had to, and the record); before
+its first mark, past the slowest start seen, it goes on while its daemon or a microVM
+shows progress (`Stalled::Unstarted`); the first read, with nothing seen before it,
+follows its microVM's liveness alone, to its end. The record is the reads held to none
+alone, never seeded, so that a budget's reads never raise the bound they are judged by.
+Until 237f3ebe7 the medians of 3 were held within twice those under none, a multiple, and
+each read was waited on 600 s and past that while its microVM ran: on adacachy2 (32 CPUs)
+a read held within the least room, its microVM thrashing at its slice's `memory.high`, ran
+28 minutes reading all along, until it was ended by hand. The judge's own test plays reads
+to it (`a_read_is_judged_by_the_pace_of_the_reads_held_to_none`: a crawl refused at its
+second look, a read keeping 16 times the least pace past the bound let through, a cold read
+with a second's stop followed to its end, a start that never comes refused): 1 of 1 on
+adacachy2 (Linux 7.3.3-1-cachyos x86_64, rustc 1.98.1) at 9472ec737, with clippy
+`--all-targets -D warnings` of shards and shards-vmm, and of shards-testguest for
+x86_64-unknown-linux-musl, clean. The E2E itself, on a KVM host with a user's systemd
+manager, is ROOT's. It runs alone in its test binary
+so other daemon tests do not compete between its phases (CI 41365265628: 2.06 times beside
+them; alone, 4 runs of 4 passed on Fedora 44, kernel 6.19.10, i9-14900HX, at 49ee67a5
+with the host at load 24 to 45, the slowest phase's median 0.46 to 1.34 times its run's
+median under none). A run begun under no budget, held to one set as it goes, is judged
+so too, and so is a run alone in the slice, its daemon keeping no warm microVM there,
+held under a budget short of what the slice holds, its kernel's inactive buffer and its
+host's own reads' room, by a mebibyte, within the least room a run goes on in (where held
+at what they used they read a gigabyte at 0.16 to 0.57 MiB/s, PM M309; with warm microVMs beside
 it, the budget ended them for room, and room came back to every run, PM M314): dispatched
 alone on CI, 32 of 32 copies passed on four runner CPUs (PM M318). On macOS and Windows,
 which have no group of processes a user's tools cap, a group shards keeps (D183's slice 3):
@@ -8902,10 +8923,11 @@ stores.
   attributes or in the reply to a SETATTR that sets no size (each notice's touch, D235),
   takes the same path in the guest kernel, which shards' kernel's patch 0007 closes
   (resources/kernel/patches): a DAX file's entries left to its layouts' own breaking. The
-  SETATTR's is closed from the kernel inputs 54fba99afaee on, whose release and pin are owed:
-  until then a notice of a size change to a file a guest process maps in 2 MiB pages lets
-  go of entries the process still maps, `fs/dax.c:415 dax_folio_put` in its guest's log
-  (PM M550).
+  SETATTR's is closed from the kernel inputs 54fba99afaee on, released as
+  kernel-6.18.48-54fba99afaee (kernel.yml run 43459558423) and pinned in `src/kernel.rs` and
+  the tests' `common::kvm_kernel`, each artifact by the release's own name, size and SHA-256:
+  before it a notice of a size change to a file a guest process maps in 2 MiB pages let go of
+  entries the process still maps, `fs/dax.c:415 dax_folio_put` in its guest's log (PM M550).
 - A mapping is charged its file's bytes in its range against the microVM's I/O limits
   (D178) as it is made, once its file's size says them: a 5,000-byte file's range 5,000
   bytes, not the range's 2 MiB, which every file's last range was charged before, and a
@@ -24240,8 +24262,8 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
   - *A DAX file's guest* (D189, PM M550): a touch's SETATTR reply tells the guest's kernel
     the file's size as the host has it, so a reader past a host's cut reads the file's end
     once the notice lands; the kernel dropped a DAX file's entries there unbroken
-    (`fuse_do_setattr`) until shards' patch 0007 covered it (kernel inputs 54fba99afaee,
-    release and pin owed); and a file the host is still writing, looked up by its notice
+    (`fuse_do_setattr`) until shards' patch 0007 covered it (kernel-6.18.48-54fba99afaee,
+    released and pinned); and a file the host is still writing, looked up by its notice
     before it is 1 MiB long, is no DAX file until its guest makes its inode again (owed:
     weighed with how a notice tells of a name the guest has not looked up).
   - *Linux's instances:* one inotify instance a share process (a run that shares any
