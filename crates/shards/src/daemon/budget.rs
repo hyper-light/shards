@@ -1048,7 +1048,10 @@ mod tests {
         // the inactive pages its kernel keeps beside the 117 MiB processes map: short.
         assert_eq!(
             room(&scope, &root, &mut |_| 0),
-            Some(((384 - (383 - 32) - 117) as i64 * MIB as i64 - reads, slice.clone()))
+            Some((
+                (384 - (383 - 32) - 117) as i64 * MIB as i64 - reads,
+                slice.clone()
+            ))
         );
         // Its shared memory is not page cache its kernel may drop.
         cgroup(
@@ -1093,7 +1096,10 @@ mod tests {
         cgroup(&slice, Some(384 * MIB), None, 383 * MIB, stale);
         assert_eq!(
             room(&scope, &root, &mut |_| 0),
-            Some((384 * MIB as i64 - 320_000_000 - 100_000_000 - reads, slice.clone()))
+            Some((
+                384 * MIB as i64 - 320_000_000 - 100_000_000 - reads,
+                slice.clone()
+            ))
         );
         // None held to a budget: no room to tell.
         cgroup(&scope, None, None, 383 * MIB, &stat(0, 0, 0));
@@ -1140,9 +1146,21 @@ mod tests {
         let slice = root.join("a.slice");
         let stat = "anon 100000000\nfile 4194304\nkernel 15000000\nfile_mapped 2097152\nshmem 0\n";
         let floor = 120_000_000 - 2 * MIB;
-        cgroup(&slice, Some(floor + 2 * MIB + reads_room()), None, 120_000_000, stat);
+        cgroup(
+            &slice,
+            Some(floor + 2 * MIB + reads_room()),
+            None,
+            120_000_000,
+            stat,
+        );
         assert_eq!(room(&slice, &root, &mut |_| 0), Some((0, slice.clone())));
-        cgroup(&slice, Some(floor + 3 * MIB + reads_room()), None, 120_000_000, stat);
+        cgroup(
+            &slice,
+            Some(floor + 3 * MIB + reads_room()),
+            None,
+            120_000_000,
+            stat,
+        );
         assert_eq!(room(&slice, &root, &mut |_| 0), Some((MIB as i64, slice.clone())));
     }
 
