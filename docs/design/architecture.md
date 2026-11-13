@@ -7798,9 +7798,24 @@ user's host as Docker's.
   slice. A killed VM process is followed the same way, its host freeing it, before its end
   is given up on. A joiner's VM is its provider's, which runs the provider's command too:
   a joiner is held to one slice, then sent SIGKILL again, as before.
+- **A network or share process is followed the same way** (2026-11-13, PM M546; the
+  person's ruling: a wait follows the party's liveness and progress, then the slowest
+  answer seen). Once its VM has gone and its spawner holds nothing of it, it goes as its
+  VM's links close, which wakes its reaper (`netproc::reap`; for a daemon's run, the
+  followers' loop). It is looked at once a slice has passed, waited on for another while it
+  runs or frees what it holds, and ended only once it has done neither for a slice. Its own
+  end is kept as the host's; one its reaper made is not. It was `netproc::GRACE`, a second,
+  picked, and the daemon's port check (`in_use`) waited twice that for an ended run's
+  network process; it now waits one slice. The cost: a network process stuck on nothing of
+  its own is ended 10 s or more after its VM, where it was 1 s; one that exits as its links
+  close, as each does, ends the wait at once. The waits that took that second as their
+  basis keep it, their own basis owed (R03): init's relay drain (hostbind.rs `DRAIN`), the
+  daemon's `PUBLISH_PATIENCE`, and the VM process's wait for its network process's
+  unpublish (warm.rs).
 - **The slice is the host's own.** Each end heard is kept in the home (`ends`: `teardown
-  MS`, `exit MS`, the slowest of each this home's daemons have heard, written whole and
-  renamed over), and a slice is the slowest of its kind there, so that a host whose guests
+  MS`, `exit MS` and `helper MS`, the slowest of each this home's processes have heard: its
+  daemon and its runs' hosts keep one record, each end put with what it holds then, written
+  whole and renamed over), and a slice is the slowest of its kind there, so that a host whose guests
   stall on its disk for 9 s before they end (PM M419) gives its teardowns that long, and
   never less than the window over which `Progress` tells a microVM that runs from one
   that runs nothing (`IDLE_VM_CPU`'s 10 s), which a home with no record yet takes alone:
@@ -7821,8 +7836,12 @@ user's host as Docker's.
 
 **Tested.** Unit tests (daemon/ends.rs): a home with no record gives each end the least
 slice; each slower end heard is kept, in the home too, and read back by the next daemon; a
-record it cannot read is none; an end is followed while its VM process runs, a joiner's
-never. On real microVMs, tests/containers.rs `a_kills_end_is_kept_as_this_hosts_in_its_home`:
+record it cannot read is none; a home's processes keep one record, neither's slower end
+lost to the other's write, and a record that cannot be kept is said; an end is followed
+while its VM process runs, a joiner's never. netproc.rs
+`a_helper_is_waited_on_while_it_goes_on_with_its_end`: a busy helper is waited on past five
+slices and its end kept, a sleeping one ended at its first look and nothing kept; the
+daemon's `a_network_process_is_ended_once_it_goes_on_no_more_and_the_ports_freed`. On real microVMs, tests/containers.rs `a_kills_end_is_kept_as_this_hosts_in_its_home`:
 a kill's end kept in the home, its VM not killed under it; the stop, kill, pause and
 daemon-stop tests as before. Measured: PM M480 to M482, which validate the method (every
 teardown and freeze measured ends while it is followed) and are no figure of it.

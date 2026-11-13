@@ -45,7 +45,7 @@ mod commit;
 mod cuts;
 mod demand;
 mod devices;
-mod ends;
+pub(crate) mod ends;
 mod engine;
 /// The Engine API's socket in the home (D170), relative to it: what Docker's clients reach;
 /// on Windows the file that names its named pipe.
@@ -126,8 +126,9 @@ const USAGE: &str = "usage: shards run daemon [--detached] [--listen ADDR:PORT]
 /// waited for as long as it takes its host, whose speed sets a boot's cost (PM M357).
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a VM's network process may take to say it has a run's published ports: a
-/// round trip on a socket pair to a process polling it, the grace one is given to end
-/// (`netproc::GRACE`).
+/// round trip on a socket pair to a process polling it. It was the second a network
+/// process was given to end, `netproc::GRACE`, which a network process's own progress
+/// replaced (PM M546); its own basis is owed (R03).
 const PUBLISH_PATIENCE: Duration = Duration::from_secs(1);
 /// A template whose warm VMs fail this many times in a row is removed and saved again.
 const MAX_FAILURES: u32 = 3;
@@ -4427,8 +4428,9 @@ impl<D: Disk> Daemon<D> {
 
     /// Whose host address `at`, found in use, is: the host's; a running microVM's of
     /// this daemon, which knows its own bindings (`published`); or a run's that ended, waited
-    /// for until its network process has gone (its grace, `netproc::GRACE`, and as long
-    /// again), where that process never said it closed the run's ports. A run's VM says
+    /// for until its network process has gone, for as long as this host gives one before it
+    /// looks at it (`ends::End::Helper`, `netproc::reap`), where that process never said it
+    /// closed the run's ports. A run's VM says
     /// PORTS_FREE, as that process has, and DONE, before it tells its client (warm.rs
     /// `finish`), whose next program may bind the port at once: what the holder's run has
     /// sent is taken first, as a name's holder's is (`create`), so that a run its client
@@ -4436,7 +4438,9 @@ impl<D: Disk> Daemon<D> {
     /// free (PM M134, M158).
     fn in_use(&self, at: std::net::SocketAddr, proto: u8) -> publish::InUse {
         let began = Instant::now();
-        let deadline = began + crate::netproc::GRACE.saturating_mul(2);
+        let deadline = began
+            .checked_add(self.ends.slice(ends::End::Helper))
+            .unwrap_or(began);
         let mut held = lock(&self.ports_held);
         // A run of this daemon's held it: gone from every run, it was freed, while this
         // waited or while it took the holder's messages without the lock.
@@ -8488,7 +8492,7 @@ impl<D: Disk> Daemon<D> {
             Err(e) => {
                 if let Some((net, side)) = network {
                     drop(side);
-                    crate::netproc::reap(&net);
+                    crate::netproc::reap(&net, &self.ends);
                 }
                 return Err(format!("starting {}: {e}", binary.display()));
             }
@@ -13111,7 +13115,8 @@ mod tests {
             );
             let asked = Instant::now();
             assert_eq!(t.daemon.in_use(at, publish::TCP), publish::InUse::Host);
-            assert!(asked.elapsed() < crate::netproc::GRACE, "{:?}", asked.elapsed());
+            let slice = t.daemon.ends.slice(ends::End::Helper);
+            assert!(asked.elapsed() < slice, "{:?}", asked.elapsed());
             say(&vm, kind::DONE, &[0]);
             t.until("the run did not end", |d| {
                 !matches!(lock(&d.runs).get(&id), Some(RunState::Tracked(_)))
@@ -13120,10 +13125,12 @@ mod tests {
         });
     }
 
-    /// A VM's network process is given its grace once the VM has ended, then ended, and
-    /// the VM's ports are freed once both have gone, not before.
+    /// A VM's network process is given a slice of this host's once the VM has ended,
+    /// looked at, and ended once it has run nothing and freed nothing for it (D217, PM
+    /// M546): a sleeping one is, at its first look. The VM's ports are freed once both have
+    /// gone, not before, and an end the daemon made is kept as no end of the host's.
     #[test]
-    fn a_network_process_is_ended_past_its_grace_and_the_ports_freed() {
+    fn a_network_process_is_ended_once_it_goes_on_no_more_and_the_ports_freed() {
         let t = Test::new("net-end");
         t.run(|t| {
             let (ready, _theirs) = t.warm_vm(None);
@@ -13140,8 +13147,14 @@ mod tests {
             let ended = Instant::now();
             let _ = vm.kill(shards_ipc::signal::SIGKILL);
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
-            assert!(ended.elapsed() >= crate::netproc::GRACE, "freed within the grace");
+            let slice = t.daemon.ends.slice(ends::End::Helper);
+            assert!(ended.elapsed() >= slice, "freed within its slice");
             assert!(reaped(net_pid), "the network process was not reaped");
+            let kept = std::fs::read_to_string(t.home.join(ends::RECORD)).unwrap_or_default();
+            assert!(
+                !kept.lines().any(|l| l.starts_with("helper ") && l != "helper 0"),
+                "an end the daemon made was kept as the host's: {kept}"
+            );
             // The VM is reaped once its ports are freed (follow.rs), which the wait above
             // could see first.
             t.until("the VM was not reaped", |_| reaped(vm.id()));
@@ -13171,7 +13184,8 @@ mod tests {
             let ended = Instant::now();
             let _ = vm.kill(shards_ipc::signal::SIGKILL);
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
-            assert!(ended.elapsed() < crate::netproc::GRACE, "{:?}", ended.elapsed());
+            let slice = t.daemon.ends.slice(ends::End::Helper);
+            assert!(ended.elapsed() < slice, "{:?}", ended.elapsed());
         });
     }
 

@@ -78,8 +78,9 @@ const UDP_STREAM_AFTER: Duration = Duration::from_secs(2);
 /// The largest UDP datagram (RFC 768: its length a 16-bit field).
 const DATAGRAM: usize = 65_536;
 /// How long the relays have, once the run has ended, to pass on what its servers sent
-/// before they ended, as the kernel sends what a closed socket holds: the grace the run's
-/// network process is given to end (shards netproc::GRACE).
+/// before they ended, as the kernel sends what a closed socket holds: the second the run's
+/// network process was given to end (shards `netproc::GRACE`, until PM M546, which follows
+/// that process for as long as it goes on). Its own basis is owed (R03).
 const DRAIN: Duration = Duration::from_secs(1);
 /// What each init's message to this process starts with: a listener, with it; or the
 /// host's answer, after it.
