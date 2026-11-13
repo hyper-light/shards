@@ -336,7 +336,7 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
                 ))
             })?;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        super::slept(std::time::Duration::from_millis(10));
     }
 }
 

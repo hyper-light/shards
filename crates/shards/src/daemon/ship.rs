@@ -160,7 +160,9 @@ impl Wait<'_> {
             return Err(io::Error::last_os_error());
         }
         let deadline = std::time::Instant::now().checked_add(d);
-        let waited = shards_ipc::await_any(&[self.0], &[event.as_handle()], deadline);
+        let waited = super::timed(Some(d), || {
+            shards_ipc::await_any(&[self.0], &[event.as_handle()], deadline)
+        });
         // SAFETY: as above: no event of the socket's is set from here on.
         unsafe { WSAEventSelect(raw, 0, 0) };
         let (stopped, _) = waited?;
@@ -875,7 +877,9 @@ impl Waits<'_> {
     fn wait(&self, within: Option<Duration>) -> io::Result<[bool; 3]> {
         let deadline = within.and_then(|d| std::time::Instant::now().checked_add(d));
         let watch: Vec<_> = self.watch.map(FileWatch::fd).into_iter().collect();
-        let (streams, set) = shards_ipc::await_any(&[self.end, self.stopped], &watch, deadline)?;
+        let (streams, set) = super::timed(within, || {
+            shards_ipc::await_any(&[self.end, self.stopped], &watch, deadline)
+        })?;
         let at = |v: &[bool], i: usize| v.get(i).copied().unwrap_or(false);
         Ok([at(&set, 0), at(&streams, 0), at(&streams, 1)])
     }
@@ -931,8 +935,10 @@ fn wait_ready(fds: &[Option<BorrowedFd<'_>>; 3], within: Option<Duration>) -> io
             )
             .unwrap_or(libc::c_int::MAX),
         };
-        // SAFETY: poll(2) on three pollfds of descriptors the caller holds open.
-        let n = unsafe { libc::poll(polled.as_mut_ptr(), 3, ms) };
+        let n = super::timed(super::poll_timeout(ms), || {
+            // SAFETY: poll(2) on three pollfds of descriptors the caller holds open.
+            unsafe { libc::poll(polled.as_mut_ptr(), 3, ms) }
+        });
         if n >= 0 {
             break;
         }
@@ -966,8 +972,11 @@ fn stopped_within(stop: &UnixStream, also: Option<BorrowedFd<'_>>, wait: Duratio
         });
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         let ms = libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX);
-        // SAFETY: poll(2) on two pollfds, of descriptors the caller holds open or none.
-        match unsafe { libc::poll(polled.as_mut_ptr(), 2, ms) } {
+        let polls = super::timed(super::poll_timeout(ms), || {
+            // SAFETY: poll(2) on two pollfds, of descriptors the caller holds open or none.
+            unsafe { libc::poll(polled.as_mut_ptr(), 2, ms) }
+        });
+        match polls {
             0 => return false,
             n if n > 0 => return polled[0].revents != 0,
             _ if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => {}
