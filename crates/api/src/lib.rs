@@ -36,7 +36,6 @@ pub mod physical;
 mod said;
 pub mod sim;
 mod stream;
-#[cfg(unix)]
 mod taken;
 #[cfg(test)]
 mod while_runs;
@@ -751,13 +750,14 @@ pub trait Guests: Send + Sync {
     fn boot(&self, spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal>;
     /// Takes back the guest `identity` names, booted from `spec` by a client whose process has
     /// gone since (a crash: nothing of it ran on, so nothing ended the guest), as [`boot`]'s
-    /// own: the caller's until it drops, which ends it. On Unix, native identity observation
-    /// failures return [`Refusal::Process`], preserving the requested PID/start and exact
-    /// [`ProcessFailure`]. An uncertain observation is not proof the guest ended; inspect
-    /// the typed cause rather than infer a terminal state from its OS code alone.
-    /// A simulator may return [`Refusal::Gone`] or [`Refusal::Ended`]. On Windows a guest's
-    /// VM is in a job object that ends with the process that booted it (D141), so no guest
-    /// outlives its client there, and attach returns [`Refusal::Gone`].
+    /// own: the caller's until it drops, which ends it. On every host, native identity
+    /// observation failures return [`Refusal::Process`], preserving the requested PID/start
+    /// and exact [`ProcessFailure`]. An uncertain observation is not proof the guest ended;
+    /// inspect the typed cause rather than infer a terminal state from its OS code alone.
+    /// A simulator may return [`Refusal::Gone`] or [`Refusal::Ended`]. On Windows the guest's
+    /// process is the `shards` that booted its VM, whose job object ends the VM as it ends
+    /// (D141); it outlives its client as on Unix, and is taken back by a handle of its own
+    /// (D215).
     ///
     /// [`boot`]: Guests::boot
     fn attach(&self, identity: &Identity, spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal>;

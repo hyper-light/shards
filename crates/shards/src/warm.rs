@@ -709,6 +709,13 @@ enum From<'a> {
 /// connection to answer on.
 type Pause = (bool, [u8; 8], UnixStream);
 
+/// A `RATE`'s number and its rate in milli-CPU (D247): exactly 16 bytes, both big-endian;
+/// anything else is no ask, as an unread `GUEST_TIME`'s is.
+fn rate_asked(payload: &[u8]) -> Option<([u8; 8], u64)> {
+    let (number, milli) = payload.split_first_chunk::<8>()?;
+    Some((*number, u64::from_be_bytes(<[u8; 8]>::try_from(milli).ok()?)))
+}
+
 /// The pauses and resumes the daemon asks of this VM (`PAUSE`), done in order on a thread
 /// of their own, each answered (`PAUSED`) on its own copy of the daemon's connection as it
 /// is done: a pause waits for every vCPU to be held, which a vCPU busy with an exit this
@@ -820,10 +827,27 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             // the exec that writes its cgroup.
             kind::CPUS if matches!(from, From::Daemon(_)) => {
                 if let Ok(bytes) = <[u8; 8]>::try_from(message.payload.as_slice())
-                    && let Err(e) =
-                        crate::vm_run::hold_cpus(u32::try_from(u64::from_be_bytes(bytes)).unwrap_or(u32::MAX))
+                    && let Err(e) = crate::vm_run::hold_rate(
+                        u64::from_be_bytes(bytes).saturating_mul(shards_vmm::vm::MILLI_PER_CPU),
+                    )
                 {
                     let _ = writeln!(io::stderr(), "shards: its CPUs' hold: {e}");
+                }
+            }
+            // The CPU rate its orchestrator holds its vCPUs to (D247), answered once held:
+            // what it holds them to, or why not.
+            kind::RATE if matches!(from, From::Daemon(_)) => {
+                if let Some((number, milli)) = rate_asked(&message.payload) {
+                    let answer = match crate::vm_run::hold_rate(milli) {
+                        Ok(held) => {
+                            let held = held.map(|m| m.to_string()).unwrap_or_default();
+                            [&number[..], &[0], held.as_bytes()].concat()
+                        }
+                        Err(e) => [&number[..], &[1], e.as_bytes()].concat(),
+                    };
+                    if let Err(e) = to_daemon(conn, kind::RATED, &answer, &[]) {
+                        let _ = writeln!(io::stderr(), "shards: answering its rate: {e}");
+                    }
                 }
             }
             // What its microVM's vCPUs have run of their guest, for its stats, answered at
@@ -2165,6 +2189,19 @@ mod tests {
 
     /// The null device's path.
     const NULL: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
+    /// A rate's ask reads as its run host wrote it (D247): its number, then its rate; a
+    /// payload a byte short or long is no ask, never a rate made up.
+    #[test]
+    fn a_rate_ask_reads_its_number_and_rate_alone() {
+        let ask = [7u64.to_be_bytes(), 1500u64.to_be_bytes()].concat();
+        assert_eq!(rate_asked(&ask), Some((7u64.to_be_bytes(), 1500)));
+        let none = [u64::MAX.to_be_bytes(), 0u64.to_be_bytes()].concat();
+        assert_eq!(rate_asked(&none), Some((u64::MAX.to_be_bytes(), 0)));
+        assert_eq!(rate_asked(&ask[..15]), None);
+        assert_eq!(rate_asked(&[ask.as_slice(), &[0]].concat()), None);
+        assert_eq!(rate_asked(&[]), None);
+    }
 
     /// A request that brings fewer descriptors than it needs, or more, is refused, in words
     /// that say which, before the VM takes it.

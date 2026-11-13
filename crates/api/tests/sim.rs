@@ -14,7 +14,6 @@ use std::net::Shutdown;
 use std::time::Duration;
 
 use shards_api::conformance::{self, Subject};
-use shards_api::record::Learned;
 use shards_api::sim::{SimGuests, SimHost};
 use shards_api::{End, GuestSpec, Guests, Init, Refusal, min_memory_mib};
 
@@ -22,23 +21,15 @@ use shards_api::{End, GuestSpec, Guests, Init, Refusal, min_memory_mib};
 /// port (`crates/testguest/src/linux.rs:3293` `ECHO_PORT`), and one it does not serve.
 const ECHO: u32 = 1234;
 const UNSERVED: u32 = 1236;
-/// A hang guard: each wait here returns at its fact (a condition variable's signal, a
-/// process's end), and the guard only bounds a failing one (`record::Learned`). Recorded
-/// (`docs/research/platform-measurements.md` M463), the slowest of these tests' waits:
-/// macOS-HVF's, a new stand-in script's boot to its end, 4.402617625 s; Linux-KVM's, a
-/// simulated guest's connect as it listens 100 ms late, 100.83073 ms.
-static PATIENCE: Learned = Learned::new(
-    "tests/sim.rs PATIENCE",
-    &[
-        ("macOS-HVF", Duration::from_nanos(4_402_617_625)),
-        ("Linux-KVM", Duration::from_nanos(100_830_730)),
-    ],
-);
-
-/// This node's `PATIENCE` now.
-fn patience() -> Duration {
-    PATIENCE.get()
-}
+/// What every wait here is asked with: no clock (`Duration::MAX`, as `Guest::connect` and
+/// `Guest::wait_for` take it), so each returns at its fact, a guest's answer or its end, and
+/// none is bounded by a number recorded on another host (R03).
+const NO_CLOCK: Duration = Duration::MAX;
+/// The longest finite patience: u64's most nanoseconds (584 years), a deadline no wait here
+/// reaches, for a call that takes only a finite one (`Guests::probe_gpu` refuses no clock as
+/// `Pending`), so it too returns at its fact, the stand-in's end.
+#[cfg(unix)]
+const UNREACHED: Duration = Duration::from_nanos(u64::MAX);
 
 /// A spec of the least guest Shards boots: one vCPU, its least memory (`min_memory_mib`).
 fn spec(cmdline: &str) -> GuestSpec {
@@ -94,7 +85,7 @@ fn the_simulator_conforms() {
         port: ECHO,
         unserved: UNSERVED,
         powering_off: spec("shards_test=kmsg"),
-        patience: patience(),
+        patience: NO_CLOCK,
     })
     .unwrap();
 }
@@ -111,7 +102,7 @@ fn the_simulator_retains_shared_gpu_enable() {
         });
         let expected = GuestSpec { gpu, ..spec("") };
         let guest = guests.boot(&expected).unwrap();
-        let ended = guest.wait_for(patience());
+        let ended = guest.wait_for(NO_CLOCK);
         let stopped = guest.stop();
         drop(guest);
         assert_eq!(ended.unwrap(), Some(End::PowerOff));
@@ -131,7 +122,7 @@ fn a_connect_waits_for_a_guest_that_listens_late() {
         End::Stopped
     });
     let g = guests.boot(&spec("")).unwrap();
-    assert!(g.connect(ECHO, patience()).is_ok());
+    assert!(g.connect(ECHO, NO_CLOCK).is_ok());
 }
 
 /// A connect and a wait with no clock (`Duration::MAX`) wait for their facts: the guest's
@@ -162,11 +153,8 @@ fn no_clock_waits_for_the_fact() {
 fn a_guest_ends_as_its_program_says() {
     let guests = SimGuests::new(|_| End::Reset);
     let g = guests.boot(&spec("")).unwrap();
-    assert_eq!(g.wait_for(patience()).unwrap(), Some(End::Reset));
-    assert_eq!(
-        g.connect(ECHO, patience()).err(),
-        Some(Refusal::Ended(End::Reset))
-    );
+    assert_eq!(g.wait_for(NO_CLOCK).unwrap(), Some(End::Reset));
+    assert_eq!(g.connect(ECHO, NO_CLOCK).err(), Some(Refusal::Ended(End::Reset)));
 }
 
 #[cfg(unix)]
@@ -175,17 +163,6 @@ mod client {
     use shards_api::{GpuProbe, GpuProbeError, PhysicalGpu, ResolvedGpu, Shards};
     use std::path::PathBuf;
     use std::time::Instant;
-
-    /// How soon after shards' end its refusal comes, with a child holding shards' output
-    /// (`record::Learned`). Recorded, the slowest (M463): macOS-HVF 4.277875 ms, Linux-KVM
-    /// 299.915 µs (beside the whole shards-api suite).
-    static REFUSED_AFTER_END: Learned = Learned::new(
-        "REFUSED_AFTER_END",
-        &[
-            ("macOS-HVF", Duration::from_nanos(4_277_875)),
-            ("Linux-KVM", Duration::from_nanos(299_915)),
-        ],
-    );
 
     /// A stand-in for `shards` that runs `body` whatever it is asked. Written to a file of
     /// its own and installed by install(1), so no descriptor of this process ever writes
@@ -229,14 +206,14 @@ mod client {
                 ..spec("")
             })
             .unwrap();
-        match g.connect(ECHO, patience()) {
+        match g.connect(ECHO, NO_CLOCK) {
             Err(Refusal::Boot(why)) => {
                 assert!(why.contains('7'), "{why}");
                 assert!(why.contains("no kernel at kernel"), "{why}");
             }
             other => panic!("{:?}", other.err()),
         }
-        assert!(matches!(g.wait_for(patience()).unwrap(), Some(End::Failed(_))));
+        assert!(matches!(g.wait_for(NO_CLOCK).unwrap(), Some(End::Failed(_))));
     }
 
     /// A guest that powers off before anything connected to it is refused `Ended(PowerOff)`,
@@ -295,7 +272,7 @@ mod client {
                     ..spec("")
                 })
                 .unwrap();
-            assert_eq!(g.wait_for(patience()).unwrap(), Some(end));
+            assert_eq!(g.wait_for(NO_CLOCK).unwrap(), Some(end));
         }
     }
 
@@ -336,7 +313,7 @@ mod client {
             let dir = shards_testdir::TempDir::new("api-gpu-probe").unwrap();
             // Canonical protocol fields contain no shell quoting characters.
             let bin = stand_in(&dir, &format!("printf '%s' '{text}'"));
-            let probed = Shards.probe_gpu(&probing(bin), patience());
+            let probed = Shards.probe_gpu(&probing(bin), UNREACHED);
             match refused {
                 None => assert_eq!(probed.unwrap(), expected),
                 Some(why) => assert_eq!(probed.err(), Some(Refusal::GpuProbe(why))),
@@ -364,9 +341,9 @@ mod client {
             .unwrap();
         assert_eq!(g.wait_for(Duration::ZERO).unwrap(), None);
         g.stop().unwrap();
-        assert_eq!(g.wait_for(patience()).unwrap(), Some(End::Stopped));
+        assert_eq!(g.wait_for(NO_CLOCK).unwrap(), Some(End::Stopped));
         assert_eq!(
-            g.connect(ECHO, patience()).err(),
+            g.connect(ECHO, NO_CLOCK).err(),
             Some(Refusal::Ended(End::Stopped))
         );
     }
@@ -383,7 +360,7 @@ mod client {
             })
             .unwrap();
         assert!(matches!(
-            g.connect(9, patience()),
+            g.connect(9, NO_CLOCK),
             Err(Refusal::Channel { port: 9, .. })
         ));
     }
@@ -394,16 +371,22 @@ mod client {
     #[test]
     fn no_clock_ends_with_shards() {
         let dir = shards_testdir::TempDir::new("api-noclock").unwrap();
-        // An input: shards ends this long after it starts, so after the connect has begun. Each
-        // wait below is bounded by it plus the recorded wait for a stand-in's end (`patience()`),
-        // as the input is the test's own, not part of what the record timed.
-        let ends_after = Duration::from_millis(200);
-        let bound = ends_after + patience();
+        // shards ends when the test says, after the wait's thread is started: it reads a line
+        // from a FIFO the test writes then, no clock in either. A wait that begins only after
+        // the end is refused the same, at the end's fact.
+        let go = dir.path().join("go");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&go)
+                .status()
+                .unwrap()
+                .success()
+        );
         let bin = stand_in(
             &dir,
             &format!(
-                "sleep {}; echo 'no kernel at kernel' >&2; exit 7",
-                ends_after.as_secs_f64()
+                "read _ < '{}'; echo 'no kernel at kernel' >&2; exit 7",
+                go.display()
             ),
         );
         let g = Shards
@@ -414,7 +397,8 @@ mod client {
             .unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || tx.send(g.connect(ECHO, Duration::MAX).err()));
-        match rx.recv_timeout(bound).unwrap() {
+        std::fs::write(&go, "end\n").unwrap();
+        match rx.recv().unwrap() {
             Some(Refusal::Boot(why)) => assert!(why.contains("no kernel at kernel"), "{why}"),
             other => panic!("{other:?}"),
         }
@@ -426,10 +410,8 @@ mod client {
             .unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || tx.send(g.wait_for(Duration::MAX)));
-        assert!(matches!(
-            rx.recv_timeout(bound).unwrap(),
-            Ok(Some(End::Failed(_)))
-        ));
+        std::fs::write(&go, "end\n").unwrap();
+        assert!(matches!(rx.recv().unwrap(), Ok(Some(End::Failed(_)))));
     }
 
     /// The longest report shards writes as it ends, a reset's with its guest's last console
@@ -460,7 +442,7 @@ exit 3"#
                 ..spec("")
             })
             .unwrap();
-        let outcome = g.connect(ECHO, patience());
+        let outcome = g.connect(ECHO, NO_CLOCK);
         let report = std::fs::read_to_string(&said).unwrap();
         let report = report.trim_end();
         assert!(report.ends_with("\\u{1b}"), "{report:.200}");
@@ -472,8 +454,8 @@ exit 3"#
 
     /// shards' refusal comes as shards ends, with its last words, though a child it left
     /// holds its output open (macOS's grants broker until it exits): the end of its words is
-    /// a fact, not a clock. Timed from shards' last act, as a new script's first start can
-    /// take seconds on macOS, and held to `REFUSED_AFTER_END` (D215).
+    /// a fact, not a clock. So the refusal comes while that child still lives, which no
+    /// refusal held back for the child's end could (D215).
     #[test]
     fn a_child_holding_shards_output_holds_no_refusal_back() {
         let dir = shards_testdir::TempDir::new("api-held").unwrap();
@@ -501,24 +483,26 @@ exit 3"#
             .unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let refused = g.connect(ECHO, patience()).err();
-            tx.send((refused, Instant::now()))
+            let refused = g.connect(ECHO, NO_CLOCK).err();
+            tx.send(refused)
         });
         std::fs::read(&ending).unwrap();
-        let ended = Instant::now();
-        let (refused, at) = rx.recv_timeout(patience()).unwrap();
+        let refused = rx.recv().unwrap();
         let holder = std::fs::read_to_string(&pid).unwrap();
+        let held = std::process::Command::new("kill")
+            .args(["-0", holder.trim()])
+            .status()
+            .unwrap()
+            .success();
         let _ = std::process::Command::new("kill").arg(holder.trim()).status();
         match refused {
             Some(Refusal::Boot(why)) => assert!(why.contains("no kernel at kernel"), "{why}"),
             other => panic!("{other:?}"),
         }
-        let took = at.saturating_duration_since(ended);
         assert!(
-            took < REFUSED_AFTER_END.get(),
-            "refused {took:?} after shards' end"
+            held,
+            "the refusal came only once the child holding shards' output had gone"
         );
-        REFUSED_AFTER_END.saw(took);
     }
 
     /// Measures how long past its patience an unserved connect's refusal comes, the
@@ -566,8 +550,8 @@ exit 3"#
     /// Measures the waits this file's tests make, each kind on a thread of its own as the
     /// tests run side by side, `SHARDS_API_WAITS_N` (default 40) of each, with a new stand-in
     /// script for each (a new script's first start is slow on macOS): printed as n, p50, p90,
-    /// p99 and max (docs/research/measurements/shards-api-waits/run.sh), for `PATIENCE` and
-    /// the held-output test's bound.
+    /// p99 and max (docs/research/measurements/shards-api-waits/run.sh): what these waits
+    /// cost, each of which waits for its fact rather than a bound.
     #[test]
     #[ignore = "a measurement, run by its harness"]
     fn the_waits_of_these_tests() {
@@ -740,9 +724,9 @@ exit 3"#
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let stopped = g.stop();
-            tx.send((stopped, g.wait_for(patience())))
+            tx.send((stopped, g.wait_for(NO_CLOCK)))
         });
-        let (stopped, end) = rx.recv_timeout(patience()).unwrap();
+        let (stopped, end) = rx.recv().unwrap();
         stopped.unwrap();
         assert_eq!(end.unwrap(), Some(End::Stopped));
     }
