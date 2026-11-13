@@ -390,17 +390,24 @@ impl fmt::Display for Refusal {
 /// (RFC 9112 §6.1), whose framing the injector reads.
 pub fn readable(head: &[u8]) -> Result<(), Refusal> {
     let fields = response_fields(head).ok_or(Refusal::Head)?;
-    let coded = inject::values(head, &fields, "content-encoding")
-        .flat_map(inject::list)
-        .any(|c| !c.eq_ignore_ascii_case(b"identity"));
-    let transfer = inject::values(head, &fields, "transfer-encoding")
-        .flat_map(inject::list)
-        .any(|c| !c.eq_ignore_ascii_case(b"chunked"));
-    if coded || transfer {
-        Err(Refusal::Coded)
-    } else {
-        Ok(())
+    readable_fields(
+        fields
+            .iter()
+            .map(|f| (f.name.as_bytes(), head.get(f.value.clone()).unwrap_or_default())),
+    )
+}
+
+/// `readable`, of a response's fields as names and values (an HTTP/2 response's, decoded).
+pub fn readable_fields<'f>(fields: impl IntoIterator<Item = (&'f [u8], &'f [u8])>) -> Result<(), Refusal> {
+    for (name, value) in fields {
+        let only = |coding: &[u8]| inject::list(value).all(|c| c.eq_ignore_ascii_case(coding));
+        if (name.eq_ignore_ascii_case(b"content-encoding") && !only(b"identity"))
+            || (name.eq_ignore_ascii_case(b"transfer-encoding") && !only(b"chunked"))
+        {
+            return Err(Refusal::Coded);
+        }
     }
+    Ok(())
 }
 
 /// A response head for a body of `len` bytes (RFC 9112 §6.3, f43): its Content-Length and
@@ -1455,8 +1462,29 @@ impl Answered {
 /// §6, f47).
 #[derive(Debug)]
 enum Asking {
-    Capture { index: usize, waiter: Waiter },
-    Refresh { index: usize, waiting: Vec<Waiter> },
+    /// Its asker gone (an HTTP/2 stream let go of) where none: its answer is kept all the same.
+    Capture {
+        index: usize,
+        asker: Option<Asker>,
+    },
+    Refresh {
+        index: usize,
+        waiting: Vec<Asker>,
+    },
+}
+
+/// Who waits on an ask: a flow, and its request's HTTP/2 stream, 0 for an HTTP/1.1 flow's, whose
+/// requests go one at a time (no HTTP/2 request is on stream 0, RFC 9113 §5.1.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Asker {
+    pub flow: Waiter,
+    pub stream: u32,
+}
+
+impl From<Waiter> for Asker {
+    fn from(flow: Waiter) -> Asker {
+        Asker { flow, stream: 0 }
+    }
 }
 
 /// An ask's answer, as its flow takes it.
@@ -1503,7 +1531,7 @@ pub struct SignIns {
     asking: HashMap<u32, Asking>,
     next: u32,
     unsent: Vec<Zeroizing<Vec<u8>>>,
-    answers: HashMap<Waiter, Answer>,
+    answers: HashMap<Asker, Answer>,
     resumed: Vec<Waiter>,
     ended: bool,
 }
@@ -1568,28 +1596,35 @@ impl SignIns {
             .ok_or_else(|| Declined::Denied("no sign-in of the run's".into()))
     }
 
-    /// Asks the run host to keep sign-in `index`'s `taken` tokens, flow `waiter` waiting.
-    pub fn capture(&mut self, index: usize, taken: Taken, waiter: Waiter) -> Result<(), Declined> {
+    /// Asks the run host to keep sign-in `index`'s `taken` tokens, `asker` waiting.
+    pub fn capture(&mut self, index: usize, taken: Taken, asker: impl Into<Asker>) -> Result<(), Declined> {
         let sign_in = self.sign_in(index)?;
         let id = self.fresh();
         let told = Told::Capture { id, sign_in, taken }
             .encode()
             .ok_or_else(|| Declined::Unavailable("a capture past what its lengths count".into()))?;
         self.unsent.push(told);
-        self.asking.insert(id, Asking::Capture { index, waiter });
+        self.asking.insert(
+            id,
+            Asking::Capture {
+                index,
+                asker: Some(asker.into()),
+            },
+        );
         Ok(())
     }
 
-    /// Asks the run host to refresh sign-in `index`, flow `waiter` waiting: joined to the ask
-    /// under way where there is one.
-    pub fn refresh(&mut self, index: usize, waiter: Waiter) -> Result<(), Declined> {
+    /// Asks the run host to refresh sign-in `index`, `asker` waiting: joined to the ask under way
+    /// where there is one.
+    pub fn refresh(&mut self, index: usize, asker: impl Into<Asker>) -> Result<(), Declined> {
+        let asker = asker.into();
         let sign_in = self.sign_in(index)?;
         let under_way = self.asking.values_mut().find_map(|a| match a {
             Asking::Refresh { index: i, waiting } if *i == index => Some(waiting),
             _ => None,
         });
         if let Some(waiting) = under_way {
-            waiting.push(waiter);
+            waiting.push(asker);
             return Ok(());
         }
         let id = self.fresh();
@@ -1601,7 +1636,7 @@ impl SignIns {
             id,
             Asking::Refresh {
                 index,
-                waiting: vec![waiter],
+                waiting: vec![asker],
             },
         );
         Ok(())
@@ -1635,16 +1670,16 @@ impl SignIns {
             Answered::Captured { id, .. } | Answered::Refreshed { id, .. } => (*id, self.asking.remove(id)?),
         };
         match (asking, answered) {
-            (Asking::Capture { index, waiter }, Answered::Captured { result, .. }) => {
+            (Asking::Capture { index, asker }, Answered::Captured { result, .. }) => {
                 let result = result.and_then(|c| self.fits(index, c, grants));
                 Some(match result {
                     Ok(c) => {
                         let replaced = self.grants.get_mut(index)?.captured.replace(c);
-                        self.tell(waiter, Answer::Captured);
+                        self.tell(asker, Answer::Captured);
                         Changed::Captured { index, replaced }
                     }
                     Err(declined) => {
-                        self.tell(waiter, Answer::Declined(declined));
+                        self.tell(asker, Answer::Declined(declined));
                         Changed::Nothing
                     }
                 })
@@ -1654,12 +1689,12 @@ impl SignIns {
                     Ok(_) => Changed::Refreshed { index },
                     Err(_) => Changed::Nothing,
                 };
-                for waiter in waiting {
+                for asker in waiting {
                     let answer = match &result {
                         Ok(body) => Answer::Refreshed(body.clone()),
                         Err(declined) => Answer::Declined(declined.clone()),
                     };
-                    self.tell(waiter, answer);
+                    self.tell(Some(asker), answer);
                 }
                 Some(changed)
             }
@@ -1708,14 +1743,30 @@ impl SignIns {
         }
     }
 
-    fn tell(&mut self, waiter: Waiter, answer: Answer) {
-        self.answers.insert(waiter, answer);
-        self.resumed.push(waiter);
+    fn tell(&mut self, asker: Option<Asker>, answer: Answer) {
+        if let Some(asker) = asker {
+            self.answers.insert(asker, answer);
+            self.resumed.push(asker.flow);
+        }
     }
 
-    /// Flow `waiter`'s answer, where one came for it.
-    pub fn take(&mut self, waiter: Waiter) -> Option<Answer> {
-        self.answers.remove(&waiter)
+    /// `asker`'s answer, where one came for it.
+    pub fn take(&mut self, asker: impl Into<Asker>) -> Option<Answer> {
+        self.answers.remove(&asker.into())
+    }
+
+    /// `asker` gone (an HTTP/2 stream let go of before its answer was taken): its answer dropped,
+    /// and none kept for it after. Its ask stays under way, as other askers or the sign-in's
+    /// grants may still take its answer.
+    pub fn forget(&mut self, asker: Asker) {
+        self.answers.remove(&asker);
+        for asking in self.asking.values_mut() {
+            match asking {
+                Asking::Capture { asker: a, .. } if *a == Some(asker) => *a = None,
+                Asking::Refresh { waiting, .. } => waiting.retain(|a| *a != asker),
+                Asking::Capture { .. } => {}
+            }
+        }
     }
 
     /// The flows whose asks were answered or ended since the last call.
@@ -1729,7 +1780,7 @@ impl SignIns {
         self.asking
             .values()
             .map(|a| match a {
-                Asking::Capture { .. } => 1,
+                Asking::Capture { asker, .. } => usize::from(asker.is_some()),
                 Asking::Refresh { waiting, .. } => waiting.len(),
             })
             .sum()
@@ -1742,10 +1793,10 @@ impl SignIns {
         self.unsent.clear();
         for (_, asking) in std::mem::take(&mut self.asking) {
             match asking {
-                Asking::Capture { waiter, .. } => self.tell(waiter, Answer::Declined(Declined::Ended)),
+                Asking::Capture { asker, .. } => self.tell(asker, Answer::Declined(Declined::Ended)),
                 Asking::Refresh { waiting, .. } => {
-                    for waiter in waiting {
-                        self.tell(waiter, Answer::Declined(Declined::Ended));
+                    for asker in waiting {
+                        self.tell(Some(asker), Answer::Declined(Declined::Ended));
                     }
                 }
             }
