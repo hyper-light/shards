@@ -52,18 +52,31 @@ fn a_daemons_whole_lines_are_its_words() {
 
 /// The stand-in a test's wait follows here: this test binary run again for this test alone,
 /// doing what `SHARDS_STAND_IN` says: `exit`, at once; `busy MS`, its CPU busy for MS
-/// milliseconds, then its end; `idle`, nothing at all until its stdin closes.
+/// milliseconds, then its end; `answer PORT MS`, connected to loopback's PORT, busy for MS
+/// milliseconds, then its answer written there and its end; `idle`, nothing at all until
+/// its stdin closes.
 #[test]
 #[ignore = "a process of its own for the harness's stand-ins, which run it"]
 fn stand_in() {
     use std::io::Read as _;
     let asked = std::env::var("SHARDS_STAND_IN").unwrap_or_default();
-    if let Some(ms) = asked.strip_prefix("busy ").and_then(|ms| ms.parse().ok()) {
+    let busy = |ms| {
         let until = Instant::now() + Duration::from_millis(ms);
         let mut spun = 0u64;
         while Instant::now() < until {
             spun = std::hint::black_box(spun.wrapping_add(1));
         }
+    };
+    let answer = asked
+        .strip_prefix("answer ")
+        .and_then(|a| a.split_once(' '))
+        .and_then(|(port, ms)| Some((port.parse::<u16>().ok()?, ms.parse().ok()?)));
+    if let Some(ms) = asked.strip_prefix("busy ").and_then(|ms| ms.parse().ok()) {
+        busy(ms);
+    } else if let Some((port, ms)) = answer {
+        let mut to = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        busy(ms);
+        to.write_all(ANSWER).unwrap();
     } else if asked == "idle" {
         let _ = std::io::stdin().read(&mut [0u8; 1]);
     }
@@ -334,4 +347,38 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
         || {},
         || party.wait().unwrap(),
     )
+}
+
+/// What an `answer` stand-in writes.
+const ANSWER: &[u8] = b"answered";
+
+/// The old shape of a read of a stream its party answers on, at its test's `TIMEOUT`
+/// (warm.rs' daemon link and its client's connection, daemon.rs' engine stream,
+/// containers.rs' reads of published ports): a caller's bound on each read, here scaled to
+/// 100 ms, against a party that works for a second before it answers. Do: a stand-in
+/// connected to this test, busy for a second, then its answer; read it at that bound.
+/// Expect: its answer.
+#[test]
+fn red_a_judged_read_goes_on_while_its_party_works() {
+    use std::io::Read as _;
+    let busy = Duration::from_secs(1);
+    let bound = Duration::from_millis(100);
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let mut party = stand_in_doing(&format!("answer {port} {}", busy.as_millis()))
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let (mut conn, _) = listener.accept().unwrap();
+    let began = Instant::now();
+    conn.set_read_timeout(Some(bound)).unwrap();
+    let mut got = [0u8; ANSWER.len()];
+    let read = conn.read_exact(&mut got);
+    let _ = party.kill();
+    let _ = party.wait();
+    assert!(
+        read.is_ok(),
+        "a party busy for {busy:?} cut {:?} into its read: {read:?}",
+        began.elapsed()
+    );
 }
