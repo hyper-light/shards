@@ -23164,6 +23164,9 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     cut at its first 0.5 s gap).
   - `cargo clippy -p shards-registry --all-targets -- -D warnings`: clean (r107).
   - `cargo fmt --check`: clean.
+  - On the merged tree (8e3568e75 over main 740fa3726, r156): 169 passed; clippy clean for
+    aarch64-apple-darwin, and for x86_64-pc-windows-msvc through cargo-xwin with `shards`
+    (r450, at a1cb7dd64).
 - **Owed.** CI's: Linux and Windows (where a system wait's early end is the own-stop rule's
   reason) and arm64 Linux. ROOT's: real pulls and pushes on every backend (api_image.rs,
   containers.rs), where a fresh home's first pull now runs out on a few answers a path's
@@ -23237,6 +23240,7 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     ending).
   - `cargo clippy -p shards-init --all-targets -- -D warnings`: clean (r108).
   - `cargo fmt --check`: clean.
+  - On the merged tree (8e3568e75 over main 740fa3726, r157): 7 passed, clippy clean.
 - **Owed.** CI's: the musl and aarch64 lints and tests. ROOT's: tests/containers.rs
   `a_run_on_the_hosts_network_is_on_the_hosts_network` (its relays drained at the run's
   end) on KVM and HVF.
@@ -23306,6 +23310,12 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     error: the Unix tests' helper `learned` dead on Windows (r143), gated since; the merged
     tree's run is below.
   - `cargo fmt --check`: clean.
+  - On the merged tree (over main 740fa3726): its first run hung on waitid's word (r158,
+    above); with the end the kernel's word, at a1cb7dd64, 7 passed with main's own
+    builder test (r448), clippy clean for aarch64-apple-darwin (r448) and, through
+    cargo-xwin, for x86_64-pc-windows-msvc (r450). The stalled stand-ins are stopped
+    (SIGSTOP), as main's judge (5716d309d) holds an asleep process live while its host's
+    pressure grows.
 - **Owed.** CI's: Linux (the CPU clock's look) and Windows (`exits_by` on its handle, the
   process tree's look), where the tests, Unix's, do not run. ROOT's: tests/build.rs on
   every backend, the builder's real end.
