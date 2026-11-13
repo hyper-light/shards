@@ -33,7 +33,7 @@ use windows_sys::Win32::Foundation::{
     DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING,
     ERROR_MORE_DATA, ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
     ERROR_PIPE_NOT_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
-    LocalFree, STATUS_PENDING, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    LocalFree, STATUS_PENDING, SetLastError, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -280,6 +280,58 @@ pub(crate) fn write_from(
     call(handle, cancels, deadline, |ov| unsafe {
         WriteFile(handle, at, len, std::ptr::null_mut(), ov)
     })
+}
+
+/// Writes from `buf` to `handle` with [`call`], waiting on nothing but the write: `pended`
+/// is told, as the write begins to wait, where it could not finish at once (ERROR_IO_PENDING).
+/// A named pipe's write finishes at once where its pipe holds it whole, or hands it to a read
+/// its reader has pending; one it cannot pends until its reader has taken enough of what the
+/// pipe holds for it to (npfs: a write is charged what its quota has free, and completes once
+/// all of it is, `NpAddDataQueueEntry`, `NpCompleteStalledWrites`). So its pend is its reader's
+/// to end: what a slot's answer is waited on its client for (D185's takes, `slots::named`).
+pub(crate) fn write_telling(handle: HANDLE, buf: &[u8], pended: impl FnOnce()) -> Called {
+    let len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+    let at = buf.as_ptr();
+    let mut pended = Some(pended);
+    call(handle, &[], None, |ov| {
+        // SAFETY: as `read_into`'s.
+        let started = unsafe { WriteFile(handle, at, len, std::ptr::null_mut(), ov) };
+        if started == 0 {
+            // SAFETY: no arguments.
+            let code = unsafe { GetLastError() };
+            if code == ERROR_IO_PENDING
+                && let Some(pended) = pended.take()
+            {
+                pended();
+            }
+            // What `call` reads of its start is the start's own error, whatever `pended` did.
+            // SAFETY: no arguments but the code.
+            unsafe { SetLastError(code) };
+        }
+        started
+    })
+}
+
+/// What the pipe whose end is `handle` holds of that end's writes before one waits on its
+/// reader: its outbound quota, the buffer its instance was made with (GetNamedPipeInfo's out
+/// buffer size; `LINE_BUFFER` each way for a slot's line); none where it says none.
+pub(crate) fn outbound_quota(handle: HANDLE) -> io::Result<u32> {
+    let mut quota = 0u32;
+    // SAFETY: a pipe's end this process holds, and one size for the call to fill; its flags,
+    // its in buffer and its instances are not asked for.
+    if unsafe {
+        GetNamedPipeInfo(
+            handle,
+            std::ptr::null_mut(),
+            &raw mut quota,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(quota)
 }
 
 /// Waits for a client to open the instance `server`, or for `cancel`: `Ok(true)` once one

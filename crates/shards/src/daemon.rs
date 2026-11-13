@@ -4089,10 +4089,20 @@ impl<D: Disk> Daemon<D> {
                     &agentfile.managed_labels,
                     &agentfile.active_members,
                 )?;
-                Ok((inputs, owned, managed::control_asked(&run.annotations)?))
+                let terminals = managed::terminal_members(
+                    &run.annotations,
+                    &agentfile.managed_labels,
+                    &agentfile.active_members,
+                )?;
+                Ok((
+                    inputs,
+                    owned,
+                    terminals,
+                    managed::control_asked(&run.annotations)?,
+                ))
             })
             .map_err(managed::Failure::Refused)
-            .and_then(|(inputs, owned, agent_control)| {
+            .and_then(|(inputs, owned, terminals, agent_control)| {
                 // What the daemon reads of the members it is shown an attached client on its
                 // stderr, as an agent's output always was (D59); a detached run's is kept
                 // alone.
@@ -4110,6 +4120,7 @@ impl<D: Disk> Daemon<D> {
                         active: &agentfile.active_members,
                         inputs: &inputs,
                         owned: &owned,
+                        terminals: &terminals,
                     },
                     managed::Shown {
                         retention: kept.map(|k| LogRetention {
@@ -5882,6 +5893,12 @@ impl<D: Disk> Daemon<D> {
                 kind::PIDS => self.pids_refused(id, &m.payload),
                 kind::WORKLOAD_READY => self.workload_ready(id, &m.payload),
                 kind::PROCESS => self.keep_processes(id, &m.payload),
+                // A member's end (D231), for its own lanes of the run's agent control (D238).
+                kind::MEMBER_ENDED => {
+                    if let Err(e) = self.managed.member_ended(id, &m.payload) {
+                        log(format!("container {id}: a member's end: {e}"));
+                    }
+                }
                 kind::MANAGED_ABORT => {
                     if let Err(e) = self.managed.abort_member(id, &m.payload) {
                         log(format!("container {id}: invalid managed abort: {e}"));
@@ -10977,9 +10994,9 @@ mod tests {
     /// (cut off by its exit before its slot passed it on, x86_64 CI); and a client that
     /// takes nothing holds it no longer than the slowest take seen, from when its answer's
     /// writer began waiting on it, so that a stopped client keeps no daemon from exiting (PM
-    /// M261, M549). Unix's: a named pipe says nothing of its room before a write, so on
-    /// Windows a closed daemon follows its clients' ends alone.
-    #[cfg(unix)]
+    /// M261, M549). On every host: on Windows a part of an answer whose write pends is the
+    /// take (`slots::write_all_waiting`); before, no take was seen there, and a closed daemon
+    /// held such a client until it ended.
     #[test]
     fn a_closed_daemon_waits_for_its_clients_to_take_their_answers() {
         use shards_ipc::slots as s;
@@ -11069,8 +11086,8 @@ mod tests {
     /// said its microVM stopped before its command ended (125: budget E2E 40162744975's a,
     /// `a_daemon_ending_its_runs_is_waited_for`, PM M331). Its client leaving its answer
     /// untaken lets go of it once the slowest take seen has passed, no more: before, twice
-    /// the longest piece, at least TCP's R2, 100 s (PM M549). Unix's, as the test above.
-    #[cfg(unix)]
+    /// the longest piece, at least TCP's R2, 100 s (PM M549). On every host, as the test
+    /// above.
     #[test]
     fn a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear() {
         let t = Test::new("sp");
@@ -11102,8 +11119,7 @@ mod tests {
 
     /// Before any take has been seen, a closed daemon follows a client that takes nothing of
     /// its answer by its end alone (PM M549): held, with no time it lets go at, until the
-    /// client ends, and its writer's write fails then. Unix's, as the tests above.
-    #[cfg(unix)]
+    /// client ends, and its writer's write fails then. On every host, as the tests above.
     #[test]
     fn a_closed_daemon_with_no_take_seen_holds_a_client_until_it_ends() {
         let t = Test::new("cold");
@@ -12137,12 +12153,20 @@ mod tests {
     }
 
     /// A microVM that does not answer its give-back keeps no other's from the host, and is
-    /// asked nothing more until its give-back has ended, which its time does (PM M308: a
-    /// pass that waited on each microVM in turn gave back 3 times in 600 s).
+    /// asked nothing more until its give-back has ended (PM M308: a pass that waited on each
+    /// microVM in turn gave back 3 times in 600 s). Its give-back ends as D215's judge ends
+    /// a wait whose kind has been answered (6fc62c231): at a look, past the slowest give-back
+    /// answered, that finds its VM process ran no CPU since the look before. A wait begun
+    /// before its kind's first answer follows liveness alone, whatever it learns meanwhile.
     #[test]
     fn a_microvm_that_does_not_give_back_keeps_no_other_waiting() {
         let t = Test::new("give-back");
         t.run(|t| {
+            // A give-back answered before, its microVM running a thousandth of it: a fixture's
+            // record, long beside how soon a played VM answers on a loaded host, so that the
+            // one that answers is never cut.
+            let slowest = PATIENCE / 4;
+            t.t.daemon.answers.reclaim.teach(slowest, slowest / 1000);
             let (stalled, _stalled, vm) = running(t, "stalled");
             let (answers, _answers, other) = running(t, "answers");
             let t0 = Instant::now();
@@ -12159,7 +12183,7 @@ mod tests {
                 drop(asked);
                 t.until("its answer taken", |d| !d.watching.giving(&answers));
             }
-            assert!(t0.elapsed() < TAKE_TIMEOUT, "{:?}", t0.elapsed());
+            assert!(t0.elapsed() < slowest, "{:?}", t0.elapsed());
             // The one still asked is asked nothing more meanwhile.
             assert!(t.t.daemon.watching.giving(&stalled));
             vm.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
@@ -12170,13 +12194,14 @@ mod tests {
                     Err(_) => break,
                 }
             }
-            // Its time up, its give-back is ended on its exec's connection, as its VM says
-            // once it has ended it; then it may be asked again.
+            // Its VM process, a sleep, ran nothing: past the slowest answer, its give-back is
+            // ended on its exec's connection, as its VM says once it has ended it; then it may
+            // be asked again.
             let conn = stream_of(&held.fds[0]);
-            conn.set_read_timeout(Some(PATIENCE)).unwrap();
+            conn.set_read_timeout(Some(slowest + PATIENCE)).unwrap();
             let ended = shards_ipc::recv(&conn).unwrap().unwrap();
             assert_eq!((ended.kind, ended.payload), signal(9));
-            assert!(t0.elapsed() >= TAKE_TIMEOUT, "{:?}", t0.elapsed());
+            assert!(t0.elapsed() >= slowest, "{:?}", t0.elapsed());
             shards_ipc::send(&conn, kind::EXIT, &[137], &[]).unwrap();
             drop((conn, held));
             t.until("its give-back ended", |d| !d.watching.giving(&stalled));
