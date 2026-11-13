@@ -1,0 +1,11 @@
+host=adalundhe-MacBook-Pro Darwin 25.5.0 arm64 load={ 2.83 4.16 4.07 } base=744dd57ccba069954ea72e746966f1b06404673e patch=s11-logs-red.patch 54fffe43d7e7cc18
+rustc 1.98.1 (48a229cea 2026-09-01)
+red: the slice with control/exec.rs `scoped()` refusing a log lane of a member the endpoint serves no stream of (`if !served {` in place of `if !served && !matches!(ask.kind, Kind::Log(_)) {`)
+== cargo test -p shards-remote --lib control::tests::lanes::the_controller_reads_a_log_lane 2>&1 | grep -E "panicked|left|right|test result|^test "
+test control::tests::lanes::the_controller_reads_a_log_lane_exactly_and_goes_on_from_its_cursor ... FAILED
+thread 'control::tests::lanes::the_controller_reads_a_log_lane_exactly_and_goes_on_from_its_cursor' (23208770) panicked at crates/remote/src/control.rs:3495:13:
+assertion `left == right` failed
+  left: Err(Refused(Scope))
+ right: Err(Unlogged(Unknown))
+thread '<unnamed>' (23208775) panicked at crates/remote/src/control.rs:3420:63:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 110 filtered out; finished in 0.01s

@@ -24659,7 +24659,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built; log lanes building, goal 58's step 7: the lane and its controller built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -25275,6 +25275,58 @@ abi (`members::tests::a_signal_says_its_member_and_number`) and init (`run::memb
   is found among its processes and signalled alone while its sibling of PID 3 runs on, and none
   is found once it has ended.
 
+*Log lanes* (goal 58's step 7, design L1, ROOT's; `control::exec::Kind::Log`). The logs a run
+keeps of its command's output (D161) and of every member's (D240) are read on a lane of their
+own, asked as an exec is, so that a controller reads what a harness wrote while it was away and
+goes on from where it got to, byte for byte.
+- *The ask* (`Log`, tag 9): the scope (run, generation, member), then whose log (the run's
+  command, its member field 0, or member N), which channels (stdout, stderr or both), each
+  channel's place (the store's own `Pos`, D163's cursor: segment, record, byte; none for the
+  oldest kept), and whether it follows. An endpoint that admits no exec refuses it `Scope`, as
+  it refuses another run (`Scope`) or generation (`Stale`); the member is its host's to know,
+  not the endpoint's, since the run keeps every member's output whatever streams the endpoint
+  serves.
+- *Its records*: an exec in all but its start. Its host reads the log into one stream of step
+  5's records (offset and bytes, one in flight, each consumed before the next goes: the
+  controller's credit), each one typed record (`exec::LogRecord`) at its own place: output (its
+  channel, place, time and bytes), a gap (its channel, place, time, the bytes lost and why,
+  `Behind` or `Unwritten`), or `Rotated { oldest }` where segments its retention let go went
+  before the lane read them. Each fits the run's exec admission (`run::CHUNK`); output comes in
+  pieces of that record less its 34-byte head.
+- *Its refusals, typed* (`exec::Unlogged`): `Rotated { oldest }`, a frame of its own (tag 45,
+  the oldest place kept), where a place asked is older than the oldest kept, saying what was
+  lost (all of it, unless the place was its segment's very end); `Unkept` (23), a run kept with
+  `--log-driver none`; `Uncached` (24), the command's log of a run whose driver keeps no copy
+  (`cache-disabled=true`, as `logs` refuses it); `Unknown` (25), a member the run has not. The
+  run's budget and its host's failures as an exec's (`Unstarted`).
+- *Its end*: unfollowed, once all that was kept as it asked is consumed; followed, at its
+  source's end. Its host then says it exited, told once its records have finished, as an exec's
+  exit is.
+- *The controller* (`Execs::log(source, channels, cursor, follow)`): a `Log` whose `next_record`
+  gives each record, typed, the one before acknowledged; its `cursor` is each channel it reads
+  past every record handed out, never back (a channel it does not read keeps its place, and the
+  log is read in its order, so a read channel has had all of itself before each record), where a
+  later lane goes on, inside a record too. A `Log` let go before its end abandons its lane
+  (`Ask::Hangup`), which hangs its host up as a connection's end does. A record that does not
+  read as one breaks its lane's protocol, as any frame does. `Dialed::lanes` names `log:run`,
+  and `log:N` for each member its subscriptions name, where execs are granted; another
+  member's log is read the same way, unnamed, as the controller knows no more of the run's
+  members.
+
+Tested in `crates/remote`: the ask, the records and the told frames read back, `Rotated` with
+its place and the codes apart from every other; the cursor moving past what its reader had, for
+the channels it reads alone, never back. Over loopback through the controller, with a stand-in
+host: every record from the oldest kept, exact and at its place, a long output in pieces of the
+lane's room; a later lane from inside a record reading its rest alone, the other channel's place
+kept; a place older than the oldest refused `Rotated`, naming it; a member the run has not
+refused `Unknown`; a followed lane reading what comes as it comes and ending at its source's end;
+a lane let go before its end letting its host go. Red first: with the endpoint refusing the log of
+a member it serves no stream of, `Refused(Scope)` where `Unlogged(Unknown)` was due.
+
+Building next: the daemon's log host (until it lands, the daemon's exec host refuses a log lane
+`Failed`), and every member's output kept in its log, owned or not, within the run's one log cap
+(D240).
+
 Record:
 [agent-control-v1](../research/measurements/agent-control-v1/README.md).
 
@@ -25323,6 +25375,11 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | `builtin::SIGNAL` 22 | the next after `RESIZE` 21 (D244) |
 | `SIGNAL_ENDED` 3, `SIGNAL_UNKNOWN` 2 | ESRCH's and ENOENT's numbers (include/uapi/asm-generic/errno-base.h), as `DEVICE_BUSY` is EBUSY's |
 | PID 2 | the first process a namespace's init forks: the member's command (init managed.rs `ACTOR`) |
+| Frame tags `Log` 9, `Rotated` 45 | this protocol's own, after `Member` 8 and `Steered` 44 |
+| `Unlogged` 23, 24, 25 | this protocol's own, after `Unsteered`'s 19 to 22 |
+| A log ask past its scope, 53 bytes | its source, channels and follow (a byte each), and each channel's place (a flag byte and the store's 24-byte `Pos`) |
+| A log record's kinds 1, 2, 3; its head, 34 bytes | output, gap, rotation; the kind and channel (a byte each), its place (24) and its time (8) |
+| A gap's why, 1 and 2 | `Behind` (let go so as never to hold up its owner, D240) and `Unwritten` (its write failed) |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 

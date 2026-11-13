@@ -1,0 +1,17 @@
+host=adalundhe-MacBook-Pro Darwin 25.5.0 arm64 load={ 3.34 4.86 4.21 } base=744dd57ccba069954ea72e746966f1b06404673e patch=s11-logs.patch 8e5d3758514e78eb
+rustc 1.98.1 (48a229cea 2026-09-01)
+== cargo test -p shards-remote --lib control:: 2>&1 | grep -E "log|granted|told|refusals|test result|FAILED|panicked"; cargo clippy -p shards-remote -p shards --all-targets -- -D warnings 2>&1 | tail -60
+     Running unittests src/lib.rs (/Users/ada.lundhe/g121-tmp/s11-logs/target/debug/deps/shards_remote-0c466c59a2f7bb8c)
+test control::exec::tests::a_steers_refusals_are_codes_of_their_own ... ok
+test control::exec::tests::a_log_cursor_moves_past_what_its_reader_had ... ok
+test control::exec::tests::what_an_exec_lane_is_told_reads_back ... ok
+test control::exec::tests::a_log_ask_reads_back_and_one_amiss_is_refused ... ok
+test control::exec::tests::a_log_record_reads_back_and_one_amiss_is_refused ... ok
+test control::tests::lanes::a_dials_lanes_are_named_as_granted ... ok
+test control::tests::lanes::an_exec_that_starts_and_exits_at_once_is_told_both_in_order ... ok
+test control::tests::lanes::an_exec_asked_amiss_is_refused_and_one_not_started_is_told_why ... ok
+test control::tests::lanes::a_members_lane_asked_amiss_is_refused_and_one_ended_is_told_its_end ... ok
+test control::tests::lanes::the_controller_reads_a_log_lane_exactly_and_goes_on_from_its_cursor ... ok
+test result: ok. 56 passed; 0 failed; 0 ignored; 0 measured; 55 filtered out; finished in 1.37s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 31.11s
+rc=0
