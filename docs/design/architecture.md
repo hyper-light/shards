@@ -12285,9 +12285,53 @@ peer", each going on here as it should. What changed for them:
   of `QUIET`). A connection takes the lesser of the two sides' bounds, so both machines need
   this build. No other deadline is on the stream's
   path: the CLI's pipes and the daemons' reads and writes block as the link lets them
-  (cli/moves.rs, daemon/moves.rs, daemon/remote.rs `copy_step`); `running_there`'s
-  minute of asking whether a restore with no answer runs there (twelve asks, 5 s apart) is
-  after the stream, and leaves the microVM held here, saved, saying so, never in two places.
+  (cli/moves.rs, daemon/moves.rs, daemon/remote.rs `copy_step`); asking whether a restore
+  with no answer runs there (below) is after the stream, and leaves the microVM held here,
+  saved, saying so, never in two places.
+- **Whether it runs there, its restore unanswered** (cli/moves.rs `running_there`; R03,
+  2026-11-13). A restore there whose answer never came may have run, so the move asks the
+  other machine whether the microVM runs (`inspect`) until it says: running, the move goes
+  on; not, and gone there once removed, it goes on here; else not known, held here, saved,
+  saying how to settle it. It asked twelve times, 5 s apart, figures of no derivation. How
+  long and how often it asks are now that machine's own, as this move heard it, with no
+  figure of shards':
+  - *How long*: while that machine shows it is there. An ask that heard it, though
+    unanswered (a connection it closed, its daemon stopping), is followed by another, however
+    many; one that heard nothing too, until that machine has gone unheard (`Seen::heard`,
+    the latest of its connections') longer than the longest it went unheard in this move and
+    was heard again (`Seen::longest_silence`, the most of any connection the move made there:
+    `ready`, the image's `load`, the import, the restore, these asks): its slowest answer.
+    Not known then. A connection ends at `QUIET` unheard, so that answer is less, and the
+    asking is never more patient than the link. The first ask goes out whatever that
+    machine's silence, the wait after the restore's run-out following liveness alone, each
+    ask held to the link's own bounds (its handshake's, then `QUIET`). The cold start, a move
+    that heard nothing of that machine (none reaches this step, `ready` and the import having
+    answered), ends at its first ask that hears nothing.
+  - *A refusal* (`Answer::Refused`, typed on the wire): not known at once. That machine heard
+    the ask and declined it (a client it no longer enrolls, a command it could not start);
+    asking again asks it to decline again, nothing learned of when it would not, and a
+    machine heard at each ask would be asked for ever.
+  - *How often*: each ask begins a round trip after the last began, at least: the link's, as
+    the connection that last heard that machine estimated it (RFC 9002 §5), the least time an
+    answer takes. An ask that heard nothing took its handshake's bound already, and one heard
+    a round trip, so only one that failed here, before the link, waits.
+  - *Its values' edges*: never heard, the silence is unbounded; the comparisons saturate
+    (`Instant::elapsed`, `saturating_sub`), with no arithmetic to overflow. They are that
+    machine's own showing, through connections authenticated both ways (D180): it can make a
+    move ask longer, only while it is heard and never past `QUIET` of silence, and never make
+    it take for an answer what it did not answer; not known keeps the copy held here. How long
+    the asking runs on the links measured above is not measured: none of their moves left a
+    restore unanswered.
+
+  Held by cli/moves.rs's `a_move_learns_the_other_machines_slowest_answer_from_every_connection`,
+  `the_other_machines_first_answer_says`, `a_machine_unanswered_is_asked_again_until_it_answers`,
+  `a_machine_silent_past_its_slowest_answer_is_not_known` and
+  `the_wait_takes_its_figures_from_the_link_alone` (asks a round trip apart; no number in its
+  source but an answer's exit status), and net.rs's `Liveness::last_heard` in
+  `a_connection_lives_while_it_is_heard_and_its_handshake_alone_is_held_to_its_bound`. Every
+  move between two machines takes in each connection's `Seen` so
+  (`a_microvm_moves_to_another_host_saved_and_live`, tests/moved.rs); no test leaves a restore
+  unanswered, a fault case owed.
 - **What a move sends**, cold: the move's stream (`Writer`), its plan, then its directory
   but its other snapshots and its kept layer, its snapshot's state, memory, layer and swap
   among it; its volumes; and the files its snapshot restores against that the other machine
