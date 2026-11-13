@@ -27681,7 +27681,10 @@ wakes it, net/unix/af_unix.c; macOS as measured, PM M559).
 - Mutation of the grant's and the name's checks.
 - A cut carried through a real VM (*Its cut through the guest's legs*, built and unit
   tested): a workload's socket cut mid-stream read as `ConnectionReset` at the controller,
-  and its half-close still as its way's end, on HVF, KVM and WHP; and, the muxer being every
+  and its half-close still as its way's end, on HVF, KVM and WHP
+  (`nesting::a_nested_workloads_socket_cut_mid_stream_resets_its_lane_at_the_controller` and
+  `nesting::a_nested_workloads_half_close_ends_its_way_in_order_while_the_controllers_goes_on`,
+  testguest's `nesting ends`; written, not yet run); and, the muxer being every
   exec's, engine's and MCP member's, their suites on all three. On WHP: a guest connection
   ended both ways at once with its host still writing now loses the host what it had not
   read (no linger); exec's own end is a half-close first, which keeps M358's hold.
