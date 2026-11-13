@@ -4530,7 +4530,12 @@ microVMs, from a git daemon and from smart HTTP served by git's own upload-pack.
   4095. The walk keeps the trees open on a stack of its own, a chain is followed in a loop,
   and the walk refuses what git refuses (`trees_nest_as_deep_as_git_checks_out_and_no_deeper`:
   2048 levels walked on a 256 KiB thread and 2049 refused, as git's read-tree takes and
-  refuses the same trees).
+  refuses the same trees). The host's git is asked at 2048 only where its own
+  core.maxTreeDepth reaches it: Git for Windows' MSVC and arm64 clang builds stop at 512
+  and 1280, as their stacks hold no deeper (git v2.56.0 git-compat-util.h:594-616,
+  `DEFAULT_MAX_ALLOWED_TREE_DEPTH`), and held to 2048, CI's arm64 git (2.56.0.windows.4)
+  died of STATUS_STACK_OVERFLOW (0xC00000FD) instead of answering; there the walk alone is
+  checked, and the test says so.
 
   | Literal | Was | Now | Source |
   |---|---|---|---|
@@ -16230,7 +16235,16 @@ download.
     listening to the asking instead of asleep: an answer cut by its wait is overdue
     (`Error::is_overdue`) and asked again at once, at the moment the pause would have
     ended, and one that comes meanwhile is taken. A stalled download already resumes at
-    once once it brought bytes (fetch.rs).
+    once once it brought bytes (fetch.rs). The cut is its read's own stop, the socket's
+    timeout set to what is left of the wait or the wait's deadline (http.rs `read_head`),
+    as a silence's is (`Silenced::timed_out`), never the time `Instant` says passed: a
+    system wait "can be anywhere between one and two ticks" of a timeout between them
+    (Microsoft Learn, Wait Functions), so ends before its time by the clock, and on CI's
+    arm64 Windows (main cc439a2a7) a first cut so ended went uncounted, its asking again
+    paused and its wait not doubled: 3 asks where 2 were due, in 4.47 s from the test's
+    start, the 1.25 s + a pause + 1.25 + 1.5 s an uncounted cut takes and not the 5.25 s
+    a second cut would (`a_paths_answers_are_waited_for_as_long_as_it_shows`;
+    `a_read_its_wait_stops_is_overdue_by_the_stop_itself`).
   - **At least a second** (RFC 6298 §2.4's least timeout, which keeps it conservative
     against what its samples do not show; RFC 6298 cites Allman and Paxson, SIGCOMM
     1999: a large minimum avoids spurious retransmissions). Without it, this crate's
