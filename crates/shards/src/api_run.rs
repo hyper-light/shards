@@ -58,6 +58,78 @@ fn say(what: std::fmt::Arguments<'_>) {
     let _ = writeln!(io::stderr(), "shards api-run: {what}");
 }
 
+/// The run's channel from its orchestrator, this process's stdin (D231), read a frame at a
+/// time into a buffer of its own (`wire::read_frame_into`), never through std's `Stdin`,
+/// whose buffer reads ahead and keeps what it read (a lease's value, D242; a staged
+/// credential; a member's typed input) until later frames overwrite it.
+struct Channel<R> {
+    from: R,
+    buf: Vec<u8>,
+}
+
+/// A frame of the [`Channel`]'s: its kind, and its payload in the channel's buffer.
+struct Frame<'a> {
+    kind: u8,
+    payload: &'a mut [u8],
+}
+
+impl std::ops::Deref for Frame<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.payload
+    }
+}
+
+impl<R: io::Read> Channel<R> {
+    fn new(from: R) -> Channel<R> {
+        Channel {
+            from,
+            buf: Vec::new(),
+        }
+    }
+
+    /// The next frame, none at a clean end before its header; refused past the channel's
+    /// bound or cut short.
+    fn next(&mut self) -> io::Result<Option<Frame<'_>>> {
+        match wire::read_frame_into(&mut self.from, &mut self.buf) {
+            Ok(Some((kind, len))) => {
+                let payload = self
+                    .buf
+                    .get_mut(..len)
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?;
+                Ok(Some(Frame { kind, payload }))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Lets go of its buffer's memory: after the run's request, which may be far the largest
+    /// frame it reads.
+    fn shed(&mut self) {
+        self.buf = Vec::new();
+    }
+}
+
+/// The run's channel, as this process reads it.
+type Input = Channel<std::fs::File>;
+
+/// This process's stdin as the run's [`Channel`] reads it: its own descriptor (on Windows its
+/// own handle), read unbuffered.
+fn stdin() -> io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsFd as _;
+        Ok(std::fs::File::from(io::stdin().as_fd().try_clone_to_owned()?))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsHandle as _;
+        Ok(std::fs::File::from(io::stdin().as_handle().try_clone_to_owned()?))
+    }
+}
+
 /// `shards api-run`: not for people to run. The run's end is said as its VM ends, before
 /// its owner closes the channel; a run that never started is refused instead.
 pub fn command() -> ExitCode {
@@ -76,20 +148,21 @@ pub fn command() -> ExitCode {
 }
 
 fn host(answers: &Answers) -> Result<(), No> {
-    let mut input = io::stdin();
-    let request = match wire::read_frame(&mut input) {
-        Ok(Some((wire::to_host::CREATE, payload))) => {
-            wire::Request::decode(&payload).map_err(|e| No(Cause::Request, e.to_string()))?
+    let mut input = Channel::new(stdin().map_err(|e| No(Cause::Boot, format!("its stdin: {e}")))?);
+    let request = match input.next() {
+        Ok(Some(frame)) if frame.kind == wire::to_host::CREATE => {
+            wire::Request::decode(&frame).map_err(|e| No(Cause::Request, e.to_string()))?
         }
-        Ok(Some((kind, _))) => {
+        Ok(Some(frame)) => {
             return Err(No(
                 Cause::Request,
-                format!("message kind {kind} before the request"),
+                format!("message kind {} before the request", frame.kind),
             ));
         }
         Ok(None) => return Err(No(Cause::Request, "the channel closed before its request".into())),
         Err(e) => return Err(No(Cause::Request, format!("the request: {e}"))),
     };
+    input.shed();
     let ready_by = deadline(request.ready_by, SystemTime::now())?;
     hosted::run(answers, &request, ready_by, input)
 }
@@ -1375,7 +1448,7 @@ mod hosted {
         answers: &Answers,
         request: &wire::Request,
         ready_by: Option<u64>,
-        input: io::Stdin,
+        input: super::Input,
     ) -> Result<(), No> {
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
         let plan = plan(request, ready_by, &home)?;
@@ -2389,7 +2462,7 @@ mod hosted {
         Stream::plain_pair()
     }
 
-    fn launch_and_serve(answers: &Answers, input: io::Stdin, home: &Path, plan: Plan) -> Result<(), No> {
+    fn launch_and_serve(answers: &Answers, input: super::Input, home: &Path, plan: Plan) -> Result<(), No> {
         let boot = |e: String| No(Cause::Boot, e);
         super::say(format_args!(
             "prepared {}, {} vCPUs, {} MiB; starting its VM",
@@ -2571,7 +2644,7 @@ mod hosted {
     /// channel closed first, kills the VM, whose end then says `Stopped`.
     fn serve(
         live: &Live<'_>,
-        input: io::Stdin,
+        input: super::Input,
         launched: &Launched,
         client: Stream,
         control: Option<(shards_remote::control::Endpoint, shards_remote::control::Served)>,
@@ -2885,12 +2958,12 @@ mod hosted {
     /// closed after the run's end is its owner having heard it.
     fn asks<'scope, 'env>(
         live: &'env Live<'env>,
-        mut input: io::Stdin,
+        mut input: super::Input,
         vm: &'env shards_ipc::Child,
         scope: &'scope std::thread::Scope<'scope, 'env>,
     ) {
-        while let Ok(Some((which, payload))) = wire::read_frame(&mut input) {
-            match which {
+        while let Ok(Some(payload)) = input.next() {
+            match payload.kind {
                 wire::to_host::CREDIT => {
                     let Ok(credit) = wire::Credit::decode(&payload) else {
                         break;
@@ -2920,10 +2993,9 @@ mod hosted {
                     }
                 }
                 // A lease the orchestrator answered (D242), relayed to the network process
-                // that asked it; the frame's copy of a value wiped as it goes. One of a run
-                // with no grants, or to no ask, breaks the channel.
+                // that asked it. One of a run with no grants, or to no ask, breaks the
+                // channel.
                 wire::to_host::LEASED => {
-                    let payload = zeroize::Zeroizing::new(payload);
                     let Some(leasing) = &live.leasing else {
                         break;
                     };
@@ -2989,7 +3061,7 @@ mod hosted {
                 }
                 // On a thread of its own, as stats: a plug's guest steps hold up nothing else.
                 wire::to_host::PLUG | wire::to_host::UNPLUG => {
-                    let asked = if which == wire::to_host::PLUG {
+                    let asked = if payload.kind == wire::to_host::PLUG {
                         let Ok(ask) = wire::PlugAsk::decode(&payload) else {
                             break;
                         };
@@ -4837,6 +4909,44 @@ mod tests {
             orchestrator.read_to_end(&mut rest).unwrap();
             assert!(rest.is_empty(), "{end:?}: told the orchestrator more: {rest:?}");
         }
+    }
+
+    /// A frame that carried a lease's value (D242) leaves nothing of it in the run host's own
+    /// buffer once let go of. Do: read a `LEASED` frame through the run host's channel, decode
+    /// it, let it go, then read the frame after it. Expect: the value read whole; then not one
+    /// byte of the channel's buffer other than zero, so nothing of the value left in it; and
+    /// the next frame read whole after it, the channel having read nothing past its frame.
+    #[test]
+    fn a_leased_frame_leaves_nothing_of_its_value_in_the_channels_buffer() {
+        let value = VALUE.as_bytes();
+        let answer = wire::LeaseAnswer {
+            id: 7,
+            result: Ok(wire::Lease {
+                value: wire::Secret::from(VALUE),
+                lives: NonZeroU64::MIN,
+            }),
+        };
+        let mut sent = wire::frame(wire::to_host::LEASED, &answer.encode().unwrap()).unwrap();
+        sent.extend(wire::frame(wire::to_host::STOP, &[]).unwrap());
+        let mut channel = Channel::new(&sent[..]);
+        {
+            let frame = channel.next().unwrap().unwrap();
+            assert_eq!(frame.kind, wire::to_host::LEASED);
+            let lease = wire::LeaseAnswer::decode(&frame).unwrap().result.unwrap();
+            assert_eq!(lease.value.0, value);
+        }
+        assert!(
+            !channel.buf.windows(value.len()).any(|w| w == value),
+            "the lease's value left in the run host's buffer"
+        );
+        assert!(
+            channel.buf.iter().all(|&b| b == 0),
+            "a frame's bytes left in the run host's buffer"
+        );
+        let frame = channel.next().unwrap().unwrap();
+        assert_eq!((frame.kind, frame.len()), (wire::to_host::STOP, 0));
+        drop(frame);
+        assert!(channel.next().unwrap().is_none());
     }
 
     /// An answer to no ask of the run's breaks the orchestrator's channel; one of a run that
