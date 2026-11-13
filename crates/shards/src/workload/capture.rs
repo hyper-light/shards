@@ -168,11 +168,10 @@ pub fn start(spec: &mut run::Spec, given: Given) -> Result<Control, String> {
         .map_err(|e| e.to_string())?;
     input_states.resize(members, InputState::None);
     // Each member whose input its owner writes: a token of its own for its connection, which
-    // goes to the owner as its hello comes.
-    if !managed::input_tokens(&spec.setup)
-        .map_err(|e| e.to_string())?
-        .is_empty()
-    {
+    // goes to the owner as its hello comes. The tokens are this process's to mint, so a
+    // request bringing any is refused; `input_tokens` would refuse every request asking an
+    // input, holding a setup to one token for each input member, which none has yet.
+    if spec.setup.iter().any(|e| e.starts_with(managed::INPUT_TOKEN_KEY)) {
         return Err("managed input tokens are the VM's to mint".into());
     }
     let mut inputs = Vec::new();
@@ -610,6 +609,57 @@ mod tests {
         assert_eq!(message.kind, shards_ipc::kind::MANAGED_ABORT);
         assert_eq!(managed::Abort::decode(&message.payload).unwrap(), abort);
         assert!(shards_ipc::recv(&owner).unwrap().is_none());
+    }
+
+    /// A run whose owner writes a member's stdin starts with that member's token minted
+    /// here, one a member, and a request that brings one of its own is refused: the tokens
+    /// are the VM's alone. Every run asking a member's stdin was refused before its start
+    /// (ROOT's HVF run at 27ed7cccd, the api_image and member_exec stdin cases Stopped at
+    /// once; Linux CI at 5b4a561e5, managed_output's member_stdin runs exiting 125 with no
+    /// words), its request's input members holding no token yet.
+    #[test]
+    fn an_input_members_token_is_minted_here_and_none_is_taken_from_its_request() {
+        let _serial = super::super::hellos::TESTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        super::super::hellos::reopen();
+        let (_port, _acceptor) = super::super::exec_port().unwrap();
+        let spec = |extra: Option<Vec<u8>>| {
+            let mut setup = vec![
+                [managed::CAPACITY_KEY, b"4096"].concat(),
+                [managed::MEMBERS_KEY, b"2"].concat(),
+                [managed::ACTIVE_KEY, &1u32.to_be_bytes()[..]].concat(),
+                [managed::INPUT_KEY, &1u32.to_be_bytes()[..]].concat(),
+            ];
+            setup.extend(extra);
+            run::Spec {
+                setup,
+                ..run::Spec::default()
+            }
+        };
+        let given = || Given {
+            stream: shards_ipc::Stream::pair().unwrap().0,
+            control: shards_ipc::Stream::pair().unwrap().0,
+            capacity: 4096,
+            members: 2,
+        };
+        let mut asked = spec(None);
+        let started = start(&mut asked, given());
+        assert!(started.is_ok(), "{:?}", started.err());
+        let minted = managed::input_tokens(&asked.setup).unwrap();
+        assert_eq!(minted.iter().map(|(m, _)| *m).collect::<Vec<_>>(), [1]);
+        let brought = [
+            managed::INPUT_TOKEN_KEY,
+            &1u32.to_be_bytes()[..],
+            &[7; run::TOKEN],
+        ]
+        .concat();
+        let refused = start(&mut spec(Some(brought)), given());
+        assert_eq!(
+            refused.err().as_deref(),
+            Some("managed input tokens are the VM's to mint")
+        );
+        super::super::hellos::close();
     }
 
     /// A member's input's end, as its init tells it, goes to the owner checked and once a

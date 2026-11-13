@@ -58,6 +58,9 @@ struct InputFlow {
 #[derive(Debug, Default)]
 struct State {
     started: Option<wire::Started>,
+    /// The members whose stdin the request asks for, by kind and name: each one's flow is
+    /// made as the run's start is taken ([`take`]), by its index there.
+    asked_inputs: Vec<(wire::MemberKind, String)>,
     refused: Option<ImageRefusal>,
     flows: HashMap<(u32, Channel), Flow>,
     /// Each member's stdin its spec asked for, by its index.
@@ -106,6 +109,19 @@ struct Asked<T> {
 }
 
 impl State {
+    /// A session's state before its host has answered, for a request staging `members`:
+    /// those whose stdin it asks for named, for their flows to be made with its start.
+    fn asking(members: &[wire::MemberStage]) -> State {
+        State {
+            asked_inputs: members
+                .iter()
+                .filter(|m| m.input)
+                .map(|m| (m.kind, m.name.clone()))
+                .collect(),
+            ..State::default()
+        }
+    }
+
     /// The host is gone and has said all it will.
     fn gone(&self) -> bool {
         self.exited && self.answered
@@ -431,7 +447,7 @@ impl Session {
             said,
         } = start_host(&binary, &[OsStr::new("api-run")], &spec.env)?;
         let shared = Arc::new(Shared {
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State::asking(&request.members)),
             changed: Condvar::new(),
             to_host: Mutex::new(Some(to_host)),
         });
@@ -513,19 +529,6 @@ impl Session {
                 )));
             }
         };
-        // Each member whose stdin its spec asked for, by its index in the host's answer.
-        {
-            let mut state = lock(&shared.state);
-            for m in request.members.iter().filter(|m| m.input) {
-                if let Some(info) = started
-                    .members
-                    .iter()
-                    .find(|i| i.kind == m.kind && i.name == m.name)
-                {
-                    state.inputs.entry(info.index).or_default();
-                }
-            }
-        }
         // Its endpoint told exactly where one was asked for (D252): a host that binds none for
         // a run that asked, or one for a run that did not, broke the channel's contract.
         if request.control.is_some() != started.control.is_some() {
@@ -754,7 +757,25 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
     let mut state = lock(&shared.state);
     let mut ended = false;
     match kind {
-        k::STARTED => state.started = Some(wire::Started::decode(payload).map_err(bad)?),
+        k::STARTED => {
+            let started = wire::Started::decode(payload).map_err(bad)?;
+            // Each asked member's flow, by its index in the start, made under this lock: the
+            // host gives it room as soon as its input connection comes, which this reader
+            // may take before the caller waiting for the start runs again.
+            let State {
+                asked_inputs, inputs, ..
+            } = &mut *state;
+            for (kind, name) in asked_inputs.iter() {
+                if let Some(info) = started
+                    .members
+                    .iter()
+                    .find(|i| i.kind == *kind && i.name == *name)
+                {
+                    inputs.entry(info.index).or_default();
+                }
+            }
+            state.started = Some(started);
+        }
         k::REFUSED => {
             let r = wire::Refused::decode(payload).map_err(bad)?;
             state.refused = Some(match r.cause {
@@ -1160,6 +1181,50 @@ mod tests {
             changed: Condvar::new(),
             to_host: Mutex::new(None),
         }
+    }
+
+    /// A member's stdin has its flow as the run's start is taken, under the lock that answer
+    /// is taken in: the host gives it room (`INPUT_ROOM`) as soon as its input connection
+    /// comes, which this session's reader may take before the caller waiting for the start
+    /// runs again; a room for a member with no flow breaks the channel. A member whose stdin
+    /// was not asked for has none.
+    #[test]
+    fn a_stdins_room_right_after_the_start_is_its_members() {
+        let stage = |name: &str, input: bool| wire::MemberStage {
+            kind: wire::MemberKind::Harness,
+            name: name.into(),
+            env: Vec::new(),
+            files: Vec::new(),
+            workdir: None,
+            input,
+            terminal: false,
+            args: Vec::new(),
+        };
+        let s = Shared {
+            state: Mutex::new(State::asking(&[stage("codex", true), stage("other", false)])),
+            changed: Condvar::new(),
+            to_host: Mutex::new(None),
+        };
+        let info = |index, name: &str| MemberInfo {
+            index,
+            kind: wire::MemberKind::Harness,
+            name: name.into(),
+            runs: true,
+        };
+        let started = wire::Started {
+            members: vec![info(0, "other"), info(1, "codex")],
+            published: Vec::new(),
+            control: None,
+            rate_period: Duration::from_millis(100),
+            from: wire::StartedFrom::Booted,
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(take(&s, wire::to_client::STARTED, &started), Ok(false));
+        let room = |member, bytes| wire::InputRoom { member, bytes }.encode();
+        assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(1, 5)), Ok(false));
+        assert_eq!(lock(&s.state).inputs[&1].room, 5);
+        assert!(take(&s, wire::to_client::INPUT_ROOM, &room(0, 5)).is_err());
     }
 
     /// A member's stdin's room and end are taken as its host says them: room adds up, an
