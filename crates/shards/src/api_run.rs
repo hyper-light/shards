@@ -158,6 +158,20 @@ fn gpu_args(gpus: &[shards_api::PhysicalGpu]) -> Vec<std::ffi::OsString> {
     args
 }
 
+/// The kernel and init a run's VM boots: its guest's, as `run::prepare` chose them, the GPU's
+/// guest kernel `gpu` in its kernel's place where the run is given its GPU (D144), as the
+/// daemon boots a run given one (daemon.rs `warm_for`); no init where a given guest names none.
+fn boot_of(
+    boot: &crate::run::Boot,
+    gpu: Option<&std::path::Path>,
+) -> (std::path::PathBuf, Option<std::path::PathBuf>) {
+    let (kernel, init) = match boot {
+        crate::run::Boot::Given(cfg) => (cfg.kernel.as_path(), cfg.init.clone()),
+        crate::run::Boot::Stored(guest) => (guest.kernel.as_path(), Some(guest.init.clone())),
+    };
+    (gpu.unwrap_or(kernel).to_path_buf(), init)
+}
+
 /// What the run's command is given of the nesting grant (D234), decided as the daemon
 /// decides it for a run of its own (`agentfile::nesting`), refused typed, in its words: the
 /// grant asked of an image whose Agentfile declares no `NESTING` a widening of its grants;
@@ -789,15 +803,12 @@ mod hosted {
     use shards_ipc::kind;
 
     use super::{Answers, No, no};
+    use crate::daemon::ends::Ends;
     use crate::daemon::publish;
 
     fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
         m.lock().unwrap_or_else(PoisonError::into_inner)
     }
-
-    /// What the VM is told its link is: a descriptor's number on Unix, a handle's name on
-    /// Windows (daemon.rs `VM_LINK`).
-    const LINK: &str = if cfg!(windows) { "daemon" } else { "3" };
 
     /// The run, prepared: its spec, its members, its ports bound, its policy, its
     /// directories open, and what its VM boots.
@@ -899,6 +910,14 @@ mod hosted {
             } else {
                 Vec::new()
             },
+            // GPUs named (D232) ask for the microVM's GPU as `--gpus 1` asks it, so that
+            // `run::prepare` gives it the GPU's guest kernel, DRM's virtio-gpu driver built in
+            // (D144), which its VM then boots (`super::boot_of`).
+            gpus: if request.gpu_devices.is_empty() {
+                Vec::new()
+            } else {
+                vec!["1".into()]
+            },
             ready_by,
             remove: true,
             ..Default::default()
@@ -910,6 +929,14 @@ mod hosted {
         let say = |line: &str| {
             let _ = writeln!(io::stderr(), "{line}");
         };
+        // A host that gives a microVM no GPU (`run::GIVES_GPU`) refuses GPUs named, before
+        // anything of the run is made.
+        if !request.gpu_devices.is_empty() && !crate::run::GIVES_GPU {
+            return Err(No(
+                Cause::Unsupported,
+                "this host gives a microVM no GPU (D144, D201, D202)".into(),
+            ));
+        }
         let cancel = shards_registry::http::Cancel::new();
         let mut prepared = crate::run::prepare(&run, home, &say, &cancel).map_err(no(Cause::Image))?;
         if request.vcpus > 0 {
@@ -996,10 +1023,7 @@ mod hosted {
             setup.retain(|e| !e.starts_with(b"caps="));
             setup.push(format!("caps={}", a.caps(&run)).into_bytes());
         }
-        let boot = match &prepared.boot {
-            crate::run::Boot::Given(cfg) => (cfg.kernel.clone(), cfg.init.clone()),
-            crate::run::Boot::Stored(guest) => (guest.kernel.clone(), Some(guest.init.clone())),
-        };
+        let boot = super::boot_of(&prepared.boot, prepared.gpu.as_deref());
         let (kernel, init) = (
             boot.0,
             boot.1.ok_or_else(|| No(Cause::Boot, "no init to boot".into()))?,
@@ -1137,10 +1161,11 @@ mod hosted {
     impl Shares {
         /// Its end, its VM's gone: what of it this process holds let go of, the last of its
         /// streams where the VM never took them (a run refused before `TAKEN`), then waited
-        /// for as a network process is, [`crate::netproc::GRACE`] at most, and ended. Waited
-        /// for with its door still held here, it never went (CI run 43230466376,
+        /// for as a network process is, while it goes on with its end, and ended once it does
+        /// not (`netproc::reap`, the home's `record` of this host's ends). Waited for with its
+        /// door still held here, it never went (CI run 43230466376,
         /// `a_share_at_a_granted_volume_reaches_the_harness`, this process in `do_wait`).
-        fn end(self) {
+        fn end(self, record: &Ends) {
             let Shares {
                 child,
                 #[cfg(unix)]
@@ -1154,7 +1179,7 @@ mod hosted {
             drop(door);
             #[cfg(windows)]
             drop(ends);
-            crate::netproc::reap(&child);
+            crate::netproc::reap(&child, record);
         }
     }
 
@@ -1184,7 +1209,7 @@ mod hosted {
             // Memory its workload frees given back to the host as it reports it (D151).
             "--reporting".into(),
             "--warm".into(),
-            LINK.into(),
+            crate::launch::LINK.into(),
         ];
         if let Some(server) = &plan.server {
             args.extend(["--pmem".into(), server.clone().into()]);
@@ -1199,16 +1224,6 @@ mod hosted {
         }
         args.extend(super::gpu_args(&plan.gpu_devices));
         args
-    }
-
-    /// The VM process to start: the GPU's (D144) where the run names its GPUs (D232), with
-    /// MoltenVK saying its errors alone, as the daemon starts a GPU's; else the plain one.
-    fn vm_binary(plan: &Plan, env: &mut Vec<(&'static str, OsString)>) -> Result<PathBuf, String> {
-        if plan.gpu_devices.is_empty() {
-            return crate::helpers::vm();
-        }
-        env.push(("MVK_CONFIG_LOG_LEVEL", "1".into()));
-        crate::helpers::vm_gpu()
     }
 
     /// The home's private directory, made if it is not there: where a share process keeps
@@ -1229,263 +1244,67 @@ mod hosted {
         shards_vmm::platform::open_dir(&at).map_err(|e| format!("{}: {e}", at.display()))
     }
 
-    #[cfg(unix)]
+    /// The run's processes, started as the daemon starts a run's VM (launch.rs): its share
+    /// process, ended where the VM does not start; then its network process, denying all
+    /// until its policy comes, and its VM. On Windows each is made in a job of this
+    /// process's that ends them as it ends (D141, D197).
     fn launch(home: &Path, plan: &Plan) -> Result<Launched, No> {
-        let boot = |e: String| No(Cause::Boot, e);
-        // Its network process, denying all until its policy comes, as a daemon run's.
-        let (net, side) = match &plan.bridge {
-            Some(bridge) => {
-                let mac = shards_net::random_mac().map_err(|e| boot(format!("a guest's MAC: {e}")))?;
-                let (child, side) = crate::netproc::start(
-                    shards_net::Policy::DenyAll,
-                    &mac,
-                    bridge,
-                    None,
-                    plan.credentials.is_some(),
-                )
-                .map_err(boot)?;
-                (Some((child, mac)), Some(side))
-            }
-            None => (None, None),
-        };
-        let shares = if plan.dirs.is_empty() {
-            None
-        } else {
-            Some(start_shares(home, &plan.dirs, Some(&run_tags(plan.dirs.len()))).map_err(boot)?)
-        };
-        let (ours, theirs) = Stream::pair().map_err(|e| boot(format!("the VM's link: {e}")))?;
-        let grants = if cfg!(target_os = "macos") {
-            Some(Stream::pair().map_err(|e| boot(format!("the VM's grants: {e}")))?)
-        } else {
-            None
-        };
-        let mut args = vm_args(plan);
-        if grants.is_some() {
-            args.extend(["--grants".into(), "4".into()]);
-        }
-        let release = crate::netproc::VM_RELEASE_FD.to_string();
-        if let Some((_, mac)) = &net {
-            args.extend([
-                "--net".into(),
-                crate::netproc::VmSide::arg(mac).into(),
-                "--net-release".into(),
-                release.into(),
-            ]);
-        }
-        let null =
-            std::fs::File::open(crate::os::NULL).map_err(|e| boot(format!("{}: {e}", crate::os::NULL)))?;
-        let err = io::stderr();
-        let mut fds: Vec<(BorrowedFd<'_>, i32)> = vec![
-            (null.as_fd(), 0),
-            (err.as_fd(), 1),
-            (err.as_fd(), 2),
-            (theirs.as_fd(), 3),
-        ];
-        if let Some((_, granted)) = &grants {
-            fds.push((granted.as_fd(), 4));
-        }
-        if let Some(side) = &side {
-            let [r, s, w] = crate::netproc::VM_FDS;
-            fds.extend([
-                (side.region.as_fd(), r),
-                (side.sleeps.as_fd(), s),
-                (side.rings.as_fd(), w),
-                (side.release.as_fd(), crate::netproc::VM_RELEASE_FD),
-            ]);
-        }
-        let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
-        let mut env = crate::netproc::child_env();
-        let binary = vm_binary(plan, &mut env).map_err(boot)?;
-        let spawned = shards_ipc::spawn_in(&binary, &argv, &fds, false, &crate::netproc::env_pairs(&env));
-        drop(fds);
-        let vm = match spawned {
-            Ok(vm) => vm,
-            Err(e) => {
-                if let Some((child, _)) = &net {
-                    crate::netproc::reap(child);
-                }
-                return Err(boot(format!("starting {}: {e}", binary.display())));
-            }
-        };
-        drop(theirs);
-        // On macOS the VM, in App Sandbox from its launch, asks this process for the files
-        // its arguments name (D30), on a thread of its own that ends with the VM.
-        if let Some((ours, granted)) = grants {
-            drop(granted);
-            #[cfg(target_os = "macos")]
-            if let Err(e) = std::thread::Builder::new()
-                .name("vm grants".into())
-                .spawn(move || {
-                    let _ = crate::grant_answer::serve(&ours, None);
-                })
-            {
-                let _ = vm.kill(shards_ipc::signal::SIGKILL);
-                return Err(boot(format!("answering the VM: {e}")));
-            }
-            #[cfg(not(target_os = "macos"))]
-            drop(ours);
-        }
-        let net = match (net, side) {
-            (Some((child, _)), Some(side)) => Some((child, side.control)),
-            _ => None,
-        };
-        Ok(Launched {
-            vm,
-            link: ours,
-            net,
-            shares,
-        })
-    }
-
-    /// [`launch`] on Windows (D141, D142, D195), as the daemon starts a run's VM: every
-    /// process of the run's made in a job of this process's that ends them as it ends; the
-    /// VM process confined in an AppContainer of its own, made suspended, given by name its
-    /// link (`daemon`, the other end of a pair of this process's), the null device, the
-    /// pipes it asks for its files on and its network's ring and doorbells; its network
-    /// process started next, given the VM's process to watch; then the VM runs, and this
-    /// process answers what it asks for on a thread of its own, which ends as the VM does.
-    #[cfg(windows)]
-    fn launch(home: &Path, plan: &Plan) -> Result<Launched, No> {
-        use std::os::windows::io::{AsHandle as _, OwnedHandle};
         let boot = |e: String| No(Cause::Boot, e);
         // Made before any process of the run's, and held until each is reaped.
+        #[cfg(windows)]
         let job = shards_ipc::GroupJob::ending_with_this_process()
             .map_err(|e| boot(format!("the run's job: {e}")))?;
-        // Its network, denying all until its policy comes, as a daemon run's.
         let network = match &plan.bridge {
-            Some(bridge) => {
-                let mac = shards_net::random_mac().map_err(|e| boot(format!("a guest's MAC: {e}")))?;
-                let (ready, side) = crate::netproc::prepare(
-                    shards_net::Policy::DenyAll,
-                    &mac,
-                    bridge,
-                    plan.credentials.is_some(),
-                )
-                .map_err(boot)?;
-                Some((mac, ready, side))
-            }
+            Some(bridge) => Some(crate::launch::Network {
+                policy: shards_net::Policy::DenyAll,
+                mac: shards_net::random_mac().map_err(|e| boot(format!("a guest's MAC: {e}")))?,
+                bridge,
+                credentials: plan.credentials.is_some(),
+            }),
             None => None,
         };
-        let shares = if plan.dirs.is_empty() {
-            None
-        } else {
-            Some(start_shares(home, &plan.dirs, &job, Some(&run_tags(plan.dirs.len()))).map_err(boot)?)
-        };
-        let (ours, theirs) = Stream::pair().map_err(|e| boot(format!("the VM's link: {e}")))?;
-        // Its end, the VM's alone once given it: this process's copy goes, so that the
-        // VM's end is the end this process reads.
-        let link = theirs.share().map_err(|e| boot(format!("the VM's link: {e}")))?;
-        drop(theirs);
-        let container = crate::helpers::containers()
-            .and_then(|records| {
-                shards_ipc::AppContainer::new("vm", &records)
-                    .map_err(|e| format!("the VM's AppContainer: {e}"))
-            })
-            .map_err(boot)?;
-        // A pipe each way: the VM's requests, and the answers.
-        let pipes = std::io::pipe().and_then(|asks| Ok((asks, std::io::pipe()?)));
-        let ((asks_from, asks_to), (answers_from, answers_to)) =
-            pipes.map_err(|e| boot(format!("the VM's grants: {e}")))?;
-        let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
-        // The null device, for the stdio it lets go of: its AppContainer opens no file by
-        // name, NUL among them on Windows Server (PM M351).
-        let null =
-            std::fs::File::open(crate::os::NULL).map_err(|e| boot(format!("{}: {e}", crate::os::NULL)))?;
-        let mut given = vec![
-            shards_ipc::Given {
-                name: "ask",
-                handle: asks_to.as_handle(),
-            },
-            shards_ipc::Given {
-                name: "answer",
-                handle: answers_from.as_handle(),
-            },
-            shards_ipc::Given {
-                name: LINK,
-                handle: link.as_handle(),
-            },
-            shards_ipc::Given {
-                name: "null",
-                handle: null.as_handle(),
-            },
-        ];
-        let mut sockets = Vec::new();
-        if let Some((_, _, side)) = &network {
-            given.extend(side.given());
-            sockets.extend([side.shared(), side.release()]);
-        }
-        let mut args = vm_args(plan);
-        if let Some((mac, _, _)) = &network {
-            args.extend(["--net".into(), crate::netproc::VmSide::arg(mac).into()]);
-        }
+        let vm = crate::helpers::vm().map_err(boot)?;
+        let ends = Ends::kept_in(home);
+        let args = vm_args(plan);
         let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
-        let err = io::stderr();
-        let mut env = crate::netproc::child_env();
-        let binary = vm_binary(plan, &mut env).map_err(boot)?;
-        let suspended = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
-            program: &binary,
+        let tags = run_tags(plan.dirs.len());
+        #[cfg(unix)]
+        let shares = (!plan.dirs.is_empty())
+            .then(|| start_shares(home, &plan.dirs, Some(&tags)))
+            .transpose()
+            .map_err(boot)?;
+        #[cfg(windows)]
+        let shares = (!plan.dirs.is_empty())
+            .then(|| start_shares(home, &plan.dirs, &job, Some(&tags)))
+            .transpose()
+            .map_err(boot)?;
+        let launched = crate::launch::run(crate::launch::Plan {
             args: &argv,
-            grants_at: 1,
-            given: &given,
-            stdin: None,
-            stdout: err.as_handle(),
-            stderr: err.as_handle(),
-            sockets: &sockets,
-            env: &crate::netproc::env_pairs(&env),
-            container: Some(&container),
-            holds: shards_ipc::Holds::Hypervisor,
+            vm: &vm,
+            network,
+            ends: &ends,
+            #[cfg(unix)]
+            group: None,
+            #[cfg(windows)]
             group: Some(&job),
-            graphics: false,
-        })
-        .map_err(|e| boot(format!("starting {}: {e}", binary.display())))?;
-        // Shared with it already, and its handles duplicated into it.
-        drop((given, sockets));
-        // Its network process, given the VM's process to watch, before the VM runs; its
-        // control this process's, where the run's published ports and policy go.
-        let net = match network {
-            Some((_, ready, side)) => {
-                let started = crate::netproc::start(ready, &suspended, Some(&job)).map_err(boot)?;
-                let control = crate::netproc::Control {
-                    socket: side.control,
-                    pid: started.id(),
-                };
-                Some((started, control))
+            #[cfg(target_os = "macos")]
+            grants: crate::launch::Grants::Answered,
+        });
+        let (launched, link) = match launched {
+            Ok(launched) => launched,
+            Err(e) => {
+                if let Some(shares) = shares {
+                    shares.end(&ends);
+                }
+                return Err(boot(e));
             }
-            None => None,
         };
-        let giver = suspended
-            .giver()
-            .map_err(|e| boot(format!("answering the VM: {e}")))?;
-        let gives = suspended
-            .giver()
-            .map_err(|e| boot(format!("the VM's link: {e}")))?
-            .into_handle();
-        let mut vm = suspended
-            .resume()
-            .map_err(|e| boot(format!("starting {}: {e}", binary.display())))?;
-        // Its AppContainer's profile goes once it has.
-        vm.hold(container);
-        // What this process sends on its link goes to the VM: handles duplicated into it.
-        ours.gives_to(gives);
-        drop((asks_to, answers_from, link, null));
-        let grants = crate::grant::Link {
-            from: std::fs::File::from(OwnedHandle::from(asks_from)),
-            to: std::fs::File::from(OwnedHandle::from(answers_to)),
-        };
-        if let Err(e) = std::thread::Builder::new()
-            .name("vm grants".into())
-            .spawn(move || {
-                let _ = crate::grant_answer::serve(&grants, &giver);
-            })
-        {
-            let _ = vm.kill(shards_ipc::signal::SIGKILL);
-            return Err(boot(format!("answering the VM: {e}")));
-        }
         Ok(Launched {
-            vm,
-            link: ours,
-            net,
+            vm: launched.vm,
+            link,
+            net: launched.net,
             shares,
+            #[cfg(windows)]
             job,
         })
     }
@@ -1704,6 +1523,9 @@ mod hosted {
     /// What the serving threads share.
     struct Live<'a> {
         answers: &'a Answers,
+        /// The home's record of this host's ends, by which a share process plugged in is
+        /// followed to its end ([`Shares::end`]).
+        ends: Ends,
         flows: Mutex<Flows>,
         /// Each input member's stdin, by its index.
         feeds: Mutex<HashMap<u32, Feed>>,
@@ -2002,6 +1824,7 @@ mod hosted {
                 .map_err(|e| boot(format!("the VM's link: {e}")))?;
             let live = Live {
                 answers,
+                ends: Ends::kept_in(home),
                 flows: Mutex::new(Flows::default()),
                 feeds: Mutex::new(plan.inputs.iter().map(|m| (*m, Feed::default())).collect()),
                 fed: std::sync::Condvar::new(),
@@ -2031,7 +1854,7 @@ mod hosted {
             // What was plugged in goes with the VM: each share process ends as its streams
             // close (`Shares::end`).
             for (_, p) in std::mem::take(&mut *lock(&live.plugged)) {
-                p.share.end();
+                p.share.end(&live.ends);
             }
             Ok(())
         })();
@@ -2051,12 +1874,13 @@ mod hosted {
         let _ = vm.kill(shards_ipc::signal::SIGKILL);
         let _ = vm.wait();
         drop(link);
+        let record = Ends::kept_in(home);
         if let Some((child, control)) = net {
             drop(control);
-            crate::netproc::reap(&child);
+            crate::netproc::reap(&child, &record);
         }
         if let Some(shares) = shares {
-            shares.end();
+            shares.end(&record);
         }
         #[cfg(windows)]
         drop(job);
@@ -2485,7 +2309,7 @@ mod hosted {
                                     plugged(live, id, result);
                                     // Its share process ends as its device's stream closes.
                                     if let Some(share) = share {
-                                        share.end();
+                                        share.end(&live.ends);
                                     }
                                 }),
                         )
@@ -3075,7 +2899,7 @@ mod hosted {
         let (devfn, address) = match placed {
             Ok(placed) => placed,
             Err(e) => {
-                share.end();
+                share.end(&live.ends);
                 return Err((R::Device, e));
             }
         };
@@ -3085,7 +2909,7 @@ mod hosted {
             // Taken off again, its guest having found it or not.
             let _ = guest_device(live, &["unmount", &address, &ask.at, "member", &index]);
             let _ = ask_device(live, &[shards_ipc::device::UNPLUG, devfn], &[]);
-            share.end();
+            share.end(&live.ends);
             return Err((R::Device, e));
         }
         // Its guest told what its host changes beneath it from now on (D235).
@@ -3256,7 +3080,7 @@ mod hosted {
                 door,
                 notices: None,
             }
-            .end();
+            .end(&Ends::kept_in(&dir));
             assert!(
                 said.exists(),
                 "the share process was ended at the grace's end, not by its door's"
@@ -4195,6 +4019,60 @@ mod tests {
                 "metal:00000001000002a1"
             ]
             .map(std::ffi::OsString::from)
+        );
+    }
+
+    /// D232 through D231, what a run naming GPUs asks (2d60abb24 asked none, so its guest had
+    /// no GPU driver and its command no render node): the microVM's GPU, as `--gpus 1` asks
+    /// it, where this host gives one, so that `run::prepare` gives it the GPU's guest kernel
+    /// (D144), and its command the GPU's render node, as `--gpus` gives a run's; a run naming
+    /// none asks for neither.
+    #[test]
+    fn a_run_naming_gpus_asks_for_the_gpu_guest_and_its_render_node() {
+        let naming = wire::Request {
+            command: Some(vec!["node".into()]),
+            gpu_devices: vec![shards_api::PhysicalGpu::MetalRegistry(0x1_0000_02a1)],
+            ..request(Vec::new())
+        };
+        let gpus = hosted::as_run(&naming, None);
+        let none = hosted::as_run(&request(Vec::new()), None);
+        assert_eq!(
+            crate::run::wants_gpu(&gpus).is_ok_and(|wants| wants),
+            crate::run::GIVES_GPU
+        );
+        assert_eq!(crate::run::wants_gpu(&none), Ok(false));
+        let renders = |run: &shards_ipc::Run| {
+            let node = crate::run::RENDER_NODE.as_bytes();
+            let mut setup = Vec::new();
+            crate::setup::security_setup(&mut setup, run, shards_seccomp::Kernel(6, 18), None, &[], None)
+                .unwrap();
+            setup
+                .iter()
+                .any(|e| e.starts_with(b"devices=") && e.windows(node.len()).any(|w| w == node))
+        };
+        assert_eq!(renders(&gpus), crate::run::GIVES_GPU);
+        assert!(!renders(&none));
+    }
+
+    /// D232 through D231, what a run given its GPU boots (2d60abb24 booted its stored guest's
+    /// kernel): the GPU's guest kernel `run::prepare` gave it, with its guest's init, as the
+    /// daemon boots a run given one; a run given none, its guest's own.
+    #[test]
+    fn a_run_given_its_gpu_boots_the_gpu_guests_kernel() {
+        let stored = crate::run::Boot::Stored(crate::guest::Guest {
+            kernel: "/store/vmlinux".into(),
+            init: "/store/init".into(),
+            kernel_digest: String::new(),
+            init_digest: String::new(),
+        });
+        let gpu = std::path::Path::new("/store/vmlinux-gpu");
+        assert_eq!(
+            boot_of(&stored, Some(gpu)),
+            (gpu.to_path_buf(), Some("/store/init".into()))
+        );
+        assert_eq!(
+            boot_of(&stored, None),
+            ("/store/vmlinux".into(), Some("/store/init".into()))
         );
     }
 }

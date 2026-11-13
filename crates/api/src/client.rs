@@ -3849,7 +3849,9 @@ mod tests {
     }
 
     /// Records of a test's own, apart from every other test's, each kind in `learned`
-    /// taught as an answer that came `slowest` after its wait began, `cpu` run meanwhile.
+    /// taught as an answer that came `slowest` after its wait began, `cpu` run meanwhile:
+    /// for the Unix tests that judge a VM process's CPU, its only callers.
+    #[cfg(unix)]
     fn records(learned: &[(Awaited, Duration, Duration)]) -> &'static Records {
         let records: &'static Records = Box::leak(Box::new(Records::new()));
         for &(awaited, slowest, cpu) in learned {

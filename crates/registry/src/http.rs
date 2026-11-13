@@ -784,10 +784,11 @@ impl Client {
             None => conn.io.get_mut().flush().map(|()| true),
         });
         let asked = Instant::now();
-        // An answer its wait cut is said overdue: asked again at once, its wait having
-        // been drawn to end where the trouble's pause would (crate::patience `Cutoff`).
+        // An answer its wait cut is said overdue (read_head): asked again at once, its wait
+        // having been drawn to end where the trouble's pause would (crate::patience `Cutoff`).
+        let cut = self.learning && lookup;
         let learned = |read: Result<Head, Failure>| {
-            if !(self.learning && lookup) {
+            if !cut {
                 return read;
             }
             let took = asked.elapsed();
@@ -796,9 +797,9 @@ impl Client {
                     self.paths.waited(&path, Wait::Answer, took);
                     Ok(head)
                 }
-                Err(failure) if answer.is_some_and(|a| took >= a) => {
+                Err(failure) if failure.is_overdue() => {
                     self.paths.timed_out(&path, Wait::Answer, took);
-                    Err(failure.overdue())
+                    Err(failure)
                 }
                 Err(failure) => Err(failure),
             }
@@ -807,7 +808,7 @@ impl Client {
         // 401 to an upload. Its answer is taken as it comes (`send_body`), or where a
         // write fails as the server leaves, from what it left.
         let (head, early) = match written {
-            Ok(whole) => (learned(read_head(&mut conn, req.url, answer))?, !whole),
+            Ok(whole) => (learned(read_head(&mut conn, req.url, answer, cut))?, !whole),
             Err(e) => {
                 let left = matches!(
                     e.kind(),
@@ -826,7 +827,7 @@ impl Client {
                     return Err(sending());
                 }
                 (
-                    learned(read_head(&mut conn, req.url, answer)).map_err(|_| sending())?,
+                    learned(read_head(&mut conn, req.url, answer, cut)).map_err(|_| sending())?,
                     true,
                 )
             }
@@ -1367,11 +1368,10 @@ impl Failure {
         }
     }
 
-    /// The same failure, of an answer its path's wait cut.
-    fn overdue(self) -> Failure {
+    /// Whether it is an answer its path's wait cut (read_head).
+    fn is_overdue(&self) -> bool {
         match self {
-            Failure::BeforeResponse(e) => Failure::BeforeResponse(e.overdue()),
-            Failure::Other(e) => Failure::Other(e.overdue()),
+            Failure::BeforeResponse(e) | Failure::Other(e) => e.is_overdue(),
         }
     }
 }
@@ -1635,9 +1635,15 @@ struct Head {
 }
 
 /// Reads a response head, skipping 1xx ones, within 10 MiB and `patience` in all (30 s
-/// for a registry; without end where `None`).
-fn read_head(conn: &mut Conn, url: &Url, patience: Option<Duration>) -> Result<Head, Failure> {
+/// for a registry; without end where `None`). Where `cut`, `patience` is its path's wait
+/// for an answer (crate::patience `Cutoff`), and a read its end stops is said overdue by
+/// that end itself, the deadline or the socket's timeout set to what is left of it, never
+/// by the time `Instant` says passed: a socket's timeout is a system wait, which "can be
+/// anywhere between one and two ticks" of a timeout between them (Windows' wait functions,
+/// Microsoft Learn), so may end before its time does by the clock (CI's arm64 Windows).
+fn read_head(conn: &mut Conn, url: &Url, patience: Option<Duration>, cut: bool) -> Result<Head, Failure> {
     let deadline = patience.map(after);
+    let ended = |e: Error| if cut { e.overdue() } else { e };
     let mut budget = MAX_HEAD;
     let mut first = true;
     loop {
@@ -1650,13 +1656,13 @@ fn read_head(conn: &mut Conn, url: &Url, patience: Option<Duration>) -> Result<H
                         .checked_duration_since(Instant::now())
                         .filter(|d| !d.is_zero())
                         .ok_or_else(|| {
-                            Failure::Other(Error::of(
+                            Failure::Other(ended(Error::of(
                                 ErrorKind::Transient,
                                 format!(
                                     "{url}: no response within {:.1} s",
                                     patience.unwrap_or_default().as_secs_f64()
                                 ),
-                            ))
+                            )))
                         })?,
                 ),
                 None => None,
@@ -1665,13 +1671,17 @@ fn read_head(conn: &mut Conn, url: &Url, patience: Option<Duration>) -> Result<H
             let available = match conn.io.fill_buf() {
                 Ok(bytes) => bytes,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) if first && buf.is_empty() => {
-                    return Err(Failure::BeforeResponse(Error::from(e).context(url)));
-                }
                 Err(e) => {
-                    return Err(Failure::Other(
-                        Error::from(e).context(format!("{url}: reading the response")),
-                    ));
+                    // A blocking socket's read fails so only as its timeout ends it.
+                    let timed_out = matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock);
+                    let said = |e: Error| if timed_out { ended(e) } else { e };
+                    return Err(if first && buf.is_empty() {
+                        Failure::BeforeResponse(said(Error::from(e).context(url)))
+                    } else {
+                        Failure::Other(said(
+                            Error::from(e).context(format!("{url}: reading the response")),
+                        ))
+                    });
                 }
             };
             if available.is_empty() {
@@ -3192,6 +3202,53 @@ mod tests {
         });
         let e = fetch(&impatient, "GET", &url).unwrap_err();
         assert!(!e.is_overdue(), "{e}");
+    }
+
+    /// A read its path's wait stops is overdue by that stop, the socket's timeout set to
+    /// what is left of the wait, whatever time `Instant` says passed: a system wait may end
+    /// before its time by the clock (Windows' wait functions, Microsoft Learn), and CI's
+    /// arm64 Windows took such a cut for none, its asking again paused and its wait not
+    /// doubled (registry.rs `a_paths_answers_are_waited_for_as_long_as_it_shows`: 3 asks
+    /// for 2). Not overdue: a read its server ends, nor one a client's patience stops that
+    /// is no path's wait. Waits of 1 to 40 ms; how many ended early by the clock is said.
+    #[test]
+    fn a_read_its_wait_stops_is_overdue_by_the_stop_itself() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = at("http", "127.0.0.1", listener.local_addr().unwrap().port());
+        // A connection its server holds, answering nothing, or ends at once.
+        let read = |patience: Duration, cut: bool, ends: bool| {
+            let tcp = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (held, _) = listener.accept().unwrap();
+            let _held = (!ends).then_some(held);
+            let mut conn = Conn {
+                key: Key::of(&url, None),
+                io: BufReader::new(Stream::Plain(Hop::Tcp(tcp))),
+                watch: None,
+            };
+            let t0 = Instant::now();
+            let failure = read_head(&mut conn, &url, Some(patience), cut).err().unwrap();
+            (failure, t0.elapsed())
+        };
+        let mut early = Vec::new();
+        for ms in 1..=40 {
+            let wait = Duration::from_millis(ms);
+            let (failure, took) = read(wait, true, false);
+            assert!(failure.is_overdue(), "{wait:?}: {}", failure.into_error());
+            if let Some(by) = wait.checked_sub(took).filter(|by| !by.is_zero()) {
+                early.push(by);
+            }
+        }
+        println!(
+            "{} of 40 waits ended before their time by the clock, by at most {:?}",
+            early.len(),
+            early.iter().max()
+        );
+        let (failure, _) = read(Duration::from_millis(20), false, false);
+        assert!(!failure.is_overdue(), "{}", failure.into_error());
+        let (failure, took) = read(Duration::from_secs(30), true, true);
+        assert!(!failure.is_overdue(), "{}", failure.into_error());
+        assert!(took < Duration::from_secs(30), "{took:?}");
     }
 
     /// A proxy on loopback: each connection's request head is kept; a CONNECT answered

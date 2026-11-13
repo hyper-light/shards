@@ -300,7 +300,7 @@ earlier run); the owner's `shards rm -f` ends it.
 |---|---|
 | R01 | No production code changed. The test may unwrap and assert. |
 | R02 | No architecture decided. Sources: the publishers' release workflow, installer and docs (cited above); the base image and the musl libraries Anthropic documents; each CLI's own `--help` and docs for its flags and credential inputs. Credential options are reported for the person, not chosen. |
-| R03 | No production literal. Test patience `WITHIN` = 600 s and the H1 silences, `QUIET ± QUIET/4` (one keep-alive interval as `tls.rs` sets it), are test-only and documented in the test. |
+| R03 | No production literal. Test patience `WITHIN` = 600 s and the H1 silences, `QUIET ± QUIET/4` (one keep-alive interval as `tls.rs` sets it), are test-only and documented in the test. The review (plan step 2, [../harness-bringup-v2/review.md](../harness-bringup-v2/review.md)) removed `WITHIN`, the run's `sleep 600` and `bringup.sh`'s 300 s deadline: the test and the script wait on facts with no clock. |
 | R04 | No state machine added; the observer's records pass the existing `StreamState` checks. |
 | R05 | No production interface; the test's `Case` serves its nine cases. No cache or wait added to production. |
 | R06, R07, R13 | One test file, a shared bring-up, comments for intent and sources. |

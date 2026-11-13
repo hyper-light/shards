@@ -20,6 +20,7 @@ use shards_ipc::{ExitWatch, Poller};
 #[cfg(unix)]
 use shards_vmm::platform::{ExitWatch, Poller};
 
+use super::ends::End;
 use super::{Daemon, Inbox, Threads, lock, log};
 use crate::containers::{Disk, Removal};
 
@@ -42,12 +43,15 @@ enum Process {
     },
     /// A VM's network process: its VM's pid, whose ports are freed once both have ended,
     /// and whether that VM still runs; once it has ended, the VM, not yet reaped, so that
-    /// its pid names no new process before its ports are freed (review 2.25).
+    /// its pid names no new process before its ports are freed (review 2.25); and from then
+    /// on, when, and what the network process does since (D217's `Followed`), which each of
+    /// its deadlines looks at: none once it was ended for doing nothing.
     Net {
         child: Arc<shards_ipc::Child>,
         vm: u32,
         vm_running: bool,
         ended_vm: Option<Arc<shards_ipc::Child>>,
+        following: Option<(Instant, super::ends::Followed)>,
         watch: Option<ExitWatch>,
     },
     /// A run's share process (D38), which ends as its VM's connections close: Unix's
@@ -66,7 +70,7 @@ pub(super) struct Followers {
     pub(super) runs: Mutex<HashMap<u64, Followed>>,
     /// Each process followed, by its token.
     processes: Mutex<HashMap<u64, Process>>,
-    /// When network processes whose VMs have gone are ended, and microVMs waiting to
+    /// When network processes whose VMs have gone are looked at, and microVMs waiting to
     /// restart start again, by their tokens.
     pub(super) deadlines: Mutex<BinaryHeap<Reverse<(Instant, u64)>>>,
     /// The microVMs waiting to restart, by their deadlines' tokens (restart.rs).
@@ -265,9 +269,27 @@ impl<D: Disk> Daemon<D> {
                     self.restart_due(threads, &id);
                     continue;
                 }
-                // Its end follows, which frees its VM's ports.
-                if let Some(Process::Net { child, .. }) = lock(&f.processes).get(&token) {
-                    let _ = child.kill(shards_ipc::signal::SIGKILL);
+                // A network process whose VM has gone: given another slice while it goes on
+                // with its end (D217, PM M546), ended once it has run nothing and freed
+                // nothing for one. Its end follows, which frees its VM's ports.
+                let again = {
+                    let mut processes = lock(&f.processes);
+                    let Some(Process::Net { child, following, .. }) = processes.get_mut(&token) else {
+                        continue;
+                    };
+                    if following
+                        .as_mut()
+                        .is_some_and(|(_, done)| done.goes_on().is_some())
+                    {
+                        Instant::now().checked_add(self.ends.slice(End::Helper))
+                    } else {
+                        *following = None;
+                        let _ = child.kill(shards_ipc::signal::SIGKILL);
+                        None
+                    }
+                };
+                if let Some(at) = again {
+                    lock(&f.deadlines).push(Reverse((at, token)));
                 }
             }
         }
@@ -275,9 +297,9 @@ impl<D: Disk> Daemon<D> {
 
     /// Follows VM `vm`, and its network process `net`, to their ends on the followers'
     /// loop, rather than on a thread each (PM M90): each reaped as it ends, the VM taken
-    /// out of `pool` if it ends waiting there, its network process given
-    /// [`netproc::GRACE`](crate::netproc::GRACE) to follow it, and its ports freed once
-    /// both have gone. A process whose end cannot be watched (Linux before 5.3, or no
+    /// out of `pool` if it ends waiting there, its network process followed to its end as
+    /// [`netproc::reap`](crate::netproc::reap) follows one, and its ports freed once both
+    /// have gone. A process whose end cannot be watched (Linux before 5.3, or no
     /// descriptor to spare) is waited for on a thread of its own.
     pub(super) fn follow_vm<'s, 'e>(
         &'s self,
@@ -302,6 +324,7 @@ impl<D: Disk> Daemon<D> {
                         vm: vm.id(),
                         vm_running: true,
                         ended_vm: None,
+                        following: None,
                         watch: None,
                     },
                 );
@@ -359,8 +382,9 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// What follows process `token`'s end: a VM reaped, out of its pool if it ended
-    /// waiting there, its network process given its grace; a network process reaped, and
-    /// its VM's ports freed once the VM has gone too.
+    /// waiting there, its network process followed to its end; a network process reaped,
+    /// its end after its VM's kept as this host's (D217), and its VM's ports freed once the
+    /// VM has gone too.
     fn process_ended<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, token: u64) {
         let f = &self.followers;
         let Some(process) = lock(&f.processes).remove(&token) else {
@@ -396,14 +420,23 @@ impl<D: Disk> Daemon<D> {
                 };
                 let mut processes = lock(&f.processes);
                 if let Some(Process::Net {
-                    vm_running, ended_vm, ..
+                    child,
+                    vm_running,
+                    ended_vm,
+                    following,
+                    ..
                 }) = processes.get_mut(&net)
                 {
                     *vm_running = false;
                     *ended_vm = Some(vm);
+                    let now = Instant::now();
+                    *following = Some((now, super::ends::Followed::of(Some(child.id()))));
                     drop(processes);
-                    lock(&f.deadlines).push(Reverse((Instant::now() + crate::netproc::GRACE, net)));
-                    f.wake();
+                    // A slice past what a clock holds: its end alone, which reaps it.
+                    if let Some(at) = now.checked_add(self.ends.slice(End::Helper)) {
+                        lock(&f.deadlines).push(Reverse((at, net)));
+                        f.wake();
+                    }
                 } else {
                     drop(processes);
                     self.free_ports(None, Some(pid));
@@ -415,9 +448,15 @@ impl<D: Disk> Daemon<D> {
                 vm,
                 vm_running,
                 ended_vm,
+                following,
                 ..
             } => {
                 let _ = child.wait();
+                if let Some((since, _)) = following
+                    && let Err(e) = self.ends.heard(End::Helper, since.elapsed())
+                {
+                    log(e);
+                }
                 if !vm_running {
                     self.free_ports(None, Some(vm));
                 }

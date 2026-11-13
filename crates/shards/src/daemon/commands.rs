@@ -2167,7 +2167,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
                             let mut byte = [0u8; 1];
                             let ended = matches!((&gone.told).read(&mut byte), Ok(1));
                             if ended {
-                                self.ends.heard(End::Exit, gone.since.elapsed());
+                                if let Err(e) = self.ends.heard(End::Exit, gone.since.elapsed()) {
+                                    super::log(e);
+                                }
                             } else {
                                 super::log(format!(
                                     "microVM {}: no end heard {:?} after it was killed, its process gone on with nothing of its end for {:?}: {}",
@@ -2214,11 +2216,14 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     self.forget_waiter(&gone.id, gone.waiter);
                 }
                 // What this host's ends take, kept for the next (D217).
-                match gone.phase {
-                    _ if !ended => {}
+                let kept = match gone.phase {
+                    _ if !ended => Ok(()),
                     Phase::Killed | Phase::Escalated => self.ends.heard(End::Teardown, gone.since.elapsed()),
                     Phase::VmKilled => self.ends.heard(End::Exit, gone.since.elapsed()),
-                    Phase::Signalled => {}
+                    Phase::Signalled => Ok(()),
+                };
+                if let Err(e) = kept {
+                    super::log(e);
                 }
                 done(
                     gone.index,

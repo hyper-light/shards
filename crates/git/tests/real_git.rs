@@ -714,10 +714,30 @@ fn an_objects_abbreviation_is_gits() {
     );
 }
 
+/// What git's read-tree makes of `dir`'s branch `deep`, held to `bound` levels, else to
+/// its own core.maxTreeDepth: whether it took the tree, whether it refused it as too deep,
+/// and what it said.
+fn read_tree(dir: &Path, bound: Option<usize>) -> (bool, bool, std::process::Output) {
+    let mut cmd = git_command(dir);
+    cmd.arg("-C")
+        .arg(dir)
+        .env("GIT_INDEX_FILE", dir.join("deep.index"));
+    if let Some(bound) = bound {
+        cmd.arg("-c").arg(format!("core.maxTreeDepth={bound}"));
+    }
+    let out = cmd.args(["read-tree", "deep"]).output().unwrap();
+    let too_deep = String::from_utf8_lossy(&out.stderr).contains("exceeded maximum allowed tree depth");
+    (out.status.success() && !too_deep, too_deep, out)
+}
+
 /// Trees nested as deep as git checks out and one deeper, made by git (fast-import, which
 /// writes paths no file system holds, into a pack of its own): the walk takes the first
 /// and refuses the second as git's read-tree does at the same core.maxTreeDepth, and needs
-/// no stack for the depth (it runs on a thread of 256 KiB).
+/// no stack for the depth (it runs on a thread of 256 KiB). git is asked at that depth only
+/// where its own core.maxTreeDepth reaches it: Git for Windows' MSVC and arm64 clang builds
+/// stop at 512 and 1280 levels, as their stacks hold no deeper (git v2.56.0
+/// git-compat-util.h:594-616, `DEFAULT_MAX_ALLOWED_TREE_DEPTH`), and held to 2048, CI's
+/// arm64 git died of STATUS_STACK_OVERFLOW (0xC00000FD) instead of answering.
 #[test]
 fn trees_nest_as_deep_as_git_checks_out_and_no_deeper() {
     use shards_git::checkout::{self, Item, MAX_DEPTH};
@@ -726,6 +746,8 @@ fn trees_nest_as_deep_as_git_checks_out_and_no_deeper() {
         return;
     }
     let tmp = shards_testdir::TempDir::new("git-deep").unwrap();
+    // Whether this git's own core.maxTreeDepth reaches MAX_DEPTH, as its first answer says.
+    let mut reaches = None;
     for depth in [MAX_DEPTH, MAX_DEPTH + 1] {
         // Bare, so that no command looks for attributes in a work tree along the paths.
         let dir = tmp.join(depth.to_string());
@@ -742,21 +764,21 @@ fn trees_nest_as_deep_as_git_checks_out_and_no_deeper() {
                 .args(["fast-import", "--quiet"]),
             stream.into_bytes(),
         );
-        // git's own answer, at the depth Linux's git takes by default.
-        let git_took = git_command(&dir)
-            .arg("-C")
-            .arg(&dir)
-            .env("GIT_INDEX_FILE", dir.join("deep.index"))
-            .args([
-                "-c",
-                &format!("core.maxTreeDepth={MAX_DEPTH}"),
-                "read-tree",
-                "deep",
-            ])
-            .output()
-            .unwrap();
-        let git_ok = git_took.status.success()
-            && !String::from_utf8_lossy(&git_took.stderr).contains("exceeded maximum allowed tree depth");
+        // git's own answer: at MAX_DEPTH within its own bound, which says whether it reaches
+        // that deep at all; one deeper held to MAX_DEPTH, which its own bound then reaches.
+        let answer = match reaches {
+            None => {
+                let (took, too_deep, out) = read_tree(&dir, None);
+                assert!(took || too_deep, "git's own read-tree at {depth}: {out:?}");
+                reaches = Some(took);
+                took.then_some((true, out))
+            }
+            Some(true) => {
+                let (took, _, out) = read_tree(&dir, Some(MAX_DEPTH));
+                Some((took, out))
+            }
+            Some(false) => None,
+        };
         let packs: Vec<_> = std::fs::read_dir(dir.join("objects/pack"))
             .unwrap()
             .map(|e| e.unwrap().path())
@@ -790,13 +812,18 @@ fn trees_nest_as_deep_as_git_checks_out_and_no_deeper() {
             .unwrap()
             .join()
             .unwrap();
-        assert_eq!(
-            walked.is_ok(),
-            git_ok,
-            "depth {depth}: {walked:?}, git's {git_took:?}"
-        );
+        match &answer {
+            Some((git_ok, out)) => assert_eq!(
+                walked.is_ok(),
+                *git_ok,
+                "depth {depth}: {walked:?}, git's {out:?}"
+            ),
+            None => eprintln!(
+                "SKIP: git's read-tree at depth {depth}: this git's own core.maxTreeDepth stops short of {MAX_DEPTH}"
+            ),
+        }
         if depth == MAX_DEPTH {
-            assert!(git_ok);
+            assert!(walked.is_ok(), "{walked:?}");
             assert_eq!(dirs, MAX_DEPTH);
         } else {
             assert_eq!(walked, Err("a tree nested too deep".into()));

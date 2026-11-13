@@ -95,14 +95,9 @@ pub enum Ended {
 /// A builder VM, and the layers it holds.
 pub struct Builder {
     vm: shards_ipc::Child,
-    /// Its network process, which ends with the VM.
-    #[cfg(unix)]
-    net: shards_ipc::Child,
-    #[cfg(windows)]
-    net: crate::netproc::NetProcess,
-    /// Its VM's AppContainer (Windows, D141), whose profile goes once the VM has.
-    #[cfg(windows)]
-    _container: shards_ipc::AppContainer,
+    /// Its network process, which ends with the VM: the one its launch made, as a builder's
+    /// asks for one.
+    net: Option<crate::netproc::NetProcess>,
     conn: UnixStream,
     /// Where its host asks it to give back what it holds cold (build::GIVE_PORT, D188),
     /// where its init dialed it.
@@ -124,6 +119,9 @@ pub struct Builder {
     /// Where its home records what its builds needed of memory (D133), which it adds its
     /// own build's to as it ends.
     needs: Option<PathBuf>,
+    /// Its home's record of this host's ends, by which its network process is followed to
+    /// its end (`netproc::reap`, D217).
+    ends: crate::daemon::ends::Ends,
 }
 
 /// A builder's give-back connection, as its build's memory pressure watcher asks through it
@@ -460,21 +458,6 @@ fn lock_free(lock: &Path) -> bool {
     }
 }
 
-/// Where a builder's VM process finds its `--attach` socket (D134): a descriptor on Unix,
-/// the name its spawner handed it by on Windows.
-#[cfg(unix)]
-const ATTACH: &str = "4";
-#[cfg(windows)]
-const ATTACH: &str = "attach";
-
-/// Where a builder's VM process finds the pipe it tells how its console's report came out on
-/// (`--said-to`, D12): a descriptor past the others it is given on Unix, the name its
-/// spawner handed it by on Windows.
-#[cfg(unix)]
-const SAID_TO: i32 = 9;
-#[cfg(windows)]
-const SAID_TO: &str = "said-to";
-
 /// The longest socket path a host binds, less the `_<port>` the vsock muxer adds: what
 /// both Linux (108 bytes of sun_path) and macOS (104) take, and Windows' afunix (108, its
 /// NUL among them).
@@ -548,195 +531,6 @@ fn socket_dir() -> Result<SocketDir, String> {
         }
     }
     Err("a directory for the builder: every name tried was taken".into())
-}
-
-/// A builder's VM process and network process, started: and on Windows the AppContainer
-/// its VM runs in.
-struct Launched {
-    vm: shards_ipc::Child,
-    #[cfg(unix)]
-    net: shards_ipc::Child,
-    #[cfg(windows)]
-    net: crate::netproc::NetProcess,
-    #[cfg(windows)]
-    container: shards_ipc::AppContainer,
-}
-
-/// Starts a builder's network process and its VM process, the VM's command `args`, its
-/// `--attach` socket `attach`: the network process first, whose side of the ring the VM is
-/// given, as a VM's (D31); the VM in App Sandbox on macOS, asking this process for what it
-/// opens (D30).
-#[cfg(unix)]
-fn launch(
-    args: &[OsString],
-    policy: shards_net::Policy,
-    mac: &[u8; 6],
-    bridge: &shards_net::bridge::Bridge,
-    attach: UnixStream,
-    said_to: io::PipeWriter,
-) -> Result<Launched, String> {
-    let (net, side) = crate::netproc::start(policy, mac, bridge, None, false)?;
-    let grants = if cfg!(target_os = "macos") {
-        Some(UnixStream::pair().map_err(|e| format!("the builder's grants: {e}"))?)
-    } else {
-        None
-    };
-    let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
-    let err = io::stderr();
-    let fds: Vec<_> = [
-        (null.as_fd(), 0),
-        (err.as_fd(), 1),
-        (err.as_fd(), 2),
-        (side.region.as_fd(), crate::netproc::VM_FDS[0]),
-        (side.sleeps.as_fd(), crate::netproc::VM_FDS[1]),
-        (side.rings.as_fd(), crate::netproc::VM_FDS[2]),
-        (attach.as_fd(), 4),
-        (said_to.as_fd(), SAID_TO),
-    ]
-    .into_iter()
-    .chain(grants.as_ref().map(|(_, theirs)| (theirs.as_fd(), 3)))
-    .collect();
-    let given: &[OsString] = if grants.is_some() {
-        &["--grants".into(), "3".into()]
-    } else {
-        &[]
-    };
-    let argv: Vec<&std::ffi::OsStr> = args
-        .iter()
-        .take(1)
-        .chain(given)
-        .chain(args.iter().skip(1))
-        .map(OsString::as_os_str)
-        .collect();
-    let mut env = crate::netproc::child_env();
-    // A GPU's builder is the GPU's VM process (D144), which says MoltenVK's errors alone.
-    let vm_binary = if args.iter().any(|a| *a == "--gpu") {
-        env.push(("MVK_CONFIG_LOG_LEVEL", "1".into()));
-        crate::helpers::vm_gpu()?
-    } else {
-        crate::helpers::vm()?
-    };
-    let vm = match shards_ipc::spawn_in(&vm_binary, &argv, &fds, false, &crate::netproc::env_pairs(&env)) {
-        Ok(vm) => vm,
-        Err(e) => {
-            let _ = net.kill(libc::SIGKILL);
-            let _ = net.wait();
-            return Err(format!("starting the builder: {e}"));
-        }
-    };
-    // The two processes hold the ring now: once the VM goes, its network process hears
-    // its doorbell hang up and goes too.
-    drop(fds);
-    drop(side);
-    drop(attach);
-    drop(said_to);
-    if let Some((ours, _)) = grants {
-        #[cfg(target_os = "macos")]
-        std::thread::Builder::new()
-            .name("builder grants".into())
-            .spawn(move || {
-                let _ = crate::grant_answer::serve(&ours, None);
-            })
-            .map_err(|e| format!("answering the builder: {e}"))?;
-        #[cfg(not(target_os = "macos"))]
-        drop(ours);
-    }
-    Ok(Launched { vm, net })
-}
-
-/// Starts a builder's VM process and network process (Windows, D141, D142): the VM
-/// confined in an AppContainer of its own, made suspended, so that its network process,
-/// started next in one holding the network's capabilities, is given the VM's process to
-/// watch for its end; then the VM runs, and this process answers what it asks for (its
-/// base images, its vsock socket, its dials to this process's ports) on a thread of its
-/// own, which ends as the VM does.
-#[cfg(windows)]
-fn launch(
-    args: &[OsString],
-    policy: shards_net::Policy,
-    mac: &[u8; 6],
-    bridge: &shards_net::bridge::Bridge,
-    attach: UnixStream,
-    said_to: io::PipeWriter,
-) -> Result<Launched, String> {
-    use std::os::windows::io::{AsHandle as _, OwnedHandle};
-    let (ready, side) = crate::netproc::prepare(policy, mac, bridge, false)?;
-    // A GPU's builder is the GPU's VM process, which runs its host's GPU driver (D144,
-    // D202).
-    let gpu = args.iter().any(|a| *a == "--gpu");
-    let vm_binary = if gpu {
-        crate::helpers::vm_gpu()?
-    } else {
-        crate::helpers::vm()?
-    };
-    let container = crate::helpers::containers().and_then(|records| {
-        shards_ipc::AppContainer::new("vm", &records).map_err(|e| format!("the builder's AppContainer: {e}"))
-    })?;
-    // A pipe each way: the VM's requests, and the answers.
-    let pipes = std::io::pipe().and_then(|asks| Ok((asks, std::io::pipe()?)));
-    let ((asks_from, asks_to), (answers_from, answers_to)) =
-        pipes.map_err(|e| format!("the builder's grants: {e}"))?;
-    let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
-    let argv: Vec<&std::ffi::OsStr> = args.iter().map(OsString::as_os_str).collect();
-    let mut given = vec![
-        shards_ipc::Given {
-            name: "ask",
-            handle: asks_to.as_handle(),
-        },
-        shards_ipc::Given {
-            name: "answer",
-            handle: answers_from.as_handle(),
-        },
-    ];
-    given.extend(side.given());
-    let said_to = OwnedHandle::from(said_to);
-    given.push(shards_ipc::Given {
-        name: SAID_TO,
-        handle: said_to.as_handle(),
-    });
-    let err = io::stderr();
-    let env = crate::netproc::child_env();
-    let vm = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
-        program: &vm_binary,
-        args: &argv,
-        grants_at: 1,
-        given: &given,
-        stdin: None,
-        stdout: err.as_handle(),
-        stderr: err.as_handle(),
-        sockets: &[
-            shards_ipc::Shared {
-                name: ATTACH,
-                socket: attach.raw_socket() as u64,
-            },
-            side.shared(),
-        ],
-        env: &crate::netproc::env_pairs(&env),
-        container: Some(&container),
-        holds: shards_ipc::Holds::Hypervisor,
-        group: None,
-        graphics: gpu,
-    })
-    .map_err(|e| format!("starting the builder: {e}"))?;
-    // Ended with the suspended VM, a Job's, where its network process does not start.
-    let net = crate::netproc::start(ready, &vm, None)?;
-    let giver = vm.giver().map_err(|e| format!("answering the builder: {e}"))?;
-    let vm = vm.resume().map_err(|e| format!("starting the builder: {e}"))?;
-    // Its ends are the VM's now: its exit ends its requests, and its network process,
-    // which watches it, goes with it.
-    drop(given);
-    drop((asks_to, answers_from, side, attach, said_to));
-    let link = crate::grant::Link {
-        from: std::fs::File::from(OwnedHandle::from(asks_from)),
-        to: std::fs::File::from(OwnedHandle::from(answers_to)),
-    };
-    std::thread::Builder::new()
-        .name("builder grants".into())
-        .spawn(move || {
-            let _ = crate::grant_answer::serve(&link, &giver);
-        })
-        .map_err(|e| format!("answering the builder: {e}"))?;
-    Ok(Launched { vm, net, container })
 }
 
 /// Records what a builder's VM tells on `from_vm` of its console's report as it ends
@@ -851,20 +645,13 @@ impl Builder {
             boot.memory_mib.to_string().into(),
             "--vsock".into(),
             vsock.clone().into(),
-            "--net".into(),
-            crate::netproc::VmSide::arg(&mac).into(),
             "--no-console".into(),
         ];
         // What it keeps of its console to quote as it fails, as its kernel's records say,
-        // and the pipe it tells how that report came out on (D12).
+        // and the pipe it tells how that report came out on (D12), which its launch hands it.
         let said = crate::said::learn(boot.home, Some(boot.kernel));
         let (from_vm, said_to) = io::pipe().map_err(|e| format!("the builder's console report: {e}"))?;
-        args.extend([
-            "--console-said".into(),
-            said.kept.to_string().into(),
-            "--said-to".into(),
-            SAID_TO.to_string().into(),
-        ]);
+        args.extend(["--console-said".into(), said.kept.to_string().into()]);
         for base in boot.bases {
             args.extend(["--pmem".into(), base.into()]);
         }
@@ -878,11 +665,34 @@ impl Builder {
         // (D151): a build's peak is not held to its end, on WHP as a run's is
         // (`platform::discard`).
         args.push("--reporting".into());
-        // The files this process attaches to its join disk for its steps' caches (D134).
+        // The files this process attaches to its join disk for its steps' caches (D134), on
+        // the socket its launch hands it (`--attach`).
         let (attach, attach_theirs) =
             UnixStream::pair().map_err(|e| format!("the builder's join disk: {e}"))?;
-        args.extend(["--attach".into(), ATTACH.into()]);
-        let launched = launch(&args, policy, &mac, &bridge, attach_theirs, said_to)?;
+        let vm_binary = crate::helpers::vm()?;
+        let ends = crate::daemon::ends::Ends::kept_in(boot.home);
+        let argv: Vec<&std::ffi::OsStr> = args.iter().map(OsString::as_os_str).collect();
+        // The network process first, whose side of the ring the VM is given, as a VM's
+        // (D31); the VM in App Sandbox on macOS, asking this process for what it opens
+        // (D30), and on Windows in an AppContainer (D141, D142).
+        let launched = crate::launch::builder(
+            crate::launch::Plan {
+                args: &argv,
+                vm: &vm_binary,
+                network: Some(crate::launch::Network {
+                    policy,
+                    mac,
+                    bridge: &bridge,
+                    credentials: false,
+                }),
+                ends: &ends,
+                group: None,
+                #[cfg(target_os = "macos")]
+                grants: crate::launch::Grants::Answered,
+            },
+            attach_theirs,
+            said_to,
+        )?;
         let vm = launched.vm;
         record_said(boot.home, said, from_vm);
         let began = Instant::now();
@@ -936,11 +746,10 @@ impl Builder {
         // Its init dialed its give-back connection before the build's, so it waits now, or
         // there is none (an init that gives nothing back).
         let give = take_first(give);
+        // Its control is let go of: a build publishes no port.
         let mut builder = Builder {
             vm,
-            net: launched.net,
-            #[cfg(windows)]
-            _container: launched.container,
+            net: launched.net.map(|(process, _)| process),
             conn,
             give,
             ssh,
@@ -951,6 +760,7 @@ impl Builder {
             attach,
             attached: HashMap::new(),
             needs: boot.needs.map(Path::to_path_buf),
+            ends,
         };
         if let Some((_, architectures)) = boot.emulators {
             let device = u32::try_from(boot.bases.len()).map_err(|_| "too many base images")?;
@@ -1558,9 +1368,10 @@ impl Drop for Builder {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        // The network process goes with its VM; its directory and AppContainer, fields,
-        // after this.
-        crate::netproc::reap(&self.net);
+        // The network process goes with its VM; its directory, a field, after this.
+        if let Some(net) = &self.net {
+            crate::netproc::reap(net, &self.ends);
+        }
     }
 }
 
