@@ -25818,7 +25818,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2, the sign-ins' wiring and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2, kiln's broker answering sign-ins and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -26523,11 +26523,73 @@ record docs/research/s33-veil-creds/STEP8.md).
 - *Owed.* The run host's relay of `NET_SIGN_INS` and `NET_SIGN_IN` to its orchestrator, the image channel's next
   version and `Lessor` grown (this slice's second part); kiln's broker answering them (step 8's third slice).
 
+**Built: step 8's second slice, its second part: the run host's relay** (crates/api `image.rs`,
+`image/wire.rs`, `image/session.rs`; crates/shards `api_run.rs`; crates/net `signin.rs`, `inject.rs`; shards-dns
+`credential.rs`; record docs/research/s33-veil-creds/STEP8.md).
+- *The grants' way in.* An orchestrator names a run's sign-ins in its spec (`ImageSpec::sign_ins`, shards-dns'
+  `SignInGrant`), checked where its request is built (`image::sign_ins`: a name, hosts as a credential grant's, one
+  sign-in of a CLI, each placeholder a token and one credential's alone with the run's credential grants, and a
+  lessor), carried in the image channel's version 24 (`Request::sign_ins`, appended) and checked again by the run host
+  (`api_run::sign_ins`: its CLI's token host and each host its access token goes to reached by the run's egress,
+  D236). The run host tells its network process `NET_SIGN_INS` after its policy and before `NET_CREDENTIALS`, which it
+  sends for a run with sign-ins and no credential grant too, as the run's CA names the sign-ins' hosts, and lays that
+  CA in the trust of each member whose link reaches one of them (`trust`). A run with none tells none (default deny).
+- *The words.* The network process's `NET_SIGN_IN` (`Told`) rides the run channel as `CAPTURE` (36,
+  `wire::CaptureAsk`: the sign-in, its access and refresh tokens, `expires_in`, and, no credential, its ID token made
+  inert and its `scope`), `REFRESH` (37) and `REVOKE` (38); the orchestrator answers `CAPTURED` (34,
+  `wire::CaptureAnswer`: the access token's reference and the placeholders, or a typed `SignInRefusal`) and
+  `REFRESHED` (35: the token response its CLI is to have, or a refusal), which the run host hands to the network
+  process (`Answered`), each cause kept (`Denied`, `Unavailable`, `Ended`, `Unanswered`). An ask keeps the network
+  process's id. The run host's ledger (`api_run::Ledger`) holds each ask under way by its id and kind (`Signing`):
+  an answer to none or of another kind, or a second ask by an id under way, breaks the contract; an ask after the
+  run's release (`Ended`) or of a sign-in the run does not grant (`Denied`) is declined there, typed.
+- *Question 1 kept.* Nothing in the run host or the orchestrator's session calls a provider: a refresh is
+  `Lessor::refresh`, kiln's broker's `Turn` (step 8's third slice).
+- *Question 2 kept: placeholders stay, the held lease drops.* A refresh leaves the sign-in's placeholders as its
+  capture gave them: the network process writes the broker's response with them, whatever it holds. The access
+  token's held lease is let go of by each holder. The session releases to its lessor each lease of it given before
+  the refresh, before its host hears (`rotated`). The run host's ledger drops its held entry (`Ledger::refreshed`),
+  so the next ask is asked anew and not refused `Live`, which a guest would see as a 503. The network process
+  forgets the value (`Leases::forget`, the first part). An ask under way is kept by each.
+- *A captured token leased by reference, released at the run's end.* From its capture, its access token's reference
+  is one the run may lease. The session (`granted`) and the run host (`Ledger::captured`) take it in place of an
+  earlier capture's. It is leased by step 4's path and released with the rest at every end of the run (`RELEASED`,
+  the session's `release`).
+- *The Lessor, grown append-only.* `capture(sign_in, tokens, key) -> Result<Captured, SignInRefusal>`,
+  `refresh(sign_in, key) -> Result<Secret, SignInRefusal>` and `revoked(sign_in, key)`, each defaulted: an
+  orchestrator that serves no sign-in refuses `Unanswered`, which the injector renders 503. Each is called on a thread
+  of its own, as `lease` is. `release` is called too for a lease whose value a refresh rotated.
+- *ROOT's asks taken.* `Captured::refresh_placeholder` is optional: a sign-in whose response gave no refresh token
+  holds no placeholder for one, and a response that carries a refresh token with no placeholder to stand for it is
+  refused (`NoPlaceholder`), never passed. The capture carries the inert ID token and `scope`, which the orchestrator
+  stages into a later run's CLI file (Codex's `auth.json` parses its ID token for its account; Claude Code's
+  `.credentials.json` records `scopes`).
+- *Wiping.* A capture's tokens are wiped in the network process's message as the run host takes it, moved (never
+  copied) from its `Taken` into the channel's `Secret`s, encoded in one buffer wiped as it drops, and written as they
+  lie. The run host's answers now go out through its own stdout descriptor, unbuffered, in one vectored write of a
+  frame's parts (`api_run::stdout`), never through std's `Stdout`, whose buffer kept what passed through it. The
+  session wipes a `CAPTURE` frame's payload once taken. A refresh's response is a `Secret` on the channel and
+  `Zeroizing` in the run host and the network process.
+- *Literals.* Version 24, kinds 34 to 38 and the refusal tags 1 to 4 are sequence numbers and names on a wire. No bound
+  of its own: the channel's `MAX_PAYLOAD` and `shards_ipc`'s frames bound each word.
+- *Tests (macOS arm64; STEP8.md).* The run host: a run granting a sign-in tells its network process its policy, its
+  sign-in and its grants in that order, and its CA's trust names the sign-in's hosts; a run granting none tells its
+  policy alone; a sign-in its egress cannot reach is refused. The relay end to end, over a socket and pipes with the
+  network process's real `SignIns` and lease client and a simulated orchestrator: the capture's tokens reach the
+  orchestrator whole; its placeholders reach the network process; its access token is leased by the orchestrator's
+  reference; the refresh is answered with the placeholders kept and no rotated token written; the next lease is asked
+  anew; the revocation is told; the leases are released before the run's end, and a later ask is refused as ended.
+  The ledger's states. The session: the broker keeps the capture and answers the refresh once; the lease given before
+  the refresh is released by it; the one after is released at the run's end, each once; the revocation is told. The
+  wire: each word and answer round-trips, cut or unknown-tagged words are refused, and no token or placeholder is in a
+  `Debug`.
+- *Owed.* Step 8's third slice: kiln's `RunLessor` answering `capture`, `refresh` and `revoked` from its broker, and
+  Hex forwarding the three. ROOT: the real sign-ins (below).
+
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** The injector that
-fills HTTP/2 headers (step 7); the sign-in profiles' wiring (step 8's second slice: the network
-process telling its run host of a capture, a refresh and a revocation, the run host its
-orchestrator, the injector capturing and answering outside) and kiln's broker answering them
-(its third); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
+fills HTTP/2 headers (step 7); kiln's broker answering the sign-ins' words (step 8's third slice;
+the network process telling its run host of a capture, a refresh and a revocation, the run host its
+orchestrator, and the injector capturing and answering outside are built, its second); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
 (its harness built, D259), the injector's measured cost (step 10), and a real sign-in of each
 CLI surviving a refresh answered outside (step 8). Step 6's own owed items are its block's,
 above.

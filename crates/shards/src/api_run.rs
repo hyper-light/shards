@@ -22,6 +22,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use shards_api::image::wire::{self, Cause};
 use shards_ipc::kind;
 use shards_net::lease::Refusal;
+use shards_net::signin::{self, Declined};
 
 /// Why the run will not be, for the orchestrator.
 #[derive(Debug)]
@@ -36,17 +37,29 @@ fn no(cause: Cause) -> impl Fn(String) -> No {
 struct Answers(Mutex<Box<dyn io::Write + Send>>);
 
 impl Answers {
-    /// Frames `parts` as one payload of `kind`, written in one turn.
+    /// Frames `parts` as one payload of `kind`, written in one turn, as they lie: no copy of a
+    /// part is made here, so a sign-in's tokens (D242, step 8) are in no buffer but their
+    /// sender's, which wipes them (this process's stdout is its own descriptor, unbuffered:
+    /// [`stdout`]).
     fn send(&self, kind: u8, parts: &[&[u8]]) -> io::Result<()> {
         let len = parts
             .iter()
             .try_fold(0usize, |n, p| n.checked_add(p.len()))
             .ok_or(io::ErrorKind::InvalidInput)?;
         let header = wire::header(kind, len).map_err(io::Error::other)?;
+        let mut slices: Vec<io::IoSlice<'_>> = Vec::with_capacity(parts.len().saturating_add(1));
+        slices.push(io::IoSlice::new(&header));
+        slices.extend(parts.iter().map(|p| io::IoSlice::new(p)));
+        let mut rest = slices.as_mut_slice();
         let mut out = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        out.write_all(&header)?;
-        for p in parts {
-            out.write_all(p)?;
+        while !rest.is_empty() {
+            match out.write_vectored(rest) {
+                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                // At most what `rest` holds is written, so it advances within it.
+                Ok(n) => io::IoSlice::advance_slices(&mut rest, n),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
         }
         out.flush()
     }
@@ -142,10 +155,35 @@ fn stdin() -> io::Result<std::fs::File> {
     }
 }
 
+/// This process's stdout as its [`Answers`] write it: its own descriptor (on Windows its own
+/// handle), written unbuffered, never through std's `Stdout`, whose buffer keeps what went
+/// through it (a sign-in's tokens, D242 step 8) until later frames overwrite it.
+fn stdout() -> io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsFd as _;
+        Ok(std::fs::File::from(io::stdout().as_fd().try_clone_to_owned()?))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsHandle as _;
+        Ok(std::fs::File::from(
+            io::stdout().as_handle().try_clone_to_owned()?,
+        ))
+    }
+}
+
 /// `shards api-run`: not for people to run. The run's end is said as its VM ends, before
 /// its owner closes the channel; a run that never started is refused instead.
 pub fn command() -> ExitCode {
-    let answers = Answers(Mutex::new(Box::new(io::stdout())));
+    let answers = match stdout() {
+        Ok(out) => Answers(Mutex::new(Box::new(out))),
+        // No channel to say anything on: its owner reads its end, and this, on its stderr.
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "shards api-run: its stdout: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     match host(&answers) {
         Ok(()) => ExitCode::SUCCESS,
         Err(No(cause, why)) => {
@@ -577,9 +615,14 @@ fn egress(
 /// value: each toward one host at least, and each host one its egress grants reach (D236),
 /// as a grant that could never be filled is refused, not kept silently; each placeholder a
 /// token, and one credential's alone, as its orchestrator's side checked them; the network
-/// process checks them again as it takes them (D109). None where the run has none.
-fn credentials(grants: &[wire::CredentialGrant], egress: Option<&[u8]>) -> Result<Option<Vec<u8>>, No> {
-    if grants.is_empty() {
+/// process checks them again as it takes them (D109). None where the run has none and signs
+/// nothing in (`signs_in`): a run's sign-ins make its CA with its grants, none as they may be.
+fn credentials(
+    grants: &[wire::CredentialGrant],
+    egress: Option<&[u8]>,
+    signs_in: bool,
+) -> Result<Option<Vec<u8>>, No> {
+    if grants.is_empty() && !signs_in {
         return Ok(None);
     }
     shards_net::dns::credential::check(grants)
@@ -615,6 +658,53 @@ fn credentials(grants: &[wire::CredentialGrant], egress: Option<&[u8]>) -> Resul
     })
 }
 
+/// The run's sign-in grants for its network process (`NET_SIGN_INS`, D242 step 8): each
+/// sign-in's CLI's token host and each host its access token goes to one its egress grants
+/// reach (D236), as a sign-in whose tokens could never be taken or used is refused, not kept
+/// silently; one sign-in of a CLI; each placeholder an earlier capture gave a token, and one
+/// credential's alone, the run's credential grants' included, as its orchestrator's side checked
+/// them; the network process checks them again as it takes them (D109). None where the run has
+/// none.
+fn sign_ins(
+    sign_ins: &[wire::SignInGrant],
+    grants: &[wire::CredentialGrant],
+    egress: Option<&[u8]>,
+) -> Result<Option<Vec<u8>>, No> {
+    if sign_ins.is_empty() {
+        return Ok(None);
+    }
+    let (ports, named, _) = egress.and_then(shards_net::decode_policy).unwrap_or_default();
+    for s in sign_ins {
+        let token = shards_net::signin::profile(s.cli).token.host;
+        if s.toward.is_empty() {
+            return Err(No(
+                Cause::Request,
+                format!("sign-in {}: its access token goes to no host", s.sign_in),
+            ));
+        }
+        if let Some(host) = std::iter::once(token)
+            .chain(s.toward.iter().map(String::as_str))
+            .find(|h| !shards_net::reaches(&ports, &named, h))
+        {
+            return Err(No(
+                Cause::Request,
+                format!(
+                    "sign-in {} toward {host}: none of the run's egress grants reaches it (D236), so its tokens could never be taken or used",
+                    s.sign_in
+                ),
+            ));
+        }
+    }
+    shards_net::dns::credential::check_sign_ins(grants, sign_ins)
+        .map_err(|refused| No(Cause::Request, format!("sign-in {refused}")))?;
+    shards_net::signin::encode_grants(sign_ins).map(Some).ok_or_else(|| {
+        No(
+            Cause::Request,
+            "the run's sign-in grants: a name or placeholder past 65535 bytes, a host past 255, or more than 65535 hosts".into(),
+        )
+    })
+}
+
 /// The characters of a PEM line: "Generators MUST wrap the base64-encoded lines so that each
 /// line consists of exactly 64 characters except for the final line" (RFC 7468 §2).
 const PEM_LINE: usize = 64;
@@ -622,8 +712,9 @@ const PEM_LINE: usize = 64;
 /// The setup entries giving the run's members its CA (D242, `shards_abi::run::trust`), once
 /// its network process has answered `grants` (as `NET_CREDENTIALS` carries them) with the
 /// CA's certificate `der`: the certificate in PEM (RFC 7468), and each host the grants name,
-/// once. init lays it in the trust of each member whose link reaches one of those hosts.
-fn trust(der: &[u8], grants: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+/// and each sign-in's (its CLI's token host and the hosts its access token goes to), once.
+/// init lays it in the trust of each member whose link reaches one of those hosts.
+fn trust(der: &[u8], grants: &[u8], sign_ins: &[wire::SignInGrant]) -> Result<Vec<Vec<u8>>, String> {
     use base64::Engine as _;
     use shards_abi::run::trust as entries;
     let grants = shards_net::decode_grants(grants).ok_or("the run's credential grants are malformed")?;
@@ -635,8 +726,16 @@ fn trust(der: &[u8], grants: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     }
     pem.extend_from_slice(b"-----END CERTIFICATE-----\n");
     let mut hosts: Vec<&str> = Vec::new();
-    for host in grants.iter().flat_map(|g| &g.toward) {
-        if !hosts.contains(&host.as_str()) {
+    let signed = sign_ins.iter().flat_map(|s| {
+        std::iter::once(shards_net::signin::profile(s.cli).token.host)
+            .chain(s.toward.iter().map(String::as_str))
+    });
+    for host in grants
+        .iter()
+        .flat_map(|g| g.toward.iter().map(String::as_str))
+        .chain(signed)
+    {
+        if !hosts.contains(&host) {
             hosts.push(host);
         }
     }
@@ -975,6 +1074,10 @@ enum Ask<'a> {
     Input(wire::Input),
     InputEnd(wire::InputEnd),
     Leased(&'a [u8]),
+    /// A sign-in's capture answered (D242, step 8), as its frame holds it.
+    Captured(&'a [u8]),
+    /// A sign-in's refresh answered, its token response as its frame holds it.
+    Refreshed(&'a [u8]),
     Stats(wire::StatsAsk),
     Room(wire::RoomAsk),
     Rate(wire::RateAsk),
@@ -1010,6 +1113,8 @@ fn judged(which: u8, payload: &[u8]) -> Result<Ask<'_>, AsksEnd> {
         wire::to_host::INPUT => ("INPUT", wire::Input::decode(payload).map(Ask::Input)),
         wire::to_host::INPUT_END => ("INPUT_END", wire::InputEnd::decode(payload).map(Ask::InputEnd)),
         wire::to_host::LEASED => ("LEASED", Ok(Ask::Leased(payload))),
+        wire::to_host::CAPTURED => ("CAPTURED", Ok(Ask::Captured(payload))),
+        wire::to_host::REFRESHED => ("REFRESHED", Ok(Ask::Refreshed(payload))),
         wire::to_host::STATS => ("STATS", wire::StatsAsk::decode(payload).map(Ask::Stats)),
         wire::to_host::ROOM => ("ROOM", wire::RoomAsk::decode(payload).map(Ask::Room)),
         wire::to_host::RATE => ("RATE", wire::RateAsk::decode(payload).map(Ask::Rate)),
@@ -1057,26 +1162,126 @@ enum Answered {
     Late,
 }
 
+/// A sign-in's ask of the orchestrator under way (D242, step 8; R04): a capture of its tokens,
+/// or a refresh. Answered or let go of at the run's release, its ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Signing {
+    Capture,
+    Refresh,
+}
+
 /// The run's leases, as its host keeps them (D242): each one its network process asked, by
 /// the id the run's channel names it by. Asked of the orchestrator by reference, then held
 /// until its end, or refused; every one released as the run ends. A run asks only what its
 /// grants name, and one lease of a credential at a time, as its network process asks one,
 /// so at most one for each grant is here: what grows past that is refused, never kept.
+///
+/// And the run's sign-ins (step 8): each grant, with what its last capture gave, whose access
+/// token is one of the run's grants from then on; and each ask of the orchestrator under way,
+/// by the id its network process gave it, which the run's channel names it by. That process
+/// asks one refresh of a sign-in at a time (`shards_net::signin::SignIns`), so at most one ask
+/// of each kind for each sign-in is here, bounded by the run's grants.
 struct Ledger {
     granted: Vec<String>,
     live: HashMap<u32, Entry>,
     next: u32,
     released: bool,
+    sign_ins: Vec<wire::SignInGrant>,
+    signing: HashMap<u32, (usize, Signing)>,
 }
 
 impl Ledger {
-    fn new(granted: Vec<String>) -> Ledger {
+    /// The run's ledger, its grants' references `granted` and its sign-ins `sign_ins`, whose
+    /// access tokens an earlier capture gave are granted too.
+    fn new(mut granted: Vec<String>, sign_ins: Vec<wire::SignInGrant>) -> Ledger {
+        granted.extend(
+            sign_ins
+                .iter()
+                .filter_map(|s| s.captured.as_ref().map(|c| c.access.clone())),
+        );
         Ledger {
             granted,
             live: HashMap::new(),
             next: 0,
             released: false,
+            sign_ins,
+            signing: HashMap::new(),
         }
+    }
+
+    /// The network process's ask `id` of sign-in `sign_in`, a capture or a refresh: asked of the
+    /// orchestrator by the same id; or declined here, typed, nothing asked: after the run's
+    /// release, or of a sign-in no grant of the run's names. An id under way asked again breaks
+    /// that process's contract (`Err`).
+    fn sign_in(&mut self, id: u32, sign_in: &str, asking: Signing) -> Result<Result<(), Declined>, String> {
+        if self.released {
+            return Ok(Err(Declined::Ended));
+        }
+        let Some(index) = self.sign_ins.iter().position(|s| s.sign_in == sign_in) else {
+            return Ok(Err(Declined::Denied("no sign-in of the run's".into())));
+        };
+        if self.signing.contains_key(&id) {
+            return Err(format!("its network process asked by {id}, an id under way"));
+        }
+        self.signing.insert(id, (index, asking));
+        Ok(Ok(()))
+    }
+
+    /// The orchestrator's answer to sign-in ask `id`, of kind `asking`: the sign-in it was of;
+    /// none after the run's release, which goes nowhere. One to no ask of that kind under way
+    /// breaks the channel's contract.
+    fn signed_in(&mut self, id: u32, asking: Signing) -> Result<Option<usize>, String> {
+        if self.released {
+            return Ok(None);
+        }
+        match self.signing.remove(&id) {
+            Some((index, asked)) if asked == asking => Ok(Some(index)),
+            Some(other) => {
+                self.signing.insert(id, other);
+                Err(format!("an answer of sign-in ask {id} of another kind"))
+            }
+            None => Err(format!(
+                "an answer of sign-in ask {id}, which no ask of the run awaits"
+            )),
+        }
+    }
+
+    /// Sign-in `index` captured as `c`: its access token's reference granted, in place of the
+    /// one an earlier capture gave where no other grant names that one.
+    fn captured(&mut self, index: usize, c: &wire::Captured) {
+        let Some(s) = self.sign_ins.get_mut(index) else {
+            return;
+        };
+        if let Some(old) = s.captured.replace(c.clone())
+            && old.access != c.access
+            && let Some(at) = self.granted.iter().position(|g| *g == old.access)
+        {
+            self.granted.remove(at);
+        }
+        if !self.granted.contains(&c.access) {
+            self.granted.push(c.access.clone());
+        }
+    }
+
+    /// Sign-in `index` refreshed outside (Q2): its access token's held lease let go of, its
+    /// value rotated, so that the next ask of it is asked anew rather than refused as live; an
+    /// ask of it under way kept, as its network process keeps it.
+    fn refreshed(&mut self, index: usize) {
+        let Some(access) = self
+            .sign_ins
+            .get(index)
+            .and_then(|s| s.captured.as_ref())
+            .map(|c| c.access.clone())
+        else {
+            return;
+        };
+        self.live
+            .retain(|_, e| !(e.reference == access && matches!(e.state, State::Held { .. })));
+    }
+
+    /// Sign-in `sign_in`'s name where it is one of the run's.
+    fn signs_in(&self, sign_in: &str) -> bool {
+        self.sign_ins.iter().any(|s| s.sign_in == sign_in)
     }
 
     /// The network process's ask `asked_as` of credential `reference`, at `now`: a lease to
@@ -1154,6 +1359,7 @@ impl Ledger {
             .count();
         let asked = self.live.len().saturating_sub(held);
         self.live.clear();
+        self.signing.clear();
         Some((held, asked))
     }
 }
@@ -1179,6 +1385,33 @@ enum Audit<'a> {
         held: usize,
         asked: usize,
     },
+    /// A sign-in's ask relayed to the orchestrator (D242, step 8), by the sign-in's name.
+    Signing {
+        sign_in: &'a str,
+        id: u32,
+        asking: Signing,
+    },
+    /// A sign-in's capture kept outside: its access token leased by this reference from now.
+    Captured {
+        sign_in: &'a str,
+        id: u32,
+        reference: &'a str,
+    },
+    /// A sign-in refreshed outside: its access token's held lease let go of.
+    Refreshed {
+        sign_in: &'a str,
+        id: u32,
+    },
+    /// A sign-in's ask declined, here (none) or by the orchestrator.
+    Declined {
+        sign_in: &'a str,
+        id: Option<u32>,
+        why: &'a Declined,
+    },
+    /// The run's VM revoked a sign-in, answered in its network process, its tokens kept.
+    Revoked {
+        sign_in: &'a str,
+    },
 }
 
 impl std::fmt::Display for Audit<'_> {
@@ -1200,6 +1433,48 @@ impl std::fmt::Display for Audit<'_> {
             } => write!(f, "credential {reference}: an ask refused here: {refusal}"),
             Audit::Released { held, asked } => {
                 write!(f, "its leases released as it ends: {held} held, {asked} asked")
+            }
+            Audit::Signing {
+                sign_in,
+                id,
+                asking: Signing::Capture,
+            } => write!(f, "sign-in {sign_in}: capture {id} asked"),
+            Audit::Signing {
+                sign_in,
+                id,
+                asking: Signing::Refresh,
+            } => write!(f, "sign-in {sign_in}: refresh {id} asked"),
+            Audit::Captured {
+                sign_in,
+                id,
+                reference,
+            } => write!(
+                f,
+                "sign-in {sign_in}: capture {id} kept, its access token leased as {reference}"
+            ),
+            Audit::Refreshed { sign_in, id } => {
+                write!(
+                    f,
+                    "sign-in {sign_in}: refresh {id} answered, its access token's held lease let go"
+                )
+            }
+            Audit::Declined {
+                sign_in,
+                id: Some(id),
+                why,
+            } => write!(f, "sign-in {sign_in}: ask {id} declined: {why}"),
+            Audit::Declined {
+                sign_in,
+                id: None,
+                why,
+            } => {
+                write!(f, "sign-in {sign_in}: an ask declined here: {why}")
+            }
+            Audit::Revoked { sign_in } => {
+                write!(
+                    f,
+                    "sign-in {sign_in}: revoked in its VM, answered there, its tokens kept"
+                )
             }
         }
     }
@@ -1228,6 +1503,19 @@ impl Leasing<'_> {
         #[cfg(windows)]
         return shards_ipc::write_message_parts(&self.net.socket, kind::NET_LEASE, &payload);
     }
+
+    /// Tells the network process a sign-in's answer (D242, step 8), wiped as it drops, sent as
+    /// it lies as [`tell`](Self::tell) sends a lease's.
+    fn tell_sign_in(&self, answered: &signin::Answered) -> io::Result<()> {
+        let payload = answered
+            .encode()
+            .ok_or_else(|| io::Error::other("a sign-in's answer past what its lengths count"))?;
+        let _one = lock(&self.sending);
+        #[cfg(unix)]
+        return crate::netproc::send(self.net, kind::NET_SIGN_IN, &payload, &[]);
+        #[cfg(windows)]
+        return shards_ipc::write_message_parts(&self.net.socket, kind::NET_SIGN_IN, &payload);
+    }
 }
 
 /// The network process's refusal for the orchestrator's `refusal`, each cause kept.
@@ -1250,16 +1538,30 @@ fn net_refusal(refusal: &wire::LeaseRefusal) -> Refusal {
 /// more of its asks are relayed.
 fn relay(leasing: &Leasing<'_>, answers: &Answers) {
     loop {
-        let m = match crate::netproc::recv(leasing.net) {
+        let mut m = match crate::netproc::recv(leasing.net) {
             Ok(Some(m)) => m,
             Ok(None) | Err(_) => return,
         };
+        // A sign-in's word (D242, step 8): its message's copy of a capture's tokens wiped as it
+        // goes, whatever came of it.
+        if m.kind == kind::NET_SIGN_IN {
+            let told = signin::Told::decode(&m.payload);
+            zeroize::Zeroize::zeroize(&mut m.payload);
+            match told.map(|told| sign_in_told(leasing, answers, told)) {
+                Some(Ok(())) => continue,
+                Some(Err(why)) => say(format_args!("{why}: no more of its asks are relayed")),
+                None => say(format_args!(
+                    "its network process said a sign-in's word this side does not read: no more of its asks are relayed"
+                )),
+            }
+            return;
+        }
         let ask = (m.kind == kind::NET_LEASE)
             .then(|| shards_net::lease::decode_ask(&m.payload))
             .flatten();
         let Some((asked_as, reference)) = ask else {
             say(format_args!(
-                "its network process said message kind {} where it asks leases alone: no more of its asks are relayed",
+                "its network process said message kind {} where it asks leases and sign-ins alone: no more of its asks are relayed",
                 m.kind
             ));
             return;
@@ -1328,6 +1630,201 @@ fn leased(leasing: &Leasing<'_>, payload: &[u8]) -> Result<(), String> {
             leasing.tell(asked_as, Err(&refusal))
         }
     };
+    Ok(())
+}
+
+/// A sign-in's word from the network process (D242, step 8), relayed to the orchestrator: a
+/// capture's tokens (`CAPTURE`, written as they lie and wiped as they go) or a refresh
+/// (`REFRESH`), each asked by its id once the ledger takes it, else declined here, typed; a
+/// revocation in the VM told (`REVOKE`), answered by nobody. Only the orchestrator's broker
+/// calls the provider (Q1): nothing here does. An ask by an id under way breaks that process's
+/// contract (`Err`).
+fn sign_in_told(leasing: &Leasing<'_>, answers: &Answers, told: signin::Told) -> Result<(), String> {
+    let (id, sign_in, asking) = match &told {
+        signin::Told::Capture { id, sign_in, .. } => (*id, sign_in.clone(), Signing::Capture),
+        signin::Told::Refresh { id, sign_in } => (*id, sign_in.clone(), Signing::Refresh),
+        signin::Told::Revoke { sign_in } => {
+            if lock(&leasing.ledger).signs_in(sign_in) {
+                say(format_args!("{}", Audit::Revoked { sign_in }));
+                if let Ok(payload) = (wire::Revoked {
+                    sign_in: sign_in.clone(),
+                })
+                .encode()
+                {
+                    let _ = answers.send(wire::to_client::REVOKE, &[&payload]);
+                }
+            }
+            return Ok(());
+        }
+    };
+    let taken = lock(&leasing.ledger).sign_in(id, &sign_in, asking)?;
+    if let Err(why) = taken {
+        let audit = Audit::Declined {
+            sign_in: &sign_in,
+            id: None,
+            why: &why,
+        };
+        say(format_args!("{audit}"));
+        let answered = match asking {
+            Signing::Capture => signin::Answered::Captured { id, result: Err(why) },
+            Signing::Refresh => signin::Answered::Refreshed { id, result: Err(why) },
+        };
+        return leasing.tell_sign_in(&answered).map_err(|e| e.to_string());
+    }
+    say(format_args!(
+        "{}",
+        Audit::Signing {
+            sign_in: &sign_in,
+            id,
+            asking
+        }
+    ));
+    // The orchestrator gone, the run ends, and its network process with it.
+    let _ = match told {
+        signin::Told::Capture { taken, .. } => {
+            let signin::Taken {
+                mut access,
+                refresh,
+                expires_in,
+                id_token,
+                scope,
+            } = taken;
+            // Each token moved, never copied, into what wipes it as it drops.
+            let secret = |t: &mut zeroize::Zeroizing<Vec<u8>>| wire::Secret(std::mem::take(&mut **t));
+            let ask = wire::CaptureAsk {
+                id,
+                sign_in,
+                tokens: wire::SignInTokens {
+                    access: secret(&mut access),
+                    refresh: refresh.map(|mut r| secret(&mut r)),
+                    expires_in,
+                    id_token: id_token.map(|mut t| secret(&mut t)),
+                    scope,
+                },
+            };
+            let payload = ask.encode().map(zeroize::Zeroizing::new);
+            drop(ask);
+            match payload {
+                Ok(payload) => answers.send(wire::to_client::CAPTURE, &[&payload]),
+                Err(e) => {
+                    let why = Declined::Unavailable(format!("its tokens: {e}"));
+                    lock(&leasing.ledger).signed_in(id, Signing::Capture)?;
+                    return leasing
+                        .tell_sign_in(&signin::Answered::Captured { id, result: Err(why) })
+                        .map_err(|e| e.to_string());
+                }
+            }
+        }
+        signin::Told::Refresh { .. } => match (wire::RefreshAsk { id, sign_in }).encode() {
+            Ok(payload) => answers.send(wire::to_client::REFRESH, &[&payload]),
+            Err(e) => Err(io::Error::other(e)),
+        },
+        signin::Told::Revoke { .. } => Ok(()),
+    };
+    Ok(())
+}
+
+/// The network process's refusal of a sign-in's ask for the orchestrator's `refusal`, each cause
+/// kept.
+fn declined(refusal: wire::SignInRefusal) -> Declined {
+    match refusal {
+        wire::SignInRefusal::Denied(why) => Declined::Denied(why),
+        wire::SignInRefusal::Unavailable(why) => Declined::Unavailable(why),
+        wire::SignInRefusal::Ended => Declined::Ended,
+        wire::SignInRefusal::Unanswered => Declined::Unanswered,
+    }
+}
+
+/// The orchestrator's answer to a sign-in's capture (`CAPTURED`, D242 step 8), relayed to the
+/// network process that asked it: the placeholders its CLI is to hold, its access token one of
+/// the run's grants from now; or why not. One to no capture the run awaits breaks the
+/// channel's contract; one after the run's release goes nowhere.
+fn captured(leasing: &Leasing<'_>, payload: &[u8]) -> Result<(), String> {
+    let answer = wire::CaptureAnswer::decode(payload).map_err(|e| e.to_string())?;
+    let mut ledger = lock(&leasing.ledger);
+    let Some(index) = ledger.signed_in(answer.id, Signing::Capture)? else {
+        return Ok(());
+    };
+    let sign_in = ledger
+        .sign_ins
+        .get(index)
+        .map(|s| s.sign_in.clone())
+        .unwrap_or_default();
+    let result = match answer.result {
+        Ok(c) => {
+            ledger.captured(index, &c);
+            let audit = Audit::Captured {
+                sign_in: &sign_in,
+                id: answer.id,
+                reference: &c.access,
+            };
+            say(format_args!("{audit}"));
+            Ok(c)
+        }
+        Err(refusal) => {
+            let why = declined(refusal);
+            let audit = Audit::Declined {
+                sign_in: &sign_in,
+                id: Some(answer.id),
+                why: &why,
+            };
+            say(format_args!("{audit}"));
+            Err(why)
+        }
+    };
+    drop(ledger);
+    // A network process gone is told nothing: the run ends with it.
+    let _ = leasing.tell_sign_in(&signin::Answered::Captured {
+        id: answer.id,
+        result,
+    });
+    Ok(())
+}
+
+/// The orchestrator's answer to a sign-in's refresh (`REFRESHED`, D242 step 8), relayed to the
+/// network process that asked it: the token response its CLI is to have, which that process
+/// gives the sign-in's placeholders whatever it holds (Q2: they stay), the access token's held
+/// lease let go of here first, as its value rotated; or why not. Its decoded copy is wiped as it
+/// drops. One to no refresh the run awaits breaks the channel's contract.
+fn refreshed(leasing: &Leasing<'_>, payload: &[u8]) -> Result<(), String> {
+    let answer = wire::RefreshAnswer::decode(payload).map_err(|e| e.to_string())?;
+    let mut ledger = lock(&leasing.ledger);
+    let Some(index) = ledger.signed_in(answer.id, Signing::Refresh)? else {
+        return Ok(());
+    };
+    let sign_in = ledger
+        .sign_ins
+        .get(index)
+        .map(|s| s.sign_in.clone())
+        .unwrap_or_default();
+    let result = match answer.result {
+        Ok(mut body) => {
+            ledger.refreshed(index);
+            say(format_args!(
+                "{}",
+                Audit::Refreshed {
+                    sign_in: &sign_in,
+                    id: answer.id
+                }
+            ));
+            Ok(zeroize::Zeroizing::new(std::mem::take(&mut body.0)))
+        }
+        Err(refusal) => {
+            let why = declined(refusal);
+            let audit = Audit::Declined {
+                sign_in: &sign_in,
+                id: Some(answer.id),
+                why: &why,
+            };
+            say(format_args!("{audit}"));
+            Err(why)
+        }
+    };
+    drop(ledger);
+    let _ = leasing.tell_sign_in(&signin::Answered::Refreshed {
+        id: answer.id,
+        result,
+    });
     Ok(())
 }
 
@@ -1675,10 +2172,15 @@ mod hosted {
         listeners: Vec<publish::Listener>,
         egress: Option<Vec<u8>>,
         /// Its credential grants as its network process takes them (`NET_CREDENTIALS`), where
-        /// it has any.
+        /// it has any, or sign-ins.
         credentials: Option<Vec<u8>>,
+        /// Its sign-in grants as its network process takes them (`NET_SIGN_INS`, D242 step 8),
+        /// where it has any.
+        sign_ins: Option<Vec<u8>>,
         /// The references its grants name, the leases its network process may ask (D242).
         granted: Vec<String>,
+        /// Its sign-in grants, whose asks its host relays (D242, step 8).
+        signing: Vec<wire::SignInGrant>,
         dirs: Vec<(OwnedFd, bool, OsString)>,
         /// The anonymous volumes its `VOLUME`s made, removed as it ends (`--rm`'s).
         made: Vec<String>,
@@ -1800,6 +2302,7 @@ mod hosted {
         active: Vec<u32>,
         egress: Option<Vec<u8>>,
         credentials: Option<Vec<u8>>,
+        sign_ins: Option<Vec<u8>>,
         bridge: Option<shards_net::bridge::Bridge>,
         points: Vec<crate::volumes::MountPoint>,
         opened: crate::volumes::Opened,
@@ -1845,7 +2348,8 @@ mod hosted {
         }
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
         let egress = super::network(agentfile.as_ref(), request, &mut run)?;
-        let credentials = super::credentials(&request.credentials, egress.as_deref())?;
+        let sign_ins = super::sign_ins(&request.sign_ins, &request.credentials, egress.as_deref())?;
+        let credentials = super::credentials(&request.credentials, egress.as_deref(), sign_ins.is_some())?;
         let bridge = if run.network == "bridge" {
             Some(
                 shards_net::bridge::elected_here(&mut |note| say(&note))
@@ -1928,6 +2432,7 @@ mod hosted {
             active,
             egress,
             credentials,
+            sign_ins,
             bridge,
             points,
             opened,
@@ -1948,6 +2453,7 @@ mod hosted {
             active,
             egress,
             credentials,
+            sign_ins,
             bridge,
             points,
             opened,
@@ -2074,7 +2580,9 @@ mod hosted {
             listeners: bound.listeners,
             egress,
             credentials,
+            sign_ins,
             granted: request.credentials.iter().map(|g| g.reference.clone()).collect(),
+            signing: request.sign_ins.clone(),
             dirs: opened.dirs,
             made,
             bridge,
@@ -2524,10 +3032,11 @@ mod hosted {
     /// Tells the network process, before the VM has the run, its published ports and its
     /// policy, each answered by its own kind in the order asked (daemon/networks.rs
     /// `Asks`); the descriptors kept until answered (M24).
-    fn tell_net(
+    pub(super) fn tell_net(
         net: &crate::netproc::Control,
         listeners: &[publish::Listener],
         egress: Option<&[u8]>,
+        sign_ins: Option<&[u8]>,
         credentials: Option<&[u8]>,
     ) -> Result<Option<Vec<u8>>, String> {
         let mut asked = Vec::new();
@@ -2555,6 +3064,18 @@ mod hosted {
                 Ok(Some(m)) if m.kind == which => {}
                 Ok(_) => return Err(format!("{what}: the network process did not take them")),
                 Err(e) => return Err(format!("{what}: the network process: {e}")),
+            }
+        }
+        // The run's sign-in grants (D242, step 8), once its policy is taken, which the network
+        // process checks them against, and before its credential grants, whose CA names their
+        // hosts too.
+        if let Some(sign_ins) = sign_ins {
+            crate::netproc::send(net, kind::NET_SIGN_INS, sign_ins, &[])
+                .map_err(|e| format!("sign-in grants: {e}"))?;
+            match crate::netproc::recv(net) {
+                Ok(Some(m)) if m.kind == kind::NET_SIGN_INS => {}
+                Ok(_) => return Err("sign-in grants: the network process did not take them".into()),
+                Err(e) => return Err(format!("sign-in grants: the network process: {e}")),
             }
         }
         // The run's credential grants (D242), once its policy is taken, which the network
@@ -2991,6 +3512,7 @@ mod hosted {
                     control,
                     &plan.listeners,
                     plan.egress.as_deref(),
+                    plan.sign_ins.as_deref(),
                     plan.credentials.as_deref(),
                 )
                 .map_err(boot)?;
@@ -3000,7 +3522,7 @@ mod hosted {
                     super::say(format_args!(
                         "its credential grants taken; its CA's SHA-256 {hex}"
                     ));
-                    trust = super::trust(der, grants).map_err(boot)?;
+                    trust = super::trust(der, grants, &plan.signing).map_err(boot)?;
                 }
             }
             let (client, client_theirs) =
@@ -3062,7 +3584,7 @@ mod hosted {
                 .as_ref()
                 .filter(|_| plan.credentials.is_some())
                 .map(|(_, control)| super::Leasing {
-                    ledger: Mutex::new(super::Ledger::new(plan.granted.clone())),
+                    ledger: Mutex::new(super::Ledger::new(plan.granted.clone(), plan.signing.clone())),
                     net: control,
                     sending: Mutex::new(()),
                 });
@@ -3472,6 +3994,11 @@ mod hosted {
         let _ = vm.kill(shards_ipc::signal::SIGKILL);
     }
 
+    /// How a sign-in's answer to a run that signs nothing in ends its asks: it breaks the channel.
+    fn unsigned() -> super::AsksEnd {
+        super::broke(format_args!("a sign-in's answer, of a run that signs nothing in"))
+    }
+
     /// Serves the orchestrator's ask `ask`, or says how it ends its asks.
     fn take<'scope, 'env>(
         live: &'env Live<'env>,
@@ -3514,6 +4041,17 @@ mod hosted {
                     )));
                 };
                 super::leased(leasing, payload).map_err(|e| super::broke(format_args!("{e}")))?;
+            }
+            // A sign-in's answer the orchestrator gave (D242, step 8), relayed to the network
+            // process that asked it, its token response from the frame itself, wiped as it goes.
+            // One of a run with no sign-in, or to no ask, breaks the channel.
+            Ask::Captured(payload) => {
+                let leasing = live.leasing.as_ref().ok_or_else(unsigned)?;
+                super::captured(leasing, payload).map_err(|e| super::broke(format_args!("{e}")))?;
+            }
+            Ask::Refreshed(payload) => {
+                let leasing = live.leasing.as_ref().ok_or_else(unsigned)?;
+                super::refreshed(leasing, payload).map_err(|e| super::broke(format_args!("{e}")))?;
             }
             // On a thread of its own: an exec its guest is slow to answer holds up no
             // credit and no stop.
@@ -5031,6 +5569,7 @@ mod tests {
             credentials: Vec::new(),
             control: None,
             gpu_devices: Vec::new(),
+            sign_ins: Vec::new(),
         }
     }
 
@@ -5275,10 +5814,11 @@ mod tests {
             &[("api.anthropic.com".into(), 443)],
             false,
         );
-        assert_eq!(credentials(&[], Some(&named)).ok().unwrap(), None);
+        assert_eq!(credentials(&[], Some(&named), false).ok().unwrap(), None);
         let sent = credentials(
             &[grant("anthropic/claude-max", &["api.anthropic.com"])],
             Some(&named),
+            false,
         )
         .ok()
         .unwrap()
@@ -5298,20 +5838,25 @@ mod tests {
         let mut shared = grant("anthropic/console", &["api.anthropic.com"]);
         shared.placeholder = "kiln-placeholder-anthropic-claude-max".into();
         for refused in [
-            credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&named)),
-            credentials(&[grant("anthropic/claude-max", &[])], Some(&named)),
-            credentials(&[grant("anthropic/claude-max", &["api.anthropic.com"])], None),
-            credentials(&[untoken], Some(&named)),
+            credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&named), false),
+            credentials(&[grant("anthropic/claude-max", &[])], Some(&named), false),
+            credentials(
+                &[grant("anthropic/claude-max", &["api.anthropic.com"])],
+                None,
+                false,
+            ),
+            credentials(&[untoken], Some(&named), false),
             credentials(
                 &[grant("anthropic/claude-max", &["api.anthropic.com"]), shared],
                 Some(&named),
+                false,
             ),
         ] {
             assert!(matches!(refused, Err(No(Cause::Request, _))));
         }
         // A TCP port granted reaches every host on it.
         let any443 = shards_net::encode_policy(&shards_net::Ports::parse("443/tcp").unwrap(), &[], false);
-        assert!(credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&any443)).is_ok());
+        assert!(credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&any443), false).is_ok());
     }
 
     /// The run's CA goes to its guest for its members' trust (D242): its certificate in PEM,
@@ -5334,7 +5879,7 @@ mod tests {
             },
         ])
         .unwrap();
-        let entries = trust(&der, &grants).unwrap();
+        let entries = trust(&der, &grants, &[]).unwrap();
         // Each of a key the run protocol registers (D257), as the guest refuses any other.
         assert_eq!(shards_abi::run::setup::check(&entries), Ok(()));
         let got = shards_abi::run::trust::of(&entries).unwrap().unwrap();
@@ -5352,7 +5897,7 @@ mod tests {
         use rustls::pki_types::pem::PemObject as _;
         let back = rustls::pki_types::CertificateDer::from_pem_slice(got.pem).unwrap();
         assert_eq!(back.as_ref(), der.as_slice());
-        assert!(trust(&der, b"\x00").is_err());
+        assert!(trust(&der, b"\x00", &[]).is_err());
     }
 
     /// Each member held to its reach of the names kept (D246). Do: keep a destination that
@@ -5856,7 +6401,7 @@ mod tests {
     /// it, asks refused as the run ended, the answer late.
     #[test]
     fn a_runs_ledger_holds_one_lease_of_a_credential_and_releases_them_all() {
-        let mut ledger = Ledger::new(vec![CLAUDE.into(), CHATGPT.into()]);
+        let mut ledger = Ledger::new(vec![CLAUDE.into(), CHATGPT.into()], Vec::new());
         let now = Instant::now();
         let life = NonZeroU64::new(60_000_000_000).unwrap();
         let told = |asked_as| Answered::Told {
@@ -5917,7 +6462,7 @@ mod tests {
             let (mut orchestrator, out) = std::io::pipe().unwrap();
             let answers = Answers(Mutex::new(Box::new(out)));
             let leasing = Leasing {
-                ledger: Mutex::new(Ledger::new(vec![CLAUDE.into()])),
+                ledger: Mutex::new(Ledger::new(vec![CLAUDE.into()], Vec::new())),
                 net: &run_host,
                 sending: Mutex::new(()),
             };
@@ -6024,7 +6569,7 @@ mod tests {
     fn an_answer_to_no_ask_breaks_the_channel() {
         let (_net, run_host) = std::os::unix::net::UnixStream::pair().unwrap();
         let leasing = Leasing {
-            ledger: Mutex::new(Ledger::new(vec![CLAUDE.into()])),
+            ledger: Mutex::new(Ledger::new(vec![CLAUDE.into()], Vec::new())),
             net: &run_host,
             sending: Mutex::new(()),
         };

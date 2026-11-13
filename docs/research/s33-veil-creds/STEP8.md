@@ -208,10 +208,91 @@ did not compile as written (its `None` arms left the type open, so it was no red
 | a refresh's answer never prints its tokens | `signin::tests::a_sign_ins_words_round_trip_and_print_no_token` (2189) |
 | a sign-in's refresh placeholder one credential's alone | `credential::tests::a_sign_ins_placeholders_are_tokens_and_one_credentials_alone` (credential.rs:442) |
 
+## Slice 2b: the run host's relay (#74 step 8 slice 2b)
+
+Role: implementer, for ROOT (g121). Policy read at origin/main ff08eca25: AGENTS.md sha256 f66d304c…,
+docs/development-rules.md df2acf47…, docs/development-evidence.md 61613a24…. Worktree `s33-signin2b`, branch
+`p/s33-signin2b-v1` from main ff08eca25; it builds on the previous implementer's partial start (the wire messages, the
+`Lessor` defaults and the session's handlers, untested), taken and finished. The design is D242's "Built: step 8's
+second slice, its second part".
+
+### Change
+
+- `crates/api/src/image/wire.rs`: version 24, `Request::sign_ins` appended; `SignInTokens` (with the inert ID token and
+  `scope`), `CaptureAsk`, `RefreshAsk`, `Revoked`, `CaptureAnswer`, `RefreshAnswer`, `SignInRefusal`; kinds
+  `CAPTURED` 34, `REFRESHED` 35 (to the host), `CAPTURE` 36, `REFRESH` 37, `REVOKE` 38 (to the client). The end-relative
+  offsets of older tests moved past the new count, and a version 23 request is refused.
+- `crates/api/src/image.rs`: `ImageSpec::sign_ins`, checked as the request is built (`sign_ins`); `Lessor` grown with
+  `capture`, `refresh` and `revoked`, each defaulted (`Unanswered`).
+- `crates/api/src/image/session.rs`: the three words put to the lessor on threads of their own; the captured access
+  token leasable (`granted`); a refresh releasing the leases of it given before it (`given_of`, `rotated`); a
+  `CAPTURE` frame wiped once taken.
+- `crates/shards/src/api_run.rs`: `sign_ins` (checked against the egress, encoded for `NET_SIGN_INS`); `tell_net`
+  sending it before `NET_CREDENTIALS`, which goes for a run with sign-ins and no grant too; `trust` naming the sign-ins'
+  hosts; the ledger's sign-ins (`Signing`, `Ledger::sign_in`, `signed_in`, `captured`, `refreshed`); the relay of
+  `NET_SIGN_IN` (`sign_in_told`) and of the answers (`captured`, `refreshed`); answers written through the process's own
+  stdout descriptor in one vectored write (`stdout`, `Answers::send`).
+- `crates/net/src/signin.rs`, `inject.rs`, `crates/dns/src/credential.rs` (ROOT's asks): `Captured::refresh_placeholder`
+  and `Placeholders::refresh` optional, a refresh token with no placeholder refused in `write`; `Tokens::scope`;
+  `Taken::id_token` (inert) and `Taken::scope`, carried by `Told::Capture`; `Taken::of` typed (`NoToken`, `NotAJwt`).
+
+### Tests (adas-mac-studio.local, macOS arm64, cargo 1.98.1; carrier `.claude/worktrees/s33-signin2b-carrier`,
+`CARGO_TARGET_DIR=~/g121-tmp/s33-signin2b/target`, `SHARDS_HELPERS=skip`, `CARGO_INCREMENTAL=0`)
+
+- Run r825 (head e33c6aea, the tree landed but for formatting and three test-only lint fixes):
+  - `cargo test -p shards-dns -p shards-net -p shards-api --lib -- credential signin inject:: lease:: image::`: 5, 47
+    and 62 passed.
+  - `cargo test -p shards --bin shards -- api_run::`: 45 passed, among them
+    `a_run_whose_request_grants_a_sign_in_tells_its_network_process_and_one_that_grants_none_tells_none`,
+    `a_sign_in_is_relayed_its_placeholders_kept_through_a_refresh_and_its_lease_released_at_the_runs_end` and
+    `a_runs_ledger_relays_its_own_sign_ins_and_lets_a_refreshed_lease_go`.
+- Run r840 (head a6d11fbb5, the three test-only lint findings of r825 fixed): `cargo clippy -p shards-dns -p shards-net
+  -p shards-api -p shards --all-targets -- -D warnings` clean on aarch64-apple-darwin, on x86_64-unknown-linux-gnu (zig
+  CC, as `scripts/lint` sets it) and on x86_64-pc-windows-msvc (`cargo xwin`); `image::session` 24 passed.
+- Run r858 (head 9539320cc, the relay test given a direct assertion of its lease's drop): `api_run::` 45 passed.
+- The merged tree's rerun before landing: MERGED_RESULT
+
+### R10: each guard's red (`scripts/step8-reds.py 2b`)
+
+Run r847 (head ca5e5cf17, `run.sh p/s33-signin2b-v1 python3 docs/research/s33-veil-creds/scripts/step8-reds.py 2b`):
+9 of 10 red, each its own test failing at its assertion, the file restored after each. The tenth (the relay letting a
+refreshed token's held lease go) was held only by the relay test, which with the guard gone would wait on a lease ask
+that never comes rather than fail: the test now asserts the ledger's drop directly, and run r858 (head 9539320cc) shows
+it red, with the 2a guard of the same name still red. 10 of 10. Slice 1's and 2a's guard texts that this slice moved
+(the optional refresh placeholder) are updated in the script.
+
+| Guard removed | Its test, failing |
+|---|---|
+| a run's sign-ins told its network process | `api_run::tests::a_run_whose_request_grants_a_sign_in_tells_its_network_process_and_one_that_grants_none_tells_none` |
+| a sign-in its egress cannot reach refused | the same |
+| a refreshed token's held lease let go (the run host) | `api_run::tests::a_sign_in_is_relayed_its_placeholders_kept_through_a_refresh_and_its_lease_released_at_the_runs_end` |
+| a capture's access token granted (the run host) | `api_run::tests::a_runs_ledger_relays_its_own_sign_ins_and_lets_a_refreshed_lease_go` |
+| an ask after the run's release declined | the same |
+| a captured access token leasable (the session) | `image::session::tests::a_sign_ins_capture_and_refresh_are_kept_by_the_broker_and_its_lease_released_at_the_runs_end` |
+| a lease given before a refresh released (Q2) | the same |
+| a sign-in's CLI no version has refused | `image::wire::tests::a_runs_sign_ins_and_their_words_cross_the_channel` |
+| a refresh token with no placeholder never reaches the guest | `signin::tests::a_capture_carries_its_inert_id_token_and_scope_and_a_sign_in_may_hold_no_refresh_placeholder` |
+| the capture's ID token inert | the same |
+
+## R01-R16 (slice 2b)
+
+- R01: no unwrap, expect, indexing or unchecked arithmetic in the new production code; `IoSlice::advance_slices` is
+  given at most what `write_vectored` wrote (its precondition). Tests alone assert.
+- R02: the relay rides step 4's path (D242), the words its channel's existing conventions; no new mechanism.
+- R03: no numeric literal of its own: sequence numbers and wire tags; the channel's and `shards_ipc`'s bounds.
+- R04: `Signing`, `SignInRefusal` (to `signin::Declined`, each cause kept), the ledger's states; an answer to no ask, of
+  another kind, or a reused id breaks the contract, typed.
+- R05: no cache; the ledger is bounded by the run's sign-ins, one ask of each kind under way.
+- R06/R07/R13: focused functions; comments say why (Q1, Q2, wiping).
+- R08/R14: no performance claim; one vectored write per frame replaces std's buffered writes (unmeasured: ROOT's).
+- R09: no defect claimed; the gotcha (a refresh's lease refused `Live`) is held by a unit red.
+- R10: the reds above.
+- R11/R12: platform-independent code; the raw stdout is the twin of `stdin()` on Unix and Windows; clippy on three
+  targets.
+- R15: implementer scope only; R16: the target dir on the runner removed after landing.
+
 ## Owed
 
-- Slice 2 (Shards): the NET kinds, the image channel's next version, `Lessor` grown append-only, the injector wired, the
-  light test with a simulated token endpoint.
 - Slice 3 (kiln): `RunLessor` answering capture, refresh and revoke from the broker.
 - ROOT: a real `claude auth login` and `codex login --device-auth` in a microVM through the injector, each surviving a
   refresh answered outside; a real request with the captured token filled in at egress; the `scope` a claude.ai

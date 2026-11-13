@@ -57,8 +57,11 @@ pub use shards_abi::run::nesting::Ready;
 /// stands for its credential in a request, so that the run's injector fills a value in where
 /// its own placeholder stands and nowhere else; 23, the run's microVM saved whole for its
 /// owner ([`to_host::SAVE`], answered [`to_client::SAVED`]; D259), so that a side that saves
-/// none refuses the run as it is asked, before any save is.
-pub const VERSION: u8 = 23;
+/// none refuses the run as it is asked, before any save is; 24, the run's sign-in grants
+/// ([`Request::sign_ins`], D242 step 8) and their words ([`to_client::CAPTURE`],
+/// [`to_client::REFRESH`] and [`to_client::REVOKE`], answered [`to_host::CAPTURED`] and
+/// [`to_host::REFRESHED`]), so that a side that knows no sign-in refuses the run by its version.
+pub const VERSION: u8 = 24;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -98,6 +101,12 @@ pub mod to_host {
     /// A [`SaveAsk`](super::SaveAsk): the run's microVM saved whole into a directory its
     /// owner names (D259).
     pub const SAVE: u8 = 15;
+    /// A [`CaptureAnswer`](super::CaptureAnswer): a sign-in's tokens kept and their
+    /// placeholders given, or why not, by its ask's id (D242, step 8).
+    pub const CAPTURED: u8 = 34;
+    /// A [`RefreshAnswer`](super::RefreshAnswer): the token response a sign-in's CLI is to
+    /// have, refreshed outside, or why not, by its ask's id.
+    pub const REFRESHED: u8 = 35;
 }
 
 /// What the run host sends.
@@ -143,6 +152,14 @@ pub mod to_client {
     pub const WARMED: u8 = 32;
     /// [`SaveAnswer`](super::SaveAnswer): a save's outcome, by its ask's id (D259).
     pub const SAVED: u8 = 33;
+    /// A [`CaptureAsk`](super::CaptureAsk): a sign-in's tokens, as the run's injector took them
+    /// from its CLI's token response, to keep outside (D242, step 8).
+    pub const CAPTURE: u8 = 36;
+    /// A [`RefreshAsk`](super::RefreshAsk): a sign-in's refresh, as its CLI asked it.
+    pub const REFRESH: u8 = 37;
+    /// [`Revoked`](super::Revoked): the run's VM revoked a sign-in, answered in its network
+    /// process; told, unanswered.
+    pub const REVOKE: u8 = 38;
 }
 
 /// Why a payload could not be read or written.
@@ -376,6 +393,80 @@ pub struct LeaseAnswer {
     pub result: Result<Lease, LeaseRefusal>,
 }
 
+/// A run's sign-in grant and what its capture gave (D242, step 8): shards-dns', which the
+/// network process holds too.
+pub use shards_dns::credential::{Captured, Cli, SignInGrant};
+
+/// A sign-in's tokens as its run's injector took them (D242, step 8), each wiped as it drops:
+/// its access token, its refresh token where its response had one, and the access token's
+/// life in seconds where its response said (RFC 6749 §5.1); and, no credential, what its CLI's
+/// own file records beside them, for its orchestrator to stage into a later run's: its ID token
+/// made inert as its CLI was given it (its header and claims, no signature: Codex's `auth.json`
+/// parses it for its account), and the scope its access token was granted (Claude Code's
+/// `scopes`). The real ID token stays nowhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignInTokens {
+    pub access: Secret,
+    pub refresh: Option<Secret>,
+    pub expires_in: Option<u64>,
+    pub id_token: Option<Secret>,
+    pub scope: Option<String>,
+}
+
+/// A sign-in's capture, asked by the run's host (D242, step 8): keep its tokens, and give the
+/// placeholders its CLI is to hold in their places; answered by its id ([`CaptureAnswer`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureAsk {
+    pub id: u32,
+    pub sign_in: String,
+    pub tokens: SignInTokens,
+}
+
+/// A sign-in's refresh, asked by the run's host as its CLI asked it (D242, step 8): refreshed
+/// by its broker once for every run of it at a time, answered by its id ([`RefreshAnswer`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshAsk {
+    pub id: u32,
+    pub sign_in: String,
+}
+
+/// A sign-in the run's VM revoked (its CLI's logout, or a sign-in anew), answered in its
+/// network process and its stored tokens kept (D242, step 8): told, unanswered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revoked {
+    pub sign_in: String,
+}
+
+/// Why a sign-in's ask was not answered (D242, step 8), typed (R04): the run's host relays it
+/// to its network process, whose injector matches it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignInRefusal {
+    /// The orchestrator's broker refused it, in its words: a sign-in its store does not hold, or
+    /// a refresh its provider refused.
+    Denied(String),
+    /// Its broker could not be asked, or failed, in its words: a later ask may be answered.
+    Unavailable(String),
+    /// The run has ended.
+    Ended,
+    /// The run's orchestrator answers no sign-in.
+    Unanswered,
+}
+
+/// A capture's answer, by its ask's id: the placeholders the sign-in's CLI is to hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureAnswer {
+    pub id: u32,
+    pub result: Result<Captured, SignInRefusal>,
+}
+
+/// A refresh's answer, by its ask's id: the token response the sign-in's CLI is to have, its
+/// tokens the placeholders it holds (the run's injector gives them those whatever comes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshAnswer {
+    pub id: u32,
+    pub result: Result<Secret, SignInRefusal>,
+}
+
 /// A host directory the guest sees at a path, as `-v HOST:PATH[:ro]` gives one (D109).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShareAt {
@@ -417,6 +508,10 @@ pub struct Request {
     /// The host GPUs its VM renders on, each by its exact identity (D232), which its command
     /// reads under the nesting grant (D234's `gpus=`); none, no GPU. Appended in version 16.
     pub gpu_devices: Vec<shards_abi::gpu::PhysicalGpu>,
+    /// The run's sign-in grants (D242, step 8): each a sign-in its CLI may sign in as, its
+    /// tokens kept outside and its CLI given placeholders. Empty for a run with none. Appended
+    /// in version 24.
+    pub sign_ins: Vec<SignInGrant>,
 }
 
 /// What a run's agent-control endpoint takes and serves (D252): the one key it takes, its
@@ -1013,6 +1108,20 @@ impl Writer {
     fn text(&mut self, s: &str) -> Result<(), WireError> {
         self.bytes(s.as_bytes())
     }
+    /// A capture's access reference and its placeholder, then 1 and its refresh token's
+    /// placeholder where it has one, else 0 (D242, step 8).
+    fn captured(&mut self, c: &Captured) -> Result<(), WireError> {
+        self.text(&c.access)?;
+        self.text(&c.access_placeholder)?;
+        match &c.refresh_placeholder {
+            None => self.u8(0),
+            Some(refresh) => {
+                self.u8(1);
+                self.text(refresh)?;
+            }
+        }
+        Ok(())
+    }
     fn ip(&mut self, ip: Option<IpAddr>) {
         match ip {
             None => self.u8(0),
@@ -1102,6 +1211,14 @@ impl Writer {
 struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
+    /// What [`Writer::captured`] wrote.
+    fn captured(&mut self) -> Result<Captured, WireError> {
+        Ok(Captured {
+            access: self.text()?,
+            access_placeholder: self.text()?,
+            refresh_placeholder: if self.flag()? { Some(self.text()?) } else { None },
+        })
+    }
     fn take(&mut self, n: usize) -> Result<&'a [u8], WireError> {
         let data: &'a [u8] = self.0;
         let (head, rest) = data.split_at_checked(n).ok_or(WireError::Short)?;
@@ -1450,6 +1567,24 @@ impl Request {
         for grant in &self.credentials {
             w.text(&grant.placeholder)?;
         }
+        // The run's sign-in grants, appended in version 24 (D242, step 8): each its name, its
+        // CLI's code, its hosts, and whether a capture gave it placeholders, which follow.
+        w.count(self.sign_ins.len())?;
+        for s in &self.sign_ins {
+            w.text(&s.sign_in)?;
+            w.u8(s.cli.code());
+            w.count(s.toward.len())?;
+            for host in &s.toward {
+                w.text(host)?;
+            }
+            match &s.captured {
+                None => w.u8(0),
+                Some(c) => {
+                    w.u8(1);
+                    w.captured(c)?;
+                }
+            }
+        }
         w.done()
     }
 
@@ -1631,6 +1766,30 @@ impl Request {
         for grant in &mut credentials {
             grant.placeholder = r.text()?;
         }
+        // The run's sign-in grants, appended in version 24 (D242, step 8): each at least its
+        // name's length (four bytes), its CLI (one), its hosts' count (four) and its flag (one).
+        let n = r.count(4 + 1 + 4 + 1)?;
+        let mut sign_ins = Vec::with_capacity(n);
+        for _ in 0..n {
+            let sign_in = r.text()?;
+            let code = r.u8()?;
+            let cli = Cli::from_code(code).ok_or(WireError::Tag {
+                what: "a sign-in's CLI",
+                tag: code,
+            })?;
+            let k = r.count(4)?;
+            let mut toward = Vec::with_capacity(k);
+            for _ in 0..k {
+                toward.push(r.text()?);
+            }
+            let captured = if r.flag()? { Some(r.captured()?) } else { None };
+            sign_ins.push(SignInGrant {
+                sign_in,
+                cli,
+                toward,
+                captured,
+            });
+        }
         r.end()?;
         Ok(Request {
             image,
@@ -1646,7 +1805,233 @@ impl Request {
             credentials,
             control,
             gpu_devices,
+            sign_ins,
         })
+    }
+}
+
+impl SignInRefusal {
+    fn write(&self, w: &mut Writer) -> Result<(), WireError> {
+        match self {
+            SignInRefusal::Denied(why) => {
+                w.u8(1);
+                w.text(why)
+            }
+            SignInRefusal::Unavailable(why) => {
+                w.u8(2);
+                w.text(why)
+            }
+            SignInRefusal::Ended => {
+                w.u8(3);
+                Ok(())
+            }
+            SignInRefusal::Unanswered => {
+                w.u8(4);
+                Ok(())
+            }
+        }
+    }
+
+    fn read(r: &mut Reader<'_>) -> Result<SignInRefusal, WireError> {
+        Ok(match r.u8()? {
+            1 => SignInRefusal::Denied(r.text()?),
+            2 => SignInRefusal::Unavailable(r.text()?),
+            3 => SignInRefusal::Ended,
+            4 => SignInRefusal::Unanswered,
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a sign-in's refusal",
+                    tag,
+                });
+            }
+        })
+    }
+}
+
+impl CaptureAsk {
+    /// Its id, its sign-in, the life and the scope where it has them (1 and each, else 0), then
+    /// its tokens last, the refresh token's and the ID token's flags before them, in one buffer
+    /// made to its length at once: no buffer let go of as one grows holds a part of a token. The
+    /// caller wipes what it returns.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let t = &self.tokens;
+        let sized = |v: Option<usize>| v.map_or(0, |n| n.saturating_add(4));
+        let mut w = Writer(Vec::with_capacity(
+            self.sign_in
+                .len()
+                .saturating_add(t.access.0.len())
+                .saturating_add(sized(t.refresh.as_ref().map(|r| r.0.len())))
+                .saturating_add(sized(t.id_token.as_ref().map(|i| i.0.len())))
+                .saturating_add(sized(t.scope.as_ref().map(String::len)))
+                .saturating_add(4 + 4 + 9 + 1 + 1 + 1 + 4),
+        ));
+        w.u32(self.id);
+        w.text(&self.sign_in)?;
+        match t.expires_in {
+            None => w.u8(0),
+            Some(s) => {
+                w.u8(1);
+                w.u64(s);
+            }
+        }
+        match &t.scope {
+            None => w.u8(0),
+            Some(scope) => {
+                w.u8(1);
+                w.text(scope)?;
+            }
+        }
+        w.u8(u8::from(t.refresh.is_some()));
+        w.u8(u8::from(t.id_token.is_some()));
+        w.bytes(&t.access.0)?;
+        if let Some(r) = &t.refresh {
+            w.bytes(&r.0)?;
+        }
+        if let Some(i) = &t.id_token {
+            w.bytes(&i.0)?;
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<CaptureAsk, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let sign_in = r.text()?;
+        let expires_in = if r.flag()? { Some(r.u64()?) } else { None };
+        let scope = if r.flag()? { Some(r.text()?) } else { None };
+        let (refreshes, identified) = (r.flag()?, r.flag()?);
+        let access = Secret(r.bytes()?.to_vec());
+        let refresh = if refreshes {
+            Some(Secret(r.bytes()?.to_vec()))
+        } else {
+            None
+        };
+        let id_token = if identified {
+            Some(Secret(r.bytes()?.to_vec()))
+        } else {
+            None
+        };
+        r.end()?;
+        Ok(CaptureAsk {
+            id,
+            sign_in,
+            tokens: SignInTokens {
+                access,
+                refresh,
+                expires_in,
+                id_token,
+                scope,
+            },
+        })
+    }
+}
+
+impl RefreshAsk {
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.text(&self.sign_in)?;
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RefreshAsk, WireError> {
+        let mut r = Reader(payload);
+        let ask = RefreshAsk {
+            id: r.u32()?,
+            sign_in: r.text()?,
+        };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl Revoked {
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.text(&self.sign_in)?;
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<Revoked, WireError> {
+        let mut r = Reader(payload);
+        let told = Revoked { sign_in: r.text()? };
+        r.end()?;
+        Ok(told)
+    }
+}
+
+impl CaptureAnswer {
+    /// Its id, then 0 and the access token's reference and its placeholder, then 1 and the
+    /// refresh token's where it has one, else 0; or 1 and its refusal.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(c) => {
+                w.u8(0);
+                w.captured(c)?;
+            }
+            Err(refusal) => {
+                w.u8(1);
+                refusal.write(&mut w)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<CaptureAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(r.captured()?),
+            1 => Err(SignInRefusal::read(&mut r)?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a capture's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(CaptureAnswer { id, result })
+    }
+}
+
+impl RefreshAnswer {
+    /// Its id, then 0 and the token response, last, in one buffer made to its length at once;
+    /// or 1 and its refusal. The caller wipes what it returns.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let body = self.result.as_ref().map_or(0, |b| b.0.len());
+        let mut w = Writer(Vec::with_capacity(body.saturating_add(4 + 1 + 4)));
+        w.u32(self.id);
+        match &self.result {
+            Ok(body) => {
+                w.u8(0);
+                w.bytes(&body.0)?;
+            }
+            Err(refusal) => {
+                w.u8(1);
+                refusal.write(&mut w)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RefreshAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(Secret(r.bytes()?.to_vec())),
+            1 => Err(SignInRefusal::read(&mut r)?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a refresh's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(RefreshAnswer { id, result })
     }
 }
 
@@ -2822,6 +3207,7 @@ mod tests {
             credentials: Vec::new(),
             control: None,
             gpu_devices: Vec::new(),
+            sign_ins: Vec::new(),
         }
     }
 
@@ -2846,9 +3232,10 @@ mod tests {
             },
         ];
         assert_eq!(Request::decode(&credited.encode().unwrap()).unwrap(), credited);
-        // A placeholder is the grants' last field: a request cut in it is refused.
+        // A placeholder is the grants' last field, before the sign-ins' count (version 24): a
+        // request cut in it is refused.
         let bytes = credited.encode().unwrap();
-        assert!(Request::decode(&bytes[..bytes.len() - 1]).is_err());
+        assert!(Request::decode(&bytes[..bytes.len() - 4 - 1]).is_err());
         // Each member's working directory, or none, in the members' order (version 5),
         // whether its input is the orchestrator's (version 6), and its run-time arguments, none,
         // several, or an empty one among others (version 18).
@@ -2903,18 +3290,20 @@ mod tests {
         }
         .encode()
         .unwrap();
-        // ... the control ask's absence (version 15), the GPUs' count (version 16) and the
-        // member's arguments' count (version 18) last.
+        // ... the control ask's absence (version 15), the GPUs' count (version 16), the
+        // member's arguments' count (version 18) and the sign-ins' count (version 24) last.
         assert_eq!(
-            asked.get(asked.len() - 28..).unwrap(),
+            asked.get(asked.len() - 32..).unwrap(),
             [
-                1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0
             ],
             "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
              member's working directory (none) and its input, the credential grants' count \
              (zero, version 8), the member's terminal (none, version 11), whether the members \
              are held apart (no, version 12), the control ask (none, version 15), the GPUs' \
-             count (zero, version 16), then the member's arguments' count (zero, version 18)"
+             count (zero, version 16), the member's arguments' count (zero, version 18), then \
+             the sign-ins' count (zero, version 24)"
         );
         // Destinations kept by name, the host itself among them (D236), and none.
         for destinations in [
@@ -3083,11 +3472,11 @@ mod tests {
         ));
         // A member's input flag, before the credential grants' count (version 8), its
         // terminal's flag (version 11) and the members' reach (version 12), that is no flag.
-        // One member, so its input is the sixteenth byte from the end (the count's four, its
-        // terminal's one, the reach's flag, the control ask's, the GPUs' count and its
-        // arguments' count follow it).
+        // One member, so its input is the twentieth byte from the end (the count's four, its
+        // terminal's one, the reach's flag, the control ask's, the GPUs' count, its arguments'
+        // count and the sign-ins' count follow it).
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 16;
+        let at = bad.len() - 20;
         assert_eq!(
             bad[at], 1,
             "the member's input flag precedes the credentials' count"
@@ -3166,10 +3555,10 @@ mod tests {
                 );
             }
         }
-        // The reach's flag, before the control ask's, the GPUs' count and the member's
-        // arguments' count where none is held apart.
+        // The reach's flag, before the control ask's, the GPUs' count, the member's arguments'
+        // count and the sign-ins' count where none is held apart.
         let mut flag = held(None).encode().unwrap();
-        let at = flag.len() - 10;
+        let at = flag.len() - 14;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -3182,9 +3571,9 @@ mod tests {
         let mut kindless = held(Some(vec![reach(MemberKind::Agent, "helper", &[])]))
             .encode()
             .unwrap();
-        // ... then the control ask's absence (version 15), the GPUs' count (version 16) and
-        // the one member's arguments' count (version 18).
-        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4);
+        // ... then the control ask's absence (version 15), the GPUs' count (version 16), the
+        // one member's arguments' count (version 18) and the sign-ins' count (version 24).
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4);
         assert_eq!(kindless[at], MemberKind::Agent as u8);
         kindless[at] = 2;
         assert_eq!(
@@ -3197,7 +3586,7 @@ mod tests {
         // Held apart, with four billion members in a few bytes, in place of the reach's flag
         // and what follows it.
         let mut hostile = held(None).encode().unwrap();
-        hostile.truncate(hostile.len() - 10);
+        hostile.truncate(hostile.len() - 14);
         hostile.push(1);
         hostile.extend_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(Request::decode(&hostile), Err(WireError::Short));
@@ -3246,13 +3635,15 @@ mod tests {
                 );
             }
         }
-        // The second member's one argument, "ü", last: its bytes made no UTF-8.
+        // The second member's one argument, "ü", last before the sign-ins' count (version 24):
+        // its bytes made no UTF-8.
         let mut bad = with(&["--resume"], &["ü"]).encode().unwrap();
-        let at = bad.len() - "ü".len();
+        let at = bad.len() - 4 - "ü".len();
         bad[at] = 0xff;
         assert_eq!(Request::decode(&bad), Err(WireError::Text));
-        // The second member's count, last, said as four billion in no bytes.
+        // The second member's count, before the sign-ins', said as four billion in no bytes.
         let mut hostile = with(&[], &[]).encode().unwrap();
+        hostile.truncate(hostile.len() - 4);
         let at = hostile.len() - 4;
         hostile[at..].copy_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(Request::decode(&hostile), Err(WireError::Short));
@@ -3274,74 +3665,81 @@ mod tests {
         // A request of version 1, without the nesting grant's fields and the destinations',
         // of version 4, without its members' working directories, or of version 5, without
         // their inputs, is no request of this one's: refused by its version, never read with
-        // them defaulted. The request's one member makes each of those one byte, and its
-        // arguments' count (version 18) four bytes, which every version before 18 lacks.
+        // them defaulted. The request's one member makes each of those one byte, its
+        // arguments' count (version 18) four bytes, which every version before 18 lacks, and the
+        // sign-ins' count (version 24) four, which every version before 24 lacks.
         let mut v1 = request().encode().unwrap();
-        v1.truncate(v1.len() - 20);
+        v1.truncate(v1.len() - 24);
         v1[0] = 1;
         assert_eq!(Request::decode(&v1), Err(WireError::Version(1)));
         let mut v4 = request().encode().unwrap();
-        v4.truncate(v4.len() - 17);
+        v4.truncate(v4.len() - 21);
         v4[0] = 4;
         assert_eq!(Request::decode(&v4), Err(WireError::Version(4)));
         let mut v5 = request().encode().unwrap();
-        v5.truncate(v5.len() - 16);
+        v5.truncate(v5.len() - 20);
         v5[0] = 5;
         assert_eq!(Request::decode(&v5), Err(WireError::Version(5)));
         // One of version 6 carries every field version 7 does, but its host ends the run at
         // a room: refused by its version, before any room is told (D241).
         let mut v6 = request().encode().unwrap();
-        v6.truncate(v6.len() - 15);
+        v6.truncate(v6.len() - 19);
         v6[0] = 6;
         assert_eq!(Request::decode(&v6), Err(WireError::Version(6)));
         // One of version 7, without the credential grants' count: refused by its version
         // (D242), so an older reader never reads a grant with its field defaulted.
         let mut v7 = request().encode().unwrap();
-        v7.truncate(v7.len() - 15);
+        v7.truncate(v7.len() - 19);
         v7[0] = 7;
         assert_eq!(Request::decode(&v7), Err(WireError::Version(7)));
         // One of version 8, without its members' terminals: refused by its version (D244), so
         // an older reader never starts a member with pipes where its owner asked a terminal.
         let mut v8 = request().encode().unwrap();
-        v8.truncate(v8.len() - 11);
+        v8.truncate(v8.len() - 15);
         v8[0] = 8;
         assert_eq!(Request::decode(&v8), Err(WireError::Version(8)));
         // One of version 11, without the members' reach: refused by its version (D246), so a
         // run host never takes a request that holds its members apart as one that holds none.
         let mut v11 = request().encode().unwrap();
-        v11.truncate(v11.len() - 10);
+        v11.truncate(v11.len() - 14);
         v11[0] = 11;
         assert_eq!(Request::decode(&v11), Err(WireError::Version(11)));
         // One of version 12 carries every field version 13 does, but its host ends the run at
         // a rate: refused by its version, before any rate is told (D247).
         let mut v12 = request().encode().unwrap();
-        v12.truncate(v12.len() - 9);
+        v12.truncate(v12.len() - 13);
         v12[0] = 12;
         assert_eq!(Request::decode(&v12), Err(WireError::Version(12)));
         // One of version 14, without the control ask: refused by its version (D252), so a run
         // host never takes a run that asked an endpoint as one that asked none.
         let mut v14 = request().encode().unwrap();
-        v14.truncate(v14.len() - 9);
+        v14.truncate(v14.len() - 13);
         v14[0] = 14;
         assert_eq!(Request::decode(&v14), Err(WireError::Version(14)));
         // One of version 15, without the GPUs it names: refused by its version (D232), so a run
         // host never starts a run without the GPUs its orchestrator asked.
         let mut v15 = request().encode().unwrap();
-        v15.truncate(v15.len() - 8);
+        v15.truncate(v15.len() - 12);
         v15[0] = 15;
         assert_eq!(Request::decode(&v15), Err(WireError::Version(15)));
         // One of version 16 asks what version 17 does, but its host tells no rate's period as
         // the run starts: refused by its version, so no orchestrator waits on one (D247).
         let mut v16 = request().encode().unwrap();
-        v16.truncate(v16.len() - 4);
+        v16.truncate(v16.len() - 8);
         v16[0] = 16;
         assert_eq!(Request::decode(&v16), Err(WireError::Version(16)));
         // One of version 17, without its members' arguments: refused by its version (D256), so
         // a run host never starts a member without the flags its orchestrator asked.
         let mut v17 = request().encode().unwrap();
-        v17.truncate(v17.len() - 4);
+        v17.truncate(v17.len() - 8);
         v17[0] = 17;
         assert_eq!(Request::decode(&v17), Err(WireError::Version(17)));
+        // One of version 23, without the sign-ins' count: refused by its version (D242 step 8),
+        // so a run host never takes a run that signs in as one that signs nothing in.
+        let mut v23 = request().encode().unwrap();
+        v23.truncate(v23.len() - 4);
+        v23[0] = 23;
+        assert_eq!(Request::decode(&v23), Err(WireError::Version(23)));
         // One of version 13 reads a vCPU's unread guest time as free words
         // (guest-cpu-time-v1), and one of 19 carries every field version 20 does, but its
         // client ends the run at a lease its host asks: each refused by its version, before
@@ -3354,10 +3752,10 @@ mod tests {
         // The nesting flag, before the deadline's tag, the destinations', the one member's
         // working directory's and input's, the credential grants' count (version 8), the
         // member's terminal's (version 11), the members' reach (version 12), the control ask
-        // (version 15), the GPUs' count (version 16) and its arguments' count (version 18): no
-        // flag.
+        // (version 15), the GPUs' count (version 16), its arguments' count (version 18) and the
+        // sign-ins' count (version 24): no flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 20;
+        let at = flag.len() - 24;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -3368,9 +3766,10 @@ mod tests {
         );
         // The destinations' list, before the member's working directory and input, the
         // credential grants' count, the member's terminal, the members' reach, the control ask,
-        // the GPUs' count and the member's arguments' count: no list of version 3's and on.
+        // the GPUs' count, the member's arguments' count and the sign-ins' count: no list of
+        // version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 18;
+        let at = list.len() - 22;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -3582,11 +3981,11 @@ mod tests {
         };
         assert_eq!(long.encode(), Err(WireError::TooLong));
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 11;
+        let at = bad.len() - 15;
         assert_eq!(
             bad[at], 0,
-            "the member's terminal flag precedes the members' reach, the control ask, the GPUs \
-             and its arguments"
+            "the member's terminal flag precedes the members' reach, the control ask, the GPUs, \
+             its arguments and the sign-ins"
         );
         bad[at] = 2;
         assert_eq!(
@@ -3785,6 +4184,7 @@ mod tests {
                 sockets: None,
             }),
             gpu_devices: Vec::new(),
+            sign_ins: Vec::new(),
         };
         let exemplar = full.exemplar();
         assert!(exemplar.members.is_empty() && exemplar.ready_by.is_none() && exemplar.control.is_none());
@@ -3960,6 +4360,7 @@ mod tests {
             credentials: Vec::new(),
             control,
             gpu_devices: Vec::new(),
+            sign_ins: Vec::new(),
         }
     }
 
@@ -4041,9 +4442,9 @@ mod tests {
         let bytes = named.encode().unwrap();
         assert_eq!(Request::decode(&bytes).unwrap().gpu_devices, gpus);
         // The last identity's text, "metal:00000001000002a1", before the one member's arguments'
-        // count (version 18), made one D232's grammar refuses.
+        // count (version 18) and the sign-ins' (version 24), made one D232's grammar refuses.
         let mut unnamed = bytes.clone();
-        let at = unnamed.len() - 4 - "metal:00000001000002a1".len();
+        let at = unnamed.len() - 4 - 4 - "metal:00000001000002a1".len();
         unnamed[at] = b'x';
         assert_eq!(Request::decode(&unnamed), Err(WireError::Gpu));
         let twice = Request {

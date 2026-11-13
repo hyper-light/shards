@@ -114,6 +114,7 @@ fn boot_member(home: &TempDir, image: &str, terminal: bool, stdin: bool) -> Box<
         env: host_env(home),
         control: None,
         gpu_devices: Vec::new(),
+        sign_ins: Vec::new(),
     };
     ImageShards::new().boot(&spec, TIMEOUT).unwrap()
 }

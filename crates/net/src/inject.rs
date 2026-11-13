@@ -1917,9 +1917,8 @@ impl Ended {
             Some(tokens) => {
                 let sign_ins = &mut run.credentials.sign_ins;
                 let index = self.sign_in.and_then(|cli| sign_ins.of(cli));
-                let (Some(index), Some(taken)) = (index, signin::Taken::of(&tokens)) else {
-                    return Err(Refusal::SignIn(signin::Refusal::NoToken));
-                };
+                let index = index.ok_or(Refusal::SignIn(signin::Refusal::NoToken))?;
+                let taken = signin::Taken::of(&tokens).map_err(Refusal::SignIn)?;
                 sign_ins
                     .capture(index, taken, run.waiter)
                     .map_err(|why| Refusal::Declined { refresh: false, why })?;
@@ -3018,7 +3017,7 @@ mod tests {
         let captured = captured.then(|| signin::Captured {
             access: access_reference(),
             access_placeholder: SIGNED_ACCESS.into(),
-            refresh_placeholder: SIGNED_REFRESH.into(),
+            refresh_placeholder: Some(SIGNED_REFRESH.into()),
         });
         let grants: Vec<Grant> = captured.iter().map(|c| c.grant(&[API_HOST.into()])).collect();
         Credentials {
@@ -3085,7 +3084,7 @@ mod tests {
                             result: Ok(signin::Captured {
                                 access: access_reference(),
                                 access_placeholder: SIGNED_ACCESS.into(),
-                                refresh_placeholder: SIGNED_REFRESH.into(),
+                                refresh_placeholder: Some(SIGNED_REFRESH.into()),
                             }),
                         }
                     }
