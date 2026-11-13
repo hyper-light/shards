@@ -23255,7 +23255,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run and exec lanes' endpoint side built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, and exec lanes at the endpoint and the controller built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -23635,8 +23635,18 @@ member's are, so one stdio protocol carries both. The pieces:
 - *Its connection*: an exec belongs to the connection that asked for it. That connection gone,
   or the lane stopped, hangs the exec up: its steering is dropped, its streams are let go.
 
-Its host in the daemon (charging and pumping a member exec through the VM process) and the
-controller's exec handle are the next slices.
+*The controller's execs* (`control::Execs`, `Exec`, `ExecControl`). A controller dialed with
+`Subscriptions::execs` asks for one with `Execs::exec(member, spec)`, and its lane opens with the
+ask. Once the endpoint says `Started`, the controller opens the exec's stdio lanes, from their
+first bytes, at the exec's streams. It hands back step 2's `Output` and `Input` handles for them,
+and an `ExecControl` that resizes, signals (a signal outside `1..=NSIG` is refused before it is
+sent) and waits for the exit. An exec that did not start says why (`Fault::Unstarted`). The
+controller's handles now ask its driver through one channel and a unit wake, not a command slot
+per lane, so lanes open as execs come. A lane over is let go, its handle's later asks answered by
+none. The connection's windows rise by an exec's lanes while it runs, from the same admissions.
+
+The exec host in the daemon, which charges and pumps a member exec through the VM process, is the
+next slice.
 
 Tested in `crates/remote` (`control::tests`, over the in-process exchange of `lib.rs`'s
 handshake tests): the enrolled controller and its pinned microVM connect,

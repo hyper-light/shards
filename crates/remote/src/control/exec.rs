@@ -301,7 +301,7 @@ pub(super) struct Limits {
 }
 
 impl Limits {
-    fn plus(self, other: Limits) -> Option<Limits> {
+    pub(super) fn plus(self, other: Limits) -> Option<Limits> {
         Some(Limits {
             streams: self.streams.checked_add(other.streams)?,
             receive: self.receive.checked_add(other.receive)?,
