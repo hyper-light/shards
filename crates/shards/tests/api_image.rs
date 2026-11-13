@@ -747,9 +747,11 @@ fn an_images_next_run_restores_the_template_its_first_saved() {
         .filter(|p| p.is_dir())
         .collect();
     assert_eq!(templates.len(), 1, "{templates:?}");
-    // Its snapshot's state emptied: a template that is there and no longer restores.
-    let current = std::fs::read_to_string(templates[0].join("current")).unwrap();
-    std::fs::write(templates[0].join(current.trim_end()).join("state"), b"").unwrap();
+    // Its snapshot's state emptied: a template that is there and no longer restores. Its
+    // generation found as the store finds it (`common::snapshot_file`): on Windows its pointer
+    // is the newest `current.~N`, never `current` itself (platform `write_in`, PM M345), and
+    // reading that name failed NotFound on WHP at 6c3cb7137.
+    std::fs::write(common::snapshot_file(&templates[0], "state"), b"").unwrap();
     assert_eq!(run(&stored), StartedFrom::Replaced);
     assert_eq!(run(&stored), StartedFrom::Restored);
     assert_eq!(run(&given), StartedFrom::Booted);
