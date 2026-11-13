@@ -23013,3 +23013,73 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09 | The orphan: M528's reproduction and 6ff69befe's ancestry. The other four: not reproduced, no fix made. |
   | R11 | windows-2022 and windows-2025 logs read; no Windows run here. |
   | R15, R16 | Implementer; logs read on this Mac, no run. |
+
+### M549. A closed daemon follows a client taking its answer by the room it makes, the slowest take bounding a stall (D185)
+
+- **Question.** A closed daemon let go of a client that took nothing of its answer after
+  twice the longest a 64 KiB piece had taken, at least TCP's R2 (100 s, RFC 1122
+  §4.2.3.5). The person ruled on 2026-11-13: the slowest answer seen bounds a stall, a gap
+  with no progress, never an answer's whole length; progress is what the client takes; before
+  any take, its liveness alone. What does the daemon see of a client's progress?
+- **Found** (adalundhe-macbook-pro, macOS 26.5.2, a FIFO made and held by a Python script;
+  Linux from its source).
+  - A slot's FIFO holds 8,192 bytes on macOS. poll(2) and select(2) both say a full one's
+    write end has no room.
+  - With 504 bytes free, poll(2) says POLLOUT, and a write of 512 then waits: a write of no
+    more than PIPE_BUF (512 there) goes whole or not at all (POSIX write(2)), and macOS's
+    FIFOs, local stream sockets (bsd/miscfs/fifofs), are writable at their low-water mark.
+    So "room" is not knowable before a write; a write that does not wait says it, taking
+    what fits, or nothing (`EAGAIN`).
+  - With its reader closed, a full FIFO's writer in poll(2) for POLLOUT slept 3 s of 3;
+    select(2) woke within 0.13 s, as a reader can sleep through its writer's end there (PM
+    M253). Linux's pipe_poll says POLLERR as the last reader goes (fs/pipe.c).
+  - A Windows named pipe says nothing of its outbound room before a write.
+- **Decision** (`slots::Seen::answer_wait`; `shards_ipc::slots::write_all_waiting`,
+  `await_fifo_room`).
+  - An answer is written as its FIFO takes it, a write that does not wait. Only where the FIFO
+    takes none of what is left is its client waited on, until it makes room: in select(2) on
+    macOS, poll(2) elsewhere (`await_fifo_room`), or, where no more than PIPE_BUF is left, in
+    the write itself, which goes whole.
+  - Each such wait that ends is a take. A closed daemon lets go of a client whose writer has
+    waited on it longer than the slowest take seen, and holds one that takes, however slowly
+    its answer goes as a whole. What the FIFO takes at once waits on no client and teaches
+    nothing. Before any take, a client holds a closed daemon until it ends (its FIFO's end).
+  - This is shards-api's judge's rule (D215; `judge.rs`, 6fc62c231): its W* the slowest take,
+    cold its liveness alone, a stall a gap past W*. Its record is the slowest alone: a take's
+    progress is bytes, so its CPU rate R* would say nothing.
+  - On Windows no take is seen, and a closed daemon follows its clients' ends alone (owed: a
+    signal of a named pipe's outbound room). The let-go tests are Unix's.
+- **Tests.**
+  - New: `daemon::tests::a_closed_daemon_with_no_take_seen_holds_a_client_until_it_ends`.
+  - The closed-daemon tests teach their slowest take (`Seen::taken`) instead of lowering
+    R2. `a_closed_daemon_waits_for_its_clients_to_take_their_answers` keeps its 300 KiB
+    answers, one taken late and one never.
+  - `a_requests_wait_is_learned_from_its_clients` asserts none before any take, then the
+    slowest.
+- **Checked** (one host, adalundhe-macbook-pro, macOS arm64, `CARGO_INCREMENTAL=0`, at
+  9abbe4a03 over main 29dde4f4c):
+  - `cargo test -p shards-ipc --lib -- slots`: 15 passed.
+  - `cargo test -p shards --bin shards --` the daemon's slot tests: 10 passed in 11.6 s.
+  - tests/daemon.rs's `a_daemon_out_of_descriptors_waits_for_room`: passed.
+  - Red with the old rule (2 × the slowest take, at least R2; `/tmp/g51/carrier/red-answer.sh`):
+    `a_closed_daemon_waits_for_its_clients_to_take_their_answers` failed, "a client that takes
+    nothing held its closed daemon".
+  - On the way, two reds of the first draft, each shown above: poll(2)'s POLLOUT taken for
+    room on macOS (its writer waited uncounted), and poll(2) for the reader's end (its slot
+    never ended).
+  - `cargo clippy -p shards-ipc -p shards --all-targets -- -D warnings`: clean for
+    aarch64-apple-darwin; x86_64-pc-windows-msvc (cargo-xwin, adas-mac-studio.local) clean at
+    84dc8d33a before the two fixes.
+- **Owed.** CI's: Linux's poll(2) path, and Windows'. ROOT's: the daemon and CLI suites on
+  every backend.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap or panic added to production code. |
+  | R02, R03 | POSIX and the kernels' own behaviour, measured here; the one learned value is the slowest take, none before any. The ×2 and R2 go. |
+  | R04 | `slots::Wait` says a wait's start and end; a wait that fails tells no end. |
+  | R05 | The writer waits on its FIFO's readiness and its reader's end, never a clock. |
+  | R09, R10 | Red with the old rule, green after; the draft's two reds named. |
+  | R11 | Unix's poll and macOS's select; Windows follows its clients' ends, owed. |
+  | R15, R16 | Implementer; targets removed after landing. |
