@@ -32,12 +32,6 @@ use shards_cmdline::buildflags::Agent;
 use shards_image::erofs::Source;
 use shards_vmm::platform::{AsRawSocket as _, UnixListener, UnixStream};
 
-/// How long a builder may run nothing of its boot before it is given up: one that runs it
-/// is waited for as long as its host takes to boot it, judged as the daemon judges a
-/// starting microVM (`shards_vmm::platform::progressed`, PM M357), a slice of `daemon::READY_STALL` at a
-/// time.
-const BOOT_PATIENCE: Duration = Duration::from_secs(30);
-
 /// What this process has learned of its builders (D215's judge, shared, R12): the slowest
 /// answer of a guest's to `NEEDS`, from its asking, and the slowest end of a builder's VM,
 /// from its connection's end, which powers its guest off, to its process's exit; each with
@@ -46,6 +40,10 @@ const BOOT_PATIENCE: Duration = Duration::from_secs(30);
 /// daemon that serves builds (the Engine API) learns from its first.
 static NEEDED: Record = Record::new();
 static ENDED: Record = Record::new();
+/// And the slowest boot of a builder's, from its VM's launch to its init's dial ([`dialed`]):
+/// before its first, a builder's boot is waited for while its VM lives. It was
+/// `BOOT_PATIENCE`'s 30 s, judged each `daemon::READY_STALL`'s 10 s, picked (ROOT's (3)).
+static BOOTED: Record = Record::new();
 
 /// The memory a builder boots with, in MiB, where it may have more: what its page
 /// structures cost it at boot grows with it (PM M82), and the rest is plugged as the build
@@ -563,46 +561,47 @@ fn record_said(home: &Path, said: crate::said::Learned, from_vm: io::PipeReader)
 }
 
 /// The connection a builder's init dials on `listener` (non-blocking), its VM process `vm`
-/// waited for while it runs its boot: one that runs nothing of it for [`BOOT_PATIENCE`] is
-/// given up on, and said apart where the host never let it run (PM M166), as is one that
-/// ends.
+/// waited for while it runs its boot, judged by [`BOOTED`] (D215's judge): before a builder's
+/// first boot, as long as its VM lives; after, given up on at a look, each the slowest boot
+/// seen past the look before, that finds its VM ran nothing at all over a whole such window,
+/// and said apart where the host never let it run (PM M166), as is one that ends.
 fn dialed(vm: &shards_ipc::Child, listener: &UnixListener) -> Result<UnixStream, String> {
     let began = Instant::now();
-    // Its process's CPU time when last judged, and when it last ran its boot.
-    let cpu = || {
-        shards_vmm::platform::process_usage(vm.id())
-            .ok()
-            .map(|u| u.cpu_ns)
-    };
-    let (mut seen, mut judged, mut ran) = (cpu(), began, began);
+    let mut follow = following(vm, &BOOTED);
     let conn = loop {
         match listener.accept() {
             Ok((conn, _)) => break conn,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                let now = Instant::now();
-                let slice = now.saturating_duration_since(judged);
-                if slice >= crate::daemon::READY_STALL {
-                    let cpu_now = cpu();
-                    if shards_vmm::platform::progressed(seen, cpu_now, slice) {
-                        ran = now;
+                let due = follow.as_ref().and_then(Follow::due);
+                if due.is_some_and(|due| Instant::now() >= due) {
+                    match follow.as_mut().map(Follow::look) {
+                        Some(Err(Unfollowed::Stalled(stall))) => {
+                            // One the host has not let run yet is not the builder's failure
+                            // to boot, and says so (PM M166).
+                            #[cfg(unix)]
+                            let unstarted = shards_vmm::platform::launched(vm.id()) == Some(false);
+                            #[cfg(windows)]
+                            let unstarted = false;
+                            if unstarted {
+                                return Err(format!(
+                                    "the builder was not started by the host in {:?}: its \
+                                     process ran nothing, as macOS admits each launch after it \
+                                     has assessed the executables launched before it",
+                                    began.elapsed()
+                                ));
+                            }
+                            return Err(format!(
+                                "the builder did not start: it ran nothing for {:?}, past the \
+                                 slowest boot seen ({:?}), {:?} after it began",
+                                stall.over(),
+                                stall.slowest(),
+                                began.elapsed()
+                            ));
+                        }
+                        // Unreadable while it lives: never taken for no progress.
+                        Some(Err(Unfollowed::Process { .. })) => follow = None,
+                        Some(Ok(())) | None => {}
                     }
-                    (seen, judged) = (cpu_now, now);
-                }
-                if now.saturating_duration_since(ran) > BOOT_PATIENCE {
-                    // One the host has not let run yet is not the builder's failure to boot,
-                    // and says so (PM M166).
-                    #[cfg(unix)]
-                    let unstarted = shards_vmm::platform::launched(vm.id()) == Some(false);
-                    #[cfg(windows)]
-                    let unstarted = false;
-                    if unstarted {
-                        return Err(format!(
-                            "the builder was not started by the host in {BOOT_PATIENCE:?}: its \
-                             process ran nothing, as macOS admits each launch after it has \
-                             assessed the executables launched before it"
-                        ));
-                    }
-                    return Err("the builder did not start".into());
                 }
                 if vm.try_wait().is_some() {
                     return Err("the builder ended as it started".into());
@@ -612,6 +611,9 @@ fn dialed(vm: &shards_ipc::Child, listener: &UnixListener) -> Result<UnixStream,
             Err(e) => return Err(format!("the builder's port: {e}")),
         }
     };
+    if let Some(follow) = follow.as_mut() {
+        follow.answered();
+    }
     conn.set_nonblocking(false)
         .map_err(|e| format!("the builder's connection: {e}"))?;
     Ok(conn)
