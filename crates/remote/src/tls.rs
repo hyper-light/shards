@@ -233,6 +233,25 @@ fn server_under(
     transport: TransportConfig,
     alpn: &[u8],
 ) -> Result<ServerConfig, Error> {
+    let tls = tls_server(provider, identity, owner, alpn)?;
+    let crypto = QuicServerConfig::try_from(tls).map_err(|e| Error::new(format!("QUIC's TLS: {e}")))?;
+    let mut config = ServerConfig::with_crypto(Box::new(crypto));
+    config.transport_config(transport);
+    Ok(config)
+}
+
+/// The TLS of a server side: TLS 1.3 alone under `provider`, this home's raw public key, the
+/// client's checked by [`AnyClient`], `alpn`, no early data, and no certificate compression.
+/// RFC 8879 compression is optional either way (§4: a Certificate answers an offer of it), and a
+/// raw public key's body is 53 bytes (Ed25519's SubjectPublicKeyInfo), which hyper-tls's Brotli
+/// compresses to 65 after a 32 MiB forest's allocation (hyper-tls VENDORED.md, the RPK
+/// compression experiment shards' pin once carried): neither side offers it, so neither pays it.
+fn tls_server(
+    provider: &'static rustls::crypto::CryptoProvider,
+    identity: &Identity,
+    owner: Option<Fingerprint>,
+    alpn: &[u8],
+) -> Result<rustls::ServerConfig, Error> {
     let resolver = AlwaysResolvesServerRawPublicKeys::new(certified(identity)?);
     let mut tls = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
@@ -241,10 +260,9 @@ fn server_under(
         .with_cert_resolver(Box::new(resolver));
     tls.alpn_protocols = vec![alpn.to_vec()];
     tls.max_early_data_size = 0;
-    let crypto = QuicServerConfig::try_from(tls).map_err(|e| Error::new(format!("QUIC's TLS: {e}")))?;
-    let mut config = ServerConfig::with_crypto(Box::new(crypto));
-    config.transport_config(transport);
-    Ok(config)
+    tls.cert_compressors = Vec::new();
+    tls.cert_decompressors = Vec::new();
+    Ok(tls)
 }
 
 /// The client side, which connects to the daemon whose key's SHA-256 is `daemon`, its
@@ -269,6 +287,22 @@ fn client_under(
     transport: TransportConfig,
     alpn: &[u8],
 ) -> Result<ClientConfig, Error> {
+    let tls = tls_client(provider, identity, daemon, alpn)?;
+    let crypto = QuicClientConfig::try_from(tls).map_err(|e| Error::new(format!("QUIC's TLS: {e}")))?;
+    let mut config = ClientConfig::new(Box::new(crypto));
+    config.transport_config(transport);
+    Ok(config)
+}
+
+/// The TLS of a client side: TLS 1.3 alone under `provider`, this home's raw public key, the
+/// daemon's pinned ([`Pinned`]), `alpn`, no early data, and no certificate compression, as
+/// [`tls_server`]'s.
+fn tls_client(
+    provider: &'static rustls::crypto::CryptoProvider,
+    identity: &Identity,
+    daemon: Fingerprint,
+    alpn: &[u8],
+) -> Result<rustls::ClientConfig, Error> {
     let resolver = AlwaysResolvesClientRawPublicKeys::new(certified(identity)?);
     let mut tls = rustls::ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
@@ -278,10 +312,9 @@ fn client_under(
         .with_client_cert_resolver(Box::new(resolver));
     tls.alpn_protocols = vec![alpn.to_vec()];
     tls.enable_early_data = false;
-    let crypto = QuicClientConfig::try_from(tls).map_err(|e| Error::new(format!("QUIC's TLS: {e}")))?;
-    let mut config = ClientConfig::new(Box::new(crypto));
-    config.transport_config(transport);
-    Ok(config)
+    tls.cert_compressors = Vec::new();
+    tls.cert_decompressors = Vec::new();
+    Ok(tls)
 }
 
 /// The name a client gives the daemon it connects to: none, as a pinned key names it.
@@ -510,6 +543,18 @@ mod tests {
         let managed = connect(owner.unwrap(), subscriber.unwrap());
         assert_aes_256_gcm(&context);
         assert_aes_256_gcm(&managed);
+    }
+
+    /// Neither side offers or uses certificate compression (RFC 8879): a raw public key's body is
+    /// 53 bytes, and compressing it costs the compressor's whole allocation for nothing. Red with
+    /// hyper-tls's defaults, which offer Brotli and zlib where their features are built.
+    #[test]
+    fn neither_side_offers_or_uses_certificate_compression() {
+        let (home, daemon) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let client = tls_client(provider(), &home, daemon.fingerprint(), ALPN).unwrap();
+        assert!(client.cert_compressors.is_empty() && client.cert_decompressors.is_empty());
+        let server = tls_server(provider(), &daemon, None, ALPN).unwrap();
+        assert!(server.cert_compressors.is_empty() && server.cert_decompressors.is_empty());
     }
 
     /// What a home knows of a peer (the person's ruling, 2026-11-13): a peer never reached
