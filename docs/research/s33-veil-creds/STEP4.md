@@ -19,8 +19,8 @@ from origin/main 8479be870, fast-forwarded to 72cdfbf06 before any edit. The des
 - `crates/net/src/lib.rs`: `Credentials.leases`, made as the grants come; `NET_LEASE` answers taken from the run host's
   control alone (`Control::Daemon`), the message's payload wiped once taken; asks sent each pass (`ask_run_host`);
   leases ended as the run host's control hangs up; values released on the loop's timers.
-- `crates/ipc/src/lib.rs`: `kind::NET_LEASE = 98`.
-- `crates/api/src/image/wire.rs`: run channel version 15 (14 went first to guest-cpu-time-v1's typed unread time);
+- `crates/ipc/src/lib.rs`: `kind::NET_LEASE = 100` (98 and 99 went first to D251's `LANE_OPEN` and `LANE_HELD`).
+- `crates/api/src/image/wire.rs`: run channel version 16 (14 and 15 went first, to guest-cpu-time-v1 and D252);
   `to_client::LEASE` (30), `to_client::RELEASED` (31), `to_host::LEASED` (13); `LeaseAsk`, `Lease`, `LeaseRefusal`,
   `LeaseAnswer`, `released`; `Secret` wiped as it drops.
 - `crates/api/src/image.rs`: `Lessor` (the orchestrator-side interface: `lease(reference)`, `release(lease)`),
@@ -36,12 +36,14 @@ from origin/main 8479be870, fast-forwarded to 72cdfbf06 before any edit. The des
 
 ## The identity decision (for ROOT to confirm)
 
-On `shards api-run` the run's identity is its channel, and no key is made. Evidence: D238's key is made by the daemon as
-a run's managed scope begins (`daemon/managed.rs` `bind_agent`, `vm_key`); nothing in crates/api or api_run.rs makes or
-names one; the run host's stdio is its orchestrator's alone (D231, D248, f7). The `Lessor` is given per run, so it binds
-the run's leases toward its broker. Moves are the daemon's runs'; the daemon gives no network process grants yet. D242
-records the reasoning and what a key-bearing run host owes (an ask naming its key's SHA-256, the broker refusing a
-replaced one as `KeyReplaced { asked, current }`, which this step carries end to end).
+A lease is asked under the run's own key where it has one, and by its channel where it has none; no key is made for
+leases alone. Evidence: D238's key is made where an agent-control endpoint binds, by the daemon (`daemon/managed.rs`
+`bind_agent`, `vm_key`) and, since D252 (merged here from main), by `shards api-run` where its orchestrator asks for an
+endpoint (`ImageSpec::control`; the key's SHA-256 told in `Started::control`, before the relay starts). The session
+takes it as it takes `STARTED` and gives it to the run's `Lessor` with each ask (`Lessor::lease(reference, key)`), so
+the broker issues the leases to it and refuses a replaced one as `KeyReplaced { asked, current }`, carried end to end.
+A run with no endpoint has no key; its host's stdio is its orchestrator's alone (D231, D248, f7), and its `Lessor` is
+given for that run alone. Moves are the daemon's runs'; the daemon gives no network process grants yet. D242 records it.
 
 ## Tests (one host: adas-mac-studio.local, macOS arm64, Darwin; kiln runs through the carrier
 `.claude/worktrees/s33-lease-carrier`, cold `CARGO_TARGET_DIR=~/g121-tmp/s33-lease/target`, `SHARDS_HELPERS=skip`)

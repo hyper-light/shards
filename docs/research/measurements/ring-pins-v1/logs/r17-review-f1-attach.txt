@@ -1,0 +1,62 @@
+# Review of ring-pins-v1 (goal 52, plan step 5), F1: Ring::attach never ended on an offer longer
+# than its slot. Red, guard-removal mutation, green, and the lane's light gates on the fix.
+#
+# Runner: adas-mac-studio-3.local (kiln runner 2768d0d5d2974f1e21d348edadff9d1b, macOS arm64, 14 CPUs),
+# through the step's carrier: a blobless clone of hyper-light/shards at origin/main
+# 672b6fb47b2194f3ac27a3a40a90896587f640d1, a patch applied, CARGO_TARGET_DIR its own, SHARDS_HELPERS=skip,
+# SHARDS_INIT_BINARY and SHARDS_SERVER_BINARY empty placeholder files; rustc 1.98.1 (48a229cea 2026-09-01).
+# Patches: red = the new test alone, on main's attach; mutation = the fix with its guard
+# (`.filter(|&end| end <= slot)`) removed; green = the fix. Each built with
+#   cargo test -p shards-vmm --lib --no-run
+# and its one test run under review-watchdog.sh (this directory), which kills a test still running once
+# its resident memory passes 256 MiB, or after 5 s:
+#   review-watchdog.sh <shards_vmm test binary> devices::virtio::vsock::ring::tests::an_offer_longer_than_its_slot_is_refused
+# 2026-11-12, kiln run r328.
+######## RED
+== at 672b6fb4 + s5-red.patch:  M crates/vmm/src/devices/virtio/vsock/ring.rs
+build exit 0:   Executable unittests src/lib.rs (/Users/adalundhe/g121-tmp/s2-5-target/debug/deps/shards_vmm-d65d8cca3948a247)
+binary: shards_vmm-d65d8cca3948a247
+
+running 1 test
+test devices::virtio::vsock::ring::tests::an_offer_longer_than_its_slot_is_refused ... WATCHDOG: devices::virtio::vsock::ring::tests::an_offer_longer_than_its_slot_is_refused still running after 0 s, 284608 kB resident: killed
+watchdog exit 2
+######## MUTATION
+== at 672b6fb4 + s5-mut.patch:  M crates/vmm/src/devices/virtio/vsock/ring.rs
+build exit 0:   Executable unittests src/lib.rs (/Users/adalundhe/g121-tmp/s2-5-target/debug/deps/shards_vmm-d65d8cca3948a247)
+binary: shards_vmm-d65d8cca3948a247
+
+running 1 test
+test devices::virtio::vsock::ring::tests::an_offer_longer_than_its_slot_is_refused ... WATCHDOG: devices::virtio::vsock::ring::tests::an_offer_longer_than_its_slot_is_refused still running after 1 s, 269024 kB resident: killed
+watchdog exit 2
+######## GREEN
+== at 672b6fb4 + s5-green.patch:  M crates/vmm/src/devices/virtio/vsock/ring.rs
+build exit 0:   Executable unittests src/lib.rs (/Users/adalundhe/g121-tmp/s2-5-target/debug/deps/shards_vmm-d65d8cca3948a247)
+binary: shards_vmm-d65d8cca3948a247
+
+running 1 test
+test devices::virtio::vsock::ring::tests::an_offer_longer_than_its_slot_is_refused ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 482 filtered out; finished in 0.00s
+
+WATCHDOG: devices::virtio::vsock::ring::tests::an_offer_longer_than_its_slot_is_refused ended, exit 0
+watchdog exit 0
+######## GATES (green)
+# cargo fmt -p shards-abi -p shards-vmm -- --check
+# cargo test -p shards-abi --lib ring::
+# cargo test -p shards-vmm --lib devices::virtio::vsock::
+# cargo clippy -p shards-abi -p shards-vmm --all-targets -- -D warnings
+# cargo clippy -p shards-init -p shards-abi --target {aarch64,x86_64}-unknown-linux-musl --all-targets -- -D warnings
+== at 672b6fb4 + s5-green.patch:  M crates/vmm/src/devices/virtio/vsock/ring.rs
+rustc 1.98.1 (48a229cea 2026-09-01)
+fmt exit 0        0 lines
+running 9 tests
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 52 filtered out; finished in 0.00s
+abi ring tests exit 0
+running 67 tests
+test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 416 filtered out; finished in 0.91s
+vmm vsock tests exit 0
+test devices::virtio::vsock::ring::tests::an_offer_longer_than_its_slot_is_refused ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 482 filtered out; finished in 0.00s
+clippy abi+vmm (aarch64-apple-darwin) exit 0 0 diagnostics
+clippy init+abi (aarch64-unknown-linux-musl) exit 0 0 diagnostics
+clippy init+abi (x86_64-unknown-linux-musl) exit 0 0 diagnostics

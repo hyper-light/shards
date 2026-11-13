@@ -111,6 +111,7 @@ fn boot_member(home: &TempDir, image: &str, terminal: bool, stdin: bool) -> Box<
         ready_by: None,
         binary: Some(common::shards().to_path_buf()),
         env: host_env(home),
+        control: None,
     };
     ImageShards::new().boot(&spec, TIMEOUT).unwrap()
 }

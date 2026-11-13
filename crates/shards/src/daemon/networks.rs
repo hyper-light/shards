@@ -436,16 +436,19 @@ impl<D: Disk> Daemon<D> {
         (Ipv6Addr::from(subnet | 2), Ipv6Addr::from(subnet | 1))
     }
 
-    /// The home's engine ID, made once: what dockerd derives its IPv6 ULA pool from.
-    fn engine_id(&self) -> String {
+    /// The home's engine ID, made once: what dockerd derives its IPv6 ULA pool from. Callers
+    /// that make a home's first at once each take the one it keeps (`keep_first`).
+    pub(super) fn engine_id(&self) -> String {
         let path = self.home.join("networks").join("engine-id");
         if let Ok(id) = std::fs::read_to_string(&path) {
             return id.trim().to_string();
         }
         let id = new_id().unwrap_or_default();
         let _ = crate::networks::make_dir(&self.home.join("networks"));
-        let _ = super::keep_whole(&path, id.as_bytes());
-        id
+        match super::keep_first(&path, id.as_bytes()) {
+            Ok(false) => std::fs::read_to_string(&path).map_or(id, |kept| kept.trim().to_string()),
+            Ok(true) | Err(_) => id,
+        }
     }
 
     /// The networks: dockerd's predefined ones, made here the first time they are

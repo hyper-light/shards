@@ -989,6 +989,7 @@ fn relay_frames(
             }
             kind::SYSTEM_ERR => not_run = Some(String::from_utf8_lossy(payload).into_owned()),
             kind::EXEC_FAILED => exec_failed(payload),
+            kind::SOCKET_REFUSED => socket_refused(payload),
             // All the guest held is here, the save it was asked for waits on it (D176).
             kind::QUIESCED => {
                 quiescing().quiet();
@@ -1267,18 +1268,28 @@ enum Target {
         member: u32,
         to: std::sync::mpsc::SyncSender<(u32, UnixStream)>,
     },
+    /// A lane to a socket of the run's own command (D251), by the id its guest's
+    /// [`kind::SOCKET_REFUSED`] names.
+    Socket {
+        id: u32,
+        to: std::sync::mpsc::SyncSender<Result<UnixStream, Unopened>>,
+    },
 }
 
 impl Target {
     fn id(&self) -> Option<u32> {
         match self {
-            Self::Exec { id, .. } => Some(*id),
+            Self::Exec { id, .. } | Self::Socket { id, .. } => Some(*id),
             _ => None,
         }
     }
     fn deliver(self, result: Result<UnixStream, String>) {
         let to = match self {
             Self::Exec { to, .. } | Self::Resumed(to) | Self::Capture(to) => to,
+            Self::Socket { to, .. } => {
+                let _ = to.try_send(result.map_err(Unopened::Ended));
+                return;
+            }
             // An input that never comes is its init's to tell (`managed::InputEnded`), as the
             // connection it dialed fails there: nothing waits on it here.
             Self::Input { member, to } => {
@@ -1293,6 +1304,17 @@ impl Target {
 }
 
 static NEXT_EXEC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// Lane `id` (D251) will have no connection: its guest refused it before connecting
+/// anything, as it said.
+fn socket_refused(payload: &[u8]) {
+    let Some((id, errno)) = run::socket::read_refused(payload) else {
+        return;
+    };
+    if let Some(Target::Socket { to, .. }) = hellos::fail(id) {
+        let _ = to.try_send(Err(Unopened::Refused(errno)));
+    }
+}
 
 /// Exec `id` will have no connection, for `why`, as the guest said: it fails with it.
 fn exec_failed(payload: &[u8]) {
@@ -1520,6 +1542,55 @@ pub fn null() -> io::Result<fs::File> {
     NULL.get()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no null device is held"))?
         .try_clone()
+}
+
+/// Why a lane to a socket of the run's own command (D251) did not open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unopened {
+    /// Its guest refused it, with Linux's errno for why (`shards_abi::run::socket`): its
+    /// connect's own, or init's for a run that grants no sockets, a name that is no file name
+    /// in its directory, or a command not running.
+    Refused(std::num::NonZeroU32),
+    /// It could not be asked of its guest, or its connection will not come: the workload
+    /// has ended, or its connections failed. Why.
+    Ended(String),
+}
+
+impl std::fmt::Display for Unopened {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(errno) => write!(f, "refused, errno {errno}"),
+            Self::Ended(why) => f.write_str(why),
+        }
+    }
+}
+
+/// Opens a lane to the socket `name` in the run's own command's socket directory (D251): asks
+/// the guest for it, waits for its connection to the exec port, and reads its status.
+/// Connected, the connection, its bytes the socket's each way from here on; else why not.
+pub fn open_socket(to: &'static ToGuest, name: &[u8]) -> Result<UnixStream, Unopened> {
+    let mut token = [0u8; run::TOKEN];
+    shards_vmm::platform::fill_random(&mut token)
+        .map_err(|e| Unopened::Ended(format!("a lane's token: {e}")))?;
+    let id = NEXT_EXEC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let payload = run::socket::Ask { token, id, name }.encode();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    register(token, Target::Socket { id, to: tx }).map_err(Unopened::Ended)?;
+    if let Err(unsent) = to_guest(to, kind::SOCKET, &payload) {
+        hellos::forget(&token);
+        return Err(Unopened::Ended(unsent.to_string()));
+    }
+    let conn = rx
+        .recv()
+        .map_err(|_| Unopened::Ended("the run's command ended before the lane opened".into()))??;
+    let mut status = [0u8; run::socket::STATUS];
+    conn.set_nonblocking(false)
+        .and_then(|()| Read::read_exact(&mut shards_ipc::Polled(&conn), &mut status))
+        .map_err(|e| Unopened::Ended(format!("the lane's status: {e}")))?;
+    match std::num::NonZeroU32::new(u32::from_be_bytes(status)) {
+        None => Ok(conn),
+        Some(errno) => Err(Unopened::Refused(errno)),
+    }
 }
 
 /// A command to run beside the workload (`docker exec`), and its client's: the
@@ -3677,6 +3748,85 @@ mod tests {
             *lock(&to) = Signals::default();
             to.changed.notify_all();
         });
+    }
+
+    /// A lane to a socket of the run's own command (D251): its ask reaches the guest on the
+    /// signal connection, a fresh token and the lane's name; the guest's connection whose
+    /// HELLO says that token is the lane once its status says connected, its bytes the
+    /// socket's from there; a status of an errno is the lane's refusal; and the guest's
+    /// SOCKET_REFUSED, by the lane's id, fails a lane that waits.
+    #[test]
+    fn a_lane_is_the_connection_its_token_names_once_its_status_says_connected() {
+        use std::num::NonZeroU32;
+        static TO: ToGuest = ToGuest::new(Signals::new());
+        let (_serial, port, acceptor) = exec_port_test();
+        let server = std::thread::spawn(move || acceptor.run());
+        will_run(&TO);
+        let ((sending, _watched), mut guest) = {
+            let (host, guest) = pair();
+            (dialed(&TO, host).unwrap(), guest)
+        };
+        let dial = |token: &[u8], status: u32, then: &[u8]| {
+            let (mut theirs, host) = UnixStream::pair().unwrap();
+            theirs
+                .write_all(&run::header(kind::HELLO, run::TOKEN as u32))
+                .unwrap();
+            theirs.write_all(token).unwrap();
+            theirs.write_all(&status.to_be_bytes()).unwrap();
+            theirs.write_all(then).unwrap();
+            assert_eq!(port.accept(host), shards_vmm::vm::Admission::Accepted);
+            theirs
+        };
+        std::thread::scope(|s| {
+            s.spawn(|| send_frames(&TO, sending));
+            let opened = s.spawn(|| open_socket(&TO, b"control.sock"));
+            let (which, asked) = next_frame(&mut guest);
+            assert_eq!(which, kind::SOCKET);
+            let ask = run::socket::Ask::decode(&asked).unwrap();
+            assert_eq!(ask.name, b"control.sock");
+            let mut theirs = dial(&ask.token, 0, b"after");
+            let mut lane = opened.join().unwrap().unwrap();
+            let mut got = [0u8; 5];
+            Read::read_exact(&mut lane, &mut got).unwrap();
+            assert_eq!(&got, b"after", "the bytes past the status are the socket's");
+            lane.write_all(b"back").unwrap();
+            let mut back = [0u8; 4];
+            theirs.read_exact(&mut back).unwrap();
+            assert_eq!(&back, b"back");
+
+            let unreached = s.spawn(|| open_socket(&TO, b"absent.sock"));
+            let (_, asked) = next_frame(&mut guest);
+            let ask = run::socket::Ask::decode(&asked).unwrap();
+            let _theirs = dial(&ask.token, 2, b"");
+            assert_eq!(
+                unreached.join().unwrap().unwrap_err(),
+                Unopened::Refused(NonZeroU32::new(2).unwrap())
+            );
+
+            let early = s.spawn(|| open_socket(&TO, b"x.sock"));
+            let (_, asked) = next_frame(&mut guest);
+            let ask = run::socket::Ask::decode(&asked).unwrap();
+            socket_refused(&run::socket::refused(ask.id, run::socket::errno::EACCES));
+            assert_eq!(
+                early.join().unwrap().unwrap_err(),
+                Unopened::Refused(NonZeroU32::new(run::socket::errno::EACCES).unwrap())
+            );
+            // A lane that waits fails as the signal connection goes, as an exec does.
+            let waiting = s.spawn(|| open_socket(&TO, b"y.sock"));
+            let _ = next_frame(&mut guest);
+            while hellos::fail_execs("lost") == 0 {
+                std::thread::yield_now();
+            }
+            assert_eq!(
+                waiting.join().unwrap().unwrap_err(),
+                Unopened::Ended("lost".into())
+            );
+            *lock(&TO) = Signals::default();
+            TO.changed.notify_all();
+        });
+        hellos::close();
+        drop(port);
+        server.join().unwrap();
     }
 
     /// What waits for a dial whose sends fail is lost with it: an exec it asked for fails

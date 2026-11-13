@@ -105,12 +105,14 @@ enum Holding {
     Given(String),
 }
 
-/// The run's leases by their asks' ids, and whether the run has released them: once it has,
-/// a lease given after is released as it comes.
+/// The run's leases by their asks' ids, whether the run has released them (once it has, a
+/// lease given after is released as it comes), and the SHA-256 of the run's own key they are
+/// issued to, where its start told one (D252), taken as its host's answers are.
 #[derive(Debug, Default)]
 struct Leases {
     each: HashMap<u32, Holding>,
     released: bool,
+    key: Option<[u8; 32]>,
 }
 
 /// Each ask of a kind awaited, by its id, and its answer once it came, or why its host
@@ -437,6 +439,8 @@ pub(super) struct Session {
     host: Arc<shards_ipc::Child>,
     members: Vec<MemberInfo>,
     published: Vec<wire::Bound>,
+    /// Where its agent-control endpoint is bound (D252), where it asked for one.
+    control: Option<wire::ControlAt>,
     outputs: Mutex<HashMap<(u32, Channel), io::PipeReader>>,
     /// Its command has the nesting grant (D234): its spec asked for it, and its host, which
     /// refuses a grant it cannot give, started it.
@@ -561,6 +565,14 @@ impl Session {
                 }
             }
         }
+        // Its endpoint told exactly where one was asked for (D252): a host that binds none for
+        // a run that asked, or one for a run that did not, broke the channel's contract.
+        if request.control.is_some() != started.control.is_some() {
+            end_it(&shared);
+            return Err(ImageRefusal::Host(
+                "the run host's start told an agent-control endpoint other than the run asked".into(),
+            ));
+        }
         // Each member whose terminal its spec asked for (D244), by its index likewise.
         let terminals = request
             .members
@@ -579,6 +591,7 @@ impl Session {
             host,
             members: started.members,
             published: started.published,
+            control: started.control,
             outputs: Mutex::new(HashMap::new()),
             nesting: request.nesting,
             terminals,
@@ -790,7 +803,12 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
     let mut state = lock(&shared.state);
     let mut ended = false;
     match kind {
-        k::STARTED => state.started = Some(wire::Started::decode(payload).map_err(bad)?),
+        k::STARTED => {
+            let started = wire::Started::decode(payload).map_err(bad)?;
+            // The run's own key, which its leases are issued to (D242), known before any ask.
+            state.leases.key = started.control.map(|at| at.vm);
+            state.started = Some(started);
+        }
         k::REFUSED => {
             let r = wire::Refused::decode(payload).map_err(bad)?;
             state.refused = Some(match r.cause {
@@ -904,7 +922,8 @@ fn lease_asked(shared: &Arc<Shared>, payload: &[u8]) -> Result<(), String> {
             ask.reference
         ));
     }
-    {
+    // Asked under the run's own key, where its start told one.
+    let key = {
         let mut state = lock(&shared.state);
         if state.leases.released {
             drop(state);
@@ -919,13 +938,14 @@ fn lease_asked(shared: &Arc<Shared>, payload: &[u8]) -> Result<(), String> {
                 asked.insert(Holding::Asked);
             }
         }
-    }
+        state.leases.key
+    };
     let id = ask.id;
     let asking = Arc::clone(shared);
     let spawned = std::thread::Builder::new()
         .name("shards-api-lease".into())
         .spawn(move || {
-            let got = lessor.0.lease(&ask.reference);
+            let got = lessor.0.lease(&ask.reference, key);
             let result = settle(&asking, &*lessor.0, ask.id, got, Instant::now());
             answer_lease(&asking, ask.id, result);
         });
@@ -1089,6 +1109,10 @@ impl ImageGuest for Session {
 
     fn published(&self) -> &[wire::Bound] {
         &self.published
+    }
+
+    fn control(&self) -> Option<&wire::ControlAt> {
+        self.control.as_ref()
     }
 
     fn take_output(&self, member: &MemberName, channel: Channel) -> Result<io::PipeReader, ImageRefusal> {
@@ -1825,6 +1849,8 @@ mod tests {
         given: Vec<String>,
         released: Vec<String>,
         entered: usize,
+        /// The key each ask came under.
+        keys: Vec<Option<[u8; 32]>>,
         /// Its answers held until a test lets them go.
         held: bool,
     }
@@ -1854,9 +1880,10 @@ mod tests {
     }
 
     impl Lessor for Orchestrator {
-        fn lease(&self, reference: &str) -> Result<Leased, LeaseRefusal> {
+        fn lease(&self, reference: &str, key: Option<[u8; 32]>) -> Result<Leased, LeaseRefusal> {
             let mut l = lock(&self.ledger);
             l.entered += 1;
+            l.keys.push(key);
             self.changed.notify_all();
             while l.held {
                 l = self.changed.wait(l).unwrap();
@@ -1990,6 +2017,32 @@ mod tests {
             given.sort();
             released.sort();
             assert_eq!(released, given, "{end}: each lease released once");
+        }
+    }
+
+    /// A run's leases are asked under its own key where its start told one (D252's endpoint,
+    /// D238's key, D242's leases), and under none where it told none. Do: start a run whose
+    /// host tells an endpoint and its key, and one whose host tells none, and ask a lease of
+    /// each. Expect: the lessor asked under that key, then under none.
+    #[test]
+    fn a_lease_is_asked_under_the_runs_own_key_where_it_has_one() {
+        for key in [Some([7u8; 32]), None] {
+            let orchestrator = Arc::new(Orchestrator::default());
+            let mut h = hosted(Some(Arc::clone(&orchestrator)), &[CLAUDE]);
+            let started = wire::Started {
+                members: Vec::new(),
+                published: Vec::new(),
+                control: key.map(|vm| wire::ControlAt {
+                    address: "127.0.0.1:4433".parse().unwrap(),
+                    vm,
+                }),
+            };
+            says(&mut h.host, wire::to_client::STARTED, &started.encode().unwrap());
+            ask(&mut h.host, 1, CLAUDE);
+            assert!(answered(&mut h.sent).result.is_ok());
+            assert_eq!(lock(&orchestrator.ledger).keys, [key]);
+            drop(h.host);
+            h.reader.join().unwrap();
         }
     }
 

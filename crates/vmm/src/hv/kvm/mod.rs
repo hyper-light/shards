@@ -811,8 +811,11 @@ impl GuestClock {
     /// gone, else its thread's stat's errno (none for a line not parsed).
     pub fn read(&self) -> std::result::Result<u64, shards_abi::guest_time::Unread> {
         let thread = *lock(&self.0);
-        let tid = thread.map(|t| t.tid).ok_or(shards_abi::guest_time::Unread::Gone)?;
-        crate::platform::thread_guest_ns(tid).map_err(|e| shards_abi::guest_time::Unread::ThreadStat(e.raw_os_error()))
+        let tid = thread
+            .map(|t| t.tid)
+            .ok_or(shards_abi::guest_time::Unread::Gone)?;
+        crate::platform::thread_guest_ns(tid)
+            .map_err(|e| shards_abi::guest_time::Unread::ThreadStat(e.raw_os_error()))
     }
 }
 

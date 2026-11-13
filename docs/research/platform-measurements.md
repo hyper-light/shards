@@ -20416,6 +20416,10 @@ revision before comparing a changed API/implementation.
   pauses are a few ms). `conformance::OVERSHOOT` is the most measured, rounded up to the next
   10 ms: 160 ms. What would falsify it: a host where a conforming refusal comes later, which
   is a new measurement here, not a raised bound.
+- **Since.** `OVERSHOOT`, `UNSERVED_PATIENCE` and this harness are gone (D215, 2026-11-13,
+  R03): the case's patience is the host's own single refused attempt, and no bound holds how
+  late past it the refusal comes. The harness is in git history
+  (`git show 831854804:docs/research/measurements/shards-api-overshoot/run.sh`).
 
 ### M463. The waits shards-api's bounds hold, on HVF
 
