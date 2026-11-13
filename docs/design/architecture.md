@@ -27216,9 +27216,12 @@ seen on real runs:
   run in those words (`UNSERVED`, below; capture.rs `relay_ending`), where before its output
   stopped and the run waited for its owner's `STOP`. A side's end of its connection ends
   nothing of the run: its guest's, as its run ends; its owner's, which its owner ends the run
-  for, or its `STOP_ORDER` where its owner is gone, whose grace the run keeps. Owed (goal 75's
-  survey): api-run's reader of the capture lets go of its own copy alone on a record it cannot
-  take, and the daemon ends its owner at its own failure, each leaving the run to its `STOP`. Each failed end is
+  for, or its `STOP_ORDER` where its owner is gone, whose grace the run keeps. And each owner
+  ends its run at a failure of its own end of the capture, in its words (goal 75's survey):
+  api-run's reader of it (`records`) ends the run's asks `Failed` ("its VM's members' output
+  broke: …", or its answers to its orchestrator) and kills the VM; the daemon's
+  (`capture_failed`) logs why and stops the run as it stops, a connection's end, its VM's,
+  alone left to the VM. No run waits for its `STOP` on a failure its owner saw. Each failed end is
   said on the host's stderr too. An end the VM said
   first (its `DONE` came) stands, whatever the asks did meanwhile. Frames are read in place
   and wiped as they go (D242's channel), and a lease's answer is served from its frame.
@@ -27259,6 +27262,15 @@ No other.
   a0e12422e: failed ("a relay that broke left its run's connection open"). As built,
   `cargo test -p shards-vm-process --bin shards-vm workload::` passed 39 of 39; clippy for
   shards-vm-process, all targets, clean.
+- The owners' ends: `api_run::hosted::tests::members_output_its_host_cannot_take_ends_its_run_failed_saying_why`
+  (a frame of no record's kind ends the asks failed in its words and kills the VM; the
+  output's end at a frame's start ends nothing) and
+  `daemon::tests::a_capture_failure_of_the_daemons_own_stops_its_run_and_its_vms_end_does_not`
+  (a played VM: a refused record stops the run, its stop signal heard, why logged; a
+  connection's end tells it nothing). Red at a1d3bab15: both failed. As built,
+  `cargo test -p shards --bin shards -- api_run:: daemon::tests::a_capture_failure_of_the_daemons_own
+  daemon::managed::` passed 80 of 80 (6 ignored, ROOT's fixtures); clippy for shards, all
+  targets, clean.
 
 **Owed** (ROOT).
 - The real-VM suites on HVF, KVM and WHP: api_image whole, member_exec, and boot.rs
