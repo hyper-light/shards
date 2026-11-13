@@ -338,7 +338,7 @@ impl<D: Disk> Daemon<D> {
                 .min()
                 .map(|at| at.saturating_duration_since(Instant::now()));
             let heard = match wait {
-                Some(wait) => heard.recv_timeout(wait),
+                Some(wait) => super::timed(Some(wait), || heard.recv_timeout(wait)),
                 None => heard.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
             };
             match heard {

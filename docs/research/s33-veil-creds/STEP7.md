@@ -192,8 +192,9 @@ crates/net/src`. Touch the file after restoring it.
 
 ## Owed
 
-- A sign-in's token host over HTTP/2: its token POST and response read whole per stream. Until then a token host is
-  offered HTTP/1.1 alone.
+- ~~A sign-in's token host over HTTP/2~~: built (#74 steps 7 and 8, 3ad5e9d3a): a token host is offered what its
+  guest offered, and step 8's token handling runs per stream. Its record is STEP8.md's "A sign-in's token host over
+  HTTP/2".
 - Not covered by a light test here: 503 (a refused lease), 403 (`mints`), 431, a host's GOAWAY and RST_STREAM carried,
   and SETTINGS_MAX_CONCURRENT_STREAMS holding a stream back. Each is a code path in `H2`, typed and bounded, and none
   is exercised yet.
