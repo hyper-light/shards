@@ -1187,7 +1187,7 @@ mod tests {
         let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
         let (endpoint, client) = connect(
             endpoint(&vm, kiln.fingerprint(), transport(true)).unwrap(),
-            tls::client(&kiln, vm.fingerprint(), tls::Rtt::Unmeasured).unwrap(),
+            tls::client(&kiln, vm.fingerprint(), tls::Known::Never).unwrap(),
         );
         assert!(!endpoint.connected && !client.connected);
         assert_eq!(why(&endpoint), Ended::Protocol(By::This));
