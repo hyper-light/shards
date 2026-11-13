@@ -3647,6 +3647,60 @@ mod tests {
             assert_eq!(host.join().unwrap(), [false, false, false, false, false, true]);
         }
 
+        /// A log lane that has nothing to read (asked from past every record kept, unfollowed)
+        /// ends `Finished`: its host finishes its output and exits before its controller's
+        /// stdout lane has come, and the endpoint keeps that output for it until its end has
+        /// been told it, rather than letting it go and refusing the lane `Scope` (#72, the real
+        /// VM's log_lanes.rs "a lane past its log's end").
+        #[test]
+        fn a_log_lane_with_nothing_to_read_finishes_and_is_not_refused() {
+            use exec::{LogChannels, LogCursor, LogPos, LogRecord, LogSource};
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let (serving, starts) = Serving::with_execs(&vm, kiln.fingerprint());
+            let (outputs, inputs) = all(0);
+            let (dialed, _driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                    execs: Some(exec::Admissions {
+                        output: out_admitted(),
+                        input: in_admitted(),
+                    }),
+                    sockets: None,
+                },
+            );
+            let execs = dialed.execs.as_ref().unwrap();
+            let pos = LogPos { seq: 1, no: 0, byte: 0 };
+            let kept = vec![LogRecord::Output {
+                channel: Channel::Stdout,
+                pos,
+                at: 11,
+                bytes: b"line one\n".to_vec(),
+            }];
+            let end = pos.after(9).unwrap();
+            let past = LogCursor {
+                stdout: Some(end),
+                stderr: Some(end),
+            };
+            // Each source the run keeps, the command's and a member's.
+            let sources = [LogSource::Command, LogSource::Member(0)];
+            let served = kept.clone();
+            let host = std::thread::spawn(move || {
+                (0..sources.len())
+                    .map(|_| log_stand_in(starts.recv_timeout(PATIENCE).unwrap(), &served, 1, None))
+                    .collect::<Vec<_>>()
+            });
+            for source in sources {
+                let mut lane = execs.log(source, LogChannels::BOTH, past, false).unwrap();
+                assert_eq!(lane.next_record(), Ok(Logged::Finished), "{source:?}");
+                assert_eq!(lane.cursor(), past, "{source:?}");
+            }
+            assert_eq!(host.join().unwrap(), [false, false]);
+        }
+
         /// What a controller was granted as it dialed is named as Shards names its lanes (goal
         /// 60's `lanes`): its control lane, then each subscription's stream in its order; an
         /// exec's, a socket's and an MCP bridge's names where they are granted.
