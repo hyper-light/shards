@@ -22821,8 +22821,11 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   - Red, with the reader's deadline kept after the rest began (`/tmp/g51/carrier/red-r03a.sh`):
     the ipc test failed (`Late` for a rest begun), and the daemon test failed (its client
     heard RESTART within the 2.5 s).
-  - `cargo clippy -p shards-ipc -p shards --all-targets -- -D warnings` (aarch64-apple-darwin)
-    was clean.
+  - `cargo clippy -p shards-ipc -p shards --all-targets -- -D warnings` was clean for
+    aarch64-apple-darwin, and for x86_64-pc-windows-msvc through cargo-xwin on
+    adas-mac-studio.local (r394).
+  - Again with D217's helper ends (PM M546), at bdbe0d58e over main 144dc4ada with
+    `CARGO_INCREMENTAL=0` (r486, r488): the same tests passed and both clippies were clean.
 - **Owed.** CI's: the named.rs twin on Windows, and Linux. ROOT's: the daemon and CLI suites
   on every backend, where every request goes through a slot.
 - **Rules** (policy df2acf47, role implementer):
@@ -22836,3 +22839,73 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | Red with the guard removed, green after: above. |
   | R11 | fifo.rs and named.rs alike; macOS arm64 run, Windows' twin and Linux owed to CI. |
   | R15, R16 | Implementer; the targets on adalundhe-macbook-pro and adas-mac-studio.local are removed after. |
+
+### M546. A network or share process followed to its end while it goes on with it, never a picked second (D217)
+
+- **Question.** `netproc::reap` gave a network or share process whose VM had gone one second
+  (`GRACE`, picked) and then killed it. The daemon's followers gave a run's network process
+  the same second, and its port check (`in_use`) waited twice that for one. The person ruled
+  on 2026-11-13 that a wait follows the party's liveness and progress, then the slowest answer
+  seen. What is such a process's progress, and its slowest answer?
+- **Found, from the code.** Such a process goes as its VM's links close: the network process
+  as its doorbell hangs up, the share process as its connections to the VM close, once its
+  spawner holds nothing of it (PM M544). Its end wakes its reaper (`Poller::add_exit`, or the
+  process's handle on Windows). D217 already follows a killed VM process the same way: looked
+  at once a slice has passed, and waited on while it runs more than an idle microVM does or
+  holds less than it did (`Followed`), its slice the slowest such end the home has kept, never
+  less than `Progress`'s window (`IDLE_VM_CPU`'s 10 s).
+- **Decision** (D217's new bullet).
+  - Such a process is followed as D217 follows a killed VM process (`End::Helper`, the home's
+    `helper MS`), by `netproc::reap` (the run host's network and share processes, a builder's
+    network process, a daemon run's that failed to start) and by the daemon's followers (a
+    run's network process once its VM ends).
+  - Its own end is kept as the host's; an end its reaper made is not.
+  - A run's host and a builder now write the home's record beside the daemon, so
+    `Ends::heard` puts each end with what the record holds then (another process may have kept
+    one since this one read it), and returns a record it cannot keep, which each caller logs as
+    its own.
+  - `in_use` waits one helper slice for an ended run's network process.
+  - Its cost: a process stuck on nothing of its own is ended 10 s or more after its VM, where it
+    was 1 s. One that exits as its links close ends the wait at once.
+  - Left with their second, their own basis owed (R03): init's relay drain (hostbind.rs
+    `DRAIN`), the daemon's `PUBLISH_PATIENCE`, and warm.rs's wait for its network process's
+    unpublish, each of which took `GRACE` as its basis.
+- **Tests.**
+  - `netproc::reap_tests::a_helper_is_waited_on_while_it_goes_on_with_its_end` (a 200 ms slice):
+    a busy helper is waited on past five slices and ends of itself as its file comes, its end
+    kept; a sleeping one is ended at its first look, nothing kept.
+  - `daemon::ends::tests::a_homes_processes_keep_one_record_of_its_ends`: a run host's helper
+    end and the daemon's exit end are kept together, neither lost to the other's write, and a
+    record that cannot be kept is said.
+  - The daemon's `a_network_process_is_ended_once_it_goes_on_no_more_and_the_ports_freed` (was
+    `…_past_its_grace_…`): a sleeping network process is ended at its first look, after a whole
+    slice, and its end is not kept. `ports_are_freed_as_the_vm_ends_after_its_network_process`
+    and `a_run_whose_ports_are_closed_holds_them_no_longer` hold to one helper slice.
+  - `api_run::hosted::tests::a_share_process_goes_as_its_door_is_let_go_of` (PM M544) passes
+    the home's record.
+- **Checked** (one host, adalundhe-macbook-pro, macOS arm64, `CARGO_INCREMENTAL=0`, at bdbe0d58e
+  over main 144dc4ada, with D185's request wait, PM M545; kiln run r486):
+  - `cargo test -p shards --bin shards --` the tests above with the daemon's slot tests: 17
+    passed in 12.2 s.
+  - `cargo test -p shards-ipc --lib -- slots`: 15 passed.
+  - tests/daemon.rs's `a_daemon_out_of_descriptors_waits_for_room`: passed.
+  - Red with the guard removed, a helper ended at its first look whatever it did
+    (`/tmp/g51/carrier/red-reap.sh`): the reap test failed, "ended while it went on: 201.7ms".
+  - `cargo clippy -p shards-ipc -p shards --all-targets -- -D warnings`: clean for
+    aarch64-apple-darwin, and for x86_64-pc-windows-msvc through cargo-xwin on
+    adas-mac-studio.local (r488).
+- **Owed.** CI's: Linux, and Windows, where `reap` follows a process through its handle; the
+  daemon's followers' "goes on" branch, which only a network process running past a whole
+  slice (10 s at least) shows. ROOT's: the run host's and daemon's real runs, api_image.rs and
+  daemon.rs on every backend.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap, index or panic added to production code; a slice past what a clock holds sets no deadline (the process's end alone). |
+  | R02, R03 | D217's method and record, shared (R12); the second goes; the waits that took it as their basis are named as owed. |
+  | R04 | `Ends::heard` returns its failure; each caller says it in its own words. |
+  | R05 | Woken by the process's end; looked at only once each slice passes. |
+  | R09, R10 | Red with the guard removed, green after: above. |
+  | R11 | Unix and Windows share `reap_by`; each has its own `ended_within`. macOS arm64 run; Windows clippy-checked. |
+  | R15, R16 | Implementer; the targets on adalundhe-macbook-pro and adas-mac-studio.local are removed after landing. |
