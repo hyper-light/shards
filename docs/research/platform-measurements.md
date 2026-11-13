@@ -22419,3 +22419,42 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R10 | ROOT's summaries are in `measurements/control-end/results/`. The raw records are owed. |
   | R11 | macOS arm64 (HVF) and Linux x86_64 (KVM) only. WHP x86_64, WHP arm64 and Linux arm64 were not run, so they are unverified. |
   | R15, R16 | No agent started: the session's cap refused one. Nothing was run, so there is nothing to clean. |
+
+### M542. macOS refused a daemon's request wait past what one select(2) takes, and its descriptors never ran out (D222, D185)
+
+- **Question.** Why does `tests/daemon.rs`'s `a_daemon_out_of_descriptors_waits_for_room`
+  fail on every macOS CI run since 11-10 ("the daemon never ran out of descriptors, 2693
+  clients in"), while it passes on Linux?
+- **Method.** The test's daemon log as CI printed it (job 131480418809, main d35c4cf79),
+  each line counted; the test's result on each macOS CI job back to the last green run;
+  then the code that logs the line, and XNU's select(2).
+- **Found.**
+  - The test passed at main e64ff8407 (11-09 23:03Z) and failed from df0563e90 (11-10)
+    on, on one runner image. Between them, fb1f28d42 replaced the request's fixed 10 s wait
+    with a learned cutoff that doubles with each cut in a row (D222's `Cutoff::wait`,
+    `backed_off`, up to 2^31 times).
+  - The daemon log: 34 silent clients cut ("its request not whole in 1.0 to 1.98 s"), then
+    2659 slots ending at once: "request slot N: Invalid argument (os error 22)". Each
+    slot's descriptors went at once, so the daemon never ran out.
+  - On macOS a request's rest is waited for in select(2), whose timeout XNU checks before
+    any descriptor: `tv_sec > 100000000` is EINVAL (bsd/kern/kern_time.c, `itimerfix`;
+    bsd/kern/sys_generic.c, `select_nocancel`). After 27 cuts in a row, 1 s doubled is
+    past that, and every new slot's wait failed. Linux's poll(2) clamps the
+    millisecond wait it is given, and takes any.
+- **Fix.** `shards_ipc::await_any_within` waits at most XNU's bound in one select on macOS,
+  and a longer wait goes on to its own deadline in the next. A bound XNU's source states
+  (R03).
+- **Checked** (one host, adalundhe-macbook-pro, macOS arm64):
+  `a_wait_past_selects_most_is_waited_not_refused` (a ready pipe under a 2^34 s wait: EINVAL
+  before, ready after) and `a_daemon_out_of_descriptors_waits_for_room` alone. Its red is
+  CI's.
+- **Owed.** ROOT's: the macOS leg of CI on main, where both run.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap or panic added; the bound is a constant of XNU's. |
+  | R02, R03 | XNU's own source for the bound; no number of ours. |
+  | R04, R05 | The wait's states are unchanged: ready, timed out at its own deadline, or interrupted. |
+  | R09, R10 | Red: CI's log above and the unit test before the fix. Green: both tests after. |
+  | R11 | The bound is macOS's alone; Linux's and Windows' waits are unchanged. |
