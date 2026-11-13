@@ -892,3 +892,70 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
     assert!(guest.take_input(&codex()).is_err());
     guest.stop().unwrap();
 }
+
+/// D256: a member's run-time arguments follow its image's command on its command line, each
+/// whole and in its order. The harness, the test guest writing its command line word by word,
+/// each with its NUL, says its program as found in its own `bin`, its image's options, then its
+/// run's `--resume`, `s 1` and an empty one: none split, joined or dropped. An argument holding
+/// a NUL, which no command line exec'd holds, is refused by its place, never its bytes; and
+/// arguments past the channel's bound are refused whole, never cut; each before any run host
+/// starts.
+#[test]
+fn a_members_arguments_follow_its_images_command_in_order() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-args-home");
+    build(&home, "api-args:1", &["argv", "--from-image"], "");
+    let given = |args: Vec<String>| {
+        let mut s = spec(&home, "api-args:1");
+        s.members = vec![MemberSpec {
+            member: codex(),
+            env: Vec::new(),
+            files: Vec::new(),
+            workdir: None,
+            stdin: false,
+            terminal: false,
+            args,
+        }];
+        s
+    };
+    let guest = ImageShards::new()
+        .boot(
+            &given(["--resume", "s 1", ""].map(String::from).to_vec()),
+            TIMEOUT,
+        )
+        .unwrap();
+    let said = read_all(&*guest, Channel::Stdout);
+    let (program, rest) = said.split_at(said.iter().position(|&b| b == 0).unwrap_or(said.len()));
+    assert!(
+        program.starts_with(b"/") && program.ends_with(b"/bin/codex"),
+        "its command line: {:?}",
+        String::from_utf8_lossy(&said)
+    );
+    assert_eq!(
+        rest,
+        b"\0argv\0--from-image\0--resume\0s 1\0\0",
+        "its command line: {:?}",
+        String::from_utf8_lossy(&said)
+    );
+    assert_ended(&*guest, MemberEnd::Exited(0));
+    guest.stop().unwrap();
+    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+    let refused = |s: ImageSpec| match ImageShards::new().boot(&s, TIMEOUT) {
+        Err(e) => e,
+        Ok(_) => panic!("booted"),
+    };
+    match refused(given(["--resume", "s-1\0--model"].map(String::from).to_vec())) {
+        ImageRefusal::Spec { what, why } => {
+            assert_eq!(what, "a member's argument");
+            assert!(why.contains("argument 1") && !why.contains("s-1"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let half = shards_abi::run::MAX_PAYLOAD as usize / 2;
+    assert!(matches!(
+        refused(given(vec!["x".repeat(half), "x".repeat(half)])),
+        ImageRefusal::Spec { what: "the spec", .. }
+    ));
+}
