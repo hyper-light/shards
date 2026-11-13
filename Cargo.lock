@@ -1407,6 +1407,7 @@ dependencies = [
 name = "shards-net"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "httparse",
  "libc",
  "rcgen",

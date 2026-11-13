@@ -6,6 +6,9 @@
 //! - `true`; `echo WORDS…`; `cat`; `sleep SECONDS`: as the tools are.
 //! - `zeros N`: N zero bytes on stdout, as `head -c N /dev/zero` writes them.
 //! - `say OUT ERR STATUS`: OUT on stdout and ERR on stderr, a line each, then exits STATUS.
+//! - `drip MS`: reads its stdin 64 KiB at a time, MS milliseconds apart, as a slow consumer
+//!   of a stream does (a moved microVM's import writing its files), then says how many bytes
+//!   it read, a line.
 //! - `await GO [ready=FILE] [say=TEXT] [exit=STATUS]`: makes FILE, then waits until GO is
 //!   there, then says TEXT, a line, and exits STATUS (0 if none). It waits while GO's
 //!   directory is, a test's own (`TempDir`), which goes as its test ends, failed or killed
@@ -67,6 +70,23 @@ fn run(args: &[String]) -> Result<u8, String> {
                     .map_err(|e| format!("zeros: {e}"))?;
                 left = left.saturating_sub(now as u64);
             }
+            Ok(0)
+        }
+        ("drip", [ms]) => {
+            let pause = Duration::from_millis(ms.parse().map_err(|e| format!("drip {ms}: {e}"))?);
+            let mut input = io::stdin().lock();
+            let mut buffer = vec![0u8; 64 << 10];
+            let mut read = 0u64;
+            loop {
+                match io::Read::read(&mut input, &mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => read = read.saturating_add(n as u64),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(format!("drip: {e}")),
+                }
+                std::thread::sleep(pause);
+            }
+            writeln!(out, "{read}").map_err(|e| format!("drip: {e}"))?;
             Ok(0)
         }
         ("say", [said, err, status]) => {

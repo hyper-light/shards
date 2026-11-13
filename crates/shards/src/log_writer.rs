@@ -25,6 +25,9 @@ pub struct Writer {
     logged: u64,
     indexed: u64,
     lost: u64,
+    /// Bytes of records it has kept, every segment's: what the run's one log cap counts as it
+    /// grows (D240).
+    written: u64,
 }
 
 /// Makes a log's segment `seq`, its log and index to append to, and removes the oldest
@@ -68,6 +71,7 @@ impl Writer {
             logged,
             indexed,
             lost: 0,
+            written: 0,
         })
     }
 
@@ -126,6 +130,7 @@ impl Writer {
             Ok(()) => {
                 self.logged += record_len;
                 self.indexed += 8;
+                self.written = self.written.saturating_add(record_len);
                 true
             }
             Err(_) => {
@@ -138,7 +143,7 @@ impl Writer {
     }
 
     /// Starts the next segment: as the one written fills, or, for a member's log its daemon
-    /// keeps, as the run's one log cap takes its newest segment (segments.rs, `cap`).
+    /// keeps, as the run's one log cap takes its newest segment (daemon/managed/cap.rs).
     pub fn rotate(&mut self) -> io::Result<()> {
         let next = self.seq + 1;
         let (log, index) = (self.next)(next)?;
@@ -149,6 +154,20 @@ impl Writer {
     /// Bytes of output not kept.
     pub fn lost(&self) -> u64 {
         self.lost
+    }
+
+    /// The segment it writes. The daemon's alone, its keeper of members' logs (D240): the VM
+    /// process carries this file too.
+    #[allow(dead_code)]
+    pub fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    /// Bytes of records it has kept, heads and output, since it began: the daemon's alone, as
+    /// [`Writer::seq`].
+    #[allow(dead_code)]
+    pub fn written(&self) -> u64 {
+        self.written
     }
 }
 
