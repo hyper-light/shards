@@ -23603,7 +23603,12 @@ the terminal lane (D238); nothing crosses into another member. How it is built i
 implementer's, reviewed by ROOT. Until it is, shards-api refuses a member's terminal
 `Unsupported` (`crates/api/src/image.rs`). What it builds on is on main: the run's signal link,
 whose states are explicit (D16; [signal-link](../research/measurements/signal-link/README.md)), and the
-exec port's admission under contention (D16, "An exec's connection").
+exec port's admission under contention (D16, "An exec's connection"). Slice 1 is on main
+(`78fc1c8f5`, `532ad27c5`): a member starts with every signal's disposition at its default and its
+mask empty, as an exec's child already did (init `defaults::signals`, which both now call), since
+execve(2) keeps an ignored signal ignored and init's runtime ignores SIGPIPE; reproduced, fixed and
+its guard mutated live on HVF ([member-exec-tty-v1](../research/measurements/member-exec-tty-v1/README.md)),
+its real-VM test (`tests/member_exec.rs`) on KVM x86_64, WHP and arm64 KVM owed (ROOT).
 
 **Owed** (ROOT). Step 5's real-VM E2E (`tests/managed_output.rs`'s `member_stdin`,
 `tests/api_image.rs`'s `a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end`)
