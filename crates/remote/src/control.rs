@@ -17,6 +17,8 @@
 //!   stalled on one member's reader holds up no other lane (RFC 9000 §2.2, §4.1). A lane the
 //!   endpoint will not serve is refused alone ([`refused`]): the connection and its other
 //!   lanes go on.
+//! - **Its controller's side** ([`Controller`], `drive.rs`): the connection kiln or Hex dials and
+//!   the lanes it opens, step 5's client of each stream, so that neither writes this wire again.
 
 use std::mem::size_of;
 use std::net::SocketAddr;
@@ -35,6 +37,9 @@ use crate::managed::{
 };
 use crate::net::{Close, ConnKey, Driver, DriverLimits, Handler, Io, Read, Sender};
 use crate::tls;
+
+mod drive;
+pub use drive::{Controller, Dialed, Fault, Got, Hangup, Input, Output, Subscriptions};
 
 /// The application protocol of a control connection (RFC 7301), apart from a context's
 /// (`shards/1`) and the managed output's: a peer offering another is refused at its handshake.
@@ -1856,6 +1861,414 @@ mod tests {
             assert!(matches!(
                 twice,
                 Err(managed::Error::Protocol(ProtocolError::Scope))
+            ));
+        }
+
+        /// The production controller (`drive.rs`), dialed at `to` for `subscriptions`, its
+        /// driver on a thread of its own.
+        fn drive(
+            own: &Identity,
+            vm: Fingerprint,
+            to: SocketAddr,
+            subscriptions: Subscriptions<'_>,
+        ) -> (Dialed, JoinHandle<Result<(), managed::Error>>) {
+            let (controller, dialed) = super::super::Controller::dial(own, vm, to, subscriptions).unwrap();
+            let driver = std::thread::Builder::new()
+                .name("controller".into())
+                .spawn(move || controller.run())
+                .unwrap();
+            (dialed, driver)
+        }
+
+        fn out_admitted() -> Admitted {
+            admitted(RECORD, RECORD + DATA_HEAD)
+        }
+
+        fn in_admitted() -> Admitted {
+            admitted(RECORD, input::TAKEN_BYTES)
+        }
+
+        /// Member 0's two outputs and its stdin, each with its admission and cursor.
+        type Member = ([(Scope, Admitted, u64); 2], [(input::Scope, Admitted, u64); 1]);
+
+        /// Member 0's stdout, stderr and stdin, each from `from`.
+        fn all(from: u64) -> Member {
+            (
+                [
+                    (output(Channel::Stdout), out_admitted(), from),
+                    (output(Channel::Stderr), out_admitted(), from),
+                ],
+                [(stdin(), in_admitted(), from)],
+            )
+        }
+
+        /// kiln's side as Shards gives it: the controller drives member 0's stdin, stdout and
+        /// stderr over one connection; bytes no text holds come through exactly both ways, in
+        /// records of the endpoint's room under its pace, the stdin's end reaches the member
+        /// and its end comes back, and an output that finishes says so once its last record is
+        /// had.
+        #[test]
+        fn the_controller_drives_a_members_stdio_exactly_and_ends_as_it_ends() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let serving = Serving::bind(&vm, kiln.fingerprint());
+            let (outputs, inputs) = all(0);
+            let (mut dialed, driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                },
+            );
+            let out = b"\x00\xff\xfe not UTF-8 \x80, and no newline";
+            serving.submit(STDOUT, out);
+            assert_eq!(
+                dialed.outputs[0].next_record().unwrap(),
+                Got::Record {
+                    at: 0,
+                    bytes: out.to_vec()
+                }
+            );
+            serving.submit(STDERR, b"\x1b[31m");
+            assert_eq!(
+                dialed.outputs[1].next_record().unwrap(),
+                Got::Record {
+                    at: 0,
+                    bytes: b"\x1b[31m".to_vec()
+                }
+            );
+
+            // More than one record's room: the stdin takes it a room at a time, each record
+            // taken before the next goes.
+            let line: Vec<u8> = (0..=255u8).cycle().take(3 * RECORD + 5).collect();
+            let stdin = &mut dialed.inputs[0];
+            let mut at = 0;
+            while at < line.len() {
+                let took = stdin.write(&line[at..]).unwrap();
+                assert!((1..=RECORD).contains(&took), "{took}");
+                at += took;
+                assert_eq!(stdin.cursor(), at as u64);
+            }
+            let mut relayed = Vec::new();
+            while relayed.len() < line.len() {
+                let record = serving.records.recv_timeout(tls::IDLE).unwrap();
+                assert!(record.len() <= RECORD);
+                relayed.extend_from_slice(&record);
+            }
+            assert_eq!(relayed, line);
+            assert_eq!(stdin.end().unwrap(), (line.len() as u64, InputEnd::Closed));
+            assert_eq!(
+                stdin.write(b"after"),
+                Err(Fault::InputEnded {
+                    written: line.len() as u64,
+                    end: InputEnd::Closed
+                })
+            );
+
+            serving.outputs[STDOUT].1.finish().unwrap();
+            assert_eq!(dialed.outputs[0].next_record().unwrap(), Got::Finished);
+            assert_eq!(dialed.outputs[0].cursor(), out.len() as u64);
+            assert_eq!(
+                serving.outputs[STDOUT].1.state(),
+                State::Finished(managed::Progress {
+                    accepted: out.len() as u64,
+                    consumed: out.len() as u64
+                })
+            );
+            assert_eq!(dialed.outputs[0].next_record().unwrap(), Got::Finished);
+            drop(dialed);
+            driver.join().unwrap().unwrap();
+        }
+
+        /// One record in flight, acknowledged only as the controller asks for the next: the
+        /// endpoint holds a record handed out until then, and its next comes after, at its
+        /// cursor.
+        #[test]
+        fn a_record_is_acknowledged_only_as_the_next_is_asked_for() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let serving = Serving::bind(&vm, kiln.fingerprint());
+            let (outputs, inputs) = all(0);
+            let (mut dialed, _driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                },
+            );
+            serving.submit(STDOUT, b"first");
+            let mut stdout = dialed.outputs.remove(0);
+            assert_eq!(
+                stdout.next_record().unwrap(),
+                Got::Record {
+                    at: 0,
+                    bytes: b"first".to_vec()
+                }
+            );
+            let held = managed::Progress {
+                accepted: 5,
+                consumed: 0,
+            };
+            std::thread::sleep(tls::IDLE / 10);
+            assert_eq!(
+                serving.outputs[STDOUT].1.progress(),
+                held,
+                "acknowledged while held"
+            );
+            assert_eq!(stdout.cursor(), 0);
+            let reader = std::thread::spawn(move || {
+                let next = stdout.next_record();
+                (stdout, next)
+            });
+            let asked = std::time::Instant::now();
+            while serving.outputs[STDOUT].1.progress().consumed != 5 {
+                assert!(asked.elapsed() < tls::IDLE, "never acknowledged");
+                std::thread::sleep(tls::IDLE / 100);
+            }
+            serving.submit(STDOUT, b"second");
+            let (stdout, next) = reader.join().unwrap();
+            assert_eq!(
+                next.unwrap(),
+                Got::Record {
+                    at: 5,
+                    bytes: b"second".to_vec()
+                }
+            );
+            assert_eq!(stdout.cursor(), 5);
+        }
+
+        /// A lane the endpoint does not serve is refused alone, typed, and the others go on.
+        #[test]
+        fn a_lane_the_endpoint_refuses_is_refused_alone_and_typed() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let serving = Serving::bind(&vm, kiln.fingerprint());
+            let outputs = [
+                (
+                    Scope {
+                        member: 9,
+                        ..output(Channel::Stdout)
+                    },
+                    out_admitted(),
+                    0,
+                ),
+                (
+                    Scope {
+                        generation: GENERATION + 1,
+                        ..output(Channel::Stdout)
+                    },
+                    out_admitted(),
+                    0,
+                ),
+                (output(Channel::Stdout), out_admitted(), 0),
+            ];
+            let inputs = [(input::Scope { member: 1, ..stdin() }, in_admitted(), 0)];
+            let (mut dialed, _driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                },
+            );
+            assert_eq!(
+                dialed.outputs[0].next_record(),
+                Err(Fault::Refused(Reason::Scope))
+            );
+            assert_eq!(
+                dialed.outputs[1].next_record(),
+                Err(Fault::Refused(Reason::Stale))
+            );
+            assert_eq!(dialed.inputs[0].write(b"x"), Err(Fault::Refused(Reason::Scope)));
+            serving.submit(STDOUT, b"served");
+            assert_eq!(
+                dialed.outputs[2].next_record().unwrap(),
+                Got::Record {
+                    at: 0,
+                    bytes: b"served".to_vec()
+                }
+            );
+            assert_eq!(
+                dialed.outputs[0].next_record(),
+                Err(Fault::Refused(Reason::Scope))
+            );
+        }
+
+        /// A controller under a key the microVM did not enroll reaches no lane: each says so,
+        /// typed, `NotEnrolled`. So does one that pinned another microVM's key.
+        #[test]
+        fn a_controller_not_enrolled_or_not_pinned_reaches_no_lane() {
+            let (vm, kiln, stranger) = (
+                Identity::generate().unwrap(),
+                Identity::generate().unwrap(),
+                Identity::generate().unwrap(),
+            );
+            let serving = Serving::bind(&vm, kiln.fingerprint());
+            let (outputs, inputs) = all(0);
+            let subscriptions = Subscriptions {
+                outputs: &outputs,
+                inputs: &inputs,
+            };
+            let (mut dialed, driver) = drive(&stranger, vm.fingerprint(), serving.address, subscriptions);
+            let refused = dialed.outputs[0].next_record();
+            assert!(
+                matches!(refused, Err(Fault::Lost(Ended::NotEnrolled(_)))),
+                "{refused:?}"
+            );
+            assert!(matches!(
+                dialed.inputs[0].write(b"x"),
+                Err(Fault::Lost(Ended::NotEnrolled(_)))
+            ));
+            driver.join().unwrap().unwrap();
+            let (mut dialed, driver) = drive(&kiln, stranger.fingerprint(), serving.address, subscriptions);
+            assert_eq!(
+                dialed.outputs[0].next_record(),
+                Err(Fault::Lost(Ended::NotEnrolled(By::This)))
+            );
+            driver.join().unwrap().unwrap();
+            assert_eq!(serving.outputs[STDOUT].1.progress().consumed, 0);
+        }
+
+        /// The controller's newer connection supersedes its older, which is told `Stale`; the
+        /// newer opens at the older's cursors and has again the record the older never
+        /// acknowledged.
+        #[test]
+        fn a_newer_dial_supersedes_the_older_and_resumes_at_its_cursors() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let serving = Serving::bind(&vm, kiln.fingerprint());
+            let (outputs, inputs) = all(0);
+            let (mut older, _older_driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                },
+            );
+            serving.submit(STDOUT, b"once");
+            assert_eq!(
+                older.outputs[0].next_record().unwrap(),
+                Got::Record {
+                    at: 0,
+                    bytes: b"once".to_vec()
+                }
+            );
+            assert_eq!(older.inputs[0].write(b"in").unwrap(), 2);
+            let (outputs, inputs) = (
+                [
+                    (output(Channel::Stdout), out_admitted(), older.outputs[0].cursor()),
+                    (output(Channel::Stderr), out_admitted(), older.outputs[1].cursor()),
+                ],
+                [(stdin(), in_admitted(), older.inputs[0].cursor())],
+            );
+            let (mut newer, _newer_driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                },
+            );
+            assert_eq!(
+                newer.outputs[0].next_record().unwrap(),
+                Got::Record {
+                    at: 0,
+                    bytes: b"once".to_vec()
+                }
+            );
+            assert_eq!(
+                older.outputs[0].next_record(),
+                Err(Fault::Lost(Ended::Closed(By::Peer, Reason::Stale)))
+            );
+            assert_eq!(newer.inputs[0].write(b"more").unwrap(), 4);
+            assert_eq!(serving.records.recv_timeout(tls::IDLE).unwrap(), b"in");
+            assert_eq!(serving.records.recv_timeout(tls::IDLE).unwrap(), b"more");
+            // Asking for the next acknowledges "once", which makes the endpoint's room for it.
+            let mut stdout = newer.outputs.remove(0);
+            let reader = std::thread::spawn(move || stdout.next_record());
+            serving.submit(STDOUT, b"twice");
+            assert_eq!(
+                reader.join().unwrap().unwrap(),
+                Got::Record {
+                    at: 4,
+                    bytes: b"twice".to_vec()
+                }
+            );
+        }
+
+        /// A revoked output ends its lane alone, `Revoked`; an aborted stdin ends with its
+        /// errno as the member's init tells it; the connection and other lanes go on, until
+        /// the controller hangs up, which every lane left hears as its own close.
+        #[test]
+        fn revocation_and_abort_end_their_lanes_alone_and_a_hangup_ends_the_rest() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let serving = Serving::bind(&vm, kiln.fingerprint());
+            let (outputs, inputs) = all(0);
+            let (mut dialed, driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                },
+            );
+            serving.submit(STDOUT, b"before");
+            assert!(matches!(dialed.outputs[0].next_record(), Ok(Got::Record { .. })));
+            serving.outputs[STDOUT].1.abort();
+            assert_eq!(dialed.outputs[0].next_record(), Err(Fault::Revoked));
+            let epipe = std::num::NonZeroU16::new(32).unwrap();
+            assert_eq!(dialed.inputs[0].write(b"ab").unwrap(), 2);
+            assert_eq!(dialed.inputs[0].abort(epipe).unwrap(), (2, InputEnd::Aborted(32)));
+            serving.submit(STDERR, b"still");
+            assert!(matches!(dialed.outputs[1].next_record(), Ok(Got::Record { .. })));
+            dialed.hangup.hangup();
+            assert_eq!(dialed.outputs[1].next_record(), Err(Fault::Lost(Ended::Local)));
+            driver.join().unwrap().unwrap();
+        }
+
+        /// The controller's windows are its lanes' own, from the endpoint's admissions: what
+        /// the endpoint sends on each before it is read, summed; what it sends on each, summed;
+        /// no stream the endpoint may open; the least patience and the largest handshake.
+        #[test]
+        fn the_controllers_windows_are_its_lanes_own_summed() {
+            let slow = Admitted {
+                patience: tls::QUIET,
+                ..admitted(50, input::TAKEN_BYTES)
+            };
+            let (link, windows) = super::super::drive::windows(Subscriptions {
+                outputs: &[
+                    (output(Channel::Stdout), out_admitted(), 0),
+                    (output(Channel::Stderr), out_admitted(), 7),
+                ],
+                inputs: &[(stdin(), slow, 0)],
+            })
+            .unwrap();
+            let ack = 5 + 8;
+            assert_eq!(
+                windows,
+                Windows {
+                    stream: RECORD + DATA_HEAD,
+                    connection: 2 * (RECORD + DATA_HEAD) + input::TAKEN_BYTES,
+                    send: (2 * (managed::CONTROL_BYTES + ack)
+                        + input::SUBSCRIBE_BYTES
+                        + input::RECORD_HEAD
+                        + 50
+                        + input::END_BYTES) as u64,
+                    streams: 0,
+                }
+            );
+            assert_eq!(link.patience, tls::IDLE);
+            assert!(matches!(
+                super::super::drive::windows(Subscriptions {
+                    outputs: &[],
+                    inputs: &[]
+                }),
+                Err(managed::Error::Admission(AdmissionError::Capacity))
             ));
         }
     }
