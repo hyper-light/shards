@@ -72,6 +72,7 @@ mod logs;
 mod managed;
 mod metrics;
 mod moves;
+pub(crate) use moves::Refused;
 mod network;
 mod networks;
 mod packed;
@@ -14890,6 +14891,46 @@ mod tests {
             say(&plain_vm, kind::DONE, &[0]);
             drop(plain_vm);
             joined(plain.run).unwrap();
+        });
+    }
+
+    /// A move's `ready` step (D176 part 6) refuses a microVM another hypervisor ran, before
+    /// it asks anything else of the plan: typed on stdout, which the mover matches
+    /// (cli/moves.rs `unready`), and in words on stderr, status 1.
+    #[test]
+    fn a_move_of_another_hypervisors_microvm_is_refused_typed() {
+        let t = Test::new("move-refused");
+        t.run(|t| {
+            let theirs = if shards_vmm::hv::BACKEND == Some("hvf") {
+                "kvm"
+            } else {
+                "hvf"
+            };
+            // Its image at a registry nothing answers at, so that a step that went past the
+            // refusal would fail at once, asking no registry of the world.
+            let plan = serde_json::json!({
+                "id": "a".repeat(64),
+                "name": "web",
+                "image": "127.0.0.1:9/absent",
+                "image_id": format!("sha256:{}", "b".repeat(64)),
+                "arch": std::env::consts::ARCH,
+                "format": shards_vmm::snapshot::FORMAT,
+                "hypervisor": theirs,
+                "snapshot": "s1",
+                "home": "/h",
+                "files": [],
+                "volumes": [],
+                "binds": [],
+            });
+            let (status, out, err) = t.ask(&[shards_ipc::MOVE_STEP, "ready", &plan.to_string()]);
+            assert_eq!(status, 1, "{out}{err}");
+            let refused: moves::Refused = serde_json::from_str(out.trim()).unwrap();
+            assert!(
+                matches!(&refused, moves::Refused::Hypervisor { hypervisor, here, .. }
+                    if hypervisor == theirs && here.as_deref() == shards_vmm::hv::BACKEND),
+                "{refused:?}"
+            );
+            assert_eq!(err, format!("shards: {refused}\n"));
         });
     }
 }
