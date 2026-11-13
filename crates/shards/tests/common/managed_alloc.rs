@@ -266,6 +266,8 @@ mod tests {
         a.allocated(64, AllocationKind::Zeroed, std::ptr::null_mut());
         a.reallocated(8, 128, std::ptr::null_mut());
         let s = a.snapshot();
+        // Independent loads, never one transaction: what every snapshot says of itself.
+        assert_eq!(s.semantics, SnapshotSemantics::ConcurrentNonAtomic);
         assert_eq!(
             (s.alloc_successes, s.alloc_failures),
             (Count::Known(1), Count::Known(1))

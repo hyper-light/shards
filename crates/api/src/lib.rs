@@ -55,7 +55,7 @@ pub use client::{
 pub use judge::{Found, Judge, Rate, Record, Seen, Stall};
 pub use native::{ImageIdentity, NativeBoot, NativeImages, NativeStartup, verify_native_image};
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
-pub use progress::{Awaited, Follow, Followed, Unfollowed};
+pub use progress::{Awaited, Follow, Followed, Unfollowed, Watch};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]

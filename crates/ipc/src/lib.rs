@@ -2333,7 +2333,8 @@ pub use windows::*;
 /// written to must be (an invitation, a home's identity): mode 0600 on Unix; on Windows a
 /// DACL that grants this process's user, and no one else, all of it, protected from what
 /// its directory would give it, where an ACL inherited is whatever the directory's is.
-/// Refused where a file is there already.
+/// Refused where a file is there already. Another open of its user's reads it while this one
+/// holds it, on every host.
 pub fn create_private(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
     {
@@ -2488,6 +2489,27 @@ impl Latch {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    /// A private file its maker still holds is read by another open of its user's, on every
+    /// host, and none is made over it: a run's managed-output record, which the daemon holds
+    /// for the run's life, is how its owner finds the run, and Windows refused the owner's
+    /// read of it as long as the daemon held it (ERROR_SHARING_VIOLATION, CI run 43435318858's
+    /// code_mode_runs_a_program_with_the_callers_grants on windows-2022).
+    #[test]
+    fn a_private_file_its_maker_holds_is_read_by_its_user() {
+        use std::io::Write as _;
+        let dir = shards_testdir::TempDir::new("private").unwrap();
+        let path = dir.join("record");
+        let mut held = super::create_private(&path).unwrap();
+        held.write_all(b"shards managed output 1\n").unwrap();
+        held.flush().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"shards managed output 1\n");
+        assert_eq!(
+            super::create_private(&path).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        drop(held);
+    }
+
     /// A run's request to its warm VM goes in one message however long its command's spec,
     /// up to what the run protocol carries in one frame: before, a spec at that bound
     /// could not go.

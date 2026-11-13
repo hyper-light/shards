@@ -7346,7 +7346,21 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     (`a_microvm_under_a_group_is_held_to_its_budget`, M355): 1,254 MiB held under a
     `memory.high` of 998 MiB, given back to 281; past a `memory.max` of 793 MiB, the
     microVM that held 679 MiB of 960 stopped, 137 and OOM-killed, the other running on.
-    Mutation-checked: no give-back; no stop.
+    Mutation-checked: no give-back; no stop. A microVM that may swap (D159: as much again
+    as its memory by default) is held within its room by its guest, whose kernel swaps
+    what passes its run's `memory.high` to its swap window, a file of the host's, whose
+    pages are no part of a footprint (XNU's `phys_footprint` counts anonymous memory and
+    what the compressor holds of it at full size, osfmk/kern/task.c and arm64's pmap.c,
+    xnu f6217f891ac0): its group stays within `memory.max`, and it runs on, as a cgroup's
+    process swaps rather than meet its OOM killer. M355's second microVM had swap, and was
+    stopped only as it held 679 MiB where its group left it at most 512: init holds a run
+    at what it uses as its room is told and that room (`hold_within`), so its first room
+    came after it had grown. At dc7f45bc6 (HVF, 2026-11-13) the same microVM, `-m 1g` and
+    so 1 GiB of swap, held its 768 MiB and slept, the daemon never said its group past its
+    budget again, and no stop came. The test's second microVM has no swap
+    (`--memory-swap` its memory): its guest's `memory.high` slows it and refuses it nothing
+    (cgroup-v2.rst), so it passes `memory.max` whether its room comes before its growth or
+    after, as nothing it holds can go to swap.
   - **Windows** (built): every process of a microVM under NAME is made in a job object of
     NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST, the
     group's first; Job Objects, "Nested Jobs", Windows 8 on), its warm VMs too: a VM
@@ -7813,8 +7827,14 @@ process.
     (GetNamedPipeInfo's out buffer size, `LINE_BUFFER`), each waiting on the client for no
     more than a quota's worth of its reading: a part that finishes at once teaches nothing,
     and one that pends is a take, from its pend (`ERROR_IO_PENDING`, `pipe::write_telling`)
-    to its completion (ROOT, 2026-11-13). WriteQuotaAvailable is no measure of a client's
-    room; it was a closed daemon following its clients' ends alone there, no take seen.
+    to its completion (ROOT, 2026-11-13), where the pipe is connected still as it finishes
+    (`NamedPipeState`, `pipe::connected_now`): Windows 11 finishes a write that pended on a
+    client that then went, `Ok`, its data dropped, and fails the next with ERROR_NO_DATA,
+    where ReactOS's npfs completes it `STATUS_PIPE_BROKEN` (`statesup.c`
+    `NpSetClosingPipeState`); so one that finished as its client went is no take, told no end,
+    and the write fails `BrokenPipe` (PM M553: the line holds its quota exactly, 65,536 bytes,
+    before a part pends). WriteQuotaAvailable is no measure of a client's room; it was a
+    closed daemon following its clients' ends alone there, no take seen.
   - It was twice the longest a piece of 64 KiB took, at least TCP's R2 (100 s, RFC 1122
     §4.2.3.5).
   A slot whose answer's last word is its client's holds it no more: the word is in its FIFO
@@ -8060,14 +8080,19 @@ writable layer's metadata). A figure measured on shards' machines is as arbitrar
 user's host as Docker's.
 
 **Decided.**
-- **A teardown is followed, not timed** (daemon/ends.rs), as a start is (D209): once
-  SIGKILL is sent, by `stop`, `kill`, `rm -f`, `restart` or the daemon's own stop, its VM
-  process is looked at after a slice and each slice after, and waited on while it has run
-  more than an idle microVM does or held less than it did (`Progress`, PM M357's idle
-  CPU); its VM is killed only once it has gone on with nothing of its end for a whole
-  slice. A killed VM process is followed the same way, its host freeing it, before its end
-  is given up on. A joiner's VM is its provider's, which runs the provider's command too:
-  a joiner is held to one slice, then sent SIGKILL again, as before.
+- **A teardown is followed, not timed** (daemon/ends.rs), on D215's judge (the person's
+  rule for waits, 2026-11-13): once SIGKILL is sent, by `stop`, `kill`, `rm -f`, `restart`
+  or the daemon's own stop, its VM process is looked at after a slice and each slice after,
+  and waited on while it goes on with its end: it ran any CPU at all, held less than it did
+  (its host freeing it), or its host held it from running (D215's readers,
+  `shards_api::Watch`: a thread runnable or waiting on memory, a cgroup's pressure grown),
+  which is no stall of its own. Its VM is killed only once it did none of these for a whole
+  slice, or is stopped or frozen. It was PM M357's idle CPU (`Progress`, 63 ms in 10 s),
+  which ended a teardown that ran slower than an idle microVM (red at 2b89e8504:
+  `an_end_goes_on_at_any_rate_and_not_asleep_or_stopped`, a fiftieth of a CPU). A killed VM
+  process is followed the same way, its host freeing it, before its end is given up on. A
+  joiner's VM is its provider's, which runs the provider's command too: a joiner is held to
+  one slice, then sent SIGKILL again, as before.
 - **A network or share process is followed the same way** (2026-11-13, PM M546; the
   person's ruling: a wait follows the party's liveness and progress, then the slowest
   answer seen). Once its VM has gone and its spawner holds nothing of it, it goes as its
@@ -8082,14 +8107,21 @@ user's host as Docker's.
   basis keep it, their own basis owed (R03): init's relay drain (hostbind.rs `DRAIN`), the
   daemon's `PUBLISH_PATIENCE`, and the VM process's wait for its network process's
   unpublish (warm.rs).
-- **The slice is the host's own.** Each end heard is kept in the home (`ends`: `teardown
-  MS`, `exit MS` and `helper MS`, the slowest of each this home's processes have heard: its
-  daemon and its runs' hosts keep one record, each end put with what it holds then, written
-  whole and renamed over), and a slice is the slowest of its kind there, so that a host whose guests
-  stall on its disk for 9 s before they end (PM M419) gives its teardowns that long, and
-  never less than the window over which `Progress` tells a microVM that runs from one
-  that runs nothing (`IDLE_VM_CPU`'s 10 s), which a home with no record yet takes alone:
-  below it a tick of CPU time reads as a run, and a pause of the host's as a stall.
+- **The slice is the host's own, W*.** Each end heard is kept in the home (`ends`:
+  `teardown MS`, `exit MS` and `helper MS`, the slowest of each this home's processes have
+  heard: its daemon and its runs' hosts keep one record, each end put with what it holds
+  then, written whole and renamed over), and a slice is the slowest of its kind there, so
+  that a host whose guests stall on its disk for 9 s before they end (PM M419) gives its
+  teardowns that long. A home with none of a kind yet has no slice (`Ends::slice` is
+  `None`): its end is followed by its process's liveness alone, to the end that teaches
+  it, as the person's rule has a cold wait. `LEAST_SLICE` (`IDLE_VM_CPU`'s 10 s, the floor
+  a home with no record took alone) is gone: D215's readers read CPU to the nanosecond, so
+  no tick of a clock reads as a run, and a pause of the host's is its hold, not a stall
+  (red at 2b89e8504: `a_hosts_ends_are_learned_and_kept_in_its_home`, 10 s of shards' own
+  for a home with no record). Its gap: the first end of a kind a home ever hears, a
+  teardown its guest cannot finish among them, is waited for as long as its process lives;
+  the daemon's own stop and `rm -f` on such a home wait so too. The daemon's tests teach a
+  helper's slice where their stand-ins never end (`heard`), as a home that has heard one.
 - **A signal that cannot be sent kills its VM at once:** the run's connection to its VM
   is gone, the one its guest says its end on, so nothing it could wait for can come.
 - **A joiner's freeze has no deadline** (init's `freeze`): once `cgroup.freeze` is
@@ -8104,17 +8136,23 @@ user's host as Docker's.
   `--stop-timeout` left out is read the same, the time its author gave its command to end
   on its own.
 
-**Tested.** Unit tests (daemon/ends.rs): a home with no record gives each end the least
-slice; each slower end heard is kept, in the home too, and read back by the next daemon; a
-record it cannot read is none; a home's processes keep one record, neither's slower end
-lost to the other's write, and a record that cannot be kept is said; an end is followed
-while its VM process runs, a joiner's never. netproc.rs
+**Tested.** Unit tests (daemon/ends.rs): a home with no record gives no end a slice (it
+gave each the least); each slower end heard is kept, in the home too, and read back by the
+next daemon; a record it cannot read is none; a home's processes keep one record, neither's
+slower end lost to the other's write, and a record that cannot be kept is said; an end is
+followed while its VM process runs, a joiner's never; and one goes on at a fiftieth of a CPU,
+not asleep or stopped (`an_end_goes_on_at_any_rate_and_not_asleep_or_stopped`). netproc.rs
 `a_helper_is_waited_on_while_it_goes_on_with_its_end`: a busy helper is waited on past five
 slices and its end kept, a sleeping one ended at its first look and nothing kept; the
 daemon's `a_network_process_is_ended_once_it_goes_on_no_more_and_the_ports_freed`. On real microVMs, tests/containers.rs `a_kills_end_is_kept_as_this_hosts_in_its_home`:
 a kill's end kept in the home, its VM not killed under it; the stop, kill, pause and
 daemon-stop tests as before. Measured: PM M480 to M482, which validate the method (every
-teardown and freeze measured ends while it is followed) and are no figure of it.
+teardown and freeze measured ends while it is followed) and are no figure of it. On D215's
+judge, at main 68baef2d0 (adas-mac-studio.local, macOS 26.2 arm64, kiln r276): shards-api's
+judge, progress and client tests (53 passed, 3 ignored), the shards bin's ends, reap, network
+process, stop, health, metrics and commands tests (41 passed); clippy -D warnings on macOS,
+x86_64 Linux (shards-api) and x86_64 Windows (cargo-xwin, shards-api and shards). Owed: the
+real-VM kill and stop tests on HVF, KVM and WHP (ROOT's).
 
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
@@ -8338,6 +8376,47 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   Xeon 8573C and 8370C), 2.07 times at most, its slice refaulting none at p50; none of its
   336 ran away, where 7 of 126 did with the share's copy kept within its reads' room alone
   and 31 of 144 on the tree.
+- **Less what its host's own reads need below it** (goal 71's cluster 8). On adacachy2
+  (KVM x86_64, CachyOS, Linux 7.3.3, 32 CPUs, so 32 vCPUs; 237f3ebe7) the FUSE budget
+  E2E's first read held within the least room ran 28 minutes until it was ended: from 60 s
+  to 1,710 s its slice held 127 to 134 MB against a `memory.high` of 123,101,184, 110 to
+  118 MB of it anonymous, under 2.1 MB of files and 15 to 16.5 MB neither; its vCPU threads
+  and its share's reading thread asleep in `__mem_cgroup_handle_over_high`, its reclaim
+  scanning 62 to 247 million pages and its major faults 114,000 to 566,000. Its kernel
+  charges a cgroup ahead of the pages its processes take: a charge takes a batch of 64
+  pages from its counter and leaves what it did not use on its CPU, up to
+  `MEMCG_STOCK_HIGH`, 64 pages a memcg on each CPU (mm/memcontrol.c `try_charge_memcg`,
+  `refill_stock`, Linux 7.4-rc2, 2026-11-12), which `memory.current` counts; reclaim at
+  `memory.high` takes back pages and drains no such stock (`reclaim_high`,
+  `__mem_cgroup_handle_over_high`), which only a write of `memory.high` or `memory.max`
+  below what it holds, or a charge past `memory.max`, does (`memory_high_write`,
+  `try_charge_memcg`). A share's request in flight and its read-ahead are page cache charged
+  to the budget too. The share kept its copy only past that room (`fs::headroom`
+  `reads_room`: 64 pages a host CPU, a request, two read-ahead windows), but every room the
+  daemon told gave it all to the guest, whose run filled it, and what the host's kernel and
+  share charged then had only the guest's own RAM to take back: 2.25 MiB so told on CI's
+  4-CPU runners, which hid it, and 9.25 MiB on 32 CPUs. So the room a budget leaves its
+  microVMs, and a build's builders, is less that room, the share's own derivation shared
+  (`Holding::reads`, read at each count from the host's CPUs online and its page size), and
+  a budget's word says it ("leaves N KiB below it for its host's own reads"). It is a kernel
+  and protocol bound, not a learned value, and has no cold start; it is an upper bound,
+  what its kernel had already charged ahead as the budget was read being counted in what
+  it holds too. One daemon's microVMs under a parent are one spawner's scope (D183), one
+  memcg, counted once. Tested (light): daemon/budget.rs
+  `a_budgets_room_leaves_its_hosts_own_reads_their_room`, a slice whose budget leaves its
+  reads' room past all it holds and the inactive pages beside its mapped ones telling its
+  microVM none, and the rooms of the other budget tests less it; tests/budget.rs's budget
+  short of a lone run counts it as the daemon does. Red at 377d49ca7 with the test
+  (adacachy2, Linux 7.3.3-1-cachyos x86_64, 32 CPUs, rustc 1.98.1): its microVM told
+  9,699,328 bytes, 32 CPUs' reads' room, where none was left; green with the change:
+  shards-vmm's `headroom` tests 4 of 4, shards' `daemon::budget` 8 of 8, clippy of both
+  `--all-targets -D warnings` clean. Not run: the E2E and every real VM, ROOT's. Not
+  settled without a real VM: what else of that slice's overage was the guest's own least
+  room (10.25 MiB on 32 vCPUs, init's `working_room_of`), which a budget short of what its
+  run holds leaves its host to find in what its microVM holds cold, and what was its
+  guest's free pages on its CPUs' lists, which may grow to an eighth of each zone
+  (mm/page_alloc.c `zone_highsize`) and which no report gives back (D151): the
+  measurement is ROOT's.
 - **The share's copy of what its guest reads, kept only within its budgets' room** (PM
   M318). What a share reads for its guest its guest keeps in its own page cache, so the
   copy its host's page cache keeps beside it is a second one, under a budget charged to
@@ -8688,17 +8767,38 @@ budget's word and the next left its microVM within the next, which nothing said:
 41344493548); a give-back whose answer is lost to the daemon's 10 s, its guest giving back as it
 was ended, followed by the budget's word all the same (12 runs of 12 on Fedora, where 3 of
 19 had the daemon say nothing of the budget, PM M391). tests/budget.rs
-`a_microvm_held_to_a_budget_reads_through_fuse_within_twice_its_time_without_one`: runs
+`a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_none`: runs
 restored from their template, its warm microVMs in the slice, read a gigabyte through FUSE
-under a `MemoryHigh` its idle microVMs leave 128 MiB of within twice the time runs under
-none took (medians of 3), alone in its test binary so other daemon tests do not compete
-between its phases (CI 41365265628: 2.06 times beside them; alone, 4 runs of 4 passed on
-Fedora 44, kernel 6.19.10, i9-14900HX, at 49ee67a5 with the host at load 24 to 45, the
-slowest phase's median 0.46 to 1.34 times its run's median under none), a run begun
-under no budget held to one set as it goes within it too, and a run alone in the slice,
-its daemon keeping no warm microVM there, held under a budget short of what the slice holds and its kernel's inactive buffer, by a mebibyte,
-within the least room a run goes on in and reading within it too (where held at what
-they used they read a gigabyte at 0.16 to 0.57 MiB/s, PM M309; with warm microVMs beside
+under a `MemoryHigh` its idle microVMs leave 128 MiB of, each read followed by the marks
+its guest prints as it reads (testguest `read-marked`: as it opens the file and at each MiB
+it crosses) and judged by the reads held to none before it (goal 71's cluster 8; D215's
+shape and the person's ruling of 2026-11-13, "No ×2"): past the slowest of them, from its
+first mark to its last, a read goes on while each window as long reads what their slowest
+MiB keeps over it, and is refused, typed, at the first that does not (`Stalled::Slow`: how
+far it had read, what it read over the window and what it had to, and the record); before
+its first mark, past the slowest start seen, it goes on while its daemon or a microVM
+shows progress (`Stalled::Unstarted`); the first read, with nothing seen before it,
+follows its microVM's liveness alone, to its end. The record is the reads held to none
+alone, never seeded, so that a budget's reads never raise the bound they are judged by.
+Until 237f3ebe7 the medians of 3 were held within twice those under none, a multiple, and
+each read was waited on 600 s and past that while its microVM ran: on adacachy2 (32 CPUs)
+a read held within the least room, its microVM thrashing at its slice's `memory.high`, ran
+28 minutes reading all along, until it was ended by hand. The judge's own test plays reads
+to it (`a_read_is_judged_by_the_pace_of_the_reads_held_to_none`: a crawl refused at its
+second look, a read keeping 16 times the least pace past the bound let through, a cold read
+with a second's stop followed to its end, a start that never comes refused): 1 of 1 on
+adacachy2 (Linux 7.3.3-1-cachyos x86_64, rustc 1.98.1) at 9472ec737, with clippy
+`--all-targets -D warnings` of shards and shards-vmm, and of shards-testguest for
+x86_64-unknown-linux-musl, clean. The E2E itself, on a KVM host with a user's systemd
+manager, is ROOT's. It runs alone in its test binary
+so other daemon tests do not compete between its phases (CI 41365265628: 2.06 times beside
+them; alone, 4 runs of 4 passed on Fedora 44, kernel 6.19.10, i9-14900HX, at 49ee67a5
+with the host at load 24 to 45, the slowest phase's median 0.46 to 1.34 times its run's
+median under none). A run begun under no budget, held to one set as it goes, is judged
+so too, and so is a run alone in the slice, its daemon keeping no warm microVM there,
+held under a budget short of what the slice holds, its kernel's inactive buffer and its
+host's own reads' room, by a mebibyte, within the least room a run goes on in (where held
+at what they used they read a gigabyte at 0.16 to 0.57 MiB/s, PM M309; with warm microVMs beside
 it, the budget ended them for room, and room came back to every run, PM M314): dispatched
 alone on CI, 32 of 32 copies passed on four runner CPUs (PM M318). On macOS and Windows,
 which have no group of processes a user's tools cap, a group shards keeps (D183's slice 3):
@@ -8829,10 +8929,11 @@ stores.
   attributes or in the reply to a SETATTR that sets no size (each notice's touch, D235),
   takes the same path in the guest kernel, which shards' kernel's patch 0007 closes
   (resources/kernel/patches): a DAX file's entries left to its layouts' own breaking. The
-  SETATTR's is closed from the kernel inputs 54fba99afaee on, whose release and pin are owed:
-  until then a notice of a size change to a file a guest process maps in 2 MiB pages lets
-  go of entries the process still maps, `fs/dax.c:415 dax_folio_put` in its guest's log
-  (PM M550).
+  SETATTR's is closed from the kernel inputs 54fba99afaee on, released as
+  kernel-6.18.48-54fba99afaee (kernel.yml run 43459558423) and pinned in `src/kernel.rs` and
+  the tests' `common::kvm_kernel`, each artifact by the release's own name, size and SHA-256:
+  before it a notice of a size change to a file a guest process maps in 2 MiB pages let go of
+  entries the process still maps, `fs/dax.c:415 dax_folio_put` in its guest's log (PM M550).
 - A mapping is charged its file's bytes in its range against the microVM's I/O limits
   (D178) as it is made, once its file's size says them: a 5,000-byte file's range 5,000
   bytes, not the range's 2 MiB, which every file's last range was charged before, and a
@@ -24167,8 +24268,8 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
   - *A DAX file's guest* (D189, PM M550): a touch's SETATTR reply tells the guest's kernel
     the file's size as the host has it, so a reader past a host's cut reads the file's end
     once the notice lands; the kernel dropped a DAX file's entries there unbroken
-    (`fuse_do_setattr`) until shards' patch 0007 covered it (kernel inputs 54fba99afaee,
-    release and pin owed); and a file the host is still writing, looked up by its notice
+    (`fuse_do_setattr`) until shards' patch 0007 covered it (kernel-6.18.48-54fba99afaee,
+    released and pinned); and a file the host is still writing, looked up by its notice
     before it is 1 MiB long, is no DAX file until its guest makes its inode again (owed:
     weighed with how a notice tells of a name the guest has not looked up).
   - *Linux's instances:* one inotify instance a share process (a run that shares any

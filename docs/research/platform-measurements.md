@@ -23188,3 +23188,54 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | Each symptom in CI's or ROOT's logs, before and after; the premise red then green on macOS; the kernel's red/green is ROOT's run with the pin. |
   | R11 | Unix moves the file; Windows refuses the cut, as before. Linux's inotify check is CI's. |
   | R15, R16 | Implementer; light runs on one host; its checkout and target removed after landing. |
+
+### M553. A slot's line on Windows: what it holds before a write waits, and how a waiting write ends as its reader goes (D185)
+
+- **Question.** D185's Windows take (82da06b02) writes a slot's answer in parts no larger than
+  its line's outbound quota, and takes a part's pend for a wait on its client until the part
+  finishes. Does the line hold what GetNamedPipeInfo says before a part pends, and how does a
+  part that pends end when its client goes, rather than reads? ReactOS's npfs completes such a
+  write `STATUS_PIPE_BROKEN` (`statesup.c` `NpSetClosingPipeState` drains the closing end's
+  inbound queue so). On Windows its unit test (`an_answer_is_written_as_its_line_takes_it`)
+  failed: a client dropped as its two-quota answer's second part waited left the write `Ok`
+  (jupiter, at 68baef2d0).
+- **Method.** shards-ipc
+  `slots::named::tests::what_a_line_holds_and_what_a_waiting_write_comes_to_as_its_reader_goes`
+  (ignored, run by hand with `--ignored --nocapture`), both ways of a `slots::joined` line
+  (the client end writing, and the server end, as a slot's answer goes): the writer's
+  GetNamedPipeInfo; parts of a sixteenth of the outbound quota written through
+  `pipe::write_telling`, nothing read, until one pends, the bytes before it what the line held,
+  and PeekNamedPipe's count at the pend; then, on a fresh line, the reader dropped as the first
+  pending part waits, what that write came to, and the next write. Run once on jupiter (Windows
+  11 build 26200, x86_64; `MINGW64_NT-10.0-26200`), at main 68baef2d0 with the test alone added,
+  in a clone and target of its own, removed after.
+- **Found** (each way alike; flags 0x8 for the client end, 0x9 the server's):
+  - GetNamedPipeInfo: out 65,536, in 65,536, the `LINE_BUFFER` the instance was made with.
+  - The line held 65,536 bytes, 16 parts of 4,096, before a part pended: its quota exactly.
+    PeekNamedPipe then said 69,632 bytes, the pending part's among them.
+  - The pending write, its reader dropped: `Ok(4096)`, the whole part, which no reader took.
+    The next write: `ERROR_NO_DATA` (232, "The pipe is being closed").
+- **Decision** (D185's Windows line).
+  - A part's finish is a take only where the pipe is connected still after it: its local
+    information's `NamedPipeState` (`FILE_PIPE_CONNECTED_STATE`, `pipe::connected_now`,
+    NtQueryInformationFile's `FilePipeLocalInformation`). One that finished as its client
+    went teaches nothing, is told no end, and the write fails `BrokenPipe`, as a run's answer
+    to a client gone must end typed, never waiting on it. Taken for a take, it would have
+    taught the time a client that read nothing lived, a W* of that.
+  - Its cost: a client that takes the last of a part and goes at once may be seen gone after
+    that part's finish; its take teaches nothing, and the write says BrokenPipe though its
+    bytes were read. A lesson lost, never a wrong one.
+  - The parts stay the quota GetNamedPipeInfo says: the line holds that much, no more.
+- **Tests.** `an_answer_is_written_as_its_line_takes_it`, its dropped reader asserted as before
+  (`BrokenPipe`, its wait told no end), now on Windows' own finish.
+- **Owed.** The run of `slots::named` on jupiter again (ROOT's); CI's windows-2022.
+- **Rules** (policy cbd392849, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap or panic added to production code; the state query's NTSTATUS is a typed error. |
+  | R02, R03 | Windows' own behaviour, measured once on jupiter; the quota is the line's own; no figure added. |
+  | R04 | A pend's end is a take, or `BrokenPipe` with no end told. |
+  | R09, R10 | Red: the Windows test's failure at 68baef2d0 (`unwrap_err` of `Ok`); the cause measured here. |
+  | R11 | Windows' writer only; Unix's FIFO writer sees its reader's end as EPIPE. |
+  | R15, R16 | Implementer; one light run on jupiter, ROOT's leave; its clone and target removed after. |
