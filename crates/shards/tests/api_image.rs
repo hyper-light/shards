@@ -98,6 +98,19 @@ fn codex() -> MemberName {
     MemberName::harness("codex")
 }
 
+/// The harness's end, held to `expected`; where it is not, the run's own end is said beside
+/// it, which tells a run that ended first (`WithRun`) as stopped, failed in its host's words or
+/// exited (CI run 43303186680: `WithRun` where `Exited(3)` was expected, its cause unsaid).
+fn assert_ended(guest: &dyn ImageGuest, expected: MemberEnd) {
+    let ended = guest.wait_member(&codex(), TIMEOUT).unwrap();
+    assert_eq!(
+        ended,
+        Some(expected),
+        "the run's end: {:?}",
+        guest.wait_for(Duration::ZERO)
+    );
+}
+
 /// Reads `channel` of the harness to its end, within the test's bound.
 fn read_all(guest: &dyn ImageGuest, channel: Channel) -> Vec<u8> {
     let mut pipe = guest.take_output(&codex(), channel).unwrap();
@@ -156,10 +169,7 @@ fn staged_credentials_reach_the_harness_and_its_output_and_end_come_back() {
     );
     assert_eq!(read_all(&*guest, Channel::Stdout), b"sk-orchestrated-0");
     assert_eq!(read_all(&*guest, Channel::Stderr), token);
-    assert_eq!(
-        guest.wait_member(&codex(), TIMEOUT).unwrap(),
-        Some(MemberEnd::Exited(3))
-    );
+    assert_ended(&*guest, MemberEnd::Exited(3));
     // Nothing of the secret lies in the host's home: it went on the channel alone.
     let mut found = Vec::new();
     let mut dirs = vec![home.to_path_buf()];
@@ -314,10 +324,7 @@ fn a_share_at_a_granted_volume_reaches_the_harness() {
     let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
     let said = String::from_utf8(read_all(&*guest, Channel::Stdout)).unwrap();
     assert_eq!(said, "== /work/hello.txt\nfrom the host\n");
-    assert_eq!(
-        guest.wait_member(&codex(), TIMEOUT).unwrap(),
-        Some(MemberEnd::Exited(0))
-    );
+    assert_ended(&*guest, MemberEnd::Exited(0));
 }
 
 /// A guest port the image gives its harness coming in, published on a host port the
@@ -596,10 +603,7 @@ fn a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs() {
         members: None,
     };
     let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
-    assert_eq!(
-        guest.wait_member(&codex(), TIMEOUT).unwrap(),
-        Some(MemberEnd::Exited(0))
-    );
+    assert_ended(&*guest, MemberEnd::Exited(0));
     guest.stop().unwrap();
 }
 
@@ -664,10 +668,7 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
     );
     let said = read_all(guest.as_ref(), Channel::Stderr);
     assert_eq!(said, format!("codex\0echo-end {}", input.len()).into_bytes());
-    assert_eq!(
-        guest.wait_member(&codex(), TIMEOUT).unwrap(),
-        Some(MemberEnd::Exited(0))
-    );
+    assert_ended(&*guest, MemberEnd::Exited(0));
     guest.stop().unwrap();
     // Not asked for: no stdin.
     let home = TempDir::new("api-nostdin-home");

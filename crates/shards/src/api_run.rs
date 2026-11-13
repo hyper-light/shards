@@ -2956,6 +2956,40 @@ mod hosted {
             });
         }
     }
+
+    #[cfg(all(test, unix))]
+    #[allow(clippy::unwrap_used)]
+    mod tests {
+        use super::*;
+
+        /// A run's share process ends as its run ends, by its own going: [`Shares::end`]
+        /// lets go of its door before it waits, and the process, which goes once its
+        /// connection to the VM ends, has gone well before `reap`'s grace ends it (CI run
+        /// 43230466376, its run host in `do_wait` with the door still held, 56 minutes).
+        /// The process here is a shell that reads its door to its end and then says so in a
+        /// file, which one killed at the grace's end never writes.
+        #[test]
+        fn a_share_process_goes_as_its_door_is_let_go_of() {
+            let dir = shards_testdir::TempDir::new("share-end").unwrap();
+            let said = dir.join("gone");
+            let (door, theirs) = Stream::pair().unwrap();
+            let script = OsStr::new("read -r _ <&3; : >\"$0\"");
+            let args = [OsStr::new("-c"), script, said.as_os_str()];
+            let child = shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[(theirs.as_fd(), 3)], false, &[])
+                .unwrap();
+            drop(theirs);
+            Shares {
+                child,
+                door,
+                notices: None,
+            }
+            .end();
+            assert!(
+                said.exists(),
+                "the share process was ended at the grace's end, not by its door's"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

@@ -838,7 +838,9 @@ pub fn min_memory_mib(arch: &str) -> u64 {
 }
 
 /// Guest memory's unit, in MiB: shards-vmm boots an even number of MiB alone (`ram_bytes`
-/// in `vm/aarch64.rs`, `ram_ranges` in `vm/x86_64.rs`).
+/// in `vm/aarch64.rs`, `ram_ranges` in `vm/x86_64.rs`). On arm64 that keeps the DTB at
+/// RAM's top within one 2 MiB block of RAM, as its boot protocol maps it; x86-64 restates
+/// it (docs/design/architecture.md D29, "Its size").
 const MEMORY_UNIT_MIB: u64 = 2;
 
 /// A MiB in bytes. shards-vmm counts a guest's memory in bytes in a u64 (the same

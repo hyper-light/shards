@@ -2076,6 +2076,49 @@ devices. The code is `crates/vmm/src/memory.rs`.
   The initrd sits at the top of low RAM, beside what the guest kernel takes there from
   the top down, as Firecracker and QEMU place it. arm64's boot is unmeasured. A run's
   restore maps its memory file, on small pages.
+- **Its size: whole 2 MiB blocks, an even number of MiB** (`ram_bytes` in
+  `vm/aarch64.rs`, `ram_ranges` in `vm/x86_64.rs`, since c2622c656 and 4dd27991d). Its
+  derivation was recorded on 2026-11-13 (R03), once shards-api's `envelope` came to expose
+  the unit (D215).
+  - *arm64* (HVF, KVM and WHP alike) derives it from its boot protocol. The VMM writes the
+    DTB in RAM's last `FDT_MAX` (`fdt_addr = DRAM_BASE + ram - FDT_MAX` in `vm/aarch64.rs`'s
+    `build_reported`), the most a DTB may be: 2 MiB (booting.rst §2 l. 53-54;
+    `MAX_FDT_SIZE`, arch/arm64/include/asm/boot.h l. 13). The kernel maps the DTB "cacheable
+    using blocks of up to 2 megabytes", so no 2M region it is mapped in may need other
+    attributes (booting.rst l. 54-56).
+  - Before Linux 6.4, `fixmap_remap_fdt` mapped the DTB in whole `SWAPPER_BLOCK_SIZE`
+    blocks (2 MiB with 4 KiB pages), from its address rounded down to its end rounded up
+    (arch/arm64/mm/fixmap.c l. 162-178 at 414c109bdf49^; 414c109bdf49 made it
+    page-granular, v6.4-rc1). Linux 7.2's `map_fdt` maps [dtb, dtb + 2 MiB)
+    (arch/arm64/kernel/pi/map_kernel.c l. 200-215). A managed guest boots its caller's own
+    kernel, of any version (D215).
+  - With `DRAM_BASE` on a 2 MiB boundary (0x8000_0000, arch/aarch64/mod.rs), RAM of whole
+    2 MiB blocks puts the DTB's window on one block of RAM: its last. RAM ending 1 MiB into
+    a block would have a kernel before 6.4 map a DTB longer than 1 MiB in a block half
+    past RAM's end. That half is the hole before the next GiB boundary, where memory to
+    plug and pmem start.
+  - *x86-64* has no requirement of its own: none was found. Its boot puts nothing in a
+    2 MiB window at RAM's top. The e820 map takes any page-aligned size (`boot::e820`). The
+    boot's identity map spans [0, 1 GiB) in 2 MiB pages whatever RAM is
+    (`boot::write_boot_state`). The initrd sits page-aligned at RAM's top
+    (`boot::place_initrd`). KVM asks a slot's size and addresses to be page-aligned alone
+    (virt/kvm/kvm_main.c l. 2015-2021). The rule came with the x86-64 machine (4dd27991d)
+    in arm64's words.
+  - What a RAM end short of a 2 MiB boundary would cost x86-64 is huge mappings of that
+    last part, unmeasured. KVM maps no large page over a slot's partial last huge page
+    (arch/x86/kvm/x86.c l. 13555-13556, `disallow_lpage`). The VMM puts no region's last
+    span short of a huge page on THP (`memory::huge_runs`). The guest reports free memory
+    in whole pageblocks, 2 MiB with 4 KiB pages (include/linux/pageblock-flags.h l. 60-66;
+    D151).
+  - Proposed for x86-64, with ROOT's word before anything changes: either keep 2 MiB as
+    its large page (a PDE that maps a 2-MByte page, Intel SDM Vol. 3A §4.5), the unit those
+    mechanisms work in, and measure what a tail short of it costs; or take x86-64's unit
+    down to the MiB that `memory_mib` counts in.
+  - The least memory each architecture boots in, 64 MiB on arm64 and 128 on x86-64
+    (`MIN_MEMORY_MIB`), rests on its comment alone (a kernel, its bss and early
+    allocations, and on arm64 the DTB's window). No record measures it: owed.
+
+  Linux citations are at 1590cf03 (7.2-rc4) unless a revision is named.
 - **Tests:** `memory::tests` (copies at every alignment of either side to 64 bytes and
   lengths through 200, each way against bytes read alone; copies of 16 and 64 KiB;
   threads taking turns, a nested access refused, ranges in any order, a reused file; the
@@ -22742,9 +22785,11 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
     number of MiB alone); the least, 64 MiB on arm64 and 128 on x86-64 (`MIN_MEMORY_MIB`
     there); and the most, 2^44 - 2 MiB, the last even MiB whose bytes fit the u64 those
     functions count a guest's memory in (`checked_mul(MIB)`).
-  - The unit's derivation is recorded nowhere, neither in a comment nor in a D-entry, since
-    the VMM's first boot (c2622c656, 2026-09-28): it is owed there, under R03. The least's is
-    its comment (a kernel, its bss and early allocations, and on arm64 its DTB window).
+  - The unit's derivation is D29's ("Its size"). On arm64 it comes from the boot protocol:
+    the DTB at RAM's top lies in one 2 MiB block of RAM. On x86-64 it is arm64's rule
+    restated, with no requirement of its own, and a change is proposed there for ROOT's
+    word. The least rests on its comment (a kernel, its bss and early allocations, and on
+    arm64 its DTB window); no measure of it is recorded, so it is owed (D29).
   - Tested (light): lib's `an_envelope_rounds_up_to_the_unit_and_the_least`,
     `an_envelope_past_what_a_u64_holds_is_refused` and
     `check_and_envelope_agree_on_every_case` (each architecture's rule, at every bound and
