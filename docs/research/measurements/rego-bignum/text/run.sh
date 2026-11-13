@@ -1,5 +1,5 @@
 #!/bin/sh
-# PM M525's cases, each its own process: the fuzzer's number through each builtin that
+# PM M536's cases, each its own process: the fuzzer's number through each builtin that
 # answers all of its integer's digits, then floor of 1eD for D up to Go's last finite
 # power of ten (646456992), each time and peak RSS. Run from the repository's root:
 #   sh docs/research/measurements/rego-bignum/text/run.sh [cargo +toolchain]

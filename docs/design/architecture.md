@@ -19834,11 +19834,12 @@ held to more than OPA's answers:
     past which the transforms measured cheaper at every size, s by s and s by 64·s, on
     both hosts: 73 on arm64 macOS, 164 on x86_64 Linux (M536).
   - The converter writes every size. num-bigint's `to_str_radix` measured the cheaper
-    for dense random integers below 44,842 limbs on macOS and below 2^20 on x86_64,
-    whose `div` it divides with. It was not taken there: its division clones its
-    operands at each level, which this decision rules out, and its allocations passed
-    the bound below by 11 to 13% at every size it was given (100 to 2^20 limbs). For the
-    integers builtins write, sparse, the converter is the cheaper: `floor(1e10000000)`
+    for dense random integers below 44,842 limbs on macOS, and to 2^19 limbs at least
+    on x86_64, whose `div` it divides with. It was not taken there: its division clones
+    its operands at each level, which this decision rules out, and where it wrote below
+    2^20 limbs, 56 of the 108 integers `tests/text_memory.rs` holds to the bound passed
+    the bound as it then stood (the larger of the two phases below), by up to 18%. For
+    the integers builtins write, sparse, the converter is the cheaper: `floor(1e10000000)`
     0.49 s here, 5.9 s through num-bigint, on one Mac (M536).
   - The bound. No budget bounds an evaluation: OPA's sets none, buildx's none, and
     this record's evaluation none. So the bound is the evaluation's own memory,
@@ -19855,15 +19856,20 @@ held to more than OPA's answers:
     value's limbs three times (the parts held, a product of them, and what the
     allocator keeps of a chain's freed results), a copy of the largest power for a block
     of ones, and the scratch at 4.5 words a point. Then, on top of those, as an allocator
-    may keep what the conversion gave back (macOS's did: 170 MiB resident for 131.5 MiB
-    of the larger of the two phases), the text and its caller's copy (`Rc<str>` from a
-    String). `tests/text_memory.rs` counts every allocation through a global allocator,
-    at 108 integers dense, sparse and of ones about each level's size: each peak within
-    0.65 of the bound. Whole calls held to it too: Linux's resident and macOS's
-    physical footprint, 0.85 to 0.98 of it. A float's text from its leading digits (`abs`
+    may keep what the conversion gave back (macOS's did: 170.1 MiB of physical footprint
+    for the fuzzer's number, against 131.5 MiB, the larger of the two phases), the text
+    and its caller's copy (`Rc<str>` from a String). `tests/text_memory.rs` counts every
+    allocation through a global allocator, at 108 integers dense, sparse and of ones
+    about each level's size: each peak within 0.65 of the bound, on macOS arm64 and Linux
+    x86_64. Whole calls, one a process (`text/run.sh`), decimal writes from 10^6 digits
+    to Go's last finite power of ten, the process's parse and the harness's JSON copy of
+    the answer counted, past its start: macOS's physical footprint 0.64 to 0.96 of the
+    bound, Linux's resident 0.57 to 0.67. A float's text from its leading digits (`abs`
     and the arithmetic) takes twice its length; `format_int` in bases 2, 8 and 16 twice
-    its length; `bits.*` and `numbers.range*` need and their operands' limbs, refused
-    before those are made; `number::int`, its limbs.
+    its length (the text, reserved exactly, and its copy); `bits.*` and `numbers.range*`
+    need and their operands' limbs, refused before those are made; `number::int`, its
+    limbs. What a caller makes of an answer afterwards (a JSON copy of it) is the
+    caller's.
   - Past the bound, refused, typed (`number::Error::Unholdable`) and named:
     `number too large to write: the text of a N-bit number takes M bytes to make, more
     than the L bytes this evaluation can hold`, an eval_builtin_error of the builtin.
@@ -19873,9 +19879,10 @@ held to more than OPA's answers:
     floor, ceil, round, format_int, bits, rem and units, and 73 readings, Go's
     `Text('p', 0)`, across Go's finite exponents. 1e536870939 through 1e646456992 read as
     Go reads them (ci-rego's `pow5` above). The fuzzer's number through `floor`: 1.7 s
-    and 170 MiB on macOS arm64, 3.9 s and 112 MiB on x86_64 Linux; Go's own way took
-    63.4 s and 447 MB. `floor` of Go's largest finite power of ten, 646,456,993 digits:
-    76 s and 4.2 GiB on macOS, 155 s and 2.5 GiB on Linux.
+    and 170 MiB on macOS arm64 (M4 Max), 4.9 s and 111 MiB on x86_64 Linux (i9-14900HX);
+    Go's `Text` of it took 63.4 s and 447 MB (M524, an M5 Max). `floor` of Go's largest
+    finite power of ten, 646,456,993 digits: 76 s and 4.2 GiB on macOS, 205 s and 2.9 GiB
+    on Linux (M536).
 - Left: a rule whose local-variable rewrite errs is rewritten OPA's way, so an
   erroring rule of `every` statements and comprehensions alternating takes OPA's time.
   Evaluation asks no bound of a policy's time, as OPA's does not (`numbers.range` over

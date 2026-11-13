@@ -1,5 +1,5 @@
 #!/bin/bash
-# CI's fuzz job for PM M531, from a checkout's root on Linux: rego-builtins and rego built
+# CI's fuzz job for PM M536, from a checkout's root on Linux: rego-builtins and rego built
 # as CI builds them (nightly-2026-09-05, cargo-fuzz 0.13.1, AddressSanitizer), each
 # rego-builtins artifact replayed alone with CI's flags, then rego-builtins fuzzed SECS
 # seconds seeded with them all and the fuzzer's number through each builtin that writes an

@@ -1,0 +1,200 @@
+# PM M536: an earlier revision's allocation test and whole calls, kept for the bound's
+# history. Below digits::FROM (2^20 limbs) num-bigint 0.4.8's to_str_radix wrote the
+# integer, and need was the larger of the conversion's peak and the text's.
+# adas-mac-studio-2.local, 2026-11-12 15:46 to 15:51 PST, carrier patch eac633fcb2a5c287
+# on 41e5a0943: crates/rego/tests/text_memory.rs, then text/run.sh.
+applied: eac633fcb2a5c287 on 41e5a09; changed:       26
+host: Darwin 25.2.0 arm64, Apple M4 Max, load: load averages: 6.49 3.86 3.28
+dense 1: 63 bits, 19 digits, peak 59 B, bound 416 B (0.14), 3.11 a digit
+mantissa shifted 1: 109 bits, 33 digits, peak 89 B, bound 568 B (0.16), 2.70 a digit
+ones 1: 64 bits, 20 digits, peak 60 B, bound 440 B (0.14), 3.00 a digit
+half zero 1: 0 bits, 1 digits, peak 25 B, bound 416 B (0.06), 25.00 a digit
+dense 2: 126 bits, 38 digits, peak 94 B, bound 568 B (0.17), 2.47 a digit
+mantissa shifted 2: 164 bits, 50 digits, peak 122 B, bound 880 B (0.14), 2.44 a digit
+ones 2: 128 bits, 39 digits, peak 95 B, bound 880 B (0.11), 2.44 a digit
+half zero 2: 126 bits, 38 digits, peak 94 B, bound 568 B (0.17), 2.47 a digit
+dense 3: 192 bits, 58 digits, peak 138 B, bound 904 B (0.15), 2.38 a digit
+mantissa shifted 3: 221 bits, 67 digits, peak 155 B, bound 1032 B (0.15), 2.31 a digit
+ones 3: 192 bits, 58 digits, peak 138 B, bound 904 B (0.15), 2.38 a digit
+half zero 3: 127 bits, 39 digits, peak 95 B, bound 880 B (0.11), 2.44 a digit
+dense 5: 320 bits, 97 digits, peak 217 B, bound 1080 B (0.20), 2.24 a digit
+mantissa shifted 5: 333 bits, 101 digits, peak 221 B, bound 1080 B (0.20), 2.19 a digit
+ones 5: 320 bits, 97 digits, peak 217 B, bound 1080 B (0.20), 2.24 a digit
+half zero 5: 254 bits, 77 digits, peak 173 B, bound 1056 B (0.16), 2.25 a digit
+dense 24: 1536 bits, 463 digits, peak 943 B, bound 3712 B (0.25), 2.04 a digit
+mantissa shifted 24: 1560 bits, 470 digits, peak 966 B, bound 3712 B (0.26), 2.06 a digit
+ones 24: 1536 bits, 463 digits, peak 943 B, bound 3712 B (0.25), 2.04 a digit
+half zero 24: 1536 bits, 463 digits, peak 943 B, bound 3712 B (0.25), 2.04 a digit
+dense 25: 1595 bits, 480 digits, peak 977 B, bound 3736 B (0.26), 2.04 a digit
+mantissa shifted 25: 1650 bits, 497 digits, peak 1017 B, bound 3760 B (0.27), 2.05 a digit
+ones 25: 1600 bits, 482 digits, peak 986 B, bound 3736 B (0.26), 2.05 a digit
+half zero 25: 1535 bits, 462 digits, peak 943 B, bound 3712 B (0.25), 2.04 a digit
+dense 26: 1664 bits, 501 digits, peak 1021 B, bound 3760 B (0.27), 2.04 a digit
+mantissa shifted 26: 1714 bits, 516 digits, peak 1052 B, bound 3784 B (0.28), 2.04 a digit
+ones 26: 1664 bits, 501 digits, peak 1021 B, bound 3760 B (0.27), 2.04 a digit
+half zero 26: 1664 bits, 501 digits, peak 1021 B, bound 3760 B (0.27), 2.04 a digit
+dense 63: 4030 bits, 1213 digits, peak 6674 B, bound 7416 B (0.90), 5.50 a digit
+mantissa shifted 63: 4040 bits, 1217 digits, peak 6699 B, bound 8288 B (0.81), 5.50 a digit
+ones 63: 4032 bits, 1214 digits, peak 6674 B, bound 7416 B (0.90), 5.50 a digit
+half zero 63: 3967 bits, 1195 digits, peak 6601 B, bound 7392 B (0.89), 5.52 a digit
+dense 64: 4096 bits, 1233 digits, peak 6750 B, bound 8288 B (0.81), 5.47 a digit
+mantissa shifted 64: 4112 bits, 1238 digits, peak 6778 B, bound 8312 B (0.82), 5.47 a digit
+ones 64: 4096 bits, 1234 digits, peak 6750 B, bound 8288 B (0.81), 5.47 a digit
+half zero 64: 4096 bits, 1233 digits, peak 6750 B, bound 8288 B (0.81), 5.47 a digit
+dense 65: 4159 bits, 1252 digits, peak 6820 B, bound 8312 B (0.82), 5.45 a digit
+mantissa shifted 65: 4175 bits, 1257 digits, peak 6851 B, bound 8336 B (0.82), 5.45 a digit
+ones 65: 4160 bits, 1253 digits, peak 6823 B, bound 8312 B (0.82), 5.45 a digit
+half zero 65: 4095 bits, 1233 digits, peak 6747 B, bound 8288 B (0.81), 5.47 a digit
+dense 100: 6400 bits, 1927 digits, peak 9925 B, bound 9176 B (1.08), 5.15 a digit
+mantissa shifted 100: 6432 bits, 1937 digits, peak 9971 B, bound 9176 B (1.09), 5.15 a digit
+ones 100: 6400 bits, 1927 digits, peak 9925 B, bound 9176 B (1.08), 5.15 a digit
+half zero 100: 6400 bits, 1927 digits, peak 9925 B, bound 9176 B (1.08), 5.15 a digit
+dense 1000: 63997 bits, 19265 digits, peak 123346 B, bound 111288 B (1.11), 6.40 a digit
+mantissa shifted 1000: 64024 bits, 19273 digits, peak 109714 B, bound 111312 B (0.99), 5.69 a digit
+ones 1000: 64000 bits, 19266 digits, peak 123346 B, bound 111288 B (1.11), 6.40 a digit
+half zero 1000: 63997 bits, 19265 digits, peak 123346 B, bound 111288 B (1.11), 6.40 a digit
+dense 1023: 65471 bits, 19709 digits, peak 124709 B, bound 111864 B (1.11), 6.33 a digit
+mantissa shifted 1023: 65484 bits, 19713 digits, peak 110705 B, bound 124408 B (0.89), 5.62 a digit
+ones 1023: 65472 bits, 19710 digits, peak 124710 B, bound 111864 B (1.11), 6.33 a digit
+half zero 1023: 65407 bits, 19690 digits, peak 124650 B, bound 111840 B (1.11), 6.33 a digit
+dense 1024: 65536 bits, 19729 digits, peak 124769 B, bound 124432 B (1.00), 6.32 a digit
+mantissa shifted 1024: 65550 bits, 19733 digits, peak 110749 B, bound 124432 B (0.89), 5.61 a digit
+ones 1024: 65536 bits, 19729 digits, peak 124769 B, bound 124432 B (1.00), 6.32 a digit
+half zero 1024: 65536 bits, 19729 digits, peak 124769 B, bound 124432 B (1.00), 6.32 a digit
+dense 1025: 65598 bits, 19747 digits, peak 124843 B, bound 124456 B (1.00), 6.32 a digit
+mantissa shifted 1025: 65642 bits, 19761 digits, peak 110801 B, bound 124480 B (0.89), 5.61 a digit
+ones 1025: 65600 bits, 19748 digits, peak 124844 B, bound 124456 B (1.00), 6.32 a digit
+half zero 1025: 65535 bits, 19728 digits, peak 124769 B, bound 124432 B (1.00), 6.32 a digit
+dense 4095: 262077 bits, 78893 digits, peak 500182 B, bound 445344 B (1.12), 6.34 a digit
+mantissa shifted 4095: 262127 bits, 78908 digits, peak 449069 B, bound 495272 B (0.91), 5.69 a digit
+ones 4095: 262080 bits, 78894 digits, peak 500182 B, bound 445344 B (1.12), 6.34 a digit
+half zero 4095: 262015 bits, 78875 digits, peak 500123 B, bound 445320 B (1.12), 6.34 a digit
+dense 4096: 262144 bits, 78914 digits, peak 500242 B, bound 495272 B (1.01), 6.34 a digit
+mantissa shifted 4096: 262184 bits, 78926 digits, peak 450438 B, bound 495272 B (0.91), 5.71 a digit
+ones 4096: 262144 bits, 78914 digits, peak 500242 B, bound 495272 B (1.01), 6.34 a digit
+half zero 4096: 262144 bits, 78914 digits, peak 500242 B, bound 495272 B (1.01), 6.34 a digit
+dense 4097: 262206 bits, 78932 digits, peak 500316 B, bound 495296 B (1.01), 6.34 a digit
+mantissa shifted 4097: 262257 bits, 78948 digits, peak 449156 B, bound 495320 B (0.91), 5.69 a digit
+ones 4097: 262208 bits, 78933 digits, peak 500317 B, bound 495296 B (1.01), 6.34 a digit
+half zero 4097: 262143 bits, 78913 digits, peak 500241 B, bound 495272 B (1.01), 6.34 a digit
+dense 16383: 1048512 bits, 315634 digits, peak 2001978 B, bound 1778784 B (1.13), 6.34 a digit
+mantissa shifted 16383: 1048542 bits, 315643 digits, peak 1870947 B, bound 1978208 B (0.95), 5.93 a digit
+ones 16383: 1048512 bits, 315634 digits, peak 2001978 B, bound 1778784 B (1.13), 6.34 a digit
+half zero 16383: 1048448 bits, 315615 digits, peak 2001919 B, bound 1778760 B (1.13), 6.34 a digit
+dense 16384: 1048575 bits, 315653 digits, peak 2002037 B, bound 1978232 B (1.01), 6.34 a digit
+mantissa shifted 16384: 1048596 bits, 315659 digits, peak 1739915 B, bound 1978232 B (0.88), 5.51 a digit
+ones 16384: 1048576 bits, 315653 digits, peak 2002037 B, bound 1978232 B (1.01), 6.34 a digit
+half zero 16384: 1048575 bits, 315653 digits, peak 2002037 B, bound 1978232 B (1.01), 6.34 a digit
+dense 16385: 1048637 bits, 315671 digits, peak 2002112 B, bound 1978256 B (1.01), 6.34 a digit
+mantissa shifted 16385: 1048676 bits, 315683 digits, peak 1871091 B, bound 1978256 B (0.95), 5.93 a digit
+ones 16385: 1048640 bits, 315673 digits, peak 2002113 B, bound 1978256 B (1.01), 6.34 a digit
+half zero 16385: 1048575 bits, 315653 digits, peak 2002037 B, bound 1978232 B (1.01), 6.34 a digit
+dense 65535: 4194240 bits, 1262592 digits, peak 8009097 B, bound 7112112 B (1.13), 6.34 a digit
+mantissa shifted 65535: 4194251 bits, 1262596 digits, peak 6960548 B, bound 7909616 B (0.88), 5.51 a digit
+ones 65535: 4194240 bits, 1262593 digits, peak 8009097 B, bound 7112112 B (1.13), 6.34 a digit
+half zero 65535: 4194174 bits, 1262572 digits, peak 8009037 B, bound 7112088 B (1.13), 6.34 a digit
+dense 65536: 4194303 bits, 1262611 digits, peak 8009156 B, bound 7909640 B (1.01), 6.34 a digit
+mantissa shifted 65536: 4194362 bits, 1262629 digits, peak 7484933 B, bound 7909664 B (0.95), 5.93 a digit
+ones 65536: 4194304 bits, 1262612 digits, peak 8009156 B, bound 7909640 B (1.01), 6.34 a digit
+half zero 65536: 4194303 bits, 1262611 digits, peak 8009156 B, bound 7909640 B (1.01), 6.34 a digit
+dense 65537: 4194368 bits, 1262631 digits, peak 8009231 B, bound 7909664 B (1.01), 6.34 a digit
+mantissa shifted 65537: 4194387 bits, 1262637 digits, peak 6960669 B, bound 7909664 B (0.88), 5.51 a digit
+ones 65537: 4194368 bits, 1262631 digits, peak 8009231 B, bound 7909664 B (1.01), 6.34 a digit
+half zero 65537: 4194304 bits, 1262612 digits, peak 8009156 B, bound 7909640 B (1.01), 6.34 a digit
+dense 24576: 1572862 bits, 473479 digits, peak 2568311 B, bound 2177576 B (1.18), 5.42 a digit
+mantissa shifted 24576: 1572891 bits, 473488 digits, peak 2277088 B, bound 2177600 B (1.05), 4.81 a digit
+ones 24576: 1572864 bits, 473480 digits, peak 2559856 B, bound 2177576 B (1.18), 5.41 a digit
+half zero 24576: 1572862 bits, 473479 digits, peak 2571983 B, bound 2177576 B (1.18), 5.43 a digit
+dense 81920: 5242880 bits, 1578264 digits, peak 9145705 B, bound 8308352 B (1.10), 5.79 a digit
+mantissa shifted 81920: 5242916 bits, 1578275 digits, peak 7866619 B, bound 8308376 B (0.95), 4.98 a digit
+ones 81920: 5242880 bits, 1578265 digits, peak 9145705 B, bound 8308352 B (1.10), 5.79 a digit
+half zero 81920: 5242880 bits, 1578264 digits, peak 9145705 B, bound 8308352 B (1.10), 5.79 a digit
+dense 150000: 9599999 bits, 2889888 digits, peak 17291840 B, bound 16278696 B (1.06), 5.98 a digit
+mantissa shifted 150000: 9600046 bits, 2889902 digits, peak 16243318 B, bound 16278720 B (1.00), 5.62 a digit
+ones 150000: 9600000 bits, 2889888 digits, peak 17291840 B, bound 16278696 B (1.06), 5.98 a digit
+half zero 150000: 9599999 bits, 2889888 digits, peak 17291840 B, bound 16278696 B (1.06), 5.98 a digit
+dense 1048575: 67108796 bits, 20201761 digits, peak 128151001 B, bound 113776000 B (1.13), 6.34 a digit
+mantissa shifted 1048575: 67108844 bits, 20201775 digits, peak 96764480 B, bound 126535112 B (0.76), 4.79 a digit
+ones 1048575: 67108800 bits, 20201762 digits, peak 128151002 B, bound 113776000 B (1.13), 6.34 a digit
+half zero 1048575: 67108736 bits, 20201743 digits, peak 128150943 B, bound 113775976 B (1.13), 6.34 a digit
+dense 1048576: 67108864 bits, 20201781 digits, peak 101017488 B, bound 126535112 B (0.80), 5.00 a digit
+mantissa shifted 1048576: 67108926 bits, 20201800 digits, peak 105270336 B, bound 126535136 B (0.83), 5.21 a digit
+ones 1048576: 67108864 bits, 20201782 digits, peak 101016592 B, bound 126535112 B (0.80), 5.00 a digit
+half zero 1048576: 67108864 bits, 20201781 digits, peak 101017488 B, bound 126535112 B (0.80), 5.00 a digit
+dense 100: held 9925 past its bound 9176
+mantissa shifted 100: held 9971 past its bound 9176
+ones 100: held 9925 past its bound 9176
+half zero 100: held 9925 past its bound 9176
+dense 1000: held 123346 past its bound 111288
+ones 1000: held 123346 past its bound 111288
+half zero 1000: held 123346 past its bound 111288
+dense 1023: held 124709 past its bound 111864
+ones 1023: held 124710 past its bound 111864
+half zero 1023: held 124650 past its bound 111840
+dense 1024: held 124769 past its bound 124432
+ones 1024: held 124769 past its bound 124432
+half zero 1024: held 124769 past its bound 124432
+dense 1025: held 124843 past its bound 124456
+ones 1025: held 124844 past its bound 124456
+half zero 1025: held 124769 past its bound 124432
+dense 4095: held 500182 past its bound 445344
+ones 4095: held 500182 past its bound 445344
+half zero 4095: held 500123 past its bound 445320
+dense 4096: held 500242 past its bound 495272
+ones 4096: held 500242 past its bound 495272
+half zero 4096: held 500242 past its bound 495272
+dense 4097: held 500316 past its bound 495296
+ones 4097: held 500317 past its bound 495296
+half zero 4097: held 500241 past its bound 495272
+dense 16383: held 2001978 past its bound 1778784
+ones 16383: held 2001978 past its bound 1778784
+half zero 16383: held 2001919 past its bound 1778760
+dense 16384: held 2002037 past its bound 1978232
+ones 16384: held 2002037 past its bound 1978232
+half zero 16384: held 2002037 past its bound 1978232
+dense 16385: held 2002112 past its bound 1978256
+ones 16385: held 2002113 past its bound 1978256
+half zero 16385: held 2002037 past its bound 1978232
+dense 65535: held 8009097 past its bound 7112112
+ones 65535: held 8009097 past its bound 7112112
+half zero 65535: held 8009037 past its bound 7112088
+dense 65536: held 8009156 past its bound 7909640
+ones 65536: held 8009156 past its bound 7909640
+half zero 65536: held 8009156 past its bound 7909640
+dense 65537: held 8009231 past its bound 7909664
+ones 65537: held 8009231 past its bound 7909664
+half zero 65537: held 8009156 past its bound 7909640
+dense 24576: held 2568311 past its bound 2177576
+mantissa shifted 24576: held 2277088 past its bound 2177600
+ones 24576: held 2559856 past its bound 2177576
+half zero 24576: held 2571983 past its bound 2177576
+dense 81920: held 9145705 past its bound 8308352
+ones 81920: held 9145705 past its bound 8308352
+half zero 81920: held 9145705 past its bound 8308352
+dense 150000: held 17291840 past its bound 16278696
+ones 150000: held 17291840 past its bound 16278696
+half zero 150000: held 17291840 past its bound 16278696
+dense 1048575: held 128151001 past its bound 113776000
+ones 1048575: held 128151002 past its bound 113776000
+half zero 1048575: held 128150943 past its bound 113775976
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 71.76s
+host: Darwin arm64, Apple M4 Max, 41e5a09
+abs [80000000000e00029174680]: 0.052076 s, 29174691 bytes, peak 57.4 MiB (start 1.6), footprint 56.7 MiB, 96916226 bits, bound 137869328 B
+floor [80000000000e00029174680]: 1.692092 s, 29174691 bytes, peak 170.7 MiB (start 1.6), footprint 170.1 MiB, 96916226 bits, bound 137869328 B
+ceil [-80000000000e00029174680]: 1.689878 s, 29174692 bytes, peak 170.7 MiB (start 1.6), footprint 170.1 MiB, 96916226 bits, bound 137869328 B
+round [80000000000e00029174680]: 1.701733 s, 29174691 bytes, peak 170.7 MiB (start 1.6), footprint 170.1 MiB, 96916226 bits, bound 137869328 B
+format_int [80000000000e00029174680,10]: 1.717204 s, 29174693 bytes, peak 178.5 MiB (start 1.6), footprint 177.9 MiB, 96916226 bits, bound 137869328 B
+format_int [80000000000e00029174680,16]: 0.038566 s, 24229059 bytes, peak 73.1 MiB (start 1.6), footprint 72.5 MiB, 96916226 bits, bound 137869328 B
+format_int [80000000000e00029174680,2]: 0.156342 s, 96916228 bytes, peak 281.1 MiB (start 1.6), footprint 280.5 MiB, 96916226 bits, bound 137869328 B
+floor [1e100000]: 0.005498 s, 100001 bytes, peak 4.2 MiB (start 1.5), footprint 3.5 MiB, 332193 bits, bound 521912 B
+floor [1e1000000]: 0.171145 s, 1000000 bytes, peak 12.9 MiB (start 1.5), footprint 12.2 MiB, 3321929 bits, bound 4421112 B
+floor [1e3000000]: 0.906688 s, 3000001 bytes, peak 30.4 MiB (start 1.5), footprint 29.7 MiB, 9965785 bits, bound 16417776 B
+floor [1e10000000]: 5.901663 s, 10000001 bytes, peak 98.6 MiB (start 1.5), footprint 97.9 MiB, 33219281 bits, bound 56761256 B
+floor [1e29174690]: 1.690491 s, 29174690 bytes, peak 170.7 MiB (start 1.5), footprint 170.1 MiB, 96916223 bits, bound 137869328 B
+floor [1e100000000]: 6.659870 s, 100000000 bytes, peak 615.1 MiB (start 1.5), footprint 614.7 MiB, 332192810 bits, bound 530379544 B
+floor [1e200000000]: 15.026163 s, 200000000 bytes, peak 1228.6 MiB (start 1.5), footprint 1228.5 MiB, 664385619 bits, bound 1060757448 B
+floor [1e400000000]: 34.196231 s, 400000001 bytes, peak 2454.8 MiB (start 1.5), footprint 2455.3 MiB, 1328771238 bits, bound 2121513208 B
+floor [1e646456992]: 76.353881 s, 646456993 bytes, peak 4318.1 MiB (start 1.5), footprint 4319.6 MiB, 2147483644 bits, bound 4049075568 B
+floor [80000000000e00029174680]: 1.691594 s, 29174691 bytes, peak 170.7 MiB (start 1.6), footprint 170.1 MiB, 96916226 bits, bound 137869328 B
+floor [80000000000e00029174680]: refused in 0.000028 s, peak 1.7 MiB: number too large to write: the text of a 96916226-bit number takes 137869328 bytes to make, more than the 137869327 bytes this evaluation can hold
+load after: load averages: 3.69 3.37 3.17

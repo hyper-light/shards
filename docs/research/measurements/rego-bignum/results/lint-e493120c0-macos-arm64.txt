@@ -1,0 +1,27 @@
+# PM M536: scripts/lint over the merged tree (e493120c0: origin/main dc7d36014 and carrier
+# patch 62bcd355c1998945), adas-mac-studio.local (macOS arm64), 2026-11-12 16:03 to 16:10
+# PST: "lint exit 0 in 425 s". Its log's section and result lines (aws-lc-sys's
+# compiler-feature probes, warnings by design, left out):
+== format
+== aarch64-apple-darwin
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 46.74s
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.58s
+== x86_64-unknown-linux-gnu
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 35.33s
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.79s
+== aarch64-unknown-linux-gnu
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 37.60s
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.77s
+== x86_64-pc-windows-msvc
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 59.82s
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.16s
+== aarch64-pc-windows-msvc
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 11s
+== x86_64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 16s
+== aarch64-unknown-linux-musl
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 16s
