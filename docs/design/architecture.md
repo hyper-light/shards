@@ -24586,7 +24586,11 @@ sums. Through the controller over loopback:
 - the control lane answered with the endpoint's own TLS13_AES_256_GCM_SHA384 and its group, an
   ask of more than its tag refused alone and the next answered, and the controller's `Link` the
   same at both ends, its member's lanes going on beside it (`tls::tests`: a negotiation the
-  provider's for that suite alone, AES-128-GCM and ChaCha20-Poly1305 not).
+  provider's for that suite alone, AES-128-GCM and ChaCha20-Poly1305 not);
+- what it was granted as it dialed named as Shards names its lanes (`Dialed::lanes`,
+  `Granted::name`: `control`, `stdout:N`, `stderr:N`, `stdin:N`, `exec`, `socket`, `mcp:N`, N
+  the member's index), what a session's report of its link says (goal 60's `lanes`); `mcp:N`
+  comes with D254's run side, where a run asks a member's bridge.
 
 In the daemon (`daemon::managed::tests`): the annotation asked for by its last value, any value
 but `true` or `false` refused; a run's endpoint of a key its own, two runs two keys, serving
