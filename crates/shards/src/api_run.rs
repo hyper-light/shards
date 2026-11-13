@@ -834,6 +834,22 @@ fn run_end(failed: Option<String>, done: Option<&[u8]>, started: bool) -> wire::
     }
 }
 
+/// What a run's VM told of its end on its link (warm.rs `finish`): whether its command started
+/// (`STARTED`), why the VM could not serve its run, where it could not, and its `DONE`.
+#[derive(Debug, Default)]
+struct Told {
+    started: bool,
+    unserved: Option<String>,
+    done: Option<Vec<u8>>,
+}
+
+impl Told {
+    /// The run's end, its VM's link closed, or broken as `failed` says.
+    fn end(self, failed: Option<String>) -> wire::RunEnd {
+        run_end(failed, self.done.as_deref(), self.started)
+    }
+}
+
 /// How the orchestrator's asks of a run ended (D231): its `STOP`; or the run failed as they
 /// were served, for the reason given.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3077,8 +3093,7 @@ mod hosted {
     /// as the VM takes it, the run's end from its `DONE` (`super::run_end`), and whether its
     /// `DONE` came.
     fn follow(live: &Live<'_>, link: &Stream) -> (RunEnd, bool) {
-        let mut done = None;
-        let mut started = false;
+        let mut told = super::Told::default();
         let failed = loop {
             let m = match shards_ipc::recv(link) {
                 Ok(Some(m)) => m,
@@ -3086,9 +3101,9 @@ mod hosted {
                 Err(e) => break Some(format!("the VM's link: {e}")),
             };
             if m.kind == kind::DONE {
-                done = Some(m.payload);
+                told.done = Some(m.payload);
             } else if m.kind == kind::STARTED {
-                started = true;
+                told.started = true;
                 // Its guest told what its host changes in its shares from now on (D235).
                 if let Some(pipe) = lock(&live.notices_due).take() {
                     match notice_exec(live, pipe) {
@@ -3135,8 +3150,8 @@ mod hosted {
         for member in members {
             end_input(live, member);
         }
-        let said = done.is_some();
-        (super::run_end(failed, done.as_deref(), started), said)
+        let said = told.done.is_some();
+        (told.end(failed), said)
     }
 
     /// The orchestrator's asks, until its channel closes: credit, stats, stop. A channel
@@ -4065,6 +4080,32 @@ mod tests {
             wire::RunEnd::Failed("the VM's link: reset".into())
         );
         assert!(matches!(run_end(None, None, false), wire::RunEnd::Failed(_)));
+    }
+
+    /// Do end a run whose VM could not serve it, as warm.rs `finish` tells it: why, then a
+    /// `DONE` of the status a client exits with then (125), its command started or not; and
+    /// one whose link broke after the VM said why. Expect: a failure in the VM's words each
+    /// time, never the command's exit (api_image on HVF at 2b89e8504: `Exited(125)`, nothing
+    /// said, its harness's output read whole).
+    #[test]
+    fn a_vm_that_could_not_serve_its_run_ends_it_failed_in_its_words() {
+        let why = "the guest stopped before the command ended: Connection reset by peer";
+        let unserved = |started: bool| Told {
+            started,
+            unserved: Some(why.into()),
+            done: Some(vec![125]),
+        };
+        let failed = wire::RunEnd::Failed(format!("its VM could not serve its run: {why}"));
+        assert_eq!(unserved(true).end(None), failed);
+        assert_eq!(unserved(false).end(None), failed);
+        assert_eq!(unserved(true).end(Some("the VM's link: reset".into())), failed);
+        // One that served its run has its command's end, as before.
+        let served = Told {
+            started: true,
+            unserved: None,
+            done: Some(vec![125]),
+        };
+        assert_eq!(served.end(None), wire::RunEnd::Exited(125));
     }
 
     /// Do end the orchestrator's asks by its `STOP`; by its channel's end without one; by a
