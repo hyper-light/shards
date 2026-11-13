@@ -2260,7 +2260,7 @@ mod hosted {
         #[cfg(windows)]
         let lane = {
             drop(fds);
-            (|| {
+            (|| -> Result<_, String> {
                 let (ours, theirs) = handed_pair().map_err(|e| e.to_string())?;
                 let shared = theirs.share().map_err(|e| e.to_string())?;
                 shards_ipc::send(&lock(&live.link), kind::LANE_HELD, &held, &[shared.as_fd()])
