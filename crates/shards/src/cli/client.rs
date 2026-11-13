@@ -1135,7 +1135,9 @@ fn unread(e: &io::Error) -> bool {
 }
 
 /// Asks the daemon of `home` to exit once the runs in hand are handed over, and waits
-/// until it has: the daemon holds the request's slot open until it exits.
+/// until it has let go of its home: its slot's end alone, which it holds back until then,
+/// is no word of that where a RESTART or no slot answers, or the slot ends early; the lock
+/// a closed daemon holds until then is ([`await_stopping`], D185).
 pub fn stop(home: &Path) -> ExitCode {
     match std::env::set_current_dir(home) {
         Ok(()) => {}
@@ -1149,39 +1151,83 @@ pub fn stop(home: &Path) -> ExitCode {
 /// [`stop`] of the daemon of the home `here` names: `home`, by this process's working
 /// directory.
 fn stop_at(here: &Path, home: &Path) -> ExitCode {
-    use shards_ipc::slots;
+    use shards_ipc::{Named, slots};
     for _ in 0..RESTARTS {
         let client = match slots::take(here, 0) {
             Ok(slots::Taken::Slot(client)) => client,
-            // No slot offered: a daemon of a build from before slots, or none.
+            // No slot offered: a daemon that has closed, waited for until it has let go of
+            // its home; then a daemon of a build from before slots, or none.
             #[cfg(unix)]
-            Ok(slots::Taken::NoDaemon) => return stop_socket(here, home),
-            // No slot offered: no daemon, Windows' first having slots.
+            Ok(slots::Taken::NoDaemon) => {
+                return await_stopping(here).map_or_else(|e| failed(&e), |_| stop_socket(here, home));
+            }
+            // Windows' first daemon had slots.
             #[cfg(windows)]
-            Ok(slots::Taken::NoDaemon) => return ExitCode::SUCCESS,
+            Ok(slots::Taken::NoDaemon) => {
+                return await_stopping(here).map_or_else(|e| failed(&e), |_| ExitCode::SUCCESS);
+            }
             Err(e) => return failed(&format!("{}: {e}", home.join(slots::DIR).display())),
         };
+        // The daemon this slot is of, as the home names the one that holds it.
+        let asked = Named::read(&here.join(shards_ipc::PID));
         match client.ask(kind::STOP, &[], &[]) {
             // Removed as it was asked: the next.
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => continue,
             Err(e) => return failed(&format!("asking the daemon to stop: {e}")),
             Ok(()) => {}
         }
-        // Its end, waited for as long as it ends its runs, each as its stop timeout says
-        // (D217): the slot is the daemon's until it exits.
-        return match client.recv() {
-            // Its end. Closing already, or stepping aside for another build's client, it
-            // exits all the same.
-            Ok(None) => ExitCode::SUCCESS,
-            Ok(Some(f)) if f.kind == kind::RESTART => ExitCode::SUCCESS,
-            Err(_) => ExitCode::SUCCESS,
-            Ok(Some(f)) => failed(&format!(
-                "the daemon answered its stop with message kind {}",
-                f.kind
-            )),
-        };
+        // Its end, which a daemon that took the stop holds back until it has let go of its
+        // home (`stoppers`); or RESTART, from one closed already, or one that serves on, its
+        // request cut or no descriptor left for it. Neither is word of its exit: a stop its
+        // daemon closed for, or one it found closed, waits for that daemon's own.
+        match client.recv() {
+            Ok(None) | Err(_) => {}
+            Ok(Some(f)) if f.kind == kind::RESTART => {}
+            Ok(Some(f)) => {
+                return failed(&format!(
+                    "the daemon answered its stop with message kind {}",
+                    f.kind
+                ));
+            }
+        }
+        drop(client);
+        match await_stopping(here) {
+            Ok(true) => return ExitCode::SUCCESS,
+            Ok(false) => {}
+            Err(e) => return failed(&e),
+        }
+        // None closed: the daemon asked has exited, or holds its home still, serving on, the
+        // request not taken; asked again, after its answer, as long as RESTARTS allows.
+        if asked.is_some_and(|asked| asked.lives() && Named::read(&here.join(shards_ipc::PID)) == Some(asked))
+        {
+            continue;
+        }
+        return ExitCode::SUCCESS;
     }
     failed("the daemon kept asking for a restart")
+}
+
+/// Waits until a daemon of the home `here` names that has closed, and ends its runs, has let
+/// go of its home: it holds [`shards_ipc::STOPPING_LOCK`], a file it made anew as it closed,
+/// until it has unlocked the home (daemon.rs `close`, `finish`), and a shared lock of it is
+/// had once it has. No daemon that serves holds it, so this waits on none but one that
+/// stops: never a next daemon's lock of the home. Whether one had closed.
+fn await_stopping(here: &Path) -> Result<bool, String> {
+    let path = here.join(shards_ipc::STOPPING_LOCK);
+    let held = match File::open(&path) {
+        Ok(held) => held,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    held.lock_shared().map_err(|e| {
+        format!(
+            "waiting for the daemon to let go of its home, {}: {e}",
+            path.display()
+        )
+    })?;
+    // Let go of before its file closes (M244).
+    let _ = held.unlock();
+    Ok(true)
 }
 
 /// [`stop`] of a daemon of a build from before slots (D185), through its socket in `here`.

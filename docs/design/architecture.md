@@ -1325,10 +1325,11 @@ for the exit status.
   - A client of another build, told apart by its binary's file identity, gets
     `RESTART`. The daemon removes its socket, ends its runs as `shards daemon stop`
     does, and exits; the client starts its own, which takes the home once the old one
-    has gone. A daemon ending its runs names itself in `daemon.stopping` first, and the
-    new daemon and the client wait while that process lives, however long its runs'
-    stop timeouts make it; otherwise a daemon waits 20 s for another's lock, and a
-    client 30 s for its daemon to listen.
+    has gone. A daemon ending its runs names itself in `daemon.stopping` first, as it
+    closes for any reason, and the new daemon and the client wait while that process
+    lives, however long its runs' stop timeouts make it; otherwise a daemon waits 20 s
+    for another's lock, and a client 30 s for its daemon to listen. `daemon stop` waits on
+    the lock it holds beside it until it has let go of the home (D185, *A stop's wait*).
   - It follows each run to its end. The warm VM tells the daemon of its command's start
     (`STARTED`) before its client has any of the command's output, and of its end
     (`DONE`) before its client has the status; a Unix socket's send puts a message in
@@ -7657,7 +7658,7 @@ descriptors.
   its list `free` has a reader, the daemon's own (`slots::served`): a starting daemon
   waiting for the lock (`take_lock`) and a context's look at its machine ask that, or
   whether an older build's socket answers. `daemon stop` asks through a slot and waits for
-  the slot's end, which comes as the daemon exits, at most 60 s (`Client::recv_within`); the
+  the daemon to let go of its home (*A stop's wait*, below); the
   requests a daemon puts to itself for a context's steps go through slots of its own home
   (`cli::ask_here`), which start no daemon. The default context's endpoint is the Engine
   API's socket, which Docker's clients take.
@@ -7731,6 +7732,31 @@ descriptors.
   write, one reading 16 KiB at a time, 60 ms apart, was let go of a request's time in, 3 s
   in the test, still reading). A stop's slot is not counted: the daemon holds that session
   until its exit, which is how `daemon stop` learns of it.
+- **A stop's wait** (2026-11-13). A daemon holds a stop it took until it has let go of its
+  home (`finish` ends `stoppers` after the home's unlock), but `stop` took any end of its
+  slot for that: a RESTART from a daemon closed already (another stop's word, an idle
+  exit) or no slot offered returned at once while that daemon still ended its runs and held
+  `daemon.lock`, and a RESTART from one serving on (its request cut, no descriptor left) for
+  a stop though nothing stopped. managed_output's HVF run at 4a426c367 showed a stop
+  returned with its daemon still stepping aside, which its single taken stop does not
+  explain and ea6f4b53b did not show again. Now a daemon names itself stopping as it
+  closes, for any reason (`name_stopping`): `daemon.stopping` as before, and
+  `daemon.stopping.lock` (`shards_ipc::STOPPING_LOCK`), a file made beside its name, locked
+  (flock(2), LockFileEx) and renamed there, held until the home's lock is let go of and
+  only then let go of, its name removed last. `stop`, its slot ended, answered RESTART or
+  given none, takes a shared lock of that file where there is one, and so returns once the
+  daemon that stops has let go of its home, whatever its slot said; where there is none
+  and the daemon it asked still holds the home (`daemon.pid`, `shards_ipc::Named`), it asks
+  again after that answer, within `RESTARTS`. No serving daemon holds that file (a starting
+  one removes a dead one's), so a stop never waits on a next daemon's lock of the home, as
+  one blocked on `daemon.lock` could once a successor polling `take_lock` took it first;
+  nor on a process's ID, whose exit Linux watches only from 5.3 (pidfd_open(2)). It is
+  apart from `daemon.stopping`, whose readers (`exiting`) Windows' mandatory byte-range
+  locks would refuse. Held by `a_stop_returns_once_its_daemon_has_let_go_of_its_home`
+  (cli/client.rs: a stand-in daemon, this process, holding the home's lock and, closed,
+  `STOPPING_LOCK`, serving real slots: a session ended early, a RESTART from a closed
+  daemon, no slot, a RESTART from one serving on), red before; and on real VMs by
+  `a_stop_while_another_stops_its_daemon_waits_for_its_home_let_go_of` (tests/daemon.rs).
 - **Whose end a run's client heard** (PM M530). A run's, an exec's and an attach's slot
   passes on what its VM says, so the slot ends both where the VM's connection closes with no
   last word and where the daemon itself ends: a killed daemon closes every slot it served.
