@@ -183,7 +183,10 @@ fn host(answers: &Answers) -> Result<(), No> {
 /// owner's until its request, a warm host's its pool's (D253), so that nothing is served
 /// before it, a save above all (D259), whose microVM's memory is its owner's alone.
 fn before_request(kind: u8) -> No {
-    No(Cause::Request, format!("message kind {kind} before the run's request"))
+    No(
+        Cause::Request,
+        format!("message kind {kind} before the run's request"),
+    )
 }
 
 /// The nesting grant's deadline (D234) as an instant, made as the request reaches this
@@ -1593,7 +1596,8 @@ fn destination(
         return Err(refused(format!("{}: names no directory to make", to.display())));
     };
     let parent = std::fs::canonicalize(parent).map_err(|e| refused(format!("{}: {e}", parent.display())))?;
-    let home = std::fs::canonicalize(home).map_err(|e| refused(format!("the run's home {}: {e}", home.display())))?;
+    let home = std::fs::canonicalize(home)
+        .map_err(|e| refused(format!("the run's home {}: {e}", home.display())))?;
     if !parent.starts_with(&home) {
         return Err(refused(format!(
             "{}: outside the run's home, {}",
@@ -1635,7 +1639,10 @@ fn made(target: &std::path::Path) -> Result<(), (wire::SaveRefusal, String)> {
                 io::ErrorKind::AlreadyExists => "something is there already".to_string(),
                 _ => e.to_string(),
             };
-            (wire::SaveRefusal::Destination, format!("{}: {why}", target.display()))
+            (
+                wire::SaveRefusal::Destination,
+                format!("{}: {why}", target.display()),
+            )
         })
 }
 
@@ -4011,9 +4018,14 @@ mod hosted {
     /// there, its files handed to the run's VM, which parks its vCPUs, quiets its devices and
     /// its guest, fills them and goes on (`SAVE`, left running), its answer heard by `said`;
     /// then committed, synced and pointed at, as the daemon commits its saves.
-    fn fill(live: &Live<'_>, target: &Path, said: &super::SaveSaid) -> Result<(), (wire::SaveRefusal, String)> {
+    fn fill(
+        live: &Live<'_>,
+        target: &Path,
+        said: &super::SaveSaid,
+    ) -> Result<(), (wire::SaveRefusal, String)> {
         use wire::SaveRefusal as R;
-        let staged = shards_vmm::snapshot::prepare(target, true).inspect_err(|_| lock(&live.saving).unasked());
+        let staged =
+            shards_vmm::snapshot::prepare(target, true).inspect_err(|_| lock(&live.saving).unasked());
         let staged = staged.map_err(|e| (R::Failed, e))?;
         let asked = (|| -> Result<(), (R, String)> {
             let files = staged.handed().map_err(|e| (R::Failed, e))?;
@@ -4021,8 +4033,12 @@ mod hosted {
             // The tokens its guest would dial its host again with, restored from it (D176):
             // fresh, and kept nowhere, as no save of an orchestrator's run is restored.
             let mut tokens = [0u8; 2 * shards_abi::run::TOKEN];
-            shards_vmm::platform::fill_random(&mut tokens).map_err(|e| (R::Failed, format!("its tokens: {e}")))?;
-            let snapshot = target.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+            shards_vmm::platform::fill_random(&mut tokens)
+                .map_err(|e| (R::Failed, format!("its tokens: {e}")))?;
+            let snapshot = target
+                .file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default();
             let mut payload = crate::daemon::snapshots::save_ask(
                 shards_ipc::SAVE_LEAVE_RUNNING,
                 &tokens,
@@ -4442,7 +4458,12 @@ mod hosted {
 
         /// A run's live state as its host holds it, of no members, its VM's link `link` and its
         /// managed output `capture`, kept in `home`.
-        fn live<'a>(answers: &'a super::super::Answers, home: &'a Path, link: Stream, capture: Option<Stream>) -> Live<'a> {
+        fn live<'a>(
+            answers: &'a super::super::Answers,
+            home: &'a Path,
+            link: Stream,
+            capture: Option<Stream>,
+        ) -> Live<'a> {
             Live {
                 answers,
                 ends: Ends::kept_in(home),
@@ -4614,12 +4635,16 @@ mod hosted {
             // A bound on the VM's waits, as the session's tests bound theirs: it decides no
             // result, but ends a run whose save went wrong failing, never hanging, its link
             // closing as its thread goes.
-            vm.set_read_timeout(Some(std::time::Duration::from_secs(120))).unwrap();
+            vm.set_read_timeout(Some(std::time::Duration::from_secs(120)))
+                .unwrap();
             let followed = link.try_clone().unwrap();
             let live = live(&answers, dir.path(), link, None);
             let to = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
             if !shards_vmm::vm::SNAPSHOTS {
-                assert_eq!(save(&live, &to("s1")).err().map(|e| e.0), Some(wire::SaveRefusal::Unsupported));
+                assert_eq!(
+                    save(&live, &to("s1")).err().map(|e| e.0),
+                    Some(wire::SaveRefusal::Unsupported)
+                );
                 return;
             }
             std::thread::scope(|scope| {
@@ -4741,7 +4766,10 @@ mod tests {
         saving.unasked();
         assert!(said.try_recv().is_err(), "a save given up hears nothing");
         saving.answered(b"");
-        assert!(matches!(saving, Saving::Idle), "an answer none asked asks nothing");
+        assert!(
+            matches!(saving, Saving::Idle),
+            "an answer none asked asks nothing"
+        );
         let said = saving.ask().unwrap();
         saving.gone();
         assert_eq!(said.recv(), Err(std::sync::mpsc::RecvError));

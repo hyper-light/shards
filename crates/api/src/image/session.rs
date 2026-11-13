@@ -394,10 +394,11 @@ impl Shared {
                 why: e.to_string(),
             })
             .and_then(|ask| {
-                self.send(wire::to_host::SAVE, &ask).map_err(|e| ImageRefusal::Os {
-                    what: "the run host's save",
-                    kind: e.kind(),
-                })
+                self.send(wire::to_host::SAVE, &ask)
+                    .map_err(|e| ImageRefusal::Os {
+                        what: "the run host's save",
+                        kind: e.kind(),
+                    })
             })
             .and_then(|()| {
                 self.wait(patience, |s| {
@@ -2270,7 +2271,10 @@ mod tests {
         let mut h = hosted(None, &[]);
         let to = "/home/u/.local/share/shards/saves/s1";
         for result in [
-            Err((wire::SaveRefusal::Destination, "outside the run's home".to_string())),
+            Err((
+                wire::SaveRefusal::Destination,
+                "outside the run's home".to_string(),
+            )),
             Ok(()),
         ] {
             let shared = Arc::clone(&h.shared);
