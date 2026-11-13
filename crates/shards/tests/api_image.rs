@@ -12,13 +12,14 @@ mod common;
 
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
-use std::time::Duration;
+use std::num::NonZeroU64;
+use std::time::{Duration, Instant};
 
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 use shards_api::image::{
     Channel, ImageGuest, ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _, Keep, MemberEnd,
-    MemberFile, MemberKind, MemberName, MemberSpec, Narrowing, PlugRefusal, Proto, Publish, RunEnd, Secret,
-    StatsScope,
+    MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto, Publish,
+    RunEnd, Secret, StatsScope,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -183,9 +184,10 @@ fn staged_credentials_reach_the_harness_and_its_output_and_end_come_back() {
 }
 
 /// What would widen the image's grants, or names a member it does not declare or one of
-/// files alone, is refused by type before anything boots: the nesting grant (D234) asked of
-/// an image declaring no NESTING among them, in the daemon's words; and a deadline without
-/// the grant, the request's.
+/// files alone, is refused by type before anything boots: members held apart (D246) that
+/// would reach other than asked among them, the nesting grant (D234) asked of an image
+/// declaring no NESTING, in the daemon's words; and a deadline without the grant, the
+/// request's.
 #[test]
 fn what_the_image_does_not_grant_is_refused_before_boot() {
     if cannot_run_vms() {
@@ -224,6 +226,43 @@ fn what_the_image_does_not_grant_is_refused_before_boot() {
         ..Narrowing::default()
     };
     assert!(matches!(refused(s), ImageRefusal::Widening(_)));
+    // Members held apart (D246), of an image whose harness alone reaches a destination:
+    // that destination kept with the harness let reach nothing, or with the agent of files
+    // alone let reach it too, would let a member reach other than asked; and a member the
+    // image declares not.
+    build(
+        &home,
+        "api-refused:2",
+        &["exit", "0"],
+        "NETWORK --egress=api.example:443 provider FOR codex\n\
+         EXPOSE --harnesses=codex 443 AS egress FOR provider\nCONNECT codex WITH codex ON provider\n",
+    );
+    let apart = |members: Vec<MemberReach>| Narrowing {
+        egress: Keep::Only(Vec::new()),
+        mcp: Keep::Only(Vec::new()),
+        destinations: Keep::Only(vec!["api.example:443".into()]),
+        dns: false,
+        members: Some(members),
+    };
+    let reach = |kind, name: &str, destinations: &[&str]| MemberReach {
+        kind,
+        name: name.into(),
+        destinations: destinations.iter().map(|d| (*d).to_string()).collect(),
+    };
+    for members in [
+        Vec::new(),
+        vec![
+            reach(MemberKind::Harness, "codex", &["api.example:443"]),
+            reach(MemberKind::Agent, "helper", &["api.example:443"]),
+        ],
+    ] {
+        let mut s = spec(&home, "api-refused:2");
+        s.egress = apart(members);
+        assert!(matches!(refused(s), ImageRefusal::Widening(_)));
+    }
+    let mut s = spec(&home, "api-refused:2");
+    s.egress = apart(vec![reach(MemberKind::Harness, "nobody", &[])]);
+    assert!(matches!(refused(s), ImageRefusal::Image(_)));
     let mut s = spec(&home, "api-refused:1");
     s.publish = vec![Publish {
         guest_port: 9000,
@@ -483,6 +522,51 @@ fn the_orchestrators_room_holds_its_run_within_it() {
         .expect("held within the least room");
     assert!(least > 0 && least < held, "held within {least}, short of {held}");
     assert_eq!(guest.room(None, TIMEOUT).unwrap(), None);
+    guest.stop().unwrap();
+    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+}
+
+/// The CPU rate an orchestrator holds its run's vCPUs to (D247) reaches its VM through its
+/// host: a run spinning its one vCPU, held to a quarter of its CPU, runs its guest a quarter
+/// of the time passing, but what a period may overrun and a period's share where the window
+/// and the periods do not line up, and is let go each period; held to its vCPU's whole CPU,
+/// nothing holds it, and the answer says so; told none, its hold is lifted.
+#[test]
+fn the_orchestrators_rate_holds_its_run_to_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-rate-home");
+    build(&home, "api-rate:1", &["spin"], "");
+    let guest = ImageShards::new()
+        .boot(&spec(&home, "api-rate:1"), TIMEOUT)
+        .unwrap();
+    let quarter = NonZeroU64::new(250).unwrap();
+    assert_eq!(guest.rate(Some(quarter), TIMEOUT).unwrap(), Some(quarter));
+    let ran = || {
+        let stats = guest.stats(StatsScope::Run, TIMEOUT).unwrap();
+        stats.microvm.unwrap().guest.unwrap().total_ns()
+    };
+    let (start, before) = (Instant::now(), ran());
+    std::thread::sleep(Duration::from_secs(2));
+    let (used, wall) = (ran() - before, u64::try_from(start.elapsed().as_nanos()).unwrap());
+    // D191's period, 100 ms: a quarter of it the share, and the period's whole share and
+    // what one vCPU overruns before its governor reads at the window's two ends.
+    let most = wall / 4 + 200_000_000;
+    assert!(
+        used <= most,
+        "{used} ns of guest in {wall} ns, held to a quarter CPU"
+    );
+    assert!(
+        used >= wall / 20,
+        "{used} ns of guest in {wall} ns: held, and never let go"
+    );
+    assert_eq!(
+        guest.rate(NonZeroU64::new(1000), TIMEOUT).unwrap(),
+        None,
+        "its one vCPU's whole CPU holds nothing"
+    );
+    assert_eq!(guest.rate(None, TIMEOUT).unwrap(), None);
     guest.stop().unwrap();
     assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
 }

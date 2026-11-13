@@ -36,6 +36,11 @@ pub mod whp;
 #[cfg(hv = "whp")]
 pub use whp::*;
 
+/// Whether a Windows host's hypervisor assigns a host's PCI function, as both WHP backends
+/// ask it (D154).
+#[cfg(any(hv = "whp", test))]
+pub mod assignment;
+
 /// The backend this build drives VMs with, if any.
 pub const BACKEND: Option<&str> = if cfg!(hv = "hvf") {
     Some("hvf")

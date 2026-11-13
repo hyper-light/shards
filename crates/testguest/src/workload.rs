@@ -4374,6 +4374,9 @@ fn confined(args: &[String]) -> i32 {
     ));
     let errno = |e: &io::Error| format!("errno {}", e.raw_os_error().unwrap_or(0));
     let mut mode: &str = "";
+    // `done`: it exits once it has said all, as a command run in a member does, where a
+    // member's own program waits to be ended (`confined-ready`).
+    let mut done = false;
     // The last request `srv-receive` saw: its sender, and its ID.
     let mut asked: Option<(String, String)> = None;
     for a in args {
@@ -4482,6 +4485,7 @@ fn confined(args: &[String]) -> i32 {
             // keeps what it is given does: how the child ended, killed by the signal, or its
             // write's errno as its exit status.
             "pipe" => out.push_str(&format!("confined pipe: {}\n", pipe_child_end())),
+            "done" => done = true,
             // A grandchild let go as daemons are (fork, setsid, fork), named `escaped`,
             // that waits until it is ended.
             "daemonize" => {
@@ -5478,6 +5482,9 @@ fn confined(args: &[String]) -> i32 {
     out.push_str(&format!("confined net={}\n", ifaces.join(",")));
     let _ = io::stdout().write_all(out.as_bytes());
     let _ = io::stdout().flush();
+    if done {
+        return 0;
+    }
     // SAFETY: prctl(2) naming this thread, with a NUL-terminated name of 15 bytes or fewer.
     unsafe { libc::prctl(libc::PR_SET_NAME, c"confined-ready".as_ptr()) };
     loop {

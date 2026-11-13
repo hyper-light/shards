@@ -178,9 +178,18 @@ mod barrier;
 pub mod group;
 mod guest_time;
 pub use guest_time::{GuestTimes, VcpuTime};
+/// A CPU in the hold's unit, the milli-CPU: a rate is a whole CPU's time in thousandths, as
+/// Kubernetes counts CPU, no finer than `1m` ("Resource Management for Pods and Containers",
+/// CPU resource units), and as Hex charges and caps a microVM (`hex_api::MIN_CPU_MILLI`). A
+/// unit, not a tuning: a daemon's whole CPUs are this many of it (D191, D247).
+pub const MILLI_PER_CPU: u64 = 1000;
 #[cfg(any(hv, test))]
 mod hold;
 pub mod live;
+#[cfg(not(target_os = "linux"))]
+mod passthrough;
+#[cfg(not(target_os = "linux"))]
+pub use passthrough::PassthroughRefusal;
 #[cfg(hv)]
 mod runtime;
 #[cfg(hv)]
@@ -192,12 +201,24 @@ pub use runtime::{
 #[cfg(all(hv, target_arch = "aarch64"))]
 pub use aarch64::host_cpu_id;
 
-/// This host's CPU as its hypervisor shows a guest, as AArch64 ID registers (D176 part 6):
-/// none on another architecture's host, whose CPU baseline is not built.
-#[cfg(not(all(hv, target_arch = "aarch64")))]
-pub fn host_cpu_id() -> Result<Vec<(u16, u64)>, String> {
-    Err("a CPU baseline is of arm64 hosts' ID registers, and this host is none".into())
+/// This host's CPU as its hypervisor shows a guest (D176 part 6, D245): on KVM its vendor
+/// and feature leaves, as a CPU baseline names them; on WHP, which restores a snapshot only
+/// on the CPU it was taken on (hv::whp's state.rs), the leaves that say which CPU that is
+/// (`cpuid::IDENTITY`), which a move to another checks before anything moves.
+#[cfg(all(hv, target_arch = "x86_64"))]
+pub fn host_cpu_id() -> Result<crate::arch::cpu::Id, String> {
+    crate::hv::host_cpu_id().map_err(|e| e.to_string())
 }
+
+/// This host's CPU as its hypervisor shows a guest: none in a build that drives no VMs.
+#[cfg(not(all(hv, any(target_arch = "aarch64", target_arch = "x86_64"))))]
+pub fn host_cpu_id() -> Result<crate::arch::cpu::Id, String> {
+    Err("this build drives no VMs: it has no CPU to show a guest".into())
+}
+
+/// Why no CPU baseline is told on the Windows Hypervisor Platform (D245): its restore takes
+/// a snapshot only on the CPU it was taken on.
+pub const NO_BASELINE_ON_WHP: &str = "a CPU baseline is not told on the Windows Hypervisor Platform, which restores a snapshot only on the CPU it was taken on";
 
 #[cfg(not(hv))]
 mod unsupported;
@@ -1290,10 +1311,11 @@ pub struct Config {
     /// every function plugged in. Its snapshot is refused, as its IOMMU's state is no
     /// snapshot's.
     pub pci_slots_iommu: bool,
-    /// The CPU baseline its guest is told (D176 part 6), as AArch64 ID registers by
-    /// encoding, each field the most it may find: every vCPU is told the lower of this
-    /// host's and the baseline's. Empty for none: the host's own.
-    pub cpu_baseline: Vec<(u16, u64)>,
+    /// The CPU baseline its guest is told (D176 part 6), as `arch::cpu` names it (AArch64
+    /// ID registers, each field the most it may find; x86-64's feature leaves, each bit
+    /// one it may have): every vCPU is told the lower of this host's and the baseline's.
+    /// Empty for none: the host's own.
+    pub cpu_baseline: crate::arch::cpu::Id,
 }
 
 /// A device plugged into a running machine (D214): its place on bus 0 (`devfn`, device <<
@@ -1354,21 +1376,25 @@ pub struct VfioFiles {
 /// device is made (WHvCreateVpciDevice's remarks), with no I/O address space of the
 /// guest's own: what a guest's VFIO needs to give the function to a process, so a
 /// workload, or a function plugged in as the microVM runs, behind its IOMMU, is refused
-/// with that limit; outside it, one plugged in is refused with `plug_refused`'s.
+/// with that limit; outside it, one plugged in is refused with `plug_refused`'s. Each
+/// refusal is typed ([`PassthroughRefusal`]); its callers render it where they say it.
 #[cfg(not(target_os = "linux"))]
-pub fn passthrough_refused() -> String {
+pub fn passthrough_refused() -> PassthroughRefusal {
     #[cfg(target_os = "macos")]
-    let why = String::from("macOS's Hypervisor.framework assigns no device to a VM (D154)");
+    {
+        PassthroughRefusal::HypervisorFramework
+    }
     #[cfg(hv = "whp")]
-    let why = match crate::hv::device_assignment_refused() {
-        Some(said) => format!(
-            "{said}; Microsoft supports Discrete Device Assignment, a function dismounted from its host and assigned to a VM, on Windows Server, on server-class hardware that gives Windows the PCIe fabric's control and whose root complex has Access Control Services, its traffic forced through the IOMMU (D154)"
-        ),
-        None => WHP_NO_GUEST_IOMMU.into(),
-    };
+    {
+        match crate::hv::device_assignment_refused() {
+            Some(refused) => PassthroughRefusal::Hypervisor(refused),
+            None => PassthroughRefusal::NoGuestIommu,
+        }
+    }
     #[cfg(not(any(target_os = "macos", hv = "whp")))]
-    let why = check_host().err().unwrap_or_default();
-    format!("this host passes no PCI function through to a microVM: {why}")
+    {
+        PassthroughRefusal::NoBackend(check_host().err().unwrap_or_default())
+    }
 }
 
 impl Vfio {
@@ -1391,8 +1417,9 @@ impl Vfio {
         }
         #[cfg(hv = "whp")]
         {
-            if crate::hv::device_assignment_refused().is_some() {
-                return Err(format!("{name}: {}", passthrough_refused()));
+            let limit = passthrough_refused();
+            if matches!(limit, PassthroughRefusal::Hypervisor(_)) {
+                return Err(format!("{name}: {limit}"));
             }
             if !name
                 .get(..DISMOUNTED.len())
@@ -2122,7 +2149,7 @@ fn passed_through(
     for ((f, place), (device, probed)) in vfio.iter().zip(&places).zip(made) {
         let named = |e: String| format!("{}: {e}", f.name);
         if f.iommu {
-            return Err(named(WHP_NO_GUEST_IOMMU.into()));
+            return Err(named(PassthroughRefusal::NoGuestIommu.to_string()));
         }
         let &Some((slot, function)) = place else {
             return Err(named(
@@ -2166,10 +2193,6 @@ fn passed_through(
     Ok(functions)
 }
 
-/// What WHP gives a function it assigns of the guest's IOMMU: nothing (D154).
-#[cfg(hv = "whp")]
-const WHP_NO_GUEST_IOMMU: &str = "its hypervisor remaps an assigned function's DMA to all of its VM's memory as it assigns it (WHvCreateVpciDevice), with no I/O address space of the guest's own, which a microVM's own VFIO needs to give a workload the function: give it to the VM's kernel instead (`shards run vm --kernel ... --vfio PCIP\\...`; D154)";
-
 /// The host's functions `vfio` made devices of `vm`'s partition, which
 /// [`crate::hv::Vm::assigning`] made, by logical IDs from 1, each with what its BAR
 /// registers read sized; and `vfio` with their 64-bit BARs' sizes, which the PCI bus's
@@ -2197,26 +2220,15 @@ fn assigned_functions(
     Ok((assigned, given))
 }
 
-/// What WHP gives a host's function plugged into a microVM as it runs, outside its IOMMU:
-/// nothing documented (D214). A partition is allowed device assignment as it is made,
-/// before WHvSetupPartition alone (WHvSetPartitionProperty(AllowDeviceAssignment) after it:
-/// E_INVALIDARG, PM M401), and Microsoft documents Discrete Device Assignment for a VM given
-/// its device before it starts and giving it back once stopped (Microsoft Learn, "Deploy
-/// graphics devices by using Discrete Device Assignment", 2026-01-30), WHP's own pages
-/// (WHvCreateVpciDevice and its virtual PCI functions', 2026-06-08) saying nothing of a
-/// device made in a partition that runs.
-#[cfg(hv = "whp")]
-const WHP_NO_PLUG: &str = "Windows gives a microVM a host's function only as it starts: its hypervisor allows a partition device assignment before it is set up alone, and Microsoft documents Discrete Device Assignment for a VM given its device before it starts and giving it back once stopped, its Windows Hypervisor Platform's pages saying nothing of a virtual PCI device made in a partition that runs (WHvCreateVpciDevice): give the function as the microVM starts (`shards run vm --kernel ... --vfio PCIP\\...`; D154, D214)";
-
 /// Why a host's function plugged into a running microVM outside its IOMMU is refused off
 /// Linux (D214): macOS's Hypervisor.framework assigns none at all ([`passthrough_refused`]);
 /// Windows', where its hypervisor assigns devices, at a microVM's start alone
-/// (`WHP_NO_PLUG`), and where it assigns none, its own answer.
+/// ([`PassthroughRefusal::NoPlug`]), and where it assigns none, its own answer.
 #[cfg(all(hv, not(target_os = "linux")))]
-pub(crate) fn plug_refused() -> String {
+pub(crate) fn plug_refused() -> PassthroughRefusal {
     #[cfg(hv = "whp")]
     if crate::hv::device_assignment_refused().is_none() {
-        return WHP_NO_PLUG.into();
+        return PassthroughRefusal::NoPlug;
     }
     passthrough_refused()
 }
@@ -2247,7 +2259,7 @@ fn passed_through(
     _machine: &PciMachine<'_>,
     _routed: &mut PciBus,
 ) -> Result<Vec<crate::devices::pci::Function>, String> {
-    Err(passthrough_refused())
+    Err(passthrough_refused().to_string())
 }
 
 /// KVM as the host of the functions VFIO passes through (D154): its VFIO device told of
@@ -3539,31 +3551,42 @@ mod tests {
     /// `a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one` boots a guest
     /// with one there, on x86_64 and arm64 alike. One plugged into a running microVM is
     /// refused with Windows' documented limit, a function assigned as a VM starts alone,
-    /// where its hypervisor assigns devices, and elsewhere with the host's own (D214).
-    /// Printed: what this host said.
+    /// where its hypervisor assigns devices, and elsewhere with the host's own (D214). Each
+    /// is typed, its variant the host's limit (`PassthroughRefusal`). Printed: what this host
+    /// said.
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn a_hosts_pci_function_is_refused_with_its_oss_own_limit() {
         let limit = passthrough_refused();
         eprintln!("{limit}");
+        #[cfg(target_os = "macos")]
+        assert_eq!(limit, PassthroughRefusal::HypervisorFramework);
+        #[cfg(hv = "whp")]
+        let assigns = match (&limit, crate::hv::device_assignment_refused()) {
+            (PassthroughRefusal::Hypervisor(said), Some(asked)) => {
+                assert_eq!(said, &asked);
+                false
+            }
+            (PassthroughRefusal::NoGuestIommu, None) => true,
+            other => panic!("{other:?}"),
+        };
+        #[cfg(not(any(target_os = "macos", hv = "whp")))]
+        assert!(matches!(limit, PassthroughRefusal::NoBackend(_)), "{limit:?}");
         #[cfg(hv)]
         {
             let plug = plug_refused();
             #[cfg(hv = "whp")]
-            if crate::hv::device_assignment_refused().is_none() {
-                assert_eq!(plug, WHP_NO_PLUG);
-                assert!(
-                    plug.contains("only as it starts") && plug.contains("--vfio PCIP"),
-                    "{plug}"
-                );
+            if assigns {
+                assert_eq!(plug, PassthroughRefusal::NoPlug);
             } else {
                 assert_eq!(plug, limit);
             }
             #[cfg(not(hv = "whp"))]
             assert_eq!(plug, limit);
         }
+        let limit = limit.to_string();
         #[cfg(hv = "whp")]
-        if crate::hv::device_assignment_refused().is_none() {
+        if assigns {
             let dismounted = "PCIP\\VEN_17A0&DEV_9755&SUBSYS_202F1043&REV_01\\4&632F499&0&0012";
             assert_eq!(
                 Vfio::of(dismounted).map(|f| (f.group, f.iommu)),
@@ -3591,18 +3614,5 @@ mod tests {
         ] {
             assert!(refused.ends_with(&limit), "{refused}");
         }
-        let said: &[&str] = if cfg!(target_os = "macos") {
-            &["Hypervisor.framework assigns no device"]
-        } else if cfg!(hv = "whp") {
-            &[
-                "WHvSetPartitionProperty(AllowDeviceAssignment) failed: HRESULT",
-                "VirtualPciDeviceSupport 0",
-                "the Windows Hypervisor Platform is not on this host",
-                "asking the Windows Hypervisor Platform",
-            ]
-        } else {
-            &["no hypervisor backend for this host"]
-        };
-        assert!(said.iter().any(|s| limit.contains(s)), "{limit}");
     }
 }

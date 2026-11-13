@@ -1609,6 +1609,69 @@ fn destinations_are_what_joined_networks_name_and_open() {
     assert_eq!(af::spec(&read), af::spec(&directives));
 }
 
+/// Each member's reach by name (D236, §4.4), as a run host holds it per member (D246). Do:
+/// read an Agentfile whose harness reaches a provider and the host itself on one network, an
+/// agent another provider on its own and a remote MCP server granted it alone, an agent
+/// joining no network, and a remote MCP server granted every agent on a port of its own.
+/// Expect: each member in the order the Agentfile declares it, with its own names alone (its
+/// networks' destinations, then its remote MCP servers'), the harness none of the agents'
+/// MCP servers; and the normalized Agentfile read back as the run host reads it gives each
+/// member the same reach.
+#[test]
+fn each_member_reaches_its_own_names() {
+    use shards_agentfile::agentfile as af;
+    let text = "FROM alpine\nHARNESS codex FROM ./codex\nAGENT helper FROM ./helper\nAGENT idle FROM ./idle\n\
+        NETWORK --egress=api.openai.com:443 --egress=host.docker.internal:7070 provider FOR codex\n\
+        NETWORK --egress=api.example:8443 other FOR helper\n\
+        EXPOSE --harnesses=codex 443 7070 AS egress FOR provider\nEXPOSE --agents=helper 8443 AS egress FOR other\n\
+        CONNECT codex WITH codex ON provider\nCONNECT helper WITH helper ON other\n\
+        MCP web FROM https://mcp.example:9443/sse FOR helper\nMCP all FROM https://every.example:9444/sse\n";
+    let directives = af::resolve_targets(&stage_directives(text)).unwrap();
+    af::connections(&directives).unwrap();
+    af::held(&directives).unwrap();
+    let said = |directives: &[Directive]| -> Vec<(TargetKind, String, Vec<String>)> {
+        af::named_reach(directives)
+            .into_iter()
+            .map(|(kind, name, named)| {
+                let named = named
+                    .iter()
+                    .map(|(host, port)| format!("{}:{port}", String::from_utf8_lossy(host)))
+                    .collect();
+                (kind, String::from_utf8(name).unwrap(), named)
+            })
+            .collect()
+    };
+    let owned = |list: &[&str]| list.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        said(&directives),
+        [
+            (
+                TargetKind::Harness,
+                "codex".to_string(),
+                owned(&["api.openai.com:443", "host.docker.internal:7070"])
+            ),
+            (
+                TargetKind::Agent,
+                "helper".to_string(),
+                owned(&["api.example:8443", "mcp.example:9443", "every.example:9444"])
+            ),
+            (
+                TargetKind::Agent,
+                "idle".to_string(),
+                owned(&["every.example:9444"])
+            ),
+        ]
+    );
+    // As the run host reads the normalized Agentfile back (shards' `agentfile::agentfile`),
+    // which lists its agents before its harnesses: each member's reach the same.
+    let read = af::resolve_targets(&af::from_spec(&af::spec(&directives)).unwrap()).unwrap();
+    let by_member = |mut reach: Vec<(TargetKind, String, Vec<String>)>| {
+        reach.sort_by(|a, b| (a.0 == TargetKind::Harness, &a.1).cmp(&(b.0 == TargetKind::Harness, &b.1)));
+        reach
+    };
+    assert_eq!(by_member(said(&read)), by_member(said(&directives)));
+}
+
 /// What no destination of a network's is, refused by name and why: one let in rather than
 /// reached, of a network carrying no TCP, an all-digit or patterned host, an IPv6 address,
 /// UDP, and the member's own loopback; a port, a range and a Unix socket read as before.

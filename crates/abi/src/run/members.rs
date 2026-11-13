@@ -25,6 +25,11 @@ pub const IMAGE_ENV_KEY: &[u8] = b"image-env=";
 /// `member-ends`, alone: the run's owner hears each member's end
 /// ([`kind::MEMBER_ENDED`](super::kind::MEMBER_ENDED)), which a daemon's run does not ask.
 pub const ENDS: &[u8] = b"member-ends";
+/// `member-terminal=<index>`: the member's stdio is a terminal of its own (plan step 6,
+/// D244), whose master init holds: what the terminal shows is its stdout channel, its
+/// stdin goes to it, and [`builtin::RESIZE`](super::builtin::RESIZE) sizes it. One for a
+/// member at most.
+pub const TERMINAL_KEY: &[u8] = b"member-terminal=";
 /// The variable that names a member's domain to its processes: init's to set
 /// (init domains.rs), never a stager's.
 pub const DOMAIN_VARIABLE: &[u8] = b"SHARDS_DOMAIN";
@@ -58,6 +63,12 @@ pub enum Error {
     Twice,
     /// The entry lacks one of its fields.
     Shape,
+    /// A second member for one exec ([`EXEC_KEY`]).
+    SecondMember,
+    /// A second terminal for one member ([`TERMINAL_KEY`]).
+    SecondTerminal,
+    /// A terminal's size that is not its rows and columns, each a decimal u16.
+    Size,
 }
 
 impl core::fmt::Display for Error {
@@ -71,6 +82,9 @@ impl core::fmt::Display for Error {
             Error::Workdir => "a working directory that is not absolute, plain and within PATH_MAX",
             Error::Twice => "a second working directory for one member",
             Error::Shape => "an entry missing a field",
+            Error::SecondMember => "a second member for one exec",
+            Error::SecondTerminal => "a second terminal for one member",
+            Error::Size => "a terminal size that is not its rows and columns in decimal u16s",
         })
     }
 }
@@ -338,6 +352,165 @@ impl Ended {
             member: u32::from_be_bytes([a, b, c, d]),
             status: u32::from_be_bytes([e, f, g, h]),
         })
+    }
+}
+
+/// `in-member=<index>`: an exec's setup entry that runs its command in the member of that
+/// declared index (plan step 6, D243): born in its PID namespace and cgroup, in the
+/// namespaces of its command, and confined as its command is, with its environment under
+/// the exec's own and its working directory where the exec names none. One at most.
+pub const EXEC_KEY: &[u8] = b"in-member=";
+
+/// The setup entry that runs an exec in member `member`.
+pub fn exec_in(member: u32) -> Vec<u8> {
+    let mut entry = Vec::new();
+    entry.extend_from_slice(EXEC_KEY);
+    push_decimal(&mut entry, member);
+    entry
+}
+
+/// The member an exec's `setup` runs it in, where it names one: every `in-member=` entry
+/// checked, and a second refusing the whole.
+pub fn exec_member(setup: &[Vec<u8>]) -> Result<Option<u32>, Error> {
+    let mut found = None;
+    for value in setup.iter().filter_map(|e| e.strip_prefix(EXEC_KEY)) {
+        if found.replace(decimal(value)?).is_some() {
+            return Err(Error::SecondMember);
+        }
+    }
+    Ok(found)
+}
+
+/// The setup entry giving member `member` a terminal of its own ([`TERMINAL_KEY`]).
+pub fn terminal(member: u32) -> Vec<u8> {
+    let mut entry = Vec::new();
+    entry.extend_from_slice(TERMINAL_KEY);
+    push_decimal(&mut entry, member);
+    entry
+}
+
+/// The members `setup` gives a terminal of their own, in its order: every entry checked,
+/// and a member named twice refusing the whole.
+pub fn terminals(setup: &[Vec<u8>]) -> Result<Vec<u32>, Error> {
+    let mut seen = alloc::collections::BTreeSet::new();
+    let mut found = Vec::new();
+    for value in setup.iter().filter_map(|e| e.strip_prefix(TERMINAL_KEY)) {
+        let member = decimal(value)?;
+        if !seen.insert(member) {
+            return Err(Error::SecondTerminal);
+        }
+        found.push(member);
+    }
+    Ok(found)
+}
+
+/// [`builtin::RESIZE`](super::builtin::RESIZE)'s arguments: the member's index, then its
+/// terminal's rows and columns, each in decimal.
+pub fn resize_args(member: u32, size: super::Size) -> Vec<Vec<u8>> {
+    [member, u32::from(size.rows), u32::from(size.cols)]
+        .into_iter()
+        .map(|n| {
+            let mut arg = Vec::new();
+            push_decimal(&mut arg, n);
+            arg
+        })
+        .collect()
+}
+
+/// The member and the size [`resize_args`] gives, checked: three arguments, the index a
+/// decimal u32, the rows and columns each a decimal u16.
+pub fn parse_resize(args: &[Vec<u8>]) -> Result<(u32, super::Size), Error> {
+    let [member, rows, cols] = args else {
+        return Err(Error::Shape);
+    };
+    let cells = |arg: &[u8]| -> Result<u16, Error> {
+        decimal(arg)
+            .map_err(|_| Error::Size)
+            .and_then(|n| u16::try_from(n).map_err(|_| Error::Size))
+    };
+    let size = super::Size {
+        rows: cells(rows)?,
+        cols: cells(cols)?,
+    };
+    Ok((decimal(member)?, size))
+}
+
+/// Why init ran no command in a member (plan step 6, D243), as its exec's
+/// [`kind::SYSTEM_ERR`](super::kind::SYSTEM_ERR) says after the class
+/// [`exec_failed::MEMBER`](super::exec_failed::MEMBER): a code, what that code carries, then
+/// the words for a person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// No member of that index started in this run.
+    Unknown,
+    /// It runs no process of its own: it has ended.
+    Ended,
+    /// Its cgroup runs as many processes as its `pids.max` lets it.
+    Processes,
+    /// The exec asks for what its member has not: a user, or capabilities, of its own.
+    Widening,
+    /// Its namespaces could not be entered, with the errno.
+    Joining(i32),
+    /// A step of its confinement failed: which (init's `domains::Confining`, by its
+    /// number), and the errno.
+    Confining(u8, i32),
+}
+
+impl Refusal {
+    const UNKNOWN: u8 = 1;
+    const ENDED: u8 = 2;
+    const PROCESSES: u8 = 3;
+    const WIDENING: u8 = 4;
+    const JOINING: u8 = 5;
+    const CONFINING: u8 = 6;
+
+    /// Its code and what it carries, then `words`.
+    pub fn encode(self, words: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(6 + words.len());
+        match self {
+            Refusal::Unknown => out.push(Self::UNKNOWN),
+            Refusal::Ended => out.push(Self::ENDED),
+            Refusal::Processes => out.push(Self::PROCESSES),
+            Refusal::Widening => out.push(Self::WIDENING),
+            Refusal::Joining(errno) => {
+                out.push(Self::JOINING);
+                out.extend_from_slice(&errno.to_be_bytes());
+            }
+            Refusal::Confining(step, errno) => {
+                out.extend_from_slice(&[Self::CONFINING, step]);
+                out.extend_from_slice(&errno.to_be_bytes());
+            }
+        }
+        out.extend_from_slice(words);
+        out
+    }
+
+    /// The refusal `bytes` begins with, and its words; none for a code no refusal has, or
+    /// one cut short.
+    pub fn decode(bytes: &[u8]) -> Option<(Refusal, &[u8])> {
+        let (&code, rest) = bytes.split_first()?;
+        let errno = |b: &[u8]| -> Option<i32> { Some(i32::from_be_bytes(*b.first_chunk::<4>()?)) };
+        Some(match code {
+            Self::UNKNOWN => (Refusal::Unknown, rest),
+            Self::ENDED => (Refusal::Ended, rest),
+            Self::PROCESSES => (Refusal::Processes, rest),
+            Self::WIDENING => (Refusal::Widening, rest),
+            Self::JOINING => (Refusal::Joining(errno(rest)?), rest.get(4..)?),
+            Self::CONFINING => {
+                let (&step, rest) = rest.split_first()?;
+                (Refusal::Confining(step, errno(rest)?), rest.get(4..)?)
+            }
+            _ => return None,
+        })
+    }
+
+    /// Whether init could not start what it would have run (`docker exec`'s 126, an OCI
+    /// runtime's failure), not refused it (`docker exec`'s 1, the daemon's refusal).
+    pub fn not_started(self) -> bool {
+        matches!(
+            self,
+            Refusal::Processes | Refusal::Joining(_) | Refusal::Confining(..)
+        )
     }
 }
 
@@ -625,5 +798,94 @@ mod tests {
         }
         assert_eq!(Ended::decode(&[0; 7]), None);
         assert_eq!(Ended::decode(&[0; 9]), None);
+    }
+
+    /// An exec names one member at most, in the index's one spelling; an exec naming none
+    /// runs where it would.
+    #[test]
+    fn an_exec_names_one_member() {
+        for member in [0, 7, u32::MAX] {
+            assert_eq!(exec_member(&[exec_in(member)]), Ok(Some(member)));
+        }
+        assert_eq!(exec_member(&[b"caps=1".to_vec()]), Ok(None));
+        assert_eq!(exec_member(&[]), Ok(None));
+        assert_eq!(exec_member(&[exec_in(1), exec_in(1)]), Err(Error::SecondMember));
+        for bad in [
+            &b"in-member="[..],
+            b"in-member=01",
+            b"in-member=-1",
+            b"in-member=4294967296",
+        ] {
+            assert_eq!(exec_member(&[bad.to_vec()]), Err(Error::Index), "{bad:?}");
+        }
+    }
+
+    /// A member's terminal is asked once at most, in the index's one spelling; the setup's
+    /// other entries are not terminals.
+    #[test]
+    fn a_member_has_one_terminal_at_most() {
+        let setup = [terminal(2), b"member-ends".to_vec(), terminal(0), exec_in(1)];
+        assert_eq!(terminals(&setup), Ok(vec![2, 0]));
+        assert_eq!(terminals(&[]), Ok(Vec::new()));
+        assert_eq!(terminals(&[terminal(1), terminal(1)]), Err(Error::SecondTerminal));
+        for bad in [
+            &b"member-terminal="[..],
+            b"member-terminal=01",
+            b"member-terminal=x",
+        ] {
+            assert_eq!(terminals(&[bad.to_vec()]), Err(Error::Index), "{bad:?}");
+        }
+    }
+
+    /// A resize's arguments round-trip; a size past a u16, or not three arguments, is
+    /// refused.
+    #[test]
+    fn a_resize_says_its_member_and_size() {
+        let size = super::super::Size { rows: 40, cols: 120 };
+        assert_eq!(parse_resize(&resize_args(3, size)), Ok((3, size)));
+        let most = super::super::Size {
+            rows: u16::MAX,
+            cols: 0,
+        };
+        assert_eq!(parse_resize(&resize_args(u32::MAX, most)), Ok((u32::MAX, most)));
+        let args = |a: &[&[u8]]| a.iter().map(|x| x.to_vec()).collect::<Vec<_>>();
+        assert_eq!(parse_resize(&args(&[b"1", b"65536", b"80"])), Err(Error::Size));
+        assert_eq!(parse_resize(&args(&[b"1", b"24", b"-1"])), Err(Error::Size));
+        assert_eq!(parse_resize(&args(&[b"x", b"24", b"80"])), Err(Error::Index));
+        assert_eq!(parse_resize(&args(&[b"1", b"24"])), Err(Error::Shape));
+        assert_eq!(
+            parse_resize(&args(&[b"1", b"24", b"80", b"9"])),
+            Err(Error::Shape)
+        );
+    }
+
+    /// Every refusal round-trips with its words; one cut short, or of a code no refusal
+    /// has, is none.
+    #[test]
+    fn refusals_round_trip() {
+        for r in [
+            Refusal::Unknown,
+            Refusal::Ended,
+            Refusal::Processes,
+            Refusal::Widening,
+            Refusal::Joining(1),
+            Refusal::Joining(i32::MIN),
+            Refusal::Confining(13, 22),
+            Refusal::Confining(0, -1),
+        ] {
+            for words in [&b""[..], b"agent main: it has ended", b"\0\xff"] {
+                let said = r.encode(words);
+                assert_eq!(Refusal::decode(&said), Some((r, words)), "{r:?}");
+                // Cut anywhere within what the code carries, it is none.
+                let carried = said.len() - words.len();
+                for cut in 0..carried {
+                    assert_eq!(Refusal::decode(&said[..cut]), None, "{r:?} cut at {cut}");
+                }
+            }
+        }
+        assert_eq!(Refusal::decode(&[0]), None);
+        assert_eq!(Refusal::decode(&[7, b'x']), None);
+        assert!(!Refusal::Unknown.not_started() && !Refusal::Widening.not_started());
+        assert!(Refusal::Processes.not_started() && Refusal::Confining(1, 1).not_started());
     }
 }

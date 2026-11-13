@@ -81,3 +81,159 @@ alone. This slice's test reads the harness's stdout as its owner does, through s
 - R11/R12: guest code, the same for every host; HVF run here, the rest owed above.
 - R15: implementer's light runs only; the real-VM suites are ROOT's.
 - R16: nothing reclaimed.
+
+## Slice 2: a command run in a member (D243)
+
+`shards exec vm --for NAME VM CMD [ARG...]` runs CMD in the agent or harness NAME of the
+microVM's image, confined exactly as that member is. The daemon resolves NAME to the member's
+declared index and sends the run protocol's existing exec with one setup entry,
+`in-member=N`. Init (`enter.rs`) is born into the member's PID namespace and its cgroup
+(clone3 `CLONE_INTO_CGROUP`, held to its `pids.max`), enters its other namespaces from a
+pidfd of its command, and confines itself through `domains::confine` with the member's kept
+`Confinement`, the same function the member's own first process runs. Its stdio is pipes,
+or a pty whose peer comes from TIOCGPTPEER, given to the member's uid, resized by the
+existing `EXEC_RESIZE`. What stops it is typed: `members::Refusal` under
+`exec_failed::MEMBER`, said with `docker exec`'s statuses. Design, alternatives and literals:
+D243.
+
+### Light results
+
+On this slice merged with main (the person's rule of 2026-11-13: focused tests, init's on
+Linux, where alone it runs, the rest on one host; ROOT's host rule moved them off adacachy):
+init's at 634d7f22d, whose init and abi differ from the landed tree's in comments alone, the
+rest at 22a710c6a. An earlier round at bb88be4c8 on adacachy passed the same.
+
+| host | what ran | result |
+| --- | --- | --- |
+| Linux x86_64 (adacachy2, rustc 1.98.1) | `cargo clippy -p shards-init --all-targets -- -D warnings` | clean |
+| the same | `cargo test -p shards-init` | 235 passed, 1 ignored (the five `enter::tests` among them) |
+| macOS arm64 (adas-mac-studio-3, M4 Max) | `cargo fmt --all --check` | clean |
+| the same | `cargo clippy -p shards-abi -p shards-ipc -p shards-cmdline -p shards --all-targets -- -D warnings` | clean (tests/member_exec.rs's real-VM tests among what it compiled) |
+| the same | `cargo test -p shards-abi -p shards-ipc -p shards-cmdline` | all pass (abi's `members::tests` among them) |
+| the same | `cargo test -p shards --bin shards -- devices:: spec:: commands:: workload::` | 22 passed (`a_member_exec_takes_nothing_its_member_has_not`, `a_member_is_found_by_its_name`, `a_member_commands_variables_go_as_given_for_init_to_lay_over_its_members` among them) |
+
+### Guards removed (R10)
+
+Each guard this slice adds, removed alone, fails the unit test named; each test passes with
+it in place (adacachy, against this slice's code before its commits were squashed).
+
+| | guard | removed by | test that fails |
+| --- | --- | --- | --- |
+| M1 | the daemon refuses `--privileged` | `if exec.privileged` made false | `daemon::commands::tests::a_member_exec_takes_nothing_its_member_has_not` |
+| M2 | the daemon refuses `--user` | `if !exec.user.is_empty()` made false | the same |
+| M3 | none of the microVM's variables under a member's command's | `if o.member` made false | `spec::tests::a_member_commands_variables_go_as_given_for_init_to_lay_over_its_members` |
+| M4 | one member for one exec | the second `in-member=` let through | `run::members::tests::an_exec_names_one_member` |
+| M5 | no exec names `SHARDS_DOMAIN` | its comparison taken out of `over` | `enter::tests::an_exec_cannot_set_what_init_sets_or_nothing` |
+| M6 | init refuses a user of the command's own | `if !spec.user.is_empty()` made false | `enter::tests::a_member_command_takes_nothing_its_member_has_not` |
+| M7 | init refuses any other setup entry | the `EXEC_KEY` check made false | the same |
+| M8 | a stdio end's owner, or why not | `own`'s fchown result ignored | `enter::tests::a_stdio_end_given_to_another_uid_says_whether_it_was` |
+| M9 | a terminal's peer's owner, or why not | `terminal`'s fchown result ignored | `enter::tests::a_terminal_is_of_its_size_and_its_peer_the_members` |
+| M10 | a terminal's size as asked | its TIOCSWINSZ skipped | the same |
+
+M8 and M9 hold as the tests run, as a user other than root (euid 1000 on adacachy): fchown(2)
+to another uid is refused EPERM, and the functions say so. Run as root, the tests take the
+other arm, where fchown succeeds.
+
+### Run it (ROOT's legs)
+
+    cargo test -p shards --profile test-release --test member_exec
+
+`a_command_run_in_a_member_is_confined_as_the_member_is` (its uid and gid and no group, its
+member's PID namespace, name, capabilities and `no_new_privs`, signals, Landlock on files and
+TCP, seccomp, cgroup and network; another member's files by path, by symlink and by hard
+link refused; nothing of init's held; the other member entered as itself),
+`what_a_member_has_not_is_refused_to_a_command_run_in_it` (no such member, `-u`,
+`--privileged`, a program its `PATH` does not hold) and
+`a_command_run_in_a_member_has_a_terminal_that_resizes`, beside slice 1's
+`a_member_starts_with_every_signal_at_its_default`. Owed, ROOT's: all four on KVM x86_64,
+KVM arm64 (the nested L1 path), HVF and WHP; shards-init's unit tests on arm64 Linux.
+
+### R01–R16, slice 2
+
+- R01: no panic path in production code: errors returned and typed (`enter::Failed`,
+  `members::Refusal`, `devices::NoMember`, `commands::MemberExec`); slices by `get`, the
+  child's report by pattern; clippy's denied lints on the host below.
+- R02: runc v1.5.1 and crun 1.31 read at their sources for joining a container; Docker's
+  exec resize (moby, containerd); setns(2), clone(2), cgroup-v2's PID controller,
+  landlock(7), TIOCGPTPEER(2const), pid_namespaces(7) (D243, and kiln research
+  01a1d2be234e7711a389f3e1d52731db).
+- R03: no chosen number: wire codes and statuses, each with its source in D243's Literals.
+- R04: refusals typed end to end, each with its cause; no new lifecycle state, the member's
+  own ending ends the command (pid_namespaces(7)).
+- R05/R12/R13: the member's start and a command in it share `confine` and `Confinement`, a
+  command shares `born_in` with the run's execs, and the exec takes the run protocol's
+  existing frames; no new channel or manager.
+- R06/R07: `enter::start` refuses in order, then one child that execs or reports a step;
+  comments carry the kernel's and the runtimes' facts.
+- R08/R14: no performance claim; a command in a member costs one clone3, one setns and the
+  member's confinement steps, unmeasured here.
+- R09: a feature, not a defect: no defect to reproduce.
+- R10: above, every guard removed fails its test; the real-VM tests are ROOT's.
+- R11: init's code is Linux's, the same in every guest. Its tests and clippy ran on Linux
+  x86_64, the host's code's on macOS arm64, as the person's rule of 2026-11-13 has it; CI on
+  main runs the eight-target matrix, ROOT's to watch; the real-VM legs owed above.
+- R15: implementer's light runs only.
+- R16: build output under `~/g121-tmp/s6-exec-tty` (adacachy, removed), `~/g121-tmp/s6-member-exec`
+  (adacachy2) and `~/s6-member-exec` (adas-mac-studio-3), removed when the step ends.
+
+## Step 4: a member's own terminal (D244)
+
+shards-api's `MemberSpec::terminal`, refused `Unsupported` until now, gives a member a pty
+of its own: init makes it from its devpts (the peer through TIOCGPTPEER, owned by the
+member's uid), the member's command takes it as its stdin, stdout and stderr and as its
+session's controlling terminal (setsid, TIOCSCTTY), and init holds the master. What the
+terminal shows is the member's stdout channel (`capture::Pipe::master`, its end the kernel's
+EIO); its stderr channel ends at once; its owner's stdin, where asked, is typed into the
+master (`input::Input::terminal`). `ImageGuest::resize` sizes it through the run host
+(channel version 11, `RESIZE`/`RESIZED`) and init's `builtin::RESIZE`, TIOCSWINSZ on the
+master. Design, alternatives and literals: D244.
+
+### Light results
+
+At 8149cebab, this step on main: init's on Linux, where alone it runs, the rest on macOS,
+as the person's rule of 2026-11-13 has it (an earlier round at 225e13850 passed the same).
+
+| host | what ran | result |
+| --- | --- | --- |
+| Linux x86_64 (adacachy2, rustc 1.98.1) | `cargo clippy -p shards-init -p shards-abi --all-targets -- -D warnings` | clean |
+| the same | `cargo test -p shards-init` | 237 passed, 1 ignored (`capture::tests::a_terminals_master_ends_its_channel_as_its_last_other_end_closes`, `input::tests::a_terminals_input_is_typed_into_it_and_its_hangup_ends_it` and `enter::tests::a_terminal_is_of_its_size_and_its_peer_the_members` on real ptys among them) |
+| the same | `cargo test -p shards-abi` | 60 passed (`a_member_has_one_terminal_at_most`, `a_resize_says_its_member_and_size` among them) |
+| macOS arm64 (adas-mac-studio-3, M4 Max) | `cargo fmt --all --check`; `cargo clippy -p shards-abi -p shards-api -p shards --all-targets -- -D warnings` | clean |
+| the same | `cargo test -p shards-abi -p shards-api` | all pass (api's `resizes_and_their_answers_read_back_as_said`, `a_resizes_answer_is_kept_for_its_awaited_ask_alone` and the request's version tests among them) |
+| the same | `cargo test -p shards --bin shards -- api_run::` | 12 passed (`a_terminal_is_a_running_members_once` among them) |
+
+### Run it (ROOT's legs)
+
+    cargo test -p shards --profile test-release --test member_exec a_harness_on_a_terminal_of_its_own
+
+`a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner` (its stdin, stdout and
+stderr a tty, its session's controlling terminal with it in the foreground, 0 by 0, its
+stderr channel empty, `resize` heard as SIGWINCH at 40 by 120) and
+`a_harness_on_a_terminal_of_its_own_reads_what_its_owner_types` (a line typed through its
+stdin echoed and read). Owed, ROOT's: both on KVM x86_64, KVM arm64 (the nested L1 path), HVF
+and WHP.
+
+### R01–R16, step 4
+
+- R01: errors returned and typed (`ImageRefusal::Terminal`, `ImageRefusal::Spec`, the run
+  host's `No`, init's `members::Error`); no panic path in production code.
+- R02: Docker's pty path (runc's console socket, containerd's shim, moby's resize) read for
+  the alternative; TIOCGPTPEER(2const), TIOCSWINSZ(2const), n_tty's EIO and POLLHUP at the
+  kernel's source (D244).
+- R03: no chosen number: the kernel's 0 by 0, one STDIN frame's bound, wire codes (D244's
+  Literals).
+- R04: the ask and its answer typed by id, refusals by kind; the terminal's end is the
+  channel's typed end, its hangup the input's.
+- R05/R12/R13: the terminal shares D243's `enter::terminal`, the capture's and the input's
+  machinery, and a built-in beside `ROOM`'s; no new channel or manager.
+- R06/R07: each piece a branch of the path it extends; comments carry the kernel's facts.
+- R08/R14: no performance claim; one more descriptor of the master per terminal member,
+  unmeasured.
+- R09: a feature, not a defect.
+- R10: each guard has its unit test (red where it fails, green as built), as the person's
+  rule of 2026-11-13 has it; the real-VM tests are ROOT's.
+- R11: init's code is Linux's, the rest every host's; tested as above; CI on main runs the
+  matrix.
+- R15: implementer's light runs only.
+- R16: build output under `~/g121-tmp/s6-member-exec` (adacachy2) and `~/s6-member-exec`
+  (adas-mac-studio-3), removed when the step ends.

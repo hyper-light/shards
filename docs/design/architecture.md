@@ -250,6 +250,7 @@ SPIs of the GICv2m frame the VMM keeps (D154).
 | Keyless signing, its SPIFFE provider (D126) | yes | yes | yes | yes, by the Workload API's named pipe |
 | `--platform` for one platform's microVM, other CPUs' images emulated (D179) | yes | yes | yes | yes |
 | The build cache collected as its user's shares say (D212) | yes | yes | yes | yes |
+| Guests booted through `shards` for other programs (shards-api): a spec's boot, a stream to a port, every refusal typed, and `attach` taking back a guest its client lost (D215) | yes: boot.rs's shards-api tests on real guests, on CI's runners and fedora (PM M465), a guest taken back held by its pidfd; the attach case's reap fix not yet rerun on real guests, and its waits' bounds other hosts' records until they are learned where they run (PM M541) | built and linted, its real-VM tests amd64's code, not yet run there | yes: its conformance suite on real guests (PM M463, M464, M465), a guest taken back held by kqueue; the attach case's reap fix not yet rerun there (PM M541) | booted to its port and to its power-off on real guests (jupiter, PM M465); a guest taken back by a handle of its own to the `shards` that holds its VM in a Job (parity step 14, 43670dc18, b4548fcf6), unit-tested on jupiter, its conformance case on real guests not yet run |
 
 A Linux host runs VMs on Linux 6.10 or later with Landlock enabled (its `lsm=` list), whose
 ABI v5 is the first to govern `/dev/kvm`'s ioctls: a VM process starts under no weaker
@@ -8717,8 +8718,8 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   apart from the VM (`hv::VfioHost`), which the running machine owns. Off Linux
   `Handle::plug_vfio` refuses, changing nothing (`vm::plug_refused`): macOS's
   Hypervisor.framework assigns no device at all, and Windows gives a microVM a host's
-  function as it starts alone (`WHP_NO_PLUG`): WHP allows a partition device assignment
-  before its setup alone (M401), Microsoft documents Discrete Device Assignment for a VM
+  function as it starts alone (`PassthroughRefusal::NoPlug`): WHP allows a partition device
+  assignment before its setup alone (M401), Microsoft documents Discrete Device Assignment for a VM
   given its device before it starts and giving it back once stopped, and WHP's pages say
   nothing of a virtual PCI device made in a partition that runs (D154's "No Windows host
   plugs a function"). Untested where a hypervisor assigns devices, as none here does.
@@ -12023,6 +12024,17 @@ other's but what the move sends, and what the other takes by content:
   (`a_cpu_lacking_what_its_guest_may_have_used_is_named`, moves.rs).
 - **Its connections**, dialed again by its init there as a restore here redials them
   (part 3), and its address on its network asked for again.
+- **Its published ports**, bound again there as its restore starts it, as a start binds
+  them (`publish::bind`: the host address its binding names, else its network's, else every
+  one). The plan carries them as its run asked for them (`Plan::published`, `-p`'s own words,
+  with its network), and the machine moved to binds each before anything moves, letting it
+  go at once: a port another program holds there, or a run of its own, refuses the move
+  (`Refused::PortTaken`), which goes on here, where it was refused only at the restore, after
+  the whole stream. A binding with no host port, or a range, takes any free port of it there,
+  as a start does. Its restore's bind stays what holds them, and fails the move should
+  another program take one between. Two homes of one machine share its host ports, so their
+  test publishes on a port each home picks (`a_moved_microvms_published_port_answers_there`);
+  a fixed one is the two-host test's.
 - **Refused before anything moves, by what refuses it** (R04). The machine moved to answers
   `ready` with a `Refused` (daemon/moves.rs) as JSON on stdout, beside its words on
   stderr, which a mover of an earlier build prints as before; this build's mover reads it
@@ -12031,9 +12043,12 @@ other's but what the move sends, and what the other takes by content:
   and devices are (KVM's x86-64 state is not WHP's, nor Hypervisor.framework's arm64 state
   KVM's), which a snapshot's head, naming its architecture alone, does not tell apart;
   another snapshot format; the fields of its CPU baseline this machine's hypervisor shows
-  less of, each by register, field and both levels (`arch::aarch64::cpu::Short`); the
+  less of, each by register, field and both levels (`arch::aarch64::cpu::Short`); another
+  CPU than the one it was saved on, where this machine's hypervisor restores a snapshot only
+  on that one (WHP on x86-64, `Plan::cpu_identity`, D245); the
   features its guest may have used that this CPU lacks, by name; its ID, its name or a
-  volume of its name here already; a bind's host path absent. A plan of an earlier build
+  volume of its name here already; a bind's host path absent; a port it publishes that this
+  machine cannot bind. A plan of an earlier build
   names no hypervisor, and is taken as before. Held by
   `a_microvm_of_another_hypervisor_is_refused_before_anything_moves` and
   `a_refusal_is_typed_on_the_wire_and_says_what_it_said` (moves.rs),
@@ -12197,10 +12212,14 @@ peer", each going on here as it should. What changed for them:
   Ultra's and an M4 Max's no `rpres`, PM M499), so no move checks them, and the baseline
   test holds it on each Mac it runs on. A guest is shown less than the features macOS
   names in registers the framework does say too (an M4 Max's finds no `i8mm`, ISAR1's),
-  which a baseline's fields, the hypervisors' own views, take in. On
-  arm64 only: x86_64's CPUID has `covers` and no meet yet, and `configure cpu` says so
-  there; between the two Linux hosts measured (one CPU model, Linux 7.2 and 7.3) every move
-  went through without one (PM M497).
+  which a baseline's fields, the hypervisors' own views, take in. On KVM x86-64 too (D245):
+  CPUID's feature leaves, one vendor's, each register the bits every machine's KVM offers
+  (`arch::x86_64::cpuid::meet`), the VM's supported CPUID brought within it before its
+  shape is written in (`cpuid::within`), and checked by those bits alone, none by name.
+  Not on WHP x86-64, which restores a snapshot only on the CPU it was taken on: `configure
+  cpu` says so there, and a move checks that CPU before anything moves (D245). Between the
+  two Linux hosts measured (one CPU model, Linux 7.2 and 7.3)
+  every move went through without one (PM M497).
 - **A listener that outlives its runner's restarts** (two-hosts.sh, the harness of these
   measurements). A runner that restarts ends what its runs started, the listening daemon
   among them, and kiln's ends a launchd job a session starts within seconds (3 s on the M3
@@ -14062,7 +14081,8 @@ one. So both, in that order.
     host's USB device for the VM's emulated XHCI controller (the
     `com.apple.vm.device-access` entitlement: "captures USB devices and uses them in the
     guest"), no PCI function. A run that names one is refused with "macOS's
-    Hypervisor.framework assigns no device to a VM" (`vm::passthrough_refused`).
+    Hypervisor.framework assigns no device to a VM, whose every device its VMM emulates"
+    (`vm::passthrough_refused`, `PassthroughRefusal::HypervisorFramework`).
   - **Windows passes one through where its hypervisor assigns devices** (Discrete Device
     Assignment), by WHP's virtual PCI devices (Microsoft Learn, "Windows Hypervisor Platform
     API Definitions", its Virtual PCI (VPCI) Devices and each function's page, 2026-06-08),
@@ -14151,7 +14171,8 @@ one. So both, in that order.
     2026-06-08) say nothing of a device made in a partition that runs, nor does OpenVMM make
     one (ba105dd7: its `new_physical_device` has no caller). So `Handle::plug_vfio` off
     Linux refuses (`vm::plug_refused`): where the hypervisor assigns devices with
-    `WHP_NO_PLUG`, naming those limits and how to give the function as the microVM starts;
+    `PassthroughRefusal::NoPlug`, naming those limits and how to give the function as the
+    microVM starts;
     elsewhere with the host's own answer. Untested on such a host, as none here assigns one.
   - **Windows refuses where its hypervisor assigns none**, with the hypervisor's own answer,
     asked as a function is (`hv::device_assignment_refused`: WHP's VirtualPciDeviceSupport,
@@ -14178,6 +14199,39 @@ one. So both, in that order.
     `a_hosts_pci_function_is_refused_with_its_oss_own_limit` (vm/mod.rs),
     `a_hosts_pci_function_is_refused_where_its_os_passes_none` (boot.rs) and
     `a_run_given_a_hosts_pci_function_is_refused_with_its_hosts_limit` (containers.rs).
+  - **Each refusal is typed** (R04), its variant the OS's own limit
+    (`vm::PassthroughRefusal`, crates/vmm/src/vm/passthrough.rs): macOS's
+    `HypervisorFramework` (Apple's docs: "Hypervisor maps the physical memory in the guest
+    to virtual memory of the host process", the VMM to "Emulate memory-mapped hardware by
+    emulating the memory access on exit"; M403); Windows' `Hypervisor`, the hypervisor's own
+    answer; where it assigns devices, `NoGuestIommu` and `NoPlug`; a host without a backend's
+    `NoBackend`. Callers that decide match it (`Vfio::of`, `plug_refused`, the tests); those
+    that say it render it, in their own words around it (dockerd's "error gathering device
+    information", the VM process's exit, the daemon's answer to `shards plug`), and text is
+    all that crosses those processes. The hypervisor's answer (`hv::assignment::Refused`,
+    written once for both WHP backends) is `NoPlatform`, `Unasked` (its words), `NoVirtualPci`
+    or `NotAllowed`: AllowDeviceAssignment refused, in its words, with WHP's IommuSupport bit
+    and the Windows edition, which says whose limit the refusal is. Microsoft supports
+    Discrete Device Assignment on Windows Server alone: "DDA and GPU-P aren't supported on
+    desktop-class hardware or client operating systems such as Windows 10 or 11 Pro"
+    (Microsoft Learn, "Troubleshooting guidance for Hyper-V GPU assignment, partitioning,
+    and passthrough", 2026-02-12), its host "running Windows Server 2016 or later" ("Deploy
+    graphics devices by using Discrete Device Assignment", 2026-01-30); and on Windows
+    Server it needs "server class hardware that's capable of granting the operating system
+    control over configuring the PCIe fabric (Native PCI Express Control)" and Access
+    Control Services at the PCIe root complex ("Deploy devices by using Discrete Device
+    Assignment", 2025-02-19). So a client edition's refusal names the first limit and a
+    server's the second, neither the other's: jupiter's Windows 11 Pro (ProductType 1, M401)
+    the edition's, CI's Server 2022 and 2025 (ProductType 3, M402) the hardware's. The
+    edition is the kernel's word, RtlGetVersion's wProductType (winnt.h's
+    VER_NT_WORKSTATION a client; VER_NT_SERVER and VER_NT_DOMAIN_CONTROLLER a server; any
+    other said as itself), read on the refusal path alone (`platform::product_type`); not
+    VerifyVersionInfoW, which IsWindowsServer wraps, whose page says it "has been
+    deprecated for Windows 10". No number is chosen here: the edition and the HRESULT are
+    the host's own answers. Held by `hv::assignment`'s tests (each product type's edition;
+    each edition's limit and not the other's), `vm::passthrough`'s (each variant's words),
+    and `a_hosts_pci_function_is_refused_with_its_oss_own_limit`, which matches the variant
+    its host gives.
   - Step 13's last part waits on hardware: the Windows E2E passing on a Windows Server host
     that assigns devices, and x86_64 Linux's VFIO on a host with a function to spare.
 - **BARs in the guest's memory.** Each BAR vfio-pci lets a user map
@@ -17729,9 +17783,11 @@ Agentfile). That PID 1 mounts the node's file systems, gives the node its descri
 starts the node and its relay within its host's deadline, and powers the guest off when
 either ends (f3).
 
-Run as the command of a shards run instead, the node would gain templates, warm pools,
-D188's budgets and give-back, metrics and default-deny networks, and every microVM would
-boot one way (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, steps 38 and 39).
+Run as the command of a shards run as well, the node would gain templates, warm pools,
+D188's budgets and give-back, metrics and default-deny networks (kiln plan
+01a1cd8e862e7169a074db3d5fa33f3d, steps 38 and 39). Hex's own PID 1 stays beside that path,
+never removed, and shards-init works with it (the person, repeatedly; restated 2026-11-13;
+step 39 at the plan's version 12): a microVM boots either way.
 
 A shards workload already has most of what that PID 1 does (f12, f13, f14, f27, f28). What
 it lacks is the authority to make boxes:
@@ -17964,8 +18020,9 @@ it, and stopping the run is the caller's decision.
   fresh /proc in a user namespace under shards' masked /proc, and Docker refuses writable
   cgroups with user namespaces (f33). It stays a later layer, for where /proc can be given
   whole.
-- Hex keeping its own PID 1 (D215): two ways to boot a microVM, and Hex's without
-  templates, pools, budgets or default-deny networks (f3).
+- Hex's own PID 1 (D215) alone, with no grant: Hex's node without templates, pools,
+  budgets or default-deny networks (f3). That PID 1 is kept beside the grant, not in its
+  place (the person, restated 2026-11-13; plan step 39).
 - The image's word alone: every run of an image would escalate as its author says, where
   established nesting grants ask the operator too (f32).
 
@@ -22555,7 +22612,17 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
   end mark written after that exit, `Duration::MAX` as no clock. What remains timed is
   twice the slowest recorded run on the host class (`shards_api::record`, PM M463, M464,
   M515); a class without a record has no bound, and its timed tests fail naming the record
-  due.
+  due. A record of one host bounds no other's (R03): CI's runner went past twice fedora's
+  slowest boot and refusal (PM M541), and ROOT decided on 2026-11-13 that these bounds are
+  learned where they run (docs/research/s37-decision-inventory.md, row 2). An attach of a
+  guest whose first client reaps it as it is held is refused `Exited` (PM M541).
+- On Windows a guest's process is the `shards` that booted its VM, which holds the VM in a
+  Job that ends with it (D141); it outlives a client that crashes or loses its guest, so
+  `attach` takes it back as on Unix (parity step 14): held by a handle of its own with query,
+  synchronize and terminate rights, which keeps its pid its own while held, its start that
+  handle's GetProcessTimes creation time, its end waited on and made through it
+  (TerminateProcess), which ends its Job and so its VM. Where Windows refused this before, the
+  refusal was no limit of its API.
 - `stop` kills the VM's process at once: the VMM has no host-to-guest power-off
   (vm/runtime.rs), so the page cache a guest held is lost, and a clean stop is the
   client's (ask the guest to sync and power off, `wait_for` its `PowerOff`).
@@ -22790,10 +22857,17 @@ API's protocol: its output drained, its end, its connections.
 - *Scope.* `Refusal::Scope` keeps a scope's typed failure before its process's identity is
   known; `--host-managed` keeps the processes shards starts beside the VM in the client's
   process group; `Shards::configured(cache, home)` gives its probe and launches exactly the
-  client's `SHARDS_CACHE` and `SHARDS_HOME`, the environment otherwise cleared.
+  client's `SHARDS_CACHE` and `SHARDS_HOME`, the environment otherwise cleared, but on
+  Windows the system root the OS reports (`GetSystemWindowsDirectoryW`, not an inherited
+  variable): Winsock's catalog names its providers under `%SystemRoot%`, so without it
+  WSAStartup fails with WSAEPROVIDERFAILEDINIT (10106) and `shards` opens no socket, its
+  vsock's included (plan step 2's review: red on Windows 11 26200, green with it).
 - *Images.* `verify_native_image` checks a declared executable's whole bytes (length,
   SHA-256) against the same open file by the caller's deadline: a content witness, not
-  permission to run it.
+  permission to run it. It reads them in the pieces the file's file system prefers
+  (`st_blksize`; on Windows `FILE_STORAGE_INFO.PhysicalBytesPerSectorForPerformance`), not in
+  SHA-256's 64-byte blocks, which made a launch's tens of MiB about a million reads (a MiB was
+  16,384 reads; `a_verified_image_is_read_in_its_file_systems_pieces` holds it under that).
 - *Connections.* `connect_before(port, deadline)` dials under an absolute deadline, a socket
   completed after it never published; `connect_once_before` dials once, refused at once where
   nothing listens.
@@ -22804,7 +22878,9 @@ API's protocol: its output drained, its end, its connections.
   names a frame, not a channel, and a pipe named for its scope refused every other report
   of that scope while its one instance lived, ERROR_PIPE_BUSY (PM M533).
 
-**Literals.** None new beyond D232's; every wait is the caller's deadline.
+**Literals.** None new beyond D232's but SHA-256's 64-byte block (FIPS 180-4 §5.1.1), what an
+image is read in where its file system names no preferred size; every wait is the caller's
+deadline.
 
 **Evidence.** Hex's design records (docs/design/managed-native-receipts.md,
 native-physical-report.md in Hex) and the failures each port's commit cites (an inline stop,
@@ -23099,8 +23175,9 @@ named a host (D59 part seven); a run's command had D192's.
   the image is refused, naming both members and what each reaches. Remote MCP servers beside
   another member's other grants on one port, which passed before, are refused alike.
 - *Orchestrators* keep or drop destinations (`Narrowing.destinations`, D231, channel version
-  3), never add one. The build labels them (`vnd.osi.agentfile.destinations`) for Docker and
-  Kubernetes; the daemon holds a run to its own reading of the image (D109).
+  3), never add one, and may hold each member to its own of those kept (D246, version 12). The
+  build labels them (`vnd.osi.agentfile.destinations`) for Docker and Kubernetes; the daemon
+  holds a run to its own reading of the image (D109).
 
 ```dockerfile
 HARNESS codex FROM ./codex
@@ -23189,7 +23266,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes and their controller built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, and exec lanes at the endpoint and the controller built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -23519,6 +23596,69 @@ admissions, summed over its lanes as the endpoint sums its own:
 - no stream the endpoint may open;
 - one command slot per lane, since each handle has one ask in flight.
 
+*Where the daemon binds it* (`daemon/managed.rs`, `bind_agent`). A run asks for its agent-control
+endpoint with the annotation `shards.control=true`, as it names its stdin members with
+`shards.stdin` (step 5). Docker keeps a key's last value, and any value but `true` or `false` is
+refused by name. Such a run's managed scope binds one endpoint instead of step 5's endpoint per
+stream:
+- *Its key*: made for this run as its scope begins, and held by the endpoint alone. Managed
+  scopes are neither restored nor joined ("managed output scopes cannot yet be restored or
+  joined"), so the key is never a template's, and it is never in guest memory.
+- *What it serves*: the run's streams, with the admissions step 5's endpoints take for them, its
+  owner's key alone (the run's enrolled client, step 5's owner), bound on loopback as step 5's
+  endpoints are.
+- *What it feeds*: each stream's producer, relay and control go into the same credits, bridge and
+  relays that step 5's endpoints feed. One driver thread runs the endpoint; as it ends, every
+  stream of the run ends with it, as a stream's own endpoint ends its stream.
+- *How it ends*: the run's scope ending revokes it (`Owner::abort`).
+- *What a controller reads*: the run's managed metadata gains `control ADDRESS` and `vm
+  SHA256-HEX` in place of a line per stream, and `shards port` lists `agent-control/udp`.
+
+Other runs keep step 5's endpoints, so nothing landed changes until a run asks. The budget the
+scope reserves is step 5's for every stream. It holds the one endpoint, whose handshake and
+datagram buffers are one connection's, not one per stream.
+
+*Exec lanes* (`control::exec`; ROOT chose design (B), 2026-11-13). A command run in a member is a
+lane of its own, and its stdout, stderr and stdin are step 5's streams on lanes of their own, as a
+member's are, so one stdio protocol carries both. The pieces:
+- *The ask*: the lane's first frame (`MemberExec`) names the run, its generation and the member,
+  then carries step 6's member exec as the run protocol carries it, a `run::Spec` byte for byte
+  (D243). Its length is bound by the run protocol's own `MAX_PAYLOAD`, which is as large as Linux
+  execs. An endpoint that admits no exec, or an ask for another run, generation or member,
+  refuses the lane alone, typed.
+- *Its streams*: the endpoint numbers each exec. The exec's stdout, its stderr (none on a
+  terminal) and its stdin (where it reads one) are step 5's streams under a run of their own: the
+  run's identity and the exec's number hashed (SHA-256), so the controller's subscriptions name
+  them as they name a member's. Their record sizes are what the endpoint's caller admits for
+  execs (`Streams::execs`). Streams are looked up by run as well, so no exec's stream answers for a
+  member's.
+- *Its host*: the endpoint starts nothing itself. It hands its host the ask and its streams'
+  handles (`exec::Start`). The host charges the run's budget for each exec and replies
+  `Started`, `Unstarted` (`Capacity`, `Refused` by the member, or `Failed`) or `Exited(status)`.
+  While the exec runs, the endpoint raises the connection's stream limit and windows by its lanes
+  (RFC 9000 §4.1, §4.6, through `Io::limit`), and lowers them as the exec is let go.
+- *Its steering*: after `Started`, the lane carries the controller's resizes and signals (D180's
+  `Resize` and `Signal` frames, a signal `1..=NSIG`), one in flight to the host at a time, as
+  step 5 has one record in flight.
+- *Its end*: its exit is told only once its outputs have finished, every record consumed, so no
+  tail is cut. Its steering channel stays open until the endpoint lets the exec go. A host keeps
+  each stream's control until then, because a control dropped revokes its stream.
+- *Its connection*: an exec belongs to the connection that asked for it. That connection gone,
+  or the lane stopped, hangs the exec up: its steering is dropped, its streams are let go.
+
+*The controller's execs* (`control::Execs`, `Exec`, `ExecControl`). A controller dialed with
+`Subscriptions::execs` asks for one with `Execs::exec(member, spec)`, and its lane opens with the
+ask. Once the endpoint says `Started`, the controller opens the exec's stdio lanes, from their
+first bytes, at the exec's streams. It hands back step 2's `Output` and `Input` handles for them,
+and an `ExecControl` that resizes, signals (a signal outside `1..=NSIG` is refused before it is
+sent) and waits for the exit. An exec that did not start says why (`Fault::Unstarted`). The
+controller's handles now ask its driver through one channel and a unit wake, not a command slot
+per lane, so lanes open as execs come. A lane over is let go, its handle's later asks answered by
+none. The connection's windows rise by an exec's lanes while it runs, from the same admissions.
+
+The exec host in the daemon, which charges and pumps a member exec through the VM process, is the
+next slice.
+
 Tested in `crates/remote` (`control::tests`, over the in-process exchange of `lib.rs`'s
 handshake tests): the enrolled controller and its pinned microVM connect,
 TLS13_AES_256_GCM_SHA384 and `shards-control/1` at both ends, each holding the other's key; a
@@ -23541,6 +23681,11 @@ sums. Through the controller over loopback:
 - a newer dial superseding the older (`Stale`) and resuming at its cursors;
 - a revoked output and an aborted stdin each ending alone, and a hangup ending the rest (`Local`);
 - its windows its lanes' sums.
+
+In the daemon (`daemon::managed::tests`): the annotation asked for by its last value, any value
+but `true` or `false` refused; a run's endpoint of a key its own, two runs two keys, serving
+its owner alone, whose controller reads a member's record through it while a stranger's ends
+`NotEnrolled`.
 
 Record:
 [agent-control-v1](../research/measurements/agent-control-v1/README.md).
@@ -23572,6 +23717,11 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | The controller's windows; its command slots | the endpoint's admissions, summed over its lanes as the endpoint sums its own; one slot per lane, as each handle has one ask in flight |
 | An output's acknowledgment, 13 bytes | step 5's `consumed` frame: a frame's head (5) and an offset (8) |
 | An errno under 4096 (`NonZeroU16`) | Linux's MAX_ERRNO, 4095 (`include/linux/err.h`) |
+| Frame tags `MemberExec` 4, `Started` 38 | this protocol's own, after D180's (`frame::Tag`) |
+| An exec's ask, at most its scope (44) and `run::MAX_PAYLOAD` | the run protocol's bound, as large as Linux execs (D243) |
+| `Unstarted` 16, 17, 18 | this protocol's own, apart from `managed::Reason`'s 1 to 5 |
+| A told or steering frame, 9 bytes | a frame's head (5) and a u32 |
+| One steer in flight; per exec, its lane, one ask and its stdio lanes; their windows | as step 5 has one record in flight; each lane's own, summed as the endpoint's streams are |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 
@@ -23643,7 +23793,7 @@ test asserts against. A client an agent runs that offers no AES-256-GCM by defau
 then be refused: OpenSSL 3.6.4 and 4.1.0 and Node.js 24.14.1 offer it first, and Go and
 rustls's aws-lc-rs offer it (D60).
 
-### D240. A member's stdio, terminal and environment, as a harness is driven (stdin, stdout and stderr built: plan step 5; environment, home and working directory built: step 7; exec, attach and a terminal building: step 6; real-VM runs owed)
+### D240. A member's stdio, terminal and environment, as a harness is driven (stdin, stdout and stderr built: plan step 5; environment, home and working directory built: step 7; exec, attach and a terminal built: step 6, D243 and D244; real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs a harness as a HARNESS member under
 shards-init (D54, D59) and drives it as kiln drives one on a host: over its stdio (Claude
@@ -23688,12 +23838,13 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   made them"). The record of step 7's four items:
   [s7-home-workdir](../research/measurements/s7-home-workdir/README.md).
 
-**Building: exec, attach and a terminal** (step 6; G24). Decided by the plan: an exec into a
+**Built: exec, attach and a terminal** (step 6; G24). Decided by the plan: an exec into a
 member runs as its uid and under its confinement (its namespaces, Landlock, seccomp, no
 capabilities, `no_new_privs`); attach reaches its stdio; a TTY of its own can be resized, on
 the terminal lane (D238); nothing crosses into another member. How it is built is step 6's
-implementer's, reviewed by ROOT. Until it is, shards-api refuses a member's terminal
-`Unsupported` (`crates/api/src/image.rs`). What it builds on is on main: the run's signal link,
+implementer's, reviewed by ROOT. A command run in a member is built (D243), and a member's own
+terminal, shown, typed into and sized by its owner (D244). What it
+builds on is on main: the run's signal link,
 whose states are explicit (D16; [signal-link](../research/measurements/signal-link/README.md)), and the
 exec port's admission under contention (D16, "An exec's connection"). Slice 1 is on main
 (`78fc1c8f5`, `532ad27c5`): a member starts with every signal's disposition at its default and its
@@ -23920,6 +24071,592 @@ token's signature or `at_hash` locally (then that harness is tmpfs-fallback, not
 step 9 lists each); a provider that issues sender-constrained tokens, DPoP- or mTLS-bound
 (then bearer substitution cannot serve it, and it is fallback); a measured injector cost
 that a run cannot bear (then the native-sign-in delegation path, which stays, D231).
+
+### D243. A command run in a member: born into its PID namespace and cgroup, in its command's namespaces, and confined as that command is (built: plan step 6, the CLI's and init's, every run's through the run protocol; a member's own terminal building; real-VM runs owed)
+
+**Why.** Plan step 6 (G24, D240): kiln runs a harness's sign-in in its member and shows its
+own screen, so a command run in a member must run as the member does, with a terminal that
+resizes, and reach nothing the member cannot. A member is a domain (D59): `clone3` into
+namespaces of its own and a cgroup of its own, its first process init's sealed reaper (PID 1
+there, managed.rs) and its command PID 2, in a mount namespace of its own whose root it
+pivoted into, then confined: its uid and gid, no capability, `no_new_privs`, a Landlock
+ruleset, the run's seccomp filter.
+
+**Alternatives** (R02), read at their sources:
+- runc v1.5.1 (8f2685a4): `runc exec` joins each namespace by its `/proc/PID/ns/TYPE` path, one
+  setns(2) each (libcontainer/nsenter/nsexec.c, `join_namespaces`), forks again to be born in
+  the PID namespace, and joins the cgroup by writing `cgroup.procs` (process_linux.go,
+  `setnsProcess.addIntoCgroupV2`) or, where it can, clone3 `CLONE_INTO_CGROUP`
+  (`prepareCgroupFD`); the process then sets its console, `no_new_privs`, LSM labels, its
+  seccomp filter, capabilities and user, and closes every descriptor it inherited
+  (setns_init_linux.go; CVE-2024-21626).
+- crun 1.31 (a84965e1): one setns(2) of the container's process's pidfd with every flag
+  (src/libcrun/linux.c, `try_setns_with_pidfd`), clone3 `CLONE_INTO_CGROUP`, then a fork for
+  the PID namespace; the child sets every signal to SIG_DFL (container.c,
+  `unblock_signals`), then labels, seccomp, capabilities and its working directory.
+- Docker's exec terminal (moby docker-v29.8.1, daemon/resize.go `ContainerExecResize`;
+  containerd v2.3.5, cmd/containerd-shim-runc-v2/process/exec.go `execProcess.Resize`): the
+  runtime hands the pty's master to the shim over a console socket, and a resize is
+  TIOCSWINSZ on it, which the kernel tells the foreground group as SIGWINCH (tty_ioctl(4)).
+
+**Decided and built.**
+- *Joined as crun joins, from init.* Init holds a pidfd of a process of the member's command
+  (hotplug.rs `member_process`, the command first, each held before it is checked to be the
+  member's still, so a PID taken meanwhile is never entered), enters its PID namespace for its
+  next child (setns(2) of the pidfd with `CLONE_NEWPID`, Linux 5.8), and makes that child with
+  clone3 `CLONE_INTO_CGROUP` into the member's cgroup (run.rs `born_in`), taking its own
+  namespace back at once, as `fork_in` does for a run's execs. Born into the cgroup, the child
+  is held to the member's `pids.max`, which a move into `cgroup.procs` is not ("Organisational
+  operations are not blocked by cgroup policies", cgroup-v2.rst, "PID"): at the limit the
+  clone fails EAGAIN and the exec is refused. The child enters the command's mount, network,
+  IPC, UTS and cgroup namespaces in one setns(2) of the pidfd; the command pivoted into its
+  root (domains.rs `child`), so the mount namespace's root, where setns(2) leaves a joiner,
+  is the member's.
+- *Confined by the same values, through the same steps.* A member's `Started` keeps its
+  `Confinement` (its IDs, the last capability, the TCP rights Landlock refuses it, its
+  volumes, the run's plug roots, the socket directories it receives on, its seccomp filter,
+  its environment and working directory as it started), and `domains::confine` is the one
+  function its first process and a command run in it call, last before execve: the bounding
+  set, its IDs and no group, no capability, `no_new_privs`, its umask, its Landlock ruleset,
+  its signals a new process's, its seccomp filter. Its failure is typed
+  (`domains::Confining`, a step of thirteen).
+- *Its own Landlock domain.* landlock(7) gives a ruleset to the process that enters it and its
+  children, and has no way to join a domain: the command's domain is a sibling of its
+  member's, its rules the same. So the scopes hold between them: it signals, and reaches
+  abstract Unix sockets of, its own processes alone, and the member's processes its not.
+  Sharing the member's own domain would need a process of the member's to start each
+  command, inside its seccomp filter and its pids.max, and is not built.
+- *Its program, environment and directory.* Its environment is the member's as it started,
+  the exec's variables over it as moby lays an exec's over its container's
+  (daemon/container/env.go, ReplaceOrAppendEnvValues: a name alone unsets one); none may name
+  `SHARDS_DOMAIN`. Its working directory is the exec's, else the member's, entered as the
+  member. Its program is found on that environment's `PATH` as every exec's is (run.rs
+  `candidates`, Go's LookPath), with `docker exec`'s words and statuses when it is not.
+- *Its stdio.* Pipes init relays as an exec's, owned by the member's uid as runc's
+  fixStdioPermissions gives a command its own, or a terminal: a pty from init's devpts, its
+  peer opened through the master (TIOCGPTPEER, Linux 4.13), as a member's `/dev` holds no
+  `pts`, owned by the member's uid, the session's controlling terminal (TIOCSCTTY after
+  setsid). A resize is init's TIOCSWINSZ on the master, as every exec's (`EXEC_RESIZE`). Its
+  TERM, where neither its variables nor its member's name one, is the first of its client's
+  terminal types the member's root describes (terms.rs, that root seen through
+  `/proc/PID/root`), xterm last. It holds no descriptor of init's but its stdio (its error
+  channel close-on-exec, everything above it closed).
+- *Asked and refused, typed.* `shards exec vm --for MEMBER NAME CMD` (a flag of shards' own on
+  Docker's exec, under "Shards options", as `plug volume --for` names a member, D235). The
+  daemon resolves the name to the member's declared index (`devices::NoMember`: no member
+  declared, none of that name, or files alone), refuses a user or privileges of its own
+  (`commands::MemberExec`), and sends the command with `in-member=N` (abi
+  `run::members::EXEC_KEY`) and none of the microVM's defaults under its variables
+  (`spec::Options::member`). Init refuses again what the member has not, and says what
+  stopped it as `run::members::Refusal` under `exec_failed::MEMBER`: a member that did not
+  start, one that has ended (its pidfd's process gone, ESRCH, or its PID namespace's first
+  process, ENOMEM, pid_namespaces(7)), its `pids.max` reached, a widening, its namespaces not
+  entered, or a step of its confinement, with the errno. The VM process renders each with
+  `docker exec`'s status: 1 for what its daemon refuses, 126 for what its runtime could not
+  start.
+- *It ends with its member.* The member's reaper exits as its command does, which ends its
+  PID namespace and every process in it (pid_namespaces(7)), a command run in it among them.
+- *A port its member contests* (D122): the command loads no chooser's filter, so its listen
+  on a port several members are given is never chosen; connections there reach the member's
+  own sockets alone. Default deny holds; the chooser's taking a second listener of a member
+  is not built.
+
+**Literals** (none chosen; each a protocol's or this wire's own):
+
+| Literal | Source |
+|---|---|
+| `in-member=` | the exec's setup entry, beside D231's `member-*=` entries |
+| `exec_failed::MEMBER` 2 | the next class after RUNTIME 0 and DAEMON 1 |
+| `Refusal` codes 1 to 6 | this wire's own, each a variant |
+| `step::JOIN` 12, `step::CONFINE` 13 | run.rs's child's steps, after MKDIR 11 |
+| `Confining` 1 to 13 | the steps of `confine`, in order |
+| statuses 1, 126, 127 | `docker exec`'s (docker/cli; moby daemon/errors.go) |
+
+**Tests.** Unit: the entry and refusals round trip and nothing cut short decodes (abi
+`members::tests`); an exec's variables over its member's and what is refused (init
+`enter::tests`); `--for` resolved and refused by type (daemon `devices::tests`), and its
+privileges and user refused (daemon `commands::tests`); its variables sent as given, for init
+to lay over its member's, and its TERM left for init to choose (`spec::tests`); the client's
+request with its member (ipc); `exec --help`'s Shards options (cmdline). Real VMs, ROOT's
+(`cargo test -p shards --profile test-release --test member_exec`):
+`a_command_run_in_a_member_is_confined_as_the_member_is` (uid, PID namespace, name, caps and
+`no_new_privs`, signals, Landlock on files and TCP, seccomp, cgroup and network, another
+member's files by path and by link, and nothing of init's held),
+`what_a_member_has_not_is_refused_to_a_command_run_in_it`, and
+`a_command_run_in_a_member_has_a_terminal_that_resizes`. Record:
+[member-exec-tty-v1](../research/measurements/member-exec-tty-v1/README.md).
+
+**How it reaches every run.** A command run in a member is the run protocol's exec with
+`in-member=N`, resized by `EXEC_RESIZE`, whoever sends it: the daemon for `shards exec --for`,
+and step 11's exec lanes, each exec a lane of its own whose ask carries it, a `run::Spec` byte
+for byte, to the host's end of their TLS (D238 "Exec lanes", ROOT's design (B), 2026-11-13). So
+there is no separate shards-api exec (ROOT, 2026-11-13); Hex's `MemberExec` is an exec lane's
+ask. A member's own stdio is attached through step 5's streams (D240).
+
+**A member's own terminal** is D244's.
+
+### D244. A member's own terminal: its stdio a pty whose master init holds, shown as its stdout, typed into through its stdin, sized by its owner (built: plan step 6, an orchestrator's runs; real-VM runs owed)
+
+**Why.** Plan step 6 (G24, D240): kiln shows a harness's own screen and its sign-in, so a
+member must be able to run on a terminal of its own, its owner reading what it shows,
+typing into it and sizing it, as `docker run -it` gives a container's command. shards-api's
+`MemberSpec::terminal` asked for one and was refused `Unsupported` until this.
+
+**Alternatives** (R02):
+- Docker's: runc makes the pty in the container (libcontainer/console_linux.go) and hands its
+  master over a console socket to containerd's shim, which copies it to the attached
+  client's streams; a resize is TIOCSWINSZ on that master (moby daemon/resize.go
+  `ContainerResize`; containerd's shim `Resize`), as D243's exec's is.
+- A devpts instance of the member's own: a member's `/dev` holds no `pts` (D59), and one
+  would add a mount and its device rules to every member for a peer it can be handed.
+- Decided: init's devpts, the peer opened through the master (TIOCGPTPEER) and given to the
+  member's uid, as D243's exec terminal; the master init's.
+
+**Decided and built.**
+- *Asked at create.* `member-terminal=N` (abi `run::members::TERMINAL_KEY`), one for a member
+  at most, refused for a member that starts no program, as an input is. shards-api's
+  `MemberSpec::terminal` rides the channel's `MemberStage::terminal` (version 11) to the run
+  host, which refuses it for a member the image does not declare, one of files alone, or one
+  asked twice, and gives the guest the entry.
+- *Its stdio.* The member's command's process (PID 2 under its reaper) makes itself a session
+  leader (setsid(2)) and the terminal its controlling terminal (TIOCSCTTY), then takes the
+  terminal's other end as its stdin, stdout and stderr. Init lets go of its own copy of that
+  end, so the terminal hangs up as the member's last process lets go of it.
+- *Shown.* Init reads the master as the member's stdout channel (`capture::Pipe::master`):
+  what the terminal shows, exactly, credited as any channel. Its end is the kernel's EIO once
+  the terminal's last other end has closed (drivers/tty/n_tty.c, `n_tty_read`,
+  `TTY_OTHER_CLOSED`), never an abort. Its stderr channel ends at once: nothing writes it.
+- *Typed into.* Where its stdin is its owner's too (`MemberSpec::stdin`), init writes the
+  owner's bytes to the master (`input::Input::terminal`), as keys typed, reading the
+  connection a frame's worth at a time (`run::HEADER` + `run::CHUNK`, the most a `STDIN` frame
+  carries, where a pipe's own size bounds a pipe's). The owner's end leaves the terminal
+  open, as a typist leaving does; the terminal hanging up ends the input (POLLHUP, as a
+  pipe's reader going is POLLERR).
+- *Sized.* `ImageGuest::resize(member, rows, cols)` is the channel's `RESIZE`, answered
+  `RESIZED` by its ask's id; refused as `ImageRefusal::Spec` for a member its spec gave no
+  terminal and as `ImageRefusal::Terminal` in its init's words. The run host runs init's
+  `builtin::RESIZE` (21) with the member's index, rows and columns: TIOCSWINSZ on the master,
+  a 0 in either leaving it as it is, as an exec's terminal is (run.rs `resize`; runc's
+  setupConsole), and the kernel tells the terminal's foreground process group SIGWINCH.
+- *Its size at start.* 0 by 0, as the kernel makes a pty: no size is chosen (R03). Its owner
+  sizes it once it knows its own screen's.
+
+**Not built.** A daemon's run asks no member a terminal of its own: no caller needs one yet;
+step 11's terminal lane takes the same entry and built-in where it does.
+
+**Literals** (none chosen):
+
+| Literal | Source |
+|---|---|
+| `member-terminal=` | this wire's own, beside D231's `member-*=` entries |
+| `builtin::RESIZE` 21 | the next after `NOTICE` 20 |
+| the channel's version 11 | ROOT's reservation (9 and 10 were other lanes', and are never used: ROOT, 2026-11-13; D246) |
+| `to_host::RESIZE` 11, `to_client::RESIZED` 28 | the next of each |
+| `run::HEADER` + `run::CHUNK` | one `STDIN` frame's bound |
+| 0 by 0 | the kernel's size of a new pty |
+
+**Tests.** Unit: abi `members::tests::a_member_has_one_terminal_at_most` and
+`a_resize_says_its_member_and_size`; init `capture::tests::a_terminals_master_ends_its_channel_as_its_last_other_end_closes`
+and `input::tests::a_terminals_input_is_typed_into_it_and_its_hangup_ends_it`, on real ptys;
+shards-api `wire::tests::resizes_and_their_answers_read_back_as_said` and the request's
+version tests, `session::tests::a_resizes_answer_is_kept_for_its_awaited_ask_alone`, and
+`what_the_guest_refuses_is_refused_first` (the terminal rides the request); the run host's
+`a_terminal_is_a_running_members_once`. Real VMs, ROOT's (`cargo test -p shards --profile
+test-release --test member_exec`): `a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner`
+and `a_harness_on_a_terminal_of_its_own_reads_what_its_owner_types`. Record:
+[member-exec-tty-v1](../research/measurements/member-exec-tty-v1/README.md).
+
+### D245. A CPU baseline: the CPU every machine a home moves among gives a guest, told each microVM it starts (decided; built on Hypervisor.framework, KVM arm64 and KVM x86-64; on WHP x86-64 its CPU checked at a move, its baseline researched, not built; real-VM runs owed)
+
+A microVM saved on one machine resumes on another only where that CPU has every feature its
+guest found (D176 part 6, "Its CPU"). Between two machines neither of which has every
+feature of the other, no move goes either way: an M3 Ultra (macOS 26.4) and an M4 Max
+(macOS 26.2) refused 38 of 40 at `ready` (PM M460, M462). A baseline is the CPU a guest is
+told so that it moves among a set of machines.
+
+**Alternatives.**
+- *A named, fixed CPU model.* Firecracker's CPU templates and QEMU's named models are fixed
+  feature sets a person picks for a fleet. "Representing one CPU vendor as another CPU vendor
+  is not supported", and "Disabling a feature in a CPU template does not generally make it
+  completely unavailable to the guest" (Firecracker, docs/cpu_templates/cpu-templates.md).
+  A fixed list is a choice of ours (R03), stale with each CPU generation.
+- *The meet of each machine's hypervisor's own view* (chosen). libvirt's
+  `hypervisor-cpu-baseline` will "Compute a baseline CPU which will be compatible with all
+  CPUs defined in an XML FILE", which "is different from cpu-baseline which does not consider
+  any hypervisor abilities" (virsh(1)). Hyper-V's dynamic processor compatibility (Windows
+  Server 2025) "dynamically calculates the common set of processor features across all
+  nodes" (Microsoft Learn, processor compatibility mode). KVM makes a guest's CPUID from
+  KVM_GET_SUPPORTED_CPUID's "x86 cpuid features which are supported by both the hardware and
+  kvm in its default configuration", constrained, for one, "for feature consistency across a
+  cluster" (Documentation/virt/kvm/api.rst §4.46).
+- *None*: `ready` refuses a CPU short of the guest's (D176 part 6). A guest keeps its whole
+  CPU, and moves only to machines that have more.
+
+**Decision.** `shards configure cpu --baseline CONTEXT[,CONTEXT...]` asks this machine's
+daemon and each context's for its CPU as its own hypervisor shows a guest (`move step cpu`,
+which runs `shards-vm cpu`), and keeps their meet in the home's `cpu-baseline`. Each microVM
+the home starts is told it; the run keeps it (its directory's `cpu-baseline`), its templates
+are keyed by it (`run::template`), its plan carries it (`Plan::baseline`), and the machine
+moved to checks it against its own hypervisor's view (`covers`) before anything moves,
+refusing typed. `arch::cpu` names a CPU per architecture:
+- *arm64* (Hypervisor.framework, KVM): ID registers by encoding, each 4-bit field the lowest
+  of the machines' (`arch::aarch64::cpu::meet`, the Arm ARM's ID scheme, Linux's own rule
+  across a system's CPUs); each vCPU is told the lower of its host's and the baseline's.
+- *x86-64* (KVM): leaf 0, the vendor, and CPUID's feature registers (`cpuid::FEATURES`: the
+  SDM's and APM's feature leaves; leaf 0DH's XCR0 and IA32_XSS components; leaf 1EH subleaf
+  1's AMX instructions; leaf 0x40000001's EAX, KVM's own paravirtual features, which differ
+  from host to host), each the AND of the machines' (`cpuid::meet`), of one vendor
+  (`Lacks::Vendor` otherwise). A VM's CPUID, KVM_GET_SUPPORTED_CPUID's, is brought within
+  it (`cpuid::within`) before the VM's shape is written in (`for_vcpu`: HYPERVISOR,
+  TSC-deadline, HTT, APIC IDs, topology), so the shape's bits stay the VMM's. Not in it:
+  leaves 1DH and 1EH's subleaf 0 (AMX's tile sizes, numbers that its leaf-7 and XCR0 bits
+  gate), leaf 0x40000000 (KVM's signature, every KVM host's alike), leaf 7's EAX (its highest
+  subleaf: one a host lacks reads as zeros in `covers`), and family, model and caches, which
+  are no features. It holds every feature register of cloud-hypervisor's migration check
+  (v54.1 `arch/src/x86_64/mod.rs`, `CpuidFeatureEntry`), and leaves 14H, 19H, 0x80000007,
+  0x80000008 and 0x80000021 besides.
+- *WHP on x86-64*: none told. Its restore takes only the CPU its snapshot was taken on
+  (`hv::whp` `state.rs`), and `configure cpu` says so there. So a move carries that CPU
+  (`Plan::cpu_identity`: the leaves of `cpuid::IDENTITY`, which WHP's restore compares, as
+  the machine's VM process reads them from a partition's vCPU), and the machine moved to
+  refuses another before anything moves (`Refused::CpuIdentity`), where it was refused only
+  at the restore, after the whole stream. A plan of an earlier build names none, and its
+  CPU is found at the restore as before. WHP on arm64 tells a guest its ID registers, as
+  KVM and Hypervisor.framework do (`whp_arm64`'s `cpu_id`).
+
+**A baseline on WHP x86-64: researched, not built.** WHP has the means: its
+processor-related partition properties (ProcessorFeaturesBanks, ProcessorXsaveFeatures,
+CpuidResultList2) "control the processor features that are made available to the virtual
+processor of the partition" and are set before WHvSetupPartition (Microsoft Learn,
+Partition Property Data Types), and Hyper-V's own processor compatibility mode moves a
+saved VM between hosts of different processors by giving it a common set of features,
+cancelling a restore whose sets differ, never across vendors (Microsoft Learn, Processor
+compatibility for Hyper-V virtual machines). What decides it is live and unmeasured:
+whether WHP sets a vCPU state saved on another CPU (the registers of features one CPU has,
+an XSAVE area of its components) into a partition told the same features; and a restore
+there must give the guest its snapshot's CPUID, as KVM's restore gives it
+(KVM_SET_CPUID2 from the snapshot), which shards' WHP restore does not yet. The runs that
+decide it: on one Windows host, a partition told a baseline less one feature leaf, saved
+and restored into a partition told the same; then between two Windows hosts of different
+CPUs of one vendor, of which there are none here.
+
+**Masked, not enforced.** A guest's kernel and programs use a feature only where its CPUID or
+ID registers say so; an instruction a program runs regardless is not stopped.
+
+**Literals (R03).** None chosen: each register of `FEATURES` is one the SDM, the APM or KVM's
+`cpuid.rst` defines as feature bits; `decode` takes at most `FEATURES.len() + 1` leaves (leaf
+0 and each feature leaf once), derived from it. The meet has no threshold.
+
+**Cold start.** A home with no `cpu-baseline` tells none: each guest is told its host's own
+CPU, as before, and `configure cpu --none` takes one away. A plan of an earlier build carries
+none (serde default) and is taken as before. A baseline written before a register joined
+`FEATURES` names no leaf for it: `within` leaves that leaf the host's, and `covers` checks
+only what the baseline names.
+
+**Failures, typed (R04).** `cpuid::Lacks::{Vendor, Bits}` and arm64's `Lacks`, carried as
+`Refused::{CpuVendor, Cpu}` (`CpuShort::{Bits, Field}`) on a move's wire (D176 part 6,
+"Refused before anything moves"). `configure cpu` across vendors says the machines' CPUs have
+no baseline, and why.
+
+**Held by** the unit tests `a_baseline_masks_what_any_machine_lacks`,
+`a_baseline_reads_back_as_written` and `a_baseline_holds_supervisor_state_amx_and_kvms_own_features`
+(cpuid.rs), `a_vm_told_a_baseline_gives_its_vcpus_no_more` (`hv::kvm`, a KVM VM with no
+guest), `a_machine_short_of_a_baseline_refuses_it_by_each_register` and
+`a_baseline_masks_every_feature_an_x86_guest_finds` (moves.rs), run on KVM x86-64
+([migrate](../research/measurements/migrate/README.md)); `light-gate.sh`'s mutants M4-M10
+failed their tests once, at the predecessor's tree. By E2E:
+`an_x86_cpu_baseline_is_all_its_guest_finds_and_goes_with_it` (tests/moved.rs, two homes of a
+KVM x86-64 machine) and arm64's `a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it` (PM
+M497).
+
+**Owed** (ROOT). The x86-64 E2E on KVM x86-64; a move told a baseline between two machines of
+different CPUs on KVM x86-64 and on Macs (two-hosts.sh `BASELINE=1`); the arm64 unit tests
+(CI on main); WHP x86-64's move refused at `ready` between two Windows hosts of different
+CPUs (two-hosts.sh on each; none here), and the WHP baseline's deciding runs above.
+
+### D246. Members held apart by an orchestrator: each member's reach of the names kept, named in its request and held by the run host before the microVM starts (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 15 (Hex's): a harness Hex launches
+reaches exactly its granted providers and kiln's endpoint. D236 lets an orchestrator keep or
+drop each destination for the whole microVM (`Narrowing.destinations`): the network process
+holds the microVM to the union of the names kept, each member's init lets it out on its own
+destinations' ports, and `held` makes the members that reach a port by name reach it alike.
+So a destination kept for one member is reached as well by every other member whose image
+names it, and shards-api names no member's destinations before a boot or after it
+(`Started` holds the members and each published port's receivers, `Bound::to`, alone). Hex's
+grants each name who, to whom, which port and which way, so Hex refused every destination
+(`Awaits(MemberDestinations)`) until a run could be held to them member by member.
+
+**Alternatives** (R02):
+- *Keep, then hold the run as its boot returns*, as an orchestrator holds a publish to
+  `Bound::to`: stop a run in which a member the grants don't name is let out on a kept
+  destination's port. That member could reach the destination between its start and its
+  stop. Not taken (Hex's lead, 2026-11-12).
+- *The orchestrator reads an image's members and their reach before its boot.* A member's
+  destinations live in the image's normalized Agentfile (`/.agentfile.json`, in its EROFS
+  root in the store; `agentfile::agentfile`), and shards-api holds no store, EROFS or
+  Agentfile code: every orchestrator would take on the run host's own reading of the image
+  (D109). Not taken.
+- *Each member's addresses held apart in the network process*, D236's own deferred
+  alternative (Cilium's toFQDNs programs each endpoint's allowed addresses from the answers
+  its DNS proxy relays, `Documentation/security/policy/layer3.rst`): a change to init, the
+  switch and the network process, where `held` already makes a port's names alike across its
+  members, which is what lets one comparison at the run host be exact. Not taken here; it
+  stays D236's route to lifting `held`.
+- *Each member's reach in the request, held by the run host* (taken). Hex built it first as
+  its vendored changes 0002 (shards-api's `Narrowing::members`; the run host's
+  `held_apart`, through Hex's shards-gpu), on Shards 66113379 as channel version 5 (Hex's
+  cp/t7-goal15-network-grants-r3, ec729e9d and 13ad751f; ROOT's ruling (b') of 2026-11-12).
+  Upstream it is version 12, and it holds the remote MCP servers kept beside the
+  destinations, since the network process holds the microVM to both alike.
+
+**Decided.**
+- *Wire* (image channel version 12): after each member's terminal (version 11, D244), a flag,
+  then where it is set each member's kind, name and names (`MemberReach { kind, name,
+  destinations }`, each `host:port` as the narrowing keeps it). Unset (`members: None`): no
+  member held apart, the names kept are every member's whose image names them, as through
+  version 11. A request of version 11 is refused by its version, as every older one is.
+- *What a member reaches* (`agentfile::named_reach`): of each member its Agentfile declares,
+  its networks' destinations (D236) and its remote MCP servers' (§4.4), as its init lets it
+  out to them; the reading `held` makes (`tcp_reach`). The run host reads it with the
+  Agentfile it holds a run to (`Agentfile::named`). Of those a member reaches the ones kept,
+  destinations and remote MCP servers alike.
+- *Held* (`api_run::held_apart`, before anything starts): every member the image declares,
+  named in the request or not, reaches of the names kept exactly its entry's names (sorted,
+  each once; a member in no entry, nothing). Else the run is refused as a widening of what was
+  asked (`Cause::Widening`, `ImageRefusal::Widening`), naming the member, what it would reach
+  and what it was let. An entry for a member the image declares not is the image's refusal
+  (`Cause::Image`), and a member's second entry the request's (`Cause::Request`). Init, the
+  switch and the network process are unchanged: under `held`, a member that reaches a kept name
+  is let out on its port by its init, and the network process admits only the kept names'
+  addresses there, so equal reaches mean each member reaches exactly what it is let.
+- *Ports to any address* (`Narrowing.egress`) stay the whole microVM's: the hold is of names.
+  An orchestrator that holds its members apart keeps no such port (Hex keeps none).
+
+**Literals.** Version 12, the channel's next version above the one on main as it landed (11,
+D244's): a version only appends, so it is the next number up, whichever lane lands first.
+Versions 9 and 10, reserved for other lanes as D244 took 11, are never used (ROOT,
+2026-11-13): each side decodes its own version exactly (`Request::decode`,
+`WireError::Version`), so a request of 9 or 10 is never made, and is refused by its version
+as any other is. A
+member's entry is at least nine bytes on the wire (its kind, its name's length, its names'
+count) and a name at least four (its length): the least sizes `count` refuses a hostile count
+by, read off the encoding. No bound, wait or size of its own.
+
+**Tests** (unit, one macOS arm64 host). The wire,
+`each_members_reach_rides_the_request_last`: none held apart, an empty list, one member and
+two (one reaching nothing) read back as written, every cut refused, a flag that is no flag, a
+member of no kind and a hostile count refused by type; `unknown_versions_and_tags_are_refused`
+refuses version 8. The Agentfile, `each_member_reaches_its_own_names`: a harness's provider and
+the host, an agent's provider and its own remote MCP server, a server every agent is granted,
+an agent joining no network, each member's the same read back as the run host reads it. The run host,
+`each_member_is_held_to_its_reach_of_the_names_kept`: exact reaches pass; a member left out,
+let nothing, let more, or let less than a kept remote MCP server, refused as a widening in
+those words; an undeclared member the image's refusal, a second entry the request's; no hold,
+nothing kept, and no Agentfile with no entry pass.
+
+**Evidence owed** (ROOT, real VMs: KVM, HVF, WHP).
+`cargo test -p shards --profile test-release --test api_image what_the_image_does_not_grant_is_refused_before_boot`:
+members held apart that would reach other than asked, and an undeclared member, refused
+before boot. A boot whose members are held exactly runs, its harness reaching its kept
+provider and the host's service and nothing else, another member none of them: Hex's
+image_grants_real, once Hex vendors this revision.
+
+**What would falsify it.** A member that reaches a kept name its entry does not let it (then
+`named_reach` misses a rule init's netplan follows); a run refused where every member's reach is
+exact (then the narrowing's names and the build's `host:port` are written apart).
+
+### D247. An orchestrator's rate: D191's hold told through its run's host, in milli-CPU (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 14: Hex caps each microVM it runs at
+its water-filled share of its fleet's CPU budget each window, in milli-CPU, at least the
+kernel's least quota (Hex `docs/design/learned-charge.md` C4, `charge::Node::rates`,
+`hex_api::MIN_CPU_MILLI`). On Linux its VM's cgroup holds it (`cpu.max`); on macOS and Windows
+it has only caps of a whole process (a native helper's control rate, a job's hard cap), which
+stop a VMM's device threads with its vCPUs. An image an orchestrator boots (D231) is held by
+D191's hold only as its RUN head says, its vCPUs' whole count, and shards-api had no call to
+move it: Hex had no rate for a Shards image VM but stopping its process.
+
+**Decided.**
+- *The call.* `ImageGuest::rate(rate, patience)`: the CPU time the run's vCPUs may use of the
+  host's together, in milli-CPU, or none for no hold. The run host tells its VM (`RATE`, its
+  number and the rate) on the VM's link, on a thread of its own as a room is; the VM sets its
+  hold and answers (`RATED`): what it holds the vCPUs to, nothing where it lets them be (no
+  rate, or every vCPU's whole CPU or more), or why not (`ImageRefusal::Rate`: the microVM not
+  started, its governor's thread not made). A VM holds what it is told or nothing, so its run
+  host takes any other word as a broken one, never a hold.
+- *The hold in milli-CPU.* D191's hold takes its rate in milli-CPU where it took whole CPUs: a
+  period's share is `rate × PERIOD / MILLI_PER_CPU`, exact to the nanosecond below (in u128),
+  no hold at none or at every vCPU's whole CPU. The daemon's own holds, the RUN head's `cpus`
+  and `CPUS`, stay whole CPUs on their link and are held at a thousand milli-CPU each, so its
+  runs are held exactly as before. The governor, its period and its reads are D191's:
+  the hold holds the whole guest, its kernel's threads and interrupts among it, as `cpu.max`
+  holds a VM's cgroup on Linux, while the VMM's device threads go on.
+- *Not the guest's cgroup.* The rate is the orchestrator's cap of what its microVM uses of the
+  host, the guest's kernel included; the workload's own limits inside it stay its run's (D191's
+  `cpuset.cpus` and `cpu.max`), so the call writes no cgroup.
+- *The channel.* Version 13, the next above the channel's at its landing (11 is D244's
+  terminals, 12 members' reach's): `RATE` 12 and `RATED` 29, after every kind before. The rate
+  is one u64, 0 for no hold, so no rate of nothing can be said (that is a pause, D191's). A host
+  of an earlier version ends a run at a frame it has no kind for, so a pair that differs
+  refuses the run at create. On the VM's link `RATE` 94 and `RATED` 95 (shards_ipc), answered
+  as `GUEST_TIME` is, matched by number with the run host's other asks, and none awaited once
+  the link closes.
+- *One ask.* The client's room and rate are one numbered ask (`session::Asked`), each held while
+  it is awaited, and no longer.
+
+**Literals.** `MILLI_PER_CPU` (1000, `vm`): the unit, a CPU's time in thousandths, as
+Kubernetes counts CPU, no finer than `1m` ("Resource Management for Pods and Containers", CPU
+resource units), and as Hex charges and caps a microVM (`hex_api::MIN_CPU_MILLI`): a unit, not
+a tuning. `PERIOD` and `SOONEST` stay D191's, cited to CFS (sched-bwc.rst l. 94-95; kernel
+sched). The kinds are the next free numbers.
+
+**Cold start** (R03). Nothing here is learned or estimated. The rate is the orchestrator's
+learned number (Hex's water-filled share each window), told as it moves; until it tells one, the
+run's vCPUs are held as its RUN head said (an image run's: by none), the microVM's vCPUs its
+ceiling, the envelope the person made the ceiling. A rate below what one read of the governor
+resolves (`SOONEST`, 1 ms of a period for each vCPU) is held on average: what a period overran
+comes off the next ones (D191).
+
+**Tested** (light): vmm `hold`'s `a_rates_share_is_its_thousandths_of_the_period` and
+`a_hold_holds_a_rate_below_its_vcpus_alone`, and its tests before, at whole CPUs in milli-CPU;
+`image::wire`'s `rates_and_their_answers_read_back_as_said` and the version before refused;
+`image::session`'s `a_rates_answer_is_kept_for_its_awaited_ask_alone` and
+`a_rate_no_host_hears_is_refused_and_leaves_no_ask` (the room's too, through the one ask);
+`api_run`'s `a_rates_answer_reads_as_it_was_asked`; `warm`'s
+`a_rate_ask_reads_its_number_and_rate_alone`: green on macOS arm64 at its landing. Their
+guards' removal was not run (implementers run no mutation runs, the person, 2026-11-13): each of
+seven taken out in turn must fail its test, the hold's none at every vCPU's whole CPU (`holds`)
+and its exact share (`share_of`), version 12 refused, an answer kept for its awaited ask alone
+and the ask let go once answered or given up (`session`), a VM's other rate than the one asked
+refused (`rated_of`), and a `RATE` of other than 16 bytes no ask (`rate_asked`). Real VMs,
+ROOT's: `api_image.rs` `the_orchestrators_rate_holds_its_run_to_it` (a one-vCPU run
+spinning, held to a quarter CPU, runs its guest within a quarter of the time passing and a
+period's share; its vCPU's whole CPU holds nothing; none lifts it), `cargo test --profile
+test-release -p shards --test api_image the_orchestrators_rate_holds_its_run_to_it`.
+
+**Owed.** The real-VM test on KVM, HVF and WHP (ROOT); the seven guard-removal mutants above,
+these light tests on Linux and Windows, and `scripts/lint` on the 7 targets (ROOT). Hex's
+adoption: its re-vendor of Shards past D241 and this, then its learner telling each Shards
+image VM its rate each window (kiln plan step 14). How far past its rate a VM runs at each rate
+and vCPU count, measured, as D191 owes for its marks.
+
+**What would falsify it.** A run held to a rate whose guest time over a window passes the rate
+by more than a period's share and its vCPUs' overrun; a daemon run, its whole CPUs held in
+milli-CPU, held otherwise than before (D191's tests).
+
+### D248. An orchestrator's run host is started holding its three standard streams alone (built; real-VM validation owed)
+
+**Why.** "Children get only what they are given" (D26's warm pool, `shards_ipc::spawn`; on
+Windows D195's handle list) held for every child shards starts but one: shards-api started
+D231's run host, `shards api-run`, through std's `Command`. That hands it whatever another
+thread of its orchestrator holds inheritable at that moment, for as long as its VM runs
+(CVE-2024-21626's class). On macOS std's spawn, posix_spawnp, sets no
+`POSIX_SPAWN_CLOEXEC_DEFAULT` (rust-src `library/std/src/sys/process/unix/unix.rs`), and
+pipe(2), socket(2), socketpair(2) and accept(2) take no close-on-exec flag, so a descriptor
+another thread has just made waits unmarked until that thread marks it; on Windows std's
+CreateProcessW inherits every inheritable handle (`inherit_handles`, with no
+`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`; `library/std/src/sys/process/windows.rs`). Hex starts
+every program holding its stdio alone, so it booted no image VM on macOS or Windows (Hex plan
+step 12; Ada, 2026-11-12: the image class works there too). Hex carried the fix as its
+vendored change 0001 (Hex main,
+`vendor/patches/shards/0001-image-the-run-host-started-holding-its-three-standard.patch`).
+
+**Alternatives** (R02, R12):
+- *std's `Command`* (as it was): the leak above. Not kept.
+- *A spawn of shards-api's own* (Hex's change 0001: posix_spawn with file actions for 0, 1
+  and 2 and `POSIX_SPAWN_CLOEXEC_DEFAULT` on Apple's; CreateProcessW with a
+  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` of its three; 768 lines): a second copy of what
+  `shards_ipc::spawn` does for the daemon, the CLI and the registry's credential helpers. Not
+  taken (R12).
+- *`shards_ipc::spawn_with`* (taken): the child gets exactly the descriptors named for it,
+  each at its number, its signal mask empty and every signal at its default; on Linux every
+  descriptor shards holds is close-on-exec (`cloexec_inherited` marks what this process was
+  given open); on Windows the three handles alone, in its handle list. Its `Child` waits
+  without reaping (`ended`), reaps once (`wait`) and signals only while unreaped (`kill`),
+  what the session's own waiter did with libc and windows-sys by hand. shards-api now depends
+  on shards-ipc: an orchestrator that vendors shards-api vendors crates/ipc beside it.
+
+**Decided.** The session starts its host with `shards_ipc::spawn_with(program, ["api-run"],
+[stdin, stdout and stderr pipes at 0, 1 and 2], not detached, its spec's variables over this
+process's)`. A program named alone (`shards`, the spec's default) is found as std's `Command`
+found it: the first file of that name in a directory of this process's `PATH` (on Windows
+`.exe` added to a name with no extension), else refused (`ImageRefusal::Boot`, "in no directory
+of PATH"). It is never taken from the current directory, where std never looks for one either
+(its Unix spawn is posix_spawnp, its Windows `resolve_exe` searches PATH, the program's own and
+the system's directories; rust-src `library/std/src/sys/process`): `shards_ipc::spawn` is
+posix_spawn(2), which would take a name alone as relative to the current directory, and
+CreateProcessW, given no application name, searches "the current directory for the parent
+process" second and `PATH` last (Microsoft Learn, CreateProcessW, `lpCommandLine`). A directory of `PATH` that is empty, which exec(3) reads
+as the current one, is skipped, as std's Windows spawn skips it. A variable's name that is not UTF-8
+is refused as the spec's (`ImageRefusal::Spec`, "the run host's environment"), as the spawn
+names variables in UTF-8. The host is reaped under the state's lock as `exited` is set, and
+killed only while unreaped, by the `Child`'s own lock.
+
+**Literals.** 0, 1 and 2: the standard streams' numbers (POSIX `STDIN_FILENO`,
+`STDOUT_FILENO`, `STDERR_FILENO`; Windows' first three in the handle list, as
+`shards_ipc::spawn` numbers them). `exe`: the extension CreateProcessW adds to a name that has
+none, and std's spawn adds as it searches. None of its own.
+
+**Tests** (unit, one macOS arm64 host). `image::session::tests`:
+`a_run_host_holds_no_end_it_was_not_given` (macOS and Windows, in a test process of its own:
+a pipe's write end left inheritable, a run host started, that end let go; its read end finds
+every writer gone), `a_run_host_takes_its_environment_and_speaks_on_its_streams` (a host named
+alone found on `PATH`, its variable said, its stdin's line read back, its stderr empty, its
+exit 0; a variable's name not UTF-8 refused as the spec's),
+`a_program_named_alone_is_found_on_path_alone` (names on no directory of `PATH`, one of them a
+file in the current directory, refused as not found; one named with its directory as it is; a
+shell named alone found in a directory of `PATH`), and
+`a_feed_sends_its_callers_bytes_within_its_room_then_its_end`, its host's stdin a pipe now
+(on every OS). Red/green on adas-mac-studio.local (Darwin 25.2.0 arm64, rustc 1.98.1),
+`cargo test -p shards-api image::session`: with the spawn as it was (std's `Command`, behind
+the same interface) and 6ab5332f3's fallback (a name alone that no directory of `PATH` holds
+passed on as it is), 8 passed and 2 failed, `a_run_host_holds_no_end_it_was_not_given` ("the
+run host holds the write end of a pipe it was never given") and
+`a_program_named_alone_is_found_on_path_alone` (`Ok("Cargo.toml")` where not found was
+expected); as built, 10 passed. Clippy for shards-api, all targets, `-D warnings`: clean. The
+Windows leak check is unrun on a host here (CI's Windows legs build and run it).
+
+**Evidence owed** (ROOT, real VMs). `cargo test -p shards --profile test-release --test
+api_image` on HVF and WHP; Hex's image_real on macOS and Windows once Hex vendors this.
+
+**What would falsify it.** A run host that holds a descriptor or handle of its orchestrator's
+it was not given (then `shards_ipc::spawn` leaks to every child shards starts, D26).
+
+### D249. An orchestrator's run whose command never started ends failed, in its VM's words (built; real-VM validation owed)
+
+**Why.** A run's `DONE` (warm.rs `finish`, `joined_finish`) carries the command's status and,
+where the command never started, why not: the words dockerd says for it, after the code dockerd
+gives such a run (`start_failed`). The daemon reads both (daemon.rs `run_ended`): the words
+for the run's client, the code its client exits with. D231's run host read the status alone
+(api_run.rs `follow`, `DONE`'s first byte), so a run whose command never started ended
+`RunEnd::Exited` with that code, as a command that ran and exited with it does, and the VM's
+words were lost. Hex's image_real found a run's exit wrong on a real KVM node (HEX-IMG-3,
+`/bin/sh -c 'exit 3'`, where `shards run --rm --network none` of the same image and command
+exits 3; the Hex lead's notes, 2026-11-13).
+
+**Decided.** `api_run::run_end(failed, done)`: the link's failure first; a `DONE` of a status
+alone is `Exited(status)`; a status followed by words is `Failed("its command never started
+(status N): WORDS")`; no `DONE` is a failure, as before. The words are the mark: warm.rs
+writes them only for a command that never ran (`not_run`), and the daemon takes them where
+its run never started. No wire change: `RunEnd::Failed` is "its VM, its host or its guest
+failed". Whether HEX-IMG-3's command started is not known here: if it did not, its run now
+fails saying why, and that cause is its own fix.
+
+**Literals.** None.
+
+**Tests** (unit, one macOS arm64 host).
+`api_run::tests::a_command_that_never_started_ends_its_run_failed_saying_why`. Red/green on
+adas-mac-studio.local (Darwin 25.2.0 arm64, rustc 1.98.1), `cargo test -p shards --bin shards
+-- api_run::`: with the run's end composed as `follow` composed it (`DONE`'s first byte alone),
+14 passed and that test failed ("a command that never started ended its run as Exited(128)");
+as built, 15 passed. Clippy for shards, all targets, `-D warnings`: clean.
+
+**Evidence owed** (ROOT, real VMs). Hex's image_real (HEX-IMG-3) on KVM once Hex vendors this,
+and `cargo test -p shards --profile test-release --test api_image` on a KVM host.
+
+**What would falsify it.** A run whose command started ending `Failed` for its `DONE`, or one
+whose command never started ending `Exited`.
 
 ## 4. Start path (≤ 5 ms budget)
 

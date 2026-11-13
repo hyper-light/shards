@@ -10,6 +10,7 @@
 //! length alone.
 
 use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU64;
 
 use shards_abi::run;
 pub use shards_abi::run::nesting::Ready;
@@ -27,8 +28,15 @@ pub use shards_abi::run::nesting::Ready;
 /// kind for; and the run's stats carry what its microVM costs its host and what its vCPUs ran
 /// of its guest ([`Stats::microvm`], D241); 8, the run's credential grants
 /// ([`Request::credentials`], D242), each a credential named by reference and the hosts it
-/// may be filled in toward.
-pub const VERSION: u8 = 8;
+/// may be filled in toward; 11, each member's own terminal ([`MemberStage::terminal`]) and
+/// its size (`RESIZE`, answered `RESIZED`; D244), so that a side that has no terminals refuses
+/// the run as it is asked, before any resize is; 12, each member's reach of the names kept
+/// ([`Narrowing::members`], D246), which the run host holds every member the image declares
+/// to before its microVM starts; 13, the CPU rate its orchestrator holds the run's vCPUs to
+/// (`RATE`, answered `RATED`; D191, D247), so that a side that holds none refuses the run as
+/// it is asked, before any rate is: a host of an earlier version ends a run at a frame it has
+/// no kind for.
+pub const VERSION: u8 = 13;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -53,6 +61,11 @@ pub mod to_host {
     /// A [`RoomAsk`](super::RoomAsk): the room the orchestrator's budget leaves the run
     /// (D188, D241).
     pub const ROOM: u8 = 10;
+    /// A [`ResizeAsk`](super::ResizeAsk): a member's own terminal sized (D244).
+    pub const RESIZE: u8 = 11;
+    /// A [`RateAsk`](super::RateAsk): the CPU rate the orchestrator holds the run's vCPUs to
+    /// (D191, D247).
+    pub const RATE: u8 = 12;
 }
 
 /// What the run host sends.
@@ -82,6 +95,11 @@ pub mod to_client {
     pub const INPUT_ENDED: u8 = 26;
     /// [`RoomAnswer`](super::RoomAnswer): what the run is held within, by its ask's id.
     pub const HELD: u8 = 27;
+    /// [`ResizeAnswer`](super::ResizeAnswer): whether a member's terminal took its size, by
+    /// its ask's id.
+    pub const RESIZED: u8 = 28;
+    /// [`RateAnswer`](super::RateAnswer): what the run's vCPUs are held to, by its ask's id.
+    pub const RATED: u8 = 29;
 }
 
 /// Why a payload could not be read or written.
@@ -179,6 +197,9 @@ pub struct MemberStage {
     pub workdir: Option<String>,
     /// Its stdin is the orchestrator's to write ([`Input`]); else it is `/dev/null`.
     pub input: bool,
+    /// Its stdio is a terminal of its own (D244): what it shows is its stdout channel, its
+    /// stdin goes to it, and [`ResizeAsk`] sizes it.
+    pub terminal: bool,
 }
 
 /// A guest port published on the host.
@@ -213,6 +234,14 @@ pub struct Narrowing {
     pub destinations: Keep,
     /// Names past the microVM, where the image grants them.
     pub dns: bool,
+    /// Each member's reach of the names kept, where the orchestrator holds its members apart
+    /// (version 12, D246): every member the image declares is held to its entry's, one named
+    /// in none to nothing, or the run is refused before its microVM starts. A member reaches
+    /// each destination and remote MCP server kept that its image lets it reach by name:
+    /// D236 keeps them for the whole microVM, and its `held` makes members alike on a port
+    /// they reach by name. None: no member held apart, the names kept every member's whose
+    /// image names them.
+    pub members: Option<Vec<MemberReach>>,
 }
 
 impl Default for Narrowing {
@@ -222,8 +251,19 @@ impl Default for Narrowing {
             mcp: Keep::All,
             destinations: Keep::All,
             dns: true,
+            members: None,
         }
     }
+}
+
+/// One member's reach of the names kept ([`Narrowing::members`], D246): the member, by the
+/// kind and name its image's Agentfile declares, and each destination or remote MCP server
+/// it may reach, `host:port` as the narrowing keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberReach {
+    pub kind: MemberKind,
+    pub name: String,
+    pub destinations: Vec<String>,
 }
 
 /// A credential grant by reference (D242): the credential named `reference` (a secret's
@@ -590,6 +630,39 @@ pub struct RoomAsk {
 pub struct RoomAnswer {
     pub id: u32,
     pub result: Result<Option<u64>, String>,
+}
+
+/// A member's own terminal sized (D244), as TIOCSWINSZ sets one: its rows and columns, a 0
+/// in either leaving it as it is, as an exec's is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResizeAsk {
+    pub id: u32,
+    pub member: u32,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+/// Whether a member's terminal took its size, by its ask's id, or why not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResizeAnswer {
+    pub id: u32,
+    pub result: Result<(), String>,
+}
+
+/// The CPU rate the orchestrator holds the run's vCPUs to together (D191, D247), in
+/// milli-CPU of the host's time; none for no hold, the microVM's vCPUs its ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateAsk {
+    pub id: u32,
+    pub rate: Option<NonZeroU64>,
+}
+
+/// What the run's VM holds its vCPUs to, by its ask's id: the milli-CPU, none where it lets
+/// them be (no rate, or every vCPU's whole CPU or more), or why it holds them to nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateAnswer {
+    pub id: u32,
+    pub result: Result<Option<NonZeroU64>, String>,
 }
 
 /// A host directory plugged into running member `member` as the run goes (D235), as
@@ -1113,6 +1186,27 @@ impl Request {
                 w.text(host)?;
             }
         }
+        // Each member's terminal, in the members' order, appended in version 11 (D244).
+        for m in &self.members {
+            w.u8(u8::from(m.terminal));
+        }
+        // Each member's reach of the names kept, appended in version 12 (D246): whether the
+        // members are held apart, then each member's kind, name and names.
+        match &self.egress.members {
+            None => w.u8(0),
+            Some(members) => {
+                w.u8(1);
+                w.count(members.len())?;
+                for m in members {
+                    w.u8(m.kind as u8);
+                    w.text(&m.name)?;
+                    w.count(m.destinations.len())?;
+                    for d in &m.destinations {
+                        w.text(d)?;
+                    }
+                }
+            }
+        }
         w.done()
     }
 
@@ -1136,8 +1230,8 @@ impl Request {
             None
         };
         // Each member's kind, name, env and files, and, appended last, its working
-        // directory's flag and its input's.
-        let n = r.count(1 + 4 + 4 + 4 + 1 + 1)?;
+        // directory's flag, its input's and its terminal's.
+        let n = r.count(1 + 4 + 4 + 4 + 1 + 1 + 1)?;
         let mut members = Vec::with_capacity(n);
         for _ in 0..n {
             let kind = member_kind(r.u8()?)?;
@@ -1160,9 +1254,11 @@ impl Request {
                 name,
                 env,
                 files,
-                // Read with the members' working directories and inputs, appended last.
+                // Read with the members' working directories, inputs and terminals, appended
+                // last.
                 workdir: None,
                 input: false,
+                terminal: false,
             });
         }
         let n = r.count(2 + 1 + 1 + 2)?;
@@ -1191,11 +1287,13 @@ impl Request {
         }
         let nesting = r.flag()?;
         let ready_by = if r.flag()? { Some(r.u64()?) } else { None };
-        let egress = Narrowing {
+        let mut egress = Narrowing {
             egress,
             mcp,
             destinations: r.keep()?,
             dns,
+            // Read with the members' reach, appended last.
+            members: None,
         };
         for m in &mut members {
             m.workdir = if r.flag()? { Some(r.text()?) } else { None };
@@ -1217,6 +1315,34 @@ impl Request {
             }
             credentials.push(CredentialGrant { reference, toward });
         }
+        // Each member's terminal, in the members' order, appended in version 11 (D244).
+        for m in &mut members {
+            m.terminal = r.flag()?;
+        }
+        // Each member's reach of the names kept, appended in version 12 (D246): each member
+        // is at least its kind (one byte), its name's length (four) and its names' count
+        // (four), and each name at least its length (four).
+        egress.members = if r.flag()? {
+            let n = r.count(1 + 4 + 4)?;
+            let mut reach = Vec::with_capacity(n);
+            for _ in 0..n {
+                let kind = member_kind(r.u8()?)?;
+                let name = r.text()?;
+                let k = r.count(4)?;
+                let mut destinations = Vec::with_capacity(k);
+                for _ in 0..k {
+                    destinations.push(r.text()?);
+                }
+                reach.push(MemberReach {
+                    kind,
+                    name,
+                    destinations,
+                });
+            }
+            Some(reach)
+        } else {
+            None
+        };
         r.end()?;
         Ok(Request {
             image,
@@ -1716,6 +1842,118 @@ impl RoomAnswer {
     }
 }
 
+impl ResizeAsk {
+    /// Its id, its member, then its rows and columns.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.u32(self.member);
+        w.u16(self.rows);
+        w.u16(self.cols);
+        w.0
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<ResizeAsk, WireError> {
+        let mut r = Reader(payload);
+        let ask = ResizeAsk {
+            id: r.u32()?,
+            member: r.u32()?,
+            rows: r.u16()?,
+            cols: r.u16()?,
+        };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl ResizeAnswer {
+    /// Its id, then 0 for sized, or 1 and why not.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(()) => w.u8(0),
+            Err(why) => {
+                w.u8(1);
+                w.text(why)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<ResizeAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(()),
+            1 => Err(r.text()?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a resize's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(ResizeAnswer { id, result })
+    }
+}
+
+impl RateAsk {
+    /// Its id, then the rate, 0 for no hold: no rate of nothing, which is a pause, not a
+    /// rate.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.u64(self.rate.map_or(0, NonZeroU64::get));
+        w.0
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RateAsk, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let rate = NonZeroU64::new(r.u64()?);
+        r.end()?;
+        Ok(RateAsk { id, rate })
+    }
+}
+
+impl RateAnswer {
+    /// Its id, then 0 and the milli-CPU the vCPUs are held to (0 for none), or 1 and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(held) => {
+                w.u8(0);
+                w.u64(held.map_or(0, NonZeroU64::get));
+            }
+            Err(why) => {
+                w.u8(1);
+                w.text(why)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RateAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(NonZeroU64::new(r.u64()?)),
+            1 => Err(r.text()?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a rate's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(RateAnswer { id, result })
+    }
+}
+
 impl RunEnd {
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
@@ -1899,6 +2137,7 @@ mod tests {
             }],
             workdir: None,
             input: false,
+            terminal: false,
         };
         let shown = format!("{staged:?}");
         assert!(
@@ -1924,6 +2163,7 @@ mod tests {
                 }],
                 workdir: None,
                 input: true,
+                terminal: false,
             }],
             publish: vec![
                 Publish {
@@ -1944,6 +2184,7 @@ mod tests {
                 mcp: Keep::All,
                 destinations: Keep::All,
                 dns: false,
+                members: None,
             },
             shares: vec![ShareAt {
                 host: "/home/u/work".into(),
@@ -1986,10 +2227,12 @@ mod tests {
             files: Vec::new(),
             workdir: None,
             input: false,
+            terminal: false,
         });
         worked.members.push(MemberStage {
             workdir: Some("/".into()),
             input: true,
+            terminal: true,
             ..worked.members[1].clone()
         });
         assert_eq!(Request::decode(&worked.encode().unwrap()).unwrap(), worked);
@@ -2024,11 +2267,12 @@ mod tests {
         .encode()
         .unwrap();
         assert_eq!(
-            asked.get(asked.len() - 17..).unwrap(),
-            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0],
+            asked.get(asked.len() - 19..).unwrap(),
+            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0],
             "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
-             member's working directory (none) and its input, then the credential grants' count \
-             (zero, version 8)"
+             member's working directory (none) and its input, the credential grants' count \
+             (zero, version 8), the member's terminal (none, version 11), then whether the \
+             members are held apart (no, version 12)"
         );
         // Destinations kept by name, the host itself among them (D236), and none.
         for destinations in [
@@ -2192,11 +2436,12 @@ mod tests {
             InputEnd::decode(&[0, 0, 0, 1, 2]),
             Err(WireError::Tag { tag: 2, .. })
         ));
-        // A member's input flag, before the credential grants' count (version 8), that is
-        // no flag. One member, so its input is the fifth byte from the end (the count's
-        // four follow it).
+        // A member's input flag, before the credential grants' count (version 8), its
+        // terminal's flag (version 11) and the members' reach (version 12), that is no flag.
+        // One member, so its input is the seventh byte from the end (the count's four, its
+        // terminal's one and the reach's flag follow it).
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 5;
+        let at = bad.len() - 7;
         assert_eq!(
             bad[at], 1,
             "the member's input flag precedes the credentials' count"
@@ -2227,44 +2472,57 @@ mod tests {
         assert_eq!(Request::decode(&padded), Err(WireError::Trailing));
     }
 
-    /// Unknown versions and tags are refused, never defaulted.
+    /// Each member's reach of the names kept (version 12, D246). Do: hold the members apart
+    /// with no member named, with one reaching a provider and the host itself, and with two,
+    /// one reaching nothing; and hold none. Expect: each reads back as written, its reach
+    /// last, and one cut anywhere short refused. Do: write the reach's flag as no flag, a
+    /// member of no kind, and a count of four billion members in a few bytes. Expect: each
+    /// refused by type, never read as another request.
     #[test]
-    fn unknown_versions_and_tags_are_refused() {
-        let mut bytes = request().encode().unwrap();
-        bytes[0] = VERSION + 1;
-        assert_eq!(Request::decode(&bytes), Err(WireError::Version(VERSION + 1)));
-        // A request of version 1, without the nesting grant's fields, of version 4, without
-        // its members' working directories, or of version 5, without their inputs, is no
-        // request of this one's: refused by its version, never read with them defaulted.
-        let mut v1 = request().encode().unwrap();
-        v1.truncate(v1.len() - 3);
-        v1[0] = 1;
-        assert_eq!(Request::decode(&v1), Err(WireError::Version(1)));
-        let mut v4 = request().encode().unwrap();
-        v4.truncate(v4.len() - 2);
-        v4[0] = 4;
-        assert_eq!(Request::decode(&v4), Err(WireError::Version(4)));
-        let mut v5 = request().encode().unwrap();
-        v5.truncate(v5.len() - 1);
-        v5[0] = 5;
-        assert_eq!(Request::decode(&v5), Err(WireError::Version(5)));
-        // One of version 6 carries every field version 7 does, but its host ends the run at
-        // a room: refused by its version, before any room is told (D241).
-        let mut v6 = request().encode().unwrap();
-        v6.truncate(v6.len() - 4);
-        v6[0] = 6;
-        assert_eq!(Request::decode(&v6), Err(WireError::Version(6)));
-        // One of version 7, without the credential grants' count: refused by its version
-        // (D242), so an older reader never reads a grant with its field defaulted.
-        let mut v7 = request().encode().unwrap();
-        v7.truncate(v7.len() - 4);
-        v7[0] = 7;
-        assert_eq!(Request::decode(&v7), Err(WireError::Version(7)));
-        // The nesting flag, before the deadline's tag, the destinations', the one member's
-        // working directory's and input's, and the credential grants' count (version 8): no
-        // flag.
-        let mut flag = request().encode().unwrap();
-        let at = flag.len() - 9;
+    fn each_members_reach_rides_the_request_last() {
+        let reach = |kind, name: &str, destinations: &[&str]| MemberReach {
+            kind,
+            name: name.into(),
+            destinations: destinations.iter().map(|d| (*d).to_string()).collect(),
+        };
+        let held = |members: Option<Vec<MemberReach>>| Request {
+            egress: Narrowing {
+                destinations: Keep::Only(vec![
+                    "api.openai.com:443".into(),
+                    "host.docker.internal:7070".into(),
+                ]),
+                members,
+                ..request().egress
+            },
+            ..request()
+        };
+        for members in [
+            None,
+            Some(Vec::new()),
+            Some(vec![reach(
+                MemberKind::Harness,
+                "codex",
+                &["api.openai.com:443", "host.docker.internal:7070"],
+            )]),
+            Some(vec![
+                reach(MemberKind::Harness, "codex", &["api.openai.com:443"]),
+                reach(MemberKind::Agent, "helper", &[]),
+            ]),
+        ] {
+            let asked = held(members);
+            let bytes = asked.encode().unwrap();
+            assert_eq!(bytes[0], VERSION);
+            assert_eq!(Request::decode(&bytes).unwrap(), asked);
+            for cut in 0..bytes.len() {
+                assert!(
+                    Request::decode(bytes.get(..cut).unwrap()).is_err(),
+                    "cut at {cut}"
+                );
+            }
+        }
+        // The reach's flag, last where none is held apart.
+        let mut flag = held(None).encode().unwrap();
+        let at = flag.len() - 1;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -2273,10 +2531,96 @@ mod tests {
                 tag: 2
             })
         );
-        // The destinations' list, before the member's working directory and input and the
-        // credential grants' count: no list of version 3's and on.
+        // One member reaching nothing ends in its kind, its name and its names' count.
+        let mut kindless = held(Some(vec![reach(MemberKind::Agent, "helper", &[])]))
+            .encode()
+            .unwrap();
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4);
+        assert_eq!(kindless[at], MemberKind::Agent as u8);
+        kindless[at] = 2;
+        assert_eq!(
+            Request::decode(&kindless),
+            Err(WireError::Tag {
+                what: "a member's kind",
+                tag: 2
+            })
+        );
+        let mut hostile = held(None).encode().unwrap();
+        hostile.pop();
+        hostile.push(1);
+        hostile.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(Request::decode(&hostile), Err(WireError::Short));
+    }
+
+    /// Unknown versions and tags are refused, never defaulted.
+    #[test]
+    fn unknown_versions_and_tags_are_refused() {
+        let mut bytes = request().encode().unwrap();
+        bytes[0] = VERSION + 1;
+        assert_eq!(Request::decode(&bytes), Err(WireError::Version(VERSION + 1)));
+        // A request of version 1, without the nesting grant's fields and the destinations',
+        // of version 4, without its members' working directories, or of version 5, without
+        // their inputs, is no request of this one's: refused by its version, never read with
+        // them defaulted. The request's one member makes each of those one byte.
+        let mut v1 = request().encode().unwrap();
+        v1.truncate(v1.len() - 11);
+        v1[0] = 1;
+        assert_eq!(Request::decode(&v1), Err(WireError::Version(1)));
+        let mut v4 = request().encode().unwrap();
+        v4.truncate(v4.len() - 8);
+        v4[0] = 4;
+        assert_eq!(Request::decode(&v4), Err(WireError::Version(4)));
+        let mut v5 = request().encode().unwrap();
+        v5.truncate(v5.len() - 7);
+        v5[0] = 5;
+        assert_eq!(Request::decode(&v5), Err(WireError::Version(5)));
+        // One of version 6 carries every field version 7 does, but its host ends the run at
+        // a room: refused by its version, before any room is told (D241).
+        let mut v6 = request().encode().unwrap();
+        v6.truncate(v6.len() - 6);
+        v6[0] = 6;
+        assert_eq!(Request::decode(&v6), Err(WireError::Version(6)));
+        // One of version 7, without the credential grants' count: refused by its version
+        // (D242), so an older reader never reads a grant with its field defaulted.
+        let mut v7 = request().encode().unwrap();
+        v7.truncate(v7.len() - 6);
+        v7[0] = 7;
+        assert_eq!(Request::decode(&v7), Err(WireError::Version(7)));
+        // One of version 8, without its members' terminals: refused by its version (D244), so
+        // an older reader never starts a member with pipes where its owner asked a terminal.
+        let mut v8 = request().encode().unwrap();
+        v8.truncate(v8.len() - 2);
+        v8[0] = 8;
+        assert_eq!(Request::decode(&v8), Err(WireError::Version(8)));
+        // One of version 11, without the members' reach: refused by its version (D246), so a
+        // run host never takes a request that holds its members apart as one that holds none.
+        let mut v11 = request().encode().unwrap();
+        v11.truncate(v11.len() - 1);
+        v11[0] = 11;
+        assert_eq!(Request::decode(&v11), Err(WireError::Version(11)));
+        // One of version 12 carries every field version 13 does, but its host ends the run at
+        // a rate: refused by its version, before any rate is told (D247).
+        let mut v12 = request().encode().unwrap();
+        v12[0] = 12;
+        assert_eq!(Request::decode(&v12), Err(WireError::Version(12)));
+        // The nesting flag, before the deadline's tag, the destinations', the one member's
+        // working directory's and input's, the credential grants' count (version 8), the
+        // member's terminal's (version 11) and the members' reach (version 12): no flag.
+        let mut flag = request().encode().unwrap();
+        let at = flag.len() - 11;
+        flag[at] = 2;
+        assert_eq!(
+            Request::decode(&flag),
+            Err(WireError::Tag {
+                what: "a flag",
+                tag: 2
+            })
+        );
+        // The destinations' list, before the member's working directory and input, the
+        // credential grants' count, the member's terminal and the members' reach: no list of
+        // version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 7;
+        let at = list.len() - 9;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -2425,6 +2769,151 @@ mod tests {
         assert_eq!(RoomAnswer::decode(&[0, 0, 0, 1, 1, 0]), Err(WireError::Short));
         assert_eq!(RoomAnswer::decode(&[0, 0, 0, 1, 0, 0]), Err(WireError::Trailing));
         let long = RoomAnswer {
+            id: 1,
+            result: Err("x".repeat(run::MAX_PAYLOAD as usize)),
+        };
+        assert_eq!(long.encode(), Err(WireError::TooLong));
+    }
+
+    /// A member's terminal's size, and its answer, read back as said at their bounds; one
+    /// cut short, padded, of an unknown tag or too long is refused by type (D244). A
+    /// request's terminal flag (version 11), before its members' reach (version 12), that is
+    /// no flag is refused.
+    #[test]
+    fn resizes_and_their_answers_read_back_as_said() {
+        for (member, rows, cols) in [(0, 0, 0), (3, 40, 120), (u32::MAX, u16::MAX, u16::MAX)] {
+            let ask = ResizeAsk {
+                id: 9,
+                member,
+                rows,
+                cols,
+            };
+            assert_eq!(ResizeAsk::decode(&ask.encode()), Ok(ask));
+        }
+        for result in [
+            Ok(()),
+            Err("harness codex: it has no terminal of its own".to_string()),
+        ] {
+            let answer = ResizeAnswer { id: u32::MAX, result };
+            assert_eq!(ResizeAnswer::decode(&answer.encode().unwrap()), Ok(answer));
+        }
+        let ask = ResizeAsk {
+            id: 1,
+            member: 2,
+            rows: 24,
+            cols: 80,
+        }
+        .encode();
+        for cut in 0..ask.len() {
+            assert_eq!(
+                ResizeAsk::decode(&ask[..cut]),
+                Err(WireError::Short),
+                "cut at {cut}"
+            );
+        }
+        let mut padded = ask.clone();
+        padded.push(0);
+        assert_eq!(ResizeAsk::decode(&padded), Err(WireError::Trailing));
+        assert_eq!(
+            ResizeAnswer::decode(&[0, 0, 0, 1, 2]),
+            Err(WireError::Tag {
+                what: "a resize's answer",
+                tag: 2
+            })
+        );
+        assert_eq!(ResizeAnswer::decode(&[0, 0, 0, 1, 1, 0]), Err(WireError::Short));
+        assert_eq!(
+            ResizeAnswer::decode(&[0, 0, 0, 1, 0, 0]),
+            Err(WireError::Trailing)
+        );
+        let long = ResizeAnswer {
+            id: 1,
+            result: Err("x".repeat(run::MAX_PAYLOAD as usize)),
+        };
+        assert_eq!(long.encode(), Err(WireError::TooLong));
+        let mut bad = request().encode().unwrap();
+        let at = bad.len() - 2;
+        assert_eq!(
+            bad[at], 0,
+            "the member's terminal flag precedes the members' reach"
+        );
+        bad[at] = 2;
+        assert_eq!(
+            Request::decode(&bad),
+            Err(WireError::Tag {
+                what: "a flag",
+                tag: 2
+            })
+        );
+    }
+
+    /// A rate and its answer read back as they were said (D247): no hold, the least rate,
+    /// a CPU and a half, the most a u64 holds; held to none, to a rate, and why not. Cut
+    /// short, padded or of a tag no version has, refused.
+    #[test]
+    fn rates_and_their_answers_read_back_as_said() {
+        for rate in [
+            None,
+            NonZeroU64::new(1),
+            NonZeroU64::new(1500),
+            NonZeroU64::new(u64::MAX),
+        ] {
+            let ask = RateAsk { id: 7, rate };
+            assert_eq!(RateAsk::decode(&ask.encode()), Ok(ask));
+        }
+        for result in [
+            Ok(None),
+            Ok(NonZeroU64::new(1)),
+            Ok(NonZeroU64::new(u64::MAX)),
+            Err("the microVM has not started".to_string()),
+        ] {
+            let answer = RateAnswer { id: u32::MAX, result };
+            assert_eq!(RateAnswer::decode(&answer.encode().unwrap()), Ok(answer));
+        }
+        // A rate of nothing reads as no hold: the wire has no rate of no CPU to say.
+        assert_eq!(
+            RateAsk::decode(&[0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0]),
+            Ok(RateAsk { id: 3, rate: None })
+        );
+        let ask = RateAsk {
+            id: 1,
+            rate: NonZeroU64::new(250),
+        }
+        .encode();
+        for cut in 0..ask.len() {
+            assert_eq!(
+                RateAsk::decode(&ask[..cut]),
+                Err(WireError::Short),
+                "cut at {cut}"
+            );
+        }
+        let mut padded = ask.clone();
+        padded.push(0);
+        assert_eq!(RateAsk::decode(&padded), Err(WireError::Trailing));
+        let answer = RateAnswer {
+            id: 1,
+            result: Ok(NonZeroU64::new(250)),
+        }
+        .encode()
+        .unwrap();
+        for cut in 0..answer.len() {
+            assert_eq!(
+                RateAnswer::decode(&answer[..cut]),
+                Err(WireError::Short),
+                "cut at {cut}"
+            );
+        }
+        let mut padded = answer.clone();
+        padded.push(0);
+        assert_eq!(RateAnswer::decode(&padded), Err(WireError::Trailing));
+        assert_eq!(
+            RateAnswer::decode(&[0, 0, 0, 1, 2]),
+            Err(WireError::Tag {
+                what: "a rate's answer",
+                tag: 2
+            })
+        );
+        let long = RateAnswer {
             id: 1,
             result: Err("x".repeat(run::MAX_PAYLOAD as usize)),
         };

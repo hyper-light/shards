@@ -16965,7 +16965,11 @@ revision before comparing a changed API/implementation.
   on a partition of its own, never set up and mapping nothing, so that a process's one
   mapped partition, M345, is not disturbed): on jupiter, "its hypervisor assigns no device to
   a partition: WHvSetPartitionProperty(AllowDeviceAssignment) failed: HRESULT 0x80070032
-  (The request is not supported. (os error 50)), and says it has no IOMMU support".
+  (The request is not supported. (os error 50)), and says it has no IOMMU support". Since
+  the refusal is typed (D154's "Each refusal is typed", 2026-11-13), it goes on with whose
+  limit that is, by the edition the kernel gives (ProductType 1 here, jupiter.txt line 8):
+  "this Windows is a client edition, and Microsoft supports Discrete Device Assignment on
+  Windows Server alone, not on client editions such as Windows 10 or 11 Pro (D154)".
 
 ### M402. Whether CI's Windows runners' hypervisors give a partition a host's PCI function (D154)
 
@@ -16994,7 +16998,11 @@ revision before comparing a changed API/implementation.
   IOMMU (Microsoft Learn, "Deploy devices by using Discrete Device Assignment", 2025-02-19),
   which Azure's VMs do not give it, as Hyper-V's reasons say; and windows-11-arm has no
   hypervisor. Each refusal is the
-  host's own answer (`vm::passthrough_refused`). The refusal tests cover this path; they
+  host's own answer (`vm::passthrough_refused`), typed since 2026-11-13 (D154): on these
+  runners' Windows Server (ProductType 3, ci.txt lines 6 and 29) it names the hardware
+  Windows Server needs, "server-class hardware alone, which grants it control of the PCIe
+  fabric (Native PCI Express Control) and whose PCIe root complex has Access Control
+  Services", where Windows 11's names the edition (M401). The refusal tests cover this path; they
   are not a passthrough E2E. Windows Server DDA implementation and a successful E2E on an
   assignable physical function remain outstanding for step 13.
 
@@ -22419,6 +22427,125 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R10 | ROOT's summaries are in `measurements/control-end/results/`. The raw records are owed. |
   | R11 | macOS arm64 (HVF) and Linux x86_64 (KVM) only. WHP x86_64, WHP arm64 and Linux arm64 were not run, so they are unverified. |
   | R15, R16 | No agent started: the session's cap refused one. Nothing was run, so there is nothing to clean. |
+
+### M541. Linux CI's intermittent failures at cc439a2a7, d35c4cf79 and 83f0549ad: two waits bounded by records of other hosts, an attach's reap race, and execs and signals lost on the exec port (D215, D176, D16)
+
+- **Question.** Goal #51's step 7 (kiln plan 01a1d2b3bc1e720ba976615b53723906): what caused each
+  of ten failures in x86_64 Linux gnu CI on main, and is each fixed? Jobs 131488530221
+  (cc439a2a7), 131480418603 (d35c4cf79) and 131479475824 (83f0549ad).
+- **Method.** The retained logs, ANSI stripped; main's code at each run and at a22d060b5; main's
+  history since each run. Focused unit tests: red on adacachy (Linux 7.2.9 x86_64, cargo 1.98.1)
+  at 8fb711a95, green on adalundhe-macbook-pro (macOS 26.5.2 arm64) and in its Docker Desktop's
+  Linux 6.12.76 arm64 at ff5731dc3, both 1.98.1
+  ([logs](measurements/g51-linux-flakes/logs/)). No real VM was run: those runs are ROOT's.
+- **Found: two bounds were other hosts' records (R03).** ROOT decided on 2026-11-13 that
+  shards-api's real-VM test bounds are learned where they run, with a designed cold start and
+  no chosen multiple, and gave the fix to goal 52, beside Hex's lead removing Hex's own 2x
+  bounds (docs/research/s37-decision-inventory.md row 2, 6366cfe0b). So these three are not fixed
+  here. This lane's variant, waits on facts with no clock, is offered for that fix as
+  [no-clock.patch](measurements/g51-linux-flakes/no-clock.patch). It was tested (the logs, as Method says):
+  `the_simulator_conforms_with_no_clock` was red at 8fb711a95 ("the patience is past a
+  deadline") and green at ff5731dc3.
+  1. boot.rs `shards_api_conforms_on_real_guests`, case "a served port carries bytes and a
+     half-close" (d35c4cf79): "connect: vsock port 1234: no OK within 2.41364452s: Read:
+     handshake deadline expired". 2.41364452 s is exactly twice M465's Linux-KVM record,
+     1.20682226 s. That record was the slowest of 5 boots on fedora under load 49-51, and boot.rs's
+     `E2E` (`shards_api::record::Learned`) doubled it. So the bound was a number measured on
+     another host, baked in per OS class, with a chosen margin (R03). The CI runner's boot, beside
+     the suite's other boots, took longer.
+  2. boot.rs `shards_api_shares_a_directory_and_a_read_only_one` (d35c4cf79): `left: None,
+     right: Some(PowerOff)`. Its `wait_for(E2E.get())` returned at the same 2.41 s.
+  3. tests/sim.rs `client::a_child_holding_shards_output_holds_no_refusal_back` (cc439a2a7):
+     "refused 897.335µs after shards' end". The test held the refusal to `REFUSED_AFTER_END`:
+     twice M463's Linux-KVM record of 299.915 µs, so 599.83 µs, a latency bound in a functional
+     test. The patch's version asserts the fact instead: a connect with no clock, refused while
+     the child holding shards' output still runs.
+- **Found, and fixed here.**
+  4. boot.rs `shards_api_conforms_on_real_guests`, case "a guest its client lost is taken back by
+     attach" (cc439a2a7): `Process { pid: 50747, expected_started: 171969, failure: Os {
+     operation: OpenStat, code: 2 } }`.
+     - The guest's first client is forgotten, not dropped, as a crash would leave it. Its
+       `shards-api-wait` thread still reaps the VM process: it waits with WNOWAIT, drains the
+       output, then calls `child.wait()`.
+     - The attach (`taken::Held::find`) opens a pidfd, then reads `/proc/<pid>/stat`. A reap
+       between the two leaves ENOENT; a reap between the stat file's open and its read leaves
+       ESRCH. The case accepts neither as an ended guest's, though the pidfd it holds says the
+       process exited.
+     - Fix: `Held::found` returns `Exited` when the start can't be read and the held process has
+       exited. macOS's kqueue hold shares the path.
+     - Red, then green: `taken::tests::a_process_reaped_after_it_was_held_has_exited` holds a
+       zombie by pidfd, then reaps it. It returned `Some(Os { operation: OpenStat, code: 2 })`,
+       then `Some(Exited)`.
+- **Found, already fixed on main.** Each of these failed only at 83f0549ad. d35c4cf79 and
+  cc439a2a7 passed all of them (saved.rs 13 of 13 each). Those two runs had 0d4f20288 and
+  2944d9ab5, which 83f0549ad lacked.
+  - **The defect at 83f0549ad.**
+    - A restored guest dials its run and signal connections again on the exec port (D176), as
+      every exec's connection comes.
+    - The port's admission (`hellos::admit`, on the vsock device thread) took two locks with
+      `try_lock`. It refused `Full` whenever either was busy: with an exec registering, with the
+      acceptor, or with `heard`. It also parked an admitted connection in the first free
+      waiter's slot, whoever's that was.
+    - The guest dropped such a loss silently. An exec then waited for its workload's end. A
+      restored run's `signal-conn` thread waited for a dial that never came, holding every
+      signal: "Ends with the microVM, if the guest never dials".
+  - **The failures.**
+    5. saved.rs `a_microvm_saved_as_an_execs_stdin_waits_ends_with_its_run_once_restored` and
+       `a_microvm_saved_as_an_exec_writes_on_ends_with_its_run_once_restored`: stopped in 40 s and
+       130 s, exit 255. The daemon said "its command not yet ended 10s after SIGKILL": neither the
+       stop's SIGTERM nor its SIGKILL reached the restored command.
+    6. saved.rs `an_exec_reading_its_stdin_through_a_save_ends_once_restored`: `exec ps` into the
+       restored run did not exit in 60 s.
+    7. moved.rs `a_volumes_guest_owners_move_with_it`: `exec tree /kept`, into the machine
+       restored at its destination, did not exit in 120 s.
+    8. containers.rs `a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end`:
+       `exec read /vol/big` did not exit in 300 s.
+       - Its VM ran about 1 CPU-s/s for about 80 s, which fits 512 MiB read at M308's 7-25 MiB/s
+         through a window on a nested AMD host. It then went idle at +70 to 140 ms per 10 s, while
+         its exec's client still waited.
+       - The daemon's budget word (`exec_waiting`, builtin ROOM: "telling its microVM its
+         budget's room") is itself an exec. It registers beside the test's.
+       - The guest starts an exec's process as its connection is dialed, and said nothing of the
+         loss.
+    9. daemon.rs `a_killed_daemons_runs_end_with_it`: the restored run's `shards-vm restore`
+       outlived its killed daemon. The SIGKILL sent as the daemon went was held for the guest's
+       redial.
+  - **The fixes, on main.**
+    - 0d4f20288 and 2944d9ab5 (exec admission). Admission now refuses only `Closed`, `Unwaited`
+      or `Unheld`. vm_run.rs's `await_resumed` registers both restore tokens before
+      `stopper.release()` lets the guest run, so a redial can't be refused for a busy lock. The
+      guest now says such a loss and kills the exec's process.
+    - 3607aad11 and 782275c26 (the signal link). A lost link is typed, and a SIGKILL refused for
+      it stops the machine.
+- **Remaining** (not this step's).
+  - (1) to (3): goal 52's, as ROOT decided. boot.rs's `E2E` also sets
+    `a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes`'s deadline and its
+    leftovers' wait, and `conformance::PATIENCE`, `OVERSHOOT` and tests/sim.rs's `PATIENCE` are
+    the same per-class records (R03).
+  - M538's open item stands: frames wait, with no time bound, for a restored guest that never
+    dials. That is now only a guest that never dials.
+- **Owed to ROOT** (real VMs, on KVM on adacachy and on HVF):
+  - for (4): `cargo test -p shards --test boot --profile test-release --
+    shards_api_conforms_on_real_guests` (its attach case; its other cases wait on goal 52's
+    bounds);
+  - for the verdicts, at main: `--test saved` (all three tests above), `--test moved
+    a_volumes_guest_owners_move_with_it`, `--test daemon a_killed_daemons_runs_end_with_it`, and
+    on KVM `--test containers
+    a_microvm_held_to_a_budget_reads_a_large_file_through_its_window_to_its_end`.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No panic path added: the new match returns typed failures. Tests alone unwrap. |
+  | R02, R05, R12, R13 | No new interface. `Held::found` is `find`'s body behind its open, for its test, and shared by Linux's pidfd and macOS's kqueue. |
+  | R03 | No value added. (1) to (3) are R03 defects, and their fix is goal 52's (ROOT's decision). |
+  | R04 | The ended guest's attach is refused `Exited`, typed. |
+  | R06, R07 | Small functions; comments cite the CI jobs and records. |
+  | R08, R14 | No performance claim. |
+  | R09 | The CI logs above. (4) and the patch's no-clock case were also red in unit tests. |
+  | R10 | Red, then green, in unit tests for (4), and for the patch. Logs are in `measurements/g51-linux-flakes/logs`. |
+  | R11 | Unit tests on macOS arm64 and Linux arm64; red on Linux x86_64. Clippy for shards-api (`--all-targets`), Linux arm64. The other targets are CI's on main. |
+  | R15, R16 | Implementer, no agents started. `~/g121-tmp/g51-s7` was removed on adacachy and on adalundhe-macbook-pro. |
 
 ### M542. macOS refused a daemon's request wait past what one select(2) takes, and its descriptors never ran out (D222, D185)
 

@@ -25,9 +25,9 @@ mod session;
 pub mod wire;
 
 pub use wire::{
-    Bound, Channel, CredentialGrant, Fill, GuestTimes, HostUse, Keep, MemberInfo, MemberKind, Microvm,
-    Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, Secret, Stats, StatsScope, VcpuTime,
-    decide,
+    Bound, Channel, CredentialGrant, Fill, GuestTimes, HostUse, Keep, MemberInfo, MemberKind, MemberReach,
+    Microvm, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, Secret, Stats, StatsScope,
+    VcpuTime, decide,
 };
 
 /// A member, as the image's Agentfile names it.
@@ -77,7 +77,11 @@ pub struct MemberSpec {
     /// Its stdin, a pipe the orchestrator writes ([`ImageGuest::take_input`]); else
     /// `/dev/null`, as every member's is today.
     pub stdin: bool,
-    /// A terminal for its stdio.
+    /// Its stdio a terminal of its own (plan step 6, D244), whose master its run's init
+    /// holds: what the terminal shows is its stdout ([`ImageGuest::take_output`]), its stderr
+    /// ending at once; where its stdin is asked for too, what is written to it is typed
+    /// into the terminal ([`ImageGuest::take_input`]), and its end leaves the terminal open.
+    /// It is 0 by 0 until [`ImageGuest::resize`] sizes it.
     pub terminal: bool,
 }
 
@@ -104,7 +108,9 @@ pub struct ImageSpec {
     pub command: Option<Vec<String>>,
     pub members: Vec<MemberSpec>,
     pub publish: Vec<Publish>,
-    /// The image's grants past the microVM, kept or dropped, never added to.
+    /// The image's grants past the microVM, kept or dropped, never added to; where it holds
+    /// its members apart, each member's reach of the names kept ([`Narrowing::members`],
+    /// D246), which the run host refuses the run unless every member reaches exactly.
     pub egress: Narrowing,
     /// The run's credential grants (D242): each a credential named by reference (a secret
     /// in the orchestrator's store, never a value) and the hosts the injector may fill it
@@ -169,6 +175,10 @@ pub enum ImageRefusal {
     Plug(PlugRefusal, String),
     /// The run's init held it within no room it was told (D241), in its words.
     Room(String),
+    /// The run's VM held its vCPUs to no rate it was told (D247), in its words.
+    Rate(String),
+    /// A member's terminal its run's init did not size (D244), in its words.
+    Terminal(String),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -184,6 +194,8 @@ impl std::fmt::Display for ImageRefusal {
             Self::Os { what, kind } => write!(f, "{what}: {kind:?}"),
             Self::Plug(cause, why) => write!(f, "the plug: {cause:?}: {why}"),
             Self::Room(why) => write!(f, "the run's room: {why}"),
+            Self::Rate(why) => write!(f, "the run's rate: {why}"),
+            Self::Terminal(why) => write!(f, "a member's terminal: {why}"),
         }
     }
 }
@@ -233,6 +245,33 @@ pub trait ImageGuest: Send + Sync {
     /// budget is the orchestrator's: it tells the room again as the budget changes or as
     /// the run's use moves, as D188's daemon does its own runs'.
     fn room(&self, room: Option<i64>, patience: Duration) -> Result<Option<u64>, ImageRefusal>;
+    /// The CPU rate its orchestrator holds the run's vCPUs to together (D191, D247), in
+    /// milli-CPU of the host's time, as a daemon holds a run of its own to its CPUs: once a
+    /// period's share is spent, every vCPU is held out of its guest until the period ends,
+    /// whatever its guest does, and what a period overran comes off the next ones. None lifts
+    /// the hold, the microVM's vCPUs its ceiling. Answers what its vCPUs are held to, none
+    /// where nothing holds them (no rate, or every vCPU's whole CPU or more), waiting at most
+    /// `patience` (`Duration::MAX`: until it answers or the run ends). The rate is the
+    /// orchestrator's: it tells it again as it moves.
+    fn rate(
+        &self,
+        rate: Option<std::num::NonZeroU64>,
+        patience: Duration,
+    ) -> Result<Option<std::num::NonZeroU64>, ImageRefusal>;
+    /// Member `member`'s own terminal ([`MemberSpec::terminal`]) sized to `rows` by `cols`
+    /// (plan step 6, D244), as a terminal's window is: its run's init sets the size, and the
+    /// kernel tells the terminal's foreground process group SIGWINCH where it changed; a 0 in
+    /// either leaves it as it is. Waits at most `patience` (`Duration::MAX`: until it answers
+    /// or the run ends). Refused for a member its spec gave no terminal
+    /// ([`ImageRefusal::Spec`]), and as [`ImageRefusal::Terminal`] where its init did not
+    /// size it.
+    fn resize(
+        &self,
+        member: &MemberName,
+        rows: u16,
+        cols: u16,
+        patience: Duration,
+    ) -> Result<(), ImageRefusal>;
     /// The readiness of the run's own command under the nesting grant (D234), as its init
     /// last said it, once it differs from `seen` (none: once there is any), waiting at most
     /// `timeout` (`Duration::MAX`: until it comes; `Duration::ZERO`: as it stands). Its
@@ -302,14 +341,6 @@ fn no_backend(r: crate::Refusal) -> ImageRefusal {
 fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
     let mut members = Vec::with_capacity(spec.members.len());
     for m in &spec.members {
-        if m.terminal {
-            return Err(ImageRefusal::Unsupported {
-                what: "a member's terminal",
-                why: "a pty in a member's own namespaces is owed (managed-runtime-plan.md G24); \
-                      its stdio are pipes"
-                    .into(),
-            });
-        }
         let mut env = Vec::with_capacity(m.env.len());
         for (key, value) in &m.env {
             let mut variable = Vec::with_capacity(key.len() + 1 + value.0.len());
@@ -357,6 +388,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             files,
             workdir: m.workdir.clone(),
             input: m.stdin,
+            terminal: m.terminal,
         });
     }
     let mut shares = Vec::with_capacity(spec.shares.len());
@@ -627,10 +659,12 @@ mod tests {
                 "{relative_or_escaping}"
             );
         }
+        // A member's terminal (D244) and its stdin are asked for in its request, as the run
+        // host takes them.
         let mut s = spec();
         s.members[0].terminal = true;
-        assert_eq!(refused(s), "a member's terminal");
-        // A member's stdin is asked for in its request, as the run host takes it.
+        assert!(request(&s).unwrap().members[0].terminal);
+        assert!(!request(&spec()).unwrap().members[0].terminal);
         let mut s = spec();
         s.members[0].stdin = true;
         assert!(request(&s).unwrap().members[0].input);

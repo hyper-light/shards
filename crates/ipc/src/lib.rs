@@ -575,6 +575,14 @@ pub mod kind {
     /// VM → its owner: a member's input has ended, as its init told it
     /// (`shards_abi::run::managed::InputEnded`), on the independent control path.
     pub const MANAGED_INPUT_ENDED: u8 = 93;
+    /// An orchestrator's run host → its run's VM (D247): the CPU rate its vCPUs may use of
+    /// the host's together, by its number (8, big-endian), then the rate in milli-CPU (8,
+    /// big-endian), 0 for no hold; answered with [`RATED`].
+    pub const RATE: u8 = 94;
+    /// A VM → its run host: [`RATE`]'s answer, by its number (8, big-endian), then 0 and the
+    /// milli-CPU it holds its vCPUs to in decimal, nothing where it lets them be, or 1 and
+    /// why not.
+    pub const RATED: u8 = 95;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
@@ -633,6 +641,9 @@ pub struct Exec {
     /// its `exec_create`, as dockerd has it (moby daemon/exec.go); empty for `shards
     /// exec`'s, which the daemon makes as it starts it.
     pub id: String,
+    /// `--for`: the agent or harness of its image's to run it in, confined as that member
+    /// is (D243); empty for the microVM's command's namespaces.
+    pub member: String,
 }
 
 impl Exec {
@@ -658,6 +669,7 @@ impl Exec {
         w.push(u8::from(self.privileged));
         put_list(&mut w, &self.terms);
         put_str(&mut w, &self.id);
+        put_str(&mut w, &self.member);
         w
     }
 
@@ -683,6 +695,7 @@ impl Exec {
             privileged: r.flag()?,
             terms: r.list()?,
             id: r.str()?,
+            member: r.str()?,
         };
         r.0.is_empty().then_some(exec)
     }
@@ -2714,6 +2727,7 @@ mod tests {
             privileged: true,
             terms: vec!["xterm-kitty".into()],
             id: "1f".repeat(32),
+            member: "codex".into(),
             daemon: Identity {
                 dev: 1,
                 ino: 2,

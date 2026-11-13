@@ -664,7 +664,7 @@ fn domain_pid(status: &str) -> Option<u32> {
 /// namespace of its own (managed.rs), its command (PID 2 there) first. Each is held before
 /// it is checked to be the domain's still, so that a PID another process took meanwhile is
 /// never entered: one that ended once held fails setns(2), and the next is tried.
-fn member_process(cgroup: &str) -> io::Result<OwnedFd> {
+pub(crate) fn member_process(cgroup: &str) -> io::Result<OwnedFd> {
     let procs = std::fs::read_to_string(format!("{cgroup}/cgroup.procs"))
         .map_err(|e| io::Error::new(e.kind(), format!("{cgroup}: {e}")))?;
     let group = cgroup.strip_prefix("/sys/fs/cgroup").unwrap_or(cgroup);

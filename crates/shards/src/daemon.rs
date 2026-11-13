@@ -4070,8 +4070,9 @@ impl<D: Disk> Daemon<D> {
                 &agentfile.managed_labels,
                 &agentfile.active_members,
             )
+            .and_then(|inputs| Ok((inputs, managed::control_asked(&run.annotations)?)))
             .map_err(managed::Failure::Refused)
-            .and_then(|inputs| {
+            .and_then(|(inputs, agent_control)| {
                 self.managed_capture(
                     threads,
                     &id,
@@ -4079,6 +4080,7 @@ impl<D: Disk> Daemon<D> {
                     &agentfile.managed_labels,
                     &agentfile.active_members,
                     &inputs,
+                    agent_control,
                     &mut prepared.spec.setup,
                 )
             }) {
@@ -4241,7 +4243,7 @@ impl<D: Disk> Daemon<D> {
                     _ => Err(e),
                 })
             } else {
-                keep_whole(&at, shards_vmm::arch::aarch64::cpu::encode(&baseline).as_bytes())
+                keep_whole(&at, shards_vmm::arch::cpu::encode(&baseline).as_bytes())
             };
             if let Err(e) = kept {
                 log(format!("{}: {e}", at.display()));
@@ -8255,7 +8257,7 @@ impl<D: Disk> Daemon<D> {
         if !cfg.cpu_baseline.is_empty() {
             args.extend([
                 "--cpu-baseline".into(),
-                shards_vmm::arch::aarch64::cpu::encode(&cfg.cpu_baseline).into(),
+                shards_vmm::arch::cpu::encode(&cfg.cpu_baseline).into(),
             ]);
         }
         // A join disk and a join share in every microVM, empty and unserved until a
@@ -14931,6 +14933,57 @@ mod tests {
                 "{refused:?}"
             );
             assert_eq!(err, format!("shards: {refused}\n"));
+        });
+    }
+
+    /// A move's `ready` step (D176 part 6) refuses a microVM whose published port this
+    /// machine cannot bind as its restore would bind it, typed, before anything moves; once
+    /// the port is let go it takes it, and a range with a free port in it too.
+    #[test]
+    fn a_move_whose_published_port_is_taken_here_is_refused_typed() {
+        let t = Test::new("move-port");
+        t.run(|t| {
+            let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = held.local_addr().unwrap().port();
+            // Its image at a registry nothing answers at: a step past the ports fails at once.
+            let ready = |host_port: String| {
+                let plan = serde_json::json!({
+                    "id": "a".repeat(64),
+                    "name": "web",
+                    "image": "127.0.0.1:9/absent",
+                    "image_id": format!("sha256:{}", "b".repeat(64)),
+                    "arch": std::env::consts::ARCH,
+                    "format": shards_vmm::snapshot::FORMAT,
+                    "hypervisor": shards_vmm::hv::BACKEND,
+                    "snapshot": "s1",
+                    "home": "/h",
+                    "files": [],
+                    "volumes": [],
+                    "binds": [],
+                    "published": [{
+                        "port": 80,
+                        "proto": "tcp",
+                        "host_ip": "127.0.0.1",
+                        "host_port": host_port,
+                    }],
+                });
+                t.ask(&[shards_ipc::MOVE_STEP, "ready", &plan.to_string()])
+            };
+            let (status, out, err) = ready(port.to_string());
+            assert_eq!(status, 1, "{out}{err}");
+            let refused: moves::Refused = serde_json::from_str(out.trim()).unwrap();
+            assert!(
+                matches!(&refused, moves::Refused::PortTaken { port: 80, host_port, .. }
+                    if *host_port == port.to_string()),
+                "{refused:?}"
+            );
+            assert_eq!(err, format!("shards: {refused}\n"));
+            let range = format!("{port}-{}", port.saturating_add(64));
+            let (status, out, err) = ready(range);
+            assert_eq!(status, 0, "a range with a free port: {out}{err}");
+            drop(held);
+            let (status, out, err) = ready(port.to_string());
+            assert_eq!(status, 0, "the port let go: {out}{err}");
         });
     }
 }
