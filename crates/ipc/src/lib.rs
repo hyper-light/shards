@@ -348,7 +348,7 @@ pub mod kind {
     /// with the hosts it may be filled in toward and never a value
     /// (shards_net::encode_grants), after its `NET_POLICY`, once; answered with the same kind
     /// and the run's CA's certificate (DER), made for those hosts alone.
-    pub const NET_CREDENTIALS: u8 = 96;
+    pub const NET_CREDENTIALS: u8 = 97;
     /// Daemon → a running microVM's VM process: a run joins its network (D119). Its number
     /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
     /// own connection to the daemon, on which the joiner's run goes as a warm VM's does

@@ -24138,7 +24138,7 @@ api-run`) checks each grant against the run's egress grants, refusing one toward
 toward a host they do not reach (`shards_net::reaches`: a destination they name, or any host
 on a TCP port they open; `Cause::Request`). It starts the network process with
 `--credentials` and, after `NET_POLICY`, sends it the grants by reference
-(`NET_CREDENTIALS`, kind 96; `shards_net::encode_grants`). The network process checks them
+(`NET_CREDENTIALS`, kind 97; `shards_net::encode_grants`). The network process checks them
 again against its policy (D109), once, and answers the run's CA's certificate (DER). The run
 host logs its SHA-256 and holds it for the members' trust (the next slice). shards-api's
 check refuses a grant toward no host as well.
