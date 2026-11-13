@@ -197,6 +197,7 @@ applied. No wait in the ring's production code has a timeout: each is a poll(2) 
 |---|---|---|
 | [r17](logs/r17-review-f1-attach.txt) | adas-mac-studio-3, macOS 26.2 arm64 | F1 red, mutation, green; fmt; shards-abi ring 9 of 9; the vsock device's 67 of 67; clippy -D warnings of abi and vmm (aarch64-apple-darwin) and of init and abi (aarch64 and x86_64 musl) |
 | [r18](logs/r18-review-f2-lint.txt) | the same | F2's red, fix and mutation patches: fmt and clippy -D warnings, both musl guests |
+| [r19](logs/r19-review-merged-gates.txt) | the same | r17's gates on the merged tree (origin/main 94be8818b and this step's commits): all pass; fmt's only diffs main's own (guest_time.rs, hv/kvm/mod.rs, from 2fb8e9ba3), none of this lane's |
 
 ## Owed to ROOT
 
