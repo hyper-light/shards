@@ -23123,7 +23123,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends open, plan step 10, ROOT's; its endpoint building, step 11: its connection, refusals and lanes' first frames built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals and lanes' first frames built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -23151,23 +23151,106 @@ an orchestrator's (D231), and vsock carries everything between a host and its gu
   the host process kiln sees, is the agent to kiln's git signing, credential helpers and MCP
   tokens (step 18), and the identity a run's credential leases are issued to (step 33).
 
-**Open: where its TLS ends** (plan step 10). ROOT decides, from measurements on Linux, macOS
-and Windows hosts at fleet density (R02, R14):
-- *In the guest:* each microVM is a QUIC peer with its own key, reached through its run's
-  network process (shards-net) and virtio-net. The host carries only ciphertext.
-- *At the host:* one endpoint (the managed owner endpoint over D180's QUIC, as today) carries
-  each stream on to its microVM over vsock, which never leaves the machine.
+**Where its TLS ends: at the host** (plan step 10). It was decided from ROOT's runs on HVF and
+KVM (PM M540), and ROOT approved it to stand until WHP, KVM's memory at more rounds and a loaded
+run are in. The two candidates, measured at fleet density (R02, R14):
+- *In the guest* (arm g): each microVM is a QUIC peer with its own key, reached through its
+  run's network process (shards-net) and virtio-net. The host carries only ciphertext.
+- *At the host* (arm h): one endpoint (the managed owner endpoint over D180's QUIC, as today)
+  carries each stream on to its microVM over vsock, which never leaves the machine.
 
-The harness is committed: [control-end](../research/measurements/control-end/README.md)
-(d9caccfe8 to 4bf2fe812). For each arm against its own baseline (g and g0 in the guest, h and
-h0 at the host) it measures per-VM idle memory, handshake CPU at density under the hybrid
-ML-KEM groups, the round trip and stream throughput, as n, p50, p90, p99 and max. Its record
-says what each vehicle allows. Only a daemon's run gets a network process and published ports
-(arm g). Only a direct boot gives the host a vsock socket to dial, as Docker's default seccomp
-profile, which shards-init gives a run's command, refuses `socket(AF_VSOCK)` (crates/seccomp
-`oracle.rs`); so arm h's guest program stands in for init's relay, and its endpoint for the
-daemon's. No numbers are recorded yet. ROOT runs it, writes the PM entry, and completes this
-decision with them.
+The harness is [control-end](../research/measurements/control-end/README.md) (d9caccfe8 to
+4bf2fe812). It measures each arm against its own baseline (g and g0 in the guest, h and h0 at
+the host): per-VM idle memory, handshake CPU at density under the hybrid ML-KEM groups, the
+round trip and stream throughput, as n, p50, p90, p99 and max. Its record says what each
+vehicle allows:
+- Only a daemon's run gets a network process and published ports (arm g).
+- Only a direct boot gives the host a vsock socket to dial. Docker's default seccomp profile,
+  which shards-init gives a run's command, refuses `socket(AF_VSOCK)` (crates/seccomp
+  `oracle.rs`). So arm h's guest program stands in for init's relay, and its endpoint for the
+  daemon's.
+
+ROOT ran it at 66113379c, 32 microVMs and 5 rounds an arm, on HVF (adas-mac-studio.local, Apple
+M4 Max, macOS 26.2) and on KVM (adacachy, AMD Ryzen 9 9950X3D2, Linux 7.2.9). PM M540 has the
+numbers, and the harness's `results/` keeps ROOT's summaries. The p50s the decision rests on:
+
+| p50 | HVF g | HVF h | KVM g | KVM h |
+|---|---|---|---|---|
+| Memory per microVM over its baseline, idle and connected | +1817 KiB | +302 KiB | −192.0 KiB | +2541.8 KiB |
+| Host CPU per microVM, first handshake | 3231 µs | 1590 µs | 11829.4 µs | 1568.2 µs |
+| Host CPU per microVM, reconnect | 1573 µs | 936 µs | 4712.1 µs | 1440.5 µs |
+| Round trip, 64 B (its p99) | 435 µs (4572) | 1505 µs (8658) | 269.1 µs (2312.2) | 586.4 µs (3912.4) |
+| Download and upload, one stream (MiB/s) | 300.6 and 320 | 326.6 and 273 | 91.4 and 163.7 | 372.2 and 347.6 |
+
+*Decided: at the host (arm h), on what each microVM costs a host at fleet density*, the question
+step 10 asks first. Wherever the two hosts resolve it, the host endpoint costs less:
+- *CPU per handshake*, on both hosts: 2.0× less on HVF and 7.5× less on KVM for a microVM's
+  first handshake, and 1.7× and 3.3× less for a reconnect. Every microVM of a host reconnects at
+  once when its controller restarts. In the guest arm the VM process carries most of the cost:
+  on KVM, 10961.8 of 11829.4 µs.
+- *Memory per microVM* over its vehicle: 1515 KiB less on HVF. On KVM the arms' differences
+  (−192.0 and +2541.8 KiB) lie inside their rounds' spread, 1516.0 to 4915.1 KiB from p50 to
+  max, so KVM's memory is unresolved.
+- *Inside every microVM*: arm h's relay is smaller than a TLS endpoint, by 342 and 378 KiB of
+  Pss and 196 and 188 KiB of anonymous memory.
+- *Throughput*: on KVM arm h moves 4.1× arm g's download and 2.1× its upload. On HVF the arms are
+  within 17% of each other either way.
+
+The round trip goes to arm g on both hosts, and is recorded beside the decision. It is 3.5×
+shorter on HVF and 2.2× on KVM at p50, and 1.9× and 1.7× at p99. Arm h's number includes the
+stand-in endpoint's thread handoffs: the driver to a vsock writer, and a vsock reader back to the
+driver. The harness records them as that stand-in's cost, not necessarily the daemon endpoint's
+(its README's Limits). Step 11's endpoint is to be measured with the same harness against arm g's
+numbers here (owed, ROOT's).
+
+*The directive's scope* (ROOT's ruling, 2026-11-13, so the person is not asked). The person
+wrote (2026-11-11): "we'll primarily be controlling agents via networking … hyper-quic … all
+such communications should be AESGCM256 bidirectional encrypted". That covers every network hop
+of control. Under arm h the only network hop, the controller's to the endpoint, is
+TLS13_AES_256_GCM_SHA384, held from both ends (D239). The endpoint's AF_UNIX and vsock leg to
+its microVM never leaves the host, like every other host-local IPC shards has ("Control that
+crosses no TLS", below).
+
+*The trust boundary.* Under arm h, the host's endpoint, in its daemon, holds every microVM's
+control in plaintext. The host is already trusted with each guest's memory, through its VMM.
+
+*Identity.* The harness's endpoint used one key for every microVM. Production gives each
+microVM its own identity, held by the endpoint. Step 33 issues a run's credential leases to the
+run's identity, the SHA-256 of this key, and needs no more of it (step 33's plan, kiln plan
+01a1d2b88be57304b972761e2a5c6781, steps 4 and 5). It relies on three things, which this entry
+keeps:
+- one key per run, made after the run's restore and never shared by runs restored from one
+  template, since a lease keyed to a shared fingerprint would cross runs;
+- the fingerprint, known to the orchestrator before the run's first lease ask;
+- the fingerprint, unchanged for the run's life.
+
+So, for step 11:
+- The endpoint runs in the daemon, on D180's QUIC beside the managed owner endpoint, under its
+  own protocol (`shards-control/1`).
+- It makes each run's key after the run's restore. The key is never in guest memory, so no
+  template carries one.
+- The key's SHA-256 reaches the controller and the orchestrator in the run's managed metadata,
+  as the managed endpoints' `server` fingerprint does (the microVM's identity, point 2, below).
+- Step 11 serves each microVM from an endpoint of its own, bound where its caller says ("The
+  stdio lanes' service", below). A controller dials that microVM's endpoint and meets its key
+  there. Where the daemon binds each endpoint is step 11's to build.
+- Each lane reaches its microVM over vsock, as a host reaches a guest's service in Firecracker:
+  an AF_UNIX connection to the VMM, then `CONNECT PORT` (Firecracker edb60617, `docs/vsock.md`,
+  "Host-Initiated Connections"). Inside the microVM, shards-init's relay carries it on. The
+  harness's guest program stood in for that relay.
+
+*What reopens it.* ROOT runs WHP (jupiter, with the harness README's command), KVM at more
+rounds, and a loaded run (`--spin`) on each host: step 10 asks for its numbers under load, and
+both runs added none. A result that flips the comparison reopens this decision:
+- WHP measuring arm g at or below arm h in host CPU per handshake;
+- WHP measuring arm h above arm g in memory per microVM over its baseline, outside its rounds'
+  spread;
+- KVM's memory resolving in arm g's favour;
+- a loaded run reversing a comparison the unloaded ones resolved.
+
+One thing is not a condition, and is unmeasured: why arm g's guest on KVM spends about 10× the
+controller's CPU on the same handshake (5149 against 503 µs at p50). HVF's host CPU, 2.0× in
+arm h's favour, points the same way.
 
 **Building: the endpoint** (plan step 11, `shards_remote::control`). It serves the lanes above
 to a peer holding the enrolled or pinned identity, and nothing to any other. The plan's other
@@ -23177,11 +23260,12 @@ callers of it:
 - step 38's nested runtime, whose channel to its host it is (D234);
 - step 39's node of Hex, run under shards-init.
 
-Until step 10 decides, only what both arms share is built (ROOT, 2026-11-12): the connection,
+Until step 10 decided, only what both arms share was built (ROOT, 2026-11-12): the connection,
 the microVM's identity, who is refused, and what a lane says. The control lane (exec, signal,
-inspect) and the terminal lane (attach, TTY) wait on step 6's member exec, attach and TTY; the
-log lane, where the endpoint runs and how its key's SHA-256 reaches the controller wait on step
-10.
+inspect) and the terminal lane (attach, TTY) wait on step 6's member exec, attach and TTY. Step
+10 has decided for the host (above). The endpoint runs in the daemon and holds each microVM's
+own key, and the key's SHA-256 reaches the controller in the run's managed metadata. The log
+lane, which also waited on step 10, is step 11's to build.
 
 *The connection.* QUIC over D180's driver and TLS (`net.rs`, `tls.rs`): TLS 1.3 alone, D239's
 provider (TLS13_AES_256_GCM_SHA384 alone, the hybrid ML-KEM groups), early data off, on an
@@ -23258,7 +23342,14 @@ tokens; step 33's leases). Two rules follow, whichever arm is built:
 - *A key per run, never a template's.* A key made before a template is saved would be every run
   restored from it (D25), so the endpoint makes its key after its run's restore.
 - *A moved microVM moves its key.* In arm g the key is in guest memory, which a saved and moved
-  microVM's memory carries (D176); its pin moves with it.
+  microVM's memory carries (D176); its pin moves with it. At the host, which step 10 chose, the
+  key is its host endpoint's, not the microVM's memory's. A move then does one of two things,
+  and which one is open, for migration:
+  - it takes the key from one host's endpoint to the other's, which the plan's "the key never
+    travels" refuses;
+  - or it gives the microVM a new key at its new host, for its controller to pin anew. That is
+    a new name, which breaks step 33's reliance on a fingerprint unchanged for the run's life
+    unless the move reissues the run's leases.
 
 Falsified by a party that did not start the microVM having to verify it without its launcher (a
 fleet peer, a third service), or a controller that cannot take Shards' code. Then the
@@ -23303,11 +23394,13 @@ subscriptions open their lanes, nothing taken before a frame is whole; lanes of 
 or channel refused; a lane's refusal read back. Record:
 [agent-control-v1](../research/measurements/agent-control-v1/README.md).
 
-**Open: control that crosses no TLS.** The CLI's request slots (D185), the Engine API's
-`engine.sock` (D170) and a host's vsock to its guests carry control within one machine, with
-no TLS to narrow. Step 3 left whether the directive reaches them to Ada and ROOT
-([aes256-only-v1](../research/measurements/aes256-only-v1/evidence.json), `tls_configs`). Step
-10's decision settles the guest's leg; the rest is theirs to decide.
+**Control that crosses no TLS** (ROOT's ruling, 2026-11-13). The CLI's request slots (D185),
+the Engine API's `engine.sock` (D170) and a host's vsock to its guests carry control within one
+machine, with no TLS to narrow. Step 3 left whether the directive reaches them to Ada and ROOT
+([aes256-only-v1](../research/measurements/aes256-only-v1/evidence.json), `tls_configs`). ROOT
+ruled from the person's own words ("The directive's scope", above): the directive covers every
+network hop of control, and these never leave the host. That includes the leg step 10's host
+endpoint adds, its AF_UNIX and vsock to each microVM.
 
 **Literals** (step 11's endpoint; none chosen, each a protocol's or step 5's). No window,
 buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
@@ -23383,7 +23476,8 @@ on the seven targets with the whole workspace's tests; the real-VM E2E of each l
 (`tests/context.rs`, `tests/managed_output/`, the in-VM server's
 `the_in_vm_server_knows_each_agent` and `tests/mcp.rs`); the suite asserted on every link of a
 real session (plan step 34); what AES-256-GCM costs an in-VM server client that negotiated
-another suite before. Open, Ada's and ROOT's: control that crosses no TLS (D238).
+another suite before. Control that crosses no TLS never leaves the host and is outside the
+directive, which covers every network hop of control (ROOT's ruling, D238).
 
 **Literals.** None new: the suite is the one the directive names.
 

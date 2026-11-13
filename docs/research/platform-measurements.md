@@ -22193,3 +22193,148 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R10 | The raw logs, patches, scripts and tally are in `measurements/restored-kill`. |
   | R11 | Windows x86_64 only, where the failure was. Windows arm64 runs no VM tests. Linux's and macOS's CI results for this test were not tallied. |
   | R15, R16 | No agents started. jupiter's trees, targets and logs from this lane are removed after landing. |
+
+### M540. Where agent control ends its TLS, in the guest or at a host endpoint: 32 microVMs on HVF and KVM (D238, plan step 10; WHP owed)
+
+- **Question.** Plan step 10 (kiln plan 01a1cd8e862e7169a074db3d5fa33f3d) asks where a
+  microVM's agent control should end its TLS. In the guest (arm g), each microVM is a QUIC peer
+  with its own key, reached through its run's network process and virtio-net. At a host
+  endpoint (arm h), one endpoint carries each stream on to its microVM over vsock. What does each
+  cost a host per microVM at fleet density, in idle memory and in CPU per handshake under the
+  hybrid ML-KEM groups? What round trip and stream throughput does each give?
+- **Method.** ROOT ran [control-end](measurements/control-end/README.md) at 66113379c on
+  2026-11-12.
+  - Each arm is costed against its own vehicle's baseline: g − g0 on a daemon run under
+    shards-init, h − h0 on a direct boot. Each arm runs on microVMs booted for it, and the arms'
+    order rotates round by round (the README's Method).
+  - Knobs: 32 microVMs an arm, 5 rounds, 1 vCPU and 512 MiB each, 10 s idle windows, and 100
+    round trips of 64 B on each connection, all 32 at once. Then 3 transfers of 16 MiB each way
+    on one connection, with no added load (`--spin 0`).
+  - HVF (ROOT's r411): adas-mac-studio.local, Apple M4 Max, macOS 26.2, with Shards and the
+    harness at 66113379c. It ran as a launchd job, outside the agent session's QoS clamp (PM
+    M317). Its raw `summary.txt` and `records.jsonl` are on that host in
+    `~/s10-run-1794523928/`. ROOT's summary gives each metric's p50 and the round trip's p99.
+  - KVM: adacachy, AMD Ryzen 9 9950X3D2 (32 CPUs), CachyOS, Linux 7.2.9-2-cachyos, with the
+    harness at 66113379c. Its shards is 0.7.0, whose build recorded no commit
+    (`unknown-commit`). ROOT's summary gives n, p50, p90, p99 and max. At n = 5 the p90, p99
+    and max are all the largest round's.
+  - ROOT's summaries are in [results](measurements/control-end/results/), as ROOT wrote them.
+  - WHP: not run.
+- **Found.** Each arm's p50:
+
+  | | HVF g | HVF h | KVM g | KVM h |
+  |---|---|---|---|---|
+  | Memory per microVM over its baseline, idle and connected | +1817 KiB | +302 KiB | −192.0 KiB | +2541.8 KiB |
+  | Host CPU per microVM, first handshake | 3231 µs | 1590 µs | 11829.4 µs | 1568.2 µs |
+  | Host CPU per microVM, reconnect | 1573 µs | 936 µs | 4712.1 µs | 1440.5 µs |
+  | The controller's CPU, first handshake | 674 µs | 529 µs | 503.0 µs | 462.5 µs |
+  | Handshake, first | 14.1 ms | 19.1 ms | 14.1 ms | 8.3 ms |
+  | Handshake, reconnect | 3.0 ms | 5.7 ms | 5.3 ms | 10.0 ms |
+  | Connect to first round trip, first | 15.1 ms | 24.1 ms | 16.6 ms | 26.3 ms |
+  | Connect to first round trip, reconnect | 3.9 ms | 9.0 ms | 6.4 ms | 15.8 ms |
+  | Round trip, 64 B | 435 µs | 1505 µs | 269.1 µs | 586.4 µs |
+  | Round trip, 64 B, p99 | 4572 µs | 8658 µs | 2312.2 µs | 3912.4 µs |
+  | Download, one stream | 300.6 MiB/s | 326.6 MiB/s | 91.4 MiB/s | 372.2 MiB/s |
+  | Upload, one stream | 320 MiB/s | 273 MiB/s | 163.7 MiB/s | 347.6 MiB/s |
+  | Idle CPU per microVM, connected | 0.3% (baseline 0.3) | 0.0–0.1% | 0.3% (g0 0.5) | 0.0% |
+  | Guest program Pss | 1562 KiB | 1220 KiB | 1922 KiB | 1544 KiB |
+  | Guest program RssAnon | 288 KiB | 92 KiB | 396 KiB | 208 KiB |
+
+  KVM's distributions of the rows the decision rests on. The per-run rows have n = 5 rounds of
+  32 microVMs:
+
+  | KVM | arm | n | p50 | p90 | p99 | max |
+  |---|---|---|---|---|---|---|
+  | Host CPU per microVM, first handshake (µs) | g | 5 | 11829.4 | 12988.6 | 12988.6 | 12988.6 |
+  | | h | 5 | 1568.2 | 1783.7 | 1783.7 | 1783.7 |
+  | Host CPU per microVM, reconnect (µs) | g | 5 | 4712.1 | 4993.6 | 4993.6 | 4993.6 |
+  | | h | 5 | 1440.5 | 1673.8 | 1673.8 | 1673.8 |
+  | Memory per microVM, idle (KiB) | g | 5 | 14487.9 | 17550.3 | 17550.3 | 17550.3 |
+  | | g0 | 5 | 14679.9 | 16195.9 | 16195.9 | 16195.9 |
+  | | h | 5 | 66842.6 | 71757.7 | 71757.7 | 71757.7 |
+  | | h0 | 5 | 64300.8 | 67172.8 | 67172.8 | 67172.8 |
+  | Round trip, 64 B (µs) | g | 16000 | 269.1 | 816.6 | 2312.2 | 20874.4 |
+  | | h | 16000 | 586.4 | 1565.6 | 3912.4 | 12132.2 |
+  | Handshake, first (ms) | g | 160 | 14.1 | 39.5 | 44.0 | 47.4 |
+  | | h | 160 | 8.3 | 10.1 | 11.1 | 11.8 |
+  | Handshake, reconnect (ms) | g | 160 | 5.3 | 10.5 | 13.1 | 14.0 |
+  | | h | 160 | 10.0 | 19.2 | 25.5 | 26.5 |
+  | Connect to first round trip, first (ms) | g | 160 | 16.6 | 42.0 | 45.1 | 48.1 |
+  | | h | 160 | 26.3 | 28.3 | 29.7 | 29.8 |
+  | Connect to first round trip, reconnect (ms) | g | 160 | 6.4 | 12.3 | 14.6 | 15.5 |
+  | | h | 160 | 15.8 | 26.4 | 31.4 | 35.9 |
+  | Download, one stream (MiB/s) | g | 15 | 91.4 | 131.7 | 139.3 | 139.3 |
+  | | h | 15 | 372.2 | 437.3 | 476.1 | 476.1 |
+  | Upload, one stream (MiB/s) | g | 15 | 163.7 | 243.2 | 270.9 | 270.9 |
+  | | h | 15 | 347.6 | 415.9 | 526.3 | 526.3 |
+  | The guest's own CPU, first handshake (µs) | g | 160 | 5149.0 | 11288.0 | 14743.0 | 16379.0 |
+
+  - Over each arm's baseline on KVM (differences of p50s):
+    - memory per microVM, idle and connected: g − g0 is −192.0 KiB and h − h0 +2541.8 KiB;
+    - idle CPU per microVM, connected: −0.2 and −0.0 points of a CPU;
+    - the rounds spread from p50 to max by 3062.4 KiB (g), 1516.0 (g0), 4915.1 (h) and 2872.0
+      (h0).
+  - KVM's host CPU by process, p50 per microVM:
+    - first handshake, arm g: the VM processes 10961.8 µs, the network processes 880.6, and the
+      daemon, spawner and launchers −5.3, an idle rate subtracted to below zero, so nothing
+      measurable;
+    - first handshake, arm h: the VM processes 911.5 and the endpoint 683.5;
+    - reconnect: g 4308.6, 423.5 and −6.0; h 686.1 and 719.3.
+    Each class's p50 is taken over its own rounds, so the classes do not add up to the total.
+- **Reading.**
+  - The two hosts agree on three things.
+    - Arm h costs a host less CPU per handshake: 2.0× less on HVF and 7.5× less on KVM for a
+      microVM's first handshake, and 1.7× and 3.3× less for a reconnect. In arm g the VM process
+      carries most of it: on KVM, 10961.8 of 11829.4 µs.
+    - Arm g's round trip is shorter: 3.5× on HVF and 2.2× on KVM at p50, and 1.9× and 1.7× at
+      p99. Only at KVM's max is arm g worse: 20874.4 against 12132.2 µs.
+    - Arm g's guest program is larger than arm h's relay: 342 and 378 KiB more Pss, and 196 and
+      188 KiB more RssAnon.
+  - The two hosts disagree, or do not resolve, on three more.
+    - Memory per microVM over its baseline: on HVF arm h's p50 is 1515 KiB below arm g's. On
+      KVM the p50 differences point the other way (−192.0 and +2541.8 KiB), but each lies inside
+      its rounds' spread, so the comparison is unresolved at n = 5. ROOT's summary does not give
+      HVF's spread.
+    - Throughput: on KVM arm h moves 4.1× arm g's download and 2.1× its upload. On HVF arm h's
+      download is 9% above arm g's, and arm g's upload is 17% above arm h's.
+    - The first handshake's wall time: on HVF arm g's is shorter (14.1 against 19.1 ms), and on
+      KVM arm h's is (8.3 against 14.1 ms, and 11.1 against 44.0 at p99). All 32 microVMs
+      connect at once: in arm h one driver thread makes every handshake, and in arm g each guest
+      makes its own on its vCPU. A reconnect is faster in arm g on both hosts.
+  - On KVM, arm g's guest spends 5149 µs of its own CPU on its first handshake (p50), about 10×
+    the 503 µs the controller spends on the same handshake on the host. Why is unmeasured. So
+    is whether it is why arm g's KVM throughput is below HVF's (91.4 against 300.6 MiB/s
+    down).
+  - In neither arm does a held connection, with D180's keep-alive every 2.5 s, cost measurable
+    idle CPU over its vehicle.
+  - D238 decides from these numbers: TLS ends at the host (arm h). ROOT approved that decision
+    to stand until WHP, KVM's memory at more rounds and a loaded run are in.
+- **Derivation (R03).** Nothing here becomes a production value. The knobs are this
+  campaign's conditions, and D238's decision takes none of them.
+- **Unverified.** All of these are owed to ROOT, the second part of plan step 10's goal.
+  - WHP on jupiter, with the README's Windows command at `--vms 32 --rounds 5`.
+  - Under load. Both runs added none (`--spin 0`), and step 10 asks for its numbers under
+    load: a `--spin` run on each host.
+  - KVM's memory at more rounds.
+  - HVF's p90, p99 and max (all but the round trip's p99), and both runs' `summary.txt` and
+    `records.jsonl` committed in `results/`. HVF's are on adas-mac-studio.local. KVM's
+    directory on adacachy is not named in its summary.
+  - The commit of the shards that ran on KVM (`unknown-commit`).
+  - Why a KVM guest's handshake costs 10× the controller's.
+  - Linux on arm64 (no native KVM host; the nested L1) and WHP on arm64.
+  - Arm h's endpoint and guest program stand in for the daemon's managed owner endpoint and
+    shards-init's relay (the README's Limits). Step 11's endpoint is to be measured with this
+    harness against these numbers. Arm h used one key for every microVM; production gives each
+    microVM its own (D238).
+- **Rules** (policy df2acf47, role implementer; records only, no code):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01, R04, R05, R06, R07, R12, R13 | No code changed. |
+  | R02 | D238 records the two arms, the established host-side path (Firecracker edb60617, docs/vsock.md, "Host-Initiated Connections") and the evidence. kiln research 01a1d2be78b171c4885e31a486511fed grades it. |
+  | R03 | No value introduced. |
+  | R08, R14 | ROOT's measurements, as n, p50, p90, p99 and max where recorded. HVF's distributions, a loaded run and WHP are owed. There is no outside baseline: the comparison is between Shards' own two arms. |
+  | R09 | Not a defect. KVM's guest handshake cost is recorded, not investigated. |
+  | R10 | ROOT's summaries are in `measurements/control-end/results/`. The raw records are owed. |
+  | R11 | macOS arm64 (HVF) and Linux x86_64 (KVM) only. WHP x86_64, WHP arm64 and Linux arm64 were not run, so they are unverified. |
+  | R15, R16 | No agent started: the session's cap refused one. Nothing was run, so there is nothing to clean. |
