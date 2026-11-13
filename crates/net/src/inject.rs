@@ -3979,7 +3979,7 @@ mod ab;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Read;
     use std::num::NonZeroU64;
@@ -4026,7 +4026,7 @@ mod tests {
     }
 
     /// A test root, which the injector's host side is given to trust as a host's.
-    fn root(name: &str) -> CertifiedIssuer<'static, KeyPair> {
+    pub(crate) fn root(name: &str) -> CertifiedIssuer<'static, KeyPair> {
         let mut p = params(&[]);
         p.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         p.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::DigitalSignature];
@@ -4040,7 +4040,7 @@ mod tests {
     }
 
     /// A test server's TLS, any suite: a leaf for `names` that `root` signs.
-    fn leaf_config(root: &CertifiedIssuer<'static, KeyPair>, names: &[&str]) -> Arc<ServerConfig> {
+    pub(crate) fn leaf_config(root: &CertifiedIssuer<'static, KeyPair>, names: &[&str]) -> Arc<ServerConfig> {
         let mut p = params(names);
         p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         p.key_usages = vec![KeyUsagePurpose::DigitalSignature];

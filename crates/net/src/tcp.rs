@@ -1820,9 +1820,9 @@ mod tests {
         assert!(!c.blocked());
     }
 
-    /// A run's credentials, toward `host` alone, its injector's host side trusting the host's
-    /// roots.
-    fn credentials(host: &str) -> crate::Credentials {
+    /// A run's credentials, toward `host` alone, its injector's host side trusting `root` beside
+    /// the host's own roots.
+    fn credentials(host: &str, root: &rcgen::CertifiedIssuer<'static, rcgen::KeyPair>) -> crate::Credentials {
         crate::Credentials {
             grants: vec![crate::Grant {
                 reference: "anthropic/claude-max".into(),
@@ -1831,7 +1831,7 @@ mod tests {
             }],
             ca: crate::ca::Ca::new(crate::ca::Key::generate().unwrap(), &[host]).unwrap(),
             leases: crate::lease::Leases::new(vec!["anthropic/claude-max".into()]),
-            upstream: crate::inject::Upstream::new(Vec::new()).unwrap(),
+            upstream: crate::inject::Upstream::new(vec![root.der().clone()]).unwrap(),
             sign_ins: crate::signin::SignIns::new(Vec::new()),
         }
     }
@@ -1858,12 +1858,26 @@ mod tests {
         (guest, bytes)
     }
 
+    /// Blocks until the host's bytes, or its end, are there for `c` to read: an event, waited on
+    /// without a clock.
+    fn readable(c: &Conn) {
+        let HostSock::Tcp(sock) = &c.sock else {
+            panic!("a host connection that is no TCP stream")
+        };
+        sock.set_nonblocking(false).unwrap();
+        sock.peek(&mut [0u8; 1]).unwrap();
+        sock.set_nonblocking(true).unwrap();
+    }
+
     /// The injector's handoff (D242). Do: send a connection of a run with credential grants a
     /// ClientHello for a host no grant names, in two segments; then another connection one for
-    /// the granted host. Expect: the first's bytes held by the injector, and out of the window,
-    /// until its ClientHello is whole, then passed to the host as they came, the injector let
-    /// go of; the second's guest answered with its TLS's handshake as segments, which the guest
-    /// takes, and the host sent the injector's own ClientHello for the granted host.
+    /// the granted host, whose TLS server answers the injector. Expect: the first's bytes held by
+    /// the injector, and out of the window, until its ClientHello is whole, then passed to the
+    /// host as they came, the injector let go of. The second's guest answered nothing while the
+    /// injector opens the host's TLS (f41); the host given the injector's own ClientHello for the
+    /// granted host; once the host has answered, the guest answered with its TLS's handshake as
+    /// segments, which it takes under the run's CA alone, and the host's TLS made with the
+    /// injector under the host's own certificate.
     #[test]
     fn the_injector_passes_an_ungranted_flow_and_ends_a_granted_ones_tls() {
         fn run(credentials: &mut crate::Credentials) -> crate::inject::Run<'_> {
@@ -1875,7 +1889,8 @@ mod tests {
                 refused: Vec::new(),
             }
         }
-        let mut credentials = credentials("api.example.test");
+        let root = crate::inject::tests::root("the host's root");
+        let mut credentials = credentials("api.example.test", &root);
         let mut sent = Sent::default();
         let (mut c, mut client) = opened(&mut sent);
         c.inject = Some(Box::default());
@@ -1904,7 +1919,6 @@ mod tests {
         assert!(c.inject.is_none(), "a flow to a host no grant names was kept");
         c.on_writable(&mut sent);
         let mut got = vec![0u8; bytes.len()];
-        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         client.read_exact(&mut got).unwrap();
         assert_eq!(got, bytes, "the ClientHello did not reach the host as it came");
         // The granted host's.
@@ -1919,6 +1933,32 @@ mod tests {
         };
         c.on_segment(&seg, &mut sent, Some(&mut run(&mut credentials)));
         assert!(c.inject.is_some());
+        assert!(
+            sent.take().iter().all(|s| s.3.is_empty()),
+            "the guest was answered before the host's TLS was made"
+        );
+        c.on_writable(&mut sent);
+        let mut host =
+            rustls::ServerConnection::new(crate::inject::tests::leaf_config(&root, &["api.example.test"]))
+                .unwrap();
+        while !host.wants_write() {
+            assert!(
+                host.read_tls(&mut client).unwrap() > 0,
+                "the connection ended before the injector's ClientHello"
+            );
+            host.process_new_packets().unwrap();
+        }
+        assert_eq!(host.server_name(), Some("api.example.test"));
+        while host.wants_write() {
+            host.write_tls(&mut client).unwrap();
+        }
+        // The host's answer, read as it comes, until the injector has made the host's TLS.
+        let mut buf = vec![0u8; 64 << 10];
+        while format!("{:?}", c.inject) == "Some(Flow(Opening))" {
+            readable(&c);
+            c.on_readable(&mut sent, &mut buf, Some(&mut run(&mut credentials)));
+        }
+        assert!(c.inject.is_some(), "the injector let a granted flow go");
         let answer: Vec<u8> = sent.take().into_iter().flat_map(|s| s.3).collect();
         assert!(!answer.is_empty(), "no handshake for the guest");
         let mut rest = &answer[..];
@@ -1930,21 +1970,14 @@ mod tests {
             !guest.is_handshaking(),
             "the guest's TLS was not ended under the run's CA"
         );
-        c.on_writable(&mut sent);
-        let mut acceptor = rustls::server::Acceptor::default();
-        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let accepted = loop {
-            let mut buf = vec![0u8; 4096];
-            let n = client.read(&mut buf).unwrap();
-            let mut rest = &buf[..n];
-            while !rest.is_empty() {
-                acceptor.read_tls(&mut rest).unwrap();
-            }
-            if let Some(accepted) = acceptor.accept().map_err(|(e, _)| e).unwrap() {
-                break accepted;
-            }
-        };
-        assert_eq!(accepted.client_hello().server_name(), Some("api.example.test"));
+        // The injector's Finished, which went to the host as the host's TLS was made.
+        while host.is_handshaking() {
+            assert!(
+                host.read_tls(&mut client).unwrap() > 0,
+                "the connection ended before the injector's Finished"
+            );
+            host.process_new_packets().unwrap();
+        }
     }
 
     /// A connection that moved bytes and then idles holds no memory for them: its queues
