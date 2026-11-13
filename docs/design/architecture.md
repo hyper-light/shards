@@ -15990,10 +15990,10 @@ an agent through the in-VM server and reads nothing of the agent's directory (§
   go. Its server opens the path beneath the scratch as the kernel resolves it (openat2(2),
   `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV`),
   without waiting (`O_NONBLOCK`: a FIFO's open waits on no writer), refuses any but a
-  regular file, and reads it whole within what a message to a peer holds (1 MiB less the
-  file's name and its length), else refuses, naming why. So a link the caller planted (to
-  its server's own key), a FIFO, a giant file or a path above the scratch redirects,
-  stalls and exhausts nothing.
+  regular file, and reads it whole within what a message to a peer holds (its socket's
+  bound, D60, less the file's name and its length), else refuses, naming why. So a link the
+  caller planted (to its server's own key), a FIFO, a giant file or a path above the
+  scratch redirects, stalls and exhausts nothing.
 - **On the channel**, a file is a message of kinds of its own, a request or an answer with
   the file's name and bytes, held by the receiving instance under the same grants as a
   text; `receive` shows it as `"file":{"name","size","data"}`, its bytes in Base64 (RFC
@@ -16013,6 +16013,18 @@ receives. Mutation-checked: links followed, a path above the scratch reached, a 
 on (the server stalls), any kind of file read, a giant file not refused, a file heard
 without its grant, Base64 unpadded, the scratch not given to its instance, and the scratch
 closed to its instance: each fails a test.
+
+Tested again since the broker took `hand` over (270bc4670, whose refusals had lost these
+words): `a_refused_hand_names_its_file_and_why` hands, as an MCP call, each file the real-VM
+test plants, a directory, a socket, a file grown past the bound as it is read, a NUL and no
+scratch, and holds each refusal to the words above, its path named, and to its typed cause:
+`file_io` with its `os_code` (ELOOP a link, EXDEV past the scratch, ENXIO a socket),
+`file_kind` with the `file` it is, `file_too_large` with its `size` and the `most`,
+`file_grew` with the `most`, `path`, `path_nul`, `no_scratch`; a text past its bound is
+`too_long` with the `most` a message holds (D60). The broker's
+`a_refused_hand_is_worded_as_d139_and_typed` holds those no test can plant (EACCES, other
+codes, devices). Red on 845d7eb93 (9 of 10 worded otherwise), green after
+([evidence](../research/measurements/hand-refusal-words-v1/)).
 
 ### D138. The in-VM server speaks MCP 2026-07-28, and the revisions before it
 
