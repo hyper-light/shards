@@ -276,6 +276,24 @@ pub fn cannot_pool() -> bool {
     cannot_snapshot()
 }
 
+/// Whether a test that must reach Docker Hub itself skips here, saying why: unless
+/// `SHARDS_TESTS_DOCKER_HUB=1` says it runs, as CI's test step does. Docker Hub counts
+/// anonymous pulls by address, and every machine behind one shares them: 100 an hour for
+/// this LAN's whole IPv6 /64, which tests that pulled each run spent (CI cluster 13). What
+/// such a test reads is Docker Hub's own (`what`: attestation chains and signatures, tags as
+/// they move, other CPUs' images and the emulator image), which the tests' own registry
+/// ([`hub`]) does not serve.
+pub fn cannot_reach_docker_hub(what: &str) -> bool {
+    if std::env::var_os("SHARDS_TESTS_DOCKER_HUB").is_some_and(|v| v == "1") {
+        return false;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIP: {what} is Docker Hub's, whose anonymous pulls every machine behind this address shares: SHARDS_TESTS_DOCKER_HUB=1 runs it"
+    );
+    true
+}
+
 /// The kernel shards pins for its guests (src/kernel.rs), which the tests boot too.
 #[path = "../../src/kernel.rs"]
 pub mod pinned;
@@ -441,14 +459,14 @@ pub fn kvm_kernel() -> Option<&'static Path> {
         let pinned = match ARCH {
             _ if cfg!(windows) => return None,
             "aarch64" => Artifact {
-                name: "Image-6.18.48-aarch64-kvm-17c3ba205400",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-17c3ba205400/Image-6.18.48-aarch64-kvm",
-                sha256: "eb06ef6171a207fe7739687342d0ec50204ff4f7a86a1ee2fcc385e8871ad6e6",
+                name: "Image-6.18.48-aarch64-kvm-54fba99afaee",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/Image-6.18.48-aarch64-kvm",
+                sha256: "ed1e6dabf2f4088b37e3405a40b12962eb5eff76afe4303730e9d76ee1a7a3ba",
             },
             "x86_64" => Artifact {
-                name: "vmlinux-6.18.48-x86_64-kvm-17c3ba205400",
-                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-17c3ba205400/vmlinux-6.18.48-x86_64-kvm",
-                sha256: "0d7e6b69d43a3ad1373c68164243f633c12c87a3f3782917a741d7703f337b60",
+                name: "vmlinux-6.18.48-x86_64-kvm-54fba99afaee",
+                url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/vmlinux-6.18.48-x86_64-kvm",
+                sha256: "71b5de5f7c9b4abfc543e230ad09bc1736e2ca15f7e76cbd28efbc546e6fa89e",
             },
             _ => return None,
         };
@@ -3543,6 +3561,143 @@ pub fn served_counting() -> (String, Arc<AtomicUsize>) {
     (format!("127.0.0.1:{port}/test/image:v1"), served)
 }
 
+/// Docker Hub's image `reference`, pinned by its digest, served by a registry of the
+/// tests' own as `127.0.0.1:<port>/test/image@<digest>`: the same image, never pulled from
+/// Docker Hub as a test runs. Docker Hub counts its anonymous pulls by address, here the
+/// whole LAN's IPv6 /64, 100 an hour, and test homes that pulled their base from it each run
+/// spent them for every machine there (CI cluster 13: api_image.rs's builds, refused from its
+/// eighth round of 30 on). What it serves is what a pull of the image for this host's
+/// platform fetches, pulled once per checkout ([`hub_seed`]); one registry serves each image
+/// to every test of the binary.
+pub fn hub(reference: &str, timeout: Duration) -> String {
+    static SERVED: OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
+    let mut served = SERVED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(at) = served.get(reference) {
+        return at.clone();
+    }
+    let (top, blobs) = hub_seed(reference, timeout);
+    let digest = sha256_digest(&top);
+    let (port, _) = registry(top, blobs);
+    let at = format!("127.0.0.1:{port}/test/image@{digest}");
+    served.insert(reference.to_string(), at.clone());
+    at
+}
+
+/// `reference` as a test pulls it: a Docker Hub image pinned by its digest from the tests'
+/// own registry ([`hub`]), any other as it is.
+pub fn hubless(reference: &str, timeout: Duration) -> String {
+    match shards_image::reference::Reference::parse(reference) {
+        Ok(r) if r.domain == shards_image::reference::DOCKER_HUB && r.digest.is_some() => {
+            hub(reference, timeout)
+        }
+        _ => reference.to_string(),
+    }
+}
+
+/// `agentfile` with each base it takes `FROM` Docker Hub by a digest taken from the tests'
+/// own registry instead ([`hubless`]): the same image, every other word as it was.
+pub fn hub_bases(agentfile: &str, timeout: Duration) -> String {
+    agentfile
+        .split_inclusive('\n')
+        .map(|line| {
+            let base = line
+                .strip_prefix("FROM ")
+                .and_then(|rest| rest.split_whitespace().find(|w| !w.starts_with("--")));
+            match base {
+                Some(base) => line.replacen(base, &hubless(base, timeout), 1),
+                None => line.to_string(),
+            }
+        })
+        .collect()
+}
+
+/// What [`hub`] serves of `reference`: the document its digest names, then each manifest,
+/// config and layer of it a pull for this host's platform fetched (the platform's manifest
+/// and its attestations), from the store of target/artifacts/hub, a home of the tests' own
+/// that a build pulls each into from Docker Hub the first time it is asked for, in process,
+/// as a build pulls its base (no daemon): once per checkout, as the pinned kernel is
+/// downloaded once into target/artifacts ([`fetch`]), one test process at a time.
+fn hub_seed(reference: &str, timeout: Duration) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let pinned = shards_image::reference::Reference::parse(reference).unwrap();
+    assert!(
+        pinned.domain == shards_image::reference::DOCKER_HUB && pinned.digest.is_some(),
+        "{reference}: a Docker Hub image pinned by its digest"
+    );
+    let home = workspace().join("target/artifacts/hub");
+    shards_vmm::platform::create_private_dir(&home).unwrap();
+    let _seeding = shards_image::store::Locked::exclusive(&home.join("seeding.lock")).unwrap();
+    if let Some(seed) = hub_held(&home, &pinned) {
+        return seed;
+    }
+    let ctx = TempDir::new("hub-seed");
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {reference}\n")).unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let built = run_shards_env(&["build"], &[ctx.as_os_str()], &env, timeout);
+    assert_eq!(
+        built.status,
+        Some(0),
+        "{reference}, pulled from Docker Hub once into {}: {}",
+        home.display(),
+        built.stderr
+    );
+    hub_held(&home, &pinned)
+        .unwrap_or_else(|| panic!("{reference}: not held whole in {} once pulled", home.display()))
+}
+
+/// What `home`'s store holds of `pinned`, whole: none where a part is missing or is not
+/// what its digest says.
+fn hub_held(home: &Path, pinned: &shards_image::reference::Reference) -> Option<(Vec<u8>, Vec<Vec<u8>>)> {
+    let store = shards_image::store::Store::open(&home.join("images")).ok()?;
+    let digest = pinned.digest.as_ref()?.to_string();
+    if store.resolved(&pinned.to_string()).ok()??.to_string() != digest {
+        return None;
+    }
+    let read = |d: &str| {
+        let bytes = std::fs::read(store.blob_path(&shards_image::reference::Digest::parse(d).ok()?)).ok()?;
+        (sha256_digest(&bytes) == d).then_some(bytes)
+    };
+    let top = read(&digest)?;
+    let doc: serde_json::Value = serde_json::from_slice(&top).ok()?;
+    // The registry serves a document as the media type its words name, a Docker list's as
+    // a Docker manifest's (registry_serving_at): Docker Hub's official images are OCI's.
+    assert_ne!(
+        doc["mediaType"].as_str(),
+        Some("application/vnd.docker.distribution.manifest.list.v2+json"),
+        "{pinned}: a Docker manifest list, which the tests' registry serves as a manifest"
+    );
+    // An index's manifests that its pull fetched, which the registry serves among the blobs;
+    // a lone manifest is the document itself.
+    let listed = doc["manifests"].as_array();
+    let manifests: Vec<Vec<u8>> = match listed {
+        Some(listed) => listed
+            .iter()
+            .filter_map(|m| read(m["digest"].as_str()?))
+            .collect(),
+        None => vec![top.clone()],
+    };
+    if manifests.is_empty() {
+        return None;
+    }
+    let mut blobs = Vec::new();
+    for manifest in manifests {
+        let parsed: serde_json::Value = serde_json::from_slice(&manifest).ok()?;
+        for part in std::iter::once(&parsed["config"]).chain(parsed["layers"].as_array()?) {
+            blobs.push(read(part["digest"].as_str()?)?);
+        }
+        if listed.is_some() {
+            blobs.push(manifest);
+        }
+    }
+    Some((top, blobs))
+}
+
 /// A running `shards` whose output lines arrive on a channel, killed when dropped.
 pub struct Vm {
     child: std::process::Child,
@@ -5151,7 +5306,10 @@ pub fn noise(path: &Path, mib: usize) {
 
 /// The pipe a test tells its daemon its host is short of memory through
 /// (`SHARDS_PRESSURE`, D188), each line a word: a FIFO on Unix, a named pipe on Windows,
-/// there before the daemon opens it as it starts.
+/// there before the daemon opens it as it starts. One never said keeps a daemon from its
+/// host's own word (engine_ring.rs's shrinking room). Each is its own, as many at once as a
+/// test process's tests make: a named pipe of one instance, named by the process alone,
+/// would refuse a second.
 pub struct Told {
     pub path: std::ffi::OsString,
     #[cfg(windows)]
@@ -5177,7 +5335,9 @@ impl Told {
             use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
             use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, PIPE_TYPE_BYTE, PIPE_WAIT};
             let _ = home;
-            let pipe = format!(r"\\.\pipe\shards-test-pressure-{}", std::process::id());
+            static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let pipe = format!(r"\\.\pipe\shards-test-pressure-{}-{n}", std::process::id());
             let name: Vec<u16> = pipe.encode_utf16().chain(Some(0)).collect();
             // SAFETY: a NUL-terminated name and plain arguments.
             let server = unsafe {

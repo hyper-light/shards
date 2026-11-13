@@ -125,11 +125,6 @@ const USAGE: &str = "usage: shards run daemon [--detached] [--listen ADDR:PORT]
 /// and a claim of a pool with none starting waits for one: a VM that runs its start is
 /// waited for as long as it takes its host, whose speed sets a boot's cost (PM M357).
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long a VM's network process may take to say it has a run's published ports: a
-/// round trip on a socket pair to a process polling it. It was the second a network
-/// process was given to end, `netproc::GRACE`, which a network process's own progress
-/// replaced (PM M546); its own basis is owed (R03).
-const PUBLISH_PATIENCE: Duration = Duration::from_secs(1);
 /// A template whose warm VMs fail this many times in a row is removed and saved again.
 const MAX_FAILURES: u32 = 3;
 const DEFAULT_POOL: usize = 2;
@@ -657,9 +652,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 struct Ready {
     vm: Arc<shards_ipc::Child>,
     socket: UnixStream,
-    /// Its network process's control socket, if it has one: where its run's published
-    /// ports go.
-    net: Option<crate::netproc::Control>,
+    /// Its network process's control socket, and its process, if it has one: where its
+    /// run's published ports go.
+    net: Option<crate::netproc::NetLink>,
     /// The guest's MAC on its network, if it has one.
     mac: Option<[u8; 6]>,
     /// The pool it came from.
@@ -940,8 +935,9 @@ struct Tracked {
     visit: bool,
     /// Its guest's MAC on its network, for `inspect`.
     mac: Option<[u8; 6]>,
-    /// Its network process's control socket, where peers on its network come (D46).
-    net: Option<crate::netproc::Control>,
+    /// Its network process's control socket, and its process, where peers on its network
+    /// come (D46).
+    net: Option<crate::netproc::NetLink>,
     /// For a joiner of another's network (D119), the ID of the run it joins: `vm` is its
     /// VM, which this run never ends, pauses or reads as its own.
     joined: Option<String>,
@@ -4452,8 +4448,8 @@ impl<D: Disk> Daemon<D> {
     /// Whose host address `at`, found in use, is: the host's; a running microVM's of
     /// this daemon, which knows its own bindings (`published`); or a run's that ended, waited
     /// for until its network process has gone, for as long as this host gives one before it
-    /// looks at it (`ends::End::Helper`, `netproc::reap`), where that process never said it
-    /// closed the run's ports. A run's VM says
+    /// looks at it (`ends::End::Helper`, `netproc::reap`; with none heard yet, until it has
+    /// gone), where that process never said it closed the run's ports. A run's VM says
     /// PORTS_FREE, as that process has, and DONE, before it tells its client (warm.rs
     /// `finish`), whose next program may bind the port at once: what the holder's run has
     /// sent is taken first, as a name's holder's is (`create`), so that a run its client
@@ -4461,9 +4457,10 @@ impl<D: Disk> Daemon<D> {
     /// free (PM M134, M158).
     fn in_use(&self, at: std::net::SocketAddr, proto: u8) -> publish::InUse {
         let began = Instant::now();
-        let deadline = began
-            .checked_add(self.ends.slice(ends::End::Helper))
-            .unwrap_or(began);
+        let deadline = self
+            .ends
+            .slice(ends::End::Helper)
+            .map(|slice| began.checked_add(slice).unwrap_or(began));
         let mut held = lock(&self.ports_held);
         // A run of this daemon's held it: gone from every run, it was freed, while this
         // waited or while it took the holder's messages without the lock.
@@ -4507,24 +4504,32 @@ impl<D: Disk> Daemon<D> {
             if running || lock(&self.runs).contains_key(&holder) {
                 return publish::InUse::Allocated;
             }
-            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            let left = deadline.map(|at| at.checked_duration_since(Instant::now()));
+            if let Some(None) = left {
                 log(format!(
                     "{at}: still {holder}'s after {:?}, its run ended: the host's",
                     began.elapsed()
                 ));
                 return publish::InUse::Host;
-            };
+            }
             if !waited {
                 log(format!(
                     "{at}: {holder}'s, its run ended: waiting for its network process"
                 ));
                 waited = true;
             }
-            held = self
-                .ports_freed
-                .wait_timeout(held, left)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
+            held = match left.flatten() {
+                Some(left) => {
+                    self.ports_freed
+                        .wait_timeout(held, left)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0
+                }
+                None => self
+                    .ports_freed
+                    .wait(held)
+                    .unwrap_or_else(PoisonError::into_inner),
+            };
         }
     }
 
@@ -5703,7 +5708,7 @@ impl<D: Disk> Daemon<D> {
                         .map_err(|e| log(format!("container {id}: its network process: {e}")))
                         .ok()
                 })
-                .map(|net| hostnet::HostNet::new(net, PUBLISH_PATIENCE))
+                .map(hostnet::HostNet::new)
         } else {
             None
         };
@@ -7113,13 +7118,17 @@ impl<D: Disk> Daemon<D> {
                     Some(teardown) => {
                         if teardown.goes_on().is_some() {
                             // Its guest still at its end: another slice.
-                            stop.next = Instant::now().checked_add(self.ends.slice(ends::End::Teardown));
+                            stop.next = self
+                                .ends
+                                .slice(ends::End::Teardown)
+                                .and_then(|slice| Instant::now().checked_add(slice));
                             continue;
                         }
                         if let Some(vm) = &stop.vm {
                             log(format!(
                                 "container {id}: its command not ended as the daemon stops, its microVM gone on with nothing of its end for {:?}: its microVM killed",
-                                self.ends.slice(ends::End::Teardown)
+                                // Its deadline came: the home has a slice.
+                                self.ends.slice(ends::End::Teardown).unwrap_or_default()
                             ));
                             let _ = vm.kill(shards_ipc::signal::SIGKILL);
                         }
@@ -7127,15 +7136,16 @@ impl<D: Disk> Daemon<D> {
                     }
                     None => {
                         // A SIGKILL that cannot be sent leaves its guest nothing to end it
-                        // by, nor to say its end on: its VM goes at once.
+                        // by, nor to say its end on: its VM goes at once. One sent is given
+                        // this home's slice (none heard yet: its end alone, its liveness's).
                         let teardown = ends::Followed::of(stop.vm.as_ref().map(|vm| vm.id()));
                         let sent = stop.socket.send(kind::SIGNAL, &9u32.to_be_bytes(), &[]).is_ok();
                         let wait = if sent {
                             self.ends.slice(ends::End::Teardown)
                         } else {
-                            Duration::ZERO
+                            Some(Duration::ZERO)
                         };
-                        stop.next = Instant::now().checked_add(wait);
+                        stop.next = wait.and_then(|wait| Instant::now().checked_add(wait));
                         stop.killed = Some(teardown);
                     }
                 }
@@ -8422,7 +8432,13 @@ impl<D: Disk> Daemon<D> {
         // The VM holds its side of its network now; its network process goes with it.
         // The control socket stays the daemon's.
         let (net_process, net_control) = match launched.net {
-            Some((process, control)) => (Some(process), Some((control, net))),
+            Some((process, control)) => {
+                let pid = process.id();
+                (
+                    Some(process),
+                    Some((crate::netproc::NetLink { control, pid }, net)),
+                )
+            }
             None => (None, None),
         };
         let vm = Arc::new(launched.vm);
@@ -8475,7 +8491,7 @@ impl<D: Disk> Daemon<D> {
         child: Arc<shards_ipc::Child>,
         socket: UnixStream,
         grants: Option<UnixStream>,
-        net: Option<(crate::netproc::Control, Option<[u8; 6]>)>,
+        net: Option<(crate::netproc::NetLink, Option<[u8; 6]>)>,
         dest: For,
         net_process: Option<crate::netproc::NetProcess>,
         layer: Option<layers::LayerFile>,
@@ -10725,6 +10741,46 @@ mod tests {
                 .is_some_and(|c| c.state == Life::Running)
         });
         (id, starting, vm)
+    }
+
+    /// Do have the daemon's end of a running run's managed capture end as its VM's end of
+    /// it does, as its run ends; then fail on a record it refuses, its own failure. Expect:
+    /// nothing told the run for the first, whose end is its VM's; the run stopped for the
+    /// second as it stops (its stop signal heard): no run waits for its `STOP` on a failure
+    /// its daemon saw (D258; goal 75's survey). Why goes to the daemon's log, its stderr.
+    #[test]
+    fn a_capture_failure_of_the_daemons_own_stops_its_run_and_its_vms_end_does_not() {
+        let t = Test::new("capture-failed");
+        t.run(|t| {
+            let (id, starting, vm) = running(t, "captured");
+            t.daemon
+                .capture_failed(&id, "its members' output", &managed::Failure::Closed);
+            vm.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+            let told = loop {
+                match shards_ipc::recv(&vm) {
+                    Ok(Some(m)) if m.kind == kind::STOP_ORDER => continue,
+                    Ok(Some(m)) => break Some(m.kind),
+                    _ => break None,
+                }
+            };
+            assert_eq!(told, None, "a run told of its own capture's end");
+            vm.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+            let refused = managed::Failure::Protocol(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid capture record header",
+            ));
+            std::thread::scope(|s| {
+                let stopping = s.spawn(|| t.daemon.capture_failed(&id, "its members' output", &refused));
+                assert_eq!(
+                    heard(&vm),
+                    signal(15),
+                    "a run its daemon's capture failed was not stopped"
+                );
+                say(&vm, kind::DONE, &[143]);
+                stopping.join().unwrap();
+            });
+            let _ = joined(starting.run);
+        });
     }
 
     /// A run's microVM is looked at for its progress while its own client waits on it, an
@@ -13237,9 +13293,11 @@ mod tests {
                 matches!(lock(&t.daemon.runs).get(&id), Some(RunState::Tracked(_))),
                 "freed as its run ended, not before"
             );
+            // A helper's end this home has heard, which a wait for one would take.
+            let slice = Duration::from_secs(10);
+            t.daemon.ends.heard(ends::End::Helper, slice).unwrap();
             let asked = Instant::now();
             assert_eq!(t.daemon.in_use(at, publish::TCP), publish::InUse::Host);
-            let slice = t.daemon.ends.slice(ends::End::Helper);
             assert!(asked.elapsed() < slice, "{:?}", asked.elapsed());
             say(&vm, kind::DONE, &[0]);
             t.until("the run did not end", |d| {
@@ -13303,6 +13361,9 @@ mod tests {
     fn a_network_process_is_ended_once_it_goes_on_no_more_and_the_ports_freed() {
         let t = Test::new("net-end");
         t.run(|t| {
+            // A helper's end this home has heard: its slice, W*.
+            let slice = Duration::from_millis(200);
+            t.daemon.ends.heard(ends::End::Helper, slice).unwrap();
             let (ready, _theirs) = t.warm_vm(None);
             let vm = ready.vm.clone();
             let net = sleeper(600);
@@ -13317,12 +13378,13 @@ mod tests {
             let ended = Instant::now();
             let _ = vm.kill(shards_ipc::signal::SIGKILL);
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
-            let slice = t.daemon.ends.slice(ends::End::Helper);
             assert!(ended.elapsed() >= slice, "freed within its slice");
             assert!(reaped(net_pid), "the network process was not reaped");
             let kept = std::fs::read_to_string(t.home.join(ends::RECORD)).unwrap_or_default();
             assert!(
-                !kept.lines().any(|l| l.starts_with("helper ") && l != "helper 0"),
+                kept.lines()
+                    .filter(|l| l.starts_with("helper "))
+                    .eq(["helper 200"]),
                 "an end the daemon made was kept as the host's: {kept}"
             );
             // The VM is reaped once its ports are freed (follow.rs), which the wait above
@@ -13337,6 +13399,9 @@ mod tests {
     fn ports_are_freed_as_the_vm_ends_after_its_network_process() {
         let t = Test::new("net-first");
         t.run(|t| {
+            // A helper's end this home has heard, which a wait for one would take.
+            let slice = Duration::from_secs(10);
+            t.daemon.ends.heard(ends::End::Helper, slice).unwrap();
             let (ready, _theirs) = t.warm_vm(None);
             let vm = ready.vm.clone();
             let net = sleeper(600);
@@ -13354,7 +13419,6 @@ mod tests {
             let ended = Instant::now();
             let _ = vm.kill(shards_ipc::signal::SIGKILL);
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
-            let slice = t.daemon.ends.slice(ends::End::Helper);
             assert!(ended.elapsed() < slice, "{:?}", ended.elapsed());
         });
     }
@@ -13366,6 +13430,12 @@ mod tests {
     fn a_vms_pid_is_kept_until_its_ports_are_freed() {
         let t = Test::new("vm-pid-kept");
         t.run(|t| {
+            // A helper's end this home has heard, past this test's own end of its network
+            // process, which a deadline then holds.
+            t.daemon
+                .ends
+                .heard(ends::End::Helper, Duration::from_secs(60))
+                .unwrap();
             let (ready, _theirs) = t.warm_vm(None);
             let vm = ready.vm.clone();
             let net = sleeper(600);
@@ -13401,6 +13471,11 @@ mod tests {
     fn a_vm_ended_before_it_is_followed_is_reaped() {
         let t = Test::new("vm-gone");
         t.run(|t| {
+            // A helper's end this home has heard, its network process's slice.
+            t.daemon
+                .ends
+                .heard(ends::End::Helper, Duration::from_millis(200))
+                .unwrap();
             // The loop, started and asleep, with nothing due.
             let (ready, _theirs) = t.warm_vm(None);
             t.t.daemon.follow_vm(t.threads, ready.vm.clone(), None, None);
