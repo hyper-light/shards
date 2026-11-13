@@ -64,8 +64,10 @@ pub use shards_abi::run::nesting::Ready;
 /// bridge ([`MemberStage::mcp`], D254), so that a side that makes none never starts a harness
 /// whose MCP config names one that is not there; 26, the run's upstream roots
 /// ([`Request::upstream_roots`], D242), so that a side that knows none never runs an injector
-/// that trusts fewer roots than its orchestrator named.
-pub const VERSION: u8 = 26;
+/// that trusts fewer roots than its orchestrator named; 27, a member's end typed
+/// ([`MemberEnded::end`]: exited, or killed by a signal), so that no side reads a signal as an
+/// exit of 128 plus it.
+pub const VERSION: u8 = 27;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -187,6 +189,8 @@ pub enum WireError {
     Unread,
     /// A GPU's identity not in D232's grammar, or a selection D232 refuses (`shards_abi::gpu`).
     Gpu,
+    /// A member's end by a signal no Linux has, out of `1..=run::NSIG` (version 27).
+    Signal(u32),
 }
 
 impl std::fmt::Display for WireError {
@@ -201,6 +205,7 @@ impl std::fmt::Display for WireError {
             Self::Order { what } => write!(f, "{what} out of order"),
             Self::Unread => f.write_str("a vCPU's unread cause this side does not parse"),
             Self::Gpu => f.write_str("a GPU's identity D232's grammar or selection refuses"),
+            Self::Signal(n) => write!(f, "a member's end by signal {n}, which no Linux has"),
         }
     }
 }
@@ -735,8 +740,9 @@ pub struct OutputEnd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemberEnded {
     pub member: u32,
-    /// As `docker run` reports one: its code, or 128 plus a fatal signal's number.
-    pub status: u32,
+    /// How its command ended: exited with its code, or killed by a signal (version 27), as
+    /// its init's reaper saw it.
+    pub end: shards_abi::run::members::End,
 }
 
 /// What init's `STATS` says, each line `None` where it said none; and, for the run, what its
@@ -2526,21 +2532,34 @@ impl OutputEnd {
 }
 
 impl MemberEnded {
+    /// Its member, then its end as the guest's `MEMBER_ENDED` carries it
+    /// (`run::members::End`: a tag, exited 0 or signaled 1, and its code or signal).
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
-        w.u32(self.status);
+        w.0.extend_from_slice(&self.end.encode());
         w.0
     }
 
     pub fn decode(payload: &[u8]) -> Result<MemberEnded, WireError> {
+        use shards_abi::run::members::End;
         let mut r = Reader(payload);
-        let e = MemberEnded {
-            member: r.u32()?,
-            status: r.u32()?,
-        };
+        let member = r.u32()?;
+        let tag = r.u8()?;
+        let word = r.u32()?;
         r.end()?;
-        Ok(e)
+        let end = match tag {
+            0 => End::Exited(word),
+            1 if (1..=shards_abi::run::NSIG).contains(&word) => End::Signaled(word),
+            1 => return Err(WireError::Signal(word)),
+            _ => {
+                return Err(WireError::Tag {
+                    what: "a member's end",
+                    tag,
+                });
+            }
+        };
+        Ok(MemberEnded { member, end })
     }
 }
 
@@ -3429,11 +3448,30 @@ mod tests {
             };
             assert_eq!(OutputEnd::decode(&e.encode()).unwrap(), e);
         }
-        let ended = MemberEnded {
-            member: 2,
-            status: 137,
-        };
-        assert_eq!(MemberEnded::decode(&ended.encode()).unwrap(), ended);
+        for end in [
+            shards_abi::run::members::End::Exited(137),
+            shards_abi::run::members::End::Exited(143),
+            shards_abi::run::members::End::Signaled(15),
+        ] {
+            let ended = MemberEnded { member: 2, end };
+            assert_eq!(MemberEnded::decode(&ended.encode()).unwrap(), ended);
+        }
+        // A tag of neither end, or a signal no Linux has, is no end.
+        assert_eq!(
+            MemberEnded::decode(&[0, 0, 0, 2, 2, 0, 0, 0, 1]),
+            Err(WireError::Tag {
+                what: "a member's end",
+                tag: 2
+            })
+        );
+        assert_eq!(
+            MemberEnded::decode(&[0, 0, 0, 2, 1, 0, 0, 0, 0]),
+            Err(WireError::Signal(0))
+        );
+        assert_eq!(
+            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 1]),
+            Err(WireError::Short)
+        );
         for end in [RunEnd::Exited(0), RunEnd::Stopped, RunEnd::Failed("x".into())] {
             assert_eq!(RunEnd::decode(&end.encode().unwrap()).unwrap(), end);
         }

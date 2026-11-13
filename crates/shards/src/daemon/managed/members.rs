@@ -4,7 +4,8 @@
 //! steering delivered and answered: a signal by init's `SIGNAL` built-in, a resize of the
 //! member's own terminal by its `RESIZE` (D244).
 //!
-//! - **Its state.** Once its run has started: running, or ended with the status its init said.
+//! - **Its state.** Once its run has started: running, or ended as its init said, typed: its
+//!   command's exit (`Reply::Exited`) or the signal that killed it (`Reply::Signaled`).
 //! - **Its end, as it comes.** Its init says each member's end once its whole population has
 //!   ended (D231), which its VM process relays (`MEMBER_ENDED`) and the run's end table keeps
 //!   and tells whoever waits ([`Ends`]): no lane looks for it.
@@ -36,11 +37,11 @@ pub(crate) struct Ends {
     changed: Condvar,
 }
 
-/// What a run's end table holds (R04): each member's status once told, by its index; and
+/// What a run's end table holds (R04): each member's end once told, by its index; and
 /// whether the run is over, after which none is told and every wait ends.
 #[derive(Debug)]
 struct Told {
-    ended: Vec<Option<u32>>,
+    ended: Vec<Option<members::End>>,
     over: bool,
 }
 
@@ -56,10 +57,10 @@ impl Ends {
         })
     }
 
-    /// Member `member` ended with `status`, as its init told it (once a member): told whoever
+    /// Member `member` ended as `end` says, as its init told it (once a member): told whoever
     /// waits on it. A member of no index the run has, or told twice, is the guest's protocol
     /// broken, refused.
-    pub(crate) fn told(&self, member: u32, status: u32) -> io::Result<()> {
+    pub(crate) fn told(&self, member: u32, end: members::End) -> io::Result<()> {
         let mut told = lock(&self.state);
         let slot = usize::try_from(member)
             .ok()
@@ -71,7 +72,7 @@ impl Ends {
                 format!("member {member}'s end told twice"),
             ));
         }
-        *slot = Some(status);
+        *slot = Some(end);
         drop(told);
         self.changed.notify_all();
         Ok(())
@@ -83,22 +84,22 @@ impl Ends {
         self.changed.notify_all();
     }
 
-    /// Member `member`'s status, once its end has been told.
-    fn ended(&self, member: u32) -> Option<u32> {
+    /// Member `member`'s end, once it has been told.
+    fn ended(&self, member: u32) -> Option<members::End> {
         let told = lock(&self.state);
         usize::try_from(member)
             .ok()
             .and_then(|at| told.ended.get(at).copied().flatten())
     }
 
-    /// Waits for member `member`'s end: its status; or none, once the run is over or `gone`
-    /// says its lane was let go (which [`Ends::wake`] tells).
-    fn wait(&self, member: u32, gone: &AtomicBool) -> Option<u32> {
+    /// Waits for member `member`'s end; or none, once the run is over or `gone` says its lane
+    /// was let go (which [`Ends::wake`] tells).
+    fn wait(&self, member: u32, gone: &AtomicBool) -> Option<members::End> {
         let at = usize::try_from(member).ok()?;
         let mut told = lock(&self.state);
         loop {
-            if let Some(status) = told.ended.get(at).copied().flatten() {
-                return Some(status);
+            if let Some(end) = told.ended.get(at).copied().flatten() {
+                return Some(end);
             }
             if told.over || gone.load(Ordering::Acquire) || told.ended.get(at).is_none() {
                 return None;
@@ -154,9 +155,13 @@ pub(crate) fn host(lanes: &mpsc::Receiver<MemberStart>, hosting: &Hosting<'_>) {
     });
 }
 
-/// A member's status as its lane tells it: the bits its init said, as an exec's are told.
-fn told_status(status: u32) -> i32 {
-    i32::from_be_bytes(status.to_be_bytes())
+/// A member's end as its lane tells it, typed: its exit's code, the bits its init said, as an
+/// exec's are told; or the signal that killed it.
+fn told_end(end: members::End) -> Reply {
+    match end {
+        members::End::Exited(code) => Reply::Exited(i32::from_be_bytes(code.to_be_bytes())),
+        members::End::Signaled(signal) => Reply::Signaled(signal),
+    }
 }
 
 /// One member's lane, from its ask to its letting go: refused where its run has no such member
@@ -195,8 +200,8 @@ fn serve(start: MemberStart, hosting: &Hosting<'_>) {
             return replies.tell(Reply::Unstarted(Unstarted::Capacity));
         }
     };
-    if let Some(status) = hosting.ends.ended(member) {
-        return replies.tell(Reply::Exited(told_status(status)));
+    if let Some(end) = hosting.ends.ended(member) {
+        return replies.tell(told_end(end));
     }
     let Ok(answers) = replies.try_clone() else {
         say("its answers");
@@ -220,8 +225,8 @@ fn serve(start: MemberStart, hosting: &Hosting<'_>) {
             return replies.tell(Reply::Unstarted(Unstarted::Failed));
         }
         replies.tell(Reply::Running);
-        if let Some(status) = hosting.ends.wait(member, gone) {
-            replies.tell(Reply::Exited(told_status(status)));
+        if let Some(end) = hosting.ends.wait(member, gone) {
+            replies.tell(told_end(end));
         }
     });
 }
@@ -357,13 +362,20 @@ mod tests {
         assert_eq!(ends.ended(1), None);
         std::thread::scope(|s| {
             let waiting = s.spawn(|| ends.wait(1, &gone));
-            ends.told(1, 137).unwrap();
-            assert_eq!(waiting.join().unwrap(), Some(137));
+            ends.told(1, members::End::Signaled(9)).unwrap();
+            assert_eq!(waiting.join().unwrap(), Some(members::End::Signaled(9)));
         });
-        assert_eq!(ends.ended(1), Some(137));
-        assert_eq!(ends.wait(1, &gone), Some(137));
-        assert_eq!(ends.told(1, 0).unwrap_err().kind(), io::ErrorKind::InvalidData);
-        assert_eq!(ends.told(2, 0).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(ends.ended(1), Some(members::End::Signaled(9)));
+        assert_eq!(ends.wait(1, &gone), Some(members::End::Signaled(9)));
+        let exited = members::End::Exited(0);
+        assert_eq!(
+            ends.told(1, exited).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            ends.told(2, exited).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
         assert_eq!(ends.wait(2, &gone), None);
         std::thread::scope(|s| {
             let waiting = s.spawn(|| ends.wait(0, &gone));
@@ -379,11 +391,13 @@ mod tests {
         });
     }
 
-    /// A status keeps its bits as its lane tells it.
+    /// A lane tells a member's end typed: a death by TERM `Signaled(15)`, which `exit 143` is
+    /// not; an exit's code its bits as its init said them.
     #[test]
-    fn a_status_is_told_as_its_init_said_it() {
-        assert_eq!(told_status(0), 0);
-        assert_eq!(told_status(143), 143);
-        assert_eq!(told_status(u32::MAX), -1);
+    fn a_lane_tells_a_signal_apart_from_an_exit() {
+        assert_eq!(told_end(members::End::Signaled(15)), Reply::Signaled(15));
+        assert_eq!(told_end(members::End::Exited(143)), Reply::Exited(143));
+        assert_eq!(told_end(members::End::Exited(0)), Reply::Exited(0));
+        assert_eq!(told_end(members::End::Exited(u32::MAX)), Reply::Exited(-1));
     }
 }

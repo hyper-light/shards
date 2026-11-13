@@ -25,7 +25,8 @@
 //!   already. Its host ([`MemberStart`]) says the member runs (`Running`) or ended (its
 //!   `Exit`), answers each steer, a signal to its command or a resize of its own terminal,
 //!   taken or refused, typed (`Steered`, [`Unsteered`]), one in flight, and tells its end as
-//!   it comes (`Exit`).
+//!   it comes, typed ([`End`]): its command's exit (`Exit`), or the signal that killed it
+//!   (`Signaled`), which a status of 128 plus its number cannot tell from an exit.
 //! - **A log lane** (D238's log lane): its first frame is `Tag::Log`, the scope and a
 //!   [`LogAsk`]: the run's command's log or a member's, its channels, where each starts and
 //!   whether it is followed ([`Kind::Log`]). It is an exec in all but its start: its host
@@ -739,6 +740,24 @@ impl TryFrom<u32> for Unsteered {
     }
 }
 
+/// How a member's command ended, as its lane tells it (D238): exited, with its status; or
+/// killed by a signal, its Linux number (`1..=run::NSIG`), as its init's reaper saw it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum End {
+    Exited(i32),
+    Signaled(u32),
+}
+
+impl End {
+    /// Its status as `docker run` reports one: its exit's, or 128 plus its signal's number.
+    pub fn status(self) -> i32 {
+        match self {
+            End::Exited(status) => status,
+            End::Signaled(signal) => i32::try_from(signal).map_or(i32::MAX, |n| n.saturating_add(128)),
+        }
+    }
+}
+
 /// What the endpoint tells an exec's lane, or a member's, after its ask.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Told {
@@ -749,6 +768,9 @@ pub enum Told {
     /// It ended, with this status: its command's, or 128 plus the signal that ended it. A
     /// member's, as its end is told (D231), first where it had ended before its lane asked.
     Exit(i32),
+    /// A member's lane: its command was killed by this signal (`Tag::Signaled`), in place of
+    /// its `Exit`.
+    Signaled(u32),
     /// A member's lane: the member of this index runs.
     Running(u32),
     /// A member's lane: its last steer taken, or why not.
@@ -768,6 +790,7 @@ pub fn telling(told: Told) -> ([u8; TOLD_MOST], usize) {
         Told::Started(exec) => (Tag::Started, exec),
         Told::Unstarted(why) => (Tag::Refused, why as u32),
         Told::Exit(status) => (Tag::Exit, u32::from_be_bytes(status.to_be_bytes())),
+        Told::Signaled(signal) => (Tag::Signaled, signal),
         Told::Running(member) => (Tag::Running, member),
         Told::Steered(answer) => (Tag::Steered, answer.err().map_or(0, |why| why as u32)),
         Told::Unlogged(Unlogged::Rotated { oldest }) => return framed(Tag::Rotated, &oldest.to_bytes()),
@@ -826,6 +849,7 @@ pub fn told(bytes: &[u8]) -> Result<Option<(Told, usize)>, Reason> {
             (Err(()), None) => return Err(Reason::Protocol),
         },
         Tag::Exit => Told::Exit(i32::from_be_bytes(word.to_be_bytes())),
+        Tag::Signaled if (1..=run::NSIG).contains(&word) => Told::Signaled(word),
         Tag::Running => Told::Running(word),
         Tag::Steered if word == 0 => Told::Steered(Ok(())),
         Tag::Steered => Told::Steered(Err(Unsteered::try_from(word).map_err(|()| Reason::Protocol)?)),
@@ -840,6 +864,9 @@ pub enum Reply {
     Started,
     Unstarted(Unstarted),
     Exited(i32),
+    /// A member's lane: its command was killed by this signal, its Linux number. An exec's
+    /// lane tells it as its status, 128 plus the number.
+    Signaled(u32),
     /// A member's lane: the member runs.
     Running,
     /// A member's lane: the last steer it was handed, taken or refused.
@@ -908,10 +935,10 @@ pub struct Start {
 
 /// A member's lane the endpoint hands its host ([`Kind::Member`]): the ask, the lane's number,
 /// its steering and where to say how it goes. The host says first that the member runs
-/// ([`Reply::Running`]), or how it ended ([`Reply::Exited`]), or why it serves the lane none
-/// ([`Reply::Unstarted`]); then answers every steer it takes ([`Reply::Steered`]), the next
-/// handed only once the last is answered; and says the member's end as it comes
-/// ([`Reply::Exited`]). Its steering closes as the endpoint lets the lane go: its exit told,
+/// ([`Reply::Running`]), or how it ended ([`Reply::Exited`], [`Reply::Signaled`]), or why it
+/// serves the lane none ([`Reply::Unstarted`]); then answers every steer it takes
+/// ([`Reply::Steered`]), the next handed only once the last is answered; and says the member's
+/// end as it comes ([`Reply::Exited`], [`Reply::Signaled`]). Its steering closes as the endpoint lets the lane go: its exit told,
 /// or its controller's connection gone. The member's life is no lane's: none ends it.
 #[derive(Debug)]
 pub struct MemberStart {
@@ -960,7 +987,7 @@ pub(super) enum Stage {
     Running,
     /// Its host said it ended: its exit is told once its outputs have finished and, on a
     /// member's lane, the steer its host was handed is answered.
-    Exited(i32),
+    Exited(End),
     /// Its last frame (its exit, or why it did not start) is queued: its lane finishes as it
     /// goes, and the exec's streams with it.
     Told,
@@ -1674,11 +1701,14 @@ impl super::Lanes {
         }
         let awaiting = lane.member.as_ref().is_some_and(|m| m.awaiting);
         let exited = match lane.stage {
-            Stage::Exited(status) => Some(status),
+            Stage::Exited(end) => Some(end),
             _ => None,
         };
-        if let (Some(status), true, false) = (exited, done, awaiting) {
-            lane.say(Told::Exit(status));
+        if let (Some(end), true, false) = (exited, done, awaiting) {
+            lane.say(match end {
+                End::Exited(status) => Told::Exit(status),
+                End::Signaled(signal) => Told::Signaled(signal),
+            });
             lane.stage = Stage::Told;
         }
         false
@@ -1753,7 +1783,14 @@ impl super::Lanes {
             }
             (Reply::Exited(status), Stage::Running | Stage::Pending, _) => {
                 // Its steering stays open until it is let go (`Start::steer`, `MemberStart`).
-                lane.stage = Stage::Exited(status);
+                lane.stage = Stage::Exited(End::Exited(status));
+            }
+            // A member's signal typed; an exec's lane has only a status to tell.
+            (Reply::Signaled(signal), Stage::Running | Stage::Pending, member) => {
+                lane.stage = Stage::Exited(match member {
+                    Some(_) => End::Signaled(signal),
+                    None => End::Exited(End::Signaled(signal).status()),
+                });
             }
             _ => {}
         }
@@ -1928,6 +1965,9 @@ mod tests {
             Told::Exit(0),
             Told::Exit(137),
             Told::Exit(-1),
+            Told::Signaled(1),
+            Told::Signaled(15),
+            Told::Signaled(run::NSIG),
             Told::Running(3),
             Told::Steered(Ok(())),
             Told::Steered(Err(Unsteered::Ended)),
@@ -1955,6 +1995,12 @@ mod tests {
             let mut frame = Vec::new();
             frame::put(&mut frame, Tag::Refused, &code.to_be_bytes()).unwrap();
             assert_eq!(told(&frame), Err(Reason::Protocol), "{code}");
+        }
+        // A signal no Linux has is no end.
+        for signal in [0, run::NSIG + 1, u32::MAX] {
+            let mut frame = Vec::new();
+            frame::put(&mut frame, Tag::Signaled, &signal.to_be_bytes()).unwrap();
+            assert_eq!(told(&frame), Err(Reason::Protocol), "{signal}");
         }
         let mut short = Vec::new();
         frame::put(&mut short, Tag::Rotated, &7u32.to_be_bytes()).unwrap();

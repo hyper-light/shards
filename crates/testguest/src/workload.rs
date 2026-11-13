@@ -702,6 +702,37 @@ pub fn main() -> ! {
         // the line read back and printed: a file a guest holds that no path reaches, whose
         // bytes a save keeps and a restore of it holds again (D176).
         "unlinked-held" => unlinked_held(arg(1), arg(2).parse().ok()),
+        // A harness that starts as an MCP client does (D254): runs its member's MCP bridge, its
+        // stdio piped, writes `initialize` into it and holds it open; says `ready`, then sleeps
+        // until a signal ends it.
+        "mcp-hello" => 'hello: {
+            let bridge = std::process::Command::new(shards_abi::run::mcp::BRIDGE)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn();
+            let mut bridge = match bridge {
+                Ok(bridge) => bridge,
+                Err(e) => {
+                    let _ = writeln!(io::stderr(), "its MCP bridge: {e}");
+                    break 'hello 1;
+                }
+            };
+            let sent = match bridge.stdin.as_mut() {
+                Some(to) => to
+                    .write_all(shards_testguest::MCP_INITIALIZE)
+                    .and_then(|()| to.flush()),
+                None => Err(io::Error::other("no stdin")),
+            };
+            if let Err(e) = sent {
+                let _ = writeln!(io::stderr(), "its MCP bridge's stdin: {e}");
+                break 'hello 1;
+            }
+            let _ = writeln!(io::stdout(), "ready");
+            loop {
+                // SAFETY: blocks until a signal arrives.
+                unsafe { libc::pause() };
+            }
+        }
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {

@@ -282,8 +282,11 @@ pub enum UpstreamRoot {
 /// How a member ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemberEnd {
-    /// Its population ended, its leader with this status (as `docker run` reports one).
+    /// Its population ended, its command having exited with this code.
     Exited(u32),
+    /// Its population ended, its command killed by this signal, its Linux number
+    /// (`1..=run::NSIG`): `docker run` would report 128 plus it, which an exit can be too.
+    Signaled(u32),
     /// The run ended first, and the member with it.
     WithRun,
 }
