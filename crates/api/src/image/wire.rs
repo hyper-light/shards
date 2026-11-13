@@ -6,8 +6,8 @@
 //! payload is read whole or refused: a field past its end, bytes after its last field, an
 //! unknown tag or a bad UTF-8 string is a [`WireError`], never a default.
 //!
-//! Credentials ride only in [`Request`], each in a [`Secret`], whose `Debug` prints its
-//! length alone.
+//! Credentials ride only in [`Request`] and in a lease's answer ([`LeaseAnswer`]), each in a
+//! [`Secret`], whose `Debug` prints its length alone and whose bytes are wiped as it drops.
 
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU64;
@@ -47,8 +47,12 @@ pub use shards_abi::run::nesting::Ready;
 /// ([`MemberStage::args`], D256), so that a side that passes none starts no member without
 /// the flags its orchestrator asked; 19, how the run's microVM started ([`Started::from`],
 /// D253): from its image's template, booted saving one, or booted where its template did not
-/// restore, so that its orchestrator hears a template replaced.
-pub const VERSION: u8 = 19;
+/// restore, so that its orchestrator hears a template replaced; 20, a credential's lease, asked by the run host
+/// just in time (`LEASE`, answered `LEASED`), and the run's release of every lease
+/// (`RELEASED`; D242), so that a side that leases nothing refuses the run as it is asked,
+/// before any lease is: a client of an earlier version ends a run at a frame it has no kind
+/// for.
+pub const VERSION: u8 = 20;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -78,6 +82,9 @@ pub mod to_host {
     /// A [`RateAsk`](super::RateAsk): the CPU rate the orchestrator holds the run's vCPUs to
     /// (D191, D247).
     pub const RATE: u8 = 12;
+    /// A [`LeaseAnswer`](super::LeaseAnswer): a lease its run host asked, given or refused,
+    /// by its ask's id (D242).
+    pub const LEASED: u8 = 13;
 }
 
 /// What the run host sends.
@@ -112,6 +119,12 @@ pub mod to_client {
     pub const RESIZED: u8 = 28;
     /// [`RateAnswer`](super::RateAnswer): what the run's vCPUs are held to, by its ask's id.
     pub const RATED: u8 = 29;
+    /// A [`LeaseAsk`](super::LeaseAsk): a credential's lease, asked just in time by reference
+    /// (D242).
+    pub const LEASE: u8 = 30;
+    /// Every lease of the run released ([`released`](super::released)): the run has ended,
+    /// and nothing of any value it was leased is held (D242). Before [`ENDED`].
+    pub const RELEASED: u8 = 31;
 }
 
 /// Why a payload could not be read or written.
@@ -156,13 +169,19 @@ impl std::fmt::Display for WireError {
 impl std::error::Error for WireError {}
 
 /// Bytes a caller would not have printed: a credential, as often as not. Its `Debug` says
-/// how many there are, never what.
+/// how many there are, never what, and its bytes are wiped as it drops (D242).
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct Secret(pub Vec<u8>);
 
 impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Secret({} bytes)", self.0.len())
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
     }
 }
 
@@ -338,6 +357,50 @@ pub fn decide(grants: &[CredentialGrant], sni: &str, host: &str) -> Fill {
         }
     }
     Fill::Pass
+}
+
+/// A credential's lease, asked by the run's host just in time (D242): the credential its
+/// network process first needs, by reference, one of the run's grants and never a value;
+/// answered by its id ([`LeaseAnswer`]). It names the run by the channel it comes on, which
+/// the orchestrator that started the run's host alone speaks on (D231, D248).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseAsk {
+    pub id: u32,
+    pub reference: String,
+}
+
+/// A lease given (D242): the credential's value, and how long its lease lives past its
+/// answer, in nanoseconds, never none. Its holder wipes the value as it ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lease {
+    pub value: Secret,
+    pub lives: NonZeroU64,
+}
+
+/// Why no lease was given (D242), typed (R04): the run's host relays it to the network
+/// process that asked, whose asker matches it, never its words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeaseRefusal {
+    /// The orchestrator's broker leases the run none of it, in its words: a credential its
+    /// store does not hold, or one its policy keeps from the run.
+    Denied(String),
+    /// Asked under the key the run had before a move replaced it (D238, D176 part 6, as the
+    /// daemon's `move step key` refuses one): that key, and the run's key now where it has
+    /// one, each 64 lowercase hex digits. The broker alone says which key is current.
+    KeyReplaced { asked: String, current: Option<String> },
+    /// Its broker could not be asked, or failed, in its words: a later ask may be leased.
+    Unavailable(String),
+    /// The run has ended: nothing is leased after its release.
+    Ended,
+    /// Its lease ended before it was answered: a later ask is leased anew.
+    Lapsed,
+}
+
+/// A lease's answer, by its ask's id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseAnswer {
+    pub id: u32,
+    pub result: Result<Lease, LeaseRefusal>,
 }
 
 /// A host directory the guest sees at a path, as `-v HOST:PATH[:ro]` gives one (D109).
@@ -2163,6 +2226,108 @@ impl RateAnswer {
     }
 }
 
+impl LeaseAsk {
+    /// Its id, then the credential's reference.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.text(&self.reference)?;
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<LeaseAsk, WireError> {
+        let mut r = Reader(payload);
+        let ask = LeaseAsk {
+            id: r.u32()?,
+            reference: r.text()?,
+        };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl LeaseAnswer {
+    /// Its id, then 0, how long the lease lives in nanoseconds and the value, last, so that
+    /// the buffer holding it is made once; or its refusal's tag and fields: 1 and the
+    /// broker's words, 2 and the key asked under and the run's key (0 for none, or 1 and the
+    /// key), 3 and the broker's words, 4, or 5. The caller wipes what it returns.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(lease) => {
+                w.u8(0);
+                w.u64(lease.lives.get());
+                w.bytes(&lease.value.0)?;
+            }
+            Err(LeaseRefusal::Denied(why)) => {
+                w.u8(1);
+                w.text(why)?;
+            }
+            Err(LeaseRefusal::KeyReplaced { asked, current }) => {
+                w.u8(2);
+                w.text(asked)?;
+                match current {
+                    None => w.u8(0),
+                    Some(current) => {
+                        w.u8(1);
+                        w.text(current)?;
+                    }
+                }
+            }
+            Err(LeaseRefusal::Unavailable(why)) => {
+                w.u8(3);
+                w.text(why)?;
+            }
+            Err(LeaseRefusal::Ended) => w.u8(4),
+            Err(LeaseRefusal::Lapsed) => w.u8(5),
+        }
+        w.done()
+    }
+
+    /// A lease that lives no time is no lease: refused, as [`Started`]'s bound address of
+    /// none is.
+    pub fn decode(payload: &[u8]) -> Result<LeaseAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => {
+                let lives = NonZeroU64::new(r.u64()?).ok_or(WireError::Tag {
+                    what: "a lease's life",
+                    tag: 0,
+                })?;
+                Ok(Lease {
+                    lives,
+                    value: Secret(r.bytes()?.to_vec()),
+                })
+            }
+            1 => Err(LeaseRefusal::Denied(r.text()?)),
+            2 => {
+                let asked = r.text()?;
+                let current = if r.flag()? { Some(r.text()?) } else { None };
+                Err(LeaseRefusal::KeyReplaced { asked, current })
+            }
+            3 => Err(LeaseRefusal::Unavailable(r.text()?)),
+            4 => Err(LeaseRefusal::Ended),
+            5 => Err(LeaseRefusal::Lapsed),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a lease's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(LeaseAnswer { id, result })
+    }
+}
+
+/// What a [`to_client::RELEASED`] says: every lease of the run released. Its payload is
+/// none; anything else is refused.
+pub fn released(payload: &[u8]) -> Result<(), WireError> {
+    Reader(payload).end()
+}
+
 impl RunEnd {
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
@@ -2354,6 +2519,112 @@ mod tests {
             !shown.contains("DEADBEEF"),
             "a staged value leaked into Debug: {shown}"
         );
+        // A lease's value is a Secret too, redacted in its answer's Debug (D242).
+        let answer = LeaseAnswer {
+            id: 1,
+            result: Ok(Lease {
+                value: Secret::from("sk-ant-lease-DEADBEEF"),
+                lives: NonZeroU64::MIN,
+            }),
+        };
+        let shown = format!("{answer:?}");
+        assert!(
+            !shown.contains("DEADBEEF"),
+            "a lease's value leaked into Debug: {shown}"
+        );
+        assert!(shown.contains("Secret(21 bytes)"), "{shown}");
+    }
+
+    /// A lease's ask and its answer read back as written, each refusal by its tag, and the
+    /// run's release as none (D242); one cut short, padded or of an unknown tag is refused,
+    /// as is a lease that lives no time, never a default.
+    #[test]
+    fn leases_round_trip_and_bad_ones_are_refused() {
+        let ask = LeaseAsk {
+            id: 3,
+            reference: "anthropic/claude-max".into(),
+        };
+        let bytes = ask.encode().unwrap();
+        assert_eq!(LeaseAsk::decode(&bytes).unwrap(), ask);
+        assert_eq!(LeaseAsk::decode(&bytes[..bytes.len() - 1]), Err(WireError::Short));
+        assert_eq!(
+            LeaseAsk::decode(&[bytes.as_slice(), &[0]].concat()),
+            Err(WireError::Trailing)
+        );
+        let given = Lease {
+            value: Secret::from("sk-ant-api03-lease"),
+            lives: NonZeroU64::new(3_600_000_000_000).unwrap(),
+        };
+        for result in [
+            Ok(given.clone()),
+            Ok(Lease {
+                value: Secret::default(),
+                lives: NonZeroU64::MIN,
+            }),
+            Err(LeaseRefusal::Denied("no such secret".into())),
+            Err(LeaseRefusal::KeyReplaced {
+                asked: "a".repeat(64),
+                current: Some("b".repeat(64)),
+            }),
+            Err(LeaseRefusal::KeyReplaced {
+                asked: "a".repeat(64),
+                current: None,
+            }),
+            Err(LeaseRefusal::Unavailable(String::new())),
+            Err(LeaseRefusal::Ended),
+            Err(LeaseRefusal::Lapsed),
+        ] {
+            let answer = LeaseAnswer { id: u32::MAX, result };
+            let bytes = answer.encode().unwrap();
+            assert_eq!(LeaseAnswer::decode(&bytes).unwrap(), answer);
+            assert_eq!(
+                LeaseAnswer::decode(&bytes[..bytes.len() - 1]),
+                Err(WireError::Short),
+                "{answer:?}"
+            );
+            assert_eq!(
+                LeaseAnswer::decode(&[bytes.as_slice(), &[0]].concat()),
+                Err(WireError::Trailing),
+                "{answer:?}"
+            );
+        }
+        assert!(matches!(
+            LeaseAnswer::decode(&[0, 0, 0, 1, 6]),
+            Err(WireError::Tag { tag: 6, .. })
+        ));
+        let mut flag = LeaseAnswer {
+            id: 1,
+            result: Err(LeaseRefusal::KeyReplaced {
+                asked: "a".into(),
+                current: None,
+            }),
+        }
+        .encode()
+        .unwrap();
+        *flag.last_mut().unwrap() = 2;
+        assert_eq!(
+            LeaseAnswer::decode(&flag),
+            Err(WireError::Tag {
+                what: "a flag",
+                tag: 2
+            })
+        );
+        let mut none = LeaseAnswer {
+            id: 1,
+            result: Ok(given),
+        }
+        .encode()
+        .unwrap();
+        none[5..13].fill(0);
+        assert_eq!(
+            LeaseAnswer::decode(&none),
+            Err(WireError::Tag {
+                what: "a lease's life",
+                tag: 0
+            })
+        );
+        assert_eq!(released(&[]), Ok(()));
+        assert_eq!(released(&[0]), Err(WireError::Trailing));
     }
 
     fn request() -> Request {
@@ -2922,6 +3193,15 @@ mod tests {
         v17.truncate(v17.len() - 4);
         v17[0] = 17;
         assert_eq!(Request::decode(&v17), Err(WireError::Version(17)));
+        // One of version 13 reads a vCPU's unread guest time as free words
+        // (guest-cpu-time-v1), and one of 19 carries every field version 20 does, but its
+        // client ends the run at a lease its host asks: each refused by its version, before
+        // any lease is (D242).
+        for old in [13, 19] {
+            let mut bytes = request().encode().unwrap();
+            bytes[0] = old;
+            assert_eq!(Request::decode(&bytes), Err(WireError::Version(old)));
+        }
         // The nesting flag, before the deadline's tag, the destinations', the one member's
         // working directory's and input's, the credential grants' count (version 8), the
         // member's terminal's (version 11), the members' reach (version 12), the control ask

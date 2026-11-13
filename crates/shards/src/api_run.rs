@@ -12,13 +12,16 @@
 //! each is made in a job whose last handle is this process's, which ends them as it ends,
 //! however it ends. And the run goes with its owner: its stdin closing kills the VM.
 
+use std::collections::HashMap;
 use std::io::{self, Write as _};
+use std::num::NonZeroU64;
 use std::process::ExitCode;
-use std::sync::{Mutex, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use shards_api::image::wire::{self, Cause};
 use shards_ipc::kind;
+use shards_net::lease::Refusal;
 
 /// Why the run will not be, for the orchestrator.
 #[derive(Debug)]
@@ -30,7 +33,7 @@ fn no(cause: Cause) -> impl Fn(String) -> No {
 
 /// The answers' channel, this process's stdout: one frame at a time, whichever thread
 /// sends it.
-struct Answers(Mutex<io::Stdout>);
+struct Answers(Mutex<Box<dyn io::Write + Send>>);
 
 impl Answers {
     /// Frames `parts` as one payload of `kind`, written in one turn.
@@ -58,7 +61,7 @@ fn say(what: std::fmt::Arguments<'_>) {
 /// `shards api-run`: not for people to run. The run's end is said as its VM ends, before
 /// its owner closes the channel; a run that never started is refused instead.
 pub fn command() -> ExitCode {
-    let answers = Answers(Mutex::new(io::stdout()));
+    let answers = Answers(Mutex::new(Box::new(io::stdout())));
     match host(&answers) {
         Ok(()) => ExitCode::SUCCESS,
         Err(No(cause, why)) => {
@@ -826,6 +829,323 @@ fn run_end(failed: Option<String>, done: Option<&[u8]>, started: bool) -> wire::
     }
 }
 
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Where a live lease of the run's stands (D242, R04): asked of the orchestrator; or held
+/// until `until` on this process's clock, none where its end is past what that clock can
+/// name, which the run's end releases. Refused and released are its ends, where it leaves
+/// the ledger.
+enum State {
+    Asked,
+    Held { until: Option<Instant> },
+}
+
+impl State {
+    fn lapsed(&self, now: Instant) -> bool {
+        matches!(self, State::Held { until: Some(until) } if *until <= now)
+    }
+}
+
+/// A live lease: its credential, the network process's id for its ask, and where it stands.
+struct Entry {
+    reference: String,
+    asked_as: u32,
+    state: State,
+}
+
+/// What an orchestrator's answer to a lease comes to.
+#[derive(Debug, PartialEq, Eq)]
+enum Answered {
+    /// The network process's ask `asked_as`, of `reference`, to be told it.
+    Told { asked_as: u32, reference: String },
+    /// One after the run released its leases: told nobody.
+    Late,
+}
+
+/// The run's leases, as its host keeps them (D242): each one its network process asked, by
+/// the id the run's channel names it by. Asked of the orchestrator by reference, then held
+/// until its end, or refused; every one released as the run ends. A run asks only what its
+/// grants name, and one lease of a credential at a time, as its network process asks one,
+/// so at most one for each grant is here: what grows past that is refused, never kept.
+struct Ledger {
+    granted: Vec<String>,
+    live: HashMap<u32, Entry>,
+    next: u32,
+    released: bool,
+}
+
+impl Ledger {
+    fn new(granted: Vec<String>) -> Ledger {
+        Ledger {
+            granted,
+            live: HashMap::new(),
+            next: 0,
+            released: false,
+        }
+    }
+
+    /// The network process's ask `asked_as` of credential `reference`, at `now`: a lease to
+    /// ask of the orchestrator by the id returned (its lease that ended released first); or
+    /// refused here, typed, nothing asked.
+    fn ask(&mut self, asked_as: u32, reference: &str, now: Instant) -> Result<u32, Refusal> {
+        if self.released {
+            return Err(Refusal::Ended);
+        }
+        if !self.granted.iter().any(|g| g == reference) {
+            return Err(Refusal::Ungranted);
+        }
+        self.live
+            .retain(|_, e| !(e.reference == reference && e.state.lapsed(now)));
+        if self.live.values().any(|e| e.reference == reference) {
+            return Err(Refusal::Live);
+        }
+        // An id no live lease has: at most one more try than there are of them.
+        let id = loop {
+            let id = self.next;
+            self.next = self.next.wrapping_add(1);
+            if !self.live.contains_key(&id) {
+                break id;
+            }
+        };
+        self.live.insert(
+            id,
+            Entry {
+                reference: reference.to_string(),
+                asked_as,
+                state: State::Asked,
+            },
+        );
+        Ok(id)
+    }
+
+    /// The orchestrator's answer to lease `id` at `now`: held for `lives` where given, else
+    /// refused. One to no ask the run awaits breaks the channel's contract; one after the run
+    /// released its leases is late, and goes nowhere.
+    fn answer(&mut self, id: u32, lives: Option<NonZeroU64>, now: Instant) -> Result<Answered, String> {
+        if self.released {
+            return Ok(Answered::Late);
+        }
+        let Some(entry) = self.live.get_mut(&id).filter(|e| matches!(e.state, State::Asked)) else {
+            return Err(format!("an answer of lease {id}, which no ask of the run awaits"));
+        };
+        let told = Answered::Told {
+            asked_as: entry.asked_as,
+            reference: entry.reference.clone(),
+        };
+        match lives {
+            Some(lives) => {
+                entry.state = State::Held {
+                    until: now.checked_add(Duration::from_nanos(lives.get())),
+                };
+            }
+            None => {
+                self.live.remove(&id);
+            }
+        }
+        Ok(told)
+    }
+
+    /// Every live lease released, once: how many were held and how many asked; none where
+    /// the run released them already. Every ask after is refused, the run ended.
+    fn release(&mut self) -> Option<(usize, usize)> {
+        if self.released {
+            return None;
+        }
+        self.released = true;
+        let held = self
+            .live
+            .values()
+            .filter(|e| matches!(e.state, State::Held { .. }))
+            .count();
+        let asked = self.live.len().saturating_sub(held);
+        self.live.clear();
+        Some((held, asked))
+    }
+}
+
+/// What the run host says of its leases on its diagnostics (D242): each ask, answer and the
+/// run's release, by its credential's reference and its lease's id, and never a value.
+enum Audit<'a> {
+    Asked {
+        reference: &'a str,
+        id: u32,
+    },
+    Held {
+        reference: &'a str,
+        id: u32,
+        lives: Duration,
+    },
+    Refused {
+        reference: &'a str,
+        id: Option<u32>,
+        refusal: &'a Refusal,
+    },
+    Released {
+        held: usize,
+        asked: usize,
+    },
+}
+
+impl std::fmt::Display for Audit<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Audit::Asked { reference, id } => write!(f, "credential {reference}: lease {id} asked"),
+            Audit::Held { reference, id, lives } => {
+                write!(f, "credential {reference}: lease {id} held for {lives:?}")
+            }
+            Audit::Refused {
+                reference,
+                id: Some(id),
+                refusal,
+            } => write!(f, "credential {reference}: lease {id} refused: {refusal}"),
+            Audit::Refused {
+                reference,
+                id: None,
+                refusal,
+            } => write!(f, "credential {reference}: an ask refused here: {refusal}"),
+            Audit::Released { held, asked } => {
+                write!(f, "its leases released as it ends: {held} held, {asked} asked")
+            }
+        }
+    }
+}
+
+/// A run's leases, as its host relays them (D242): its ledger, and its network process's
+/// control, on which that process's asks come and their answers go, one whole message at a
+/// time.
+struct Leasing<'a> {
+    ledger: Mutex<Ledger>,
+    net: &'a crate::netproc::Control,
+    sending: Mutex<()>,
+}
+
+impl Leasing<'_> {
+    /// Tells the network process its ask `asked_as`'s answer: the value and its lease's
+    /// life, or why not. The message's copy of a value is wiped once sent.
+    fn tell(&self, asked_as: u32, answer: Result<(NonZeroU64, &[u8]), &Refusal>) -> io::Result<()> {
+        let payload = shards_net::lease::encode_answer(asked_as, answer)
+            .ok_or_else(|| io::Error::other("a lease's answer past what its lengths count"))?;
+        let _one = lock(&self.sending);
+        crate::netproc::send(self.net, kind::NET_LEASE, &payload, &[])
+    }
+}
+
+/// The network process's refusal for the orchestrator's `refusal`, each cause kept.
+fn net_refusal(refusal: &wire::LeaseRefusal) -> Refusal {
+    match refusal {
+        wire::LeaseRefusal::Denied(why) => Refusal::Denied(why.clone()),
+        wire::LeaseRefusal::KeyReplaced { asked, current } => Refusal::KeyReplaced {
+            asked: asked.clone(),
+            current: current.clone(),
+        },
+        wire::LeaseRefusal::Unavailable(why) => Refusal::Unavailable(why.clone()),
+        wire::LeaseRefusal::Ended => Refusal::Ended,
+        wire::LeaseRefusal::Lapsed => Refusal::Lapsed,
+    }
+}
+
+/// Relays the network process's asks to the orchestrator until its control closes (D242):
+/// each one the ledger takes asked as `LEASE`, by reference and never a value; the rest
+/// refused here, typed. A message that is no ask breaks that process's contract, and no
+/// more of its asks are relayed.
+fn relay(leasing: &Leasing<'_>, answers: &Answers) {
+    loop {
+        let m = match crate::netproc::recv(leasing.net) {
+            Ok(Some(m)) => m,
+            Ok(None) | Err(_) => return,
+        };
+        let ask = (m.kind == kind::NET_LEASE)
+            .then(|| shards_net::lease::decode_ask(&m.payload))
+            .flatten();
+        let Some((asked_as, reference)) = ask else {
+            say(format_args!(
+                "its network process said message kind {} where it asks leases alone: no more of its asks are relayed",
+                m.kind
+            ));
+            return;
+        };
+        let asked = lock(&leasing.ledger).ask(asked_as, reference, Instant::now());
+        match asked {
+            Ok(id) => {
+                say(format_args!("{}", Audit::Asked { reference, id }));
+                let ask = wire::LeaseAsk {
+                    id,
+                    reference: reference.to_string(),
+                };
+                // The orchestrator gone, its run ends, which releases this lease with the
+                // rest.
+                if let Ok(payload) = ask.encode() {
+                    let _ = answers.send(wire::to_client::LEASE, &[&payload]);
+                }
+            }
+            Err(refusal) => {
+                say(format_args!(
+                    "{}",
+                    Audit::Refused {
+                        reference,
+                        id: None,
+                        refusal: &refusal,
+                    }
+                ));
+                if leasing.tell(asked_as, Err(&refusal)).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// The orchestrator's answer to a lease (`LEASED`, D242), relayed to the network process
+/// that asked it: its value for its lease's life, or its refusal, typed. The decoded copy of
+/// a value is wiped as it drops (`Secret`). One to no ask the run awaits breaks the channel's
+/// contract.
+fn leased(leasing: &Leasing<'_>, payload: &[u8]) -> Result<(), String> {
+    let answer = wire::LeaseAnswer::decode(payload).map_err(|e| e.to_string())?;
+    let lives = answer.result.as_ref().ok().map(|lease| lease.lives);
+    let told = lock(&leasing.ledger).answer(answer.id, lives, Instant::now())?;
+    let Answered::Told { asked_as, reference } = told else {
+        return Ok(());
+    };
+    // A network process gone is told nothing: its values went with it.
+    let _ = match &answer.result {
+        Ok(lease) => {
+            let audit = Audit::Held {
+                reference: &reference,
+                id: answer.id,
+                lives: Duration::from_nanos(lease.lives.get()),
+            };
+            say(format_args!("{audit}"));
+            leasing.tell(asked_as, Ok((lease.lives, &lease.value.0)))
+        }
+        Err(refusal) => {
+            let refusal = net_refusal(refusal);
+            let audit = Audit::Refused {
+                reference: &reference,
+                id: Some(answer.id),
+                refusal: &refusal,
+            };
+            say(format_args!("{audit}"));
+            leasing.tell(asked_as, Err(&refusal))
+        }
+    };
+    Ok(())
+}
+
+/// Says the run's end (`ENDED`), whatever ended it; where it has leases, every one released
+/// first and the orchestrator told (`RELEASED`), which releases each its broker gave (D242).
+/// The network process holds no value past this: it wipes its own as it ends with the VM.
+fn end_run(answers: &Answers, leasing: Option<&Leasing<'_>>, end: &wire::RunEnd) {
+    if let Some((held, asked)) = leasing.and_then(|l| lock(&l.ledger).release()) {
+        say(format_args!("{}", Audit::Released { held, asked }));
+        let _ = answers.send(wire::to_client::RELEASED, &[]);
+    }
+    if let Ok(payload) = end.encode() {
+        let _ = answers.send(wire::to_client::ENDED, &[&payload]);
+    }
+}
+
 /// How the run's microVM starts (D253), as the daemon starts a run's (daemon.rs `warm_for`):
 /// from its image's template where one is saved; else booted, saving it on the way at a name of
 /// this process's alone that becomes the template once complete; or booted alone where it has
@@ -1031,6 +1351,8 @@ mod hosted {
         /// Its credential grants as its network process takes them (`NET_CREDENTIALS`), where
         /// it has any.
         credentials: Option<Vec<u8>>,
+        /// The references its grants name, the leases its network process may ask (D242).
+        granted: Vec<String>,
         dirs: Vec<(OwnedFd, bool, OsString)>,
         /// The anonymous volumes its `VOLUME`s made, removed as it ends (`--rm`'s).
         made: Vec<String>,
@@ -1355,6 +1677,7 @@ mod hosted {
             listeners: bound.listeners,
             egress,
             credentials,
+            granted: request.credentials.iter().map(|g| g.reference.clone()).collect(),
             dirs: opened.dirs,
             made,
             bridge,
@@ -1895,6 +2218,8 @@ mod hosted {
         /// of those built-ins' ends are told on, held while the run is.
         notices_due: Mutex<Option<OwnedFd>>,
         notices: Mutex<Vec<Stream>>,
+        /// Its credential leases, where it has grants (D242).
+        leasing: Option<super::Leasing<'a>>,
         /// On Windows the run's job, which each plug's share process is made in too.
         #[cfg(windows)]
         job: &'a shards_ipc::GroupJob,
@@ -2151,6 +2476,16 @@ mod hosted {
                 .link
                 .try_clone()
                 .map_err(|e| boot(format!("the VM's link: {e}")))?;
+            // Its credentials' leases (D242), where it has grants and so a network process.
+            let leasing = launched
+                .net
+                .as_ref()
+                .filter(|_| plan.credentials.is_some())
+                .map(|(_, control)| super::Leasing {
+                    ledger: Mutex::new(super::Ledger::new(plan.granted.clone())),
+                    net: control,
+                    sending: Mutex::new(()),
+                });
             let live = Live {
                 answers,
                 ends: Ends::kept_in(home),
@@ -2173,6 +2508,7 @@ mod hosted {
                 plugged: Mutex::new(HashMap::new()),
                 notices_due: Mutex::new(due),
                 notices: Mutex::new(Vec::new()),
+                leasing,
                 #[cfg(windows)]
                 job: &launched.job,
             };
@@ -2293,6 +2629,16 @@ mod hosted {
                     let _ = writeln!(io::stderr(), "shards api-run: its members' output: {e}");
                 }
             }
+            // Its network process's asks for leases (D242), relayed until that process ends
+            // with the VM. With none relayed, a flow that needs a value waits out the run.
+            if let Some(leasing) = &live.leasing {
+                let started = std::thread::Builder::new()
+                    .name("api-run leases".into())
+                    .spawn_scoped(scope, move || super::relay(leasing, live.answers));
+                if let Err(e) = started {
+                    let _ = writeln!(io::stderr(), "shards api-run: its credentials' leases: {e}");
+                }
+            }
             let following = std::thread::Builder::new()
                 .name("api-run link".into())
                 .spawn_scoped(scope, || {
@@ -2309,18 +2655,19 @@ mod hosted {
                     } else {
                         end
                     };
-                    if let Ok(payload) = end.encode() {
-                        let _ = live.answers.send(wire::to_client::ENDED, &[&payload]);
-                    }
+                    // Every end of the run's comes here, its leases released before it is said:
+                    // its own command's, `STOP`, its owner's channel closed, its VM gone.
+                    super::end_run(live.answers, live.leasing.as_ref(), &end);
+                    net_gone(live, launched);
                 });
             if following.is_err() {
                 // Nothing would say its end: the run is ended now, and said so.
                 live.stopping.store(true, std::sync::atomic::Ordering::SeqCst);
                 let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
                 lock(&live.held).take();
-                if let Ok(payload) = RunEnd::Failed("the run host could not follow its VM".into()).encode() {
-                    let _ = live.answers.send(wire::to_client::ENDED, &[&payload]);
-                }
+                let end = RunEnd::Failed("the run host could not follow its VM".into());
+                super::end_run(live.answers, live.leasing.as_ref(), &end);
+                net_gone(live, launched);
             }
             asks(live, input, &launched.vm, scope);
             // The run is over: its endpoint, and every lane on it, with it.
@@ -2328,6 +2675,18 @@ mod hosted {
             lock(&live.lanes).take();
         });
         drop(client);
+    }
+
+    /// Its VM gone and its end said, a run's network process that relays its leases (D242)
+    /// reaped as the run's end reaps it (`netproc::reap`: followed while it goes on with its
+    /// end, then ended): so that its control closes, and the relay of its asks with it,
+    /// whatever that process does.
+    fn net_gone(live: &Live<'_>, launched: &Launched) {
+        if live.leasing.is_some()
+            && let Some((child, _)) = &launched.net
+        {
+            crate::netproc::reap(child, &live.ends);
+        }
     }
 
     /// The run's agent-control endpoint (D252), bound on loopback, as step 5's endpoints bind:
@@ -2557,6 +2916,19 @@ mod hosted {
                         break;
                     };
                     if input_end(live, end).is_err() {
+                        break;
+                    }
+                }
+                // A lease the orchestrator answered (D242), relayed to the network process
+                // that asked it; the frame's copy of a value wiped as it goes. One of a run
+                // with no grants, or to no ask, breaks the channel.
+                wire::to_host::LEASED => {
+                    let payload = zeroize::Zeroizing::new(payload);
+                    let Some(leasing) = &live.leasing else {
+                        break;
+                    };
+                    if let Err(e) = super::leased(leasing, &payload) {
+                        super::say(format_args!("its orchestrator broke its channel: {e}"));
                         break;
                     }
                 }
@@ -4328,6 +4700,210 @@ mod tests {
         ] {
             assert!(held_of(room, said).is_err(), "{room:?} {said:?}");
         }
+    }
+
+    const CLAUDE: &str = "anthropic/claude-max";
+    const CHATGPT: &str = "openai/chatgpt";
+    const VALUE: &str = "sk-ant-lease-test-value";
+
+    /// The run's ledger of leases (D242, R04). Do: ask a credential no grant names; ask a
+    /// granted one, then again while it is asked and while it is held; ask it once its lease
+    /// has ended, refuse that, and answer it again; answer a lease never asked; hold one and
+    /// ask another; release the run's leases, twice; then ask, and answer the other. Expect:
+    /// the ungranted refused, nothing asked; one lease of a credential at a time; the ended
+    /// lease released by the next ask, asked anew; the refused one gone, its second answer
+    /// and the stray one refused; the release counting the held and the asked, once; and after
+    /// it, asks refused as the run ended, the answer late.
+    #[test]
+    fn a_runs_ledger_holds_one_lease_of_a_credential_and_releases_them_all() {
+        let mut ledger = Ledger::new(vec![CLAUDE.into(), CHATGPT.into()]);
+        let now = Instant::now();
+        let life = NonZeroU64::new(60_000_000_000).unwrap();
+        let told = |asked_as| Answered::Told {
+            asked_as,
+            reference: CLAUDE.into(),
+        };
+        assert_eq!(ledger.ask(1, "github/token", now), Err(Refusal::Ungranted));
+        let first = ledger.ask(1, CLAUDE, now).unwrap();
+        assert_eq!(
+            ledger.ask(2, CLAUDE, now),
+            Err(Refusal::Live),
+            "asked while asked"
+        );
+        assert_eq!(ledger.answer(first, Some(life), now), Ok(told(1)));
+        assert_eq!(ledger.ask(3, CLAUDE, now), Err(Refusal::Live), "asked while held");
+        let ended = now + Duration::from_secs(60);
+        let second = ledger.ask(4, CLAUDE, ended).unwrap();
+        assert_ne!(second, first, "a new lease, a new id");
+        assert_eq!(ledger.answer(second, None, ended), Ok(told(4)));
+        assert!(
+            ledger.answer(second, Some(life), ended).is_err(),
+            "a refused lease answered"
+        );
+        assert!(
+            ledger.answer(u32::MAX, Some(life), ended).is_err(),
+            "no ask answered"
+        );
+        let held = ledger.ask(5, CLAUDE, ended).unwrap();
+        assert_eq!(ledger.answer(held, Some(life), ended), Ok(told(5)));
+        let asked = ledger.ask(6, CHATGPT, ended).unwrap();
+        assert_eq!(ledger.release(), Some((1, 1)));
+        assert_eq!(ledger.release(), None, "released twice");
+        assert_eq!(ledger.ask(7, CHATGPT, ended), Err(Refusal::Ended));
+        assert_eq!(ledger.answer(asked, Some(life), ended), Ok(Answered::Late));
+    }
+
+    /// A run with a grant, its lease relayed just in time between its network process (its
+    /// lease client, shards_net::lease) and a simulated orchestrator, over a socket and pipes as
+    /// the run host has them (D242). Do, for a run ending as its command exits, as it is
+    /// stopped or its owner's channel closes, and as its VM fails: ask the credential on its
+    /// first use; answer it as the orchestrator, as the run host's asks take `LEASED`; end the
+    /// run; ask again; end the network process. Expect: no value before the first use; the
+    /// orchestrator asked by reference; the value held by the network process; the run's
+    /// release told before its end, every time; the later ask refused as ended, nothing asked
+    /// of the orchestrator; the relay ended with the network process's control.
+    #[cfg(unix)]
+    #[test]
+    fn a_granted_runs_lease_is_relayed_on_first_use_and_released_as_it_ends() {
+        use std::io::Read as _;
+        use std::os::unix::net::UnixStream;
+        let soon = || Instant::now() + Duration::from_secs(120);
+        for end in [
+            wire::RunEnd::Exited(0),
+            wire::RunEnd::Stopped,
+            wire::RunEnd::Failed("its VM ended".into()),
+        ] {
+            let (net, run_host) = UnixStream::pair().unwrap();
+            let (mut orchestrator, out) = std::io::pipe().unwrap();
+            let answers = Answers(Mutex::new(Box::new(out)));
+            let leasing = Leasing {
+                ledger: Mutex::new(Ledger::new(vec![CLAUDE.into()])),
+                net: &run_host,
+                sending: Mutex::new(()),
+            };
+            std::thread::scope(|s| {
+                let relaying = s.spawn(|| relay(&leasing, &answers));
+                let mut leases = shards_net::lease::Leases::new(vec![CLAUDE.into()]);
+                assert_eq!(
+                    leases.held(CLAUDE, Instant::now()),
+                    None,
+                    "a value before its use"
+                );
+                assert!(matches!(
+                    leases.ask(CLAUDE, 1, Instant::now()),
+                    shards_net::lease::Asked::Waiting
+                ));
+                for ask in leases.asks() {
+                    shards_ipc::send(&net, kind::NET_LEASE, &ask, &[]).unwrap();
+                }
+                let (which, payload) = wire::read_frame(&mut orchestrator).unwrap().unwrap();
+                assert_eq!(which, wire::to_client::LEASE);
+                let ask = wire::LeaseAsk::decode(&payload).unwrap();
+                assert_eq!(ask.reference, CLAUDE);
+                let answer = wire::LeaseAnswer {
+                    id: ask.id,
+                    result: Ok(wire::Lease {
+                        value: wire::Secret::from(VALUE),
+                        lives: NonZeroU64::new(3_600_000_000_000).unwrap(),
+                    }),
+                };
+                leased(&leasing, &answer.encode().unwrap()).unwrap();
+                let m = shards_ipc::recv_by(&net, soon()).unwrap().unwrap();
+                assert_eq!(m.kind, kind::NET_LEASE);
+                assert!(leases.answered(&m.payload, Instant::now()));
+                assert_eq!(leases.held(CLAUDE, Instant::now()), Some(VALUE.as_bytes()));
+                end_run(&answers, Some(&leasing), &end);
+                let (which, payload) = wire::read_frame(&mut orchestrator).unwrap().unwrap();
+                assert_eq!(
+                    (which, wire::released(&payload)),
+                    (wire::to_client::RELEASED, Ok(())),
+                    "{end:?}: its leases not released before its end"
+                );
+                let (which, payload) = wire::read_frame(&mut orchestrator).unwrap().unwrap();
+                assert_eq!(which, wire::to_client::ENDED);
+                assert_eq!(wire::RunEnd::decode(&payload).unwrap(), end);
+                let late = shards_net::lease::encode_ask(9, CLAUDE);
+                shards_ipc::send(&net, kind::NET_LEASE, &late, &[]).unwrap();
+                let m = shards_ipc::recv_by(&net, soon()).unwrap().unwrap();
+                assert_eq!(
+                    shards_net::lease::decode_answer(&m.payload),
+                    Some((9, Err(Refusal::Ended)))
+                );
+                drop(net);
+                relaying.join().unwrap();
+            });
+            drop(answers);
+            let mut rest = Vec::new();
+            orchestrator.read_to_end(&mut rest).unwrap();
+            assert!(rest.is_empty(), "{end:?}: told the orchestrator more: {rest:?}");
+        }
+    }
+
+    /// An answer to no ask of the run's breaks the orchestrator's channel; one of a run that
+    /// has released its leases goes nowhere (D242).
+    #[cfg(unix)]
+    #[test]
+    fn an_answer_to_no_ask_breaks_the_channel() {
+        let (_net, run_host) = std::os::unix::net::UnixStream::pair().unwrap();
+        let leasing = Leasing {
+            ledger: Mutex::new(Ledger::new(vec![CLAUDE.into()])),
+            net: &run_host,
+            sending: Mutex::new(()),
+        };
+        let answer = wire::LeaseAnswer {
+            id: 7,
+            result: Err(wire::LeaseRefusal::Ended),
+        }
+        .encode()
+        .unwrap();
+        assert!(leased(&leasing, &answer).is_err());
+        assert!(leased(&leasing, &[0, 0]).is_err());
+        assert!(lock(&leasing.ledger).release().is_some());
+        assert!(leased(&leasing, &answer).is_ok());
+    }
+
+    /// What the run host says of its leases names each by its credential's reference and its
+    /// lease's id, and never a value: none is given it (D242).
+    #[test]
+    fn the_audit_names_leases_never_their_values() {
+        let denied = Refusal::Denied("no such secret".into());
+        let lines = [
+            Audit::Asked {
+                reference: CLAUDE,
+                id: 3,
+            }
+            .to_string(),
+            Audit::Held {
+                reference: CLAUDE,
+                id: 3,
+                lives: Duration::from_secs(3600),
+            }
+            .to_string(),
+            Audit::Refused {
+                reference: CLAUDE,
+                id: Some(4),
+                refusal: &denied,
+            }
+            .to_string(),
+            Audit::Refused {
+                reference: "github/token",
+                id: None,
+                refusal: &Refusal::Ungranted,
+            }
+            .to_string(),
+            Audit::Released { held: 1, asked: 2 }.to_string(),
+        ];
+        assert_eq!(
+            lines,
+            [
+                "credential anthropic/claude-max: lease 3 asked",
+                "credential anthropic/claude-max: lease 3 held for 3600s",
+                "credential anthropic/claude-max: lease 4 refused: its broker leases the run none of it: no such secret",
+                "credential github/token: an ask refused here: no grant of the run names it",
+                "its leases released as it ends: 1 held, 2 asked",
+            ]
+        );
+        assert!(lines.iter().all(|l| !l.contains(VALUE)));
     }
 
     /// D251: the run's socket grant is held as shards-api holds it, as init holds it again:

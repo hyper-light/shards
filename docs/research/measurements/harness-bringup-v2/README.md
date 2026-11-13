@@ -278,7 +278,7 @@ alone. The harness would still want a writable home of its own for its state.
 | R09 | Each pass is a live run. S1 was corrected before any run, not reproduced (said so above). The leak check's alignment gap was found by a planted-piece test, fixed and tested again. |
 | R10 | The harness, records and self-tests are here. No production guard changed. The cases' guards are the kernel's record of `ls` in the harness's domain, and both names in the tool's output and in the answer. Their removal mutation (a prompt asking for no tool must fail) costs a real turn and was not run (owed). |
 | R11 | Verified: Linux x86_64 on KVM only. Unverified: macOS arm64 (HVF), Windows (WHP), Linux arm64. Both publishers ship arm64 builds, which fetch.sh does not fetch yet. |
-| R12 | Nothing platform-specific in shards. The script's private store is Linux's per-user tmpfs; another host needs another. |
+| R12 | Nothing platform-specific in shards. The script's private store is Linux's per-user tmpfs; another host needs another. Since the review ([review.md](review.md), F9) it runs on macOS too, its copy in macOS's per-user temporary directory, and writes a refresh back in one swap; Windows is refused, saying why. |
 | R15 | Implementer scope: two single-VM turns and light checks. The person's rule of 2026-11-12, relayed by the coordinator, has the implementer merge its work to main; the checks it leaves owed are below. |
 | R16 | adacachy keeps `~/.cache/shards-harness-bringup-v2`: v1's verified binaries, this build's target, and the work directories with the raw Claude stream (for the redaction's check). v1's 6.9 GB there was removed. Nothing was built on this Mac. |
 

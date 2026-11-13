@@ -18,6 +18,8 @@ shards-ipc = { path = "../ipc" }
 # The run's CA (D242): rcgen over AWS-LC, as shards-server makes its own (crates/server).
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs"] }
 time = { version = "0.3.55", default-features = false }
+# A credential's value wiped as its lease ends (D242), as shards wipes its own (google.rs).
+zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
