@@ -272,6 +272,13 @@ pub trait ImageGuest: Send + Sync {
         rate: Option<std::num::NonZeroU64>,
         patience: Duration,
     ) -> Result<Option<std::num::NonZeroU64>, ImageRefusal>;
+    /// The period the run's VM's governor holds a [`rate`](Self::rate) over (D191, D247):
+    /// each period the run's vCPUs together use at most the rate's share of it, held out of
+    /// their guest once it is spent until the period ends. As its run host said it as the run
+    /// started, the period its own build's hold uses, so that an orchestrator derives its
+    /// window from the run's own and copies no number: a period shards derives later (D191)
+    /// reaches it as it is.
+    fn rate_period(&self) -> Duration;
     /// Member `member`'s own terminal ([`MemberSpec::terminal`]) sized to `rows` by `cols`
     /// (plan step 6, D244), as a terminal's window is: its run's init sets the size, and the
     /// kernel tells the terminal's foreground process group SIGWINCH where it changed; a 0 in

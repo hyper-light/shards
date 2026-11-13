@@ -14,15 +14,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use super::HOLD_PERIOD as PERIOD;
 use super::MILLI_PER_CPU;
 use super::group::GroupCpu;
 use crate::platform::ThreadClock;
 use crate::sync::{lock, wait, wait_timeout};
 
-/// A period: CFS bandwidth control's default, `cpu.max`'s 100000 µs
-/// (kernel/sched/sched.h l. 445-447, `default_bw_period_us`, Linux 1590cf03), which Docker's
-/// `--cpus` is a quota of.
-pub(super) const PERIOD: Duration = Duration::from_millis(100);
 /// The least it waits between reads, however little of the share is left: as closely as
 /// CFS bandwidth control holds a cgroup's threads to its quota, 1 ms. CFS takes no quota
 /// or period below it (kernel/sched/core.c l. 10054, `min_bw_quota_period_us`), and leaves

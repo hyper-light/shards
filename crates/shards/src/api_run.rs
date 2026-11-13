@@ -1990,6 +1990,9 @@ mod hosted {
                     address: endpoint.address,
                     vm: endpoint.fingerprint,
                 }),
+                // The period its VM's governor holds a rate over: this build's hold's, which
+                // the VM process it carries holds by (D36, D247).
+                rate_period: shards_vmm::vm::hold_period(),
             }
             .encode()
             .map_err(|e| boot(e.to_string()))?;

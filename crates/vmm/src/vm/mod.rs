@@ -202,6 +202,18 @@ pub use guest_time::{GuestTimes, VcpuTime};
 /// CPU resource units), and as Hex charges and caps a microVM (`hex_api::MIN_CPU_MILLI`). A
 /// unit, not a tuning: a daemon's whole CPUs are this many of it (D191, D247).
 pub const MILLI_PER_CPU: u64 = 1000;
+/// The period a machine's hold holds its vCPUs to their rate over (D191, D247): CFS
+/// bandwidth control's default, `cpu.max`'s 100000 µs (kernel/sched/sched.h l. 445-447,
+/// `default_bw_period_us`, Linux 1590cf03), which Docker's `--cpus` is a quota of. Its
+/// derivation from what the governor resolves is decided, waiting on a measurement (D191).
+const HOLD_PERIOD: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The period this build's hold holds a machine's vCPUs to their rate over: what a run's
+/// host tells its orchestrator (D247), which derives its own window from it rather than
+/// copying a number.
+pub fn hold_period() -> std::time::Duration {
+    HOLD_PERIOD
+}
 #[cfg(any(hv, test))]
 mod hold;
 pub mod live;
