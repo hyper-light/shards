@@ -142,8 +142,8 @@ struct Hold {
     runnable: bool,
     /// It is stopped (a stop signal's, a debugger's, a suspension's) or frozen.
     stopped: bool,
-    /// Linux: the time its threads have waited for a CPU.
-    #[cfg(target_os = "linux")]
+    /// The scheduler's own count of its threads' wait for a CPU.
+    #[cfg(unix)]
     queued: Queued,
     /// Linux: the time its cgroup's tasks have waited for a CPU or stalled on memory, in
     /// microseconds (cpu.pressure's and memory.pressure's `some` totals, summed), read only
@@ -153,46 +153,51 @@ struct Hold {
     pressure: Option<u64>,
 }
 
-/// Linux: what a look read of a process's threads' wait for a CPU.
-#[cfg(target_os = "linux")]
+/// What a look read of a process's threads' wait for a CPU, as its scheduler counts it: only
+/// its growth is read, and only of a look that found it ran no CPU.
+#[cfg(unix)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Queued {
-    /// None read: the kernel keeps no schedstat (built without CONFIG_SCHED_INFO), or keeps
-    /// it as zeros (fs/proc/base.c, where `sched_info_on()` is false), or the process went.
-    /// Its looks are judged by its CPU and its runnable sample alone.
+    /// None read: (Linux) the kernel keeps no schedstat (built without CONFIG_SCHED_INFO), or
+    /// keeps it as zeros (fs/proc/base.c, where `sched_info_on()` is false); or the process
+    /// went, or could not be read. Its looks are judged by its CPU and its runnable sample
+    /// alone.
     #[default]
     Unread,
-    /// Its threads' run-queue wait, in nanoseconds, summed: each one's
+    /// Linux: its threads' run-queue wait, in nanoseconds, summed: each one's
     /// `/proc/<pid>/task/<tid>/schedstat` second field, `run_delay`
-    /// (Documentation/scheduler/sched-stats.rst).
+    /// (Documentation/scheduler/sched-stats.rst). macOS: the time its threads have been
+    /// runnable, running or waiting for a CPU, in Mach absolute-time units
+    /// (proc_pid_rusage(2)'s RUSAGE_INFO_V4 `ri_runnable_time`, sys/resource.h): grown over a
+    /// time it ran no CPU, a wait for one.
     Waited(u64),
 }
 
 impl Hold {
     /// Whether its host held it since the look that saw `before`: a thread of it runnable,
-    /// or waiting on its host's memory, now; or (Linux) its threads' wait for a CPU grown
-    /// since, or its own cgroup's pressure.
+    /// or waiting on its host's memory, now; or its threads' wait for a CPU grown since; or
+    /// (Linux) its own cgroup's pressure.
     ///
     /// The kernel adds a thread's wait to its `run_delay` as it reaches a CPU or leaves the
     /// queue (kernel/sched/stats.h `sched_info_arrive`, `sched_info_dequeue`): a thread that
     /// waited the whole time between two looks shows by its runnable state instead. A thread
     /// gone since takes its wait out of the sum, which then shows growth only past it.
     fn held_since(&self, before: &Hold) -> bool {
-        #[cfg(target_os = "linux")]
-        let waited = {
-            let queued = matches!(
-                (before.queued, self.queued),
-                (Queued::Waited(b), Queued::Waited(n)) if n > b
-            );
-            let pressed = matches!((before.pressure, self.pressure), (Some(b), Some(n)) if n > b);
-            queued || pressed
-        };
-        #[cfg(not(target_os = "linux"))]
-        let waited = {
+        #[cfg(unix)]
+        let queued = matches!(
+            (before.queued, self.queued),
+            (Queued::Waited(b), Queued::Waited(n)) if n > b
+        );
+        #[cfg(windows)]
+        let queued = {
             let _ = before;
             false
         };
-        self.runnable || waited
+        #[cfg(target_os = "linux")]
+        let pressed = matches!((before.pressure, self.pressure), (Some(b), Some(n)) if n > b);
+        #[cfg(not(target_os = "linux"))]
+        let pressed = false;
+        self.runnable || queued || pressed
     }
 }
 
@@ -628,7 +633,7 @@ mod os {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 mod os {
-    use super::{Hold, Look};
+    use super::{Hold, Look, Queued};
     use crate::{ProcessFailure, ProcessOperation};
     use std::time::Duration;
 
@@ -668,13 +673,16 @@ mod os {
     /// "debugging or suspension"); a thread of it runnable where one's run state is
     /// `TH_STATE_RUNNING` (running, or waiting for a CPU) or `TH_STATE_UNINTERRUPTIBLE` (a wait
     /// in the kernel, a page-in among them, which macOS keeps no pressure record of), as
-    /// `PROC_PIDTHREADINFO` reports each (sys/proc_info.h, mach/thread_info.h). What it cannot
-    /// read shows nothing.
+    /// `PROC_PIDTHREADINFO` reports each (sys/proc_info.h, mach/thread_info.h); and its
+    /// threads' time runnable ([`Queued`]), which grows over a time it ran no CPU only while
+    /// one waited for a CPU, as a thread its host holds through a look's sample does. What it
+    /// cannot read shows nothing.
     pub(super) fn hold(pid: u32) -> Hold {
         let Ok(id) = libc::c_int::try_from(pid) else {
             return Hold::default();
         };
         Hold {
+            queued: runnable_time(id).map_or(Queued::Unread, Queued::Waited),
             runnable: threads(id).is_some_and(|handles| {
                 handles.iter().any(|&handle| {
                     run_state(id, handle).is_some_and(|state| {
@@ -684,6 +692,17 @@ mod os {
             }),
             stopped: status(id) == Some(libc::SSTOP),
         }
+    }
+
+    /// The time process `id`'s threads have been runnable, running or waiting for a CPU
+    /// (`ri_runnable_time`, Mach absolute-time units); none where it could not be read.
+    fn runnable_time(id: libc::c_int) -> Option<u64> {
+        // SAFETY: a rusage_info_v4, plain data, for proc_pid_rusage to fill.
+        let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+        // SAFETY: proc_pid_rusage(3) of `id` into a rusage_info_v4 of ours, which
+        // RUSAGE_INFO_V4 names.
+        let code = unsafe { libc::proc_pid_rusage(id, libc::RUSAGE_INFO_V4, (&raw mut info).cast()) };
+        (code == 0).then_some(info.ri_runnable_time)
     }
 
     /// Process `id`'s BSD status (`pbi_status`); none where it could not be read.
@@ -1332,7 +1351,7 @@ mod tests {
         let hold = |runnable, stopped| Hold {
             runnable,
             stopped,
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             queued: Queued::Unread,
             #[cfg(target_os = "linux")]
             pressure: None,
@@ -1361,6 +1380,9 @@ mod tests {
                 Found::Still,
                 "no total before"
             );
+        }
+        #[cfg(unix)]
+        {
             let waited = |ns| Hold {
                 queued: Queued::Waited(ns),
                 ..Hold::default()
@@ -1455,6 +1477,39 @@ mod tests {
         sleeper.wait().unwrap();
         assert!(stopped, "{watch:?}");
         assert_eq!(found, Found::Still, "{watch:?}");
+    }
+
+    /// macOS's count of a process's threads' time runnable is read (#77): a spinner's grows,
+    /// running counting, and a sleeper's does not, so that a look that finds it ran no CPU
+    /// reads its growth as a wait for a CPU. The spinner read until seen so; the sleeper over a
+    /// pause, its own CPU the witness of a wake meanwhile.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_processs_runnable_time_is_read() {
+        let waited = |followed: &Followed| match followed.hold().queued {
+            Queued::Waited(ticks) => ticks,
+            Queued::Unread => panic!("unread: {:?}", followed.hold()),
+        };
+        let mut child = this_binary("spin");
+        let spinner = Followed::of_pid(child.id()).unwrap().unwrap();
+        let first = waited(&spinner);
+        while waited(&spinner) <= first {
+            std::thread::yield_now();
+        }
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        let mut sleeper = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        let followed = Followed::of_pid(sleeper.id()).unwrap().unwrap();
+        while followed.hold().runnable {
+            std::thread::yield_now();
+        }
+        let asleep = waited(&followed);
+        let cpu = os::cpu(sleeper.id()).unwrap().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let (after, ran) = (waited(&followed), os::cpu(sleeper.id()).unwrap().unwrap());
+        sleeper.kill().unwrap();
+        sleeper.wait().unwrap();
+        assert!(after == asleep || ran > cpu, "{asleep} {after} {cpu:?} {ran:?}");
     }
 
     /// A process whose thread spins is seen runnable: running, or waiting for a CPU (ROOT's
