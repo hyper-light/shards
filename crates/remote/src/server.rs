@@ -70,10 +70,9 @@ pub trait Host: Send + Sync {
     fn invited(&self) -> usize;
     /// How many connections the machine holds at once, its own resources' bound (at the daemon,
     /// the process's descriptors, as each connection served may hold a command and its stdio):
-    /// handshakes of keys not yet known, past which the oldest unanswered is given up for the
-    /// newest (the person's ruling, 2026-11-13), and connections of every kind, past which a
-    /// newcomer is refused and takes the place of a holder that does not answer the PING it was
-    /// sent within its probe timeout (ROOT's ruling on #72, `net::Driver::hold_connections`).
+    /// handshakes and established connections alike, past which a newcomer is refused and takes
+    /// the place of a holder, its handshake in flight or ended, that does not answer the PING it
+    /// was sent within its probe timeout (ROOT's rulings on #72, `net::Driver::hold_connections`).
     fn handshakes(&self) -> usize;
     /// A peer at `at` went `unheard` past the window its path has shown, a send of the daemon's
     /// unanswered (`net::RanOut::Stalled`): told once a stall, for the machine's log, as its
@@ -995,7 +994,7 @@ pub fn serve<H: Host>(
     ready: impl FnOnce(SocketAddr, Stopper),
 ) -> Result<(), Error> {
     let config = tls::server(identity)?;
-    let slots = host.handshakes();
+    let places = host.handshakes();
     // Each start's worker is the scope's, the host shared with them: the listener returns once
     // every start under way as it stops has ended, each hung up where none relays it.
     std::thread::scope(|starts| {
@@ -1008,8 +1007,7 @@ pub fn serve<H: Host>(
         // A client is not known before its handshake says whose key it holds: each is held as
         // a peer never reached, its handshake waited for as long as its probing goes on.
         let (mut driver, sender) = Driver::bind(at, Some(config), server, tls::Known::Never)?;
-        driver.hold_handshakes(slots);
-        driver.hold_connections(slots);
+        driver.hold_connections(places);
         driver.handler_mut().sender = Some(sender.try_clone()?);
         ready(driver.local()?, Stopper(sender));
         driver.run()

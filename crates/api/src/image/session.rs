@@ -3119,11 +3119,9 @@ mod tests {
 
     /// How long a stand-in's boot may take before it is refused, so that a stop that is not
     /// heard fails its test rather than holding it: the test's bound alone.
-    #[cfg(unix)]
     const BOOT_BOUND: Duration = Duration::from_secs(10);
 
     /// An image spec for run host `binary`, its environment `env`, with nothing to run.
-    #[cfg(unix)]
     fn stand_in_spec(binary: &Path, env: Vec<(OsString, OsString)>) -> ImageSpec {
         ImageSpec {
             image: "stand-in:local".into(),
@@ -3270,5 +3268,217 @@ mod tests {
             "after {took:?}"
         );
         assert!(took < BOOT_BOUND, "the stop took {took:?}");
+    }
+
+    /// What this test binary is, started with this variable: the stand-in run host of a
+    /// boot that never starts (`host`), or the VM that host starts (`vm`).
+    #[cfg(windows)]
+    const STAND_IN: &str = "SHARDS_API_STAND_IN";
+
+    /// The named pipe a stand-in run host tells its own pid and its VM's on.
+    #[cfg(windows)]
+    const STAND_IN_TELLS: &str = "SHARDS_API_STAND_IN_TELLS";
+
+    /// Run by the C runtime as this test binary starts, before its harness: the MSVC CRT
+    /// calls each function pointer of the `.CRT$XCU` section as it initializes ("CRT
+    /// Initialization", Microsoft Learn), as the `ctor` crate does. A run host is started as
+    /// `BINARY api-run`, which the harness would read as a filter matching no test: so a
+    /// stand-in is chosen here, by its variable, and never returns.
+    #[cfg(windows)]
+    #[used]
+    #[unsafe(link_section = ".CRT$XCU")]
+    static STAND_IN_START: extern "C" fn() = stand_in;
+
+    #[cfg(windows)]
+    extern "C" fn stand_in() {
+        match std::env::var_os(STAND_IN).as_deref().and_then(OsStr::to_str) {
+            Some("host") => stand_in_host(),
+            Some("vm") => stand_by(),
+            _ => {}
+        }
+    }
+
+    /// Waits until this process is ended: on itself, which signals only as it ends.
+    #[cfg(windows)]
+    fn stand_by() -> ! {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, INFINITE, WaitForSingleObject};
+        loop {
+            // SAFETY: this process's pseudo-handle, which needs no closing.
+            unsafe { WaitForSingleObject(GetCurrentProcess(), INFINITE) };
+        }
+    }
+
+    /// The stand-in run host of a boot that never starts, as `shards api-run` is on Windows
+    /// (api_run.rs `launch`): a job ending with this process, and a stand-in VM made in it
+    /// holding this process's stderr, as a VM, network and share process do; it tells its
+    /// own pid and its VM's on `STAND_IN_TELLS`, reads its orchestrator's asks to their end,
+    /// and never answers.
+    #[cfg(windows)]
+    fn stand_in_host() -> ! {
+        use std::os::windows::io::AsHandle as _;
+        let job = shards_ipc::GroupJob::ending_with_this_process().unwrap();
+        let me = std::env::current_exe().unwrap();
+        let stderr = io::stderr();
+        let vm = shards_ipc::spawn_detached(
+            Some(&job),
+            &me,
+            &[],
+            &[(stderr.as_handle(), 2)],
+            &[(STAND_IN, OsStr::new("vm"))],
+        )
+        .unwrap();
+        let tells = std::env::var_os(STAND_IN_TELLS).unwrap();
+        let mut told = std::fs::OpenOptions::new().write(true).open(tells).unwrap();
+        writeln!(told, "{} {}", std::process::id(), vm.id()).unwrap();
+        drop(told);
+        let _ = io::copy(&mut io::stdin().lock(), &mut io::sink());
+        // Both held for as long as this process runs: its job's last handle, which ends the
+        // VM as this process ends.
+        let _held = (job, vm);
+        stand_by()
+    }
+
+    /// A process's handle, by its pid, that waits on its end; terminated as it drops unless
+    /// seen ended: a stand-in a failed stop left running.
+    #[cfg(windows)]
+    struct Held(std::os::windows::io::OwnedHandle, bool);
+
+    #[cfg(windows)]
+    impl Held {
+        fn open(pid: u32) -> Held {
+            use std::os::windows::io::FromRawHandle as _;
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+            };
+            // SAFETY: a process handle of the rights asked, owned from here on.
+            let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+            assert!(!raw.is_null(), "process {pid}: {}", io::Error::last_os_error());
+            // SAFETY: the handle just opened, which nothing else owns.
+            Held(
+                unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) },
+                false,
+            )
+        }
+
+        /// Whether it has ended, asked once: its handle signalled.
+        fn ended(&mut self) -> bool {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+            use windows_sys::Win32::System::Threading::WaitForSingleObject;
+            // SAFETY: a process handle this holds, not waited on past this moment.
+            self.1 = unsafe { WaitForSingleObject(self.0.as_raw_handle(), 0) } == WAIT_OBJECT_0;
+            self.1
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for Held {
+        fn drop(&mut self) {
+            use std::os::windows::io::AsRawHandle as _;
+            if !self.1 {
+                // SAFETY: a process handle with PROCESS_TERMINATE, which this holds.
+                unsafe { windows_sys::Win32::System::Threading::TerminateProcess(self.0.as_raw_handle(), 1) };
+            }
+        }
+    }
+
+    /// A named pipe's server end at `name`, inbound, one instance.
+    #[cfg(windows)]
+    fn pipe_server(name: &str) -> std::fs::File {
+        use std::os::windows::io::FromRawHandle as _;
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_INBOUND;
+        use windows_sys::Win32::System::Pipes::{
+            CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+        };
+        let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
+        // SAFETY: a NUL-terminated name; a pipe of default security, owned below.
+        let raw = unsafe {
+            CreateNamedPipeW(
+                wide.as_ptr(),
+                PIPE_ACCESS_INBOUND,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                1,
+                0,
+                0,
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert_ne!(
+            raw,
+            INVALID_HANDLE_VALUE,
+            "{name}: {}",
+            io::Error::last_os_error()
+        );
+        // SAFETY: the pipe just made, which nothing else owns.
+        unsafe { std::fs::File::from_raw_handle(raw) }
+    }
+
+    /// What the first client of `server` writes, to its close: none where it writes nothing.
+    #[cfg(windows)]
+    fn pipe_read(server: &mut std::fs::File) -> String {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, GetLastError};
+        use windows_sys::Win32::System::Pipes::ConnectNamedPipe;
+        // SAFETY: a pipe's server end this holds, waited on until a client opens it.
+        let connected = unsafe { ConnectNamedPipe(server.as_raw_handle(), std::ptr::null_mut()) } != 0;
+        // SAFETY: reads this thread's last error, which the call above set.
+        let connected = connected || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
+        assert!(connected, "{}", io::Error::last_os_error());
+        let mut said = String::new();
+        server.read_to_string(&mut said).unwrap();
+        said
+    }
+
+    /// The Windows twin of `a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started`:
+    /// do boot through a run host that starts a VM in its job and never says the run
+    /// started, and stop the boot once both run. Expect: the boot returns `Ended(Stopped)`,
+    /// well within its bound, the run host's handle signalled and the VM's with it (its
+    /// job's last handle closed as the host was ended), no orphan left.
+    #[cfg(windows)]
+    #[test]
+    fn a_stop_mid_boot_ends_the_boot_its_host_and_the_vm_of_its_job() {
+        let tells = format!(r"\\.\pipe\shards-api-bstop-{}", std::process::id());
+        let mut server = pipe_server(&tells);
+        let spec = stand_in_spec(
+            &std::env::current_exe().unwrap(),
+            vec![
+                (STAND_IN.into(), "host".into()),
+                (STAND_IN_TELLS.into(), tells.clone().into()),
+            ],
+        );
+        let request = super::super::request(&spec).unwrap();
+        let stop = super::super::BootStop::new();
+        std::thread::scope(|s| {
+            let booting = s.spawn(|| {
+                let booted = Session::start(&spec, &request, BOOT_BOUND, &stop).map(drop);
+                // A boot that ended before its host told anything ends the test's wait:
+                // opened and closed, the pipe says nothing. Refused where its host told.
+                let _ = std::fs::OpenOptions::new().write(true).open(&tells);
+                booted
+            });
+            let said = pipe_read(&mut server);
+            let pids: Vec<u32> = said.split_whitespace().map(|p| p.parse().unwrap()).collect();
+            let [host, vm] = pids[..] else {
+                panic!("its host told no pids: {said:?}; the boot: {:?}", booting.join());
+            };
+            // Each opened while it runs, its host blocked on its asks and its VM on itself.
+            let (mut host, mut vm) = (Held::open(host), Held::open(vm));
+            let stopped_at = Instant::now();
+            stop.stop();
+            let booted = booting.join().unwrap();
+            let took = stopped_at.elapsed();
+            let (host_gone, vm_gone) = (host.ended(), vm.ended());
+            assert_eq!(
+                booted,
+                Err(ImageRefusal::Ended(RunEnd::Stopped)),
+                "after {took:?}"
+            );
+            assert!(took < BOOT_BOUND, "the stop took {took:?}");
+            assert!(host_gone, "the run host outlived its boot's stop");
+            assert!(vm_gone, "the VM in its run host's job outlived the boot's stop");
+        });
+        assert!(stop.is_stopped());
     }
 }

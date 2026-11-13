@@ -7984,13 +7984,13 @@ fn usage_mistakes_are_answered_without_a_daemon() {
 /// that waits for the gate to open before it becomes this build's. Windows has no exec,
 /// and a VM process opens nothing but what its daemon opens for it (D30): there the gate
 /// is a copy of the init its runs boot, held open sharing nothing under an oplock
-/// ([`Oplocked`]), so that the daemon's open of it for a VM waits until the gate opens.
+/// ([`common::Oplocked`]), so that the daemon's open of it for a VM waits until the gate opens.
 /// Not the kernel's: the daemon reads that as it makes the run, before its microVM, for
 /// the version its seccomp profile is held to (`guest::version_of`).
 struct Gated {
     // Before the directory: the gate opens before its init is removed.
     #[cfg(windows)]
-    held: std::cell::RefCell<Option<Oplocked>>,
+    held: std::cell::RefCell<Option<common::Oplocked>>,
     dir: TempDir,
 }
 
@@ -8021,7 +8021,7 @@ impl Gated {
     fn new(name: &str) -> Gated {
         let dir = TempDir::new(name);
         std::fs::copy(guest_init(), dir.join("init")).unwrap();
-        let held = Oplocked::new(&dir.join("init"));
+        let held = common::Oplocked::new(&dir.join("init"), TIMEOUT);
         Gated {
             held: std::cell::RefCell::new(Some(held)),
             dir,
@@ -8095,133 +8095,6 @@ impl Gated {
     /// `shards ARGS` from this directory in `home`.
     fn shards(&self, home: &Path, args: &[&str]) -> Run {
         self.start(home, args).finish()
-    }
-}
-
-/// A file held open sharing nothing under a Read-Handle oplock (FSCTL_REQUEST_OPLOCK): an
-/// open of it by another handle that reads, writes or deletes it, which its sharing
-/// refuses, breaks the oplock and waits for the break to be acknowledged, which closing
-/// the oplock's handle does as this drops. The wait has no end: "the system would wait
-/// forever to receive the acknowledgment as there's no timeout" ("Breaking Oplocks"); "the
-/// open operation is blocked and the Read-Handle oplock breaks. The application that owns
-/// the oplock may acknowledge the break by closing the handle" ("Types of Opportunistic
-/// Locks"). An open that reads its attributes alone shares nothing and waits for nothing.
-#[cfg(windows)]
-struct Oplocked {
-    file: Option<std::fs::File>,
-    // Written as the request completes, which may be after it is made: boxed, not to move,
-    // and kept until it has.
-    overlapped: Box<windows_sys::Win32::System::IO::OVERLAPPED>,
-    _answer: Box<windows_sys::Win32::System::Ioctl::REQUEST_OPLOCK_OUTPUT_BUFFER>,
-    _event: std::os::windows::io::OwnedHandle,
-}
-
-#[cfg(windows)]
-impl Oplocked {
-    fn new(path: &Path) -> Oplocked {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-        use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, ERROR_SHARING_VIOLATION};
-        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
-        use windows_sys::Win32::System::IO::{DeviceIoControl, OVERLAPPED};
-        use windows_sys::Win32::System::Ioctl::{
-            FSCTL_REQUEST_OPLOCK, OPLOCK_LEVEL_CACHE_HANDLE, OPLOCK_LEVEL_CACHE_READ,
-            REQUEST_OPLOCK_CURRENT_VERSION, REQUEST_OPLOCK_INPUT_BUFFER, REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
-            REQUEST_OPLOCK_OUTPUT_BUFFER,
-        };
-        use windows_sys::Win32::System::Threading::CreateEventW;
-        // A handle that shares nothing is refused while another reads the file: Defender's,
-        // scanning the copy just written, is waited out.
-        let deadline = Instant::now() + TIMEOUT;
-        let file = loop {
-            match std::fs::OpenOptions::new()
-                .read(true)
-                .share_mode(0)
-                .custom_flags(FILE_FLAG_OVERLAPPED)
-                .open(path)
-            {
-                Ok(file) => break file,
-                Err(e)
-                    if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION.cast_signed())
-                        && Instant::now() < deadline =>
-                {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(e) => panic!("{}: {e}", path.display()),
-            }
-        };
-        // SAFETY: an unnamed manual-reset event, owned from here.
-        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
-        assert!(!event.is_null(), "an event: {}", std::io::Error::last_os_error());
-        // SAFETY: the event just made, this alone holds.
-        let event = unsafe { OwnedHandle::from_raw_handle(event) };
-        // SAFETY: OVERLAPPED and REQUEST_OPLOCK_OUTPUT_BUFFER are plain data, zeroes valid
-        // values of them.
-        let (mut overlapped, mut answer): (Box<OVERLAPPED>, Box<REQUEST_OPLOCK_OUTPUT_BUFFER>) =
-            unsafe { (Box::new(std::mem::zeroed()), Box::new(std::mem::zeroed())) };
-        overlapped.hEvent = event.as_raw_handle();
-        let version = u16::try_from(REQUEST_OPLOCK_CURRENT_VERSION).unwrap();
-        answer.StructureVersion = version;
-        answer.StructureLength = u16::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>()).unwrap();
-        let asked = REQUEST_OPLOCK_INPUT_BUFFER {
-            StructureVersion: version,
-            StructureLength: u16::try_from(size_of::<REQUEST_OPLOCK_INPUT_BUFFER>()).unwrap(),
-            RequestedOplockLevel: OPLOCK_LEVEL_CACHE_READ | OPLOCK_LEVEL_CACHE_HANDLE,
-            Flags: REQUEST_OPLOCK_INPUT_FLAG_REQUEST,
-        };
-        // SAFETY: the request is copied in as it is made (METHOD_BUFFERED), and its answer
-        // and OVERLAPPED live until it has completed, which dropping this waits for.
-        let done = unsafe {
-            DeviceIoControl(
-                file.as_raw_handle(),
-                FSCTL_REQUEST_OPLOCK,
-                (&raw const asked).cast(),
-                u32::try_from(size_of::<REQUEST_OPLOCK_INPUT_BUFFER>()).unwrap(),
-                (&raw mut *answer).cast(),
-                u32::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>()).unwrap(),
-                std::ptr::null_mut(),
-                &raw mut *overlapped,
-            )
-        };
-        // Granted, the request pends until the oplock breaks.
-        let e = std::io::Error::last_os_error();
-        assert!(
-            done == 0 && e.raw_os_error() == Some(ERROR_IO_PENDING.cast_signed()),
-            "an oplock on {}: {e}",
-            path.display()
-        );
-        Oplocked {
-            file: Some(file),
-            overlapped,
-            _answer: answer,
-            _event: event,
-        }
-    }
-}
-
-#[cfg(windows)]
-impl Drop for Oplocked {
-    fn drop(&mut self) {
-        use std::os::windows::io::AsRawHandle as _;
-        use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult};
-        let Some(file) = self.file.take() else {
-            return;
-        };
-        // The request, still pending or completed by a break, ended and waited for before
-        // its buffers go; then the handle is closed, which acknowledges a break, and an open
-        // that waits on it goes on.
-        // SAFETY: the request made on this handle with this OVERLAPPED.
-        unsafe {
-            CancelIoEx(file.as_raw_handle(), &raw const *self.overlapped);
-            let mut moved = 0;
-            GetOverlappedResult(
-                file.as_raw_handle(),
-                &raw const *self.overlapped,
-                &raw mut moved,
-                1,
-            );
-        }
-        drop(file);
     }
 }
 
