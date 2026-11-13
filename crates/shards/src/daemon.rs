@@ -1390,6 +1390,9 @@ struct Daemon<D: Disk = Real> {
     groups: groups::Groups,
     /// When each running microVM's health check is next due (health.rs).
     checks: health::Checks,
+    /// What its microVMs' answers to its own execs have taught it, each kind apart, which its
+    /// waits on them while they run are judged by ([`health::Wait::WhileRuns`]).
+    answers: health::Answers,
     /// Runs waiting for a VM booted for them, by number: told as the daemon stops.
     booting: Mutex<HashMap<u64, mpsc::Sender<Result<Ready, String>>>>,
     next_cold: AtomicU64,
@@ -2168,6 +2171,7 @@ impl<D: Disk> Daemon<D> {
             #[cfg(any(target_os = "macos", windows))]
             groups: groups::Groups::default(),
             checks: health::Checks::default(),
+            answers: health::Answers::default(),
             booting: Mutex::default(),
             next_cold: AtomicU64::new(0),
             boots: Boots::new(shards_vmm::vm::booting_vcpus_at_most(
@@ -14886,14 +14890,20 @@ mod tests {
         });
     }
 
-    /// The exec of `read metrics` its microVM never answers is ended once the VM process has
-    /// run nothing for as long as the daemon judges it by: told SIGKILL, its end waited for,
-    /// and the read refused as stalled (finding 4 of audit-fix-host-v1: it was waited for
-    /// with no end, holding its client and a daemon thread).
+    /// The exec of `read metrics` its microVM never answers is ended, once the daemon has seen
+    /// a metrics read answered, where the VM process ran nothing for a whole W* past the
+    /// slowest it has seen: told SIGKILL, its end waited for, and the read refused, saying so
+    /// (finding 4 of audit-fix-host-v1: it was waited for with no end, holding its client and
+    /// a daemon thread; D215's judge, which follows a cold kind's microVM while it lives).
     #[test]
     fn metrics_whose_microvm_runs_nothing_are_ended() {
         let t = Test::new("metrics-stalled");
         t.run(|t| {
+            // A metrics read answered before, in 50 ms, its microVM running 50 us of it.
+            t.daemon
+                .answers
+                .metrics
+                .teach(Duration::from_millis(50), Duration::from_micros(50));
             let (_, starting, vm) = running(t, "stalled");
             let out = t.home.join("metrics.json");
             let asked = metrics(t, "stalled", &out);
@@ -14912,16 +14922,15 @@ mod tests {
                 matches!(&told, Ok(Some((kind::SIGNAL, n))) if n.as_slice() == 9u32.to_be_bytes()),
                 "an exec its microVM never answered was waited for with no end: {told:?}"
             );
-            assert_eq!(
-                (status, err),
-                (
-                    1,
-                    format!(
-                        "shards: read metrics: stalled: its microVM ran nothing for {} s, so its \
-                         metrics were not read\n",
-                        TAKE_TIMEOUT.as_secs()
-                    )
-                )
+            assert_eq!(status, 1, "{err}");
+            assert!(
+                err.starts_with("shards: read metrics: stalled: its microVM ran no CPU in ")
+                    && err.contains(" past the slowest answer seen (50ms), ")
+                    && err.ends_with(
+                        " into the wait (the least a microVM ran and still answered: 50µs in \
+                         50ms), so its metrics were not read\n"
+                    ),
+                "{err}"
             );
             say(&vm, kind::DONE, &[0]);
             drop(vm);
