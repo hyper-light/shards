@@ -11,8 +11,6 @@ use std::time::Duration;
 
 use common::{Patience, TempDir, bridge, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
-const TIMEOUT: Duration = Duration::from_secs(120);
-
 /// A build context holding `dockerfile` as its Dockerfile.
 fn context(name: &str, dockerfile: &str) -> TempDir {
     let dir = TempDir::new(name);
@@ -13228,14 +13226,12 @@ fn code_mode_runs_a_program_with_the_callers_grants() {
     }
     #[path = "common/managed_capture.rs"]
     mod capture;
-    use capture::{Ask, Event, Metadata, Observer};
+    use capture::{Ask, Event, Metadata, Observer, Until};
     use shards_abi::run::managed::{Channel, Event as CaptureEvent, Record, StreamState};
     use shards_remote::identity::Identity;
     use shards_remote::net::Command;
     use std::collections::BTreeMap;
-    use std::time::Instant;
 
-    let until = Instant::now().checked_add(TIMEOUT).unwrap();
     let records = std::env::var_os("SHARDS_CODE_MODE_CAPTURE_RECORDS").map(std::path::PathBuf::from);
     if let Some(path) = &records {
         assert!(path.is_absolute(), "absolute new evidence directory");
@@ -13249,6 +13245,8 @@ fn code_mode_runs_a_program_with_the_callers_grants() {
     let (image, _) = served();
     let (port, _repos) = common::writable_registry();
     let home = TempDir::new("code-home");
+    // Its observers' reads judged on its home's daemon and microVMs (D209).
+    let until = Until::Judged(&home);
     let owner = Identity::load_or_create(&home.join("identity")).unwrap();
     let mut observers = Vec::<Observer>::new();
     let env = [
@@ -13256,11 +13254,7 @@ fn code_mode_runs_a_program_with_the_callers_grants() {
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| {
-        let left = until.saturating_duration_since(Instant::now());
-        assert!(!left.is_zero(), "original code-mode deadline");
-        run_shards_env(&[], args, &env)
-    };
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
     let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let a_program = r#"const me = await shards.whoami();
 const peers = await shards.peers();
@@ -13413,7 +13407,7 @@ return { me, peers, sent, refused };"#;
         // that leave nothing to wait on: each agent names itself confined-ready after writing
         // it (testguest workload.rs), and the server ends an abandoned session's program
         // worker as it finds the client gone. So the process table is read again, each
-        // snapshot kept, until it shows both or the original deadline passes.
+        // snapshot kept, until it shows both or its wait is refused (a `Patience`, D209).
         fn table(stdout: &str) -> Vec<Vec<&str>> {
             stdout
                 .lines()
@@ -13442,6 +13436,7 @@ return { me, peers, sent, refused };"#;
                 && main_awaits(rows)
         }
         let mut snapshot = 0;
+        let mut patience = Patience::of(&home);
         let top = loop {
             let top = shards(&["top", "aw-code", "-o", "pid,caught,comm"]);
             save(
@@ -13449,9 +13444,14 @@ return { me, peers, sent, refused };"#;
                 top.to_string().as_bytes(),
             );
             assert_eq!(top.status, Some(0), "{top}");
-            if settled(&table(&top.stdout)) || Instant::now() >= until {
+            if settled(&table(&top.stdout)) {
+                patience.done();
                 break top;
             }
+            if !patience.holds() {
+                break top;
+            }
+            std::thread::sleep(patience.next_look());
             snapshot += 1;
         };
         let rows = table(&top.stdout);
@@ -13509,12 +13509,8 @@ return { me, peers, sent, refused };"#;
         assert_eq!(removed.status, Some(0), "{removed}");
         assert!(!record.exists(), "private run metadata removed");
     }));
-    // The explicit cleanup phase has 15s of its own, capped by the original case+15s.
-    let cleanup = Duration::from_secs(15);
-    let cleanup_until = Instant::now()
-        .checked_add(cleanup)
-        .unwrap()
-        .min(until.checked_add(cleanup).unwrap());
+    // The cleanup: each observer asked to stop, and its driver's end, which that request owes,
+    // joined with no bound of its own (an order).
     for observer in &observers {
         observer.sender.request_stop();
     }
@@ -13532,7 +13528,7 @@ return { me, peers, sent, refused };"#;
         Err(_) => errors.push("owner-stop helper panicked; cleanup unknown".to_string()),
     }
     for observer in &mut observers {
-        if let Err(error) = observer.join(cleanup_until) {
+        if let Err(error) = observer.join(Until::Ordered) {
             errors.push(error);
         }
     }

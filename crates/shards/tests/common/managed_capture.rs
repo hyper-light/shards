@@ -3,9 +3,10 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::{OnceLock, mpsc};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use hyper_quic::{ClientConfig, StreamId};
 use sha2::{Digest as _, Sha256};
@@ -14,6 +15,60 @@ use shards_remote::frame::{self, Tag};
 use shards_remote::identity::{Fingerprint, Identity};
 use shards_remote::managed::{self, Admitted, Reason, RunId, Scope};
 use shards_remote::net::{Close, Command, ConnKey, Driver, DriverLimits, Handler, Io, Read, Sender};
+
+/// What an observer's or an input writer's wait is held to.
+#[derive(Clone, Copy)]
+pub(super) enum Until<'a> {
+    /// Its caller's own deadline: the coordinator's campaigns' explicit phase deadlines, their
+    /// caller's input, and harness_bringup's none at all.
+    At(Instant),
+    /// Judged as the tests' waits are (D209): on the daemon of a home and its microVMs
+    /// (`common::Patience::of`), its kind its caller's call site; its driver given no deadline.
+    Judged(&'a Path),
+    /// No bound: what it waits for is owed by an event of this process's own, its driver's
+    /// end once the test cancels or stops it (the fixture's own unit tests, with no daemon).
+    Ordered,
+}
+
+impl From<Instant> for Until<'static> {
+    fn from(at: Instant) -> Self {
+        Until::At(at)
+    }
+}
+
+impl Until<'_> {
+    /// Its driver's deadline: its caller's, or none where its waits are judged.
+    fn deadline(self) -> Option<Instant> {
+        match self {
+            Until::At(at) => Some(at),
+            Until::Judged(_) | Until::Ordered => None,
+        }
+    }
+}
+
+/// `rx`'s next item as `until` holds its wait: within its caller's deadline, or while its
+/// home's daemon and microVMs go on, a timeout once its judge refuses it (its account on
+/// stderr, `Patience::holds`).
+#[track_caller]
+fn receive<T>(rx: &mpsc::Receiver<T>, until: Until<'_>) -> Result<T, mpsc::RecvTimeoutError> {
+    match until {
+        Until::At(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
+        Until::Ordered => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+        Until::Judged(home) => {
+            let mut patience = crate::common::Patience::of(home);
+            loop {
+                match rx.recv_timeout(patience.next_look()) {
+                    Ok(item) => {
+                        patience.done();
+                        return Ok(item);
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) if patience.holds() => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+}
 
 pub(super) enum Event {
     Record(u64, Vec<u8>),
@@ -74,7 +129,7 @@ struct Client {
     inbound: Vec<u8>,
     finish: bool,
     done: bool,
-    deadline: Instant,
+    deadline: Option<Instant>,
     window: usize,
 }
 
@@ -250,7 +305,7 @@ impl Handler for Client {
         self.done
     }
     fn due(&self) -> Option<Instant> {
-        Some(self.deadline)
+        self.deadline
     }
     fn timeout(&mut self, _: &mut Io<'_>, _: Instant) {
         self.fail("observer deadline".into());
@@ -631,12 +686,12 @@ pub(super) struct Observer {
 }
 
 impl Observer {
-    pub(super) fn start(
+    pub(super) fn start<'a>(
         owner: &Identity,
         metadata: &Metadata,
         scope: Scope,
         address: SocketAddr,
-        until: Instant,
+        until: impl Into<Until<'a>>,
     ) -> Self {
         let window = metadata.capacity.checked_add(managed::DATA_HEAD).unwrap();
         let admitted = Admitted {
@@ -659,7 +714,7 @@ impl Observer {
             inbound: Vec::new(),
             finish: false,
             done: false,
-            deadline: until,
+            deadline: Into::<Until<'_>>::into(until).deadline(),
             window,
         };
         let (mut driver, sender) = Driver::bind_bounded(
@@ -695,14 +750,12 @@ impl Observer {
         }
     }
 
-    pub(super) fn next(&self, until: Instant) -> Event {
-        match self
-            .events
-            .recv_timeout(until.saturating_duration_since(Instant::now()))
-        {
+    #[track_caller]
+    pub(super) fn next<'a>(&self, until: impl Into<Until<'a>>) -> Event {
+        match receive(&self.events, until.into()) {
             Ok(event) => event,
             // The handler holds the event sender and drops with the driver once it ends.
-            Err(mpsc::RecvTimeoutError::Disconnected) => match self.outcome(Duration::ZERO) {
+            Err(mpsc::RecvTimeoutError::Disconnected) => match self.outcome(Until::At(Instant::now())) {
                 Some(Ok(())) => panic!("observer events ended before deadline: driver ended Ok"),
                 Some(Err(error)) => panic!("observer events ended before deadline: driver {error}"),
                 None => panic!("observer events ended before deadline: driver result not yet sent"),
@@ -711,10 +764,12 @@ impl Observer {
         }
     }
 
-    /// How the driver ended, once it has, taken from its thread within `within` and kept.
-    fn outcome(&self, within: Duration) -> Option<&Result<(), String>> {
+    /// How the driver ended, once it has, taken from its thread as `until` holds its wait and
+    /// kept.
+    #[track_caller]
+    fn outcome(&self, until: Until<'_>) -> Option<&Result<(), String>> {
         if self.outcome.get().is_none() {
-            let ended = match self.ended.recv_timeout(within) {
+            let ended = match receive(&self.ended, until) {
                 Ok(result) => result.map_err(|e| format!("failed: {e}")),
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     Err("ended without a result: its thread panicked".into())
@@ -726,7 +781,9 @@ impl Observer {
         self.outcome.get()
     }
 
-    pub(super) fn exact(&self, label: &str, expected: &[u8], until: Instant) -> (u64, u64) {
+    #[track_caller]
+    pub(super) fn exact<'a>(&self, label: &str, expected: &[u8], until: impl Into<Until<'a>>) -> (u64, u64) {
+        let until: Until<'_> = until.into();
         let mut bytes = Vec::new();
         let mut wire = 0u64;
         let mut state = StreamState::New;
@@ -765,7 +822,8 @@ impl Observer {
         panic!("nonempty fixture output required");
     }
 
-    pub(super) fn refused(&self, expected: Option<Reason>, until: Instant) {
+    #[track_caller]
+    pub(super) fn refused<'a>(&self, expected: Option<Reason>, until: impl Into<Until<'a>>) {
         match self.next(until) {
             Event::Lost(code) => assert_eq!(code, expected.map(|reason| u64::from(reason as u32))),
             Event::Record(offset, bytes) => {
@@ -776,7 +834,8 @@ impl Observer {
         }
     }
 
-    pub(super) fn ack_and_finish(&self, wire: u64, until: Instant) {
+    #[track_caller]
+    pub(super) fn ack_and_finish<'a>(&self, wire: u64, until: impl Into<Until<'a>>) {
         self.sender
             .send(Command::Handler(Ask::AckAndFinish(wire)))
             .unwrap();
@@ -785,14 +844,12 @@ impl Observer {
         self.refused(Some(Reason::Closed), until);
     }
 
-    pub(super) fn join(&mut self, until: Instant) -> Result<(), String> {
+    #[track_caller]
+    pub(super) fn join<'a>(&mut self, until: impl Into<Until<'a>>) -> Result<(), String> {
         if self.thread.is_none() {
             return Ok(());
         }
-        let Some(result) = self
-            .outcome(until.saturating_duration_since(Instant::now()))
-            .cloned()
-        else {
+        let Some(result) = self.outcome(until.into()).cloned() else {
             return Err("observer completion deadline".into());
         };
         let joined = self
@@ -921,7 +978,7 @@ struct InputClient {
     pending: Vec<u8>,
     inbound: Vec<u8>,
     heard: mpsc::Sender<InputHeard>,
-    deadline: Instant,
+    deadline: Option<Instant>,
     done: bool,
 }
 
@@ -1027,7 +1084,7 @@ impl Handler for InputClient {
         self.done
     }
     fn due(&self) -> Option<Instant> {
-        Some(self.deadline)
+        self.deadline
     }
     fn timeout(&mut self, _: &mut Io<'_>, _: Instant) {
         let _ = self
@@ -1051,14 +1108,16 @@ pub(super) struct InputWriter {
 impl InputWriter {
     /// Subscribes to `member`'s input at `address`, from offset `offset`, and waits to be
     /// told where its first record goes.
-    pub(super) fn start(
+    #[track_caller]
+    pub(super) fn start<'a>(
         owner: &Identity,
         metadata: &Metadata,
         member: u32,
         address: SocketAddr,
         offset: u64,
-        until: Instant,
+        until: impl Into<Until<'a>>,
     ) -> Result<Self, InputHeard> {
+        let until: Until<'_> = until.into();
         let admitted = Admitted {
             record_bytes: shards_abi::run::CHUNK,
             transport_bytes: u64::try_from(managed::input::TAKEN_BYTES).unwrap(),
@@ -1079,7 +1138,7 @@ impl InputWriter {
             pending: Vec::new(),
             inbound: Vec::new(),
             heard,
-            deadline: until,
+            deadline: until.deadline(),
             done: false,
         };
         let (mut driver, sender) = Driver::bind_bounded(
@@ -1112,11 +1171,13 @@ impl InputWriter {
     /// What its endpoint says next, `awaited` within `until`. A driver that ends first, its
     /// client and the channel with it, is joined and how it ended told, its thread's own
     /// panic or failure, never a wait left to the deadline.
-    pub(super) fn next(&mut self, until: Instant, awaited: &str) -> Result<InputHeard, InputHeard> {
-        match self
-            .heard
-            .recv_timeout(until.saturating_duration_since(Instant::now()))
-        {
+    #[track_caller]
+    pub(super) fn next<'a>(
+        &mut self,
+        until: impl Into<Until<'a>>,
+        awaited: &str,
+    ) -> Result<InputHeard, InputHeard> {
+        match receive(&self.heard, until.into()) {
             Ok(heard) => Ok(heard),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(InputHeard::Failed(format!(
                 "no {awaited} within the fixture's patience"
@@ -1133,7 +1194,8 @@ impl InputWriter {
     }
 
     /// Waits for the endpoint to say where the next record goes.
-    fn taken(&mut self, until: Instant) -> Result<u64, InputHeard> {
+    #[track_caller]
+    fn taken(&mut self, until: Until<'_>) -> Result<u64, InputHeard> {
         match self.next(until, "taken")? {
             InputHeard::Said(managed::input::Said::Taken { accepted, room }) => {
                 self.at = accepted;
@@ -1146,7 +1208,13 @@ impl InputWriter {
 
     /// Writes `bytes` to the member's stdin, a record at a time, each within the room it was
     /// told, waiting for each to be taken; the offset after them.
-    pub(super) fn write_all(&mut self, bytes: &[u8], until: Instant) -> Result<u64, InputHeard> {
+    #[track_caller]
+    pub(super) fn write_all<'a>(
+        &mut self,
+        bytes: &[u8],
+        until: impl Into<Until<'a>>,
+    ) -> Result<u64, InputHeard> {
+        let until: Until<'_> = until.into();
         for part in bytes.chunks(self.room.max(1)) {
             let mut frame = Vec::new();
             managed::input::record(self.at, part, &mut frame).unwrap();
@@ -1165,7 +1233,12 @@ impl InputWriter {
     }
 
     /// Ends the member's stdin (`errno` 0) or aborts it, and waits for its end.
-    pub(super) fn end(&mut self, errno: i32, until: Instant) -> Result<(u64, InputEnd), InputHeard> {
+    #[track_caller]
+    pub(super) fn end<'a>(
+        &mut self,
+        errno: i32,
+        until: impl Into<Until<'a>>,
+    ) -> Result<(u64, InputEnd), InputHeard> {
         self.sender
             .send(Command::Handler(InputAsk::Send(
                 managed::input::end(self.at, errno).to_vec(),

@@ -10888,10 +10888,35 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   - The gaps. A wait on a microVM another machine runs (moved.rs) follows this machine's home
     alone. A cold read of a flow the daemon holds open with nothing on it (build.rs' 7200) and
     a cold guest `watch` that never sees its children reaped run to their CI job's limit.
-  - Owed: managed_output.rs and its parts, with common/managed_capture.rs' `Observer`, whose
-    driver's due is its caller's deadline, and build.rs' code-mode test, which drives it
-    (its `TIMEOUT` and 15 s cleanup). ROOT owes the real-VM runs of moved.rs, slates_fs.rs,
-    managed_cleanup.rs (its ignored campaign), build_windows.rs and build.rs.
+  - *The owner's observers (second landing).* common/managed_capture.rs' `Observer` and
+    `InputWriter` wait as an `Until` says: `Judged(home)`, each read (`next`, `exact`,
+    `refused`, `ack_and_finish`, `taken`, `write_all`, `end`) and `join` a `Patience::of` the
+    run's home, its kind its caller's call site, its driver given no deadline; `At(Instant)`,
+    the coordinator's campaigns' phase deadlines as before (broker_effects', current_controls',
+    current_tenant_stdio's, tenant_exit's and tenant_stdio's, their caller's input, and
+    harness_bringup's no clock); or `Ordered`, no bound, where what it waits for is owed by an
+    event of the test's own: the fixture's own unit tests' observers, which the test cancels
+    or stops, and code mode's joins after it asks each observer to stop. managed_output.rs'
+    `WITHIN` (120 s) is gone: its fixture's waits a `Bound`, `Judged` or a campaign's `At`;
+    its commands given no bound (`Duration::MAX`, run_command judging them already). Its
+    parts: member_stdin.rs' observers and writers judged on its home; log_lanes.rs' hang-up
+    watch a `Patience::of` its home (its commands' unused bound gone); metrics.rs' commands
+    unbounded; broker_effects.rs' gate's own unit test accepts the connections it made before
+    with no timeout (poll's -1), an order. build.rs' code mode: its reads judged, its process
+    table read again under a `Patience` where it was read to its `TIMEOUT`, and its cleanup's
+    15 s an order after each observer's stop; its `TIMEOUT` gone.
+  - What a second landing would falsify: an observer's judged read refused while its run's
+    daemon or microVMs went on; a unit test's `Ordered` wait that never ends (its driver not
+    ended by the cancel or stop the test sent).
+  - Left as they are, being their caller's input: the coordinator campaigns' `CASE_MS`,
+    `CALL_MS`, `CLEANUP_MS`, `TIMEOUT_MS`, `CANCEL_WORK_MS`, `PHASE_MS`, `WORK_MS`,
+    `OUTER_MS`, `DEADLINE_MS`, `SHARDS_TENANT_STDIO_CLEANUP_MS` and
+    `SHARDS_TENANT_EXIT_DEADLINE_MS`, each an explicit phase deadline its runner sets per
+    campaign (`#[ignore]`d, ROOT's), no constant of the file's.
+  - Owed: ROOT's real-VM runs of moved.rs, slates_fs.rs, managed_cleanup.rs (its ignored
+    campaign), build_windows.rs, build.rs (code mode among them), managed_output.rs and its
+    parts (member_stdin, log_lanes, metrics), and harness_bringup.rs, whose `Observer` changed
+    beneath it.
 
 **The storm's watch, by the host's word (audit of picked constants, 2026-11-09).** The test
 guest's storm said its main thread stood still after 15 s and took its host's stream for
