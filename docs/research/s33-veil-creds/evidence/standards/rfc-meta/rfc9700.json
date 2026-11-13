@@ -1,0 +1,39 @@
+{
+  "draft": "draft-ietf-oauth-security-topics-29",
+  "doc_id": "RFC9700",
+  "title": "Best Current Practice for OAuth 2.0 Security",
+  "authors": [
+    "T. Lodderstedt",
+    "J. Bradley",
+    "A. Labunets",
+    "D. Fett"
+  ],
+  "format": [
+    "XML",
+    "TEXT",
+    "HTML",
+    "PDF"
+  ],
+  "page_count": "46",
+  "pub_status": "BEST CURRENT PRACTICE",
+  "status": "BEST CURRENT PRACTICE",
+  "source": "Web Authorization Protocol",
+  "abstract": "This document describes best current security practice for OAuth 2.0.  It updates and extends the threat model and security advice given in RFCs 6749, 6750, and 6819 to incorporate practical experiences gathered since OAuth 2.0 was published and covers new threats relevant due to the broader application of OAuth 2.0.  Further, it deprecates some modes of operation that are deemed less secure or even insecure.",
+  "pub_date": "January 2025",
+  "keywords": [
+    "threat model",
+    "attacks",
+    "mitigations"
+  ],
+  "obsoletes": [],
+  "obsoleted_by": [],
+  "updates": [
+    "RFC6749",
+    "RFC6750",
+    "RFC6819"
+  ],
+  "updated_by": [],
+  "see_also": [],
+  "doi": "10.17487/RFC9700",
+  "errata_url": null
+}

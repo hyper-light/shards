@@ -104,11 +104,26 @@ pub(crate) struct Plan {
     /// kernel, which a restore of it prepares its run's request with (run::prepare).
     #[serde(default)]
     pub guest: bool,
-    /// The CPU baseline its guest was told (D176 part 6), as ID registers by encoding: a
-    /// machine whose hypervisor shows every field of it at least takes it, whatever more
-    /// the machine it ran on has. Empty where it was told none, its host's own CPU.
+    /// The CPU baseline its guest was told (D176 part 6), as `arch::cpu` names it (ID
+    /// registers by encoding; CPUID's feature leaves): a machine whose hypervisor shows
+    /// every field or bit of it takes it, whatever more the machine it ran on has. Empty
+    /// where it was told none, its host's own CPU.
     #[serde(default)]
-    pub baseline: Vec<(u16, u64)>,
+    pub baseline: shards_vmm::arch::cpu::Id,
+    /// The CPU its snapshot was saved on, where its hypervisor restores a snapshot only on
+    /// that CPU (WHP: `cpuid::IDENTITY`'s leaves, D245), for the machine moved to to check
+    /// before anything moves. Empty elsewhere, and from a daemon of an earlier build.
+    #[serde(default)]
+    pub cpu_identity: shards_vmm::arch::cpu::Id,
+    /// The ports its run publishes on its machine's addresses, as its run asked for them
+    /// (`run -p`), which its restore binds again as a start does, and the network whose host
+    /// address a binding that names none takes: for the machine moved to to check before
+    /// anything moves. None where it bound no host port, and from a daemon of an earlier
+    /// build.
+    #[serde(default)]
+    pub published: Vec<Published>,
+    #[serde(default)]
+    pub network: String,
 }
 
 /// What a run keeps the CPU baseline its guest was told in, in its container's directory
@@ -118,16 +133,15 @@ pub(super) const RUN_BASELINE: &str = "cpu-baseline";
 
 /// The CPU baseline `home`'s microVMs are told ([`crate::cli::moves::BASELINE`]); none
 /// where it keeps none, or none it can read.
-pub(super) fn home_baseline(home: &Path) -> Vec<(u16, u64)> {
+pub(super) fn home_baseline(home: &Path) -> shards_vmm::arch::cpu::Id {
     read_baseline(&home.join(crate::cli::moves::BASELINE))
 }
 
-/// The ID registers on the first line of a baseline's file at `at`; none where there is
-/// none.
-fn read_baseline(at: &Path) -> Vec<(u16, u64)> {
+/// The CPU on the first line of a baseline's file at `at`; none where there is none.
+fn read_baseline(at: &Path) -> shards_vmm::arch::cpu::Id {
     std::fs::read_to_string(at)
         .ok()
-        .and_then(|text| shards_vmm::arch::aarch64::cpu::decode(text.lines().next()?).ok())
+        .and_then(|text| shards_vmm::arch::cpu::decode(text.lines().next()?).ok())
         .unwrap_or_default()
 }
 
@@ -136,6 +150,7 @@ fn read_baseline(at: &Path) -> Vec<(u16, u64)> {
 /// names the register masks the feature where it is lower, and a feature whose register
 /// the baseline does not name (ISAR2's, which Hypervisor.framework neither says nor lets a
 /// VMM set, PM M460) is the guest's whatever the baseline says, and checked by name.
+#[cfg(target_arch = "aarch64")]
 fn feature_register(feature: &str) -> Option<u16> {
     Some(match feature {
         "FEAT_CSV2" | "FEAT_CSV3" | "FEAT_DIT" | "FEAT_FP16" => 0xc020,
@@ -156,6 +171,7 @@ fn feature_register(feature: &str) -> Option<u16> {
 
 /// The features of `ran_on` a guest told `baseline` may still have used: those whose
 /// register the baseline does not name, and every one where it is none.
+#[cfg(target_arch = "aarch64")]
 fn unmasked(ran_on: &[String], baseline: &[(u16, u64)]) -> Vec<String> {
     ran_on
         .iter()
@@ -165,6 +181,19 @@ fn unmasked(ran_on: &[String], baseline: &[(u16, u64)]) -> Vec<String> {
         })
         .cloned()
         .collect()
+}
+
+/// The features of `ran_on` a guest told `baseline` may still have used: every one where it
+/// is none; else none, as each instruction set an x86-64 guest finds is a bit of the CPUID
+/// feature leaves a baseline names whole (`cpuid::FEATURES`), which `covers` checks of it,
+/// where the names of /proc/cpuinfo's `flags` are Linux's, kernel features among them.
+#[cfg(target_arch = "x86_64")]
+fn unmasked(ran_on: &[String], baseline: &[[u32; 7]]) -> Vec<String> {
+    if baseline.is_empty() {
+        ran_on.to_vec()
+    } else {
+        Vec::new()
+    }
 }
 
 /// The features of this machine's CPU a guest may be shown, as its OS names them: on macOS
@@ -284,6 +313,17 @@ fn cpu_lacks<'a>(ran_on: &'a [String], here: &[String]) -> Vec<&'a str> {
         .collect()
 }
 
+/// A port a run publishes on its machine's addresses, as `run -p` asked for it (its
+/// request's `shards_ipc::Publish`): the guest's port and protocol, and the host's address
+/// and port or range, empty where not given.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Published {
+    pub port: u16,
+    pub proto: String,
+    pub host_ip: String,
+    pub host_port: String,
+}
+
 /// A file a snapshot restores against, by its name relative to the home, its length and
 /// its bytes' SHA-256.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -332,6 +372,11 @@ pub(crate) enum Refused {
     /// This machine's hypervisor shows a guest less of each of these fields than the CPU
     /// baseline its guest was told.
     Cpu { name: String, short: Vec<CpuShort> },
+    /// The CPU baseline its guest was told is another vendor's than this machine's CPU.
+    CpuVendor { name: String },
+    /// This machine's CPU is not the one its snapshot was saved on, which its hypervisor
+    /// restores a snapshot only on (WHP).
+    CpuIdentity { name: String },
     /// This machine's CPU lacks these features, as its OS names them, which its guest may
     /// have used where it ran.
     Features { name: String, lacks: Vec<String> },
@@ -343,6 +388,16 @@ pub(crate) enum Refused {
     VolumeTaken { name: String, volume: String },
     /// A host path it binds is not on this machine.
     BindAbsent { name: String, path: String },
+    /// A port it publishes cannot be bound on this machine, as its restore would bind it:
+    /// the binding as its run asked for it, and why.
+    PortTaken {
+        name: String,
+        port: u16,
+        proto: String,
+        host_ip: String,
+        host_port: String,
+        why: String,
+    },
 }
 
 /// A field of the CPU a guest was told that this machine's hypervisor shows less of.
@@ -356,6 +411,79 @@ pub(crate) enum CpuShort {
         guest: i8,
         here: i8,
     },
+    /// A feature register of x86-64's CPUID: the bits of it the guest was told that this
+    /// machine's hypervisor shows none of ([`shards_vmm::arch::x86_64::cpuid::Short`]).
+    Bits {
+        function: u32,
+        index: u32,
+        register: u8,
+        missing: u32,
+    },
+}
+
+/// What a machine whose hypervisor shows a guest `here` refuses of microVM `name`, whose
+/// guest was told `baseline` (D176 part 6, D245): each field or register of it `here` has
+/// less of, or another vendor's CPU.
+fn baseline_refused(
+    name: &str,
+    here: &shards_vmm::arch::cpu::Id,
+    baseline: &shards_vmm::arch::cpu::Id,
+) -> Option<Refused> {
+    shards_vmm::arch::cpu::covers(here, baseline)
+        .err()
+        .map(|lacks| cpu_refused(name.to_string(), lacks))
+}
+
+/// Whether this machine's hypervisor restores a snapshot only on the CPU it was taken on: WHP
+/// on x86-64 (hv::whp's state.rs), which a move checks before anything moves (D245). WHP on
+/// arm64 tells a guest its ID registers, as KVM and Hypervisor.framework do.
+fn restores_on_its_own_cpu_alone() -> bool {
+    cfg!(target_arch = "x86_64") && shards_vmm::hv::BACKEND == Some("whp")
+}
+
+/// What a machine whose hypervisor restores a snapshot only on the CPU it was taken on, and
+/// whose CPU is `here`, refuses of microVM `name`, saved on `theirs` (D245): any other CPU.
+fn identity_refused<T: PartialEq>(name: &str, here: &[T], theirs: &[T]) -> Option<Refused> {
+    (here != theirs).then(|| Refused::CpuIdentity {
+        name: name.to_string(),
+    })
+}
+
+/// What `lacks`, of this build's architecture, refuses of microVM `name`'s CPU baseline.
+#[cfg(target_arch = "aarch64")]
+fn cpu_refused(name: String, lacks: shards_vmm::arch::cpu::Lacks) -> Refused {
+    let short = lacks
+        .0
+        .into_iter()
+        .map(|s| CpuShort::Field {
+            reg: s.reg,
+            shift: s.shift,
+            guest: s.guest,
+            here: s.host,
+        })
+        .collect();
+    Refused::Cpu { name, short }
+}
+
+/// What `lacks`, of this build's architecture, refuses of microVM `name`'s CPU baseline.
+#[cfg(target_arch = "x86_64")]
+fn cpu_refused(name: String, lacks: shards_vmm::arch::cpu::Lacks) -> Refused {
+    use shards_vmm::arch::cpu::Lacks;
+    match lacks {
+        Lacks::Vendor => Refused::CpuVendor { name },
+        Lacks::Bits(bits) => Refused::Cpu {
+            name,
+            short: bits
+                .into_iter()
+                .map(|s| CpuShort::Bits {
+                    function: s.function,
+                    index: s.index,
+                    register: s.register,
+                    missing: s.missing,
+                })
+                .collect(),
+        },
+    }
 }
 
 /// A hypervisor as `hv::BACKEND` names it, in a person's words.
@@ -396,25 +524,52 @@ impl std::fmt::Display for Refused {
                 "{name} was saved in snapshot format {format}, and this machine's shards reads {here}"
             ),
             Refused::Cpu { name, short } => {
-                let fields = short
-                    .iter()
-                    .map(|s| match *s {
+                // Said as each architecture's `covers` says it: a baseline's shorts are one
+                // architecture's.
+                let mut fields = Vec::new();
+                let mut bits = Vec::new();
+                for s in short {
+                    match *s {
                         CpuShort::Field {
                             reg,
                             shift,
                             guest,
                             here,
-                        } => shards_vmm::arch::aarch64::cpu::Short {
+                        } => fields.push(shards_vmm::arch::aarch64::cpu::Short {
                             reg,
                             shift,
                             guest,
                             host: here,
-                        },
-                    })
-                    .collect();
-                let lacks = shards_vmm::arch::aarch64::cpu::Lacks(fields);
-                write!(f, "{lacks}, which {name}'s CPU baseline names")
+                        }),
+                        CpuShort::Bits {
+                            function,
+                            index,
+                            register,
+                            missing,
+                        } => bits.push(shards_vmm::arch::x86_64::cpuid::Short {
+                            function,
+                            index,
+                            register,
+                            missing,
+                        }),
+                    }
+                }
+                if !fields.is_empty() {
+                    write!(f, "{}, ", shards_vmm::arch::aarch64::cpu::Lacks(fields))?;
+                }
+                if !bits.is_empty() {
+                    write!(f, "{}, ", shards_vmm::arch::x86_64::cpuid::Lacks::Bits(bits))?;
+                }
+                write!(f, "which {name}'s CPU baseline names")
             }
+            Refused::CpuVendor { name } => write!(
+                f,
+                "{name}'s CPU baseline is another vendor's CPU than this machine's: no CPUID makes one vendor's CPU another's"
+            ),
+            Refused::CpuIdentity { name } => write!(
+                f,
+                "this machine's CPU is not the one {name} was saved on, and the Windows Hypervisor Platform restores a snapshot only on that CPU"
+            ),
             Refused::Features { name, lacks } => write!(
                 f,
                 "this machine's CPU lacks {}, which {name}'s guest may have used where it ran",
@@ -430,6 +585,24 @@ impl std::fmt::Display for Refused {
                 f,
                 "{path}, which {name} binds, is not on this machine: a move takes a bind's host path shared at the same place"
             ),
+            Refused::PortTaken {
+                name,
+                port,
+                proto,
+                host_ip,
+                host_port,
+                why,
+            } => {
+                let at = if host_ip.is_empty() {
+                    format!("port {host_port}")
+                } else {
+                    format!("{host_ip}:{host_port}")
+                };
+                write!(
+                    f,
+                    "{name} publishes its port {port}/{proto} at {at}, which this machine cannot bind: {why}"
+                )
+            }
         }
     }
 }
@@ -467,9 +640,10 @@ fn platform_refused(plan: &Plan, arch: &str, hypervisor: Option<&str>, format: u
     None
 }
 
-/// Why `ready` answers no [`Needs`]: it refuses the move, or it could not tell.
+/// Why `ready` answers no [`Needs`]: it refuses the move, or it could not tell. A refusal is
+/// boxed, as its variants carry what refused it whole and the answer is otherwise a string.
 enum Unready {
-    Refused(Refused),
+    Refused(Box<Refused>),
     Failed(String),
 }
 
@@ -481,7 +655,7 @@ impl From<String> for Unready {
 
 impl From<Refused> for Unready {
     fn from(refused: Refused) -> Unready {
-        Unready::Refused(refused)
+        Unready::Refused(Box::new(refused))
     }
 }
 
@@ -1033,9 +1207,10 @@ impl<D: Disk> Daemon<D> {
                     return 1;
                 }
             },
-            Some("cpu") => self
-                .host_cpu_id()
-                .map(|id| shards_vmm::arch::aarch64::cpu::encode(&id)),
+            Some("cpu") if restores_on_its_own_cpu_alone() => {
+                Err(shards_vmm::vm::NO_BASELINE_ON_WHP.to_string())
+            }
+            Some("cpu") => self.host_cpu_id().map(|id| shards_vmm::arch::cpu::encode(&id)),
             Some("export") => self.move_export(args.get(1..).unwrap_or_default(), asker),
             Some("import") => self.move_import(args.get(1..).unwrap_or_default(), asker),
             _ => Err(format!("no step of a move in {args:?}")),
@@ -1059,6 +1234,9 @@ impl<D: Disk> Daemon<D> {
     fn move_save(&self, reference: &str) -> Result<String, String> {
         let id = self.resolve(reference)?;
         self.await_start(&id);
+        // On WHP its plan names this CPU (`exact_cpu`), asked of the VM process once a
+        // daemon: asked before the save, not in the time the microVM runs nowhere.
+        let _ = self.exact_cpu();
         let snapshot = if self.running(&id) {
             let (_, name) = self
                 .save_snapshot(reference, None, false)
@@ -1132,6 +1310,7 @@ impl<D: Disk> Daemon<D> {
             "moved-{}",
             shards_cmdline::format::rfc3339_at(now, 0).replace(':', "-")
         );
+        let (published, network) = self.published_of(&c);
         let plan = Plan {
             id: c.id.clone(),
             name: c.name.clone(),
@@ -1148,6 +1327,9 @@ impl<D: Disk> Daemon<D> {
             cpu: host_cpu(),
             guest: self.boots_stored_guest(&c.id),
             baseline: read_baseline(&lock(&self.containers).dir(&c.id).join(RUN_BASELINE)),
+            cpu_identity: self.exact_cpu(),
+            published,
+            network,
         };
         serde_json::to_string(&plan).map_err(|e| e.to_string())
     }
@@ -1360,6 +1542,7 @@ impl<D: Disk> Daemon<D> {
         }
         volumes.sort();
         volumes.dedup();
+        let (published, network) = self.published_of(&c);
         Ok(Plan {
             id: c.id.clone(),
             name: c.name.clone(),
@@ -1376,13 +1559,30 @@ impl<D: Disk> Daemon<D> {
             cpu: host_cpu(),
             guest: self.boots_stored_guest(id),
             baseline: read_baseline(&lock(&self.containers).dir(id).join(RUN_BASELINE)),
+            cpu_identity: self.exact_cpu(),
+            published,
+            network,
+        })
+    }
+
+    /// The CPU a snapshot saved here may be restored on alone, for a plan to carry (D245):
+    /// this machine's, where its hypervisor restores a snapshot only on the CPU it was taken
+    /// on (WHP on x86-64); none elsewhere. Where its VM process cannot say, none: the machine moved to
+    /// then finds another CPU at the restore, as with a plan of an earlier build.
+    fn exact_cpu(&self) -> shards_vmm::arch::cpu::Id {
+        if !restores_on_its_own_cpu_alone() {
+            return Default::default();
+        }
+        self.host_cpu_id().unwrap_or_else(|e| {
+            super::log(format!("a move's plan names no CPU: {e}"));
+            Default::default()
         })
     }
 
     /// This machine's CPU as its hypervisor shows a guest (D176 part 6): its VM process asked
     /// (`shards-vm cpu`), once a daemon, until it answers.
-    fn host_cpu_id(&self) -> Result<Vec<(u16, u64)>, String> {
-        static HOST: std::sync::OnceLock<Vec<(u16, u64)>> = std::sync::OnceLock::new();
+    fn host_cpu_id(&self) -> Result<shards_vmm::arch::cpu::Id, String> {
+        static HOST: std::sync::OnceLock<shards_vmm::arch::cpu::Id> = std::sync::OnceLock::new();
         if let Some(id) = HOST.get() {
             return Ok(id.clone());
         }
@@ -1407,9 +1607,69 @@ impl<D: Disk> Daemon<D> {
                     "its VM process could not say this host's CPU (status {status})"
                 ));
             }
-            shards_vmm::arch::aarch64::cpu::decode(out.trim())
+            shards_vmm::arch::cpu::decode(out.trim())
         })()?;
         Ok(HOST.get_or_init(|| asked).clone())
+    }
+
+    /// The ports container `c`'s run publishes on this machine's addresses, as its request
+    /// asked for them, and its network: none where its run bound no host port (no `-p`, or a
+    /// network whose members' ports are not the host's).
+    fn published_of(&self, c: &Container) -> (Vec<Published>, String) {
+        if !c.ports.iter().any(|p| p.public != 0) {
+            return (Vec::new(), String::new());
+        }
+        let dir = lock(&self.containers).dir(&c.id);
+        let Some(run) = std::fs::read(dir.join(super::REQUEST))
+            .ok()
+            .and_then(|b| shards_ipc::Run::decode(&b))
+        else {
+            return (Vec::new(), String::new());
+        };
+        let published = run
+            .publish
+            .iter()
+            .map(|p| Published {
+                port: p.port,
+                proto: p.proto.clone(),
+                host_ip: p.host_ip.clone(),
+                host_port: p.host_port.clone(),
+            })
+            .collect();
+        (published, run.network)
+    }
+
+    /// The first port `plan`'s microVM publishes that this machine cannot bind as a start
+    /// binds it (`publish::bind`: the address its binding names, else its network's, else
+    /// every one; a port of its range; this daemon's own runs' addresses as `in_use` says),
+    /// refused by what it is. The sockets go at once: its restore binds them again, and stays
+    /// what fails the move should another program take one meanwhile.
+    fn ports_refused(&self, plan: &Plan) -> Option<Refused> {
+        let default = self.user_network(&plan.network).and_then(|n| n.host_binding());
+        plan.published.iter().find_map(|p| {
+            let binding = shards_ipc::Publish {
+                port: p.port,
+                proto: p.proto.clone(),
+                host_ip: p.host_ip.clone(),
+                host_port: p.host_port.clone(),
+            };
+            super::publish::bind(
+                std::slice::from_ref(&binding),
+                &[],
+                default,
+                super::publish::v6_listenable(),
+                |at, proto| self.in_use(at, proto),
+            )
+            .err()
+            .map(|why| Refused::PortTaken {
+                name: plan.name.clone(),
+                port: p.port,
+                proto: p.proto.clone(),
+                host_ip: p.host_ip.clone(),
+                host_port: p.host_port.clone(),
+                why,
+            })
+        })
     }
 
     /// Whether container `id`'s run boots the guest its home stores: its request names no
@@ -1436,24 +1696,21 @@ impl<D: Disk> Daemon<D> {
         ) {
             return Err(refused.into());
         }
+        // On WHP its CPU first: a restore there takes only the CPU its snapshot was saved on
+        // (hv::whp's state.rs), checked here rather than after the whole stream (D245).
+        if !plan.cpu_identity.is_empty()
+            && restores_on_its_own_cpu_alone()
+            && let Some(refused) = identity_refused(&plan.name, &self.host_cpu_id()?, &plan.cpu_identity)
+        {
+            return Err(refused.into());
+        }
         // Its CPU: every feature of the machine it ran on, as its guest may have used any.
         // Told a baseline, each of its fields this machine's hypervisor shows at least; and of
         // the features it ran on, those the baseline cannot mask, by name.
-        if !plan.baseline.is_empty() {
-            let id = self.host_cpu_id()?;
-            if let Err(lacks) = shards_vmm::arch::aarch64::cpu::covers(&id, &plan.baseline) {
-                let short = lacks
-                    .0
-                    .iter()
-                    .map(|s| CpuShort::Field {
-                        reg: s.reg,
-                        shift: s.shift,
-                        guest: s.guest,
-                        here: s.host,
-                    })
-                    .collect();
-                return Err(Refused::Cpu { name: name(), short }.into());
-            }
+        if !plan.baseline.is_empty()
+            && let Some(refused) = baseline_refused(&plan.name, &self.host_cpu_id()?, &plan.baseline)
+        {
+            return Err(refused.into());
         }
         let here = host_cpu();
         let may_use = unmasked(&plan.cpu, &plan.baseline);
@@ -1485,6 +1742,11 @@ impl<D: Disk> Daemon<D> {
                 path: bind.clone(),
             }
             .into());
+        }
+        // Its published ports, which its restore binds again as a start does: one this
+        // machine cannot bind failed the move only after the whole stream.
+        if let Some(refused) = self.ports_refused(&plan) {
+            return Err(refused.into());
         }
         // Its image, by the digest its name resolved to: here, or pulled by it.
         let image = self.moved_image(&plan, asker, reply);
@@ -2003,6 +2265,9 @@ mod tests {
             cpu: Vec::new(),
             guest: false,
             baseline: Vec::new(),
+            cpu_identity: Vec::new(),
+            published: Vec::new(),
+            network: String::new(),
         }
     }
 
@@ -2056,6 +2321,31 @@ mod tests {
         );
     }
 
+    /// A machine whose hypervisor restores a snapshot only on the CPU it was taken on (WHP)
+    /// refuses a microVM saved on another, by name, and takes one saved on its own; a plan of
+    /// an earlier build, which names no CPU, reads back naming none, which no machine checks
+    /// before its restore (D245).
+    #[test]
+    fn a_microvm_saved_on_another_cpu_is_refused_where_a_restore_takes_only_its_own() {
+        let (here, other) = (
+            [[1u32, 0, 0, 0x00a6_0f12, 0, 0, 0]],
+            [[1u32, 0, 0, 0x00b4_0f40, 0, 0, 0]],
+        );
+        assert_eq!(identity_refused("web", &here, &here), None);
+        assert_eq!(
+            identity_refused("web", &here, &other),
+            Some(Refused::CpuIdentity { name: "web".into() })
+        );
+        assert_eq!(
+            identity_refused("web", &here, &here[..0]),
+            Some(Refused::CpuIdentity { name: "web".into() })
+        );
+        let mut earlier = serde_json::to_value(plan()).unwrap();
+        earlier.as_object_mut().unwrap().remove("cpu_identity");
+        let earlier: Plan = serde_json::from_value(earlier).unwrap();
+        assert!(earlier.cpu_identity.is_empty());
+    }
+
     /// A refusal goes as JSON, tagged by what refused it, and reads back as it went; its
     /// words are those each refusal said before it was typed, which a mover of an earlier
     /// build still prints.
@@ -2090,6 +2380,49 @@ mod tests {
                 },
                 "this CPU has less of what its guest uses: ID_AA64ISAR2_EL1[55:52] 1 here 0 (the \
                  guest's level, then this host's), which web's CPU baseline names",
+            ),
+            (
+                Refused::Cpu {
+                    name: "web".into(),
+                    short: vec![
+                        CpuShort::Bits {
+                            function: 7,
+                            index: 0,
+                            register: 4,
+                            missing: 1 << 16,
+                        },
+                        CpuShort::Bits {
+                            function: 0xd,
+                            index: 0,
+                            register: 3,
+                            missing: 0xe0,
+                        },
+                    ],
+                },
+                "this CPU lacks what its guest uses: leaf 0x7.0 ebx bits 0x10000, leaf 0xd.0 eax \
+                 bits 0xe0, which web's CPU baseline names",
+            ),
+            (
+                Refused::CpuVendor { name: "web".into() },
+                "web's CPU baseline is another vendor's CPU than this machine's: no CPUID makes \
+                 one vendor's CPU another's",
+            ),
+            (
+                Refused::PortTaken {
+                    name: "web".into(),
+                    port: 80,
+                    proto: "tcp".into(),
+                    host_ip: "127.0.0.1".into(),
+                    host_port: "8080".into(),
+                    why: "Bind for 127.0.0.1:8080 failed: port is already allocated".into(),
+                },
+                "web publishes its port 80/tcp at 127.0.0.1:8080, which this machine cannot \
+                 bind: Bind for 127.0.0.1:8080 failed: port is already allocated",
+            ),
+            (
+                Refused::CpuIdentity { name: "web".into() },
+                "this machine's CPU is not the one web was saved on, and the Windows Hypervisor \
+                 Platform restores a snapshot only on that CPU",
             ),
             (
                 Refused::Features {
@@ -2132,6 +2465,7 @@ mod tests {
 
     /// A baseline masks the features of the registers it names, which the move checks by
     /// their fields; the rest it checks by name.
+    #[cfg(target_arch = "aarch64")]
     #[test]
     fn a_baseline_masks_the_features_of_the_registers_it_names() {
         let names = |l: &[&str]| l.iter().map(|f| (*f).to_string()).collect::<Vec<String>>();
@@ -2150,6 +2484,57 @@ mod tests {
         assert_eq!(unmasked(&m4, &[]), m4);
         // A feature of no known register is checked by name.
         assert_eq!(unmasked(&names(&["FEAT_NEW"]), &base), ["FEAT_NEW"]);
+    }
+
+    /// An x86-64 baseline names CPUID's feature leaves whole, which the move checks by their
+    /// bits ([`shards_vmm::arch::cpu::covers`]): told one, a guest's features are checked
+    /// by none of the names Linux gives them; told none, by every one, as before.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_baseline_masks_every_feature_an_x86_guest_finds() {
+        let flags = vec![
+            "avx512f".to_string(),
+            "sha_ni".to_string(),
+            "constant_tsc".to_string(),
+        ];
+        assert_eq!(unmasked(&flags, &[]), flags);
+        let base = [[7, 0, 0, 0, 0x019c_91a9, 0, 0]];
+        assert!(unmasked(&flags, &base).is_empty());
+        assert!(cpu_lacks(&unmasked(&flags, &base), &[]).is_empty());
+    }
+
+    /// A machine whose KVM shows a guest less than the baseline a microVM's guest was told
+    /// refuses it, each register by the bits it lacks, and one of another vendor by its
+    /// vendor; one with all of it takes it (D245).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_machine_short_of_a_baseline_refuses_it_by_each_register() {
+        let amd = [0, 0, 0, 0x10, 0x6874_7541, 0x444d_4163, 0x6974_6e65];
+        let intel = [0, 0, 0, 0x1f, 0x756e_6547, 0x6c65_746e, 0x4965_6e69];
+        let baseline = vec![amd, [7, 0, 0, 0, 0x019c_91a9, 0, 0], [0xd, 0, 0, 0xe7, 0, 0, 0]];
+        let here = vec![
+            amd,
+            [7, 0, 0, 0, 0x2000_0000 | 0x019c_91a9, 0, 0],
+            [0xd, 0, 0, 0x7, 0, 0, 0],
+        ];
+        assert_eq!(baseline_refused("web", &baseline, &baseline), None);
+        assert_eq!(
+            baseline_refused("web", &here, &baseline),
+            Some(Refused::Cpu {
+                name: "web".into(),
+                short: vec![CpuShort::Bits {
+                    function: 0xd,
+                    index: 0,
+                    register: 3,
+                    missing: 0xe0,
+                }],
+            })
+        );
+        let other = vec![intel, [7, 0, 0, 0, !0, 0, 0], [0xd, 0, 0, !0, 0, 0, 0]];
+        assert_eq!(
+            baseline_refused("web", &other, &baseline),
+            Some(Refused::CpuVendor { name: "web".into() })
+        );
     }
 
     /// A move to a machine whose CPU lacks a feature of the one its microVM ran on is

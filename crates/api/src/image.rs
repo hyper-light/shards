@@ -25,8 +25,9 @@ mod session;
 pub mod wire;
 
 pub use wire::{
-    Bound, Channel, GuestTimes, HostUse, Keep, MemberInfo, MemberKind, Microvm, Narrowing, PlugRefusal,
-    Proto, Publish, Ready, Receiving, RunEnd, Secret, Stats, StatsScope, VcpuTime,
+    Bound, Channel, CredentialGrant, Fill, GuestTimes, HostUse, Keep, MemberInfo, MemberKind, MemberReach,
+    Microvm, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, Secret, Stats, StatsScope,
+    VcpuTime, decide,
 };
 
 /// A member, as the image's Agentfile names it.
@@ -76,7 +77,11 @@ pub struct MemberSpec {
     /// Its stdin, a pipe the orchestrator writes ([`ImageGuest::take_input`]); else
     /// `/dev/null`, as every member's is today.
     pub stdin: bool,
-    /// A terminal for its stdio.
+    /// Its stdio a terminal of its own (plan step 6, D244), whose master its run's init
+    /// holds: what the terminal shows is its stdout ([`ImageGuest::take_output`]), its stderr
+    /// ending at once; where its stdin is asked for too, what is written to it is typed
+    /// into the terminal ([`ImageGuest::take_input`]), and its end leaves the terminal open.
+    /// It is 0 by 0 until [`ImageGuest::resize`] sizes it.
     pub terminal: bool,
 }
 
@@ -103,8 +108,15 @@ pub struct ImageSpec {
     pub command: Option<Vec<String>>,
     pub members: Vec<MemberSpec>,
     pub publish: Vec<Publish>,
-    /// The image's grants past the microVM, kept or dropped, never added to.
+    /// The image's grants past the microVM, kept or dropped, never added to; where it holds
+    /// its members apart, each member's reach of the names kept ([`Narrowing::members`],
+    /// D246), which the run host refuses the run unless every member reaches exactly.
     pub egress: Narrowing,
+    /// The run's credential grants (D242): each a credential named by reference (a secret
+    /// in the orchestrator's store, never a value) and the hosts the injector may fill it
+    /// in toward. Empty for a run with none (default deny). An orchestrator keeps or drops
+    /// the image's, never adds one.
+    pub credentials: Vec<CredentialGrant>,
     pub shares: Vec<ImageShare>,
     /// The nesting grant for the run's own command (D234): the run's consent, as
     /// `--security-opt nesting=true` gives it to `run vm`. Given only where the image's
@@ -163,6 +175,8 @@ pub enum ImageRefusal {
     Plug(PlugRefusal, String),
     /// The run's init held it within no room it was told (D241), in its words.
     Room(String),
+    /// A member's terminal its run's init did not size (D244), in its words.
+    Terminal(String),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -178,6 +192,7 @@ impl std::fmt::Display for ImageRefusal {
             Self::Os { what, kind } => write!(f, "{what}: {kind:?}"),
             Self::Plug(cause, why) => write!(f, "the plug: {cause:?}: {why}"),
             Self::Room(why) => write!(f, "the run's room: {why}"),
+            Self::Terminal(why) => write!(f, "a member's terminal: {why}"),
         }
     }
 }
@@ -227,6 +242,20 @@ pub trait ImageGuest: Send + Sync {
     /// budget is the orchestrator's: it tells the room again as the budget changes or as
     /// the run's use moves, as D188's daemon does its own runs'.
     fn room(&self, room: Option<i64>, patience: Duration) -> Result<Option<u64>, ImageRefusal>;
+    /// Member `member`'s own terminal ([`MemberSpec::terminal`]) sized to `rows` by `cols`
+    /// (plan step 6, D244), as a terminal's window is: its run's init sets the size, and the
+    /// kernel tells the terminal's foreground process group SIGWINCH where it changed; a 0 in
+    /// either leaves it as it is. Waits at most `patience` (`Duration::MAX`: until it answers
+    /// or the run ends). Refused for a member its spec gave no terminal
+    /// ([`ImageRefusal::Spec`]), and as [`ImageRefusal::Terminal`] where its init did not
+    /// size it.
+    fn resize(
+        &self,
+        member: &MemberName,
+        rows: u16,
+        cols: u16,
+        patience: Duration,
+    ) -> Result<(), ImageRefusal>;
     /// The readiness of the run's own command under the nesting grant (D234), as its init
     /// last said it, once it differs from `seen` (none: once there is any), waiting at most
     /// `timeout` (`Duration::MAX`: until it comes; `Duration::ZERO`: as it stands). Its
@@ -296,14 +325,6 @@ fn no_backend(r: crate::Refusal) -> ImageRefusal {
 fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
     let mut members = Vec::with_capacity(spec.members.len());
     for m in &spec.members {
-        if m.terminal {
-            return Err(ImageRefusal::Unsupported {
-                what: "a member's terminal",
-                why: "a pty in a member's own namespaces is owed (managed-runtime-plan.md G24); \
-                      its stdio are pipes"
-                    .into(),
-            });
-        }
         let mut env = Vec::with_capacity(m.env.len());
         for (key, value) in &m.env {
             let mut variable = Vec::with_capacity(key.len() + 1 + value.0.len());
@@ -351,6 +372,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             files,
             workdir: m.workdir.clone(),
             input: m.stdin,
+            terminal: m.terminal,
         });
     }
     let mut shares = Vec::with_capacity(spec.shares.len());
@@ -389,6 +411,44 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             })
         })
         .transpose()?;
+    // The run's credential grants (D242): a reference names a secret, never a value, and
+    // each host it is filled in toward is a DNS name as D236 names a destination's host by
+    // name, or host.docker.internal, reusing shards_dns' RFC rules; never an address, never a
+    // port, and never localhost. The hosts are stored lowered, so the
+    // injector's case-insensitive decision rests on a lowered store.
+    let mut credentials = Vec::with_capacity(spec.credentials.len());
+    for grant in &spec.credentials {
+        if grant.reference.is_empty() {
+            return Err(ImageRefusal::Spec {
+                what: "a credential grant",
+                why: "a grant names a credential by reference, which is empty".into(),
+            });
+        }
+        let mut toward = Vec::with_capacity(grant.toward.len());
+        for host in &grant.toward {
+            let lowered = host.to_ascii_lowercase();
+            // A DNS name alone: shards_dns' rules refuse an address's all-digit last label,
+            // and an address could never be filled toward, as TLS names a server by its DNS
+            // name only (RFC 6066 §3) and the injector fills where the SNI names the host.
+            if !shards_dns::host_name(&lowered) || lowered == "localhost" || lowered.ends_with(".localhost") {
+                return Err(ImageRefusal::Spec {
+                    what: "a credential grant",
+                    why: format!(
+                        "{}: {host} is not a host a credential is filled in toward: a DNS name, or {}, \
+                         without a port and never localhost (TLS names a server by its DNS name alone, \
+                         RFC 6066 §3)",
+                        grant.reference,
+                        shards_dns::HOST
+                    ),
+                });
+            }
+            toward.push(lowered);
+        }
+        credentials.push(wire::CredentialGrant {
+            reference: grant.reference.clone(),
+            toward,
+        });
+    }
     let request = wire::Request {
         image: spec.image.clone(),
         vcpus: spec.vcpus,
@@ -400,6 +460,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
         shares,
         nesting: spec.nesting,
         ready_by,
+        credentials,
     };
     // Past the channel's bound it would never be read; the guest's bound is the same one.
     request.encode().map_err(|e| ImageRefusal::Spec {
@@ -433,6 +494,7 @@ mod tests {
             }],
             publish: Vec::new(),
             egress: Narrowing::default(),
+            credentials: Vec::new(),
             shares: vec![ImageShare {
                 host: std::env::current_dir().unwrap(),
                 at: "/work".into(),
@@ -454,7 +516,52 @@ mod tests {
         assert_eq!(r.members[0].workdir.as_deref(), Some("/Users/ada/proj"));
         assert!(r.shares[0].read_only);
         assert_eq!((r.nesting, r.ready_by), (false, None));
+        assert!(r.credentials.is_empty());
         assert_eq!(wire::Request::decode(&r.encode().unwrap()).unwrap(), r);
+    }
+
+    /// A credential grant rides the request by reference, its hosts lowered; a bad host or
+    /// an empty reference is refused, and no grant means none (default deny).
+    #[test]
+    fn a_credential_grant_rides_by_reference() {
+        let mut spec = spec();
+        spec.credentials = vec![CredentialGrant {
+            reference: "anthropic/claude-max".into(),
+            toward: vec!["API.anthropic.com".into(), "platform.claude.com".into()],
+        }];
+        let r = request(&spec).unwrap();
+        assert_eq!(r.credentials.len(), 1);
+        assert_eq!(r.credentials[0].reference, "anthropic/claude-max");
+        // Stored lowered, so the injector's case-insensitive match rests on a lowered store.
+        assert_eq!(
+            r.credentials[0].toward,
+            vec!["api.anthropic.com", "platform.claude.com"]
+        );
+        assert_eq!(wire::Request::decode(&r.encode().unwrap()).unwrap(), r);
+        // An empty reference is refused.
+        let mut bad = spec.clone();
+        bad.credentials[0].reference = String::new();
+        assert!(matches!(request(&bad), Err(ImageRefusal::Spec { .. })));
+        // A host with a port, localhost, or an address (which no SNI names, RFC 6066 §3) is
+        // not a host a credential fills toward.
+        for host in [
+            "api.anthropic.com:443",
+            "localhost",
+            "under.localhost",
+            "10.0.0.5",
+            "::1",
+        ] {
+            let mut bad = spec.clone();
+            bad.credentials[0].toward = vec![host.into()];
+            assert!(
+                matches!(request(&bad), Err(ImageRefusal::Spec { .. })),
+                "{host} was accepted as a credential's host"
+            );
+        }
+        // host.docker.internal, the host itself, is one.
+        let mut ok = spec.clone();
+        ok.credentials[0].toward = vec!["host.docker.internal".into()];
+        assert!(request(&ok).is_ok(), "host.docker.internal was refused");
     }
 
     /// The nesting grant's consent and its deadline (D234) reach the run host as asked:
@@ -536,10 +643,12 @@ mod tests {
                 "{relative_or_escaping}"
             );
         }
+        // A member's terminal (D244) and its stdin are asked for in its request, as the run
+        // host takes them.
         let mut s = spec();
         s.members[0].terminal = true;
-        assert_eq!(refused(s), "a member's terminal");
-        // A member's stdin is asked for in its request, as the run host takes it.
+        assert!(request(&s).unwrap().members[0].terminal);
+        assert!(!request(&spec()).unwrap().members[0].terminal);
         let mut s = spec();
         s.members[0].stdin = true;
         assert!(request(&s).unwrap().members[0].input);

@@ -139,6 +139,25 @@ fn native_preparation_refuses_missing_variant_and_unbound_paths() {
     assert!(ImageIdentity::new(0, [1; 32]).is_err());
 }
 
+/// An image is read in the pieces its file system prefers, not in SHA-256's 64-byte blocks:
+/// a launch hashes the whole `shards` binary and kernel (tens of MiB), which at 64 bytes a
+/// read was a read(2) or ReadFile per 64 bytes, about a million a launch.
+#[test]
+fn a_verified_image_is_read_in_its_file_systems_pieces() {
+    let dir = shards_testdir::TempDir::new("native-reads").unwrap();
+    let path = dir.path().join("image");
+    let bytes: Vec<u8> = (0..1u32 << 20).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&path, &bytes).unwrap();
+    super::READS.with(|reads| reads.set(0));
+    verify_native_image(&path, image(&bytes), Instant::now() + Duration::from_secs(60)).unwrap();
+    let reads = super::READS.with(std::cell::Cell::get);
+    assert!(
+        reads < bytes.len() / 64,
+        "{reads} reads of a {}-byte image",
+        bytes.len()
+    );
+}
+
 /// Actual private files exercise full digest/length/end/deadline and retained
 /// handle ownership. A checked file is not authority for a later replaced path.
 #[test]

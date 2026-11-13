@@ -377,6 +377,10 @@ fn ram_ranges(memory_mib: u64) -> Result<(u64, Vec<(u64, usize)>), String> {
 /// `gpu`, whether it has a GPU, and its window's length: as its renderer offers, where
 /// `Some(0)`, a boot's; that long, a restore's, where its renderer offers at least as much
 /// (D150, D201).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a boot's CPU baseline (D245) beside the machine's config, which a snapshot keeps without one"
+)]
 fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
@@ -385,6 +389,7 @@ fn assemble(
     hosts: super::Hosts<'_>,
     gpu: Option<super::MachineGpu<'_, '_>>,
     pci: super::Pci<'_>,
+    baseline: &[[u32; 7]],
 ) -> Result<Assembled, String> {
     if config.nested {
         return Err("virtualization of a guest's own is not given on x86_64 yet".into());
@@ -392,7 +397,20 @@ fn assemble(
     // The VM before the layout: on WHP each host function it assigns is a device of its
     // partition first, whose BARs size the PCI bus's 64-bit window (D154).
     #[cfg(not(hv = "whp"))]
-    let vm = hv::Vm::new(hv::VmConfig { vcpus: config.vcpus }).map_err(|e| e.to_string())?;
+    let vm = hv::Vm::new(hv::VmConfig {
+        vcpus: config.vcpus,
+        baseline: baseline.to_vec(),
+    })
+    .map_err(|e| e.to_string())?;
+    // WHP restores a snapshot on the CPU it was taken on alone (hv::whp's state.rs), so a
+    // baseline would take no microVM to another CPU there: none is told.
+    #[cfg(hv = "whp")]
+    if !baseline.is_empty() {
+        return Err(format!(
+            "{}: `shards configure cpu --none`",
+            super::NO_BASELINE_ON_WHP
+        ));
+    }
     #[cfg(hv = "whp")]
     let (vm, assigned, given) = assigning(config, pci.vfio)?;
     #[cfg(hv = "whp")]
@@ -733,6 +751,7 @@ pub fn build_reported(
                 slots: cfg.pci_slots,
                 slots_iommu: cfg.pci_slots_iommu,
             },
+            &cfg.cpu_baseline,
         )?;
         let tables = acpi::build(cfg.vcpus, &a.virtio, a.pci.as_ref())?.blobs;
         let access = memory.access().map_err(|e| e.to_string())?;
@@ -820,6 +839,8 @@ pub fn restore(
             slots: snap.config.pci_slots,
             ..super::Pci::default()
         },
+        // Its vCPUs are told the CPUID their snapshot keeps, the baseline within it.
+        &[],
     )?;
     super::replug(&memory, snap, memory_file, &a.vm)?;
     let guest: Vec<(u64, u64)> = memory
