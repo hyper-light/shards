@@ -279,7 +279,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
     /// warm VM's is (`ready`, PM M357): given up once it has run nothing a start does
     /// ([`shards_vmm::platform::progressed`]) for [`READY_TIMEOUT`], judged each
     /// [`READY_STALL`]; one whose CPU time cannot be read, [`READY_TIMEOUT`] from its start.
-    fn await_holding(&self, id: &str, inbox: &Arc<Mutex<Inbox>>) -> Result<(), String> {
+    pub(super) fn await_holding(&self, id: &str, inbox: &Arc<Mutex<Inbox>>) -> Result<(), String> {
         #[cfg(unix)]
         let fd = {
             use std::os::fd::AsRawFd as _;

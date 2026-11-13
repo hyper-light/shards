@@ -13928,6 +13928,131 @@ mod tests {
         });
     }
 
+    /// A claim of a pool none of whose VMs is starting, nor can be planned (its template
+    /// gone), is refused at once, said so: no VM comes for it. It waited READY_TIMEOUT's
+    /// minute, picked, for nothing (ROOT's (3), R03).
+    #[test]
+    fn a_claim_none_can_start_for_is_refused_at_once() {
+        let t = Test::new("claim-none");
+        t.run(|t| {
+            let dir = t.home.join("gone");
+            let rootfs = t.home.join("rootfs.erofs");
+            std::fs::write(&rootfs, b"erofs").unwrap();
+            let stamp = shards_image::store::rootfs_stamp(&rootfs);
+            let why = match t.t.daemon.claim(t.threads, &own(&dir), &rootfs, stamp.as_deref()) {
+                Err(Claim::Failed(why)) => why,
+                Err(Claim::Broken) => "found broken".to_string(),
+                Ok(_) => "a warm VM claimed".to_string(),
+            };
+            assert!(why.contains("none is starting for it"), "{why}");
+        });
+    }
+
+    /// Run `id` started on `vm`, on a daemon thread, as a visit's is: handed its VM, then
+    /// waited for until its VM holds (`await_holding`), then followed. The thread returns
+    /// what the wait for its hold found.
+    fn holding<'s>(
+        t: &In<'s, '_, Real>,
+        id: &str,
+        vm: Arc<shards_ipc::Child>,
+    ) -> (std::thread::ScopedJoinHandle<'s, Result<(), String>>, UnixStream) {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        lock(&t.t.vms).push(vm.clone());
+        let ready = Ready {
+            vm,
+            socket: ours,
+            net: None,
+            mac: None,
+            pool: None,
+            records: None,
+            joined: None,
+            layer: None,
+        };
+        let (daemon, threads, id) = (&t.t.daemon, t.threads, id.to_string());
+        let run = threads.spawn(move || {
+            let null = File::open(crate::os::NULL).unwrap();
+            let mut ready = Some(ready);
+            let inbox = daemon.start_run(
+                threads,
+                &id,
+                b"run",
+                &[null.as_fd()],
+                &[],
+                Keep {
+                    detached: None,
+                    options: crate::spec::Options::default(),
+                    health: None,
+                    published: Vec::new(),
+                    named: None,
+                    restarted: false,
+                    layer_pending: false,
+                    layer_over: None,
+                    layer_way: None,
+                    log_files: DEFAULT_LOGS.files,
+                    log_compress: false,
+                    visit: false,
+                    egress: None,
+                    agentfile: None,
+                    nested: false,
+                    mac: None,
+                    link_local: Vec::new(),
+                    engine: None,
+                },
+                || ready.take().ok_or_else(|| "no warm VM".to_string()),
+            )?;
+            let held = daemon.await_holding(&id, &inbox);
+            daemon.follow(threads, id.clone(), inbox);
+            held
+        });
+        (run, theirs)
+    }
+
+    /// A visit's VM is waited for while it goes on with its start, judged by what the daemon
+    /// has seen of holds (D215's judge): one whose process runs a CPU and says STARTED 1.5 s
+    /// after its RUN is taken, teaching the daemon the slowest hold; past it, a stopped
+    /// stand-in (a sleep) is refused once it has run nothing for a whole such window, said
+    /// so, with how long. It was refused at READY_TIMEOUT's minute, judged each
+    /// READY_STALL's 10 s, picked (ROOT's (3), R03).
+    #[cfg(unix)]
+    #[test]
+    fn a_visits_vm_is_waited_for_while_it_starts_and_refused_once_still_past_the_slowest_hold() {
+        let late = Duration::from_millis(1500);
+        let t = Test::new("holding");
+        t.run(|t| {
+            let busy = shards_ipc::spawn(
+                Path::new("/bin/sh"),
+                &[OsStr::new("-c"), OsStr::new("while :; do :; done")],
+                &[],
+                false,
+            )
+            .unwrap();
+            let id = t.create("slow");
+            let (run, vm) = holding(t, &id, Arc::new(busy));
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            std::thread::sleep(late);
+            say(&vm, kind::STARTED, &[]);
+            assert_eq!(joined(run), Ok(()), "a slow hold with progress refused");
+            say(&vm, kind::DONE, &[0]);
+            until_ended(&t.t.daemon, &id);
+
+            let id = t.create("still");
+            let began = Instant::now();
+            let (run, vm) = holding(t, &id, Arc::new(sleeper(600)));
+            assert_eq!(heard(&vm).0, kind::RUN);
+            say(&vm, kind::TAKEN, &[]);
+            let refused = joined(run).unwrap_err();
+            assert!(began.elapsed() >= late, "{:?}", began.elapsed());
+            assert!(
+                refused.contains("ran nothing of its start for")
+                    && refused.contains("past the slowest hold seen"),
+                "{refused}"
+            );
+            say(&vm, kind::DONE, &[0]);
+            until_ended(&t.t.daemon, &id);
+        });
+    }
+
     /// A warm VM that ends while it waits is reaped, and taken out of its pool, by the
     /// followers' loop: no thread waits out its life (PM M90).
     #[test]
