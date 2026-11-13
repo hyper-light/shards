@@ -1644,6 +1644,17 @@ fn managed_marker() -> Result<Vec<u8>, Refusal> {
         .map_err(|()| Refusal::Launch(crate::LaunchError::Allocation))
 }
 
+/// A managed guest's use of its host (D260), as one sample read it: what its vCPUs have run of
+/// its guest and what its VM process has used, an image run's [`Microvm`](crate::image::Microvm)
+/// (D241), read by its VM process after `asked` and before `answered`, so that two samples'
+/// window is known within their asks' spans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedUse {
+    pub microvm: crate::image::Microvm,
+    pub asked: Instant,
+    pub answered: Instant,
+}
+
 /// The existing API protocol around a receipt the native owner already owns.
 pub struct ManagedGuest {
     process: crate::ManagedReceipt,
@@ -2002,7 +2013,13 @@ impl ManagedGuest {
             .then(|| Instant::now().checked_add(patience))
             .flatten();
         let asked = rate.map_or(0, std::num::NonZeroU64::get);
-        let line = match rate_exchange(&self.process.identity()?.vsock, asked, deadline, patience) {
+        let line = match host_exchange(
+            &self.process.identity()?.vsock,
+            Exchange::Rate,
+            shards_abi::rate::ask(asked).as_bytes(),
+            deadline,
+            patience,
+        ) {
             Ok(line) => line,
             // Its process gone as it was asked: its end, which says why.
             Err(refused) => return Err(gone()?.unwrap_or(refused)),
@@ -2017,6 +2034,63 @@ impl ManagedGuest {
     /// the guest's own period and copies no number: none until a rate has been answered.
     pub fn rate_period(&self) -> Option<Duration> {
         lock(&self.shared.state).rate_period
+    }
+
+    /// What its vCPUs have run of its guest and its VM process has used of its host (D260), as
+    /// an image run's stats carry it (`ImageGuest::stats`' `microvm`, D241): each vCPU's guest
+    /// time as its hypervisor counts it (KVM's thread, HVF's `hv_vcpu_get_exec_time`, WHP's
+    /// run-time counter), then its VM process's own use (`platform::process_usage`), read by
+    /// that process in that order, so that [`Microvm::vmm_ns`](crate::image::Microvm::vmm_ns),
+    /// its VMM's own CPU time, is never less than none. Each part is its reading or its VM
+    /// process's words of why not.
+    ///
+    /// Asked on its vsock socket (`USE`, `shards_abi::rate`), as [`rate`](Self::rate) is,
+    /// waiting at most `patience` (`Duration::MAX`: until it answers or the guest ends).
+    /// Refused as [`Refusal::HostUse`] where its answer is none of the protocol's;
+    /// [`Refusal::Unsupported`] (`what: "host use"`) where its VM process takes no use (one
+    /// not booted `--host-managed`, or a shards before D260) or does not answer within
+    /// `patience`; [`Refusal::ManagedIo`] where its socket fails; and [`Refusal::Ended`] once
+    /// the guest has ended.
+    pub fn host_use(&self, patience: Duration) -> Result<ManagedUse, Refusal> {
+        let gone = || {
+            self.end(&mut lock(&self.shared.state))
+                .map(|end| end.map(Refusal::Ended))
+        };
+        if let Some(ended) = gone()? {
+            return Err(ended);
+        }
+        let deadline = (patience != Duration::MAX)
+            .then(|| Instant::now().checked_add(patience))
+            .flatten();
+        let asked = Instant::now();
+        let answer = match host_exchange(
+            &self.process.identity()?.vsock,
+            Exchange::Use,
+            shards_abi::rate::USE_ASK,
+            deadline,
+            patience,
+        ) {
+            Ok(answer) => answer,
+            Err(refused) => return Err(gone()?.unwrap_or(refused)),
+        };
+        let answered = Instant::now();
+        let used = shards_abi::rate::read_used(&answer).map_err(Refusal::HostUse)?;
+        let words = |why: &str| managed_words(format_args!("{why}"));
+        let microvm = crate::image::Microvm {
+            guest: match used.guest {
+                Ok(times) => Ok(times),
+                Err(why) => Err(words(why)?),
+            },
+            host: match used.host {
+                Ok(host) => Ok(host),
+                Err(why) => Err(words(why)?),
+            },
+        };
+        Ok(ManagedUse {
+            microvm,
+            asked,
+            answered,
+        })
     }
 
     /// The room a budget leaves the guest, as an image run's (`ImageGuest::room`, D188, D241):
@@ -2185,16 +2259,44 @@ impl Drop for ManagedGuest {
     }
 }
 
-/// One rate asked of the VM process listening at `vsock`, and its answer's line, its newline
-/// last (D255, `shards_abi::rate`): one dial, its ask, then the line read a byte at a time to
-/// its newline or the longest answer, each within `deadline` (none: no clock), its caller's
-/// `patience`.
-fn rate_exchange(
+/// What a host client asks of a managed guest's VM process on its vsock socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Exchange {
+    /// Its rate (D255): its answer one line.
+    Rate,
+    /// Its use (D260): its answer all its VM process says before closing the connection.
+    Use,
+}
+
+impl Exchange {
+    fn what(self) -> &'static str {
+        match self {
+            Self::Rate => "rate",
+            Self::Use => "host use",
+        }
+    }
+
+    /// Whether `answer` is whole before its connection closes.
+    fn whole(self, answer: &[u8]) -> bool {
+        match self {
+            Self::Rate => answer.contains(&b'\n'),
+            Self::Use => false,
+        }
+    }
+}
+
+/// One ask of the VM process listening at `vsock` (D255, D260, `shards_abi::rate`), and its
+/// answer: one dial, `ask`, then what it answers until its answer is whole or its connection
+/// closes, or past the longest answer, which its reader refuses; each within `deadline`
+/// (none: no clock), its caller's `patience`. Read as it comes, its buffer grown fallibly.
+fn host_exchange(
     vsock: &Path,
-    milli: u64,
+    exchange: Exchange,
+    ask: &[u8],
     deadline: Option<Instant>,
     patience: Duration,
 ) -> Result<Vec<u8>, Refusal> {
+    let what = exchange.what();
     let failed = |operation| {
         move |e: io::Error| Refusal::ManagedIo {
             operation,
@@ -2204,7 +2306,7 @@ fn rate_exchange(
     };
     let late = || {
         managed_words(format_args!("no answer within {patience:?}"))
-            .map(|why| Refusal::Unsupported { what: "rate", why })
+            .map(|why| Refusal::Unsupported { what, why })
     };
     let left = || match deadline {
         None => Ok(None),
@@ -2218,49 +2320,45 @@ fn rate_exchange(
     let mut s = match stream::connect_until(vsock, deadline) {
         Ok(s) => s,
         Err(e) if timed_out(&e) => return Err(late()?),
-        Err(e) => return Err(failed("rate's dial")(e)),
+        Err(e) => return Err(failed("host ask's dial")(e)),
     };
-    Stream::set_write_timeout(&s, left()?).map_err(failed("rate's ask"))?;
-    if let Err(e) = s.write_all(shards_abi::rate::ask(milli).as_bytes()) {
+    Stream::set_write_timeout(&s, left()?).map_err(failed("host ask"))?;
+    if let Err(e) = s.write_all(ask) {
         return Err(if timed_out(&e) {
             late()?
         } else {
-            failed("rate's ask")(e)
+            failed("host ask")(e)
         });
     }
-    let mut line = Vec::new();
-    loop {
-        Stream::set_read_timeout(&s, left()?).map_err(failed("rate's answer"))?;
-        let mut byte = [0u8; 1];
-        match s.read(&mut byte) {
-            Ok(0) => {
+    let most = shards_abi::rate::ANSWER_MOST.saturating_add(1);
+    let mut answer = Vec::new();
+    while !exchange.whole(&answer) && answer.len() < most {
+        Stream::set_read_timeout(&s, left()?).map_err(failed("host ask's answer"))?;
+        answer.try_reserve(1).map_err(|_| Refusal::Allocation {
+            what: "a host ask's answer",
+        })?;
+        let at = answer.len();
+        answer.resize(answer.capacity().min(most), 0);
+        let read = s.read(answer.get_mut(at..).unwrap_or_default());
+        answer.truncate(at.saturating_add(*read.as_ref().unwrap_or(&0)));
+        match read {
+            Ok(0) if at == 0 => {
                 return Err(Refusal::Unsupported {
-                    what: "rate",
+                    what,
                     why: managed_words(format_args!(
-                        "its VM process closed the ask unanswered: it takes no rate from its \
-                         host's clients (one not booted --host-managed, or a shards before D255)"
+                        "its VM process closed the ask unanswered: it takes no {what} from its \
+                         host's clients (one not booted --host-managed, or a shards before it)"
                     ))?,
                 });
             }
-            Ok(_) => {
-                line.try_reserve(1).map_err(|_| Refusal::Allocation {
-                    what: "a rate's answer",
-                })?;
-                line.extend_from_slice(&byte);
-                if byte == *b"\n" {
-                    return Ok(line);
-                }
-                if line.len() >= shards_abi::rate::ANSWER_MOST {
-                    return Err(Refusal::Rate(managed_words(format_args!(
-                        "its VM process answered past the longest answer, no line"
-                    ))?));
-                }
-            }
+            Ok(0) => break,
+            Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) if timed_out(&e) => return Err(late()?),
-            Err(e) => return Err(failed("rate's answer")(e)),
+            Err(e) => return Err(failed("host ask's answer")(e)),
         }
     }
+    Ok(answer)
 }
 
 /// A managed guest's refusal's words, allocated as its path allocates: fallibly.
@@ -2860,6 +2958,102 @@ mod tests {
             "{asked:?}"
         );
         drop(listener);
+    }
+
+    /// D260: a managed guest's use is asked on its vsock socket, `USE`, and read as its VM
+    /// process answers: its vCPUs' guest times and its own use, its VMM's own the difference;
+    /// either part's words where it was not read; an answer none of the protocol's refused
+    /// by what broke it; an ask closed unanswered, a VM process that takes none.
+    #[test]
+    fn a_managed_guests_use_is_asked_on_its_socket_and_read_as_answered() {
+        use shards_abi::rate::UseBroken;
+        let dir = shards_testdir::TempDir::new("api-use").unwrap();
+        let socket = dir.join("v");
+        let stand_in = rate_stand_in(
+            &socket,
+            vec![
+                Some(
+                    b"USED\ndeparted 5\nvcpu 0 400\nvcpu 1 600 unread hvf-exec-time 3\nhost 1500 8192 4096\n",
+                ),
+                Some(b"USED\nguest-unread the microVM has not started\nhost 70 1 2\n"),
+                Some(b"USED\ndeparted 9\nhost-unread its VM process: denied\n"),
+                Some(b"USED\nhost 1 2 3\n"),
+                Some(b"USED\ndeparted 1\nhost 1 2"),
+                Some(b"RATED 250 1\n"),
+                None,
+            ],
+        );
+        let (guest, _native) = managed_model_at(false, socket);
+        let before = Instant::now();
+        let used = guest.host_use(Duration::MAX).unwrap();
+        assert!(before <= used.asked && used.asked <= used.answered);
+        let times = crate::image::GuestTimes {
+            vcpus: vec![
+                crate::image::VcpuTime {
+                    index: 0,
+                    guest_ns: 400,
+                    unread: None,
+                },
+                crate::image::VcpuTime {
+                    index: 1,
+                    guest_ns: 600,
+                    unread: Some(shards_abi::guest_time::Unread::HvfExecTime(3)),
+                },
+            ],
+            departed_ns: 5,
+        };
+        let host = crate::image::HostUse {
+            cpu_ns: 1500,
+            resident_bytes: 8192,
+            footprint_bytes: 4096,
+        };
+        assert_eq!(
+            used.microvm,
+            crate::image::Microvm {
+                host: Ok(host),
+                guest: Ok(times),
+            }
+        );
+        assert_eq!(used.microvm.vmm_ns(), Some(1500 - 1005));
+        let unstarted = guest.host_use(Duration::MAX).unwrap().microvm;
+        assert_eq!(unstarted.guest, Err("the microVM has not started".to_string()));
+        assert_eq!(unstarted.host.as_ref().map(|h| h.cpu_ns), Ok(70));
+        assert_eq!(unstarted.vmm_ns(), None, "no guest time read");
+        let unhosted = guest.host_use(Duration::MAX).unwrap().microvm;
+        assert_eq!(unhosted.host, Err("its VM process: denied".to_string()));
+        assert_eq!(unhosted.guest.map(|g| g.total_ns()), Ok(9));
+        for broken in [UseBroken::Guest, UseBroken::Text, UseBroken::Word] {
+            assert_eq!(
+                guest.host_use(Duration::MAX),
+                Err(Refusal::HostUse(broken)),
+                "{broken:?}"
+            );
+        }
+        assert!(matches!(
+            guest.host_use(Duration::MAX),
+            Err(Refusal::Unsupported { what: "host use", .. })
+        ));
+        let asks = stand_in.join().unwrap();
+        assert_eq!(asks, vec![b"USE\n".to_vec(); 7]);
+    }
+
+    /// D260: a use its VM process does not answer within its caller's patience is refused as
+    /// unanswered, typed; once the guest has ended, its use is its end, asking nothing.
+    #[test]
+    fn a_managed_use_unanswered_or_of_an_ended_guest_is_refused() {
+        let dir = shards_testdir::TempDir::new("api-use-late").unwrap();
+        let socket = dir.join("v");
+        let listener = rate_listener(&socket);
+        let (guest, native) = managed_model_at(false, socket);
+        let asked = guest.host_use(Duration::ZERO);
+        assert!(
+            matches!(&asked, Err(Refusal::Unsupported { what: "host use", why }) if why.starts_with("no answer within")),
+            "{asked:?}"
+        );
+        drop(listener);
+        native.publish(crate::TerminalScope::Released);
+        assert_eq!(guest.wait_for(Duration::MAX).unwrap(), Some(End::PowerOff));
+        assert_eq!(guest.host_use(Duration::MAX), Err(Refusal::Ended(End::PowerOff)));
     }
 
     /// D255: a managed guest's room is refused, typed, as nothing holds a managed guest

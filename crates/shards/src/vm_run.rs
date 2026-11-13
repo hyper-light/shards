@@ -1041,10 +1041,10 @@ pub fn hold_rate(milli: u64) -> Result<Option<std::num::NonZeroU64>, String> {
         .hold_rate(milli)
 }
 
-/// Takes the rates a managed machine's host's clients ask on its vsock socket (D255): the
-/// muxer hands each `RATE` line's connection here ([`VsockHost::rate`]), and a thread of its
-/// own holds the vCPUs to each in turn and answers on its connection ([`serve_rates`]).
-/// Nothing where the machine has no socket, which no client dials.
+/// Takes the asks a managed machine's host's clients make on its vsock socket, its rates
+/// (D255) and its use (D260): the muxer hands each `RATE` or `USE` line's connection here
+/// ([`VsockHost::rate`]), and a thread of its own answers each in turn on its connection
+/// ([`serve_rates`]). Nothing where the machine has no socket, which no client dials.
 fn take_rates(vsock: &mut Option<VsockHost>) -> Result<(), String> {
     let Some(vsock) = vsock.as_mut() else {
         return Ok(());
@@ -1058,23 +1058,53 @@ fn take_rates(vsock: &mut Option<VsockHost>) -> Result<(), String> {
     Ok(())
 }
 
-/// Answers each rate asked of this machine, in turn, until its muxer goes: the hold
-/// [`hold_rate`] makes of it, with its hold's period, or why not (`shards_abi::rate`).
-fn serve_rates(asked: &std::sync::mpsc::Receiver<(shards_vmm::platform::UnixStream, u64)>) {
-    use shards_abi::rate::{Answer, answer};
-    for (mut stream, milli) in asked {
-        let line = match rate_answer(shards_vmm::vm::hold_period(), || hold_rate(milli)) {
-            Ok((milli, period_ns)) => answer(&Answer::Held { milli, period_ns }),
-            Err(why) => answer(&Answer::Refused(&why)),
+/// Answers each ask of this machine, in turn, until its muxer goes (`shards_abi::rate`): a
+/// rate, with the hold [`hold_rate`] makes of it and its hold's period, or why not; its use,
+/// with [`use_answer`].
+fn serve_rates(
+    asked: &std::sync::mpsc::Receiver<(shards_vmm::platform::UnixStream, shards_abi::rate::Asked)>,
+) {
+    use shards_abi::rate::{Answer, Asked, answer};
+    for (mut stream, ask) in asked {
+        let line = match ask {
+            Asked::Rate(milli) => match rate_answer(shards_vmm::vm::hold_period(), || hold_rate(milli)) {
+                Ok((milli, period_ns)) => answer(&Answer::Held { milli, period_ns }),
+                Err(why) => answer(&Answer::Refused(&why)),
+            },
+            Asked::Use => use_answer(guest_times, || {
+                shards_vmm::platform::process_usage(std::process::id())
+            }),
         };
         // Blocking: one line, which its socket takes whole, and its client waits for.
         let answered = stream
             .set_nonblocking(false)
             .and_then(|()| stream.write_all(line.as_bytes()));
         if let Err(e) = answered {
-            shards_vmm::debug!("a rate's answer: {e}");
+            shards_vmm::debug!("a host ask's answer: {e}");
         }
     }
+}
+
+/// What this machine's vCPUs have run of its guest, read by `guest`, then what this process
+/// has used of its host, read by `host` (D260): the later read holds the earlier, as an image
+/// run's stats read them (D241), so that the process's CPU time less its vCPUs' is its VMM's
+/// own and never less than none past the clocks' steps.
+fn use_answer(
+    guest: impl FnOnce() -> Result<shards_vmm::vm::GuestTimes, String>,
+    host: impl FnOnce() -> std::io::Result<shards_vmm::platform::Usage>,
+) -> String {
+    let guest = guest();
+    let host = host()
+        .map(|u| shards_abi::guest_time::HostUse {
+            cpu_ns: u.cpu_ns,
+            resident_bytes: u.resident,
+            footprint_bytes: u.footprint,
+        })
+        .map_err(|e| format!("its VM process: {e}"));
+    shards_abi::rate::used(
+        guest.as_ref().map_err(String::as_str),
+        host.as_ref().map_err(String::as_str),
+    )
 }
 
 /// What a rate's ask holds: what `hold` held the vCPUs to, none where it lets them be, and
@@ -3404,7 +3434,7 @@ fn last_said(said: &[u8], report: shards_abi::bounds::ConsoleReport) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod rate_tests {
-    use super::{rate_answer, serve_rates};
+    use super::{rate_answer, serve_rates, use_answer};
     use shards_abi::rate::{Answer, read_answer};
     use std::io::Read as _;
     use std::num::NonZeroU64;
@@ -3442,7 +3472,9 @@ mod rate_tests {
         let (asks, asked) = std::sync::mpsc::channel();
         let (ours, mut theirs) = shards_vmm::platform::UnixStream::pair().unwrap();
         ours.set_nonblocking(true).unwrap();
-        asks.send((ours, 250)).unwrap();
+        asks.send((ours, shards_abi::rate::Asked::Rate(250))).unwrap();
+        let (ours, mut used) = shards_vmm::platform::UnixStream::pair().unwrap();
+        asks.send((ours, shards_abi::rate::Asked::Use)).unwrap();
         drop(asks);
         serve_rates(&asked);
         let mut line = String::new();
@@ -3450,6 +3482,57 @@ mod rate_tests {
         assert_eq!(
             read_answer(line.as_bytes()).unwrap(),
             Answer::Refused("the microVM has not started")
+        );
+        // Its use, with no machine running here: its guest's refusal, and this process's own
+        // use, read as the VM process reads its own.
+        let mut answer = String::new();
+        used.read_to_string(&mut answer).unwrap();
+        let read = shards_abi::rate::read_used(answer.as_bytes()).unwrap();
+        assert_eq!(read.guest, Err("the microVM has not started"));
+        assert!(read.host.unwrap().cpu_ns > 0, "{answer}");
+    }
+
+    /// A use's answer reads its guest's times first, then its process's use, which holds them
+    /// (D260): each its reading, or its words of why not, the process's named.
+    #[test]
+    fn a_uses_answer_reads_the_guest_then_its_process() {
+        let order = std::cell::RefCell::new(Vec::new());
+        let times = shards_vmm::vm::GuestTimes {
+            vcpus: vec![shards_vmm::vm::VcpuTime {
+                index: 0,
+                guest_ns: 40,
+                unread: None,
+            }],
+            departed_ns: 2,
+        };
+        let usage = shards_vmm::platform::process_usage(std::process::id()).unwrap();
+        let answer = use_answer(
+            || {
+                order.borrow_mut().push("guest");
+                Ok(times.clone())
+            },
+            || {
+                order.borrow_mut().push("host");
+                Ok(usage)
+            },
+        );
+        assert_eq!(*order.borrow(), ["guest", "host"]);
+        let read = shards_abi::rate::read_used(answer.as_bytes()).unwrap();
+        assert_eq!(read.guest, Ok(times));
+        let host = read.host.unwrap();
+        assert_eq!(
+            (host.cpu_ns, host.resident_bytes, host.footprint_bytes),
+            (usage.cpu_ns, usage.resident, usage.footprint)
+        );
+        let refused = use_answer(
+            || Err("the microVM has not started".into()),
+            || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        );
+        let read = shards_abi::rate::read_used(refused.as_bytes()).unwrap();
+        assert_eq!(read.guest, Err("the microVM has not started"));
+        assert!(
+            read.host.unwrap_err().starts_with("its VM process: "),
+            "{refused}"
         );
     }
 }

@@ -2376,12 +2376,12 @@ pub struct VsockHost {
     ///
     /// [`ports`]: VsockHost::ports
     pub every: Vec<(u32, ServedPort)>,
-    /// A managed machine's rate (D255): a host client's `RATE <milli>` line on
-    /// [`path`](VsockHost::path)'s socket comes here with its connection, for this process
-    /// to hold the vCPUs to and answer on (`shards_abi::rate`). Only a dial on that socket
-    /// says one: a guest's connections arrive as its packets. None for every other
-    /// machine, whose muxer closes such a dial unanswered.
-    pub rate: Option<std::sync::mpsc::Sender<(crate::platform::UnixStream, u64)>>,
+    /// A managed machine's host asks: a host client's `RATE <milli>` (D255) or `USE` (D260)
+    /// line on [`path`](VsockHost::path)'s socket comes here with its connection, for this
+    /// process to hold the vCPUs to, or read their use, and answer on (`shards_abi::rate`).
+    /// Only a dial on that socket says one: a guest's connections arrive as its packets.
+    /// None for every other machine, whose muxer closes such a dial unanswered.
+    pub rate: Option<std::sync::mpsc::Sender<(crate::platform::UnixStream, shards_abi::rate::Asked)>>,
 }
 
 /// What a [`ServedPort::Admitted`] port's owner did with a guest's connection: took it, or

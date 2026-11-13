@@ -1175,12 +1175,9 @@ fn a_members_arguments_follow_its_images_command_in_order() {
         }];
         s
     };
-    let guest = ImageShards::new()
-        .boot(
-            &given(["--resume", "s 1", ""].map(String::from).to_vec()),
-            TIMEOUT,
-        )
-        .unwrap();
+    // Its run host's diagnostics kept ([`boot`]): its guest stopped before its command's end
+    // with nothing said of why (CI 43496145972, x86_64 gnu).
+    let guest = boot(&home, &given(["--resume", "s 1", ""].map(String::from).to_vec()));
     let said = read_all(&*guest, Channel::Stdout);
     let (program, rest) = said.split_at(said.iter().position(|&b| b == 0).unwrap_or(said.len()));
     assert!(

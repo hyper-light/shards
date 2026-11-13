@@ -767,43 +767,19 @@ pub struct Microvm {
     pub guest: Result<GuestTimes, String>,
 }
 
-/// What a VM process uses of its host, as the host counts it (`platform::process_usage`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HostUse {
-    /// Its CPU time, user and system together, in ns: its vCPUs' guest time among it.
-    pub cpu_ns: u64,
-    pub resident_bytes: u64,
-    /// Its own memory, as memory per VM is counted (PM M30): macOS's physical footprint,
-    /// Linux's anonymous resident pages, Windows' private working set.
-    pub footprint_bytes: u64,
-}
+/// What a VM process uses of its host, and what a microVM's vCPUs have run of its guest, each
+/// by index, with what those it no longer has ran (guest-cpu-time-v1): one form for the VM
+/// process, an image run's stats and a managed guest's use (D260).
+pub use shards_abi::guest_time::{GuestTimes, HostUse, VcpuTime};
 
-/// What a microVM's vCPUs have run of its guest, as its hypervisor counts it: each by index,
-/// and what those it no longer has ran, which stay its machine's (guest-cpu-time-v1).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct GuestTimes {
-    /// In index order, each index once.
-    pub vcpus: Vec<VcpuTime>,
-    pub departed_ns: u64,
-}
-
-impl GuestTimes {
-    /// Its machine's: what every vCPU it has had ran of its guest.
-    pub fn total_ns(&self) -> u64 {
-        self.vcpus
-            .iter()
-            .fold(self.departed_ns, |total, v| total.saturating_add(v.guest_ns))
+impl Microvm {
+    /// Its VMM's own CPU time, in ns: its VM process's less what its vCPUs ran of its guest,
+    /// none less than none past the clocks' steps (D241, D260); none where either was not read.
+    pub fn vmm_ns(&self) -> Option<u64> {
+        let host = self.host.as_ref().ok()?;
+        let guest = self.guest.as_ref().ok()?;
+        Some(host.cpu_ns.saturating_sub(guest.total_ns()))
     }
-}
-
-/// One vCPU's guest time, as a sample read it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VcpuTime {
-    pub index: u32,
-    /// Nanoseconds, never less than an earlier sample of the same vCPU said.
-    pub guest_ns: u64,
-    /// Why this sample did not read it, typed: `guest_ns` is then the most it read before.
-    pub unread: Option<shards_abi::guest_time::Unread>,
 }
 
 impl Stats {

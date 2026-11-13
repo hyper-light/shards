@@ -2197,8 +2197,11 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
 /// where the window and the periods do not line up, and what its vCPU overruns before the
 /// governor reads, at the window's two ends) and what its VMM's own threads used past its
 /// vCPU's whole CPU over a window unheld just before. Its vCPU's whole CPU holds nothing, and
-/// none lifts its hold; each answer says the period its build's hold holds over. A guest
-/// booted without `--host-managed` closes the ask unanswered.
+/// none lifts its hold; each answer says the period its build's hold holds over. Its use
+/// (D260, `USE`, as `ManagedGuest::host_use` asks it), sampled twice a window apart once let
+/// be: its one vCPU's guest time and its VM process's own use, every part read, its vCPU's
+/// grown by no more than the time between the asks and its process's CPU holding it. A guest
+/// booted without `--host-managed` closes either ask unanswered.
 #[test]
 fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
     use shards_abi::rate::{Answer, ask, read_answer};
@@ -2313,6 +2316,43 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
             "{said}"
         );
     }
+    let used = |socket: &std::path::Path| {
+        let mut s = shards_vmm::platform::UnixStream::connect(socket).unwrap();
+        s.write_all(shards_abi::rate::USE_ASK).unwrap();
+        let mut answer = Vec::new();
+        s.read_to_end(&mut answer).unwrap();
+        answer
+    };
+    let read = |answer: &[u8]| {
+        let u = shards_abi::rate::read_used(answer).unwrap();
+        (u.guest.unwrap(), u.host.unwrap())
+    };
+    let first_asked = Instant::now();
+    let first = used(&socket);
+    std::thread::sleep(Duration::from_secs(2));
+    let second = used(&socket);
+    let span = u64::try_from(first_asked.elapsed().as_nanos()).unwrap();
+    let ((g1, h1), (g2, h2)) = (read(&first), read(&second));
+    for g in [&g1, &g2] {
+        assert_eq!(g.vcpus.len(), 1, "{g:?}");
+        assert!(g.vcpus.iter().all(|v| v.unread.is_none()), "{g:?}");
+    }
+    let grew = g2.total_ns() - g1.total_ns();
+    assert!(
+        grew <= span,
+        "its one vCPU ran {grew} ns of its guest in {span} ns"
+    );
+    assert!(
+        grew >= span / 20,
+        "its spinning vCPU ran {grew} ns of its guest in {span} ns, let be"
+    );
+    assert!(h2.cpu_ns >= h1.cpu_ns, "{h1:?} then {h2:?}");
+    assert!(
+        h2.cpu_ns >= g2.total_ns(),
+        "its VM process's {} ns of CPU, read after its vCPU's {} ns of guest time",
+        h2.cpu_ns,
+        g2.total_ns()
+    );
     let _ = child.kill();
     let _ = child.wait();
     let plain_socket = dir.join("u");
@@ -2322,6 +2362,10 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
         asked(&plain_socket, 250),
         None,
         "a guest not booted --host-managed"
+    );
+    assert!(
+        used(&plain_socket).is_empty(),
+        "a guest not booted --host-managed told its use"
     );
     let _ = plain.kill();
     let _ = plain.wait();
