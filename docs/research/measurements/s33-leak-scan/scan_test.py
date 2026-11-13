@@ -13,8 +13,10 @@ import hashlib
 import importlib.util
 import io
 import json
+import mmap
 import os
 import tempfile
+import tracemalloc
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -184,6 +186,50 @@ class LeakTest(unittest.TestCase):
         )
         code, said = p.scan()
         self.assertEqual(code, 0, said)
+
+    def test_long_runs_of_every_forms_bytes_scan_in_bounded_memory_and_values_in_them_are_found(self):
+        """A saved memory full of long runs of a secret's own bytes, in each of its forms (WHP's
+        MemoryError, jupiter, 2026-11-13): the scan's heap stays below the file's own size, which a
+        scan growing with its input passes; values planted inside the runs, one across a page
+        boundary, are each found at their offset."""
+        p = Planted()
+        page = mmap.PAGESIZE
+        size = 1 << 22
+        data = bytearray(size)
+        # One of a secret's own bytes, so every run below is one to look in; none of the planted
+        # slice's neighbours, so the slice found is the slice planted.
+        filler = next(c for c in ACCESS if c not in (ACCESS[19], ACCESS[51]))
+        utf8 = (size // 8, size // 4)
+        data[utf8[0] : utf8[1]] = filler.encode() * (utf8[1] - utf8[0])
+        at = size // 8
+        for _, form in scan.forms(ACCESS):
+            at += page
+            unit = form[len(form) // 2 : len(form) // 2 + 1]
+            data[at : at + page - 1] = unit * (page - 1)
+        utf16 = (size // 2, size)
+        data[utf16[0] : utf16[1]] = (filler + "\0").encode() * ((utf16[1] - utf16[0]) // 2)
+        planted = [
+            (utf8[0] + (utf8[1] - utf8[0]) // 2 + 3, ACCESS[20:51].encode()),
+            (utf16[0] + 5 * page - 8, ACCESS.encode("utf-16-le")),
+            (utf16[0] + (utf16[1] - utf16[0]) // 2 + 2, REFRESH.encode("utf-16-le")),
+        ]
+        for offset, value in planted:
+            data[offset : offset + len(value)] = value
+        path = os.path.join(p.saved, "memory")
+        with open(path, "wb") as f:
+            f.write(bytes(data))
+        del data
+        tracemalloc.start()
+        try:
+            code, said = p.scan()
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, size, "the scan's heap grew with what it read")
+        self.assertEqual(code, 3, said)
+        self.assertEqual(said.count("FOUND"), len(planted), said)
+        for offset, value in planted:
+            self.assertIn("memory offset %d length %d: a run of" % (offset, len(value)), said)
 
     def test_what_cannot_be_read_is_said_without_a_value(self):
         p = Planted()
