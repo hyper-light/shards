@@ -2665,7 +2665,9 @@ mod tests {
 
         /// An exec its host says started and exited before the endpoint's next turn, its
         /// outputs finished with nothing written, is told `Started` and then its `Exit`, in
-        /// order: no frame of a lane is staged over one that has not gone whole.
+        /// order: no frame of a lane is staged over one that has not gone whole. Its outputs,
+        /// which have no record to wait on, are kept for the lanes its controller opens on
+        /// `Started`, each told its end, and only then is its exit told.
         #[test]
         fn an_exec_that_starts_and_exits_at_once_is_told_both_in_order() {
             let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
@@ -2694,6 +2696,10 @@ mod tests {
             replies.tell(exec::Reply::Started);
             replies.tell(exec::Reply::Exited(0));
             assert_eq!(live.take(0, told), exec::Told::Started(0));
+            live.open(1, &managed::subscribe(exec_scope(Channel::Stdout), 0));
+            live.open(2, &managed::subscribe(exec_scope(Channel::Stderr), 0));
+            assert_eq!(live.end(1), Heard::End(1));
+            assert_eq!(live.end(2), Heard::End(2));
             assert_eq!(live.take(0, told), exec::Told::Exit(0));
             assert_eq!(live.end(0), Heard::End(0));
             assert_eq!(
@@ -3673,7 +3679,11 @@ mod tests {
                 },
             );
             let execs = dialed.execs.as_ref().unwrap();
-            let pos = LogPos { seq: 1, no: 0, byte: 0 };
+            let pos = LogPos {
+                seq: 1,
+                no: 0,
+                byte: 0,
+            };
             let kept = vec![LogRecord::Output {
                 channel: Channel::Stdout,
                 pos,
