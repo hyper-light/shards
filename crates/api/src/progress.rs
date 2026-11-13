@@ -1,16 +1,18 @@
 //! Waits that follow a guest's VM process (D215): a wait for a guest's answer goes on while
-//! that process runs, and is refused, typed, once it stalls.
+//! that process runs, and is refused, typed, once it stalls. The daemon's waits on a
+//! microVM's own answers follow its VM process so too (D188, its `Wait::WhileRuns`).
 //!
 //! This process learns each kind of answer ([`Awaited`]) apart, in its own memory, from the
-//! answers it sees: W*, the slowest, from a wait's start to its answer; and R*, the least CPU
-//! rate at which a VM process still answered, its CPU over that wait's wall time. A wait that
-//! begins once its kind has an answer looks at its VM process once each W* past its start,
-//! and a look that finds it ran nothing at all since the look before refuses the wait,
-//! [`Refusal::Stalled`]: a host under load slows a VM process but never stops it, so one that
-//! ran nothing for as long as the slowest answer took is stopped, deadlocked or frozen. R* is
-//! the refusal's diagnosis, never its bound (ROOT, 2026-11-13: a rate below it refused a boot
-//! slowed by its host's load). A wait that begins before its kind's first answer
-//! ([`Seen::Cold`]) follows its VM process's liveness alone.
+//! answers it sees ([`Record`]): W*, the slowest, from a wait's start to its answer; and R*,
+//! the least CPU rate at which a VM process still answered, its CPU over that wait's wall
+//! time. A wait that begins once its kind has an answer looks at its VM process once each W*
+//! past its start, and a look that finds it ran nothing at all since the look before refuses
+//! the wait, [`Refusal::Stalled`]: a host under load slows a VM process but never stops it,
+//! so one that ran nothing for as long as the slowest answer took is stopped, deadlocked or
+//! frozen. R* is the refusal's diagnosis, never its bound (ROOT, 2026-11-13: a rate below it
+//! refused a boot slowed by its host's load). A wait that begins before its kind's first
+//! answer ([`Seen::Cold`]) follows its VM process's liveness alone. The schedule and the
+//! verdict are [`Judge`]'s; what each look finds is read here.
 //!
 //! A VM process is read as each OS keeps it, with no VMM linked (D215's falsifier is a client
 //! that needs to):
@@ -35,12 +37,15 @@
 //!   gone), each held by a handle of its own: GetProcessTimes' kernel and user times (100 ns
 //!   units, summed over a process's threads) for the record, and QueryProcessCycleTime's
 //!   count of the cycles their threads used for whether they ran at all, as GetProcessTimes
-//!   documents no resolution of its times.
+//!   documents no resolution of its times. A daemon's VM process is followed so, by its pid
+//!   ([`Followed::of_pid`]).
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use crate::{End, Identity, Refusal};
+#[cfg(unix)]
+use crate::Identity;
+use crate::judge::{Found, Judge, Record, Seen, Stall};
+use crate::{End, ProcessFailure, Refusal};
 
 /// What a wait that follows its guest's VM process waits for. This process learns each
 /// apart, as each takes its own time.
@@ -55,93 +60,12 @@ pub enum Awaited {
     End,
 }
 
-/// A CPU rate: CPU time had over a wall time, kept as the pair it was measured as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Rate {
-    /// CPU time, user and system, of every thread.
-    pub cpu: Duration,
-    /// The wall time it was had over.
-    pub over: Duration,
-}
-
-impl Rate {
-    /// Whether this rate is less than `other`: `cpu / over < other.cpu / other.over`, as
-    /// `cpu × other.over < other.cpu × over` in nanoseconds, with no division and no float.
-    /// Each side is the product of two u64s, which no u128 overflows; a duration past u64's
-    /// nanoseconds (584 years) counts as its most.
-    pub(crate) fn below(&self, other: &Rate) -> bool {
-        let ns = |d: Duration| u128::from(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
-        ns(self.cpu).saturating_mul(ns(other.over)) < ns(other.cpu).saturating_mul(ns(self.over))
-    }
-}
-
-/// What a wait that follows its guest's VM process found as it refused it
-/// ([`Refusal::Stalled`]). Kept in nanoseconds, each past u64's (584 years) its most, so a
-/// refusal is no larger for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Stall {
-    waited: u64,
-    over: u64,
-    least: [u64; 2],
-    slowest: u64,
-}
-
-impl Stall {
-    fn new(waited: Duration, over: Duration, least: Rate, slowest: Duration) -> Stall {
-        let ns = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
-        Stall {
-            waited: ns(waited),
-            over: ns(over),
-            least: [ns(least.cpu), ns(least.over)],
-            slowest: ns(slowest),
-        }
-    }
-
-    /// How far into the wait it was found.
-    pub fn waited(&self) -> Duration {
-        Duration::from_nanos(self.waited)
-    }
-
-    /// The time since the look before, a whole [`slowest`](Stall::slowest) or more, over
-    /// which its VM process ran no CPU at all.
-    pub fn over(&self) -> Duration {
-        Duration::from_nanos(self.over)
-    }
-
-    /// The least CPU rate at which a VM process here still answered (R*): diagnosis, never
-    /// a bound.
-    pub fn least(&self) -> Rate {
-        let [cpu, over] = self.least;
-        Rate {
-            cpu: Duration::from_nanos(cpu),
-            over: Duration::from_nanos(over),
-        }
-    }
-
-    /// The slowest answer of the wait's kind this process has seen (W*), past which it was
-    /// looked at.
-    pub fn slowest(&self) -> Duration {
-        Duration::from_nanos(self.slowest)
-    }
-}
-
-/// What this process has seen of a kind of answer ([`Shards::seen`](crate::Shards::seen)).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Seen {
-    /// No answer yet: a wait follows its VM process's liveness alone.
-    Cold,
-    /// The slowest answer seen (W*), from a wait's start to its answer, past which a wait
-    /// looks at its VM process; and the least CPU rate at which a VM process still answered
-    /// (R*), which a stall's refusal reports.
-    Learned { slowest: Duration, least: Rate },
-}
-
 /// What this process has learned of each kind of answer, none until its first.
 #[derive(Debug)]
 pub(crate) struct Records {
-    boot: Mutex<Seen>,
-    connect: Mutex<Seen>,
-    end: Mutex<Seen>,
+    boot: Record,
+    connect: Record,
+    end: Record,
 }
 
 /// This process's records: what every guest it boots or takes back learns from and is
@@ -151,45 +75,30 @@ pub(crate) static RECORDS: Records = Records::new();
 impl Records {
     pub(crate) const fn new() -> Records {
         Records {
-            boot: Mutex::new(Seen::Cold),
-            connect: Mutex::new(Seen::Cold),
-            end: Mutex::new(Seen::Cold),
+            boot: Record::new(),
+            connect: Record::new(),
+            end: Record::new(),
         }
     }
 
-    fn of(&self, awaited: Awaited) -> MutexGuard<'_, Seen> {
+    /// The record of `awaited`'s kind.
+    pub(crate) fn of(&self, awaited: Awaited) -> &Record {
         match awaited {
             Awaited::Boot => &self.boot,
             Awaited::Connect => &self.connect,
             Awaited::End => &self.end,
         }
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(crate) fn seen(&self, awaited: Awaited) -> Seen {
-        *self.of(awaited)
+        self.of(awaited).seen()
     }
 
     /// An answer of `awaited`'s kind came `wall` after its wait began, its VM process having
-    /// run `cpu` meanwhile: the slowest rises to it where it is slower, the least rate falls to
-    /// its where its is less. A wait no time long has no rate and teaches nothing.
+    /// run `cpu` meanwhile ([`Record::teach`]): a test's record, taught by hand.
+    #[cfg(test)]
     pub(crate) fn teach(&self, awaited: Awaited, wall: Duration, cpu: Duration) {
-        if wall.is_zero() {
-            return;
-        }
-        let rate = Rate { cpu, over: wall };
-        let mut seen = self.of(awaited);
-        *seen = match *seen {
-            Seen::Cold => Seen::Learned {
-                slowest: wall,
-                least: rate,
-            },
-            Seen::Learned { slowest, least } => Seen::Learned {
-                slowest: slowest.max(wall),
-                least: if rate.below(&least) { rate } else { least },
-            },
-        };
+        self.of(awaited).teach(wall, cpu);
     }
 }
 
@@ -220,105 +129,116 @@ impl Look {
     }
 }
 
-/// A wait that follows its guest's VM process.
-pub(crate) struct Follow {
-    awaited: Awaited,
-    records: &'static Records,
+/// Why a wait that follows its VM process gave it up, each as [`Refusal`] carries it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unfollowed {
+    /// It ran no CPU at all over a whole W* or more since the look before
+    /// ([`Refusal::Stalled`]).
+    Stalled(Stall),
+    /// It could not be read while it lived ([`Refusal::Process`]): never taken for no
+    /// progress.
+    Process {
+        pid: u32,
+        expected_started: u64,
+        failure: ProcessFailure,
+    },
+}
+
+impl From<Unfollowed> for Refusal {
+    fn from(unfollowed: Unfollowed) -> Refusal {
+        match unfollowed {
+            Unfollowed::Stalled(stall) => Refusal::Stalled(stall),
+            Unfollowed::Process {
+                pid,
+                expected_started,
+                failure,
+            } => Refusal::Process {
+                pid,
+                expected_started,
+                failure,
+            },
+        }
+    }
+}
+
+/// A wait that follows a VM process, judged by the record of its kind of answer ([`Judge`])
+/// on what each look at the process finds.
+#[derive(Debug)]
+pub struct Follow<'a> {
+    judge: Judge<'a>,
     followed: Followed,
     /// Its VM process, for a refusal to name.
     pid: u32,
     started: u64,
-    /// Whether it is judged: its kind had an answer as it began, and its VM process has not
-    /// gone since. One that began before its kind's first answer follows liveness alone.
-    judged: bool,
-    began: Instant,
     /// What its VM process had run as it began.
     from: Duration,
-    /// The look before, and when it was.
-    last: (Instant, Look),
+    /// The look before.
+    last: Look,
 }
 
-impl Follow {
-    /// A wait for an answer of `awaited`'s kind, beginning now, that follows `followed`, the
-    /// VM process `identity` names, learning into and judged by `records`: none where that
-    /// process has gone already, whose end is the wait's.
-    pub(crate) fn begin(
-        awaited: Awaited,
-        records: &'static Records,
-        identity: &Identity,
-        mut followed: Followed,
-    ) -> Result<Option<Follow>, Refusal> {
-        let judged = matches!(records.seen(awaited), Seen::Learned { .. });
-        let began = Instant::now();
-        let refused = |failure| Refusal::Process {
-            pid: identity.pid,
-            expected_started: identity.started,
+impl<'a> Follow<'a> {
+    /// A wait beginning now that follows `followed`, learning into and judged by `record`:
+    /// none where its process has gone already, whose end is the wait's.
+    pub fn begin(record: &'a Record, mut followed: Followed) -> Result<Option<Follow<'a>>, Unfollowed> {
+        let judge = Judge::begin(record);
+        let (pid, started) = (followed.pid(), followed.started());
+        let looked = followed.look().map_err(|failure| Unfollowed::Process {
+            pid,
+            expected_started: started,
             failure,
-        };
-        let Some(look) = followed.look().map_err(refused)? else {
+        })?;
+        let Some(look) = looked else {
             return Ok(None);
         };
         Ok(Some(Follow {
-            awaited,
-            records,
+            judge,
             followed,
-            pid: identity.pid,
-            started: identity.started,
-            judged,
-            began,
+            pid,
+            started,
             from: look.cpu,
-            last: (began, look),
+            last: look,
         }))
     }
 
     /// When its next look is due, W* after the look before: none while it is not judged.
-    pub(crate) fn due(&self) -> Option<Instant> {
-        match self.records.seen(self.awaited) {
-            Seen::Learned { slowest, .. } if self.judged => self.last.0.checked_add(slowest),
-            _ => None,
-        }
+    pub fn due(&self) -> Option<Instant> {
+        self.judge.due()
     }
 
     /// Looks at its VM process where a look is due: refused `Stalled` where it ran nothing
     /// since the look before, and `Process` where it could not be read while it lives. A
     /// process that has gone since is no longer looked at: its end is the wait's.
-    pub(crate) fn look(&mut self) -> Result<(), Refusal> {
-        let Some(due) = self.due() else {
+    pub fn look(&mut self) -> Result<(), Unfollowed> {
+        let Some(due) = self.judge.due() else {
             return Ok(());
         };
         if Instant::now() < due {
             return Ok(());
         }
-        let Seen::Learned { slowest, least } = self.records.seen(self.awaited) else {
-            return Ok(());
-        };
         let (pid, expected_started) = (self.pid, self.started);
-        let looked = self.followed.look().map_err(|failure| Refusal::Process {
+        let looked = self.followed.look().map_err(|failure| Unfollowed::Process {
             pid,
             expected_started,
             failure,
         })?;
-        let Some(look) = looked else {
-            self.judged = false;
-            return Ok(());
+        let found = match looked {
+            None => Found::Gone,
+            Some(look) => {
+                let before = std::mem::replace(&mut self.last, look);
+                if look.ending || look.ran_since(&before) {
+                    Found::Progressed
+                } else {
+                    Found::Still
+                }
+            }
         };
-        let now = Instant::now();
-        let (then, before) = std::mem::replace(&mut self.last, (now, look));
-        if look.ending || look.ran_since(&before) {
-            return Ok(());
-        }
-        Err(Refusal::Stalled(Stall::new(
-            now.saturating_duration_since(self.began),
-            now.saturating_duration_since(then),
-            least,
-            slowest,
-        )))
+        self.judge.found(found).map_err(Unfollowed::Stalled)
     }
 
-    /// Its guest answered: its kind learns from the answer, its VM process read now.
-    pub(crate) fn answered(&mut self) {
+    /// Its party answered: its kind learns from the answer, its VM process read now.
+    pub fn answered(&mut self) {
         if let Ok(Some(look)) = self.followed.look() {
-            self.teach(look.cpu);
+            self.judge.answered(look.cpu.saturating_sub(self.from));
         }
     }
 
@@ -333,20 +253,16 @@ impl Follow {
         #[cfg(windows)]
         let cpu = self.followed.look().ok().flatten().map(|look| look.cpu).or(cpu);
         if let Some(cpu) = cpu {
-            self.teach(cpu);
+            self.judge.answered(cpu.saturating_sub(self.from));
         }
-    }
-
-    fn teach(&self, cpu: Duration) {
-        self.records
-            .teach(self.awaited, self.began.elapsed(), cpu.saturating_sub(self.from));
     }
 }
 
 /// A VM process as a wait follows it on Unix: its pid, and the start that tells it from a
 /// process given that pid since.
 #[cfg(unix)]
-pub(crate) struct Followed {
+#[derive(Debug)]
+pub struct Followed {
     pid: u32,
     started: u64,
 }
@@ -360,8 +276,22 @@ impl Followed {
         }
     }
 
+    /// Process `pid` as it is now, its start read, which tells it from a process given its
+    /// pid later; none where no process has it.
+    pub fn of_pid(pid: u32) -> Result<Option<Followed>, ProcessFailure> {
+        Ok(os::started(pid)?.map(|started| Followed { pid, started }))
+    }
+
+    fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    fn started(&self) -> u64 {
+        self.started
+    }
+
     /// What it has run, now; none where it has gone (its pid another's, or no process's).
-    fn look(&mut self) -> Result<Option<Look>, crate::ProcessFailure> {
+    fn look(&mut self) -> Result<Option<Look>, ProcessFailure> {
         os::look(self.pid, self.started)
     }
 }
@@ -378,7 +308,7 @@ pub(crate) fn ran_by_end(pid: u32, started: Option<u64>) -> Option<Duration> {
 }
 
 #[cfg(windows)]
-pub(crate) use os::Followed;
+pub use os::Followed;
 
 #[cfg(target_os = "linux")]
 mod os {
@@ -403,6 +333,11 @@ mod os {
             return Ok(None);
         }
         Ok(Some(Look { cpu, ending }))
+    }
+
+    /// Process `pid`'s start (`/proc/<pid>/stat` field 22); none where no process has it.
+    pub(super) fn started(pid: u32) -> Result<Option<u64>, ProcessFailure> {
+        Ok(stat(pid)?.map(|(started, _)| started))
     }
 
     /// Its start and whether it has exited; none where no process has `pid`: its
@@ -482,6 +417,11 @@ mod os {
         rusage(pid)?.map(|info| times(&info)).transpose()
     }
 
+    /// Process `pid`'s start (`ri_proc_start_abstime`); none where no process has it.
+    pub(super) fn started(pid: u32) -> Result<Option<u64>, ProcessFailure> {
+        Ok(rusage(pid)?.map(|info| info.ri_proc_start_abstime))
+    }
+
     fn rusage(pid: u32) -> Result<Option<libc::rusage_info_v0>, ProcessFailure> {
         let id = libc::c_int::try_from(pid).map_err(|_| ProcessFailure::PidOutOfRange {
             operation: ProcessOperation::ProcPidRusage,
@@ -557,12 +497,18 @@ mod os {
     /// A VM process as a wait follows it on Windows: the `shards` that booted it, which holds
     /// it in a Job of its own as its child (D141), and every process that descends from that
     /// `shards`, each held by a handle of its own, which keeps the process, its pid and its
-    /// times its own while held, after it has exited too.
-    pub(crate) struct Followed {
-        /// The root, the `shards`, first.
+    /// times its own while held, after it has exited too. A daemon's VM process, the root
+    /// itself ([`of_pid`](Followed::of_pid)), is followed with whatever descends from it.
+    #[derive(Debug)]
+    pub struct Followed {
+        /// The root's pid and creation time, as a refusal names it.
+        pid: u32,
+        created: u64,
+        /// The root first.
         members: Vec<Member>,
     }
 
+    #[derive(Debug)]
     struct Member {
         pid: u32,
         /// GetProcessTimes' creation time, 100 ns units since 1601.
@@ -585,7 +531,38 @@ mod os {
                 handle: root,
                 exited: false,
             });
-            Ok(Followed { members })
+            Ok(Followed {
+                pid,
+                created,
+                members,
+            })
+        }
+
+        /// Process `pid`, held from now, and what descends from it: none where no process has
+        /// `pid`. One this user may not open is refused, not taken for gone.
+        pub fn of_pid(pid: u32) -> Result<Option<Followed>, ProcessFailure> {
+            let Some(root) = Member::open(pid, false)? else {
+                return Ok(None);
+            };
+            let mut members = Vec::new();
+            members
+                .try_reserve(1)
+                .map_err(|_| ProcessFailure::CapacityUnavailable)?;
+            let created = root.created;
+            members.push(root);
+            Ok(Some(Followed {
+                pid,
+                created,
+                members,
+            }))
+        }
+
+        pub(super) fn pid(&self) -> u32 {
+            self.pid
+        }
+
+        pub(super) fn started(&self) -> u64 {
+            self.created
         }
 
         /// What its processes have run, now: their handles read them, gone or not.
@@ -626,7 +603,7 @@ mod os {
                         .map(|m| m.created);
                     let known = self.members.iter().any(|m| m.pid == found.th32ProcessID);
                     if let (Some(parent), false) = (parent, known)
-                        && let Some(member) = Member::open(found.th32ProcessID)?
+                        && let Some(member) = Member::open(found.th32ProcessID, true)?
                         && member.created >= parent
                     {
                         self.members
@@ -645,13 +622,16 @@ mod os {
     }
 
     impl Member {
-        fn open(pid: u32) -> Result<Option<Member>, ProcessFailure> {
+        /// Process `pid`, held: none where no process has it (ERROR_INVALID_PARAMETER), nor,
+        /// one found in a snapshot as a `descendant`, where it is not this user's to open
+        /// (ERROR_ACCESS_DENIED), which is no process of the tree.
+        fn open(pid: u32, descendant: bool) -> Result<Option<Member>, ProcessFailure> {
             // SAFETY: OpenProcess of `pid` for query and synchronize access alone, its handle
             // not inherited.
             let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid) };
             if raw.is_null() {
                 let e = io::Error::last_os_error();
-                if is(&e, ERROR_INVALID_PARAMETER) || is(&e, ERROR_ACCESS_DENIED) {
+                if is(&e, ERROR_INVALID_PARAMETER) || (descendant && is(&e, ERROR_ACCESS_DENIED)) {
                     return Ok(None);
                 }
                 return Err(io_failure(ProcessOperation::OpenProcess, e));
@@ -773,27 +753,74 @@ mod os {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::judge::Rate;
 
-    /// A rate is less than another's as cross-multiplication says, with no float: equal
-    /// rates are neither below the other, none at all is below any, and a duration past
-    /// u64's nanoseconds is its most rather than an overflow (D215).
+    /// A process is followed by its pid alone, as the daemon follows its VM process: read
+    /// with the start that tells it from a process given its pid later, so that one reaped is
+    /// read as gone (or as another's), never as it (D215).
     #[test]
-    fn a_rate_is_compared_by_cross_multiplication() {
-        let rate = |cpu: u64, over: u64| Rate {
-            cpu: Duration::from_nanos(cpu),
-            over: Duration::from_nanos(over),
+    fn a_process_is_followed_by_its_pid() {
+        let me = std::process::id();
+        let mut mine = Followed::of_pid(me).unwrap().unwrap();
+        assert_eq!(mine.pid(), me);
+        assert!(mine.look().unwrap().is_some());
+        #[cfg(unix)]
+        {
+            assert_eq!(mine.started(), crate::taken::started(me).unwrap());
+            let mut child = std::process::Command::new("true").spawn().unwrap();
+            let mut followed = Followed::of_pid(child.id()).unwrap().unwrap();
+            child.wait().unwrap();
+            assert!(followed.look().unwrap().is_none(), "reaped, it has gone");
+        }
+    }
+
+    /// A wait that follows a process by its pid is refused `Stalled` at a look past W* that
+    /// finds it ran nothing since the look before, and goes on at each look while it runs
+    /// (D215; the daemon's `Wait::WhileRuns`). The sleeper is looked at until it is refused,
+    /// the first look or two taking in its start's own CPU.
+    #[cfg(unix)]
+    #[test]
+    fn a_process_followed_by_its_pid_is_judged_by_its_cpu() {
+        let slowest = Duration::from_millis(20);
+        let record = Record::new();
+        record.teach(slowest, Duration::from_millis(1));
+        let until_due = |follow: &Follow<'_>| {
+            let due = follow.due().unwrap();
+            while Instant::now() < due {
+                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+            }
         };
-        assert!(rate(1, 2).below(&rate(1, 1)));
-        assert!(!rate(1, 1).below(&rate(1, 2)));
-        assert!(!rate(2, 4).below(&rate(1, 2)));
-        assert!(!rate(1, 2).below(&rate(2, 4)));
-        assert!(rate(0, 1).below(&rate(1, u64::MAX)));
-        let most = Rate {
-            cpu: Duration::MAX,
-            over: Duration::MAX,
+        let mut sleeper = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        let followed = Followed::of_pid(sleeper.id()).unwrap().unwrap();
+        let mut follow = Follow::begin(&record, followed).unwrap().unwrap();
+        let refused = loop {
+            until_due(&follow);
+            if let Err(refused) = follow.look() {
+                break refused;
+            }
         };
-        assert!(!most.below(&rate(u64::MAX, u64::MAX)));
-        assert!(rate(1, 2).below(&most));
+        sleeper.kill().unwrap();
+        sleeper.wait().unwrap();
+        let Unfollowed::Stalled(stall) = refused else {
+            panic!("{refused:?}");
+        };
+        assert_eq!(stall.slowest(), slowest);
+        assert!(stall.over() >= slowest, "{stall:?}");
+        let busy = std::sync::atomic::AtomicBool::new(true);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                while busy.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            });
+            let followed = Followed::of_pid(std::process::id()).unwrap().unwrap();
+            let mut follow = Follow::begin(&record, followed).unwrap().unwrap();
+            for _ in 0..3 {
+                until_due(&follow);
+                assert_eq!(follow.look(), Ok(()));
+            }
+            busy.store(false, std::sync::atomic::Ordering::Relaxed);
+        });
     }
 
     /// Each kind learns apart, from its first answer on: its slowest answer only rises, its
