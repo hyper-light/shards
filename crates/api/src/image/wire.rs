@@ -3247,7 +3247,12 @@ mod tests {
     /// grant's directory and both its numbers are read back exactly.
     #[test]
     fn a_runs_control_ask_crosses_the_image_channel_whole() {
-        assert_eq!(VERSION, 15, "the channel's next version carries the control ask");
+        const {
+            assert!(
+                VERSION >= 15,
+                "the channel carries the control ask from version 15 on"
+            )
+        };
         for control in [
             None,
             Some(ControlAsk {
