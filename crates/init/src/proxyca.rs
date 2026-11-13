@@ -228,16 +228,22 @@ pub fn contains(data: &[u8], der: &[u8]) -> bool {
 /// The bundle `original` with the CA `ca` appended between the markers, as InjectProxyCA
 /// writes it.
 pub fn appended(original: &[u8], ca: &[u8]) -> Vec<u8> {
+    appended_between(original, ca, BEGIN, END)
+}
+
+/// The bundle `original` with the PEM `ca` appended between the marker lines `begin` and
+/// `end`, as InjectProxyCA appends its own between [`BEGIN`] and [`END`].
+pub fn appended_between(original: &[u8], ca: &[u8], begin: &[u8], end: &[u8]) -> Vec<u8> {
     let mut next = original.to_vec();
     if next.last().is_some_and(|&b| b != b'\n') {
         next.push(b'\n');
     }
-    next.extend_from_slice(BEGIN);
+    next.extend_from_slice(begin);
     next.extend_from_slice(ca);
     if next.last() != Some(&b'\n') {
         next.push(b'\n');
     }
-    next.extend_from_slice(END);
+    next.extend_from_slice(end);
     next
 }
 

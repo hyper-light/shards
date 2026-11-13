@@ -246,6 +246,8 @@ pub struct Io<'a> {
     next: &'a mut ConnKey,
     client: Option<ClientConfigHandle>,
     now: Instant,
+    /// How long the handshake of a connection it opens is waited for.
+    handshake: Duration,
 }
 
 impl std::fmt::Debug for Io<'_> {
@@ -263,24 +265,27 @@ struct Conn {
     liveness: Liveness,
 }
 
-/// When a connection was last heard from, and whether it lives on: its handshake held to
-/// [`IDLE`](crate::tls::IDLE) from its start, by the driver, as nothing it carries is
-/// anyone's yet; then to [`QUIET`](crate::tls::QUIET) from the last packet its peer sent, by
-/// its transport's idle timer (RFC 9000 §10.1), which each packet restarts, the
-/// acknowledgments of what it sends among them: it lives while it progresses. The longest
+/// When a connection was last heard from, and whether it lives on: its handshake held to its
+/// driver's bound from its start (an unanswered peer's, `tls::Rtt::handshake_bound`, or what a
+/// bounded driver's owner admitted), by the driver, as nothing it carries is anyone's yet; then
+/// to its transport's idle timer (RFC 9000 §10.1), which each packet its peer sends restarts,
+/// the acknowledgments of what it sends among them: it lives while it progresses. The longest
 /// silence it lived through is kept, the evidence its bound is judged by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Liveness {
     began: Instant,
+    /// How long its handshake is waited for.
+    handshake: Duration,
     heard: Option<Instant>,
     connected: bool,
     longest: Duration,
 }
 
 impl Liveness {
-    pub fn new(now: Instant) -> Liveness {
+    pub fn new(now: Instant, handshake: Duration) -> Liveness {
         Liveness {
             began: now,
+            handshake,
             heard: None,
             connected: false,
             longest: Duration::ZERO,
@@ -306,7 +311,7 @@ impl Liveness {
         if self.connected {
             return None;
         }
-        self.began.checked_add(crate::tls::IDLE)
+        self.began.checked_add(self.handshake)
     }
 
     /// The longest its peer went unheard, between two packets of its own.
@@ -382,7 +387,7 @@ impl Io<'_> {
                 handle,
                 quic,
                 connected: false,
-                liveness: Liveness::new(self.now),
+                liveness: Liveness::new(self.now, self.handshake),
             },
         ))
     }
@@ -413,6 +418,14 @@ impl Io<'_> {
             suite: u16::from(data.negotiated_cipher_suite?),
             group: u16::from(data.negotiated_key_exchange_group?),
         })
+    }
+
+    /// How long `conn` goes unanswered before it is let go, from the probe timeout its
+    /// transport runs on now (RFC 9002 §6.2.1, its round trip as measured), as a handshake is
+    /// waited for ([`crate::tls::unanswered`]).
+    pub fn unanswered(&mut self, conn: ConnKey) -> Option<Duration> {
+        let conn = self.conn(conn).ok()?;
+        Some(crate::tls::unanswered(conn.quic.probe_timeout()))
     }
 
     /// Opens a bidirectional stream on `conn`.
@@ -577,18 +590,22 @@ pub struct Driver<H: Handler> {
     stopping: bool,
     stop_requested: Arc<AtomicBool>,
     limits: Option<DriverLimits>,
+    /// How long each connection's handshake is waited for.
+    handshake: Duration,
     out: VecDeque<(SocketAddr, Vec<u8>)>,
 }
 
 impl<H: Handler> Driver<H> {
     /// A driver on a socket bound to `at`, serving connections under `server` where it is
-    /// given, and the [`Sender`] that reaches it.
+    /// given, each connection's handshake waited for `handshake` (an unanswered peer's,
+    /// `tls::Rtt::handshake_bound`), and the [`Sender`] that reaches it.
     pub fn bind(
         at: SocketAddr,
         server: Option<ServerConfig>,
         handler: H,
+        handshake: Duration,
     ) -> Result<(Self, Sender<H::Command>), Error> {
-        Self::bind_with_limits(at, server, handler, None)
+        Self::bind_with_limits(at, server, handler, None, handshake)
     }
 
     /// Uses only the command/connection/datagram capacity the caller admitted.
@@ -603,7 +620,7 @@ impl<H: Handler> Driver<H> {
                 "endpoint capacity cannot hold its protocol state and one datagram",
             ));
         }
-        Self::bind_with_limits(at, server, handler, Some(limits))
+        Self::bind_with_limits(at, server, handler, Some(limits), limits.handshake_patience)
     }
 
     fn bind_with_limits(
@@ -611,6 +628,7 @@ impl<H: Handler> Driver<H> {
         server: Option<ServerConfig>,
         handler: H,
         limits: Option<DriverLimits>,
+        handshake: Duration,
     ) -> Result<(Self, Sender<H::Command>), Error> {
         let socket = UdpSocket::bind(at).map_err(|e| Error::new(format!("{at}: {e}")))?;
         let local = socket
@@ -653,6 +671,7 @@ impl<H: Handler> Driver<H> {
                 stopping: false,
                 stop_requested: Arc::clone(&stop_requested),
                 limits,
+                handshake,
                 out: VecDeque::new(),
             },
             Sender {
@@ -726,16 +745,15 @@ impl<H: Handler> Driver<H> {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };
-            let wait = next
-                .map(|at| at.saturating_duration_since(Instant::now()))
-                .unwrap_or_else(|| self.limits.map_or(crate::tls::IDLE, |l| l.handshake_patience))
-                .max(if self.limits.is_some() {
-                    Duration::from_nanos(1)
-                } else {
-                    Duration::from_micros(100)
-                });
+            // Until its next timer, a socket's timeout no shorter than its least, a nanosecond (it
+            // refuses none, `set_read_timeout`); with none due, until a datagram or a wake comes,
+            // which every command and stop sends ([`Sender`]).
+            let wait = next.map(|at| {
+                at.saturating_duration_since(Instant::now())
+                    .max(Duration::from_nanos(1))
+            });
             self.socket
-                .set_read_timeout(Some(wait))
+                .set_read_timeout(wait)
                 .map_err(|e| Error::new(format!("the driver's socket: {e}")))?;
             match self.socket.recv_from(&mut datagram) {
                 Ok((n, from)) => {
@@ -789,6 +807,7 @@ impl<H: Handler> Driver<H> {
                 next: &mut self.next,
                 client: self.client,
                 now,
+                handshake: self.handshake,
             },
             &mut self.handler,
         )
@@ -845,7 +864,7 @@ impl<H: Handler> Driver<H> {
                 }
                 match self.endpoint.accept(incoming, now, &mut response, None, None) {
                     Ok((handle, quic)) => {
-                        let mut liveness = Liveness::new(now);
+                        let mut liveness = Liveness::new(now, self.handshake);
                         liveness.heard(now);
                         let key = place(
                             &mut self.conns,
@@ -1010,22 +1029,13 @@ impl<H: Handler> Driver<H> {
         }
     }
 
-    /// Ends each connection whose handshake is not done within [`IDLE`](crate::tls::IDLE)
-    /// of its start ([`Liveness::due`]), its handler told as of a timeout: its transport's
-    /// own idle bound is the longer [`QUIET`](crate::tls::QUIET), for a peer known to be
-    /// there.
+    /// Ends each connection whose handshake is not done within its bound of its start
+    /// ([`Liveness::due`]), its handler told as of a timeout: its transport's own idle bound
+    /// is for a peer known to be there.
     fn expire(&mut self, now: Instant) {
         self.keys.clear();
         for (key, conn) in &self.conns {
-            let due = self.limits.map_or_else(
-                || conn.liveness.due(),
-                |l| {
-                    (!conn.connected)
-                        .then(|| conn.liveness.began.checked_add(l.handshake_patience))
-                        .flatten()
-                },
-            );
-            if !conn.quic.is_closed() && due.is_some_and(|at| at <= now) {
+            if !conn.quic.is_closed() && conn.liveness.due().is_some_and(|at| at <= now) {
                 self.keys.push(*key);
             }
         }
@@ -1041,20 +1051,10 @@ impl<H: Handler> Driver<H> {
     }
 
     fn next_timer(&mut self) -> Option<Instant> {
-        let limits = self.limits;
         self.conns
             .values_mut()
             .filter_map(|c| {
-                let handshake = limits
-                    .map_or_else(
-                        || c.liveness.due(),
-                        |l| {
-                            (!c.connected)
-                                .then(|| c.liveness.began.checked_add(l.handshake_patience))
-                                .flatten()
-                        },
-                    )
-                    .filter(|_| !c.quic.is_closed());
+                let handshake = c.liveness.due().filter(|_| !c.quic.is_closed());
                 match (c.quic.poll_timeout(), handshake) {
                     (Some(a), Some(b)) => Some(a.min(b)),
                     (a, b) => a.or(b),
@@ -1159,7 +1159,7 @@ impl<H: Handler> Driver<H> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::tls::{IDLE, QUIET};
+    use crate::tls::{QUIET, Rtt};
 
     /// A timed socket read is not restarted after a signal, even with SA_RESTART
     /// (Linux signal(7)). A harmless host signal must leave the driver serving commands.
@@ -1223,7 +1223,13 @@ mod tests {
             }
         }
 
-        let (mut driver, sender) = Driver::bind("127.0.0.1:0".parse().unwrap(), None, Waiting).unwrap();
+        let (mut driver, sender) = Driver::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+            Waiting,
+            Rtt::Unmeasured.handshake_bound(),
+        )
+        .unwrap();
         let fd = driver.socket.as_raw_fd();
         let (started, ready) = mpsc::channel();
         let worker = std::thread::spawn(move || {
@@ -1264,25 +1270,26 @@ mod tests {
         worker.join().unwrap().unwrap();
     }
 
-    /// A connection's handshake is held to IDLE from its start, and nothing of the driver's
+    /// A connection's handshake is held to its bound from its start, and nothing of the driver's
     /// after: an established one lives as long as its peer is heard within QUIET, however
     /// long it carries, and the longest silence it lived through is the one measured, its
     /// peer last heard at its last packet.
     #[test]
-    fn a_connection_lives_while_it_is_heard_and_its_handshake_alone_is_held_to_idle() {
-        assert!(QUIET > IDLE);
+    fn a_connection_lives_while_it_is_heard_and_its_handshake_alone_is_held_to_its_bound() {
+        let bound = Rtt::Unmeasured.handshake_bound();
+        assert!(QUIET > bound);
         let t0 = Instant::now();
-        let mut l = Liveness::new(t0);
-        assert_eq!(l.due(), t0.checked_add(IDLE));
+        let mut l = Liveness::new(t0, bound);
+        assert_eq!(l.due(), t0.checked_add(bound));
         assert_eq!(l.last_heard(), None, "nothing heard yet");
         l.heard(t0 + Duration::from_millis(30));
         assert_eq!(l.last_heard(), Some(t0 + Duration::from_millis(30)));
-        // Heard from, its handshake still not done: still due at IDLE from its start.
-        assert_eq!(l.due(), t0.checked_add(IDLE));
+        // Heard from, its handshake still not done: still due at its bound from its start.
+        assert_eq!(l.due(), t0.checked_add(bound));
         l.connected();
         assert_eq!(l.due(), None);
         // An hour of a transfer, its peer heard every second but for one gap of 42 s, longer
-        // than IDLE and shorter than QUIET: it lives, and the gap is what it says.
+        // than its handshake's bound and shorter than QUIET: it lives, and the gap is what it says.
         let mut at = t0 + Duration::from_millis(30);
         for s in 1..3600u64 {
             at += if s == 1800 {
