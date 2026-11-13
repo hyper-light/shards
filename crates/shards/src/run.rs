@@ -1516,6 +1516,26 @@ pub fn settle(fresh: &Path, dir: &Path) {
     let _ = std::fs::remove_dir_all(fresh);
 }
 
+/// The save at `fresh` a boot made of template `dir`, as the boot ended, the daemon's and an
+/// orchestrator's run host's alike (D25, D253): where its VM was `ready`, the template's
+/// record written beside it (`record`) and the save made the template ([`settle`]); where it
+/// never was, no template, whatever its VM wrote before it failed (a snapshot saved, then its
+/// VM gone before `READY`), its save removed. What `record` refused, for its caller to say.
+pub fn settle_boot(
+    ready: bool,
+    fresh: &Path,
+    dir: &Path,
+    record: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if !ready {
+        let _ = std::fs::remove_dir_all(fresh);
+        return Ok(());
+    }
+    let recorded = record();
+    settle(fresh, dir);
+    recorded
+}
+
 /// The workload: the command line's settings merged over the image's, as dockerd merges
 /// them (moby docker-v29.8.1 `daemon/commit.go`, `merge`).
 /// - The user and working directory are the image's unless given.
@@ -2212,5 +2232,46 @@ mod tests {
             words(&restore_args(Path::new("/t/abc"), &none, false, "3")),
             ["restore", "/t/abc", "--warm", "3"]
         );
+    }
+
+    /// A stand-in snapshot at `dir`, as a VM's save leaves one (`snapshot::exists`).
+    fn snapshot_at(dir: &Path) {
+        std::fs::create_dir_all(dir.join("g-1")).unwrap();
+        std::fs::write(dir.join("current"), b"g-1\n").unwrap();
+        std::fs::write(dir.join("g-1").join("state"), b"").unwrap();
+    }
+
+    /// D25, D253: a boot's save is its template only where its VM was ready, its record
+    /// written first; one whose VM saved its snapshot and then failed before it was ready
+    /// makes no template and writes no record, its save removed; where another run's template
+    /// was saved first, that one stays and the save goes.
+    #[test]
+    fn only_a_ready_boots_save_becomes_the_template() {
+        let home = shards_testdir::TempDir::new("settle").unwrap();
+        let dir = home.path().join("templates").join("abc");
+        let fresh = dir.with_extension("new-1-0");
+        let mut recorded = 0;
+        snapshot_at(&fresh);
+        settle_boot(false, &fresh, &dir, || {
+            recorded += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!dir.exists(), "a boot never ready made a template");
+        assert!(!fresh.exists() && recorded == 0);
+
+        snapshot_at(&fresh);
+        settle_boot(true, &fresh, &dir, || {
+            recorded += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert!(shards_vmm::snapshot::exists(&dir) && !fresh.exists() && recorded == 1);
+
+        snapshot_at(&fresh);
+        std::fs::write(fresh.join("g-1").join("second"), b"").unwrap();
+        let refused = settle_boot(true, &fresh, &dir, || Err("its record: no room".into()));
+        assert_eq!(refused, Err("its record: no room".into()));
+        assert!(!fresh.exists() && !dir.join("g-1").join("second").exists());
     }
 }
