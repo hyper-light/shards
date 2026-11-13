@@ -24161,8 +24161,8 @@ check refuses a grant toward no host as well.
   from 1950 came back `BadEncoding`. The second is RFC 5280's value of no well-defined end
   (§4.1.2.5). No clock a guest may read falls outside the range, and the key, which dies with
   the process, bounds the life of what it signs instead of a date.
-- *Literals.* Kind 96 is a sequence number (94 and 95 went first to D247's `RATE` and
-  `RATED`). The grants' length fields, two bytes for a reference and one for a host, hold
+- *Literals.* Kind 97 is a sequence number (94 and 95 went first to D247's `RATE` and
+  `RATED`, 96 to D238's `EXEC_UNSTARTED`). The grants' length fields, two bytes for a reference and one for a host, hold
   every reference a store names (kiln-seams `NAME_MAX`, 512) and every DNS name (255, RFC
   1035 §2.3.4); a longer one is refused, typed. P-256,
   `pathLenConstraint` 0 and the validity bounds are as cited above. No learned value enters
