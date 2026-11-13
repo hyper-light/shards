@@ -390,9 +390,10 @@ pub trait ImageGuest: Send + Sync {
     /// there uses it ([`PlugRefusal::Busy`]), then taken off the microVM.
     fn unplug(&self, at: &str, patience: Duration) -> Result<(), ImageRefusal>;
     /// Ends it at once: its VM's process is killed, and [`wait_for`](Self::wait_for) then
-    /// returns [`RunEnd::Stopped`]. Never refused, as a VM left running is a leak. Returns
-    /// once the run's end is told, its VM gone; its host then reaps what it started and
-    /// exits on its own.
+    /// returns [`RunEnd::Stopped`], or the end the run had come to before: its command's, or
+    /// its host's failure, in its words, as `wait_for` saw it. Never refused, as a VM left
+    /// running is a leak. Returns once the run's end is told, its VM gone; its host then
+    /// reaps what it started and exits on its own.
     fn stop(&self) -> Result<(), ImageRefusal>;
     /// Its end, once it has come, waiting at most `timeout` (`Duration::MAX`: until it
     /// comes).

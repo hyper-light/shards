@@ -157,22 +157,24 @@ impl State {
         self.exited && self.answered
     }
 
-    /// The run's end, once it has come: its host's word, or its host gone without one.
+    /// The run's end, once it has come: its host's word, or its host gone without one, said
+    /// in its last diagnostics; kept as first seen, so that every later look, a stop's among
+    /// them, sees the same.
     fn end_seen(&mut self) -> Option<RunEnd> {
-        if let Some(end) = &self.end {
-            return Some(end.clone());
-        }
-        self.gone().then(|| {
-            RunEnd::Failed(format!(
+        if self.end.is_none() && self.gone() {
+            self.end = Some(RunEnd::Failed(format!(
                 "the run host exited without its run's end{}",
                 quoted(&self.said)
-            ))
-        })
+            )));
+        }
+        self.end.clone()
     }
 
-    /// The run's end once its stop has been waited for ([`Session::stop`]).
+    /// The run's end once its stop has been waited for ([`Session::stop`]): the end seen, or
+    /// `Stopped` where none has come.
     fn stopped(&mut self) -> RunEnd {
-        self.end.get_or_insert(RunEnd::Stopped).clone()
+        self.end_seen()
+            .unwrap_or_else(|| self.end.insert(RunEnd::Stopped).clone())
     }
 }
 
