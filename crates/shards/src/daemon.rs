@@ -1298,6 +1298,10 @@ struct Daemon<D: Disk = Real> {
     ports_freed: Condvar,
     /// The microVMs `shards remove vm` is removing.
     removing: Mutex<HashSet<String>>,
+    /// The microVMs whose request a client is changing ([`Daemon::request_turn`], D37), and
+    /// told as each is no more.
+    changing: Mutex<HashSet<String>>,
+    changed_request: Condvar,
     /// What has happened, for `shards watch system`.
     events: events::Events,
     /// Containers whose writable layer their stopped VM is still saving (D37), and when
@@ -2124,6 +2128,8 @@ impl<D: Disk> Daemon<D> {
             ports_held: Mutex::default(),
             ports_freed: Condvar::new(),
             removing: Mutex::default(),
+            changing: Mutex::default(),
+            changed_request: Condvar::new(),
             paused: Mutex::default(),
             plugged: Mutex::default(),
             join_shares: Mutex::default(),
@@ -5121,6 +5127,27 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Waits until reserved microVM `id` is seen.
+    /// MicroVM `id`'s turn to change its request (D37), once no other client has it: held
+    /// from the request's read to the keep of what changed, as moby holds a container's lock
+    /// across an update and a network connect (daemon/update.go, ConnectToNetwork), so that no
+    /// client keeps a request another changed after it read it. An update holds it across its
+    /// exec into the VM, which `TAKE_TIMEOUT` bounds.
+    fn request_turn(&self, id: &str) -> RequestTurn<'_> {
+        let mut changing = lock(&self.changing);
+        while changing.contains(id) {
+            changing = self
+                .changed_request
+                .wait(changing)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        changing.insert(id.to_string());
+        RequestTurn {
+            changing: &self.changing,
+            changed: &self.changed_request,
+            id: id.to_string(),
+        }
+    }
+
     fn await_arrival(&self, id: &str) {
         let mut registry = lock(&self.containers);
         while registry.is_arriving(id) {
@@ -9067,6 +9094,20 @@ fn newest_log(dir: &Path) -> io::Result<Log> {
         index: open(index)?,
         seq,
     })
+}
+
+/// A microVM's turn to change its request ([`Daemon::request_turn`]), given back as it goes.
+struct RequestTurn<'a> {
+    changing: &'a Mutex<HashSet<String>>,
+    changed: &'a Condvar,
+    id: String,
+}
+
+impl Drop for RequestTurn<'_> {
+    fn drop(&mut self) {
+        lock(self.changing).remove(&self.id);
+        self.changed.notify_all();
+    }
 }
 
 /// Keeps `bytes` at `path` whole or not at all: written beside it, under a name of this
@@ -14623,6 +14664,42 @@ mod tests {
     /// clients change it at once, each served on a thread of its own (an `update` and a
     /// `network disconnect`): every write is kept, a reader finds a request whole at every
     /// read, and nothing is left beside it.
+    /// An `update` and a `network connect` of one microVM at once each keep their change, as
+    /// moby keeps them under its container's lock (request-sites-v1's item 3): two clients on
+    /// threads of their own, each reading, changing and keeping the microVM's request while
+    /// the other does, round after round.
+    #[test]
+    fn an_update_and_a_connect_at_once_each_keep_their_change() {
+        const ROUNDS: usize = 200;
+        let t = Test::new("request-turns");
+        t.run(|t| {
+            let id = t.create("both");
+            let dir = lock(&t.daemon.containers).dir(&id);
+            std::fs::write(dir.join(REQUEST), Run::default().encode()).unwrap();
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    for shares in 2..2 + ROUNDS {
+                        let (status, _, err) =
+                            t.ask(&["update", "--cpu-shares", &shares.to_string(), "both"]);
+                        assert_eq!(status, 0, "{err}");
+                    }
+                });
+                s.spawn(|| {
+                    for round in 0..ROUNDS {
+                        let (status, _, err) = t.ask(&["network", "connect", &format!("n{round}"), "both"]);
+                        assert_eq!(status, 0, "{err}");
+                    }
+                });
+            });
+            let run = Run::decode(&std::fs::read(dir.join(REQUEST)).unwrap()).unwrap();
+            assert_eq!(
+                (run.endpoints.len(), run.resources.cpu_shares),
+                (ROUNDS, i64::try_from(1 + ROUNDS).unwrap()),
+                "the networks connected and the last shares, as kept"
+            );
+        });
+    }
+
     /// Callers that ask a fresh home's engine ID at once each take the one the home keeps
     /// (request-sites-v1's review): as many callers as this host runs at once (two at the
     /// least, a race's own), released together, round after round on a home with none.

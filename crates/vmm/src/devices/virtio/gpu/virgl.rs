@@ -266,10 +266,10 @@ const MEMORY_PROPERTY_DEVICE_LOCAL: u32 = 1 << 0;
 /// VkMemoryHeapFlagBits::VK_MEMORY_HEAP_DEVICE_LOCAL_BIT, not a memory-type flag.
 const MEMORY_HEAP_DEVICE_LOCAL: u32 = 1 << 0;
 
-/// `VkExtensionProperties` (vulkan_core.h).
+/// `VkExtensionProperties` (vulkan_core.h), its `char` name read as the bytes it is.
 #[repr(C)]
 struct ExtensionProperties {
-    name: [c_char; 256],
+    name: [u8; 256],
     spec_version: u32,
 }
 
@@ -480,7 +480,9 @@ impl Vulkan {
     }
 
     /// Whether `device` imports memory of the host's own (VK_EXT_external_memory_host),
-    /// which every allocation a guest maps is of on Windows (D202).
+    /// which every allocation a guest maps is of on Windows (D202). Its extensions are read
+    /// as native-identity.c reads them: room for the count its driver gives taken fallibly,
+    /// a count written past that room refused, and each name taken within its array.
     fn imports_host_memory(&self, device: *mut c_void) -> bool {
         let mut count = 0u32;
         // SAFETY: the count alone asked, of the device's own extensions.
@@ -492,31 +494,36 @@ impl Vulkan {
                 std::ptr::null_mut(),
             )
         };
-        if r != 0 {
+        let Some(room) = usize::try_from(count).ok().filter(|_| r == 0) else {
+            return false;
+        };
+        let mut found = Vec::new();
+        if found.try_reserve_exact(room).is_err() {
             return false;
         }
-        let mut found: Vec<ExtensionProperties> = (0..count)
-            .map(|_| ExtensionProperties {
-                name: [0; 256],
-                spec_version: 0,
-            })
-            .collect();
-        let mut count = found.len() as u32;
+        found.resize_with(room, || ExtensionProperties {
+            name: [0; 256],
+            spec_version: 0,
+        });
+        let mut written = count;
         // SAFETY: room for `count` properties; VK_INCOMPLETE where there are more, which
         // reads those it has.
         let r = unsafe {
             (self.enumerate_device_extension_properties)(
                 device,
                 std::ptr::null(),
-                &raw mut count,
+                &raw mut written,
                 found.as_mut_ptr(),
             )
         };
+        let filled = usize::try_from(written)
+            .ok()
+            .and_then(|written| found.get(..written));
         (r == 0 || r == 5)
-            && found.iter().take(count as usize).any(|e| {
-                // SAFETY: a NUL-terminated name within its array (vulkan_core.h).
-                unsafe { std::ffi::CStr::from_ptr(e.name.as_ptr()) }.to_bytes()
-                    == b"VK_EXT_external_memory_host"
+            && filled.is_some_and(|filled| {
+                filled
+                    .iter()
+                    .any(|e| shards_abi::gpu::fixed_name(&e.name) == Some(c"VK_EXT_external_memory_host"))
             })
     }
 }
