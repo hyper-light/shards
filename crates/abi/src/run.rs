@@ -9,6 +9,7 @@
 use alloc::vec::Vec;
 
 pub mod managed;
+pub mod mcp;
 pub mod members;
 pub mod nesting;
 pub mod notice;
@@ -38,6 +39,9 @@ pub const EXEC_PORT: u32 = 1027;
 pub const ENGINE_PORT: u32 = 1029;
 /// Where the command finds its microVM's engine: a socket shards-init listens on.
 pub const ENGINE_SOCKET: &str = "/run/shards/engine.sock";
+/// The port the guest dials for each connection a member makes to its MCP socket (D254),
+/// which its HELLO's token, the run's `mcp=`, admits: after the run's and the builder's ports.
+pub const MCP_PORT: u32 = 1031;
 /// The bytes of an exec's token.
 pub const TOKEN: usize = 16;
 pub const HEADER: usize = 8;

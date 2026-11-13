@@ -907,6 +907,8 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Sorted, Failu
             // Init's, done as the workload's limits are (`limit`).
         } else if entry.starts_with(run::socket::DIR) {
             // Init's, its lanes' to the command's sockets (D251, `Standby::start`).
+        } else if entry.starts_with(run::mcp::TOKEN_KEY) || entry.starts_with(run::mcp::MEMBER_KEY) {
+            // Init's, its members' MCP bridges (D254, `domains::start`).
         } else if entry == run::nesting::GRANT {
             // The nesting grant (D234): the standby's part of it, made after the run's
             // mounts (below).

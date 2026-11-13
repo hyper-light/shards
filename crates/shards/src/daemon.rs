@@ -6064,6 +6064,23 @@ impl<D: Disk> Daemon<D> {
                         }
                     }
                 }
+                // A member's MCP connection its VM handed over unprompted (D254): no
+                // controller's ask is paired with one yet, so it is let go, its VM's copy
+                // with it (M24), which ends its member's bridge. One its VM did not number
+                // as its own is let go alone.
+                kind::LANE_ACCEPTED => {
+                    drop(m.fds);
+                    if let Some(accepted) = shards_ipc::Accepted::decode(&m.payload)
+                        && let Err(e) =
+                            inbox
+                                .socket
+                                .send(kind::LANE_HELD, &accepted.number.to_be_bytes(), &[])
+                    {
+                        log(format!(
+                            "container {id}: letting go of a member's MCP connection: {e}"
+                        ));
+                    }
+                }
                 // Its VM's answer to a save (D176), before anything after it: a microVM the
                 // save stops ends as saved.
                 kind::SAVED => snapshots::answered(inbox, &m.payload),
@@ -13470,6 +13487,66 @@ mod tests {
                 }
                 say(&vm, kind::DONE, &[0]);
             }
+        });
+    }
+
+    /// D254: a member's MCP connection its VM hands over unprompted is answered as taken
+    /// (M24) and let go, no controller's ask being paired with one yet: its far end reads its
+    /// end. One its VM did not number as its own is let go unanswered.
+    #[cfg(unix)]
+    #[test]
+    fn a_members_mcp_connection_is_answered_and_let_go_until_its_pairing() {
+        use std::io::Read as _;
+        let t = Test::new("mcp-accepted");
+        t.run(|t| {
+            let id = t.create("mcp");
+            let (ready, vm) = t.warm_vm(None);
+            let keep = Keep {
+                detached: None,
+                options: crate::spec::Options::default(),
+                health: None,
+                published: Vec::new(),
+                named: None,
+                restarted: false,
+                layer_pending: false,
+                layer_over: None,
+                layer_way: None,
+                log_files: DEFAULT_LOGS.files,
+                log_compress: false,
+                visit: false,
+                egress: None,
+                agentfile: None,
+                nested: false,
+                mac: None,
+                link_local: Vec::new(),
+                engine: None,
+            };
+            let _inbox = t.daemon.register(ready, &id, keep);
+            say(&vm, kind::STARTED, &[]);
+            vm.set_read_timeout(Some(PATIENCE)).unwrap();
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            // Before its far end may close: XNU sets no option on a socket closed both ways
+            // (sosetoptlock).
+            ours.set_read_timeout(Some(PATIENCE)).unwrap();
+            let first = shards_abi::run::mcp::ACCEPTED_FIRST;
+            let owners = shards_ipc::Accepted {
+                number: first - 1,
+                member: 1,
+            };
+            say(&vm, kind::LANE_ACCEPTED, &owners.encode());
+            let accepted = shards_ipc::Accepted {
+                number: first,
+                member: 1,
+            };
+            shards_ipc::send(&vm, kind::LANE_ACCEPTED, &accepted.encode(), &[theirs.as_fd()]).unwrap();
+            t.daemon.settle();
+            // Held until the daemon has it (M24).
+            drop(theirs);
+            assert_eq!(heard(&vm), (kind::LANE_HELD, first.to_be_bytes().to_vec()));
+            let mut rest = Vec::new();
+            (&ours).read_to_end(&mut rest).unwrap();
+            assert_eq!(rest, b"");
+            say(&vm, kind::DONE, &[0]);
         });
     }
 
