@@ -1884,6 +1884,9 @@ fn relay_engine(guest: GuestConn, pipe: OwnedFd) {
                 &pipe_down,
                 &guest_down,
                 |guest| guest.shutdown(std::net::Shutdown::Write),
+                |guest| {
+                    let _ = guest.shutdown(std::net::Shutdown::Both);
+                },
                 shards_ipc::end,
             )
         });
@@ -1898,6 +1901,7 @@ fn relay_engine(guest: GuestConn, pipe: OwnedFd) {
                     &guest,
                     &pipe,
                     |pipe| pipe.shutdown(std::net::Shutdown::Write),
+                    shards_ipc::end,
                     |guest| {
                         let _ = guest.shutdown(std::net::Shutdown::Both);
                     },
@@ -1912,12 +1916,16 @@ fn relay_engine(guest: GuestConn, pipe: OwnedFd) {
 }
 
 /// Copies what `from` reads to `to` until `from` ends, then ends `to`'s writes
-/// (`ended`); where `to` takes no more, ends `from` (`refused`), so that its writer stops.
+/// (`ended`); where `from`'s read fails, its peer gone rather than its writes ended (a cut
+/// WinSock socket reads WSAECONNRESET, PM M358), ends `to` both ways (`cut`), so that its
+/// reader finds it hung up, never a half-close (D251); where `to` takes no more, ends
+/// `from` (`refused`), so that its writer stops.
 #[cfg(windows)]
 fn pass<F: ?Sized, T: ?Sized>(
     from: &F,
     to: &T,
     ended: impl FnOnce(&T) -> io::Result<()>,
+    cut: impl FnOnce(&T),
     refused: impl FnOnce(&F),
 ) where
     for<'a> &'a F: io::Read,
@@ -1926,8 +1934,12 @@ fn pass<F: ?Sized, T: ?Sized>(
     let mut buf = vec![0u8; 64 << 10];
     loop {
         match shards_ipc::read(from, &mut buf) {
-            Ok(0) | Err(_) => {
+            Ok(0) => {
                 let _ = ended(to);
+                return;
+            }
+            Err(_) => {
+                cut(to);
                 return;
             }
             Ok(n) => {

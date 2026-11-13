@@ -1,7 +1,8 @@
 //! Lanes between the host and sockets inside the microVM (D251), carried over vsock through
 //! the exec port: each one's connection says its token in its HELLO, then its status, then
 //! carries the bytes each way, each way's end that way's half-close (`native_relay::pump`,
-//! `EndPolicy::Independent`).
+//! `EndPolicy::Independent`); a workload's socket gone while its host's way is open ends the
+//! vsock connection both ways at once, D251's cut (`Termination::ClientCut`).
 //!
 //! A lane to a socket of the run's own command is asked by the host ([`open`]): its name must
 //! be a file name in the one directory the run grants (`sockets=`, default deny), and its path
