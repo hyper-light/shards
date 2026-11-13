@@ -51,6 +51,9 @@ pub(super) enum Ask {
     Ack(u64),
     AckAndFinish(u64),
     Cancel,
+    /// Panics its driver's thread, for a test of how a lost stream says its driver ended.
+    #[cfg(test)]
+    Panic,
     #[cfg(test)]
     RawControl {
         bytes: Vec<u8>,
@@ -199,10 +202,14 @@ impl Handler for Client {
 
     fn command(&mut self, io: &mut Io<'_>, command: Ask) {
         match command {
-            Ask::Connect(address) => match io.connect(address, self.config.take().unwrap()) {
-                Ok(conn) => self.conn = Some(conn),
-                Err(error) => self.fail(error.to_string()),
+            // An observer connects once: its client's config goes with its first Connect.
+            Ask::Connect(address) => match self.config.take().map(|config| io.connect(address, config)) {
+                Some(Ok(conn)) => self.conn = Some(conn),
+                Some(Err(error)) => self.fail(error.to_string()),
+                None => self.fail("an observer connects once".into()),
             },
+            #[cfg(test)]
+            Ask::Panic => panic!("an observer's driver asked to panic"),
             Ask::AckAndFinish(offset) => {
                 self.pending.extend_from_slice(&managed::consumed(offset));
                 self.finish = true;
@@ -839,20 +846,33 @@ impl Metadata {
             return None;
         }
         let mut endpoints = BTreeMap::new();
+        // What the daemon appends to the record as its channels end, after the endpoints it
+        // published (daemon/managed.rs): an output's `canonical` and `state` lines, an
+        // input's `state` line, each of an endpoint published. A member that ends at once
+        // has its input's end there before its owner reads the record (HVF at 4a426c367).
+        let mut ended = false;
         for line in lines {
             let fields: Vec<_> = line.split_whitespace().collect();
-            let ["member", member, "channel", channel, "address", address] = fields.as_slice() else {
+            let ["member", member, "channel", channel, word, rest @ ..] = fields.as_slice() else {
                 return None;
             };
-            let member = member.parse().ok()?;
-            let channel = channel.parse().ok()?;
-            let address: SocketAddr = address.parse().ok()?;
+            let member: u32 = member.parse().ok()?;
+            let channel: u8 = channel.parse().ok()?;
             // 1 and 2 a member's output channels, 0 its input (plan step 5).
-            if !matches!(channel, 0..=2)
-                || !address.ip().is_loopback()
-                || endpoints.insert((member, channel), address).is_some()
-            {
+            if !matches!(channel, 0..=2) {
                 return None;
+            }
+            match (*word, rest) {
+                ("address", [address]) if !ended => {
+                    let address: SocketAddr = address.parse().ok()?;
+                    if !address.ip().is_loopback() || endpoints.insert((member, channel), address).is_some() {
+                        return None;
+                    }
+                }
+                ("canonical" | "state", [_, ..]) if endpoints.contains_key(&(member, channel)) => {
+                    ended = true
+                }
+                _ => return None,
             }
         }
         Some(Self {
