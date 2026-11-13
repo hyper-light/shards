@@ -19,7 +19,7 @@ use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served
 use shards_api::image::{
     Channel, ImageGuest, ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _, Keep, MemberEnd,
     MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto, Publish,
-    RunEnd, Secret, StatsScope,
+    RunEnd, Secret, StartedFrom, StatsScope,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -679,6 +679,58 @@ fn an_images_own_command_ends_its_run_with_its_status() {
     };
     let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
     assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Exited(3)));
+}
+
+/// D253: an orchestrator's run restores its image's template, as a daemon's run does. In a
+/// home whose guest is recorded (D28), the image's first run boots, saving its template, and
+/// says so; the next restores it, and its command ends as the first's did. A template that no
+/// longer restores (its snapshot's state emptied) is replaced, and its run told so; a run of a
+/// guest its caller gave has none. Where the host's hypervisor restores no snapshot (Windows
+/// Server 2022, PM M345), each run boots.
+#[test]
+fn an_images_next_run_restores_the_template_its_first_saved() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = common::home_with("api-tmpl-home", TIMEOUT);
+    build_example(&home, "api-tmpl:1");
+    let mut given = spec(&home, "api-tmpl:1");
+    given.command = Some(["/bin/sh", "-c", "exit 3"].map(String::from).to_vec());
+    given.egress = Narrowing {
+        egress: Keep::Only(Vec::new()),
+        mcp: Keep::Only(Vec::new()),
+        destinations: Keep::Only(Vec::new()),
+        dns: false,
+        members: Some(Vec::new()),
+    };
+    let mut stored = given.clone();
+    stored
+        .env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    let run = |s: &ImageSpec| {
+        let guest = ImageShards::new().boot(s, TIMEOUT).unwrap();
+        let from = guest.started_from();
+        assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Exited(3)));
+        from
+    };
+    if !shards_vmm::vm::restores_here() {
+        assert_eq!(run(&stored), StartedFrom::Booted);
+        return;
+    }
+    assert_eq!(run(&stored), StartedFrom::Saved);
+    assert_eq!(run(&stored), StartedFrom::Restored);
+    let templates: Vec<_> = std::fs::read_dir(home.join("templates"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_dir())
+        .collect();
+    assert_eq!(templates.len(), 1, "{templates:?}");
+    // Its snapshot's state emptied: a template that is there and no longer restores.
+    let current = std::fs::read_to_string(templates[0].join("current")).unwrap();
+    std::fs::write(templates[0].join(current.trim_end()).join("state"), b"").unwrap();
+    assert_eq!(run(&stored), StartedFrom::Replaced);
+    assert_eq!(run(&stored), StartedFrom::Restored);
+    assert_eq!(run(&given), StartedFrom::Booted);
 }
 
 /// Stop ends the run at once, whatever its members do, and its end says so.

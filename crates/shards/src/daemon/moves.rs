@@ -143,7 +143,7 @@ pub(super) const RUN_BASELINE: &str = "cpu-baseline";
 
 /// The CPU baseline `home`'s microVMs are told ([`crate::cli::moves::BASELINE`]); none
 /// where it keeps none, or none it can read.
-pub(super) fn home_baseline(home: &Path) -> shards_vmm::arch::cpu::Id {
+pub(crate) fn home_baseline(home: &Path) -> shards_vmm::arch::cpu::Id {
     read_baseline(&home.join(crate::cli::moves::BASELINE))
 }
 

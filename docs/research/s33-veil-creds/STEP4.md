@@ -20,7 +20,7 @@ from origin/main 8479be870, fast-forwarded to 72cdfbf06 before any edit. The des
   control alone (`Control::Daemon`), the message's payload wiped once taken; asks sent each pass (`ask_run_host`);
   leases ended as the run host's control hangs up; values released on the loop's timers.
 - `crates/ipc/src/lib.rs`: `kind::NET_LEASE = 100` (98 and 99 went first to D251's `LANE_OPEN` and `LANE_HELD`).
-- `crates/api/src/image/wire.rs`: run channel version 19 (14 to 18 went first: guest time, D252, D232, D247, D256);
+- `crates/api/src/image/wire.rs`: run channel version 20 (14 to 19 went first: guest time, D252, D232, D247, D256, D253);
   `to_client::LEASE` (30), `to_client::RELEASED` (31), `to_host::LEASED` (13); `LeaseAsk`, `Lease`, `LeaseRefusal`,
   `LeaseAnswer`, `released`; `Secret` wiped as it drops.
 - `crates/api/src/image.rs`: `Lessor` (the orchestrator-side interface: `lease(reference)`, `release(lease)`),

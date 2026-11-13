@@ -450,6 +450,8 @@ pub(super) struct Session {
     /// The period its VM's governor holds a rate over, as its host said it as the run
     /// started (D247).
     rate_period: Duration,
+    /// How its microVM started, as its host said it (D253).
+    started_from: wire::StartedFrom,
 }
 
 impl Session {
@@ -599,6 +601,7 @@ impl Session {
             nesting: request.nesting,
             terminals,
             rate_period: started.rate_period,
+            started_from: started.from,
         };
         session.pump_outputs()?;
         Ok(session)
@@ -1221,6 +1224,10 @@ impl ImageGuest for Session {
 
     fn rate_period(&self) -> Duration {
         self.rate_period
+    }
+
+    fn started_from(&self) -> wire::StartedFrom {
+        self.started_from
     }
 
     fn resize(
@@ -2045,6 +2052,7 @@ mod tests {
                     vm,
                 }),
                 rate_period: Duration::from_millis(100),
+                from: wire::StartedFrom::Booted,
             };
             says(&mut h.host, wire::to_client::STARTED, &started.encode().unwrap());
             ask(&mut h.host, 1, CLAUDE);
