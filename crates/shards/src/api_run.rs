@@ -4,7 +4,8 @@
 //! and end, stats and the run's end out. It is to its run what the daemon is to each of its
 //! runs, and nothing more: it prepares the run with the daemon's own functions (`run`,
 //! `volumes`, `setup`, `agentfile`, `daemon::publish`, `netproc`), starts the run's network,
-//! share and VM processes, plays the daemon's side of the VM's link (warm.rs) for that one
+//! share and VM processes, its VM restoring its image's template where one is saved, the daemon's
+//! runs' shape (D253), plays the daemon's side of the VM's link (warm.rs) for that one
 //! run, and owns its managed output (P3). Its children go with it: the VM is told at
 //! `TAKEN` that its run is killed if its link closes (`STOP_ORDER`), the network process
 //! goes as the VM's doorbell end does, the share process as its streams close; on Windows
@@ -143,34 +144,6 @@ fn socket_grant(grant: &wire::SocketGrant, command: bool) -> Result<(), No> {
         return refuse("a run without a command of its own has no sockets to grant".into());
     }
     Ok(())
-}
-
-/// The VM process's arguments for the run's GPUs (D232), as shards-api's direct boot gives
-/// them: `--gpu`, then each identity's `--gpu-device`; none for none.
-fn gpu_args(gpus: &[shards_api::PhysicalGpu]) -> Vec<std::ffi::OsString> {
-    if gpus.is_empty() {
-        return Vec::new();
-    }
-    let mut args = vec![std::ffi::OsString::from("--gpu")];
-    for gpu in gpus {
-        args.push("--gpu-device".into());
-        args.push(gpu.to_string().into());
-    }
-    args
-}
-
-/// The kernel and init a run's VM boots: its guest's, as `run::prepare` chose them, the GPU's
-/// guest kernel `gpu` in its kernel's place where the run is given its GPU (D144), as the
-/// daemon boots a run given one (daemon.rs `warm_for`); no init where a given guest names none.
-fn boot_of(
-    boot: &crate::run::Boot,
-    gpu: Option<&std::path::Path>,
-) -> (std::path::PathBuf, Option<std::path::PathBuf>) {
-    let (kernel, init) = match boot {
-        crate::run::Boot::Given(cfg) => (cfg.kernel.as_path(), cfg.init.clone()),
-        crate::run::Boot::Stored(guest) => (guest.kernel.as_path(), Some(guest.init.clone())),
-    };
-    (gpu.unwrap_or(kernel).to_path_buf(), init)
 }
 
 /// The run's microVM, made as every run's is (D253): its config, its guest's (the GPU's where
@@ -1039,9 +1012,10 @@ mod hosted {
         /// The anonymous volumes its `VOLUME`s made, removed as it ends (`--rm`'s).
         made: Vec<String>,
         bridge: Option<shards_net::bridge::Bridge>,
-        kernel: PathBuf,
-        init: PathBuf,
+        /// The in-VM server's device, where its image is an Agentfile's (D60).
         server: Option<PathBuf>,
+        /// Its microVM, made as every run's is, and its template (D253).
+        microvm: super::Microvm,
         /// Its managed output's members, labels and active ones, where it has any.
         capture: Option<(u32, Vec<u32>)>,
         /// The members whose stdin its orchestrator writes, by their declared index.
@@ -1050,8 +1024,6 @@ mod hosted {
         roots: Vec<Vec<u8>>,
         /// Its agent-control endpoint's ask (D252), where its orchestrator made one.
         control: Option<wire::ControlAsk>,
-        /// The host GPUs its VM renders on (D232); none, no GPU.
-        gpu_devices: Vec<shards_api::PhysicalGpu>,
     }
 
     pub(super) fn run(
@@ -1127,7 +1099,7 @@ mod hosted {
             },
             // GPUs named (D232) ask for the microVM's GPU as `--gpus 1` asks it, so that
             // `run::prepare` gives it the GPU's guest kernel, DRM's virtio-gpu driver built in
-            // (D144), which its VM then boots (`super::boot_of`).
+            // (D144), which its VM then boots (`super::microvm`).
             gpus: if request.gpu_devices.is_empty() {
                 Vec::new()
             } else {
@@ -1238,22 +1210,50 @@ mod hosted {
             setup.retain(|e| !e.starts_with(b"caps="));
             setup.push(format!("caps={}", a.caps(&run)).into_bytes());
         }
-        let boot = super::boot_of(&prepared.boot, prepared.gpu.as_deref());
-        let (kernel, init) = (
-            boot.0,
-            boot.1.ok_or_else(|| No(Cause::Boot, "no init to boot".into()))?,
-        );
-        let version = crate::guest::version_of(&kernel).map_err(no(Cause::Boot))?;
-        crate::setup::security_setup(&mut setup, &run, version, None, &[], nesting.grant())
-            .map_err(no(Cause::Request))?;
+        // The in-VM server's device after its root filesystem, where its image is an
+        // Agentfile's (D60).
         let server = match &agentfile {
-            Some(a) => {
-                setup.extend(crate::setup::domain_seccomp(version).map_err(no(Cause::Boot))?);
-                setup.extend(a.image_env.iter().cloned());
-                Some(crate::guest::server_device(home).map_err(no(Cause::Boot))?)
-            }
+            Some(_) => Some(crate::guest::server_device(home).map_err(no(Cause::Boot))?),
             None => None,
         };
+        // Its microVM, made as every run's is, the daemon's alike, so that its template is
+        // the one a daemon's run of the same shape saves and restores (D253): its size, the
+        // home's CPU baseline (D176 part 6), the host's memory to plug, the in-VM server's
+        // and the emulator's devices, a slot and a DAX window for each share (D38, D189), PCI
+        // slots (D214) and its bridge.
+        let cpu_baseline = crate::daemon::home_baseline(home);
+        let share_window_mib = crate::daemon::share_window_mib(&|line| say(line)).map_err(no(Cause::Boot))?;
+        let shares = u32::try_from(opened.dirs.len())
+            .map_err(|_| No(Cause::Request, "more shares than a microVM counts".into()))?;
+        let shape = crate::run::Shape {
+            size: prepared.size,
+            cpu_baseline: &cpu_baseline,
+            host_memory: crate::build::host_memory(),
+            server: server.as_deref(),
+            emulator: prepared.emulator.as_ref(),
+            shares,
+            share_window_mib,
+            max_map_count: crate::daemon::max_map_count(),
+            pci_slots: crate::daemon::pci_slots(),
+            bridge: bridge.as_ref(),
+        };
+        let microvm = super::microvm(
+            home,
+            &prepared,
+            &shape,
+            &request.gpu_devices,
+            shards_vmm::vm::restores_here(),
+        );
+        if microvm.cfg.init.is_none() {
+            return Err(No(Cause::Boot, "no init to boot".into()));
+        }
+        let version = crate::guest::version_of(&microvm.cfg.kernel).map_err(no(Cause::Boot))?;
+        crate::setup::security_setup(&mut setup, &run, version, None, &[], nesting.grant())
+            .map_err(no(Cause::Request))?;
+        if let Some(a) = &agentfile {
+            setup.extend(crate::setup::domain_seccomp(version).map_err(no(Cause::Boot))?);
+            setup.extend(a.image_env.iter().cloned());
+        }
         // Its domains' plug roots (D235), as a daemon's run names them: this host's own and
         // each share's top-level directory, beneath which a plug asked of it lies.
         let roots = match &agentfile {
@@ -1335,23 +1335,24 @@ mod hosted {
             dirs: opened.dirs,
             made,
             bridge,
-            kernel,
-            init,
             server,
+            microvm,
             capture,
             inputs,
             roots,
             control: request.control.clone(),
-            gpu_devices: request.gpu_devices.clone(),
         })
     }
 
-    /// The run's processes, started: its network's, its shares', its VM's.
+    /// The run's processes, started: its network's, its shares', its VM's; how its VM
+    /// started, and its template's files, held open for the run's life (D253).
     struct Launched {
         vm: shards_ipc::Child,
         link: Stream,
         net: Option<(crate::netproc::NetProcess, crate::netproc::Control)>,
         shares: Option<Shares>,
+        from: wire::StartedFrom,
+        held: Option<shards_vmm::snapshot::Held>,
         /// On Windows the job each of them is made in, whose last handle is this
         /// process's (`GroupJob::ending_with_this_process`): they end as it ends, however
         /// it ends, as a direct boot's do (D141, D197); let go of once they are reaped.
@@ -1398,49 +1399,6 @@ mod hosted {
         }
     }
 
-    /// The VM process's arguments, as the daemon's for a run's VM (daemon.rs `cold`): its
-    /// guest, booted in its warm mode for the one run handed it on its link, the in-VM
-    /// server's device after its root, and its shares' count.
-    fn vm_args(plan: &Plan) -> Vec<OsString> {
-        let mut cmdline = shards_vmm::vm::Config::new(plan.kernel.clone(), None).cmdline;
-        if let Some(bridge) = &plan.bridge {
-            cmdline.push(' ');
-            cmdline.push_str(&bridge.cmdline());
-        }
-        let mut args: Vec<OsString> = vec![
-            "run".into(),
-            "--kernel".into(),
-            plan.kernel.clone().into(),
-            "--cmdline".into(),
-            cmdline.into(),
-            "--cpus".into(),
-            plan.prepared.size.0.to_string().into(),
-            "--memory".into(),
-            plan.prepared.size.1.to_string().into(),
-            "--rootfs".into(),
-            plan.prepared.rootfs.clone().into(),
-            "--init".into(),
-            plan.init.clone().into(),
-            // Memory its workload frees given back to the host as it reports it (D151).
-            "--reporting".into(),
-            "--warm".into(),
-            crate::launch::LINK.into(),
-        ];
-        if let Some(server) = &plan.server {
-            args.extend(["--pmem".into(), server.clone().into()]);
-        }
-        // Slots for what is plugged into it as it runs (D214, D235), as a daemon run's.
-        let slots = crate::daemon::pci_slots();
-        if slots > 0 {
-            args.extend(["--pci-slots".into(), slots.to_string().into()]);
-        }
-        if !plan.dirs.is_empty() {
-            args.extend(["--shares".into(), plan.dirs.len().to_string().into()]);
-        }
-        args.extend(super::gpu_args(&plan.gpu_devices));
-        args
-    }
-
     /// The home's private directory, made if it is not there: where a share process keeps
     /// the files a restored guest holds that no path reaches (D176; daemon.rs
     /// `private_dir`).
@@ -1460,28 +1418,17 @@ mod hosted {
     }
 
     /// The run's processes, started as the daemon starts a run's VM (launch.rs): its share
-    /// process, ended where the VM does not start; then its network process, denying all
-    /// until its policy comes, and its VM. On Windows each is made in a job of this
-    /// process's that ends them as it ends (D141, D197).
+    /// process, ended where its VM does not start; then its network process, denying all
+    /// until its policy comes, and its VM, the way its template says (D253, `super::started`):
+    /// restoring it, or booting and saving it, one that does not restore replaced. On Windows
+    /// each is made in a job of this process's that ends them as it ends (D141, D197).
     fn launch(home: &Path, plan: &Plan) -> Result<Launched, No> {
         let boot = |e: String| No(Cause::Boot, e);
         // Made before any process of the run's, and held until each is reaped.
         #[cfg(windows)]
         let job = shards_ipc::GroupJob::ending_with_this_process()
             .map_err(|e| boot(format!("the run's job: {e}")))?;
-        let network = match &plan.bridge {
-            Some(bridge) => Some(crate::launch::Network {
-                policy: shards_net::Policy::DenyAll,
-                mac: shards_net::random_mac().map_err(|e| boot(format!("a guest's MAC: {e}")))?,
-                bridge,
-                credentials: plan.credentials.is_some(),
-            }),
-            None => None,
-        };
-        let vm = crate::helpers::vm().map_err(boot)?;
         let ends = Ends::kept_in(home);
-        let args = vm_args(plan);
-        let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
         let tags = run_tags(plan.dirs.len());
         #[cfg(unix)]
         let shares = (!plan.dirs.is_empty())
@@ -1493,25 +1440,25 @@ mod hosted {
             .then(|| start_shares(home, &plan.dirs, &job, Some(&tags)))
             .transpose()
             .map_err(boot)?;
-        let launched = crate::launch::run(crate::launch::Plan {
-            args: &argv,
-            vm: &vm,
-            network,
-            ends: &ends,
-            #[cfg(unix)]
-            group: None,
-            #[cfg(windows)]
-            group: Some(&job),
-            #[cfg(target_os = "macos")]
-            grants: crate::launch::Grants::Answered,
+        let started = crate::helpers::vm().map_err(boot).and_then(|vm| {
+            let mut host = Host {
+                home,
+                plan,
+                vm: &vm,
+                ends: &ends,
+                #[cfg(windows)]
+                job: &job,
+            };
+            let template = plan.microvm.template.as_ref().map(|t| t.dir.as_path());
+            super::started(&mut host, super::way_of(template, shards_vmm::snapshot::exists))
         });
-        let (launched, link) = match launched {
-            Ok(launched) => launched,
+        let ((launched, link, _), from, held) = match started {
+            Ok(started) => started,
             Err(e) => {
                 if let Some(shares) = shares {
                     shares.end(&ends);
                 }
-                return Err(boot(e));
+                return Err(e);
             }
         };
         Ok(Launched {
@@ -1519,9 +1466,157 @@ mod hosted {
             link,
             net: launched.net,
             shares,
+            from,
+            held,
             #[cfg(windows)]
             job,
         })
+    }
+
+    /// What starts the run's VM (`super::Machine`): its launch through the one seam (R12),
+    /// its words every run's microVM's (`run::boot_args`, `run::restore_args`) with its
+    /// writable layer's file (D190); its template's record and files (D253).
+    struct Host<'a> {
+        home: &'a Path,
+        plan: &'a Plan,
+        vm: &'a Path,
+        ends: &'a Ends,
+        #[cfg(windows)]
+        job: &'a shards_ipc::GroupJob,
+    }
+
+    impl super::Machine for Host<'_> {
+        type Vm = (crate::launch::Launched, Stream, Option<crate::daemon::LayerFile>);
+        type Held = shards_vmm::snapshot::Held;
+
+        fn launch(&mut self, way: &super::Way) -> Result<Self::Vm, String> {
+            let plan = self.plan;
+            let cfg = &plan.microvm.cfg;
+            let rootfs = &plan.prepared.rootfs;
+            // A network device where its run has a bridge, or, restoring, where its template
+            // has one, as the daemon's warm VMs are given theirs (refill.rs `start_planned`);
+            // a MAC of its own each time, which its guest takes as it resumes (D31). A template
+            // that cannot be read gets none: its VM then fails to restore it, as any broken
+            // template's does, and it is replaced.
+            let wired = match way {
+                super::Way::Restore { dir } => shards_vmm::snapshot::net(dir)
+                    .map_err(|e| super::say(format_args!("reading the template {}: {e}", dir.display())))
+                    .is_ok_and(|net| net.is_some()),
+                _ => true,
+            };
+            let network = match (&plan.bridge, wired) {
+                (Some(bridge), true) => Some(crate::launch::Network {
+                    policy: shards_net::Policy::DenyAll,
+                    mac: shards_net::random_mac().map_err(|e| format!("a guest's MAC: {e}"))?,
+                    bridge,
+                    credentials: plan.credentials.is_some(),
+                }),
+                _ => None,
+            };
+            // Its writable layer (D190): made empty of the run's size for a boot, a clone of its
+            // template's for a restore where its template keeps one.
+            let (mut args, layer) = match way {
+                super::Way::Boot | super::Way::Save { .. } => {
+                    let save = match way {
+                        super::Way::Save { fresh, .. } => Some(fresh.as_path()),
+                        _ => None,
+                    };
+                    let layer = crate::daemon::LayerFile::made(self.home, plan.prepared.layer)?;
+                    (
+                        crate::run::boot_args(cfg, rootfs, save, crate::launch::LINK),
+                        Some(layer),
+                    )
+                }
+                super::Way::Restore { dir } => {
+                    // Its backing files as the VM saving its template recorded them: resolved.
+                    let rootfs = crate::daemon::resolved(rootfs);
+                    let server = plan.server.as_deref().map(crate::daemon::resolved);
+                    let emulator = plan
+                        .prepared
+                        .emulator
+                        .as_ref()
+                        .map(|e| crate::daemon::resolved(&e.root));
+                    let backings = crate::run::Backings {
+                        rootfs: Some(&rootfs),
+                        server: server.as_deref(),
+                        emulator: emulator.as_deref(),
+                    };
+                    let layered = shards_vmm::snapshot::has_layer(dir)
+                        .map_err(|e| super::say(format_args!("reading the template {}: {e}", dir.display())))
+                        .unwrap_or(false);
+                    let layer = if layered {
+                        let generation = shards_vmm::snapshot::generation(dir)?;
+                        Some(crate::daemon::LayerFile::for_restore(self.home, &generation)?)
+                    } else {
+                        None
+                    };
+                    (
+                        crate::run::restore_args(dir, &backings, cfg.gpu, crate::launch::LINK),
+                        layer,
+                    )
+                }
+            };
+            args.extend(layer.iter().flat_map(crate::daemon::LayerFile::args));
+            let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
+            let (launched, link) = crate::launch::run(crate::launch::Plan {
+                args: &argv,
+                vm: self.vm,
+                network,
+                ends: self.ends,
+                #[cfg(unix)]
+                group: None,
+                #[cfg(windows)]
+                group: Some(self.job),
+                #[cfg(target_os = "macos")]
+                grants: crate::launch::Grants::Answered,
+            })?;
+            Ok((launched, link, layer))
+        }
+
+        fn ready(&mut self, vm: &mut Self::Vm) -> Result<(), String> {
+            let said = match shards_ipc::recv(&vm.1) {
+                Ok(Some(m)) if m.kind == kind::READY => Ok(()),
+                Ok(Some(m)) => Err(format!("the VM said message kind {} before it was ready", m.kind)),
+                Ok(None) => Err("the VM ended before it was ready".into()),
+                Err(e) => Err(format!("the VM was not ready: {e}")),
+            };
+            // Its writable layer's file is its VM's once it is ready or has failed (D190).
+            vm.2 = None;
+            said
+        }
+
+        fn end(&mut self, vm: Self::Vm) {
+            let (launched, link, layer) = vm;
+            drop(link);
+            launched.end(self.ends);
+            drop(layer);
+        }
+
+        fn record(&mut self, dir: &Path) -> Result<(), String> {
+            let plan = self.plan;
+            let template = plan
+                .microvm
+                .template
+                .as_ref()
+                .ok_or("a run of no template records none")?;
+            crate::run::Origin::of(
+                &template.guest,
+                &plan.prepared.rootfs,
+                template.stamp.as_deref(),
+                plan.server.is_some(),
+                plan.microvm.cfg.gpu,
+                plan.prepared.emulator.as_ref().map(|e| e.root.as_path()),
+            )
+            .write(dir)
+        }
+
+        fn hold(&mut self, dir: &Path) -> Result<Self::Held, String> {
+            shards_vmm::snapshot::hold(dir)
+        }
+
+        fn say(&mut self, line: &str) {
+            super::say(format_args!("{line}"));
+        }
     }
 
     /// The share process (share.rs) serving `dirs`, as the daemon starts a run's
@@ -1876,11 +1971,11 @@ mod hosted {
         protocol::kind::MANAGED_CREDIT
     }
 
-    /// Hands the VM its run, as the daemon hands a warm VM one (daemon.rs `hand_over`): once
-    /// it is `READY`, `RUN` with the run's head, spec and descriptors, on Windows its
-    /// shares' streams after it (D197), then `TAKEN`; then `STOP_ORDER`, SIGKILL with no
-    /// grace, so that a VM whose link closes, this process gone, ends its run. `trust` joins
-    /// its setup: the run's CA for its members' trust (D242), known only now.
+    /// Hands the VM its run, as the daemon hands a warm VM one (daemon.rs `hand_over`), the
+    /// VM `READY` already (`launch`): `RUN` with the run's head, spec and descriptors, on
+    /// Windows its shares' streams after it (D197), then `TAKEN`; then `STOP_ORDER`, SIGKILL
+    /// with no grace, so that a VM whose link closes, this process gone, ends its run.
+    /// `trust` joins its setup: the run's CA for its members' trust (D242), known only now.
     fn hand_over(
         link: &Stream,
         plan: &Plan,
@@ -1889,12 +1984,6 @@ mod hosted {
         shares: Option<&Shares>,
         capture: Option<&Stream>,
     ) -> Result<(), String> {
-        match shards_ipc::recv(link) {
-            Ok(Some(m)) if m.kind == kind::READY => super::say(format_args!("its guest is ready")),
-            Ok(Some(m)) => return Err(format!("the VM said message kind {} before it was ready", m.kind)),
-            Ok(None) => return Err("the VM ended before it was ready".into()),
-            Err(e) => return Err(format!("the VM was not ready: {e}")),
-        }
         let null = std::fs::File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let err = io::stderr();
         let payload = if trust.is_empty() {
@@ -1960,8 +2049,9 @@ mod hosted {
         ));
         let mut launched = launch(home, &plan)?;
         super::say(format_args!(
-            "its VM process {} started; waiting for its guest",
-            launched.vm.id()
+            "its VM process {} is ready ({:?})",
+            launched.vm.id(),
+            launched.from
         ));
         // Its share process's notices (D235), given its guest as its run starts.
         let due = launched.shares.as_mut().and_then(|s| s.notices.take());
@@ -2030,6 +2120,7 @@ mod hosted {
                 // The period its VM's governor holds a rate over: this build's hold's, which
                 // the VM process it carries holds by (D36, D247).
                 rate_period: shards_vmm::vm::hold_period(),
+                from: launched.from,
             }
             .encode()
             .map_err(|e| boot(e.to_string()))?;
@@ -2083,12 +2174,16 @@ mod hosted {
             link,
             net,
             shares,
+            from: _,
+            held,
             #[cfg(windows)]
             job,
         } = launched;
         let _ = vm.kill(shards_ipc::signal::SIGKILL);
         let _ = vm.wait();
         drop(link);
+        // Its template's files, held open while its VM ran (D253).
+        drop(held);
         let record = Ends::kept_in(home);
         if let Some((child, control)) = net {
             drop(control);
@@ -4209,34 +4304,6 @@ mod tests {
         assert_ne!(first.fingerprint, second.fingerprint, "two runs share one key");
     }
 
-    /// D232 through D231: a run naming GPUs gives its VM process `--gpu` and each identity's
-    /// `--gpu-device` in D232's grammar, as shards-api's direct boot does; one naming none, none.
-    #[test]
-    fn a_runs_gpus_reach_its_vm_process_as_the_direct_boot_gives_them() {
-        use shards_api::PhysicalGpu;
-        assert!(gpu_args(&[]).is_empty());
-        let args = gpu_args(&[
-            PhysicalGpu::Pci {
-                domain: 0,
-                bus: 1,
-                device: 0,
-                function: 0,
-            },
-            PhysicalGpu::MetalRegistry(0x1_0000_02a1),
-        ]);
-        assert_eq!(
-            args,
-            [
-                "--gpu",
-                "--gpu-device",
-                "pci:00000000:01:00.0",
-                "--gpu-device",
-                "metal:00000001000002a1"
-            ]
-            .map(std::ffi::OsString::from)
-        );
-    }
-
     /// D232 through D231, what a run naming GPUs asks (2d60abb24 asked none, so its guest had
     /// no GPU driver and its command no render node): the microVM's GPU, as `--gpus 1` asks
     /// it, where this host gives one, so that `run::prepare` gives it the GPU's guest kernel
@@ -4267,28 +4334,6 @@ mod tests {
         };
         assert_eq!(renders(&gpus), crate::run::GIVES_GPU);
         assert!(!renders(&none));
-    }
-
-    /// D232 through D231, what a run given its GPU boots (2d60abb24 booted its stored guest's
-    /// kernel): the GPU's guest kernel `run::prepare` gave it, with its guest's init, as the
-    /// daemon boots a run given one; a run given none, its guest's own.
-    #[test]
-    fn a_run_given_its_gpu_boots_the_gpu_guests_kernel() {
-        let stored = crate::run::Boot::Stored(crate::guest::Guest {
-            kernel: "/store/vmlinux".into(),
-            init: "/store/init".into(),
-            kernel_digest: String::new(),
-            init_digest: String::new(),
-        });
-        let gpu = std::path::Path::new("/store/vmlinux-gpu");
-        assert_eq!(
-            boot_of(&stored, Some(gpu)),
-            (gpu.to_path_buf(), Some("/store/init".into()))
-        );
-        assert_eq!(
-            boot_of(&stored, None),
-            ("/store/vmlinux".into(), Some("/store/init".into()))
-        );
     }
 
     /// A stand-in snapshot at `dir`, as a VM's save leaves one (`snapshot::exists`): a pointer
@@ -4610,20 +4655,41 @@ mod tests {
         let ours = microvm(home, &gpu, &shape, &[], true);
         let gpu_guest = crate::run::gpu_guest(&guest, &kernel);
         let (cfg, gpu_dir) = daemons(&gpu_guest, true);
-        assert_eq!(ours.cfg.kernel, kernel);
+        // The GPU's guest kernel with its guest's init (2d60abb24 booted the stored kernel).
+        assert_eq!(
+            (&ours.cfg.kernel, &ours.cfg.init),
+            (&kernel, &Some(guest.init.clone()))
+        );
         assert_eq!(words(&ours.cfg), words(&cfg));
         assert_eq!(ours.template.as_ref().map(|t| &t.dir), Some(&gpu_dir));
         assert_ne!(gpu_dir, dir);
 
-        let selected = [shards_api::PhysicalGpu::MetalRegistry(1)];
+        // The GPUs it names, in D232's grammar after `--gpu`, as shards-api's direct boot gives
+        // them, in its key too.
+        let selected = [
+            shards_api::PhysicalGpu::Pci {
+                domain: 0,
+                bus: 1,
+                device: 0,
+                function: 0,
+            },
+            shards_api::PhysicalGpu::MetalRegistry(0x1_0000_02a1),
+        ];
         let ours = microvm(home, &gpu, &shape, &selected, true);
         let named = ours.template.as_ref().map(|t| t.dir.clone()).unwrap();
         assert!(named != gpu_dir && named != dir);
         let said = words(&ours.cfg);
-        assert!(
-            said.windows(2)
-                .any(|w| w[0] == "--gpu-device" && w[1] == "metal:0000000000000001"),
-            "{said:?}"
+        let at = said.iter().position(|w| w == "--gpu").unwrap();
+        assert_eq!(
+            said.get(at..at + 5).unwrap(),
+            [
+                "--gpu",
+                "--gpu-device",
+                "pci:00000000:01:00.0",
+                "--gpu-device",
+                "metal:00000001000002a1"
+            ]
+            .map(std::ffi::OsString::from)
         );
 
         let given = crate::run::Boot::Given(Box::new(shards_vmm::vm::Config::new(

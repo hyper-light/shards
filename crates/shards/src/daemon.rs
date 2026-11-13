@@ -1145,7 +1145,7 @@ fn pool_of<'s>(state: &'s mut State, key: &PoolKey, rootfs: &Path, stamp: Option
 }
 
 /// `rootfs` as the VM saving a template records it: resolved, links and all.
-fn resolved(rootfs: &Path) -> PathBuf {
+pub(crate) fn resolved(rootfs: &Path) -> PathBuf {
     std::fs::canonicalize(rootfs).unwrap_or_else(|_| rootfs.to_path_buf())
 }
 
