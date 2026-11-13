@@ -27,7 +27,8 @@ use shards_remote::tls;
 use shards_testdir::TempDir;
 
 /// What this process's tests have seen their subjects do: each thing a machine saw ([`Saw`]),
-/// each write of a command's output ([`Captured`]), each frame a raw client heard ([`Raw`]).
+/// each write to a command's stdin ([`Told`]) and of its output ([`Captured`]), each frame a raw
+/// client heard ([`Raw`]).
 /// The progress a wait is judged by ([`Patience`]).
 static PROGRESS: AtomicU64 = AtomicU64::new(0);
 
@@ -35,24 +36,26 @@ fn progressed() {
     PROGRESS.fetch_add(1, Ordering::Relaxed);
 }
 
-/// When this process's first daemon began, and the slowest answer any wait here has had: the
-/// first counted from then, so that the process's cold start (the helper's build, the first
-/// daemon's bind) is in it.
+/// When this process's first wait began, and the slowest run any wait here has seen end (a
+/// command's, a join's): the first counted from then, so that the process's cold start (the
+/// helper's build, the first daemon's bind, the first handshake) is in it. A run is the slowest
+/// thing these tests wait on, each other wait one of its steps: a bind's or a frame's answer
+/// teaches nothing, as a window that short would fail the silent steps of a run (a handshake, a
+/// spawn), which say nothing as they go.
 static ANSWERS: Mutex<(Option<Instant>, Option<Duration>)> = Mutex::new((None, None));
 
 fn answers() -> std::sync::MutexGuard<'static, (Option<Instant>, Option<Duration>)> {
     ANSWERS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A wait judged by what it waits on (R03), with no deadline of its own: within the slowest
-/// answer any wait of this process has had, and past it for as long as the tests' subjects
+/// A wait judged by what it waits on (R03), with no deadline of its own: within the slowest run
+/// this process has seen end ([`ANSWERS`]), and past it for as long as the tests' subjects
 /// progress ([`PROGRESS`]); failed once a whole such window has passed with nothing seen. Its
-/// window is learned here, on this host, under its load: a slow host's answers widen it. Cold,
-/// before any wait here has had its answer, the window is as long as this process has waited
-/// since its first daemon began, so that no wait fails before one answer has shown how long
-/// answers take; a process whose waits all hang, the first daemon's bind among them, is ended
-/// by its job's limit. Progress is the process's, not one test's: a test that hangs while
-/// others progress fails once they are quiet.
+/// window is learned here, on this host, under its load: a slow host's runs widen it. Cold,
+/// before any run here has ended, the window is as long as this process has waited since its
+/// first wait began, so that no wait fails before one run has shown how long runs take; a
+/// process none of whose runs ever ends is ended by its job's limit. Progress is the process's,
+/// not one test's: a test that hangs while others progress fails once they are quiet.
 struct Patience {
     began: Instant,
     /// A silence its waiter makes itself, which its window is never shorter than.
@@ -60,10 +63,12 @@ struct Patience {
     seen: u64,
     /// When its wait last saw progress, or began.
     heard: Instant,
+    /// What it waits for is a run's end, which teaches the window ([`ANSWERS`]).
+    teaches: bool,
 }
 
 impl Patience {
-    /// The process's first daemon begins: its cold start counts from here.
+    /// A wait or a daemon begins: the process's cold start counts from its first.
     fn begin() {
         answers().0.get_or_insert_with(Instant::now);
     }
@@ -74,12 +79,13 @@ impl Patience {
         Patience {
             began: now,
             floor: Duration::ZERO,
+            teaches: false,
             seen: PROGRESS.load(Ordering::Relaxed),
             heard: now,
         }
     }
 
-    /// The slowest answer seen; cold, as long as this process has waited.
+    /// The slowest run seen to end; cold, as long as this process has waited.
     fn learned() -> Duration {
         match *answers() {
             (_, Some(slowest)) => slowest,
@@ -108,15 +114,18 @@ impl Patience {
     /// Why it failed, `what` not come.
     fn out(&self, what: &str) -> String {
         format!(
-            "{what}: nothing seen for a whole window ({:?}, the slowest answer here), {:?} in",
+            "{what}: nothing seen for a whole window ({:?}, the slowest run here), {:?} in",
             self.window(),
             self.began.elapsed()
         )
     }
 
-    /// Its answer came: the slowest answer learns how long it took, the first from the
-    /// process's first daemon's beginning.
+    /// What it waited for came: a run's end teaches the window how long it took, the first
+    /// from the process's first wait's beginning.
     fn answered(&self) {
+        if !self.teaches {
+            return;
+        }
         let mut answers = answers();
         let took = match *answers {
             (Some(first), None) => first.elapsed(),
@@ -126,15 +135,22 @@ impl Patience {
     }
 }
 
-/// What `rx` gives, waited for with [`Patience`]: `what`, said if it never comes.
+/// What `rx` gives, a step of a run, waited for with [`Patience`]: `what`, said if it never
+/// comes.
 fn patiently<T>(rx: &mpsc::Receiver<T>, what: &str) -> T {
-    patiently_through(rx, what, Duration::ZERO)
+    waited(rx, what, Patience::new())
 }
 
-/// [`patiently`], through a silence of `floor` its waiter makes itself.
-fn patiently_through<T>(rx: &mpsc::Receiver<T>, what: &str, floor: Duration) -> T {
+/// What `rx` gives, a run's end, which teaches the window, waited for through a silence of
+/// `floor` its waiter makes itself.
+fn run_end<T>(rx: &mpsc::Receiver<T>, what: &str, floor: Duration) -> T {
     let mut patience = Patience::new();
     patience.floor = floor;
+    patience.teaches = true;
+    waited(rx, what, patience)
+}
+
+fn waited<T>(rx: &mpsc::Receiver<T>, what: &str, mut patience: Patience) -> T {
     loop {
         let Some(left) = patience.left() else {
             panic!("{}", patience.out(what));
@@ -219,6 +235,7 @@ struct Told {
 
 impl std::io::Write for Told {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        progressed();
         self.stdin.write(buf)
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -596,12 +613,12 @@ struct Pending<T>(mpsc::Receiver<T>);
 
 impl<T> Pending<T> {
     fn get(self) -> T {
-        patiently(&self.0, "its command's end")
+        run_end(&self.0, "its command's end", Duration::ZERO)
     }
 
     /// [`Pending::get`] of a command silent `silence` long by design.
     fn get_through(self, silence: Duration) -> T {
-        patiently_through(&self.0, "its command's end", silence)
+        run_end(&self.0, "its command's end", silence)
     }
 }
 
@@ -1470,7 +1487,7 @@ fn a_slow_join_holds_up_no_other_client() {
     let (status, out, _) = run(laptop, d.remote, &["say", "quick", "x", "0"], None).get();
     assert_eq!((status, out), (Ok(0), b"quick\n".to_vec()));
     release.send(()).unwrap();
-    assert_eq!(patiently(&joined, "the join").unwrap(), Ok(()));
+    assert_eq!(run_end(&joined, "the join", Duration::ZERO).unwrap(), Ok(()));
 }
 
 /// A machine's verdict on a key runs apart from the daemon's driver too, which acknowledges
@@ -1521,7 +1538,7 @@ fn a_slow_verdict_holds_up_no_other_client() {
     assert_eq!((status, out), (Ok(0), b"quick\n".to_vec()));
     release.send(()).unwrap();
     assert_eq!(
-        patiently(&refused, "the refusal"),
+        run_end(&refused, "the refusal", Duration::ZERO),
         Ok(Err(server::NOT_ENROLLED.to_string()))
     );
 }
@@ -2039,7 +2056,7 @@ fn a_process_frozen_past_every_window_keeps_its_connections() {
         .status()
         .unwrap();
     assert!(frozen.success());
-    let ran = patiently(&ended, "the trickled command's end");
+    let ran = run_end(&ended, "the trickled command's end", Duration::ZERO);
     assert_eq!(ran, Ok(Ok(0)));
     assert_eq!(out.bytes().len(), 400 << 10);
 }
@@ -2165,7 +2182,7 @@ fn a_client_frozen_mid_import_past_its_daemons_window_keeps_its_connection() {
     d.seen.saw(&Seen::Unheard("laptop".into()));
     let told = began.elapsed();
     drop(frozen);
-    let output = patiently(&ended, "the frozen client's end").unwrap();
+    let output = run_end(&ended, "the frozen client's end", Duration::ZERO).unwrap();
     let said = String::from_utf8_lossy(&output.stdout);
     let stalls = d
         .seen
