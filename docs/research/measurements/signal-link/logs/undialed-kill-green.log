@@ -1,0 +1,6 @@
+# tests/containers.rs undialed_kill_alone: f2a4aeb7fcd7, changed: crates/shards/tests/containers.rs ; 2026-11-13T01:15:24Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 99.00 67.42 53.86
+KILL answered Some(0) after 4.302173ms; its run ended Some(125) after 4.319335ms
+KILL-LOG [3081399     348354us WARN] the guest's signal connection is lost: the guest could not dial it (Linux errno 104): its workload takes no more signals, terminal sizes, answers or execs, its command going on; execs that waited and failed with it: 0
+KILL-LOG [3081399     352139us WARN] SIGKILL for its command, which no signal reaches (the guest could not dial it (Linux errno 104)): its microVM stops
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 1.50s
+## exit 0 after 22 s

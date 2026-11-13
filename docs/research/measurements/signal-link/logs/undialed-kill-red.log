@@ -1,0 +1,6 @@
+# tests/containers.rs undialed_kill_alone: 38008233f6d5, changed: crates/init/src/run.rs crates/shards/tests/common/mod.rs crates/shards/tests/containers.rs ; 2026-11-13T01:17:14Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 50.10 58.82 52.22
+test undialed_kill_alone ...    Compiling shards-abi v0.1.0 (/home/adalundhe/g121-tmp/to-guest3/src/crates/abi)
+KILL answered Some(0) after 10.172973407s; its run ended Some(125) after 10.172993004s
+KILL-LOG shards daemon 3252509: container dc00013b4b9ade11017c52199528333e4e93efb347218d2120125dcac8f15c10: its command not ended 10s after it was signalled, its microVM gone on with nothing of its end for 10s: its microVM killed
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 70.51s
+## exit 0 after 194 s

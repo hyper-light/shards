@@ -485,19 +485,25 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     host's link waited for the dial: an exec asked of such a run still waited after 20 s and
     failed only as the run's end closed the exec port ("the container's process ended before
     the command started"), and `kill` ended the run only by the daemon's fallback, its VM
-    killed after a teardown slice; a VM whose daemon had gone kept its command until it
-    ended. The frame is held while a cut is not open, and dropped as a restore is found, as
-    `EXEC_FAILED`s are: a save would carry it into a copy whose host never waited for that
-    dial, and whose guest dials again by the save's token (D176). Alternatives: a deadline
-    on the host's wait for the dial (none is set by time: a slow guest's dial is no loss);
-    the muxer telling the signal port of a dial it refused (it sees one cause, and init's
-    own failure to make the socket sends it nothing). Held on real microVMs by
-    `a_signal_connection_never_made_fails_execs_and_kills_at_once` (an init built to dial a
-    port its run's connection has taken, which its host refuses: `common::undialing_init`;
-    red before, the exec still waiting after 60 s and the kill the fallback's), and by a
-    unit test, each mutation-checked (docs/research/measurements/signal-link). Its held
-    path, a dial found failed during a save's cut, needs a save asked before the relay's
-    first look at the dial: no test provokes it.
+    killed after a teardown slice (10.2 s on KVM, where it now ends in 4.3 ms); by its code,
+    a VM whose daemon had gone held its stop signal and SIGKILL for the dial too, its command
+    running on until it ended. The frame is held while a cut is not open, and dropped as a
+    restore is found, as `EXEC_FAILED`s are: a save would carry it into a copy whose host
+    never waited for that dial, and whose guest dials again by the save's token (D176).
+    Alternatives: a deadline on the host's wait for the dial (none is set by time: a slow
+    guest's dial is no loss); the muxer telling the signal port of a dial it refused (it
+    sees one cause, and init's own failure to make the socket sends it nothing). No value is
+    chosen (R03): the frame's kind, 52, is a wire identifier, the next free one; the errno is
+    Linux's (`include/uapi/asm-generic/errno.h`), named so where shown, as the host's own
+    codes differ; the wait for the dial has no bound but the guest's word. Held on real
+    microVMs by `a_signal_connection_never_made_fails_execs_and_kills_at_once` (an init
+    built to dial a port its run's connection has taken, which its host refuses:
+    `common::undialing_init`; the kill held to its VM process's own stop, never the
+    daemon's fallback; red before, the exec still waiting at the test's 60 s deadline), by
+    the kill alone measured each way, and by a unit test, each guard (the host's, init's)
+    mutation-checked (docs/research/measurements/signal-link). Its held path, a dial found
+    failed during a save's cut, needs a save asked before the relay's first look at the
+    dial: no test provokes it.
   - Through the daemon, a signal that arrives once the run's record is made, before the
     command runs, waits for it (D26). `run --kernel`, whose process is the VM, ends as that
     signal would end it. dockerd instead drops a signal sent before its container starts

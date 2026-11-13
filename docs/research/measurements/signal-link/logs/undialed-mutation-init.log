@@ -1,0 +1,21 @@
+# tests/containers.rs a_signal_connection_never_made_fails_execs_and_kills_at_once: c527a6f385c6, changed: crates/init/src/run.rs ; 2026-11-13T00:48:54Z Darwin 25.4.0 arm64 macOS 26.4; rustc 1.98.1 (48a229cea 2026-09-01); load { 7.19 13.58 13.07 }
+test a_signal_connection_never_made_fails_execs_and_kills_at_once ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+thread 'a_signal_connection_never_made_fails_execs_and_kills_at_once' (32867840) panicked at crates/shards/tests/common/mod.rs:2385:78:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 164 filtered out; finished in 105.26s
+## exit 101 after 150 s
+### the panic's message, from mutation-init.out
+thread 'a_signal_connection_never_made_fails_execs_and_kills_at_once' (32867840) panicked at crates/shards/tests/common/mod.rs:2385:78:
+shards exec undialed /bin/testguest exit 0 did not exit within 60s
+--- stdout
+
+--- stderr
+
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED              STATUS              PORTS     NAMES
+83d99cf02f508a36e23cbdb59055adc16d139a93231cbc702948dc9b77fc96f8   127.0.0.1:51610/test/image:v1   "/bin/testguest sleep"   About a minute ago   Up About a minute             undialed
+
+--- the end of its daemon.log
+shards daemon 87372: the default bridge is 172.17.0.0/16
+shards daemon 87372: serving /Users/adalundhe/to-guest/tmp/shards-tests/87347/containers-undialed-0 through /Users/adalundhe/to-guest/tmp/shards-tests/87347/containers-undialed-0/requests, with up to 245760 descriptors open
+shards daemon 87372: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+shards daemon 87372: container 83d99cf02f508a36e23cbdb59055adc16d139a93231cbc702948dc9b77fc96f8: VM 87597 runs as its client waits: its CPU time 554 ms (+133 ms in 10s), 23556 page faults (+384)

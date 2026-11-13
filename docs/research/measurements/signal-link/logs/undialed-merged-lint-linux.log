@@ -1,0 +1,18 @@
+# scripts/lint x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-musl: fd8c35fcb711; 2026-11-13T01:01:19Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); clippy 0.1.98 (48a229ceae 2026-09-01); zig 0.16.0; load 53.25 41.84 45.58
+== format
+== x86_64-unknown-linux-gnu
+--
+--
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.43s
+== aarch64-unknown-linux-gnu
+--
+--
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.60s
+== x86_64-unknown-linux-musl
+--
+--
+== aarch64-unknown-linux-musl
+--
+## scripts/lint (4 Linux targets) exit 0; done 2026-11-13T01:08:33Z

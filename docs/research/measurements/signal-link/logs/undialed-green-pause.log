@@ -1,0 +1,4 @@
+# tests/containers.rs a_paused_microvms_unpause_waits_for_no_exec_on_its_way: c527a6f385c6, changed: ; 2026-11-13T00:46:51Z Darwin 25.4.0 arm64 macOS 26.4; rustc 1.98.1 (48a229cea 2026-09-01); load { 9.18 15.25 13.41 }
+test a_paused_microvms_unpause_waits_for_no_exec_on_its_way ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 164 filtered out; finished in 4.23s
+## exit 0 after 6 s

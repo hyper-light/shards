@@ -1,0 +1,4 @@
+# tests/containers.rs a_lost_signal_connection_fails_execs_and_kills_at_once: c527a6f385c6, changed: ; 2026-11-13T00:46:17Z Darwin 25.4.0 arm64 macOS 26.4; rustc 1.98.1 (48a229cea 2026-09-01); load { 11.08 16.22 13.65 }
+test a_lost_signal_connection_fails_execs_and_kills_at_once ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 164 filtered out; finished in 30.87s
+## exit 0 after 32 s

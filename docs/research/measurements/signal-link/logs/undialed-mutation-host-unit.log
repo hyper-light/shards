@@ -1,0 +1,6 @@
+# shards-vm unit tests workload::tests::a_guest_that_cannot_dial_its_signal_connection_loses_it_at_once: c527a6f385c6, changed: crates/shards/src/workload.rs ; 2026-11-13T00:46:59Z Darwin 25.4.0 arm64 macOS 26.4; rustc 1.98.1 (48a229cea 2026-09-01); load { 13.04 15.86 13.64 }
+test workload::tests::a_guest_that_cannot_dial_its_signal_connection_loses_it_at_once ... FAILED
+thread 'workload::tests::a_guest_that_cannot_dial_its_signal_connection_loses_it_at_once' (32841236) panicked at crates/vm-process/src/../../shards/src/workload.rs:3424:9:
+the exec did not fail at once: Err(Timeout)
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 55 filtered out; finished in 5.08s
+## exit 101

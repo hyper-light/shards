@@ -56,8 +56,11 @@ else → Lost; the run's end (`serve`) → Idle.
 - **The guest says its end, last, on the signal connection** (`kind::SIGNALS_END`), as its
   managed control says its own (`MANAGED_CONTROL_END`), so the host tells a run's end from
   a loss on one connection, in order. Its connect, where the relay ended before seeing it
-  finish, is waited for: the kernel ends a pending one within its connect timeout (6.18
-  net/vmw_vsock/af_vsock.c l. 136, 1509, 1652) and refuses a send before (l. 2075).
+  finish, is waited for: the host's muxer answers every request, with the connection or a
+  reset (vsock/muxer.rs `guest_connect`), and Linux refuses a send before (6.18
+  net/vmw_vsock/af_vsock.c l. 2075). (Corrected in item 3: this said the kernel ends a
+  pending connect within its connect timeout, l. 136, 1509, 1652, but init's `dial` sets that
+  timeout past any answer.)
 - **The host watches the connection** (one thread, the dial's, blocked in a read: no poll,
   no wake until the end), so a loss is found as it happens, not at the next send: an exec
   whose frame went into a connection the guest closed would otherwise wait.
@@ -159,8 +162,8 @@ the same run, on `f5bfab285`: all red for their reason, [logs/mutations.log](log
   connection, the guest's EXEC_FAILED, the watch's verdict, or the port's close; no new
   timer. `Pending` is no cache: frames waiting for one dial, each standing for one pending
   thing, gone as the dial takes them.
-- Not covered: a guest that never dials. Measured and designed in the next slice, below
-  (D16's note); not built.
+- Not covered: a guest that never dials. Measured and designed in the next slice, and
+  built in item 3's (below).
 
 ## Next slice: no send under the link's lock (ROOT's items 1 to 3)
 
@@ -270,29 +273,167 @@ a cut is not open and dropped as a restore is found, as `exec_failures` are; the
 link with it. Today, measured with real threads at the unit level
 ([never-dialed-experiment.rs](never-dialed-experiment.rs), [logs/never-dialed.log](logs/never-dialed.log)):
 an exec asked of a run whose guest never dialed is held (`Awaiting`), still waits after 20 s,
-and fails only as the run's end closes the exec port. Not built.
+and fails only as the run's end closes the exec port. Built in the next section.
+
+## Item 3, built: a guest that cannot dial says so (`SIGNALS_UNDIALED`)
+
+ROOT's assignment after `dc7d36014`: build D16's note. Built by implementer
+`a65e40a73bef44f51` (`5dfc6b4ec`, its harness `c527a6f38`, origin/main `38008233f` merged in
+first, `abc13ac66`), whose run ROOT's session restart stopped; finished and landed by its
+replacement, same role: origin/main `e82b9403b` merged in (`fd8c35fcb`), the kill half's
+check and the test's assertion `f2a4aeb7f`. Policy read again in full at `e82b9403b`:
+`docs/development-rules.md` SHA-256 as above, `AGENTS.md`
+`f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41`,
+`docs/development-evidence.md`
+`61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63`. Owned paths as above,
+with `crates/shards/tests/common/mod.rs`'s `undialing_init`.
+
+### Decision (R02, R03, R04, R05, R12, R13)
+
+- **Init says it on the run connection.** `kind::SIGNALS_UNDIALED`, 52 (51 is main's
+  `MANAGED_INPUT_ENDED`), its payload a big-endian i32: Linux's errno for why, 0 for an
+  error that has none, as the quiesce refusal carries one. Init finds it as its dial fails at
+  once (its socket refused), or as the relay's first look at a connect still under way reads
+  its failure (`connect_result`, SO_ERROR: the host's muxer reset the dial, as it resets one
+  it has no connection slot or socket pair for, vsock/muxer.rs `guest_connect`). One at most
+  for a relay: `signals` is none from then on.
+- **Held as EXEC_FAILED frames are**, in their outbox (`uncarried`, was `exec_failures`):
+  sent once a save's cut is open, dropped as the host's connection goes and as a restore is
+  found. A copy restored from a save dials both connections again with the save's tokens,
+  both or neither (`redial`), and its host never waited for the first dial (D176).
+- **The host loses the link with it** where it reads the run connection, during the command
+  (`relay_frames`) and past its end (`beyond`, where joiners' execs wait on the same link):
+  `lose(to, Lost::Undialed { errno })`. From then on, the first slice's loss: frames refused,
+  execs that wait failed with why ("the guest's signal connection is lost: the guest could not
+  dial it (Linux errno 104)"), a SIGKILL refused for it stopping the microVM
+  (`warm::kill_command`). A malformed one (not 4 bytes) breaks the run's protocol during the
+  command; past its end it is an unknown frame, as any other is. `lose` leaves an `Idle` link
+  be, but the host reads the run connection only after `will_run` (`serve`: the spec sent,
+  `will_run`, then `relay`), so the frame finds the link waiting for the dial.
+- **Alternatives:** a deadline on the host's wait for the dial (none set by time: a slow
+  guest's dial is no loss); the muxer telling the signal port of a dial it refused (it sees
+  only its own refusals, and init's own failure to make the socket sends it nothing); a dial
+  again by init (the port takes one connection, AGENTFILE_ARCH.md §9.7).
+- **No value chosen (R03, as the person restated it 2026-11-13):** the frame's kind, 52, is a
+  wire identifier, the next free one; the errno is Linux's, carried as it is and named so
+  where it is shown, as the host's own codes differ (ECONNRESET is 104 in Linux's
+  `include/uapi/asm-generic/errno.h`, 54 in macOS's `sys/errno.h`); and the wait for the
+  dial has no bound but the guest's word, so no cold start to design.
+- **Provoked in tests** by an init built to dial, for its signal connection, the run's port
+  (1024), which the run's own connection has taken (`SHARDS_TEST_SIGNAL_PORT`,
+  `common::undialing_init`; no other build names it, held by init's
+  `an_init_built_for_runs_dials_the_signal_port`): the muxer refuses that second dial of a
+  port it serves once with a reset, which init's connect reads as ECONNRESET.
+
+### Red, green and mutations (R09, R10)
+
+| Check | Red | Green |
+| --- | --- | --- |
+| E2E `a_signal_connection_never_made_fails_execs_and_kills_at_once` | origin/main `38008233f` with the test hook and the test alone ([undialed-red.patch](undialed-red.patch)), HVF: `shards exec undialed /bin/testguest exit 0 did not exit within 60s`, the run up ([logs/undialed-red.log](logs/undialed-red.log)) | `c527a6f38`: HVF ([logs/undialed-green.log](logs/undialed-green.log), 118 s with the test init's build) and KVM ([logs/undialed-linux-e2e.log](logs/undialed-linux-e2e.log)); `fd8c35fcb`, KVM, 3.0 s ([logs/undialed-merged-linux-e2e.log](logs/undialed-merged-linux-e2e.log)); `f2a4aeb7f`, its kill held to the VM's own stop: KVM ([logs/undialed-never-made-green.log](logs/undialed-never-made-green.log), 80 s with the test init's build) |
+| The kill half: a run killed with nothing asked before ([undialed-kill.sh](undialed-kill.sh), [undialed-kill-experiment.patch](undialed-kill-experiment.patch)), KVM | origin/main `38008233f` with the test hook and the test: `kill` answered after 10.2 s, by the daemon's fallback, "its command not ended 10s after it was signalled, its microVM gone on with nothing of its end for 10s: its microVM killed", no loss said ([logs/undialed-kill-red.log](logs/undialed-kill-red.log)) | `f2a4aeb7f`: `kill` answered after 4.3 ms, the run over with it, by the VM process's own stop, "SIGKILL for its command, which no signal reaches (the guest could not dial it (Linux errno 104)): its microVM stops" ([logs/undialed-kill-green.log](logs/undialed-kill-green.log)) |
+| unit `a_guest_that_cannot_dial_its_signal_connection_loses_it_at_once` | the guard's mutation, below | shards-vm 56 of 56 on macOS, 61 of 61 on Linux |
+| shards-init `a_signal_connection_not_made_is_told_with_its_errno`, `an_init_built_for_runs_dials_the_signal_port` | | 230 passed, 1 ignored as on main (Linux) |
+
+The E2E test's red stops at its exec, which waits to the test's deadline, so its kill is
+never reached there: the kill half is measured alone, by an experiment that asserts nothing,
+its verdict the time `kill` took and what the daemon's log says ended the run. Guard
+mutations:
+
+- The host's relay reading the frame and losing nothing ([undialed-mac.sh](undialed-mac.sh),
+  HVF, `c527a6f38`): the unit test red, "the exec did not fail at once: Err(Timeout)"
+  ([logs/undialed-mutation-host-unit.log](logs/undialed-mutation-host-unit.log)); the E2E
+  test red, its exec still waiting at the test's 60 s deadline
+  ([logs/undialed-mutation-host.log](logs/undialed-mutation-host.log)); and the kill half red
+  (KVM, `f2a4aeb7f`): 30.2 s, the daemon's fallback after three 10 s slices, the first two
+  taking the idle microVM's 40 and 30 ms of CPU for an end going on
+  ([logs/undialed-kill-mutation-host.log](logs/undialed-kill-mutation-host.log)).
+- Init's frame made to say nothing (HVF, `c527a6f38`): the E2E test red the same way
+  ([logs/undialed-mutation-init.log](logs/undialed-mutation-init.log)).
+
+Before, by the code rather than measured: a VM whose daemon had gone held its stop signal and
+its SIGKILL for the dial too (`signal_guest` answers Ok while `Awaiting`, and
+`kill_command` stops the VM only for a loss), so its command ran on until it ended.
+
+### The signal link's other E2E tests, now on HVF
+
+Item 2's four, owed on HVF, once each at `c527a6f38` on the Mac Studio (macOS 26.4 arm64),
+each ok: `a_lost_signal_connection_fails_execs_and_kills_at_once` 31 s
+([logs/undialed-green-lost.log](logs/undialed-green-lost.log)),
+`a_runs_end_says_no_lost_signal_connection` 0.7 s
+([logs/undialed-green-end.log](logs/undialed-green-end.log)),
+`a_paused_microvms_unpause_waits_for_no_exec_on_its_way` 4.2 s
+([logs/undialed-green-pause.log](logs/undialed-green-pause.log)),
+`what_a_restoring_microvm_is_sent_goes_on_its_guests_dial` 0.8 s
+([logs/undialed-green-restore.log](logs/undialed-green-restore.log)).
+
+### Checks (R01, R06, R11, R12)
+
+- Unit suites: `c527a6f38`, adacachy (Linux 7.2.9 x86_64): shards-init 230 passed, 1
+  ignored; shards-vm 61 ([logs/undialed-linux-unit.log](logs/undialed-linux-unit.log)); the
+  Mac Studio (macOS 26.4 arm64): shards-vm 56
+  ([logs/undialed-green-unit.log](logs/undialed-green-unit.log)). Merged `fd8c35fcb`: the
+  same on Linux ([logs/undialed-merged-linux-unit.log](logs/undialed-merged-linux-unit.log))
+  and on adas-mac-studio.local, macOS 26.2 arm64: shards-vm 56
+  ([logs/undialed-merged-mac.log](logs/undialed-merged-mac.log)).
+- `scripts/lint`, clean: all seven targets at `c527a6f38` on the Mac Studio
+  ([logs/undialed-lint.log](logs/undialed-lint.log), [undialed-lint.sh](undialed-lint.sh));
+  at `fd8c35fcb`, the four Linux targets on adacachy
+  ([logs/undialed-merged-lint-linux.log](logs/undialed-merged-lint-linux.log)) and macOS and
+  both Windows targets on adas-mac-studio.local
+  ([logs/undialed-merged-mac.log](logs/undialed-merged-mac.log)); at `f2a4aeb7f`, the test's
+  assertion: all seven targets, the four Linux ones on adacachy
+  ([logs/undialed-final-lint-linux.log](logs/undialed-final-lint-linux.log)), macOS and both
+  Windows targets on adas-mac-studio.local
+  ([logs/undialed-final-mac.log](logs/undialed-final-mac.log)).
+- No new production literal but the kind; no unwrap, indexing or unchecked arithmetic
+  (`undialed` takes exactly four bytes by `try_from`, init the error's code or 0); the
+  shared seams only (the frame rides the run connection every OS has). No new syscall in
+  the VM process's seccomp filter.
+- Not provoked: the held path, a dial found failed while a save's cut is not open, which
+  needs a save asked before the relay's first look at the dial.
+
+### Found on the way, outside this item (not reproduced, nothing changed)
+
+- **The signal port can stay open to a workload until the host reads the frame.** The muxer
+  checks its connection limit before it takes a served port (`guest_connect`: the limit's
+  stray reset, then `served.remove`), and an init whose socket was refused never dials the
+  port: either way the port stays served while the workload runs, until the host reads
+  SIGNALS_UNDIALED, after which `dialed` lets any connection go (the link no longer
+  `Awaiting`). A workload dialing the port inside that window would be taken for init's
+  connection (§9.7's first-connection gate), and what the host holds for the dial (signals,
+  sizes, execs' starts) sent to it. Neither cause was seen or provoked here.
+- **A kill that ends the microVM rather than its command is told as 125, not 137.** Each
+  kill-half run ended `Some(125)`, the run's client saying its microVM stopped before its
+  command ended, where Docker's `kill` gives 137 (128 + SIGKILL): by the VM process's own
+  stop ([logs/undialed-kill-green.log](logs/undialed-kill-green.log)), as the first slice's
+  kill through a lost link stops it too (`warm::kill_command`, `vm_run::stop`), and by the
+  daemon's fallback before ([logs/undialed-kill-red.log](logs/undialed-kill-red.log)). Item 3
+  leaves the status as it was; no test pins it.
 
 ## Rules
 
 | Rule | Evidence / gap |
 | --- | --- |
 | R01 | No unwrap, expect, panic or indexing in production; `try_reserve` for held frames (`Unheld`); poison-tolerant locks; clippy below. |
-| R02 | containerd v2.4.2, moby docker-v29.8.1, Linux 6.18 sources cited above; alternatives (redial, end the run) weighed above. |
-| R03 | `NSIG` is Linux's `_NSIG`; the 4-byte ids are the frames' u32s; tests: 5 s bounds an event that comes at once or never. No other literal. |
-| R04 | `Link`, `Unsent`, `Lost` typed through callers; transitions above, each exercised. |
-| R05 | Waits above; one owner of the link's state; no send under its lock (the sender), the lock wait reproduced live, fixed, mutation-checked. |
+| R02 | containerd v2.4.2, moby docker-v29.8.1, Linux 6.18 sources cited above; alternatives (redial, end the run) weighed above; item 3's (a deadline on the dial, the muxer telling the port, a dial again) in its section. |
+| R03 | `NSIG` is Linux's `_NSIG`; the 4-byte ids are the frames' u32s; tests: 5 s bounds an event that comes at once or never. Item 3: kind 52, the next free one; its errno Linux's, named so. No other literal. |
+| R04 | `Link`, `Unsent`, `Lost` typed through callers (item 3: `Lost::Undialed { errno }`, its frame a kind of its own); transitions above, each exercised. |
+| R05 | Waits above; one owner of the link's state; no send under its lock (the sender), the lock wait reproduced live, fixed, mutation-checked. Item 3 ends the wait for a dial that will not come at the guest's word, no timer; its frame rides EXEC_FAILED's outbox. |
 | R06, R07, R13 | Small functions (`hold`, `dialed`, `take_signals`, `send_frames`, `watch`, `ended`, `lose`); comments state invariants and sources. The tests' loss hook is one branch, compiled in only where its build names it. |
 | R08, R14 | No performance claim; the watch and the sender are two threads per VM process while its guest is connected, their cost unmeasured (ROOT's). |
-| R09, R10 | Red, green, mutations above, logs kept. |
-| R11, R12 | Above. |
-| R15 | Implementer; merged to main by the person's 2026-11-12 rule; real VMs ROOT's. |
-| R16 | Work dirs `~/g121-tmp/to-guest` and `~/g121-tmp/to-guest2` on adacachy, `~/to-guest` and `~/to-guest-target` on the Mac Studio: build output, copies and zig, removed after; the stuck experiments' microVMs and daemons, this slice's own, ended by hand. |
+| R09, R10 | Red, green, mutations above, logs kept; item 3's exec half red on HVF, its kill half red on KVM, each guard (host, init) mutation-checked. |
+| R11, R12 | Above; item 3 on KVM (Linux x86_64) and HVF (macOS arm64), `scripts/lint` clean on all seven targets; WHP and Linux arm64 not run (Owed). |
+| R15 | Implementer; merged to main by the person's 2026-11-12 rule; real VMs ROOT's, but for each new test's one run and its red, as ROOT assigned. Item 3 landed by the stopped implementer's replacement. |
+| R16 | Work dirs `~/g121-tmp/to-guest` and `~/g121-tmp/to-guest2` on adacachy, `~/to-guest` and `~/to-guest-target` on the Mac Studio: build output, copies and zig, removed after; the stuck experiments' microVMs and daemons, this slice's own, ended by hand. Item 3: `~/g121-tmp/to-guest3` on adacachy, `~/to-guest` on the Mac Studio (adas-mac-studio.local-2, 21 GB) and `~/g121-tmp/to-guest-lint` on adas-mac-studio.local, removed after; no process of its runs was left. |
 
 ## Owed to ROOT
 
-- The four new E2E tests on HVF and WHP (each ran once on KVM), and their whole suites.
+- Item 2's four E2E tests and item 3's on WHP (each ran once on KVM and HVF), and their
+  whole suites.
 - The first slice's real-VM checks not covered by them: a managed run's boundary, joiners'
   execs past a loss.
-- Item 3's build (D16's note), with its restore path in a real guest.
+- Item 3's held path, a dial found failed while a save's cut is not open, in a real guest.
 - aarch64 Linux and Windows tests.
 - The sender thread's memory per VM process (R14).
+- ROOT's call on the two findings in item 3's section: the signal port open to a workload
+  until the host reads the frame, and a kill through a lost link told as 125, not 137.

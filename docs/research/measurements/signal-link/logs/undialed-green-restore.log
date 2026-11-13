@@ -1,0 +1,4 @@
+# tests/saved.rs what_a_restoring_microvm_is_sent_goes_on_its_guests_dial: c527a6f385c6, changed: ; 2026-11-13T00:46:56Z Darwin 25.4.0 arm64 macOS 26.4; rustc 1.98.1 (48a229cea 2026-09-01); load { 9.56 15.23 13.41 }
+test what_a_restoring_microvm_is_sent_goes_on_its_guests_dial ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.82s
+## exit 0 after 3 s

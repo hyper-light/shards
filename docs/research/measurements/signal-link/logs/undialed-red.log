@@ -1,0 +1,22 @@
+# tests/containers.rs a_signal_connection_never_made_fails_execs_and_kills_at_once: 38008233f6d5, changed: crates/init/src/run.rs crates/shards/tests/common/mod.rs crates/shards/tests/containers.rs ; 2026-11-13T00:51:26Z Darwin 25.4.0 arm64 macOS 26.4; rustc 1.98.1 (48a229cea 2026-09-01); load { 3.29 9.61 11.55 }
+test a_signal_connection_never_made_fails_execs_and_kills_at_once ...    Compiling shards-abi v0.1.0 (/Users/adalundhe/to-guest/src/crates/abi)
+thread 'a_signal_connection_never_made_fails_execs_and_kills_at_once' (32872214) panicked at crates/shards/tests/common/mod.rs:2385:78:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 164 filtered out; finished in 131.68s
+## exit 101 after 192 s
+# done 2026-11-13T00:54:40Z
+### the panic's message, from red.out
+thread 'a_signal_connection_never_made_fails_execs_and_kills_at_once' (32872214) panicked at crates/shards/tests/common/mod.rs:2385:78:
+shards exec undialed /bin/testguest exit 0 did not exit within 60s
+--- stdout
+
+--- stderr
+
+--- ps -a in its home
+CONTAINER ID                                                       IMAGE                           COMMAND                  CREATED              STATUS              PORTS     NAMES
+206203da3457fb2964ecbd4065f9cdb2544e4411759176faa30c471a89bd3b2e   127.0.0.1:51895/test/image:v1   "/bin/testguest sleep"   About a minute ago   Up About a minute             undialed
+
+--- the end of its daemon.log
+shards daemon 87951: the default bridge is 172.17.0.0/16
+shards daemon 87951: serving /Users/adalundhe/to-guest/tmp/shards-tests/87887/containers-undialed-0 through /Users/adalundhe/to-guest/tmp/shards-tests/87887/containers-undialed-0/requests, with up to 245760 descriptors open
+shards daemon 87951: watching the host's memory pressure: the system's memory pressure (libdispatch), said again every 2 s while raised
+shards daemon 87951: container 206203da3457fb2964ecbd4065f9cdb2544e4411759176faa30c471a89bd3b2e: VM 88004 runs as its client waits: its CPU time 565 ms (+130 ms in 10s), 23563 page faults (+374)

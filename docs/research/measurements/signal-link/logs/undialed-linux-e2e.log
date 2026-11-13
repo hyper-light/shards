@@ -1,0 +1,4 @@
+# tests/containers.rs a_signal_connection_never_made_fails_execs_and_kills_at_once: c527a6f385c6; 2026-11-13T00:32:47Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 50.96 60.60 70.68
+test a_signal_connection_never_made_fails_execs_and_kills_at_once ...    Compiling libc v0.2.189
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 164 filtered out; finished in 82.69s
+## exit 0 after 306 s; done 2026-11-13T00:37:53Z

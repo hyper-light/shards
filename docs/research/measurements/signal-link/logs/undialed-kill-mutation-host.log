@@ -1,0 +1,7 @@
+# tests/containers.rs undialed_kill_alone: f2a4aeb7fcd7, changed: crates/shards/src/workload.rs crates/shards/tests/containers.rs ; 2026-11-13T01:15:46Z Linux 7.2.9-2-cachyos x86_64; rustc 1.98.1 (48a229cea 2026-09-01); load 75.31 64.40 53.22
+KILL answered Some(0) after 30.209541513s; its run ended Some(125) after 30.217333561s
+KILL-LOG shards daemon 3117333: container f340ad414b7eccd19d053f06fc761df47b0e1fd608fa25031c7fdc751df696cb: its command not yet ended 10s after SIGKILL, its microVM going on with its end: its CPU time 5430 ms (+40 ms in 10s), 24396 page faults (+27)
+KILL-LOG shards daemon 3117333: container f340ad414b7eccd19d053f06fc761df47b0e1fd608fa25031c7fdc751df696cb: its command not yet ended 20s after SIGKILL, its microVM going on with its end: its CPU time 5460 ms (+30 ms in 10s), 24402 page faults (+6)
+KILL-LOG shards daemon 3117333: container f340ad414b7eccd19d053f06fc761df47b0e1fd608fa25031c7fdc751df696cb: its command not ended 30s after it was signalled, its microVM gone on with nothing of its end for 10s: its microVM killed
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 165 filtered out; finished in 33.57s
+## exit 0 after 87 s
