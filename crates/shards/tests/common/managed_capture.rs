@@ -260,7 +260,6 @@ pub(super) struct Held {
     pub(super) inode: u64,
 }
 
-
 /// This process's sockets: each inode with the descriptors that hold it.
 #[cfg(target_os = "linux")]
 fn sockets() -> BTreeMap<u64, Vec<i32>> {

@@ -101,6 +101,7 @@ impl<C> Sender<C> {
     }
 
     /// Idempotent owner revocation does not wait behind queued data.
+    pub fn request_stop(&self) {
         self.stopping.store(true, Ordering::Release);
         let _ = self.waker.send_to(&[0], self.to);
     }
