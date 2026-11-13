@@ -23164,9 +23164,10 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     `patch -p1 -F0`, no hunk offset; 0009 alone touches one of them after it (inode.c), in a
     hunk 0007's amendment does not change.
   - `cargo test -p shards-vmm --lib the_hosts_changes_are_told_where_the_guest_looks`: red
-    with the second name (above), 1 passed with the move.
+    with the second name (above, the change's first draft), 1 passed with the move, and 1
+    passed again on the branch merged with main (6f690d0d9).
   - `cargo clippy -p shards-vmm -p shards --all-targets -- -D warnings` (`SHARDS_HELPERS=skip`,
-    prebuilt guest binaries named): clean.
+    prebuilt guest binaries named): clean, before the merge and after.
 - **Owed.**
   - ROOT's: kernel.yml's release of kernel-6.18.48-54fba99afaee (it runs as
     resources/kernel changes on main), and its pin in crates/shards/src/kernel.rs and
