@@ -206,12 +206,14 @@ struct Member {
 }
 
 /// What the groups' thread hears of runs (D183, slice 3): those begun, by VM process and
-/// microVM, and those ended, by VM process.
+/// microVM, and those ended, by VM process; and its test's end, where a test ends it (a
+/// daemon exits from within, its threads unwaited for).
 #[cfg(any(target_os = "macos", windows))]
 #[derive(Debug, Default)]
 struct Woke {
     ran: Vec<Member>,
     left: Vec<u32>,
+    ended: bool,
 }
 
 /// The groups' thread's word from the daemon, and what wakes it; each group's CPU budget,
@@ -225,6 +227,24 @@ pub(super) struct Groups {
     cpus: Mutex<HashMap<String, (std::fs::File, shards_vmm::vm::group::GroupCpu)>>,
     #[cfg(windows)]
     jobs: Mutex<HashMap<String, (shards_ipc::GroupJob, Option<u64>)>>,
+    /// The footprints a test plays for its microVMs' VM processes, by process, in place of
+    /// what their kernels count.
+    #[cfg(test)]
+    played: Mutex<HashMap<u32, u64>>,
+}
+
+#[cfg(all(test, any(target_os = "macos", windows)))]
+impl Groups {
+    /// VM process `pid` holds `footprint` bytes from now, as its group sums it.
+    pub(super) fn play(&self, pid: u32, footprint: u64) {
+        lock(&self.played).insert(pid, footprint);
+    }
+
+    /// Its test has ended: the groups' thread returns.
+    pub(super) fn end(&self) {
+        lock(&self.woke).ended = true;
+        self.wake.notify_all();
+    }
 }
 
 /// What a group's microVMs hold themselves to of its `cpu.max` (`GroupCpu::set_budget`):
@@ -356,7 +376,7 @@ impl<D: Disk> Daemon<D> {
         loop {
             let woke = {
                 let mut woke = lock(&self.groups.woke);
-                if woke.ran.is_empty() && woke.left.is_empty() {
+                if woke.ran.is_empty() && woke.left.is_empty() && !woke.ended {
                     woke = if members.is_empty() {
                         self.groups
                             .wake
@@ -372,6 +392,9 @@ impl<D: Disk> Daemon<D> {
                 }
                 std::mem::take(&mut *woke)
             };
+            if woke.ended {
+                return;
+            }
             for m in woke.ran {
                 if let Some(group) = self.parent_of(&m.id).filter(|p| !p.is_empty()) {
                     members.entry(group).or_default().push(m);
@@ -413,11 +436,7 @@ impl<D: Disk> Daemon<D> {
             members
                 .iter()
                 .enumerate()
-                .filter_map(|(i, m)| {
-                    shards_vmm::platform::process_usage(m.pid)
-                        .ok()
-                        .map(|u| (i, u.footprint))
-                })
+                .filter_map(|(i, m)| self.footprint_of(m.pid).map(|f| (i, f)))
                 .collect()
         };
         let mut held = footprints();
@@ -511,6 +530,16 @@ impl<D: Disk> Daemon<D> {
                 m.id
             ));
         }
+    }
+
+    /// What VM process `pid` holds, as its group sums it: its footprint (proc_pid_rusage's
+    /// `ri_phys_footprint`, Windows' private working set); none where it cannot be read.
+    fn footprint_of(&self, pid: u32) -> Option<u64> {
+        #[cfg(test)]
+        if let Some(&played) = lock(&self.groups.played).get(&pid) {
+            return Some(played);
+        }
+        shards_vmm::platform::process_usage(pid).ok().map(|u| u.footprint)
     }
 
     /// Tells run `id`'s guest the room its group's budget leaves it (init's `ROOM`, D188):
