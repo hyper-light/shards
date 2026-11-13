@@ -74,7 +74,7 @@ struct State {
     flows: HashMap<(u32, Channel), Flow>,
     /// Each member's stdin its spec asked for, by its index.
     inputs: HashMap<u32, InputFlow>,
-    ends: HashMap<u32, u32>,
+    ends: HashMap<u32, shards_abi::run::members::End>,
     stats: HashMap<u32, Result<Stats, String>>,
     /// Each plug's or unplug's answer, by its ask's id (D235).
     plugs: HashMap<u32, Result<(), (wire::PlugRefusal, String)>>,
@@ -1235,7 +1235,7 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
         }
         k::MEMBER_ENDED => {
             let e = wire::MemberEnded::decode(payload).map_err(bad)?;
-            if state.ends.insert(e.member, e.status).is_some() {
+            if state.ends.insert(e.member, e.end).is_some() {
                 return Err("a member ended twice".into());
             }
         }
@@ -1809,8 +1809,11 @@ impl ImageGuest for Session {
         }
         let index = info.index;
         Ok(self.shared.wait(timeout, |s| {
-            if let Some(status) = s.ends.get(&index) {
-                return Some(MemberEnd::Exited(*status));
+            if let Some(end) = s.ends.get(&index) {
+                return Some(match *end {
+                    shards_abi::run::members::End::Exited(code) => MemberEnd::Exited(code),
+                    shards_abi::run::members::End::Signaled(signal) => MemberEnd::Signaled(signal),
+                });
             }
             (s.end.is_some() || s.gone()).then_some(MemberEnd::WithRun)
         }))

@@ -390,29 +390,74 @@ pub fn staged_members(setup: &[Vec<u8>]) -> Result<Vec<u32>, Error> {
     Ok(members)
 }
 
-/// `[member, status]`, each a big-endian u32: the payload of
-/// [`kind::MEMBER_ENDED`](super::kind::MEMBER_ENDED), its status as `docker run` reports one
-/// (its code, or 128 plus the number of the signal that ended it).
+/// How a member's command ended, as its namespace's reaper saw it (`wait4(2)`): exited with
+/// its code, or killed by a signal, its number (`WTERMSIG`, `1..=`[`NSIG`](super::NSIG)). Its
+/// [`End::status`] is the one `docker run` reports, which cannot tell `exit 143` from a death
+/// by `SIGTERM`; this can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum End {
+    Exited(u32),
+    Signaled(u32),
+}
+
+impl End {
+    const EXITED: u8 = 0;
+    const SIGNALED: u8 = 1;
+    /// Its tag, then its code or signal, a big-endian u32.
+    pub const LEN: usize = 1 + size_of::<u32>();
+
+    /// Its status as `docker run` reports one: its code, or 128 plus its signal's number.
+    pub fn status(self) -> u32 {
+        match self {
+            End::Exited(code) => code,
+            End::Signaled(signal) => signal.saturating_add(128),
+        }
+    }
+
+    pub fn encode(self) -> [u8; Self::LEN] {
+        let (tag, word) = match self {
+            End::Exited(code) => (Self::EXITED, code),
+            End::Signaled(signal) => (Self::SIGNALED, signal),
+        };
+        let [a, b, c, d] = word.to_be_bytes();
+        [tag, a, b, c, d]
+    }
+
+    /// The end `bytes` say: none for a tag of neither, or a signal out of `1..=NSIG`.
+    pub fn decode(bytes: &[u8]) -> Option<End> {
+        let [tag, a, b, c, d] = <[u8; Self::LEN]>::try_from(bytes).ok()?;
+        let word = u32::from_be_bytes([a, b, c, d]);
+        match tag {
+            Self::EXITED => Some(End::Exited(word)),
+            Self::SIGNALED if (1..=super::NSIG).contains(&word) => Some(End::Signaled(word)),
+            _ => None,
+        }
+    }
+}
+
+/// `[member, end]`: the member (a big-endian u32), then its [`End`]: the payload of
+/// [`kind::MEMBER_ENDED`](super::kind::MEMBER_ENDED).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ended {
     pub member: u32,
-    pub status: u32,
+    pub end: End,
 }
 
 impl Ended {
-    pub const LEN: usize = 2 * size_of::<u32>();
+    pub const LEN: usize = size_of::<u32>() + End::LEN;
 
     pub fn encode(self) -> [u8; Self::LEN] {
         let [a, b, c, d] = self.member.to_be_bytes();
-        let [e, f, g, h] = self.status.to_be_bytes();
-        [a, b, c, d, e, f, g, h]
+        let [e, f, g, h, i] = self.end.encode();
+        [a, b, c, d, e, f, g, h, i]
     }
 
     pub fn decode(bytes: &[u8]) -> Option<Ended> {
-        let [a, b, c, d, e, f, g, h] = <[u8; Self::LEN]>::try_from(bytes).ok()?;
+        let bytes = <&[u8; Self::LEN]>::try_from(bytes).ok()?;
+        let (member, end) = bytes.split_at(size_of::<u32>());
         Some(Ended {
-            member: u32::from_be_bytes([a, b, c, d]),
-            status: u32::from_be_bytes([e, f, g, h]),
+            member: u32::from_be_bytes(member.try_into().ok()?),
+            end: End::decode(end)?,
         })
     }
 }
@@ -1036,5 +1081,29 @@ mod tests {
         assert_eq!(Refusal::decode(&[7, b'x']), None);
         assert!(!Refusal::Unknown.not_started() && !Refusal::Widening.not_started());
         assert!(Refusal::Processes.not_started() && Refusal::Confining(1, 1).not_started());
+    }
+
+    /// A member's end says how it ended, typed: `exit 143` stays an exit, a death by TERM is
+    /// signal 15, each with the status `docker run` reports; a tag of neither, or a signal out
+    /// of `1..=NSIG`, is no end.
+    #[test]
+    fn a_members_end_tells_a_signal_from_its_status() {
+        for end in [
+            End::Exited(0),
+            End::Exited(143),
+            End::Exited(u32::MAX),
+            End::Signaled(15),
+            End::Signaled(64),
+        ] {
+            let ended = Ended { member: 3, end };
+            assert_eq!(Ended::decode(&ended.encode()), Some(ended));
+        }
+        assert_eq!(End::Exited(143).status(), 143);
+        assert_eq!(End::Signaled(15).status(), 143);
+        assert_ne!(End::Exited(143), End::Signaled(15));
+        assert_eq!(End::decode(&[1, 0, 0, 0, 0]), None);
+        assert_eq!(End::decode(&[1, 0, 0, 0, 65]), None);
+        assert_eq!(End::decode(&[2, 0, 0, 0, 1]), None);
+        assert_eq!(Ended::decode(&[0; Ended::LEN - 1]), None);
     }
 }

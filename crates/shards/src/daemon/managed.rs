@@ -1331,7 +1331,7 @@ impl Outputs {
             Some(Entry::Serving(owner)) => Arc::clone(owner),
             _ => return Err(io::Error::other("managed run is not registered")),
         };
-        owner.ends.told(ended.member, ended.status)
+        owner.ends.told(ended.member, ended.end)
     }
 
     /// Run `id`'s MCP connections, where it gave a member a bridge (D254).
@@ -3928,7 +3928,7 @@ mod tests {
         let budget = Arc::new(Mutex::new(Some(0)));
         let charge = Charge::reserve(&budget, 0).unwrap();
         let ends = members::Ends::new(2).unwrap();
-        ends.told(1, 0).unwrap();
+        ends.told(1, run::members::End::Exited(0)).unwrap();
         let (hand, handed) = std::sync::mpsc::channel::<Built>();
         let built = std::sync::atomic::AtomicUsize::new(0);
         let builtin = |spec: &run::Spec,
@@ -3997,10 +3997,13 @@ mod tests {
                 Err(Fault::Unsteered(Unsteered::Terminal))
             );
             process.join().unwrap();
-            ends.told(0, 143).unwrap();
-            assert_eq!(end.wait(), Ok(143));
+            ends.told(0, run::members::End::Signaled(15)).unwrap();
+            assert_eq!(end.wait(), Ok(control::exec::End::Signaled(15)));
             assert_eq!(steering.signal(9), Err(Fault::Unsteered(Unsteered::Ended)));
-            assert!(matches!(execs.member(1), Ok(Member::Ended(0))));
+            assert!(matches!(
+                execs.member(1),
+                Ok(Member::Ended(control::exec::End::Exited(0)))
+            ));
             *lock(&budget) = Some(u64::MAX);
             assert_eq!(
                 execs.member(0).map(|_| ()),

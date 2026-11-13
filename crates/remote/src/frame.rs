@@ -92,6 +92,9 @@ pub enum Tag {
     /// the oldest its log keeps, which this names (`control::exec::LogPos`, 24 bytes); the
     /// lane's end follows.
     Rotated = 45,
+    /// Agent-control endpoint, on a member's lane (D238): the member's command was killed by
+    /// this signal, its Linux number (four bytes, big endian), in place of its `Exit`.
+    Signaled = 46,
 }
 
 impl Tag {
@@ -124,6 +127,7 @@ impl Tag {
             43 => Tag::Running,
             44 => Tag::Steered,
             45 => Tag::Rotated,
+            46 => Tag::Signaled,
             _ => return None,
         })
     }
