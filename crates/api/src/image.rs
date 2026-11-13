@@ -25,9 +25,9 @@ mod session;
 pub mod wire;
 
 pub use wire::{
-    Bound, Channel, CredentialGrant, Fill, GuestTimes, HostUse, Keep, MemberInfo, MemberKind, Microvm,
-    Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, Secret, Stats, StatsScope, VcpuTime,
-    decide,
+    Bound, Channel, CredentialGrant, Fill, GuestTimes, HostUse, Keep, MemberInfo, MemberKind, MemberReach,
+    Microvm, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, Secret, Stats, StatsScope,
+    VcpuTime, decide,
 };
 
 /// A member, as the image's Agentfile names it.
@@ -108,7 +108,9 @@ pub struct ImageSpec {
     pub command: Option<Vec<String>>,
     pub members: Vec<MemberSpec>,
     pub publish: Vec<Publish>,
-    /// The image's grants past the microVM, kept or dropped, never added to.
+    /// The image's grants past the microVM, kept or dropped, never added to; where it holds
+    /// its members apart, each member's reach of the names kept ([`Narrowing::members`],
+    /// D246), which the run host refuses the run unless every member reaches exactly.
     pub egress: Narrowing,
     /// The run's credential grants (D242): each a credential named by reference (a secret
     /// in the orchestrator's store, never a value) and the hosts the injector may fill it
