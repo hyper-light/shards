@@ -2190,10 +2190,13 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
     };
     'rounds: for round in 1.. {
         // Each round's clients its own: a client says nothing past its first byte, and the
-        // daemon lets one go once its request's time has run out (REQUEST_TIMEOUT, 10 s),
-        // so that an earlier round's, kept, gave it room in each later round on a busy host
-        // (a gate's five rounds in a row). Let go, they give a daemon that was out room at
-        // once, which it says before the round fills it again.
+        // daemon lets one go once its request has taken longer than it waits for one (its
+        // learned cutoff, doubled for each cut in a row: D222, `Seen`), so that an earlier
+        // round's, kept, gave it room in each later round on a busy host (a gate's five
+        // rounds in a row). Let go, they give a daemon that was out room at once, which it
+        // says before the round fills it again. On macOS the doubled wait passed what one
+        // select(2) takes after 27 cuts, and every slot then failed at once, so the daemon
+        // never ran out (PM M542).
         if !silent.is_empty() {
             let before = said().len();
             let was_out = out(&said());

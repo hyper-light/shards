@@ -4,9 +4,11 @@
 //! homes stand for two machines: nothing of the one is the other's but what the move sends
 //! (its directory, snapshot, volumes and the files its snapshot restores against) and what
 //! the other machine pulls itself (its image, by the digest it was made of). Between two
-//! machines, `a_microvm_moves_to_another_host_saved_and_live` moves microVMs to the machine
-//! whose invitation `SHARDS_MOVE_INVITE` names, and the harness measures moves there
-//! (docs/research/measurements/migrate/two-hosts.sh).
+//! machines, the tests of another machine ([`another_machine`]) move microVMs to the machine
+//! whose invitation `SHARDS_MOVE_INVITE` names, each with an invitation of its own, and
+//! check there each thing a move carries. docs/research/measurements/migrate/two-hosts.sh
+//! runs them (`e2e`, `local`) and measures moves there; its README's run sheet says how, for
+//! each pair of machines.
 
 #![allow(
     clippy::panic,
@@ -21,6 +23,7 @@
 mod common;
 
 use std::ffi::OsStr;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -96,6 +99,46 @@ fn logs(home: &Path, name: &str) -> String {
     let logs = shards_in(home, &["logs", name]);
     assert_eq!(logs.status, Some(0), "{logs}");
     logs.stdout
+}
+
+/// What `shards ARGS` in `home` says on stdout, trimmed, it having succeeded.
+fn field(home: &Path, args: &[&str]) -> String {
+    let said = shards_in(home, args);
+    assert_eq!(said.status, Some(0), "{args:?}: {said}");
+    said.stdout.trim().to_string()
+}
+
+/// `args`, asked of context `peer`'s machine.
+fn at_peer<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut all = vec!["--context", "peer"];
+    all.extend_from_slice(args);
+    all
+}
+
+/// `shards move vm NAME TO` from `here`, each step said (`SHARDS_MOVE_TIMES`): `move: S of
+/// its F files sent` among them once the other machine took it.
+fn move_timed(here: &Path, name: &str, to: &str) -> Run {
+    let (kernel, init) = (kernel(), guest_init());
+    let env: [(&str, &OsStr); 4] = [
+        ("SHARDS_HOME", here.as_os_str()),
+        ("SHARDS_KERNEL", kernel.as_os_str()),
+        ("SHARDS_INIT", init.as_os_str()),
+        ("SHARDS_MOVE_TIMES", OsStr::new("1")),
+    ];
+    run_shards_env(&[], &["move", "vm", name, to], &env, TIMEOUT)
+}
+
+/// Of the files a timed move's snapshot restores against, how many it sent, and of how many.
+fn files_sent(moved: &Run) -> (usize, usize) {
+    moved
+        .stderr
+        .lines()
+        .find_map(|l| {
+            let (sent, rest) = l.strip_prefix("move: ")?.split_once(" of its ")?;
+            let (files, _) = rest.split_once(" files sent")?;
+            Some((sent.parse::<usize>().ok()?, files.parse::<usize>().ok()?))
+        })
+        .unwrap_or_else(|| panic!("no files said: {moved}"))
 }
 
 fn counts(logs: &str) -> Vec<u64> {
@@ -331,11 +374,6 @@ fn a_microvm_moved_saved_keeps_its_cpu_image_files_and_connections() {
     let Some((here, there, _listening, image)) = machines("moved-checks") else {
         return;
     };
-    let field = |home: &Path, args: &[&str]| {
-        let said = shards_in(home, args);
-        assert_eq!(said.status, Some(0), "{args:?}: {said}");
-        said.stdout.trim().to_string()
-    };
     // There, its image's name tags another image.
     let other = common::served_variant(b"another");
     let pulled = shards_in(&there, &["pull", "-q", &other]);
@@ -369,14 +407,7 @@ fn a_microvm_moved_saved_keeps_its_cpu_image_files_and_connections() {
     let early = shards_in(&here, &["save", "vm", "mover", "early", "--leave-running"]);
     assert_eq!(early.status, Some(0), "{early}");
 
-    let (kernel, init) = (kernel(), guest_init());
-    let timed: [(&str, &OsStr); 4] = [
-        ("SHARDS_HOME", here.as_os_str()),
-        ("SHARDS_KERNEL", kernel.as_os_str()),
-        ("SHARDS_INIT", init.as_os_str()),
-        ("SHARDS_MOVE_TIMES", OsStr::new("1")),
-    ];
-    let moved = run_shards_env(&[], &["move", "vm", "mover", "lab"], &timed, TIMEOUT);
+    let moved = move_timed(&here, "mover", "lab");
     assert_eq!(
         (moved.status, moved.stdout.as_str()),
         (Some(0), "mover\n"),
@@ -417,15 +448,7 @@ fn a_microvm_moved_saved_keeps_its_cpu_image_files_and_connections() {
         .filter_map(|l| l.split_whitespace().next())
         .collect();
     assert!(names.len() == 1 && names[0] != "early", "{listed}");
-    let (sent, files) = moved
-        .stderr
-        .lines()
-        .find_map(|l| {
-            let (sent, rest) = l.strip_prefix("move: ")?.split_once(" of its ")?;
-            let (files, _) = rest.split_once(" files sent")?;
-            Some((sent.parse::<usize>().ok()?, files.parse::<usize>().ok()?))
-        })
-        .unwrap_or_else(|| panic!("no files said: {moved}"));
+    let (sent, files) = files_sent(&moved);
     assert!(files >= 1 && sent <= files, "{moved}");
     let id = field(&there, &["inspect", "-f", "{{.Id}}", "mover"]);
     let backing = there.join("containers").join(&id).join("backing");
@@ -771,11 +794,6 @@ fn a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it() {
     let Some((here, there, _listening, image)) = machines("baseline") else {
         return;
     };
-    let field = |home: &Path, args: &[&str]| {
-        let said = shards_in(home, args);
-        assert_eq!(said.status, Some(0), "{args:?}: {said}");
-        said.stdout.trim().to_string()
-    };
     let cpu = |home: &Path, name: &str| {
         cpu_identity(&field(
             home,
@@ -849,11 +867,6 @@ fn a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it() {
 fn an_x86_cpu_baseline_is_all_its_guest_finds_and_goes_with_it() {
     let Some((here, there, _listening, image)) = machines("base86") else {
         return;
-    };
-    let field = |home: &Path, args: &[&str]| {
-        let said = shards_in(home, args);
-        assert_eq!(said.status, Some(0), "{args:?}: {said}");
-        said.stdout.trim().to_string()
     };
     let cpu = |home: &Path, name: &str| {
         cpu_identity(&field(
@@ -937,31 +950,26 @@ fn an_x86_cpu_baseline_is_all_its_guest_finds_and_goes_with_it() {
     assert_eq!(shards_in(&there, &["rm", "-f", "told"]).status, Some(0));
 }
 
-/// A microVM moved to another machine, the one whose invitation `SHARDS_MOVE_INVITE` names
-/// (a file: two-hosts.sh `invite`, run there, makes one), as context `peer`; the test image
+/// A home joined to another machine, the one whose invitation `SHARDS_MOVE_INVITE` names (a
+/// file: two-hosts.sh `invite`, run there, makes one), as context `peer`; the test image
 /// pulled here alone, from this machine's own loopback registry, which the other cannot
-/// reach: its image goes with the move, saved here and loaded there, and so do the files its
-/// snapshot restores against that the other has not alike (its kernel and init among them,
-/// where that machine has none at their paths).
-///
-/// Saved: a counter appending to a file it holds open in a volume goes on there from its
-/// count, each count once, in order, its volume and log with it, and is gone from here.
-/// Live: a guest stamping 16 MiB page by page goes on sweeping there, every page holding its
-/// last write, the time it ran nowhere said. 16, not 64 as between homes: it rewrites them
-/// at 100 MiB/s, which a network between machines may not carry, so that its rounds end as
-/// they no longer shrink (`live::Stop`), and what they send then is the size of what it
-/// stamps.
-#[test]
-fn a_microvm_moves_to_another_host_saved_and_live() {
+/// reach, so that it goes with each move, saved here and loaded there. An invitation enrolls
+/// one client, and each test of another machine joins with a home of its own: two-hosts.sh
+/// `e2e` runs each alone, with an invitation of its own (`PEER_TESTS`). None, saying so,
+/// where no invitation is named or this host runs no microVMs.
+fn another_machine(name: &str) -> Option<(TempDir, String)> {
     let Some(invite) = std::env::var_os("SHARDS_MOVE_INVITE") else {
-        eprintln!("SKIP: SHARDS_MOVE_INVITE names no other machine's invitation (two-hosts.sh invite)");
-        return;
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: SHARDS_MOVE_INVITE names no other machine's invitation (two-hosts.sh invite)"
+        );
+        return None;
     };
     if cannot_run_vms() || cannot_pool() {
-        return;
+        return None;
     }
     let (image, _) = served();
-    let here = TempDir::new("peer");
+    let here = TempDir::new(name);
     let invite = PathBuf::from(invite);
     let joined = shards_in(
         &here,
@@ -974,9 +982,92 @@ fn a_microvm_moves_to_another_host_saved_and_live() {
         ],
     );
     assert_eq!(joined.status, Some(0), "{joined}");
-    baseline_with_peer(&here);
     let pulled = shards_in(&here, &["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
+    Some((here, image))
+}
+
+/// That `moved`, `shards move vm NAME peer` run in `here`, moved it: its answer its name
+/// alone, as for every run with no key of its own (D176 part 6, "Its key"), and it gone from
+/// here.
+fn moved_to_peer(here: &Path, moved: &Run, name: &str) {
+    assert_eq!(
+        (moved.status, moved.stdout.as_str()),
+        (Some(0), format!("{name}\n").as_str()),
+        "{moved}\nhere:\n{}",
+        daemon_log(here)
+    );
+    let gone = shards_in(here, &["inspect", name]);
+    assert_eq!(gone.status, Some(1), "{gone}");
+}
+
+/// The log of microVM `name` on context `peer`'s machine.
+fn logs_at_peer(here: &Path, name: &str) -> String {
+    shards_in(here, &at_peer(&["logs", name])).stdout
+}
+
+/// The address context `peer`'s machine listens at for its clients, as `inspect context`
+/// says it: where its published ports are reached from this one.
+fn peer_address(here: &Path) -> std::net::IpAddr {
+    let said = field(here, &["inspect", "context", "peer"]);
+    let doc: serde_json::Value = serde_json::from_str(&said).unwrap();
+    doc[0]["Endpoint"]
+        .as_str()
+        .and_then(|e| e.strip_prefix("quic://"))
+        .and_then(|a| a.parse::<std::net::SocketAddr>().ok())
+        .unwrap_or_else(|| panic!("no endpoint: {said}"))
+        .ip()
+}
+
+/// Tells `home`'s microVMs a CPU baseline no machine's CPU covers: the CPU this machine
+/// shares with context `peer`'s (`configure cpu`, D245), one field raised past any CPU's
+/// (arm64: ID_AA64ISAR0_EL1's top field at 0xF, an unsigned field's most; x86-64: every bit
+/// of leaf 7's EBX, of which no CPU sets all). Each vCPU is told the lower of its host's and
+/// the baseline's, so a guest here finds this machine's CPU, and the machine moved to finds
+/// the baseline names more than its own.
+fn told_past_every_cpu(home: &Path) {
+    let _ = field(home, &["configure", "cpu", "--baseline", "peer"]);
+    let file = home.join("cpu-baseline");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let (line, of) = text.split_once('\n').unwrap();
+    let raised: Vec<String> = line
+        .split(',')
+        .map(|leaf| {
+            if let Some(value) = leaf.strip_prefix("c030=") {
+                let value = u64::from_str_radix(value, 16).unwrap() | (0xf << 60);
+                format!("c030={value:016x}")
+            } else if let Some(regs) = leaf.strip_prefix("7.0=") {
+                let mut regs: Vec<&str> = regs.split(':').collect();
+                regs[1] = "ffffffff";
+                format!("7.0={}", regs.join(":"))
+            } else {
+                leaf.to_string()
+            }
+        })
+        .collect();
+    let raised = raised.join(",");
+    assert_ne!(raised, line, "no register to raise in {line}");
+    std::fs::write(&file, format!("{raised}\n{of}")).unwrap();
+}
+
+/// A microVM moved to another machine ([`another_machine`]): its image goes with the move,
+/// saved here and loaded there, and so do the files its snapshot restores against that the
+/// other has not alike (its kernel and init among them, where that machine has none at
+/// their paths).
+///
+/// Saved: a counter appending to a file it holds open in a volume goes on there from its
+/// count, each count once, in order, its volume and log with it, and is gone from here.
+/// Live: a guest stamping 16 MiB page by page goes on sweeping there, every page holding its
+/// last write, the time it ran nowhere said. 16, not 64 as between homes: it rewrites them
+/// at 100 MiB/s, which a network between machines may not carry, so that its rounds end as
+/// they no longer shrink (`live::Stop`), and what they send then is the size of what it
+/// stamps.
+#[test]
+fn a_microvm_moves_to_another_host_saved_and_live() {
+    let Some((here, image)) = another_machine("peer") else {
+        return;
+    };
+    baseline_with_peer(&here);
     let id = std::process::id();
     let (counter, volume, scribbler) = (format!("cold{id}"), format!("kept{id}"), format!("live{id}"));
     let _left = LeftThere {
@@ -985,17 +1076,7 @@ fn a_microvm_moves_to_another_host_saved_and_live() {
         microvms: vec![counter.clone(), scribbler.clone()],
         volumes: vec![volume.clone()],
     };
-    let logs_there = |name: &str| shards_in(&here, &["--context", "peer", "logs", name]).stdout;
-    let moved_ok = |moved: &Run, name: &str| {
-        assert_eq!(
-            (moved.status, moved.stdout.as_str()),
-            (Some(0), format!("{name}\n").as_str()),
-            "{moved}\nhere:\n{}",
-            daemon_log(&here)
-        );
-        let gone = shards_in(&here, &["inspect", name]);
-        assert_eq!(gone.status, Some(1), "{gone}");
-    };
+    let logs_there = |name: &str| logs_at_peer(&here, name);
 
     // Saved.
     let mount = format!("{volume}:/kept");
@@ -1021,15 +1102,8 @@ fn a_microvm_moves_to_another_host_saved_and_live() {
     assert_eq!(run.status, Some(0), "{run}");
     let log_here = || logs(&here, &counter);
     until("appending", &mut || counts(&log_here()).len() >= 10, &log_here);
-    let (kernel, init) = (kernel(), guest_init());
-    let timed: [(&str, &OsStr); 4] = [
-        ("SHARDS_HOME", here.as_os_str()),
-        ("SHARDS_KERNEL", kernel.as_os_str()),
-        ("SHARDS_INIT", init.as_os_str()),
-        ("SHARDS_MOVE_TIMES", OsStr::new("1")),
-    ];
-    let moved = run_shards_env(&[], &["move", "vm", &counter, "peer"], &timed, TIMEOUT);
-    moved_ok(&moved, &counter);
+    let moved = move_timed(&here, &counter, "peer");
+    moved_to_peer(&here, &moved, &counter);
     eprintln!("saved move: {}", moved.stderr);
     let n = counts(&logs_there(&counter)).len();
     until(
@@ -1068,7 +1142,7 @@ fn a_microvm_moves_to_another_host_saved_and_live() {
     let log_here = || logs(&here, &scribbler);
     until("sweeping", &mut || counts(&log_here()).len() >= 2, &log_here);
     let (moved, downtime) = move_live_to(&here, &scribbler, "peer");
-    moved_ok(&moved, &scribbler);
+    moved_to_peer(&here, &moved, &scribbler);
     assert!(moved.stderr.contains("move: round 0: "), "{moved}");
     let downtime = downtime.unwrap_or_else(|| panic!("no downtime said: {moved}"));
     eprintln!("live move: downtime {downtime} us; {}", moved.stderr);
@@ -1096,28 +1170,12 @@ fn a_microvm_moves_to_another_host_saved_and_live() {
 /// as context `peer`; without one, between two homes here.
 #[test]
 fn a_volumes_guest_owners_move_with_it() {
-    let invite = std::env::var_os("SHARDS_MOVE_INVITE");
-    let (here, _two, image, context) = match &invite {
-        Some(invite) => {
-            if cannot_run_vms() || cannot_pool() {
+    let (here, _two, image, context) = match std::env::var_os("SHARDS_MOVE_INVITE") {
+        Some(_) => {
+            let Some((here, image)) = another_machine("owners") else {
                 return;
-            }
-            let (image, _) = served();
-            let here = TempDir::new("owners");
-            let joined = shards_in(
-                &here,
-                &[
-                    "create",
-                    "context",
-                    "peer",
-                    "--invite-file",
-                    invite.to_str().unwrap(),
-                ],
-            );
-            assert_eq!(joined.status, Some(0), "{joined}");
+            };
             baseline_with_peer(&here);
-            let pulled = shards_in(&here, &["pull", "-q", &image]);
-            assert_eq!(pulled.status, Some(0), "{pulled}");
             (here, None, image, "peer")
         }
         None => {
@@ -1195,6 +1253,422 @@ fn a_volumes_guest_owners_move_with_it() {
         before,
         "the volume there, as its guest sees it"
     );
+}
+
+/// A microVM moved saved to another machine ([`another_machine`]) keeps there what its move
+/// checks, as between two homes
+/// (`a_microvm_moved_saved_keeps_its_cpu_image_files_and_connections`), each as D176 part 6
+/// has it:
+///
+/// - its CPU: told the CPU the two machines share (`configure cpu --baseline peer`, D245),
+///   its guest's CPUs are there what they were here. Not on WHP x86-64, which tells no
+///   baseline and restores a snapshot only on the CPU it was taken on (D245);
+/// - its image, there by the digest it was made of: one no registry the other machine
+///   reaches holds, saved here and loaded there;
+/// - its files: the snapshot it moves as and none other (one it was saved as before stays
+///   here), and of the files that snapshot restores against, no more sent than it has;
+/// - its connections, dialed again by its init there: an exec runs in it, and a stop's
+///   SIGTERM ends it, well inside its timeout;
+/// - its key, made anew where it lands and never carried (D238): a run with none, as every
+///   run a move takes today is (one with a managed scope is refused before anything moves, as
+///   no restore takes one yet), is answered its name alone.
+#[test]
+fn a_microvm_moved_to_another_host_keeps_its_cpu_image_files_and_connections() {
+    let Some((here, image)) = another_machine("keeps") else {
+        return;
+    };
+    if !cfg!(all(windows, target_arch = "x86_64")) {
+        let _ = field(&here, &["configure", "cpu", "--baseline", "peer"]);
+    }
+    let name = format!("keep{}", std::process::id());
+    let _left = LeftThere {
+        here: &here,
+        context: "peer",
+        microvms: vec![name.clone()],
+        volumes: Vec::new(),
+    };
+    // Under --init, so that its command ends at a stop's SIGTERM.
+    let run = shards_in(
+        &here,
+        &[
+            "run", "-d", "--init", "--pull", "never", "--name", &name, &image, "counter", "20",
+        ],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    let image_id = field(&here, &["inspect", "-f", "{{.Image}}", &name]);
+    let log_here = || logs(&here, &name);
+    until("counting", &mut || counts(&log_here()).len() >= 10, &log_here);
+    let cpu = |at: &[&str]| {
+        let mut args = at.to_vec();
+        args.extend(["exec", name.as_str(), "/bin/testguest", "files", "/proc/cpuinfo"]);
+        cpu_identity(&field(&here, &args))
+    };
+    let cpu_here = cpu(&[]);
+    assert!(
+        cpu_here.iter().any(|l| l.starts_with("processor")),
+        "{cpu_here:?}"
+    );
+    let early = shards_in(&here, &["save", "vm", &name, "early", "--leave-running"]);
+    assert_eq!(early.status, Some(0), "{early}");
+    let moved = move_timed(&here, &name, "peer");
+    moved_to_peer(&here, &moved, &name);
+    eprintln!("saved move: {}", moved.stderr);
+
+    // Counting on there, each count once, its log with it.
+    let log_there = || logs_at_peer(&here, &name);
+    let n = counts(&log_there()).len();
+    until(
+        "counting there",
+        &mut || counts(&log_there()).len() >= n + 10,
+        &log_there,
+    );
+    let all = counts(&log_there());
+    assert_eq!(
+        all,
+        (1..=all.len() as u64).collect::<Vec<_>>(),
+        "each count once, from here on to there"
+    );
+
+    // Its image, by its digest.
+    assert_eq!(
+        field(&here, &at_peer(&["inspect", "-f", "{{.Image}}", &name])),
+        image_id
+    );
+    assert_eq!(
+        field(&here, &at_peer(&["image", "inspect", "-f", "{{.Id}}", &image_id])),
+        image_id,
+        "there by its digest"
+    );
+
+    // Its snapshot, the one it moved as alone; of the files it restores against, no more
+    // sent than it has.
+    let listed = field(&here, &at_peer(&["list", "snapshots", &name]));
+    let names: Vec<&str> = listed
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    assert!(names.len() == 1 && names[0] != "early", "{listed}");
+    let (sent, files) = files_sent(&moved);
+    assert!(files >= 1 && sent <= files, "{moved}");
+
+    // Its connections, dialed again: an exec, and a stop's signal.
+    assert_eq!(
+        cpu(&["--context", "peer"]),
+        cpu_here,
+        "its CPUs, as its guest sees them"
+    );
+    let asked = Instant::now();
+    let stopped = shards_in(&here, &at_peer(&["stop", "-t", "30", &name]));
+    let took = asked.elapsed();
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    let code = field(&here, &at_peer(&["inspect", "-f", "{{.State.ExitCode}}", &name]));
+    assert_eq!(
+        (code.as_str(), took < Duration::from_secs(30)),
+        ("143", true),
+        "stopped in {took:?}"
+    );
+}
+
+/// A volume two microVMs share here moves with the first moved to another machine
+/// ([`another_machine`]), a copy of it there that it appends on to, each count once, the
+/// other's file in it as it was; and the other stays: its move refused there, which has a
+/// volume of the name now, by that name, it appends on here to the volume here, each count
+/// once (D176 part 6, "Its volumes"), as between two homes
+/// (`a_volume_shared_here_moves_with_one_and_the_other_goes_on_here`).
+#[test]
+fn a_volume_shared_here_moves_to_another_host_with_one_and_the_other_goes_on_here() {
+    let Some((here, image)) = another_machine("shared") else {
+        return;
+    };
+    baseline_with_peer(&here);
+    let id = std::process::id();
+    let (first, second, volume) = (format!("first{id}"), format!("second{id}"), format!("shared{id}"));
+    let _left = LeftThere {
+        here: &here,
+        context: "peer",
+        microvms: vec![first.clone()],
+        volumes: vec![volume.clone()],
+    };
+    let mount = format!("{volume}:/kept");
+    for name in [&first, &second] {
+        let file = format!("/kept/{name}");
+        let run = shards_in(
+            &here,
+            &[
+                "run", "-d", "--pull", "never", "--name", name, "-u", "0", "-v", &mount, &image, "appender",
+                &file, "20",
+            ],
+        );
+        assert_eq!(run.status, Some(0), "{run}");
+    }
+    let data = |file: &str| here.join("volumes").join(&volume).join("_data").join(file);
+    let said_here = || daemon_log(&here);
+    until(
+        "appending",
+        &mut || appended(&data(&first)).len() >= 10 && appended(&data(&second)).len() >= 10,
+        &said_here,
+    );
+    let moved = shards_in(&here, &["move", "vm", &first, "peer"]);
+    moved_to_peer(&here, &moved, &first);
+    let at_move = appended(&data(&first)).len();
+    let log_there = || logs_at_peer(&here, &first);
+    let n = counts(&log_there()).len();
+    until(
+        "appending there",
+        &mut || counts(&log_there()).len() >= n + 10,
+        &log_there,
+    );
+    let all = counts(&log_there());
+    assert_eq!(
+        all,
+        (1..=all.len() as u64).collect::<Vec<_>>(),
+        "each count once, in order"
+    );
+    // The second's file, moved with the volume as it was: its whole lines, each count once.
+    let file = format!("/kept/{second}");
+    let held = shards_in(
+        &here,
+        &at_peer(&["exec", &first, "/bin/testguest", "files", &file]),
+    );
+    assert_eq!(held.status, Some(0), "{held}");
+    let whole = held
+        .stdout
+        .strip_prefix(&format!("== {file}\n"))
+        .and_then(|t| t.rsplit_once('\n'))
+        .map_or("", |(whole, _)| whole);
+    let theirs = counts(whole);
+    assert!(
+        theirs.len() >= 10 && theirs == (1..=theirs.len() as u64).collect::<Vec<_>>(),
+        "the second's file, moved with the volume: {held}"
+    );
+
+    let refused = shards_in(&here, &["move", "vm", &second, "peer"]);
+    assert_eq!(refused.status, Some(1), "{refused}");
+    assert!(
+        refused
+            .stderr
+            .contains(&format!("a volume named {volume} is here already"))
+            && refused.stderr.contains(&format!("{second} goes on here")),
+        "{refused}"
+    );
+    let n = appended(&data(&second)).len();
+    until(
+        "appending on here",
+        &mut || appended(&data(&second)).len() >= n + 10,
+        &said_here,
+    );
+    let ours = appended(&data(&second));
+    assert_eq!(
+        ours,
+        (1..=ours.len() as u64).collect::<Vec<_>>(),
+        "each count once, in order"
+    );
+    assert_eq!(
+        appended(&data(&first)).len(),
+        at_move,
+        "the first's file here as it was moved"
+    );
+    let kept = shards_in(&here, &["volume", "inspect", &volume]);
+    assert_eq!(kept.status, Some(0), "{kept}");
+}
+
+/// A microVM's published port answers on the machine it moved to ([`another_machine`]; D176
+/// part 6, "Its published ports"): its guest serving on port 7000, published here, answers at
+/// the port that machine bound for it as its restore started it, at that machine's address,
+/// as it answered here. Published on the host port `SHARDS_MOVE_PORT` names where given (a
+/// TCP port the machine moved to takes from this one, as its firewall says; that machine
+/// checks it before anything moves, and binds it), else on one each machine picks.
+#[test]
+fn a_moved_microvms_published_port_answers_on_another_host() {
+    use std::io::Read as _;
+    let Some((here, image)) = another_machine("port") else {
+        return;
+    };
+    baseline_with_peer(&here);
+    let name = format!("web{}", std::process::id());
+    let _left = LeftThere {
+        here: &here,
+        context: "peer",
+        microvms: vec![name.clone()],
+        volumes: Vec::new(),
+    };
+    let fixed: Option<u16> = std::env::var("SHARDS_MOVE_PORT").ok().map(|p| p.parse().unwrap());
+    let publish = fixed.map_or_else(|| "7000".to_string(), |p| format!("{p}:7000"));
+    let run = shards_in(
+        &here,
+        &[
+            "run", "-d", "--pull", "never", "--name", &name, "-p", &publish, &image, "serve", "7000", "2",
+        ],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    let log_here = || logs(&here, &name);
+    until("serving", &mut || log_here().contains("ready"), &log_here);
+    // The port the machine `at` asks published it at, and what the guest answered there, at
+    // address `ip`.
+    let ask = |at: &[&str], ip: std::net::IpAddr| {
+        let mut args = at.to_vec();
+        args.extend(["port", name.as_str(), "7000"]);
+        let listed = shards_in(&here, &args);
+        let port: u16 = listed
+            .stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("0.0.0.0:"))
+            .and_then(|p| p.trim().parse().ok())
+            .unwrap_or_else(|| panic!("{listed}"));
+        let to = std::net::SocketAddr::new(ip, port);
+        let mut c = std::net::TcpStream::connect_timeout(&to, TIMEOUT).unwrap_or_else(|e| {
+            panic!("{to}: {e}: the machine moved to takes no TCP from this one there (SHARDS_MOVE_PORT names a port it takes)")
+        });
+        c.set_read_timeout(Some(TIMEOUT)).unwrap();
+        c.write_all(b"hello").unwrap();
+        c.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut got = String::new();
+        c.read_to_string(&mut got).unwrap();
+        (port, got)
+    };
+    let (_, answered) = ask(&[], std::net::Ipv4Addr::LOCALHOST.into());
+    assert!(
+        answered.starts_with("from ") && answered.ends_with("\nhello"),
+        "{answered}"
+    );
+    let moved = shards_in(&here, &["move", "vm", &name, "peer"]);
+    moved_to_peer(&here, &moved, &name);
+    let (port, answered) = ask(&["--context", "peer"], peer_address(&here));
+    assert!(
+        answered.starts_with("from ") && answered.ends_with("\nhello"),
+        "{answered}"
+    );
+    if let Some(fixed) = fixed {
+        assert_eq!(port, fixed, "bound there at the port it was published at here");
+    }
+}
+
+/// A move the other machine ([`another_machine`]) cannot take is refused before anything of
+/// the microVM moves, by what refuses it, typed (D176 part 6, "Refused before anything
+/// moves"), and the microVM goes on here, each count once, nothing of it there: one of
+/// another architecture or hypervisor than that machine's (WHP's to KVM's: its snapshot
+/// holds its vCPUs as its own hypervisor keeps them); between two machines of one kind, one
+/// told a CPU baseline the other's CPU falls short of ([`told_past_every_cpu`]). WHP x86-64
+/// tells no baseline (D245): between two of its machines, that case says SKIP.
+#[test]
+fn a_move_another_host_cannot_take_is_refused_before_anything_moves() {
+    let Some((here, image)) = another_machine("refused") else {
+        return;
+    };
+    // A machine's hypervisor as its `version` says it, and as a refusal names it
+    // (daemon/moves.rs `hypervisor_name`).
+    let hypervisor = |at: &[&str]| {
+        let mut args = at.to_vec();
+        args.push("version");
+        let said = shards_in(&here, &args);
+        assert_eq!(said.status, Some(0), "{said}");
+        let named = said
+            .stdout
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("Hypervisor:"))
+            .map(str::trim)
+            .unwrap_or_else(|| panic!("no hypervisor said: {said}"))
+            .to_string();
+        if named.starts_with("Windows") {
+            format!("the {named}")
+        } else {
+            named
+        }
+    };
+    let (ours, theirs) = (hypervisor(&[]), hypervisor(&["--context", "peer"]));
+    let arch = field(&here, &at_peer(&["info", "--format", "{{.Architecture}}"]));
+    let name = format!("refused{}", std::process::id());
+    let _left = LeftThere {
+        here: &here,
+        context: "peer",
+        microvms: vec![name.clone()],
+        volumes: Vec::new(),
+    };
+    let why = if arch != std::env::consts::ARCH {
+        format!(
+            "{name} is a {} microVM, and this machine runs {arch} microVMs",
+            std::env::consts::ARCH
+        )
+    } else if theirs != ours {
+        format!("{name} ran on {ours}, and this machine runs microVMs on {theirs}")
+    } else if cfg!(all(windows, target_arch = "x86_64")) {
+        eprintln!(
+            "SKIP: a CPU short of a baseline: WHP x86-64 tells none (D245), and the other machine runs microVMs on it too"
+        );
+        return;
+    } else {
+        told_past_every_cpu(&here);
+        format!("which {name}'s CPU baseline names")
+    };
+    let run = shards_in(
+        &here,
+        &[
+            "run", "-d", "--pull", "never", "--name", &name, &image, "counter", "20",
+        ],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    let log = || logs(&here, &name);
+    until("counting", &mut || counts(&log()).len() >= 5, &log);
+    let refused = move_timed(&here, &name, "peer");
+    assert_eq!(refused.status, Some(1), "{refused}");
+    assert!(
+        refused.stderr.contains("peer cannot take it: ")
+            && refused.stderr.contains(&why)
+            && refused.stderr.contains(&format!("{name} goes on here")),
+        "{why}: {refused}"
+    );
+    // Refused at `ready`: saved here, and nothing sent.
+    assert!(
+        refused.stderr.contains("move: saved at ") && !refused.stderr.contains("move: ready there"),
+        "{refused}"
+    );
+    let there = shards_in(&here, &at_peer(&["inspect", &name]));
+    assert_eq!(there.status, Some(1), "nothing of it there: {there}");
+    let n = counts(&log()).len();
+    until("counting on here", &mut || counts(&log()).len() >= n + 5, &log);
+    let all = counts(&log());
+    assert_eq!(
+        all,
+        (1..=all.len() as u64).collect::<Vec<_>>(),
+        "each count once, here as it was"
+    );
+}
+
+/// Every test of another machine (each that joins one through [`another_machine`]) is one
+/// two-hosts.sh `e2e` runs (its `PEER_TESTS`, each alone with an invitation of its own) and
+/// one the run sheet names (docs/research/measurements/migrate/README.md); the harness names
+/// no other. No microVM: the sources alone.
+#[test]
+fn the_harness_runs_every_test_of_another_machine() {
+    let source = include_str!("moved.rs");
+    let harness = include_str!("../../../docs/research/measurements/migrate/two-hosts.sh");
+    let sheet = include_str!("../../../docs/research/measurements/migrate/README.md");
+    let mut ours: Vec<&str> = source
+        .split("#[test]\n")
+        .skip(1)
+        .filter_map(|item| {
+            let signature = item.lines().find(|l| !l.starts_with("#["))?;
+            let name = signature.strip_prefix("fn ")?.split('(').next()?;
+            let body = item.split("\n}\n").next()?;
+            body.contains("another_machine(\"").then_some(name)
+        })
+        .collect();
+    let mut runs: Vec<&str> = harness
+        .split_once("PEER_TESTS=\"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(names, _)| names.split_whitespace().collect())
+        .unwrap_or_default();
+    ours.sort_unstable();
+    runs.sort_unstable();
+    assert!(!ours.is_empty());
+    assert_eq!(
+        runs, ours,
+        "two-hosts.sh's PEER_TESTS, and tests/moved.rs's tests of another machine"
+    );
+    for name in &ours {
+        assert!(sheet.contains(name), "the run sheet names {name}");
+    }
 }
 
 /// The downtime of live moves, measured (PM, D176 part 7): `SHARDS_MOVES` microVMs, each

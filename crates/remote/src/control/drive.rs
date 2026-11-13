@@ -32,7 +32,10 @@ use shards_abi::run::managed::{Channel, InputEnd};
 use shards_abi::run::{Size, Spec};
 
 use super::exec::{self, Limits, Steer, Told};
-use super::{By, Ended, REFUSED_BYTES, controller, ended, read_refused};
+use super::{
+    By, CONTROL_ASK, Ended, NEGOTIATED_BYTES, Negotiated, REFUSED_BYTES, controller, ended, read_negotiated,
+    read_refused,
+};
 use crate::frame::{self, Tag};
 use crate::identity::{self, Fingerprint, Identity};
 use crate::managed::input::{self, Said};
@@ -100,6 +103,8 @@ enum Heard {
     Started(Box<Started>),
     /// An exec ended, with this status.
     Exit(i32),
+    /// The control lane's report, beside this side's own.
+    Linked(Link),
 }
 
 /// An exec's stdio's handles, as its lane's start makes them.
@@ -340,11 +345,37 @@ impl Execs {
     /// [`Fault::Unstarted`], or the connection's end.
     pub fn exec(&self, member: u32, spec: Spec) -> Result<Exec, Fault> {
         let (stderr, stdin) = (spec.tty.is_none(), spec.stdin);
+        self.ask(member, exec::Kind::Exec(Box::new(spec)), stderr, stdin)
+    }
+
+    /// The next connection the harness in member `member` makes to its MCP bridge (D254),
+    /// waited for until it comes: what the harness sends, what it is sent, and its end. Why
+    /// there is none, typed as an exec's: the endpoint's refusal of its lane, the host's
+    /// [`Fault::Unstarted`] (`Refused` for a member whose run asked for no bridge), or the
+    /// connection's end.
+    pub fn mcp(&self, member: u32) -> Result<McpConnection, Fault> {
+        let Exec {
+            stdout,
+            stdin,
+            control,
+            ..
+        } = self.ask(member, exec::Kind::Mcp, false, true)?;
+        let to = stdin.ok_or(Fault::Refused(Reason::Protocol))?;
+        Ok(McpConnection {
+            from: stdout,
+            to,
+            end: control,
+        })
+    }
+
+    /// Asks for `kind` in `member` on a lane of its own, and waits until it has started, its
+    /// stdio's lanes made for an exec of `stderr` and `stdin`.
+    fn ask(&self, member: u32, kind: exec::Kind, stderr: bool, stdin: bool) -> Result<Exec, Fault> {
         let ask = exec::Ask {
             run: self.run,
             generation: self.generation,
             member,
-            spec,
+            kind,
         };
         let frame = ask.frame().map_err(|_| Fault::Refused(Reason::Protocol))?;
         let (tell, heard) = mpsc::channel();
@@ -378,6 +409,21 @@ impl Execs {
             },
         })
     }
+}
+
+/// An MCP connection a member's harness made to its bridge (D254): its bytes, in records as a
+/// member's output; the controller's to it, as a member's stdin; and its end, told as an exec's
+/// once the harness's side has ended and every byte of it is consumed. A server reads [`from`]
+/// and writes [`to`] as one byte stream each way.
+///
+/// [`from`]: McpConnection::from
+/// [`to`]: McpConnection::to
+#[derive(Debug)]
+pub struct McpConnection {
+    pub from: Output,
+    pub to: Input,
+    /// Its end: [`ExecControl::wait`]. It takes no resize or signal: its host lets them go.
+    pub end: ExecControl,
 }
 
 /// A command running in a member: its stdout, its stderr (none on a terminal, whose output is
@@ -439,6 +485,41 @@ impl ExecControl {
     }
 }
 
+/// What each end's own TLS handshake negotiated on a controller's connection: this
+/// controller's, read from its own TLS state, and its endpoint's, as the endpoint reports it
+/// on its control lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Link {
+    pub controller: Negotiated,
+    pub endpoint: Negotiated,
+}
+
+/// Where a controller hears its connection's [`Link`], once its handshake is done and its
+/// endpoint has reported.
+#[derive(Debug)]
+pub struct Linked {
+    heard: mpsc::Receiver<Heard>,
+    over: Option<Result<Link, Fault>>,
+}
+
+impl Linked {
+    /// Waits for both ends' word on the connection's TLS: its [`Link`], then again; or why there
+    /// is none (the endpoint's refusal of the control lane, its reset, or the connection's end),
+    /// then again.
+    pub fn wait(&mut self) -> Result<Link, Fault> {
+        if let Some(over) = self.over {
+            return over;
+        }
+        let over = match self.heard.recv() {
+            Ok(Heard::Linked(link)) => Ok(link),
+            Ok(Heard::Fault(fault)) => Err(fault),
+            Ok(_) | Err(_) => Err(gone()),
+        };
+        self.over = Some(over);
+        over
+    }
+}
+
 /// Ends the controller's connection and every lane on it: the microVM's control is over here.
 /// Dropping it does so too.
 #[derive(Debug)]
@@ -458,13 +539,15 @@ impl Drop for Hangup {
     }
 }
 
-/// The handles of what a controller dialed, in the order its [`Subscriptions`] named them, and
-/// where it asks for execs, where its subscriptions admit them.
+/// The handles of what a controller dialed, in the order its [`Subscriptions`] named them,
+/// where it asks for execs, where its subscriptions admit them, and where it hears both ends'
+/// TLS ([`Link`]).
 #[derive(Debug)]
 pub struct Dialed {
     pub outputs: Vec<Output>,
     pub inputs: Vec<Input>,
     pub execs: Option<Execs>,
+    pub link: Linked,
     pub hangup: Hangup,
 }
 
@@ -498,10 +581,15 @@ impl Controller {
             .checked_add(subscriptions.inputs.len())
             .ok_or_else(allocation)?;
         let mut lanes = Vec::new();
-        lanes.try_reserve_exact(count).map_err(|_| allocation())?;
+        lanes
+            .try_reserve_exact(count.checked_add(1).ok_or_else(allocation)?)
+            .map_err(|_| allocation())?;
         let mut receivers = Vec::new();
         receivers.try_reserve_exact(count).map_err(|_| allocation())?;
-        let mut id = 0u64;
+        // The control lane first, for the endpoint's report.
+        let (tell, linked) = mpsc::channel();
+        lanes.push(control_lane(0, tell)?);
+        let mut id = 1u64;
         for (scope, admitted, from) in subscriptions.outputs {
             let (tell, heard) = mpsc::channel();
             lanes.push(output_lane(id, *scope, admitted, *from, tell)?);
@@ -526,6 +614,7 @@ impl Controller {
             since: Instant::now(),
             conn: None,
             cause: None,
+            own: None,
             lanes,
             over: false,
             asks,
@@ -608,6 +697,10 @@ impl Controller {
                 outputs,
                 inputs,
                 execs,
+                link: Linked {
+                    heard: linked,
+                    over: None,
+                },
                 hangup: Hangup { sender },
             },
         ))
@@ -619,6 +712,24 @@ impl Controller {
         self.driver.handler_mut().lose(Ended::Local);
         result.map_err(managed::Error::Transport)
     }
+}
+
+/// The control lane: what it sends (its ask) and the largest frame it reads (the endpoint's
+/// report, or a refusal).
+fn control_lane(id: u64, tell: mpsc::Sender<Heard>) -> Result<Lane, managed::Error> {
+    Lane::new(
+        id,
+        Carries::Control { told: false },
+        &CONTROL_ASK,
+        CONTROL_ASK.len(),
+        control_receives(),
+        tell,
+    )
+}
+
+/// The largest frame the endpoint sends on the control lane: its report, or a refusal.
+fn control_receives() -> usize {
+    NEGOTIATED_BYTES.max(REFUSED_BYTES)
 }
 
 /// An output's lane, subscribed at `from`: what it sends (its subscription, one acknowledgment)
@@ -746,6 +857,16 @@ pub(super) fn windows(subscriptions: Subscriptions<'_>) -> Result<(Admitted, Win
             },
         });
     }
+    // The control lane, as the endpoint admits it: its report or a refusal read, its ask sent.
+    windows.stream = windows.stream.max(control_receives());
+    windows.connection = windows
+        .connection
+        .checked_add(control_receives())
+        .ok_or_else(window)?;
+    windows.send = u64::try_from(CONTROL_ASK.len())
+        .ok()
+        .and_then(|send| windows.send.checked_add(send))
+        .ok_or_else(window)?;
     if let Some(execs) = subscriptions.execs {
         // An exec's stdio lanes read a record each through one stream's window.
         let receive = execs
@@ -805,6 +926,8 @@ enum Carries {
         started: Option<u32>,
         added: Limits,
     },
+    /// The control lane: whether the endpoint's report came.
+    Control { told: bool },
 }
 
 /// What a stdin's next taken may say (step 5: one record in flight, taken whole).
@@ -933,12 +1056,13 @@ enum Broken {
     Local,
 }
 
-/// What a lane's frame says: something for its handle, or, on an exec's lane, that the exec
-/// started under this number.
+/// What a lane's frame says: something for its handle; on an exec's lane, that the exec
+/// started under this number; or, on the control lane, the endpoint's report.
 #[derive(Debug)]
 enum Came {
     Heard(Heard),
     Started(u32),
+    Negotiated(Negotiated),
 }
 
 /// One frame of the endpoint's at the front of `bytes` for a lane carrying `carries`, `heard`
@@ -1010,7 +1134,20 @@ fn frame_of(bytes: &[u8], carries: Carries, heard: bool) -> Result<Option<(Came,
             }
             Some(_) => Err(Broken::Protocol),
         },
+        // The endpoint's report, once: nothing else is said on the control lane yet.
+        Carries::Control { told } => match read_negotiated(bytes) {
+            Ok(None) => Ok(None),
+            Ok(Some(endpoint)) if !told => Ok(Some((Came::Negotiated(endpoint), NEGOTIATED_BYTES))),
+            Ok(Some(_)) | Err(_) => Err(Broken::Protocol),
+        },
     }
+}
+
+/// The control lane's report beside this side's own negotiation, which every lane follows
+/// ([`Drive::connected`](Handler::connected) holds it).
+fn linked(own: Option<Negotiated>, endpoint: Negotiated) -> Result<Heard, Broken> {
+    let controller = own.ok_or(Broken::Local)?;
+    Ok(Heard::Linked(Link { controller, endpoint }))
 }
 
 /// The controller's handler: its one connection, and its lanes.
@@ -1023,6 +1160,8 @@ struct Drive {
     conn: Option<ConnKey>,
     /// Why its connection ended, as QUIC told it ([`Handler::cause`]).
     cause: Option<Ended>,
+    /// What its own TLS handshake negotiated, read once it was done.
+    own: Option<Negotiated>,
     lanes: Vec<Lane>,
     over: bool,
     asks: mpsc::Receiver<Ask>,
@@ -1110,6 +1249,7 @@ impl Drive {
     /// as its protocol has them. An exec that started stops it there: its lanes are made before
     /// anything after is told ([`Drive::exec_started`]).
     fn read(&mut self, io: &mut Io<'_>, conn: ConnKey, at: usize) -> Result<Option<u32>, Broken> {
+        let own = self.own;
         let Some(lane) = self.lanes.get_mut(at) else {
             return Ok(None);
         };
@@ -1125,6 +1265,7 @@ impl Drive {
                 let said = match came {
                     Came::Started(exec) => return Ok(Some(exec)),
                     Came::Heard(said) => said,
+                    Came::Negotiated(endpoint) => linked(own, endpoint)?,
                 };
                 match (&said, &mut lane.carries) {
                     (Heard::Record { at, bytes }, Carries::Output { next, held, .. }) => {
@@ -1132,6 +1273,7 @@ impl Drive {
                         *held = true;
                     }
                     (Heard::Taken { .. }, Carries::Input { pace }) => *pace = Pace::Told,
+                    (Heard::Linked(_), Carries::Control { told }) => *told = true,
                     _ => {}
                 }
                 lane.tell(said);
@@ -1163,25 +1305,33 @@ impl Drive {
                     lane.inbound.drain(..len.min(lane.inbound.len()));
                     heard = true;
                     lane.stage = Stage::Open { stream, heard };
-                    match came {
+                    let said = match came {
                         Came::Started(exec) => return Ok(Some(exec)),
-                        Came::Heard(said) => {
-                            if let (Heard::Record { at, bytes }, Carries::Output { next, held, .. }) =
-                                (&said, &mut lane.carries)
-                            {
-                                *next = at.checked_add(bytes.len() as u64).ok_or(Broken::Protocol)?;
-                                *held = true;
-                            }
-                            lane.tell(said);
-                            if lane.stage == Stage::Over {
-                                return Ok(None);
-                            }
+                        Came::Heard(said) => said,
+                        Came::Negotiated(endpoint) => linked(own, endpoint)?,
+                    };
+                    match (&said, &mut lane.carries) {
+                        (Heard::Record { at, bytes }, Carries::Output { next, held, .. }) => {
+                            *next = at.checked_add(bytes.len() as u64).ok_or(Broken::Protocol)?;
+                            *held = true;
                         }
+                        (Heard::Linked(_), Carries::Control { told }) => *told = true,
+                        _ => {}
+                    }
+                    lane.tell(said);
+                    if lane.stage == Stage::Over {
+                        return Ok(None);
                     }
                 }
                 return match lane.carries {
                     Carries::Output { held: false, .. } if lane.inbound.is_empty() => {
                         lane.tell(Heard::Finished);
+                        let _ = io.finish(conn, stream);
+                        Ok(None)
+                    }
+                    // The control lane ends once its report has come: let go quietly.
+                    Carries::Control { told: true } if lane.inbound.is_empty() => {
+                        lane.stage = Stage::Over;
                         let _ = io.finish(conn, stream);
                         Ok(None)
                     }
@@ -1378,6 +1528,8 @@ impl Drive {
                     return Ok(());
                 }
             }
+            // No handle asks anything of the control lane.
+            Carries::Control { .. } => return Ok(()),
         }
         if !lane.queue(&frame) {
             return Err(Broken::Local);
@@ -1400,6 +1552,16 @@ impl Handler for Drive {
                 why: "agent control: not the pinned microVM",
             });
         }
+        // Its TLS negotiated the suite the provider offers (D239), which its report holds it to
+        // here as the key is held above.
+        let Some(own) = io.negotiated(conn).filter(Negotiated::is_provided) else {
+            self.lose(Ended::Handshake(By::This));
+            return Err(Close {
+                code: Reason::Auth as u32,
+                why: "agent control: not TLS13_AES_256_GCM_SHA384",
+            });
+        };
+        self.own = Some(own);
         self.conn = Some(conn);
         self.open(io);
         Ok(())

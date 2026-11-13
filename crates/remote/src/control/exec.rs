@@ -17,6 +17,9 @@
 //! - **Its host.** The endpoint starts nothing itself: it hands its host the ask and its
 //!   streams' handles ([`Start`]), and the host, which charges the run's budget for each exec,
 //!   says how it went ([`Replies`]).
+//! - **An MCP connection** (D254) is an exec in all but its start: its lane's first frame is
+//!   `Tag::Mcp`, the scope alone ([`Kind::Mcp`]), and its host starts it as the member's harness
+//!   connects to its MCP bridge, the harness's bytes its stdout and the controller's its stdin.
 
 use std::mem::size_of;
 use std::sync::mpsc;
@@ -35,47 +38,75 @@ const SCOPE: usize = size_of::<RunId>() + size_of::<u64>() + size_of::<u32>();
 /// as large as Linux execs (`run::MAX_PAYLOAD`).
 pub const ASK_MOST: usize = SCOPE + run::MAX_PAYLOAD as usize;
 
-/// What a controller asks to run in a member.
+/// What a controller asks of a member (R04).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    /// Step 6's member exec: its argv, environment, working directory, terminal and stdin. Its
+    /// user and setup are the member's own (D243): the host refuses others.
+    Exec(Box<Spec>),
+    /// The next connection the member's harness makes to its MCP bridge (D254): the harness's
+    /// bytes its stdout, the controller's its stdin, no stderr and no steering.
+    Mcp,
+}
+
+/// What a controller asks for in a member.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
     pub run: RunId,
     pub generation: u64,
     pub member: u32,
-    /// Step 6's member exec: its argv, environment, working directory, terminal and stdin. Its
-    /// user and setup are the member's own (D243): the host refuses others.
-    pub spec: Spec,
+    pub kind: Kind,
 }
 
 impl Ask {
-    /// Its first frame, whole.
+    /// Its first frame, whole: `Tag::MemberExec` and its spec, or `Tag::Mcp` and its scope alone.
     pub fn frame(&self) -> Result<Vec<u8>, managed::Error> {
+        let (tag, spec) = match &self.kind {
+            Kind::Exec(spec) => (Tag::MemberExec, Some(spec.as_ref())),
+            Kind::Mcp => (Tag::Mcp, None),
+        };
         let mut payload = Vec::new();
         payload
-            .try_reserve_exact(SCOPE.saturating_add(self.spec.encoded_len().unwrap_or(0)))
+            .try_reserve_exact(SCOPE.saturating_add(spec.and_then(Spec::encoded_len).unwrap_or(0)))
             .map_err(|_| managed::Error::Admission(managed::AdmissionError::Allocation))?;
         payload.extend_from_slice(&self.run.0);
         payload.extend_from_slice(&self.generation.to_be_bytes());
         payload.extend_from_slice(&self.member.to_be_bytes());
-        self.spec.encode_into(&mut payload);
+        if let Some(spec) = spec {
+            spec.encode_into(&mut payload);
+        }
         if payload.len() > ASK_MOST {
             return Err(managed::Error::Protocol(managed::ProtocolError::Length));
         }
         let mut out = Vec::new();
-        frame::put(&mut out, Tag::MemberExec, &payload)?;
+        frame::put(&mut out, tag, &payload)?;
         Ok(out)
     }
 
-    /// The ask a whole first frame's `payload` carries: a protocol error for one cut short or a
-    /// spec the run protocol would not take.
-    pub fn decode(payload: &[u8]) -> Result<Ask, Reason> {
+    /// The ask a whole first frame carries, its head and payload: a protocol error for one cut
+    /// short, a spec the run protocol would not take, or an MCP ask that carries more than its
+    /// scope.
+    pub fn decode(whole: &[u8]) -> Result<Ask, Reason> {
+        let (tag, len) = frame::peek(whole)
+            .map_err(|_| Reason::Protocol)?
+            .ok_or(Reason::Protocol)?;
+        let payload = whole
+            .get(FRAME_HEAD..)
+            .filter(|p| p.len() == len)
+            .ok_or(Reason::Protocol)?;
         let (run, rest) = payload.split_first_chunk::<32>().ok_or(Reason::Protocol)?;
         let (generation, rest) = rest.split_first_chunk::<8>().ok_or(Reason::Protocol)?;
-        let (member, spec) = rest.split_first_chunk::<4>().ok_or(Reason::Protocol)?;
+        let (member, rest) = rest.split_first_chunk::<4>().ok_or(Reason::Protocol)?;
+        let kind = match tag {
+            Tag::MemberExec => Kind::Exec(Box::new(Spec::decode(rest).ok_or(Reason::Protocol)?)),
+            Tag::Mcp if rest.is_empty() => Kind::Mcp,
+            _ => return Err(Reason::Protocol),
+        };
         Ok(Ask {
             run: RunId(*run),
             generation: u64::from_be_bytes(*generation),
             member: u32::from_be_bytes(*member),
-            spec: Spec::decode(spec).ok_or(Reason::Protocol)?,
+            kind,
         })
     }
 }
@@ -451,9 +482,10 @@ pub fn lane_bytes(admissions: Admissions, stderr: bool, stdin: bool) -> Option<u
 const STEER_BYTES: usize = FRAME_HEAD + size_of::<u32>();
 
 impl super::Lanes {
-    /// A lane whose first frame is an ask (`Tag::MemberExec`) of `len` bytes, `bytes` what came
-    /// of it: refused alone where the endpoint serves no exec or the ask is longer than the run
-    /// protocol carries; read on as it comes otherwise.
+    /// A lane whose first frame is an ask (`Tag::MemberExec`, or `Tag::Mcp` for an MCP
+    /// connection) of `len` bytes, `bytes` what came of it: refused alone where the endpoint
+    /// serves no exec or the ask is longer than the run protocol carries; read on as it comes
+    /// otherwise.
     pub(super) fn begin_ask(
         &mut self,
         io: &mut crate::net::Io<'_>,
@@ -501,11 +533,7 @@ impl super::Lanes {
         // Its controller ended its side with the ask: whole, the exec runs unsteered.
         let at = self.execs.lanes.len().saturating_sub(1);
         let whole = FRAME_HEAD.saturating_add(len);
-        match bytes
-            .get(FRAME_HEAD..)
-            .filter(|_| bytes.len() == whole)
-            .map(Ask::decode)
-        {
+        match Some(bytes).filter(|b| b.len() == whole).map(Ask::decode) {
             Some(Ok(ask)) => self.admit_exec(io, at, ask),
             Some(Err(why)) => {
                 self.execs.lanes.swap_remove(at);
@@ -544,7 +572,15 @@ impl super::Lanes {
                 // Held: flow control holds its controller back meanwhile.
                 _ => return true,
             };
-            let (bytes, ended) = match io.read_within(conn, stream, room) {
+            // An ask the lane's first read took whole (an MCP connection's, its scope alone, is
+            // shorter than `LANE_MOST`) is read no further: a read of no room is blocked.
+            let whole = room == 0 && matches!(lane.stage, Stage::Asking { .. });
+            let read = if whole {
+                Ok(crate::net::Read::Bytes(Vec::new()))
+            } else {
+                io.read_within(conn, stream, room)
+            };
+            let (bytes, ended) = match read {
                 Ok(crate::net::Read::Bytes(bytes)) => (bytes, false),
                 Ok(crate::net::Read::End(bytes)) => (bytes, true),
                 Ok(crate::net::Read::Blocked) => return true,
@@ -574,7 +610,7 @@ impl super::Lanes {
                         }
                         continue;
                     }
-                    let asked = frame.get(FRAME_HEAD..).map_or(Err(Reason::Protocol), Ask::decode);
+                    let asked = Ask::decode(frame.as_slice());
                     match asked {
                         Ok(ask) => self.admit_exec(io, at, ask),
                         Err(why) => {
@@ -694,11 +730,17 @@ impl super::Lanes {
         };
         use shards_abi::run::managed::Channel;
         let (stdout, stdout_handles) = output(Channel::Stdout)?;
-        let stderr = match ask.spec.tty {
-            None => Some(output(Channel::Stderr)?),
-            Some(_) => None,
+        // An exec's stderr is its own unless it runs on a terminal; an MCP connection's bytes
+        // are one stream each way.
+        let stderr = match &ask.kind {
+            Kind::Exec(spec) if spec.tty.is_none() => Some(output(Channel::Stderr)?),
+            Kind::Exec(_) | Kind::Mcp => None,
         };
-        let stdin = match ask.spec.stdin {
+        let reads = match &ask.kind {
+            Kind::Exec(spec) => spec.stdin,
+            Kind::Mcp => true,
+        };
+        let stdin = match reads {
             true => {
                 let service = input::Service::new(
                     input::Scope {
@@ -905,7 +947,7 @@ impl super::Lanes {
                     .and_then(|n| n.checked_mul(super::CONNECTIONS))
                     .unwrap_or(0);
                 let _ = self.opening.try_reserve(streams);
-                let _ = self.refusing.try_reserve(streams);
+                let _ = self.answering.try_reserve(streams);
                 self.set_limits(io, conn);
                 let (stream, conn) = (self.execs.lanes.get(at).map(|l| l.stream), conn);
                 if let Some(stream) = stream {
@@ -983,35 +1025,54 @@ impl super::Lanes {
 mod tests {
     use super::*;
 
-    /// An ask's frame reads back as it was sent, step 6's spec byte for byte; one cut short,
-    /// or of a spec the run protocol would not take, is the controller's error.
+    /// An ask's frame reads back as it was sent: an exec's with step 6's spec byte for byte, an
+    /// MCP connection's with its scope alone (D254). One cut short, an exec's of a spec the run
+    /// protocol would not take, an MCP ask that carries more than its scope, or a frame of
+    /// another kind, is the controller's error.
     #[test]
     fn an_ask_reads_back_as_it_was_sent() {
         let ask = Ask {
             run: RunId([4; 32]),
             generation: 9,
             member: 2,
-            spec: Spec {
+            kind: Kind::Exec(Box::new(Spec {
                 argv: vec![b"sh".to_vec(), b"-c".to_vec(), b"printf \xff".to_vec()],
                 env: vec![b"A=b".to_vec()],
                 cwd: b"/work".to_vec(),
                 tty: Some(Size { rows: 24, cols: 80 }),
                 stdin: true,
                 ..Spec::default()
-            },
+            })),
         };
         let frame = ask.frame().unwrap();
         let (tag, len) = frame::peek(&frame).unwrap().unwrap();
         assert_eq!((tag, len), (Tag::MemberExec, frame.len() - FRAME_HEAD));
-        assert_eq!(Ask::decode(&frame[FRAME_HEAD..]), Ok(ask));
+        assert_eq!(Ask::decode(&frame), Ok(ask.clone()));
+        assert_eq!(Ask::decode(&frame[..FRAME_HEAD + SCOPE]), Err(Reason::Protocol));
+        assert_eq!(Ask::decode(&frame[..FRAME_HEAD + 10]), Err(Reason::Protocol));
+        let reframed = |tag, payload: &[u8]| {
+            let mut out = Vec::new();
+            frame::put(&mut out, tag, payload).unwrap();
+            out
+        };
+        let scope = &frame[FRAME_HEAD..FRAME_HEAD + SCOPE];
         assert_eq!(
-            Ask::decode(&frame[FRAME_HEAD..FRAME_HEAD + SCOPE]),
+            Ask::decode(&reframed(Tag::MemberExec, scope)),
             Err(Reason::Protocol)
         );
-        assert_eq!(
-            Ask::decode(&frame[FRAME_HEAD..FRAME_HEAD + 10]),
-            Err(Reason::Protocol)
-        );
+
+        let mcp = Ask {
+            kind: Kind::Mcp,
+            ..ask
+        };
+        let frame = mcp.frame().unwrap();
+        assert_eq!(frame::peek(&frame).unwrap(), Some((Tag::Mcp, SCOPE)));
+        assert_eq!(&frame[FRAME_HEAD..], scope);
+        assert_eq!(Ask::decode(&frame), Ok(mcp));
+        let mut longer = scope.to_vec();
+        longer.push(0);
+        assert_eq!(Ask::decode(&reframed(Tag::Mcp, &longer)), Err(Reason::Protocol));
+        assert_eq!(Ask::decode(&reframed(Tag::Control, scope)), Err(Reason::Protocol));
     }
 
     /// Steering reads back; a signal no guest has, or another frame, is the controller's error;
