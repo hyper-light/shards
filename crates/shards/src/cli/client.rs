@@ -2083,4 +2083,184 @@ mod tests {
         assert_eq!(outcome, Ok(Err(NotStopped::Untaken(me))));
         assert_eq!(asks, 2, "asked of the same daemon {asks} times");
     }
+
+    /// The clients that ask again on a RESTART, each as [`a_client_of_its_own`] runs it: a
+    /// run's, an exec's and an attach's (`serve`), and a command's, its answer shown
+    /// (`container`), taken whole (`ask`), or asked of the daemon's own home (`ask_here`).
+    const CLIENTS: [&str; 6] = ["start", "exec", "attach", "container", "ask", "ask_here"];
+
+    /// How the stand-in daemon of [`asked_of_a_stand_in`] answers each request it takes.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Answers {
+        /// RESTART, every one, as the one daemon `daemon.pid` names throughout (`4242 1`): a
+        /// daemon serving on whose answer sends each request round again.
+        RestartAsItself,
+        /// RESTART to the first, as `4242 1`; then, `daemon.pid` naming another (`4343 2`),
+        /// the next taken, its last word saying status 0: the daemon of another build
+        /// stepping aside, and the daemon that took its home after it.
+        TakenOver,
+    }
+
+    /// The most requests [`asked_of_a_stand_in`]'s stand-in answers before it lets go of its
+    /// slots: one past the four a client asked of one daemon before (`RESTARTS`,
+    /// `slots::OFFERED` + 2), the least that shows a client asking past every bound it had.
+    /// A client still asking then finds no daemon, and fails to start the one it names,
+    /// which is not there: so a client with no bound ends. A test harness's limit, no
+    /// runtime policy.
+    const ANSWERED_AT_MOST: usize = 5;
+
+    /// `client` ([`CLIENTS`]) in a process of its own ([`a_client_of_its_own`]), of `home`,
+    /// whose daemon is a stand-in, this process, serving real slots one at a time, as
+    /// `answers` says: how many requests it took, and what the client said.
+    fn asked_of_a_stand_in(client: &str, answers: Answers, home: &Path) -> (usize, String) {
+        std::fs::write(home.join(shards_ipc::PID), "4242 1\n").unwrap();
+        let mut requests = shards_ipc::slots::Requests::open(home).unwrap();
+        // A run's, an exec's and an attach's slot has streams, and its last word is EXIT.
+        let (asked_kind, streams, last) = match client {
+            "start" => (kind::START, true, kind::EXIT),
+            "exec" => (kind::EXEC, true, kind::EXIT),
+            "attach" => (kind::ATTACH, true, kind::EXIT),
+            _ => (kind::CONTAINER, false, kind::END),
+        };
+        let (offered, waiting) = std::sync::mpsc::channel();
+        let at = home.to_path_buf();
+        let serving = std::thread::spawn(move || {
+            let mut asks = 0usize;
+            while asks < ANSWERED_AT_MOST {
+                let slot = requests.make(streams).unwrap();
+                requests.offer(slot.number(), streams).unwrap();
+                let _ = offered.send(slot.stopper().unwrap());
+                let Ok(shards_ipc::slots::Waited::Opened(opened)) = slot.wait() else {
+                    return asks;
+                };
+                let asked = opened.request().unwrap().unwrap();
+                assert_eq!(asked.request.kind, asked_kind);
+                asks += 1;
+                if answers == Answers::TakenOver && asks > 1 {
+                    asked.session.send(last, &[0]).unwrap();
+                    continue;
+                }
+                asked.session.send(kind::RESTART, &[]).unwrap();
+                if answers == Answers::TakenOver {
+                    // Its successor names itself as it takes the home, before it offers a slot.
+                    std::fs::write(at.join(shards_ipc::PID), "4343 2\n").unwrap();
+                }
+            }
+            asks
+        });
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "cli::client::tests::a_client_of_its_own",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("CLIENT_CHILD", client)
+            .env("CLIENT_CHILD_HOME", home)
+            .output()
+            .unwrap();
+        // The slot offered past the client's last ask, which no client takes, ends its wait.
+        for stopper in waiting {
+            let _ = stopper.stop();
+        }
+        let asks = serving.join().unwrap();
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (asks, said)
+    }
+
+    /// A client asks again on a RESTART only where the daemon that answered so is another
+    /// than the one whose RESTART it last asked again on, and fails naming it where that same
+    /// one, as itself, answers so again: nothing changed between, so no answer of its to come
+    /// is progress. A count of asks bounded it before (`RESTARTS`, `slots::OFFERED` + 2), a
+    /// number no daemon's answer was its basis of (R03). Each client in a process of its own,
+    /// its daemon a stand-in, this process, that answers every request RESTART as `4242 1`.
+    #[test]
+    fn a_request_its_daemon_answers_again_as_itself_without_taking_it_fails_naming_it() {
+        let mut wrong = Vec::new();
+        for client in CLIENTS {
+            let home = shards_testdir::TempDir::new("again").unwrap();
+            let (asks, said) = asked_of_a_stand_in(client, Answers::RestartAsItself, &home);
+            let untaken = "the daemon (process 4242) answered again without taking the request";
+            // The daemon asking itself (`ask_here`) has its own log.
+            let expected = match client {
+                "ask_here" => untaken.to_string(),
+                _ => format!("{untaken}; see {}", log(&home).display()),
+            };
+            if asks != 2 || !said.contains(&expected) {
+                wrong.push(format!("{client}: asked {asks} times, said:\n{said}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// A client whose daemon stepped aside, answering RESTART, asks again the daemon that
+    /// took the home after it, as a takeover goes: its request is taken there, and it ends
+    /// as that daemon says. Each client in a process of its own, the stand-in this process.
+    #[test]
+    fn a_request_its_daemon_stepped_aside_from_goes_to_the_daemon_after_it() {
+        let mut wrong = Vec::new();
+        for client in CLIENTS {
+            let home = shards_testdir::TempDir::new("taken").unwrap();
+            let (asks, said) = asked_of_a_stand_in(client, Answers::TakenOver, &home);
+            if asks != 2 || !said.contains("ended 0") {
+                wrong.push(format!("{client}: asked {asks} times, said:\n{said}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// A client in a process of its own, as [`asked_of_a_stand_in`] starts it: the one
+    /// `CLIENT_CHILD` names ([`CLIENTS`]), of the home `CLIENT_CHILD_HOME` names, the daemon it
+    /// would start not there. It says how it ended: its status, or the failure it returned
+    /// (a run's, an exec's, an attach's and a shown command's client says its own first).
+    #[test]
+    #[ignore = "run in a process of its own by asked_of_a_stand_in"]
+    fn a_client_of_its_own() {
+        let (Ok(client), Some(home)) = (
+            std::env::var("CLIENT_CHILD"),
+            std::env::var_os("CLIENT_CHILD_HOME"),
+        ) else {
+            return;
+        };
+        let home = std::path::PathBuf::from(home);
+        let daemon = home.join("absent");
+        let command = Command::default();
+        let served = |kind: u8| -> Result<u8, String> {
+            let request = Attached {
+                kind,
+                payload: Vec::new(),
+                interactive: false,
+                detach: false,
+                tty: false,
+                streams: (true, true),
+                proxies_signals: false,
+                card: None,
+                detach_said: None,
+            };
+            // The client's, not the stop tests' stand-in of the same name.
+            let code = super::serve(&home, &daemon, &request, &[], &mut None);
+            Ok((0..=u8::MAX).find(|&n| ExitCode::from(n) == code).unwrap())
+        };
+        let ended: Result<u8, String> = match client.as_str() {
+            "start" => served(kind::START),
+            "exec" => served(kind::EXEC),
+            "attach" => served(kind::ATTACH),
+            "container" => Ok(container(&home, &daemon, &command, &[])),
+            "ask" => ask(&home, &daemon, &command, &[]).map(|(status, ..)| status),
+            "ask_here" => {
+                std::env::set_current_dir(&home).unwrap();
+                ask_here(&command, &[]).map(|(status, ..)| status)
+            }
+            other => panic!("no client {other}"),
+        };
+        match ended {
+            Ok(status) => println!("ended {status}"),
+            Err(e) => println!("failed: {e}"),
+        }
+    }
 }
