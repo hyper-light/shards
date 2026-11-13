@@ -10,12 +10,8 @@
 
 mod common;
 
-use std::time::Duration;
-
 use common::{cannot_run_vms, kernel};
 use shards_vmm::vm::{self, Config, Console, ExitReason};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 #[test]
 fn two_vcpus_boot_to_their_end_under_acg() {
@@ -38,11 +34,10 @@ fn two_vcpus_boot_to_their_end_under_acg() {
     std::thread::spawn(move || {
         let _ = tx.send(running.wait());
     });
-    match common::machine_ended(&handle, &rx, TIMEOUT) {
-        Some(reason) => assert_eq!(reason, ExitReason::Reset),
-        None => panic!(
-            "two vCPUs under ACG did not reach their end in {TIMEOUT:?} in this process, nor said anything new for {:?} after: {}",
-            common::DAEMON_QUIET,
+    match common::machine_ended(&handle, &rx) {
+        Ok(reason) => assert_eq!(reason, ExitReason::Reset),
+        Err(refused) => panic!(
+            "two vCPUs under ACG did not reach their end in this process: {refused}\n{}",
             String::from_utf8_lossy(&handle.console_said().lines)
         ),
     }

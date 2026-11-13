@@ -30,7 +30,6 @@ use serde_json::{Value, json};
 #[cfg(windows)]
 use shards_ipc::Stream as UnixStream;
 
-const TIMEOUT: Duration = Duration::from_secs(60);
 /// A client's call past this is taken for hung, and fails its test with what it said
 /// (`common::output_within`).
 const CLIENT: Duration = Duration::from_secs(600);
@@ -115,24 +114,41 @@ struct Api {
     reader: BufReader<Patient>,
 }
 
-/// A connection's reads, each waited on past [`TIMEOUT`] while its home's daemon says
-/// something (`common::Said`): an answer that waits on a microVM its host boots slowly
-/// comes when the daemon has it, and one from a daemon that says nothing fails its test.
+/// A connection's reads, each a wait on its home's daemon judged as `common::run_command`'s
+/// is (`common::Patience`, D209): an answer that waits on a microVM its host boots slowly
+/// comes when the daemon has it, and one from a daemon that makes no progress over a whole
+/// window past the slowest answer seen fails its test.
 struct Patient {
     conn: UnixStream,
-    said: common::Said,
+    home: std::path::PathBuf,
 }
 
 impl Read for Patient {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut patience = common::Patience::of(&self.home);
         loop {
-            match self.conn.read(buf) {
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) && self.said.lately() => {}
-                read => return read,
+            let left = patience.next_look();
+            if !left.is_zero() {
+                self.conn.set_read_timeout(Some(left))?;
+                match self.conn.read(buf) {
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    read => {
+                        if read.is_ok() {
+                            patience.done();
+                        }
+                        return read;
+                    }
+                }
+            }
+            if !patience.holds() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "its daemon made no progress (its wait's account above)",
+                ));
             }
         }
     }
@@ -165,10 +181,9 @@ fn docker_host(home: &Path) -> String {
 impl Api {
     fn new(home: &Path) -> Api {
         let conn = connect(home);
-        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
         let reader = BufReader::new(Patient {
             conn: conn.try_clone().unwrap(),
-            said: common::Said::of(home),
+            home: home.to_path_buf(),
         });
         Api { conn, reader }
     }
