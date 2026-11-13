@@ -114,20 +114,45 @@ fn split_spec(spec: &str) -> Result<(String, String, bool), String> {
     Ok((source.to_string(), format!("/{path}"), read_only))
 }
 
+/// Why `--for NAME` names no member to plug into (D235) or run a command in (D243), each
+/// with the name given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum NoMember {
+    /// Its image declares no agent or harness.
+    NoneDeclared(String),
+    /// None of its agents or harnesses is named so.
+    Unnamed(String),
+    /// It is files alone: it runs no command of its own.
+    Idle(String),
+    /// Its index is past what a member's may be.
+    Range(String),
+}
+
+impl std::fmt::Display for NoMember {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoMember::NoneDeclared(n) => write!(f, "--for {n}: its image has no agents or harnesses"),
+            NoMember::Unnamed(n) => write!(f, "--for {n}: no agent or harness of its image is named so"),
+            NoMember::Idle(n) => write!(f, "--for {n}: it runs no command of its own"),
+            NoMember::Range(n) => write!(f, "--for {n}: past the members' indices"),
+        }
+    }
+}
+
 /// The member index of `name` among an image's agents and harnesses (`labels`, `agent
 /// NAME` and `harness NAME` by index, agentfile.rs `managed_plan`), as an Agentfile's
 /// `VOLUME … FOR` names one, where it is one of those that run (`active`).
-fn member_named(labels: &[String], active: &[u32], name: &str) -> Result<u32, String> {
+fn member_named(labels: &[String], active: &[u32], name: &str) -> Result<u32, NoMember> {
     let index = labels
         .iter()
         .position(|l| {
             l.split_once(' ')
                 .is_some_and(|(kind, n)| matches!(kind, "agent" | "harness") && n == name)
         })
-        .ok_or_else(|| format!("--for {name}: no agent or harness of its image is named so"))?;
-    let index = u32::try_from(index).map_err(|_| format!("--for {name}: past the members' indices"))?;
+        .ok_or_else(|| NoMember::Unnamed(name.into()))?;
+    let index = u32::try_from(index).map_err(|_| NoMember::Range(name.into()))?;
     if !active.contains(&index) {
-        return Err(format!("--for {name}: it runs no command of its own"));
+        return Err(NoMember::Idle(name.into()));
     }
     Ok(index)
 }
@@ -316,14 +341,14 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// The member index of `name`, an agent or harness of running microVM `id`'s image that
-    /// runs (D235).
-    fn running_member(&self, id: &str, name: &str) -> Result<u32, String> {
+    /// runs (D235, D243).
+    pub(super) fn running_member(&self, id: &str, name: &str) -> Result<u32, NoMember> {
         let runs = lock(&self.runs);
         let agentfile = match runs.get(id) {
             Some(RunState::Tracked(run)) => run.base.agentfile.as_ref(),
             _ => None,
         };
-        let a = agentfile.ok_or_else(|| format!("--for {name}: its image has no agents or harnesses"))?;
+        let a = agentfile.ok_or_else(|| NoMember::NoneDeclared(name.into()))?;
         member_named(&a.managed_labels, &a.active_members, name)
     }
 
@@ -409,7 +434,7 @@ impl<D: Disk> Daemon<D> {
         // An agent or harness of its image (D235), named before anything is plugged in.
         let member = match member {
             "" => None,
-            name => Some(self.running_member(id, name)?),
+            name => Some(self.running_member(id, name).map_err(|e| e.to_string())?),
         };
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let name = format!(
@@ -1010,17 +1035,23 @@ mod tests {
         let active = [0, 2];
         assert_eq!(member_named(&labels, &active, "main"), Ok(0));
         assert_eq!(member_named(&labels, &active, "claude"), Ok(2));
+        assert_eq!(
+            member_named(&labels, &active, "tools"),
+            Err(NoMember::Idle("tools".into()))
+        );
+        assert_eq!(
+            member_named(&labels, &active, "codex"),
+            Err(NoMember::Unnamed("codex".into()))
+        );
+        assert_eq!(
+            member_named(&labels, &active, "agent main"),
+            Err(NoMember::Unnamed("agent main".into()))
+        );
         assert!(
-            member_named(&labels, &active, "tools")
-                .unwrap_err()
+            NoMember::Idle("tools".into())
+                .to_string()
                 .contains("runs no command")
         );
-        assert!(
-            member_named(&labels, &active, "codex")
-                .unwrap_err()
-                .contains("no agent or harness")
-        );
-        assert!(member_named(&labels, &active, "agent main").is_err());
     }
 
     /// A spec's source is all before its absolute path, a drive's colon among it; its mode

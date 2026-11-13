@@ -348,6 +348,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 interactive: false,
                 tty: None,
                 terms: Vec::new(),
+                member: false,
             };
             match crate::spec::spec(&options, |_| None) {
                 Ok(spec) => spec,

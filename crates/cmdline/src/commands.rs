@@ -2497,6 +2497,14 @@ pub static EXEC: Command = Command {
             "list",
             "Read in a file of environment variables",
         ),
+        // Into one of its image's agents or harnesses (plan step 6, D243).
+        Flag::string(
+            "for",
+            None,
+            "",
+            "Run it in the agent or harness of this name, confined as it is",
+        )
+        .extension(),
         HELP,
         Flag::bool("interactive", Some(b'i'), "Keep STDIN open even if not attached"),
         Flag::bool("privileged", None, "Give extended privileges to the command"),

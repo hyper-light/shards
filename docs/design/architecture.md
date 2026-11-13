@@ -23719,8 +23719,9 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
 member runs as its uid and under its confinement (its namespaces, Landlock, seccomp, no
 capabilities, `no_new_privs`); attach reaches its stdio; a TTY of its own can be resized, on
 the terminal lane (D238); nothing crosses into another member. How it is built is step 6's
-implementer's, reviewed by ROOT. Until it is, shards-api refuses a member's terminal
-`Unsupported` (`crates/api/src/image.rs`). What it builds on is on main: the run's signal link,
+implementer's, reviewed by ROOT. A command run in a member is built (D243); until a member's
+own terminal is, shards-api refuses it `Unsupported` (`crates/api/src/image.rs`). What it
+builds on is on main: the run's signal link,
 whose states are explicit (D16; [signal-link](../research/measurements/signal-link/README.md)), and the
 exec port's admission under contention (D16, "An exec's connection"). Slice 1 is on main
 (`78fc1c8f5`, `532ad27c5`): a member starts with every signal's disposition at its default and its
@@ -23947,6 +23948,130 @@ token's signature or `at_hash` locally (then that harness is tmpfs-fallback, not
 step 9 lists each); a provider that issues sender-constrained tokens, DPoP- or mTLS-bound
 (then bearer substitution cannot serve it, and it is fallback); a measured injector cost
 that a run cannot bear (then the native-sign-in delegation path, which stays, D231).
+
+### D243. A command run in a member: born into its PID namespace and cgroup, in its command's namespaces, and confined as that command is (built: plan step 6, the CLI's and init's, every run's through the run protocol; a member's own terminal building; real-VM runs owed)
+
+**Why.** Plan step 6 (G24, D240): kiln runs a harness's sign-in in its member and shows its
+own screen, so a command run in a member must run as the member does, with a terminal that
+resizes, and reach nothing the member cannot. A member is a domain (D59): `clone3` into
+namespaces of its own and a cgroup of its own, its first process init's sealed reaper (PID 1
+there, managed.rs) and its command PID 2, in a mount namespace of its own whose root it
+pivoted into, then confined: its uid and gid, no capability, `no_new_privs`, a Landlock
+ruleset, the run's seccomp filter.
+
+**Alternatives** (R02), read at their sources:
+- runc v1.5.1 (8f2685a4): `runc exec` joins each namespace by its `/proc/PID/ns/TYPE` path, one
+  setns(2) each (libcontainer/nsenter/nsexec.c, `join_namespaces`), forks again to be born in
+  the PID namespace, and joins the cgroup by writing `cgroup.procs` (process_linux.go,
+  `setnsProcess.addIntoCgroupV2`) or, where it can, clone3 `CLONE_INTO_CGROUP`
+  (`prepareCgroupFD`); the process then sets its console, `no_new_privs`, LSM labels, its
+  seccomp filter, capabilities and user, and closes every descriptor it inherited
+  (setns_init_linux.go; CVE-2024-21626).
+- crun 1.31 (a84965e1): one setns(2) of the container's process's pidfd with every flag
+  (src/libcrun/linux.c, `try_setns_with_pidfd`), clone3 `CLONE_INTO_CGROUP`, then a fork for
+  the PID namespace; the child sets every signal to SIG_DFL (container.c,
+  `unblock_signals`), then labels, seccomp, capabilities and its working directory.
+- Docker's exec terminal (moby docker-v29.8.1, daemon/resize.go `ContainerExecResize`;
+  containerd v2.3.5, cmd/containerd-shim-runc-v2/process/exec.go `execProcess.Resize`): the
+  runtime hands the pty's master to the shim over a console socket, and a resize is
+  TIOCSWINSZ on it, which the kernel tells the foreground group as SIGWINCH (tty_ioctl(4)).
+
+**Decided and built.**
+- *Joined as crun joins, from init.* Init holds a pidfd of a process of the member's command
+  (hotplug.rs `member_process`, the command first, each held before it is checked to be the
+  member's still, so a PID taken meanwhile is never entered), enters its PID namespace for its
+  next child (setns(2) of the pidfd with `CLONE_NEWPID`, Linux 5.8), and makes that child with
+  clone3 `CLONE_INTO_CGROUP` into the member's cgroup (run.rs `born_in`), taking its own
+  namespace back at once, as `fork_in` does for a run's execs. Born into the cgroup, the child
+  is held to the member's `pids.max`, which a move into `cgroup.procs` is not ("Organisational
+  operations are not blocked by cgroup policies", cgroup-v2.rst, "PID"): at the limit the
+  clone fails EAGAIN and the exec is refused. The child enters the command's mount, network,
+  IPC, UTS and cgroup namespaces in one setns(2) of the pidfd; the command pivoted into its
+  root (domains.rs `child`), so the mount namespace's root, where setns(2) leaves a joiner,
+  is the member's.
+- *Confined by the same values, through the same steps.* A member's `Started` keeps its
+  `Confinement` (its IDs, the last capability, the TCP rights Landlock refuses it, its
+  volumes, the run's plug roots, the socket directories it receives on, its seccomp filter,
+  its environment and working directory as it started), and `domains::confine` is the one
+  function its first process and a command run in it call, last before execve: the bounding
+  set, its IDs and no group, no capability, `no_new_privs`, its umask, its Landlock ruleset,
+  its signals a new process's, its seccomp filter. Its failure is typed
+  (`domains::Confining`, a step of thirteen).
+- *Its own Landlock domain.* landlock(7) gives a ruleset to the process that enters it and its
+  children, and has no way to join a domain: the command's domain is a sibling of its
+  member's, its rules the same. So the scopes hold between them: it signals, and reaches
+  abstract Unix sockets of, its own processes alone, and the member's processes its not.
+  Sharing the member's own domain would need a process of the member's to start each
+  command, inside its seccomp filter and its pids.max, and is not built.
+- *Its program, environment and directory.* Its environment is the member's as it started,
+  the exec's variables over it as moby lays an exec's over its container's
+  (daemon/container/env.go, ReplaceOrAppendEnvValues: a name alone unsets one); none may name
+  `SHARDS_DOMAIN`. Its working directory is the exec's, else the member's, entered as the
+  member. Its program is found on that environment's `PATH` as every exec's is (run.rs
+  `candidates`, Go's LookPath), with `docker exec`'s words and statuses when it is not.
+- *Its stdio.* Pipes init relays as an exec's, owned by the member's uid as runc's
+  fixStdioPermissions gives a command its own, or a terminal: a pty from init's devpts, its
+  peer opened through the master (TIOCGPTPEER, Linux 4.13), as a member's `/dev` holds no
+  `pts`, owned by the member's uid, the session's controlling terminal (TIOCSCTTY after
+  setsid). A resize is init's TIOCSWINSZ on the master, as every exec's (`EXEC_RESIZE`). Its
+  TERM, where neither its variables nor its member's name one, is the first of its client's
+  terminal types the member's root describes (terms.rs, that root seen through
+  `/proc/PID/root`), xterm last. It holds no descriptor of init's but its stdio (its error
+  channel close-on-exec, everything above it closed).
+- *Asked and refused, typed.* `shards exec vm --for MEMBER NAME CMD` (a flag of shards' own on
+  Docker's exec, under "Shards options", as `plug volume --for` names a member, D235). The
+  daemon resolves the name to the member's declared index (`devices::NoMember`: no member
+  declared, none of that name, or files alone), refuses a user or privileges of its own
+  (`commands::MemberExec`), and sends the command with `in-member=N` (abi
+  `run::members::EXEC_KEY`) and none of the microVM's defaults under its variables
+  (`spec::Options::member`). Init refuses again what the member has not, and says what
+  stopped it as `run::members::Refusal` under `exec_failed::MEMBER`: a member that did not
+  start, one that has ended (its pidfd's process gone, ESRCH, or its PID namespace's first
+  process, ENOMEM, pid_namespaces(7)), its `pids.max` reached, a widening, its namespaces not
+  entered, or a step of its confinement, with the errno. The VM process renders each with
+  `docker exec`'s status: 1 for what its daemon refuses, 126 for what its runtime could not
+  start.
+- *It ends with its member.* The member's reaper exits as its command does, which ends its
+  PID namespace and every process in it (pid_namespaces(7)), a command run in it among them.
+- *A port its member contests* (D122): the command loads no chooser's filter, so its listen
+  on a port several members are given is never chosen; connections there reach the member's
+  own sockets alone. Default deny holds; the chooser's taking a second listener of a member
+  is not built.
+
+**Literals** (none chosen; each a protocol's or this wire's own):
+
+| Literal | Source |
+|---|---|
+| `in-member=` | the exec's setup entry, beside D231's `member-*=` entries |
+| `exec_failed::MEMBER` 2 | the next class after RUNTIME 0 and DAEMON 1 |
+| `Refusal` codes 1 to 6 | this wire's own, each a variant |
+| `step::JOIN` 12, `step::CONFINE` 13 | run.rs's child's steps, after MKDIR 11 |
+| `Confining` 1 to 13 | the steps of `confine`, in order |
+| statuses 1, 126, 127 | `docker exec`'s (docker/cli; moby daemon/errors.go) |
+
+**Tests.** Unit: the entry and refusals round trip and nothing cut short decodes (abi
+`members::tests`); an exec's variables over its member's and what is refused (init
+`enter::tests`); `--for` resolved and refused by type (daemon `devices::tests`), and its
+privileges and user refused (daemon `commands::tests`); its variables sent as given, for init
+to lay over its member's, and its TERM left for init to choose (`spec::tests`); the client's
+request with its member (ipc); `exec --help`'s Shards options (cmdline). Real VMs, ROOT's
+(`cargo test -p shards --profile test-release --test member_exec`):
+`a_command_run_in_a_member_is_confined_as_the_member_is` (uid, PID namespace, name, caps and
+`no_new_privs`, signals, Landlock on files and TCP, seccomp, cgroup and network, another
+member's files by path and by link, and nothing of init's held),
+`what_a_member_has_not_is_refused_to_a_command_run_in_it`, and
+`a_command_run_in_a_member_has_a_terminal_that_resizes`. Record:
+[member-exec-tty-v1](../research/measurements/member-exec-tty-v1/README.md).
+
+**How it reaches every run.** A command run in a member is the run protocol's exec with
+`in-member=N`, resized by `EXEC_RESIZE`, whoever sends it: the daemon for `shards exec --for`,
+and step 11's control and terminal lanes, which carry the run protocol to init at the host's
+end of their TLS (D238). So there is no separate shards-api exec (ROOT, 2026-11-13); Hex's
+`MemberExec` is the control lane's. A member's own stdio is attached through step 5's streams
+(D240).
+
+**Building.** A member's own terminal (`MemberSpec::terminal`, refused `Unsupported` until
+then).
 
 ## 4. Start path (≤ 5 ms budget)
 
