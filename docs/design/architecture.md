@@ -26593,9 +26593,14 @@ are none.
   `domains::tests::a_members_command_line_is_its_command_then_its_runs_arguments`.
 
 **Owed** (ROOT).
-- A real-VM test: a member whose command prints its own arguments (a test guest mode that
-  writes each with its NUL), booted through `ImageShards` with `MemberSpec::args` of `--resume`,
-  `s 1` and an empty one, its stdout its own options then those three, on HVF, KVM and WHP.
+- The real-VM test's runs on HVF, KVM and WHP: api_image.rs
+  `a_members_arguments_follow_its_images_command_in_order` (written; built and linted only),
+  whose harness is the test guest's `argv` mode, writing its command line word by word, each
+  with its NUL. Booted through `ImageShards` with `MemberSpec::args` of `--resume`, `s 1` and an
+  empty one, its stdout is its program as found in its own `bin`, its image's options (`argv`,
+  `--from-image`), then those three. An argument holding a NUL is refused as "a member's
+  argument" by its place alone, and two of half `run::MAX_PAYLOAD` each as "the spec", before
+  any run host starts.
 - Guard-removal mutants, each of which must fail its test: init `command_line` without its
   arguments, the run host's `member-arg=` entries unstaged, the wire's arguments unwritten, and
   `arg_ok`'s NUL check.
