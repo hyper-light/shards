@@ -23089,3 +23089,101 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | Red with the old rule, green after; the draft's two reds named. |
   | R11 | Unix's poll and macOS's select; Windows follows its clients' ends, owed. |
   | R15, R16 | Implementer; targets removed after landing. |
+
+### M550. D235's notices and a DAX file's guest: the size a touch tells it, the entries its kernel then drops, the DAX a lookup decides (D189, D235)
+
+- **Question.** containers.rs's `a_volumes_large_files_go_through_its_dax_window` failed on
+  main from D235's notices on (c654d53a3, part 2 of its step 8). Its held handle's read at
+  3 MiB, past the host's cut to 1 MiB, ended the file ("failed to fill whole buffer") where
+  the test held it to read zeros: on CI's x86_64 KVM runners (f5c0c8b04), on ROOT's KVM host
+  (e72239dd3, 237f3ebe7) and on its HVF host (dc7f45bc6). On CI's x86_64 Windows runners,
+  where the cut is refused and the test goes on, the guest's log held `WARNING: ... at
+  fs/dax.c:415 dax_folio_put` once the host grew a file a guest process mapped in 2 MiB
+  pages. Once, on CI's Linux runner, the guest said a 4 MiB file the host had just written
+  was no DAX file. What tells the guest, and which answer is right?
+- **Found** (CI's and ROOT's logs, excerpts in docs/research/measurements/dax-notices/logs;
+  the guest kernel's source, linux-6.18.48 from git.kernel.org's stable tree, which
+  scripts/build-kernel.sh pins; one unit test on adas-mac-studio-3.local, macOS 26.2 arm64).
+  - Before and after, CI's x86_64 jobs (`ci-x86_64.log`): at d35c4cf79, the last main run
+    without the notices, the test passed on Linux (job 131480418603) and Windows
+    (131480418748). At 1145bd3f2, the first with them, Linux failed at the pages step,
+    `dax /v/pages no` (131628813601), and Windows at the map2m step, the warning with `kmsg
+    fs/dax.c 1` (131628813177). At f5c0c8b04, Linux gnu and musl failed at the held step
+    (131918781479, 131918781677), Windows at map2m again (131918781490). ROOT's runs
+    (`root-real-vm.log`) failed at the held step, 16.6 ms, 781 ms and 126 ms after it began.
+  - *The size.* A host's change beneath a directory its share watches is a notice:
+    ftruncate(2) is `IN_MODIFY` of the name it went through (include/linux/fsnotify.h
+    `fsnotify_change`, `ATTR_SIZE`), FSEvents a change of its path. Init's NOTICE built-in
+    touches the file (utimensat(2), its modification time alone), the server answers the
+    SETATTR with the file's attributes as the host has them (server.rs `notice`), the
+    device's window follows the file first (mod.rs `told`: the request's own node), and
+    `fuse_do_setattr` writes the reply's size into the inode (fs/fuse/dir.c 2085-2086: the
+    server negotiates no writeback cache). A DAX read asks nothing and ends at that size
+    (fs/fuse/file.c `fuse_file_read_iter`, fs/fuse/dax.c `fuse_dax_read_iter`, fs/dax.c
+    `dax_iomap_iter`'s `i_size_read`). So a read past the cut ends the file once the notice
+    lands, and reads the window's zeros before (D189); the holder lost that race on every
+    host but in one run (1145bd3f2's Linux job passed the step).
+  - *The entries.* That `fuse_do_setattr`, its size changed and nothing truncated, runs
+    `truncate_pagecache` and `invalidate_inode_pages2` (dir.c 2098-2101) on a DAX file whose
+    layouts nothing broke, M274's path, which patch 0007 closed at the open and in
+    `fuse_change_attributes_i`, not here. A process's 2 MiB entry is let go of while it maps
+    it (fs/dax.c `__dax_invalidate_entry`, `dax_folio_put`'s `WARN_ON_ONCE` of the page's
+    count, line 415 there). The map2m step's other paths are covered: the mapper's stat
+    (`fuse_change_attributes_i`, 0007) and open (FOPEN_KEEP_CACHE); the only SETATTR in it
+    is the notice's touch. Mainline v7.2-rc4 has the same code (dir.c 2283-2287).
+  - *The DAX.* Mounted `dax=inode`, the guest's kernel decides a file's DAX as it makes the
+    file's inode (fs/fuse/dax.c `fuse_dax_inode_init`, FUSE_ATTR_DAX), and told another later
+    only marks the inode to be let go of once unused (`fuse_dax_dontcache`, called from
+    `fuse_change_attributes_i` alone). A file the host makes while its guest runs is touched
+    by its notice as the host writes it: looked up before it is `DAX_SMALLEST` long, its
+    inode is no DAX file's, and the guest reads it through FUSE until it makes the inode
+    again. That is the pages step's failure.
+  - *What a notice is not told* (`macos-notices-unit.log`, notices.rs
+    `the_hosts_changes_are_told_where_the_guest_looks`). A file given a second name outside
+    the share, written through that name: FSEvents told it by its path within the share
+    (red, `held/k`). A file moved out of the share and then written: the move told as its
+    name goes, the write never (green). Linux tells a directory's watch of the changes made
+    through its own names (fs/notify/fsnotify.c `__fsnotify_parent`, of the dentry a change
+    went through), the same answer.
+- **Decision.**
+  - The held step's expectation was stale, not D189: a reader past a cut reads zeros until
+    its guest learns the size, which D235 has it learn as the notice lands, and then the
+    file's end, POSIX's answer. The step moves the file out of the volume and then cuts it
+    (Unix), so that its holder reads past the cut before anything tells its guest the size:
+    zeros, where M273's watch and HVF's abort are held to it. Windows refuses the cut as
+    before (M412). The `odd` step's cut, in the volume, keeps taking either answer.
+  - Patch 0007 also leaves a DAX file's entries to its layouts' own breaking in
+    `fuse_do_setattr`, where the SETATTR truncates nothing (`is_truncate || (!is_wb &&
+    !FUSE_IS_DAX(inode))`): as at the open and in its attributes, a DAX file has no page cache
+    to go stale. The kernel's inputs hash to 54fba99afaee (from 17c3ba205400).
+  - The test makes its files before its microVM runs, so that no notice looks one up while
+    the host writes it. A notice's lookup deciding a file's DAX is D235's to weigh (owed).
+- **Checked** (one host, adas-mac-studio-3.local, macOS 26.2 arm64, toolchain 1.98.1,
+  `CARGO_INCREMENTAL=0`, a cold target removed after):
+  - The amended 0007 applied to linux-6.18.48's fs/fuse/dir.c, file.c and inode.c with
+    `patch -p1 -F0`, no hunk offset; 0009 alone touches one of them after it (inode.c), in a
+    hunk 0007's amendment does not change.
+  - `cargo test -p shards-vmm --lib the_hosts_changes_are_told_where_the_guest_looks`: red
+    with the second name (above), 1 passed with the move.
+  - `cargo clippy -p shards-vmm -p shards --all-targets -- -D warnings` (`SHARDS_HELPERS=skip`,
+    prebuilt guest binaries named): clean.
+- **Owed.**
+  - ROOT's: kernel.yml's release of kernel-6.18.48-54fba99afaee (it runs as
+    resources/kernel changes on main), and its pin in crates/shards/src/kernel.rs and
+    tests/common/mod.rs (8 assets, their sizes and SHA-256s).
+  - ROOT's real VMs: `cargo test -p shards --profile test-release --test containers --
+    a_volumes_large_files_go_through_its_dax_window --nocapture` on KVM x86_64, HVF and WHP.
+    Before the pin the held and pages steps are to pass and map2m to fail with the warning,
+    as on Windows (Linux and HVF have not reached it since the notices); after it, green.
+    CI's Linux jobs run notices.rs's Unix check on inotify.
+  - D235's: a notice's lookup of a file the host is still writing.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No Rust production code changed; the guest kernel's patch adds a condition on `FUSE_IS_DAX`, which the function already tests. |
+  | R02, R03 | Linux's source and FSEvents' answer, measured here; no literal added. |
+  | R04, R05 | No state or wait added; the test's waits are D209's. |
+  | R09, R10 | Each symptom in CI's or ROOT's logs, before and after; the premise red then green on macOS; the kernel's red/green is ROOT's run with the pin. |
+  | R11 | Unix moves the file; Windows refuses the cut, as before. Linux's inotify check is CI's. |
+  | R15, R16 | Implementer; light runs on one host; its checkout and target removed after landing. |

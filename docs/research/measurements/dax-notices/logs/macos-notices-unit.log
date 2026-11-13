@@ -1,0 +1,24 @@
+# shards-vmm's notices test on adas-mac-studio-3.local (macOS 26.2, arm64, FSEvents), PM M550:
+#   cargo test -p shards-vmm --lib the_hosts_changes_are_told_where_the_guest_looks
+# CARGO_INCREMENTAL=0, toolchain 1.98.1, through a carrier (a bundle over main 845d7eb93).
+
+== 9c2937198: `held/k` given a second name outside the share (a hard link), written by /bin/sh
+== through that name, then `held/after` written: red, FSEvents told `held/k`.
+running 1 test
+test devices::virtio::fs::notices::tests::the_hosts_changes_are_told_where_the_guest_looks ... FAILED
+
+---- devices::virtio::fs::notices::tests::the_hosts_changes_are_told_where_the_guest_looks stdout ----
+
+thread 'devices::virtio::fs::notices::tests::the_hosts_changes_are_told_where_the_guest_looks' (14413778) panicked at crates/vmm/src/devices/virtio/fs/notices.rs:497:13:
+[[104, 101, 108, 100, 47, 107], [104, 101, 108, 100, 47, 97, 102, 116, 101, 114]]
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 483 filtered out; finished in 0.02s
+
+(the paths told: "held/k", "held/after")
+
+== c3f46d826: `held/k` moved out of the share by /bin/mv (told as `held/k`, then `held/moved`),
+== written by /bin/sh where it is now, then `held/after` written: green, `held/k` not told again.
+running 1 test
+test devices::virtio::fs::notices::tests::the_hosts_changes_are_told_where_the_guest_looks ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 483 filtered out; finished in 0.04s
