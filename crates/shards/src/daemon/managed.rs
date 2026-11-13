@@ -5,7 +5,7 @@ mod drain;
 pub(crate) mod execs;
 mod log_lanes;
 pub(crate) mod mcp;
-mod members;
+pub(crate) mod members;
 #[cfg(test)]
 mod terminal_order_tests;
 
@@ -2106,6 +2106,11 @@ impl<D: Disk> Daemon<D> {
                 .try_reserve_exact(terminals.len())
                 .map_err(io::Error::other)?;
             sized.extend_from_slice(terminals);
+            let mut running = Vec::new();
+            running
+                .try_reserve_exact(active.len())
+                .map_err(io::Error::other)?;
+            running.extend_from_slice(active);
             std::thread::Builder::new()
                 .name("agent-members".into())
                 .spawn_scoped(threads, move || {
@@ -2113,6 +2118,7 @@ impl<D: Disk> Daemon<D> {
                         &lanes,
                         &members::Hosting {
                             ends: &member_ends,
+                            active: &running,
                             terminals: &sized,
                             charge: &member_charge,
                             started: &|| {
@@ -2120,6 +2126,7 @@ impl<D: Disk> Daemon<D> {
                                 self.running(&run_id)
                             },
                             builtin: &|spec, stdio, theirs| self.launch_builtin(&run_id, spec, stdio, theirs),
+                            say: &|line| log(line),
                         },
                     );
                 })?;
@@ -3968,10 +3975,12 @@ mod tests {
         std::thread::scope(|s| {
             let hosting = members::Hosting {
                 ends: &ends,
+                active: &[0, 1],
                 terminals: &[],
                 charge: &charge,
                 started: &|| true,
                 builtin: &builtin,
+                say: &|_: &str| {},
             };
             let host = s.spawn(move || members::host(&lanes, &hosting));
             // Its VM process: the first SIGNAL it is handed exits 0, the second SIGNAL_ENDED.
