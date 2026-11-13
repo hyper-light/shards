@@ -92,6 +92,7 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         binary: Some(common::shards().to_path_buf()),
         env: host_env(home),
         control: None,
+        gpu_devices: Vec::new(),
     }
 }
 

@@ -18258,10 +18258,20 @@ it, and stopping the run is the caller's decision.
   below).
 
 Not built:
-- `gpus=`. No run carries a D232 selection that its VM process binds: the daemon's run
-  has `--gpus` alone, and shards-api's image spec has no `gpu_devices`. So no run sends
-  the entry, and none has `/run/shards/gpus`, until a run's own GPU selection is built.
-  This still holds on main at 1145bd3f2.
+- `gpus=` for a daemon's run. The daemon's run has `--gpus` alone, and no D232 selection
+  of its own, so it sends no entry and has no `/run/shards/gpus`.
+
+Built since (goal 75, Hex's step 39): `gpus=` for an orchestrator's run. shards-api's
+`ImageSpec::gpu_devices` names the run's GPUs by D232's identities, checked with
+`check_selection` before a run host starts. It rides the image channel's version 16
+(`Request::gpu_devices`, each in `--gpu-device`'s text, parsed and checked again as read). The
+run host starts the GPU's VM process (D144) with `--gpu` and each `--gpu-device`, as shards-api's
+direct boot does, with MoltenVK saying its errors alone, as the daemon starts a GPU's. Under the
+grant it sends `gpus=` with the same identities, which init checks and writes to
+`/run/shards/gpus` (0444, one a line; init's side was built at step 4). Without the grant, the VM
+renders on them and the run has no file. Tested (unit): the channel's round trip and refusals,
+shards-api's check, and the VM process's arguments. Owed (ROOT): tests/nesting.rs's GPU case
+through shards-api on a host with a GPU.
 - How late a `ready` was, on its event: the daemon's log says it, and the run host's
   `Ready::Late`. No event attribute is named for it.
 
@@ -23095,6 +23105,11 @@ reboots, driver updates or hot plug; a device's own identity does.
 - *The driver held.* The renderer keeps the host's Vulkan loader and an instance for its life
   (`HeldDriver`): unheld, each context loaded the driver anew, and NVIDIA's static-TLS
   library could not load at a VM's 19th (Hex's measurement).
+
+- *Through an orchestrator's run* (D231; goal 75): `ImageSpec::gpu_devices`, checked by
+  `check_selection` before a run host starts and again as the image channel reads it (version
+  16). The run host starts the GPU's VM process with `--gpu` and each `--gpu-device`, and under
+  the nesting grant the command reads them in `/run/shards/gpus` (D234's `gpus=`).
 
 **Literals.** `MAX_PHYSICAL_GPUS`, 65,536: the renderer's patches' bound, `1 + UINT16_MAX`,
 from Hex's scheduler's u16 device index, to which they hold a context's selection

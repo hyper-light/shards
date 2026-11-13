@@ -39,8 +39,10 @@ pub use shards_abi::run::nesting::Ready;
 /// `shards_abi::guest_time::Unread`, guest-cpu-time-v1's R04): its cause and code in their text
 /// form, which an earlier version's free words never parse as; 15, the run's agent-control
 /// endpoint ([`Request::control`], [`Started::control`]; D238, D251, D252), so that a side that
-/// binds none refuses the run as it is asked.
-pub const VERSION: u8 = 15;
+/// binds none refuses the run as it is asked; 16, the host GPUs the run names
+/// ([`Request::gpu_devices`], D232, D234's `gpus=`), so that a side that binds none starts no
+/// run without them.
+pub const VERSION: u8 = 16;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -125,6 +127,8 @@ pub enum WireError {
     Order { what: &'static str },
     /// A vCPU's unread cause not in its text form (`shards_abi::guest_time::Unread::write`).
     Unread,
+    /// A GPU's identity not in D232's grammar, or a selection D232 refuses (`shards_abi::gpu`).
+    Gpu,
 }
 
 impl std::fmt::Display for WireError {
@@ -138,6 +142,7 @@ impl std::fmt::Display for WireError {
             Self::TooLong => f.write_str("a payload past the channel's bound"),
             Self::Order { what } => write!(f, "{what} out of order"),
             Self::Unread => f.write_str("a vCPU's unread cause this side does not parse"),
+            Self::Gpu => f.write_str("a GPU's identity D232's grammar or selection refuses"),
         }
     }
 }
@@ -364,6 +369,9 @@ pub struct Request {
     /// The run's agent-control endpoint (D252), bound by its host for this run alone; none,
     /// and it has none. Appended in version 15.
     pub control: Option<ControlAsk>,
+    /// The host GPUs its VM renders on, each by its exact identity (D232), which its command
+    /// reads under the nesting grant (D234's `gpus=`); none, no GPU. Appended in version 16.
+    pub gpu_devices: Vec<shards_abi::gpu::PhysicalGpu>,
 }
 
 /// What a run's agent-control endpoint takes and serves (D252): the one key it takes, its
@@ -1274,6 +1282,11 @@ impl Request {
                 }
             }
         }
+        // The GPUs the run names, appended in version 16 (D232): each in `--gpu-device`'s text.
+        w.count(self.gpu_devices.len())?;
+        for gpu in &self.gpu_devices {
+            w.text(&gpu.to_string())?;
+        }
         w.done()
     }
 
@@ -1426,6 +1439,14 @@ impl Request {
         } else {
             None
         };
+        // The GPUs the run names, appended in version 16 (D232): each at least its text's
+        // length (four bytes), parsed and the selection checked as D232 checks one.
+        let n = r.count(4)?;
+        let mut gpu_devices = Vec::with_capacity(n);
+        for _ in 0..n {
+            gpu_devices.push(r.text()?.parse().map_err(|_| WireError::Gpu)?);
+        }
+        shards_abi::gpu::check_selection(&gpu_devices).map_err(|_| WireError::Gpu)?;
         r.end()?;
         Ok(Request {
             image,
@@ -1440,6 +1461,7 @@ impl Request {
             ready_by,
             credentials,
             control,
+            gpu_devices,
         })
     }
 }
@@ -2306,6 +2328,7 @@ mod tests {
             ready_by: None,
             credentials: Vec::new(),
             control: None,
+            gpu_devices: Vec::new(),
         }
     }
 
@@ -2378,10 +2401,12 @@ mod tests {
         }
         .encode()
         .unwrap();
-        // ... and the control ask's absence (version 15) last.
+        // ... the control ask's absence (version 15) and the GPUs' count (version 16) last.
         assert_eq!(
-            asked.get(asked.len() - 20..).unwrap(),
-            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+            asked.get(asked.len() - 24..).unwrap(),
+            [
+                1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ],
             "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
              member's working directory (none) and its input, the credential grants' count \
              (zero, version 8), the member's terminal (none, version 11), then whether the \
@@ -2552,10 +2577,10 @@ mod tests {
         ));
         // A member's input flag, before the credential grants' count (version 8), its
         // terminal's flag (version 11) and the members' reach (version 12), that is no flag.
-        // One member, so its input is the eighth byte from the end (the count's four, its
-        // terminal's one, the reach's flag and the control ask's follow it).
+        // One member, so its input is the twelfth byte from the end (the count's four, its
+        // terminal's one, the reach's flag, the control ask's and the GPUs' count follow it).
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 8;
+        let at = bad.len() - 12;
         assert_eq!(
             bad[at], 1,
             "the member's input flag precedes the credentials' count"
@@ -2634,9 +2659,9 @@ mod tests {
                 );
             }
         }
-        // The reach's flag, last but the control ask's where none is held apart.
+        // The reach's flag, before the control ask's and the GPUs' count where none is held apart.
         let mut flag = held(None).encode().unwrap();
-        let at = flag.len() - 2;
+        let at = flag.len() - 6;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -2649,8 +2674,8 @@ mod tests {
         let mut kindless = held(Some(vec![reach(MemberKind::Agent, "helper", &[])]))
             .encode()
             .unwrap();
-        // ... then the control ask's absence (version 15).
-        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1);
+        // ... then the control ask's absence (version 15) and the GPUs' count (version 16).
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4);
         assert_eq!(kindless[at], MemberKind::Agent as u8);
         kindless[at] = 2;
         assert_eq!(
@@ -2678,39 +2703,39 @@ mod tests {
         // their inputs, is no request of this one's: refused by its version, never read with
         // them defaulted. The request's one member makes each of those one byte.
         let mut v1 = request().encode().unwrap();
-        v1.truncate(v1.len() - 12);
+        v1.truncate(v1.len() - 16);
         v1[0] = 1;
         assert_eq!(Request::decode(&v1), Err(WireError::Version(1)));
         let mut v4 = request().encode().unwrap();
-        v4.truncate(v4.len() - 9);
+        v4.truncate(v4.len() - 13);
         v4[0] = 4;
         assert_eq!(Request::decode(&v4), Err(WireError::Version(4)));
         let mut v5 = request().encode().unwrap();
-        v5.truncate(v5.len() - 8);
+        v5.truncate(v5.len() - 12);
         v5[0] = 5;
         assert_eq!(Request::decode(&v5), Err(WireError::Version(5)));
         // One of version 6 carries every field version 7 does, but its host ends the run at
         // a room: refused by its version, before any room is told (D241).
         let mut v6 = request().encode().unwrap();
-        v6.truncate(v6.len() - 7);
+        v6.truncate(v6.len() - 11);
         v6[0] = 6;
         assert_eq!(Request::decode(&v6), Err(WireError::Version(6)));
         // One of version 7, without the credential grants' count: refused by its version
         // (D242), so an older reader never reads a grant with its field defaulted.
         let mut v7 = request().encode().unwrap();
-        v7.truncate(v7.len() - 7);
+        v7.truncate(v7.len() - 11);
         v7[0] = 7;
         assert_eq!(Request::decode(&v7), Err(WireError::Version(7)));
         // One of version 8, without its members' terminals: refused by its version (D244), so
         // an older reader never starts a member with pipes where its owner asked a terminal.
         let mut v8 = request().encode().unwrap();
-        v8.truncate(v8.len() - 3);
+        v8.truncate(v8.len() - 7);
         v8[0] = 8;
         assert_eq!(Request::decode(&v8), Err(WireError::Version(8)));
         // One of version 11, without the members' reach: refused by its version (D246), so a
         // run host never takes a request that holds its members apart as one that holds none.
         let mut v11 = request().encode().unwrap();
-        v11.truncate(v11.len() - 2);
+        v11.truncate(v11.len() - 6);
         v11[0] = 11;
         assert_eq!(Request::decode(&v11), Err(WireError::Version(11)));
         // One of version 12 carries every field version 13 does, but its host ends the run at
@@ -2721,14 +2746,20 @@ mod tests {
         // One of version 14, without the control ask: refused by its version (D252), so a run
         // host never takes a run that asked an endpoint as one that asked none.
         let mut v14 = request().encode().unwrap();
-        v14.truncate(v14.len() - 1);
+        v14.truncate(v14.len() - 5);
         v14[0] = 14;
         assert_eq!(Request::decode(&v14), Err(WireError::Version(14)));
+        // One of version 15, without the GPUs it names: refused by its version (D232), so a run
+        // host never starts a run without the GPUs its orchestrator asked.
+        let mut v15 = request().encode().unwrap();
+        v15.truncate(v15.len() - 4);
+        v15[0] = 15;
+        assert_eq!(Request::decode(&v15), Err(WireError::Version(15)));
         // The nesting flag, before the deadline's tag, the destinations', the one member's
         // working directory's and input's, the credential grants' count (version 8), the
         // member's terminal's (version 11) and the members' reach (version 12): no flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 12;
+        let at = flag.len() - 16;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -2953,10 +2984,10 @@ mod tests {
         };
         assert_eq!(long.encode(), Err(WireError::TooLong));
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 3;
+        let at = bad.len() - 7;
         assert_eq!(
             bad[at], 0,
-            "the member's terminal flag precedes the members' reach and the control ask"
+            "the member's terminal flag precedes the members' reach, the control ask and the GPUs"
         );
         bad[at] = 2;
         assert_eq!(
@@ -3176,6 +3207,7 @@ mod tests {
             ready_by: None,
             credentials: Vec::new(),
             control,
+            gpu_devices: Vec::new(),
         }
     }
 
@@ -3185,7 +3217,7 @@ mod tests {
     /// grant's directory and both its numbers are read back exactly.
     #[test]
     fn a_runs_control_ask_crosses_the_image_channel_whole() {
-        assert_eq!(VERSION, 15, "the channel's next version carries the control ask");
+        assert!(VERSION >= 15, "the channel's version 15 carries the control ask");
         for control in [
             None,
             Some(ControlAsk {
@@ -3231,5 +3263,38 @@ mod tests {
             };
             assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
         }
+    }
+
+    /// D232 through D231 (D234's `gpus=`): the GPUs a run names cross the image channel in
+    /// `--gpu-device`'s grammar, whole and in order; an identity that grammar refuses, or a
+    /// selection D232 refuses (one GPU twice), is refused as the request is read.
+    #[test]
+    fn a_runs_gpus_cross_the_image_channel_in_d232s_grammar() {
+        use shards_abi::gpu::PhysicalGpu;
+        let gpus = vec![
+            PhysicalGpu::Pci {
+                domain: 0,
+                bus: 1,
+                device: 0,
+                function: 0,
+            },
+            PhysicalGpu::MetalRegistry(0x1_0000_02a1),
+        ];
+        let named = Request {
+            gpu_devices: gpus.clone(),
+            ..request()
+        };
+        let bytes = named.encode().unwrap();
+        assert_eq!(Request::decode(&bytes).unwrap().gpu_devices, gpus);
+        // The last identity's text, "metal:00000001000002a1", made one D232's grammar refuses.
+        let mut unnamed = bytes.clone();
+        let at = unnamed.len() - "metal:00000001000002a1".len();
+        unnamed[at] = b'x';
+        assert_eq!(Request::decode(&unnamed), Err(WireError::Gpu));
+        let twice = Request {
+            gpu_devices: vec![gpus[1], gpus[1]],
+            ..request()
+        };
+        assert_eq!(Request::decode(&twice.encode().unwrap()), Err(WireError::Gpu));
     }
 }

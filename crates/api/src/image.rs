@@ -141,6 +141,11 @@ pub struct ImageSpec {
     /// [`ControlAsk::controller`]'s key alone, and serves lanes to the run's own command's
     /// sockets where [`ControlAsk::sockets`] grants them (D251). None: no endpoint.
     pub control: Option<ControlAsk>,
+    /// The host GPUs the run's VM renders on, each by its exact identity (D232, as
+    /// [`crate::GuestSpec::gpu_devices`] names them), bound by its VM process; under the
+    /// nesting grant its command reads them in `/run/shards/gpus` (D234's `gpus=`). None: no
+    /// GPU.
+    pub gpu_devices: Vec<crate::PhysicalGpu>,
 }
 
 /// How a member ended.
@@ -511,6 +516,12 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             ));
         }
     }
+    // The run's GPUs (D232): each a host GPU's exact identity, none twice, within the bound the
+    // renderer's selection holds, as the VM process checks them again.
+    shards_abi::gpu::check_selection(&spec.gpu_devices).map_err(|e| ImageRefusal::Spec {
+        what: "the GPU selection",
+        why: e.to_string(),
+    })?;
     let request = wire::Request {
         image: spec.image.clone(),
         vcpus: spec.vcpus,
@@ -524,6 +535,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
         ready_by,
         credentials,
         control: spec.control.clone(),
+        gpu_devices: spec.gpu_devices.clone(),
     };
     // Past the channel's bound it would never be read; the guest's bound is the same one.
     request.encode().map_err(|e| ImageRefusal::Spec {
@@ -568,6 +580,7 @@ mod tests {
             binary: None,
             env: Vec::new(),
             control: None,
+            gpu_devices: Vec::new(),
         }
     }
 
@@ -777,5 +790,17 @@ mod tests {
             sockets: None,
         });
         assert_eq!(request(&s).unwrap().control, s.control);
+    }
+
+    /// D232 through D231: a run's GPUs are D232's selection, checked before any run host starts
+    /// (one GPU twice refused), and carried whole.
+    #[test]
+    fn a_runs_gpus_are_checked_before_a_run_host_starts() {
+        let gpu = crate::PhysicalGpu::MetalRegistry(0x1_0000_02a1);
+        let mut s = spec();
+        s.gpu_devices = vec![gpu];
+        assert_eq!(request(&s).unwrap().gpu_devices, vec![gpu]);
+        s.gpu_devices = vec![gpu, gpu];
+        assert!(matches!(request(&s), Err(ImageRefusal::Spec { .. })));
     }
 }
