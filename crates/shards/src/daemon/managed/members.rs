@@ -397,14 +397,7 @@ mod tests {
     fn a_lane_tells_a_signal_apart_from_an_exit() {
         assert_eq!(told_end(members::End::Signaled(15)), Reply::Signaled(15));
         assert_eq!(told_end(members::End::Exited(143)), Reply::Exited(143));
+        assert_eq!(told_end(members::End::Exited(0)), Reply::Exited(0));
         assert_eq!(told_end(members::End::Exited(u32::MAX)), Reply::Exited(-1));
-    }
-
-    /// A status keeps its bits as its lane tells it.
-    #[test]
-    fn a_status_is_told_as_its_init_said_it() {
-        assert_eq!(told_status(0), 0);
-        assert_eq!(told_status(143), 143);
-        assert_eq!(told_status(u32::MAX), -1);
     }
 }

@@ -705,7 +705,7 @@ pub fn main() -> ! {
         // A harness that starts as an MCP client does (D254): runs its member's MCP bridge, its
         // stdio piped, writes `initialize` into it and holds it open; says `ready`, then sleeps
         // until a signal ends it.
-        "mcp-hello" => {
+        "mcp-hello" => 'hello: {
             let bridge = std::process::Command::new(shards_abi::run::mcp::BRIDGE)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
@@ -714,7 +714,7 @@ pub fn main() -> ! {
                 Ok(bridge) => bridge,
                 Err(e) => {
                     let _ = writeln!(io::stderr(), "its MCP bridge: {e}");
-                    return 1;
+                    break 'hello 1;
                 }
             };
             let sent = match bridge.stdin.as_mut() {
@@ -725,7 +725,7 @@ pub fn main() -> ! {
             };
             if let Err(e) = sent {
                 let _ = writeln!(io::stderr(), "its MCP bridge's stdin: {e}");
-                return 1;
+                break 'hello 1;
             }
             let _ = writeln!(io::stdout(), "ready");
             loop {
