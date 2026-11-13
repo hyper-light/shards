@@ -59,18 +59,26 @@ fn say(what: std::fmt::Arguments<'_>) {
 }
 
 /// The run's channel from its orchestrator, this process's stdin (D231), read a frame at a
-/// time into a buffer of its own (`wire::read_frame_into`), never through std's `Stdin`,
-/// whose buffer reads ahead and keeps what it read (a lease's value, D242; a staged
-/// credential; a member's typed input) until later frames overwrite it.
+/// time into a buffer of its own (`wire::read_frame_into`), each frame's bytes wiped as it is
+/// let go of ([`Frame`]), so that between frames the buffer is all zeros: never through
+/// std's `Stdin`, whose buffer reads ahead and keeps what it read (a lease's value, D242; a
+/// staged credential; a member's typed input) until later frames overwrite it.
 struct Channel<R> {
     from: R,
     buf: Vec<u8>,
 }
 
-/// A frame of the [`Channel`]'s: its kind, and its payload in the channel's buffer.
+/// A frame of the [`Channel`]'s: its kind, and its payload in the channel's buffer, wiped
+/// there as the frame is let go of.
 struct Frame<'a> {
     kind: u8,
     payload: &'a mut [u8],
+}
+
+impl Drop for Frame<'_> {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut *self.payload);
+    }
 }
 
 impl std::ops::Deref for Frame<'_> {
@@ -101,7 +109,11 @@ impl<R: io::Read> Channel<R> {
                 Ok(Some(Frame { kind, payload }))
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(e),
+            // What came of a frame cut short is wiped as well.
+            Err(e) => {
+                zeroize::Zeroize::zeroize(self.buf.as_mut_slice());
+                Err(e)
+            }
         }
     }
 
@@ -1096,12 +1108,17 @@ struct Leasing<'a> {
 
 impl Leasing<'_> {
     /// Tells the network process its ask `asked_as`'s answer: the value and its lease's
-    /// life, or why not. The message's copy of a value is wiped once sent.
+    /// life, or why not. The message's copy of a value is wiped once sent, and sent as it
+    /// lies, no other copy made: on Unix in one sendmsg of its parts, on Windows in two writes
+    /// (`shards_ipc::write_message_parts`), as this one thread at a time writes the control.
     fn tell(&self, asked_as: u32, answer: Result<(NonZeroU64, &[u8]), &Refusal>) -> io::Result<()> {
         let payload = shards_net::lease::encode_answer(asked_as, answer)
             .ok_or_else(|| io::Error::other("a lease's answer past what its lengths count"))?;
         let _one = lock(&self.sending);
-        crate::netproc::send(self.net, kind::NET_LEASE, &payload, &[])
+        #[cfg(unix)]
+        return crate::netproc::send(self.net, kind::NET_LEASE, &payload, &[]);
+        #[cfg(windows)]
+        return shards_ipc::write_message_parts(&self.net.socket, kind::NET_LEASE, &payload);
     }
 }
 
