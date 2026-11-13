@@ -3,6 +3,7 @@
 //! hyper-quic and hyper-tls conform quinn-proto and rustls.
 
 pub mod client;
+pub mod control;
 pub mod frame;
 pub mod identity;
 pub mod invite;
@@ -80,6 +81,24 @@ mod handshake {
             let (_, connection) = self.connection.as_ref()?;
             let data = connection.crypto_session().handshake_data()?;
             data.downcast::<HandshakeData>().ok()?.negotiated_cipher_suite
+        }
+
+        /// The application protocol its handshake chose (RFC 7301).
+        pub(crate) fn alpn(&self) -> Option<Vec<u8>> {
+            let (_, connection) = self.connection.as_ref()?;
+            let data = connection.crypto_session().handshake_data()?;
+            data.downcast::<HandshakeData>().ok()?.protocol
+        }
+
+        /// The key its peer presented, once its handshake has verified it.
+        pub(crate) fn peer_key(&self) -> Option<Vec<u8>> {
+            let (_, connection) = self.connection.as_ref()?;
+            let certs = connection
+                .crypto_session()
+                .peer_identity()?
+                .downcast::<Vec<CertificateDer<'static>>>()
+                .ok()?;
+            certs.first().map(|c| c.as_ref().to_vec())
         }
     }
 

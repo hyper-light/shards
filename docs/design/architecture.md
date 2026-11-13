@@ -22919,7 +22919,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends open, plan step 10, ROOT's; its endpoint building, step 11)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends open, plan step 10, ROOT's; its endpoint building, step 11: its connection, refusals and lanes' first frames built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -22943,9 +22943,9 @@ an orchestrator's (D231), and vsock carries everything between a host and its gu
   for each member's stdin, stdout and stderr (D240); logs.
 - *Identity:* the VM's own key, made where its TLS ends and never moved. It is enrolled with
   its controller's CA by a CSR, as Hex's nodes enroll with kiln's (hex-quic.md Q6), or pinned
-  as D180's raw keys are. That key, not the host process kiln sees, is the agent to kiln's git
-  signing, credential helpers and MCP tokens (step 18), and the identity a run's credential
-  leases are issued to (step 33).
+  as D180's raw keys are; step 11 pinned it ("The microVM's identity", below). That key, not
+  the host process kiln sees, is the agent to kiln's git signing, credential helpers and MCP
+  tokens (step 18), and the identity a run's credential leases are issued to (step 33).
 
 **Open: where its TLS ends** (plan step 10). ROOT decides, from measurements on Linux, macOS
 and Windows hosts at fleet density (R02, R14):
@@ -22965,12 +22965,139 @@ profile, which shards-init gives a run's command, refuses `socket(AF_VSOCK)` (cr
 daemon's. No numbers are recorded yet. ROOT runs it, writes the PM entry, and completes this
 decision with them.
 
-**Building: the endpoint** (plan step 11). It serves the lanes above to a peer holding the
-enrolled or pinned identity, and nothing to any other. The plan's other callers of it:
+**Building: the endpoint** (plan step 11, `shards_remote::control`). It serves the lanes above
+to a peer holding the enrolled or pinned identity, and nothing to any other. The plan's other
+callers of it:
 - Hex's member operations, which Hex refuses typed until it exists (Hex's
   `docs/design/shards-image-class.md` §8: `MemberExec`, `MemberSignal`);
 - step 38's nested runtime, whose channel to its host it is (D234);
 - step 39's node of Hex, run under shards-init.
+
+Until step 10 decides, only what both arms share is built (ROOT, 2026-11-12): the connection,
+the microVM's identity, who is refused, and what a lane says. The control lane (exec, signal,
+inspect) and the terminal lane (attach, TTY) wait on step 6's member exec, attach and TTY; the
+log lane, where the endpoint runs and how its key's SHA-256 reaches the controller wait on step
+10.
+
+*The connection.* QUIC over D180's driver and TLS (`net.rs`, `tls.rs`): TLS 1.3 alone, D239's
+provider (TLS13_AES_256_GCM_SHA384 alone, the hybrid ML-KEM groups), early data off, on an
+application protocol of its own, `shards-control/1` (RFC 7301), which a context's endpoint and
+the managed output's refuse, as it refuses theirs. The endpoint is the server and the controller
+its client in both arms, as the controller dials. Every lane is a bidirectional stream the
+controller opens; the endpoint opens none.
+
+*The wire: hyper-quic under D180's driver, not hyper-raft's hyper-transport crate.* The crate
+(classes, exchanges and lanes over hyper-quic, which kiln's `crates/kiln/src/net.rs` and Hex's
+`hex-quic` take) carries messages: its lanes are one-way streams that last as long as their
+connection, and its exchanges need their bodies' lengths before they are sent (hyper-raft
+233b7fce `lane.rs`; `Endpoint::open`'s `body: Option<u64>`). Hex built a connection protocol of
+its own over them for byte streams of no known length, a program's stdout among them (Open,
+Accept, End, Reset and Credit frames, and a Welcome, as a TLS 1.3 client counts itself
+connected before its server has verified it, RFC 8446 §4.4.4: Hex's `docs/design/hex-quic.md`
+Q3 at d84730ee). A member's stdin, stdout and stderr are such streams, and a QUIC stream is one
+already: its end (FIN), its abort (RESET_STREAM, STOP_SENDING) and its own flow control (RFC
+9000 §2, §3, §4.1), which D180's driver and step 5's endpoints use now, and which ROOT's
+step-10 harness measures in both arms. Hex and kiln take Shards' crates (Hex vendors
+shards-api; kiln vendors Shards, plan step 16), so a controller's side is Shards' code
+(`control::controller`), not a second implementation of this wire.
+
+*The microVM's identity: its own key, pinned (decided).* The plan left it open: "enrolled with
+the controller's CA by CSR, or pinned as D180's raw keys are; the key never travels".
+- Enrolled by CSR. kiln's agents: "Agents generate their key locally and send only a CSR; the
+  server signs it after checking the enrollment token. Private keys never cross the network"
+  (kiln d6ffa45d `crates/kiln/src/pki.rs`). Hex's nodes: a PKCS #10 request (RFC 2986) under
+  ECDSA P-384, admitted with the grant kiln issued for that name, once (hex-quic.md Q6).
+  Kubernetes' kubelets: a "limited usage token" authenticates a CSR, approved by the controller
+  manager or a person, renewed "when it is close to expiry" (kubelet TLS bootstrapping,
+  kubernetes.io).
+- Pinned. D180's homes: an Ed25519 key (RFC 8032) presented as a raw public key (RFC 7250), each
+  side pinning the other's SHA-256. WireGuard's peers "are identified strictly by their public
+  key", which they "exchange … through some unspecified mechanism" (Donenfeld, NDSS 2017, §2
+  and §1).
+
+What decides it:
+1. *What vouches for a key.* With no remote attestation, only the party that started a
+   microVM can say a key is that microVM's. A CA signs a CSR because a grant came with it, and
+   the grant reached the microVM from its launcher; a controller pins a key because the launcher
+   reported it. RFC 7250 §6: "Without a secure binding between identifier and key, the protocol
+   will be vulnerable to man-in-the-middle attacks. This document assumes that such binding can
+   be made out-of-band", and "Using pre-configured keys is another out-of-band method for
+   authenticating raw public keys". The binding comes from one channel either way; a
+   certificate restates it, signed, so that a party that did not start the microVM can check it
+   without asking whoever did.
+2. *What enters the microVM.* A CSR's grant is a secret inside it (step 33: no credential value
+   anywhere in the VM) unless the request leaves through the host, and a path from the microVM
+   to the CA is a grant default deny gives no one. A pin needs nothing inside: the key's SHA-256
+   leaves through the host that started the microVM, as the managed endpoints' `server`
+   fingerprint does now (the run's managed metadata, `daemon/managed.rs`).
+3. *Lifetime and revocation.* A certificate has a validity window (RFC 5280 §4.1.2.5) that a
+   run must outlive or renew mid-run. A pin lives as long as its holder keeps it and ends as it
+   is removed, as a D180 client's enrollment ends (`shards remove client`). kiln refuses its own
+   agents by their keys' SHA-256 in any case (`ServerBook::revoked_keys`, kiln d6ffa45d
+   `net.rs`).
+4. *Clocks.* A certificate's checks read the verifier's wall clock. A guest's is set from its
+   host at boot and after each restore ("Wall clock", above), so either arm could check one; a
+   pin has nothing to check.
+5. *Code and bytes.* Pins are built and tested (`identity.rs`; `tls.rs` `Pinned`, `AnyClient`),
+   and a handshake's Certificate message carries the key's 44-byte SubjectPublicKeyInfo (RFC
+   8410 §4). A CSR needs its encoding (rcgen, which shards-server carries into the guest
+   already), WebPKI's path validation (hyper-tls) and a chain in every handshake.
+6. *The controllers.* kiln's and Hex's own QUIC links verify certificates under kiln's CA and
+   take no raw key; both reach this endpoint through Shards' crates, whose verifiers pin.
+
+So the microVM's identity is an Ed25519 key made where TLS ends (`Identity::generate`, the
+operating system's random numbers through aws-lc-rs), held only there, its SHA-256 its name.
+The controller pins it, and the endpoint takes only the controller's key, enrolled as the run
+starts. That fingerprint is the identity that replaces kiln's peer-process one: every lane of a
+connection it authenticated is that microVM's (step 18's git signing, credential helpers and MCP
+tokens; step 33's leases). Two rules follow, whichever arm is built:
+- *A key per run, never a template's.* A key made before a template is saved would be every run
+  restored from it (D25), so the endpoint makes its key after its run's restore.
+- *A moved microVM moves its key.* In arm g the key is in guest memory, which a saved and moved
+  microVM's memory carries (D176); its pin moves with it.
+
+Falsified by a party that did not start the microVM having to verify it without its launcher (a
+fleet peer, a third service), or a controller that cannot take Shards' code. Then the
+controller's CA certifies this same key from a CSR the endpoint signs where the key is (RFC 8410
+makes Ed25519 an X.509 key): a certificate is added and the identity kept, the key's SHA-256
+naming the microVM either way.
+
+*Who reaches it.* Each side refuses any other key at the handshake with TLS's access_denied ("A
+valid certificate or PSK was received, but when access control was applied, the sender decided
+not to proceed with negotiation", RFC 8446 §6.2), which rustls raises for this crate's verifiers'
+`ApplicationVerificationFailure` (hyper-tls `error.rs`). "A server MUST NOT process incoming
+1-RTT protected packets before the TLS handshake is complete" (RFC 9001 §5.7): a controller of
+another key opens no stream the endpoint reads, and the endpoint's handler is told of no
+connection of it. How a connection ended is typed (`control::Ended`, read from QUIC's codes;
+callers match it, never its words), with which side said so:
+
+| `Ended` | QUIC's code | Cause |
+|---|---|---|
+| `NotEnrolled(by)` | CRYPTO_ERROR 0x131 | access_denied (49): a key not enrolled or not pinned |
+| `Handshake(by)` | CRYPTO_ERROR 0x128 | handshake_failure (40): no suite, group or signature in common (D239) |
+| `Protocol(by)` | CRYPTO_ERROR 0x178 | no_application_protocol (120): a peer of another protocol |
+| `Closed(by, reason)` | an application close | one of `managed::Reason`'s codes |
+| `Silent` | — | its peer unheard for its idle timeout (RFC 9000 §10.1) |
+| `Local`, `Transport(by)` | — | closed here; any other code, a reset, a version |
+
+*Its lanes.* A lane's first frame names it (`control::lane`), and the endpoint reads no more of
+a lane before it knows what it is (`LANE_MOST`). A member's stdin, stdout and stderr lanes open
+with step 5's own subscriptions, byte for byte (`managed::subscribe`,
+`managed::input::subscribe`: the run, its generation, the member, the channel, the offset), and
+carry step 5's frames after them, so the endpoint serves step 5's streams as they are: one
+record in flight each way, cursors resumed, ends and aborts typed. A lane the endpoint will not
+serve is refused alone, a `Refused` frame of `managed::Reason`'s code then the lane's end, and
+the connection and its other lanes go on.
+
+Tested in `crates/remote` (`control::tests`, over the in-process exchange of `lib.rs`'s
+handshake tests): the enrolled controller and its pinned microVM connect, TLS13_AES_256_GCM_SHA384
+and `shards-control/1` at both ends, each holding the other's key; a controller of another key is
+refused at its handshake, `NotEnrolled` at both ends, the endpoint never connected; an endpoint
+of another key than the pinned one is refused by its controller, typed at both ends; a context's
+client is refused for its protocol; codes read back as their causes; step 5's three
+subscriptions open their lanes, nothing taken before a frame is whole; lanes of no kind, length
+or channel refused; a lane's refusal read back. Record:
+[agent-control-v1](../research/measurements/agent-control-v1/README.md).
 
 **Open: control that crosses no TLS.** The CLI's request slots (D185), the Engine API's
 `engine.sock` (D170) and a host's vsock to its guests carry control within one machine, with
@@ -22978,7 +23105,17 @@ no TLS to narrow. Step 3 left whether the directive reaches them to Ada and ROOT
 ([aes256-only-v1](../research/measurements/aes256-only-v1/evidence.json), `tls_configs`). Step
 10's decision settles the guest's leg; the rest is theirs to decide.
 
-**Literals.** None yet.
+**Literals** (step 11's endpoint; none chosen, each a protocol's or step 5's):
+
+| Literal | Source |
+|---|---|
+| ALPN `shards-control/1` | its own protocol's name (RFC 7301), apart from a context's (`shards/1`) and the managed output's |
+| A key: Ed25519 | D180's identity (RFC 8032), the only kind the verifiers take (`identity::is_ed25519`) |
+| A microVM's name: 32 bytes | the SHA-256 of its key's SubjectPublicKeyInfo (FIPS 180-4) |
+| `LANE_MOST` 58 | step 5's subscription: a frame's head (5), the run (32), its generation (8), the member (4), the channel (1), the offset (8) |
+| `REFUSED_BYTES` 9 | a frame's head (5) and a u32 code |
+| A lane's refusal, 1 to 5 | `managed::Reason` (Protocol, Scope, Stale, Closed, Auth), as step 5's endpoints close with them |
+| Channels 0, 1, 2 | the run protocol's stdin, stdout and stderr (abi `run::kind`) |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 
