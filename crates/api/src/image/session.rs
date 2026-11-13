@@ -113,7 +113,11 @@ struct State {
 #[derive(Debug)]
 enum Holding {
     Asked,
-    Given(String),
+    /// The lessor's name for it, and the credential it is of.
+    Given {
+        lease: String,
+        reference: String,
+    },
 }
 
 /// The run's leases by their asks' ids, whether the run has released them (once it has, a
@@ -205,6 +209,10 @@ struct Shared {
     lessor: Mutex<Option<RunLessor>>,
     /// The references the run's grants name: no other is leased.
     granted: Mutex<Vec<String>>,
+    /// The run's sign-in grants (D242, step 8), whose captures and refreshes its host may ask,
+    /// each with what its last capture gave: its access token's reference is leased as a
+    /// grant's is.
+    sign_ins: Mutex<Vec<wire::SignInGrant>>,
     /// Where the host's diagnostics are written whole, once its caller has named a file
     /// ([`ImageGuest::keep_diagnostics`]).
     said_to: Mutex<Option<std::fs::File>>,
@@ -501,7 +509,11 @@ fn start_host(program: &Path, args: &[&OsStr], env: &[(OsString, OsString)]) -> 
             (child_err.as_handle(), 2),
         ]
     };
-    let process = shards_ipc::spawn_with(&found, args, &ends, false, &set).map_err(boot)?;
+    // On Unix it leads a session and a process group of its own, which `kill` ends whole; a
+    // terminal's signals to this process's group no longer reach it, and its run ends with
+    // this process all the same, its stdin closing. On Windows `detach` would take it out of
+    // this process's job, so it is not asked.
+    let process = shards_ipc::spawn_with(&found, args, &ends, cfg!(unix), &set).map_err(boot)?;
     // The host holds its ends now; this process's go, so that each pipe ends with it.
     drop((child_in, child_out, child_err));
     Ok(Host {
@@ -538,9 +550,12 @@ fn on_path(program: &Path) -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "in no directory of PATH"))
 }
 
-/// Kills the host at once, unless it is reaped (`shards_ipc::Child::kill`).
-fn kill(host: &shards_ipc::Child) {
-    let _ = host.kill(shards_ipc::signal::SIGKILL);
+/// Kills the host at once, and every process it started, unless it is reaped: on Unix its
+/// process group, which it leads (`start_host`), and which its VM, network and share
+/// processes are in (api_run.rs starts each in it); on Windows the host alone, whose job,
+/// whose last handle it holds, ends them as it ends (D141, D197).
+pub(super) fn kill(host: &shards_ipc::Child) {
+    let _ = host.kill_group(shards_ipc::signal::SIGKILL);
 }
 
 /// One image run, as its client holds it.
@@ -595,6 +610,7 @@ impl Begun {
             to_host: Mutex::new(Some(to_host)),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            sign_ins: Mutex::new(Vec::new()),
             said_to: Mutex::new(None),
         });
         // Shared: the session and its exit watcher, which outlives this call.
@@ -651,6 +667,7 @@ impl Begun {
     ) -> Result<(), ImageRefusal> {
         *lock(&self.shared.lessor) = lessor;
         *lock(&self.shared.granted) = request.credentials.iter().map(|g| g.reference.clone()).collect();
+        *lock(&self.shared.sign_ins) = request.sign_ins.clone();
         lock(&self.shared.state).asked_inputs = State::asking(&request.members).asked_inputs;
         self.send(wire::to_host::CREATE, request)
     }
@@ -696,11 +713,14 @@ impl Begun {
 
     /// Waits at most `patience` for the start of the run `request` it was sent: the run's
     /// session; else why not, the host ended, and whether it refused the run as one of
-    /// another microVM's than its warm one (`Cause::Unfit`, D253's pools).
+    /// another microVM's than its warm one (`Cause::Unfit`, D253's pools). `stop` holds the
+    /// host meanwhile: stopped, it kills the host and all the host started, and the run is
+    /// `Ended(Stopped)` once they are gone.
     pub(super) fn started(
         mut self,
         request: &wire::Request,
         patience: Duration,
+        stop: &super::BootStop,
     ) -> Result<Session, (ImageRefusal, bool)> {
         // The host is the session's from here, ended by it, or here where its run does not
         // start.
@@ -712,6 +732,10 @@ impl Begun {
             lock(&shared.to_host).take();
         };
         let unfit = |shared: &Shared| lock(&shared.state).unfit;
+        if let Err(e) = stop.hold(&host) {
+            end_it(&shared);
+            return Err((e, false));
+        }
         // Started, refused, or gone: whichever comes first, within the caller's patience. A
         // refusal is the host's last word, told once it has exited and said all it will.
         let outcome = shared.wait(patience, |s| {
@@ -737,6 +761,14 @@ impl Begun {
                 )))
             })
         });
+        if stop.release() {
+            end_it(&shared);
+            // Followed to its end, never timed (D215, D217): the host exited and reaped by its
+            // watcher, its answers ended, and its diagnostics, which the VM, network and share
+            // processes it started hold as their stderr, closed by every one of them.
+            shared.wait(Duration::MAX, |s| (s.gone() && s.said_all).then_some(()));
+            return Err((ImageRefusal::Ended(RunEnd::Stopped), false));
+        }
         let started = match outcome {
             Some(Ok(started)) => started,
             Some(Err(e)) => {
@@ -837,13 +869,14 @@ impl super::pool::Hosts for ShardsHosts {
         spec: &ImageSpec,
         request: &wire::Request,
         patience: Duration,
+        stop: &super::BootStop,
     ) -> Result<Box<dyn ImageGuest>, super::pool::Taken> {
         use super::pool::Taken;
         if let Err(e) = warm.create(spec.lessor.clone(), request) {
             warm.end();
             return Err(Taken::Refused(e));
         }
-        match warm.started(request, patience) {
+        match warm.started(request, patience, stop) {
             Ok(session) => Ok(Box::new(session)),
             Err((_, true)) => Err(Taken::Unfit),
             Err((refused, false)) => Err(Taken::Refused(refused)),
@@ -855,8 +888,9 @@ impl super::pool::Hosts for ShardsHosts {
         spec: &ImageSpec,
         request: &wire::Request,
         patience: Duration,
+        stop: &super::BootStop,
     ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
-        Ok(Box::new(Session::start(spec, request, patience)?))
+        Ok(Box::new(Session::start(spec, request, patience, stop)?))
     }
 }
 
@@ -876,10 +910,13 @@ impl Session {
         spec: &ImageSpec,
         request: &wire::Request,
         patience: Duration,
+        stop: &super::BootStop,
     ) -> Result<Session, ImageRefusal> {
         let begun = Begun::begin(spec.binary.as_deref(), &spec.env)?;
         begun.create(spec.lessor.clone(), request)?;
-        begun.started(request, patience).map_err(|(refused, _)| refused)
+        begun
+            .started(request, patience, stop)
+            .map_err(|(refused, _)| refused)
     }
 
     /// Its running members' outputs ([`pumped`]).
@@ -1061,13 +1098,22 @@ fn send_input(shared: &Shared, member: u32, typed: &mut [u8]) -> io::Result<()> 
 /// host says the run released them, or as its answers end where it never says so (D242).
 fn read_answers(shared: &Arc<Shared>, mut from_host: io::PipeReader) {
     let failed = loop {
-        let (kind, payload) = match wire::read_frame(&mut from_host) {
+        let (kind, mut payload) = match wire::read_frame(&mut from_host) {
             Ok(Some(frame)) => frame,
             Ok(None) => break None,
             Err(e) => break Some(format!("its answers: {e}")),
         };
         let taken = match kind {
             wire::to_client::LEASE => lease_asked(shared, &payload).map(|()| false),
+            // A capture's tokens are the lessor's once taken (D242, step 8): the frame's copy is
+            // wiped as it goes.
+            wire::to_client::CAPTURE => {
+                let taken = capture_asked(shared, &payload).map(|()| false);
+                zeroize::Zeroize::zeroize(&mut payload);
+                taken
+            }
+            wire::to_client::REFRESH => refresh_asked(shared, &payload).map(|()| false),
+            wire::to_client::REVOKE => revoke_told(shared, &payload).map(|()| false),
             wire::to_client::RELEASED => wire::released(&payload)
                 .map(|()| {
                     release(shared);
@@ -1250,7 +1296,7 @@ fn lease_asked(shared: &Arc<Shared>, payload: &[u8]) -> Result<(), String> {
     let Some(lessor) = lock(&shared.lessor).clone() else {
         return Err("a lease asked of a run with no lessor".into());
     };
-    if !lock(&shared.granted).contains(&ask.reference) {
+    if !granted(shared, &ask.reference) {
         return Err(format!(
             "a lease of {}, which no grant of the run names",
             ask.reference
@@ -1280,7 +1326,7 @@ fn lease_asked(shared: &Arc<Shared>, payload: &[u8]) -> Result<(), String> {
         .name("shards-api-lease".into())
         .spawn(move || {
             let got = lessor.0.lease(&ask.reference, key);
-            let result = settle(&asking, &*lessor.0, ask.id, got, Instant::now());
+            let result = settle(&asking, &*lessor.0, &ask, got, Instant::now());
             answer_lease(&asking, ask.id, result);
         });
     if spawned.is_err() {
@@ -1298,10 +1344,11 @@ fn lease_asked(shared: &Arc<Shared>, payload: &[u8]) -> Result<(), String> {
 fn settle(
     shared: &Shared,
     lessor: &dyn Lessor,
-    id: u32,
+    ask: &wire::LeaseAsk,
     got: Result<Leased, LeaseRefusal>,
     now: Instant,
 ) -> Result<wire::Lease, LeaseRefusal> {
+    let id = ask.id;
     let mut state = lock(&shared.state);
     state.leases.each.remove(&id);
     let leased = got?;
@@ -1314,7 +1361,11 @@ fn settle(
         _ if state.leases.released => LeaseRefusal::Ended,
         None => LeaseRefusal::Lapsed,
         Some(lives) => {
-            state.leases.each.insert(id, Holding::Given(leased.lease.clone()));
+            let given = Holding::Given {
+                lease: leased.lease.clone(),
+                reference: ask.reference.clone(),
+            };
+            state.leases.each.insert(id, given);
             return Ok(wire::Lease {
                 value: leased.value,
                 lives,
@@ -1345,6 +1396,191 @@ fn answer_lease(shared: &Shared, id: u32, result: Result<wire::Lease, LeaseRefus
     }
 }
 
+/// The run's lessor, for an ask of sign-in `sign_in` its host made (D242, step 8): one of a run
+/// with no lessor, or of a sign-in no grant of the run names, breaks the channel's contract.
+fn sign_in_lessor(shared: &Shared, sign_in: &str) -> Result<RunLessor, String> {
+    let Some(lessor) = lock(&shared.lessor).clone() else {
+        return Err("a sign-in asked of a run with no lessor".into());
+    };
+    if !lock(&shared.sign_ins).iter().any(|s| s.sign_in == sign_in) {
+        return Err(format!(
+            "an ask of sign-in {sign_in}, which no grant of the run names"
+        ));
+    }
+    Ok(lessor)
+}
+
+/// Whether credential `reference` is one the run may lease: one its grants name, or the access
+/// token a capture of one of its sign-ins gave (D242, step 8).
+fn granted(shared: &Shared, reference: &str) -> bool {
+    lock(&shared.granted).iter().any(|g| g == reference)
+        || lock(&shared.sign_ins)
+            .iter()
+            .filter_map(|s| s.captured.as_ref())
+            .any(|c| c.access == reference)
+}
+
+/// The ids of the leases given of sign-in `sign_in`'s access token now.
+fn given_of(shared: &Shared, sign_in: &str) -> Vec<u32> {
+    let access = lock(&shared.sign_ins)
+        .iter()
+        .find(|s| s.sign_in == sign_in)
+        .and_then(|s| s.captured.as_ref())
+        .map(|c| c.access.clone());
+    let Some(access) = access else {
+        return Vec::new();
+    };
+    lock(&shared.state)
+        .leases
+        .each
+        .iter()
+        .filter(|(_, held)| matches!(held, Holding::Given { reference, .. } if *reference == access))
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+/// Leases `ids`, given before a refresh rotated their value (D242 step 8, Q2), let go of, so
+/// that the next ask of it is leased anew, the placeholders its CLI holds the same: each
+/// released to the run's lessor once, as the run's end would, where the run holds it still.
+fn rotated(shared: &Shared, lessor: &dyn Lessor, ids: &[u32]) {
+    let stale: Vec<String> = {
+        let mut state = lock(&shared.state);
+        ids.iter()
+            .filter_map(|id| match state.leases.each.remove(id) {
+                Some(Holding::Given { lease, .. }) => Some(lease),
+                Some(other) => {
+                    state.leases.each.insert(*id, other);
+                    None
+                }
+                None => None,
+            })
+            .collect()
+    };
+    for lease in stale {
+        lessor.release(&lease);
+    }
+}
+
+/// A sign-in's capture its host asks (D242, step 8), put to the run's lessor on a thread of its
+/// own, so that no answer of the host's waits on it; the access token's reference it gives is
+/// one the run's leases may name from then on. Refused as ended once the run has released its
+/// leases.
+fn capture_asked(shared: &Arc<Shared>, payload: &[u8]) -> Result<(), String> {
+    let ask = wire::CaptureAsk::decode(payload).map_err(|e| e.to_string())?;
+    let lessor = sign_in_lessor(shared, &ask.sign_in)?;
+    let id = ask.id;
+    let asking = Arc::clone(shared);
+    let spawned = std::thread::Builder::new()
+        .name("shards-api-capture".into())
+        .spawn(move || {
+            let wire::CaptureAsk { sign_in, tokens, .. } = ask;
+            let (released, key) = {
+                let state = lock(&asking.state);
+                (state.leases.released, state.leases.key)
+            };
+            let result = if released {
+                Err(wire::SignInRefusal::Ended)
+            } else {
+                lessor.0.capture(&sign_in, tokens, key)
+            };
+            // Its access token is the run's to lease from now, in place of an earlier capture's.
+            if let Ok(c) = &result
+                && let Some(grant) = lock(&asking.sign_ins).iter_mut().find(|s| s.sign_in == sign_in)
+            {
+                grant.captured = Some(c.clone());
+            }
+            answer_capture(&asking, id, result);
+        });
+    if spawned.is_err() {
+        let why = "no thread to ask its lessor on".to_string();
+        answer_capture(shared, id, Err(wire::SignInRefusal::Unavailable(why)));
+    }
+    Ok(())
+}
+
+/// A sign-in's refresh its host asks (D242, step 8), put to the run's lessor on a thread of its
+/// own; refused as ended once the run has released its leases.
+fn refresh_asked(shared: &Arc<Shared>, payload: &[u8]) -> Result<(), String> {
+    let ask = wire::RefreshAsk::decode(payload).map_err(|e| e.to_string())?;
+    let lessor = sign_in_lessor(shared, &ask.sign_in)?;
+    let id = ask.id;
+    let asking = Arc::clone(shared);
+    let spawned = std::thread::Builder::new()
+        .name("shards-api-refresh".into())
+        .spawn(move || {
+            let (released, key) = {
+                let state = lock(&asking.state);
+                (state.leases.released, state.leases.key)
+            };
+            // The leases of its access token given before the refresh, whose value it rotates.
+            let before = given_of(&asking, &ask.sign_in);
+            let result = if released {
+                Err(wire::SignInRefusal::Ended)
+            } else {
+                lessor.0.refresh(&ask.sign_in, key)
+            };
+            // Its access token rotated: those leases let go of before its host hears, so that
+            // the next ask is leased the rotated value (Q2).
+            if result.is_ok() {
+                rotated(&asking, &*lessor.0, &before);
+            }
+            answer_refresh(&asking, id, result);
+        });
+    if spawned.is_err() {
+        let why = "no thread to ask its lessor on".to_string();
+        answer_refresh(shared, id, Err(wire::SignInRefusal::Unavailable(why)));
+    }
+    Ok(())
+}
+
+/// A sign-in its run's VM revoked, told by its host (D242, step 8): told the run's lessor on a
+/// thread of its own; answered nowhere, as its network process answered the VM.
+fn revoke_told(shared: &Arc<Shared>, payload: &[u8]) -> Result<(), String> {
+    let told = wire::Revoked::decode(payload).map_err(|e| e.to_string())?;
+    let lessor = sign_in_lessor(shared, &told.sign_in)?;
+    let key = lock(&shared.state).leases.key;
+    // With no thread to tell it on, the lessor is not told: nothing waits on it.
+    let _ = std::thread::Builder::new()
+        .name("shards-api-revoked".into())
+        .spawn(move || lessor.0.revoked(&told.sign_in, key));
+    Ok(())
+}
+
+/// Tells the run's host capture `id`'s answer (`CAPTURED`); one past the channel's bound is told
+/// unavailable.
+fn answer_capture(shared: &Shared, id: u32, result: Result<wire::Captured, wire::SignInRefusal>) {
+    let payload = wire::CaptureAnswer { id, result }.encode().or_else(|e| {
+        wire::CaptureAnswer {
+            id,
+            result: Err(wire::SignInRefusal::Unavailable(format!("its answer: {e}"))),
+        }
+        .encode()
+    });
+    // A host gone is told nothing: its run has ended.
+    if let Ok(payload) = payload {
+        let _ = shared.send_parts(wire::to_host::CAPTURED, &payload);
+    }
+}
+
+/// Tells the run's host refresh `id`'s answer (`REFRESHED`), every copy of its token response
+/// wiped once sent; one past the channel's bound is told unavailable.
+fn answer_refresh(shared: &Shared, id: u32, result: Result<wire::Secret, wire::SignInRefusal>) {
+    let answer = wire::RefreshAnswer { id, result };
+    let encoded = answer.encode().map(zeroize::Zeroizing::new);
+    drop(answer);
+    let payload = encoded.or_else(|e| {
+        wire::RefreshAnswer {
+            id,
+            result: Err(wire::SignInRefusal::Unavailable(format!("its answer: {e}"))),
+        }
+        .encode()
+        .map(zeroize::Zeroizing::new)
+    });
+    if let Ok(payload) = payload {
+        let _ = shared.send_parts(wire::to_host::REFRESHED, &payload);
+    }
+}
+
 /// Releases every lease the run was given (D242), once; a lease given after is released as
 /// it comes ([`settle`]).
 fn release(shared: &Shared) {
@@ -1360,7 +1596,7 @@ fn release(shared: &Shared) {
             .each
             .drain()
             .filter_map(|(_, held)| match held {
-                Holding::Given(lease) => Some(lease),
+                Holding::Given { lease, .. } => Some(lease),
                 Holding::Asked => None,
             })
             .collect()
@@ -1694,6 +1930,7 @@ mod tests {
             to_host: Mutex::new(None),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            sign_ins: Mutex::new(Vec::new()),
             said_to: Mutex::new(None),
         }
     }
@@ -1838,6 +2075,7 @@ mod tests {
             to_host: Mutex::new(None),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            sign_ins: Mutex::new(Vec::new()),
             said_to: Mutex::new(None),
         };
         let info = |index, name: &str| MemberInfo {
@@ -1903,6 +2141,7 @@ mod tests {
             to_host: Mutex::new(Some(to_host)),
             lessor: Mutex::new(None),
             granted: Mutex::new(Vec::new()),
+            sign_ins: Mutex::new(Vec::new()),
             said_to: Mutex::new(None),
         });
         lock(&s.state).inputs.insert(1, InputFlow::default());
@@ -1985,7 +2224,6 @@ mod tests {
 
     /// Whether every write end of `read`'s pipe is gone, every process's: a read that would
     /// wait finds its end (Unix), or a look at it finds it broken (Windows), at once.
-    #[cfg(any(target_os = "macos", windows))]
     fn writers_gone(read: &io::PipeReader) -> bool {
         #[cfg(unix)]
         {
@@ -2513,6 +2751,7 @@ mod tests {
             to_host: Mutex::new(Some(to_host)),
             lessor: Mutex::new(lessor.map(|l| RunLessor(l))),
             granted: Mutex::new(granted.iter().map(|g| (*g).to_string()).collect()),
+            sign_ins: Mutex::new(Vec::new()),
             said_to: Mutex::new(None),
         });
         let reader = {
@@ -2695,5 +2934,341 @@ mod tests {
             assert_eq!(l.given.len(), usize::from(twice));
             assert_eq!(l.released, l.given, "a lease outlived its channel");
         }
+    }
+
+    const SIGN_IN: &str = "claude/acct-1";
+    const SIGNED_ACCESS: &str = "sign-ins/claude/acct-1/access";
+
+    /// What a simulated broker's capture gives (D242, step 8): one reference, and the same
+    /// placeholders every time.
+    fn kept() -> wire::Captured {
+        wire::Captured {
+            access: SIGNED_ACCESS.into(),
+            access_placeholder: "kiln-placeholder-access-0123456789abcdef".into(),
+            refresh_placeholder: Some("kiln-placeholder-refresh-fedcba9876543210".into()),
+        }
+    }
+
+    /// A simulated orchestrator keeping its run's sign-in (D242, step 8): its leases as
+    /// [`Orchestrator`]'s, its value whatever the reference; each capture's tokens kept; each
+    /// refresh answered with the rotated tokens' response, the provider called once for each;
+    /// each revocation told.
+    #[derive(Default)]
+    struct Broker {
+        leases: Orchestrator,
+        kept: Mutex<Vec<wire::SignInTokens>>,
+        refreshed: Mutex<usize>,
+        revoked: Mutex<Vec<String>>,
+    }
+
+    impl Lessor for Broker {
+        fn lease(&self, reference: &str, key: Option<[u8; 32]>) -> Result<Leased, LeaseRefusal> {
+            self.leases.lease(reference, key)
+        }
+
+        fn release(&self, lease: &str) {
+            self.leases.release(lease);
+        }
+
+        fn capture(
+            &self,
+            sign_in: &str,
+            tokens: wire::SignInTokens,
+            _key: Option<[u8; 32]>,
+        ) -> Result<wire::Captured, wire::SignInRefusal> {
+            if sign_in != SIGN_IN {
+                return Err(wire::SignInRefusal::Denied(format!("no sign-in {sign_in}")));
+            }
+            lock(&self.kept).push(tokens);
+            Ok(kept())
+        }
+
+        fn refresh(
+            &self,
+            sign_in: &str,
+            _key: Option<[u8; 32]>,
+        ) -> Result<wire::Secret, wire::SignInRefusal> {
+            if sign_in != SIGN_IN {
+                return Err(wire::SignInRefusal::Denied(format!("no sign-in {sign_in}")));
+            }
+            *lock(&self.refreshed) += 1;
+            Ok(wire::Secret::from(
+                r#"{"access_token":"sk-ant-oat01-rotated","refresh_token":"sk-ant-ort01-rotated","expires_in":28800}"#,
+            ))
+        }
+
+        fn revoked(&self, sign_in: &str, _key: Option<[u8; 32]>) {
+            lock(&self.revoked).push(sign_in.into());
+            self.leases.changed.notify_all();
+        }
+    }
+
+    /// A session of a run that grants sign-in `SIGN_IN` (not yet captured), its lessor `broker`.
+    fn signing(broker: &Arc<Broker>) -> Hosted {
+        let (sent, to_host) = io::pipe().unwrap();
+        let (from_host, host) = io::pipe().unwrap();
+        let lessor: Arc<dyn Lessor> = Arc::clone(broker) as Arc<dyn Lessor>;
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+            to_host: Mutex::new(Some(to_host)),
+            lessor: Mutex::new(Some(RunLessor(lessor))),
+            granted: Mutex::new(Vec::new()),
+            sign_ins: Mutex::new(vec![wire::SignInGrant {
+                sign_in: SIGN_IN.into(),
+                cli: wire::Cli::ClaudeCode,
+                toward: vec!["api.anthropic.com".into()],
+                captured: None,
+            }]),
+            said_to: Mutex::new(None),
+        });
+        let reader = {
+            let shared = Arc::clone(&shared);
+            std::thread::spawn(move || read_answers(&shared, from_host))
+        };
+        Hosted {
+            shared,
+            sent,
+            host,
+            reader,
+        }
+    }
+
+    /// A run's sign-in kept by its orchestrator (D242, step 8). Do: have the host ask a capture
+    /// of its tokens; lease the access token the capture gave; refresh the sign-in; lease it
+    /// again; tell a revocation in the VM; say the run released its leases. Expect: the tokens
+    /// kept by the broker, whole, and the capture answered with its placeholders; the access
+    /// token leasable only once captured, by the broker's reference; the refresh answered with
+    /// the broker's response, its provider called once, the lease given before it released and
+    /// the sign-in's placeholders the same; the revocation told the broker, answered nowhere;
+    /// and the lease given after the refresh released at the run's end, each lease once.
+    #[test]
+    fn a_sign_ins_capture_and_refresh_are_kept_by_the_broker_and_its_lease_released_at_the_runs_end() {
+        let broker = Arc::new(Broker::default());
+        let mut h = signing(&broker);
+        assert!(!granted(&h.shared, SIGNED_ACCESS), "leasable before its capture");
+        let capture = wire::CaptureAsk {
+            id: 1,
+            sign_in: SIGN_IN.into(),
+            tokens: wire::SignInTokens {
+                access: wire::Secret::from("sk-ant-oat01-real-access"),
+                refresh: Some(wire::Secret::from("sk-ant-ort01-real-refresh")),
+                expires_in: Some(28800),
+                id_token: None,
+                scope: Some("user:inference".into()),
+            },
+        };
+        says(&mut h.host, wire::to_client::CAPTURE, &capture.encode().unwrap());
+        let (kind, payload) = wire::read_frame(&mut h.sent).unwrap().unwrap();
+        assert_eq!(kind, wire::to_host::CAPTURED);
+        let answer = wire::CaptureAnswer::decode(&payload).unwrap();
+        assert_eq!((answer.id, answer.result), (1, Ok(kept())));
+        assert_eq!(*lock(&broker.kept), std::slice::from_ref(&capture.tokens));
+        assert!(granted(&h.shared, SIGNED_ACCESS));
+        ask(&mut h.host, 7, SIGNED_ACCESS);
+        assert!(answered(&mut h.sent).result.is_ok());
+        let first = lock(&broker.leases.ledger).given.clone();
+        assert_eq!(first, [format!("{SIGNED_ACCESS}#0")]);
+        // The refresh: the broker's alone, its answer relayed; the lease given before let go of.
+        let refresh = wire::RefreshAsk {
+            id: 2,
+            sign_in: SIGN_IN.into(),
+        };
+        says(&mut h.host, wire::to_client::REFRESH, &refresh.encode().unwrap());
+        let (kind, payload) = wire::read_frame(&mut h.sent).unwrap().unwrap();
+        assert_eq!(kind, wire::to_host::REFRESHED);
+        let answer = wire::RefreshAnswer::decode(&payload).unwrap();
+        assert_eq!(answer.id, 2);
+        assert!(answer.result.is_ok());
+        assert_eq!(*lock(&broker.refreshed), 1);
+        assert_eq!(
+            lock(&broker.leases.ledger).released,
+            first,
+            "the rotated token's lease held past its refresh"
+        );
+        assert_eq!(
+            lock(&h.shared.sign_ins)[0].captured,
+            Some(kept()),
+            "a refresh changed the sign-in's placeholders"
+        );
+        ask(&mut h.host, 8, SIGNED_ACCESS);
+        assert!(answered(&mut h.sent).result.is_ok());
+        // The VM's revocation: told the broker, answered nowhere.
+        let revoked = wire::Revoked {
+            sign_in: SIGN_IN.into(),
+        };
+        says(&mut h.host, wire::to_client::REVOKE, &revoked.encode().unwrap());
+        assert!(broker.leases.until(|_| !lock(&broker.revoked).is_empty()));
+        // The run's end: the lease given after the refresh released, each once.
+        says(&mut h.host, wire::to_client::RELEASED, &[]);
+        assert!(
+            broker.leases.until(|l| l.released.len() == 2),
+            "the captured token's lease not released at the run's end"
+        );
+        says(
+            &mut h.host,
+            wire::to_client::ENDED,
+            &RunEnd::Exited(0).encode().unwrap(),
+        );
+        drop(h.host);
+        h.reader.join().unwrap();
+        let l = lock(&broker.leases.ledger);
+        assert_eq!(l.released, l.given, "each lease released once");
+        assert_eq!(*lock(&broker.revoked), [SIGN_IN]);
+    }
+
+    /// How long a stand-in's boot may take before it is refused, so that a stop that is not
+    /// heard fails its test rather than holding it: the test's bound alone.
+    #[cfg(unix)]
+    const BOOT_BOUND: Duration = Duration::from_secs(10);
+
+    /// An image spec for run host `binary`, its environment `env`, with nothing to run.
+    #[cfg(unix)]
+    fn stand_in_spec(binary: &Path, env: Vec<(OsString, OsString)>) -> ImageSpec {
+        ImageSpec {
+            image: "stand-in:local".into(),
+            vcpus: 1,
+            memory_mib: 256,
+            command: None,
+            members: Vec::new(),
+            publish: Vec::new(),
+            egress: wire::Narrowing::default(),
+            credentials: Vec::new(),
+            lessor: None,
+            sign_ins: Vec::new(),
+            shares: Vec::new(),
+            nesting: false,
+            ready_by: None,
+            binary: Some(binary.to_path_buf()),
+            env,
+            control: None,
+            gpu_devices: Vec::new(),
+        }
+    }
+
+    /// `script` written to `dir` as an executable stand-in for `shards api-run`.
+    #[cfg(unix)]
+    fn stand_in(dir: &Path, script: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dir.join("host");
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// A FIFO at `path`.
+    #[cfg(unix)]
+    fn fifo(path: &Path) {
+        use std::os::unix::ffi::OsStrExt as _;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: mkfifo(3) of a NUL-terminated path this function holds.
+        let made = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+        assert_eq!(made, 0, "{}", io::Error::last_os_error());
+    }
+
+    /// SIGKILLs `pid` as it drops, unless let go of: a stand-in VM a failed stop left running,
+    /// never one already seen gone (whose pid may be another's by then).
+    #[cfg(unix)]
+    struct Leftover(Option<libc::pid_t>);
+
+    #[cfg(unix)]
+    impl Drop for Leftover {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0 {
+                // SAFETY: kill(2) of the stand-in VM, seen still running.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+    }
+
+    /// The stand-in run host of a boot that never starts: it holds `$HOST_SEEN` open as long
+    /// as it runs, starts a stand-in VM that never looks at its host (as a VM mid-boot does
+    /// not) and holds `$VM_SEEN` open as long as it runs, tells the VM's pid, and never answers.
+    #[cfg(unix)]
+    const NEVER_STARTS: &str = "#!/bin/sh\n\
+        exec 3>\"$HOST_SEEN\"\n\
+        tail -f /dev/null >\"$VM_SEEN\" 3>&- &\n\
+        echo \"$!\" >&3\n\
+        wait\n";
+
+    /// Do boot through a run host that starts a VM of its own and never says the run started,
+    /// and stop the boot once both run. Expect: the boot returns `Ended(Stopped)`, well within
+    /// its bound, the run host gone and the VM it started gone with it, no orphan left.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started() {
+        use std::io::BufRead as _;
+        let dir = shards_testdir::TempDir::new("bstop").unwrap();
+        let (host_seen, vm_seen) = (dir.path().join("h"), dir.path().join("v"));
+        fifo(&host_seen);
+        fifo(&vm_seen);
+        let host = stand_in(dir.path(), NEVER_STARTS);
+        let spec = stand_in_spec(
+            &host,
+            vec![
+                ("HOST_SEEN".into(), host_seen.clone().into()),
+                ("VM_SEEN".into(), vm_seen.clone().into()),
+            ],
+        );
+        let request = super::super::request(&spec).unwrap();
+        let stop = super::super::BootStop::new();
+        let mut leftover = Leftover(None);
+        std::thread::scope(|s| {
+            let booting = s.spawn(|| Session::start(&spec, &request, BOOT_BOUND, &stop).map(drop));
+            // Each open waits for its writer: the host, then its VM, both running once open.
+            let host_end = std::fs::File::open(&host_seen).unwrap();
+            let vm_end = std::fs::File::open(&vm_seen).unwrap();
+            let mut said = String::new();
+            io::BufReader::new(&host_end).read_line(&mut said).unwrap();
+            leftover.0 = Some(said.trim().parse().unwrap());
+            let stopped_at = Instant::now();
+            stop.stop();
+            let booted = booting.join().unwrap();
+            let took = stopped_at.elapsed();
+            let ends = |f: std::fs::File| io::PipeReader::from(std::os::fd::OwnedFd::from(f));
+            let (host_gone, vm_gone) = (writers_gone(&ends(host_end)), writers_gone(&ends(vm_end)));
+            if vm_gone {
+                leftover.0 = None;
+            }
+            assert_eq!(
+                booted,
+                Err(ImageRefusal::Ended(RunEnd::Stopped)),
+                "after {took:?}"
+            );
+            assert!(took < BOOT_BOUND, "the stop took {took:?}");
+            assert!(host_gone, "the run host outlived its boot's stop");
+            assert!(vm_gone, "the VM its run host started outlived the boot's stop");
+        });
+        assert!(stop.is_stopped());
+    }
+
+    /// Do boot through a run host that never answers, with a stop never stopped and no
+    /// patience. Expect: the boot refused as one with no stop is, not started within it. Do
+    /// the same with a stop already stopped and patience to spare. Expect: `Ended(Stopped)`
+    /// well within it.
+    #[cfg(unix)]
+    #[test]
+    fn a_boot_not_stopped_answers_as_before_and_one_stopped_first_ends_stopped() {
+        let dir = shards_testdir::TempDir::new("bstop2").unwrap();
+        let host = stand_in(dir.path(), "#!/bin/sh\nexec tail -f /dev/null\n");
+        let spec = stand_in_spec(&host, Vec::new());
+        let request = super::super::request(&spec).unwrap();
+        let stop = super::super::BootStop::new();
+        let refused = Session::start(&spec, &request, Duration::ZERO, &stop).map(drop);
+        assert!(
+            matches!(&refused, Err(ImageRefusal::Boot(why)) if why.contains("did not start within")),
+            "{refused:?}"
+        );
+        assert!(!stop.is_stopped());
+        stop.stop();
+        let asked = Instant::now();
+        let stopped = Session::start(&spec, &request, BOOT_BOUND, &stop).map(drop);
+        let took = asked.elapsed();
+        assert_eq!(
+            stopped,
+            Err(ImageRefusal::Ended(RunEnd::Stopped)),
+            "after {took:?}"
+        );
+        assert!(took < BOOT_BOUND, "the stop took {took:?}");
     }
 }

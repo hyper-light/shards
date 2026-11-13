@@ -23,7 +23,7 @@
 //! as the run's host asks, and every lease it gave is released as the run ends.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 mod pool;
@@ -31,9 +31,10 @@ mod session;
 pub mod wire;
 
 pub use wire::{
-    Bound, Channel, ControlAsk, ControlAt, CredentialGrant, Fill, GuestTimes, HostUse, Keep, LeaseRefusal,
-    MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving,
-    RunEnd, SaveRefusal, Secret, SocketGrant, StartedFrom, Stats, StatsScope, VcpuTime, decide,
+    Bound, Captured, Channel, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, GuestTimes, HostUse, Keep,
+    LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, PlugRefusal, Proto, Publish,
+    Ready, Receiving, RunEnd, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, SocketGrant,
+    StartedFrom, Stats, StatsScope, VcpuTime, decide,
 };
 
 /// A credential's lease, as a run's [`Lessor`] gives it (D242): what its release names it
@@ -60,9 +61,40 @@ pub trait Lessor: Send + Sync {
     /// the run has no key, its lessor's run alone asking.
     fn lease(&self, reference: &str, key: Option<[u8; 32]>) -> Result<Leased, LeaseRefusal>;
     /// The lease [`lease`](Self::lease) named `lease`, released: the run has ended, or the
-    /// lease was given after it did or ended before it could be passed on. Called once for
-    /// each lease given.
+    /// lease was given after it did or ended before it could be passed on, or the value it
+    /// gave rotated (its sign-in refreshed, [`refresh`](Self::refresh)). Called once for each
+    /// lease given.
     fn release(&self, lease: &str);
+    /// Sign-in `sign_in`'s tokens, as the run's injector took them from its CLI's token
+    /// response (D242, step 8): kept outside by the run's broker, which gives back the
+    /// placeholders the CLI holds in their places ([`Captured`]: its access token's reference,
+    /// which the run's leases name from then on as a grant's, that token's placeholder, and its
+    /// refresh token's where `tokens` has one). Called on a thread of its own, once for each
+    /// capture, `sign_in` one of the run's sign-in grants, `key` as [`lease`](Self::lease) is
+    /// given it. An orchestrator that serves no sign-in refuses it `Unanswered`, as this does.
+    fn capture(
+        &self,
+        _sign_in: &str,
+        _tokens: SignInTokens,
+        _key: Option<[u8; 32]>,
+    ) -> Result<Captured, SignInRefusal> {
+        Err(SignInRefusal::Unanswered)
+    }
+    /// Sign-in `sign_in` refreshed by its broker, which alone calls its provider (Q1), once for
+    /// every run of it at a time (RFC 6749 §6), keeping the rotated tokens under the references
+    /// its capture gave: the token response its CLI is to have, as its provider gave it or with
+    /// the sign-in's placeholders in its tokens' places, as the run's injector gives them those
+    /// whatever it holds (Q2: they stay). Called on a thread of its own, once for each ask, every
+    /// flow of the run that asked one joined to it; once it answers, each lease of the access
+    /// token given the run is released ([`release`](Self::release)), its value rotated. Refused
+    /// `Unanswered` by an orchestrator that serves no sign-in, as by this.
+    fn refresh(&self, _sign_in: &str, _key: Option<[u8; 32]>) -> Result<Secret, SignInRefusal> {
+        Err(SignInRefusal::Unanswered)
+    }
+    /// The run's VM revoked sign-in `sign_in` (its CLI's logout, or a sign-in anew): answered
+    /// in the run's network process, its stored tokens kept. Told, on a thread of its own, so
+    /// that its broker may say so; never a revocation of the sign-in outside.
+    fn revoked(&self, _sign_in: &str, _key: Option<[u8; 32]>) {}
 }
 
 /// A run's [`Lessor`], as its spec holds it: equal to another where it is the same one, and
@@ -185,6 +217,13 @@ pub struct ImageSpec {
     /// What answers the run's credential leases, for this run alone (D242): needed by a run
     /// with credential grants, which is refused without one; a run with none asks nothing.
     pub lessor: Option<RunLessor>,
+    /// The run's sign-in grants (D242, step 8): each a sign-in its CLI may sign in as (its name
+    /// in the orchestrator's store), the hosts its access token goes to, and the placeholders
+    /// an earlier capture of it gave, staged by the orchestrator into its CLI's file. Its
+    /// tokens are taken outside the microVM by the run's injector and kept by its
+    /// [`lessor`](Self::lessor), needed by a run with any. One sign-in of a CLI a run. Empty
+    /// for a run with none (default deny).
+    pub sign_ins: Vec<SignInGrant>,
     pub shares: Vec<ImageShare>,
     /// The nesting grant for the run's own command (D234): the run's consent, as
     /// `--security-opt nesting=true` gives it to `run vm`. Given only where the image's
@@ -291,6 +330,106 @@ pub trait Images: Send + Sync {
     /// past it, the run's host is killed and its run refused with what it last said. It is
     /// the caller's until it drops, which ends it.
     fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal>;
+    /// [`boot`](Self::boot), ended by `stop` (D231's stop of a boot under way): a
+    /// [`BootStop::stop`] from any thread while it boots kills the run's host and every
+    /// process it started, and the boot returns [`ImageRefusal::Ended`]`(`[`RunEnd::Stopped`]`)`
+    /// once they are gone; a stop that came before is the same, booting nothing. A stop that
+    /// comes after the boot has returned is no longer the boot's: the guest's own
+    /// [`stop`](ImageGuest::stop) ends its run.
+    ///
+    /// By default, for an implementor with no run host to end mid-boot, the stop is honoured
+    /// as the boot returns: its guest stopped, and `Ended(Stopped)` returned.
+    fn boot_stoppable(
+        &self,
+        spec: &ImageSpec,
+        patience: Duration,
+        stop: &BootStop,
+    ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        if stop.is_stopped() {
+            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+        }
+        let guest = self.boot(spec, patience)?;
+        if stop.is_stopped() {
+            let _ = guest.stop();
+            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+        }
+        Ok(guest)
+    }
+}
+
+/// A stop for a boot under way ([`Images::boot_stoppable`], D231): its caller's, given to one
+/// boot at a time by reference and stopped from any other thread. Its stop is an event, never
+/// a flag a boot looks at: it kills the run host the boot holds here at once, every process
+/// that host started with it, and the boot, which waits on that host's end, returns as the
+/// host is followed to its end. Once stopped it stays stopped.
+#[derive(Debug, Default)]
+pub struct BootStop(Mutex<Stopping>);
+
+/// A [`BootStop`]'s state (R04): `Armed` to `Booting` as a boot holds its run host here and
+/// back as the boot lets go of it; either to `Stopped`, killing a host held, which a boot
+/// holding a host after finds and kills at once.
+#[derive(Debug, Default)]
+enum Stopping {
+    /// Not stopped, and no boot holds a run host here.
+    #[default]
+    Armed,
+    /// A boot holds its run host here while its run starts: the host the boot's own
+    /// session and its exit watcher already share.
+    Booting(Arc<shards_ipc::Child>),
+    /// Stopped: terminal.
+    Stopped,
+}
+
+impl BootStop {
+    pub fn new() -> BootStop {
+        BootStop::default()
+    }
+
+    /// Stops the boot under way, killing its run host and all the host started, or the next
+    /// boot given it. Never refused; once is enough. Returns at once: the boot returns
+    /// `Ended(Stopped)` once they are gone.
+    pub fn stop(&self) {
+        let mut state = self.state();
+        if let Stopping::Booting(host) = std::mem::replace(&mut *state, Stopping::Stopped) {
+            session::kill(&host);
+        }
+    }
+
+    /// Whether it has been stopped.
+    pub fn is_stopped(&self) -> bool {
+        matches!(*self.state(), Stopping::Stopped)
+    }
+
+    /// A boot's run `host`, held here until [`release`](Self::release): killed at once where
+    /// the stop has come. Refused where another boot holds one here.
+    fn hold(&self, host: &Arc<shards_ipc::Child>) -> Result<(), ImageRefusal> {
+        let mut state = self.state();
+        match *state {
+            Stopping::Armed => *state = Stopping::Booting(host.clone()),
+            Stopping::Booting(_) => {
+                return Err(ImageRefusal::Spec {
+                    what: "the boot's stop",
+                    why: "another boot under way holds it".into(),
+                });
+            }
+            Stopping::Stopped => session::kill(host),
+        }
+        Ok(())
+    }
+
+    /// Lets go of the host a boot held here: whether the stop came first.
+    fn release(&self) -> bool {
+        let mut state = self.state();
+        if matches!(*state, Stopping::Stopped) {
+            return true;
+        }
+        *state = Stopping::Armed;
+        false
+    }
+
+    fn state(&self) -> MutexGuard<'_, Stopping> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 /// A booted image. Dropping it ends it.
@@ -437,9 +576,21 @@ impl Images for ImageShards {
     }
 
     fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        self.boot_stoppable(spec, patience, &BootStop::new())
+    }
+
+    fn boot_stoppable(
+        &self,
+        spec: &ImageSpec,
+        patience: Duration,
+        stop: &BootStop,
+    ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        if stop.is_stopped() {
+            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+        }
         crate::backend().map_err(no_backend)?;
         let request = request(spec)?;
-        Ok(Box::new(session::Session::start(spec, &request, patience)?))
+        Ok(Box::new(session::Session::start(spec, &request, patience, stop)?))
     }
 }
 
@@ -473,9 +624,21 @@ impl Images for ImagePools {
     }
 
     fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        self.boot_stoppable(spec, patience, &BootStop::new())
+    }
+
+    fn boot_stoppable(
+        &self,
+        spec: &ImageSpec,
+        patience: Duration,
+        stop: &BootStop,
+    ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        if stop.is_stopped() {
+            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+        }
         crate::backend().map_err(no_backend)?;
         let request = request(spec)?;
-        self.0.boot(spec, &request, patience)
+        self.0.boot(spec, &request, patience, stop)
     }
 }
 
@@ -484,6 +647,67 @@ fn no_backend(r: crate::Refusal) -> ImageRefusal {
         crate::Refusal::NoBackend { os, arch } => ImageRefusal::NoBackend { os, arch },
         other => ImageRefusal::Boot(other.to_string()),
     }
+}
+
+/// The run's sign-in grants (D242, step 8), as its request carries them: each names its sign-in
+/// and the hosts its access token goes to, each host a DNS name as a credential grant's are
+/// (lowered, never an address, a port or localhost); one sign-in of a CLI a run, as a capture
+/// names no sign-in; each placeholder an earlier capture gave a token, and one credential's alone,
+/// the run's credential grants' included; and a lessor to keep their tokens.
+fn sign_ins(
+    spec: &ImageSpec,
+    credentials: &[wire::CredentialGrant],
+) -> Result<Vec<SignInGrant>, ImageRefusal> {
+    let refuse = |why: String| ImageRefusal::Spec {
+        what: "a sign-in grant",
+        why,
+    };
+    let mut sign_ins: Vec<SignInGrant> = Vec::with_capacity(spec.sign_ins.len());
+    for s in &spec.sign_ins {
+        if s.sign_in.is_empty() {
+            return Err(refuse("a grant names its sign-in, which is empty".into()));
+        }
+        if s.toward.is_empty() {
+            return Err(refuse(format!(
+                "{}: a sign-in whose access token goes to no host could never be used",
+                s.sign_in
+            )));
+        }
+        if sign_ins.iter().any(|o| o.cli == s.cli) {
+            return Err(refuse(format!(
+                "{}: a second sign-in of its CLI, where a capture names no sign-in",
+                s.sign_in
+            )));
+        }
+        let mut toward = Vec::with_capacity(s.toward.len());
+        for host in &s.toward {
+            let lowered = host.to_ascii_lowercase();
+            if !shards_dns::host_name(&lowered) || lowered == "localhost" || lowered.ends_with(".localhost") {
+                return Err(refuse(format!(
+                    "{}: {host} is not a host a token is filled in toward: a DNS name, or {}, without a \
+                     port and never localhost (TLS names a server by its DNS name alone, RFC 6066 §3)",
+                    s.sign_in,
+                    shards_dns::HOST
+                )));
+            }
+            toward.push(lowered);
+        }
+        sign_ins.push(SignInGrant {
+            sign_in: s.sign_in.clone(),
+            cli: s.cli,
+            toward,
+            captured: s.captured.clone(),
+        });
+    }
+    shards_dns::credential::check_sign_ins(credentials, &sign_ins)
+        .map_err(|refused| refuse(refused.to_string()))?;
+    if !sign_ins.is_empty() && spec.lessor.is_none() {
+        return Err(ImageRefusal::Spec {
+            what: "the run's lessor",
+            why: "a run with sign-in grants needs a lessor to keep their tokens".into(),
+        });
+    }
+    Ok(sign_ins)
 }
 
 /// `spec` as the run host reads it, refused here where it could never be run: a member's
@@ -650,6 +874,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             why: "a run with credential grants needs a lessor to lease their values".into(),
         });
     }
+    let sign_ins = sign_ins(spec, &credentials)?;
     // The run's agent-control endpoint (D252): its socket grant's directory absolute and plain,
     // as a member's working directory is, refused here, by the run host and by init; its
     // admission one lane and one byte at least (R03: the caller's numbers), and the grant a run's
@@ -698,6 +923,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
         credentials,
         control: spec.control.clone(),
         gpu_devices: spec.gpu_devices.clone(),
+        sign_ins,
     };
     // Past the channel's bound it would never be read; the guest's bound is the same one.
     request.encode().map_err(|e| ImageRefusal::Spec {
@@ -749,6 +975,7 @@ mod tests {
             env: Vec::new(),
             control: None,
             gpu_devices: Vec::new(),
+            sign_ins: Vec::new(),
         }
     }
 

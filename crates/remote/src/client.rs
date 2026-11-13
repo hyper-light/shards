@@ -13,7 +13,7 @@ use hyper_quic::StreamId;
 use crate::frame::{self, Request, Tag};
 use crate::identity::{Fingerprint, Identity};
 use crate::invite::{self, Invitation};
-use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Seen, Sender};
+use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, RanOut, Read as StreamRead, Seen, Sender};
 use crate::{Error, server, tls};
 
 /// Where the daemon is: its address, its key's SHA-256, and what this home knows of it from its
@@ -37,6 +37,23 @@ pub struct Unanswered {
 
 /// Whether a handshake that has not ended waits on ([`Unanswered`]).
 type Waits<'a> = Box<dyn FnMut(Unanswered) -> bool + 'a>;
+
+/// A stall of the daemon's as a command waits on its answer (R04), each told once: unheard past
+/// the window its path has shown, the command waiting on with no window for as long as its
+/// caller does, the daemon busy, its host loaded, or gone (ROOT's ruling A); then answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stall {
+    /// Unheard `unheard` long, past `window` (`net::RanOut::Stalled`).
+    Unheard {
+        unheard: std::time::Duration,
+        window: std::time::Duration,
+    },
+    /// Answered at last, `after` the send it stalled on (`net::RanOut::Answered`).
+    Answered { after: std::time::Duration },
+}
+
+/// What is told of a stall ([`Stall`]).
+type Stalls<'a> = Box<dyn FnMut(Stall) + 'a>;
 
 enum Ask {
     /// A command; `input`, whether its stdin is sent: a command given none reads the end of
@@ -154,6 +171,8 @@ struct Client<'a> {
     made: Option<Made<'a>>,
     /// Asked, as each probe of a handshake that has not ended goes, whether it waits on.
     waits: Option<Waits<'a>>,
+    /// Told of each stall of its daemon's.
+    stalls: Option<Stalls<'a>>,
     answer: Option<Answer>,
     failed: Option<String>,
     done: bool,
@@ -490,6 +509,18 @@ impl Handler for Client<'_> {
         }
     }
 
+    /// Its daemon unheard past its window, and answered after: told its caller ([`Stall`]).
+    fn ran_out(&mut self, _io: &mut Io<'_>, _conn: ConnKey, what: RanOut) {
+        let stall = match what {
+            RanOut::Stalled { unheard, window } => Stall::Unheard { unheard, window },
+            RanOut::Answered { after } => Stall::Answered { after },
+            RanOut::Handshake { .. } | RanOut::Send { .. } => return,
+        };
+        if let Some(stalls) = self.stalls.as_mut() {
+            stalls(stall);
+        }
+    }
+
     fn command(&mut self, io: &mut Io<'_>, command: Event) {
         match command {
             Event::Connect => {
@@ -602,9 +633,11 @@ pub fn exec_made(
 
 /// [`exec_made`], `unanswered` asked as each probe of a handshake that has not ended goes
 /// whether it waits on ([`Unanswered`]: a handshake is waited for as long as its caller does,
-/// one with a daemon reached before past its run-out too), `hang_up` given what ends it from
-/// another thread once its connection is made ([`HangUp`]), and what its connection saw
-/// ([`Seen`]), answered or not, for what its caller keeps of the daemon ([`tls::Known::after`]).
+/// one with a daemon reached before past its run-out too), `stalled` told of each stall of its
+/// daemon's and its end ([`Stall`]: waited through for as long as its caller waits), `hang_up` given what
+/// ends it from another thread once its connection is made ([`HangUp`]), and what its connection
+/// saw ([`Seen`]), answered or not, for what its caller keeps of the daemon
+/// ([`tls::Known::after`]).
 #[allow(clippy::too_many_arguments)]
 pub fn exec_with(
     identity: &Identity,
@@ -616,6 +649,7 @@ pub fn exec_with(
     steered: impl FnOnce(Controls),
     made: impl FnMut(&[u8]),
     unanswered: impl FnMut(Unanswered) -> bool,
+    stalled: impl FnMut(Stall),
     hang_up: impl FnOnce(HangUp),
 ) -> (Result<Result<i32, String>, Error>, Seen) {
     let input = stdin.is_some();
@@ -630,6 +664,7 @@ pub fn exec_with(
             steered: Some(Box::new(steered)),
             made: Some(Box::new(made)),
             waits: Some(Box::new(unanswered)),
+            stalls: Some(Box::new(stalled)),
             hang_up: Some(Box::new(hang_up)),
         },
         &mut seen,
@@ -681,12 +716,14 @@ type Made<'a> = Box<dyn FnMut(&[u8]) + 'a>;
 
 /// What a run's caller is given and asked as it goes, besides its output: what steers the
 /// command once it is asked for, what it tells of the microVM it made, whether a handshake
-/// that has not ended waits on, and what ends it from another thread from the start.
+/// that has not ended waits on, each stall of its daemon's, and what ends it from another
+/// thread from the start.
 #[derive(Default)]
 struct Hooks<'a> {
     steered: Option<Box<dyn FnOnce(Controls) + 'a>>,
     made: Option<Made<'a>>,
     waits: Option<Waits<'a>>,
+    stalls: Option<Stalls<'a>>,
     hang_up: Option<Box<dyn FnOnce(HangUp) + 'a>>,
 }
 
@@ -704,6 +741,7 @@ fn run(
         steered,
         made,
         waits,
+        stalls,
         hang_up,
     } = hooks;
     let config = tls::client(identity, remote.daemon, remote.known)?;
@@ -736,6 +774,7 @@ fn run(
             steering: None,
             made,
             waits,
+            stalls,
             answer: None,
             failed: None,
             done: false,

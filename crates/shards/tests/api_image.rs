@@ -94,6 +94,7 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         env: host_env(home),
         control: None,
         gpu_devices: Vec::new(),
+        sign_ins: Vec::new(),
     }
 }
 
