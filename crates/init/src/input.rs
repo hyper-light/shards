@@ -9,6 +9,10 @@
 //! init closes the pipe, so the member reads its end, and tells the owner how it ended and
 //! how many bytes the member's stdin took ([`managed::InputEnded`]): its owner's end, the
 //! member no longer reading, or the connection failing, refused or ending first.
+//!
+//! A member with a terminal of its own (plan step 6, D244) has its terminal for its stdin:
+//! its owner's bytes are written to the terminal's master instead, as keys typed, and its
+//! input's end leaves the terminal open, as a terminal's typist going does.
 
 use std::fs::File;
 use std::io;
@@ -55,11 +59,22 @@ enum State {
     Told,
 }
 
+/// What the owner's bytes are written to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sink {
+    /// A pipe whose read end is the member's stdin.
+    Pipe,
+    /// The master of the member's own terminal.
+    Terminal,
+}
+
 #[derive(Debug)]
 pub struct Input {
     member: u32,
-    /// The pipe's write end, nonblocking: the member holds its read end.
+    /// The pipe's write end, nonblocking: the member holds its read end. With a terminal,
+    /// a descriptor of its master.
     pipe: Option<OwnedFd>,
+    sink: Sink,
     /// The member's input connection, nonblocking.
     conn: Option<File>,
     state: State,
@@ -92,6 +107,22 @@ impl Input {
         if unsafe { libc::fcntl(write.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
             return Err(io::Error::last_os_error());
         }
+        Ok((Self::dialing(member, token, write, Sink::Pipe)?, read))
+    }
+
+    /// The input of a member with a terminal of its own (plan step 6, D244), written to
+    /// `master`, a descriptor of the terminal's master, made nonblocking (as every
+    /// descriptor of it is: its status flags are its open file's).
+    pub fn terminal(member: u32, token: &[u8; run::TOKEN], master: OwnedFd) -> io::Result<Self> {
+        // SAFETY: fcntl of the master's descriptor, which this owns.
+        if unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Self::dialing(member, token, master, Sink::Terminal)
+    }
+
+    /// The input writing to `pipe`, its connection dialed.
+    fn dialing(member: u32, token: &[u8; run::TOKEN], pipe: OwnedFd, sink: Sink) -> io::Result<Self> {
         let mut hello = [0; run::HEADER + run::TOKEN];
         let (header, bytes) = hello
             .split_first_chunk_mut::<{ run::HEADER }>()
@@ -100,7 +131,8 @@ impl Input {
         bytes.copy_from_slice(token);
         let mut input = Self {
             member,
-            pipe: Some(write),
+            pipe: Some(pipe),
+            sink,
             conn: None,
             state: State::Dialing { hello },
             buffer: Vec::new(),
@@ -113,7 +145,7 @@ impl Input {
             Ok(conn) => input.conn = Some(conn),
             Err(e) => input.end(aborted(&e)),
         }
-        Ok((input, read))
+        Ok(input)
     }
 
     /// The connection, and what to wait for of it: its hello's room to go, or bytes once all
@@ -147,9 +179,11 @@ impl Input {
         matches!(self.frame, Frame::Payload { left } if left > 0) && self.taken < self.filled
     }
 
-    /// The pipe's events: its room, or its reader gone.
+    /// The pipe's events: its room, or its reader gone, which a pipe says as POLLERR and a
+    /// terminal's master as POLLHUP once its last other end has closed (Linux
+    /// drivers/tty/n_tty.c, `n_tty_poll`); a pipe's write end is never hung up.
     pub fn on_pipe(&mut self, revents: libc::c_short) {
-        if revents & libc::POLLERR != 0 && !self.pending() {
+        if revents & (libc::POLLERR | libc::POLLHUP) != 0 && !self.pending() {
             self.end(InputEnd::Aborted(libc::EPIPE));
             return;
         }
@@ -214,9 +248,16 @@ impl Input {
             return Ok(true);
         }
         let pipe = self.pipe.as_ref().ok_or(InputEnd::Aborted(libc::EBADF))?;
-        // SAFETY: fcntl of the pipe's write end, which init holds.
-        let size = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETPIPE_SZ) };
-        let size = usize::try_from(size).map_err(|_| aborted(&io::Error::last_os_error()))?;
+        let size = match self.sink {
+            Sink::Pipe => {
+                // SAFETY: fcntl of the pipe's write end, which init holds.
+                let size = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETPIPE_SZ) };
+                usize::try_from(size).map_err(|_| aborted(&io::Error::last_os_error()))?
+            }
+            // A terminal has no pipe's size to ask: a frame at once, the most one carries
+            // (run::CHUNK) after its header, the master's own buffer taking what it can.
+            Sink::Terminal => run::HEADER + run::CHUNK,
+        };
         if size == 0 {
             return Err(InputEnd::Aborted(libc::EINVAL));
         }
@@ -376,6 +417,7 @@ mod tests {
         Input {
             member,
             pipe: Some(write),
+            sink: Sink::Pipe,
             conn: Some(File::from(OwnedFd::from(conn))),
             state,
             buffer,
@@ -506,6 +548,82 @@ mod tests {
                 end: InputEnd::Aborted(libc::EPIPE),
             })
         );
+    }
+
+    /// A member's own terminal's master as its input's sink, raw at its other end so that
+    /// its line discipline passes bytes as they are (termios(3), cfmakeraw).
+    fn terminal_input(member: u32) -> (Input, UnixStream, File, File) {
+        // SAFETY: geteuid(2) reads this process's effective uid.
+        let (master, other) =
+            crate::enter::terminal(run::Size::default(), unsafe { libc::geteuid() }).unwrap();
+        // SAFETY: tcgetattr(3) and tcsetattr(3) of the terminal's other end, ours.
+        unsafe {
+            let mut t: libc::termios = std::mem::zeroed();
+            assert_eq!(libc::tcgetattr(other.as_raw_fd(), &raw mut t), 0);
+            libc::cfmakeraw(&raw mut t);
+            assert_eq!(libc::tcsetattr(other.as_raw_fd(), libc::TCSANOW, &raw const t), 0);
+        }
+        let held = File::from(master.try_clone().unwrap());
+        let (conn, peer) = UnixStream::pair().unwrap();
+        conn.set_nonblocking(true).unwrap();
+        let input = Input {
+            member,
+            pipe: Some(master),
+            sink: Sink::Terminal,
+            conn: Some(File::from(OwnedFd::from(conn))),
+            state: State::Relaying,
+            buffer: vec![0; run::HEADER + run::CHUNK],
+            filled: 0,
+            taken: 0,
+            frame: HEADER_NEW,
+            written: 0,
+        };
+        (input, peer, File::from(other), held)
+    }
+
+    /// A member with a terminal of its own (plan step 6, D244): its owner's bytes are typed
+    /// into the terminal as they came; its owner's end leaves the terminal open, its master
+    /// held elsewhere still working; and its last other end closing ends an idle input as a
+    /// pipe's reader going does.
+    #[test]
+    fn a_terminals_input_is_typed_into_it_and_its_hangup_ends_it() {
+        let (mut input, mut peer, mut other, mut held) = terminal_input(4);
+        let payload = b"\x1b[A\0\xffq";
+        peer.write_all(&stdin_frame(payload)).unwrap();
+        input.progress();
+        let mut got = [0; 6];
+        other.read_exact(&mut got).unwrap();
+        assert_eq!(&got, payload);
+        peer.write_all(&stdin_frame(b"")).unwrap();
+        input.progress();
+        assert_eq!(
+            input.report(),
+            Some(InputEnded {
+                member: 4,
+                written: payload.len() as u64,
+                end: InputEnd::Closed,
+            })
+        );
+        assert!(input.pipe.is_none());
+        other.write_all(b"still").unwrap();
+        let mut still = [0; 5];
+        held.read_exact(&mut still).unwrap();
+        assert_eq!(&still, b"still", "the terminal outlives its input");
+
+        let (mut input, _peer, other, _held) = terminal_input(5);
+        let (fd, events) = input.pipe();
+        assert_eq!(events, libc::POLLERR);
+        drop(other);
+        let mut set = [libc::pollfd {
+            fd: fd.unwrap(),
+            events,
+            revents: 0,
+        }];
+        // SAFETY: poll(2) of one valid pollfd.
+        assert_eq!(unsafe { libc::poll(set.as_mut_ptr(), 1, 0) }, 1);
+        assert_ne!(set[0].revents & libc::POLLHUP, 0);
+        input.on_pipe(set[0].revents);
+        assert_eq!(input.report().unwrap().end, InputEnd::Aborted(libc::EPIPE));
     }
 
     #[test]

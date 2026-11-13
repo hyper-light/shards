@@ -209,6 +209,11 @@ pub trait Handler {
     /// code its peer closed it with, where its peer did (RFC 9000 §20.2). One this side closed
     /// is not told of: its handler knows.
     fn lost(&mut self, io: &mut Io<'_>, conn: ConnKey, why: &str, code: Option<u64>);
+    /// Why a connection ended, as QUIC told it (RFC 9000 §20, RFC 9001 §4.8), just before
+    /// [`Handler::lost`] tells of it: for a handler that types its peer's refusals, which
+    /// `lost`'s words and application code do not carry. Nothing, by default; a connection
+    /// whose handshake ran out of patience ([`DriverLimits::handshake_patience`]) has none.
+    fn cause(&mut self, _conn: ConnKey, _error: &ConnectionError) {}
     /// Another thread's command.
     fn command(&mut self, io: &mut Io<'_>, command: Self::Command);
     /// The peer allows more of the streams this side opens (MAX_STREAMS, RFC 9000 §4.6): one
@@ -467,6 +472,19 @@ impl Io<'_> {
         if let Ok(conn) = self.conn(conn) {
             let _ = conn.quic.send_stream(stream).reset(VarInt::from_u32(0));
         }
+    }
+
+    /// Sets what `conn`'s peer may have open and send, and what this side keeps unacknowledged,
+    /// as streams come and go (RFC 9000 §4.1, §4.6): its concurrent bidirectional streams, the
+    /// connection's receive window, and this side's send window.
+    pub fn limit(&mut self, conn: ConnKey, streams: u64, receive: u64, send: u64) -> Result<(), Error> {
+        let window = |n: u64| VarInt::from_u64(n).map_err(|_| Error::new("a limit past QUIC's"));
+        let (streams, receive) = (window(streams)?, window(receive)?);
+        let conn = self.conn(conn)?;
+        conn.quic.set_max_concurrent_streams(Dir::Bi, streams);
+        conn.quic.set_receive_window(receive);
+        conn.quic.set_send_window(send);
+        Ok(())
     }
 
     /// Closes `conn`, saying `why` to its peer.
@@ -904,6 +922,7 @@ impl<H: Handler> Driver<H> {
                 };
                 let why = reason.to_string();
                 let (mut io, handler) = self.io(now);
+                handler.cause(key, &reason);
                 handler.lost(&mut io, key, &why, code);
                 self.client = io.client;
             }

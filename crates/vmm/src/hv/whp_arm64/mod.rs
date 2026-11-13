@@ -139,22 +139,21 @@ pub fn check_host() -> std::result::Result<(), String> {
 
 /// This host's refusal to assign a device, as the x86_64 WHP backend asks it: the
 /// capability and AllowDeviceAssignment on a temporary, unconfigured partition with
-/// no memory or device. `None` where WHP accepted the property: [`Vm::assigning`] then
-/// makes a partition a host's functions are assigned to ([`Vm::assign`]).
-pub fn device_assignment_refused() -> Option<String> {
+/// no memory or device, and this Windows' edition where it refuses (`super::assignment`).
+/// `None` where WHP accepted the property: [`Vm::assigning`] then makes a partition a
+/// host's functions are assigned to ([`Vm::assign`]).
+pub fn device_assignment_refused() -> Option<super::assignment::Refused> {
+    use super::assignment::{Edition, Refused};
     if !ffi::loaded() {
-        return Some("the Windows Hypervisor Platform is not on this host".into());
+        return Some(Refused::NoPlatform);
     }
-    let asked = |e: Error| Some(format!("asking the Windows Hypervisor Platform: {e}"));
+    let asked = |e: Error| Some(Refused::Unasked(e.to_string()));
     let features = match capability(CAP_FEATURES) {
         Ok(words) => words.first().copied().unwrap_or(0),
         Err(e) => return asked(e),
     };
     if features & FEATURE_VIRTUAL_PCI_DEVICES == 0 {
-        return Some(
-            "its Windows Hypervisor Platform makes no virtual PCI device of a host's (WHvCapabilityCodeFeatures: VirtualPciDeviceSupport 0)"
-                .into(),
-        );
+        return Some(Refused::NoVirtualPci);
     }
     let mut handle: ffi::Partition = 0;
     // SAFETY: a handle for the call to fill. No vCPU, mapping or device is created.
@@ -173,14 +172,11 @@ pub fn device_assignment_refused() -> Option<String> {
             "WHvSetPartitionProperty(AllowDeviceAssignment)",
         )
         .err()?;
-    let iommu = if features & FEATURE_IOMMU_SUPPORT == 0 {
-        ", and says it has no IOMMU support (WHvCapabilityCodeFeatures: IommuSupport 0)"
-    } else {
-        ""
-    };
-    Some(format!(
-        "its hypervisor assigns no device to a partition: {refused}{iommu}"
-    ))
+    Some(Refused::NotAllowed {
+        refused: refused.to_string(),
+        iommu: features & FEATURE_IOMMU_SUPPORT != 0,
+        edition: crate::platform::product_type().map(Edition::of),
+    })
 }
 
 /// M414 set back the global GIC state and each vCPU's interrupt controller state, and

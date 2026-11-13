@@ -83,6 +83,7 @@ crates/vmm/src/vm/x86_64.rs	impl crate	crates/vmm/src/hv/whp/vpci.rs	fn map_inte
 crates/vmm/src/vm/mod.rs	fn route	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	as route
 crates/vmm/src/vm/mod.rs	fn route	crates/vmm/src/hv/whp/vpci.rs	fn map_interrupt [windows]	a passed-through function's MSIs into the guest: KVM's irqfds on Linux; on Windows each MSI the guest programs mapped by WHP (WHvMapVpciDeviceInterrupt; devices::pci::assigned, D154, d3029698): on x86_64 to the vCPUs it names (WHvGetInterruptTargetVpSet), on arm64 to the SPI the GICv2m frame the VMM keeps names, at one vCPU, as WHP aims each MSI at one there (vpci.rs's target, shared by both WHP backends since p/whp-assign-gaps)
 crates/vmm/src/vm/mod.rs	fn passthrough_refused	crates/vmm/src/devices/pci/mod.rs	mod vfio [linux]	the refusal of macOS and Windows, with each host's own limit, Windows' as its hypervisor answers (D154, PM M356, M401-M403); Linux's VFIO
+crates/vmm/src/vm/mod.rs	mod passthrough	crates/vmm/src/devices/pci/mod.rs	mod vfio [linux]	why a host off Linux passes no PCI function, or this one, through, typed: each variant its OS's own limit (macOS's Hypervisor.framework assigns no device; Windows' hypervisor's own answer, its edition naming whose limit; where it assigns, no guest IOMMU and no plug as a VM runs) (D154, PM M401-M403); Linux passes one through by VFIO
 crates/shards/src/run.rs	fn names_a_function	-	none: linux	a run's device that names a host's PCI function, refused off Linux with the host's own limit (D154); Linux passes it through, the run given its VFIO group (vfio_groups)
 crates/vmm/src/devices/pci/mod.rs	mod vfio	crates/vmm/src/vm/mod.rs	fn passthrough_refused [macos]	Linux's VFIO; macOS's refusal names its API limit (D154, M403)
 crates/vmm/src/devices/pci/mod.rs	mod vfio	crates/vmm/src/devices/pci/mod.rs	mod assigned [windows]	a host's function given the VM's kernel as it boots: VFIO on Linux; on Windows Discrete Device Assignment by WHP's virtual PCI devices (hv::whp's vpci.rs, both backends', x86_64's and arm64's; devices::pci::assigned; D154, d3029698) where its hypervisor assigns one, refused with its own answer where it does not (PM M401, M402), its E2E waiting on a Windows Server host that assigns one
@@ -351,13 +352,12 @@ crates/shards/src/context.rs	fn signal_descriptor	-	none: linux,macos	as SIGNAL_
 crates/shards/src/synced.rs	fn given_secrets	-	none: linux,macos	a Windows build reads a secret its daemon gave it at a number from that handle; a Unix build reads the descriptor's path (/dev/fd/N) as any file's
 crates/shards/src/cli/client.rs	fn take_signal_pipe	-	none: linux,macos	a Windows client's command takes its signals from its daemon's pipe (context::SIGNAL_FD); a Unix command takes them as any process does
 crates/shards/src/daemon/relay.rs	impl Default	-	none: linux,macos	Relays' Default, which Unix derives (cfg_attr(unix, derive(Default))); Windows' channel of clients taken has none to derive
-crates/shards/src/daemon/relay.rs	type Taken	crates/shards/src/daemon/relay.rs	fn relay_polled	a context's engine clients taken: on Windows by a thread per context's pipe (WaitForMultipleObjects waits on 64 handles at most), on Unix by the daemon's poll(2) of the listeners
-crates/shards/src/daemon/relay.rs	struct Came	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken
-crates/shards/src/daemon/relay.rs	struct Taker	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken
-crates/shards/src/daemon/relay.rs	impl Taker	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken
-crates/shards/src/daemon/relay.rs	impl Drop	crates/shards/src/daemon/relay.rs	fn relay_polled	as Taken: the Windows taker's stop
+crates/shards/src/daemon/relay.rs	type Taken	crates/shards/src/daemon/relay.rs	fn relay_waiting [linux,macos]	a context's engine clients taken: on Windows by a thread per context's pipe (WaitForMultipleObjects waits on 64 handles at most), on Unix by the daemon's poll(2) of the listeners
+crates/shards/src/daemon/relay.rs	struct Came	crates/shards/src/daemon/relay.rs	fn relay_waiting [linux,macos]	as Taken
+crates/shards/src/daemon/relay.rs	struct Taker	crates/shards/src/daemon/relay.rs	fn relay_waiting [linux,macos]	as Taken
+crates/shards/src/daemon/relay.rs	impl Taker	crates/shards/src/daemon/relay.rs	fn relay_waiting [linux,macos]	as Taken
+crates/shards/src/daemon/relay.rs	impl Drop	crates/shards/src/daemon/relay.rs	fn relay_waiting [linux,macos]	as Taken: the Windows taker's stop
 crates/shards/src/daemon/relay.rs	fn fds	crates/shards/src/daemon/relay.rs	struct Taker	as Taken: the listeners the Unix daemon polls
-crates/shards/src/daemon/relay.rs	fn relay_polled	crates/shards/src/daemon/relay.rs	struct Taker	as Taken
 crates/shards/src/daemon/remote.rs	struct Console	crates/shards/src/daemon/remote.rs	fn open_pty	a client's command's or build's terminal: a pseudoconsole (ConPTY) on Windows, a pseudo-terminal on Unix
 crates/shards/src/daemon/remote.rs	type Held	crates/shards/src/daemon/remote.rs	fn open_pty	as Console
 crates/shards/src/daemon/remote.rs	impl Console	crates/shards/src/daemon/remote.rs	fn open_pty	as Console
@@ -483,3 +483,69 @@ crates/shards/src/warm.rs	const RUN_DESCRIPTORS	-	none: macos,windows	room made 
 crates/shards/src/warm.rs	fn reserve_descriptors	-	none: macos,windows	as RUN_DESCRIPTORS
 crates/api/src/stream.rs	mod unix	crates/api/src/stream.rs	impl Socket [windows]	a guest connection's socket and its waits: Unix's stream socket, its timeouts and reads in poll(2) (PM M236); Windows' AF_UNIX socket (shards_afunix), which polls them itself
 crates/api/src/stream.rs	impl Socket	crates/api/src/stream.rs	mod unix [linux,macos]	as mod unix: Windows' AF_UNIX socket, Unix's stream socket
+crates/apple/src/lib.rs	mod fsevents	crates/vmm/src/platform/unix.rs	fn watch_named [linux]	a share's host edits told its guest (D235): macOS's FSEvents, bound when first used; Linux's inotify; Windows' ReadDirectoryChangesW (server.rs changes_root)
+crates/apple/src/lib.rs	mod fsevents	crates/vmm/src/devices/virtio/fs/server.rs	fn changes_root [windows]	as watch_named
+crates/vmm/src/platform/unix.rs	struct Named	crates/apple/src/lib.rs	mod fsevents [macos]	an inotify event, by its watch (D235), Linux's; macOS's FSEvents names each change by its path
+crates/vmm/src/platform/unix.rs	fn watch_named	crates/apple/src/lib.rs	mod fsevents [macos]	a directory watched for a share's guest (D235): Linux's inotify, every watch one instance's (PM M257); macOS's FSEvents
+crates/vmm/src/platform/unix.rs	fn watch_named	crates/vmm/src/devices/virtio/fs/server.rs	fn changes_root [windows]	as watch_named: Windows' ReadDirectoryChangesW on the share's root
+crates/vmm/src/platform/unix.rs	fn unwatch_named	crates/apple/src/lib.rs	mod fsevents [macos]	as watch_named
+crates/vmm/src/platform/unix.rs	fn unwatch_named	crates/vmm/src/devices/virtio/fs/server.rs	fn changes_root [windows]	as watch_named
+crates/vmm/src/devices/virtio/fs/server.rs	struct Watching	crates/vmm/src/devices/virtio/fs/server.rs	fn root_path [macos]	a share's host edits told its guest (D235): Linux's inotify watch of each directory node the guest holds; macOS's FSEvents on the share's root path
+crates/vmm/src/devices/virtio/fs/server.rs	struct Watching	crates/vmm/src/devices/virtio/fs/server.rs	fn changes_root [windows]	as Watching: Windows' ReadDirectoryChangesW on the share's root, reopened
+crates/vmm/src/devices/virtio/fs/server.rs	const WATCHED	crates/vmm/src/devices/virtio/fs/server.rs	fn root_path [macos]	as Watching: the inotify events watched, Linux's
+crates/vmm/src/devices/virtio/fs/server.rs	const WATCHED	crates/vmm/src/devices/virtio/fs/server.rs	fn changes_root [windows]	as Watching
+crates/vmm/src/devices/virtio/fs/server.rs	fn watch_dirs	crates/vmm/src/devices/virtio/fs/server.rs	fn root_path [macos]	as Watching
+crates/vmm/src/devices/virtio/fs/server.rs	fn watch_dirs	crates/vmm/src/devices/virtio/fs/server.rs	fn changes_root [windows]	as Watching
+crates/vmm/src/devices/virtio/fs/server.rs	fn root_path	crates/vmm/src/devices/virtio/fs/server.rs	fn watch_dirs [linux]	as Watching
+crates/vmm/src/devices/virtio/fs/server.rs	fn root_path	crates/vmm/src/devices/virtio/fs/server.rs	fn changes_root [windows]	as Watching
+crates/vmm/src/devices/virtio/fs/server.rs	fn changes_root	crates/vmm/src/devices/virtio/fs/server.rs	fn watch_dirs [linux]	as Watching
+crates/vmm/src/devices/virtio/fs/server.rs	fn changes_root	crates/vmm/src/devices/virtio/fs/server.rs	fn root_path [macos]	as Watching
+crates/vmm/src/devices/virtio/fs/server.rs	fn noticed	crates/vmm/src/devices/virtio/fs/notices.rs	fn told [macos,windows]	the paths a host edit is of, told the guest (D235): Linux's from the nodes its watch is of; macOS's and Windows' from the paths their watchers give
+crates/vmm/src/devices/virtio/fs/notices.rs	fn told	crates/vmm/src/devices/virtio/fs/server.rs	fn noticed [linux]	as noticed
+crates/vmm/src/devices/virtio/fs/server.rs	fn path_of	-	none: macos,windows	a node's path from the names the guest gave it, for inotify's events, which name a watch (D235); FSEvents and ReadDirectoryChangesW name each change by its path beneath the root
+crates/vmm/src/devices/virtio/fs/server.rs	fn watch_dir	-	none: macos,windows	inotify watches one directory, so each the guest holds is watched as it looks it up (D235); FSEvents and ReadDirectoryChangesW watch the whole tree beneath the share's root (root_path, changes_root)
+crates/vmm/src/devices/virtio/fs/server.rs	fn unwatch_dir	-	none: macos,windows	as watch_dir
+crates/vmm/src/devices/virtio/fs/server_unix.rs	fn path_of_fd	crates/vmm/src/devices/virtio/fs/server.rs	fn watch_dirs [linux]	the share's root as its host's watcher takes it (D235): macOS's FSEvents by its path (F_GETPATH); Linux's inotify by its descriptor's /proc link
+crates/vmm/src/devices/virtio/fs/server_unix.rs	fn path_of_fd	crates/vmm/src/devices/virtio/fs/server.rs	fn changes_root [windows]	as path_of_fd: Windows' by a handle of the root reopened
+crates/shards/src/daemon.rs	type StartedShares	crates/shards/src/daemon.rs	fn started_shares [linux,macos]	what a share process's start gives (D197, D235): Windows' each share's VM end, its process and its notices' pipe, named for clippy's type_complexity; Unix's as its started_shares returns them
+crates/vmm/src/platform/unix.rs	fn mach_ns	crates/vmm/src/platform/unix.rs	fn thread_guest_ns [linux]	a vCPU's guest time in nanoseconds (vm::guest_time): HVF's hv_vcpu_get_exec_time, Mach ticks by the timebase; KVM's from /proc's clock ticks; WHP's 100 ns run-time counters
+crates/vmm/src/platform/unix.rs	fn mach_ns	crates/vmm/src/hv/mod.rs	fn whp_guest_ns [windows]	as mach_ns
+crates/vmm/src/platform/unix.rs	fn thread_guest_ns	crates/vmm/src/hv/hvf/mod.rs	struct GuestClock [macos]	a vCPU's guest time (vm::guest_time): KVM's vCPU thread's, /proc/self/task/TID/stat field 43; HVF's hv_vcpu_get_exec_time
+crates/vmm/src/platform/unix.rs	fn thread_guest_ns	crates/vmm/src/hv/whp/mod.rs	struct GuestClock [windows]	as thread_guest_ns: WHP's WHvGetVirtualProcessorCounters
+crates/vmm/src/platform/unix.rs	const STAT_LINE_MOST	crates/vmm/src/hv/hvf/mod.rs	struct GuestClock [macos]	as thread_guest_ns
+crates/vmm/src/platform/unix.rs	const STAT_LINE_MOST	crates/vmm/src/hv/whp/mod.rs	struct GuestClock [windows]	as thread_guest_ns
+crates/vmm/src/platform/unix.rs	fn guest_ticks	crates/vmm/src/hv/hvf/mod.rs	struct GuestClock [macos]	as thread_guest_ns
+crates/vmm/src/platform/unix.rs	fn guest_ticks	crates/vmm/src/hv/whp/mod.rs	struct GuestClock [windows]	as thread_guest_ns
+crates/shards/src/said.rs	fn recorder	crates/shards/src/cli/mod.rs	fn vm [windows]	a direct boot's console report recorded as its VM exits (D12): on Unix by `shards console-said`, started before the command line becomes the VM; on Windows by the command line that starts the VM and waits for it
+crates/shards/src/cli/mod.rs	fn said_recorded	crates/shards/src/cli/mod.rs	fn vm [windows]	as said.rs's recorder
+crates/shards/src/cli/mod.rs	fn said_kept	crates/shards/src/cli/mod.rs	fn vm [windows]	the VM's end of its report's pipe (D12): on Unix kept open through the exec into it; on Windows handed it by name (SAID_TO)
+crates/shards/src/cli/mod.rs	const SAID_TO	crates/shards/src/cli/mod.rs	fn said_recorded [linux,macos]	as said_kept
+crates/shards/src/vm_run.rs	fn lifeline_fd	-	none: windows	a managed VM's lifeline (D233): its launcher's pipe, whose end ends the VMM, as a Unix process's end takes no child with it; on Windows its client's native owner holds the VM process in a Job (D233), which ends it as its last handle goes (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+crates/shards/src/vm_run.rs	fn lifeline_open	-	none: windows	as lifeline_fd
+crates/shards/src/vm_run.rs	fn end_lifeline	-	none: windows	as lifeline_fd
+crates/api/src/physical.rs	fn lifeline_arguments	-	none: windows	as vm_run.rs's lifeline_fd: the lifeline's arguments, Unix's
+crates/shards/src/cli/mod.rs	struct CarriedVmIo	crates/shards/src/cli/mod.rs	fn gpu_reported [windows]	a managed GPU VM's report pipe given its VM (D232, D233): on Unix carried across the exec into it, with its lifeline; on Windows adopted and handed the VM by name, never inherited
+crates/shards/src/cli/mod.rs	impl CarriedVmIo	crates/shards/src/cli/mod.rs	fn gpu_reported [windows]	as CarriedVmIo
+crates/shards/src/cli/mod.rs	fn carried_io_failure	crates/shards/src/cli/mod.rs	fn gpu_reported [windows]	as CarriedVmIo
+crates/shards/src/cli/mod.rs	fn gpu_reported	crates/shards/src/cli/mod.rs	struct CarriedVmIo [linux,macos]	as CarriedVmIo
+crates/api/src/physical/report.rs	mod unix	crates/api/src/physical/report.rs	mod windows [windows]	a GPU report's reader (D232, D233): Unix's anonymous pipe; Windows' named pipe of the client's own, read overlapped (PM M533)
+crates/api/src/physical/report.rs	mod windows	crates/api/src/physical/report.rs	mod unix [linux,macos]	as report.rs's mod unix
+crates/api/src/physical/report.rs	fn buffer	crates/api/src/physical/report/windows.rs	impl Reader [windows]	a report's read buffer, reserved fallibly: Unix's reader's; Windows' reader reserves its own beside its overlapped read
+crates/shards/src/cli/shares.rs	fn inherit	crates/shards/src/cli/shares.rs	fn served [windows]	a direct boot's shares given its VM (D38, D197): on Unix their connections kept open through the exec; on Windows a share process's streams, each named and handed the VM it starts
+crates/shards/src/cli/shares.rs	type Served	crates/shards/src/cli/shares.rs	fn inherit [linux,macos]	as inherit
+crates/shards/src/daemon.rs	fn is_pipe	crates/shards/src/share.rs	fn is [linux,macos]	a client's share (D228) told from a directory: on Windows by its handle's type in the daemon, handed the VM in its place; on Unix by its descriptor's type in the share process
+crates/shards/src/daemon.rs	type Reserve	crates/ipc/src/pipe.rs	fn refuse [windows]	a client refused when no descriptor is left for it: Unix's listener keeps a spare descriptor to take and close it (libuv's emfile trick); a Windows pipe's client is refused by its own instance (Listener::refuse), which makes no handle
+crates/shards/src/daemon.rs	struct Reserve	crates/shards/src/daemon.rs	type Reserve [linux,macos]	as type Reserve: Windows' holds nothing
+crates/shards/src/daemon/managed.rs	fn awaits_input	crates/shards/src/daemon/managed.rs	fn input_arrived [linux,macos]	a member's input awaited (D180): on Windows asked before the daemon makes the pipe its VM relays the connection onto; on Unix the connection the VM hands over itself, ended by input_arrived where the run does not await it
+crates/ipc/src/unix.rs	fn cloexec_inherited	crates/ipc/src/unix.rs	fn spawn_here [macos]	what a process was given open reaches none of its children: Linux's marked close-on-exec before its first child (close_range's CLOSE_RANGE_CLOEXEC); macOS's posix_spawn closes all but those named (POSIX_SPAWN_CLOEXEC_DEFAULT)
+crates/ipc/src/unix.rs	fn cloexec_inherited	crates/ipc/src/windows.rs	fn spawn [windows]	as cloexec_inherited: a Windows child inherits the handles named for it alone (PROC_THREAD_ATTRIBUTE_HANDLE_LIST)
+crates/api/src/taken.rs	mod linux	crates/api/src/taken.rs	mod macos [macos]	a guest's VM process held by its pid and start, for Guests::attach (D215): Linux's pidfd; macOS's kqueue with its exit registered; Windows' process handle
+crates/api/src/taken.rs	mod linux	crates/api/src/taken.rs	mod windows [windows]	as mod linux
+crates/api/src/taken.rs	mod macos	crates/api/src/taken.rs	mod linux [linux]	as mod linux
+crates/api/src/taken.rs	mod macos	crates/api/src/taken.rs	mod windows [windows]	as mod linux
+crates/api/src/taken.rs	mod windows	crates/api/src/taken.rs	mod linux [linux]	as mod linux
+crates/api/src/taken.rs	mod windows	crates/api/src/taken.rs	mod macos [macos]	as mod linux
+crates/api/src/client.rs	mod borrowed_windows	crates/api/src/taken.rs	struct Held [linux,macos]	a borrowed connection's guest process held for its one dial (D233): on Unix by taken::Held; on Windows by a handle of query and synchronize rights alone, as a borrowed connection ends nothing
+crates/api/src/taken.rs	fn started	crates/api/src/taken.rs	fn created [windows]	a process's start as its OS counts it (D215): by pid on Unix (/proc stat, proc_pid_rusage); on Windows through a handle held to it (GetProcessTimes), a booted guest's its Child's, one taken back its own
+crates/api/src/taken.rs	fn check	crates/api/src/client.rs	mod borrowed_windows [windows]	a borrowed connection's second look at its guest's process (D233): on Unix through taken::Held; Windows' borrowed_windows holds it with query and synchronize rights alone
+crates/api/src/client.rs	fn system_root	-	none: linux,macos	the system root a configured provider's shards is given in its closed environment (D233): Winsock's catalog names its providers under %SystemRoot%, so without it WSAStartup fails with WSAEPROVIDERFAILEDINIT (10106) and no socket opens (red then green on jupiter, f7e6d1c63); a Unix process opens its sockets by socket(2), which reads no variable of its environment

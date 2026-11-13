@@ -1234,6 +1234,8 @@ dependencies = [
  "sha2",
  "shards-abi",
  "shards-afunix",
+ "shards-dns",
+ "shards-ipc",
  "shards-testdir",
  "triomphe",
  "unsize",

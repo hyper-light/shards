@@ -1,0 +1,23 @@
+LC_ALL=C $GG -a -o -b -E 'function _n\(\)\{let e=i\.CLAUDE_CODE_CERT_STORE;.{0,700}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'var yt=\["bundled","system"\]' "$B"
+LC_ALL=C $GG -a -o -b -E 'var mt=\["NODE_EXTRA_CA_CERTS","SSL_CERT_FILE","SSL_CERT_DIR"\]' "$B"
+LC_ALL=C $GG -a -o -b -E 'function xt\(e,r,n\)\{let o=_n\(\).{0,2400}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'function CP\(e\)\{let r=CA\(\),n=hat\(zie\(e\)\);if\(!r&&!n\)return\{\};return\{tls:\{\.\.\.r,\.\.\.n&&\{ca:n\}\}\}\}' "$B"
+LC_ALL=C $GG -a -o -b -E 'function hat\(e\)\{.{0,170}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'function gat\(e\)\{let r=ZM\(\),n=J\(\);.{0,300}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'function oa\(e\)\{let r=process\.env\.API_FORCE_IDLE_TIMEOUT.{0,760}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'function yat\(e\)\{let r=Z\(\),n=CA\(\),o=hat\(e\).{0,300}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'function mo\(e,r\)\{if\(e\.socketPath\)return e;.{0,240}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'var De=\[(\{certificate:"[0-9a-f]{64}",key:"[0-9a-f]{64}"\},?)+\]' "$B" | LC_ALL=C $GG -o -E 'certificate:"[0-9a-f]{64}"' | wc -l
+LC_ALL=C $GG -a -o -b -E 'No certificate authority to trust: every CA certificate found is on the CLI.s deny list[^"]{0,170}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.' | head -3
+LC_ALL=C $GG -a -o -b -E 'let E=new r\(p\),h=Et\(E\.subject\),y=Et\(E\.issuer\),A=_t\(p,E\),S=A\|\|h===y;' "$B"
+LC_ALL=C $GG -a -o -b -E 'CA certs: Dropped \$\{s\} certificate\(s\) that do not chain to a root in the CA list' "$B"
+LC_ALL=C $GG -a -o -b -E 'let P=L\(\[\.\.\.C,\.\.\.y\]\),k=r\?\{kept:P,dropped:0\}:St\(P\);' "$B"
+LC_ALL=C $GG -a -o -b -E 'function ZM\(\)\{let e=J\(\);if\(e\.fromHost\)return e\.fromHost\.certificates;let r=Boolean\(i\.CLAUDE_CODE_CLIENT_CERT\);' "$B"
+LC_ALL=C $GG -a -o -b -E 'function Sn\(e,r=Date\.now\(\)\)\{.{0,330}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'air\("1\.4\.4",">=1\.4\.0"\)\)throw Error\("this runtime, Bun 1\.3 or earlier, trusts its own store beside the one root given"\)' "$B"
+LC_ALL=C $GG -a -o -b -F 'if (store === "system" || process.env.NODE_USE_SYSTEM_CA === "1") {' "$B"
+LC_ALL=C $GG -a -o -b -F 'if (process.env.NODE_EXTRA_CA_CERTS) {' "$B"
+LC_ALL=C $GG -a -o -b -F 'return cacheSystemCACertificates();' "$B"
+LC_ALL=C $GG -a -o -b -F 'get rootCertificates() {' "$B"
+LC_ALL=C $GG -a -o -b -E '/etc/ssl/certs/ca-certificates\.crt|/etc/pki/ca-trust/extracted/pem/tls-ca-bundle\.pem|/etc/pki/tls/certs/ca-bundle\.crt|/usr/local/share/ca-certificates/ca-certificates\.crt' "$B" | awk -F: '$1 < 115363840'

@@ -1,0 +1,23 @@
+# Docs-side searches over the 29 saved code.claude.com pages (docs/*.md, docs/llms.txt), run from the evidence dir with GNU grep 3.12.
+## command: LC_ALL=C /opt/homebrew/bin/ggrep -c -i -E 'certificate pinning|pinned (cert|certificate|public key|fingerprint)|pin-sha256|public key pin|HPKP' docs/*.md | awk -F: '$2>0'
+## end
+## command: LC_ALL=C /opt/homebrew/bin/ggrep -o -i -h -E '.{0,80}(TLS pin|pinned fingerprint|certificate fingerprint).{0,80}' docs/*.md | head -12
+## end
+## command: LC_ALL=C /opt/homebrew/bin/ggrep -l -E 'SSL_CERT_FILE|SSL_CERT_DIR' docs/*.md docs/llms.txt | wc -l
+       0
+## end
+## command: LC_ALL=C /opt/homebrew/bin/ggrep -c -E 'NODE_EXTRA_CA_CERTS' docs/*.md | awk -F: '$2>0'
+docs/cloud-environments.md:1
+docs/env-vars.md:1
+docs/errors.md:6
+docs/llm-gateway-connect.md:1
+docs/monitoring-usage.md:1
+docs/network-config.md:8
+docs/self-hosted-environments-deploy.md:2
+docs/troubleshoot-install.md:5
+## end
+## command: LC_ALL=C /opt/homebrew/bin/ggrep -c -i -E 'statsig|sentry' docs/*.md | awk -F: '$2>0'
+docs/claude-directory.md:2
+docs/cli-reference.md:2
+docs/self-hosted-environments-deploy.md:1
+## end

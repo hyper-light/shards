@@ -3,7 +3,9 @@
 //! process given that pid since, held from before that start is read, so that its end is
 //! seen and a kill reaches it alone. It is another process's child (the client's that booted
 //! it, or the one that process left it to), so its exit status is that parent's, never this
-//! client's.
+//! client's. Each host holds it its own way: Linux by a pidfd, macOS by a kqueue that has its
+//! exit registered, Windows by a handle to the process, which keeps its pid its own while it
+//! is held.
 
 use crate::{ProcessFailure, ProcessOperation};
 use std::io;
@@ -26,12 +28,20 @@ fn native_failure(operation: ProcessOperation) -> ProcessFailure {
 
 #[cfg(target_os = "linux")]
 use linux as os;
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 use macos as os;
+#[cfg(windows)]
+use windows as os;
+#[cfg(windows)]
+pub(crate) use windows::created;
 
 /// The start of process `pid`, as its OS counts it, set as it is made and kept through
 /// exec: Linux's `/proc/<pid>/stat` starttime (clock ticks after boot, proc(5)); macOS's
-/// `proc_pid_rusage` `ri_proc_start_abstime` (Mach absolute time).
+/// `proc_pid_rusage` `ri_proc_start_abstime` (Mach absolute time); Windows'
+/// GetProcessTimes creation time (100 ns units since 1601). Read by pid on Unix; on Windows
+/// a booted guest's start is read through its Child's handle and a taken one's through its
+/// own (`created`), so this is its tests' there.
+#[cfg(any(unix, test))]
 pub(crate) fn started(pid: u32) -> Result<u64, ProcessFailure> {
     os::started(pid)
 }
@@ -48,8 +58,19 @@ impl Held {
     /// Held before its start is read: a process given `pid` once it has gone shows another
     /// start, and one that has gone since shows its end.
     pub(crate) fn find(pid: u32, started: u64) -> Result<Held, ProcessFailure> {
-        let os = os::Held::open(pid)?;
-        let now = os::started(pid)?;
+        Held::found(os::Held::open(pid)?, pid, started)
+    }
+
+    /// [`find`](Held::find) of process `pid`, held as `os`. A start unread once the process
+    /// held has exited is that exit: reaped since it was held, by its parent (the client
+    /// that booted it reaps it as it ends), its `/proc/<pid>` is gone (ENOENT, or ESRCH for a
+    /// stat file opened before) and macOS's `proc_pid_rusage` of it fails.
+    fn found(os: os::Held, pid: u32, started: u64) -> Result<Held, ProcessFailure> {
+        let now = match os.started(pid) {
+            Ok(now) => now,
+            Err(_) if matches!(os.exited(false), Ok(true)) => return Err(ProcessFailure::Exited),
+            Err(failure) => return Err(failure),
+        };
         if now != started {
             return Err(ProcessFailure::DifferentStart { observed: now });
         }
@@ -64,7 +85,9 @@ impl Held {
         self.os.exited(true).map(drop)
     }
 
-    /// A second observation of the same held process, without waiting or ownership transfer.
+    /// A second observation of the same held process, without waiting or ownership transfer:
+    /// a borrowed connection's on Unix (Windows' holds its own, `client::borrowed_windows`).
+    #[cfg(unix)]
     pub(crate) fn check(&self) -> Result<(), ProcessFailure> {
         if self.os.exited(false)? {
             Err(ProcessFailure::Exited)
@@ -75,7 +98,7 @@ impl Held {
 
     /// Kills it (SIGKILL): on Linux through its pidfd, which no process given its pid since
     /// receives; on macOS, which has none, by its pid, which its caller sends only while its
-    /// exit has not been seen.
+    /// exit has not been seen; on Windows through its handle (TerminateProcess).
     pub(crate) fn kill(&self) {
         self.os.kill(self.pid);
     }
@@ -193,6 +216,10 @@ mod linux {
     pub(super) struct Held(OwnedFd);
 
     impl Held {
+        pub(super) fn started(&self, pid: u32) -> Result<u64, ProcessFailure> {
+            started(pid)
+        }
+
         pub(super) fn open(pid: u32) -> Result<Held, ProcessFailure> {
             let pid = libc::pid_t::try_from(pid).map_err(|_| ProcessFailure::PidOutOfRange {
                 operation: ProcessOperation::PidfdOpen,
@@ -244,7 +271,7 @@ mod linux {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 mod macos {
     use super::{ProcessFailure, ProcessOperation, io_failure, native_failure};
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
@@ -270,6 +297,10 @@ mod macos {
     pub(super) struct Held(OwnedFd);
 
     impl Held {
+        pub(super) fn started(&self, pid: u32) -> Result<u64, ProcessFailure> {
+            started(pid)
+        }
+
         pub(super) fn open(pid: u32) -> Result<Held, ProcessFailure> {
             let ident = usize::try_from(pid).map_err(|_| ProcessFailure::IdentifierOutOfRange)?;
             // SAFETY: kqueue(2), no arguments.
@@ -336,5 +367,130 @@ mod macos {
                 unsafe { libc::kill(pid, libc::SIGKILL) };
             }
         }
+    }
+}
+
+#[cfg(windows)]
+mod windows {
+    use super::{ProcessFailure, ProcessOperation, io_failure, native_failure};
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle, RawHandle};
+    use windows_sys::Win32::Foundation::{FILETIME, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, INFINITE, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+    };
+
+    /// When the process `handle` holds was created: GetProcessTimes' creation time, a
+    /// FILETIME (100 ns since 1601), as one number.
+    pub(crate) fn created(handle: RawHandle) -> std::io::Result<u64> {
+        let zero = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+        // SAFETY: the caller holds this process handle open; FILETIMEs are ours.
+        let ok = unsafe {
+            GetProcessTimes(
+                handle,
+                &raw mut created,
+                &raw mut exited,
+                &raw mut kernel,
+                &raw mut user,
+            )
+        };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    }
+
+    fn opened(pid: u32, access: u32) -> Result<OwnedHandle, ProcessFailure> {
+        // SAFETY: OpenProcess of `pid` with `access` alone, its handle not inherited.
+        let handle = unsafe { OpenProcess(access, 0, pid) };
+        if handle.is_null() {
+            return Err(native_failure(ProcessOperation::OpenProcess));
+        }
+        // SAFETY: the handle OpenProcess just made, owned from here alone.
+        Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+    }
+
+    #[cfg(test)]
+    pub(super) fn started(pid: u32) -> Result<u64, ProcessFailure> {
+        let held = opened(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+        created(held.as_raw_handle()).map_err(|e| io_failure(ProcessOperation::GetProcessTimes, e))
+    }
+
+    /// A process held by a handle of its own, which keeps the process object, and its pid,
+    /// from any other process while it is held: its start read, its exit waited on and its
+    /// end made through it.
+    #[derive(Debug)]
+    pub(super) struct Held(OwnedHandle);
+
+    impl Held {
+        pub(super) fn open(pid: u32) -> Result<Held, ProcessFailure> {
+            opened(
+                pid,
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE,
+            )
+            .map(Held)
+        }
+
+        pub(super) fn started(&self, _pid: u32) -> Result<u64, ProcessFailure> {
+            created(self.0.as_raw_handle()).map_err(|e| io_failure(ProcessOperation::GetProcessTimes, e))
+        }
+
+        /// Whether it has exited: `wait`ing until it has, else as it is now.
+        pub(super) fn exited(&self, wait: bool) -> Result<bool, ProcessFailure> {
+            // SAFETY: a wait on the process handle this holds, at once or until it is
+            // signaled, as its process exits.
+            match unsafe { WaitForSingleObject(self.0.as_raw_handle(), if wait { INFINITE } else { 0 }) } {
+                WAIT_OBJECT_0 => Ok(true),
+                WAIT_TIMEOUT => Ok(false),
+                WAIT_FAILED => Err(native_failure(ProcessOperation::WaitForExit)),
+                returned => Err(ProcessFailure::UnexpectedWait { returned }),
+            }
+        }
+
+        pub(super) fn kill(&self, _pid: u32) {
+            // SAFETY: TerminateProcess of the process this handle holds, which no process given
+            // its pid since can be.
+            unsafe { TerminateProcess(self.0.as_raw_handle(), 1) };
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::process::{Command, Stdio};
+
+    /// A process reaped between its hold and the read of its start has exited: the hold
+    /// is a pidfd of its zombie, its parent's wait then removes `/proc/<pid>`. A guest's
+    /// first client reaps its VM process as its watcher sees it end, so attach of an ended
+    /// guest met this (boot.rs's conformance, CI job 131488530221 at cc439a2a7: `Os {
+    /// operation: OpenStat, code: 2 }`), where one reaped before is refused at its pidfd
+    /// (ESRCH) and one not yet reaped `Exited`.
+    #[test]
+    fn a_process_reaped_after_it_was_held_has_exited() {
+        // cat waits on its stdin, which this test holds open: alive until it is killed.
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let started = started(pid).unwrap();
+        child.kill().unwrap();
+        // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid(2) of this test's own child into `info`; WNOWAIT leaves it a zombie.
+        let waited = unsafe { libc::waitid(libc::P_PID, pid, &raw mut info, libc::WEXITED | libc::WNOWAIT) };
+        assert_eq!(waited, 0);
+        let held = os::Held::open(pid).unwrap();
+        child.wait().unwrap();
+        assert_eq!(
+            Held::found(held, pid, started).err(),
+            Some(ProcessFailure::Exited)
+        );
     }
 }

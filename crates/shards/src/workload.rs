@@ -1644,7 +1644,7 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
             .map_err(|e| format!("an exec's client: {e}"))?;
     }
     let mut frame = Vec::new();
-    let mut not_started: Option<(u8, String)> = None;
+    let mut not_started: Option<(u8, Vec<u8>)> = None;
     let mut conn = io::BufReader::with_capacity(run::BUFFERED, shards_ipc::Polled(&conn));
     loop {
         let mut h = [0u8; run::HEADER];
@@ -1684,7 +1684,7 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
             kind::STDOUT | kind::STDERR => {}
             kind::SYSTEM_ERR => {
                 let (class, why) = payload.split_first().ok_or("an empty failure")?;
-                not_started = Some((*class, String::from_utf8_lossy(why).into_owned()));
+                not_started = Some((*class, why.to_vec()));
             }
             kind::EXIT => {
                 let status: [u8; 4] = payload.try_into().map_err(|_| "malformed exit status")?;
@@ -1695,10 +1695,19 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
                 return Ok(match not_started {
                     None => status,
                     Some((run::exec_failed::DAEMON, why)) => {
-                        let _ = writeln!(req.stderr, "shards: {why}");
+                        let _ = writeln!(req.stderr, "shards: {}", String::from_utf8_lossy(&why));
                         1
                     }
+                    // Refused in a member, by type (D243): `docker exec`'s 126 for what its
+                    // runtime could not start, its 1 for what its daemon refuses.
+                    Some((run::exec_failed::MEMBER, said)) => {
+                        let (refusal, why) = run::members::Refusal::decode(&said)
+                            .ok_or("the guest's refusal of a member's command is malformed")?;
+                        let _ = writeln!(req.stderr, "shards: {}", String::from_utf8_lossy(why));
+                        if refusal.not_started() { 126 } else { 1 }
+                    }
                     Some((_, why)) => {
+                        let why = String::from_utf8_lossy(&why);
                         // The status of what init could not start (126 or 127, as moby
                         // daemon/errors.go sets them), and why.
                         let (_, code) = shards_cmdline::commands::start_failed(&why);

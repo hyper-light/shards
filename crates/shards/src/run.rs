@@ -125,7 +125,10 @@ pub fn vfio_groups<'a>(paths: impl IntoIterator<Item = &'a str>) -> Result<Vec<V
         let clean = host.trim_end_matches('/');
         #[cfg(not(target_os = "linux"))]
         if names_a_function(clean) {
-            return Err(gathering(host, &shards_vmm::vm::passthrough_refused()));
+            return Err(gathering(
+                host,
+                &shards_vmm::vm::passthrough_refused().to_string(),
+            ));
         }
         // A function by its device node: iommufd its DMA's (vfio.rst, "VFIO Device cdev").
         let cdevs: Vec<String> = if clean == "/dev/vfio/devices" {
@@ -1064,7 +1067,7 @@ fn cpu_baseline(cfg: &Config) -> String {
     } else {
         format!(
             "cpu baseline {}\n",
-            shards_vmm::arch::aarch64::cpu::encode(&cfg.cpu_baseline)
+            shards_vmm::arch::cpu::encode(&cfg.cpu_baseline)
         )
     }
 }
@@ -1348,6 +1351,7 @@ fn compose(image: Option<&RunConfig>, asked: &Run) -> Result<Options, String> {
         interactive: asked.interactive,
         tty: asked.tty.map(|(rows, cols)| shards_abi::run::Size { rows, cols }),
         terms: asked.terms.clone(),
+        member: false,
     })
 }
 
