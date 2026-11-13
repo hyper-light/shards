@@ -17063,6 +17063,15 @@ download.
     the answer is asked again at once, overdue (`Error::overdue_by`, typed by the wait that
     ran out: `Overdue::Answer` before its first byte, `Overdue::Silence` after), and a
     download is resumed where it was (fetch.rs).
+  - **A wait of nothing is no sample** (`patience::sample`): one shorter than the record
+    measures, a µs, waited for nothing, a read that found its bytes already buffered or an
+    answer that came with its request's end, and shows no stall of the path's. Taken for
+    one, it made a bound of 0, which std refuses as a socket's timeout ("cannot set a 0
+    duration timeout"): at d54bca98e every second request on a path whose body came whole
+    with its head failed so, every pull from the E2E tests' local registry on KVM among them
+    (ROOT, adacachy2). A record that keeps 0 µs, as those runs' homes can, is read as none
+    (`bounded`); and a dial at its deadline's very instant starts no `connect_timeout` of
+    zero (`dial`). The record's own resolution is the basis: no figure of ours.
   - **A run-out learns nothing** (no sample: that answer came later, or never), and the
     path's next wait of its kind follows its connection's liveness alone until one ends
     (`Bounded::RanOut`): an answer until one comes, which ends the run-out whatever its
