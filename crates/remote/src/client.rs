@@ -16,14 +16,26 @@ use crate::invite::{self, Invitation};
 use crate::net::{Close, Command, ConnKey, Driver, Handler, Io, Read as StreamRead, Seen, Sender};
 use crate::{Error, server, tls};
 
-/// Where the daemon is: its address, its key's SHA-256, and the round trip it was last
-/// measured at, which its handshake starts from ([`tls::Rtt`]).
+/// Where the daemon is: its address, its key's SHA-256, and what this home knows of it from its
+/// connections before ([`tls::Known`]), which its handshake and its waits start from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Remote {
     pub address: SocketAddr,
     pub daemon: Fingerprint,
-    pub rtt: tls::Rtt,
+    pub known: tls::Known,
 }
+
+/// A daemon's handshake that has not ended, told as each probe goes (RFC 9002 §6.2): the
+/// datagrams sent in all, and how long it has waited. Its caller says whether it waits on: a
+/// daemon never reached, or whose last wait ran out, has no deadline but its caller's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unanswered {
+    pub probes: u64,
+    pub waited: std::time::Duration,
+}
+
+/// Whether a handshake that has not ended waits on ([`Unanswered`]).
+type Waits<'a> = Box<dyn FnMut(Unanswered) -> bool + 'a>;
 
 enum Ask {
     /// A command; `input`, whether its stdin is sent: a command given none reads the end of
@@ -77,10 +89,29 @@ impl Controls {
     }
 }
 
+/// What ends a command [`exec_with`] runs, from another thread, from the moment its connection
+/// is made: before its daemon answers too, whose handshake has no deadline where the daemon was
+/// never reached ([`tls::Known`]), so that only its holder's own end, a daemon's stop, ends
+/// that wait.
+#[derive(Debug)]
+pub struct HangUp(Sender<Event>);
+
+impl HangUp {
+    /// Ends the command's connection, as [`Controls::hang_up`] does, whether or not its
+    /// handshake has ended: [`exec_with`] returns.
+    pub fn now(&self) -> Result<(), Error> {
+        self.0.send(Command::Handler(Event::HangUp))
+    }
+}
+
 /// What the daemon answered.
 enum Answer {
     Exit(i32),
+    /// Refused before any command of it started: nothing of it ran.
     Refused(String),
+    /// Its command started, and the daemon ended its stream before its end ([`Tag::Cut`]):
+    /// it may have run.
+    Cut(String),
     Joined,
 }
 
@@ -121,6 +152,8 @@ struct Client<'a> {
     steering: Option<Steering<'a>>,
     /// Given what the command tells of the microVM it made ([`Tag::Made`]).
     made: Option<Made<'a>>,
+    /// Asked, as each probe of a handshake that has not ended goes, whether it waits on.
+    waits: Option<Waits<'a>>,
     answer: Option<Answer>,
     failed: Option<String>,
     done: bool,
@@ -267,6 +300,10 @@ impl Client<'_> {
                             io,
                             Answer::Refused(String::from_utf8_lossy(&payload).into_owned()),
                         );
+                        return;
+                    }
+                    Tag::Cut => {
+                        self.answered(io, Answer::Cut(String::from_utf8_lossy(&payload).into_owned()));
                         return;
                     }
                     Tag::Joined => {
@@ -428,23 +465,40 @@ impl Handler for Client<'_> {
             self.answer = Some(Answer::Refused(words.to_string()));
         }
         if self.answer.is_none() && self.failed.is_none() {
-            self.failed = Some(match self.stream {
-                // Its handshake never ended: no daemon answered there.
-                None => format!(
-                    "no shards daemon answered at {} within {:?} ({why}): is it listening there (shards run daemon --listen ADDR:PORT)?",
-                    self.remote.address,
-                    self.remote.rtt.handshake_bound()
+            let at = self.remote.address;
+            self.failed = Some(match (self.stream, self.remote.known.handshake_deadline()) {
+                (Some(_), _) => format!("the connection to {at} ended: {why}"),
+                // Its handshake never ended, past the slowest seen from this daemon.
+                (None, Some(slowest)) if self.seen.ran_out => format!(
+                    "no answer from the shards daemon at {at} within the slowest handshake seen from it, {slowest:?} ({why}): is it listening there (shards run daemon --listen ADDR:PORT)?"
                 ),
-                Some(_) => format!("the connection to {} ended: {why}", self.remote.address),
+                (None, _) => format!(
+                    "no shards daemon answered at {at} ({why}): is it listening there (shards run daemon --listen ADDR:PORT)?"
+                ),
             });
         }
         self.done = true;
     }
 
+    fn unanswered(&mut self, io: &mut Io<'_>, _conn: ConnKey, probes: u64, waited: std::time::Duration) {
+        let told = Unanswered { probes, waited };
+        let goes_on = self.waits.as_mut().is_none_or(|waits| waits(told));
+        if !goes_on {
+            self.fail(
+                io,
+                format!(
+                    "no shards daemon answered at {}: {probes} probes over {waited:?}",
+                    self.remote.address
+                ),
+            );
+        }
+    }
+
     fn command(&mut self, io: &mut Io<'_>, command: Event) {
         match command {
             Event::Connect => {
-                let Some(config) = self.identity.take() else {
+                // Hung up before its connection was made ([`HangUp`]): none is.
+                let Some(config) = self.identity.take().filter(|_| !self.done) else {
                     return;
                 };
                 match io.connect(self.remote.address, config) {
@@ -540,31 +594,33 @@ pub fn exec_made(
         Ask::Exec { request, input },
         stdin,
         Some((Box::new(stdout), Box::new(stderr))),
-        Some(Box::new(steered)),
-        Some(Box::new(made)),
+        Hooks {
+            steered: Some(Box::new(steered)),
+            made: Some(Box::new(made)),
+            ..Hooks::default()
+        },
         &mut seen,
     )?;
     exit_of(answer)
 }
 
-fn exit_of(answer: Answer) -> Result<Result<i32, String>, Error> {
-    match answer {
-        Answer::Exit(status) => Ok(Ok(status)),
-        Answer::Refused(why) => Ok(Err(why)),
-        Answer::Joined => Err(Error::new("the daemon answered a command as a join")),
-    }
-}
-
-/// [`exec`], nothing steering it, and what its connection saw of the path it crossed
-/// ([`Seen`]), whether it was answered or not: a move's record of the link it crossed
-/// (D176 part 6).
-pub fn exec_seen(
+/// [`exec_made`], `unanswered` asked as each probe of a handshake that has not ended goes
+/// whether it waits on ([`Unanswered`]: a daemon never reached, or whose last wait ran out, is
+/// waited for as long as its caller does), `hang_up` given what ends it from another thread
+/// once its connection is made ([`HangUp`]), and what its connection saw ([`Seen`]), answered
+/// or not, for what its caller keeps of the daemon ([`tls::Known::after`]).
+#[allow(clippy::too_many_arguments)]
+pub fn exec_with(
     identity: &Identity,
     remote: Remote,
     request: Request,
     stdin: Option<Box<dyn Read + Send>>,
     stdout: impl Write + Send + 'static,
     stderr: impl Write + Send + 'static,
+    steered: impl FnOnce(Controls),
+    made: impl FnMut(&[u8]),
+    unanswered: impl FnMut(Unanswered) -> bool,
+    hang_up: impl FnOnce(HangUp),
 ) -> (Result<Result<i32, String>, Error>, Seen) {
     let input = stdin.is_some();
     let mut seen = Seen::default();
@@ -574,40 +630,52 @@ pub fn exec_seen(
         Ask::Exec { request, input },
         stdin,
         Some((Box::new(stdout), Box::new(stderr))),
-        None,
-        None,
+        Hooks {
+            steered: Some(Box::new(steered)),
+            made: Some(Box::new(made)),
+            waits: Some(Box::new(unanswered)),
+            hang_up: Some(Box::new(hang_up)),
+        },
         &mut seen,
     );
     (answer.and_then(exit_of), seen)
 }
 
+/// A command's end: its status, its refusal before it ran, or, cut after it started, no
+/// answer, as a connection lost then is: it may have run (D176 part 6).
+fn exit_of(answer: Answer) -> Result<Result<i32, String>, Error> {
+    match answer {
+        Answer::Exit(status) => Ok(Ok(status)),
+        Answer::Refused(why) => Ok(Err(why)),
+        Answer::Cut(why) => Err(Error::new(format!(
+            "{why}, after the command started: it may have run"
+        ))),
+        Answer::Joined => Err(Error::new("the daemon answered a command as a join")),
+    }
+}
+
 /// Joins the daemon `invitation` names, as the home whose identity is `identity`: Ok once
-/// the daemon has enrolled it, or the daemon's reason for refusing.
-pub fn join(identity: &Identity, invitation: &Invitation) -> Result<Result<(), String>, Error> {
+/// the daemon has enrolled it, or the daemon's reason for refusing; and what its connection
+/// saw ([`Seen`]), the first of the daemon's path its home keeps ([`tls::Known::after`]).
+pub fn join(identity: &Identity, invitation: &Invitation) -> (Result<Result<(), String>, Error>, Seen) {
     // A daemon joined is one this home has never reached.
     let remote = Remote {
         address: invitation.address,
         daemon: invitation.daemon,
-        rtt: tls::Rtt::Unmeasured,
+        known: tls::Known::Never,
     };
     let ask = Ask::Join {
         name: invitation.name.clone(),
         secret: invitation.secret,
     };
-    match run(
-        identity,
-        remote,
-        ask,
-        None,
-        None,
-        None,
-        None,
-        &mut Seen::default(),
-    )? {
-        Answer::Joined => Ok(Ok(())),
-        Answer::Refused(why) => Ok(Err(why)),
-        Answer::Exit(_) => Err(Error::new("the daemon answered a join as a command")),
-    }
+    let mut seen = Seen::default();
+    let joined =
+        run(identity, remote, ask, None, None, Hooks::default(), &mut seen).and_then(|answer| match answer {
+            Answer::Joined => Ok(Ok(())),
+            Answer::Refused(why) => Ok(Err(why)),
+            Answer::Exit(_) | Answer::Cut(_) => Err(Error::new("the daemon answered a join as a command")),
+        });
+    (joined, seen)
 }
 
 type Outputs = (Box<dyn Write + Send>, Box<dyn Write + Send>);
@@ -615,19 +683,34 @@ type Outputs = (Box<dyn Write + Send>, Box<dyn Write + Send>);
 /// What is given what a command tells of the microVM it made ([`exec_made`]).
 type Made<'a> = Box<dyn FnMut(&[u8]) + 'a>;
 
+/// What a run's caller is given and asked as it goes, besides its output: what steers the
+/// command once it is asked for, what it tells of the microVM it made, whether a handshake
+/// that has not ended waits on, and what ends it from another thread from the start.
+#[derive(Default)]
+struct Hooks<'a> {
+    steered: Option<Box<dyn FnOnce(Controls) + 'a>>,
+    made: Option<Made<'a>>,
+    waits: Option<Waits<'a>>,
+    hang_up: Option<Box<dyn FnOnce(HangUp) + 'a>>,
+}
+
 /// Asks `ask` of `remote`; `seen` given what its connection saw, once it has ended.
-#[allow(clippy::too_many_arguments)]
 fn run(
     identity: &Identity,
     remote: Remote,
     ask: Ask,
     stdin: Option<Box<dyn Read + Send>>,
     outputs: Option<Outputs>,
-    steered: Option<Box<dyn FnOnce(Controls) + '_>>,
-    made: Option<Made<'_>>,
+    hooks: Hooks<'_>,
     seen: &mut Seen,
 ) -> Result<Answer, Error> {
-    let config = tls::client(identity, remote.daemon, remote.rtt)?;
+    let Hooks {
+        steered,
+        made,
+        waits,
+        hang_up,
+    } = hooks;
+    let config = tls::client(identity, remote.daemon, remote.known)?;
     let any: SocketAddr = if remote.address.is_ipv4() {
         SocketAddr::from(([0, 0, 0, 0], 0))
     } else {
@@ -656,12 +739,15 @@ fn run(
             uncontrolled: false,
             steering: None,
             made,
+            waits,
             answer: None,
             failed: None,
             done: false,
             seen: Seen::default(),
         };
-        let (mut driver, sender) = Driver::bind(any, None, client, remote.rtt.handshake_bound())?;
+        let (mut driver, sender) = Driver::bind(any, None, client, remote.known)?;
+        // Its one peer: a refusal of its host's (ICMP) reads as one.
+        driver.aim(remote.address)?;
         if let Some((stdout, stderr)) = outputs {
             let handler = &mut driver_handler(&mut driver);
             handler.stdout = Some(writer(scope, stdout, sender.try_clone()?)?);
@@ -697,6 +783,9 @@ fn run(
         if let Some(steered) = steered {
             driver_handler(&mut driver).steering = Some((steered, sender.try_clone()?));
         }
+        if let Some(hang_up) = hang_up {
+            hang_up(HangUp(sender.try_clone()?));
+        }
         sender.send(Command::Handler(Event::Connect))?;
         driver.run()?;
         let mut client = driver.into_handler();
@@ -715,4 +804,26 @@ fn run(
 
 fn driver_handler<'d, 'a>(driver: &'d mut Driver<Client<'a>>) -> &'d mut Client<'a> {
     driver.handler_mut()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A command refused before it started is its refusal; one cut after it started is no
+    /// answer, as a lost connection is, for it may have run; its exit is its status (D176
+    /// part 6).
+    #[test]
+    fn a_cut_command_is_unanswered_and_a_refused_one_refused() {
+        assert_eq!(exit_of(Answer::Exit(3)).unwrap(), Ok(3));
+        assert_eq!(
+            exit_of(Answer::Refused("not enrolled".into())).unwrap(),
+            Err("not enrolled".to_string())
+        );
+        let cut = exit_of(Answer::Cut("a frame out of place (Joined)".into())).unwrap_err();
+        assert_eq!(
+            cut.to_string(),
+            "a frame out of place (Joined), after the command started: it may have run"
+        );
+    }
 }

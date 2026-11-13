@@ -178,6 +178,15 @@ impl Host for Machine {
     fn invited(&self) -> usize {
         crate::context::open_invitations(&self.home)
     }
+
+    /// The descriptors this process may have open, as the daemon says at its start: each
+    /// connection whose handshake ends may hold a command and its stdio, and none past them.
+    /// A platform that says no bound sets none.
+    fn handshakes(&self) -> usize {
+        shards_vmm::platform::descriptor_limit()
+            .and_then(|n| usize::try_from(n).ok())
+            .unwrap_or(usize::MAX)
+    }
 }
 
 /// A client's command `args` started on Unix, `env` its environment, as [`Machine::start`]

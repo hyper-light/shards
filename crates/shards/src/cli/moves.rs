@@ -28,7 +28,7 @@ use crate::cli::cp::Ask;
 /// What a step on the other machine said: its status, its stdout and its stderr.
 type There = (u8, Vec<u8>, Vec<u8>);
 
-/// A step asked of the other machine, as `shards_remote::client::exec_seen` says it: answered
+/// A step asked of the other machine, as `context::exec` says it: answered
 /// (`Ok(Ok)`); refused there, in its daemon's words (`Ok(Err)`); or unanswered, its
 /// connection ended first or never made (`Err`).
 type Asked = Result<Result<There, String>, String>;
@@ -196,13 +196,16 @@ fn baseline_of(home: &Path, contexts: &str) -> Result<shards_vmm::arch::cpu::Id,
             env: Vec::new(),
             terminal: None,
         };
-        let (ran, _) = shards_remote::client::exec_seen(
+        let (ran, _) = crate::context::exec(
+            home,
             &identity,
-            context.remote(),
+            &context,
             request,
             None,
             Taken(out_tx),
             Taken(err_tx),
+            |_| {},
+            |_| {},
         );
         let there = match ran {
             Ok(Ok(status)) => (u8::try_from(status).unwrap_or(1), taken(&out_rx), taken(&err_rx)),
@@ -269,7 +272,7 @@ impl Times {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Heard {
     /// The longest that machine went unheard and was heard again: its slowest answer in this
-    /// move, held below the silence that ends a connection (`shards_remote::tls::QUIET`).
+    /// move.
     slowest: Duration,
     /// When it was last heard.
     last: Option<Instant>,
@@ -376,7 +379,7 @@ fn resumed(
 /// export wrote them, and as they were sent where it was packed; the bytes of UDP the
 /// other machine acknowledged, over the import's whole time, the rate the link was seen to
 /// carry; its round trip, the packets it took for lost, and the longest its peer went
-/// unheard, which `shards_remote::tls::QUIET` bounds.
+/// unheard.
 fn sent_line(tally: Option<crate::packing::Tally>, seen: &Seen, took: std::time::Duration) -> String {
     let packed = match tally {
         Some(t) => format!(
@@ -411,9 +414,13 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     };
     let context = crate::context::load(home, to)?.ok_or_else(|| format!("no context named {to}"))?;
     let identity = crate::context::identity(home)?;
-    // A step on the other machine: `argv`, `stdin` sent as it comes; what it came to, and
-    // what its connection saw of the link.
-    let exec = |argv: Vec<String>, stdin: Option<Box<dyn Read + Send>>| -> (Asked, Seen) {
+    // A step on the other machine: `argv`, `stdin` sent as it comes, its handshake waiting on
+    // while `waits` says (`context::exec_with`); what it came to, and what its connection saw
+    // of the link.
+    let exec = |argv: Vec<String>,
+                stdin: Option<Box<dyn Read + Send>>,
+                waits: &mut dyn FnMut(shards_remote::client::Unanswered) -> bool|
+     -> (Asked, Seen) {
         let (out_tx, out_rx) = std::sync::mpsc::channel();
         let (err_tx, err_rx) = std::sync::mpsc::channel();
         let request = Request {
@@ -421,13 +428,17 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
             env: Vec::new(),
             terminal: None,
         };
-        let (ran, seen) = shards_remote::client::exec_seen(
+        let (ran, seen) = crate::context::exec_with(
+            home,
             &identity,
-            context.remote(),
+            &context,
             request,
             stdin,
             Taken(out_tx),
             Taken(err_tx),
+            |_| {},
+            |_| {},
+            waits,
         );
         let asked = match ran {
             Ok(Ok(status)) => Ok(Ok((
@@ -445,7 +456,7 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     let heard = Mutex::new(Heard::default());
     // A step there, its answer kept typed (`Asked`), what its connection saw taken in.
     let asked_there = |argv: Vec<String>, stdin: Option<Box<dyn Read + Send>>| -> (Asked, Seen) {
-        let (asked, seen) = exec(argv, stdin);
+        let (asked, seen) = exec(argv, stdin, &mut |_| true);
         heard.lock().unwrap_or_else(PoisonError::into_inner).saw(&seen);
         (asked, seen)
     };
@@ -647,7 +658,13 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     // 4. Resumed there, where it was saved.
     let (restore, _) = asked_there(step(&["restore", name, &plan.snapshot]), None);
     let so_far = *heard.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut inspect = || exec(step(&["inspect", "-f", "{{.State.Running}}", name]), None);
+    // An ask that hears nothing gives up as that machine goes silent past this move's slowest
+    // answer ([`Heard::silent`]), as a daemon whose last wait ran out has no handshake deadline
+    // of its own (D180).
+    let mut inspect = || {
+        let argv = step(&["inspect", "-f", "{{.State.Running}}", name]);
+        exec(argv, None, &mut |_| !so_far.silent())
+    };
     match resumed(restore, &there, &mut inspect, so_far, to, name) {
         Resumed::There => {}
         Resumed::Here(why) => return Err(back_here(why)),
