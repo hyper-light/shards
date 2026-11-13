@@ -738,7 +738,7 @@ impl Bearer {
                 Some(_) => false,
             };
             let wait = passing
-                .then(|| trouble.wait(asked, http.budget(&self.realm), None))
+                .then(|| trouble.wait(http, &self.realm, asked, None))
                 .flatten();
             let Some(wait) = wait else {
                 // The credentials' refusal stays one, for a login to say so; anything else

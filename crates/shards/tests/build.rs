@@ -9058,6 +9058,11 @@ fn supplied_agents_and_harness_archives_start_their_declared_entrypoints() {
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
 }
 
+/// A run's supplied members' output never rewrites its command's own (G01): its stdout stays
+/// exactly the command's JSON-RPC, and its stderr bytes whole, while the daemon drains its
+/// members' output into their logs and shows the attached client each of their lines on its
+/// stderr after its label, to the members' ends (their tails cut short as the run ends them
+/// included), before the client's own end says its timing (D59 "Its stdio", PM M543).
 #[test]
 fn supplied_member_output_does_not_rewrite_the_main_protocol() {
     if cannot_run_vms() {
@@ -9119,12 +9124,43 @@ fn supplied_member_output_does_not_rewrite_the_main_protocol() {
     );
     assert_eq!(ran.status, Some(0), "{ran}");
     assert_eq!(ran.stdout, r#"{"jsonrpc":"2.0","id":1,"result":"main"}"#, "{ran}");
-    let timing = ran
+    // Its stderr: main's own bytes, whole, and its members' lines, which the daemon drains
+    // and shows the client attached, each after its label (D59 "Its stdio", PM M543), the
+    // host's timing last. Main's are one write of its command's, so they lie whole between
+    // two of the members' lines, or within one, each of which is one write too.
+    let (said, timing) = ran
         .stderr
-        .strip_prefix("main-stderrshards-timing ")
-        .and_then(|s| s.strip_suffix('\n'))
-        .expect("only main stderr and one final host timing diagnostic");
+        .rsplit_once("shards-timing ")
+        .expect("a final host timing diagnostic");
+    let timing = timing
+        .strip_suffix('\n')
+        .expect("the timing line ends the stderr");
     assert!(!timing.contains('\n'), "{ran}");
+    let members = said.replacen("main-stderr", "", 1);
+    assert_eq!(
+        said.len() - members.len(),
+        "main-stderr".len(),
+        "main's stderr whole: {ran}"
+    );
+    assert!(members.is_empty() || members.ends_with('\n'), "{ran}");
+    let mut shown: Vec<&str> = members.lines().collect();
+    shown.sort_unstable();
+    // What each member writes (testguest `managed_capture_bytes`), its lines as shown: a line
+    // cut short at its stream's end ended.
+    let mut expected: Vec<String> = [("agent helper", "agent"), ("harness driver", "harness")]
+        .iter()
+        .flat_map(|(label, member)| {
+            [
+                format!("{member}\0stdout").into_bytes(),
+                b"\xff\x1b[2Jout-tail".to_vec(),
+                format!("{member}\0stderr").into_bytes(),
+                b"\x80\xfeerr-tail".to_vec(),
+            ]
+            .map(|line| format!("[{label}] {}", String::from_utf8_lossy(&line)))
+        })
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(shown, expected, "{ran}");
     let value: serde_json::Value = serde_json::from_str(timing).expect("host timing JSON");
     let timing = value.as_object().expect("host timing object");
     let numbers = [
@@ -16567,14 +16603,27 @@ fn a_failing_step_cites_its_build_file_lines() {
     if cannot_run_vms() {
         return;
     }
+    // A home of its own, and alpine:3.22 as Docker 29.3.1 ran it for D115 (Docker Hub,
+    // 2026-10-15) from the tests' own registry.
+    let home = TempDir::new("excerpt-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let alpine = common::hub(
+        "alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8",
+        TIMEOUT,
+    );
     let ctx = context(
         "excerpt-ctx",
-        "FROM alpine:3.22 as base\nRUN echo one\nRUN echo hi && \\\n  exit 3\n",
+        &format!("FROM {alpine} as base\nRUN echo one\nRUN echo hi && \\\n  exit 3\n"),
     );
-    let out = common::run_shards_in(
+    let out = common::run_shards_env_in(
         &ctx,
         &[],
         &["build", "--progress=plain", "--no-cache", "."],
+        &env,
         TIMEOUT,
     );
     assert_eq!(out.status, Some(1), "{}", out.stderr);
@@ -16616,11 +16665,15 @@ fn a_failing_step_cites_its_build_file_lines() {
     // A source the context lacks: the step's error is the checksum's, the build's the
     // cache key's that failed to load (BuildKit names its internal reference where shards
     // names the context).
-    let ctx = context("excerpt-copy-ctx", "FROM alpine:3.22\nCOPY missing.txt /m\n");
-    let out = common::run_shards_in(
+    let ctx = context(
+        "excerpt-copy-ctx",
+        &format!("FROM {alpine}\nCOPY missing.txt /m\n"),
+    );
+    let out = common::run_shards_env_in(
         &ctx,
         &[],
         &["build", "--progress=plain", "--no-cache", "."],
+        &env,
         TIMEOUT,
     );
     assert_eq!(out.status, Some(1), "{}", out.stderr);
@@ -16631,9 +16684,9 @@ fn a_failing_step_cites_its_build_file_lines() {
         out.stderr
     );
     assert!(
-        out.stderr.ends_with(
-            "------\n > [2/2] COPY missing.txt /m:\n------\nDockerfile:2\n--------------------\n   1 |     FROM alpine:3.22\n   2 | >>> COPY missing.txt /m\n   3 |     \n--------------------\nERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref context: \"/missing.txt\": not found\n"
-        ),
+        out.stderr.ends_with(&format!(
+            "------\n > [2/2] COPY missing.txt /m:\n------\nDockerfile:2\n--------------------\n   1 |     FROM {alpine}\n   2 | >>> COPY missing.txt /m\n   3 |     \n--------------------\nERROR: failed to build: failed to solve: failed to compute cache key: failed to calculate checksum of ref context: \"/missing.txt\": not found\n"
+        )),
         "{}",
         out.stderr
     );

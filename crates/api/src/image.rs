@@ -33,7 +33,7 @@ pub mod wire;
 pub use wire::{
     Bound, Channel, ControlAsk, ControlAt, CredentialGrant, Fill, GuestTimes, HostUse, Keep, LeaseRefusal,
     MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving,
-    RunEnd, Secret, SocketGrant, StartedFrom, Stats, StatsScope, VcpuTime, decide,
+    RunEnd, SaveRefusal, Secret, SocketGrant, StartedFrom, Stats, StatsScope, VcpuTime, decide,
 };
 
 /// A credential's lease, as a run's [`Lessor`] gives it (D242): what its release names it
@@ -257,6 +257,8 @@ pub enum ImageRefusal {
     Rate(String),
     /// A member's terminal its run's init did not size (D244), in its words.
     Terminal(String),
+    /// A save its run's host refused (D259), by what refused it.
+    Save(SaveRefusal, String),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -274,6 +276,7 @@ impl std::fmt::Display for ImageRefusal {
             Self::Room(why) => write!(f, "the run's room: {why}"),
             Self::Rate(why) => write!(f, "the run's rate: {why}"),
             Self::Terminal(why) => write!(f, "a member's terminal: {why}"),
+            Self::Save(cause, why) => write!(f, "the save: {cause:?}: {why}"),
         }
     }
 }
@@ -390,6 +393,17 @@ pub trait ImageGuest: Send + Sync {
     /// What is plugged in at `at` let go of: unmounted in its member, refused while anything
     /// there uses it ([`PlugRefusal::Busy`]), then taken off the microVM.
     fn unplug(&self, at: &str, patience: Duration) -> Result<(), ImageRefusal>;
+    /// The run's microVM saved whole and left running (D176, D259): its memory, its vCPUs'
+    /// and devices' state, its run's swap and its writable layer, as the daemon's `save vm`
+    /// saves one, in a snapshot directory (`shards_vmm::snapshot`'s: `current` naming the
+    /// generation, whose `memory`, `state`, `swap`, `layer-head`, `layer` and `window-heads`
+    /// they are) at `to`, which the save makes: absolute, beneath the run's home (its
+    /// `SHARDS_HOME`), beneath no directory its guest reaches (its shares, what is plugged
+    /// into it, the home's volumes), and with nothing there yet. It holds every value its
+    /// guest holds: it is its owner's alone, asked on the run's own channel and written
+    /// nowhere else, and its owner's to remove. Waits at most `patience`; refused as
+    /// [`ImageRefusal::Save`], by what refused it: a path not UTF-8 as [`ImageRefusal::Spec`].
+    fn save(&self, to: &std::path::Path, patience: Duration) -> Result<(), ImageRefusal>;
     /// Ends it at once: its VM's process is killed, and [`wait_for`](Self::wait_for) then
     /// returns [`RunEnd::Stopped`], or the end the run had come to before: its command's, or
     /// its host's failure, in its words, as `wait_for` saw it. Never refused, as a VM left

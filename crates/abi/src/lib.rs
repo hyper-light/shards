@@ -147,6 +147,12 @@ pub mod control {
     /// the run under the device in its place, a stopped microVM's own (`run::kind::OVER`).
     /// Read: 1 once one was put there, else 0.
     pub const LAYER_SWAP: u64 = 0x48;
+    /// Read, 64 bits in one access: the VM process's own memory when read, in bytes, as its
+    /// host counts memory per VM and a group shards keeps sums it (D183; PM M30): macOS's
+    /// physical footprint, Windows' private working set, Linux's anonymous resident pages;
+    /// 0 where it cannot say. A group's room is held as of it, read with what the run uses
+    /// (`run::room_now`).
+    pub const FOOTPRINT: u64 = 0x50;
 
     pub const SNAPSHOT_NOW: u32 = 1;
     pub const SHOW_SWAP: u32 = 1;

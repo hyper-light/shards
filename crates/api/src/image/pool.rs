@@ -531,6 +531,10 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.unplug(at, patience)
     }
 
+    fn save(&self, to: &std::path::Path, patience: Duration) -> Result<(), ImageRefusal> {
+        self.guest.save(to, patience)
+    }
+
     fn stop(&self) -> Result<(), ImageRefusal> {
         self.guest.stop()
     }
@@ -703,6 +707,9 @@ mod tests {
             none()
         }
         fn unplug(&self, _: &str, _: Duration) -> Result<(), ImageRefusal> {
+            none()
+        }
+        fn save(&self, _: &std::path::Path, _: Duration) -> Result<(), ImageRefusal> {
             none()
         }
         fn stop(&self) -> Result<(), ImageRefusal> {

@@ -485,9 +485,15 @@ impl Client {
     }
 
     /// How long a trouble of `url`'s server is ridden out before it is said as the
-    /// server's failure (registry.rs `Trouble`): as long as its path's troubles say.
-    pub(crate) fn budget(&self, url: &Url) -> Duration {
-        self.moment.unwrap_or_else(|| self.paths.budget(&path_of(url)))
+    /// server's failure (registry.rs `Trouble`): as long as its path's troubles say, none
+    /// where they bound nothing.
+    pub(crate) fn budget(&self, url: &Url) -> Option<Duration> {
+        self.moment.or_else(|| self.paths.budget(&path_of(url)))
+    }
+
+    /// A trouble of `url`'s server lasted its path's budget and was given up on.
+    pub(crate) fn trouble_ran_out(&self, url: &Url) {
+        self.paths.trouble_ran_out(&path_of(url));
     }
 
     /// A trouble of `url`'s server that lasted `lasted` passed.
@@ -1603,7 +1609,11 @@ fn dial(
         if let Some(cancel) = cancel {
             cancel.check()?;
         }
-        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+        // Past its deadline, or at it: connect_timeout refuses a zero wait.
+        let Some(left) = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+        else {
             break;
         };
         let reply = Reply::new(tx.clone(), cancel);
@@ -3405,6 +3415,37 @@ mod tests {
         assert!(learned < 600_000, "the time to its first byte: {learned} µs");
         drop(client);
         served.join().unwrap();
+    }
+
+    /// A wait shorter than the record's µs waited for nothing and is no sample: a body whose
+    /// bytes all came with its head, read at once, teaches its path no silence, and the next
+    /// request on the path is asked as before; a path whose record keeps 0 µs of each kind
+    /// (as d54bca98e's could) is asked as one that has shown none. Before, a bound of 0 was
+    /// set as a socket's timeout, which std refuses, and every next request failed: "cannot
+    /// set a 0 duration timeout" (D222).
+    #[test]
+    fn a_wait_of_nothing_is_no_sample_and_no_bound() {
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+        // Four answers: a second asking can run out once on the first's bound, and is asked
+        // again.
+        let server = serve(None, vec![(ok.clone(), After::Keep); 4]);
+        let url = at("http", "127.0.0.1", server.port);
+        let client = plain().learning();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        let shown = client.shown("127.0.0.1", server.port);
+        assert_ne!(shown.slowest_silence_us, Some(0), "{shown:?}");
+        assert_ne!(shown.slowest_answer_us, Some(0), "{shown:?}");
+        let zero = crate::patience::Shown {
+            slowest_answer_us: Some(0),
+            slowest_silence_us: Some(0),
+            ..crate::patience::Shown::default()
+        };
+        let server = serve(None, vec![(ok, After::Keep)]);
+        let url = at("http", "127.0.0.1", server.port);
+        let kept = plain().learning().showing("127.0.0.1", server.port, zero);
+        assert_eq!(kept.silence("127.0.0.1", server.port), Bounded::Cold);
+        assert_eq!(fetch(&kept, "GET", &url).unwrap(), (200, b"ok".to_vec()));
     }
 
     /// A body's silence is a read's own wait for the bytes it brought, the gap past which

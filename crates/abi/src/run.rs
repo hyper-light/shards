@@ -721,8 +721,14 @@ pub mod builtin {
     /// it uses than the room a run needs to go on, which a room short of it raises no hold
     /// past. Answered with the bytes the run is held within past what it uses, in decimal.
     /// Without one, it has no budget, is held only as its memory is (D148), and nothing is
-    /// answered.
+    /// answered. A second word, a group's (D183), says in decimal the footprint its VM
+    /// process held as that room was read: the room is held as of its footprint now
+    /// ([`room_now`](super::room_now)), and where its VMM cannot say that, as said, its
+    /// answer then followed by a space and [`ROOM_UNREAD`].
     pub const ROOM: u8 = 16;
+    /// [`ROOM`]'s answer's second word where it held a group's room as said, its VMM unable to
+    /// say its VM process's footprint now (`control::FOOTPRINT` 0).
+    pub const ROOM_UNREAD: &str = "unread";
     /// A device plugged into the running microVM, or let go of, or a disk grown (D214;
     /// shards-init hotplug.rs): `disk ADDR DST [ro]`, `share ADDR TAG DST [ro]`, `unmount
     /// ADDR DST`, `grow ADDR DST SECTORS`, ADDR the function's PCI address.
@@ -798,6 +804,20 @@ impl Size {
             cols: u16::from_be_bytes([c, d]),
         })
     }
+}
+
+/// The room a group's word leaves a run now (D183, [`builtin::ROOM`]'s second word): `room`
+/// bytes, read as its VM process's footprint was `at` bytes, as of its footprint `now`, read
+/// with what the run uses. What its VM process came to hold past `at` since is no room, and
+/// what it let go of is room, so a room read before the run grew counts that growth once,
+/// whenever the word arrives. None where `now` is 0, its VMM unable to say it
+/// (`control::FOOTPRINT`): the room is then held as said, and the answer says so.
+pub fn room_now(room: i64, at: u64, now: u64) -> Option<i64> {
+    if now == 0 {
+        return None;
+    }
+    let signed = |b: u64| i64::try_from(b).unwrap_or(i64::MAX);
+    Some(room.saturating_sub(signed(now).saturating_sub(signed(at))))
 }
 
 /// Whether `name` is a terminal type a run's TERM may be given ([`Spec::terms`]): a name
@@ -1035,6 +1055,26 @@ impl Cursor<'_> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    /// A group's room is held as of its VM process's footprint now (D183): a run that grew by
+    /// 200 MiB before its room was read, and one that grew as much after it, before its word
+    /// came, are held alike, at what it used before it grew and the room then; one that let
+    /// memory go meanwhile has that much more room; and a footprint its VMM cannot say
+    /// leaves the room as said, typed.
+    #[test]
+    fn a_groups_room_is_held_as_of_the_footprint_it_was_read_with() {
+        let mib = |n: i64| n << 20;
+        let at = |n: u64| n << 20;
+        // Read after it grew: 100 MiB of room, at 600; now 600.
+        let before = room_now(mib(100), at(600), at(600)).unwrap();
+        // Read before it grew: 300 MiB of room, at 400; now 600.
+        let after = room_now(mib(300), at(400), at(600)).unwrap();
+        assert_eq!((before, after), (mib(100), mib(100)));
+        assert_eq!(room_now(mib(300), at(400), at(350)), Some(mib(350)));
+        assert_eq!(room_now(mib(-50), at(400), at(450)), Some(mib(-100)));
+        assert_eq!(room_now(mib(300), at(400), 0), None);
+        assert_eq!(room_now(i64::MIN, 0, u64::MAX), Some(i64::MIN));
+    }
+
     /// The host's network's bind and answer (D124), each as the other side reads it.
     #[test]
     fn host_binds_are_read_as_written() {
