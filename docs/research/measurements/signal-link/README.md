@@ -389,6 +389,9 @@ each ok: `a_lost_signal_connection_fails_execs_and_kills_at_once` 31 s
   (`undialed` takes exactly four bytes by `try_from`, init the error's code or 0); the
   shared seams only (the frame rides the run connection every OS has). No new syscall in
   the VM process's seccomp filter.
+- At the revision landed, origin/main `1dbaeeb4e` merged in (`512b8152a`), on adacachy:
+  shards-init 230 passed, 1 ignored; shards-vm 61; the E2E test ok in 4.4 s
+  ([logs/undialed-landed-linux.log](logs/undialed-landed-linux.log)).
 - Not provoked: the held path, a dial found failed while a save's cut is not open, which
   needs a save asked before the relay's first look at the dial.
 
