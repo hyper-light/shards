@@ -6527,4 +6527,349 @@ mod tests {
         assert!(microvm(home, &plain, &shape, &[], false).template.is_none());
         assert!(Path::new(&dir).starts_with(home.join("templates")));
     }
+
+    const SIGNED: &str = "claude/acct-1";
+    const SIGNED_ACCESS: &str = "sign-ins/claude/acct-1/access";
+    const ACCESS_HOLDER: &str = "kiln-placeholder-access-0123456789abcdef0123456789abcdef";
+    const REFRESH_HOLDER: &str = "kiln-placeholder-refresh-fedcba9876543210fedcba9876543210";
+
+    /// A run's sign-in of Claude Code (D242, step 8), as an earlier capture gave it where
+    /// `captured`.
+    fn signs_in(captured: bool) -> wire::SignInGrant {
+        wire::SignInGrant {
+            sign_in: SIGNED.into(),
+            cli: wire::Cli::ClaudeCode,
+            toward: vec!["api.anthropic.com".into()],
+            captured: captured.then(|| wire::Captured {
+                access: SIGNED_ACCESS.into(),
+                access_placeholder: ACCESS_HOLDER.into(),
+                refresh_placeholder: Some(REFRESH_HOLDER.into()),
+            }),
+        }
+    }
+
+    /// A run whose request grants a sign-in has the grant reach its network process, after its
+    /// policy and before its credential grants, whose CA names its hosts and whose trust its
+    /// members are given; a run that grants none tells it none (D242, step 8). Do: tell a
+    /// simulated network process a run's network, once with a sign-in of Claude Code and no
+    /// credential grant, once with neither; and grant a sign-in whose token host the run's egress
+    /// does not reach. Expect: the first told its policy, its sign-in (as the run asked it) and
+    /// its grants, none, in that order, and its CA's hosts the sign-in's; the second its policy
+    /// alone; the third refused before anything starts.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_whose_request_grants_a_sign_in_tells_its_network_process_and_one_that_grants_none_tells_none() {
+        use std::os::unix::net::UnixStream;
+        let policy = shards_net::encode_policy(
+            &shards_net::Ports::default(),
+            &[
+                ("platform.claude.com".into(), 443),
+                ("api.anthropic.com".into(), 443),
+            ],
+            false,
+        );
+        let der = b"the run's CA".to_vec();
+        for granted in [true, false] {
+            let asked = if granted {
+                vec![signs_in(false)]
+            } else {
+                Vec::new()
+            };
+            let sign_ins = sign_ins(&asked, &[], Some(&policy)).ok().unwrap();
+            let grants = credentials(&[], Some(&policy), sign_ins.is_some()).ok().unwrap();
+            let (net, run_host) = UnixStream::pair().unwrap();
+            let (ca, told) = std::thread::scope(|s| {
+                let network = s.spawn(|| {
+                    let mut told = Vec::new();
+                    let soon = || Instant::now() + Duration::from_secs(120);
+                    while let Ok(Some(m)) = shards_ipc::recv_by(&net, soon()) {
+                        let answer = if m.kind == kind::NET_CREDENTIALS {
+                            der.clone()
+                        } else {
+                            Vec::new()
+                        };
+                        shards_ipc::send(&net, m.kind, &answer, &[]).unwrap();
+                        told.push((m.kind, m.payload));
+                    }
+                    told
+                });
+                let ca = hosted::tell_net(
+                    &run_host,
+                    &[],
+                    Some(&policy),
+                    sign_ins.as_deref(),
+                    grants.as_deref(),
+                );
+                drop(run_host);
+                (ca, network.join().unwrap())
+            });
+            let kinds: Vec<u8> = told.iter().map(|(k, _)| *k).collect();
+            if granted {
+                assert_eq!(
+                    kinds,
+                    [kind::NET_POLICY, kind::NET_SIGN_INS, kind::NET_CREDENTIALS],
+                    "its sign-in not told, or out of order"
+                );
+                assert_eq!(
+                    shards_net::signin::decode_grants(&told[1].1),
+                    Some(vec![signs_in(false)])
+                );
+                assert_eq!(shards_net::decode_grants(&told[2].1), Some(Vec::new()));
+                assert_eq!(ca, Ok(Some(der.clone())));
+                let entries = trust(&der, &told[2].1, &asked).unwrap();
+                let got = shards_abi::run::trust::of(&entries).unwrap().unwrap();
+                assert_eq!(
+                    got.hosts,
+                    [b"platform.claude.com".as_slice(), b"api.anthropic.com"]
+                );
+            } else {
+                assert_eq!(kinds, [kind::NET_POLICY], "a run with no sign-in told one");
+                assert_eq!(ca, Ok(None));
+            }
+        }
+        let api_alone = shards_net::encode_policy(
+            &shards_net::Ports::default(),
+            &[("api.anthropic.com".into(), 443)],
+            false,
+        );
+        assert!(matches!(
+            sign_ins(&[signs_in(false)], &[], Some(&api_alone)),
+            Err(No(Cause::Request, _))
+        ));
+    }
+
+    /// A sign-in relayed between its network process (shards_net::signin's `SignIns` and the
+    /// lease client) and a simulated orchestrator, over a socket and pipes as the run host has
+    /// them (D242, step 8). Do: capture the sign-in's tokens; lease its access token; refresh
+    /// it; lease it again; revoke it in the VM; end the run, and lease it once more. Expect: the
+    /// tokens reach the orchestrator whole, nothing of the provider called here; the capture's
+    /// placeholders reach the network process and its access token is leased by the reference
+    /// the orchestrator gave; the refresh answered with the same placeholders kept, the rotated
+    /// token's response written with them and no rotated token, and the held lease let go of
+    /// here so the next lease is asked anew rather than refused as live; the revocation told
+    /// the orchestrator; the leases released as the run ends, before its end, and a lease asked
+    /// after refused as ended.
+    #[cfg(unix)]
+    #[test]
+    fn a_sign_in_is_relayed_its_placeholders_kept_through_a_refresh_and_its_lease_released_at_the_runs_end() {
+        use std::os::unix::net::UnixStream;
+        use zeroize::Zeroizing;
+        let soon = || Instant::now() + Duration::from_secs(120);
+        let (net, run_host) = UnixStream::pair().unwrap();
+        let (mut orchestrator, out) = std::io::pipe().unwrap();
+        let answers = Answers(Mutex::new(Box::new(out)));
+        let leasing = Leasing {
+            ledger: Mutex::new(Ledger::new(Vec::new(), vec![signs_in(false)])),
+            net: &run_host,
+            sending: Mutex::new(()),
+        };
+        let life = NonZeroU64::new(3_600_000_000_000).unwrap();
+        std::thread::scope(|s| {
+            let relaying = s.spawn(|| relay(&leasing, &answers));
+            let mut sign_ins = shards_net::signin::SignIns::new(vec![signs_in(false)]);
+            let mut leases = shards_net::lease::Leases::new(Vec::new());
+            let send = |kind, payloads: Vec<Zeroizing<Vec<u8>>>| {
+                for p in payloads {
+                    shards_ipc::send(&net, kind, &p, &[]).unwrap();
+                }
+            };
+            let next =
+                |orchestrator: &mut std::io::PipeReader| wire::read_frame(orchestrator).unwrap().unwrap();
+            // The capture: the tokens to the orchestrator, its placeholders back.
+            let taken = shards_net::signin::Taken {
+                access: Zeroizing::new(b"sk-ant-oat01-real-access".to_vec()),
+                refresh: Some(Zeroizing::new(b"sk-ant-ort01-real-refresh".to_vec())),
+                expires_in: Some(28800),
+                id_token: None,
+                scope: Some("user:inference user:profile".into()),
+            };
+            sign_ins.capture(0, taken, 1).unwrap();
+            send(kind::NET_SIGN_IN, sign_ins.asks());
+            let (which, payload) = next(&mut orchestrator);
+            assert_eq!(which, wire::to_client::CAPTURE);
+            let ask = wire::CaptureAsk::decode(&payload).unwrap();
+            assert_eq!(ask.sign_in, SIGNED);
+            assert_eq!(ask.tokens.access, wire::Secret::from("sk-ant-oat01-real-access"));
+            assert_eq!(ask.tokens.scope.as_deref(), Some("user:inference user:profile"));
+            let kept = wire::CaptureAnswer {
+                id: ask.id,
+                result: Ok(signs_in(true).captured.unwrap()),
+            };
+            captured(&leasing, &kept.encode().unwrap()).unwrap();
+            let m = shards_ipc::recv_by(&net, soon()).unwrap().unwrap();
+            assert_eq!(m.kind, kind::NET_SIGN_IN);
+            assert!(matches!(
+                sign_ins.answered(&m.payload, &[]),
+                Some(shards_net::signin::Changed::Captured { index: 0, .. })
+            ));
+            assert_eq!(sign_ins.grants[0].captured, signs_in(true).captured);
+            // Its access token leased by the orchestrator's reference, as a grant's is.
+            let lease = |orchestrator: &mut std::io::PipeReader,
+                         leases: &mut shards_net::lease::Leases,
+                         waiter,
+                         value: &str| {
+                assert!(matches!(
+                    leases.ask(SIGNED_ACCESS, waiter, Instant::now()),
+                    shards_net::lease::Asked::Waiting
+                ));
+                for ask in leases.asks() {
+                    shards_ipc::send(&net, kind::NET_LEASE, &ask, &[]).unwrap();
+                }
+                let (which, payload) = next(orchestrator);
+                assert_eq!(
+                    which,
+                    wire::to_client::LEASE,
+                    "its access token's lease not asked"
+                );
+                let ask = wire::LeaseAsk::decode(&payload).unwrap();
+                assert_eq!(ask.reference, SIGNED_ACCESS);
+                let answer = wire::LeaseAnswer {
+                    id: ask.id,
+                    result: Ok(wire::Lease {
+                        value: wire::Secret::from(value),
+                        lives: life,
+                    }),
+                };
+                leased(&leasing, &answer.encode().unwrap()).unwrap();
+                let m = shards_ipc::recv_by(&net, soon()).unwrap().unwrap();
+                assert_eq!(m.kind, kind::NET_LEASE);
+                assert!(leases.answered(&m.payload, Instant::now()));
+                assert_eq!(leases.held(SIGNED_ACCESS, Instant::now()), Some(value.as_bytes()));
+            };
+            leases.grant(SIGNED_ACCESS);
+            lease(&mut orchestrator, &mut leases, 1, "sk-ant-oat01-real-access");
+            // The refresh: asked of the orchestrator, never of the provider here; answered with
+            // the rotated tokens' response; the placeholders the same.
+            sign_ins.refresh(0, 2).unwrap();
+            send(kind::NET_SIGN_IN, sign_ins.asks());
+            let (which, payload) = next(&mut orchestrator);
+            assert_eq!(which, wire::to_client::REFRESH);
+            let ask = wire::RefreshAsk::decode(&payload).unwrap();
+            assert_eq!(ask.sign_in, SIGNED);
+            let rotated = r#"{"access_token":"sk-ant-oat01-rotated","refresh_token":"sk-ant-ort01-rotated","expires_in":28800}"#;
+            let answer = wire::RefreshAnswer {
+                id: ask.id,
+                result: Ok(wire::Secret::from(rotated)),
+            };
+            refreshed(&leasing, &answer.encode().unwrap()).unwrap();
+            assert!(
+                !lock(&leasing.ledger)
+                    .live
+                    .values()
+                    .any(|e| e.reference == SIGNED_ACCESS),
+                "the rotated token's held lease kept: its next ask would be refused as live"
+            );
+            let m = shards_ipc::recv_by(&net, soon()).unwrap().unwrap();
+            assert_eq!(m.kind, kind::NET_SIGN_IN);
+            assert_eq!(
+                sign_ins.answered(&m.payload, &[]),
+                Some(shards_net::signin::Changed::Refreshed { index: 0 })
+            );
+            assert_eq!(
+                sign_ins.grants[0].captured,
+                signs_in(true).captured,
+                "a refresh changed the sign-in's placeholders"
+            );
+            let Some(shards_net::signin::Answer::Refreshed(body)) = sign_ins.take(2) else {
+                panic!("the refresh not answered")
+            };
+            let tokens = shards_net::signin::read(&body).unwrap().unwrap();
+            let held = shards_net::signin::Placeholders {
+                access: ACCESS_HOLDER.into(),
+                refresh: Some(REFRESH_HOLDER.into()),
+            };
+            let written = shards_net::signin::write(&body, &tokens, &held).unwrap();
+            let written = String::from_utf8(written.to_vec()).unwrap();
+            assert!(written.contains(ACCESS_HOLDER) && written.contains(REFRESH_HOLDER));
+            assert!(!written.contains("rotated"), "{written}");
+            // Its held lease let go of, here as in the network process: the next is asked anew.
+            leases.forget(SIGNED_ACCESS);
+            lease(&mut orchestrator, &mut leases, 3, "sk-ant-oat01-rotated");
+            // A revocation in the VM: told the orchestrator, answered by nobody.
+            sign_ins.revoke(0);
+            send(kind::NET_SIGN_IN, sign_ins.asks());
+            let (which, payload) = next(&mut orchestrator);
+            assert_eq!(which, wire::to_client::REVOKE);
+            assert_eq!(wire::Revoked::decode(&payload).unwrap().sign_in, SIGNED);
+            // The run's end: its leases released first, the captured token's among them.
+            end_run(&answers, Some(&leasing), &wire::RunEnd::Exited(0));
+            let (which, _) = next(&mut orchestrator);
+            assert_eq!(
+                which,
+                wire::to_client::RELEASED,
+                "its leases not released before its end"
+            );
+            let (which, _) = next(&mut orchestrator);
+            assert_eq!(which, wire::to_client::ENDED);
+            let late = shards_net::lease::encode_ask(9, SIGNED_ACCESS);
+            shards_ipc::send(&net, kind::NET_LEASE, &late, &[]).unwrap();
+            let m = shards_ipc::recv_by(&net, soon()).unwrap().unwrap();
+            assert_eq!(
+                shards_net::lease::decode_answer(&m.payload),
+                Some((9, Err(Refusal::Ended)))
+            );
+            drop(net);
+            relaying.join().unwrap();
+        });
+    }
+
+    /// The run host's ledger of sign-ins (D242, step 8; R04). Do: ask of a sign-in no grant
+    /// names; capture the run's; answer a capture never asked and one of another kind; refresh
+    /// it while its access token's lease is held, and while one is asked; release the run.
+    /// Expect: the stranger declined here; the capture's access token granted, in place of an
+    /// earlier capture's; the stray answers refused; the refresh letting the held lease go and
+    /// keeping the asked one; after the release, asks declined as ended and answers late.
+    #[test]
+    fn a_runs_ledger_relays_its_own_sign_ins_and_lets_a_refreshed_lease_go() {
+        let mut ledger = Ledger::new(vec![CLAUDE.into()], vec![signs_in(false)]);
+        let now = Instant::now();
+        let life = NonZeroU64::new(60_000_000_000).unwrap();
+        assert_eq!(
+            ledger.sign_in(1, "codex/other", Signing::Capture),
+            Ok(Err(Declined::Denied("no sign-in of the run's".into())))
+        );
+        assert_eq!(ledger.sign_in(1, SIGNED, Signing::Capture), Ok(Ok(())));
+        assert!(
+            ledger.sign_in(1, SIGNED, Signing::Refresh).is_err(),
+            "an id under way asked again"
+        );
+        assert!(
+            ledger.signed_in(1, Signing::Refresh).is_err(),
+            "an answer of another kind"
+        );
+        assert!(
+            ledger.signed_in(2, Signing::Capture).is_err(),
+            "an answer of no ask"
+        );
+        assert_eq!(ledger.signed_in(1, Signing::Capture), Ok(Some(0)));
+        assert_eq!(ledger.ask(5, SIGNED_ACCESS, now), Err(Refusal::Ungranted));
+        ledger.captured(0, &signs_in(true).captured.unwrap());
+        let held = ledger.ask(5, SIGNED_ACCESS, now).unwrap();
+        ledger.answer(held, Some(life), now).unwrap();
+        assert_eq!(ledger.ask(6, SIGNED_ACCESS, now), Err(Refusal::Live));
+        assert_eq!(ledger.sign_in(2, SIGNED, Signing::Refresh), Ok(Ok(())));
+        assert_eq!(ledger.signed_in(2, Signing::Refresh), Ok(Some(0)));
+        ledger.refreshed(0);
+        let asked = ledger.ask(7, SIGNED_ACCESS, now).unwrap();
+        ledger.refreshed(0);
+        assert_eq!(
+            ledger.ask(8, SIGNED_ACCESS, now),
+            Err(Refusal::Live),
+            "an ask under way let go"
+        );
+        // A second capture's reference in place of the first's.
+        let mut again = signs_in(true).captured.unwrap();
+        again.access = "sign-ins/claude/acct-1/access-2".into();
+        ledger.captured(0, &again);
+        assert_eq!(ledger.ask(9, SIGNED_ACCESS, now), Err(Refusal::Ungranted));
+        assert!(ledger.ask(9, &again.access, now).is_ok());
+        assert_eq!(ledger.sign_in(3, SIGNED, Signing::Refresh), Ok(Ok(())));
+        assert!(ledger.release().is_some());
+        assert_eq!(
+            ledger.sign_in(4, SIGNED, Signing::Capture),
+            Ok(Err(Declined::Ended))
+        );
+        assert_eq!(ledger.signed_in(3, Signing::Refresh), Ok(None));
+        assert_eq!(ledger.answer(asked, Some(life), now), Ok(Answered::Late));
+    }
 }

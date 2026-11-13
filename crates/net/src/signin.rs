@@ -2311,4 +2311,57 @@ mod tests {
             assert!(s.grants[0].captured.is_none());
         }
     }
+
+    /// A capture carries what its CLI's own file records beside its tokens, none a credential,
+    /// and a sign-in whose response gave no refresh token holds no placeholder for one (D242,
+    /// step 8, ROOT's asks). Do: take Codex's response's tokens, and Claude Code's; send a
+    /// capture's word; write a response with a refresh token for a sign-in with no refresh
+    /// placeholder, and one without; ask a refresh of such a sign-in. Expect: the ID token taken
+    /// inert alone, its signature gone, and the scope as it came, both through the word; the
+    /// refresh token with nothing to stand for it refused, never passed; the response without one
+    /// written; the refresh passed, nothing of the run's in it.
+    #[test]
+    fn a_capture_carries_its_inert_id_token_and_scope_and_a_sign_in_may_hold_no_refresh_placeholder() {
+        let codex = codex_body();
+        let taken = Taken::of(&read(codex.as_bytes()).unwrap().unwrap()).unwrap();
+        let inert = format!("{ID_HEADER}.{ID_PAYLOAD}.shards-placeholder");
+        assert_eq!(
+            taken.id_token.as_deref().map(Vec::as_slice),
+            Some(inert.as_bytes())
+        );
+        assert!(!holds(taken.id_token.as_ref().unwrap(), ID_SIGNATURE));
+        let claude = claude_body();
+        let taken = Taken::of(&read(claude.as_bytes()).unwrap().unwrap()).unwrap();
+        assert_eq!(taken.scope.as_deref(), Some("user:inference user:profile"));
+        assert!(taken.id_token.is_none());
+        let told = Told::Capture {
+            id: 3,
+            sign_in: "codex/acct-2".into(),
+            taken: Taken::of(&read(codex.as_bytes()).unwrap().unwrap()).unwrap(),
+        };
+        let Some(Told::Capture { taken, .. }) = Told::decode(&told.encode().unwrap()) else {
+            panic!("no capture read back")
+        };
+        assert_eq!(
+            taken.id_token.as_deref().map(Vec::as_slice),
+            Some(inert.as_bytes())
+        );
+        assert_eq!(taken.scope, None);
+        let unrefreshed = Placeholders {
+            access: ACCESS_PLACEHOLDER.into(),
+            refresh: None,
+        };
+        let tokens = read(claude.as_bytes()).unwrap().unwrap();
+        assert!(matches!(
+            write(claude.as_bytes(), &tokens, &unrefreshed),
+            Err(Refusal::NoPlaceholder)
+        ));
+        let bare = format!(r#"{{"access_token":"{ACCESS}","expires_in":28800}}"#);
+        let tokens = read(bare.as_bytes()).unwrap().unwrap();
+        let written = write(bare.as_bytes(), &tokens, &unrefreshed).unwrap();
+        assert!(holds(&written, ACCESS_PLACEHOLDER) && !holds(&written, ACCESS));
+        let body = format!(r#"{{"grant_type":"refresh_token","refresh_token":"{REFRESH_PLACEHOLDER}"}}"#);
+        let asked = request("platform.claude.com", "/v1/oauth/token", JSON, &body);
+        assert_eq!(ask(&CLAUDE_CODE, &asked, &[&unrefreshed]), Ask::Pass);
+    }
 }

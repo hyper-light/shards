@@ -4052,4 +4052,125 @@ mod tests {
         };
         assert_eq!(Request::decode(&twice.encode().unwrap()), Err(WireError::Gpu));
     }
+
+    /// A run's sign-ins and their words (version 24, D242 step 8). Do: carry a sign-in captured
+    /// before, with and without a refresh token's placeholder, and one never captured; each word
+    /// of a capture (its tokens, its ID token made inert and its scope where it has them), a
+    /// refresh, a revocation and their answers, given and refused each way; cut each, and give a
+    /// CLI or a refusal no version has. Expect: each read back exactly; each cut and each unknown
+    /// tag refused; no token or placeholder in any `Debug`.
+    #[test]
+    fn a_runs_sign_ins_and_their_words_cross_the_channel() {
+        let captured = |refresh: Option<&str>| Captured {
+            access: "sign-ins/claude/acct-1/access".into(),
+            access_placeholder: "kiln-placeholder-access-0123".into(),
+            refresh_placeholder: refresh.map(Into::into),
+        };
+        let signed = Request {
+            sign_ins: vec![
+                SignInGrant {
+                    sign_in: "claude/acct-1".into(),
+                    cli: Cli::ClaudeCode,
+                    toward: vec!["api.anthropic.com".into()],
+                    captured: Some(captured(Some("kiln-placeholder-refresh-4567"))),
+                },
+                SignInGrant {
+                    sign_in: "codex/acct-2".into(),
+                    cli: Cli::Codex,
+                    toward: vec!["chatgpt.com".into(), "api.openai.com".into()],
+                    captured: None,
+                },
+            ],
+            ..request()
+        };
+        let bytes = signed.encode().unwrap();
+        assert_eq!(Request::decode(&bytes).unwrap(), signed);
+        let unrefreshed = Request {
+            sign_ins: vec![SignInGrant {
+                captured: Some(captured(None)),
+                ..signed.sign_ins[0].clone()
+            }],
+            ..request()
+        };
+        assert_eq!(
+            Request::decode(&unrefreshed.encode().unwrap()).unwrap(),
+            unrefreshed
+        );
+        for cut in 1..=bytes.len() - request().encode().unwrap().len() {
+            assert!(Request::decode(&bytes[..bytes.len() - cut]).is_err(), "cut {cut}");
+        }
+        // The second sign-in's CLI, its code after its name, made one no version has.
+        let mut cli = bytes.clone();
+        let at = cli.len() - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1);
+        assert_eq!(cli[at], Cli::Codex.code());
+        cli[at] = 9;
+        assert!(matches!(Request::decode(&cli), Err(WireError::Tag { .. })));
+        let tokens = |refresh: bool, id: bool, scope: bool| SignInTokens {
+            access: Secret::from("sk-ant-oat01-access"),
+            refresh: refresh.then(|| Secret::from("sk-ant-ort01-refresh")),
+            expires_in: refresh.then_some(28800),
+            id_token: id.then(|| Secret::from("eyJh.eyJw.shards-placeholder")),
+            scope: scope.then(|| "user:inference user:profile".into()),
+        };
+        for (refresh, id, scope) in [(true, true, true), (false, false, false), (true, false, true)] {
+            let ask = CaptureAsk {
+                id: 7,
+                sign_in: "claude/acct-1".into(),
+                tokens: tokens(refresh, id, scope),
+            };
+            let bytes = ask.encode().unwrap();
+            assert_eq!(CaptureAsk::decode(&bytes).unwrap(), ask);
+            assert!(CaptureAsk::decode(&bytes[..bytes.len() - 1]).is_err());
+            let shown = format!("{ask:?}");
+            assert!(!shown.contains("sk-ant") && !shown.contains("eyJ"), "{shown}");
+        }
+        let refresh = RefreshAsk {
+            id: 8,
+            sign_in: "claude/acct-1".into(),
+        };
+        assert_eq!(RefreshAsk::decode(&refresh.encode().unwrap()).unwrap(), refresh);
+        let revoked = Revoked {
+            sign_in: "claude/acct-1".into(),
+        };
+        assert_eq!(Revoked::decode(&revoked.encode().unwrap()).unwrap(), revoked);
+        let refusals = [
+            SignInRefusal::Denied("no such sign-in".into()),
+            SignInRefusal::Unavailable("the broker is down".into()),
+            SignInRefusal::Ended,
+            SignInRefusal::Unanswered,
+        ];
+        for result in [
+            Ok(captured(Some("kiln-placeholder-refresh-4567"))),
+            Ok(captured(None)),
+        ]
+        .into_iter()
+        .chain(refusals.iter().cloned().map(Err))
+        {
+            let answer = CaptureAnswer { id: 9, result };
+            let bytes = answer.encode().unwrap();
+            assert_eq!(CaptureAnswer::decode(&bytes).unwrap(), answer);
+            assert!(CaptureAnswer::decode(&bytes[..bytes.len() - 1]).is_err());
+            let shown = format!("{answer:?}");
+            assert!(!shown.contains("kiln-placeholder"), "{shown}");
+        }
+        for result in [Ok(Secret::from(r#"{"access_token":"sk-ant-oat01-rotated"}"#))]
+            .into_iter()
+            .chain(refusals.iter().cloned().map(Err))
+        {
+            let answer = RefreshAnswer { id: 10, result };
+            let bytes = answer.encode().unwrap();
+            assert_eq!(RefreshAnswer::decode(&bytes).unwrap(), answer);
+            assert!(RefreshAnswer::decode(&bytes[..bytes.len() - 1]).is_err());
+            assert!(!format!("{answer:?}").contains("sk-ant"));
+        }
+        // A refusal's tag no version has.
+        let mut bad = CaptureAnswer {
+            id: 9,
+            result: Err(SignInRefusal::Ended),
+        }
+        .encode()
+        .unwrap();
+        *bad.last_mut().unwrap() = 9;
+        assert!(matches!(CaptureAnswer::decode(&bad), Err(WireError::Tag { .. })));
+    }
 }

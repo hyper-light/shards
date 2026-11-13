@@ -2696,4 +2696,185 @@ mod tests {
             assert_eq!(l.released, l.given, "a lease outlived its channel");
         }
     }
+
+    const SIGN_IN: &str = "claude/acct-1";
+    const SIGNED_ACCESS: &str = "sign-ins/claude/acct-1/access";
+
+    /// What a simulated broker's capture gives (D242, step 8): one reference, and the same
+    /// placeholders every time.
+    fn kept() -> wire::Captured {
+        wire::Captured {
+            access: SIGNED_ACCESS.into(),
+            access_placeholder: "kiln-placeholder-access-0123456789abcdef".into(),
+            refresh_placeholder: Some("kiln-placeholder-refresh-fedcba9876543210".into()),
+        }
+    }
+
+    /// A simulated orchestrator keeping its run's sign-in (D242, step 8): its leases as
+    /// [`Orchestrator`]'s, its value whatever the reference; each capture's tokens kept; each
+    /// refresh answered with the rotated tokens' response, the provider called once for each;
+    /// each revocation told.
+    #[derive(Default)]
+    struct Broker {
+        leases: Orchestrator,
+        kept: Mutex<Vec<wire::SignInTokens>>,
+        refreshed: Mutex<usize>,
+        revoked: Mutex<Vec<String>>,
+    }
+
+    impl Lessor for Broker {
+        fn lease(&self, reference: &str, key: Option<[u8; 32]>) -> Result<Leased, LeaseRefusal> {
+            self.leases.lease(reference, key)
+        }
+
+        fn release(&self, lease: &str) {
+            self.leases.release(lease);
+        }
+
+        fn capture(
+            &self,
+            sign_in: &str,
+            tokens: wire::SignInTokens,
+            _key: Option<[u8; 32]>,
+        ) -> Result<wire::Captured, wire::SignInRefusal> {
+            if sign_in != SIGN_IN {
+                return Err(wire::SignInRefusal::Denied(format!("no sign-in {sign_in}")));
+            }
+            lock(&self.kept).push(tokens);
+            Ok(kept())
+        }
+
+        fn refresh(
+            &self,
+            sign_in: &str,
+            _key: Option<[u8; 32]>,
+        ) -> Result<wire::Secret, wire::SignInRefusal> {
+            if sign_in != SIGN_IN {
+                return Err(wire::SignInRefusal::Denied(format!("no sign-in {sign_in}")));
+            }
+            *lock(&self.refreshed) += 1;
+            Ok(wire::Secret::from(
+                r#"{"access_token":"sk-ant-oat01-rotated","refresh_token":"sk-ant-ort01-rotated","expires_in":28800}"#,
+            ))
+        }
+
+        fn revoked(&self, sign_in: &str, _key: Option<[u8; 32]>) {
+            lock(&self.revoked).push(sign_in.into());
+            self.leases.changed.notify_all();
+        }
+    }
+
+    /// A session of a run that grants sign-in `SIGN_IN` (not yet captured), its lessor `broker`.
+    fn signing(broker: &Arc<Broker>) -> Hosted {
+        let (sent, to_host) = io::pipe().unwrap();
+        let (from_host, host) = io::pipe().unwrap();
+        let lessor: Arc<dyn Lessor> = Arc::clone(broker) as Arc<dyn Lessor>;
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State::default()),
+            changed: Condvar::new(),
+            to_host: Mutex::new(Some(to_host)),
+            lessor: Mutex::new(Some(RunLessor(lessor))),
+            granted: Mutex::new(Vec::new()),
+            sign_ins: Mutex::new(vec![wire::SignInGrant {
+                sign_in: SIGN_IN.into(),
+                cli: wire::Cli::ClaudeCode,
+                toward: vec!["api.anthropic.com".into()],
+                captured: None,
+            }]),
+            said_to: Mutex::new(None),
+        });
+        let reader = {
+            let shared = Arc::clone(&shared);
+            std::thread::spawn(move || read_answers(&shared, from_host))
+        };
+        Hosted {
+            shared,
+            sent,
+            host,
+            reader,
+        }
+    }
+
+    /// A run's sign-in kept by its orchestrator (D242, step 8). Do: have the host ask a capture
+    /// of its tokens; lease the access token the capture gave; refresh the sign-in; lease it
+    /// again; tell a revocation in the VM; say the run released its leases. Expect: the tokens
+    /// kept by the broker, whole, and the capture answered with its placeholders; the access
+    /// token leasable only once captured, by the broker's reference; the refresh answered with
+    /// the broker's response, its provider called once, the lease given before it released and
+    /// the sign-in's placeholders the same; the revocation told the broker, answered nowhere;
+    /// and the lease given after the refresh released at the run's end, each lease once.
+    #[test]
+    fn a_sign_ins_capture_and_refresh_are_kept_by_the_broker_and_its_lease_released_at_the_runs_end() {
+        let broker = Arc::new(Broker::default());
+        let mut h = signing(&broker);
+        assert!(!granted(&h.shared, SIGNED_ACCESS), "leasable before its capture");
+        let capture = wire::CaptureAsk {
+            id: 1,
+            sign_in: SIGN_IN.into(),
+            tokens: wire::SignInTokens {
+                access: wire::Secret::from("sk-ant-oat01-real-access"),
+                refresh: Some(wire::Secret::from("sk-ant-ort01-real-refresh")),
+                expires_in: Some(28800),
+                id_token: None,
+                scope: Some("user:inference".into()),
+            },
+        };
+        says(&mut h.host, wire::to_client::CAPTURE, &capture.encode().unwrap());
+        let (kind, payload) = wire::read_frame(&mut h.sent).unwrap().unwrap();
+        assert_eq!(kind, wire::to_host::CAPTURED);
+        let answer = wire::CaptureAnswer::decode(&payload).unwrap();
+        assert_eq!((answer.id, answer.result), (1, Ok(kept())));
+        assert_eq!(*lock(&broker.kept), std::slice::from_ref(&capture.tokens));
+        assert!(granted(&h.shared, SIGNED_ACCESS));
+        ask(&mut h.host, 7, SIGNED_ACCESS);
+        assert!(answered(&mut h.sent).result.is_ok());
+        let first = lock(&broker.leases.ledger).given.clone();
+        assert_eq!(first, [format!("{SIGNED_ACCESS}#0")]);
+        // The refresh: the broker's alone, its answer relayed; the lease given before let go of.
+        let refresh = wire::RefreshAsk {
+            id: 2,
+            sign_in: SIGN_IN.into(),
+        };
+        says(&mut h.host, wire::to_client::REFRESH, &refresh.encode().unwrap());
+        let (kind, payload) = wire::read_frame(&mut h.sent).unwrap().unwrap();
+        assert_eq!(kind, wire::to_host::REFRESHED);
+        let answer = wire::RefreshAnswer::decode(&payload).unwrap();
+        assert_eq!(answer.id, 2);
+        assert!(answer.result.is_ok());
+        assert_eq!(*lock(&broker.refreshed), 1);
+        assert_eq!(
+            lock(&broker.leases.ledger).released,
+            first,
+            "the rotated token's lease held past its refresh"
+        );
+        assert_eq!(
+            lock(&h.shared.sign_ins)[0].captured,
+            Some(kept()),
+            "a refresh changed the sign-in's placeholders"
+        );
+        ask(&mut h.host, 8, SIGNED_ACCESS);
+        assert!(answered(&mut h.sent).result.is_ok());
+        // The VM's revocation: told the broker, answered nowhere.
+        let revoked = wire::Revoked {
+            sign_in: SIGN_IN.into(),
+        };
+        says(&mut h.host, wire::to_client::REVOKE, &revoked.encode().unwrap());
+        assert!(broker.leases.until(|_| !lock(&broker.revoked).is_empty()));
+        // The run's end: the lease given after the refresh released, each once.
+        says(&mut h.host, wire::to_client::RELEASED, &[]);
+        assert!(
+            broker.leases.until(|l| l.released.len() == 2),
+            "the captured token's lease not released at the run's end"
+        );
+        says(
+            &mut h.host,
+            wire::to_client::ENDED,
+            &RunEnd::Exited(0).encode().unwrap(),
+        );
+        drop(h.host);
+        h.reader.join().unwrap();
+        let l = lock(&broker.leases.ledger);
+        assert_eq!(l.released, l.given, "each lease released once");
+        assert_eq!(*lock(&broker.revoked), [SIGN_IN]);
+    }
 }
