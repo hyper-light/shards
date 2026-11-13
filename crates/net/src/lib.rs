@@ -3700,6 +3700,60 @@ mod tests {
         );
     }
 
+    /// The run's credential grants are taken with each placeholder checked again, as its run
+    /// host checked them (D109). Do: send grants whose placeholder is no token, then two
+    /// credentials sharing one, then one credential granted twice with one. Expect: the
+    /// first two refused, the control broken and nothing taken; the last answered with the
+    /// run's CA.
+    #[cfg(unix)]
+    #[test]
+    fn credential_grants_are_taken_with_their_placeholders_checked() {
+        use std::os::unix::net::UnixStream;
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut stack = stack(
+            Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
+            region.producer(1, pr),
+        );
+        let (host, ours) = UnixStream::pair().unwrap();
+        let grant = |reference: &str, placeholder: &str| Grant {
+            reference: reference.into(),
+            toward: vec!["api.anthropic.com".into()],
+            placeholder: placeholder.into(),
+        };
+        let message = |grants: &[Grant]| shards_ipc::Message {
+            kind: shards_ipc::kind::NET_CREDENTIALS,
+            payload: encode_grants(grants).unwrap(),
+            fds: Vec::new(),
+        };
+        for refused in [
+            vec![grant("anthropic/claude-max", "two words")],
+            vec![
+                grant("anthropic/claude-max", "p"),
+                grant("anthropic/console", "p"),
+            ],
+        ] {
+            stack.credential_key = Some(ca::Key::generate().unwrap());
+            assert!(
+                answer_other(&mut stack, &ours, &message(&refused)).is_err(),
+                "{refused:?} taken"
+            );
+            assert!(stack.credentials.is_none());
+        }
+        stack.credential_key = Some(ca::Key::generate().unwrap());
+        let twice = [
+            grant("anthropic/claude-max", "p"),
+            grant("anthropic/claude-max", "p"),
+        ];
+        assert!(answer_other(&mut stack, &ours, &message(&twice)).is_ok());
+        let answer = shards_ipc::recv_by(&host, Instant::now() + Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert_eq!(answer.kind, shards_ipc::kind::NET_CREDENTIALS);
+        assert_eq!(answer.payload, stack.credentials.as_ref().unwrap().ca.der());
+    }
+
     /// An initial sequence number is its connection's and its secret's alone, plus its
     /// clock: another connection, or another process's secret, gives another, and the
     /// clock adds to it (RFC 6528 §3, review 2.31).
