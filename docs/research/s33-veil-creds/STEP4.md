@@ -69,6 +69,16 @@ given for that run alone. Moves are the daemon's runs'; the daemon gives no netw
   the leases take 15; and main's one unformatted line of wire.rs formatted): shards-net 12, shards-api `image::` 38,
   shards `api_run::` 23, shards-ipc 1 passed; the four crates' clippy, `--all-targets -- -D warnings`, clean
   (`Compiling shards v0.7.0`, its build script rerun after main's build.rs change, then checked).
+- Run r454, head bdf6869c3 (merged with main 5bd110792: D251 took ipc kinds 98 and 99, so `NET_LEASE` takes 100;
+  D252 took the channel's version 15 and makes a run's own key where its orchestrator asks for an endpoint, which the
+  session now gives the `Lessor` with each ask; `CARGO_INCREMENTAL=0` from here, as ROOT's hosts update asks): shards-net
+  12, shards `api_run::` 25, shards-ipc 1 passed, clippy clean; shards-api `image::` 41 passed, 1 failed: D252's
+  `a_runs_control_ask_crosses_the_image_channel_whole` pinned the version at 15, which the leases' bump moved; it reads
+  from 15 on since be6656f17 (main's own commit since makes the same fix).
+- Run r505, head 59ef4c0b0 (merged with main 5a49f7a5a: goal 75 took version 16 and D247's period 17, so the leases take
+  18): shards-net 12, shards-api `image::` 45, shards `api_run::` 26, shards-ipc 1 passed; the four crates' clippy clean.
+- Run r522, head 61b353fe5 (merged with main e0cc059c7), the tree that lands: shards-net 12, shards-api `image::` 45,
+  shards `api_run::` 26, shards-ipc 1 passed; the four crates' clippy, `--all-targets -- -D warnings`, clean.
 - Between r282 and r301 the runner's disk was full (116 MiB free; this lane's directory was 6.1 GB of it, other lanes'
   far more); another lane's cleanup freed 87 GiB before r301, and nothing of others' was touched here.
 
