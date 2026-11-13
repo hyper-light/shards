@@ -18299,7 +18299,9 @@ Built since (goal 75, Hex's step 39): `gpus=` for an orchestrator's run. shards-
 `check_selection` before a run host starts. It rides the image channel's version 16
 (`Request::gpu_devices`, each in `--gpu-device`'s text, parsed and checked again as read). The
 run host starts the GPU's VM process (D144) with `--gpu` and each `--gpu-device`, as shards-api's
-direct boot does, with MoltenVK saying its errors alone, as the daemon starts a GPU's. Under the
+direct boot does, with MoltenVK saying its errors alone, as the daemon starts a GPU's, and boots
+the GPU's guest kernel in it, its command given the GPU's render node, as `--gpus 1` asks them
+(D232's record says how 2d60abb24 missed both). Under the
 grant it sends `gpus=` with the same identities, which init checks and writes to
 `/run/shards/gpus` (0444, one a line; init's side was built at step 4). Without the grant, the VM
 renders on them and the run has no file. Tested (unit): the channel's round trip and refusals,
@@ -23300,8 +23302,14 @@ reboots, driver updates or hot plug; a device's own identity does.
 
 - *Through an orchestrator's run* (D231; goal 75): `ImageSpec::gpu_devices`, checked by
   `check_selection` before a run host starts and again as the image channel reads it (version
-  16). The run host starts the GPU's VM process with `--gpu` and each `--gpu-device`, and under
-  the nesting grant the command reads them in `/run/shards/gpus` (D234's `gpus=`).
+  16). The run host asks for the microVM's GPU as `--gpus 1` asks it, so that `run::prepare`
+  gives it the GPU's guest kernel, DRM's virtio-gpu driver built in (D144), and its command
+  the GPU's render node, as `--gpus` gives a run's; it boots that kernel in the GPU's VM
+  process with `--gpu` and each `--gpu-device`. (2d60abb24 booted the stored guest's kernel,
+  which has no GPU driver, and gave the command no render node: fixed with
+  `a_run_naming_gpus_boots_the_gpu_guest_and_reaches_its_render_node`, red first.) A host
+  that gives a microVM no GPU (`run::GIVES_GPU`) refuses GPUs named, `Unsupported`. Under the
+  nesting grant the command reads them in `/run/shards/gpus` (D234's `gpus=`).
 
 **Literals.** `MAX_PHYSICAL_GPUS`, 65,536: the renderer's patches' bound, `1 + UINT16_MAX`,
 from Hex's scheduler's u16 device index, to which they hold a context's selection
