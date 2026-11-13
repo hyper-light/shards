@@ -45,6 +45,14 @@ env:
   # the multi-arch index, so each runner pulls its own architecture.
   MUSL_IMAGE: rust:1.98.1-alpine@sha256:7cc1c22d77d9432f7fe012a70e6d3e555af54c2a6832700ed7d553f1769ae89f
 
+# Runs give way to newer ones (PM M539): a push's run on a branch or a pull request is cancelled
+# by the next push's, and on main the run under way finishes while only the newest push's waits,
+# replacing any that waited before it. A run dispatched by hand has a group of its own, so a
+# measurement asked for is never cancelled or replaced.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
+
 jobs:
   format:
     runs-on: ubuntu-24.04
