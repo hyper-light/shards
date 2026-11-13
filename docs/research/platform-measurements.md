@@ -21926,3 +21926,59 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
     starting child without its parent's descriptors, and std's own sockets are as exposed.
   - What would show this wrong: the check failing alone, or a socket found open with no
     process started beside it.
+
+### M536. A blocking read of an AF_UNIX stream on Windows sleeps through its peer's end (D140)
+
+- **Question.** `client::borrowed_tests::exact_bytes_clone_and_half_close` hung on Windows, past
+  120 s, in a few runs of every 100 (M533's last runs), at main as on its fix. Where did it
+  wait, and why?
+- **Method.** `docs/research/measurements/api-flakes/` (`hang.sh`: the test binary again and
+  again, and at a time limit every thread's stack from cdb, WinDbg 1.2611's console
+  debugger, attached noninvasively, `~*kn`, symbolized from the build's PDB; `half-close.rs`:
+  a read waiting on a pair while its peer writes three bytes, ends its side, through a copy
+  of its socket or not, or only closes, its socket blocking or not, the reader in recv
+  itself or in WSAPoll first, 2,000 times each, a read seeing no end within 2 s counted
+  lost and freed by a shutdown of its own): on jupiter (Windows 10.0.26200, x86_64, 32
+  CPUs), beside ROOT's WHP gate of the whole workspace, CPU load 29% to 100%, 2026-11-12.
+- **Found.** Every hang's stacks (7: 4 of the test alone, 3 of the whole library, main
+  c2c4547c1) were the same: the test's thread in `server.join()` (focused.rs:79); its
+  server's in `ws2_32!recv`, from `shards_afunix::UnixStream::read_into`, at focused.rs:63,
+  the read of its peer's end after the peer had written three bytes, ended its side through
+  its `try_clone` copy and closed both copies.
+
+  | build | `half-close.rs`, reads that missed the end: recv | WSAPoll, then recv |
+  |---|---|---|
+  | main 7f9f73b6a (three ways to end, a blocking peer) | 3 of 6,000 (all of a close) | 0 of 6,000 |
+  | main 99d88fccf | 4 of 12,000 | 0 of 12,000 |
+  | the fix less its WSAPoll before a read with no timeout | 6 of 12,000 | 0 of 12,000 |
+  | the fix (its recv waits in WSAPoll first) | 0 of 12,000 | 0 of 12,000 |
+
+  Each missed end was a half-close or a close, of a blocking or a non-blocking peer; each
+  missing read was freed by its own side's shutdown, so its thread had sat in recv.
+
+  | build | the test alone, 20 s limit | runs hung |
+  |---|---|---|
+  | main c2c4547c1 | 150 | 4 |
+  | main 99d88fccf | 300 | 7 |
+  | the fix | 1,000 | 0 |
+  | the fix less its WSAPoll before a read with no timeout | 300 | 26 |
+
+  And the fix's whole library, 20 runs: none hung or failed. The loads: 97% to 100% CPU as
+  main's, the fix's and the mutant's runs ran, 51% as the whole library's did.
+- **Reading.**
+  - A recv waiting on an AF_UNIX stream (afunix.sys) can miss its peer's end, a half-close
+    or a close, and wait for good: 13 of 30,000 waits here, about one in 2,300, where WSAPoll
+    on the same streams saw all of 54,000. XNU's reader has a gap of its kind (M236); this
+    is Windows' own, and no record of it from Microsoft or others was found.
+  - The fix is where every such read is made, `shards_afunix`: a blocking stream's read
+    (`Read`, `readv`) waits in WSAPoll, for ever where it has no timeout, and only then
+    reads; a read of nothing waits for nothing. shards_ipc's Windows `read` reads these
+    streams, so it waits so too. A clone keeps its stream's mode, which their socket
+    shares (WSADuplicateSocketW: "All of the state information associated with a socket is
+    held in common across all the descriptors"), so a non-blocking stream's clone (shards-api
+    makes them) never waits in the poll.
+  - The other readers were looked at: shards-api's streams and the VMM's vsock sockets do not
+    block (each waits in WSAPoll or on WSAEventSelect's events, D140, D215); the daemon's
+    log streams wait on WSAEventSelect's events and peek; named pipes end at once (M340).
+  - What would show this wrong: a read waiting in WSAPoll that misses an end, or a blocking
+    stream read that still sleeps in recv.

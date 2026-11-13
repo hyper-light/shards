@@ -15354,7 +15354,10 @@ network process (D142) and its builder (D143) follow.
   event, not a socket pair. An ended connection's host socket is held, its writing shut
   down, reading and dropping what comes, until its peer ends its side: an AF_UNIX socket
   closed holding any of its peer's data unread, or written to by its peer after its close,
-  loses the peer all it had not read, as a reset (M358).
+  loses the peer all it had not read, as a reset (M358). A read of an AF_UNIX stream that
+  blocks waits in WSAPoll and only then reads (`shards_afunix`): a recv waiting there can
+  sleep through its peer's end, a half-close or a close, for good, about once in 2,300
+  under load, where WSAPoll saw every one (M536), as XNU's reader can (M236).
 - **Carried on Windows too**: shards-init and the in-VM server, built for the guest as on
   every other host.
 - **Snapshots** came after (D196), with templates and warm pools once the daemon ran on
