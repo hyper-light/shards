@@ -52,12 +52,13 @@ use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{CloseHandle, DuplicateHandle, HANDLE};
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentThread, GetCurrentThreadId, GetThreadPriority, SetThreadPriority,
-    THREAD_PRIORITY, THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_NORMAL, THREAD_QUERY_LIMITED_INFORMATION,
-    THREAD_SET_LIMITED_INFORMATION,
+    GetCurrentProcess, GetCurrentThread, GetCurrentThreadId, GetPriorityClass, GetThreadPriority,
+    SetThreadPriority, THREAD_PRIORITY, THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_NORMAL,
+    THREAD_QUERY_LIMITED_INFORMATION, THREAD_SET_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::System::WindowsProgramming::THREAD_PRIORITY_ERROR_RETURN;
 
+use super::Unprioritized;
 use crate::sync::{lock, wait};
 
 /// The time over which the governor counts each thread's use: the hold's period (D191),
@@ -127,12 +128,19 @@ impl Drop for Watch {
 
 /// Raises the calling thread to [`RAISED`] and has the governor watch it ([`Watch`]). A
 /// thread its program or its user set at another priority is left at it, unwatched: `None`.
-pub fn raise_current() -> Result<Option<Watch>, String> {
-    GOVERNOR.get_or_init(start_governor).clone()?;
+/// One Windows leaves below [`RAISED`] is refused ([`set`]), never watched as raised.
+pub fn raise_current() -> Result<Option<Watch>, Unprioritized> {
+    GOVERNOR
+        .get_or_init(start_governor)
+        .clone()
+        .map_err(Unprioritized::Refused)?;
     // SAFETY: the calling thread's pseudo-handle, which is not closed.
     let current = unsafe { GetThreadPriority(GetCurrentThread()) };
     if u32::try_from(current).is_ok_and(|p| p == THREAD_PRIORITY_ERROR_RETURN) {
-        return Err(format!("GetThreadPriority: {}", io::Error::last_os_error()));
+        return Err(Unprioritized::Refused(format!(
+            "GetThreadPriority: {}",
+            io::Error::last_os_error()
+        )));
     }
     if current != THREAD_PRIORITY_NORMAL {
         return Ok(None);
@@ -153,7 +161,10 @@ pub fn raise_current() -> Result<Option<Watch>, String> {
         )
     };
     if duplicated == 0 {
-        return Err(format!("DuplicateHandle: {}", io::Error::last_os_error()));
+        return Err(Unprioritized::Refused(format!(
+            "DuplicateHandle: {}",
+            io::Error::last_os_error()
+        )));
     }
     // SAFETY: no preconditions.
     let id = unsafe { GetCurrentThreadId() };
@@ -165,7 +176,8 @@ pub fn raise_current() -> Result<Option<Watch>, String> {
         credit: most_credit(),
         raised: false,
     };
-    watched.ran = super::windows::thread_time(handle).map_err(|e| format!("GetThreadTimes: {e}"))?;
+    watched.ran = super::windows::thread_time(handle)
+        .map_err(|e| Unprioritized::Refused(format!("GetThreadTimes: {e}")))?;
     set(handle, RAISED)?;
     watched.raised = true;
     lock(&WATCHED).push(watched);
@@ -176,14 +188,37 @@ pub fn raise_current() -> Result<Option<Watch>, String> {
     }))
 }
 
-/// Sets the thread `handle` names, of this process, at `priority`.
-fn set(handle: HANDLE, priority: THREAD_PRIORITY) -> Result<(), String> {
+/// Sets the thread `handle` names, of this process, at `priority`, and reads it back
+/// (GetThreadPriority): in a process a job holds to a priority class, or a job that job is
+/// nested in (JOB_OBJECT_LIMIT_PRIORITY_CLASS), Windows takes a raise, says it succeeded, and
+/// leaves the thread where it was, where it takes a lowering (PM M536). A priority not read
+/// back is refused, with the process's priority class: which job holds it is not for the
+/// process to read past its own (QueryInformationJobObject: "the immediate job of the
+/// calling process"; cargo's, under `cargo test`).
+pub(super) fn set(handle: HANDLE, priority: THREAD_PRIORITY) -> Result<(), Unprioritized> {
     // SAFETY: a thread handle with THREAD_SET_LIMITED_INFORMATION, as SetThreadPriority needs.
     if unsafe { SetThreadPriority(handle, priority) } == 0 {
-        return Err(format!(
+        return Err(Unprioritized::Refused(format!(
             "SetThreadPriority({priority}): {}",
             io::Error::last_os_error()
-        ));
+        )));
+    }
+    // SAFETY: a thread handle with THREAD_QUERY_LIMITED_INFORMATION, as GetThreadPriority needs.
+    let got = unsafe { GetThreadPriority(handle) };
+    if u32::try_from(got).is_ok_and(|p| p == THREAD_PRIORITY_ERROR_RETURN) {
+        return Err(Unprioritized::Refused(format!(
+            "GetThreadPriority: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    if got != priority {
+        // SAFETY: this process's pseudo-handle.
+        let class = unsafe { GetPriorityClass(GetCurrentProcess()) };
+        return Err(Unprioritized::NotRaised {
+            asked: priority,
+            got,
+            class,
+        });
     }
     Ok(())
 }
@@ -287,9 +322,85 @@ mod tests {
         }
     }
 
+    /// Whether Windows takes no raise of this process's threads (in a job that holds its
+    /// priority class, PM M536), which the governor's tests need: a raise tried, and said
+    /// where it is so.
+    fn raises_untaken(test: &str) -> bool {
+        let untaken = std::thread::spawn(|| match raise_current() {
+            Err(Unprioritized::NotRaised { class, .. }) => Some(class),
+            _ => None,
+        })
+        .join()
+        .unwrap();
+        let Some(class) = untaken else {
+            return false;
+        };
+        println!(
+            "SKIP: {test}: Windows takes no raise of this process's threads, in priority class \
+             {class:#x} (a_raise_is_taken_or_refused_never_claimed); unverified here"
+        );
+        true
+    }
+
+    /// The flags of this process's immediate job's limits, where it is in one.
+    fn immediate_job_flags() -> Option<u32> {
+        use windows_sys::Win32::System::JobObjects::{
+            JOBOBJECT_BASIC_LIMIT_INFORMATION, JobObjectBasicLimitInformation, QueryInformationJobObject,
+        };
+        let mut limits = JOBOBJECT_BASIC_LIMIT_INFORMATION::default();
+        // SAFETY: the limits of this process's own job, if any, into a structure of their size.
+        let read = unsafe {
+            QueryInformationJobObject(
+                std::ptr::null_mut(),
+                JobObjectBasicLimitInformation,
+                (&raw mut limits).cast(),
+                u32::try_from(size_of::<JOBOBJECT_BASIC_LIMIT_INFORMATION>()).unwrap(),
+                std::ptr::null_mut(),
+            )
+        };
+        (read != 0).then_some(limits.LimitFlags)
+    }
+
+    /// A raise is what the thread then runs at, or a refusal that says what Windows left it at,
+    /// never one claimed: where a job holds the process's priority class (kiln's runs:
+    /// BELOW_NORMAL_PRIORITY_CLASS, held by kiln's job, which cargo's own job nests in), Windows
+    /// takes SetThreadPriority's raise and leaves the thread at normal (PM M536).
+    #[test]
+    fn a_raise_is_taken_or_refused_never_claimed() {
+        std::thread::spawn(|| {
+            let raised = raise_current();
+            // SAFETY: the calling thread's pseudo-handle.
+            let now = unsafe { GetThreadPriority(GetCurrentThread()) };
+            // SAFETY: this process's pseudo-handle.
+            let class = unsafe { GetPriorityClass(GetCurrentProcess()) };
+            match raised {
+                Ok(Some(_watch)) => assert_eq!(now, RAISED, "claimed raised, at {now}"),
+                Err(Unprioritized::NotRaised {
+                    asked,
+                    got,
+                    class: said,
+                }) => {
+                    assert_eq!((asked, got, said), (RAISED, THREAD_PRIORITY_NORMAL, class));
+                    assert_eq!(now, THREAD_PRIORITY_NORMAL);
+                    println!(
+                        "a raise refused: at {now}, the process in priority class {class:#x}, its \
+                         immediate job's flags {:#x?}",
+                        immediate_job_flags()
+                    );
+                }
+                other => panic!("{other:?}, at {now}"),
+            }
+        })
+        .join()
+        .unwrap();
+    }
+
     /// A raised thread that runs on goes back to normal, and is raised again once it waits.
     #[test]
     fn a_thread_run_long_goes_back_to_normal_and_is_raised_again_as_it_waits() {
+        if raises_untaken("a_thread_run_long_goes_back_to_normal_and_is_raised_again_as_it_waits") {
+            return;
+        }
         let (tx, rx) = mpsc::channel();
         let (stop, stopped) = mpsc::channel();
         let (go, wait_for_go) = mpsc::channel::<()>();
@@ -329,6 +440,9 @@ mod tests {
     /// raised: 1 ms run, then a sleep, for a second; and is normal again once it lets go.
     #[test]
     fn a_thread_that_waits_between_its_runs_stays_raised() {
+        if raises_untaken("a_thread_that_waits_between_its_runs_stays_raised") {
+            return;
+        }
         let (tx, rx) = mpsc::channel();
         let (done, finished) = mpsc::channel();
         let (go, wait_for_go) = mpsc::channel::<()>();

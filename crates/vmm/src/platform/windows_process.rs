@@ -145,26 +145,30 @@ pub fn thread_limit() -> Option<u64> {
 }
 
 /// What a thread std started holds of its process however far its code goes: its stack's
-/// reservation of the address space, and the commit Windows charges every thread of it, its
-/// stack's initial commit and guard pages (std's stack guarantee's among them) and its TEB's.
+/// reservation of the address space, and the commit Windows charges every thread of it: its
+/// stack's guard pages (std's stack guarantee's among them) and initial commit, and its TEB.
 /// Not the pages its code has touched: a process's first thread runs its one-time
 /// initialization on its own stack, and a test's every thread its output's capture, a page
-/// more each (PM M529). No call reports what else a thread is charged: its share of the heap
-/// (7 KB of the 48 KB Windows charged each in a job, PM M529), nor the kernel's own commit for
-/// it, its kernel stack's, which "can vary among different hardware platforms and different
-/// versions of the operating system" (Using the Kernel Stack). None of these is counted, so
-/// that the threads a commit is said to hold are never fewer than Windows starts in it.
+/// more each (PM M529). No call reports what else a thread is charged: the page of page table
+/// its stack's pages take (a page more than its regions for a thread made suspended, PM M529),
+/// its share of the heap, nor the kernel's own commit for it, its kernel stack's, which "can
+/// vary among different hardware platforms and different versions of the operating system"
+/// (Using the Kernel Stack). None of these is counted, so that the threads a commit is said to
+/// hold are never fewer than Windows starts in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Thread {
     reserved: u64,
-    committed: u64,
+    guard: u64,
+    initial: u64,
+    teb: u64,
 }
 
 impl Thread {
-    /// The calling thread's: the bounds GetCurrentThreadStackLimits gives; the image's initial
-    /// commit ([`stack_commit`]) and the guard pages VirtualQuery finds between them
-    /// (PAGE_GUARD); and winternl.h's TEB, the least a TEB is ("Do not assume a maximum size
-    /// for this structure"; two pages, as measured, PM M529). Each in whole pages.
+    /// The calling thread's: the bounds GetCurrentThreadStackLimits gives; the guard pages
+    /// VirtualQuery finds between them (PAGE_GUARD); the image's initial commit
+    /// ([`stack_commit`]); and winternl.h's TEB, the least a TEB is ("Do not assume a maximum
+    /// size for this structure"; two pages, as Windows commits it, PM M529). Each in whole
+    /// pages.
     fn here() -> Option<Thread> {
         let (mut low, mut high) = (0usize, 0usize);
         // SAFETY: two words to fill with this thread's stack's bounds.
@@ -196,14 +200,18 @@ impl Thread {
             at = end;
         }
         let page = super::page_size().ok()?;
-        let whole = |bytes: usize| bytes.div_ceil(page).checked_mul(page);
-        let committed = guard
-            .checked_add(whole(stack_commit()?)?)?
-            .checked_add(whole(size_of::<TEB>())?)?;
+        let whole = |bytes: usize| u64::try_from(bytes.div_ceil(page).checked_mul(page)?).ok();
         Some(Thread {
             reserved: u64::try_from(high.checked_sub(low)?).ok()?,
-            committed: u64::try_from(committed).ok()?,
+            guard: u64::try_from(guard).ok()?,
+            initial: whole(stack_commit()?)?,
+            teb: whole(size_of::<TEB>())?,
         })
+    }
+
+    /// The commit counted of it: its guard pages, its initial commit and its TEB.
+    fn committed(&self) -> Option<u64> {
+        self.guard.checked_add(self.initial)?.checked_add(self.teb)
     }
 }
 
@@ -268,18 +276,31 @@ impl Room {
     /// [`HANDLES`] of one each.
     fn threads(&self, thread: &Thread) -> Option<u64> {
         let by_space = self.space.checked_div(thread.reserved)?;
-        let by_commit = self.commit.checked_div(thread.committed)?;
+        let by_commit = self.commit.checked_div(thread.committed()?)?;
         Some(by_space.min(by_commit).min(HANDLES))
     }
 }
 
 /// The commit this process's job holds it to, where it is in one that holds it to any: the
 /// fewer of its limit for a process (JOB_OBJECT_LIMIT_PROCESS_MEMORY) and for its processes
-/// together (JOB_OBJECT_LIMIT_JOB_MEMORY), as QueryInformationJobObject reads them of "the
-/// immediate job of the calling process". A job it nests in that holds it to less, where
-/// "the effective memory limit is the most restrictive memory limit in the job chain", is not
-/// for it to read.
+/// together (JOB_OBJECT_LIMIT_JOB_MEMORY) ([`job_limits`]).
 fn job_commit() -> Option<u64> {
+    let limits = job_limits()?;
+    let flags = limits.BasicLimitInformation.LimitFlags;
+    let process = (flags & JOB_OBJECT_LIMIT_PROCESS_MEMORY != 0).then_some(limits.ProcessMemoryLimit);
+    let job = (flags & JOB_OBJECT_LIMIT_JOB_MEMORY != 0).then_some(limits.JobMemoryLimit);
+    let fewer = match (process, job) {
+        (Some(p), Some(j)) => Some(p.min(j)),
+        (p, j) => p.or(j),
+    };
+    fewer.and_then(|bytes| u64::try_from(bytes).ok())
+}
+
+/// The limits of this process's job, as QueryInformationJobObject reads them of "the immediate
+/// job of the calling process"; none where it is in no job. A job it nests in that holds it to
+/// less, where "the effective memory limit is the most restrictive memory limit in the job
+/// chain", is not for it to read.
+fn job_limits() -> Option<JOBOBJECT_EXTENDED_LIMIT_INFORMATION> {
     let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     // SAFETY: the limits of this process's own job, if it is in one, into a structure of their
     // size.
@@ -292,17 +313,7 @@ fn job_commit() -> Option<u64> {
             std::ptr::null_mut(),
         )
     };
-    if read == 0 {
-        return None;
-    }
-    let flags = limits.BasicLimitInformation.LimitFlags;
-    let process = (flags & JOB_OBJECT_LIMIT_PROCESS_MEMORY != 0).then_some(limits.ProcessMemoryLimit);
-    let job = (flags & JOB_OBJECT_LIMIT_JOB_MEMORY != 0).then_some(limits.JobMemoryLimit);
-    let fewer = match (process, job) {
-        (Some(p), Some(j)) => Some(p.min(j)),
-        (p, j) => p.or(j),
-    };
-    fewer.and_then(|bytes| u64::try_from(bytes).ok())
+    (read != 0).then_some(limits)
 }
 
 /// How many handles this process may hold open (unix.rs `descriptor_limit`): the kernel's
@@ -437,7 +448,9 @@ mod tests {
     fn the_threads_held_are_the_fewest_each_limit_holds() {
         let thread = Thread {
             reserved: 2 << 20,
-            committed: 36 << 10,
+            guard: 24 << 10,
+            initial: 4 << 10,
+            teb: 8 << 10,
         };
         let room = |space, commit| Room { space, commit };
         assert_eq!(
@@ -448,11 +461,18 @@ mod tests {
         assert_eq!(room(4 << 30, u64::MAX).threads(&thread), Some(2_048));
         assert_eq!(room(u64::MAX, u64::MAX).threads(&thread), Some(HANDLES));
         assert_eq!(room(1, 1).threads(&thread), Some(0));
-        let none = Thread {
+        let reserves_none = Thread {
             reserved: 0,
-            committed: 1,
+            ..thread
         };
-        assert_eq!(room(1, 1).threads(&none), None);
+        assert_eq!(room(1, 1).threads(&reserves_none), None);
+        let commits_none = Thread {
+            guard: 0,
+            initial: 0,
+            teb: 0,
+            ..thread
+        };
+        assert_eq!(room(1, 1).threads(&commits_none), None);
     }
 
     /// How many threads this process may have is what its host holds of a thread std
@@ -480,11 +500,9 @@ mod tests {
         // Size), and its TEB, of what it reserves.
         let page = super::super::page_size().unwrap() as u64;
         assert!(thread.reserved >= 2 * page, "{thread:?}");
-        assert!(
-            thread.committed >= 2 * page + size_of::<TEB>() as u64,
-            "{thread:?}"
-        );
-        assert!(thread.committed < thread.reserved, "{thread:?}");
+        let committed = thread.committed().unwrap();
+        assert!(committed >= 2 * page + size_of::<TEB>() as u64, "{thread:?}");
+        assert!(committed < thread.reserved, "{thread:?}");
         assert!(before.space > 0 && before.commit > 0, "{before:?}");
         // The host's commit limit may move between the readings (a page file grown).
         let (a, b) = (before.threads(&thread).unwrap(), after.threads(&thread).unwrap());
@@ -497,8 +515,46 @@ mod tests {
         println!("thread limit: {limit:?} threads, of {after:?} and {thread:?}");
     }
 
-    /// Set in the child `a_jobs_commit_limit_holds_the_threads_it_says` runs.
-    const IN_JOB: &str = "SHARDS_VMM_THREADS_IN_JOB";
+    /// Set, to its test's name, in the child a test of this module runs in.
+    const IN_CHILD: &str = "SHARDS_VMM_PROCESS_CHILD";
+
+    /// Whether this is the child test `name` runs in, alone in its process, so that what it
+    /// reads of the process's commit is its own: else runs it there, which must pass and say
+    /// `said`, and says that line too.
+    fn in_child(name: &str, said: &str) -> bool {
+        if std::env::var_os(IN_CHILD).is_some_and(|v| v == name) {
+            return true;
+        }
+        let path = format!("platform::windows_process::tests::{name}");
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &path, "--test-threads=1", "--nocapture"])
+            .env(IN_CHILD, name)
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success() && out.contains(said),
+            "{:?}\n{out}{}",
+            child.status,
+            String::from_utf8_lossy(&child.stderr)
+        );
+        if let Some(line) = out.lines().find(|l| l.contains(said)) {
+            println!("{line}");
+        }
+        false
+    }
+
+    /// This process's commit charge (PrivateUsage).
+    fn commit() -> u64 {
+        let mut c = PROCESS_MEMORY_COUNTERS_EX {
+            cb: u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX>()).unwrap(),
+            ..Default::default()
+        };
+        // SAFETY: counters of the size their `cb` says, of this process.
+        let read = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut c).cast(), c.cb) };
+        assert_ne!(read, 0);
+        c.PrivateUsage as u64
+    }
 
     /// Where its job holds a process's commit to less than its host does, the threads it may
     /// have are that commit's over what a thread is charged; and Windows charges each thread
@@ -513,39 +569,14 @@ mod tests {
         use windows_sys::Win32::System::JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
         };
-        const NAME: &str = "platform::windows_process::tests::a_jobs_commit_limit_holds_the_threads_it_says";
         const SAID: &str = "thread limit child: ";
         const THREADS: u64 = 64;
-        if std::env::var_os(IN_JOB).is_none() {
-            let child = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", NAME, "--test-threads=1", "--nocapture"])
-                .env(IN_JOB, "1")
-                .output()
-                .unwrap();
-            let said = String::from_utf8_lossy(&child.stdout);
-            assert!(
-                child.status.success() && said.contains(SAID),
-                "{:?}\n{said}{}",
-                child.status,
-                String::from_utf8_lossy(&child.stderr)
-            );
-            if let Some(line) = said.lines().find(|l| l.contains(SAID)) {
-                println!("{line}");
-            }
+        if !in_child("a_jobs_commit_limit_holds_the_threads_it_says", SAID) {
             return;
         }
-        let commit = || {
-            let mut c = PROCESS_MEMORY_COUNTERS_EX {
-                cb: u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS_EX>()).unwrap(),
-                ..Default::default()
-            };
-            // SAFETY: counters of the size their `cb` says, of this process.
-            let read = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut c).cast(), c.cb) };
-            assert_ne!(read, 0);
-            c.PrivateUsage as u64
-        };
         let thread = std::thread::spawn(Thread::here).join().unwrap().unwrap();
-        let limit = commit() + 2 * THREADS * thread.committed;
+        let counted = thread.committed().unwrap();
+        let limit = commit() + 2 * THREADS * counted;
         // SAFETY: an anonymous job, which this process stays in until it ends.
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         assert!(!job.is_null());
@@ -568,7 +599,7 @@ mod tests {
         let room = Room::now().unwrap();
         assert_eq!(room.commit, limit, "{room:?}: not the job's limit");
         assert_eq!(thread_limit(), room.threads(&thread));
-        assert_eq!(thread_limit(), Some(limit / thread.committed));
+        assert_eq!(thread_limit(), Some(limit / counted));
         // Threads std starts, each reading itself as `thread` was read before it parks.
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let (tx, rx) = mpsc::channel();
@@ -596,17 +627,159 @@ mod tests {
             each.iter().all(|t| t.reserved == thread.reserved),
             "{thread:?}, then {each:?}"
         );
-        let counted: u64 = each.iter().map(|t| t.committed).sum();
+        let counted_each: u64 = each.iter().map(|t| t.committed().unwrap()).sum();
         assert!(
-            charged >= counted,
-            "{THREADS} threads charged {charged} B, fewer than the {counted} B counted of them"
+            charged >= counted_each,
+            "{THREADS} threads charged {charged} B, fewer than the {counted_each} B counted of them"
         );
         println!(
             "{SAID}{THREADS} threads charged {charged} B, {} B each, counted {} B each ({thread:?} first); \
              the job's {limit} B hold {:?}",
             charged / THREADS,
-            counted / THREADS,
+            counted_each / THREADS,
             thread_limit()
+        );
+    }
+
+    /// What a thread is counted is what Windows commits for each thread it makes, read as it
+    /// makes one (PM M529): a thread made suspended, its stack reserved as std reserves it, is
+    /// committed Windows' guard pages and the image's initial commit in its stack's
+    /// allocation and, past it, its TEB, which the count takes as winternl.h declares it; std's
+    /// stack guarantee then widens the guard to the count's. So the limit holds no more
+    /// threads than the commit holds of each part as Windows commits it: a count without its
+    /// TEB, or a part short, holds more. What no region of the thread's shows (its stack's
+    /// page of page table, PM M529) is said, not counted. Run alone in a child, so that its
+    /// address space changes by the thread alone.
+    #[test]
+    fn a_thread_is_counted_what_windows_commits_for_one_it_makes() {
+        use std::collections::BTreeMap;
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::System::Threading::{
+            CREATE_SUSPENDED, CreateThread, INFINITE, ResumeThread, STACK_SIZE_PARAM_IS_A_RESERVATION,
+            WaitForSingleObject,
+        };
+        const SAID: &str = "a thread made: ";
+        if !in_child("a_thread_is_counted_what_windows_commits_for_one_it_makes", SAID) {
+            return;
+        }
+        unsafe extern "system" fn ends(_: *mut core::ffi::c_void) -> u32 {
+            0
+        }
+        let thread = std::thread::spawn(Thread::here).join().unwrap().unwrap();
+        let reserved = usize::try_from(thread.reserved).unwrap();
+        let make = || {
+            // SAFETY: a thread of this process at a function that returns at once, made
+            // suspended, its stack reserved as `thread`'s was.
+            let made = unsafe {
+                CreateThread(
+                    std::ptr::null(),
+                    reserved,
+                    Some(ends),
+                    std::ptr::null(),
+                    CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION,
+                    std::ptr::null_mut(),
+                )
+            };
+            assert!(!made.is_null(), "{}", io::Error::last_os_error());
+            made
+        };
+        let end = |made: HANDLE| {
+            // SAFETY: a thread made above, resumed to return at once, waited for, closed once.
+            unsafe {
+                ResumeThread(made);
+                WaitForSingleObject(made, INFINITE);
+                CloseHandle(made);
+            }
+        };
+        // Each committed region of the address space (its allocation, its size, its
+        // protection), into room made before, so that reading them commits nothing.
+        let walk = |into: &mut Vec<(usize, u64, u32)>| {
+            let room = into.capacity();
+            into.clear();
+            let mut at = 0usize;
+            loop {
+                let mut r = MEMORY_BASIC_INFORMATION::default();
+                // SAFETY: a query of this process's address space, into a structure of its size.
+                let said =
+                    unsafe { VirtualQuery(at as *const _, &mut r, size_of::<MEMORY_BASIC_INFORMATION>()) };
+                if said == 0 {
+                    break;
+                }
+                if r.State == MEM_COMMIT {
+                    into.push((r.AllocationBase as usize, r.RegionSize as u64, r.Protect));
+                }
+                match (r.BaseAddress as usize).checked_add(r.RegionSize) {
+                    Some(next) if next > at => at = next,
+                    _ => break,
+                }
+            }
+            assert_eq!(
+                into.capacity(),
+                room,
+                "the walk grew its room, and the heap with it"
+            );
+        };
+        let (mut before, mut after) = (Vec::with_capacity(1 << 16), Vec::with_capacity(1 << 16));
+        // A first made and ended, so that nothing a process does once is this one's.
+        end(make());
+        walk(&mut before);
+        let c0 = commit();
+        let made = make();
+        let c1 = commit();
+        walk(&mut after);
+        end(made);
+        let by_allocation = |regions: &[(usize, u64, u32)]| {
+            let mut total = BTreeMap::<usize, (u64, u64)>::new();
+            for &(base, size, protect) in regions {
+                let (all, guard) = total.entry(base).or_default();
+                *all += size;
+                if protect & PAGE_GUARD != 0 {
+                    *guard += size;
+                }
+            }
+            total
+        };
+        let (was, now) = (by_allocation(&before), by_allocation(&after));
+        assert!(
+            was.keys().all(|base| now.contains_key(base)),
+            "an allocation went as the thread was made"
+        );
+        // Its stack's allocation: new, with guard pages. Every other grew by what the thread
+        // was committed past its stack.
+        let stack = *now
+            .iter()
+            .find(|(base, (_, guard))| *guard > 0 && !was.contains_key(base))
+            .expect("the made thread's stack")
+            .0;
+        let (in_stack, guard) = now[&stack];
+        let initial = in_stack - guard;
+        let mut teb = 0;
+        for (base, (all, _)) in now.iter().filter(|(base, _)| **base != stack) {
+            let had = was.get(base).map_or(0, |(all, _)| *all);
+            assert!(*all >= had, "allocation {base:#x} gave back {} B", had - all);
+            teb += all - had;
+        }
+        let charged = c1 - c0;
+        assert_eq!(
+            initial, thread.initial,
+            "the initial commit Windows gave it, and the image's"
+        );
+        assert_eq!(
+            teb, thread.teb,
+            "what Windows committed past its stack, its TEB, and the one counted"
+        );
+        assert!(
+            guard <= thread.guard,
+            "std's stack guarantee widens Windows' guard of {guard} B: {thread:?}"
+        );
+        assert!(
+            charged >= in_stack + teb,
+            "charged {charged} B, less than its regions"
+        );
+        println!(
+            "{SAID}charged {charged} B: in its stack {in_stack} (guard {guard}, initial {initial}), its TEB \
+             {teb}, and {} B no region of it shows; counted {thread:?}",
+            charged - in_stack - teb
         );
     }
 

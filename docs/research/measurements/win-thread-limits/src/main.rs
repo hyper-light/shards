@@ -18,7 +18,15 @@
 //!   counts one (its stack's guard pages, the image's SizeOfStackCommit and winternl.h's
 //!   TEB, whole pages).
 //!
+//! - `--suspended N`: what Windows charges for each of N threads made suspended, their stacks
+//!   reserved as std's, before any runs (no heap of theirs, no stack guarantee), beside a std
+//!   thread as thread_limit counts one;
+//! - `--priority`: the priority limits of the job this process is in, and what each of
+//!   SetThreadPriority's levels does to the calling thread under them (its return, its error,
+//!   and the priority read back).
+//!
 //! Usage: win-thread-limits [--image PATH] [--burst N] [--rounds R] [--job-limit MIB]
+//!        win-thread-limits --suspended N | --priority
 
 use std::io::{BufRead as _, Read as _, Write as _};
 use std::os::windows::io::AsRawHandle as _;
@@ -48,6 +56,16 @@ fn main() {
     let value = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     if args.first().map(String::as_str) == Some("--fill") {
         return fill();
+    }
+    if args.first().map(String::as_str) == Some("--priority") {
+        return priority();
+    }
+    if args.first().map(String::as_str) == Some("--regions") {
+        return regions();
+    }
+    if args.first().map(String::as_str) == Some("--suspended") {
+        let n: usize = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(256);
+        return suspended(n);
     }
     let burst: usize = value("--burst").and_then(|v| v.parse().ok()).unwrap_or(2000);
     let rounds: usize = value("--rounds").and_then(|v| v.parse().ok()).unwrap_or(5);
@@ -484,4 +502,228 @@ fn fill() {
         "counted a thread {counted} B (guard {}, initial commit {initial}, TEB {teb}; {} of its stack committed as it began): the limit holds {derived}; Windows started {started}",
         probe.guard, probe.committed
     );
+}
+
+/// The job's priority limits as this process reads them, and what each of SetThreadPriority's
+/// levels does to the calling thread under them: its return, its error, and the priority
+/// GetThreadPriority reads back.
+fn priority() {
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, GetPriorityClass, GetThreadPriority, SetThreadPriority};
+    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    // SAFETY: the limits of this process's own job, into a structure of their size.
+    let read = unsafe {
+        QueryInformationJobObject(
+            std::ptr::null_mut(),
+            JobObjectExtendedLimitInformation,
+            (&raw mut limits).cast(),
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            std::ptr::null_mut(),
+        )
+    };
+    // SAFETY: this process's pseudo-handle.
+    let class = unsafe { GetPriorityClass(GetCurrentProcess()) };
+    println!(
+        "job read {read}: LimitFlags {:#x}, PriorityClass {:#x}, SchedulingClass {}; this process's priority class {class:#x}",
+        limits.BasicLimitInformation.LimitFlags,
+        limits.BasicLimitInformation.PriorityClass,
+        limits.BasicLimitInformation.SchedulingClass
+    );
+    for (name, level) in [
+        ("ABOVE_NORMAL", 1),
+        ("HIGHEST", 2),
+        ("TIME_CRITICAL", 15),
+        ("NORMAL", 0),
+        ("BELOW_NORMAL", -1),
+        ("LOWEST", -2),
+        ("IDLE", -15),
+        ("NORMAL", 0),
+    ] {
+        // SAFETY: the calling thread's pseudo-handle.
+        let set = unsafe { SetThreadPriority(GetCurrentThread(), level) };
+        // SAFETY: no arguments.
+        let error = unsafe { GetLastError() };
+        // SAFETY: the calling thread's pseudo-handle.
+        let now = unsafe { GetThreadPriority(GetCurrentThread()) };
+        println!("SetThreadPriority({name}, {level}) -> {set} (last error {error}); GetThreadPriority -> {now}");
+    }
+}
+
+/// What Windows charges this process for each of `n` threads it makes suspended, their stacks
+/// reserved as std reserves its threads' (a std thread's reservation): before any runs a line,
+/// no heap of theirs and no stack guarantee; beside a std thread's guard, initial commit, TEB
+/// and stack guarantee, as thread_limit counts a thread.
+fn suspended(n: usize) {
+    use windows_sys::Win32::System::Threading::{
+        CREATE_SUSPENDED, CreateThread, INFINITE, ResumeThread, STACK_SIZE_PARAM_IS_A_RESERVATION, WaitForSingleObject,
+    };
+    unsafe extern "system" fn nothing(_: *mut core::ffi::c_void) -> u32 {
+        0
+    }
+    let probe = std::thread::spawn(held).join().unwrap_or_default();
+    let initial = image_stack().map_or(0, |(_, commit)| commit as usize).div_ceil(4096) * 4096;
+    let teb = size_of::<windows_sys::Win32::System::Threading::TEB>().div_ceil(4096) * 4096;
+    println!(
+        "a std thread: reserved {}, guard {}, guarantee {}, initial commit {initial}, TEB {teb}: counted {}",
+        probe.reserved,
+        probe.guard,
+        probe.guarantee,
+        probe.guard + initial + teb
+    );
+    let mut handles = Vec::with_capacity(n);
+    let (before, _, _) = process_counters();
+    for _ in 0..n {
+        // SAFETY: a thread of this process at a function that returns at once, made suspended,
+        // its stack reserved as a std thread's.
+        let h = unsafe {
+            CreateThread(
+                std::ptr::null(),
+                probe.reserved,
+                Some(nothing),
+                std::ptr::null(),
+                CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION,
+                std::ptr::null_mut(),
+            )
+        };
+        if h.is_null() {
+            // SAFETY: no arguments.
+            println!("CreateThread failed after {}: {}", handles.len(), unsafe { GetLastError() });
+            break;
+        }
+        handles.push(h);
+    }
+    let (after, _, _) = process_counters();
+    let made = handles.len().max(1) as u64;
+    println!(
+        "{} suspended threads: charged {} B, {} B each, remainder {}; counted less the guarantee: {}",
+        handles.len(),
+        after - before,
+        (after - before) / made,
+        (after - before) % made,
+        probe.guard + initial + teb - probe.guarantee as usize
+    );
+    for h in handles {
+        // SAFETY: each thread made above, resumed to return at once, waited for, closed once.
+        unsafe {
+            ResumeThread(h);
+            WaitForSingleObject(h, INFINITE);
+            CloseHandle(h);
+        }
+    }
+    let (end, _, _) = process_counters();
+    println!("after they ended: {end} (before {before})");
+}
+
+/// Every region of this process's address space: base, size, state, protection, type and
+/// allocation base, as VirtualQuery says them.
+fn map() -> Vec<(usize, usize, u32, u32, u32, usize)> {
+    let mut regions = Vec::with_capacity(4096);
+    let mut at = 0usize;
+    while let Some(m) = query(at) {
+        regions.push((m.BaseAddress as usize, m.RegionSize, m.State, m.Protect, m.Type, m.AllocationBase as usize));
+        let Some(next) = (m.BaseAddress as usize).checked_add(m.RegionSize) else { break };
+        if next <= at {
+            break;
+        }
+        at = next;
+    }
+    regions
+}
+
+/// The committed regions one thread made suspended adds or changes, its stack reserved as a
+/// std thread's: where each of the pages Windows charges for it lies. And whether user-mode
+/// shadow stacks (CET) are on for this process (GetProcessMitigationPolicy).
+fn regions() {
+    use windows_sys::Win32::System::SystemServices::PROCESS_MITIGATION_USER_SHADOW_STACK_POLICY;
+    use windows_sys::Win32::System::Threading::{
+        CREATE_SUSPENDED, CreateThread, GetProcessMitigationPolicy, INFINITE, ProcessUserShadowStackPolicy,
+        ResumeThread, STACK_SIZE_PARAM_IS_A_RESERVATION, WaitForSingleObject,
+    };
+    unsafe extern "system" fn nothing(_: *mut core::ffi::c_void) -> u32 {
+        0
+    }
+    let mut policy = PROCESS_MITIGATION_USER_SHADOW_STACK_POLICY::default();
+    // SAFETY: this process's pseudo-handle and a policy structure of its size.
+    let read = unsafe {
+        GetProcessMitigationPolicy(
+            GetCurrentProcess(),
+            ProcessUserShadowStackPolicy,
+            (&raw mut policy).cast(),
+            size_of::<PROCESS_MITIGATION_USER_SHADOW_STACK_POLICY>(),
+        )
+    };
+    // SAFETY: the union's flags, which the call filled.
+    println!("user shadow stack policy read {read}: flags {:#x}", unsafe { policy.Anonymous.Flags });
+    let reserved = std::thread::spawn(held).join().unwrap_or_default().reserved;
+    let rounds: usize = std::env::args().nth(2).and_then(|v| v.parse().ok()).unwrap_or(2);
+    let quiet = rounds > 2;
+    let mut usual = 0usize;
+    // Each kept, suspended, until the last is made: as the batch kept its 256.
+    let mut kept = Vec::with_capacity(rounds);
+    for round in 0..rounds {
+        let before = map();
+        let (c0, _, _) = process_counters();
+        // SAFETY: a thread of this process at a function that returns at once, made suspended.
+        let h = unsafe {
+            CreateThread(
+                std::ptr::null(),
+                reserved,
+                Some(nothing),
+                std::ptr::null(),
+                CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION,
+                std::ptr::null_mut(),
+            )
+        };
+        let (c1, _, _) = process_counters();
+        let after = map();
+        let charged = c1 as i64 - c0 as i64;
+        let changed: Vec<_> = after.iter().filter(|r| r.2 == MEM_COMMIT && !before.contains(r)).collect();
+        let gone: Vec<_> = before.iter().filter(|r| r.2 == MEM_COMMIT && !after.contains(r)).collect();
+        // Committed bytes by allocation, before and after: the new stack's allocation (new, with
+        // guard pages), and every other that grew.
+        let by_allocation = |m: &[(usize, usize, u32, u32, u32, usize)]| {
+            let mut total = std::collections::BTreeMap::<usize, i64>::new();
+            for r in m.iter().filter(|r| r.2 == MEM_COMMIT) {
+                *total.entry(r.5).or_default() += r.1 as i64;
+            }
+            total
+        };
+        let (b, a) = (by_allocation(&before), by_allocation(&after));
+        let mut grew: Vec<(usize, i64)> = a
+            .iter()
+            .map(|(base, t)| (*base, t - b.get(base).copied().unwrap_or(0)))
+            .filter(|(_, d)| *d != 0)
+            .collect();
+        grew.extend(b.iter().filter(|(base, _)| !a.contains_key(base)).map(|(base, t)| (*base, -t)));
+        let stack = changed.iter().find(|r| r.3 & PAGE_GUARD != 0).map(|r| r.5);
+        let past_stack: i64 = grew.iter().filter(|(base, _)| Some(*base) != stack).map(|(_, d)| d).sum();
+        let others = grew.iter().filter(|(base, _)| Some(*base) != stack).count();
+        // The usual: 28,672 B charged; its stack's allocation new, and one other grown by 8 KiB.
+        if quiet && charged == 28672 && stack.is_some() && others == 1 && past_stack == 8192 {
+            usual += 1;
+        } else {
+            println!("round {round}: allocations changed {grew:x?}; past the stack {past_stack} B");
+            println!("round {round}: one suspended thread charged {charged} B");
+            for r in &changed {
+                println!(
+                    "  new or changed committed region {:#x} {} B protect {:#x} type {:#x} allocation {:#x}",
+                    r.0, r.1, r.3, r.4, r.5
+                );
+            }
+            for r in &gone {
+                println!("  committed before, not now: {:#x} {} B protect {:#x}", r.0, r.1, r.3);
+            }
+        }
+        kept.push(h);
+    }
+    for h in kept {
+        // SAFETY: each thread made above, resumed to return at once, waited for, closed once.
+        unsafe {
+            ResumeThread(h);
+            WaitForSingleObject(h, INFINITE);
+            CloseHandle(h);
+        }
+    }
+    if quiet {
+        println!("{usual} of {rounds} rounds the usual: 28672 B charged, the stack's allocation new, one other grown 8192 B");
+    }
 }

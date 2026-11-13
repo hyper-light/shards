@@ -1,6 +1,6 @@
 --- a/crates/vmm/src/platform/windows_process.rs
 +++ b/crates/vmm/src/platform/windows_process.rs
-@@ -190,7 +190,7 @@
+@@ -194,7 +194,7 @@
              if end <= at {
                  return None;
              }

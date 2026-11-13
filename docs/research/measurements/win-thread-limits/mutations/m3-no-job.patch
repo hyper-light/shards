@@ -1,6 +1,6 @@
 --- a/crates/vmm/src/platform/windows_process.rs
 +++ b/crates/vmm/src/platform/windows_process.rs
-@@ -259,7 +259,7 @@
+@@ -267,7 +267,7 @@
          }
          Some(Room {
              space: status.ullTotalVirtual,

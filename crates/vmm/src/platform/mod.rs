@@ -135,6 +135,33 @@ pub struct Prioritized {
     _watch: Option<windows_thread::Watch>,
 }
 
+/// Why a `prioritize_` call did not give its thread the policy it asked: its caller runs the
+/// thread on as it is, never at a policy claimed that it does not run at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unprioritized {
+    /// The system refused the policy, in its words.
+    Refused(String),
+    /// Windows took a raise of the thread's priority to `asked` (SetThreadPriority succeeded)
+    /// and left the thread at `got`, its process in priority class `class`
+    /// (GetPriorityClass): as it leaves every thread of a process that a job, or a job that job
+    /// is nested in, holds to a priority class (JOB_OBJECT_LIMIT_PRIORITY_CLASS, PM M536).
+    NotRaised { asked: i32, got: i32, class: u32 },
+}
+
+impl std::fmt::Display for Unprioritized {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unprioritized::Refused(why) => f.write_str(why),
+            Unprioritized::NotRaised { asked, got, class } => write!(
+                f,
+                "Windows took a raise to priority {asked} and left the thread at {got}, its process \
+                 in priority class {class:#x}, as it does where a job holds a process's class \
+                 (JOB_OBJECT_LIMIT_PRIORITY_CLASS)"
+            ),
+        }
+    }
+}
+
 /// Applies the scheduling policy measured to have a vCPU run as it wakes: on macOS the
 /// real-time policy, for precise timer wake-ups (docs/research/platform-measurements.md
 /// M8, M10); on Linux EEVDF's shortest slice, at its weight as before, where on a host
@@ -145,13 +172,15 @@ pub struct Prioritized {
 /// credit carrying half a period across its clock's coarse steps (windows_thread.rs), where
 /// on 4 CPUs that 4 busy loops hold a run's start waited 217 to 337 ms at p50 for its guest
 /// to begin the command, and 8 to 10 so (PM M495, D191).
-pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
+pub fn prioritize_vcpu_thread() -> Result<Prioritized, Unprioritized> {
     #[cfg(target_os = "macos")]
-    return macos_thread::make_current_realtime().map(|watch| Prioritized { _watch: watch });
+    return macos_thread::make_current_realtime()
+        .map(|watch| Prioritized { _watch: watch })
+        .map_err(Unprioritized::Refused);
     #[cfg(target_os = "linux")]
     return unix::run_promptly()
         .map(|()| Prioritized {})
-        .map_err(|e| format!("its slice (sched_setattr): {e}"));
+        .map_err(|e| Unprioritized::Refused(format!("its slice (sched_setattr): {e}")));
     #[cfg(windows)]
     return windows_thread::raise_current().map(|watch| Prioritized { _watch: watch });
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -164,7 +193,7 @@ pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
 /// three alike on a quiet host (PM M317); on Linux at the vCPUs' slice too (a start on a
 /// busy host gained nothing measured past its vCPUs' slice from every thread's, PM M440);
 /// on Windows at the vCPUs' priority.
-pub fn prioritize_device_thread() -> Result<Prioritized, String> {
+pub fn prioritize_device_thread() -> Result<Prioritized, Unprioritized> {
     prioritize_vcpu_thread()
 }
 
@@ -175,7 +204,7 @@ pub fn prioritize_device_thread() -> Result<Prioritized, String> {
 /// process held to two CPUs kept it from running and used up to 1.58 s of CPU in a second
 /// held to one (PM M294); on Linux at their slice, so that a hold ends as its period does
 /// however busy the host (PM M441).
-pub fn prioritize_governor_thread() -> Result<Prioritized, String> {
+pub fn prioritize_governor_thread() -> Result<Prioritized, Unprioritized> {
     #[cfg(windows)]
     return windows::run_time_critical().map(|()| Prioritized { _watch: None });
     #[cfg(not(windows))]

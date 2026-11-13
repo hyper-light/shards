@@ -6203,25 +6203,34 @@ there where the container is not removed.
   threads, its address space 67,108,863 and its handles 16,777,216, so 1,913,620 clients,
   956,810 of them a microVM's engine's alone.
 
-  Windows charges a thread more than any call reports of it, which is not counted, so that
-  the threads said are never fewer than Windows starts: the pages its code touches and its
-  share of the heap (in jobs of 16, 64 and 256 MiB each std thread was charged 47.9 KB,
-  36.9 KB of it counted; the limits said 455, 1,820 and 7,281 threads, and Windows started
-  333, 1,380 and 5,563, then refused the next, ERROR_COMMITMENT_LIMIT, with less than a
-  counted thread's commit left), and the kernel's own commit for its kernel stack, which
-  "can vary among different hardware platforms and different versions of the operating
-  system" (Using the Kernel Stack): about 35 KB of the system's commit more a thread on
-  jupiter, from bursts of 20,000 threads that other work's commit moved by up to 3 GB. As
-  Linux's `threads-max` counts a thread's kernel stack and not its user stack, this is a
-  limit, not what is free on a loaded host: a client whose thread cannot be started is
-  dropped, logged, as on every host. Tested natively on jupiter (windows_process.rs:
-  `the_threads_held_are_the_fewest_each_limit_holds`;
+  Each counted part is what Windows commits for each thread it makes, read as it makes one:
+  a thread made suspended, its stack reserved as std's, is committed 4 KiB of initial
+  commit and 12 KiB of guard pages in its stack's allocation and, past it, 8 KiB, its TEB
+  (in 1,796 of 1,800 threads made one at a time, one other allocation grew by it; in the
+  other four, a TEB in a new chunk of them, also 8 KiB), before std's stack guarantee
+  widens the guard to 24 KiB. Windows charges a thread more than any call reports of it,
+  which is not counted, so that the threads said are never fewer than Windows starts: a
+  page no region of it shows, its stack's page of page table (28,672 B charged a thread
+  made suspended, 24,576 B of regions; a page more as a chunk of TEBs begins); the pages
+  its code touches and its share of the heap (in jobs of 16, 64 and 256 MiB each std
+  thread was charged 47.9 KB, 36.9 KB of it counted; the limits said 455, 1,820 and 7,281
+  threads, and Windows started 333, 1,380 and 5,563, then refused the next,
+  ERROR_COMMITMENT_LIMIT, with less than a counted thread's commit left); and the kernel's
+  own commit for its kernel stack, which "can vary among different hardware platforms and
+  different versions of the operating system" (Using the Kernel Stack): about 35 KB of the
+  system's commit more a thread on jupiter, from bursts of 20,000 threads that other work's
+  commit moved by up to 3 GB. As Linux's `threads-max` counts a thread's kernel stack and
+  not its user stack, this is a limit, not what is free on a loaded host: a client whose
+  thread cannot be started is dropped, logged, as on every host. Tested natively on
+  jupiter (windows_process.rs: `the_threads_held_are_the_fewest_each_limit_holds`;
   `a_thread_limit_is_what_the_host_holds_of_a_thread`, red while `thread_limit` said none,
   and a thread that has touched 256 KiB of its stack counted as a fresh one;
   `a_jobs_commit_limit_holds_the_threads_it_says`, a child in a job of its own whose limit
   is the job's over a thread's count, and whose 64 threads Windows charged at least what
-  was counted of them). Owed: the pins test's 32 streams at once past the old bound on WHP
-  (ROOT's).
+  was counted of them, so that the limit holds no fewer threads than the commit;
+  `a_thread_is_counted_what_windows_commits_for_one_it_makes`, a thread made suspended
+  whose stack's initial commit and TEB are the count's, so that it holds no more). Owed:
+  the pins test's 32 streams at once past the old bound on WHP (ROOT's).
 
 Tested on real microVMs (`a_runs_command_reaches_its_own_microvms_engine`: made, started,
 waited for, logged, listed, inspected and removed through it, the host's other microVM and
@@ -10588,7 +10597,20 @@ the user told).
   GetThreadPriority reads the base priority, which only the governor's SetThreadPriority
   changes: neither MMCSS, which shards does not use, nor Windows' boosts and their decay,
   which move the dynamic priority alone, Priority Boosts). A thread its program set at
-  another priority is left at it. Not MMCSS
+  another priority is left at it. A process held to a priority class by its job, or by a
+  job that job is nested in (JOB_OBJECT_LIMIT_PRIORITY_CLASS; kiln's runs,
+  BELOW_NORMAL_PRIORITY_CLASS, and under `cargo test` cargo's own job nested in kiln's), has
+  none of its threads raised: Windows takes SetThreadPriority's raise, says it succeeded,
+  and leaves the thread at normal, where it takes a lowering (PM M536). A process reads
+  none of its jobs' limits past its immediate job's ("the immediate job of the calling
+  process", QueryInformationJobObject), so each priority set is read back
+  (GetThreadPriority), and a raise not taken is refused, `platform::Unprioritized::NotRaised`
+  with what was asked, what the thread was left at and the process's priority class, which
+  `prioritize_*`'s callers handle as any refusal: the thread runs on at its priority, and
+  vCPU 0 says why. Before, the raise was claimed and watched as raised, and the governor's
+  tests failed under kiln's job; `a_raise_is_taken_or_refused_never_claimed` holds either
+  case, and the governor's tests say SKIP where a raise tried is not taken, unverified
+  there. Not MMCSS
   (AvSetMmThreadCharacteristics), which moves a thread into the real-time range, 16 to 26
   (Multimedia Class Scheduler Service), nor power throttling off (SetThreadInformation,
   ThreadPowerThrottling), which chooses the cores and clock a thread runs at, "while
@@ -10596,8 +10618,9 @@ the user told).
   to schedule next" (Quality of Service); the harness tries it beside the priority, and
   HIGHEST (10). Tested: platform's `a_thread_run_long_goes_back_to_normal_and_is_raised_again_as_it_waits`,
   `a_thread_that_waits_between_its_runs_stays_raised`,
-  `credit_carries_a_thread_that_waits_across_its_clocks_steps` and
-  `a_thread_set_otherwise_is_left_as_it_is`. Measured as PM M440 was (PM M495, n 100 a side,
+  `credit_carries_a_thread_that_waits_across_its_clocks_steps`,
+  `a_thread_set_otherwise_is_left_as_it_is` and `a_raise_is_taken_or_refused_never_claimed`.
+  Measured as PM M440 was (PM M495, n 100 a side,
   interleaved, `cpu-elastic/phases.py` against `winnone.patch`, which leaves the threads as
   they start): on windows-2025's 4 CPUs that 4 busy loops held, the guest's part of a
   `--cpus 1` start took 217 and 337 ms at p50 with the vCPUs at their starting priority and
