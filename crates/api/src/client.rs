@@ -1470,6 +1470,10 @@ pub fn connect_borrowed(
 #[path = "../../../docs/research/measurements/managed-borrowed-nowait/focused.rs"]
 mod borrowed_tests;
 
+#[cfg(all(test, unix))]
+#[path = "../../../docs/research/measurements/api-flakes/spawns.rs"]
+mod spawns;
+
 #[cfg(windows)]
 mod borrowed_windows {
     use crate::{ProcessFailure, ProcessOperation};
