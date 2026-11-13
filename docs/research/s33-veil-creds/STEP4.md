@@ -80,8 +80,11 @@ given for that run alone. Moves are the daemon's runs'; the daemon gives no netw
 - Run r522, head 61b353fe5 (merged with main e0cc059c7): shards-net 12, shards-api `image::` 45, shards `api_run::` 26,
   shards-ipc 1 passed; the four crates' clippy clean.
 - Run r543, head 0a5b70481 (merged with main 9b9da26c7, whose M546 ended `netproc::GRACE`: `net_gone` reaps through
-  `netproc::reap(child, &live.ends)`), the tree that lands: shards-net 12, shards-api `image::` 45, shards `api_run::` 26,
-  shards-ipc 1 passed; the four crates' clippy, `--all-targets -- -D warnings`, clean.
+  `netproc::reap(child, &live.ends)`): shards-net 12, shards-api `image::` 45, shards `api_run::` 26, shards-ipc 1
+  passed; the four crates' clippy clean. Then r572, head 1a125a93f (merged with main 454aa9a70): the same counts, clean.
+- Run r622, head 5349fd82f (merged with main f5c0c8b04), the tree that lands: shards-net 12, shards-api `image::` 45,
+  shards `api_run::` 28 (main's two added), shards-ipc 1 passed; the four crates' clippy, `--all-targets -- -D warnings`,
+  clean (`CARGO_INCREMENTAL=0`).
 - Between r282 and r301 the runner's disk was full (116 MiB free; this lane's directory was 6.1 GB of it, other lanes'
   far more); another lane's cleanup freed 87 GiB before r301, and nothing of others' was touched here.
 
