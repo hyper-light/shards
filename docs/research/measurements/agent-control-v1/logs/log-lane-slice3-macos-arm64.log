@@ -1,0 +1,18 @@
+# #72 log-lane slice 3, green on the merged tree: 728f89cd4 (tree 173f88103d7a98fd8453563a58e8696739c8945f;
+# 8a8188715 merged with origin/main 9d2da923d)
+# host: adalundhe-MacBook-Pro macOS 26.5.2 arm64, 18 CPUs, 64 GiB; rustc 1.98.1 (48a229cea 2026-09-01)
+# SHARDS_HELPERS=skip, placeholder guest binaries, CARGO_INCREMENTAL=0
+# cargo test --locked -j 8 -p shards --bin shards -- daemon::logs daemon::managed daemon::packed daemon::files log_writer
+test daemon::managed::cap::tests::each_log_loses_its_oldest_first_and_keeps_its_newest ... ok
+test daemon::managed::cap::tests::a_drop_across_owners_records_the_loss_per_owner ... ok
+test daemon::managed::log_lanes::tests::a_lane_from_the_oldest_says_what_the_cap_let_go ... ok
+test daemon::managed::drain::tests::a_members_log_is_kept_and_counted_in_its_runs_cap ... ok
+test daemon::managed::cap::tests::the_newest_segment_rotation_keeps_the_bound_within_one_segment ... ok
+test daemon::managed::tests::a_runs_log_host_serves_its_logs_from_the_store ... ok
+test daemon::managed::drain::tests::a_members_rotated_segment_is_compressed_when_the_runs_options_say_so ... ok
+test result: ok. 74 passed; 0 failed; 6 ignored; 0 measured; 797 filtered out; finished in 98.72s
+# cargo clippy --locked -j 8 -p shards -p shards-vm-process --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 25.94s
+::: ok in 26 s
+# cargo fmt --all --check
+::: ok in 6 s

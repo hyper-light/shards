@@ -610,6 +610,35 @@ pub fn end(sock: &UnixStream) {
     let _ = sock.shutdown(Shutdown::Read);
 }
 
+/// Whether `sock` has hung up, asked at once: it takes no more writes, its peer gone (its
+/// close; on Linux its reads shut too) or this side's own writes ended (on Linux, once its
+/// reads have ended as well), poll(2)'s POLLHUP or POLLERR for a socket asked for POLLOUT. A
+/// peer that ended only its writes, a half-close, leaves it POLLOUT alone: so what a read's
+/// end was, measured on macOS 26 and Linux 7.3 (PM M559). XNU shows no peer's
+/// shutdown(SHUT_RDWR), whose socket takes writes on (M236).
+pub fn hung_up(sock: &UnixStream) -> io::Result<bool> {
+    let mut fds = [libc::pollfd {
+        fd: sock.as_raw_fd(),
+        events: libc::POLLOUT,
+        revents: 0,
+    }];
+    loop {
+        // SAFETY: one pollfd of a descriptor `sock` holds open; a timeout of 0 waits for none.
+        if unsafe { libc::poll(fds.as_mut_ptr(), 1, 0) } >= 0 {
+            break;
+        }
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+    let revents = fds.first().map_or(0, |fd| fd.revents);
+    if revents & libc::POLLNVAL != 0 {
+        return Err(io::Error::from_raw_os_error(libc::EBADF));
+    }
+    Ok(revents & (libc::POLLHUP | libc::POLLERR) != 0)
+}
+
 /// Waits in poll(2) until `fd` has something to read, or has ended: until `deadline`
 /// where there is one (`TimedOut`); else as a read would, not at all where `fd` is set
 /// not to block, and no longer than a socket's receive timeout (`WouldBlock`).
@@ -2131,6 +2160,35 @@ pub(crate) mod tests {
         assert_eq!((m.kind, m.payload.as_slice(), m.fds.len()), (5, &b"abc"[..], 0));
         drop(split.join().unwrap());
         assert!(recv_by(&b, deadline).unwrap().is_none(), "a clean end");
+    }
+
+    /// A socket whose peer has gone has hung up, and one whose peer ended its writes alone has
+    /// not, its reads ending alike (D251's cut and half-close); this side's own end of writes
+    /// before its peer's hangs it up too.
+    #[test]
+    fn hung_up_tells_a_peer_gone_from_a_half_close() {
+        let mut byte = [0u8; 1];
+        let (here, peer) = UnixStream::pair().unwrap();
+        assert!(!hung_up(&here).unwrap(), "open both ways");
+        peer.shutdown(Shutdown::Write).unwrap();
+        assert_eq!(read(&here, &mut byte).unwrap(), 0, "its end");
+        assert!(!hung_up(&here).unwrap(), "a half-close");
+        (&here).write_all(b"on").unwrap();
+
+        let (here, peer) = UnixStream::pair().unwrap();
+        drop(peer);
+        assert_eq!(read(&here, &mut byte).unwrap(), 0, "its end");
+        assert!(hung_up(&here).unwrap(), "its peer gone");
+        assert_eq!(
+            (&here).write_all(b"x").unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+
+        let (here, peer) = UnixStream::pair().unwrap();
+        here.shutdown(Shutdown::Write).unwrap();
+        peer.shutdown(Shutdown::Write).unwrap();
+        assert_eq!(read(&here, &mut byte).unwrap(), 0, "its end");
+        assert!(hung_up(&here).unwrap(), "its own writes ended, then its peer's");
     }
 
     #[test]

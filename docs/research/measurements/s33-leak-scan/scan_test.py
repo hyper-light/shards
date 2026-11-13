@@ -13,8 +13,10 @@ import hashlib
 import importlib.util
 import io
 import json
+import mmap
 import os
 import tempfile
+import tracemalloc
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -83,6 +85,38 @@ class Planted:
 
 # Unaligned, as a value lies in a guest's memory wherever its allocator put it.
 AT = (3 << 16) + 5
+
+
+def runs_image(path, size):
+    """A memory image of `size` bytes (4 MiB or more) at `path`, full of long runs of ACCESS's
+    own bytes in each of its forms; values planted inside the runs: one in the middle of a
+    UTF-16LE run, and in a UTF-8 run and a UTF-16LE one, one across each of the first RUN
+    steps of the scan's walk (a run's first RUN units, then a host page at a time), each at its
+    own offset to the step, so at each a lookup's stride can take. Each (offset, value)."""
+    page = mmap.PAGESIZE
+    data = bytearray(size)
+    # One of a secret's own bytes, so every run below is one to look in; none of the planted
+    # slice's neighbours, so the slice found is the slice planted.
+    filler = next(c for c in ACCESS if c not in (ACCESS[19], ACCESS[51]))
+    utf8 = (size // 8, size // 4)
+    data[utf8[0] : utf8[1]] = filler.encode() * (utf8[1] - utf8[0])
+    at = size // 16
+    for _, form in scan.forms(ACCESS):
+        at += page
+        unit = form[len(form) // 2 : len(form) // 2 + 1]
+        data[at : at + page - 1] = unit * (page - 1)
+    utf16 = (size // 2, size)
+    data[utf16[0] : utf16[1]] = (filler + "\0").encode() * ((utf16[1] - utf16[0]) // 2)
+    planted = [(utf16[0] + (utf16[1] - utf16[0]) // 2 + 2, REFRESH.encode("utf-16-le"))]
+    for shift in range(RUN):
+        planted.append((utf8[0] + RUN + (shift + 1) * page - 16 + shift, ACCESS[20:51].encode()))
+        value = (ACCESS if shift % 2 else REFRESH).encode("utf-16-le")
+        planted.append((utf16[0] + 2 * RUN + (shift + 1) * page - 2 * (8 + shift), value))
+    for offset, value in planted:
+        data[offset : offset + len(value)] = value
+    with open(path, "wb") as f:
+        f.write(data)
+    return planted
 
 
 class LeakTest(unittest.TestCase):
@@ -184,6 +218,38 @@ class LeakTest(unittest.TestCase):
         )
         code, said = p.scan()
         self.assertEqual(code, 0, said)
+
+    def test_a_shape_inside_a_word_hides_no_token_after_it(self):
+        """A JWT's shape matched inside a word ("x" + "eyJ0.") is none, and a JWT that begins
+        a token inside that match, after its ".", is still listed: shapes are tried only where
+        a token begins, never skipped past a match that does not."""
+        jwt = "eyJhbGciOiJSUzI1NiJ9." + fake("signature", 43) + "." + fake("more", 43)
+        p = Planted()
+        p.image("memory", b"xeyJ0." + jwt.encode(), AT)
+        code, said = p.scan()
+        self.assertEqual(code, 4, said)
+        self.assertIn("offset %d length %d: a JWT" % (AT + 6, len(jwt)), said)
+        self.assertEqual(said.count("SHAPE"), 1, said)
+
+    def test_long_runs_of_every_forms_bytes_scan_in_bounded_memory_and_values_in_them_are_found(self):
+        """A saved memory full of long runs of a secret's own bytes, in each of its forms (WHP's
+        MemoryError, jupiter, 2026-11-13): the scan's heap stays below the file's own size, which a
+        scan growing with its input passes; every value runs_image plants inside the runs is
+        found at its offset, whole."""
+        p = Planted()
+        size = 1 << 22
+        planted = runs_image(os.path.join(p.saved, "memory"), size)
+        tracemalloc.start()
+        try:
+            code, said = p.scan()
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, size, "the scan's heap grew with what it read")
+        self.assertEqual(code, 3, said)
+        self.assertEqual(said.count("FOUND"), len(planted), said)
+        for offset, value in planted:
+            self.assertIn("memory offset %d length %d: a run of" % (offset, len(value)), said)
 
     def test_what_cannot_be_read_is_said_without_a_value(self):
         p = Planted()

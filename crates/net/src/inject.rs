@@ -826,26 +826,30 @@ fn hop_by_hop(head: &[u8], fields: &[Field]) -> Vec<(Range<usize>, Vec<u8>)> {
     edits
 }
 
-/// A field's value as a credential's token: an `Authorization` field's bearer token (RFC 6750
-/// §2.1, its scheme of any case, RFC 9110 §11.1) or an `x-api-key` field's whole value, the
-/// two fields the harnesses send theirs in (f56, f65), where each lies in the head.
-fn token(head: &[u8], field: &Field) -> Option<Range<usize>> {
-    let value = head.get(field.value.clone())?;
-    match field.name.as_str() {
-        "authorization" => {
+/// Where a credential's token lies in a field's value: an `Authorization` field's bearer token
+/// (RFC 6750 §2.1, its scheme of any case, RFC 9110 §11.1) or an `x-api-key` field's whole
+/// value, the two fields the harnesses send theirs in (f56, f65). `name` lowered, as HTTP/1.1's
+/// fields are read and HTTP/2's are sent (RFC 9113 §8.2.1).
+pub(crate) fn token_in(name: &[u8], value: &[u8]) -> Option<Range<usize>> {
+    match name {
+        b"authorization" => {
             let space = value.iter().position(|&b| b == b' ')?;
             let (scheme, rest) = value.split_at_checked(space)?;
             if !scheme.eq_ignore_ascii_case(b"bearer") {
                 return None;
             }
-            let skipped = rest.iter().take_while(|&&b| b == b' ').count();
-            let start = field.value.start + space + skipped;
-            (start < field.value.end && !value.get(space + skipped..)?.contains(&b' '))
-                .then_some(start..field.value.end)
+            let start = space + rest.iter().take_while(|&&b| b == b' ').count();
+            (start < value.len() && !value.get(start..)?.contains(&b' ')).then_some(start..value.len())
         }
-        "x-api-key" => (!value.is_empty()).then_some(field.value.clone()),
+        b"x-api-key" => (!value.is_empty()).then_some(0..value.len()),
         _ => None,
     }
+}
+
+/// A head's field's credential token, where it lies in the head.
+fn token(head: &[u8], field: &Field) -> Option<Range<usize>> {
+    let r = token_in(field.name.as_bytes(), head.get(field.value.clone())?)?;
+    Some(field.value.start + r.start..field.value.start + r.end)
 }
 
 /// A sign-in's request made to ask its response as its sender wrote it (RFC 9110 §12.5.3:
@@ -890,8 +894,13 @@ fn request_host(target: &str, head: &[u8], fields: &[Field]) -> Result<String, R
     };
     let authority =
         std::str::from_utf8(authority).map_err(|_| Refusal::Malformed("a host that is not text"))?;
-    // Without its user information, then its port, an IPv6 literal kept whole with its
-    // brackets (RFC 3986 §3.2.2).
+    authority_host(authority).ok_or(Refusal::Malformed("a request's host is empty"))
+}
+
+/// An authority's host (RFC 3986 §3.2.2): without its user information, then its port, an IPv6
+/// literal kept whole with its brackets; lowered, as `decide` compares hosts. None where nothing
+/// is left.
+pub(crate) fn authority_host(authority: &str) -> Option<String> {
     let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
     let name = match authority.find(']') {
         Some(close) if authority.starts_with('[') => authority.get(..=close).unwrap_or(authority),
@@ -900,10 +909,7 @@ fn request_host(target: &str, head: &[u8], fields: &[Field]) -> Result<String, R
             .filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit()))
             .map_or(authority, |(name, _)| name),
     };
-    if name.is_empty() {
-        return Err(Refusal::Malformed("a request's host is empty"));
-    }
-    Ok(name.to_ascii_lowercase())
+    (!name.is_empty()).then(|| name.to_ascii_lowercase())
 }
 
 /// A request's body's framing (RFC 9112 §6.3, f43): chunked where its Transfer-Encoding ends in
@@ -2061,6 +2067,11 @@ impl Ended {
         }
     }
 }
+
+/// The injector's cost, measured (#74 step 10 part B): ignored tests ROOT runs, its README beside it.
+#[cfg(test)]
+#[path = "../../../docs/research/measurements/s33-injector-ab/ab.rs"]
+mod ab;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]

@@ -43,3 +43,5 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }
+# The gzip-coded arm of the injector's measurement (#74 step 10 part B), as the image crate codes layers.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs", "runtime_detection"] }

@@ -40,7 +40,7 @@ pub(super) struct Logs<'a> {
     pub(super) dir: &'a Path,
     /// The members that run a program, by declared index: those whose output is kept.
     pub(super) active: &'a [u32],
-    /// What the daemon reads of its members itself: each drained member's end.
+    /// The keeper of its members' logs: each kept member's end.
     pub(super) drain: Option<&'a drain::Drain>,
     /// The run's end: a stream readable once it has ended, and its waiter's number to forget;
     /// none where it has ended already (`Daemon::wake_at_end`).
@@ -185,7 +185,8 @@ pub(super) fn serve(start: Start, logs: &Logs<'_>, admissions: exec::Admissions,
 }
 
 /// The directory of `source`'s log: the run's for its command, `members/<index>` for a member
-/// that runs a program, which the daemon keeps itself; why not, typed, otherwise.
+/// that runs a program, whose log the daemon keeps whoever reads it (D240); why not, typed,
+/// otherwise.
 fn source(logs: &Logs<'_>, source: exec::LogSource) -> Result<std::path::PathBuf, (Reply, String)> {
     let exec::LogSource::Member(member) = source else {
         return Ok(logs.dir.to_path_buf());
@@ -196,18 +197,14 @@ fn source(logs: &Logs<'_>, source: exec::LogSource) -> Result<std::path::PathBuf
             format!("member {member}, which the run has not"),
         ));
     }
-    if !logs.drain.is_some_and(|drain| drain.drains_member(member)) {
-        return Err((
-            Reply::Unstarted(Unstarted::Failed),
-            format!("member {member}'s output, which its owner reads, is kept from step 7's keeper on"),
-        ));
-    }
     Ok(drain::member_dir(logs.dir, member))
 }
 
 /// The log in `dir` of the run whose directory is `run`, opened, and each channel's place to
 /// read from: as `logs` refuses a run's log, refused; a place older than its oldest segment
-/// refused `Rotated`, naming the oldest place kept; none given, the oldest place kept.
+/// refused `Rotated`, naming the oldest place kept; none given, the oldest place kept, or, where
+/// the run's one log cap let its owner's older output go (D240), its log's first place, which its
+/// reader says went (`Rotated`) before it reads from the oldest kept.
 fn opened(run: &Path, dir: &Path, asked: exec::LogAsk) -> Result<(LogFile, [Pos; 2]), (Reply, String)> {
     let request = std::fs::read(run.join(crate::daemon::REQUEST))
         .ok()
@@ -234,6 +231,8 @@ fn opened(run: &Path, dir: &Path, asked: exec::LogAsk) -> Result<(LogFile, [Pos;
         .map_err(failed)?
         .ok_or_else(|| failed(io::ErrorKind::NotFound.into()))?;
     let first = Pos::segment_start(oldest);
+    let capped = super::cap::capped(file.dir()).map_err(failed)?.segments > 0;
+    let start = if capped { Pos::START } else { first };
     let place = |channel| {
         let read = asked.channels.reads(channel);
         match asked.cursor.of(channel).map(|at| Pos::from_bytes(&at.to_bytes())) {
@@ -247,7 +246,7 @@ fn opened(run: &Path, dir: &Path, asked: exec::LogAsk) -> Result<(LogFile, [Pos;
                 ),
             )),
             Some(at) => Ok(at),
-            None => Ok(first),
+            None => Ok(start),
         }
     };
     let from = [place(Channel::Stdout)?, place(Channel::Stderr)?];
@@ -414,4 +413,62 @@ fn wait(
     let gone = at.next().unwrap_or(false);
     let ended = member_ended || streams_ready.first().copied().unwrap_or(false);
     Ok(Woke { changed, ended, gone })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+    use crate::spec::{LOG_STDOUT, LogRetention};
+
+    /// A lane asked from the oldest of a log whose older output the run's one cap let go says so
+    /// first, `Rotated` with the oldest place kept, then reads from there; one whose log lost
+    /// nothing to the cap reads from its oldest as before.
+    #[test]
+    fn a_lane_from_the_oldest_says_what_the_cap_let_go() {
+        let run = shards_testdir::TempDir::new("lane-capped").unwrap();
+        let newest = crate::daemon::newest_log(&run).unwrap();
+        let held = shards_vmm::platform::open_dir(&run).unwrap();
+        let mut writer = crate::log_writer::Writer::new(
+            newest.log,
+            newest.index,
+            newest.seq,
+            LogRetention { size: 30, files: 8 },
+            Box::new(move |seq| crate::segments::new_segment(&held, seq, 8)),
+        )
+        .unwrap();
+        for word in [&b"one\n"[..], b"two\n", b"six\n"] {
+            writer.keep(LOG_STDOUT, word);
+        }
+        let ask = exec::LogAsk {
+            source: exec::LogSource::Command,
+            channels: exec::LogChannels::BOTH,
+            cursor: exec::LogCursor::OLDEST,
+            follow: false,
+        };
+        let read = |from: [Pos; 2]| {
+            let mut got = Vec::new();
+            Records::new(from, [true, true], 64)
+                .read(&LogFile::open(&run).unwrap(), &mut |kept| {
+                    got.push(match kept {
+                        Kept::Output { bytes, .. } => bytes.to_vec(),
+                        Kept::Rotated { oldest } => format!("rotated {}", oldest.seq()).into_bytes(),
+                        Kept::Gap { .. } => b"gap".to_vec(),
+                    });
+                    Ok(true)
+                })
+                .unwrap();
+            got
+        };
+        // Its first segment let go by its own retention: read from the oldest, nothing said.
+        std::fs::remove_file(run.join("log.idx")).unwrap();
+        std::fs::remove_file(run.join("log")).unwrap();
+        let (_, from) = opened(&run, &run, ask).map_err(|(_, why)| why).unwrap();
+        assert_eq!(read(from), [b"two\n".to_vec(), b"six\n".to_vec()]);
+        // Its second let go by the run's cap, its loss recorded: said first.
+        let segment = super::super::cap::tests_drop(&run, 1);
+        assert_eq!(segment, 17);
+        let (_, from) = opened(&run, &run, ask).map_err(|(_, why)| why).unwrap();
+        assert_eq!(read(from), [b"rotated 2".to_vec(), b"six\n".to_vec()]);
+    }
 }

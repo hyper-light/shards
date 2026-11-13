@@ -23,7 +23,7 @@
 //! as the run's host asks, and every lease it gave is released as the run ends.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 mod pool;
@@ -330,6 +330,106 @@ pub trait Images: Send + Sync {
     /// past it, the run's host is killed and its run refused with what it last said. It is
     /// the caller's until it drops, which ends it.
     fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal>;
+    /// [`boot`](Self::boot), ended by `stop` (D231's stop of a boot under way): a
+    /// [`BootStop::stop`] from any thread while it boots kills the run's host and every
+    /// process it started, and the boot returns [`ImageRefusal::Ended`]`(`[`RunEnd::Stopped`]`)`
+    /// once they are gone; a stop that came before is the same, booting nothing. A stop that
+    /// comes after the boot has returned is no longer the boot's: the guest's own
+    /// [`stop`](ImageGuest::stop) ends its run.
+    ///
+    /// By default, for an implementor with no run host to end mid-boot, the stop is honoured
+    /// as the boot returns: its guest stopped, and `Ended(Stopped)` returned.
+    fn boot_stoppable(
+        &self,
+        spec: &ImageSpec,
+        patience: Duration,
+        stop: &BootStop,
+    ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        if stop.is_stopped() {
+            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+        }
+        let guest = self.boot(spec, patience)?;
+        if stop.is_stopped() {
+            let _ = guest.stop();
+            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+        }
+        Ok(guest)
+    }
+}
+
+/// A stop for a boot under way ([`Images::boot_stoppable`], D231): its caller's, given to one
+/// boot at a time by reference and stopped from any other thread. Its stop is an event, never
+/// a flag a boot looks at: it kills the run host the boot holds here at once, every process
+/// that host started with it, and the boot, which waits on that host's end, returns as the
+/// host is followed to its end. Once stopped it stays stopped.
+#[derive(Debug, Default)]
+pub struct BootStop(Mutex<Stopping>);
+
+/// A [`BootStop`]'s state (R04): `Armed` to `Booting` as a boot holds its run host here and
+/// back as the boot lets go of it; either to `Stopped`, killing a host held, which a boot
+/// holding a host after finds and kills at once.
+#[derive(Debug, Default)]
+enum Stopping {
+    /// Not stopped, and no boot holds a run host here.
+    #[default]
+    Armed,
+    /// A boot holds its run host here while its run starts: the host the boot's own
+    /// session and its exit watcher already share.
+    Booting(Arc<shards_ipc::Child>),
+    /// Stopped: terminal.
+    Stopped,
+}
+
+impl BootStop {
+    pub fn new() -> BootStop {
+        BootStop::default()
+    }
+
+    /// Stops the boot under way, killing its run host and all the host started, or the next
+    /// boot given it. Never refused; once is enough. Returns at once: the boot returns
+    /// `Ended(Stopped)` once they are gone.
+    pub fn stop(&self) {
+        let mut state = self.state();
+        if let Stopping::Booting(host) = std::mem::replace(&mut *state, Stopping::Stopped) {
+            session::kill(&host);
+        }
+    }
+
+    /// Whether it has been stopped.
+    pub fn is_stopped(&self) -> bool {
+        matches!(*self.state(), Stopping::Stopped)
+    }
+
+    /// A boot's run `host`, held here until [`release`](Self::release): killed at once where
+    /// the stop has come. Refused where another boot holds one here.
+    fn hold(&self, host: &Arc<shards_ipc::Child>) -> Result<(), ImageRefusal> {
+        let mut state = self.state();
+        match *state {
+            Stopping::Armed => *state = Stopping::Booting(host.clone()),
+            Stopping::Booting(_) => {
+                return Err(ImageRefusal::Spec {
+                    what: "the boot's stop",
+                    why: "another boot under way holds it".into(),
+                });
+            }
+            Stopping::Stopped => session::kill(host),
+        }
+        Ok(())
+    }
+
+    /// Lets go of the host a boot held here: whether the stop came first.
+    fn release(&self) -> bool {
+        let mut state = self.state();
+        if matches!(*state, Stopping::Stopped) {
+            return true;
+        }
+        *state = Stopping::Armed;
+        false
+    }
+
+    fn state(&self) -> MutexGuard<'_, Stopping> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 /// A booted image. Dropping it ends it.
@@ -476,9 +576,21 @@ impl Images for ImageShards {
     }
 
     fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        self.boot_stoppable(spec, patience, &BootStop::new())
+    }
+
+    fn boot_stoppable(
+        &self,
+        spec: &ImageSpec,
+        patience: Duration,
+        stop: &BootStop,
+    ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        if stop.is_stopped() {
+            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+        }
         crate::backend().map_err(no_backend)?;
         let request = request(spec)?;
-        Ok(Box::new(session::Session::start(spec, &request, patience)?))
+        Ok(Box::new(session::Session::start(spec, &request, patience, stop)?))
     }
 }
 
@@ -512,9 +624,21 @@ impl Images for ImagePools {
     }
 
     fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        self.boot_stoppable(spec, patience, &BootStop::new())
+    }
+
+    fn boot_stoppable(
+        &self,
+        spec: &ImageSpec,
+        patience: Duration,
+        stop: &BootStop,
+    ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        if stop.is_stopped() {
+            return Err(ImageRefusal::Ended(RunEnd::Stopped));
+        }
         crate::backend().map_err(no_backend)?;
         let request = request(spec)?;
-        self.0.boot(spec, &request, patience)
+        self.0.boot(spec, &request, patience, stop)
     }
 }
 
