@@ -2337,55 +2337,36 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
         }
         patience.done();
     };
-    // Where the last window began in the daemon's log: no room said after it, as it ended.
-    let mut last_window = 0;
-    'rounds: for round in 1.. {
-        // Each round's clients its own: a client says nothing past its first byte, and one
-        // kept from an earlier round would give the daemon room as it went, in each later
-        // round on a busy host (a gate's five rounds in a row). Let go, they give a daemon
-        // that was out room at once, which it says before the round fills it again. On
-        // macOS a wait past what one select(2) takes failed every slot at once, so that the
-        // daemon never ran out (PM M542).
-        if !silent.is_empty() {
-            let before = said().len();
-            let was_out = out(&said());
-            silent.clear();
-            if was_out {
-                eventually(&home, "no room once a round's clients were let go", || {
-                    said().get(before..).is_some_and(|since| since.contains(AGAIN))
-                });
-            }
+    // Its clients each take a slot it offers and say nothing past their first byte. On macOS
+    // a wait past what one select(2) takes failed every slot at once, so that the daemon
+    // never ran out (PM M542). Then windows until one passes with no room found: room it
+    // found meanwhile was its last take's own, the stop pipe of the slot taken, which a
+    // busy daemon came to after this test stopped taking slots (PM M334): that slot is
+    // taken, and the window run again.
+    fill(&mut silent);
+    let last_window = loop {
+        let from = said().len();
+        // Its CPU over a second's window as it waits for room, told: what it costs, which no
+        // later event orders (D209).
+        let before = cpu_time(daemon);
+        std::thread::sleep(Duration::from_secs(1));
+        let spent = cpu_time(daemon).saturating_sub(before);
+        common::measured("a daemon out of descriptors, its CPU in a second", &[spent]);
+        // A collection due meanwhile waits: its files would take what clients wait for.
+        std::fs::write(&left, b"left behind").unwrap();
+        std::fs::write(&due, b"").unwrap();
+        eventually(&home, "the collection due was not seen", || !due.exists());
+        if !said().get(from..).is_some_and(|since| since.contains(AGAIN)) {
+            assert!(
+                left.exists(),
+                "collected while out of descriptors; its log:\n{}",
+                said()
+            );
+            break from;
         }
+        eprintln!("the daemon found room as its window went; its slot taken");
         fill(&mut silent);
-        loop {
-            let from = said().len();
-            last_window = from;
-            // Its CPU over a second's window as it waits for room, told: what it costs, which
-            // no later event orders (D209).
-            let before = cpu_time(daemon);
-            std::thread::sleep(Duration::from_secs(1));
-            let spent = cpu_time(daemon).saturating_sub(before);
-            common::measured("a daemon out of descriptors, its CPU in a second", &[spent]);
-            // A collection due meanwhile waits: its files would take what clients wait for.
-            std::fs::write(&left, b"left behind").unwrap();
-            std::fs::write(&due, b"").unwrap();
-            eventually(&home, "the collection due was not seen", || !due.exists());
-            if !said().get(from..).is_some_and(|since| since.contains(AGAIN)) {
-                assert!(
-                    left.exists(),
-                    "collected while out of descriptors; its log:\n{}",
-                    said()
-                );
-                break 'rounds;
-            }
-            // Room it found meanwhile was room to collect in: the window says nothing. The
-            // room was its last take's own, the stop pipe of the slot taken, which a busy
-            // daemon came to after this test stopped taking slots (PM M334): that slot is
-            // taken, and the window run again.
-            eprintln!("round {round}: the daemon found room as its window went; its slot taken");
-            fill(&mut silent);
-        }
-    }
+    };
     // Let go: the daemon has room, says so, and only then collects what was left, as its log
     // orders it (no window after the mark stands for its wait, D209).
     drop(silent);
