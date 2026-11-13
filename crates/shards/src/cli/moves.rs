@@ -217,6 +217,16 @@ fn said(step: &str, (_, _, err): &There) -> String {
     }
 }
 
+/// Why the other machine's `ready` step does not take a move: its refusal, typed
+/// (daemon/moves.rs `Refused`), or, from a daemon of an earlier build or a step that failed,
+/// its words.
+fn unready(step: &str, answer: &There) -> String {
+    match serde_json::from_slice::<crate::daemon::Refused>(&answer.1) {
+        Ok(refused) => refused.to_string(),
+        Err(_) => said(step, answer),
+    }
+}
+
 /// Times each step to stderr where `SHARDS_MOVE_TIMES` is set: what a measurement of moves
 /// reads (docs/research/measurements/migrate).
 struct Times {
@@ -361,7 +371,7 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     let ready = |phase: &str| -> Result<Needs, String> {
         let answer = there(step(&[mv, "ready", &plan_json]), None)?;
         if answer.0 != 0 {
-            return Err(format!("{to} cannot take it: {}", said(phase, &answer)));
+            return Err(format!("{to} cannot take it: {}", unready(phase, &answer)));
         }
         serde_json::from_slice(&answer.1).map_err(|e| format!("{to}'s answer: {e}"))
     };
@@ -568,4 +578,38 @@ fn moved(home: &Path, name: &str, to: &str, live: bool, ask: &Ask<'_>) -> Result
     }
     times.step("removed here");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A refusal the other machine answers typed is said from what it is; one of a daemon of
+    /// an earlier build, or a step that failed, in the step's own words.
+    #[test]
+    fn a_refusal_is_said_from_its_type_and_else_in_the_steps_words() {
+        let refused = crate::daemon::Refused::NameTaken { name: "web".into() };
+        let typed = (
+            1,
+            serde_json::to_vec(&refused).unwrap(),
+            b"shards: anything\n".to_vec(),
+        );
+        assert_eq!(
+            unready("its check", &typed),
+            "a microVM named web is here already"
+        );
+        let worded = (
+            1,
+            Vec::new(),
+            b"shards: a microVM named web is here already\n".to_vec(),
+        );
+        assert_eq!(
+            unready("its check", &worded),
+            "a microVM named web is here already"
+        );
+        assert_eq!(
+            unready("its check", &(1, Vec::new(), Vec::new())),
+            "its check failed"
+        );
+    }
 }

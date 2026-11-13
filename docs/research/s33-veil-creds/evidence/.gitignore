@@ -1,0 +1,6 @@
+# Heavy, regenerable third-party trees are not committed: their INDEX.md records the
+# pinned raw URLs and SHA-256s, so they regenerate exactly (R10 — link, don't duplicate).
+# The OpenAI Codex clone at rust-v0.167.2 (git clone --depth 1 --branch rust-v0.167.2
+# https://github.com/openai/codex.git) and its downloaded Cargo.lock crate sources.
+codex/src/
+codex/crates/

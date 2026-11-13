@@ -2,13 +2,17 @@
 //! inside an image by shards-init (crates/shards/tests/run.rs).
 
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use shards_testguest::fill;
 
 /// SIGPIPE's disposition as the workload started: 0 default, 1 ignored, 2 handled. Rust's
 /// runtime ignores SIGPIPE before main, so a constructor records it first.
 static SIGPIPE_AT_START: AtomicI32 = AtomicI32::new(-1);
+
+/// The signals ignored as the workload started, a bit for each, 1 << (signal - 1), as
+/// /proc's SigIgn has them; recorded with [`SIGPIPE_AT_START`].
+static IGNORED_AT_START: AtomicU64 = AtomicU64::new(0);
 
 extern "C" fn record_sigpipe() {
     // SAFETY: sigaction(2) only reads the disposition.
@@ -22,6 +26,14 @@ extern "C" fn record_sigpipe() {
             };
             SIGPIPE_AT_START.store(v, Ordering::Relaxed);
         }
+        let mut ignored = 0u64;
+        for sig in 1..=64 {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(sig, std::ptr::null(), &mut old) == 0 && old.sa_sigaction == libc::SIG_IGN {
+                ignored |= 1 << (sig - 1);
+            }
+        }
+        IGNORED_AT_START.store(ignored, Ordering::Relaxed);
     }
 }
 
@@ -4362,6 +4374,9 @@ fn confined(args: &[String]) -> i32 {
     ));
     let errno = |e: &io::Error| format!("errno {}", e.raw_os_error().unwrap_or(0));
     let mut mode: &str = "";
+    // `done`: it exits once it has said all, as a command run in a member does, where a
+    // member's own program waits to be ended (`confined-ready`).
+    let mut done = false;
     // The last request `srv-receive` saw: its sender, and its ID.
     let mut asked: Option<(String, String)> = None;
     for a in args {
@@ -4452,6 +4467,25 @@ fn confined(args: &[String]) -> i32 {
                 };
                 out.push_str(&format!("confined whoami: {said}\n"));
             }
+            // The signals it was started with ignored, and those blocked, as /proc's SigIgn
+            // and SigBlk have them: its runtime's own SIGPIPE comes after the first.
+            "signals" => {
+                let blocked = std::fs::read_to_string("/proc/self/status")
+                    .unwrap_or_default()
+                    .lines()
+                    .find_map(|l| l.strip_prefix("SigBlk:").map(|v| v.trim().to_string()))
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "confined signals ignored={:016x} blocked={blocked}\n",
+                    IGNORED_AT_START.load(Ordering::Relaxed)
+                ));
+            }
+            // A child of its own writing to a pipe whose reader has gone, with SIGPIPE as
+            // this program was started with it (its runtime's put back), as a program that
+            // keeps what it is given does: how the child ended, killed by the signal, or its
+            // write's errno as its exit status.
+            "pipe" => out.push_str(&format!("confined pipe: {}\n", pipe_child_end())),
+            "done" => done = true,
             // A grandchild let go as daemons are (fork, setsid, fork), named `escaped`,
             // that waits until it is ended.
             "daemonize" => {
@@ -5448,11 +5482,60 @@ fn confined(args: &[String]) -> i32 {
     out.push_str(&format!("confined net={}\n", ifaces.join(",")));
     let _ = io::stdout().write_all(out.as_bytes());
     let _ = io::stdout().flush();
+    if done {
+        return 0;
+    }
     // SAFETY: prctl(2) naming this thread, with a NUL-terminated name of 15 bytes or fewer.
     unsafe { libc::prctl(libc::PR_SET_NAME, c"confined-ready".as_ptr()) };
     loop {
         // SAFETY: blocks until a signal arrives.
         unsafe { libc::pause() };
+    }
+}
+
+/// How a child of this process ended writing a byte to a pipe whose read end is closed,
+/// SIGPIPE's disposition in it as this program started (`confined pipe`): `signal N` where
+/// the signal killed it, `exit N` where its write failed with errno N (`exit 0` had it not
+/// failed).
+fn pipe_child_end() -> String {
+    let mut fds = [0 as libc::c_int; 2];
+    // SAFETY: pipe(2) into a two-element array.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return format!("pipe: {}", io::Error::last_os_error());
+    }
+    let [read, write] = fds;
+    // SAFETY: close(2) of the read end just made, which nothing else holds.
+    unsafe { libc::close(read) };
+    let started = if SIGPIPE_AT_START.load(Ordering::Relaxed) == 0 {
+        libc::SIG_DFL
+    } else {
+        libc::SIG_IGN
+    };
+    // SAFETY: fork(2); the child calls async-signal-safe functions alone, then _exit(2).
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        // SAFETY: signal(2), write(2) of a byte on this stack, and _exit(2), in the child.
+        unsafe {
+            libc::signal(libc::SIGPIPE, started);
+            let wrote = libc::write(write, b"x".as_ptr().cast(), 1);
+            let errno = if wrote < 0 { *libc::__errno_location() } else { 0 };
+            libc::_exit(errno)
+        }
+    }
+    // SAFETY: close(2) of this process's write end, the child's being its own.
+    unsafe { libc::close(write) };
+    if pid < 0 {
+        return format!("fork: {}", io::Error::last_os_error());
+    }
+    let mut status = 0;
+    // SAFETY: waitpid(2) of this process's own child.
+    if unsafe { libc::waitpid(pid, &mut status, 0) } != pid {
+        return format!("waitpid: {}", io::Error::last_os_error());
+    }
+    if libc::WIFSIGNALED(status) {
+        format!("signal {}", libc::WTERMSIG(status))
+    } else {
+        format!("exit {}", libc::WEXITSTATUS(status))
     }
 }
 

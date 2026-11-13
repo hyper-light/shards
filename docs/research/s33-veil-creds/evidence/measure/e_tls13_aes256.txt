@@ -1,0 +1,8 @@
+# 2026-11-12T23:15:41Z OpenSSL 3.6.4 25 Aug 2026 (Library: OpenSSL 3.6.4 25 Aug 2026) on Darwin arm64
+api.anthropic.com | Protocol version: TLSv1.3 | Ciphersuite: TLS_AES_256_GCM_SHA384 | Negotiated TLS1.3 group: X25519MLKEM768 | Verification: OK
+platform.claude.com | Protocol version: TLSv1.3 | Ciphersuite: TLS_AES_256_GCM_SHA384 | Negotiated TLS1.3 group: X25519MLKEM768 | Verification: OK
+console.anthropic.com | Protocol version: TLSv1.3 | Ciphersuite: TLS_AES_256_GCM_SHA384 | Negotiated TLS1.3 group: X25519MLKEM768 | Verification: OK
+claude.ai | Protocol version: TLSv1.3 | Ciphersuite: TLS_AES_256_GCM_SHA384 | Negotiated TLS1.3 group: X25519MLKEM768 | Verification: OK
+api.openai.com | Protocol version: TLSv1.3 | Ciphersuite: TLS_AES_256_GCM_SHA384 | Negotiated TLS1.3 group: X25519MLKEM768 | Verification: OK
+chatgpt.com | Protocol version: TLSv1.3 | Ciphersuite: TLS_AES_256_GCM_SHA384 | Negotiated TLS1.3 group: X25519MLKEM768 | Verification: OK
+auth.openai.com | Protocol version: TLSv1.3 | Ciphersuite: TLS_AES_256_GCM_SHA384 | Negotiated TLS1.3 group: X25519MLKEM768 | Verification: OK

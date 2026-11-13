@@ -303,6 +303,7 @@ pub fn exec(path: &str, args: &[OsString]) -> ExitCode {
         // microVM: the CLI inspects it first, so that "No such container" comes first
         // (docker/cli exec.go RunExec).
         stdin_terminal: std::io::stdin().is_terminal(),
+        member: parsed.string("for").to_string(),
         ..shards_ipc::Exec::default()
     };
     // Before the microVM is looked for, as the CLI checks them (exec.go parseExec).

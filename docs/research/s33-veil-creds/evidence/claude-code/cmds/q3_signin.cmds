@@ -1,0 +1,22 @@
+LC_ALL=C $GG -a -o -b -E '// Version: 2\.1\.311' "$B" | wc -l
+LC_ALL=C $GG -a -o -b -E 'function E\(\)\{return"prod"\}var Qwe=.{0,40}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'var a=\{BASE_API_URL:"https://api\.anthropic\.com",.{0,1000}MCP_PROXY_PATH:"/v1/mcp/\{server_id\}"\}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'var dae=31536000;.{0,420}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'function s3r\(\{codeChallenge:e,.{0,1000}return H\.toString\(\)\}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'async function c9o\(e,\{state:n,codeVerifier:r,.{0,700}return a\("tengu_oauth_token_exchange_success",\{\}\),g\("oauth_token_exchange"\),C\.data\}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'formatTokens\(e,\{subscriptionType:r,.{0,700}workspaceName:e\.workspace\?\.name\}:void 0\}\}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'function on\(\)\{let t=ueo\(\),e=process\.env\.CLAUDE_CODE_CUSTOM_OAUTH_URL;.{0,200}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'var c6e=\["https://beacon\.claude-ai\.staging\.ant\.dev","https://claude\.fedstart\.com","https://claude-staging\.fedstart\.com"\]' "$B"
+LC_ALL=C $GG -a -o -b -E 'inferenceOnly:_==="setup-token",expiresIn:_==="setup-token"\?A\?\?dae:void 0' "$B"
+LC_ALL=C $GG -a -o -b -E 'command\("setup-token"\)\.description\("[^"]{0,120}"\)' "$B"
+LC_ALL=C $GG -a -o -b -E 're\.command\("login"\)\.description\("Sign in to your Anthropic account"\)\.option\("--email <email>","[^"]*"\)\.option\("--sso","[^"]*"\)\.option\("--console","[^"]*"\)\.option\("--claudeai","[^"]*"\)' "$B"
+LC_ALL=C $GG -a -o -b -E 'grant_type:"[a-z_]+"' "$B" | awk -F: '$1 >= 115363840 {print $2":"$3}' | sort | uniq -c
+LC_ALL=C $GG -a -o -b -E '.{0,140}urn:ietf:params:oauth:grant-type:device_code.{0,140}' "$B" | awk -F: '$1 >= 115363840' | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'DEVICE_CODE_GRANT:"device_code"' "$B"
+LC_ALL=C $GG -a -o -b -E 'grant_type:go,device_code:k' "$B"
+LC_ALL=C $GG -a -o -b -E '\{accessToken:e\.access_token,refreshToken:e\.refresh_token,expiresAt:Date\.now\(\)\+e\.expires_in\*1000,refreshTokenExpiresAt:o3r\(e\.refresh_token_expires_in,!0\),scopes:_ir\(e\.scope\),subscriptionType:r' "$B"
+LC_ALL=C $GG -a -o -b -E '\{accessToken:r\.accessToken,refreshToken:r\.refreshToken,expiresAt:r\.expiresAt,refreshTokenExpiresAt:r\.refreshTokenExpiresAt,scopes:r\.scopes,subscriptionType:r\.subscriptionType,subscriptionTypeSource:r\.subscriptionTypeSource,subscriptionTypeVerifiedAt:r\.subscriptionTypeVerifiedAt,rateLimitTier:r\.rateLimitTier,clientId:r\.clientId\}' "$B"
+LC_ALL=C $GG -a -o -b -E 'var a3r=new Map\(\[\["claude_max","max"\],\["claude_pro","pro"\],\["claude_enterprise","enterprise"\],\["claude_team","team"\]\]\)' "$B"
+LC_ALL=C $GG -a -o -b -E 'claudeAiOauth' "$B" | awk -F: '$1 >= 115363840' | wc -l
+LC_ALL=C $GG -a -o -b -E 'let\{tokenEndpoint:h\}=L,.{0,260}grant_type:go,device_code:k\}\)\.toString\(\)' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 't\(`\[gateway-login\] ignoring advertised endpoint' "$B" | head -2

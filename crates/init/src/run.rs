@@ -36,6 +36,8 @@ pub(crate) struct Failure {
     pub(crate) message: String,
     /// The daemon's refusal, not init's failure to start it: an exec's unknown user.
     daemon: bool,
+    /// Why a command run in a member did not start, by type ([`crate::enter`]).
+    refusal: Option<run::members::Refusal>,
 }
 
 fn setup_failed(message: impl Into<String>) -> Failure {
@@ -43,6 +45,7 @@ fn setup_failed(message: impl Into<String>) -> Failure {
         status: NOT_RUN,
         message: message.into(),
         daemon: false,
+        refusal: None,
     }
 }
 
@@ -1480,12 +1483,37 @@ fn pid_ns_of(pid: libc::pid_t) -> Result<OwnedFd, Failure> {
 /// children, its agents' domains among them, must not be born there, where the workload
 /// would see them: past a failure to take it back, init goes no further.
 fn fork_in(ns: Option<&OwnedFd>) -> Result<libc::pid_t, Failure> {
+    // SAFETY: init is single-threaded, so its child may run anything until it execs.
+    born_in(ns, || libc::c_long::from(unsafe { libc::fork() })).map_err(|e| match e {
+        NotBorn::Entering(e) => setup_failed(format!("the workload's PID namespace: {e}")),
+        NotBorn::Making(e) => setup_failed(format!("fork: {e}")),
+    })
+}
+
+/// What [`born_in`] could not do: hold or enter the PID namespace, or make the child there.
+#[derive(Debug)]
+pub(crate) enum NotBorn {
+    Entering(io::Error),
+    Making(io::Error),
+}
+
+/// A child of init's, made by `make` (fork(2), or clone3(2) as fork into a cgroup), born in
+/// the PID namespace `ns` names (a namespace's descriptor, or a pidfd, which setns(2) takes
+/// since Linux 5.8), or, with none, in a new one whose first process it is: setns(2) and
+/// unshare(2) give the children made after them (pid_namespaces(7)), and init takes its own
+/// back before anything else. Init's later children, its agents' domains among them, must
+/// not be born there, where the workload would see them: past a failure to take it back,
+/// init goes no further. In the child, 0.
+pub(crate) fn born_in(
+    ns: Option<&OwnedFd>,
+    make: impl FnOnce() -> libc::c_long,
+) -> Result<libc::pid_t, NotBorn> {
     let own = match OWN_PID_NS.get() {
         Some(own) => own,
         None => {
             let own = File::open("/proc/self/ns/pid")
                 .map(OwnedFd::from)
-                .map_err(|e| setup_failed(format!("init's PID namespace: {e}")))?;
+                .map_err(NotBorn::Entering)?;
             OWN_PID_NS.get_or_init(|| own)
         }
     };
@@ -1496,17 +1524,13 @@ fn fork_in(ns: Option<&OwnedFd>) -> Result<libc::pid_t, Failure> {
         None => unsafe { libc::unshare(libc::CLONE_NEWPID) },
     };
     if entered != 0 {
-        return Err(setup_failed(format!(
-            "the workload's PID namespace: {}",
-            io::Error::last_os_error()
-        )));
+        return Err(NotBorn::Entering(io::Error::last_os_error()));
     }
-    // SAFETY: init is single-threaded, so its child may run anything until it execs.
-    let pid = unsafe { libc::fork() };
+    let pid = make();
     if pid == 0 {
         return Ok(0);
     }
-    let forked = io::Error::last_os_error();
+    let made = io::Error::last_os_error();
     // SAFETY: setns(2) back into init's own namespace, which it holds.
     if unsafe { libc::setns(own.as_raw_fd(), libc::CLONE_NEWPID) } != 0 {
         let _ = writeln!(
@@ -1517,9 +1541,9 @@ fn fork_in(ns: Option<&OwnedFd>) -> Result<libc::pid_t, Failure> {
         power_off()
     }
     if pid < 0 {
-        return Err(setup_failed(format!("fork: {forked}")));
+        return Err(NotBorn::Making(made));
     }
-    Ok(pid)
+    libc::pid_t::try_from(pid).map_err(|_| NotBorn::Making(io::Error::from_raw_os_error(libc::ERANGE)))
 }
 
 /// A new PID namespace for the workload under `--init` (D115), its first process
@@ -2391,7 +2415,7 @@ fn reports(err: &OwnedFd) -> Said {
 
 /// What the child reports through its error channel when it cannot exec: the step that
 /// failed and errno.
-mod step {
+pub(crate) mod step {
     pub const CHDIR: u8 = 0;
     pub const USER: u8 = 1;
     /// execve(2) itself, or setting up the stdio before it.
@@ -2415,6 +2439,11 @@ mod step {
     pub const NNP: u8 = 10;
     /// Making a joiner's working directory (D119), as [`super::workdir`] makes a run's.
     pub const MKDIR: u8 = 11;
+    /// Entering a member's namespaces, for a command run in it ([`crate::enter`]).
+    pub const JOIN: u8 = 12;
+    /// A step of a member's confinement, its number (`domains::Confining`) where a
+    /// candidate's would be ([`crate::enter`]).
+    pub const CONFINE: u8 = 13;
 }
 
 /// A running workload and init's ends of its stdio. With a terminal, `stdout` is its
@@ -3210,28 +3239,7 @@ impl Standby {
         } else {
             workdir(&spec.cwd)?
         };
-        let path_env = env
-            .iter()
-            .rev()
-            .find_map(|kv| kv.strip_prefix(b"PATH="))
-            .unwrap_or_default();
-        let explicit = argv0.contains(&b'/');
-        // An empty PATH has no entries (Go's filepath.SplitList), so nothing is found in
-        // it, as runc finds nothing (D27).
-        let candidates: Vec<Vec<u8>> = if explicit {
-            vec![argv0.clone()]
-        } else if path_env.is_empty() {
-            Vec::new()
-        } else {
-            path_env
-                .split(|&b| b == b':')
-                .map(|dir| {
-                    // An empty PATH entry is the working directory.
-                    let dir: &[u8] = if dir.is_empty() { b"." } else { dir };
-                    [dir, b"/", argv0].concat()
-                })
-                .collect()
-        };
+        let (explicit, candidates) = candidates(argv0, &env);
         for (list, what) in [
             (&candidates, "PATH"),
             (&spec.argv, "an argument"),
@@ -3318,6 +3326,7 @@ impl Standby {
                     status: u32::from(shards_cmdline::commands::run_status(&message)),
                     message,
                     daemon: false,
+                    refusal: None,
                 });
             }
             let tried = match (which, &pty) {
@@ -4445,7 +4454,24 @@ impl Exec {
             .iter()
             .find_map(|e| e.strip_prefix(b"in-join="))
             .map(|n| std::str::from_utf8(n).ok().and_then(|n| n.parse::<u32>().ok()));
-        let started = if let Some(range) = crate::join::range(&spec.setup) {
+        // A command run in one of the run's members (plan step 6, D243).
+        let in_member = run::members::exec_member(&spec.setup);
+        let started = if let Ok(Some(member)) = in_member {
+            crate::enter::start(&spec, member, domains)
+                .map(|e| Started {
+                    pid: e.pid,
+                    tty: e.tty,
+                    stdin: e.stdin,
+                    stdout: e.stdout,
+                    stderr: e.stderr,
+                    binds: None,
+                    published: None,
+                    member: None,
+                })
+                .map_err(|f| entered_failure(f, &spec))
+        } else if let Err(e) = in_member {
+            Err(setup_failed(format!("a malformed command: {e}")))
+        } else if let Some(range) = crate::join::range(&spec.setup) {
             exec.joined = true;
             exec.engine_made = spec.setup.iter().any(|e| e == b"engine-made");
             if running {
@@ -4556,17 +4582,14 @@ impl Exec {
                 exec.to_conn.extend(&[&run::header(kind::STARTED, 0)]);
             }
             Err(f) => {
-                let class = if f.daemon {
-                    run::exec_failed::DAEMON
-                } else {
-                    run::exec_failed::RUNTIME
+                // A member's refusal by type, its words after (D243); else the class alone.
+                let said = match f.refusal {
+                    Some(r) => [&[run::exec_failed::MEMBER][..], &r.encode(f.message.as_bytes())].concat(),
+                    None if f.daemon => [&[run::exec_failed::DAEMON][..], f.message.as_bytes()].concat(),
+                    None => [&[run::exec_failed::RUNTIME][..], f.message.as_bytes()].concat(),
                 };
-                let len = u32::try_from(f.message.len() + 1).unwrap_or(u32::MAX);
-                exec.to_conn.extend(&[
-                    &run::header(kind::SYSTEM_ERR, len),
-                    &[class],
-                    f.message.as_bytes(),
-                ]);
+                let len = u32::try_from(said.len()).unwrap_or(u32::MAX);
+                exec.to_conn.extend(&[&run::header(kind::SYSTEM_ERR, len), &said]);
                 exec.status = Some(f.status);
             }
         }
@@ -6172,6 +6195,7 @@ fn exec_cwd(cwd: &[u8]) -> Result<Vec<u8>, Failure> {
             status: 128,
             message: "Cwd must be an absolute path".into(),
             daemon: false,
+            refusal: None,
         }),
     }
 }
@@ -6198,6 +6222,7 @@ fn exec_failure(which: u8, errno: i32, argv0: &[u8], tried: &[u8], cwd: &[u8], u
                 status: NOT_RUN,
                 message: format!("joining the container's cgroup: {err}"),
                 daemon: false,
+                refusal: None,
             };
         }
         // As `workdir` says it for a run's.
@@ -6220,6 +6245,7 @@ fn exec_failure(which: u8, errno: i32, argv0: &[u8], tried: &[u8], cwd: &[u8], u
                 status: NOT_RUN,
                 message,
                 daemon: false,
+                refusal: None,
             };
         }
         _ => format!("exec {}: {err}", String::from_utf8_lossy(tried)),
@@ -6228,7 +6254,54 @@ fn exec_failure(which: u8, errno: i32, argv0: &[u8], tried: &[u8], cwd: &[u8], u
         status: u32::from(shards_cmdline::commands::run_status(&message)),
         message,
         daemon: false,
+        refusal: None,
     }
+}
+
+/// Why a command run in a member did not start ([`crate::enter`]), as an exec's failures
+/// are said: a refusal by type, its status `docker exec`'s for one the daemon refuses (1)
+/// or one its runtime could not start (126, moby daemon/errors.go); a step of its child's
+/// in an exec's words, as [`exec_failure`] says them.
+fn entered_failure(f: crate::enter::Failed, spec: &Spec) -> Failure {
+    match f {
+        crate::enter::Failed::Refused(r, message) => Failure {
+            status: if r.not_started() { 126 } else { 1 },
+            message,
+            daemon: false,
+            refusal: Some(r),
+        },
+        crate::enter::Failed::Step { which, errno, tried } => {
+            let argv0 = spec.argv.first().map_or(&[][..], Vec::as_slice);
+            exec_failure(which, errno, argv0, &tried, &spec.cwd, &spec.user)
+        }
+    }
+}
+
+/// Where a command `argv0` is looked for, in order, as Go's exec.LookPath looks on the
+/// `PATH` of `env`: `argv0` alone where it names a path (whether it does, first). An empty
+/// PATH has no entries (Go's filepath.SplitList), so nothing is found in it, as runc finds
+/// nothing (D27); an empty entry is the working directory.
+pub(crate) fn candidates(argv0: &[u8], env: &[Vec<u8>]) -> (bool, Vec<Vec<u8>>) {
+    let path_env = env
+        .iter()
+        .rev()
+        .find_map(|kv| kv.strip_prefix(b"PATH="))
+        .unwrap_or_default();
+    if argv0.contains(&b'/') {
+        return (true, vec![argv0.to_vec()]);
+    }
+    let found = if path_env.is_empty() {
+        Vec::new()
+    } else {
+        path_env
+            .split(|&b| b == b':')
+            .map(|dir| {
+                let dir: &[u8] = if dir.is_empty() { b"." } else { dir };
+                [dir, b"/", argv0].concat()
+            })
+            .collect()
+    };
+    (false, found)
 }
 
 /// What the child needs, built before fork.
@@ -6259,6 +6332,22 @@ struct Child<'a> {
     envp: *const *const libc::c_char,
 }
 
+/// Reports the failed step, errno and the candidate it was trying to the parent on `err`,
+/// and exits: `[step, errno (4, big-endian), candidate (4, big-endian)]`, one write.
+///
+/// # Safety
+/// Only in the child of a fork of a single-threaded process, before it execs.
+pub(crate) unsafe fn report(err: RawFd, which: u8, candidate: usize) -> ! {
+    // SAFETY: async-signal-safe calls on a local buffer.
+    unsafe {
+        let [a, b, c, d] = (*libc::__errno_location()).to_be_bytes();
+        let [e, f, g, h] = u32::try_from(candidate).unwrap_or(u32::MAX).to_be_bytes();
+        let report = [which, a, b, c, d, e, f, g, h];
+        libc::write(err, report.as_ptr().cast(), report.len());
+        libc::_exit(127)
+    }
+}
+
 /// The workload's side of the fork, as runc's init runs it (libcontainer/init_linux.go,
 /// finalizeNamespace and setupUser; standard_init_linux.go): stdio, session, working
 /// directory, user, then the command, found as Go's exec.LookPath finds it.
@@ -6266,32 +6355,13 @@ struct Child<'a> {
 /// # Safety
 /// Only in the child of a fork of a single-threaded process; it never returns.
 unsafe fn child(c: &Child<'_>) -> ! {
-    /// Reports the failed step, errno and the candidate it was trying to the parent, and
-    /// exits.
-    ///
-    /// # Safety
-    /// As for `child`.
-    unsafe fn report(err: RawFd, which: u8, candidate: usize) -> ! {
-        // SAFETY: async-signal-safe calls on a local buffer.
-        unsafe {
-            let [a, b, c, d] = (*libc::__errno_location()).to_be_bytes();
-            let [e, f, g, h] = u32::try_from(candidate).unwrap_or(u32::MAX).to_be_bytes();
-            let report = [which, a, b, c, d, e, f, g, h];
-            libc::write(err, report.as_ptr().cast(), report.len());
-            libc::_exit(127)
-        }
-    }
     // SAFETY: async-signal-safe calls, on memory prepared before the fork.
     unsafe {
         let fail = |which: u8| report(c.err, which, 0);
         // Signals as a new process has them: none blocked, none ignored. Rust ignores
-        // SIGPIPE in init, and execve keeps ignored signals ignored.
-        let mut none: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut none);
-        libc::sigprocmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
-        for sig in 1..libc::SIGRTMAX() {
-            libc::signal(sig, libc::SIG_DFL);
-        }
+        // SIGPIPE in init, and execve keeps ignored signals ignored. The mask, an empty set,
+        // is never refused (sigprocmask(2): only EFAULT and EINVAL).
+        let _ = defaults::signals();
         libc::setsid();
         let stdio = match c.tty {
             // The session's controlling terminal, as runc makes it (TIOCSCTTY after
