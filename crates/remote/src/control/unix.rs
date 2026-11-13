@@ -360,8 +360,9 @@ pub(super) fn added(admission: Admission) -> Option<(u32, u64, u64)> {
 
 impl super::Lanes {
     /// A lane whose first frame is a socket's ask (`Tag::UnixConnect`) of `len` bytes, `bytes`
-    /// what came of it: refused alone where the endpoint serves no socket or the ask is longer
-    /// than a name allows; read on as it comes otherwise.
+    /// what came of it: refused alone where the ask is longer than a name allows; read on as it
+    /// comes otherwise, and refused once whole where the endpoint serves no socket
+    /// ([`Lanes::admit_socket`](super::Lanes)).
     pub(super) fn begin_socket(
         &mut self,
         io: &mut Io<'_>,
@@ -372,10 +373,6 @@ impl super::Lanes {
         ended: bool,
     ) {
         let whole = FRAME_HEAD.saturating_add(len);
-        if self.sockets.admission.is_none() {
-            self.refuse_lane(io, conn, stream, Reason::Scope);
-            return;
-        }
         if whole > ASK_MOST {
             self.refuse_lane(io, conn, stream, Reason::Protocol);
             return;
