@@ -1,5 +1,6 @@
 //! A run's admitted, independently credited owner-output channels (D180).
 
+mod execs;
 #[cfg(test)]
 mod terminal_order_tests;
 
@@ -566,12 +567,14 @@ struct Agent {
 
 /// The run's agent-control endpoint (D238, plan step 11): a key of the microVM's own, made for
 /// this run as its scope begins, which no template carries and only the endpoint holds; serving
-/// `outputs` and `inputs` as lanes of one connection to the run's owner `key` alone, bound on
-/// loopback as step 5's endpoints are.
+/// `outputs` and `inputs` as lanes of one connection to the run's owner `key` alone, and the
+/// execs its owner asks for in its members with `execs`' streams, bound on loopback as step 5's
+/// endpoints are.
 fn bind_agent(
     key: Fingerprint,
     outputs: &[(Scope, Admitted)],
     inputs: &[(input::Scope, Admitted)],
+    execs: control::exec::Admissions,
 ) -> Result<(control::Endpoint, control::Served), Failure> {
     let vm = identity::Identity::generate().map_err(|e| Failure::Endpoint(e.into()))?;
     control::Endpoint::bind(
@@ -581,10 +584,29 @@ fn bind_agent(
         control::Streams {
             outputs,
             inputs,
-            execs: None,
+            execs: Some(execs),
         },
     )
     .map_err(Failure::Endpoint)
+}
+
+/// What each exec's streams are admitted (D238): an output's record is what one of its
+/// guest's output frames carries at most (`run::CHUNK`), its window that record with its
+/// data frame's head, as a member's is; its stdin's is a member's stdin's, `input`. Their
+/// handshake, datagrams and patience are the connection's, `output`'s as the run's.
+fn exec_admissions(output: Admitted, input: Admitted) -> io::Result<control::exec::Admissions> {
+    let transport = run::CHUNK
+        .checked_add(shards_remote::managed::DATA_HEAD)
+        .and_then(|n| u64::try_from(n).ok())
+        .ok_or_else(|| io::Error::other("an exec's window overflows"))?;
+    Ok(control::exec::Admissions {
+        output: Admitted {
+            record_bytes: run::CHUNK,
+            transport_bytes: transport,
+            ..output
+        },
+        input,
+    })
 }
 
 impl Owner {
@@ -1282,7 +1304,8 @@ impl<D: Disk> Daemon<D> {
                 };
                 input_lanes.push((scope, input_admitted));
             }
-            let (endpoint, served) = bind_agent(key, &lanes, &input_lanes)?;
+            let exec_admitted = exec_admissions(admitted, input_admitted)?;
+            let (endpoint, served) = bind_agent(key, &lanes, &input_lanes, exec_admitted)?;
             // One driver's socket, and the waker every stream's control shares.
             let mut kernel = endpoint.kernel_buffer_bytes().map_err(Failure::Endpoint)?;
             if let Some((_, control)) = served.outputs.first() {
@@ -1295,8 +1318,7 @@ impl<D: Disk> Daemon<D> {
                 outputs: served_outputs,
                 inputs: served_inputs,
                 revoke,
-                // The daemon admits no exec yet: `bind_agent`'s streams carry none.
-                execs: _,
+                execs: starts,
             } = served;
             for ((scope, _), (producer, control)) in lanes.into_iter().zip(served_outputs) {
                 let excess = u64::try_from(producer.storage_capacity().saturating_sub(capacity))
@@ -1309,7 +1331,7 @@ impl<D: Disk> Daemon<D> {
             for ((scope, _), (relay, control)) in input_lanes.into_iter().zip(served_inputs) {
                 staged_inputs.push((scope, endpoint.address, None, relay, control));
             }
-            agent = Some((endpoint, revoke));
+            agent = Some((endpoint, revoke, starts.map(|starts| (starts, exec_admitted))));
         } else {
             for &member in active {
                 for channel in [Channel::Stdout, Channel::Stderr] {
@@ -1374,7 +1396,7 @@ impl<D: Disk> Daemon<D> {
         )?;
         match &agent {
             // Its controller dials the one endpoint and pins its key (D238).
-            Some((endpoint, _)) => writeln!(
+            Some((endpoint, ..)) => writeln!(
                 metadata,
                 "control {}\nvm {}",
                 endpoint.address,
@@ -1498,16 +1520,19 @@ impl<D: Disk> Daemon<D> {
                 .ok_or_else(|| io::Error::other("input member index"))? = Some(Arc::clone(&input));
             input_workers.push((endpoint, relay, input));
         }
-        let (agent, agent_endpoint) = match agent {
-            Some((endpoint, revoke)) => (
+        let (agent, agent_endpoint, agent_execs) = match agent {
+            Some((endpoint, revoke, execs)) => (
                 Some(Agent {
                     address: endpoint.address,
                     revoke,
                 }),
                 Some(endpoint),
+                execs,
             ),
-            None => (None, None),
+            None => (None, None, None),
         };
+        // Each exec the run's owner asks for is charged to the run's budget as it starts.
+        let agent_execs = agent_execs.map(|(starts, admissions)| (starts, admissions, Arc::clone(&charge)));
         let owner = Arc::new(Owner {
             outputs,
             inputs: input_slots,
@@ -1579,6 +1604,22 @@ impl<D: Disk> Daemon<D> {
                         input.control.abort();
                         input.close();
                     }
+                })?;
+        }
+        // Its execs (D238), hosted until the endpoint that brings them ends.
+        if let Some((starts, admissions, exec_charge)) = agent_execs {
+            let run_id = id.to_owned();
+            std::thread::Builder::new()
+                .name("agent-execs".into())
+                .spawn_scoped(threads, move || {
+                    execs::host(
+                        &starts,
+                        admissions,
+                        &exec_charge,
+                        &|spec, argv, flags, stdio, theirs| {
+                            self.launch_exec(&run_id, spec, argv, flags, stdio, theirs)
+                        },
+                    );
                 })?;
         }
         let writer_owner = Arc::clone(&owner);
@@ -1657,6 +1698,25 @@ impl<D: Disk> Daemon<D> {
             .into());
         }
         Ok(peer)
+    }
+
+    /// Starts an agent-control exec in run `id`'s microVM (D238): once the run has started,
+    /// as an ask may come while it starts; not while it is paused, as `docker exec` refuses
+    /// one; handed to its VM process as `shards exec --for` hands one (D243).
+    fn launch_exec(
+        &self,
+        id: &str,
+        spec: &run::Spec,
+        argv: &[String],
+        flags: u8,
+        stdio: [shards_ipc::fd::BorrowedFd<'_>; 3],
+        theirs: &Stream,
+    ) -> io::Result<()> {
+        self.await_start(id);
+        if lock(&self.paused).contains(id) {
+            return Err(io::Error::other("its microVM is paused"));
+        }
+        self.hand_exec(id, spec, Some(argv), flags, stdio, theirs)
     }
 }
 
@@ -2566,8 +2626,10 @@ mod tests {
             channel: Channel::Stdout,
         };
         let out = admitted(64, shards_remote::tls::QUIET);
-        let (endpoint, served) = bind_agent(owner.fingerprint(), &[(scope, out)], &[]).unwrap();
-        let (other, _other_served) = bind_agent(owner.fingerprint(), &[(scope, out)], &[]).unwrap();
+        let (endpoint, served) =
+            bind_agent(owner.fingerprint(), &[(scope, out)], &[], exec_admitted()).unwrap();
+        let (other, _other_served) =
+            bind_agent(owner.fingerprint(), &[(scope, out)], &[], exec_admitted()).unwrap();
         assert_ne!(endpoint.fingerprint, other.fingerprint, "two runs share a key");
         assert_ne!(endpoint.fingerprint, owner.fingerprint());
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
@@ -2610,6 +2672,177 @@ mod tests {
         );
         served.revoke.revoke();
         serving.join().unwrap().unwrap();
+    }
+
+    /// The admissions a run's execs get, as `start_managed_capture` gives them.
+    fn exec_admitted() -> control::exec::Admissions {
+        let input = Admitted {
+            transport_bytes: u64::try_from(input::TAKEN_BYTES).unwrap(),
+            ..admitted(INPUT_ROOM, shards_remote::tls::QUIET)
+        };
+        exec_admissions(admitted(64, shards_remote::tls::QUIET), input).unwrap()
+    }
+
+    /// What a run's exec host hands its VM process (`Daemon::launch_exec`): the member's exec,
+    /// its flags, its stdin, stdout and stderr, and its client's end of its connection.
+    type Handed = (run::Spec, u8, [shards_ipc::fd::OwnedFd; 3], Stream);
+
+    /// The run's exec host (D238): through the run's agent-control endpoint its owner's
+    /// controller execs into member 0, and the host hands its VM process the member's exec,
+    /// told and reading its stdin (`EXEC_TOLD`, `EXEC_INTERACTIVE`, its setup `in-member=0`
+    /// alone), the run's budget charged while it runs. The controller's stdin reaches the
+    /// exec's pipe exactly and its output comes back exactly; a resize and a signal reach the VM
+    /// process as `RESIZE` and `SIGNAL`; its stdin's end is told, and its exit once its output
+    /// has finished, the charge given back after. An exec its member refuses, one whose spec
+    /// sets a user, and one the budget has no room for are each told why, typed; the last two
+    /// hand its VM process nothing.
+    #[test]
+    fn a_runs_exec_host_runs_a_members_exec_through_its_vm_process() {
+        use shards_remote::control::exec::Unstarted;
+        use shards_remote::control::{Controller, Exec, Fault, Got, Subscriptions};
+        use std::io::{Read as _, Write as _};
+        // A bound on what comes at once or never.
+        const AT_ONCE: std::time::Duration = std::time::Duration::from_secs(5);
+        let owner = identity::Identity::generate().unwrap();
+        let scope = Scope {
+            run: RunId([3; 32]),
+            generation: 1,
+            member: 0,
+            channel: Channel::Stdout,
+        };
+        let out = admitted(64, shards_remote::tls::QUIET);
+        let admissions = exec_admitted();
+        let (endpoint, served) = bind_agent(owner.fingerprint(), &[(scope, out)], &[], admissions).unwrap();
+        let (vm, address) = (endpoint.fingerprint, endpoint.address);
+        let starts = served.execs.unwrap();
+        let serving = std::thread::spawn(move || endpoint.run());
+        let budget = Arc::new(Mutex::new(Some(0)));
+        let charge = Charge::reserve(&budget, 0).unwrap();
+        let (hand, handed) = std::sync::mpsc::channel::<Handed>();
+        let launched = std::sync::atomic::AtomicUsize::new(0);
+        let launch = |spec: &run::Spec,
+                      _: &[String],
+                      flags: u8,
+                      stdio: [shards_ipc::fd::BorrowedFd<'_>; 3],
+                      theirs: &Stream|
+         -> io::Result<()> {
+            launched.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let [stdin, stdout, stderr] = stdio;
+            let fds = [
+                stdin.try_clone_to_owned()?,
+                stdout.try_clone_to_owned()?,
+                stderr.try_clone_to_owned()?,
+            ];
+            hand.send((spec.clone(), flags, fds, theirs.try_clone()?))
+                .map_err(io::Error::other)
+        };
+        let line = b"\x00\xff typed, no newline";
+        std::thread::scope(|s| {
+            let (charged, launcher) = (&charge, &launch);
+            let hosting = s.spawn(move || execs::host(&starts, admissions, charged, launcher));
+            // Its VM process: the first exec it runs, an echo of its stdin; the second its member
+            // refuses.
+            let process = s.spawn(move || {
+                let (spec, flags, [stdin, stdout, stderr], conn) = handed.recv_timeout(AT_ONCE).unwrap();
+                assert_eq!(flags, shards_ipc::EXEC_TOLD | shards_ipc::EXEC_INTERACTIVE);
+                assert_eq!(spec.setup, vec![b"in-member=0".to_vec()]);
+                assert_eq!(spec.argv, vec![b"cat".to_vec()]);
+                shards_ipc::send(&conn, shards_ipc::kind::STARTED, &[], &[]).unwrap();
+                let (mut stdin, mut stdout) = (File::from(stdin), File::from(stdout));
+                let mut came = vec![0; line.len()];
+                stdin.read_exact(&mut came).unwrap();
+                stdout.write_all(&came).unwrap();
+                let heard = |kind: u8| {
+                    let said = shards_ipc::recv(&conn).unwrap().unwrap();
+                    assert_eq!(said.kind, kind);
+                    said.payload
+                };
+                assert_eq!(
+                    heard(shards_ipc::kind::RESIZE),
+                    run::Size { rows: 40, cols: 100 }.encode()
+                );
+                assert_eq!(heard(shards_ipc::kind::SIGNAL), 10u32.to_be_bytes());
+                assert_eq!(stdin.read(&mut [0; 1]).unwrap(), 0, "its stdin's end");
+                drop((stdin, stdout, stderr));
+                shards_ipc::send(&conn, shards_ipc::kind::EXIT, &[7], &[]).unwrap();
+                let (_, _, _, conn) = handed.recv_timeout(AT_ONCE).unwrap();
+                let refusal = run::members::Refusal::Ended.encode(b"member 0 has ended");
+                let said = [&[run::exec_failed::MEMBER][..], &refusal[..]].concat();
+                shards_ipc::send(&conn, shards_ipc::kind::EXEC_UNSTARTED, &said, &[]).unwrap();
+                shards_ipc::send(&conn, shards_ipc::kind::EXIT, &[1], &[]).unwrap();
+            });
+            let (controller, dialed) = Controller::dial(
+                &owner,
+                vm,
+                address,
+                Subscriptions {
+                    outputs: &[(scope, out, 0)],
+                    inputs: &[],
+                    execs: Some(admissions),
+                },
+            )
+            .unwrap();
+            let driver = s.spawn(move || controller.run());
+            let execs = dialed.execs.as_ref().unwrap();
+            let spec = run::Spec {
+                argv: vec![b"cat".to_vec()],
+                stdin: true,
+                ..run::Spec::default()
+            };
+            let Exec {
+                mut stdout,
+                stderr,
+                stdin,
+                mut control,
+            } = execs.exec(0, spec.clone()).unwrap();
+            let (mut stderr, mut stdin) = (stderr.unwrap(), stdin.unwrap());
+            assert_eq!(stdin.write(line).unwrap(), line.len());
+            assert_eq!(
+                stdout.next_record().unwrap(),
+                Got::Record {
+                    at: 0,
+                    bytes: line.to_vec()
+                }
+            );
+            assert!(*lock(&charge.bytes) > 0, "an exec running is charged");
+            control.resize(run::Size { rows: 40, cols: 100 }).unwrap();
+            control.signal(10).unwrap();
+            assert_eq!(
+                stdin.end().unwrap(),
+                (line.len() as u64, run::managed::InputEnd::Closed)
+            );
+            assert_eq!(stdout.next_record().unwrap(), Got::Finished);
+            assert_eq!(stderr.next_record().unwrap(), Got::Finished);
+            assert_eq!(control.wait(), Ok(7));
+            assert_eq!(
+                execs.exec(0, spec.clone()).map(|_| ()),
+                Err(Fault::Unstarted(Unstarted::Refused))
+            );
+            process.join().unwrap();
+            let as_root = run::Spec {
+                user: b"0".to_vec(),
+                ..spec.clone()
+            };
+            assert_eq!(
+                execs.exec(0, as_root).map(|_| ()),
+                Err(Fault::Unstarted(Unstarted::Refused))
+            );
+            *lock(&budget) = Some(u64::MAX);
+            assert_eq!(
+                execs.exec(0, spec).map(|_| ()),
+                Err(Fault::Unstarted(Unstarted::Capacity))
+            );
+            served.revoke.revoke();
+            serving.join().unwrap().unwrap();
+            hosting.join().unwrap();
+            let _ = driver.join();
+        });
+        assert_eq!(
+            launched.into_inner(),
+            2,
+            "an exec refused here reached its VM process"
+        );
+        assert_eq!(*lock(&charge.bytes), 0, "an exec's charge outlived it");
     }
 
     /// The run's annotation names its input members by kind and name, each one that runs a

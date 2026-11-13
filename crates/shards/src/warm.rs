@@ -1308,6 +1308,7 @@ fn exec_request(
             spec,
             interactive: flags & shards_ipc::EXEC_INTERACTIVE != 0,
             detached: flags & shards_ipc::EXEC_DETACHED != 0,
+            told: flags & shards_ipc::EXEC_TOLD != 0,
             number,
             daemon,
             client: stream(client)?,
