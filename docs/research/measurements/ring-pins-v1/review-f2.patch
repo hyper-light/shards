@@ -1,0 +1,144 @@
+diff --git a/crates/init/src/ring.rs b/crates/init/src/ring.rs
+index ce4ee71d6..05c7d0a58 100644
+--- a/crates/init/src/ring.rs
++++ b/crates/init/src/ring.rs
+@@ -1183,6 +1183,10 @@ enum Swapped {
+     /// The device let go of the old slot and said nothing of the new: the connection is
+     /// over.
+     Done,
++    /// The new slot attached, the old one let go with last positions past belief: what it
++    /// held is lost, and the connection ends, its new slot freed once the device has let go
++    /// of it too.
++    Broken,
+     /// No word of the old slot.
+     Lost,
+ }
+@@ -1265,16 +1269,11 @@ impl<'a> Stream<'a> {
+                 Turned::Grow => match self.swap() {
+                     Swapped::Grown | Swapped::Kept => {}
+                     Swapped::Unringed => return self.unringed(false),
++                    Swapped::Broken => return self.end(),
+                     Swapped::Done => return (Offered::Done, Disposal::Release { given_back: false }),
+                     Swapped::Lost => return (Offered::Done, Disposal::Lose),
+                 },
+-                Turned::Ended => {
+-                    let _ = self.conn.shutdown(std::net::Shutdown::Both);
+-                    if self.ask_detach().is_err() {
+-                        return (Offered::Done, Disposal::Lose);
+-                    }
+-                    return (Offered::Done, Disposal::Release { given_back: false });
+-                }
++                Turned::Ended => return self.end(),
+                 Turned::Lost => {
+                     let _ = self.conn.shutdown(std::net::Shutdown::Both);
+                     return (Offered::Done, Disposal::Lose);
+@@ -1283,6 +1282,16 @@ impl<'a> Stream<'a> {
+         }
+     }
+ 
++    /// Ends the connection: its client's both ways, then its slot, freed once the device has
++    /// let go of it, and kept pinned where no word of that comes.
++    fn end(&mut self) -> (Offered, Disposal) {
++        let _ = self.conn.shutdown(std::net::Shutdown::Both);
++        if self.ask_detach().is_err() {
++            return (Offered::Done, Disposal::Lose);
++        }
++        (Offered::Done, Disposal::Release { given_back: false })
++    }
++
+     /// The slot let go, both sides' DETACHes said: what it holds is passed on, and the
+     /// connection goes on over plain vsock; a slot whose last positions cannot be believed
+     /// ends it.
+@@ -1474,8 +1483,11 @@ impl<'a> Stream<'a> {
+         match reply {
+             Ok(Some(Reply::Attached)) => {
+                 let Some((taken, given)) = finals(&old, self.head, self.tail) else {
++                    // The device let go of the old slot, but its last positions are past
++                    // belief. The new one it attached, and may write until it says it let go
++                    // of that too (review.md, F2).
+                     lock(self.pool).release(old, false);
+-                    return Swapped::Done;
++                    return Swapped::Broken;
+                 };
+                 // The host's bytes the old ring still held, to the client before any of the
+                 // new ring's.
+@@ -1951,6 +1963,9 @@ mod tests {
+         /// The daemon ends as soon as its last byte is in the ring, before the relay took
+         /// it: the relay passes on what the slot still holds after the device's DETACH.
+         early: bool,
++        /// On a swap, the device's last positions of the old slot past belief: its tail of the
++        /// ring for the host past all the relay put in it.
++        garble: bool,
+     }
+ 
+     /// What the device stand-in saw.
+@@ -1968,6 +1983,9 @@ mod tests {
+         held: Option<bool>,
+         /// A plain hello: no offer.
+         plain: bool,
++        /// Whether the pool held a swap's new slot once the stand-in had answered it, its
++        /// old slot's positions past belief (`Script::garble`).
++        swapped_held: Option<bool>,
+     }
+ 
+     /// The stand-in's end of the vsock connection: what came and is not yet taken.
+@@ -2166,12 +2184,26 @@ mod tests {
+                     }
+                     abi::SWAP => {
+                         let offer = wire.offer();
++                        if script.garble {
++                            slot.word(field::TO_HOST_TAIL).store(u64::MAX, Ordering::Release);
++                        }
+                         wire.say(&[abi::DETACH]);
+                         saw.rings.push(offer.ring);
+                         slot = Mapped::of(&offer);
+                         (taken, given) = (0, 0);
+                         slot.flag(field::HOST_WAITS_DATA).store(1, Ordering::SeqCst);
+                         wire.say(&Reply::Attached.encode());
++                        if let (true, Some(pool)) = (script.garble, script.pool) {
++                            // Time for a relay that would free the attached slot before the
++                            // device let go of it to do so; one that waits holds it however long.
++                            std::thread::sleep(Duration::from_millis(50));
++                            let held = lock(pool).pinned >= abi::slot_len(offer.ring);
++                            saw.swapped_held = Some(held);
++                            if !held {
++                                // Freed and unmapped: nothing of it may be touched here.
++                                return saw;
++                            }
++                        }
+                     }
+                     other => panic!("the relay sent {other}"),
+                 }
+@@ -2340,6 +2372,32 @@ mod tests {
+         assert_eq!(held(pool), (0, 0));
+     }
+ 
++    /// A swap whose old slot's last positions are past belief ends the stream, and its new
++    /// slot, which the device attached, is freed only after the device's DETACH of it: a host
++    /// that writes nonsense spoils the connection's own stream alone (review.md, F2).
++    #[test]
++    fn a_swap_past_belief_frees_its_new_slot_only_after_the_devices_detach() {
++        let pool = pool(room(PLENTY));
++        let (_, saw, offered) = connection(
++            pool,
++            &pattern(3 * 64 * 1024 + 17, 3),
++            Script {
++                answer: pattern(1000, 9),
++                garble: true,
++                pool: Some(pool),
++                ..Script::default()
++            },
++        );
++        assert!(saw.rings.len() > 1, "no swap: {:?}", saw.rings);
++        assert_eq!(
++            saw.swapped_held,
++            Some(true),
++            "the relay let go of the attached slot before the device's DETACH"
++        );
++        assert_eq!(offered, Offered::Done);
++        assert_eq!(held(pool), (0, 0), "both slots freed, none lost");
++    }
++
+     /// Waits until the pool's one stream is asleep, idle.
+     fn settle_idle(pool: &Mutex<Pool>) {
+         let deadline = Instant::now() + Duration::from_secs(10);

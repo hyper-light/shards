@@ -449,8 +449,10 @@ mod tests {
         let (mut reader, writer) = Reader::new(64).unwrap();
         let operation = reader.operation.first().unwrap().get();
         let buffer = reader.bytes.as_ptr();
+        // The least wait this host's streams keep, measured: no frame comes, so any kept
+        // deadline shows the read left pending.
         let deadline = Instant::now()
-            .checked_add(crate::conformance::PATIENCE.get())
+            .checked_add(crate::while_runs::kept_wait())
             .unwrap();
         assert!(matches!(
             reader.frame(deadline),

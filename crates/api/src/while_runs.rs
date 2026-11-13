@@ -113,3 +113,72 @@ pub(crate) fn answer<T>(rx: &Receiver<T>, worker: Worker, timeout: Duration) -> 
         was_blocked = blocked;
     }
 }
+
+/// The least timed wait this host's streams keep, measured as the test runs: a read on a
+/// fresh pair whose timeout is the least there is (a nonzero `Duration`'s least), timed from
+/// its call to its timing out: microseconds where the streams keep a timeout to its
+/// nanosecond (macOS, Linux), a millisecond or more where the poll's unit is one (WSAPoll).
+/// Learned where it runs, so it carries this host's scheduling as the test does: the timeout
+/// of a test that needs some timeout kept and any one shows it, never a number of ours (R03),
+/// and never a wait on another thread's fact.
+pub(crate) fn kept_wait() -> Duration {
+    use std::io::Read as _;
+    let (mut a, _b) = crate::stream::pair().unwrap();
+    crate::Stream::set_read_timeout(&a, Some(Duration::from_nanos(1))).unwrap();
+    let began = Instant::now();
+    let read = a.read(&mut [0u8; 1]).map_err(|e| e.kind());
+    let kept = began.elapsed();
+    assert!(
+        matches!(
+            read,
+            Err(std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
+        ),
+        "{read:?}"
+    );
+    kept
+}
+
+/// The latest instant this host's clock names: the deadline of a wait for a fact, which no
+/// wait reaches, so the test waits for the fact itself. Halved down from `Duration::MAX`
+/// until the clock can add it: `Instant`'s range is the platform's own.
+pub(crate) fn latest() -> Instant {
+    let now = Instant::now();
+    let mut far = Duration::MAX;
+    loop {
+        if let Some(at) = now.checked_add(far) {
+            return at;
+        }
+        far /= 2;
+    }
+}
+
+/// A finite patience no wait reaches, for an API that takes only finite ones (a borrowed
+/// connect refuses `Duration::MAX`): half the span from now to the clock's latest instant
+/// ([`latest`]), so the API's own `now`, taken later, can still add it.
+pub(crate) fn unreached() -> Duration {
+    latest().saturating_duration_since(Instant::now()) / 2
+}
+
+/// What a test's attempt asked with a patience came to: done, with what it found; or its
+/// patience ran out sooner than its subject's step began (a dial, a CONNECT written).
+pub(crate) enum Reached<T> {
+    Done(T),
+    Sooner,
+}
+
+/// The patience a test's subject needs to reach its step, this host's own, learned as the
+/// test runs: `attempt` asked first with the least wait this host's streams keep
+/// ([`kept_wait`], which on a host that keeps a timeout to its nanosecond is microseconds),
+/// then again with its patience grown by what each attempt that ran out sooner took, no less
+/// than that patience, until one is done. No number of ours (R03), and never a wait on another
+/// thread's fact.
+pub(crate) fn until_reached<T>(mut attempt: impl FnMut(Duration) -> Reached<T>) -> T {
+    let mut patience = kept_wait();
+    loop {
+        let began = Instant::now();
+        match attempt(patience) {
+            Reached::Done(done) => return done,
+            Reached::Sooner => patience = patience.saturating_add(began.elapsed()),
+        }
+    }
+}

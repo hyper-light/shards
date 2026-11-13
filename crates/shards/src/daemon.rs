@@ -9078,15 +9078,37 @@ fn newest_log(dir: &Path) -> io::Result<Log> {
 /// with the rename costs 4.3 ms at the median (PM M46), on the path each new microVM takes
 /// to start. So a power loss may still leave one cut, as it may the record.
 fn keep_whole(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    static WRITES: AtomicU64 = AtomicU64::new(0);
-    let mut new = path.as_os_str().to_owned();
-    new.push(format!(".new.{}", WRITES.fetch_add(1, Ordering::Relaxed)));
-    let new = PathBuf::from(new);
+    let new = beside(path);
     let kept = std::fs::write(&new, bytes).and_then(|()| std::fs::rename(&new, path));
     if kept.is_err() {
         let _ = std::fs::remove_file(&new);
     }
     kept
+}
+
+/// Keeps `bytes` at `path` whole where nothing is kept there yet, as [`keep_whole`] does, but
+/// linked as `path` rather than renamed over it. A link fails where another writer kept its
+/// own there first (link(2)'s EEXIST, CreateHardLinkW's ERROR_ALREADY_EXISTS), so callers
+/// making a home's first record at once each take the one kept, never their own beside it.
+/// `Ok(true)` where these bytes are the record, `Ok(false)` where another's are.
+fn keep_first(path: &Path, bytes: &[u8]) -> io::Result<bool> {
+    let new = beside(path);
+    let kept = std::fs::write(&new, bytes).and_then(|()| std::fs::hard_link(&new, path));
+    let _ = std::fs::remove_file(&new);
+    match kept {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// A name beside `path` of this write's alone: a count of this process's writes, the one
+/// daemon that holds the home ([`keep_whole`]).
+fn beside(path: &Path) -> PathBuf {
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let mut new = path.as_os_str().to_owned();
+    new.push(format!(".new.{}", WRITES.fetch_add(1, Ordering::Relaxed)));
+    PathBuf::from(new)
 }
 
 /// The request microVM `id` was made by, as a client asks to start it again: attached
@@ -14576,6 +14598,42 @@ mod tests {
     /// clients change it at once, each served on a thread of its own (an `update` and a
     /// `network disconnect`): every write is kept, a reader finds a request whole at every
     /// read, and nothing is left beside it.
+    /// Callers that ask a fresh home's engine ID at once each take the one the home keeps
+    /// (request-sites-v1's review): as many callers as this host runs at once (two at the
+    /// least, a race's own), released together, round after round on a home with none.
+    #[test]
+    fn a_homes_first_engine_id_is_one_however_many_ask_at_once() {
+        const ROUNDS: usize = 200;
+        let t = Test::new("engine-id");
+        let callers = std::thread::available_parallelism().map_or(2, |n| n.get().max(2));
+        let path = t.home.join("networks").join("engine-id");
+        let mut split = Vec::new();
+        for round in 0..ROUNDS {
+            let _ = std::fs::remove_file(&path);
+            let start = std::sync::Barrier::new(callers);
+            let ids: Vec<String> = std::thread::scope(|s| {
+                let asked: Vec<_> = (0..callers)
+                    .map(|_| {
+                        s.spawn(|| {
+                            start.wait();
+                            t.daemon.engine_id()
+                        })
+                    })
+                    .collect();
+                asked.into_iter().map(|a| a.join().unwrap()).collect()
+            });
+            let kept = std::fs::read_to_string(&path).unwrap();
+            if ids.iter().any(|id| id != kept.trim()) {
+                split.push(round);
+            }
+        }
+        assert!(
+            split.is_empty(),
+            "{} of {ROUNDS} rounds of {callers} callers took an ID the home did not keep: {split:?}",
+            split.len()
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_request_kept_at_once_is_whole() {

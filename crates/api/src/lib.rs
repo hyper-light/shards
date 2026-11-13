@@ -30,9 +30,11 @@ use std::time::{Duration, Instant};
 
 mod client;
 pub mod conformance;
+pub mod control;
 pub mod image;
 mod native;
 pub mod physical;
+mod progress;
 mod said;
 pub mod sim;
 mod stream;
@@ -50,6 +52,7 @@ pub use client::{
 };
 pub use native::{ImageIdentity, NativeBoot, NativeImages, NativeStartup, verify_native_image};
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
+pub use progress::{Awaited, Rate, Seen, Stall};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,72 +346,6 @@ pub enum End {
     Failed(String),
 }
 
-/// Bounds seeded from records of a host class's runs: macOS-HVF, Linux-KVM and
-/// Windows-WHP are recorded apart and chosen as this crate is built; a class with no record
-/// seeds from the slowest of any, and every bound rises with what its node sees.
-pub mod record {
-    /// This host's class.
-    pub const CLASS: &str = if cfg!(target_os = "macos") {
-        "macOS-HVF"
-    } else if cfg!(target_os = "linux") {
-        "Linux-KVM"
-    } else if cfg!(windows) {
-        "Windows-WHP"
-    } else {
-        "no backend"
-    };
-
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::Duration;
-
-    /// A bound on a wait that can't wait on a fact alone, from the records of its waits by
-    /// host class (`docs/research/measurements/shards-api-waits/run.sh`): twice (the
-    /// margin) this class's slowest record; where this class has none, twice the slowest of
-    /// any class's, as an unrecorded model seeds from the highest on record; and either
-    /// rising to twice the slowest this node has seen ([`Learned::saw`]), never falling.
-    #[derive(Debug)]
-    pub struct Learned {
-        name: &'static str,
-        records: &'static [(&'static str, Duration)],
-        /// The slowest seen here, in ns.
-        seen: AtomicU64,
-    }
-
-    impl Learned {
-        pub const fn new(name: &'static str, records: &'static [(&'static str, Duration)]) -> Learned {
-            Learned {
-                name,
-                records,
-                seen: AtomicU64::new(0),
-            }
-        }
-
-        /// What it bounds.
-        pub fn name(&self) -> &'static str {
-            self.name
-        }
-
-        /// The bound now: twice the slowest of this class's records, else of any class's,
-        /// or of what this node has seen, whichever is longer.
-        pub fn get(&self) -> Duration {
-            let own = self.records.iter().filter(|(class, _)| *class == CLASS);
-            let slowest = |r: &mut dyn Iterator<Item = &(&str, Duration)>| r.map(|(_, d)| *d).max();
-            let recorded = slowest(&mut own.clone())
-                .or_else(|| slowest(&mut self.records.iter()))
-                .unwrap_or_default();
-            let seen = Duration::from_nanos(self.seen.load(Ordering::Relaxed));
-            recorded.max(seen).saturating_mul(2)
-        }
-
-        /// A wait it bounds took `took`: the bound rises to twice it where it is the
-        /// slowest yet.
-        pub fn saw(&self, took: Duration) {
-            let ns = u64::try_from(took.as_nanos()).unwrap_or(u64::MAX);
-            self.seen.fetch_max(ns, Ordering::Relaxed);
-        }
-    }
-}
-
 /// The native operation that could not observe a process identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessOperation {
@@ -426,6 +363,18 @@ pub enum ProcessOperation {
     GetExitCode,
     QueryScope,
     StopScope,
+    /// Linux: clock_getcpuclockid(3) or clock_gettime(2) of a VM process's CPU clock.
+    CpuClock,
+    /// macOS: mach_timebase_info(3), which converts a VM process's CPU times.
+    MachTimebase,
+    /// Windows: CreateToolhelp32Snapshot, a snapshot of the system's processes.
+    Snapshot,
+    /// Windows: Process32FirstW or Process32NextW, a snapshot's processes.
+    ListProcesses,
+    /// Windows: QueryProcessCycleTime, the cycles a VM process's threads used.
+    CycleTime,
+    /// Windows: DuplicateHandle (std's `try_clone_to_owned`), a VM process's handle.
+    DuplicateHandle,
 }
 
 /// A failure of the concrete process-identity producers. Observation failure is
@@ -449,6 +398,9 @@ pub enum ProcessFailure {
     CapacityUnavailable,
     BufferBounds,
     InvalidStartRecord,
+    /// A CPU clock read a time no clock keeps (Linux: a negative second, or a second's
+    /// nanoseconds or more).
+    InvalidCpuTime,
     DifferentStart {
         observed: u64,
     },
@@ -483,6 +435,7 @@ impl std::fmt::Display for ProcessFailure {
             Self::CapacityUnavailable => f.write_str("process stat capacity unavailable"),
             Self::BufferBounds => f.write_str("process stat buffer bounds"),
             Self::InvalidStartRecord => f.write_str("process stat has no valid starttime"),
+            Self::InvalidCpuTime => f.write_str("process CPU clock read no valid time"),
             Self::DifferentStart { observed } => {
                 write!(f, "process started at {observed}: another process's since")
             }
@@ -630,6 +583,11 @@ pub enum Refusal {
     /// An owning connection failed within its caller's absolute deadline.
     /// The native owner is retained; the handshake phase/cause stays typed.
     Connect { port: u32, failure: HandshakeError },
+    /// A wait that follows its guest's VM process ([`Guest::connect_while_runs`],
+    /// [`Guest::wait_while_runs`]) found it stalled ([`Stall`]): it had run no CPU at all
+    /// over the time since the look before, a whole W*, the slowest answer of the wait's kind
+    /// this process has seen ([`Seen`]). The guest is not stopped: it is still its caller's.
+    Stalled(Stall),
     /// A managed guest's VM process held its vCPUs to no rate it was told (D255), in its
     /// words: its microVM not started, its governor's thread not made, or an answer none of
     /// the rate's protocol's (`shards_abi::rate`).
@@ -681,6 +639,17 @@ impl std::fmt::Display for Refusal {
             }
             Refusal::Borrowed { port, failure } => write!(f, "vsock port {port}: {failure}"),
             Refusal::Allocation { what } => write!(f, "cannot allocate {what}"),
+            Refusal::Stalled(stall) => write!(
+                f,
+                "the guest's VM process stalled: {:?} into the wait it ran no CPU in {:?}, past the \
+                 slowest answer seen ({:?}); the least a VM process ran here and still answered was \
+                 {:?} in {:?}",
+                stall.waited(),
+                stall.over(),
+                stall.slowest(),
+                stall.least().cpu,
+                stall.least().over
+            ),
             Refusal::Rate(why) => write!(f, "the guest's rate: {why}"),
         }
     }
@@ -817,6 +786,42 @@ pub trait Guest: Send + Sync {
     fn wait_for(&self, timeout: Duration) -> Result<Option<End>, Refusal>;
     /// What names it for [`Guests::attach`].
     fn identity(&self) -> Result<Identity, Refusal>;
+    /// A stream to its vsock `port`, as [`connect`](Guest::connect) with no clock gives one,
+    /// waited for while its VM process runs (D215). It is refused as `connect` refuses, and
+    /// [`Refusal::Stalled`] where the VM process ran no CPU at all for a whole W*: the
+    /// slowest `OK` of its kind this process has seen ([`Awaited::Boot`] while the guest has
+    /// answered no connect yet, else [`Awaited::Connect`]), looked at once each W* past the
+    /// wait's start. Its answer teaches its kind ([`Shards::seen`]).
+    ///
+    /// For a wait in which the VM works toward its answer (a boot to its listener): a guest
+    /// that idles before it answers (on a timer, an input) runs nothing and is refused; ask
+    /// such a guest with [`connect`](Guest::connect). A VM that runs without answering (a
+    /// spin) is never judged stalled. Before its kind's first answer ([`Seen::Cold`]) it
+    /// follows liveness alone, so a guest whose VM runs but never answers is ended only by its
+    /// caller: [`stop`](Guest::stop), from a thread of its own, ends the wait as
+    /// `Ended(Stopped)`.
+    ///
+    /// By default, for a [`Guest`] with no VM process of its own to follow (the simulator), it
+    /// follows liveness alone, as a cold record does: `connect(port, Duration::MAX)`.
+    fn connect_while_runs(&self, port: u32) -> Result<Box<dyn Stream>, Refusal> {
+        self.connect(port, Duration::MAX)
+    }
+    /// Its end, as [`wait_for`](Guest::wait_for) with no clock gives it, waited for while its
+    /// VM process runs (D215): [`Refusal::Stalled`] where it ran no CPU at all for a whole W*,
+    /// the slowest end this process has seen ([`Awaited::End`]), as
+    /// [`connect_while_runs`](Guest::connect_while_runs) judges, with its contract: for a guest
+    /// that works toward its end (a workload that powers off). An end it did not
+    /// [`stop`](Guest::stop) teaches its kind.
+    ///
+    /// By default it follows liveness alone, as a cold record does:
+    /// `wait_for(Duration::MAX)`.
+    fn wait_while_runs(&self) -> Result<End, Refusal> {
+        loop {
+            if let Some(end) = self.wait_for(Duration::MAX)? {
+                return Ok(end);
+            }
+        }
+    }
 }
 
 /// The backend shards boots Linux guests with on `os` and `arch` (`std::env::consts`'):
@@ -995,34 +1000,6 @@ mod tests {
         assert!(check(&GuestSpec { vcpus, ..spec() }).is_ok());
         let ports = (0..1024).collect();
         assert!(check(&GuestSpec { ports, ..spec() }).is_ok());
-    }
-
-    /// A bound is twice its own class's slowest record; a class with none seeds from twice
-    /// the slowest of any class's; and either rises to twice the slowest this node has
-    /// seen, never falling (review: the per-class rule).
-    #[test]
-    fn a_bound_seeds_from_the_records_and_rises_with_what_it_sees() {
-        let ms = Duration::from_millis;
-        static OWN: record::Learned = record::Learned::new(
-            "own",
-            &[
-                (record::CLASS, Duration::from_millis(5)),
-                ("another", Duration::from_millis(10)),
-            ],
-        );
-        assert_eq!(OWN.get(), ms(10));
-        static UNRECORDED: record::Learned = record::Learned::new(
-            "unrecorded",
-            &[
-                ("one", Duration::from_millis(10)),
-                ("another", Duration::from_millis(30)),
-            ],
-        );
-        assert_eq!(UNRECORDED.get(), ms(60));
-        UNRECORDED.saw(ms(40));
-        assert_eq!(UNRECORDED.get(), ms(80));
-        UNRECORDED.saw(ms(1));
-        assert_eq!(UNRECORDED.get(), ms(80));
     }
 
     /// A refusal printed with its chain of causes (each `source()` after its Display, as error

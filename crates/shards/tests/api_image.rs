@@ -91,6 +91,7 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         ready_by: None,
         binary: Some(common::shards().to_path_buf()),
         env: host_env(home),
+        control: None,
     }
 }
 
