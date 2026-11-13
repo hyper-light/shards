@@ -11846,70 +11846,81 @@ mod tests {
         assert!(matches!(e, Untaken::Surely(_)), "{e:?}");
     }
 
-    /// A client whose request does not come whole within its wait is cut, and told to ask
-    /// again (RESTART), as a request is cut only where asking again is a restart (D222's
-    /// cutoff, `slots::Seen`); the cut is learned, the next wait doubled (RFC 6298 §5.5).
-    /// Before, its slot ended unanswered after 10 s, which its client took for its
-    /// command's end.
+    /// A request's rest is waited for while its client goes on with it (D185, PM M545). A
+    /// request whole at once is answered, and the daemon learns how long a rest takes. A
+    /// client whose rest has begun is not cut, however long it then pauses: past the old
+    /// cutoff's longest draw (a second at least before any cut, from [1 s, 2 s)), it has
+    /// heard nothing; told to ask again (RESTART) only as the daemon ends its clients, as one
+    /// whose request no thread had taken is. Before, a request not whole within a second or
+    /// more of its first byte was cut, and the next wait doubled for each cut in a row.
     #[test]
-    fn a_request_cut_tells_its_client_to_ask_again() {
+    fn a_request_is_waited_for_while_its_client_goes_on_with_it() {
         use shards_ipc::slots as s;
         let t = Test::new("cut");
         t.run(|t| {
             t.t.daemon
                 .serve_slots(t.threads, s::Requests::open(&t.home).unwrap());
-            let s::Taken::Slot(client) = s::take(&t.home, 0).unwrap() else {
-                panic!("no daemon");
+            let take = || {
+                let s::Taken::Slot(client) = s::take(&t.home, 0).unwrap() else {
+                    panic!("no daemon");
+                };
+                client
             };
-            // Its first byte and a part of the rest: a request begun, never whole (no
-            // streams, no descriptors, a frame of kind 0 whose length is two bytes short).
-            let t0 = Instant::now();
-            client.sender().unwrap().send(0, &[]).unwrap();
-            let said = client.recv().unwrap().expect("its slot ended unanswered");
-            let took = t0.elapsed();
-            assert_eq!(said.kind, kind::RESTART);
-            // Before any request was whole, a second, drawn from [1 s, 2 s).
-            assert!(took >= Duration::from_secs(1) && took < PATIENCE, "{took:?}");
-            {
-                let seen = lock(&t.daemon.seen);
-                assert_eq!(seen.cuts, 1);
-                assert!(seen.request_wait(0.0) >= Duration::from_secs(2));
+            // An inspect of a microVM there is none of, which the daemon answers alone.
+            let command = shards_ipc::Command {
+                argv: vec!["inspect".to_string(), "none".to_string()],
+                registry_env: Vec::new(),
+                east_asian: false,
+                now: 0,
+                utc_offset: 0,
+                terminal: false,
+                width: 0,
+                color: false,
+                daemon: Identity::default(),
+                client: String::new(),
+            };
+            let whole = take();
+            whole.ask(kind::CONTAINER, &command.encode(), &[]).unwrap();
+            let end = loop {
+                match whole.recv().unwrap() {
+                    Some(f) if f.kind == kind::END => break f.payload,
+                    Some(f) => assert_ne!(f.kind, kind::RESTART, "a whole request told to ask again"),
+                    None => panic!("a whole request's answer ended unsaid"),
+                }
+            };
+            assert_eq!(end, [1]);
+            assert!(lock(&t.daemon.seen).request_stall().is_some(), "no rest learned");
+            drop(whole);
+            // Its first byte and a part of the rest (no streams, no descriptors, a frame of
+            // kind 0 whose length is two bytes short), then nothing.
+            let begun = take();
+            begun.sender().unwrap().send(0, &[]).unwrap();
+            match begun.recv_within(Duration::from_millis(2500)) {
+                Err(e) if e.kind() == io::ErrorKind::TimedOut => {}
+                said => panic!("a client whose rest had begun heard {said:?}"),
             }
-            drop(client);
+            t.daemon.end_clients();
+            let said = begun.recv().unwrap().expect("its slot ended unanswered");
+            assert_eq!(said.kind, kind::RESTART);
+            drop(begun);
             // Its slots' maker ends as the daemon closes.
             t.daemon.close();
         });
     }
 
-    /// A request's rest is waited for as its clients' requests have shown makes them come
-    /// soonest when a cut is asked again (D222's cutoff): a second before any, drawn from
-    /// [t, 2t); doubled for each cut in a row, and no longer once one comes whole; the least
-    /// second where requests come whole at once (RFC 6298 §2.4); past what slow clients take.
-    /// A client that takes nothing of its answer is waited for twice the longest one took a
-    /// piece in, RFC 1122's R2 at least.
+    /// While none of a request's rest has come, it is waited for as long as the slowest
+    /// rest seen whole (D185, PM M545): none before any, the client's end alone then; a
+    /// slower rest raises it, a faster one leaves it. A client that takes nothing of its
+    /// answer is waited for twice the longest one took a piece in, RFC 1122's R2 at least.
     #[test]
     fn a_requests_wait_is_learned_from_its_clients() {
         let mut seen = slots::Seen::default();
-        assert_eq!(seen.request_wait(0.0), Duration::from_secs(1));
-        assert_eq!(seen.request_wait(0.5), Duration::from_millis(1500));
-        seen.cut(Duration::from_secs(1));
-        assert_eq!(seen.request_wait(0.0), Duration::from_secs(2));
-        seen.cut(Duration::from_secs(2));
-        assert_eq!(seen.request_wait(0.0), Duration::from_secs(4));
-        for _ in 0..100 {
-            seen.whole(Duration::from_micros(300));
-        }
-        assert_eq!(seen.cuts, 0);
-        assert_eq!(seen.request_wait(0.0), Duration::from_secs(1));
-        let mut slow = slots::Seen::default();
-        for _ in 0..100 {
-            slow.whole(Duration::from_secs(3));
-        }
-        let wait = slow.request_wait(0.0);
-        assert!(
-            wait >= Duration::from_secs(3) && wait < Duration::from_secs(4),
-            "{wait:?}"
-        );
+        assert_eq!(seen.request_stall(), None);
+        seen.whole(Duration::from_micros(300));
+        assert_eq!(seen.request_stall(), Some(Duration::from_micros(300)));
+        seen.whole(Duration::from_secs(3));
+        seen.whole(Duration::from_micros(40));
+        assert_eq!(seen.request_stall(), Some(Duration::from_secs(3)));
         assert_eq!(seen.answer_wait(), Duration::from_secs(100));
     }
 

@@ -7428,11 +7428,13 @@ descriptors.
   took a slot holds no place; and sweeps only while a slot is taken with no request
   read: a minute after it is first seen so, and again a minute after, when a slot still
   unwritten goes. With none, it sleeps until it hears something (PM M260).
-- **A request in time.** The rest of a request is read within the wait its clients'
-  requests have shown makes them come soonest (D222's cutoff; "Admission", below), and no
-  longer once the daemon ends its clients (`requests_end`, a pipe written once): either
-  way the client hears RESTART, as one whose request no thread had read did, and asks
-  again. (Was 10 s, `REQUEST_TIMEOUT`, after which the slot ended unanswered.)
+- **A request in time.** The rest of a request is waited for while its client goes on with
+  it: one that sends nothing past its first byte for as long as the slowest rest the daemon
+  has seen whole is cut, and one whose rest has begun is read until it is whole or its
+  client ends ("Admission", below); no longer, either way, once the daemon ends its clients
+  (`requests_end`, a pipe written once). A client cut hears RESTART, as one whose request
+  no thread had read does, and asks again. (Was 10 s, `REQUEST_TIMEOUT`, after which the
+  slot ended unanswered; then D222's restart cutoff, doubled for each cut in a row.)
 - **Out of descriptors**, the maker offers nothing, says so once, and offers again as it is
   told descriptors were let go of (`Event::Room`, from `wake_listener`); no collection
   starts meanwhile, and clients wait on their lists. A slot taken whose serving finds no
@@ -7532,17 +7534,33 @@ daemon out of descriptors looked for one, and how a client knew its daemon. Each
 it follows: the request's own times, the descriptors' being let go of, the daemon's own
 process.
 
-- **A request's rest is waited for as long as makes requests come soonest, and a cut one is
-  asked again** (`slots::Seen`). A cut is safe to learn only where its client is told to ask
-  again: a request cut is not begun anywhere, so asking again is a restart, and its slot now
-  answers RESTART, as a closing daemon's does (before, it ended unanswered, and its client
-  took the end for its command's); a client still writing finds its `say` gone, and asks
-  again through the next slot (`ask_slot`'s BrokenPipe). So the wait is D222's restart
-  cutoff (Luby, Sinclair and Zuckerman 1993) over this daemon's own requests' times from
-  their first byte to whole, cuts counted as observations cut short (Kaplan and Meier
-  1958), a second at least and before any (RFC 6298 §2.1, §2.4), doubled for each cut in a
-  row (§5.5), drawn from [t, 2t); asking again taken as a fresh draw, since a client's next
-  asking is not told from another's. The daemon's own handling of a connection waits on no
+- **A request's rest is waited for while its client goes on with it, and a client cut asks
+  again** (`slots::Seen`, PM M545; the person's ruling of 2026-11-13: a wait follows the
+  party's liveness and progress, then the slowest answer seen, never a doubling). A request
+  cut is begun nowhere, so asking again is a restart: its slot answers RESTART, as a
+  closing daemon's does, and a client still writing finds its `say` gone and asks again
+  through the next slot (`ask_slot`'s BrokenPipe).
+  - *Its first byte alone.* A client writes its request in one write (`Client::ask`), so
+    its rest comes with its first byte. A client that sends nothing past it is waited for as
+    long as the slowest rest this daemon has read whole, from its first byte, and then cut.
+  - *Its cold start.* Before any request has come whole the daemon has seen no rest, and
+    bounds none: the wait follows the client alone, its end (the FIFO's, or the pipe's) or
+    the daemon ending its clients. A daemon is mostly started by a client's request, which
+    comes whole and so teaches it the first rest.
+  - *Its rest begun.* A request whose rest has begun is read until it is whole or its
+    client ends. One larger than a FIFO holds (a run's spec, up to `MAX_PAYLOAD`, 6 MiB)
+    comes in parts, each as the daemon reads and its client is next run: a gap no rest of a
+    request written whole measures, so a window learned from those would cut such a request
+    each time it was asked, for ever.
+  - *What it costs.* A client stopped mid-request (`SIGSTOP`) holds its slot's descriptors
+    until it goes on or ends, and keeps an idle daemon from exiting meanwhile; a closing
+    daemon still lets it go after its answer's wait (below). The slowest rest is this
+    daemon's alone, in memory: a client of the home's own user can make it longer by
+    writing its request slowly, which only waits longer on a silent one.
+  - It was D222's restart cutoff (Luby, Sinclair and Zuckerman 1993, over the daemon's
+    requests' times, Kaplan and Meier 1958 over its cuts), a second at least and before any
+    (RFC 6298 §2.1, §2.4), doubled for each cut in a row (§5.5), drawn from [t, 2t). The
+    registry's own restart cutoff (D222) is unchanged. The daemon's own handling of a connection waits on no
   clock at all: every connection it takes is a socket pair one of its threads writes the
   request on whole (a slot's bridge, a request it puts to itself), and a bridge that cannot
   send ends its writing.
@@ -7589,7 +7607,7 @@ process.
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
-| `REQUEST_TIMEOUT` (daemon.rs), a request's rest | 10 s, slot ended unanswered | `Seen::request_wait`, learned; cut told RESTART | D222's cutoff (Luby, Sinclair, Zuckerman 1993; Kaplan, Meier 1958; RFC 6298 §2.1, §2.4, §5.5) |
+| `REQUEST_TIMEOUT` (daemon.rs), a request's rest | 10 s, slot ended unanswered | `Seen::request_stall`: nothing past its first byte for the slowest rest read whole (none before any); its rest begun, its client's end; cut told RESTART | its client's own writes (`Client::ask`, one write) and end; was D222's cutoff, doubled per cut (2026-11-09 to 11-13) |
 | `REQUEST_TIMEOUT`, a handled connection's first message | 10 s | none: the daemon's own pairs | its senders write whole or end their writing |
 | `REQUEST_TIMEOUT`, a closed daemon's client taking nothing | 10 s | `Seen::answer_wait`: 2 × longest piece taken, ≥ 100 s | RFC 1122 §4.2.3.5 (R2); Baeza-Yates, Culberson, Rawlins 1993 |
 | `REQUEST_TIMEOUT`, after an answer's last word | 10 s | none | pipe(7): a FIFO keeps what was written as its writer goes |
