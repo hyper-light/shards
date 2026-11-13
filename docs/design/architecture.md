@@ -23316,7 +23316,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, and exec lanes at the endpoint and the controller built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, and exec lanes at the endpoint, the controller and the daemon built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -23706,8 +23706,44 @@ controller's handles now ask its driver through one channel and a unit wake, not
 per lane, so lanes open as execs come. A lane over is let go, its handle's later asks answered by
 none. The connection's windows rise by an exec's lanes while it runs, from the same admissions.
 
-The exec host in the daemon, which charges and pumps a member exec through the VM process, is the
-next slice.
+*The daemon's exec host* (`daemon/managed/execs.rs`). A run that asks for agent control admits
+execs on its endpoint: an exec's output record is what one of its guest's output frames carries
+(`run::CHUNK`), and its stdin's is a member's stdin's. The host takes each exec the endpoint hands
+it, on a thread of its own:
+- *As whom.* An ask whose spec sets what a member's exec does not take (a user, a builtin, the
+  run's own hostname, resolvers, hosts, domain, cgroup or setup) is refused `Refused` before
+  anything is made. What runs is the run protocol's EXEC with `in-member=N` alone in its setup,
+  as `shards exec --for` sends it (D243), and its member refuses again what it has not.
+- *What it costs.* What it holds while it runs: each output's record and its pump's buffer of the
+  same size; its stdin's record; the windows its lanes add to the connection
+  (`control::exec::lane_bytes`, the endpoint's own sums); the kernel's queues of its connection to
+  its VM process, both ends, measured as the run's capture socket is; and its pipes' (Linux's
+  `F_GETPIPE_SZ`, Windows' GetNamedPipeInfo, and on macOS, which tells no pipe's, xnu's most,
+  `BIG_PIPE_SIZE`). The run's budget has room for it or it is refused `Capacity`, and the charge
+  is given back as it ends.
+- *Its start, typed.* It is handed to the run's VM process as `EXEC_RUN` with a flag of its own,
+  `EXEC_TOLD`, once the run has started and not while it is paused (`docker exec` refuses a
+  paused container's). The VM process then tells it `STARTED` as its guest starts the command,
+  or, for one that never started, `EXEC_UNSTARTED`: the run protocol's `exec_failed` class and the
+  guest's words, before its `EXIT`. Its member's refusal or its daemon's is `Refused`; its
+  runtime's (a program not found or not executable), or an exec its VM process could not ask its
+  guest for, `Failed`. Without the flag a client could not tell a command that never started
+  from one that exited 126.
+- *Its stdio.* Pipes, as the daemon's own execs use (health.rs). Each output is read into a
+  buffer of its pump's and taken into a record only for bytes there are: a record taken and never
+  submitted would keep its stream from finishing. Its stdin is written a record at a time, each
+  told taken once the pipe has it whole, and its end or abort is the pipe's close. A write the
+  pipe refuses ends it `EPIPE` (its reader gone) or `EIO`; an exec that exits with its stdin open
+  ends it `EPIPE` at the bytes taken.
+- *Its steering.* Each resize and signal goes to the VM process on its connection as `RESIZE` and
+  `SIGNAL`, as a client's do, and is told taken.
+- *Its end.* `EXIT`'s status is told once its outputs have ended, every byte its VM process wrote
+  taken, and finished. A connection that ends without its `EXIT` (its VM process gone) aborts its
+  outputs. Its steering closed before its end (its controller's connection gone, or its lane
+  stopped) hangs it up: SIGHUP, as a terminal's hangup tells its session (POSIX.1-2024, General
+  Terminal Interface, "Modem Disconnect"), its output let go of and its stdin ended, so that
+  nothing it does waits on a controller that has gone. Its streams' controls are held until its
+  steering closes.
 
 Tested in `crates/remote` (`control::tests`, over the in-process exchange of `lib.rs`'s
 handshake tests): the enrolled controller and its pinned microVM connect,
@@ -23735,7 +23771,18 @@ sums. Through the controller over loopback:
 In the daemon (`daemon::managed::tests`): the annotation asked for by its last value, any value
 but `true` or `false` refused; a run's endpoint of a key its own, two runs two keys, serving
 its owner alone, whose controller reads a member's record through it while a stranger's ends
-`NotEnrolled`.
+`NotEnrolled`. Its exec host, through the run's endpoint, its VM process a stand-in that takes
+what `launch_exec` hands it: the owner's controller execs into member 0, handed as a member's exec
+told and reading its stdin (`EXEC_TOLD | EXEC_INTERACTIVE`, `in-member=0` its setup alone); its
+stdin reaches the exec's pipe exactly and its output comes back exactly; a resize and a signal
+reach the VM process as `RESIZE` and `SIGNAL`; its stdin's end is told, then its exit once its
+output finished; the run's budget charged while it runs and given back after. An exec its member
+refuses, one whose spec sets a user, and one the budget has no room for are each told why, typed,
+the last two handing the VM process nothing. A member's exec takes its command and stdio alone;
+a guest's refusal is typed by its class; a pipe's buffer is measured or bounded
+(`daemon::managed::execs::tests`). In the VM process (`workload::tests`): an exec told is told
+`STARTED`, or `EXEC_UNSTARTED` with its guest's class and words before its end, and one not told
+hears neither.
 
 Record:
 [agent-control-v1](../research/measurements/agent-control-v1/README.md).
@@ -23772,6 +23819,10 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | `Unstarted` 16, 17, 18 | this protocol's own, apart from `managed::Reason`'s 1 to 5 |
 | A told or steering frame, 9 bytes | a frame's head (5) and a u32 |
 | One steer in flight; per exec, its lane, one ask and its stdio lanes; their windows | as step 5 has one record in flight; each lane's own, summed as the endpoint's streams are |
+| An exec output's record, `run::CHUNK` (64 KiB) | the most one of its guest's output frames carries (abi `run::CHUNK`); its window that record and a data frame's head, as a member's |
+| `EXEC_TOLD` 4; `EXEC_UNSTARTED` 96 | `EXEC_RUN`'s flag after `EXEC_DETACHED` 2; the IPC's kind after `RATED` 95 (D247) |
+| An exec's charge | what it holds, each part measured (its records and buffers, its lanes' windows, its connection's queues, Linux's and Windows' pipes) or its kernel's own bound (macOS's pipes, `BIG_PIPE_SIZE` 64 KiB, xnu-12377.101.15 bsd/sys/pipe.h l. 80) |
+| SIGHUP 1; EPIPE 32, EIO 5 | Linux's (include/uapi/asm-generic/signal.h; errno-base.h), as the guest takes them |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 

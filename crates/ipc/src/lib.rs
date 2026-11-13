@@ -222,7 +222,8 @@ pub mod kind {
     pub const DONE: u8 = 9;
     /// Warm VM → daemon: the command is executing: it started, where `DONE` without this
     /// means it never did. A joiner's (D119) carries its exec's id in its provider's guest
-    /// (u32, big-endian), by which another joiner may join its PID namespace.
+    /// (u32, big-endian), by which another joiner may join its PID namespace. And to the
+    /// client of an [`EXEC_TOLD`](super::EXEC_TOLD) exec, empty, as its command starts.
     pub const STARTED: u8 = 10;
     /// Client → daemon: a command of the catalog's (`ps`, `wait`, `rm`, ...) and its arguments,
     /// as a list of strings, for the daemon to run and answer with `OUT`, `ERR` and `END`.
@@ -583,6 +584,11 @@ pub mod kind {
     /// milli-CPU it holds its vCPUs to in decimal, nothing where it lets them be, or 1 and
     /// why not.
     pub const RATED: u8 = 95;
+    /// Warm VM → the client of an [`EXEC_TOLD`](super::EXEC_TOLD) exec, before its `EXIT`:
+    /// the command never started, and why, as its guest said it: the run protocol's
+    /// `exec_failed` class (a byte), then what the guest said (D238). An exec that never
+    /// started and says none of this could not be asked of its guest.
+    pub const EXEC_UNSTARTED: u8 = 96;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
@@ -611,6 +617,10 @@ pub const EXEC_INTERACTIVE: u8 = 1;
 /// An `EXEC_RUN` flag: the client is answered once the command starts (`-d`), and its
 /// output goes nowhere.
 pub const EXEC_DETACHED: u8 = 2;
+/// An `EXEC_RUN` flag: the client is told, before anything else on its connection, that the
+/// command started (`STARTED`) or why it never did ([`kind::EXEC_UNSTARTED`]), so that it
+/// types the start as the agent-control endpoint's exec lane does (D238).
+pub const EXEC_TOLD: u8 = 4;
 
 /// `shards exec vm` as the client asks for it: the microVM, the command, and what the
 /// command line set; the client's terminal size for `-t`; and the daemon binary the client

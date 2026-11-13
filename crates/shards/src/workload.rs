@@ -1528,6 +1528,8 @@ pub struct ExecRequest {
     pub spec: Spec,
     pub interactive: bool,
     pub detached: bool,
+    /// Its client is told its start, or why it never started (`EXEC_TOLD`, D238).
+    pub told: bool,
     /// The daemon's number for it, and its connection, told of its end (`EXEC_ENDED`).
     pub number: u64,
     pub daemon: Option<shards_ipc::Stream>,
@@ -1673,6 +1675,10 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
                     }
                 }
             }
+            // Its start, to a client that types it (the agent-control endpoint's host, D238).
+            kind::STARTED if req.told => {
+                let _ = shards_ipc::send(&req.client, shards_ipc::kind::STARTED, &[], &[]);
+            }
             kind::STARTED => {}
             // A detached exec's output goes nowhere, as `docker exec -d`'s does.
             kind::STDOUT if !req.detached => {
@@ -1692,6 +1698,12 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
                 // Ended, every copy, its stdin's too: the VMM's end on Windows is held until
                 // this one ends (PM M358).
                 end_guest(conn.get_ref().0);
+                // Why it never started, by its class, to a client that types it (D238): the
+                // guest's own failure, within what its frame carried.
+                if let (true, Some((class, why))) = (req.told, &not_started) {
+                    let said = [&[*class][..], why.as_slice()].concat();
+                    let _ = shards_ipc::send(&req.client, shards_ipc::kind::EXEC_UNSTARTED, &said, &[]);
+                }
                 return Ok(match not_started {
                     None => status,
                     Some((run::exec_failed::DAEMON, why)) => {
@@ -3236,6 +3248,7 @@ mod tests {
             },
             interactive: false,
             detached: false,
+            told: false,
             number: 1,
             daemon: None,
             client,
@@ -3430,6 +3443,80 @@ mod tests {
         assert_eq!(failure(&heard), "the container is not running");
         assert_eq!(signal_guest(&TO, 15), Err(Unsent::NotRunning));
         hellos::close();
+    }
+
+    /// An exec whose client types its start (`EXEC_TOLD`, D238) is told `STARTED` as its guest
+    /// starts it, and of one its guest never starts, why, by its class and the guest's words
+    /// whole, before its end; an exec not so asked tells neither. The client's `EXIT` is
+    /// `exec`'s, sent here as it sends it.
+    #[test]
+    fn a_told_exec_hears_its_start_or_why_it_never_started() {
+        static TO: ToGuest = ToGuest::new(Signals::new());
+        let (_serial, port, acceptor) = exec_port_test();
+        let server = std::thread::spawn(move || acceptor.run());
+        let ((sending, watched), mut guest) = connected(&TO);
+        let sender = std::thread::spawn(move || send_frames(&TO, sending));
+        let frame =
+            |which: u8, payload: &[u8]| [&run::header(which, payload.len() as u32)[..], payload].concat();
+        let ended = run::members::Refusal::Ended.encode(b"member 0 has ended");
+        let refused = [&[run::exec_failed::MEMBER][..], &ended[..]].concat();
+        for (told, refusal) in [
+            (true, None),
+            (true, Some(&refused)),
+            (false, None),
+            (false, Some(&refused)),
+        ] {
+            let (client, peer) = shards_ipc::Stream::pair().unwrap();
+            let mut req = ExecRequest {
+                told,
+                client,
+                ..exec_request()
+            };
+            let session = std::thread::spawn(move || {
+                let status = exec_session(&TO, &mut req);
+                let code = *status.as_ref().unwrap_or(&1);
+                shards_ipc::send(&req.client, shards_ipc::kind::EXIT, &[code], &[]).unwrap();
+                status
+            });
+            // Its guest takes its frame and dials its connection with its token.
+            let (which, asked) = next_frame(&mut guest);
+            assert_eq!(which, kind::EXEC);
+            let (mut conn, host) = UnixStream::pair().unwrap();
+            conn.write_all(&frame(kind::HELLO, &asked[..run::TOKEN])).unwrap();
+            assert_eq!(port.accept(host), shards_vmm::vm::Admission::Accepted);
+            match refusal {
+                None => conn.write_all(&frame(kind::STARTED, &[])).unwrap(),
+                Some(why) => conn.write_all(&frame(kind::SYSTEM_ERR, why)).unwrap(),
+            }
+            conn.write_all(&frame(kind::EXIT, &0u32.to_be_bytes())).unwrap();
+            let status = session.join().unwrap().unwrap();
+            let mut heard = Vec::new();
+            loop {
+                let said = shards_ipc::recv(&peer).unwrap().unwrap();
+                let last = said.kind == shards_ipc::kind::EXIT;
+                heard.push((said.kind, said.payload));
+                if last {
+                    break;
+                }
+            }
+            let mut expected = match (told, refusal) {
+                (true, None) => vec![(shards_ipc::kind::STARTED, Vec::new())],
+                (true, Some(why)) => vec![(shards_ipc::kind::EXEC_UNSTARTED, why.clone())],
+                (false, _) => Vec::new(),
+            };
+            expected.push((shards_ipc::kind::EXIT, vec![status]));
+            assert_eq!(heard, expected, "told {told}, refused {}", refusal.is_some());
+            // A member that has ended refuses it: `docker exec`'s 1, as the daemon refuses.
+            assert_eq!(status, if refusal.is_some() { 1 } else { 0 });
+        }
+        guest.write_all(&run::header(kind::SIGNALS_END, 0)).unwrap();
+        drop(guest);
+        signal_guest(&TO, 15).unwrap();
+        sender.join().unwrap();
+        watch(&TO, &watched);
+        hellos::close();
+        drop(port);
+        server.join().unwrap();
     }
 
     /// The signal connection is taken as it comes: what waited goes on it, and its end is
