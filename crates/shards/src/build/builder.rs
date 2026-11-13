@@ -119,6 +119,9 @@ pub struct Builder {
     /// Where its home records what its builds needed of memory (D133), which it adds its
     /// own build's to as it ends.
     needs: Option<PathBuf>,
+    /// Its home's record of this host's ends, by which its network process is followed to
+    /// its end (`netproc::reap`, D217).
+    ends: crate::daemon::ends::Ends,
 }
 
 /// A builder's give-back connection, as its build's memory pressure watcher asks through it
@@ -667,6 +670,7 @@ impl Builder {
         let (attach, attach_theirs) =
             UnixStream::pair().map_err(|e| format!("the builder's join disk: {e}"))?;
         let vm_binary = crate::helpers::vm()?;
+        let ends = crate::daemon::ends::Ends::kept_in(boot.home);
         let argv: Vec<&std::ffi::OsStr> = args.iter().map(OsString::as_os_str).collect();
         // The network process first, whose side of the ring the VM is given, as a VM's
         // (D31); the VM in App Sandbox on macOS, asking this process for what it opens
@@ -681,6 +685,7 @@ impl Builder {
                     bridge: &bridge,
                     credentials: false,
                 }),
+                ends: &ends,
                 group: None,
                 #[cfg(target_os = "macos")]
                 grants: crate::launch::Grants::Answered,
@@ -755,6 +760,7 @@ impl Builder {
             attach,
             attached: HashMap::new(),
             needs: boot.needs.map(Path::to_path_buf),
+            ends,
         };
         if let Some((_, architectures)) = boot.emulators {
             let device = u32::try_from(boot.bases.len()).map_err(|_| "too many base images")?;
@@ -1364,7 +1370,7 @@ impl Drop for Builder {
         }
         // The network process goes with its VM; its directory, a field, after this.
         if let Some(net) = &self.net {
-            crate::netproc::reap(net);
+            crate::netproc::reap(net, &self.ends);
         }
     }
 }

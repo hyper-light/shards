@@ -42,25 +42,24 @@ const R2: Duration = Duration::from_secs(100);
 
 /// What the daemon has seen of its clients, which its waits on them follow (D185's
 /// admission), never a figure picked:
-/// - **The rest of a request**, from its first byte, is waited for as long as makes requests
-///   come whole soonest when a cut one is asked again (D222's restart cutoff, crates/registry
-///   `Cutoff`: Luby, Sinclair and Zuckerman 1993, over its clients' own times, Kaplan and
-///   Meier 1958; a second at least and before any, RFC 6298 §2.1 and §2.4; doubled for each
-///   cut in a row, §5.5; drawn from [t, 2t)). A request cut is a restart: its client is told
-///   RESTART, or finds its slot's `say` gone as it writes (BrokenPipe), and asks again
-///   through the next slot, its request not begun anywhere. What a cut costs until the
-///   request comes again is not measured (a client's next asking is not told from
-///   another's), so the estimator takes asking again as a fresh draw, as Luby's does.
+/// - **The rest of a request** comes with its first byte: a client writes its request in one
+///   write (`Client::ask`). So a client that sends nothing past its first byte is waited for
+///   as long as the slowest rest a request has come whole in, and then cut: told RESTART,
+///   or finding its slot's `say` gone as it writes (BrokenPipe), it asks again through the
+///   next slot, its request begun nowhere. Before any request has come whole there is no
+///   such time, and the wait follows the client alone: its end, its FIFO's, or the daemon
+///   ending its clients. A request whose rest has begun is waited for until it is whole or
+///   its client ends: one larger than a FIFO holds comes in parts, each as the daemon reads
+///   and its client is next run, a gap no whole request's rest measures, which a window
+///   learned from them would cut again each time it was asked (PM M545).
 /// - **A client that takes nothing of its answer** holds a closed daemon twice the longest
 ///   a client of it has taken a piece in (a doubling search past what is known, Baeza-Yates,
 ///   Culberson and Rawlins 1993), at least [`R2`]: the daemon cannot tell it to ask again,
 ///   its command done.
 #[derive(Debug)]
 pub(crate) struct Seen {
-    /// The times requests' rests took, and the times waited before a cut.
-    requests: shards_registry::Cutoff,
-    /// Requests cut in a row.
-    pub(super) cuts: u32,
+    /// The slowest a request's rest was read whole in, from its first byte; none before any.
+    slowest_rest: Option<Duration>,
     /// The longest a client took a piece of its answer in.
     longest_take: Duration,
     /// The least a closed daemon waits on a client that takes nothing ([`R2`]; less in tests).
@@ -70,8 +69,7 @@ pub(crate) struct Seen {
 impl Default for Seen {
     fn default() -> Seen {
         Seen {
-            requests: shards_registry::Cutoff::default(),
-            cuts: 0,
+            slowest_rest: None,
             longest_take: Duration::ZERO,
             least: R2,
         }
@@ -79,21 +77,15 @@ impl Default for Seen {
 }
 
 impl Seen {
-    /// How long the rest of a request is waited for, `u` a uniform draw from [0, 1).
-    pub(super) fn request_wait(&self, u: f64) -> Duration {
-        self.requests.wait(self.cuts, u)
+    /// How long a request's rest is waited for while none of it has come: the slowest rest
+    /// that has come whole; none before any, the client's end alone then.
+    pub(super) fn request_stall(&self) -> Option<Duration> {
+        self.slowest_rest
     }
 
     /// A request came whole `took` after its first byte.
     pub(super) fn whole(&mut self, took: Duration) {
-        self.requests.answered(took);
-        self.cuts = 0;
-    }
-
-    /// A request was cut, `waited` after its first byte.
-    pub(super) fn cut(&mut self, waited: Duration) {
-        self.requests.cut(waited);
-        self.cuts = self.cuts.saturating_add(1);
+        self.slowest_rest = Some(self.slowest_rest.map_or(took, |slowest| slowest.max(took)));
     }
 
     /// A client took a piece of its answer in `took`.
@@ -446,17 +438,15 @@ impl<D: Disk> Daemon<D> {
         };
         living.opened();
         let _ = tell.send(Event::Asked(n));
-        // The rest of its request, whole within the wait its clients' requests have shown
-        // makes them come soonest (`Seen`), and no longer waited for once the daemon ends its
-        // clients.
-        let wait = lock(&self.seen).request_wait(super::uniform());
+        // The rest of its request, waited for while its client goes on with it: none of it
+        // past the slowest rest seen whole, its client's end alone before any (`Seen`); and
+        // no longer once the daemon ends its clients.
+        let stall = lock(&self.seen).request_stall();
         let request = |opened: slots::Opened| {
             let began = Instant::now();
-            let requested = opened.request_within(Some(wait), Some(&self.requests_end));
-            match &requested {
-                Ok(Requested::Asked(_)) => lock(&self.seen).whole(began.elapsed()),
-                Ok(Requested::Late(_)) => lock(&self.seen).cut(began.elapsed()),
-                _ => {}
+            let requested = opened.request_within(stall, Some(&self.requests_end));
+            if let Ok(Requested::Asked(_)) = &requested {
+                lock(&self.seen).whole(began.elapsed());
             }
             requested
         };
@@ -489,11 +479,12 @@ impl<D: Disk> Daemon<D> {
             }
             // Ended before its request was whole: it is gone, and its count with it.
             Ok(Requested::Gone) => {}
-            // Cut: told to ask again, as a request is cut where asking again is a restart
-            // (`Seen`). One still writing finds its `say` gone (BrokenPipe), and asks again.
+            // Cut: told to ask again, its request begun nowhere (`Seen`). One still writing
+            // finds its `say` gone (BrokenPipe), and asks again.
             Ok(Requested::Late(session)) => {
                 log(format!(
-                    "request slot {n}: its request not whole in {wait:?}; its client asks again"
+                    "request slot {n}: nothing past its request's first byte in {:?}; its client asks again",
+                    stall.unwrap_or_default()
                 ));
                 let _ = session.send(kind::RESTART, &[]);
             }

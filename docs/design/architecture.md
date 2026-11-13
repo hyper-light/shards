@@ -7011,7 +7011,7 @@ throughput both ways, small requests no slower, on every host.
 | `MAX_RING` 2 MiB | The largest power of two each turn of which one `readv`/`writev` reaches whole, its pages each apart: a turn of S bytes from any offset spans S/4096 + 1 pages, within 1,024 iovecs (Linux `UIO_MAXIOV`, macOS `IOV_MAX`): 513 for 2 MiB, 1,025 for 4 MiB. |
 | Control page, 4 KiB; fields 128 bytes apart | The smallest page of every supported guest; Apple silicon's 128-byte line (hw.cachelinesize), x86's paired-line prefetch. |
 | Slots in use | No count: one a stream (two while it swaps), within the room. |
-| Room for pins | With a budget: init's hold (`plug::cap`) less what the run holds (`memory.current`, the slots among it) and its working room (`plug::working_room`, D188, PM M309/M321, of the CPUs online as read); with none: `MemAvailable` (free pages less the zones' high watermarks and reserves, with reclaimable cache) less the working room. Read as each slot is made. |
+| Room for pins | With a budget: init's hold (`plug::cap`) less what the run holds (`memory.current`, the slots among it) and its working room (`plug::working_room`, D188, PM M309/M321, of the CPUs online as read); with none: `MemAvailable` (free pages less the zones' high watermarks and reserves, with reclaimable cache) less the working room. Read as each slot is reserved, under the same hold of the relay's pool lock as its reservation: read and reserved apart, a slot another stream made between the two was counted by neither, and streams that started at once pinned past the room (review F3). |
 | Idle slots owed a told room | The working room less the room told, where positive. |
 | Fixed-buffer table | Twice the relay's `RLIMIT_NOFILE` over 3 (a stream's client, vsock and wake descriptors; two slots while it swaps), within io_uring's 16,384 (`IORING_MAX_REG_BUFFERS`). |
 | Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2; the owner's cue to its own device after an offer, `CUE` 0x00 (host-side) | Protocol constants. |
@@ -7029,7 +7029,7 @@ pins E2E on WHP arm64, and on WHP x86_64 past that bound; and throughput, small-
 latency (paced and back to back), connection setup with its slot's making, a ring's ramp, CPU
 and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
 
-**Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2-F4 owed to ROOT with their reds and commands).
+**Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2 fixed by ROOT, a6edfb8e9; F3 cured, 6557c8597, and F4, a2c887eeb: its "Cures, F3 and F4", with the real-VM runs F4 owes; F5, a failed slot's room given back without moving `room_gen`, cured: its "Cures, F5").
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 
@@ -7468,11 +7468,13 @@ descriptors.
   took a slot holds no place; and sweeps only while a slot is taken with no request
   read: a minute after it is first seen so, and again a minute after, when a slot still
   unwritten goes. With none, it sleeps until it hears something (PM M260).
-- **A request in time.** The rest of a request is read within the wait its clients'
-  requests have shown makes them come soonest (D222's cutoff; "Admission", below), and no
-  longer once the daemon ends its clients (`requests_end`, a pipe written once): either
-  way the client hears RESTART, as one whose request no thread had read did, and asks
-  again. (Was 10 s, `REQUEST_TIMEOUT`, after which the slot ended unanswered.)
+- **A request in time.** The rest of a request is waited for while its client goes on with
+  it: one that sends nothing past its first byte for as long as the slowest rest the daemon
+  has seen whole is cut, and one whose rest has begun is read until it is whole or its
+  client ends ("Admission", below); no longer, either way, once the daemon ends its clients
+  (`requests_end`, a pipe written once). A client cut hears RESTART, as one whose request
+  no thread had read does, and asks again. (Was 10 s, `REQUEST_TIMEOUT`, after which the
+  slot ended unanswered; then D222's restart cutoff, doubled for each cut in a row.)
 - **Out of descriptors**, the maker offers nothing, says so once, and offers again as it is
   told descriptors were let go of (`Event::Room`, from `wake_listener`); no collection
   starts meanwhile, and clients wait on their lists. A slot taken whose serving finds no
@@ -7572,17 +7574,33 @@ daemon out of descriptors looked for one, and how a client knew its daemon. Each
 it follows: the request's own times, the descriptors' being let go of, the daemon's own
 process.
 
-- **A request's rest is waited for as long as makes requests come soonest, and a cut one is
-  asked again** (`slots::Seen`). A cut is safe to learn only where its client is told to ask
-  again: a request cut is not begun anywhere, so asking again is a restart, and its slot now
-  answers RESTART, as a closing daemon's does (before, it ended unanswered, and its client
-  took the end for its command's); a client still writing finds its `say` gone, and asks
-  again through the next slot (`ask_slot`'s BrokenPipe). So the wait is D222's restart
-  cutoff (Luby, Sinclair and Zuckerman 1993) over this daemon's own requests' times from
-  their first byte to whole, cuts counted as observations cut short (Kaplan and Meier
-  1958), a second at least and before any (RFC 6298 §2.1, §2.4), doubled for each cut in a
-  row (§5.5), drawn from [t, 2t); asking again taken as a fresh draw, since a client's next
-  asking is not told from another's. The daemon's own handling of a connection waits on no
+- **A request's rest is waited for while its client goes on with it, and a client cut asks
+  again** (`slots::Seen`, PM M545; the person's ruling of 2026-11-13: a wait follows the
+  party's liveness and progress, then the slowest answer seen, never a doubling). A request
+  cut is begun nowhere, so asking again is a restart: its slot answers RESTART, as a
+  closing daemon's does, and a client still writing finds its `say` gone and asks again
+  through the next slot (`ask_slot`'s BrokenPipe).
+  - *Its first byte alone.* A client writes its request in one write (`Client::ask`), so
+    its rest comes with its first byte. A client that sends nothing past it is waited for as
+    long as the slowest rest this daemon has read whole, from its first byte, and then cut.
+  - *Its cold start.* Before any request has come whole the daemon has seen no rest, and
+    bounds none: the wait follows the client alone, its end (the FIFO's, or the pipe's) or
+    the daemon ending its clients. A daemon is mostly started by a client's request, which
+    comes whole and so teaches it the first rest.
+  - *Its rest begun.* A request whose rest has begun is read until it is whole or its
+    client ends. One larger than a FIFO holds (a run's spec, up to `MAX_PAYLOAD`, 6 MiB)
+    comes in parts, each as the daemon reads and its client is next run: a gap no rest of a
+    request written whole measures, so a window learned from those would cut such a request
+    each time it was asked, for ever.
+  - *What it costs.* A client stopped mid-request (`SIGSTOP`) holds its slot's descriptors
+    until it goes on or ends, and keeps an idle daemon from exiting meanwhile; a closing
+    daemon still lets it go after its answer's wait (below). The slowest rest is this
+    daemon's alone, in memory: a client of the home's own user can make it longer by
+    writing its request slowly, which only waits longer on a silent one.
+  - It was D222's restart cutoff (Luby, Sinclair and Zuckerman 1993, over the daemon's
+    requests' times, Kaplan and Meier 1958 over its cuts), a second at least and before any
+    (RFC 6298 §2.1, §2.4), doubled for each cut in a row (§5.5), drawn from [t, 2t). The
+    registry's own restart cutoff (D222) is unchanged. The daemon's own handling of a connection waits on no
   clock at all: every connection it takes is a socket pair one of its threads writes the
   request on whole (a slot's bridge, a request it puts to itself), and a bridge that cannot
   send ends its writing.
@@ -7629,7 +7647,7 @@ process.
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
-| `REQUEST_TIMEOUT` (daemon.rs), a request's rest | 10 s, slot ended unanswered | `Seen::request_wait`, learned; cut told RESTART | D222's cutoff (Luby, Sinclair, Zuckerman 1993; Kaplan, Meier 1958; RFC 6298 §2.1, §2.4, §5.5) |
+| `REQUEST_TIMEOUT` (daemon.rs), a request's rest | 10 s, slot ended unanswered | `Seen::request_stall`: nothing past its first byte for the slowest rest read whole (none before any); its rest begun, its client's end; cut told RESTART | its client's own writes (`Client::ask`, one write) and end; was D222's cutoff, doubled per cut (2026-11-09 to 11-13) |
 | `REQUEST_TIMEOUT`, a handled connection's first message | 10 s | none: the daemon's own pairs | its senders write whole or end their writing |
 | `REQUEST_TIMEOUT`, a closed daemon's client taking nothing | 10 s | `Seen::answer_wait`: 2 × longest piece taken, ≥ 100 s | RFC 1122 §4.2.3.5 (R2); Baeza-Yates, Culberson, Rawlins 1993 |
 | `REQUEST_TIMEOUT`, after an answer's last word | 10 s | none | pipe(7): a FIFO keeps what was written as its writer goes |
@@ -7831,9 +7849,24 @@ user's host as Docker's.
   slice. A killed VM process is followed the same way, its host freeing it, before its end
   is given up on. A joiner's VM is its provider's, which runs the provider's command too:
   a joiner is held to one slice, then sent SIGKILL again, as before.
+- **A network or share process is followed the same way** (2026-11-13, PM M546; the
+  person's ruling: a wait follows the party's liveness and progress, then the slowest
+  answer seen). Once its VM has gone and its spawner holds nothing of it, it goes as its
+  VM's links close, which wakes its reaper (`netproc::reap`; for a daemon's run, the
+  followers' loop). It is looked at once a slice has passed, waited on for another while it
+  runs or frees what it holds, and ended only once it has done neither for a slice. Its own
+  end is kept as the host's; one its reaper made is not. It was `netproc::GRACE`, a second,
+  picked, and the daemon's port check (`in_use`) waited twice that for an ended run's
+  network process; it now waits one slice. The cost: a network process stuck on nothing of
+  its own is ended 10 s or more after its VM, where it was 1 s; one that exits as its links
+  close, as each does, ends the wait at once. The waits that took that second as their
+  basis keep it, their own basis owed (R03): init's relay drain (hostbind.rs `DRAIN`), the
+  daemon's `PUBLISH_PATIENCE`, and the VM process's wait for its network process's
+  unpublish (warm.rs).
 - **The slice is the host's own.** Each end heard is kept in the home (`ends`: `teardown
-  MS`, `exit MS`, the slowest of each this home's daemons have heard, written whole and
-  renamed over), and a slice is the slowest of its kind there, so that a host whose guests
+  MS`, `exit MS` and `helper MS`, the slowest of each this home's processes have heard: its
+  daemon and its runs' hosts keep one record, each end put with what it holds then, written
+  whole and renamed over), and a slice is the slowest of its kind there, so that a host whose guests
   stall on its disk for 9 s before they end (PM M419) gives its teardowns that long, and
   never less than the window over which `Progress` tells a microVM that runs from one
   that runs nothing (`IDLE_VM_CPU`'s 10 s), which a home with no record yet takes alone:
@@ -7854,8 +7887,12 @@ user's host as Docker's.
 
 **Tested.** Unit tests (daemon/ends.rs): a home with no record gives each end the least
 slice; each slower end heard is kept, in the home too, and read back by the next daemon; a
-record it cannot read is none; an end is followed while its VM process runs, a joiner's
-never. On real microVMs, tests/containers.rs `a_kills_end_is_kept_as_this_hosts_in_its_home`:
+record it cannot read is none; a home's processes keep one record, neither's slower end
+lost to the other's write, and a record that cannot be kept is said; an end is followed
+while its VM process runs, a joiner's never. netproc.rs
+`a_helper_is_waited_on_while_it_goes_on_with_its_end`: a busy helper is waited on past five
+slices and its end kept, a sleeping one ended at its first look and nothing kept; the
+daemon's `a_network_process_is_ended_once_it_goes_on_no_more_and_the_ports_freed`. On real microVMs, tests/containers.rs `a_kills_end_is_kept_as_this_hosts_in_its_home`:
 a kill's end kept in the home, its VM not killed under it; the stop, kill, pause and
 daemon-stop tests as before. Measured: PM M480 to M482, which validate the method (every
 teardown and freeze measured ends while it is followed) and are no figure of it.
@@ -25761,6 +25798,111 @@ microVM and the kiln runner on one machine and on two.
 **What would falsify it.** A harness that takes MCP and no stdio server; a byte of an MCP
 connection reaching the microVM's network; a member's connection told to the controller as
 another member's.
+
+
+### D255. A managed microVM's rate: D191's hold told on its vsock socket by its host's client, its room refused (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d step 14, the Hex lead's ask. Hex holds the
+microVMs it boots through `boot_managed` (its `shards` class, D233) to its water-filled CPU
+rates with platform caps alone: macOS's native helper's managed control, a Windows job's hard
+cap, Linux's `cpu.max`. Those hold a VMM's device threads with its vCPUs, and on Windows no
+window derives from the cap's undocumented interval (Hex `learned-charge.md` C1, C4). D247
+gives an image run's orchestrator D191's governor through its run host. A managed microVM has
+no run host and no link to its VM process: its client reaches it through its vsock socket
+alone (D215).
+
+**Decided** (ROOT's go, 2026-11-13).
+- *The word* (`shards_abi::rate`). On a microVM booted `--host-managed`, a host client may
+  write `RATE <milli>\n` on its vsock socket in place of Firecracker's `CONNECT <port>`.
+  - The muxer hands that connection to the VM process (`VsockHost::rate`), whose `rates`
+    thread holds the vCPUs to it (`Handle::hold_rate`, D191's governor, as D247's `RATE`
+    does) and then answers on it.
+  - The answer is `RATED <milli> <period>\n` (what it holds them to, 0 where it lets them
+    be, and the period its governor holds over, in nanoseconds), or `REFUSED <why>\n`. Then
+    it closes the connection.
+  - One ask a connection, matched without case as `CONNECT` is; a line may end `\r\n`.
+- *Only the host.* The word is a line of a dial on the socket the VM process listens at, in
+  its client's 0700 directory (D215).
+  - A guest's connections arrive as its virtio-vsock packets, to host ports, and are never
+    read as a host client's line; the bytes it sends go to their port's owner.
+  - A microVM not booted `--host-managed` (every daemon run, every image run) closes such a
+    dial unanswered, so no rate reaches a microVM that a daemon's or a run host's limits
+    hold.
+- *The client.* `ManagedGuest::rate(rate, patience)` is the same call as `ImageGuest::rate`
+  (D247): one dial, its ask, and its answer read a byte at a time to its newline, within its
+  caller's patience.
+  - Held: the rate asked, or none, with the period kept (`ManagedGuest::rate_period`, none
+    until a rate is answered). A VM holds what it is told or nothing (D247), so a held rate
+    other than asked is a broken answer.
+  - Refused, typed: `Refusal::Rate`, in the VM process's words (its microVM not started, its
+    governor's thread not made, an answer none of the protocol's). `Unsupported`
+    (`what: "rate"`) where the VM process closes the ask unanswered (not booted
+    `--host-managed`, or a shards before this) or does not answer within the patience.
+    `ManagedIo` where the socket fails, and `Ended` once the guest has ended.
+  - Its ask is made and its answer read without allocating, and its words are allocated
+    fallibly, as the managed path's are.
+- *Why the vsock socket.* Two other paths were weighed.
+  - An inherited control descriptor from the native launcher dies with its client, so
+    `attach_managed` could not give a recovered client its rate (its GPU report has that
+    limit), and Hex's three launchers would each have to place one more handle.
+  - A second socket needs a grant of its own on macOS, where App Sandbox lets the VM process
+    neither bind nor dial (PM M67), and a path that an attach must derive.
+  - The vsock socket is the one path every managed microVM serves, which a recovered client
+    reaches by its identity, on all three OSes.
+- *Its room*: refused, typed, as `Refusal::Unsupported { what: "room" }`.
+  - D188's room is held inside the guest by shards-init's `ROOM` built-in (D241), and a
+    managed guest runs its caller's own PID 1 (D215), never shards-init.
+  - Its guest's kernel alone may drop its page cache; a host that takes it back has its guest
+    read it again (PM M309).
+  - Its caller holds its guest's memory through its own PID 1, or through the host's limits
+    of its process.
+
+**Literals.**
+- `RATE`, `RATED`, `REFUSED`: the protocol's words.
+- `ASK_MOST`, the longest ask (`RATE 18446744073709551615\r\n`, 27 bytes): its word, a u64's
+  digits, a space and a line's end. The muxer's longest handshake line is now the longer of
+  it and `CONNECT 4294967295\r\n`. Its first read stays `CONNECT 0\n`'s length, as nothing
+  follows a `RATE` line, whose client waits for its answer.
+- `ANSWER_MOST`: the run protocol's payload bound (`run::MAX_PAYLOAD`), as an image run's
+  `RATED` carries its VM's words (D247).
+- The period is D191's (`hold_period`).
+
+**Cold start** (R03). Nothing here is learned. The rate is the orchestrator's, told as it
+moves; until one is told, the vCPUs run as booted, the envelope their ceiling. The client knows
+the period from the first answer.
+
+**Tested** (light):
+- abi `rate`'s `an_ask_reads_back_as_its_rate_and_nothing_else_does`,
+  `an_answer_reads_back_as_it_was_said` and `a_broken_answer_is_refused_by_what_breaks_it`.
+- The muxer's `a_rate_comes_from_a_dial_on_the_socket_alone`: a guest's connection to a
+  served port, its `RATE` bytes on it, and its dials to ports none serves reach no rate; a
+  host's dial does, and its answer reaches its client; a machine that takes none closes it.
+  Also its `parses_connect_lines_and_nothing_else` and
+  `handshake_lines_are_bounded_by_the_protocols_words`.
+- vm_run's `a_rates_answer_is_its_hold_and_its_period` and
+  `each_rate_handed_over_is_answered_on_its_connection`.
+- shards-api's `a_managed_guests_rate_is_asked_on_its_socket_and_held_as_answered`,
+  `a_managed_rate_unanswered_within_its_patience_is_refused` and
+  `a_managed_guests_room_is_refused_and_an_ended_ones_rate_is_its_end`.
+
+**Owed** (ROOT).
+- The real-VM test on HVF, KVM and WHP: `boot.rs`'s
+  `a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket`, run as
+  `cargo test --profile test-release -p shards --test boot a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket`.
+  A guest booted `--host-managed`, spinning its one vCPU, asked a quarter CPU on its socket,
+  uses no more than a quarter of the time passing, two periods and its VMM's own CPU; its
+  vCPU's whole CPU and none hold nothing; each answer's period is its build's hold's; a guest
+  booted without `--host-managed` closes the ask unanswered.
+- Guard-removal mutants, each of which must fail its test: the muxer's `rate` gate (none:
+  closed), `read_ask`'s word, `held_of`'s asked-or-none, the client's unanswered close as
+  `Unsupported`, and vm_run's `--host-managed` flag.
+- These light tests on Linux and Windows (CI), and `scripts/lint` on the 7 targets.
+- Hex's adoption: its learner telling each managed microVM its rate through
+  `ManagedGuest::rate` on every OS, its window from `rate_period`.
+
+**What would falsify it.** A guest that reaches the rate from inside (a connection or bytes of
+its own read as a `RATE` line); a managed guest held to a rate whose CPU over a window passes it
+by more than a period's share, its vCPUs' overrun and its VMM's own.
 
 ## 4. Start path (≤ 5 ms budget)
 

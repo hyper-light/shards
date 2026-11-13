@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::fd::{AsFd as _, BorrowedFd, RawFd};
 
+use crate::daemon::ends::Ends;
 use crate::netproc::{NetProcess, VmSide};
 
 /// What a run's VM is told its link to its spawner is (`--warm`, `--resume`): the
@@ -30,6 +31,9 @@ pub struct Plan<'a> {
     pub vm: &'a Path,
     /// Its network, where it has one.
     pub network: Option<Network<'a>>,
+    /// The home's record of this host's ends, by which a network process whose VM does not
+    /// start is followed to its end (`netproc::reap`, D217).
+    pub ends: &'a Ends,
     /// The spawner it and its network process are made by, a group's (D183): in the
     /// group's scope from their first instruction.
     #[cfg(unix)]
@@ -80,22 +84,23 @@ pub struct Launched {
 }
 
 impl Launched {
-    /// Ends its VM process, then its network process, which goes as its VM does
-    /// ([`crate::netproc::reap`]).
+    /// Ends its VM process, then its network process, which goes as its VM does, followed to
+    /// its end by `ends` ([`crate::netproc::reap`]).
     #[cfg(any(target_os = "macos", windows))]
-    pub(crate) fn end(self) {
+    pub(crate) fn end(self, ends: &Ends) {
         let _ = self.vm.kill(shards_ipc::signal::SIGKILL);
         let _ = self.vm.wait();
         if let Some((process, control)) = self.net {
             drop(control);
-            crate::netproc::reap(&process);
+            crate::netproc::reap(&process, ends);
         }
     }
 }
 
-/// What a VM is handed besides its stdio, its grants and its network, by its kind.
+/// The kind of VM a launch makes, and what it is handed besides its stdio, its grants and
+/// its network as one.
 #[derive(Debug)]
-enum Ends {
+enum Kind {
     /// A run's VM, the daemon's or an orchestrator's: its end of its link to its spawner
     /// ([`LINK`]); its network's release, where it has a network (`--net-release`, on which
     /// its run's published ports close as it ends); and on Windows the null device, for the
@@ -116,12 +121,12 @@ enum Ends {
     },
 }
 
-impl Ends {
+impl Kind {
     /// Its name, as its launch's failures say it.
     fn who(&self) -> &'static str {
         match self {
-            Ends::Run { .. } => "the VM",
-            Ends::Builder { .. } => "the builder",
+            Kind::Run { .. } => "the VM",
+            Kind::Builder { .. } => "the builder",
         }
     }
 
@@ -129,8 +134,8 @@ impl Ends {
     #[cfg(any(target_os = "macos", windows))]
     fn answerer(&self) -> &'static str {
         match self {
-            Ends::Run { .. } => "vm grants",
-            Ends::Builder { .. } => "builder grants",
+            Kind::Run { .. } => "vm grants",
+            Kind::Builder { .. } => "builder grants",
         }
     }
 }
@@ -138,26 +143,28 @@ impl Ends {
 /// Launches a run's VM, the daemon's or an orchestrator's: it, and this process's end of its
 /// link ([`LINK`]).
 pub fn run(plan: Plan<'_>) -> Result<(Launched, shards_ipc::Stream), String> {
+    #[cfg(windows)]
+    let record = plan.ends;
     let (ours, theirs) = shards_ipc::Stream::pair().map_err(|e| format!("the VM's link: {e}"))?;
     #[cfg(unix)]
-    let ends = Ends::Run { link: theirs };
+    let kind = Kind::Run { link: theirs };
     // Its end shared, this process's copy of it let go of, so that the VM's end is the end
     // this process reads.
     #[cfg(windows)]
-    let ends = {
+    let kind = {
         let link = theirs.share().map_err(|e| format!("the VM's link: {e}"))?;
         drop(theirs);
         let null = std::fs::File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
-        Ends::Run { link, null }
+        Kind::Run { link, null }
     };
-    let launched = launch(plan, ends)?;
+    let launched = launch(plan, kind)?;
     // What this process sends on its link goes to the VM: handles duplicated into it.
     #[cfg(windows)]
     {
         match launched.vm.giver() {
             Ok(giver) => ours.gives_to(giver.into_handle()),
             Err(e) => {
-                launched.end();
+                launched.end(record);
                 return Err(format!("the VM's link: {e}"));
             }
         }
@@ -172,7 +179,7 @@ pub fn builder(
     attach: shards_vmm::platform::UnixStream,
     said_to: std::io::PipeWriter,
 ) -> Result<Launched, String> {
-    launch(plan, Ends::Builder { attach, said_to })
+    launch(plan, Kind::Builder { attach, said_to })
 }
 
 /// What a VM process is given of this process's environment: what it reads alone
@@ -213,7 +220,7 @@ fn after_command<'w>(args: &[&'w OsStr], words: &'w [OsString]) -> Vec<&'w OsStr
 /// socket at 4, the ring at `VM_FDS` and its console report's pipe at 9.
 #[cfg(unix)]
 fn handed<'f>(
-    ends: &'f Ends,
+    kind: &'f Kind,
     null: BorrowedFd<'f>,
     err: BorrowedFd<'f>,
     grants: Option<BorrowedFd<'f>>,
@@ -230,8 +237,8 @@ fn handed<'f>(
     };
     let mut fds = vec![(null, 0), (err, 1), (err, 2)];
     let mut words = Vec::new();
-    match ends {
-        Ends::Run { link } => {
+    match kind {
+        Kind::Run { link } => {
             let (link_at, grants_at, release_at) = (3, 4, crate::netproc::VM_RELEASE_FD);
             fds.push((link.as_fd(), link_at));
             if let Some(grants) = grants {
@@ -249,7 +256,7 @@ fn handed<'f>(
                 ]);
             }
         }
-        Ends::Builder { attach, said_to } => {
+        Kind::Builder { attach, said_to } => {
             let (grants_at, attach_at, said_to_at) = (3, 4, 9);
             if let Some(grants) = grants {
                 fds.push((grants, grants_at));
@@ -273,10 +280,10 @@ fn handed<'f>(
 }
 
 #[cfg(unix)]
-fn launch(plan: Plan<'_>, ends: Ends) -> Result<Launched, String> {
+fn launch(plan: Plan<'_>, kind: Kind) -> Result<Launched, String> {
     launch_with(
         plan,
-        ends,
+        kind,
         |n, group| crate::netproc::start(n.policy, &n.mac, n.bridge, group, n.credentials),
         |group, program, args, fds, env| shards_ipc::spawn_in_group(group, program, args, fds, false, env),
     )
@@ -286,7 +293,7 @@ fn launch(plan: Plan<'_>, ends: Ends) -> Result<Launched, String> {
 #[cfg(unix)]
 fn launch_with(
     plan: Plan<'_>,
-    ends: Ends,
+    kind: Kind,
     network: impl FnOnce(Network<'_>, Option<shards_ipc::Group>) -> Result<(NetProcess, VmSide), String>,
     spawn: impl FnOnce(
         Option<shards_ipc::Group>,
@@ -300,13 +307,14 @@ fn launch_with(
         args,
         vm,
         network: net,
+        ends: record,
         group,
         #[cfg(target_os = "macos")]
             grants: answered,
     } = plan;
-    let who = ends.who();
+    let who = kind.who();
     #[cfg(target_os = "macos")]
-    let answerer = ends.answerer();
+    let answerer = kind.answerer();
     let (binary, env, _) = program(args, vm)?;
     #[cfg(target_os = "macos")]
     let (grants, granted) =
@@ -326,7 +334,7 @@ fn launch_with(
         None => None,
     };
     let (fds, words) = handed(
-        &ends,
+        &kind,
         null.as_fd(),
         err.as_fd(),
         granted.as_ref().map(|g| g.as_fd()),
@@ -341,14 +349,14 @@ fn launch_with(
             // Its side let go of here, its network process goes as its doorbell hangs up.
             if let Some((process, side, _)) = started {
                 drop(side);
-                crate::netproc::reap(&process);
+                crate::netproc::reap(&process, record);
             }
             return Err(format!("starting {who} ({}): {e}", binary.display()));
         }
     };
     // The VM holds its ends now, its side of the ring among them: as it goes, its network
     // process hears its doorbell hang up and goes too.
-    drop((ends, null, granted));
+    drop((kind, null, granted));
     let net = started.map(|(process, side, _)| (process, side.control));
     #[cfg(target_os = "macos")]
     let grants = match answered {
@@ -363,7 +371,7 @@ fn launch_with(
                     net,
                     grants: None,
                 }
-                .end();
+                .end(record);
                 return Err(format!("answering {who}: {e}"));
             }
             None
@@ -385,7 +393,7 @@ fn launch_with(
 /// doorbells, its console report's pipe and its join disk's socket.
 #[cfg(windows)]
 fn handed<'f>(
-    ends: &'f Ends,
+    kind: &'f Kind,
     grants: [shards_ipc::Given<'f>; 2],
     net: Option<(&'f VmSide, &[u8; 6])>,
 ) -> (
@@ -397,8 +405,8 @@ fn handed<'f>(
     let mut given = Vec::from(grants);
     let mut sockets = Vec::new();
     let mut words: Vec<OsString> = Vec::new();
-    match ends {
-        Ends::Run { link, null } => {
+    match kind {
+        Kind::Run { link, null } => {
             given.extend([
                 shards_ipc::Given {
                     name: LINK,
@@ -415,7 +423,7 @@ fn handed<'f>(
                 words.extend(["--net".into(), VmSide::arg(mac).into()]);
             }
         }
-        Ends::Builder { attach, said_to } => {
+        Kind::Builder { attach, said_to } => {
             let (attach_as, said_to_as) = ("attach", "said-to");
             sockets.push(shards_ipc::Shared {
                 name: attach_as,
@@ -448,15 +456,16 @@ fn handed<'f>(
 /// one, ended as its value drops (its Job's last handle closing), so a step that fails ends
 /// what was started as it returns.
 #[cfg(windows)]
-fn launch(plan: Plan<'_>, ends: Ends) -> Result<Launched, String> {
+fn launch(plan: Plan<'_>, kind: Kind) -> Result<Launched, String> {
     use std::os::windows::io::{AsHandle as _, OwnedHandle};
     let Plan {
         args,
         vm,
         network,
+        ends: record,
         group,
     } = plan;
-    let (who, answerer) = (ends.who(), ends.answerer());
+    let (who, answerer) = (kind.who(), kind.answerer());
     let (binary, env, gpu) = program(args, vm)?;
     let network = match network {
         Some(n) => {
@@ -474,7 +483,7 @@ fn launch(plan: Plan<'_>, ends: Ends) -> Result<Launched, String> {
         pipes.map_err(|e| format!("{who}'s grants: {e}"))?;
     let (asks_to, answers_from) = (OwnedHandle::from(asks_to), OwnedHandle::from(answers_from));
     let (given, sockets, words) = handed(
-        &ends,
+        &kind,
         [
             shards_ipc::Given {
                 name: "ask",
@@ -527,7 +536,7 @@ fn launch(plan: Plan<'_>, ends: Ends) -> Result<Launched, String> {
     // Its AppContainer's profile goes once it has, as its follower lets it go.
     vm.hold(container);
     // Its ends are its own now.
-    drop((asks_to, answers_from, ends));
+    drop((asks_to, answers_from, kind));
     let link = crate::grant::Link {
         from: std::fs::File::from(OwnedHandle::from(asks_from)),
         to: std::fs::File::from(OwnedHandle::from(answers_to)),
@@ -537,7 +546,7 @@ fn launch(plan: Plan<'_>, ends: Ends) -> Result<Launched, String> {
         let _ = crate::grant_answer::serve(&link, &giver);
     });
     if let Err(e) = answering {
-        launched.end();
+        launched.end(record);
         return Err(format!("answering {who}: {e}"));
     }
     Ok(launched)
@@ -604,7 +613,7 @@ mod tests {
         let err = std::io::stderr();
         let (grants, _) = std::os::unix::net::UnixStream::pair().unwrap();
         let side = side_of_nothing();
-        let ends = Ends::Run { link };
+        let kind = Kind::Run { link };
         let stdio = [(null.as_raw_fd(), 0), (2, 1), (2, 2)];
         let ring = [
             (side.region.as_raw_fd(), 5),
@@ -616,7 +625,7 @@ mod tests {
 
         // macOS's: grants, and a network.
         let (fds, said) = handed(
-            &ends,
+            &kind,
             null.as_fd(),
             err.as_fd(),
             Some(grants.as_fd()),
@@ -639,7 +648,7 @@ mod tests {
         );
 
         // Linux's: no grants.
-        let (fds, said) = handed(&ends, null.as_fd(), err.as_fd(), None, Some((&side, &MAC)));
+        let (fds, said) = handed(&kind, null.as_fd(), err.as_fd(), None, Some((&side, &MAC)));
         let mut want = stdio.to_vec();
         want.push((link_fd, 3));
         want.extend(ring);
@@ -650,7 +659,7 @@ mod tests {
         );
 
         // No network (a guest without `shards_net=`, a run without a bridge).
-        let (fds, said) = handed(&ends, null.as_fd(), err.as_fd(), Some(grants.as_fd()), None);
+        let (fds, said) = handed(&kind, null.as_fd(), err.as_fd(), Some(grants.as_fd()), None);
         let mut want = stdio.to_vec();
         want.extend([(link_fd, 3), (grants.as_raw_fd(), 4)]);
         assert_eq!(numbers(&fds), want);
@@ -675,7 +684,7 @@ mod tests {
         let err = std::io::stderr();
         let (grants, _) = std::os::unix::net::UnixStream::pair().unwrap();
         let side = side_of_nothing();
-        let ends = Ends::Builder { attach, said_to };
+        let kind = Kind::Builder { attach, said_to };
         let words = |w: &[&str]| w.iter().map(OsString::from).collect::<Vec<_>>();
         let ring = [
             (side.region.as_raw_fd(), 5),
@@ -684,7 +693,7 @@ mod tests {
         ];
 
         let (fds, said) = handed(
-            &ends,
+            &kind,
             null.as_fd(),
             err.as_fd(),
             Some(grants.as_fd()),
@@ -714,7 +723,7 @@ mod tests {
             ])
         );
 
-        let (fds, said) = handed(&ends, null.as_fd(), err.as_fd(), None, Some((&side, &MAC)));
+        let (fds, said) = handed(&kind, null.as_fd(), err.as_fd(), None, Some((&side, &MAC)));
         let mut want = vec![(null.as_raw_fd(), 0), (2, 1), (2, 2), (attach_fd, 4)];
         want.extend(ring);
         want.push((said_to_fd, 9));
@@ -755,6 +764,8 @@ mod tests {
         let mut side = side_of_nothing();
         side.rings = rings.into();
         let bridge = shards_net::bridge::Bridge::elect(&[]).unwrap();
+        let home = shards_testdir::TempDir::new("launch-reap").unwrap();
+        let record = Ends::kept_in(&home);
         let (link, _ours) = shards_ipc::Stream::pair().unwrap();
         let args = ["run", "--warm", LINK].map(OsStr::new);
         let mut asked = None;
@@ -768,11 +779,12 @@ mod tests {
                     bridge: &bridge,
                     credentials: false,
                 }),
+                ends: &record,
                 group: None,
                 #[cfg(target_os = "macos")]
                 grants: Grants::Answered,
             },
-            Ends::Run { link },
+            Kind::Run { link },
             |_, _| Ok((stand_in, side)),
             |_, program, argv, fds, _| {
                 let argv: Vec<OsString> = argv.iter().map(|a| a.to_os_string()).collect();
@@ -837,7 +849,7 @@ mod tests {
         }
         let words = |w: &[&str]| w.iter().map(OsString::from).collect::<Vec<_>>();
 
-        let run = Ends::Run {
+        let run = Kind::Run {
             link: file(),
             null: std::fs::File::open(crate::os::NULL).unwrap(),
         };
@@ -858,7 +870,7 @@ mod tests {
         assert!(said.is_empty());
 
         let (_from_vm, said_to) = std::io::pipe().unwrap();
-        let builder = Ends::Builder {
+        let builder = Kind::Builder {
             attach: socket(),
             said_to,
         };

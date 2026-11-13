@@ -57,6 +57,8 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
                contexts accept them, and ends. Implies --gpu; no workload, devices or snapshot.
   --host-managed: the program that started shards contains it (D233): the processes shards
                   starts beside the VM stay in its process group, not sessions of their own.
+                  A client that dials its --vsock socket may hold its vCPUs to a rate,
+                  `RATE <milli>` in place of `CONNECT <port>` (D255).
   --pci-test: a PCI bus with a test function at 00:01.0, the identification and liveness
               registers of QEMU's edu device in its BAR 0, for testing the bus. Not with
               --snapshot-dir.
@@ -204,6 +206,9 @@ struct Common {
     workload: Options,
     /// Whether a workload option was given.
     workload_options: bool,
+    /// `--host-managed`: its native launcher contains it (D233), and its host's clients may
+    /// hold its vCPUs to a rate on its vsock socket (D255).
+    host_managed: bool,
 }
 
 impl Common {
@@ -218,6 +223,7 @@ impl Common {
             net: None,
             workload: Options::default(),
             workload_options: false,
+            host_managed: false,
         }
     }
 
@@ -230,8 +236,9 @@ impl Common {
         let w = &mut self.workload;
         match arg {
             // Containment is established by the native launcher and interpreted
-            // by the parent CLI only. It grants no guest/device authority.
-            "--host-managed" => {}
+            // by the parent CLI only. It grants no guest/device authority; its host's
+            // clients may hold its vCPUs to a rate (D255).
+            "--host-managed" => self.host_managed = true,
             #[cfg(unix)]
             "--host-lifeline" => {
                 // run() already armed this explicit reader before parser effects.
@@ -396,6 +403,8 @@ struct Run {
     /// Where it tells its spawner how its console's report came out ([`Common::said_to`]).
     said_to: Option<LinkArg>,
     gpu_report: Option<GpuReportTarget>,
+    /// `--host-managed`: a plain boot takes rates from its host's clients (D255).
+    managed: bool,
 }
 
 struct GpuReportTarget {
@@ -676,6 +685,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             attach,
             said_to: None,
             gpu_report: None,
+            managed: false,
         });
     }
     let mode = match rootfs {
@@ -705,6 +715,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         said_to: common.said_to.take(),
         attach,
         gpu_report,
+        managed: common.host_managed,
     })
 }
 
@@ -1028,6 +1039,60 @@ pub fn hold_rate(milli: u64) -> Result<Option<std::num::NonZeroU64>, String> {
         .get()
         .ok_or("the microVM has not started")?
         .hold_rate(milli)
+}
+
+/// Takes the rates a managed machine's host's clients ask on its vsock socket (D255): the
+/// muxer hands each `RATE` line's connection here ([`VsockHost::rate`]), and a thread of its
+/// own holds the vCPUs to each in turn and answers on its connection ([`serve_rates`]).
+/// Nothing where the machine has no socket, which no client dials.
+fn take_rates(vsock: &mut Option<VsockHost>) -> Result<(), String> {
+    let Some(vsock) = vsock.as_mut() else {
+        return Ok(());
+    };
+    let (asks, asked) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("rates".into())
+        .spawn(move || serve_rates(&asked))
+        .map_err(|e| format!("its rates' thread: {e}"))?;
+    vsock.rate = Some(asks);
+    Ok(())
+}
+
+/// Answers each rate asked of this machine, in turn, until its muxer goes: the hold
+/// [`hold_rate`] makes of it, with its hold's period, or why not (`shards_abi::rate`).
+fn serve_rates(asked: &std::sync::mpsc::Receiver<(shards_vmm::platform::UnixStream, u64)>) {
+    use shards_abi::rate::{Answer, answer};
+    for (mut stream, milli) in asked {
+        let line = match rate_answer(shards_vmm::vm::hold_period(), || hold_rate(milli)) {
+            Ok((milli, period_ns)) => answer(&Answer::Held { milli, period_ns }),
+            Err(why) => answer(&Answer::Refused(&why)),
+        };
+        // Blocking: one line, which its socket takes whole, and its client waits for.
+        let answered = stream
+            .set_nonblocking(false)
+            .and_then(|()| stream.write_all(line.as_bytes()));
+        if let Err(e) = answered {
+            shards_vmm::debug!("a rate's answer: {e}");
+        }
+    }
+}
+
+/// What a rate's ask holds: what `hold` held the vCPUs to, none where it lets them be, and
+/// the hold's `period` in nanoseconds; or why not. A period no u64 counts in nanoseconds
+/// holds nothing, as no client could hear it.
+fn rate_answer(
+    period: std::time::Duration,
+    hold: impl FnOnce() -> Result<Option<std::num::NonZeroU64>, String>,
+) -> Result<(Option<std::num::NonZeroU64>, std::num::NonZeroU64), String> {
+    let Some(period_ns) = u64::try_from(period.as_nanos())
+        .ok()
+        .and_then(std::num::NonZeroU64::new)
+    else {
+        return Err(format!(
+            "its hold's period, {period:?}, is no nanoseconds a u64 counts"
+        ));
+    };
+    hold().map(|milli| (milli, period_ns))
 }
 
 /// What each of this VM's vCPUs has run of its guest, by index, read now, and what those it
@@ -1501,6 +1566,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         attach,
         said_to,
         gpu_report,
+        managed,
     } = match parsed(parse_run(args.into_iter()), RUN_USAGE) {
         Ok(run) => run,
         Err(code) => return code,
@@ -1542,13 +1608,18 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Mode::Plain => supervise(
-            start_reported(&cfg, gpu_report),
-            cfg.console,
-            false,
-            said_to,
-            input,
-        ),
+        Mode::Plain => {
+            if managed && let Err(e) = take_rates(&mut cfg.vsock) {
+                report(e);
+                return ExitCode::FAILURE;
+            }
+            let started = start_reported(&cfg, gpu_report);
+            // Its rates hold the running machine (`hold_rate`).
+            if managed && let Ok((handle, _)) = &started {
+                let _ = RUNNING.set(handle.clone());
+            }
+            supervise(started, cfg.console, false, said_to, input)
+        }
         Mode::Template(rootfs) => {
             boot_into(&mut cfg, rootfs, true);
             // Restored copies dial the host through this device, served by whatever
@@ -3295,6 +3366,59 @@ fn last_said(said: &[u8], report: shards_abi::bounds::ConsoleReport) -> String {
     match text.trim_start_matches('\n').trim_end() {
         "" => String::new(),
         said => format!(", its console's last lines{lost}:\n{said}"),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod rate_tests {
+    use super::{rate_answer, serve_rates};
+    use shards_abi::rate::{Answer, read_answer};
+    use std::io::Read as _;
+    use std::num::NonZeroU64;
+    use std::time::Duration;
+
+    /// A rate's answer is what its hold held the vCPUs to, a rate or none, with the hold's
+    /// period in nanoseconds, or the hold's words of why not; a period no u64 counts in
+    /// nanoseconds asks for no hold at all (D255).
+    #[test]
+    fn a_rates_answer_is_its_hold_and_its_period() {
+        let period = Duration::from_millis(100);
+        let ns = NonZeroU64::new(100_000_000).unwrap();
+        assert_eq!(
+            rate_answer(period, || Ok(NonZeroU64::new(250))),
+            Ok((NonZeroU64::new(250), ns))
+        );
+        assert_eq!(rate_answer(period, || Ok(None)), Ok((None, ns)));
+        assert_eq!(
+            rate_answer(period, || Err("the microVM has not started".into())),
+            Err("the microVM has not started".into())
+        );
+        let mut asked = false;
+        let refused = rate_answer(Duration::MAX, || {
+            asked = true;
+            Ok(None)
+        });
+        assert!(refused.is_err(), "{refused:?}");
+        assert!(!asked, "a period no client could hear holds nothing");
+    }
+
+    /// Each rate the muxer hands over is answered on its own connection, one line, then
+    /// closed; with no machine running here, its hold's refusal (D255).
+    #[test]
+    fn each_rate_handed_over_is_answered_on_its_connection() {
+        let (asks, asked) = std::sync::mpsc::channel();
+        let (ours, mut theirs) = shards_vmm::platform::UnixStream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        asks.send((ours, 250)).unwrap();
+        drop(asks);
+        serve_rates(&asked);
+        let mut line = String::new();
+        theirs.read_to_string(&mut line).unwrap();
+        assert_eq!(
+            read_answer(line.as_bytes()).unwrap(),
+            Answer::Refused("the microVM has not started")
+        );
     }
 }
 

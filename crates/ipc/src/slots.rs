@@ -198,7 +198,7 @@ pub enum Requested {
     Asked(Asked),
     /// The client ended before it was whole.
     Gone,
-    /// Not whole by its deadline: the session, its client to let go of.
+    /// Nothing of its rest came within its stall: the session, its client to let go of.
     Late(Session),
     /// Its daemon ended its clients first: the session, for the daemon to answer.
     Ended(Session),
