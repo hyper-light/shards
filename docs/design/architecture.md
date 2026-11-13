@@ -25243,7 +25243,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the leak scan's harness built, step 10's first part, D259; the injector and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -25622,11 +25622,25 @@ token beside a real ID token; whether its Anthropic sign-in runs it is step 8's 
 sender-constrained tokens. A string found says the build carries the code, not that every path runs it; ROOT's real
 runs (step 10) confirm each harness's trust of the run's CA.
 
+**Built: step 10's first part, the leak scan's harness (D259, docs/research/measurements/
+s33-leak-scan).**
+- *The save.* `ImageGuest::save` saves an orchestrator's run whole and leaves it running: its
+  memory, swap and writable layer. It uses D176's own save, made by the run's host. It is the
+  run owner's alone, beneath the run's home, beneath no directory its guest reaches, and typed.
+- *The scan.* scan.py reuses the bring-up's leak check where it lives (credentials.py: the whole
+  value, or any run of `RUN = 9` of its bytes, at every offset). It points that check at a
+  save's files, a disk image and each member's environment as given, and looks for each value
+  in its UTF-8, UTF-16LE and base64 forms. It counts the run's placeholders as no leak, lists
+  the bring-up's credential shapes that no value explains, and never prints a value.
+- *Owed.* ROOT's runs of it on KVM, HVF and WHP (its README) and step 10's second part, the
+  injector's A/B latency harness, which waits on step 3.
+
 **Owed (later slices of step 33, this plan's steps 3, 6–8 and 10).** The injector that
 terminates TLS and fills HTTP/1.1 then HTTP/2 headers (steps 3, 7); Hex wiring the grants
 and answering a run's leases from kiln's broker (step 6); the Claude Code and Codex
-sign-in/refresh profiles (step 8); and ROOT's real-VM runs on KVM, HVF and WHP with a
-whole-guest-memory leak scan and the injector's measured cost (step 10).
+sign-in/refresh profiles (step 8); and ROOT's real-VM runs on KVM, HVF and WHP with the
+whole-guest-memory leak scan (its harness built, D259) and the injector's measured cost
+(step 10).
 
 **Literals.** None of its own: this slice adds no numeric bound. A credential's `reference`
 is bounded by the store it names (kiln-seams `NAME_MAX`, 512), not re-stated here; its hosts
@@ -27157,6 +27171,144 @@ No other.
 ended by an orchestrator's broken channel, or by a VM that could not serve it, whose end does
 not say why. A run's end read once as one thing and later as another. A host's diagnostic that
 its named file lacks, or holds twice.
+
+### D259. An orchestrator's run saved whole for its owner: `ImageGuest::save`, D176's save made by its run's host, and plan step 33's leak scan over what it writes (built; real-VM runs owed)
+
+**Why.** Plan step 33's acceptance (D242) is that no credential value is anywhere in a
+harness's microVM: its memory, its disk, its environment. Checking its memory needs the guest's
+memory whole, saved at a point of a session: after a tool turn and a token's refresh. Shards
+saves a running microVM whole (D176, `shards save vm`). But an orchestrator's run (D231) has
+no daemon, and its handle, `ImageGuest`, had no save (kiln research
+01a1d2b88be57304bf6b081fe46832e0, f19). ROOT's conditions (2026-11-13), because a run's memory
+on disk is the most sensitive thing a run has:
+- the save is the run owner's alone, asked over its own session, and written only where the
+  owner names, nothing anyone else can ask for;
+- it is typed, and refused when the run is in no state to save;
+- it has a D-entry of its own;
+- it reuses the daemon's save, or D253's template save, rather than build a second.
+
+**Alternatives.**
+- *The daemon's `save vm` (D176), as it is.* It reaches the daemon's own runs alone. An
+  orchestrator's run is hosted by its own `shards api-run` (D231, D248), and no daemon knows
+  it. A run's credential grants (D242) are an orchestrator's alone, so the sessions step 33
+  must scan are such runs. Its machinery is reused below, all of it.
+- *D253's template save.* It is the guest's own, made at its boot before any member runs, so
+  it can hold nothing a session holds later.
+- *Any path the owner names, held to a walk of every directory above it.* On Unix, OpenSSH's
+  `auth_secure_path` (auth.c) walks a path so: every directory owned by root or the user, none
+  writable by group or other. On Windows a directory's ACL can let another user rename what its
+  owner made beneath it. Authenticated Users' Modify, inherited beneath `C:\`, grants `DELETE`.
+  So a path's privacy there needs every ACE of every directory above it read. Shards already
+  keeps guest memory in the home, D25's templates and D176's saves, which is private on every OS
+  (0700; on Windows the ACL `%LOCALAPPDATA%` gives it, `os::owner_only_dir`). The save takes the
+  home's privacy instead (ROOT, 2026-11-13).
+- *The guest's RAM read from the host without a snapshot.* Its VM process maps its RAM
+  privately inside its sandbox (D30), and its own save writes it already.
+
+**Decided and built.**
+- *The ask* (shards-api).
+  - `ImageGuest::save(to, patience)`, image channel version 22: `to_host::SAVE` (15) carries a
+    `SaveAsk { id, to }`, answered by `to_client::SAVED` (33), a `SaveAnswer { id, result }`.
+  - Refusals are typed, `SaveRefusal`: `Destination` 0, `State` 1, `Unsupported` 2, `Failed` 3.
+    They reach the caller as `ImageRefusal::Save(SaveRefusal, String)`.
+  - A path that is not UTF-8 is refused as `Spec`, as a plug's is.
+  - It is awaited as a room's is: an answer to an ask whose patience ran out is dropped.
+  - `ImagePools`' runs pass it through.
+- *The owner's alone.*
+  - Its frame is read only on the run's own channel, in the run host's asks (`judged`), after
+    its request.
+  - A frame that comes before the request refuses the run (`before_request`, `Cause::Request`).
+    Until its run comes, a warm host's channel is its pool's (D253).
+  - The agent-control endpoint (D252) has no save, and neither has the guest.
+  - The VM's `SAVED` answers only a save its owner asked (`Saving::answered`).
+- *Where* (`api_run::destination`, `made`).
+  - `to` is absolute. Its parent is canonicalized, so no link is followed past here, and must be
+    the run's home or beneath it.
+  - `to` is not at, beneath or holding a directory a guest reaches: each share's host directory
+    (canonical as the run starts), each plug's, and the home's volumes (`volumes::ROOT`, made or
+    not).
+  - The directory is made then, its user's alone (`os::owner_only_dir`), and refused where
+    anything is already there.
+  - Each refusal is `Destination`, saying why.
+- *One at a time* (R04, `api_run::Saving`).
+  - `Idle` becomes `Asked` as the owner asks.
+  - `Asked` becomes `Idle` as its VM answers, or where the ask never reached it.
+  - Either becomes `Gone` as the VM's link closes, and a save awaiting its answer hears that
+    its microVM stopped.
+  - A save asked while one is under way, or after the VM's end, is refused `State`, as the
+    daemon refuses one per run (`Inbox::saving`).
+  - A host whose backend takes no snapshots refuses `Unsupported` (`shards_vmm::vm::SNAPSHOTS`).
+- *The save is the daemon's* (R12).
+  - `shards_vmm::snapshot::prepare(dir, true)` stages a generation: memory, state, swap,
+    layer-head, layer, window-heads.
+  - Its files are handed to the VM with `SAVE`, whose payload `daemon::snapshots::save_ask` now
+    makes for the daemon's `ask_save` and api-run alike. warm.rs's `save_request` reads it as
+    before.
+  - With `SAVE_LEAVE_RUNNING`, its VM parks its vCPUs, quiets its devices and its guest (D176's
+    `QUIESCE`), fills the files and goes on.
+  - The run host then commits the generation: synced, renamed, pointed at.
+  - Its tokens, D176's two of `run::TOKEN`, which a restore of it would dial with, are fresh,
+    wiped here and kept nowhere: no save of an orchestrator's run is restored.
+  - For the same reason, a host that saves but cannot restore (Windows Server 2022's WHP, PM
+    M345) still saves.
+  - A save that fails leaves nothing: its directory is removed.
+- *The leak scan* (docs/research/measurements/s33-leak-scan, its README). scan.py reuses the
+  bring-up's check where it lives (harness-bringup-v2/credentials.py): a secret is every value
+  under a token, key, secret or account_id name, and a leak is the whole value or a run of
+  `RUN` bytes, looked up at every offset. It adds:
+  - the scan of a save's files, a disk image and each member's environment as given, each file
+    mapped, not read in;
+  - each value's UTF-16LE and base64 forms;
+  - the run's placeholders, given as public, whose windows are no leak;
+  - the bring-up's credential shapes, those no value explains listed by where they lie;
+  - exit 3 for a leak and 4 for unexplained shapes alone, never printing a value.
+
+**Literals** (R03).
+- The channel's version 22, kinds 15 and 33, and refusal tags 0 to 3 are sequence numbers, each
+  the next free.
+- The save adds no number: D176's tokens and the snapshot's file names are reused.
+- The scan:
+  - `RUN = SHOWN + 1 = 9` is credentials.py's. OpenAI's refusal shows a key's first 8
+    characters, in harness-bringup-v1's record. The bring-up's review (F1) replaced the chosen
+    24-byte windows, 8-byte stride and 31-byte promise that research f18 still cites; ROOT
+    confirmed it, 2026-11-13.
+  - A shape's random part is at least `ceil(128 / 6) = 22` base64url characters: RFC 6749
+    §10.10 bounds a token's guessing odds at 2^-128, and RFC 4648 §5's 64 symbols carry 6 bits.
+  - Exit 3 is credentials.py's for a leak; 4 is the next.
+
+**Cold start** (R03). Nothing is learned or chosen.
+
+**Tested** (light; adas-mac-studio-3.local, macOS arm64, rustc 1.98.1, Python 3.9.6, through a
+carrier: a bundle over origin/main in a blobless clone):
+- shards-api: `image::wire::tests::saves_round_trip_and_bad_ones_are_refused`, and
+  `image::session::tests::a_saves_answer_is_kept_for_its_awaited_ask_alone` and
+  `a_save_rides_the_runs_channel_and_comes_back_typed`.
+- shards, api-run (`api_run::tests`):
+  - `a_save_is_served_on_its_run_owners_channel_alone`: not the owner's session;
+  - `a_runs_saves_go_one_at_a_time_and_end_with_its_vm`: not in a state to save;
+  - `a_save_is_made_only_where_its_owner_may_have_it`: a destination not the owner's;
+  - the run host's side, `hosted::tests::a_save_is_handed_to_its_vm_and_committed_once_its_vm_filled_it`.
+    Its VM is played on the link's other end, and the link is followed as a run's is.
+- shards: `daemon::snapshots::tests::a_saves_ask_reads_as_its_vm_reads_it`.
+- The scan: `scan_test.py`, 7 tests; credentials.py's `credentials_test.py`, 15, unchanged.
+- Each guard was removed in turn and its test failed: the records are in the scan's README and
+  below.
+
+**Owed** (ROOT).
+- `api_image`'s `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it` on
+  KVM x86_64, HVF, WHP and, through L1, KVM arm64.
+- Step 33's real sessions scanned, once steps 3, 6 and 8 land, with a save hook in Hex (the
+  Hex lead's).
+- These light tests on Linux and Windows (CI), and `scripts/lint` on every target.
+
+**What would falsify it.**
+- A save asked other than on its run's own channel that is made.
+- A save written where its owner did not name, or where a guest reaches.
+- A second save made while one is under way.
+- A save that fails and leaves files behind.
+- A run that stops for its save.
+- A credential's run in a save's files that the scan does not report, or a report that prints
+  a value.
 
 ## 4. Start path (≤ 5 ms budget)
 

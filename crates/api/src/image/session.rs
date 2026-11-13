@@ -88,6 +88,9 @@ struct State {
     /// Each resize asked and still awaited, by its ask's id, and its answer once it came
     /// (D244), held as [`rooms`](Self::rooms) is.
     resizes: HashMap<u32, Option<Result<(), String>>>,
+    /// Each save asked and still awaited, by its ask's id, and its answer once it came (D259),
+    /// held as [`rooms`](Self::rooms) is.
+    saves: HashMap<u32, Option<Saved>>,
     next_ask: u32,
     /// The run's own command's readiness under the nesting grant (D234), as its init last
     /// said it: init owns it, and moves it by D234's table.
@@ -126,6 +129,9 @@ struct Leases {
 /// Each ask of a kind awaited, by its id, and its answer once it came, or why its host
 /// refused it (D241, D247).
 type Awaited<T> = HashMap<u32, Option<Result<T, String>>>;
+
+/// A save's outcome as its host said it (D259): saved, or refused and why.
+type Saved = Result<(), (wire::SaveRefusal, String)>;
 
 /// A numbered ask of the session's, answered by its id (D241, D247): its kind; the ask and
 /// its send, as a refusal names them; where its answer is awaited; what its host's refusal
@@ -364,6 +370,54 @@ impl Shared {
                 })
             });
         lock(&self.state).resizes.remove(&id);
+        answer
+    }
+
+    /// Asks the run's microVM saved whole at `to` (D259) and waits at most `patience` for its
+    /// host's answer; its ask awaited from before it is sent until it is answered or given up,
+    /// as [`room`](Self::room)'s is.
+    fn save(&self, to: &str, patience: Duration) -> Result<(), ImageRefusal> {
+        let id = {
+            let mut state = lock(&self.state);
+            if let Some(end) = &state.end {
+                return Err(ImageRefusal::Ended(end.clone()));
+            }
+            state.next_ask = state.next_ask.wrapping_add(1);
+            let id = state.next_ask;
+            state.saves.insert(id, None);
+            id
+        };
+        let answer = wire::SaveAsk { id, to: to.into() }
+            .encode()
+            .map_err(|e| ImageRefusal::Spec {
+                what: "a save",
+                why: e.to_string(),
+            })
+            .and_then(|ask| {
+                self.send(wire::to_host::SAVE, &ask).map_err(|e| ImageRefusal::Os {
+                    what: "the run host's save",
+                    kind: e.kind(),
+                })
+            })
+            .and_then(|()| {
+                self.wait(patience, |s| {
+                    if let Some(answer) = s.saves.get_mut(&id).and_then(Option::take) {
+                        return Some(answer.map_err(|(cause, why)| ImageRefusal::Save(cause, why)));
+                    }
+                    if let Some(end) = &s.end {
+                        return Some(Err(ImageRefusal::Ended(end.clone())));
+                    }
+                    s.gone()
+                        .then(|| Err(ImageRefusal::Host("it exited without answering".into())))
+                })
+                .unwrap_or_else(|| {
+                    Err(ImageRefusal::Unsupported {
+                        what: "a save",
+                        why: format!("no answer within {patience:?}"),
+                    })
+                })
+            });
+        lock(&self.state).saves.remove(&id);
         answer
     }
 
@@ -1145,6 +1199,12 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
                 *awaited = Some(answer.result);
             }
         }
+        k::SAVED => {
+            let answer = wire::SaveAnswer::decode(payload).map_err(bad)?;
+            if let Some(awaited) = state.saves.get_mut(&answer.id) {
+                *awaited = Some(answer.result);
+            }
+        }
         k::READY => state.ready = Some(wire::ready(payload).map_err(bad)?),
         k::INPUT_ROOM => {
             let room = wire::InputRoom::decode(payload).map_err(bad)?;
@@ -1560,6 +1620,14 @@ impl ImageGuest for Session {
         self.plug_ask(wire::to_host::UNPLUG, patience, |id| {
             wire::UnplugAsk { id, at: at.into() }.encode()
         })
+    }
+
+    fn save(&self, to: &Path, patience: Duration) -> Result<(), ImageRefusal> {
+        let to = to.to_str().ok_or_else(|| ImageRefusal::Spec {
+            what: "a save's directory",
+            why: format!("{}: not UTF-8", to.display()),
+        })?;
+        self.shared.save(to, patience)
     }
 
     fn wait_ready(&self, seen: Option<Ready>, timeout: Duration) -> Result<Option<Ready>, ImageRefusal> {
@@ -2157,6 +2225,73 @@ mod tests {
             Err(ImageRefusal::Ended(RunEnd::Stopped))
         );
         assert!(lock(&s.state).resizes.is_empty());
+    }
+
+    /// A save's answer is kept for the ask awaiting it alone, as a room's is (D259): one for an
+    /// ask no longer awaited is dropped; one that is no answer breaks the channel. A save no
+    /// host hears is refused, typed, and leaves no ask awaited; a run that has ended is saved
+    /// no more.
+    #[test]
+    fn a_saves_answer_is_kept_for_its_awaited_ask_alone() {
+        let s = shared();
+        lock(&s.state).saves.insert(4, None);
+        let saved = |id, result| wire::SaveAnswer { id, result }.encode().unwrap();
+        assert_eq!(take(&s, wire::to_client::SAVED, &saved(4, Ok(()))), Ok(false));
+        assert_eq!(lock(&s.state).saves.get(&4), Some(&Some(Ok(()))));
+        let refused = Err((wire::SaveRefusal::State, "a save of it is under way".to_string()));
+        assert_eq!(take(&s, wire::to_client::SAVED, &saved(5, refused)), Ok(false));
+        assert!(
+            !lock(&s.state).saves.contains_key(&5),
+            "an answer no ask awaits is dropped"
+        );
+        assert!(take(&s, wire::to_client::SAVED, &[0, 0, 0, 4, 1, 9]).is_err());
+        let s = shared();
+        assert_eq!(
+            s.save("/home/u/.local/share/shards/saves/s1", BOUND),
+            Err(ImageRefusal::Os {
+                what: "the run host's save",
+                kind: io::ErrorKind::BrokenPipe
+            })
+        );
+        assert!(lock(&s.state).saves.is_empty());
+        lock(&s.state).end = Some(RunEnd::Stopped);
+        assert_eq!(
+            s.save("/home/u/.local/share/shards/saves/s1", BOUND),
+            Err(ImageRefusal::Ended(RunEnd::Stopped))
+        );
+        assert!(lock(&s.state).saves.is_empty());
+    }
+
+    /// A save is asked of the run's host on the run's own channel, its directory whole, and
+    /// its answer is the host's, typed (D259): a refusal comes back as `ImageRefusal::Save` by
+    /// what refused it, a save made as done, each to its own ask, and no ask is left awaited.
+    #[test]
+    fn a_save_rides_the_runs_channel_and_comes_back_typed() {
+        let mut h = hosted(None, &[]);
+        let to = "/home/u/.local/share/shards/saves/s1";
+        for result in [
+            Err((wire::SaveRefusal::Destination, "outside the run's home".to_string())),
+            Ok(()),
+        ] {
+            let shared = Arc::clone(&h.shared);
+            let asking = std::thread::spawn(move || shared.save(to, BOUND));
+            let (kind, payload) = wire::read_frame(&mut h.sent).unwrap().unwrap();
+            assert_eq!(kind, wire::to_host::SAVE);
+            let ask = wire::SaveAsk::decode(&payload).unwrap();
+            assert_eq!(ask.to, to);
+            let answer = wire::SaveAnswer {
+                id: ask.id,
+                result: result.clone(),
+            };
+            says(&mut h.host, wire::to_client::SAVED, &answer.encode().unwrap());
+            assert_eq!(
+                asking.join().unwrap(),
+                result.map_err(|(cause, why)| ImageRefusal::Save(cause, why))
+            );
+        }
+        assert!(lock(&h.shared.state).saves.is_empty());
+        drop(h.host);
+        h.reader.join().unwrap();
     }
 
     /// A room no host hears is refused, typed, and leaves no ask awaited; a run that has

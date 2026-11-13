@@ -605,10 +605,14 @@ pub fn validate_options(opts: &BTreeMap<String, String>) -> Result<(), String> {
     Ok(())
 }
 
+/// Where a home keeps its volumes' files, every run's that has any (`Store`): a directory
+/// whose volumes guests reach.
+pub(crate) const ROOT: &str = "volumes";
+
 impl Store {
     pub fn new(home: &Path) -> Store {
         Store {
-            root: home.join("volumes"),
+            root: home.join(ROOT),
         }
     }
 

@@ -69,6 +69,21 @@ pub(super) fn unhex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// `SAVE`'s payload, as its VM reads it (warm.rs `save_request`): its `SAVE_*` flags, the
+/// save's tokens, then the generation's, the snapshot's and the microVM's names, each after a
+/// NUL but the first. The daemon's saves and an orchestrator's run host's (D259) alike.
+pub(crate) fn save_ask(flags: u8, tokens: &[u8], names: [&str; 3]) -> Vec<u8> {
+    let mut payload = vec![flags];
+    payload.extend_from_slice(tokens);
+    for (i, name) in names.into_iter().enumerate() {
+        if i > 0 {
+            payload.push(0);
+        }
+        payload.extend_from_slice(name.as_bytes());
+    }
+    payload
+}
+
 /// A save a run's VM was asked for (`kind::SAVE`), waiting for its answer
 /// (`kind::SAVED`).
 pub(super) struct Saving {
@@ -806,14 +821,7 @@ impl<D: Disk> Daemon<D> {
         } else {
             0
         };
-        let mut payload = vec![flags];
-        payload.extend_from_slice(tokens);
-        for (i, name) in [staged.name(), snapshot, &microvm].into_iter().enumerate() {
-            if i > 0 {
-                payload.push(0);
-            }
-            payload.extend_from_slice(name.as_bytes());
-        }
+        let payload = save_ask(flags, tokens, [staged.name(), snapshot, &microvm]);
         if let Err(e) = socket.send(kind::SAVE, &payload, &fds) {
             lock(&inbox).saving = None;
             return Err(format!("asking its microVM: {e}"));
@@ -839,6 +847,20 @@ impl<D: Disk> Daemon<D> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// `SAVE`'s payload reads as its VM reads it (warm.rs `save_request`): its flags, then the
+    /// save's tokens, then exactly its three names, each whole, an empty one too.
+    #[test]
+    fn a_saves_ask_reads_as_its_vm_reads_it() {
+        let tokens = [7u8; 2 * shards_abi::run::TOKEN];
+        let payload = save_ask(shards_ipc::SAVE_LEAVE_RUNNING, &tokens, ["g-1", "s1", ""]);
+        let (flags, rest) = payload.split_first().unwrap();
+        assert_eq!(*flags, shards_ipc::SAVE_LEAVE_RUNNING);
+        let (read, names) = rest.split_at_checked(2 * shards_abi::run::TOKEN).unwrap();
+        assert_eq!(read, tokens);
+        let names: Vec<&[u8]> = names.split(|&b| b == 0).collect();
+        assert_eq!(names, [&b"g-1"[..], b"s1", b""]);
+    }
 
     /// A record of a run on an IPv6 network, every field there, is within the most read, which
     /// is a few hundred bytes, not a figure picked.
