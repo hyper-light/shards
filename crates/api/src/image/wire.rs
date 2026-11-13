@@ -35,9 +35,12 @@ pub use shards_abi::run::nesting::Ready;
 /// to before its microVM starts; 13, the CPU rate its orchestrator holds the run's vCPUs to
 /// (`RATE`, answered `RATED`; D191, D247), so that a side that holds none refuses the run as
 /// it is asked, before any rate is: a host of an earlier version ends a run at a frame it has
-/// no kind for; 14, the run's agent-control endpoint ([`Request::control`], [`Started::control`];
-/// D238, D251, D252), so that a side that binds none refuses the run as it is asked.
-pub const VERSION: u8 = 14;
+/// no kind for; 14, why a vCPU's guest time went unread, typed ([`VcpuTime::unread`],
+/// `shards_abi::guest_time::Unread`, guest-cpu-time-v1's R04): its cause and code in their text
+/// form, which an earlier version's free words never parse as; 15, the run's agent-control
+/// endpoint ([`Request::control`], [`Started::control`]; D238, D251, D252), so that a side that
+/// binds none refuses the run as it is asked.
+pub const VERSION: u8 = 15;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -120,6 +123,8 @@ pub enum WireError {
     TooLong,
     /// A list whose items come out of the order the channel keeps them in.
     Order { what: &'static str },
+    /// A vCPU's unread cause not in its text form (`shards_abi::guest_time::Unread::write`).
+    Unread,
 }
 
 impl std::fmt::Display for WireError {
@@ -132,6 +137,7 @@ impl std::fmt::Display for WireError {
             Self::Version(v) => write!(f, "channel version {v}, where this side speaks {VERSION}"),
             Self::TooLong => f.write_str("a payload past the channel's bound"),
             Self::Order { what } => write!(f, "{what} out of order"),
+            Self::Unread => f.write_str("a vCPU's unread cause this side does not parse"),
         }
     }
 }
@@ -356,7 +362,7 @@ pub struct Request {
     /// is until an orchestrator asks for one (default deny).
     pub credentials: Vec<CredentialGrant>,
     /// The run's agent-control endpoint (D252), bound by its host for this run alone; none,
-    /// and it has none. Appended in version 14.
+    /// and it has none. Appended in version 15.
     pub control: Option<ControlAsk>,
 }
 
@@ -456,7 +462,7 @@ pub struct Started {
     pub members: Vec<MemberInfo>,
     pub published: Vec<Bound>,
     /// Where the run's endpoint is bound, where it asked for one (D252); appended in version
-    /// 14.
+    /// 15.
     pub control: Option<ControlAt>,
 }
 
@@ -613,8 +619,8 @@ pub struct VcpuTime {
     pub index: u32,
     /// Nanoseconds, never less than an earlier sample of the same vCPU said.
     pub guest_ns: u64,
-    /// Why this sample did not read it: `guest_ns` is then the most it read before.
-    pub unread: Option<String>,
+    /// Why this sample did not read it, typed: `guest_ns` is then the most it read before.
+    pub unread: Option<shards_abi::guest_time::Unread>,
 }
 
 impl Stats {
@@ -933,7 +939,9 @@ impl Writer {
                 None => self.u8(0),
                 Some(why) => {
                     self.u8(1);
-                    self.text(why)?;
+                    let mut text = String::new();
+                    let _ = why.write(&mut text);
+                    self.text(&text)?;
                 }
             }
         }
@@ -1071,7 +1079,9 @@ impl<'a> Reader<'a> {
                     let guest_ns = self.u64()?;
                     let unread = match self.u8()? {
                         0 => None,
-                        1 => Some(self.text()?),
+                        1 => Some(
+                            shards_abi::guest_time::Unread::parse(&self.text()?).ok_or(WireError::Unread)?,
+                        ),
                         tag => {
                             return Err(WireError::Tag {
                                 what: "a vCPU's guest time",
@@ -1246,7 +1256,7 @@ impl Request {
                 }
             }
         }
-        // The run's agent-control endpoint, appended in version 14 (D252): whether it asks one,
+        // The run's agent-control endpoint, appended in version 15 (D252): whether it asks one,
         // its controller's key, then whether it grants sockets, their directory and admission.
         match &self.control {
             None => w.u8(0),
@@ -1400,7 +1410,7 @@ impl Request {
         } else {
             None
         };
-        // The run's agent-control endpoint, appended in version 14 (D252).
+        // The run's agent-control endpoint, appended in version 15 (D252).
         let control = if r.flag()? {
             let controller = r.array::<32>()?;
             let sockets = if r.flag()? {
@@ -1589,7 +1599,7 @@ impl Started {
                 w.u16(r.port);
             }
         }
-        // Where the run's endpoint is bound and its microVM's key, appended in version 14.
+        // Where the run's endpoint is bound and its microVM's key, appended in version 15.
         match &self.control {
             None => w.u8(0),
             Some(at) => {
@@ -3040,7 +3050,7 @@ mod tests {
                 VcpuTime {
                     index: 2,
                     guest_ns: u64::MAX,
-                    unread: Some("its vCPU had left its guest".into()),
+                    unread: Some(shards_abi::guest_time::Unread::HvfExecTime(-85377023)),
                 },
             ],
             departed_ns: 1_500,
@@ -3100,6 +3110,13 @@ mod tests {
                 what: "a microVM's vCPUs"
             })
         );
+        // A vCPU's unread cause only in its text form: a code signed `+`, which no side writes,
+        // is refused, not taken as words.
+        let token = b"hvf-exec-time -85377023";
+        let at = bytes.windows(token.len()).position(|w| w == token).unwrap();
+        let mut free = bytes.clone();
+        free[at + 14] = b'+';
+        assert_eq!(StatsAnswer::decode(&free), Err(WireError::Unread));
         let microvm_tag = 4 + 1 + 4 + lines.len();
         for (at, tag, what) in [
             (microvm_tag, 2, "a microVM's cost"),
@@ -3160,7 +3177,7 @@ mod tests {
     /// grant's directory and both its numbers are read back exactly.
     #[test]
     fn a_runs_control_ask_crosses_the_image_channel_whole() {
-        assert_eq!(VERSION, 14, "the channel's next version carries the control ask");
+        assert_eq!(VERSION, 15, "the channel's next version carries the control ask");
         for control in [
             None,
             Some(ControlAsk {
