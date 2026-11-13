@@ -1114,6 +1114,23 @@ pub fn fill_random(buf: &mut [u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// This Windows' product type as its kernel says it, RtlGetVersion's wProductType (winnt.h's
+/// VER_NT_*), which tells a client edition from a server's (D154); none where it says
+/// nothing. RtlGetVersion answers whatever this program's manifest says, where
+/// VerifyVersionInfoW, which IsWindowsServer wraps, is deprecated for Windows 10.
+pub fn product_type() -> Option<u8> {
+    use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
+    use windows_sys::Win32::System::SystemInformation::{OSVERSIONINFOEXW, OSVERSIONINFOW};
+    let mut info = OSVERSIONINFOEXW {
+        dwOSVersionInfoSize: u32::try_from(size_of::<OSVERSIONINFOEXW>()).ok()?,
+        ..OSVERSIONINFOEXW::default()
+    };
+    // SAFETY: an OSVERSIONINFOEXW whose dwOSVersionInfoSize says it is one, as RtlGetVersion
+    // takes it in place of an OSVERSIONINFOW and fills it.
+    let status = unsafe { RtlGetVersion((&raw mut info).cast::<OSVERSIONINFOW>()) };
+    (status >= 0).then_some(info.wProductType)
+}
+
 fn at(offset: u64) -> OVERLAPPED {
     let mut o = OVERLAPPED::default();
     o.Anonymous.Anonymous.Offset = offset as u32;

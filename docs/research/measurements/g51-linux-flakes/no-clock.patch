@@ -1,0 +1,224 @@
+diff --git a/crates/api/src/conformance.rs b/crates/api/src/conformance.rs
+index deeab0181..5f169113c 100644
+--- a/crates/api/src/conformance.rs
++++ b/crates/api/src/conformance.rs
+@@ -29,7 +29,9 @@ pub struct Subject<'a> {
+     pub unserved: u32,
+     /// A guest that powers off by itself.
+     pub powering_off: GuestSpec,
+-    /// How long a guest may take to boot and listen, or to end.
++    /// How long a guest may take to boot and listen, or to end; `Duration::MAX` is no clock,
++    /// each wait ending at its fact (a guest's listening, its end), as `Guest::connect` and
++    /// `Guest::wait_for` take it.
+     pub patience: Duration,
+ }
+ 
+@@ -288,9 +290,7 @@ pub fn a_single_attempt_is_refused_at_once_where_the_guest_does_not_listen(
+             .connect(s.port, s.patience)
+             .map_err(|e| fail(CASE, format!("connect to the served port: {e}")))?,
+     );
+-    let at = Instant::now()
+-        .checked_add(s.patience)
+-        .ok_or_else(|| fail(CASE, "the patience is past a deadline"))?;
++    let at = deadline(s.patience).ok_or_else(|| fail(CASE, "the patience is past a deadline"))?;
+     drop(
+         guest
+             .connect_once_before(s.port, at)
+@@ -310,6 +310,18 @@ pub fn a_single_attempt_is_refused_at_once_where_the_guest_does_not_listen(
+     Ok(())
+ }
+ 
++/// The deadline `patience` from now. No clock (`Duration::MAX`) is for ever's equal, as a
++/// stream's timeout keeps it (`stream::waits::nanos`: u64's most nanoseconds, 584 years),
++/// since no `Instant` is unbounded.
++fn deadline(patience: Duration) -> Option<Instant> {
++    let patience = if patience == Duration::MAX {
++        Duration::from_nanos(u64::MAX)
++    } else {
++        patience
++    };
++    Instant::now().checked_add(patience)
++}
++
+ /// How long a real guest may take to boot and listen, to echo, or to end (`record::Learned`):
+ /// a hang guard, each wait returning at its fact. Recorded, the slowest of those waits by
+ /// the client as it is (`docs/research/platform-measurements.md` M463): macOS-HVF's, a boot
+diff --git a/crates/api/tests/sim.rs b/crates/api/tests/sim.rs
+index 15735f372..b633617d1 100644
+--- a/crates/api/tests/sim.rs
++++ b/crates/api/tests/sim.rs
+@@ -99,6 +99,22 @@ fn the_simulator_conforms() {
+     .unwrap();
+ }
+ 
++/// Every case passes with no clock too (`Duration::MAX`), each wait ending at its fact, as
++/// boot.rs runs the suite against real guests, whose boot no recorded time bounds (R03).
++#[test]
++fn the_simulator_conforms_with_no_clock() {
++    let guests = SimGuests::new(guest);
++    conformance::run(&Subject {
++        guests: &guests,
++        serving: spec("shards_test=echo"),
++        port: ECHO,
++        unserved: UNSERVED,
++        powering_off: spec("shards_test=kmsg"),
++        patience: Duration::MAX,
++    })
++    .unwrap();
++}
++
+ /// The simulator's PID 1 sees the spec it was booted with, a GPU or none (D215).
+ #[test]
+ fn the_simulator_retains_shared_gpu_enable() {
+@@ -176,17 +192,6 @@ mod client {
+     use std::path::PathBuf;
+     use std::time::Instant;
+ 
+-    /// How soon after shards' end its refusal comes, with a child holding shards' output
+-    /// (`record::Learned`). Recorded, the slowest (M463): macOS-HVF 4.277875 ms, Linux-KVM
+-    /// 299.915 µs (beside the whole shards-api suite).
+-    static REFUSED_AFTER_END: Learned = Learned::new(
+-        "REFUSED_AFTER_END",
+-        &[
+-            ("macOS-HVF", Duration::from_nanos(4_277_875)),
+-            ("Linux-KVM", Duration::from_nanos(299_915)),
+-        ],
+-    );
+-
+     /// A stand-in for `shards` that runs `body` whatever it is asked. Written to a file of
+     /// its own and installed by install(1), so no descriptor of this process ever writes
+     /// the file it executes: one that a test running beside it forked while it was open
+@@ -471,9 +476,12 @@ exit 3"#
+     }
+ 
+     /// shards' refusal comes as shards ends, with its last words, though a child it left
+-    /// holds its output open (macOS's grants broker until it exits): the end of its words is
+-    /// a fact, not a clock. Timed from shards' last act, as a new script's first start can
+-    /// take seconds on macOS, and held to `REFUSED_AFTER_END` (D215).
++    /// holding its output open (macOS's grants broker until it exits) still runs: the end of
++    /// its words is a fact, not a clock. Its connect has no clock (`Duration::MAX`), so shards'
++    /// end alone refuses it, and the refusal comes while the child still holds the output;
++    /// this file's patience bounds a failing run alone (D215). How soon was no fact: twice a
++    /// time recorded on another host failed a loaded one (CI job 131488530221, 897 µs past
++    /// PM M463's Linux-KVM 299.915 µs doubled).
+     #[test]
+     fn a_child_holding_shards_output_holds_no_refusal_back() {
+         let dir = shards_testdir::TempDir::new("api-held").unwrap();
+@@ -500,25 +508,25 @@ exit 3"#
+             })
+             .unwrap();
+         let (tx, rx) = std::sync::mpsc::channel();
+-        std::thread::spawn(move || {
+-            let refused = g.connect(ECHO, patience()).err();
+-            tx.send((refused, Instant::now()))
+-        });
++        std::thread::spawn(move || tx.send(g.connect(ECHO, Duration::MAX).err()));
+         std::fs::read(&ending).unwrap();
+-        let ended = Instant::now();
+-        let (refused, at) = rx.recv_timeout(patience()).unwrap();
++        let refused = rx.recv_timeout(patience());
+         let holder = std::fs::read_to_string(&pid).unwrap();
++        // Still running as the refusal came: signal 0 reaches it (kill(2)), before it is ended.
++        let holding = std::process::Command::new("kill")
++            .args(["-0", holder.trim()])
++            .status()
++            .unwrap()
++            .success();
+         let _ = std::process::Command::new("kill").arg(holder.trim()).status();
+         match refused {
+-            Some(Refusal::Boot(why)) => assert!(why.contains("no kernel at kernel"), "{why}"),
++            Ok(Some(Refusal::Boot(why))) => assert!(why.contains("no kernel at kernel"), "{why}"),
+             other => panic!("{other:?}"),
+         }
+-        let took = at.saturating_duration_since(ended);
+         assert!(
+-            took < REFUSED_AFTER_END.get(),
+-            "refused {took:?} after shards' end"
++            holding,
++            "the child holding shards' output ended before the refusal came"
+         );
+-        REFUSED_AFTER_END.saw(took);
+     }
+ 
+     /// Measures how long past its patience an unserved connect's refusal comes, the
+@@ -566,8 +574,9 @@ exit 3"#
+     /// Measures the waits this file's tests make, each kind on a thread of its own as the
+     /// tests run side by side, `SHARDS_API_WAITS_N` (default 40) of each, with a new stand-in
+     /// script for each (a new script's first start is slow on macOS): printed as n, p50, p90,
+-    /// p99 and max (docs/research/measurements/shards-api-waits/run.sh), for `PATIENCE` and
+-    /// the held-output test's bound.
++    /// p99 and max (docs/research/measurements/shards-api-waits/run.sh), for `PATIENCE`, and
++    /// how soon the held-output test's refusal comes after shards' end, which it holds to no
++    /// bound.
+     #[test]
+     #[ignore = "a measurement, run by its harness"]
+     fn the_waits_of_these_tests() {
+diff --git a/crates/shards/tests/boot.rs b/crates/shards/tests/boot.rs
+index ffb8b9052..0d3c44b1a 100644
+--- a/crates/shards/tests/boot.rs
++++ b/crates/shards/tests/boot.rs
+@@ -17,10 +17,12 @@ use common::{
+ 
+ const TIMEOUT: Duration = Duration::from_secs(60);
+ const EXIT_RESET: i32 = 3;
+-/// How long shards-api's waits here may take, side by side with this file's other boots as
+-/// the suite runs them (`shards_api::record::Learned`): twice the slowest boot of the test
+-/// guest to its port answering recorded under the suite on each host class
+-/// (`shards_api_boot_under_the_suites_load`, docs/research/platform-measurements.md M465).
++/// How long a direct boot the harness ends at its deadline is given, and its processes after
++/// ([`a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes`]), side by side with
++/// this file's other boots as the suite runs them (`shards_api::record::Learned`): twice the
++/// slowest boot of the test guest to its port answering recorded under the suite on each host
++/// class (`shards_api_boot_under_the_suites_load`, docs/research/platform-measurements.md
++/// M465). shards-api's own waits here wait on their facts with no clock instead.
+ static E2E: shards_api::record::Learned = shards_api::record::Learned::new(
+     "boot.rs E2E",
+     &[
+@@ -2185,15 +2187,17 @@ fn a_parent_that_started_after_its_child_is_not_its_parent() {
+ 
+ /// shards-api's client of this build's `shards` conforms: every case of its conformance
+ /// suite against real guests, the test guest as PID 1 (`echo` serves port 1234, `kmsg`
+-/// powers off), each wait guarded by [`E2E`], recorded side by side with the suite's boots.
+-/// A guest kernel's panic resets it at once (`panic=-1`), its case failing then, not at its
+-/// patience.
++/// powers off), each wait on its fact with no clock (`Duration::MAX`): the guest's
++/// listening, however long its host takes to boot it beside the suite's other boots, or its
++/// end, which refuses the wait as it comes. A guest kernel's panic resets it at once
++/// (`panic=-1`), its case failing then. Twice a boot recorded on another host was no bound
++/// for this one's (CI job 131480418603: "no OK within 2.41364452s", PM M465's Linux-KVM
++/// record doubled).
+ #[test]
+ fn shards_api_conforms_on_real_guests() {
+     if cannot_run_vms() {
+         return;
+     }
+-    let patience = E2E.get();
+     let spec = |mode: &str| api_spec(&format!("console=ttyS0 quiet panic=-1 shards_test={mode}"));
+     conformance::run(&conformance::Subject {
+         guests: &shards_api::Shards,
+@@ -2201,13 +2205,14 @@ fn shards_api_conforms_on_real_guests() {
+         port: 1234,
+         unserved: 1236,
+         powering_off: spec("kmsg"),
+-        patience,
++        patience: Duration::MAX,
+     })
+     .unwrap();
+ }
+ 
+ /// shards-api's `GuestSpec::shares`: the test guest's `share` mode writes through `shards0`
+-/// and is refused through a read-only `shards1`, then powers off, seen as `End::PowerOff`.
++/// and is refused through a read-only `shards1`, then powers off, seen as `End::PowerOff`,
++/// its end waited for with no clock, as [`shards_api_conforms_on_real_guests`] waits.
+ #[test]
+ fn shards_api_shares_a_directory_and_a_read_only_one() {
+     if cannot_run_vms() {
+@@ -2234,7 +2239,7 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
+     };
+     let guest = shards_api::Shards.boot(&spec).unwrap();
+     assert_eq!(
+-        guest.wait_for(E2E.get()).unwrap(),
++        guest.wait_for(Duration::MAX).unwrap(),
+         Some(shards_api::End::PowerOff)
+     );
+     assert_eq!(

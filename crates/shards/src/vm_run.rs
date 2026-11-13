@@ -569,10 +569,9 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                     .map_err(|e| format!("--pci-slots: {e}"))?
             }
             "--pci-slots-iommu" => cfg.pci_slots_iommu = true,
-            // The CPU baseline its guest is told (D176 part 6), ID registers as its home keeps
-            // them.
+            // The CPU baseline its guest is told (D176 part 6), as its home keeps it.
             "--cpu-baseline" => {
-                cfg.cpu_baseline = shards_vmm::arch::aarch64::cpu::decode(&text(value("--cpu-baseline")?)?)?
+                cfg.cpu_baseline = shards_vmm::arch::cpu::decode(&text(value("--cpu-baseline")?)?)?
             }
             "--vfio" => cfg.vfio.push(vfio(&text(value("--vfio")?)?)?),
             "--vfio-iommu" => cfg.vfio.push(vm::Vfio {
@@ -864,19 +863,15 @@ pub fn save(save: vm::Save) -> Result<vm::Saved, String> {
     RUNNING.get().ok_or("the microVM has not started")?.save(save)
 }
 
-/// `shards-vm cpu`: this host's CPU as its hypervisor shows a guest, its ID registers on
-/// stdout as a CPU baseline is written ([`shards_vmm::arch::aarch64::cpu::encode`]), for its
+/// `shards-vm cpu`: this host's CPU as its hypervisor shows a guest, on stdout as a CPU
+/// baseline is written ([`shards_vmm::arch::cpu::encode`]: ID registers, CPUID leaves), for its
 /// daemon (D176 part 6). The VM process's alone (crates/vm-process): shards carries this file
 /// for `run --kernel` and `restore`.
 #[allow(dead_code)]
 pub fn cpu() -> ExitCode {
     match vm::host_cpu_id() {
         Ok(id) => {
-            let _ = writeln!(
-                std::io::stdout(),
-                "{}",
-                shards_vmm::arch::aarch64::cpu::encode(&id)
-            );
+            let _ = writeln!(std::io::stdout(), "{}", shards_vmm::arch::cpu::encode(&id));
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -1012,7 +1007,7 @@ fn function(
     _step: &[u8],
     _fds: Vec<shards_ipc::fd::OwnedFd>,
 ) -> Result<vm::Plugged, String> {
-    Err(vm::passthrough_refused())
+    Err(vm::passthrough_refused().to_string())
 }
 
 /// Holds this VM's vCPUs together to `cpus` CPUs' time of the host's, its run's CPU
@@ -3010,7 +3005,7 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
         return Err("a directory of sockets cannot be granted to a confined VM process".into());
     }
     if !paths.devices.is_empty() {
-        return Err(vm::passthrough_refused());
+        return Err(vm::passthrough_refused().to_string());
     }
     let wanted: Vec<crate::grant::Wanted> = paths
         .read
