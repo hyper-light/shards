@@ -1,0 +1,21 @@
+# CI runs of ci.yml on main read for D234's real-VM test (crates/shards/tests/nesting.rs), 2026-11-13 UTC
+# Logs fetched with: gh api --allow-escape-sequences repos/hyper-light/shards/actions/jobs/<job>/logs, colours stripped
+# run sha job name: the last test binary started; the Tests step's timeout, if any; nesting.rs's result
+43255586977 87bf86b31 131312795252 x86_64-unknown-linux-gnu: last started tests/depth.rs; The action 'Tests' has timed out after 56 minutes; nesting.rs: not reached
+43263852791 fe44bc8ca 131342012062 x86_64-unknown-linux-gnu: last started tests/depth.rs; The action 'Tests' has timed out after 56 minutes; nesting.rs: not reached
+43290695299 3103d2eab 131435847210 x86_64-unknown-linux-gnu: last started tests/depth.rs; The action 'Tests' has timed out after 56 minutes; nesting.rs: not reached
+43296481740 4dd85db25 131456046046 x86_64-unknown-linux-gnu: last started tests/depth.rs; The action 'Tests' has timed out after 56 minutes; nesting.rs: not reached
+43300162291 ad600dd52 131468865437 x86_64-unknown-linux-gnu: last started tests/depth.rs; The action 'Tests' has timed out after 56 minutes; nesting.rs: not reached
+43302312717 edbada623 131476413269 x86_64-unknown-linux-gnu: last started tests/depth.rs; The action 'Tests' has timed out after 56 minutes; nesting.rs: not reached
+43303186680 83f0549ad 131479475824 x86_64-unknown-linux-gnu: last started tests/depth.rs; The action 'Tests' has timed out after 56 minutes; nesting.rs: test result: FAILED. 3 passed; 6 failed; 1 ignored; 0 measured; 0 filtered out; finished in 16.07s
+43303186680 83f0549ad 131479475880 x86_64-unknown-linux-musl: last started tests/moved.rs; no Tests timeout; nesting.rs: not reached
+43303460342 d35c4cf79 131480418603 x86_64-unknown-linux-gnu: last started tests/depth.rs; no Tests timeout; nesting.rs: test result: FAILED. 3 passed; 6 failed; 1 ignored; 0 measured; 0 filtered out; finished in 15.40s
+43303460342 d35c4cf79 131480418606 x86_64-unknown-linux-musl: last started tests/oracle.rs; no Tests timeout; nesting.rs: test result: FAILED. 3 passed; 6 failed; 1 ignored; 0 measured; 0 filtered out; finished in 15.61s
+43303460342 d35c4cf79 131480418809 aarch64-apple-darwin: last started tests/depth.rs; no Tests timeout; nesting.rs: test result: ok. 9 passed; 0 failed; 1 ignored, every case after "SKIP: Hypervisor.framework is unavailable on this host" (no HVF on the runner), so none ran (stdout trails stderr in this log: the "10 passed" line just after nesting.rs's header is moved.rs's)
+# Of the six jobs that timed out before nesting.rs, those whose end terminated a still-running tests/api_image.rs process ('Terminate orphan process: pid (N) (api_image-...)'):
+#   job 131312795252: Terminate orphan process: pid (44503) (api_image-2646be51491215fc)
+#   job 131342012062: Terminate orphan process: pid (45261) (api_image-2646be51491215fc)
+#   job 131435847210: Terminate orphan process: pid (44184) (api_image-2646be51491215fc)
+#   job 131456046046: Terminate orphan process: pid (44150) (api_image-2646be51491215fc)
+#   job 131468865437: none
+#   job 131476413269: none

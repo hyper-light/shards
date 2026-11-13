@@ -105,9 +105,13 @@ impl Home {
         run_shards_env(command, args, &self.env(), TIMEOUT)
     }
 
-    /// Builds the test image with runc at /usr/local/bin/runc, then `directives`, as `tag`;
-    /// its context holds `helper`, an agent of files alone, for the Agentfiles that name
-    /// one.
+    /// Builds the test image with runc at /usr/local/bin/runc, its command run as root, then
+    /// `directives`, as `tag`; its context holds `helper`, an agent of files alone, for the
+    /// Agentfiles that name one. The served image runs as `app`, but a nested runtime runs
+    /// as root, as D234's own example image does: runc at any other euid is rootless and
+    /// wants a user namespace (runc v1.5.2's utils_linux.go), and a command whose UIDs all
+    /// leave 0 keeps none of the grant's capabilities (capabilities(7)). So each case, given
+    /// the grant or not, holds the grant alone.
     fn build(&self, tag: &str, directives: &str) -> Run {
         let (image, _) = served();
         let ctx = TempDir::new("nesting-ctx");
@@ -116,7 +120,7 @@ impl Home {
         std::fs::write(ctx.join("helper/notes.txt"), "files alone\n").unwrap();
         std::fs::write(
             ctx.join("Agentfile"),
-            format!("FROM {image}\nCOPY --chmod=0755 runc /usr/local/bin/runc\n{directives}"),
+            format!("FROM {image}\nCOPY --chmod=0755 runc /usr/local/bin/runc\nUSER root\n{directives}"),
         )
         .unwrap();
         self.shards(&["build", "image"], &["-q", "-t", tag, ctx.to_str().unwrap()])
@@ -480,7 +484,13 @@ fn a_deadline_given_through_shards_api_is_met_or_said_passed() {
         image: "nesting:1".into(),
         vcpus: 1,
         memory_mib: 512,
-        command: Some(["nesting", "ready", "500"].map(String::from).to_vec()),
+        // The whole argv: api-run gives the run an empty entrypoint, so the image's
+        // `/bin/testguest` is not composed in (crates/shards/src/api_run.rs).
+        command: Some(
+            ["/bin/testguest", "nesting", "ready", "500"]
+                .map(String::from)
+                .to_vec(),
+        ),
         members: Vec::new(),
         publish: Vec::new(),
         egress: Narrowing::default(),
