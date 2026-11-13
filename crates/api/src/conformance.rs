@@ -29,7 +29,9 @@ pub struct Subject<'a> {
     pub unserved: u32,
     /// A guest that powers off by itself.
     pub powering_off: GuestSpec,
-    /// How long a guest may take to boot and listen, or to end.
+    /// How long a guest may take to boot and listen, or to end; `Duration::MAX` is no clock,
+    /// each wait ending at its fact (a guest's listening, its end), as `Guest::connect` and
+    /// `Guest::wait_for` take it.
     pub patience: Duration,
 }
 
@@ -288,9 +290,7 @@ pub fn a_single_attempt_is_refused_at_once_where_the_guest_does_not_listen(
             .connect(s.port, s.patience)
             .map_err(|e| fail(CASE, format!("connect to the served port: {e}")))?,
     );
-    let at = Instant::now()
-        .checked_add(s.patience)
-        .ok_or_else(|| fail(CASE, "the patience is past a deadline"))?;
+    let at = deadline(s.patience).ok_or_else(|| fail(CASE, "the patience is past a deadline"))?;
     drop(
         guest
             .connect_once_before(s.port, at)
@@ -308,6 +308,18 @@ pub fn a_single_attempt_is_refused_at_once_where_the_guest_does_not_listen(
     }
     let _ = guest.stop();
     Ok(())
+}
+
+/// The deadline `patience` from now. No clock (`Duration::MAX`) is for ever's equal, as a
+/// stream's timeout keeps it (`stream::waits::nanos`: u64's most nanoseconds, 584 years),
+/// since no `Instant` is unbounded.
+fn deadline(patience: Duration) -> Option<Instant> {
+    let patience = if patience == Duration::MAX {
+        Duration::from_nanos(u64::MAX)
+    } else {
+        patience
+    };
+    Instant::now().checked_add(patience)
 }
 
 /// How long a real guest may take to boot and listen, to echo, or to end (`record::Learned`):
@@ -357,23 +369,14 @@ pub fn stop_ends_it_and_later_connects_are_refused(s: &Subject<'_>) -> Result<()
 /// on) is taken back by `attach` of its identity: the attached guest serves its port and stops as
 /// any guest does; once it has ended, attach of it is refused `Ended` or `Gone`, and attach of an
 /// identity whose start time differs is refused with its observed start (or simulator `Gone`). On
-/// Windows a guest's VM ends with the process that booted it (D141), so none outlives its client to
-/// be taken back: attach of it answers `Gone`, the guest still its booter's.
+/// every host: on Windows the guest's process is the `shards` that booted its VM, whose Job ends
+/// the VM as it ends (D141), and it outlives its client as on Unix (D215).
 pub fn a_guest_its_client_lost_is_taken_back_by_attach(s: &Subject<'_>) -> Result<(), Failure> {
     const CASE: &str = "a guest its client lost is taken back by attach";
     let guest = boot(CASE, s, &s.serving)?;
     let identity = guest
         .identity()
         .map_err(|e| fail(CASE, format!("identity: {e}")))?;
-    // On Windows a guest's VM ends with the process that booted it (D141), so none outlives
-    // its client to be taken back: attach answers Gone, and the guest stays its booter's,
-    // ended as it drops here.
-    if cfg!(windows) {
-        return match s.guests.attach(&identity, &s.serving) {
-            Err(Refusal::Gone { .. }) => Ok(()),
-            other => Err(fail(CASE, format!("attach on Windows: {:?}", other.err()))),
-        };
-    }
     // The client's crash: its handle goes without its drop, which would end the guest.
     std::mem::forget(guest);
     let other = Identity {
