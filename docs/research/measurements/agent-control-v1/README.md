@@ -221,7 +221,7 @@ whole, never read on: D254, "Built"), until its processes were ended.
 D180's link timing under the person's ruling of 2026-11-13 (D180, "Its values derived": what a
 home knows of each daemon's path, `tls::Known`, kept per context; a cold start with no deadline,
 its probes told; liveness at use, no sooner than the probe timeout; keep-alives only where a
-path lost a connection to silence or a peer negotiated an idle timeout, hyper-quic patch Q30;
+path lost a connection to silence or a peer negotiated an idle timeout, hyper-quic patch Q34;
 strangers' places and handshake slots with no deadline), over origin/main `e0cc059c7`,
 adas-mac-studio-3.local (macOS 26.2 arm64, rustc 1.98.1), `SHARDS_HELPERS=skip`: `cargo test -p
 shards-remote --lib` `control::` 44, `tls::` 7, `frame::` 2, `net::` 6, `managed::` 30 passed;
@@ -277,11 +277,12 @@ limit saying the record's failed write first (no word of it since).
   streams a daemon's client may open are left as hyper-quic sets them (D180, "Its values
   derived"). The same liveness for step 5's and D238's endpoints, which still admit `QUIET`
   (this goal's next slice, ROOT's call C), goal 75's `unix::link()` with it; a relay's engine
-  client gone mid-handshake seen as it goes; the handshake slots' memory term. A host's start
-  is off the daemon's driver since (`a_slow_start_holds_up_no_other_client`, red with it on the
-  driver). hyper-quic's patch
-  Q30 is on hyper-raft's branch `p/negotiated-idle-v1` (b51afe30, one commit over 233b7fce,
-  Shards' pin before), for ROOT to take to hyper-raft's main. Guard mutations, ROOT's: the
+  the handshake slots' memory term. A relay's engine client gone mid-handshake is seen at its
+  next probe since (relay.rs `gone`), and a host's start is off the daemon's driver
+  (`a_slow_start_holds_up_no_other_client`, red with it on the driver). hyper-quic's patch Q34
+  (`Connection::idle_timeout`, VENDORED.md §50) is on hyper-raft's main (045cf3ff, Shards
+  pinned to it): numbered Q30 on its first branch, a number main's §38 had taken. Guard
+  mutations, ROOT's: the
   probe-timeout floor, the handshake's counts at its end, the first flight told as no probe,
   the wake socket, the record's address check, the reader's credit at an empty queue, the
   one-slot queue (none deadlocks).

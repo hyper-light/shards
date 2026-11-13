@@ -6369,7 +6369,11 @@ Tested: abi `run::managed` (the input entries, one token a member, the end's cod
 `input` (binary, no newline, invalid UTF-8 across split frames reach the pipe exactly; an
 unread stdin stops the connection's reading and resumes as it is read; a member that stops
 reading ends its input as `EPIPE` idle and writing; a connection cut short or of another
-protocol, and a hello that cannot go, end typed) and `capture` (the end's room reserved and
+protocol, and a hello that cannot go, end typed), `setup` (the input tokens the VM process
+mints, and every entry init reads for its members, of any bytes, are no entry of the
+standby's: `what_init_reads_for_its_members_is_no_workload_setup`, red on main at 845d7eb93
+with the EINVAL every run asking a member's stdin met as "error remounting the root
+read-only: invalid argument" on KVM) and `capture` (the end's room reserved and
 told before the scope's end); remote `managed::input` (frames; a record taken whole once the
 last is delivered; resubscription and refusals by scope, generation, channel and offset; an
 abort held by an unread record closes its connection; revocation), and over the real transport
@@ -6448,8 +6452,8 @@ replaced by:
   silence seen, a window before it (`keep_within`, `Liveness::keep_alive`), so that the first
   expiry of a middlebox's state measures it; and where the peer negotiated an idle timeout of
   its own (a build that still advertises one), within it, read from what was negotiated
-  (`Connection::idle_timeout`, hyper-quic patch Q30, on hyper-raft branch
-  `p/negotiated-idle-v1` until it lands there). No keep-alive goes while a send waits.
+  (`Connection::idle_timeout`, hyper-quic patch Q34, VENDORED.md §50, on hyper-raft's main
+  since 045cf3ff). No keep-alive goes while a send waits.
 - *A stranger's place* (was its time to join, from the probe timeout its handshake measured):
   no deadline. A machine holds as many connections of clients it has not enrolled as it holds
   open invitations, none while it holds none, and where every place is taken, a newer stranger
@@ -6480,6 +6484,26 @@ replaced by:
   client's resize waited for the daemon's next packet. poll waits whole milliseconds, a wait
   under one taken as one, so that a timer is looked at no sooner than it is due.
 
+**hyper-raft's main under it** (2026-11-13). Shards pinned hyper-quic and hyper-tls to a branch
+of hyper-raft forked at f116ac27 (2026-10-15) and carrying nine hyper-tls experiment commits
+(d393b4c2..233b7fce, raw public keys' certificate compression). They are pinned since to
+hyper-raft's main at 045cf3ff, where Q34 landed alone: 238 commits of main's newer than that fork
+come with it, 29 of them hyper-quic's (VENDORED.md §30 to §49: BBR, loss thresholds that learn a
+path's reordering and RACK's time threshold, the pacer, the path MTU probe's waits, forward
+erasure correction of stream data, a stream's writes recorded without allocating), so a
+context's and an agent-control link's two ends run the QUIC kiln's and Hex's vendor. The
+experiment's one effect shards relied on, no certificate compression of a raw public key, is
+shards' own since: its TLS configs offer and use none (tls.rs `tls_client`, `tls_server`; red
+with hyper-tls's defaults, which offer Brotli and zlib). Owed, ROOT's, as the behaviour under
+every link changed: the workspace on each backend (`cargo test --workspace --profile
+test-release --no-fail-fast` on macOS arm64, Linux x86_64 KVM and Windows WHP); the two-host
+moves over Wi-Fi as D176 part 6 ran them (`docs/research/measurements/migrate/two-hosts.sh`:
+`listen` on the machine moved to, `invite`, then `move` N of each mode from the other, with
+`SHARDS_MOVE_TIMES=1`, n 20, comparing `sent` and the links' longest silences with the 20 of
+2026-11-07); and the link's timing over a real network (`cargo test -p shards --profile
+test-release --test context`, and the moves' `move:` log lines, each connection's RTT, lost
+packets and longest silence).
+
 Left as hyper-quic sets them, and owed: quinn-proto's stream and connection receive windows,
 its send window, and the 100 streams a daemon's client may open at once (one command and its
 control stream, or one join, is all a connection opens; holding it there needs the raw test
@@ -6488,11 +6512,12 @@ their owners and controllers, goal 75's `unix::link()` among them, follow the sa
 (ROOT's call C): their admissions carry no patience, their bounded drivers no handshake
 deadline, their transports no idle timeout or keep-alive, `tls::QUIET` and its quarter gone;
 an endpoint whose one place a newcomer contends for asks each connection holding one for an
-answer (a PING), so that one whose owner vanished is found so at that use. Owed: a relay
-whose engine client leaves while
-its handshake waits on a daemon never reached is let go as that daemon answers or this one
-stops, not as its client leaves, as its client's input is read no further than its first
-chunk before the daemon's flow control lets it. A host's start runs on a worker of its own (server.rs `start_apart`,
+answer (a PING), so that one whose owner vanished is found so at that use. A relay whose
+engine client leaves while its handshake waits on a daemon never reached is let go at its
+next probe, its client's connection seen ended there (relay.rs `gone`: recv(2) with MSG_PEEK
+and MSG_DONTWAIT, which takes nothing and leaves the reader's descriptor blocking; on Windows,
+PeekNamedPipe's broken pipe), as its client's input is read no further than its first chunk
+before the daemon's flow control lets it. A host's start runs on a worker of its own (server.rs `start_apart`,
 `Event::Started`), apart from the driver, which acknowledges every client's packets
 meanwhile: what the client sends after its request, and on the control streams that steer the
 command, is read once the start has ended, its flow control holding it back. On the driver, a
@@ -22525,7 +22550,8 @@ Tested: `agents_run_in_their_domains` boots a real microVM. Its agent comes from
 artifact pushed to a registry; beside it is an agent of files alone. The agent reports:
 
 - uid and gid 200000, no groups;
-- PID 1, alone in its `/proc`;
+- PID 2 of its PID namespace, under init's sealed reaper (PID 1; D59's owned native domain
+  lifetime above), the two alone in its `/proc`;
 - its host name;
 - all five capability sets empty, and `no_new_privs`;
 - the other agent's directory and `/sys` unreadable (EACCES);
@@ -24932,7 +24958,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; the injector, the broker and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; the injector and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -25157,7 +25183,8 @@ docs/research/s33-veil-creds/STEP4.md.
   (`ImageRefusal::Spec`, "the run's lessor"). The daemon gives no network process grants, so
   none of its runs asks.
 - *The run's identity: its own key where it has one, else its channel* (the implementer's
-  decision, for ROOT to confirm). D238's key is made where a run's agent-control endpoint
+  decision, confirmed by ROOT on 2026-11-13: the run's D252 key where it binds an endpoint,
+  else its channel, no key made for leases alone, `KeyReplaced` carried end to end). D238's key is made where a run's agent-control endpoint
   binds: by the daemon as a run's managed scope begins (daemon/managed.rs `bind_agent`, its
   SHA-256 the `vm` line of the run's managed metadata), and by `shards api-run` once the run's
   VM has started, where its orchestrator asks for an endpoint (D252: `ImageSpec::control`, told
@@ -25183,11 +25210,18 @@ docs/research/s33-veil-creds/STEP4.md.
   type holding a value prints it: `Secret` its length, `lease::Asked` and `lease::Leases` neither.
 - *Wiping.* `Secret` zeroizes its bytes as it drops; the network process holds a value in
   `Zeroizing`; the copies of a frame that carries one are wiped once sent or taken (the
-  orchestrator's `LEASED` payload, the run host's read of it and the `NET_LEASE` it sends, the
-  network process's received message), each value appended last and whole, so that no buffer
-  let go of as one grows holds a part of it. Not wiped: kernel pipe and socket buffers, std's
-  `Stdin` buffer in the run host (later frames overwrite it), and the memory of a process
-  killed before its drop.
+  orchestrator's `LEASED` payload, the `NET_LEASE` the run host sends, the network process's
+  received message), each value appended last and whole, so that no buffer let go of as one
+  grows holds a part of it. The run host reads its channel into a buffer of its own
+  (`api_run::Channel` over `wire::read_frame_into`: its own descriptor of stdin, or handle,
+  read unbuffered, each frame read exactly), never through std's `Stdin`, whose buffer read
+  ahead and kept each frame until later ones overwrote it. Each frame is wiped in that buffer
+  as it is let go of (`api_run::Frame`'s drop, a frame cut short as well), so between frames
+  it is all zeros: a lease's value, a staged credential and a member's typed input alike. On
+  Windows the answer to the network process is written as it lies, its header and then its
+  payload (`shards_ipc::write_message_parts`), where `write_message`'s frame was a copy. Not
+  wiped: kernel pipe and socket buffers, which no call of a process's clears, and the memory
+  of a process killed before its drop.
 - *Literals.* Kind 100, the run channel's kinds 13 (`LEASED`), 30 (`LEASE`) and 31
   (`RELEASED`) and its version 20 are sequence numbers (98 and 99 went first to D251's
   `LANE_OPEN` and `LANE_HELD`; 14 to 19, to guest-cpu-time-v1's typed unread time, D252's
@@ -25217,20 +25251,71 @@ docs/research/s33-veil-creds/STEP4.md.
   where its start told one, under none where it told none. `image`: grants without a lessor
   refused. `api_run`: the ledger's states; the relay end to end over a socket and pipes, the
   network process's real lease client with a simulated orchestrator, at three kinds of end; an
-  answer to no ask breaking the channel; the audit's lines.
+  answer to no ask breaking the channel; the audit's lines; a `LEASED` frame read through the
+  run host's channel leaving not one byte other than zero in its buffer once let go of, its
+  next frame read whole (red before the wipe and with it removed, STEP4.md).
 - *Owed (ROOT).* A real run with a credential grant through `shards api-run` (KVM x86_64, HVF,
   WHP): the lease asked on first use and released at each end, with the run host's diagnostics
   saying each and no value. That needs the injector (step 3), the first caller of
   `Leases::ask`; until it lands, nothing in a run asks. Hex's vendored shards-api takes
-  `ImageSpec::lessor` (step 6). The daemon's runs have no grants, so their lease relay and a
-  move's release there are owed with them.
+  `ImageSpec::lessor` (step 6). The daemon's runs have no credential grants: their lease relay
+  and a move's release there are owed by the first change that gives a daemon's run grants.
+  No step brings them: not this plan's ten, nor the 39 of kiln plan
+  01a1cd8e862e7169a074db3d5fa33f3d, whose harness runs are all an orchestrator's, through
+  `shards api-run` (D231; its steps 9 and 15 grant names on the network, D236, not
+  credentials).
 
-**Owed (later slices of step 33, this plan's steps 3 and 5–10).** The injector that
-terminates TLS and fills HTTP/1.1 then HTTP/2 headers (steps 3, 7); kiln's broker over
-kiln-seams' `Secrets` with per-run leases, single-flight refresh and sign-in capture outside
-the VM (step 5); Hex wiring the grants (step 6); the Claude Code and Codex sign-in/refresh
-profiles (step 8); the survey of each harness's trust and token checks and the
-tmpfs-fallback list (step 9); and ROOT's real-VM runs on KVM, HVF and WHP with a
+**Built: step 5, kiln's broker (kiln main 752ca8bbc, its ledger 13991fea1; CP-T8.3).** In kiln, through kiln-seams'
+`Secrets` alone, so that `SimSecrets`, kiln's own store and Veil's (CP-T8.1) serve it alike.
+- *Kiln's store behind the seam* (`crates/kiln/src/secrets/seam.rs`, `KilnSecrets`): versions,
+  stages, deletes and leases as Secrets Manager's, each value sealed with AES-256-GCM under the
+  secrets service's data keys (wrapped by the server's master key), bound to its secret's name
+  and its version's id, so that no ciphertext opens as another row. It passes the seam's suite,
+  every clause, as the simulator does. A store of its own beside the service's app secrets,
+  which agents never read.
+- *A run's leases* (`crates/kiln/src/secrets/broker.rs`, `Broker`): a value is leased to the
+  run's identity (its microVM key's SHA-256, D238) until its provider says it ends, else until its
+  run ends (`until_ms` none): no other bound. The seam's `LEASE_MAX` (a day) is kiln-seams' own
+  bound for its stores, which no provider gave, so it ends no run's lease: the broker takes a
+  store's lease only to read the value and to revoke it. A value past its end is refused
+  `Ended`. `release` keeps the run's end, then revokes every lease held for it, and nothing more is
+  leased under its key (`RunEnded`).
+- *A ledger kept in kiln's store* (migration `20261113-1400_cp_t8_broker_ledger`): each run's end
+  and the key a move replaced it with, each lease held for a run until its revocation went
+  through, each value's end. An end or a move is kept before its leases are revoked, and a lease is
+  kept before its value is read, the run looked at again in the same call; `Broker::open` revokes
+  every lease of a run that ended or moved that a restart left live. So no restart leaves a run's
+  lease live past its end, nor leases under its key after.
+- *A move* (D176 part 6, ROOT's wiring of goal 70's key side): `moved(replaced, current)` revokes
+  every lease bound to the replaced key; an ask under it is refused
+  `KeyReplaced { asked, current }`, the fields of Shards' `Refused::KeyReplaced`; the new key is
+  leased anew; a move between an ask and its lease leases nothing to the replaced key.
+- *Sign-ins outside the microVM.* `capture` keeps a token response's access and refresh tokens
+  under `sign-ins/<sign_in>/access` and `/refresh`, and gives back placeholders: a visible marker
+  and 256 random bits (more than the 128 this entry asks; 256 is the AES-256-GCM suite's level,
+  D239). `refresh` answers one refresh of a sign-in at a time; one asked while another is under
+  way takes that one's tokens, never a second call to its provider, whose rotation would retire
+  them (RFC 6749 §6); a provider that keeps its refresh token keeps it here too.
+- *Literals.* None of its own: a lease's life is its value's own or its run's, data-derived; the
+  seam's bounds on names and values are Secrets Manager's, reused; 256 bits as cited.
+- *Tests (Linux x86_64, adacachy2, rust 1.99.1, kiln's CI toolchain; STEP5.md).* kiln-seams
+  and its doc_truth; kiln's `secrets::`: the seam's suite over kiln's store; values sealed at
+  rest, a ciphertext moved to another name refused; a run's leases end with it, a value with no
+  end of its own its run's until then, and an ask after its end refused; restarted mid-run, the
+  run's end revokes the lease from before and refuses its key, a run that ended with its leases
+  live has them revoked as the broker opens, and a move outlives the restart; a move revokes the
+  old key's leases and refuses it typed; a capture keeps the tokens and gives marked random
+  placeholders; two refreshes at once make one call to the provider. Every broker test runs over
+  `SimSecrets` and `KilnSecrets` alike, each guard removed in turn failing its test. clippy
+  `-D warnings` clean.
+- *Owed.* Hex answering a run's lease asks from the broker, and telling it of a move (step 6);
+  Shards' run host asking them (step 4). ROOT's real runs (step 10).
+
+**Owed (later slices of step 33, this plan's steps 3 and 6–10).** The injector that
+terminates TLS and fills HTTP/1.1 then HTTP/2 headers (steps 3, 7); Hex wiring the grants
+and answering a run's leases from kiln's broker (step 6); the Claude Code and Codex
+sign-in/refresh profiles (step 8); the survey of each harness's trust and token checks and
+the tmpfs-fallback list (step 9); and ROOT's real-VM runs on KVM, HVF and WHP with a
 whole-guest-memory leak scan and the injector's measured cost (step 10).
 
 **Literals.** None of its own: this slice adds no numeric bound. A credential's `reference`
@@ -26330,9 +26415,14 @@ controller's bytes and the harness's exact, its end told, a member with no bridg
 typed), `daemon::managed::tests` (the daemon's host refusing an MCP ask before its VM process
 hears of it).
 
-**Owed.** The listener, the bridge and `LANE_ACCEPTED` (D251's agent); the daemon's and the orchestrator's
-hosts pairing each connection with its ask; kiln's harness configs naming the bridge and its
-in-process server over the two streams (kiln's step 18); every real-VM run, ROOT's: each
+**Owed.** The listener, the bridge and `LANE_ACCEPTED` (D251's agent, building them; ipc kind
+101); the daemon's and the orchestrator's hosts pairing each connection with its ask, and the
+asking (the daemon's annotation, the orchestrator's MemberSpec field), goal 58's; kiln's harness
+configs naming the bridge. kiln's in-process server over the two streams is built (kiln main
+`dace992a6`, `reach::mcp::serve_lane`: one `Execs::mcp(member)` connection's newline-delimited
+JSON-RPC read from `McpConnection::from` and answered on `to`, in the runner's own process, no
+socket, on Windows too), its connection to a launch waiting on kiln's next re-vendor of Shards
+and this pairing (kiln's step 18, goal 61). Every real-VM run, ROOT's: each
 harness that takes MCP calling kiln's server through the bridge, on KVM, HVF and WHP, with the
 microVM and the kiln runner on one machine and on two.
 
@@ -26539,6 +26629,92 @@ are none.
 **What would falsify it.** A member started without the arguments its spec gave, with them
 before its own options, or with one split, joined or cut; a request past the bound started
 with its arguments cut.
+
+### D257. One registry of setup keys, and an init refusing an entry of any other before it applies a spec (built; real-VM runs owed)
+
+**Why.** D28 refuses an init of another build by the identity of what the two share: shards-abi's
+sources, hashed as it is built. A spec's setup entries are shared too, but most of their keys
+were spelled as literals in the host's composers and init's readers alone (`tmpfs=`, `readonly`,
+`caps=`, `confine-eth0`, and some fifty more), outside abi, so no identity covered them. And init
+ignored an entry it had no reader for: `setup::apply` falls through to `Ok`, and `sort_setup`
+hands an unknown entry to the standby, which applies nothing of it. An init from another commit
+whose abi sources are the same would then drop a key its host's build added, saying nothing.
+This came out of a finding first reported too broadly (D256's run): the `member-*=` keys are
+abi's, so D28 already covers them; the literals were the gap (ROOT's go, 2026-11-13).
+
+**Alternatives** (R02):
+- The init's identity carried in HELLO, checked before staging: D28 already does that, on the
+  control page, before any spec, at no cost to a run. Not built twice (R12, R13).
+- A protocol number, raised as keys change: a chosen number (R03), and one a change could forget.
+- An init warning of an unknown entry and going on: the same silent drop, logged.
+- Decided: every key in one abi registry, so D28's identity moves with each, and init refusing an
+  entry of any other.
+
+**Decided and built.**
+- *The registry.* `shards_abi::run::setup::KEYS`, 74 keys, sorted. An entry's key is its bytes
+  before its first `=`, else the whole entry (`readonly`). It holds every key a host composer
+  writes, and `own-net`, which init's joiner code reads (join.rs `built_by`) and no composer
+  writes. Not `notify`, init's own entry for its standby, which its code says is never a daemon's.
+- *Init refuses.* Both frames that carry a spec read it through `host_spec`: the workload's
+  (`receive`) and an exec's (`Exec::start`), which a member's exec and a joiner's command use
+  too. An entry of an unregistered key refuses the spec before any of it is applied.
+  - `run::setup::Unregistered` names the key, never the value, which may be a credential.
+  - A run so refused ends unstarted, with init's words, as any setup it refuses does; an exec,
+    by its id.
+- *The identity follows.* The registry is abi's source, so a key added changes D28's identity,
+  and the host refuses an init built before it, before it sends any spec.
+
+**The guard against a missed key** (ROOT's (c)): host unit tests.
+- *The composers that are functions*: setup.rs's `setup`, `security_setup`, `binds`,
+  `domain_seccomp` and `plug_roots` for a run of every option they read (with the nesting grant
+  and without, privileged, on another run's namespaces); volumes' entries as `open` and `joined`
+  compose them; api-run's staging and its CA's entries. Every entry is of a registered key, and
+  the run of every option writes each of its kinds.
+- *The composers that write inline*: a census of the crate's sources.
+  - Every file writing a spec's setup must be among the census's 14. The daemon's runs,
+    joiners and execs, api-run, the warm VM and the VM process are among them, so a new one
+    fails the test until it is read. Its first run found one the inventory had missed: a
+    member's exec (`daemon/managed/execs.rs`, D243), whose one entry is abi's `exec_in`.
+  - Each key those files spell as a literal (`b"KEY=…"`, `b"KEY"`, `format!("KEY=…")`) must be
+    registered, or one of the words each file names as no entry's key (a device's throttle tags,
+    a volume's flags, a tmpfs's options).
+  - Only `volumes.rs` may choose its key as it runs, and its own tests compose that one.
+- The builder writes no setup: its steps reach the guest in the builder's own protocol.
+- abi's own test: every key constant it defines, and every entry its functions make, is
+  registered.
+
+**Literals.**
+
+| Literal | Source |
+|---|---|
+| `KEYS` | the protocol's own names, each from the composer that writes it or the reader that reads it |
+| `=` | an entry's own separator of its key and value |
+
+**Cold start** (R03). Nothing is learned or chosen.
+
+**Tested** (light, red then green):
+- abi `run::setup::tests`: the registry sorted and each a key; every entry abi makes registered;
+  an unregistered key refused by its key, its value unsaid.
+- init `host_spec_tests::a_spec_holding_an_unregistered_setup_key_is_refused_by_it`; its
+  guard-removal mutant (`host_spec` without the check, init's behavior before) fails it.
+- shards `setup::tests::every_entry_the_setup_composers_write_is_of_a_registered_key` and
+  `every_entry_the_composers_spell_is_of_a_registered_key`. With one key taken out of the
+  registry (the daemon's `mac`), the census fails naming the file and key.
+- volumes' `a_joiners_shared_directories_are_its_join_shares_volumes` and
+  `an_agentfiles_volumes_are_registered_as_it_and_the_run_say`; api-run's
+  `a_members_arguments_are_staged_after_its_own_in_order` and
+  `credential_grants_ca_goes_to_the_guest_in_pem_with_each_host_once`.
+
+**Owed** (ROOT).
+- The broad real-VM suites on HVF, then KVM and WHP: containers, api_image, nesting,
+  member_exec. A key the census and the composers' tests missed shows there as a run refused
+  "its setup: a setup entry of key …".
+- These light tests on Linux and Windows (CI), and `scripts/lint` on the 7 targets.
+
+**What would falsify it.** A spec all of whose keys are registered refused; one holding an
+entry of an unregistered key started, applied or silently ignored; a file writing a spec's
+setup that the census does not read; an init of another build that accepts a key it has no
+reader for.
 
 ## 4. Start path (≤ 5 ms budget)
 
