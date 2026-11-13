@@ -100,7 +100,7 @@ struct Completed {
 enum Bound {
     /// A wait judged as the tests' waits are (D209): on the daemon of its home and its
     /// microVMs, or on what this test started; its kind its call site.
-    Judged(Patience),
+    Judged(Box<Patience>),
     /// One absolute deadline of its caller's: the native fixtures', whose patience is their
     /// caller's explicit synthetic input (managed-cleanup/readiness.md), partial readiness
     /// not extending it.
@@ -470,7 +470,7 @@ impl Drop for Client {
 /// its kind its caller's call site.
 #[track_caller]
 fn ready(home: &Path, args: &[&str]) -> Client {
-    let bound = Bound::Judged(Patience::of(home));
+    let bound = Bound::Judged(Box::new(Patience::of(home)));
     let mut client = Client::spawn(
         common::interruptible(
             common::command()
@@ -494,7 +494,9 @@ fn ready(home: &Path, args: &[&str]) -> Client {
 /// call site.
 #[track_caller]
 fn finished(home: &Path, client: &mut Client) -> String {
-    let result = client.finish(Bound::Judged(Patience::of(home))).unwrap();
+    let result = client
+        .finish(Bound::Judged(Box::new(Patience::of(home))))
+        .unwrap();
     assert!(
         result.status.success(),
         "{}: {} output bytes",
@@ -756,12 +758,14 @@ mod native {
                 .args(["-c", "echo ready"])
                 .stdin(Stdio::null())
                 .stderr(Stdio::inherit()),
-            Bound::Judged(Patience::started()),
+            Bound::Judged(Box::new(Patience::started())),
         )
         .unwrap();
         let returned = Returned::of(&client);
         client.await_ready().unwrap();
-        let completed = client.finish(Bound::Judged(Patience::started())).unwrap();
+        let completed = client
+            .finish(Bound::Judged(Box::new(Patience::started())))
+            .unwrap();
         assert!(completed.status.success());
         drop(client);
         returned.check();
