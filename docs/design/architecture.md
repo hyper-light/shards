@@ -9081,8 +9081,19 @@ first mark to its last, a read goes on while each window as long reads what thei
 MiB keeps over it, and is refused, typed, at the first that does not (`Stalled::Slow`: how
 far it had read, what it read over the window and what it had to, and the record); before
 its first mark, past the slowest start seen, it goes on while its daemon or a microVM
-shows progress (`Stalled::Unstarted`); the first read, with nothing seen before it,
-follows its microVM's liveness alone, to its end. The record is the reads held to none
+shows progress, never refused before each of its VM processes has been judged over a whole
+slice (`common::Patience`, D209), or while its slice's tasks stalled on memory within a
+minute, as PSI's `some` total says (`memory.pressure`, Linux's
+Documentation/accounting/psi.rst: a host's hold counts as held, R03), and is refused
+otherwise (`Stalled::Unstarted`); the first read, with nothing seen before it, follows its
+microVM's liveness alone, to its end. Until #77 a start slower than three of the slowest
+start's looks was refused before any VM process had been looked at twice: under the budget
+on adacachy2 (Linux 7.3.3 x86_64) at 8bfa6150e and 9d2da923d, 97.49 ms after its command
+began against a slowest start of 32.44 ms, its slice at its `memory.high` with 4345 `high`
+events. `a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold` plays
+starts of 500 ms against a slowest of 30 ms, one with an idle stand-in VM process not yet
+judged and one in a slice whose PSI total grows, each followed to its end, and a start that
+never comes, refused past a whole slice. The record is the reads held to none
 alone, never seeded, so that a budget's reads never raise the bound they are judged by.
 Until 237f3ebe7 the medians of 3 were held within twice those under none, a multiple, and
 each read was waited on 600 s and past that while its microVM ran: on adacachy2 (32 CPUs)
@@ -10402,7 +10413,14 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   are held: their own deadline, or past it while the home's daemon says something
   (`Said`), or a VM process under that daemon or under the test's process runs (`Ran`),
   failing a minute after the last; the look that fails one begins past it, as a
-  PowerShell's look at Windows' processes may outlast a slice. daemon.rs' `eventually`
+  PowerShell's look at Windows' processes may outlast a slice. Nor does it fail one before
+  each `Ran` has judged a whole slice of every VM process it follows (R03: refused only after
+  a whole window with no progress); `Ran` looks at its first ask, a baseline, and judges a
+  slice later. Until #77 its first look came a slice after it began and its first judgment a
+  slice after that, so a bound shorter than a slice failed before anything was judged:
+  budget.rs' read under its budget was refused 97.49 ms after its command began, the third
+  look of 32.44 ms (the slowest start under none), on adacachy2 at 8bfa6150e and 9d2da923d.
+  daemon.rs' `eventually`
   and `wait`, saved.rs', containers.rs', engine.rs' and budget.rs' waits on pools,
   restored VMs and guests' answers, and warm.rs' warm VM's end take it.
 - **A guest's stream follows its bytes, and its end its output** (every host). CPU time is

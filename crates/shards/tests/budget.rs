@@ -15,7 +15,8 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use common::{
-    Patience, TempDir, cannot_pool, cannot_run_vms, home_with, processes_with, run_shards_env, served,
+    DAEMON_QUIET, Patience, TempDir, cannot_pool, cannot_run_vms, home_with, processes_with, run_shards_env,
+    served,
 };
 use shards_vmm::devices::virtio::fs::headroom::reads_room;
 
@@ -498,8 +499,9 @@ impl Followed {
 /// A read refused ([`follow`]).
 #[derive(Debug)]
 enum Stalled {
-    /// No mark past the slowest start seen, and its daemon and microVMs showing no progress
-    /// for as long as [`Patience`] waits on them.
+    /// No mark past the slowest start seen, its daemon and microVMs showing no progress for
+    /// as long as [`Patience`] waits on them, and its slice held by its host within none of
+    /// it ([`stalled`]).
     Unstarted { waited: Duration, record: Record },
     /// Past the slowest read seen from its first mark, a window as long over which it read
     /// less than the slowest MiB seen keeps over it: how far it had read and how long after
@@ -519,7 +521,7 @@ impl std::fmt::Display for Stalled {
         match self {
             Stalled::Unstarted { waited, record } => write!(
                 f,
-                "no mark {waited:?} after its command began, past the slowest start seen, its daemon and microVMs showing nothing; {record}"
+                "no mark {waited:?} after its command began, past the slowest start seen, its daemon and microVMs showing nothing and its slice held by nothing; {record}"
             ),
             Stalled::Slow {
                 read,
@@ -563,7 +565,8 @@ enum Phase {
 /// Runs `shards ARGS`, a `read-marked` read of the gigabyte, following its guest's marks as
 /// they come, judged by `record` ([`Record`]). Before its first mark it is waited on for the
 /// slowest start seen, and past it for as long as its daemon or a microVM shows progress
-/// ([`Patience`]); from its first mark, for the slowest read seen, and past that looked at
+/// ([`Patience`], never refused before each VM process has been judged over a whole slice)
+/// or the slice `cgroup` has been held by its host within [`DAEMON_QUIET`] ([`stalled`]); from its first mark, for the slowest read seen, and past that looked at
 /// once each window as long, each having to read what the slowest MiB seen keeps over it
 /// ([`Record::judging`]); with nothing seen yet, until it ends. Each look past the slowest
 /// read seen says the slice `cgroup`'s state on stderr. Refused, its command is ended and
@@ -632,6 +635,8 @@ fn judge(
     cgroup: &Path,
 ) -> Result<Followed, Stalled> {
     let mut patience = Patience::of(home, record.start.unwrap_or_default());
+    // The slice's stall total when last looked at, and when it last grew: a hold.
+    let mut stalls = (stalled(cgroup), None::<Instant>);
     let mut phase = Phase::Starting { looked: None };
     let (mut marks, mut stdout, mut stderr) = (Vec::new(), String::new(), String::new());
     let (mut status, mut closed) = (None::<Option<i32>>, 0);
@@ -708,7 +713,15 @@ fn judge(
         let at = Instant::now();
         match &mut phase {
             Phase::Starting { looked } => {
-                if !patience.holds() {
+                let progresses = patience.holds();
+                let now = stalled(cgroup);
+                if now > stalls.0 {
+                    stalls = (now, Some(at));
+                }
+                let held = stalls
+                    .1
+                    .is_some_and(|t| at.saturating_duration_since(t) < DAEMON_QUIET);
+                if !progresses && !held {
                     return Err(Stalled::Unstarted {
                         waited: at.saturating_duration_since(began),
                         record: *record,
@@ -941,6 +954,19 @@ impl Drop for StandIn {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+
+/// How long the tasks of the slice `cgroup` have stalled on memory, in microseconds: PSI's
+/// `some` total (Linux's Documentation/accounting/psi.rst), which grows while its host holds
+/// any of them in reclaim, at its `memory.high`, or refaulting what it took back. None where
+/// its kernel keeps none.
+fn stalled(cgroup: &Path) -> Option<u64> {
+    std::fs::read_to_string(cgroup.join("memory.pressure"))
+        .ok()?
+        .lines()
+        .find(|l| l.starts_with("some "))?
+        .split_whitespace()
+        .find_map(|f| f.strip_prefix("total=")?.parse().ok())
 }
 
 /// The slice's memory, its events and pressure, and for each process in its tree its

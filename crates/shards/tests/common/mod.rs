@@ -2405,13 +2405,17 @@ pub const PROGRESS_SLICE: Duration = Duration::from_secs(10);
 /// client past its deadline is waited on while one of them ran within [`DAEMON_QUIET`], as
 /// a guest's workload runs at its host's speed (the parity plan's step 10: a 64-vCPU storm
 /// and a 3 GiB build step on an arm64 Windows host nested under QEMU's TCG). One that runs
-/// nothing for as long fails it as before. Not caught: a guest that spins for ever, as
-/// D209 says of a start, which its CI job's limit ends.
+/// nothing for as long fails it as before. Its first look is its first ask, and each VM
+/// process found at a look is judged a slice later. Not caught: a guest that spins for ever,
+/// as D209 says of a start, which its CI job's limit ends.
 pub struct Ran {
     client: u32,
     followed: std::collections::HashMap<u32, shards_vmm::platform::Progress>,
-    /// When its processes were last looked at.
-    looked: Instant,
+    /// When its processes were last looked at; none before its first ask.
+    looked: Option<Instant>,
+    /// Whether its last look judged every VM process under its client over a whole slice:
+    /// none found anew then, or none at all.
+    whole: bool,
     /// When one of them last ran, since this began watching.
     at: Option<Instant>,
     /// Whether its client's run has answered since this began watching.
@@ -2423,7 +2427,8 @@ impl Ran {
         Ran {
             client,
             followed: std::collections::HashMap::new(),
-            looked: Instant::now(),
+            looked: None,
+            whole: false,
             at: None,
             answered: false,
         }
@@ -2444,11 +2449,12 @@ impl Ran {
     /// Whether a VM process under its client ran within [`DAEMON_QUIET`], as its [`Floor`]
     /// judges what it ran: during its cold start, past an idle microVM's
     /// (`platform::progressed`); past it, not below its floor. Asked as often as its caller
-    /// likes, it looks once each [`PROGRESS_SLICE`]; one found anew is judged from the next
-    /// look on.
+    /// likes, it looks at its first ask and once each [`PROGRESS_SLICE`] after; one found
+    /// anew is judged from the next look on.
     pub fn lately(&mut self) -> bool {
-        if self.looked.elapsed() >= PROGRESS_SLICE {
-            self.looked = Instant::now();
+        if self.looked.is_none_or(|l| l.elapsed() >= PROGRESS_SLICE) {
+            self.looked = Some(Instant::now());
+            self.whole = true;
             let vms = vm_processes_under(self.client);
             self.followed.retain(|pid, _| vms.contains(pid));
             let mut floors = floors();
@@ -2471,11 +2477,18 @@ impl Ran {
                     }
                     std::collections::hash_map::Entry::Vacant(v) => {
                         v.insert(shards_vmm::platform::Progress::of(pid));
+                        self.whole = false;
                     }
                 }
             }
         }
         self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
+    }
+
+    /// Whether its last look judged a whole slice of every VM process under its client, or
+    /// found none: before it has, its silence says nothing of them.
+    pub fn watched(&self) -> bool {
+        self.whole
     }
 }
 
@@ -2487,8 +2500,12 @@ impl Ran {
 /// ([`Ran`]). Fast hosts keep `timeout`; a slow one (the parity plan's step 10, an arm64
 /// Windows host nested under QEMU's TCG, whose template saves took 20 s and pool restores
 /// a further minute) is waited on while it works, and a stuck one fails a minute after its
-/// last progress. The look that fails a wait begins past it: one that takes long itself,
-/// as a PowerShell's look at Windows' processes does, is never what the wait runs out in.
+/// last progress. A wait is never failed before each [`Ran`] has judged a whole slice of
+/// its VM processes (R03: refused only after a whole window with no progress): a bound
+/// shorter than a slice, as a start's learned from fast ones is (tests/budget.rs, 32 ms on
+/// adacachy2), is otherwise past before any of them has been looked at twice. The look that
+/// fails a wait begins past it: one that takes long itself, as a PowerShell's look at
+/// Windows' processes does, is never what the wait runs out in.
 pub struct Patience {
     start: Instant,
     timeout: Duration,
@@ -2529,8 +2546,9 @@ impl Patience {
     }
 
     /// Whether to look again: within its timeout, or past it while the daemon or a microVM
-    /// progresses; once neither does, once more, the look after this one, and then no more.
-    /// Ask it after each look that found the state not yet come, as often as they come.
+    /// progresses or a VM process has yet to be judged over a whole slice; once none of
+    /// these holds, once more, the look after this one, and then no more. Ask it after each
+    /// look that found the state not yet come, as often as they come.
     pub fn holds(&mut self) -> bool {
         let due = self.read.is_none_or(|r| r.elapsed() >= Duration::from_secs(1));
         if let Some(home) = self.home.as_ref().filter(|_| due) {
@@ -2546,7 +2564,8 @@ impl Patience {
         let said = self.said.as_mut().is_some_and(Said::lately);
         let ran = self.own.lately();
         let daemons = self.daemon.as_mut().is_some_and(|(_, r)| r.lately());
-        if self.start.elapsed() < self.timeout || said || ran || daemons {
+        let watched = self.own.watched() && self.daemon.as_ref().is_none_or(|(_, r)| r.watched());
+        if self.start.elapsed() < self.timeout || said || ran || daemons || !watched {
             self.out = false;
             return true;
         }
