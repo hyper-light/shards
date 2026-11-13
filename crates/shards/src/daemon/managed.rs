@@ -1246,6 +1246,12 @@ impl Outputs {
 }
 
 impl<D: Disk> Daemon<D> {
+    /// The daemon's end of run `id`'s managed capture failed as `e` says (`what`: its credits
+    /// or its records): logged, as yet.
+    pub(super) fn capture_failed(&self, id: &str, what: &str, e: &Failure) {
+        log(format!("container {id}: {what}: {e}"));
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn managed_capture<'s, 'e>(
         &'s self,
@@ -1821,12 +1827,13 @@ impl<D: Disk> Daemon<D> {
         }
         let writer_owner = Arc::clone(&owner);
         let writer_producers = Arc::clone(&producers);
+        let (credited, captured) = (id.to_owned(), id.to_owned());
         std::thread::Builder::new()
             .name("managed-credit".into())
             .spawn_scoped(threads, move || {
                 if let Err(e) = send_credits(writing, &writer_owner, &writer_producers) {
-                    log(format!("managed output credits: {e}"));
                     writer_owner.abort();
+                    self.capture_failed(&credited, "its members' output's credits", &e);
                 }
             })?;
         let reader_owner = Arc::clone(&owner);
@@ -1834,8 +1841,8 @@ impl<D: Disk> Daemon<D> {
             .name("managed-capture".into())
             .spawn_scoped(threads, move || {
                 if let Err(e) = bridge(reading, &reader_owner, &labels, states) {
-                    log(format!("managed output capture: {e}"));
                     reader_owner.abort();
+                    self.capture_failed(&captured, "its members' output", &e);
                 }
             })?;
         setup.try_reserve(3).map_err(io::Error::other)?;
