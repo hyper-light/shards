@@ -136,6 +136,16 @@ pub struct MemberSpec {
     /// into the terminal ([`ImageGuest::take_input`]), and its end leaves the terminal open.
     /// It is 0 by 0 until [`ImageGuest::resize`] sizes it.
     pub terminal: bool,
+    /// Its run-time arguments (D256), in their order: its command line is its image's
+    /// `run.command` (its startup descriptor's entrypoint and options, `agent.json` or
+    /// `harness.json`), then these, so that a harness takes its session's own flags (Claude
+    /// Code's `--resume`, `--model`) as it does on the host. None: its image's command alone.
+    /// No argument holds a NUL. A command line is no secret, read by whatever sees the member's
+    /// processes (proc(5), `/proc/PID/cmdline`): a credential goes in [`env`](Self::env) or
+    /// [`files`](Self::files). Bounded with the rest of the spec by the channel's own bound,
+    /// `shards_abi::run::MAX_PAYLOAD`, Linux's own on a command line and environment, and
+    /// refused past it, never cut.
+    pub args: Vec<String>,
 }
 
 /// A host directory the guest sees at `at`, as `-v HOST:AT[:ro]` gives one: a member gets
@@ -414,7 +424,8 @@ fn no_backend(r: crate::Refusal) -> ImageRefusal {
 
 /// `spec` as the run host reads it, refused here where it could never be run: a member's
 /// terminal (owed, G24), a share's path that is no UTF-8 or is relative, a variable's key
-/// that holds `=` or a NUL, or a key or file the guest would refuse.
+/// that holds `=` or a NUL, an argument that holds a NUL, or a key or file the guest would
+/// refuse.
 fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
     let mut members = Vec::with_capacity(spec.members.len());
     for m in &spec.members {
@@ -458,6 +469,13 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
                 why: format!("{w:?}: {}", shards_abi::run::members::Error::Workdir),
             });
         }
+        // Its run-time arguments (D256), each told by its place, never its bytes.
+        for (i, a) in m.args.iter().enumerate() {
+            shards_abi::run::members::arg_ok(a.as_bytes()).map_err(|e| ImageRefusal::Spec {
+                what: "a member's argument",
+                why: format!("{}: its argument {i}: {e}", m.member.name),
+            })?;
+        }
         members.push(wire::MemberStage {
             kind: m.member.kind,
             name: m.member.name.clone(),
@@ -466,6 +484,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             workdir: m.workdir.clone(),
             input: m.stdin,
             terminal: m.terminal,
+            args: m.args.clone(),
         });
     }
     let mut shares = Vec::with_capacity(spec.shares.len());
@@ -637,6 +656,7 @@ mod tests {
                 workdir: Some("/Users/ada/proj".into()),
                 stdin: false,
                 terminal: false,
+                args: Vec::new(),
             }],
             publish: Vec::new(),
             egress: Narrowing::default(),
@@ -681,6 +701,24 @@ mod tests {
         assert!(r.shares[0].read_only);
         assert_eq!((r.nesting, r.ready_by), (false, None));
         assert!(r.credentials.is_empty());
+        assert_eq!(wire::Request::decode(&r.encode().unwrap()).unwrap(), r);
+    }
+
+    /// A member's run-time arguments (D256) ride its request as given, in their order, an
+    /// empty one among them; a member given none has none, its image's command alone.
+    #[test]
+    fn a_members_arguments_ride_its_request_in_order() {
+        assert!(request(&spec()).unwrap().members[0].args.is_empty());
+        let mut s = spec();
+        s.members[0].args = vec![
+            "--resume".into(),
+            "s-1".into(),
+            String::new(),
+            "--model".into(),
+            "claude-opus-4".into(),
+        ];
+        let r = request(&s).unwrap();
+        assert_eq!(r.members[0].args, s.members[0].args);
         assert_eq!(wire::Request::decode(&r.encode().unwrap()).unwrap(), r);
     }
 
@@ -822,6 +860,17 @@ mod tests {
         let mut s = spec();
         s.members[0].files[0].mode = 0o4755;
         assert_eq!(refused(s), "a member's file");
+        // An argument holding a NUL, which no command line exec'd holds (D256), told by its
+        // place alone.
+        let mut s = spec();
+        s.members[0].args = vec!["--resume".into(), "s-1\0--model".into()];
+        match request(&s) {
+            Err(ImageRefusal::Spec { what, why }) => {
+                assert_eq!(what, "a member's argument");
+                assert!(why.contains("argument 1") && !why.contains("s-1"), "{why}");
+            }
+            other => panic!("{other:?}"),
+        }
         let mut s = spec();
         s.shares[0].host = PathBuf::from("relative");
         assert_eq!(refused(s), "a share");
@@ -855,11 +904,19 @@ mod tests {
         assert!(!request(&spec()).unwrap().members[0].input);
     }
 
-    /// A spec past the channel's bound is refused before the run host starts.
+    /// A spec past the channel's bound is refused before the run host starts: a file's bytes,
+    /// or a member's arguments (D256), never cut to fit.
     #[test]
     fn a_spec_past_the_bound_is_refused() {
         let mut s = spec();
         s.members[0].files[0].bytes = Secret(vec![0; shards_abi::run::MAX_PAYLOAD as usize]);
+        assert!(matches!(
+            request(&s),
+            Err(ImageRefusal::Spec { what: "the spec", .. })
+        ));
+        let half = shards_abi::run::MAX_PAYLOAD as usize / 2;
+        let mut s = spec();
+        s.members[0].args = vec!["x".repeat(half), "x".repeat(half)];
         assert!(matches!(
             request(&s),
             Err(ImageRefusal::Spec { what: "the spec", .. })

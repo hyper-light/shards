@@ -1,8 +1,9 @@
 //! What an orchestrator stages into a member before its program runs (D231): variables
-//! over its image's, its working directory, and regular files under its home, where its
-//! `HOME` lies (domains.rs): the scratch tmpfs init makes for it (`HOME=/tmp`), or a
-//! writable volume given it. The host checked each entry as it made it; each is read and
-//! checked again here, from the guest's own copy (D109: every check at both ends).
+//! over its image's, its working directory, its run-time arguments (D256), and regular files
+//! under its home, where its `HOME` lies (domains.rs): the scratch tmpfs init makes for it
+//! (`HOME=/tmp`), or a writable volume given it. The host checked each entry as it made it;
+//! each is read and checked again here, from the guest's own copy (D109: every check at both
+//! ends).
 
 use std::ffi::CString;
 use std::io::{self, Write as _};
@@ -47,6 +48,16 @@ pub fn workdir(member: u32, setup: &[Vec<u8>]) -> Result<Option<CString>, String
         .map_err(|e| format!("a staged working directory: {e}"))?
         .map(|w| CString::new(w).map_err(|_| "a staged working directory holding a NUL".to_string()))
         .transpose()
+}
+
+/// Member `member`'s run-time arguments (D256), in the order staged, checked again here as
+/// the host checked them; none where its run stages none.
+pub fn args(member: u32, setup: &[Vec<u8>]) -> Result<Vec<CString>, String> {
+    members::args_of(setup, member)
+        .map_err(|e| format!("a staged argument: {e}"))?
+        .into_iter()
+        .map(|a| CString::new(a).map_err(|_| "a staged argument holding a NUL".to_string()))
+        .collect()
 }
 
 /// A mount a member may write as it starts, as init holds it: its scratch's descriptor, or
@@ -273,13 +284,39 @@ mod tests {
         );
     }
 
-    /// Entries naming a member the run starts nothing for are refused as a whole.
+    /// A member's run-time arguments (D256) are its own, in the order staged, an empty one
+    /// among them, read again as the host made them; none staged, none. A crafted one holding
+    /// a NUL is refused here too.
+    #[test]
+    fn a_members_arguments_are_read_again_in_the_guest() {
+        let setup = vec![
+            members::arg(1, b"--resume").unwrap(),
+            members::env(1, b"A=b").unwrap(),
+            members::arg(2, b"--not-mine").unwrap(),
+            members::arg(1, b"").unwrap(),
+            members::arg(1, b"s 1").unwrap(),
+        ];
+        assert_eq!(args(1, &setup).unwrap(), cstrings(&["--resume", "", "s 1"]));
+        assert!(args(0, &setup).unwrap().is_empty());
+        let crafted = vec![[members::ARG_KEY, b"1\0a\0b"].concat()];
+        assert!(
+            args(1, &crafted)
+                .unwrap_err()
+                .contains("an argument holding a NUL")
+        );
+    }
+
+    /// Entries naming a member the run starts nothing for are refused as a whole, an
+    /// argument's (D256) among them.
     #[test]
     fn staging_into_no_running_member_is_refused() {
         let setup = vec![members::env(4, b"A=b").unwrap()];
         assert!(check(&setup, |m| m == 4).is_ok());
         assert!(check(&setup, |m| m == 3).unwrap_err().contains("member 4"));
         assert!(check(&[], |_| false).is_ok());
+        let argued = vec![members::arg(5, b"--resume").unwrap()];
+        assert!(check(&argued, |m| m == 5).is_ok());
+        assert!(check(&argued, |m| m == 4).unwrap_err().contains("member 5"));
     }
 
     /// The home as a test holds it: the directory `at`, the components `beneath` it.
