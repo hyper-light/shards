@@ -313,15 +313,23 @@ impl Liveness {
     pub fn longest_silence(&self) -> Duration {
         self.longest
     }
+
+    /// When its peer was last heard: none where it never was.
+    pub fn last_heard(&self) -> Option<Instant> {
+        self.heard
+    }
 }
 
 /// What a connection saw of the path it crossed, for its caller's record: the longest its
-/// peer went unheard ([`Liveness`]), its round trip as last estimated (RFC 9002 §5), the bytes
-/// it sent in UDP datagrams and the bytes of them its peer acknowledged, and the packets it
-/// took for lost.
+/// peer went unheard and when it was last heard ([`Liveness`]), its round trip as last
+/// estimated (RFC 9002 §5), the bytes it sent in UDP datagrams and the bytes of them its peer
+/// acknowledged, and the packets it took for lost.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Seen {
     pub longest_silence: Duration,
+    /// When its peer was last heard, none where it never was: the silence since is measured
+    /// from it, whatever ended the connection.
+    pub heard: Option<Instant>,
     pub rtt: Duration,
     pub sent_bytes: u64,
     pub acked_bytes: u64,
@@ -385,6 +393,7 @@ impl Io<'_> {
         let stats = conn.quic.stats();
         Some(Seen {
             longest_silence: conn.liveness.longest_silence(),
+            heard: conn.liveness.last_heard(),
             rtt: stats.path.rtt,
             sent_bytes: stats.udp_tx.bytes,
             acked_bytes: stats.path.acked_bytes,
@@ -1257,14 +1266,17 @@ mod tests {
 
     /// A connection's handshake is held to IDLE from its start, and nothing of the driver's
     /// after: an established one lives as long as its peer is heard within QUIET, however
-    /// long it carries, and the longest silence it lived through is the one measured.
+    /// long it carries, and the longest silence it lived through is the one measured, its
+    /// peer last heard at its last packet.
     #[test]
     fn a_connection_lives_while_it_is_heard_and_its_handshake_alone_is_held_to_idle() {
         assert!(QUIET > IDLE);
         let t0 = Instant::now();
         let mut l = Liveness::new(t0);
         assert_eq!(l.due(), t0.checked_add(IDLE));
+        assert_eq!(l.last_heard(), None, "nothing heard yet");
         l.heard(t0 + Duration::from_millis(30));
+        assert_eq!(l.last_heard(), Some(t0 + Duration::from_millis(30)));
         // Heard from, its handshake still not done: still due at IDLE from its start.
         assert_eq!(l.due(), t0.checked_add(IDLE));
         l.connected();
@@ -1281,6 +1293,7 @@ mod tests {
             l.heard(at);
         }
         assert_eq!(l.longest_silence(), Duration::from_secs(42));
+        assert_eq!(l.last_heard(), Some(at));
         assert_eq!(l.due(), None);
     }
 }
