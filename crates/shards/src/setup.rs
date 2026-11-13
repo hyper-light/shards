@@ -961,6 +961,262 @@ fn devices(
 mod tests {
     use super::*;
 
+    /// `entries`, each of a key the run protocol registers (D257), as shards-init refuses a
+    /// spec holding any other; else the first that is not, by its key.
+    fn registered(what: &str, entries: &[Vec<u8>]) {
+        if let Err(e) = shards_abi::run::setup::check(entries) {
+            panic!("{what}: {e}");
+        }
+    }
+
+    /// D257's guard (c), the composers that are functions: a run of every option `setup` and
+    /// `security_setup` read (its IPC, UTS and cgroup namespaces the microVM's, /dev/shm, a
+    /// tmpfs, its layer's size, umask, ulimits, sysctls, swappiness, capabilities, groups, OOM
+    /// score, read-only root, init, real-time budget, unmasked paths, writable cgroups, devices
+    /// and their rules and throttles, no new privileges, AppArmor's mount filter, the host's
+    /// network and its binds' filter), with the nesting grant and without; a privileged run
+    /// on the microVM's PID namespace, and one on another run's with no IPC namespace; the
+    /// domains' filters and the plug roots. Expect: every entry of a registered key.
+    #[test]
+    fn every_entry_the_setup_composers_write_is_of_a_registered_key() {
+        let kernel = shards_seccomp::Kernel(6, 1);
+        let mut every = Run {
+            ipc: "host".into(),
+            shm_size: 64 << 20,
+            tmpfs: vec!["/run/a:size=1m".into()],
+            uts: "host".into(),
+            cgroupns: "host".into(),
+            storage_opt: vec!["size=1G".into()],
+            umask: Some(0o22),
+            ulimits: vec!["nofile=1024:2048".into()],
+            sysctls: vec!["net.core.somaxconn=1024".into()],
+            cap_add: vec!["CAP_SYS_ADMIN".into()],
+            group_add: vec!["10".into()],
+            oom_score_adj: 5,
+            read_only: true,
+            init_process: Some(true),
+            system_paths: true,
+            security_opt: vec!["writable-cgroups".into(), "no-new-privileges".into()],
+            devices: vec!["/dev/fuse:/dev/fuse:rwm".into()],
+            device_cgroup_rules: vec!["c 10:229 rwm".into()],
+            blkio_weight_device: vec!["/dev/vda:100".into()],
+            device_read_bps: vec!["/dev/vda:1mb".into()],
+            network: "host".into(),
+            ..Run::default()
+        };
+        every.resources.memory_swappiness = Some(10);
+        every.resources.cpu_realtime_period = 1_000_000;
+        every.resources.cpu_realtime_runtime = 950_000;
+        let grant = Grant {
+            ready_by: Some(1_794_466_320_362_000_000),
+            gpus: vec![shards_abi::gpu::PhysicalGpu::MetalRegistry(0x1_0000_02a1)],
+        };
+        let privileged = Run {
+            privileged: true,
+            pid: "host".into(),
+            ..Run::default()
+        };
+        let joining = Run {
+            ipc: "none".into(),
+            pid: "container:other".into(),
+            ..Run::default()
+        };
+        for (what, run, nesting) in [
+            ("every option", &every, None),
+            ("every option, granted", &every, Some(&grant)),
+            ("privileged", &privileged, None),
+            ("another's PID namespace", &joining, None),
+        ] {
+            let mut entries = setup(run, &[], None, Some(64 << 20)).unwrap();
+            security_setup(&mut entries, run, kernel, None, &[], nesting).unwrap();
+            entries.extend(binds(run, kernel).unwrap());
+            registered(what, &entries);
+        }
+        let mut entries = setup(&every, &[], None, None).unwrap();
+        security_setup(&mut entries, &every, kernel, None, &[], None).unwrap();
+        for kind in [
+            &b"ipc"[..],
+            b"shm",
+            b"tmpfs",
+            b"uts",
+            b"cgroupns",
+            b"rw-size",
+            b"umask",
+            b"ulimit",
+            b"sysctl",
+            b"caps",
+            b"group",
+            b"oom",
+            b"readonly",
+            b"init",
+            b"rt",
+            b"unmasked",
+            b"cgroups-rw",
+            b"devices",
+            b"nnp",
+            b"seccomp-mounts",
+            b"seccomp",
+            b"network",
+            b"seccomp-binds",
+        ] {
+            assert!(
+                entries.iter().any(|e| shards_abi::run::setup::key(e) == kind),
+                "the run of every option writes no {:?} entry",
+                kind.escape_ascii()
+            );
+        }
+        registered("the domains' filters", &domain_seccomp(kernel).unwrap());
+        let point = crate::volumes::MountPoint {
+            kind: "bind".into(),
+            source: "/data/proj".into(),
+            destination: "/in".into(),
+            ..crate::volumes::MountPoint::default()
+        };
+        registered("the plug roots", &plug_roots(&[point]));
+    }
+
+    /// The files of this crate that write a spec's setup inline, each with the words it
+    /// spells as literals that are no entry's key: a device's throttle tags within its
+    /// `devices=` entry, a volume's flags, a tmpfs's options, a terminal type, a test's
+    /// marker. `volumes.rs` chooses one key as it runs (`domain-volume` or `volume`), which
+    /// its own tests compose.
+    const COMPOSERS: [(&str, &[&str]); 13] = [
+        ("setup.rs", &["rb", "ri", "w", "wb", "wi"]),
+        ("daemon.rs", &["ro", "rw"]),
+        ("api_run.rs", &[]),
+        ("warm.rs", &[]),
+        ("vm_run.rs", &[]),
+        ("volumes.rs", &["mode", "size"]),
+        ("spec.rs", &["xterm"]),
+        ("daemon/networks.rs", &[]),
+        ("daemon/managed.rs", &["record"]),
+        ("daemon/commands.rs", &[]),
+        ("daemon/visit.rs", &[]),
+        ("workload/capture.rs", &["x"]),
+        ("agentfile.rs", &[]),
+    ];
+
+    /// A source file's text but its test modules (each `#[cfg(test)]` before a `mod NAME {`,
+    /// to its closing brace at its indent; a test module of a file of its own, `mod NAME;`,
+    /// is that file's) and its comments.
+    fn production(text: &str) -> String {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut kept = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            let line = lines[i];
+            let indent = &line[..line.len() - line.trim_start().len()];
+            let opens = line.trim_start() == "#[cfg(test)]"
+                && lines
+                    .iter()
+                    .skip(i + 1)
+                    .take(3)
+                    .any(|l| l.starts_with(&format!("{indent}mod ")) && l.ends_with('{'));
+            if opens {
+                let close = format!("{indent}}}");
+                i = (i + 1..lines.len())
+                    .find(|&j| lines[j] == close)
+                    .map_or(lines.len(), |j| j + 1);
+                continue;
+            }
+            if !line.trim_start().starts_with("//") {
+                kept.push(line);
+            }
+            i += 1;
+        }
+        kept.join("\n")
+    }
+
+    /// Each key `text` spells at an entry's start: a byte string's `KEY=…` or `KEY` alone, a
+    /// format string's `KEY=…`; and how many format strings choose theirs as it runs
+    /// (`format!("{…}=…")`).
+    fn spelled(text: &str) -> (Vec<String>, usize) {
+        let mut keys = Vec::new();
+        for (start, bare) in [("b\"", true), ("format!(\"", false)] {
+            for (at, _) in text.match_indices(start) {
+                let rest = &text[at + start.len()..];
+                let key: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+                    .collect();
+                let next = rest[key.len()..].chars().next();
+                if key.starts_with(|c: char| c.is_ascii_lowercase())
+                    && (next == Some('=') || (bare && next == Some('"')))
+                {
+                    keys.push(key);
+                }
+            }
+        }
+        let chosen = text
+            .match_indices("format!(\"{")
+            .filter(|(at, _)| {
+                let rest = &text[at + "format!(\"{".len()..];
+                rest.find('}').is_some_and(|end| rest[end + 1..].starts_with('='))
+            })
+            .count();
+        (keys, chosen)
+    }
+
+    /// D257's guard (c), the composers that write a spec's setup inline (the daemon's run and
+    /// its joiners' and execs' entries, the run host's, the warm VM's, the VM process's, the
+    /// volumes', the networks', managed output's): a census of this crate's sources. Do: read
+    /// every file of it that writes a spec's setup, outside its tests. Expect: each such file
+    /// among [`COMPOSERS`], so that a new one is read; each key it spells registered, but its
+    /// words that are no entry's key; and none choosing its key as it runs but `volumes.rs`.
+    /// (The builder writes no setup: its steps go to the guest as its own protocol's.)
+    #[test]
+    fn every_entry_the_composers_spell_is_of_a_registered_key() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        let mut dirs = vec![src.clone()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        let writes = [
+            "setup.push(",
+            "setup.extend(",
+            "setup.insert(",
+            ".setup = vec!",
+            "setup: vec![",
+        ];
+        for path in &files {
+            let name = path
+                .strip_prefix(&src)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            let text = production(&std::fs::read_to_string(path).unwrap());
+            if writes.iter().any(|w| text.contains(w)) {
+                assert!(
+                    COMPOSERS.iter().any(|(f, _)| *f == name),
+                    "{name} writes a spec's setup, and D257's census does not read it: add it to COMPOSERS"
+                );
+            }
+        }
+        for (name, words) in COMPOSERS {
+            let text = production(&std::fs::read_to_string(src.join(name)).unwrap());
+            let (keys, chosen) = spelled(&text);
+            for key in keys {
+                assert!(
+                    shards_abi::run::setup::registered(key.as_bytes()) || words.contains(&key.as_str()),
+                    "{name} spells a setup entry of key {key:?}, which the run protocol does not register (shards_abi::run::setup::KEYS)"
+                );
+            }
+            let chooses = usize::from(name == "volumes.rs");
+            assert_eq!(
+                chosen, chooses,
+                "{name}: format strings choosing their key as they run"
+            );
+        }
+    }
+
     /// A run's domains are given this host's own roots, and on Unix the top-level directory
     /// of each host path its binds give it, once each; a volume's store is no project, and a
     /// root init refuses (`/tmp`) is never named, so that no run fails for one.

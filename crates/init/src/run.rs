@@ -49,6 +49,16 @@ fn setup_failed(message: impl Into<String>) -> Failure {
     }
 }
 
+/// A spec the host sent, as its workload's or an exec's frame carries it, read before any
+/// of it is applied: refused in `malformed`'s words where it is no spec, and at an entry of
+/// its setup of a key the run protocol does not register (D257), naming the key, which this
+/// init has no reader for, and would otherwise neither apply nor say anything of.
+fn host_spec(payload: &[u8], malformed: &str) -> Result<Spec, String> {
+    let spec = Spec::decode(payload).ok_or_else(|| malformed.to_string())?;
+    run::setup::check(&spec.setup).map_err(|e| format!("its setup: {e}"))?;
+    Ok(spec)
+}
+
 /// Whether the run's owner hears each member's end (`member-ends`, D231): set as its spec
 /// arrives, once a boot, as init serves one run.
 static MEMBER_ENDS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -2368,7 +2378,7 @@ fn receive(conn: &File, standby: Standby) -> Result<(Spec, Standby), Failure> {
     let mut payload = vec![0u8; len as usize];
     r.read_exact(&mut payload)
         .map_err(|e| setup_failed(format!("reading the workload: {e}")))?;
-    let spec = Spec::decode(&payload).ok_or_else(|| setup_failed("malformed workload"))?;
+    let spec = host_spec(&payload, "malformed workload").map_err(setup_failed)?;
     Ok((spec, standby))
 }
 
@@ -4434,7 +4444,7 @@ impl Exec {
         let (token, rest) = payload.split_at_checked(run::TOKEN).ok_or(None)?;
         let (id, spec) = rest.split_at_checked(4).ok_or(None)?;
         let id = u32::from_be_bytes(id.try_into().map_err(|_| None)?);
-        let spec = Spec::decode(spec).ok_or_else(|| Some((id, "a malformed command".to_string())))?;
+        let spec = host_spec(spec, "a malformed command").map_err(|why| Some((id, why)))?;
         let conn = dial(run::EXEC_PORT, false)
             .map_err(|e| Some((id, format!("connecting to the host for the command: {e}"))))?;
         let mut exec = Exec {
@@ -7424,5 +7434,52 @@ mod nesting_tests {
         for dir in [format!("{w}/boxes"), format!("{w}/{LEAF}"), w] {
             std::fs::remove_dir(&dir).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod host_spec_tests {
+    use super::*;
+
+    fn payload(setup: &[&[u8]]) -> Vec<u8> {
+        Spec {
+            argv: vec![b"/bin/true".to_vec()],
+            setup: setup.iter().map(|e| e.to_vec()).collect(),
+            ..Spec::default()
+        }
+        .encode()
+    }
+
+    /// D257: a spec whose every setup entry is of a key the run protocol registers is read
+    /// as the host sent it; one holding an entry of a key it does not register is refused by
+    /// that key before any of it is applied, its value never said; and one that is no spec, in
+    /// its frame's words. The workload's frame and an exec's both read theirs through
+    /// `host_spec`.
+    #[test]
+    fn a_spec_holding_an_unregistered_setup_key_is_refused_by_it() {
+        let registered: [&[u8]; 4] = [
+            b"readonly",
+            b"tmpfs=/t\0rw",
+            b"member-arg=0\0--resume",
+            b"pid=host",
+        ];
+        let spec = host_spec(&payload(&registered), "malformed workload").unwrap();
+        assert_eq!(spec.setup, registered.map(<[u8]>::to_vec));
+        let refused = host_spec(
+            &payload(&[b"readonly", b"member-flag=0\0sk-secret", b"tmpfs=/t\0rw"]),
+            "malformed workload",
+        )
+        .unwrap_err();
+        assert!(
+            refused.contains("its setup")
+                && refused.contains("\"member-flag\"")
+                && !refused.contains("sk-secret"),
+            "{refused}"
+        );
+        assert_eq!(
+            host_spec(&[], "a malformed command").unwrap_err(),
+            "a malformed command"
+        );
     }
 }
