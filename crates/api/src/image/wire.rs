@@ -37,8 +37,10 @@ pub use shards_abi::run::nesting::Ready;
 /// it is asked, before any rate is: a host of an earlier version ends a run at a frame it has
 /// no kind for; 14, why a vCPU's guest time went unread, typed ([`VcpuTime::unread`],
 /// `shards_abi::guest_time::Unread`, guest-cpu-time-v1's R04): its cause and code in their text
-/// form, which an earlier version's free words never parse as.
-pub const VERSION: u8 = 14;
+/// form, which an earlier version's free words never parse as; 15, the run's agent-control
+/// endpoint ([`Request::control`], [`Started::control`]; D238, D251, D252), so that a side that
+/// binds none refuses the run as it is asked.
+pub const VERSION: u8 = 15;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -359,6 +361,40 @@ pub struct Request {
     /// hosts the injector may fill it in toward. Empty for a run with none, as every run
     /// is until an orchestrator asks for one (default deny).
     pub credentials: Vec<CredentialGrant>,
+    /// The run's agent-control endpoint (D252), bound by its host for this run alone; none,
+    /// and it has none. Appended in version 15.
+    pub control: Option<ControlAsk>,
+}
+
+/// What a run's agent-control endpoint takes and serves (D252): the one key it takes, its
+/// controller's, and the lanes to the run's own command's sockets (D251).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlAsk {
+    /// The SHA-256 of the controller's key (D180's raw public key, RFC 7250): the one key the
+    /// endpoint takes.
+    pub controller: [u8; 32],
+    /// The run's socket directory and what it admits of lanes to it; none, and none.
+    pub sockets: Option<SocketGrant>,
+}
+
+/// The one directory of the run's own command's sockets its controller may reach (D251), and
+/// what the run admits of lanes to them (R03: the caller's numbers).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SocketGrant {
+    /// Absolute and plain, in the command's root (`shards_abi::run::socket::dir_ok`).
+    pub dir: String,
+    /// The most lanes open at once.
+    pub lanes: u32,
+    /// Each lane's bytes in flight each way.
+    pub window: u32,
+}
+
+/// Where a run's agent-control endpoint is bound, and the SHA-256 of its microVM's own key,
+/// which its controller pins (D252).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlAt {
+    pub address: SocketAddr,
+    pub vm: [u8; 32],
 }
 
 /// Room for `bytes` more of member `member`'s `channel`.
@@ -425,6 +461,9 @@ pub struct Receiving {
 pub struct Started {
     pub members: Vec<MemberInfo>,
     pub published: Vec<Bound>,
+    /// Where the run's endpoint is bound, where it asked for one (D252); appended in version
+    /// 15.
+    pub control: Option<ControlAt>,
 }
 
 /// Why the run host will not run it, typed by what failed: the client maps each to its
@@ -1040,7 +1079,9 @@ impl<'a> Reader<'a> {
                     let guest_ns = self.u64()?;
                     let unread = match self.u8()? {
                         0 => None,
-                        1 => Some(shards_abi::guest_time::Unread::parse(&self.text()?).ok_or(WireError::Unread)?),
+                        1 => Some(
+                            shards_abi::guest_time::Unread::parse(&self.text()?).ok_or(WireError::Unread)?,
+                        ),
                         tag => {
                             return Err(WireError::Tag {
                                 what: "a vCPU's guest time",
@@ -1215,6 +1256,24 @@ impl Request {
                 }
             }
         }
+        // The run's agent-control endpoint, appended in version 15 (D252): whether it asks one,
+        // its controller's key, then whether it grants sockets, their directory and admission.
+        match &self.control {
+            None => w.u8(0),
+            Some(control) => {
+                w.u8(1);
+                w.0.extend_from_slice(&control.controller);
+                match &control.sockets {
+                    None => w.u8(0),
+                    Some(grant) => {
+                        w.u8(1);
+                        w.text(&grant.dir)?;
+                        w.u32(grant.lanes);
+                        w.u32(grant.window);
+                    }
+                }
+            }
+        }
         w.done()
     }
 
@@ -1351,6 +1410,22 @@ impl Request {
         } else {
             None
         };
+        // The run's agent-control endpoint, appended in version 15 (D252).
+        let control = if r.flag()? {
+            let controller = r.array::<32>()?;
+            let sockets = if r.flag()? {
+                Some(SocketGrant {
+                    dir: r.text()?,
+                    lanes: r.u32()?,
+                    window: r.u32()?,
+                })
+            } else {
+                None
+            };
+            Some(ControlAsk { controller, sockets })
+        } else {
+            None
+        };
         r.end()?;
         Ok(Request {
             image,
@@ -1364,6 +1439,7 @@ impl Request {
             nesting,
             ready_by,
             credentials,
+            control,
         })
     }
 }
@@ -1523,6 +1599,16 @@ impl Started {
                 w.u16(r.port);
             }
         }
+        // Where the run's endpoint is bound and its microVM's key, appended in version 15.
+        match &self.control {
+            None => w.u8(0),
+            Some(at) => {
+                w.u8(1);
+                w.ip(Some(at.address.ip()));
+                w.u16(at.address.port());
+                w.0.extend_from_slice(&at.vm);
+            }
+        }
         w.done()
     }
 
@@ -1563,8 +1649,25 @@ impl Started {
                 to,
             });
         }
+        let control = if r.flag()? {
+            let ip = r.ip()?.ok_or(WireError::Tag {
+                what: "an endpoint's address",
+                tag: 0,
+            })?;
+            let port = r.u16()?;
+            Some(ControlAt {
+                address: SocketAddr::new(ip, port),
+                vm: r.array::<32>()?,
+            })
+        } else {
+            None
+        };
         r.end()?;
-        Ok(Started { members, published })
+        Ok(Started {
+            members,
+            published,
+            control,
+        })
     }
 }
 
@@ -2202,6 +2305,7 @@ mod tests {
             nesting: false,
             ready_by: None,
             credentials: Vec::new(),
+            control: None,
         }
     }
 
@@ -2274,9 +2378,10 @@ mod tests {
         }
         .encode()
         .unwrap();
+        // ... and the control ask's absence (version 15) last.
         assert_eq!(
-            asked.get(asked.len() - 19..).unwrap(),
-            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+            asked.get(asked.len() - 20..).unwrap(),
+            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
             "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
              member's working directory (none) and its input, the credential grants' count \
              (zero, version 8), the member's terminal (none, version 11), then whether the \
@@ -2352,6 +2457,7 @@ mod tests {
                     ],
                 },
             ],
+            control: None,
         };
         assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
         let bytes = started.encode().unwrap();
@@ -2446,10 +2552,10 @@ mod tests {
         ));
         // A member's input flag, before the credential grants' count (version 8), its
         // terminal's flag (version 11) and the members' reach (version 12), that is no flag.
-        // One member, so its input is the seventh byte from the end (the count's four, its
-        // terminal's one and the reach's flag follow it).
+        // One member, so its input is the eighth byte from the end (the count's four, its
+        // terminal's one, the reach's flag and the control ask's follow it).
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 7;
+        let at = bad.len() - 8;
         assert_eq!(
             bad[at], 1,
             "the member's input flag precedes the credentials' count"
@@ -2528,9 +2634,9 @@ mod tests {
                 );
             }
         }
-        // The reach's flag, last where none is held apart.
+        // The reach's flag, last but the control ask's where none is held apart.
         let mut flag = held(None).encode().unwrap();
-        let at = flag.len() - 1;
+        let at = flag.len() - 2;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -2543,7 +2649,8 @@ mod tests {
         let mut kindless = held(Some(vec![reach(MemberKind::Agent, "helper", &[])]))
             .encode()
             .unwrap();
-        let at = kindless.len() - (1 + 4 + "helper".len() + 4);
+        // ... then the control ask's absence (version 15).
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1);
         assert_eq!(kindless[at], MemberKind::Agent as u8);
         kindless[at] = 2;
         assert_eq!(
@@ -2571,39 +2678,39 @@ mod tests {
         // their inputs, is no request of this one's: refused by its version, never read with
         // them defaulted. The request's one member makes each of those one byte.
         let mut v1 = request().encode().unwrap();
-        v1.truncate(v1.len() - 11);
+        v1.truncate(v1.len() - 12);
         v1[0] = 1;
         assert_eq!(Request::decode(&v1), Err(WireError::Version(1)));
         let mut v4 = request().encode().unwrap();
-        v4.truncate(v4.len() - 8);
+        v4.truncate(v4.len() - 9);
         v4[0] = 4;
         assert_eq!(Request::decode(&v4), Err(WireError::Version(4)));
         let mut v5 = request().encode().unwrap();
-        v5.truncate(v5.len() - 7);
+        v5.truncate(v5.len() - 8);
         v5[0] = 5;
         assert_eq!(Request::decode(&v5), Err(WireError::Version(5)));
         // One of version 6 carries every field version 7 does, but its host ends the run at
         // a room: refused by its version, before any room is told (D241).
         let mut v6 = request().encode().unwrap();
-        v6.truncate(v6.len() - 6);
+        v6.truncate(v6.len() - 7);
         v6[0] = 6;
         assert_eq!(Request::decode(&v6), Err(WireError::Version(6)));
         // One of version 7, without the credential grants' count: refused by its version
         // (D242), so an older reader never reads a grant with its field defaulted.
         let mut v7 = request().encode().unwrap();
-        v7.truncate(v7.len() - 6);
+        v7.truncate(v7.len() - 7);
         v7[0] = 7;
         assert_eq!(Request::decode(&v7), Err(WireError::Version(7)));
         // One of version 8, without its members' terminals: refused by its version (D244), so
         // an older reader never starts a member with pipes where its owner asked a terminal.
         let mut v8 = request().encode().unwrap();
-        v8.truncate(v8.len() - 2);
+        v8.truncate(v8.len() - 3);
         v8[0] = 8;
         assert_eq!(Request::decode(&v8), Err(WireError::Version(8)));
         // One of version 11, without the members' reach: refused by its version (D246), so a
         // run host never takes a request that holds its members apart as one that holds none.
         let mut v11 = request().encode().unwrap();
-        v11.truncate(v11.len() - 1);
+        v11.truncate(v11.len() - 2);
         v11[0] = 11;
         assert_eq!(Request::decode(&v11), Err(WireError::Version(11)));
         // One of version 12 carries every field version 13 does, but its host ends the run at
@@ -2611,11 +2718,17 @@ mod tests {
         let mut v12 = request().encode().unwrap();
         v12[0] = 12;
         assert_eq!(Request::decode(&v12), Err(WireError::Version(12)));
+        // One of version 14, without the control ask: refused by its version (D252), so a run
+        // host never takes a run that asked an endpoint as one that asked none.
+        let mut v14 = request().encode().unwrap();
+        v14.truncate(v14.len() - 1);
+        v14[0] = 14;
+        assert_eq!(Request::decode(&v14), Err(WireError::Version(14)));
         // The nesting flag, before the deadline's tag, the destinations', the one member's
         // working directory's and input's, the credential grants' count (version 8), the
         // member's terminal's (version 11) and the members' reach (version 12): no flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 11;
+        let at = flag.len() - 12;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -2628,7 +2741,7 @@ mod tests {
         // credential grants' count, the member's terminal and the members' reach: no list of
         // version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 9;
+        let at = list.len() - 10;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -2840,10 +2953,10 @@ mod tests {
         };
         assert_eq!(long.encode(), Err(WireError::TooLong));
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 2;
+        let at = bad.len() - 3;
         assert_eq!(
             bad[at], 0,
-            "the member's terminal flag precedes the members' reach"
+            "the member's terminal flag precedes the members' reach and the control ask"
         );
         bad[at] = 2;
         assert_eq!(
@@ -3045,5 +3158,78 @@ mod tests {
         let mut long = run::header(1, run::MAX_PAYLOAD).to_vec();
         long[4..8].copy_from_slice(&(run::MAX_PAYLOAD + 1).to_be_bytes());
         assert!(read_frame(&mut &long[..]).is_err());
+    }
+
+    /// A run asked of `control`, otherwise as Hex asks for its node VM (joint plan step 39):
+    /// its init the run's own command under the nesting grant.
+    fn asked(control: Option<ControlAsk>) -> Request {
+        Request {
+            image: "hex-node@sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+            vcpus: 2,
+            memory_mib: 2048,
+            command: Some(vec!["/init".into()]),
+            members: Vec::new(),
+            publish: Vec::new(),
+            egress: Narrowing::default(),
+            shares: Vec::new(),
+            nesting: true,
+            ready_by: None,
+            credentials: Vec::new(),
+            control,
+        }
+    }
+
+    /// Step 11 (b), D252 (Hex's acceptance): the run's control ask crosses the image channel
+    /// whole, at its next version, and a run that asks none encodes as one at v13 did but for
+    /// its version byte: control is absent, never a default. The controller's key, the socket
+    /// grant's directory and both its numbers are read back exactly.
+    #[test]
+    fn a_runs_control_ask_crosses_the_image_channel_whole() {
+        assert_eq!(VERSION, 15, "the channel's next version carries the control ask");
+        for control in [
+            None,
+            Some(ControlAsk {
+                controller: [9u8; 32],
+                sockets: None,
+            }),
+            Some(ControlAsk {
+                controller: [9u8; 32],
+                sockets: Some(SocketGrant {
+                    dir: "/run/hex/channel".into(),
+                    lanes: 8,
+                    window: 65_536,
+                }),
+            }),
+        ] {
+            let request = asked(control);
+            assert_eq!(Request::decode(&request.encode().unwrap()).unwrap(), request);
+        }
+        // None asked: one byte past v13's encoding, its absence.
+        let none = asked(None).encode().unwrap();
+        assert_eq!(none.last(), Some(&0));
+    }
+
+    /// Step 11 (b), D252: a started run tells where its endpoint is bound and the microVM's own
+    /// key, which the controller pins; a run asked for no endpoint tells none.
+    #[test]
+    fn a_started_run_tells_where_its_endpoint_is_and_its_vms_key() {
+        for control in [
+            None,
+            Some(ControlAt {
+                address: "127.0.0.1:40123".parse().unwrap(),
+                vm: [3u8; 32],
+            }),
+            Some(ControlAt {
+                address: "[::1]:40123".parse().unwrap(),
+                vm: [4u8; 32],
+            }),
+        ] {
+            let started = Started {
+                members: Vec::new(),
+                published: Vec::new(),
+                control,
+            };
+            assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
+        }
     }
 }

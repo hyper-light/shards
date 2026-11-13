@@ -423,6 +423,23 @@ fn gpu_report_arg(value: String) -> Result<LinkArg, String> {
     Ok(value)
 }
 
+/// `--gpu-device`'s identity, checked alone and added to `selection`, which `parse_run` checks
+/// whole once every flag is read (D232): checked whole after each flag, it was copied and
+/// sorted again for every one, quadratic in the flags given.
+fn gpu_device(selection: &mut Vec<vm::gpu_selection::PhysicalGpu>, value: OsString) -> Result<(), String> {
+    let device = text(value)?
+        .parse::<vm::gpu_selection::PhysicalGpu>()
+        .map_err(|error| format!("--gpu-device: {error}"))?;
+    if selection.len() >= vm::gpu_selection::MAX_PHYSICAL_GPUS {
+        return Err("--gpu-device count exceeds the physical device-index space".into());
+    }
+    selection
+        .try_reserve(1)
+        .map_err(|_| "--gpu-device storage unavailable")?;
+    selection.push(device);
+    Ok(())
+}
+
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
     let mut args = args;
     let mut rootfs = None;
@@ -546,18 +563,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                 cfg.gpu = true;
             }
             "--gpu-device" => {
-                let device = text(value("--gpu-device")?)?
-                    .parse::<vm::gpu_selection::PhysicalGpu>()
-                    .map_err(|error| format!("--gpu-device: {error}"))?;
-                if cfg.gpu_devices.len() >= vm::gpu_selection::MAX_PHYSICAL_GPUS {
-                    return Err("--gpu-device count exceeds the physical device-index space".into());
-                }
-                cfg.gpu_devices
-                    .try_reserve(1)
-                    .map_err(|_| "--gpu-device storage unavailable")?;
-                cfg.gpu_devices.push(device);
-                vm::gpu_selection::check_selection(&cfg.gpu_devices)
-                    .map_err(|error| format!("--gpu-device: {error}"))?;
+                gpu_device(&mut cfg.gpu_devices, value("--gpu-device")?)?;
                 cfg.gpu = true;
             }
             "--pci-test" => cfg.pci_test = vec![(vm::TEST_DEVICE, 0)],
@@ -589,6 +595,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
+    vm::gpu_selection::check_selection(&cfg.gpu_devices).map_err(|error| format!("--gpu-device: {error}"))?;
     common.check_workload()?;
     served_shares(&mut cfg, &served, warm.is_some())?;
     if !cfg.pci_test.is_empty() && common.snapshot_dir.is_some() {
@@ -1522,11 +1529,9 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         }
     };
     match mode {
-        Mode::GpuProbe => match vm::probe_gpu(&cfg.gpu_devices)
-            .and_then(|probe| probe.encode().map_err(|error| error.to_string()))
-        {
-            Ok(text) => match std::io::stdout().lock().write_all(text.as_bytes()) {
-                Ok(()) => ExitCode::SUCCESS,
+        Mode::GpuProbe => match probe_answer(vm::probe_gpu(&cfg.gpu_devices)) {
+            Ok((text, code)) => match std::io::stdout().lock().write_all(text.as_bytes()) {
+                Ok(()) => code,
                 Err(error) => {
                     report(error);
                     ExitCode::FAILURE
@@ -2398,21 +2403,46 @@ fn start_reported(
         None => vm::start(cfg),
         Some((scope, writer)) => {
             let mut writer = Some(writer);
-            let mut report = |probe| {
-                let mut to = writer
-                    .take()
-                    .ok_or_else(|| shards_abi::gpu::GpuProbeError::Scope.to_string())?;
-                let frame = shards_abi::gpu::GpuReport { scope, probe }
-                    .encode()
-                    .map_err(|why| why.to_string())?;
-                to.write_all(frame.as_bytes()).map_err(|why| why.to_string())?;
-                // This sole VMM writer closes before any guest vCPU starts.
-                drop(to);
-                Ok(())
-            };
-            vm::start_gpu_report(cfg, &mut report)
+            vm::start_gpu_report(cfg, &mut |selection| write_report(&mut writer, scope, selection))
         }
     }
+}
+
+/// A managed boot's report (D232, D233), written once by its sole writer: the selection's
+/// receipt, or the refusal its renderer typed, in a frame scoped to its launch, and the
+/// writer closed, before any guest vCPU starts. Taken again, it is refused as taken.
+fn write_report(
+    writer: &mut Option<impl Write>,
+    scope: [u8; 16],
+    selection: Result<shards_abi::gpu::GpuProbe, shards_abi::gpu::GpuRefusal>,
+) -> Result<(), String> {
+    let mut to = writer
+        .take()
+        .ok_or_else(|| shards_abi::gpu::GpuProbeError::ReportTaken.to_string())?;
+    let frame = match selection {
+        Ok(probe) => shards_abi::gpu::GpuReport { scope, probe }.encode(),
+        Err(refusal) => shards_abi::gpu::GpuReport::refusal(scope, refusal),
+    }
+    .map_err(|why| why.to_string())?;
+    to.write_all(frame.as_bytes()).map_err(|why| why.to_string())?;
+    drop(to);
+    Ok(())
+}
+
+/// What `--gpu-probe` prints on stdout, and how it exits (D232): its selection's receipt; or
+/// the refusal its renderer typed, the probe failing; or, any other failure, nothing, that
+/// failure its own report.
+fn probe_answer(
+    probed: Result<shards_abi::gpu::GpuProbe, vm::StartError>,
+) -> Result<(String, ExitCode), String> {
+    let (answer, code) = match probed {
+        Ok(probe) => (probe.encode(), ExitCode::SUCCESS),
+        Err(why) => match why.gpu_refusal() {
+            Some(refusal) => (refusal.encode(), ExitCode::FAILURE),
+            None => return Err(why.to_string()),
+        },
+    };
+    Ok((answer.map_err(|why| why.to_string())?, code))
 }
 
 /// A host whose microVMs take no snapshots, arm64 KVM's (D154), says so before a VM starts
@@ -3390,6 +3420,77 @@ mod managed_report_tests {
         );
     }
 
+    const PHYSICAL: vm::gpu_selection::PhysicalGpu = vm::gpu_selection::PhysicalGpu::MetalRegistry(7);
+
+    fn probe() -> shards_abi::gpu::GpuProbe {
+        shards_abi::gpu::GpuProbe {
+            devices: vec![shards_abi::gpu::ResolvedGpu {
+                physical: PHYSICAL,
+                uuid: [1; 16],
+                pci: None,
+                luid: Some(7u64.to_be_bytes()),
+                name: None,
+                device_local_bytes: None,
+            }],
+            host_visible_bytes: 4096,
+        }
+    }
+
+    /// D232: a managed boot's report is written once, by its one writer, and taken again
+    /// says it was taken (`ReportTaken`), not that its frame's scope differs (`Scope`).
+    #[test]
+    fn a_report_written_once_is_refused_as_taken() {
+        use shards_abi::gpu::{GpuProbeError, GpuReport};
+        let mut frame = Vec::new();
+        let mut writer = Some(&mut frame);
+        write_report(&mut writer, [3; 16], Ok(probe())).unwrap();
+        assert_eq!(
+            write_report(&mut writer, [3; 16], Ok(probe())),
+            Err(GpuProbeError::ReportTaken.to_string())
+        );
+        let written = GpuReport::parse(std::str::from_utf8(&frame).unwrap(), [3; 16], &[PHYSICAL]).unwrap();
+        assert_eq!(written.probe, probe());
+    }
+
+    /// D232: a selection its renderer refused is reported as that refusal, in its launch's
+    /// scoped frame, by the same one writer, where the writer was closed unwritten.
+    #[test]
+    fn a_refused_selection_is_reported_as_its_refusal() {
+        use shards_abi::gpu::{GpuProbeError, GpuRefusal, GpuReport, JoinError};
+        let refusal = GpuRefusal::Join(JoinError::Missing);
+        let mut frame = Vec::new();
+        let mut writer = Some(&mut frame);
+        write_report(&mut writer, [3; 16], Err(refusal)).unwrap();
+        assert_eq!(
+            write_report(&mut writer, [3; 16], Err(refusal)),
+            Err(GpuProbeError::ReportTaken.to_string())
+        );
+        assert_eq!(
+            GpuReport::parse(std::str::from_utf8(&frame).unwrap(), [3; 16], &[PHYSICAL]),
+            Err(GpuProbeError::Refused(refusal))
+        );
+    }
+
+    /// D232: `--gpu-probe` prints its receipt and succeeds, or prints the refusal its
+    /// renderer typed and fails; any other failure it reports itself, printing nothing.
+    #[test]
+    fn a_probe_answers_its_receipt_or_its_refusal() {
+        use shards_abi::gpu::{GpuProbe, GpuProbeError, GpuRefusal, JoinError};
+        let refusal = GpuRefusal::Join(JoinError::Ambiguous);
+        let (text, code) =
+            probe_answer(Err(vm::StartError::GpuProbe(GpuProbeError::Refused(refusal)))).unwrap();
+        assert_eq!(GpuProbe::parse(&text), Err(GpuProbeError::Refused(refusal)));
+        assert_eq!(code, ExitCode::FAILURE);
+        let (text, code) = probe_answer(Ok(probe())).unwrap();
+        assert_eq!(GpuProbe::parse(&text).unwrap(), probe());
+        assert_eq!(code, ExitCode::SUCCESS);
+        let failed = vm::StartError::Legacy("this host has no Vulkan loader".into());
+        assert_eq!(
+            probe_answer(Err(failed)),
+            Err("this host has no Vulkan loader".to_string())
+        );
+    }
+
     #[test]
     fn managed_report_names_in_values_and_guest_argv_are_never_host_flags() {
         let run = parse(&["--cmdline", "--gpu-report"]).unwrap();
@@ -3404,6 +3505,124 @@ mod managed_report_tests {
         for value in ["9", "ask", "answer", "working-set", "said-to"] {
             assert!(gpu_report_arg(value.into()).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod gpu_device_tests {
+    use super::*;
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+    use vm::gpu_selection::{MAX_PHYSICAL_GPUS, PhysicalGpuError};
+
+    /// The system's allocator, counting what the thread that asks allocates while it asks
+    /// ([`allocations`]): no other test of this binary asks.
+    struct Counting;
+
+    thread_local! {
+        static COUNTING: Cell<bool> = const { Cell::new(false) };
+        static COUNTED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn count() {
+        if COUNTING.with(Cell::get) {
+            COUNTED.with(|n| n.set(n.get().saturating_add(1)));
+        }
+    }
+
+    // SAFETY: every call goes to the system allocator unchanged.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            count();
+            // SAFETY: the caller's contract, passed on.
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: the caller's contract, passed on.
+            unsafe { System.dealloc(ptr, layout) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            count();
+            // SAFETY: the caller's contract, passed on.
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: Counting = Counting;
+
+    /// `f`'s result, and the allocations and reallocations it made on this thread.
+    fn allocations<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        COUNTED.with(|n| n.set(0));
+        COUNTING.with(|c| c.set(true));
+        let out = f();
+        COUNTING.with(|c| c.set(false));
+        (out, COUNTED.with(Cell::get))
+    }
+
+    fn flag(value: &str) -> [OsString; 2] {
+        [OsString::from("--gpu-device"), OsString::from(value)]
+    }
+
+    fn refusal(gpu: impl Iterator<Item = OsString>) -> String {
+        let words = ["--kernel", "/never-opened/kernel"]
+            .into_iter()
+            .map(OsString::from);
+        parse_run(words.chain(gpu)).err().expect("refused")
+    }
+
+    /// D232: a `--gpu-device` adds its identity alone, copying no selection: the selection
+    /// is checked whole once its flags are read, where checked after every flag it was
+    /// copied and sorted for each, quadratic in the flags given.
+    #[test]
+    fn a_gpu_device_copies_no_selection() {
+        let given = 64;
+        let mut selection = Vec::with_capacity(given + 1);
+        for i in 0..given {
+            gpu_device(&mut selection, OsString::from(format!("luid:{i:x}"))).unwrap();
+        }
+        let next = OsString::from(format!("luid:{given:x}"));
+        let (added, allocated) = allocations(|| gpu_device(&mut selection, next));
+        added.unwrap();
+        assert_eq!(allocated, 0, "a --gpu-device beside {given} others allocated");
+    }
+
+    /// D232: `--gpu-device`'s refusals, each as it was given while the selection was checked
+    /// whole after every flag: the same text, the same flag named.
+    #[test]
+    fn a_gpu_devices_refusals_name_it() {
+        assert_eq!(
+            refusal([OsString::from("--gpu-device")].into_iter()),
+            "--gpu-device needs a value"
+        );
+        assert_eq!(
+            refusal(flag("NVIDIA").into_iter()),
+            format!("--gpu-device: {}", PhysicalGpuError::Syntax)
+        );
+        assert_eq!(
+            refusal(flag("pci:0000:01:20.0").into_iter()),
+            format!("--gpu-device: {}", PhysicalGpuError::PciAddress)
+        );
+        let repeated = flag("luid:7")
+            .into_iter()
+            .chain(flag("luid:8"))
+            .chain(flag("luid:7"));
+        assert_eq!(
+            refusal(repeated),
+            format!("--gpu-device: {}", PhysicalGpuError::Duplicate)
+        );
+    }
+
+    /// D232: one identity past the physical device-index space is refused at its flag.
+    #[test]
+    fn a_gpu_device_past_the_index_space_is_refused() {
+        let past = (0..=MAX_PHYSICAL_GPUS).flat_map(|i| flag(&format!("luid:{i:x}")));
+        assert_eq!(
+            refusal(past),
+            "--gpu-device count exceeds the physical device-index space"
+        );
     }
 }
 

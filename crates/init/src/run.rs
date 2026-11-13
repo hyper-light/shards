@@ -895,6 +895,8 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Sorted, Failu
             // Init's, as the run starts (`Standby::start`).
         } else if entry.starts_with(b"devices=") {
             // Init's, done as the workload's limits are (`limit`).
+        } else if entry.starts_with(run::socket::DIR) {
+            // Init's, its lanes' to the command's sockets (D251, `Standby::start`).
         } else if entry == run::nesting::GRANT {
             // The nesting grant (D234): the standby's part of it, made after the run's
             // mounts (below).
@@ -2475,6 +2477,9 @@ struct Workload {
     notify: Option<OwnedFd>,
     /// Its readiness, init's to move, under the nesting grant (D234).
     readiness: Option<crate::readiness::Readiness>,
+    /// The directory of its sockets its controller may reach (D251), none where the run
+    /// grants none.
+    sockets: crate::lanes::Granted,
 }
 
 /// A pty's master, and the path of its peer, which the standby opens as the workload's
@@ -3080,6 +3085,10 @@ impl Standby {
             .transpose()
             .map_err(|e| setup_failed(format!("its microVM's engine: {e}")))?;
         let mut w = standby.launch(spec, false, setup, &inherited)?;
+        // The directory of its sockets its controller may reach (D251): a run's own command's
+        // alone, so none for an orchestrator's run of its image's members (`ATTEND`).
+        w.sockets = crate::lanes::Granted::read(&spec.setup, spec.builtin != run::builtin::ATTEND)
+            .map_err(setup_failed)?;
         if let (Some(hosts), Some(listener)) = (&hosts, w.binds.take()) {
             hosts.listener(&listener, 0);
         }
@@ -3182,6 +3191,7 @@ impl Standby {
             engine: None,
             notify: None,
             readiness: None,
+            sockets: crate::lanes::Granted::default(),
         })
     }
 
@@ -3356,6 +3366,7 @@ impl Standby {
                 engine,
                 notify,
                 readiness: None,
+                sockets: crate::lanes::Granted::default(),
             });
         };
         // The terminal carries everything; the pipes go unused.
@@ -3380,6 +3391,7 @@ impl Standby {
             engine,
             notify,
             readiness: None,
+            sockets: crate::lanes::Granted::default(),
         })
     }
 }
@@ -5659,6 +5671,19 @@ impl Workload {
                                             Err(Some((id, why))) => exec_failed(&mut exec_failures, id, &why),
                                             Err(None) => {}
                                         },
+                                        // A lane to a socket of the run's own command (D251):
+                                        // refused at once where the host hears it, as an
+                                        // exec without its connection is.
+                                        kind::SOCKET => {
+                                            if let Err(Some((id, errno))) = crate::lanes::open(
+                                                payload,
+                                                &self.sockets,
+                                                running.then_some(pid),
+                                            ) {
+                                                exec_failures
+                                                    .extend(&[crate::lanes::refused(id, errno).as_slice()]);
+                                            }
+                                        }
                                         kind::EXEC_SIGNAL => {
                                             if let Some((id, rest)) = id_and(payload)
                                                 && let Some(sig) = sig(&rest)
