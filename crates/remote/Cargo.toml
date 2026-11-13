@@ -14,8 +14,10 @@ bytes = "1"
 # quinn-proto 0.11.18 and rustls 0.23.45 (D180). Without its qlog traces, whose crate turns on
 # serde_json's `preserve_order` for the whole build: shards' JSON is Docker's, its maps sorted
 # (hyper-quic's VENDORED.md §20).
-# RPK certificate-type policy: hyper-tls VENDORED.md §10.
-hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "233b7fcef7a363327c5439b191724a38065062cd", default-features = false }
+# RPK certificate-type policy: hyper-tls VENDORED.md §10. The negotiated idle timeout read by
+# patch Q30 (hyper-quic VENDORED.md §30), on hyper-raft's branch p/negotiated-idle-v1 until it
+# lands on hyper-raft's main.
+hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "b51afe3078c37d08edfc168ff65e9095179199f4", default-features = false }
 sha2 = "0.11"
 # A file of its user's alone wherever it is: an identity's, an invitation's.
 shards-ipc = { path = "../ipc" }
