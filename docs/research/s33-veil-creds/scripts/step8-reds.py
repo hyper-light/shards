@@ -100,7 +100,7 @@ REDS += [
      NET + ["lease::tests::a_captured_credential_is_granted_and_a_rotated_ones_held_lease_let_go"]),
     ("2a signin: refreshes of one sign-in ask once", SIGNIN,
      "Asking::Refresh { index: i, waiting } if *i == index => Some(waiting),",
-     "Asking::Refresh { .. } if false => None,",
+     "Asking::Refresh { waiting, .. } if false => Some(waiting),",
      NET + ["inject::tests::refreshes_of_one_sign_in_at_once_ask_once"]),
     ("2a signin: one sign-in of a CLI a run", SIGNIN,
      "            || grants.iter().any(|g| g.cli == cli || g.sign_in == sign_in)\n", "",
