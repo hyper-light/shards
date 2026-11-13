@@ -7,7 +7,7 @@ mod common;
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 
-use common::{Patience, Said, TempDir};
+use common::{Floor, Patience, Said, TempDir};
 
 /// A daemon's heartbeat, as it says it each `READY_STALL` while a microVM a client waits on
 /// runs (daemon.rs `log_progress`, D209): the nesting probe's VM on HVF at fafe35efc, whose
@@ -120,5 +120,31 @@ fn a_wait_on_idle_heartbeats_ends_at_its_bound_and_one_on_work_goes_on() {
     assert!(
         working > most,
         "heartbeats of work held a wait of {bound:?} only {working:?}"
+    );
+}
+
+/// A VM process's slices of work as `common::Ran` looks at them each `PROGRESS_SLICE`, judged
+/// by its floor as a daemon's heartbeats are (ROOT's ruling, 2026-11-13): during its cold
+/// start, before its run has answered, by its liveness alone (`platform::progressed`); once
+/// its run answered within a window, that window teaches its floor, past which a build step's
+/// work that printed nothing counts and an idle-hung microVM's timer ticks do not.
+#[test]
+fn a_vm_processes_slices_count_past_its_cold_start_only_above_its_floor() {
+    let (ms, secs) = (Duration::from_millis, Duration::from_secs);
+    let mut floor = Floor::new(false);
+    assert!(!floor.slice(ms(40), secs(10), false), "cold, and idle");
+    assert!(floor.slice(ms(70), secs(10), true), "cold, and live");
+    floor.answered();
+    assert!(
+        floor.slice(ms(3265), secs(10), true),
+        "the window its run answered within"
+    );
+    assert!(
+        !floor.slice(ms(90), secs(10), true),
+        "an idle microVM's timer ticks"
+    );
+    assert!(
+        floor.slice(ms(21671), secs(10), true),
+        "a silent build step's work"
     );
 }

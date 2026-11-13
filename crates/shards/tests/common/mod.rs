@@ -2159,33 +2159,112 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
 /// of its start. While one runs its start, however slowly its host runs it, the daemon says
 /// so each `READY_STALL` (10 s), and says why it gave up on one when it does. What it says
 /// each as long of a microVM a client waits on as it runs its workload ([`HEARTBEAT`],
-/// D209) is no word of the test's subject.
+/// D209) counts by what the microVM did ([`Floor`]).
 pub const DAEMON_QUIET: Duration = Duration::from_secs(60);
 
 /// The daemon's heartbeat of a microVM a client waits on (daemon.rs `log_progress`, D209),
 /// in each of its lines: said each `READY_STALL` while the microVM's CPU runs, whatever it
-/// runs, the same line again with its numbers grown. No progress of a test's subject: a
-/// nesting test whose runc hung waited on it to Linux CI's 56-minute limit (ROOT's R03
-/// ruling, 2026-11-13: a repeated, unchanged liveness line is no progress).
+/// runs, the same line again with its numbers grown. A nesting test whose runc hung waited
+/// on it to Linux CI's 56-minute limit, its guest idle: it counts by its deltas alone, as
+/// [`Floor`] judges them (ROOT's rulings, 2026-11-13).
 pub const HEARTBEAT: &str = " runs as its client waits: ";
+
+/// What this test process has learned of a microVM's work, as D215's judge learns a kind of
+/// answer in its process's memory (shards_api's `Record`): the least CPU rate at which its run
+/// still answered, its floor (ROOT's ruling, 2026-11-13). A slice of its work counts as
+/// progress during its cold start, before its run has answered, by liveness alone (as a wait
+/// begun before its kind's first answer follows its party's liveness); past it, only where
+/// its CPU rate is not below that floor, compared by cross-multiplication (`Rate::below`):
+/// an idle microVM's timer ticks are no progress of a test's subject, and a workload's CPU,
+/// past what its run answered at, is. A window its run answered within teaches its record,
+/// from its last teaching to the slice that closes it, as an answer teaches a wait's.
+pub struct Floor {
+    record: shards_api::Record,
+    /// Its CPU time, and the wall time it was had over, since its record last learned.
+    since: (Duration, Duration),
+    /// Whether its run has answered since then.
+    answered: bool,
+}
+
+/// The floors of every microVM this process's tests have followed, by its home and its run's
+/// container and VM process (a daemon's heartbeats, [`Said`]) or its VM process ([`Ran`]).
+static FLOORS: std::sync::Mutex<std::collections::BTreeMap<String, Floor>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn floors() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<String, Floor>> {
+    FLOORS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Floor {
+    /// A microVM first seen, its run having answered meanwhile or not.
+    pub fn new(answered: bool) -> Floor {
+        Floor {
+            record: shards_api::Record::new(),
+            since: (Duration::ZERO, Duration::ZERO),
+            answered,
+        }
+    }
+
+    /// A slice of its work, `cpu` over `over`, `live` as its follower's liveness judges it:
+    /// whether it is progress, judged by what its record learned before it; then, where its
+    /// run answered within the window this slice closes, that window taught.
+    pub fn slice(&mut self, cpu: Duration, over: Duration, live: bool) -> bool {
+        let progressed = match self.record.seen() {
+            shards_api::Seen::Cold => live,
+            shards_api::Seen::Learned { least, .. } => !shards_api::Rate { cpu, over }.below(&least),
+        };
+        self.since = (
+            self.since.0.saturating_add(cpu),
+            self.since.1.saturating_add(over),
+        );
+        if std::mem::take(&mut self.answered) {
+            let (work, wall) = std::mem::take(&mut self.since);
+            self.record.teach(wall, work);
+        }
+        progressed
+    }
+
+    /// Its run answered: the window its next slice closes teaches its record.
+    pub fn answered(&mut self) {
+        self.answered = true;
+    }
+}
+
+/// A heartbeat's microVM, by its run's container and its VM process, and the CPU time it ran
+/// over the slice it says (`+N ms in Ss`, platform::Progress's `Look`).
+fn heartbeat(line: &str) -> Option<(&str, Duration, Duration)> {
+    let (vm, look) = line.split_once(HEARTBEAT)?;
+    let vm = vm.split_once(": container ").map_or(vm, |(_, vm)| vm);
+    let slice = look.split_once("(+")?.1.split_once(')')?.0;
+    let (ms, secs) = slice.split_once(" ms in ")?;
+    let secs = secs.strip_suffix('s')?;
+    Some((
+        vm,
+        Duration::from_millis(ms.parse().ok()?),
+        Duration::from_secs(secs.parse().ok()?),
+    ))
+}
 
 /// What the daemon of a home has said in its log since this began watching: a client past
 /// its deadline is waited on while its daemon says something of it within [`DAEMON_QUIET`],
 /// as it does while it waits on a microVM its host boots slowly (the parity plan's step 10:
-/// boots past a minute on an arm64 Windows host nested under QEMU's TCG), each line but its
-/// [`HEARTBEAT`]. A test's deadline then holds where its host is fast, and follows the
-/// daemon's own judgment of a start where it is slow: never a fixed guess at the host's
-/// speed. A workload its host runs slowly is waited on through its own words and its run's
-/// own lines, never through its microVM's CPU alone.
+/// boots past a minute on an arm64 Windows host nested under QEMU's TCG): each line but its
+/// [`HEARTBEAT`], and that by what its microVM did ([`Floor`]). A test's deadline then holds
+/// where its host is fast, and follows the daemon's own judgment of a start, and its
+/// microVMs' own work, where it is slow: never a fixed guess at the host's speed.
 pub struct Said {
     log: PathBuf,
+    /// Its microVMs' floors' prefix in [`FLOORS`]: its home's.
+    home: String,
     /// How far the log has been read: to the end of the last whole line in it.
     len: u64,
-    /// When it last said something but its heartbeat, since this began watching, to within
-    /// a second.
+    /// When it last said something of its subject, since this began watching, to within a
+    /// second.
     at: Option<Instant>,
     /// When it was last read: once a second at most.
     read: Option<Instant>,
+    /// Whether its run has answered since it was last read, and since this began watching.
+    answers: (bool, bool),
 }
 
 impl Said {
@@ -2194,15 +2273,19 @@ impl Said {
         let len = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
         Said {
             log,
+            home: format!("{}|", home.display()),
             len,
             at: None,
             read: None,
+            answers: (false, false),
         }
     }
 
-    /// Its run answered, as its client's own output says (`run_command`'s client): nothing, as
-    /// yet.
-    pub fn answered(&mut self) {}
+    /// Its run answered, as its client's own output says ([`run_command`]'s client): the
+    /// window each of its microVMs' next heartbeat closes teaches its floor.
+    pub fn answered(&mut self) {
+        self.answers = (true, true);
+    }
 
     /// Whether the daemon has said something but its [`HEARTBEAT`] within [`DAEMON_QUIET`]:
     /// a microVM's start said slowly among it (daemon.rs `ready`: liveness governs a cold
@@ -2218,9 +2301,9 @@ impl Said {
         self.at.is_some_and(|at| at.elapsed() < DAEMON_QUIET)
     }
 
-    /// Whether the whole lines the log gained since its last read say anything but its
-    /// heartbeat, read to the end of the last of them; a log begun again is read from its
-    /// start.
+    /// Whether the whole lines the log gained since its last read say anything of its
+    /// subject, read to the end of the last of them: each but its heartbeat, and that where
+    /// its microVM's floor takes it for progress; a log begun again is read from its start.
     fn said_anew(&mut self) -> bool {
         use std::io::Seek as _;
         let Ok(mut log) = std::fs::File::open(&self.log) else {
@@ -2241,9 +2324,45 @@ impl Said {
             return false;
         };
         self.len += last as u64 + 1;
-        new[..last]
-            .split(|&b| b == b'\n')
-            .any(|line| !line.is_empty() && !String::from_utf8_lossy(line).contains(HEARTBEAT))
+        let mut floors = floors();
+        if std::mem::take(&mut self.answers.0) {
+            for (_, floor) in floors
+                .range_mut(self.home.clone()..)
+                .take_while(|(k, _)| k.starts_with(&self.home))
+            {
+                floor.answered();
+            }
+        }
+        let mut said = false;
+        for line in new[..last].split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+            let line = String::from_utf8_lossy(line);
+            match line.contains(HEARTBEAT).then(|| heartbeat(&line)) {
+                // One whose slice cannot be read says nothing of what its microVM did.
+                Some(None) => {}
+                Some(Some((vm, cpu, over))) => {
+                    let floor = floors
+                        .entry(format!("{}{vm}", self.home))
+                        .or_insert_with(|| Floor::new(self.answers.1));
+                    // The daemon says it only where its microVM ran past an idle one
+                    // (`progressed`): its liveness.
+                    said |= floor.slice(cpu, over, true);
+                }
+                None => {
+                    // A run's own line answers for its microVMs.
+                    if let Some(id) = line.split_once("container ").and_then(|(_, r)| r.split_once(':')) {
+                        let of = format!("{}{}", self.home, id.0);
+                        for (_, floor) in floors
+                            .range_mut(of.clone()..)
+                            .take_while(|(k, _)| k.starts_with(&of))
+                        {
+                            floor.answered();
+                        }
+                    }
+                    said = true;
+                }
+            }
+        }
+        said
     }
 }
 
@@ -2270,6 +2389,8 @@ pub struct Ran {
     looked: Instant,
     /// When one of them last ran, since this began watching.
     at: Option<Instant>,
+    /// Whether its client's run has answered since this began watching.
+    answered: bool,
 }
 
 impl Ran {
@@ -2279,21 +2400,47 @@ impl Ran {
             followed: std::collections::HashMap::new(),
             looked: Instant::now(),
             at: None,
+            answered: false,
         }
     }
 
-    /// Whether a VM process under its client ran within [`DAEMON_QUIET`]. Asked as often as
-    /// its caller likes, it looks once each [`PROGRESS_SLICE`]; one found anew is judged
-    /// from the next look on.
+    /// Its client's run answered, as its output says ([`run_command`]): the window each of
+    /// its VM processes' next look closes teaches its floor.
+    pub fn answered(&mut self) {
+        self.answered = true;
+        let mut floors = floors();
+        for pid in self.followed.keys() {
+            if let Some(floor) = floors.get_mut(&format!("vm process {pid}")) {
+                floor.answered();
+            }
+        }
+    }
+
+    /// Whether a VM process under its client ran within [`DAEMON_QUIET`], as its [`Floor`]
+    /// judges what it ran: during its cold start, past an idle microVM's
+    /// (`platform::progressed`); past it, not below its floor. Asked as often as its caller
+    /// likes, it looks once each [`PROGRESS_SLICE`]; one found anew is judged from the next
+    /// look on.
     pub fn lately(&mut self) -> bool {
         if self.looked.elapsed() >= PROGRESS_SLICE {
             self.looked = Instant::now();
             let vms = vm_processes_under(self.client);
             self.followed.retain(|pid, _| vms.contains(pid));
+            let mut floors = floors();
             for pid in vms {
+                let floor = floors
+                    .entry(format!("vm process {pid}"))
+                    .or_insert_with(|| Floor::new(self.answered));
                 match self.followed.entry(pid) {
                     std::collections::hash_map::Entry::Occupied(mut p) => {
-                        if p.get_mut().look().ran {
+                        let look = p.get_mut().look();
+                        let ran = look
+                            .before
+                            .zip(look.now)
+                            .map(|(b, n)| Duration::from_nanos(n.cpu_ns.saturating_sub(b.cpu_ns)));
+                        if let Some(ran) = ran
+                            && floor.slice(ran, look.over, look.ran)
+                        {
                             self.at = Some(Instant::now());
                         }
                     }
@@ -2509,14 +2656,13 @@ fn run_ending(
         });
         rx
     };
-    // All it wrote, to its end; or what came by the deadline, where it never ends.
-    // Lossily: a step's output is printed as it came, bytes that are no UTF-8 included,
-    // which a strict conversion would drop the whole of.
-    let took = |rx: &std::sync::mpsc::Receiver<Vec<u8>>| {
+    // All it wrote, to its end, after what had come of it (`got`); or what came by the
+    // deadline, where it never ends. Lossily: a step's output is printed as it came, bytes
+    // that are no UTF-8 included, which a strict conversion would drop the whole of.
+    let took = |rx: &std::sync::mpsc::Receiver<Vec<u8>>, mut got: Vec<u8>| {
         let until = Instant::now()
             .max(start + timeout)
             .max(Instant::now() + Duration::from_secs(1));
-        let mut got = Vec::new();
         loop {
             match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
                 Ok(chunk) => got.extend_from_slice(&chunk),
@@ -2534,11 +2680,28 @@ fn run_ending(
     };
     let out = collect(Box::new(child.stdout.take().unwrap()));
     let err = collect(Box::new(child.stderr.take().unwrap()));
+    let (mut out_got, mut err_got) = (Vec::new(), Vec::new());
+    // What came of it since the look before: its run's answers, which teach its microVMs'
+    // floors ([`Floor`]).
+    let came = |rx: &std::sync::mpsc::Receiver<Vec<u8>>, got: &mut Vec<u8>| {
+        let mut came = false;
+        while let Ok(chunk) = rx.try_recv() {
+            got.extend_from_slice(&chunk);
+            came = true;
+        }
+        came
+    };
     let mut said = home.as_deref().map(Said::of);
     let mut ran = Ran::of(child.id());
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {
             break st;
+        }
+        if came(&out, &mut out_got) | came(&err, &mut err_got) {
+            if let Some(said) = said.as_mut() {
+                said.answered();
+            }
+            ran.answered();
         }
         // Each asked each time, so that it sees when the daemon last said something, and
         // when a microVM of the client's own last ran.
@@ -2551,8 +2714,8 @@ fn run_ending(
                 said: format!(
                     "{} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}{seen}",
                     asked.join(" "),
-                    took(&out),
-                    took(&err)
+                    took(&out, std::mem::take(&mut out_got)),
+                    took(&err, std::mem::take(&mut err_got))
                 ),
                 started,
                 left,
@@ -2567,8 +2730,8 @@ fn run_ending(
     Ok(Run {
         status: status.code(),
         signal,
-        stdout: took(&out),
-        stderr: took(&err),
+        stdout: took(&out, out_got),
+        stderr: took(&err, err_got),
         elapsed: start.elapsed(),
     })
 }
