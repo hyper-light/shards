@@ -594,6 +594,22 @@ pub mod kind {
     /// `exec_failed` class (a byte), then what the guest said (D238). An exec that never
     /// started and says none of this could not be asked of its guest.
     pub const EXEC_UNSTARTED: u8 = 96;
+    /// Its owner → a VM: a lane to a socket of its run's own command (D251), by its number
+    /// (8, big-endian, below 2^63), then the socket's name in the run's socket directory
+    /// (`shards_abi::run::socket::DIR`). The VM answers with the same message, by the
+    /// number: then the lane's status (`shards_abi::run::socket::STATUS` bytes: 0 connected,
+    /// else the errno it was refused with), then, for a lane its guest could not be asked for
+    /// or never answered, why, in words; connected, on Unix the lane's connection beside it,
+    /// held by the VM until its owner says it has it with [`LANE_HELD`] (M24), and on
+    /// Windows, where a VM gives its owner no handle, none, its owner answering
+    /// [`LANE_HELD`] with the socket the VM relays the lane onto.
+    pub const LANE_OPEN: u8 = 97;
+    /// Its owner → a VM, by a lane's number (8, big-endian): the owner has the lane's
+    /// connection a VM handed it ([`LANE_OPEN`]'s answer, or any lane a VM hands it by
+    /// number), and the VM lets go of its copy (M24); on Windows beside it the socket the VM
+    /// relays the lane onto, or none for a lane its owner closes. Numbers its owner chose
+    /// ([`LANE_OPEN`]) are below 2^63; a VM's own, for lanes its guest begins, at or above.
+    pub const LANE_HELD: u8 = 98;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the

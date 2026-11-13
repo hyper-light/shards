@@ -14,6 +14,7 @@ pub mod nesting;
 pub mod notice;
 pub mod plug;
 pub mod quiesce;
+pub mod socket;
 
 /// The host port the guest dials for its workload.
 pub const PORT: u32 = 1024;
@@ -202,6 +203,16 @@ pub mod kind {
     /// The input itself comes host to guest on the member's own connection, as [`STDIN`]
     /// frames, an empty one its owner's end.
     pub const MANAGED_INPUT_ENDED: u8 = 51;
+    /// Host to guest, on the signal connection: a lane to a socket of the run's own command
+    /// (D251), as [`socket::Ask`](super::socket::Ask) encodes it. Init connects it, then dials
+    /// [`EXEC_PORT`](super::EXEC_PORT), says the ask's token in its HELLO and the lane's
+    /// status ([`socket::STATUS`](super::socket::STATUS)), or refuses it with
+    /// [`SOCKET_REFUSED`].
+    pub const SOCKET: u8 = 52;
+    /// Guest to host, on the workload's connection: a lane init refused before connecting
+    /// anything, as [`socket::refused`](super::socket::refused) encodes it, so that the host
+    /// fails it rather than wait for its connection, as [`EXEC_FAILED`] fails an exec.
+    pub const SOCKET_REFUSED: u8 = 53;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its

@@ -45,6 +45,8 @@ mod join;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod json;
 #[cfg(target_os = "linux")]
+mod lanes;
+#[cfg(target_os = "linux")]
 mod layer;
 #[cfg(target_os = "linux")]
 mod links;
