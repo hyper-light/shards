@@ -2,34 +2,31 @@
 //! and Codex's own sign-ins say to their providers' token endpoints, as their pinned builds say
 //! it, so that the injector (inject.rs) can take a token response's tokens outside the microVM,
 //! give the CLI placeholders in their place, and answer its refreshes and revocations outside.
-//! Pure: it holds no socket, clock or lease; its caller holds what it reads, within its
-//! connection's window.
+//! The profiles are pure: they hold no socket, clock or lease, and their caller holds what they
+//! read, within its connection's window. [`SignIns`] is the run's sign-ins as the network
+//! process holds them, and its asks of the run host (`NET_SIGN_IN`), which never wait.
 //!
 //! Each shape is cited to the CLI's own build, read and never run: Claude Code 2.1.311's bundle
 //! (linux-x64, sha256 86dc1fcc…8ada; offsets into that file) and Codex rust-v0.167.2's sources
 //! (commit ce21072c9; paths under codex-rs). The reads are docs/research/s33-veil-creds/STEP8.md's.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
 
 use zeroize::{Zeroize, Zeroizing};
 
+pub use crate::dns::credential::{Captured, Cli, SignInGrant};
+
 use crate::dns::credential;
 use crate::inject::{self, Field};
+use crate::lease::Waiter;
 
-/// A CLI whose own sign-in the injector serves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Cli {
-    ClaudeCode,
-    Codex,
-}
-
-impl Cli {
-    pub fn profile(self) -> &'static Profile {
-        match self {
-            Cli::ClaudeCode => &CLAUDE_CODE,
-            Cli::Codex => &CODEX,
-        }
+/// `cli`'s profile.
+pub fn profile(cli: Cli) -> &'static Profile {
+    match cli {
+        Cli::ClaudeCode => &CLAUDE_CODE,
+        Cli::Codex => &CODEX,
     }
 }
 
@@ -123,7 +120,7 @@ impl Profile {
 
 /// A request target's path (RFC 9112 §3.2): an origin-form target's before its query, an
 /// absolute-form target's after its authority.
-fn path(target: &str) -> &str {
+pub(crate) fn path(target: &str) -> &str {
     let rest = match target.split_once("://") {
         Some((_, rest)) => rest
             .find(['/', '?', '#'])
@@ -362,6 +359,8 @@ pub enum Refusal {
     /// A placeholder that is no token a JSON string holds as it is (RFC 6750 §2.1's
     /// `b64token`).
     NoPlaceholder,
+    /// A token response its sign-in needs an access token from that carries none.
+    NoToken,
 }
 
 impl fmt::Display for Refusal {
@@ -374,6 +373,7 @@ impl fmt::Display for Refusal {
             Refusal::Echoed => "a sign-in's response that carries a token's value outside its place",
             Refusal::NotAJwt => "a sign-in's response whose ID token is no JWT",
             Refusal::NoPlaceholder => "a sign-in's placeholder that is no token",
+            Refusal::NoToken => "a sign-in's token response that carries no access token",
         })
     }
 }
@@ -571,6 +571,19 @@ pub fn write(body: &[u8], tokens: &Tokens, with: &Placeholders) -> Result<Zeroiz
     }
     out.extend_from_slice(body.get(at..).unwrap_or_default());
     Ok(out)
+}
+
+/// Appends `bytes` to `buf`, which holds a token response as it comes: where it has no room, a
+/// buffer of twice its size takes its bytes and the old one is wiped as it drops, so that no
+/// buffer let go of holds a part of a token.
+pub fn append(buf: &mut Zeroizing<Vec<u8>>, bytes: &[u8]) {
+    let need = buf.len().saturating_add(bytes.len());
+    if need > buf.capacity() {
+        let mut grown = Zeroizing::new(Vec::with_capacity(need.max(buf.capacity().saturating_mul(2))));
+        grown.extend_from_slice(buf);
+        *buf = grown;
+    }
+    buf.extend_from_slice(bytes);
 }
 
 /// `v` as a JSON string, which it holds as it is.
@@ -928,6 +941,731 @@ fn code_point(rest: &[u8]) -> Result<(char, usize), NotJson> {
         c => (c, 4),
     };
     Ok((char::from_u32(c).ok_or(NotJson)?, used))
+}
+
+/// A length of `n` bytes in a field of `W` bytes, network order; none past it.
+fn length<const W: usize>(n: usize) -> Option<[u8; W]> {
+    let n = u64::try_from(n).ok()?;
+    let bytes = n.to_be_bytes();
+    let (high, low) = bytes.split_at_checked(8usize.checked_sub(W)?)?;
+    if high.iter().any(|&b| b != 0) {
+        return None;
+    }
+    low.try_into().ok()
+}
+
+/// Appends `bytes` after their length in a field of `W` bytes.
+fn put<const W: usize>(out: &mut Vec<u8>, bytes: &[u8]) -> Option<()> {
+    out.extend_from_slice(&length::<W>(bytes.len())?);
+    out.extend_from_slice(bytes);
+    Some(())
+}
+
+/// Bytes read in order, a read past their end refused.
+struct Read<'a>(&'a [u8]);
+
+impl<'a> Read<'a> {
+    fn byte(&mut self) -> Option<u8> {
+        let (&b, rest) = self.0.split_first()?;
+        self.0 = rest;
+        Some(b)
+    }
+
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let (taken, rest) = self.0.split_at_checked(n)?;
+        self.0 = rest;
+        Some(taken)
+    }
+
+    fn number<const W: usize>(&mut self) -> Option<u64> {
+        let mut be = [0u8; 8];
+        be.get_mut(8usize.checked_sub(W)?..)?
+            .copy_from_slice(self.take(W)?);
+        Some(u64::from_be_bytes(be))
+    }
+
+    fn sized<const W: usize>(&mut self) -> Option<&'a [u8]> {
+        let n = usize::try_from(self.number::<W>()?).ok()?;
+        self.take(n)
+    }
+
+    fn text(&mut self) -> Option<String> {
+        String::from_utf8(self.sized::<2>()?.to_vec()).ok()
+    }
+
+    /// A value, copied once into a buffer that wipes it as it drops.
+    fn secret(&mut self) -> Option<Zeroizing<Vec<u8>>> {
+        Some(Zeroizing::new(self.sized::<4>()?.to_vec()))
+    }
+
+    fn done(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// `NET_SIGN_INS`'s payload: each grant as its sign-in's name (a two-byte length, network order,
+/// and the name), its CLI's code (a byte), its hosts' count (two bytes) and each host (its
+/// length's byte and the name), then 1 where an earlier capture gave it placeholders, which
+/// follow (its access token's reference, that token's placeholder and its refresh token's, each
+/// a two-byte length and its bytes), else 0. None where a length passes its field, which the
+/// bounds `encode_grants` (lib.rs) cites leave room for.
+pub fn encode_grants(grants: &[SignInGrant]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    for g in grants {
+        put::<2>(&mut out, g.sign_in.as_bytes())?;
+        out.push(g.cli.code());
+        out.extend_from_slice(&length::<2>(g.toward.len())?);
+        for host in &g.toward {
+            put::<1>(&mut out, host.as_bytes())?;
+        }
+        match &g.captured {
+            Some(c) => {
+                out.push(1);
+                put::<2>(&mut out, c.access.as_bytes())?;
+                put::<2>(&mut out, c.access_placeholder.as_bytes())?;
+                put::<2>(&mut out, c.refresh_placeholder.as_bytes())?;
+            }
+            None => out.push(0),
+        }
+    }
+    Some(out)
+}
+
+/// What [`encode_grants`] wrote; none for a malformed payload, a CLI no profile serves, a grant
+/// of no name or toward no host, or two of one sign-in or one CLI: a capture names no sign-in,
+/// so a run's sign-in of a CLI is one.
+pub fn decode_grants(bytes: &[u8]) -> Option<Vec<SignInGrant>> {
+    let mut r = Read(bytes);
+    let mut grants: Vec<SignInGrant> = Vec::new();
+    while !r.done() {
+        let sign_in = r.text()?;
+        let cli = Cli::from_code(r.byte()?)?;
+        let mut toward = Vec::new();
+        for _ in 0..r.number::<2>()? {
+            toward.push(String::from_utf8(r.sized::<1>()?.to_vec()).ok()?);
+        }
+        let captured = match r.byte()? {
+            0 => None,
+            1 => Some(Captured {
+                access: r.text()?,
+                access_placeholder: r.text()?,
+                refresh_placeholder: r.text()?,
+            }),
+            _ => return None,
+        };
+        if sign_in.is_empty()
+            || toward.is_empty()
+            || grants.iter().any(|g| g.cli == cli || g.sign_in == sign_in)
+        {
+            return None;
+        }
+        grants.push(SignInGrant {
+            sign_in,
+            cli,
+            toward,
+            captured,
+        });
+    }
+    Some(grants)
+}
+
+/// A sign-in's tokens as its capture took them (D242, step 8), each wiped as it drops: what the
+/// network process tells its run host for the orchestrator's broker to keep. Its ID token is not
+/// among them: nothing outside uses one, and it is made inert where it was read ([`write`]).
+pub struct Taken {
+    pub access: Zeroizing<Vec<u8>>,
+    pub refresh: Option<Zeroizing<Vec<u8>>>,
+    /// The access token's life in seconds, where its response said (RFC 6749 §5.1).
+    pub expires_in: Option<u64>,
+}
+
+impl fmt::Debug for Taken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Taken")
+            .field("access", &format_args!("{} bytes", self.access.len()))
+            .field("refresh", &self.refresh.as_ref().map(|r| r.len()))
+            .field("expires_in", &self.expires_in)
+            .finish()
+    }
+}
+
+impl Taken {
+    /// The tokens [`read`] found, copied once each.
+    pub fn of(tokens: &Tokens) -> Option<Taken> {
+        Some(Taken {
+            access: Zeroizing::new(tokens.access.as_ref()?.value.to_vec()),
+            refresh: tokens.refresh.as_ref().map(|t| Zeroizing::new(t.value.to_vec())),
+            expires_in: tokens.expires_in,
+        })
+    }
+}
+
+/// Why an ask of a sign-in was not answered (R04), as its run host said it, each cause typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Declined {
+    /// The orchestrator's broker refused it, in its words: a sign-in its store does not hold, or
+    /// a refresh its provider refused (its refresh token revoked or expired).
+    Denied(String),
+    /// Its broker could not be asked, or failed, in its words: a later ask may be answered.
+    Unavailable(String),
+    /// The run has ended: nothing is asked after.
+    Ended,
+    /// The run's orchestrator answers no sign-in.
+    Unanswered,
+}
+
+impl fmt::Display for Declined {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Declined::Denied(why) => write!(f, "its broker refused it: {why}"),
+            Declined::Unavailable(why) => write!(f, "its broker could not answer it: {why}"),
+            Declined::Ended => f.write_str("the run has ended"),
+            Declined::Unanswered => f.write_str("the run's orchestrator answers no sign-in"),
+        }
+    }
+}
+
+impl Declined {
+    fn encode(&self, out: &mut Vec<u8>) -> Option<()> {
+        match self {
+            Declined::Denied(why) => {
+                out.push(1);
+                put::<2>(out, why.as_bytes())
+            }
+            Declined::Unavailable(why) => {
+                out.push(2);
+                put::<2>(out, why.as_bytes())
+            }
+            Declined::Ended => {
+                out.push(3);
+                Some(())
+            }
+            Declined::Unanswered => {
+                out.push(4);
+                Some(())
+            }
+        }
+    }
+
+    fn decode(r: &mut Read<'_>) -> Option<Declined> {
+        Some(match r.byte()? {
+            1 => Declined::Denied(r.text()?),
+            2 => Declined::Unavailable(r.text()?),
+            3 => Declined::Ended,
+            4 => Declined::Unanswered,
+            _ => return None,
+        })
+    }
+}
+
+/// The words of `NET_SIGN_IN`, its first byte.
+const WORD_CAPTURE: u8 = 1;
+const WORD_REFRESH: u8 = 2;
+const WORD_REVOKE: u8 = 3;
+
+/// What the network process tells its run host of a sign-in (`NET_SIGN_IN`, R04).
+#[derive(Debug)]
+pub enum Told {
+    /// Keep a capture's tokens and give their placeholders, asked by `id`.
+    Capture { id: u32, sign_in: String, taken: Taken },
+    /// Refresh the sign-in once for every flow of the run that asked, asked by `id`.
+    Refresh { id: u32, sign_in: String },
+    /// The VM revoked the sign-in: answered here, its stored tokens untouched.
+    Revoke { sign_in: String },
+}
+
+impl Told {
+    /// Its payload, in one buffer sized at once and wiped as it drops: no buffer let go of as one
+    /// grows holds a part of a token.
+    pub fn encode(&self) -> Option<Zeroizing<Vec<u8>>> {
+        let mut out = Zeroizing::new(Vec::new());
+        match self {
+            Told::Capture { id, sign_in, taken } => {
+                let refresh = taken.refresh.as_ref().map_or(0, |r| r.len().saturating_add(4));
+                out.reserve_exact(
+                    sign_in
+                        .len()
+                        .saturating_add(taken.access.len())
+                        .saturating_add(refresh)
+                        .saturating_add(25),
+                );
+                out.push(WORD_CAPTURE);
+                out.extend_from_slice(&id.to_be_bytes());
+                put::<2>(&mut out, sign_in.as_bytes())?;
+                put::<4>(&mut out, &taken.access)?;
+                match &taken.refresh {
+                    Some(r) => {
+                        out.push(1);
+                        put::<4>(&mut out, r)?;
+                    }
+                    None => out.push(0),
+                }
+                match taken.expires_in {
+                    Some(s) => {
+                        out.push(1);
+                        out.extend_from_slice(&s.to_be_bytes());
+                    }
+                    None => out.push(0),
+                }
+            }
+            Told::Refresh { id, sign_in } => {
+                out.push(WORD_REFRESH);
+                out.extend_from_slice(&id.to_be_bytes());
+                put::<2>(&mut out, sign_in.as_bytes())?;
+            }
+            Told::Revoke { sign_in } => {
+                out.push(WORD_REVOKE);
+                put::<2>(&mut out, sign_in.as_bytes())?;
+            }
+        }
+        Some(out)
+    }
+
+    /// What [`encode`](Self::encode) wrote; none for a payload that is no such word.
+    pub fn decode(payload: &[u8]) -> Option<Told> {
+        let mut r = Read(payload);
+        let told = match r.byte()? {
+            WORD_CAPTURE => {
+                let id = u32::try_from(r.number::<4>()?).ok()?;
+                let sign_in = r.text()?;
+                let access = r.secret()?;
+                let refresh = match r.byte()? {
+                    0 => None,
+                    1 => Some(r.secret()?),
+                    _ => return None,
+                };
+                let expires_in = match r.byte()? {
+                    0 => None,
+                    1 => Some(r.number::<8>()?),
+                    _ => return None,
+                };
+                Told::Capture {
+                    id,
+                    sign_in,
+                    taken: Taken {
+                        access,
+                        refresh,
+                        expires_in,
+                    },
+                }
+            }
+            WORD_REFRESH => Told::Refresh {
+                id: u32::try_from(r.number::<4>()?).ok()?,
+                sign_in: r.text()?,
+            },
+            WORD_REVOKE => Told::Revoke { sign_in: r.text()? },
+            _ => return None,
+        };
+        r.done().then_some(told)
+    }
+}
+
+/// The run host's answer to an ask of a sign-in, by its id (`NET_SIGN_IN`).
+pub enum Answered {
+    Captured {
+        id: u32,
+        result: Result<Captured, Declined>,
+    },
+    /// The token response the sign-in's CLI is to have, wiped as it drops.
+    Refreshed {
+        id: u32,
+        result: Result<Zeroizing<Vec<u8>>, Declined>,
+    },
+}
+
+/// Shows each answer, of a refresh's token response its length alone.
+impl fmt::Debug for Answered {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Answered::Captured { id, result } => f
+                .debug_struct("Captured")
+                .field("id", id)
+                .field("result", result)
+                .finish(),
+            Answered::Refreshed { id, result } => f
+                .debug_struct("Refreshed")
+                .field("id", id)
+                .field("result", &result.as_ref().map(|body| body.len()))
+                .finish(),
+        }
+    }
+}
+
+impl Answered {
+    pub fn encode(&self) -> Option<Zeroizing<Vec<u8>>> {
+        let mut out = Zeroizing::new(Vec::new());
+        match self {
+            Answered::Captured { id, result } => {
+                out.push(WORD_CAPTURE);
+                out.extend_from_slice(&id.to_be_bytes());
+                match result {
+                    Ok(c) => {
+                        out.push(0);
+                        put::<2>(&mut out, c.access.as_bytes())?;
+                        put::<2>(&mut out, c.access_placeholder.as_bytes())?;
+                        put::<2>(&mut out, c.refresh_placeholder.as_bytes())?;
+                    }
+                    Err(declined) => {
+                        out.push(1);
+                        declined.encode(&mut out)?;
+                    }
+                }
+            }
+            Answered::Refreshed { id, result } => {
+                out.reserve_exact(result.as_ref().map_or(0, |b| b.len()).saturating_add(10));
+                out.push(WORD_REFRESH);
+                out.extend_from_slice(&id.to_be_bytes());
+                match result {
+                    Ok(body) => {
+                        out.push(0);
+                        put::<4>(&mut out, body)?;
+                    }
+                    Err(declined) => {
+                        out.push(1);
+                        declined.encode(&mut out)?;
+                    }
+                }
+            }
+        }
+        Some(out)
+    }
+
+    pub fn decode(payload: &[u8]) -> Option<Answered> {
+        let mut r = Read(payload);
+        let tag = r.byte()?;
+        let id = u32::try_from(r.number::<4>()?).ok()?;
+        let ok = match r.byte()? {
+            0 => true,
+            1 => false,
+            _ => return None,
+        };
+        let answered = match (tag, ok) {
+            (WORD_CAPTURE, true) => Answered::Captured {
+                id,
+                result: Ok(Captured {
+                    access: r.text()?,
+                    access_placeholder: r.text()?,
+                    refresh_placeholder: r.text()?,
+                }),
+            },
+            (WORD_REFRESH, true) => Answered::Refreshed {
+                id,
+                result: Ok(r.secret()?),
+            },
+            (WORD_CAPTURE, false) => Answered::Captured {
+                id,
+                result: Err(Declined::decode(&mut r)?),
+            },
+            (WORD_REFRESH, false) => Answered::Refreshed {
+                id,
+                result: Err(Declined::decode(&mut r)?),
+            },
+            _ => return None,
+        };
+        r.done().then_some(answered)
+    }
+}
+
+/// An ask of the run host under way (R04): a capture, its flow waiting; or a refresh, every flow
+/// of the sign-in that asked one waiting on it, so that one rotation serves them all (RFC 6749
+/// §6, f47).
+#[derive(Debug)]
+enum Asking {
+    Capture { index: usize, waiter: Waiter },
+    Refresh { index: usize, waiting: Vec<Waiter> },
+}
+
+/// An ask's answer, as its flow takes it.
+pub enum Answer {
+    /// The sign-in's tokens are kept outside: its placeholders are its grant's `captured` now.
+    Captured,
+    /// The sign-in refreshed outside: the token response its CLI is to have.
+    Refreshed(Zeroizing<Vec<u8>>),
+    Declined(Declined),
+}
+
+impl fmt::Debug for Answer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Answer::Captured => f.write_str("Captured"),
+            Answer::Refreshed(body) => write!(f, "Refreshed({} bytes)", body.len()),
+            Answer::Declined(why) => f.debug_tuple("Declined").field(why).finish(),
+        }
+    }
+}
+
+/// What an answer changed of the run's sign-ins, for its credentials to follow.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Changed {
+    /// The sign-in at `index` was captured: its access grant is new, the one it replaced gone,
+    /// and a lease of its reference held before is stale.
+    Captured {
+        index: usize,
+        replaced: Option<Captured>,
+    },
+    /// The sign-in at `index` refreshed: its access token's held lease is stale.
+    Refreshed { index: usize },
+    /// Nothing of its credentials: a refusal.
+    Nothing,
+}
+
+/// The run's sign-ins as its network process holds them (D242, step 8; R04): each grant, with
+/// what its capture gave; each ask of the run host by its id until its answer; each answer kept
+/// for its flow until that flow takes it. An ask never holds up the loop that makes it: it goes
+/// out on the loop's next pass ([`asks`](Self::asks)) and its answer comes as an event naming the
+/// flows to resume ([`resumed`](Self::resumed)), as a run's leases do.
+pub struct SignIns {
+    pub grants: Vec<SignInGrant>,
+    asking: HashMap<u32, Asking>,
+    next: u32,
+    unsent: Vec<Zeroizing<Vec<u8>>>,
+    answers: HashMap<Waiter, Answer>,
+    resumed: Vec<Waiter>,
+    ended: bool,
+}
+
+/// Shows its grants and where its asks stand, never a token: a capture's unsent ask holds one.
+impl fmt::Debug for SignIns {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignIns")
+            .field("grants", &self.grants)
+            .field("asking", &self.asking)
+            .field("unsent", &self.unsent.len())
+            .field("answers", &self.answers)
+            .field("ended", &self.ended)
+            .finish()
+    }
+}
+
+impl SignIns {
+    pub fn new(grants: Vec<SignInGrant>) -> SignIns {
+        SignIns {
+            grants,
+            asking: HashMap::new(),
+            next: 0,
+            unsent: Vec::new(),
+            answers: HashMap::new(),
+            resumed: Vec::new(),
+            ended: false,
+        }
+    }
+
+    /// The run's sign-in of `cli`, which is one at most.
+    pub fn of(&self, cli: Cli) -> Option<usize> {
+        self.grants.iter().position(|g| g.cli == cli)
+    }
+
+    /// The sign-ins whose token host `host` is.
+    pub fn at_token_host(&self, host: &str) -> Option<Cli> {
+        self.grants
+            .iter()
+            .map(|g| g.cli)
+            .find(|&cli| profile(cli).token.host.eq_ignore_ascii_case(host))
+    }
+
+    /// An id no ask under way has: at most one more try than there are asks.
+    fn fresh(&mut self) -> u32 {
+        loop {
+            let id = self.next;
+            self.next = self.next.wrapping_add(1);
+            if !self.asking.contains_key(&id) {
+                return id;
+            }
+        }
+    }
+
+    fn sign_in(&self, index: usize) -> Result<String, Declined> {
+        if self.ended {
+            return Err(Declined::Ended);
+        }
+        self.grants
+            .get(index)
+            .map(|g| g.sign_in.clone())
+            .ok_or_else(|| Declined::Denied("no sign-in of the run's".into()))
+    }
+
+    /// Asks the run host to keep sign-in `index`'s `taken` tokens, flow `waiter` waiting.
+    pub fn capture(&mut self, index: usize, taken: Taken, waiter: Waiter) -> Result<(), Declined> {
+        let sign_in = self.sign_in(index)?;
+        let id = self.fresh();
+        let told = Told::Capture { id, sign_in, taken }
+            .encode()
+            .ok_or_else(|| Declined::Unavailable("a capture past what its lengths count".into()))?;
+        self.unsent.push(told);
+        self.asking.insert(id, Asking::Capture { index, waiter });
+        Ok(())
+    }
+
+    /// Asks the run host to refresh sign-in `index`, flow `waiter` waiting: joined to the ask
+    /// under way where there is one.
+    pub fn refresh(&mut self, index: usize, waiter: Waiter) -> Result<(), Declined> {
+        let sign_in = self.sign_in(index)?;
+        let under_way = self.asking.values_mut().find_map(|a| match a {
+            Asking::Refresh { index: i, waiting } if *i == index => Some(waiting),
+            _ => None,
+        });
+        if let Some(waiting) = under_way {
+            waiting.push(waiter);
+            return Ok(());
+        }
+        let id = self.fresh();
+        let told = Told::Refresh { id, sign_in }
+            .encode()
+            .ok_or_else(|| Declined::Unavailable("a sign-in's name past what its length counts".into()))?;
+        self.unsent.push(told);
+        self.asking.insert(
+            id,
+            Asking::Refresh {
+                index,
+                waiting: vec![waiter],
+            },
+        );
+        Ok(())
+    }
+
+    /// Tells the run host the VM revoked sign-in `index`, which is answered here.
+    pub fn revoke(&mut self, index: usize) {
+        if let Ok(sign_in) = self.sign_in(index)
+            && let Some(told) = (Told::Revoke { sign_in }).encode()
+        {
+            self.unsent.push(told);
+        }
+    }
+
+    /// The words to the run host since the last call, each a `NET_SIGN_IN` payload.
+    pub fn asks(&mut self) -> Vec<Zeroizing<Vec<u8>>> {
+        std::mem::take(&mut self.unsent)
+    }
+
+    /// The run host's answer `payload` (`NET_SIGN_IN`), the run's credential grants being
+    /// `grants`: what it changed, its flows resumed. None for a payload that is no answer, or one
+    /// to no ask of this process's, which breaks the run host's contract. A capture's placeholders
+    /// that are no tokens, or another credential's, are declined, never taken. After the run's
+    /// end, an answer is let go of: nothing waits on it.
+    pub fn answered(&mut self, payload: &[u8], grants: &[credential::CredentialGrant]) -> Option<Changed> {
+        let answered = Answered::decode(payload)?;
+        if self.ended {
+            return Some(Changed::Nothing);
+        }
+        let (id, asking) = match &answered {
+            Answered::Captured { id, .. } | Answered::Refreshed { id, .. } => (*id, self.asking.remove(id)?),
+        };
+        match (asking, answered) {
+            (Asking::Capture { index, waiter }, Answered::Captured { result, .. }) => {
+                let result = result.and_then(|c| self.fits(index, c, grants));
+                Some(match result {
+                    Ok(c) => {
+                        let replaced = self.grants.get_mut(index)?.captured.replace(c);
+                        self.tell(waiter, Answer::Captured);
+                        Changed::Captured { index, replaced }
+                    }
+                    Err(declined) => {
+                        self.tell(waiter, Answer::Declined(declined));
+                        Changed::Nothing
+                    }
+                })
+            }
+            (Asking::Refresh { index, waiting }, Answered::Refreshed { result, .. }) => {
+                let changed = match &result {
+                    Ok(_) => Changed::Refreshed { index },
+                    Err(_) => Changed::Nothing,
+                };
+                for waiter in waiting {
+                    let answer = match &result {
+                        Ok(body) => Answer::Refreshed(body.clone()),
+                        Err(declined) => Answer::Declined(declined.clone()),
+                    };
+                    self.tell(waiter, answer);
+                }
+                Some(changed)
+            }
+            (asking, _) => {
+                // An answer of another ask's kind: the ask is put back, the contract broken.
+                self.asking.insert(id, asking);
+                None
+            }
+        }
+    }
+
+    /// Captured placeholders `c` for sign-in `index`, where each is a token and the run's
+    /// credentials' alone: none another grant's placeholder (the access grant they replace
+    /// aside), and the two apart.
+    fn fits(
+        &self,
+        index: usize,
+        c: Captured,
+        grants: &[credential::CredentialGrant],
+    ) -> Result<Captured, Declined> {
+        let old = self.grants.get(index).and_then(|g| g.captured.as_ref());
+        let others: Vec<&str> = grants
+            .iter()
+            .filter(|g| old.is_none_or(|o| g.placeholder != o.access_placeholder))
+            .map(|g| g.placeholder.as_str())
+            .chain(
+                self.grants
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != index)
+                    .filter_map(|(_, g)| g.captured.as_ref())
+                    .map(|o| o.refresh_placeholder.as_str()),
+            )
+            .collect();
+        let token = |p: &str| credential::placeholder(p) && !others.contains(&p);
+        if token(&c.access_placeholder)
+            && token(&c.refresh_placeholder)
+            && c.access_placeholder != c.refresh_placeholder
+        {
+            Ok(c)
+        } else {
+            Err(Declined::Denied(
+                "its placeholders are no tokens, or stand for another credential".into(),
+            ))
+        }
+    }
+
+    fn tell(&mut self, waiter: Waiter, answer: Answer) {
+        self.answers.insert(waiter, answer);
+        self.resumed.push(waiter);
+    }
+
+    /// Flow `waiter`'s answer, where one came for it.
+    pub fn take(&mut self, waiter: Waiter) -> Option<Answer> {
+        self.answers.remove(&waiter)
+    }
+
+    /// The flows whose asks were answered or ended since the last call.
+    pub fn resumed(&mut self) -> Vec<Waiter> {
+        std::mem::take(&mut self.resumed)
+    }
+
+    /// How many flows wait on asks under way: a test's view of their single flight.
+    #[cfg(test)]
+    pub(crate) fn waiting(&self) -> usize {
+        self.asking
+            .values()
+            .map(|a| match a {
+                Asking::Capture { .. } => 1,
+                Asking::Refresh { waiting, .. } => waiting.len(),
+            })
+            .sum()
+    }
+
+    /// The run's end, or its host's: each ask under way declined, its flows told the run has
+    /// ended, and nothing asked after.
+    pub fn end(&mut self) {
+        self.ended = true;
+        self.unsent.clear();
+        for (_, asking) in std::mem::take(&mut self.asking) {
+            match asking {
+                Asking::Capture { waiter, .. } => self.tell(waiter, Answer::Declined(Declined::Ended)),
+                Asking::Refresh { waiting, .. } => {
+                    for waiter in waiting {
+                        self.tell(waiter, Answer::Declined(Declined::Ended));
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1342,5 +2080,235 @@ mod tests {
                 .expires_in,
             None
         );
+    }
+
+    fn sign_in(captured: bool) -> SignInGrant {
+        SignInGrant {
+            sign_in: "claude/acct-1".into(),
+            cli: Cli::ClaudeCode,
+            toward: vec!["api.anthropic.com".into()],
+            captured: captured.then(|| Captured {
+                access: "sign-ins/claude/acct-1/access".into(),
+                access_placeholder: ACCESS_PLACEHOLDER.into(),
+                refresh_placeholder: REFRESH_PLACEHOLDER.into(),
+            }),
+        }
+    }
+
+    fn taken() -> Taken {
+        Taken {
+            access: Zeroizing::new(ACCESS.as_bytes().to_vec()),
+            refresh: Some(Zeroizing::new(REFRESH.as_bytes().to_vec())),
+            expires_in: Some(28800),
+        }
+    }
+
+    #[test]
+    fn sign_in_grants_ride_their_message_and_a_cli_has_one() {
+        let grants = vec![
+            sign_in(true),
+            SignInGrant {
+                sign_in: "codex/acct-2".into(),
+                cli: Cli::Codex,
+                toward: vec!["chatgpt.com".into()],
+                captured: None,
+            },
+        ];
+        let bytes = encode_grants(&grants).unwrap();
+        assert_eq!(decode_grants(&bytes), Some(grants.clone()));
+        assert_eq!(decode_grants(&bytes[..bytes.len() - 1]), None);
+        let two = encode_grants(&[
+            sign_in(false),
+            SignInGrant {
+                sign_in: "claude/acct-3".into(),
+                ..sign_in(false)
+            },
+        ])
+        .unwrap();
+        assert_eq!(decode_grants(&two), None, "two sign-ins of one CLI");
+        let mut no_cli = encode_grants(&[sign_in(false)]).unwrap();
+        no_cli[2 + "claude/acct-1".len()] = 9;
+        assert_eq!(decode_grants(&no_cli), None);
+        let nowhere = SignInGrant {
+            toward: Vec::new(),
+            ..sign_in(false)
+        };
+        assert_eq!(decode_grants(&encode_grants(&[nowhere]).unwrap()), None);
+        let shown = format!("{grants:?}");
+        assert!(
+            !shown.contains(ACCESS_PLACEHOLDER) && !shown.contains(REFRESH_PLACEHOLDER),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn a_sign_ins_words_round_trip_and_print_no_token() {
+        let capture = Told::Capture {
+            id: 7,
+            sign_in: "claude/acct-1".into(),
+            taken: taken(),
+        };
+        let bytes = capture.encode().unwrap();
+        match Told::decode(&bytes).unwrap() {
+            Told::Capture { id, sign_in, taken } => {
+                assert_eq!(
+                    (id, sign_in.as_str(), taken.expires_in),
+                    (7, "claude/acct-1", Some(28800))
+                );
+                assert_eq!(taken.access.as_slice(), ACCESS.as_bytes());
+                assert_eq!(taken.refresh.unwrap().as_slice(), REFRESH.as_bytes());
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(Told::decode(&bytes[..bytes.len() - 1]).is_none());
+        assert!(Told::decode(&[bytes.as_slice(), &[0]].concat()).is_none());
+        let shown = format!("{capture:?}");
+        assert!(!shown.contains(ACCESS) && !shown.contains(REFRESH), "{shown}");
+        for told in [
+            Told::Refresh {
+                id: 1,
+                sign_in: "s".into(),
+            },
+            Told::Revoke { sign_in: "s".into() },
+        ] {
+            let back = Told::decode(&told.encode().unwrap()).unwrap();
+            assert_eq!(format!("{back:?}"), format!("{told:?}"));
+        }
+        let body = Zeroizing::new(token_body(ACCESS, REFRESH).into_bytes());
+        let refreshed = Answered::Refreshed {
+            id: 4,
+            result: Ok(body.clone()),
+        };
+        match Answered::decode(&refreshed.encode().unwrap()).unwrap() {
+            Answered::Refreshed {
+                id: 4,
+                result: Ok(back),
+            } => assert_eq!(back, body),
+            other => panic!("{other:?}"),
+        }
+        assert!(!format!("{refreshed:?}").contains(ACCESS));
+        for a in [
+            Answered::Captured {
+                id: 3,
+                result: Ok(sign_in(true).captured.unwrap()),
+            },
+            Answered::Captured {
+                id: 3,
+                result: Err(Declined::Denied("no such sign-in".into())),
+            },
+            Answered::Refreshed {
+                id: 4,
+                result: Err(Declined::Unanswered),
+            },
+            Answered::Refreshed {
+                id: 4,
+                result: Err(Declined::Unavailable("down".into())),
+            },
+            Answered::Refreshed {
+                id: 4,
+                result: Err(Declined::Ended),
+            },
+        ] {
+            let back = Answered::decode(&a.encode().unwrap()).unwrap();
+            assert_eq!(format!("{back:?}"), format!("{a:?}"));
+        }
+    }
+
+    fn token_body(access: &str, refresh: &str) -> String {
+        format!(r#"{{"access_token":"{access}","refresh_token":"{refresh}"}}"#)
+    }
+
+    #[test]
+    fn a_sign_ins_refreshes_ask_once_and_its_asks_end_with_the_run() {
+        let mut s = SignIns::new(vec![sign_in(false)]);
+        assert_eq!((s.of(Cli::ClaudeCode), s.of(Cli::Codex)), (Some(0), None));
+        assert_eq!(s.at_token_host("PLATFORM.claude.com"), Some(Cli::ClaudeCode));
+        assert_eq!(s.at_token_host("auth.openai.com"), None);
+        s.capture(0, taken(), 1).unwrap();
+        let asks = s.asks();
+        let Some(Told::Capture { id, .. }) = Told::decode(&asks[0]) else {
+            panic!("no capture asked")
+        };
+        let captured = sign_in(true).captured.unwrap();
+        let answer = Answered::Captured {
+            id,
+            result: Ok(captured.clone()),
+        };
+        assert_eq!(
+            s.answered(&answer.encode().unwrap(), &[]),
+            Some(Changed::Captured {
+                index: 0,
+                replaced: None
+            })
+        );
+        assert_eq!(s.resumed(), [1]);
+        assert!(matches!(s.take(1), Some(Answer::Captured)));
+        assert_eq!(s.grants[0].captured, Some(captured));
+        assert!(
+            s.answered(&answer.encode().unwrap(), &[]).is_none(),
+            "an answer to no ask taken"
+        );
+        s.refresh(0, 1).unwrap();
+        s.refresh(0, 2).unwrap();
+        let asks = s.asks();
+        assert_eq!((asks.len(), s.waiting()), (1, 2), "one refresh asked twice");
+        let Some(Told::Refresh { id, .. }) = Told::decode(&asks[0]) else {
+            panic!("no refresh asked")
+        };
+        let body = Zeroizing::new(token_body(ACCESS, REFRESH).into_bytes());
+        let answer = Answered::Refreshed {
+            id,
+            result: Ok(body.clone()),
+        };
+        assert_eq!(
+            s.answered(&answer.encode().unwrap(), &[]),
+            Some(Changed::Refreshed { index: 0 })
+        );
+        let mut resumed = s.resumed();
+        resumed.sort_unstable();
+        assert_eq!(resumed, [1, 2]);
+        for waiter in [1, 2] {
+            assert!(matches!(s.take(waiter), Some(Answer::Refreshed(b)) if b == body));
+        }
+        s.revoke(0);
+        assert!(matches!(Told::decode(&s.asks()[0]), Some(Told::Revoke { .. })));
+        s.refresh(0, 3).unwrap();
+        s.end();
+        assert_eq!(s.resumed(), [3]);
+        assert!(matches!(s.take(3), Some(Answer::Declined(Declined::Ended))));
+        assert_eq!(s.refresh(0, 4), Err(Declined::Ended));
+        assert!(s.asks().is_empty());
+    }
+
+    #[test]
+    fn a_captures_placeholders_that_are_no_tokens_or_anothers_are_declined() {
+        let other = credential::CredentialGrant {
+            reference: "openai/key".into(),
+            toward: vec!["api.openai.com".into()],
+            placeholder: ACCESS_PLACEHOLDER.into(),
+        };
+        let mut s = SignIns::new(vec![sign_in(false)]);
+        for (access, refresh) in [
+            (ACCESS_PLACEHOLDER, REFRESH_PLACEHOLDER),
+            ("not a token", REFRESH_PLACEHOLDER),
+            (REFRESH_PLACEHOLDER, REFRESH_PLACEHOLDER),
+        ] {
+            s.capture(0, taken(), 1).unwrap();
+            let Some(Told::Capture { id, .. }) = Told::decode(&s.asks()[0]) else {
+                panic!("no capture asked")
+            };
+            let c = Captured {
+                access: "a".into(),
+                access_placeholder: access.into(),
+                refresh_placeholder: refresh.into(),
+            };
+            let answer = Answered::Captured { id, result: Ok(c) };
+            assert_eq!(
+                s.answered(&answer.encode().unwrap(), std::slice::from_ref(&other)),
+                Some(Changed::Nothing)
+            );
+            assert!(matches!(s.take(1), Some(Answer::Declined(Declined::Denied(_)))));
+            assert!(s.grants[0].captured.is_none());
+        }
     }
 }

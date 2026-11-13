@@ -362,6 +362,16 @@ pub mod kind {
     /// not, typed (shards_net::lease::encode_answer). Asked only where the run has credential
     /// grants (`NET_CREDENTIALS`), of a run host that relays it to its orchestrator.
     pub const NET_LEASE: u8 = 100;
+    /// Run host → network process: the run's sign-in grants (D242, step 8), each a sign-in's
+    /// name, its CLI, the hosts its access token goes to and what an earlier capture of it
+    /// gave, never a value (shards_net::signin::encode_grants), after its `NET_POLICY` and
+    /// before its `NET_CREDENTIALS`, once; answered with the same kind once taken.
+    pub const NET_SIGN_INS: u8 = 104;
+    /// Network process ⇄ its run host: a sign-in's capture or refresh, asked by id, and its
+    /// answer by that id; or a revocation, told (D242, step 8; shards_net::signin's codec).
+    /// The network process asks it as the injector meets a sign-in's token response or its
+    /// CLI's refresh, of a run host that relays it to its orchestrator.
+    pub const NET_SIGN_IN: u8 = 105;
     /// Daemon → a running microVM's VM process: a run joins its network (D119). Its number
     /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
     /// own connection to the daemon, on which the joiner's run goes as a warm VM's does
@@ -2409,6 +2419,39 @@ pub mod fd {
     }
 }
 
+/// A MAC address as shards' processes pass it to one another (review 2.32): its six
+/// bytes in hex, two digits each, between colons, as Linux and Docker write one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mac(pub [u8; 6]);
+
+impl std::fmt::Display for Mac {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let [a, b, c, d, e, g] = self.0;
+        write!(f, "{a:02x}:{b:02x}:{c:02x}:{d:02x}:{e:02x}:{g:02x}")
+    }
+}
+
+impl std::str::FromStr for Mac {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Mac, String> {
+        let not = || format!("{s:?} is not a MAC");
+        let mut octets = s.split(':');
+        let mut mac = [0u8; 6];
+        for byte in &mut mac {
+            let hex = octets
+                .next()
+                .filter(|h| h.len() == 2 && h.bytes().all(|c| c.is_ascii_hexdigit()))
+                .ok_or_else(not)?;
+            *byte = u8::from_str_radix(hex, 16).map_err(|_| not())?;
+        }
+        match octets.next() {
+            Some(_) => Err(not()),
+            None => Ok(Mac(mac)),
+        }
+    }
+}
+
 /// The signals shards names a process's end by: this host's own on Unix; on Windows, which
 /// sends a process none but its end, Linux's numbers, which a child it ends takes 128 and
 /// one of as its status (`Child::kill`), as a Unix child a signal ended does.
@@ -2506,6 +2549,28 @@ impl Latch {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    /// A MAC goes as text and comes back the same; what is not six two-digit hex bytes
+    /// between colons is no MAC.
+    #[test]
+    fn macs_read_back_as_written() {
+        let mac = super::Mac([0x02, 0x42, 0xac, 0x11, 0x00, 0xff]);
+        assert_eq!(mac.to_string(), "02:42:ac:11:00:ff");
+        assert_eq!("02:42:ac:11:00:ff".parse(), Ok(mac));
+        assert_eq!("02:42:AC:11:00:FF".parse(), Ok(mac));
+        for not in [
+            "",
+            "02:42:ac:11:00",
+            "02:42:ac:11:00:ff:01",
+            "2:42:ac:11:00:ff",
+            "+2:42:ac:11:00:ff",
+            "02:42:ac:11:00:fg",
+            "02-42-ac-11-00-ff",
+            "02:42:ac:11:00:ff:",
+        ] {
+            assert!(not.parse::<super::Mac>().is_err(), "{not:?}");
+        }
+    }
+
     /// A private file its maker still holds is read by another open of its user's, on every
     /// host, and none is made over it: a run's managed-output record, which the daemon holds
     /// for the run's life, is how its owner finds the run, and Windows refused the owner's

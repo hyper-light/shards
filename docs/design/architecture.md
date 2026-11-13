@@ -1333,11 +1333,17 @@ for the exit status.
   - A client of another build, told apart by its binary's file identity, gets
     `RESTART`. The daemon removes its socket, ends its runs as `shards daemon stop`
     does, and exits; the client starts its own, which takes the home once the old one
-    has gone. A daemon ending its runs names itself in `daemon.stopping` first, as it
-    closes for any reason, and the new daemon and the client wait while that process
-    lives, however long its runs' stop timeouts make it; otherwise a daemon waits 20 s
-    for another's lock, and a client 30 s for its daemon to listen. `daemon stop` waits on
-    the lock it holds beside it until it has let go of the home (D185, *A stop's wait*).
+    has gone. The client asks again after a RESTART where it came from another daemon
+    than the last it asked again after, each the one `daemon.pid` named as its request was
+    asked (its ID and start): a takeover is the old daemon's RESTART, then its successor's
+    answer. The same daemon answering so again as itself, nothing about it changed, would
+    answer so for ever, and the client fails naming it; a count bounded it before
+    (`RESTARTS`, 4; D185, *A request asked again*). A daemon ending its runs names itself
+    in `daemon.stopping` first, as it closes for any reason, and the new daemon and the
+    client wait while that process lives, however long its runs' stop timeouts make it;
+    otherwise a daemon waits 20 s for another's lock, and a client 30 s for its daemon to
+    listen. `daemon stop` waits on the lock it holds beside it until it has let go of the
+    home (D185, *A stop's wait*).
   - It follows each run to its end. The warm VM tells the daemon of its command's start
     (`STARTED`) before its client has any of the command's output, and of its end
     (`DONE`) before its client has the status; a Unix socket's send puts a message in
@@ -7802,7 +7808,9 @@ descriptors.
   at once but its request waits its turn, and no slot is offered, so that further clients
   wait on their list and cost the daemon nothing. A closing daemon unlinks its lists at
   once, so that a client looking for a slot asks the next daemon, and answers RESTART to a
-  client that took a slot meanwhile; a client asks again as often as that can happen.
+  client that took a slot meanwhile; a client asks again after each RESTART that is another
+  daemon's than the one whose RESTART it last asked again after (*A request asked again*,
+  below).
 - The client asks through a slot for every command: the catalog's, its streams (`save`,
   `export`, `import`, `load`, `cp`) copied by the client to and from the slot's (`cli::Stream`:
   what the daemon writes, what it reads); a run's, an exec's and an attach's, its stdin
@@ -7927,6 +7935,35 @@ descriptors.
   that answers every stop RESTART as itself: asked twice, then named; red before, asked four
   times); and on real VMs by
   `a_stop_while_another_stops_its_daemon_waits_for_its_home_let_go_of` (tests/daemon.rs).
+- **A request asked again** (2026-11-13, R03). A run's, an exec's and an attach's client
+  (`serve`) and a command's (`container`, `ask`, `ask_here`) asked again after a RESTART,
+  or a socket an older build shut unread, within `RESTARTS` (`slots::OFFERED` + 2 = 4): a
+  count derived in its comment alone, for one takeover's RESTARTs (the step-aside
+  request's, each slot the closing daemon had offered of the kind asked, an older build's
+  socket), and in no D-entry. No count bounds it now. The client reads `daemon.pid`
+  (`shards_ipc::Named`: ID and start) as it takes its slot or connects, before it asks, and
+  after a RESTART asks again only where the daemon so named is another than the one whose
+  RESTART it last asked again after (`cli::client::Again`): the same one answering so again
+  as itself, nothing about it changed, would answer so for ever, and the client fails
+  naming it (`Untaken`: "the daemon (process N) answered again without taking the request;
+  see <daemon.log>"), as `stop` does through the same `Again` (*A stop's wait*). The name
+  read is the slot's daemon's: a daemon names itself before it offers any slot, and holds
+  its home until each slot it offered has its last word (*What it said last*), so no
+  successor names itself between a client's take and its ask. Cold start: nothing has
+  answered yet, so the first RESTART is asked again whoever said it, and a takeover is two
+  answers, the stepping-aside daemon's RESTART and its successor's. A `daemon.pid` naming
+  none is `None`, so two such RESTARTs in a row fail the client. Nothing is counted, timed
+  or learned, so nothing overflows; a writer of `daemon.pid`, a process its home lets in
+  (0700 on Unix), keeps a client asking only by naming another daemon each time, as a real
+  succession does.
+  Held by `a_request_its_daemon_answers_again_as_itself_without_taking_it_fails_naming_it`
+  (each client in a process of its own, its daemon a stand-in, this process, serving real
+  slots and answering every request RESTART as `4242 1`: asked twice, then named; red
+  before, asked four times, "the daemon kept asking for a restart"; red with the identity
+  check removed, asked to the stand-in's limit) and
+  `a_request_its_daemon_stepped_aside_from_goes_to_the_daemon_after_it` (RESTART as
+  `4242 1`, then `4343 2` answers: asked twice, status 0). On real VMs, owed: a takeover's
+  `a_rebuilt_binary_replaces_the_daemon` (tests/daemon.rs).
 - **Whose end a run's client heard** (PM M530). A run's, an exec's and an attach's slot
   passes on what its VM says, so the slot ends both where the VM's connection closes with no
   last word and where the daemon itself ends: a killed daemon closes every slot it served.
@@ -24945,9 +24982,10 @@ Until step 10 decided, only what both arms share was built (ROOT, 2026-11-12): t
 the microVM's identity, who is refused, and what a lane says. The control lane (exec, signal,
 inspect) and the terminal lane (attach, TTY) wait on step 6's member exec, attach and TTY. Step
 10 has decided for the host (above). The endpoint runs in the daemon and holds each microVM's
-own key, and the key's SHA-256 reaches the controller in the run's managed metadata. The log
-lane, which also waited on step 10, is step 11's to build. Exec lanes and members' own lanes
-(signal, inspect, a terminal's size) are built now, below.
+own key, and the key's SHA-256 reaches the controller in the run's managed metadata. Exec lanes,
+members' own lanes (signal, inspect, a terminal's size) and the log lane, which also waited on
+step 10, are built now, below; a log lane of an owned member waits on the daemon keeping that
+member's output (D240).
 
 *The connection.* QUIC over D180's driver and TLS (`net.rs`, `tls.rs`): TLS 1.3 alone, D239's
 provider (TLS13_AES_256_GCM_SHA384 alone, the hybrid ML-KEM groups), early data off, on an
@@ -26468,6 +26506,60 @@ pin, read on Linux and never run), as data and pure functions the injector drive
   CLI's refresh (JSON and form) and revocation found, and a refresh of another or a near placeholder passed; the
   minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
   clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
+
+**Built: step 8's second slice, its first part: the injector takes a sign-in's tokens outside and answers its
+refresh and revocation there** (crates/net: `signin.rs`, `inject.rs`, `lib.rs`, `lease.rs`; shards-dns' sign-in grant;
+record docs/research/s33-veil-creds/STEP8.md).
+- *Question 1: who calls the provider.* The orchestrator's broker alone (kiln's `Turn`, step 5), for every run of the
+  sign-in: the injector never sends a refresh on. It reads a POST to the sign-in's token path whole (its body within the
+  connection's window) and, where it carries the sign-in's refresh placeholder (`signin::ask`), asks its run host
+  (`NET_SIGN_IN`, kind 105) and parks the request (`Request::Refreshing`); every flow of the run that asks the
+  sign-in's refresh meanwhile joins that one ask (`SignIns::refresh`), and the broker's `Turn` makes it one across
+  runs. Refused: the network process refreshing on its own, which would need the refresh token in it and would let two
+  runs rotate one sign-in's tokens out from under each other (RFC 6749 §6, f47).
+- *Question 2: the grant, its hosts, its placeholders.* A run captures a sign-in only where a sign-in grant
+  (`shards_dns::credential::SignInGrant`: the sign-in's name in the store, its CLI, the hosts its access token goes to,
+  and what an earlier capture gave) names its CLI, whose profile names its token host, and its egress reaches that host
+  and each host its access token goes to (checked again as the grants come, `NET_SIGN_INS`, kind 104, before
+  `NET_CREDENTIALS`, whose CA names them). TLS is ended at the token host for that CLI's sign-in alone; no value is
+  filled toward it. One sign-in of a CLI a run: a capture names no sign-in. The access token goes to the grant's hosts
+  alone, as a credential grant the capture adds (`Captured::grant`). After a refresh the VM keeps its placeholders: the
+  broker keeps the rotated tokens under the same references, and the network process lets its held lease of the access
+  token go (`Leases::forget`), so that the next flow that needs it asks anew. Refused: new placeholders at each refresh
+  (a grant changed mid-run, the CLI's file rewritten each time, every other run's staged placeholders stale); a
+  JWT-shaped access placeholder (above).
+- *Question 3: the one body rewritten.* A sign-in's token host is asked `Accept-Encoding: identity` (RFC 9110
+  §12.5.3), and each of its final responses with a body is read whole (`Response::Whole`) within the connection's
+  window (4 MiB, `TO_GUEST`, which already bounds each way: no bound of its own, R03), its chunks joined into a buffer
+  that, outgrown, is replaced by one of twice its size and wiped (`signin::append`); one coded otherwise is refused 502,
+  as its tokens could not be found. A body with tokens is held (`Response::Capturing`) while its run host keeps them
+  outside (`NET_SIGN_IN`), then written with the broker's placeholders and framed anew (RFC 9112 §6.3); none of it
+  reaches the guest before, and none of its real tokens after. A refresh's answer is rewritten as well, whatever its
+  broker sent (`write` gives the sign-in's placeholders in each token's place).
+- *Question 6: the VM's revocation.* A POST to the sign-in's revocation path naming either of its placeholders is
+  answered 200 here (RFC 7009 §2.2) and never sent on; its run host is told (`NET_SIGN_IN`), the stored tokens kept.
+  Claude Code revokes at logout and for a refused sign-in (`i3r`, `Ib`); Codex at logout and before each login
+  (auth/revoke.rs, cli/src/login.rs:133): neither ends the sign-in outside.
+- *The minting endpoint* (step 8's first slice): a request toward it carrying a captured sign-in's access placeholder
+  is answered 403 (`Refusal::Mints`), never sent, nothing leased.
+- *Refusals, typed (R04):* `signin::Declined` (`Denied`, `Unavailable`, `Ended`, `Unanswered`: an orchestrator that
+  answers no sign-in), rendered by the injector as `invalid_grant` (400, RFC 6749 §5.2) for a refresh its broker
+  refused, so that its CLI signs in anew, else 503; a capture not kept 502. The audit says each capture, refresh and
+  revocation by the sign-in's name and its host, with the time, never a token or a placeholder (`Did`).
+- *Literals.* Kinds 104 and 105 are sequence numbers (103 went first to `UNPUBLISHING`); the CLI's codes 1 and 2 and the
+  words' 1 to 3 are names on a wire. Lengths: a name or placeholder in two bytes, as `NET_CREDENTIALS`' are; a token or
+  a body in four, as `shards_ipc` frames its payload's length. No learned value.
+- *Tests (macOS arm64, adas-mac-studio.local; STEP8.md).* The plan's light test: a simulated token endpoint behind the
+  injector, real TLS both ways, and a test lessor standing for the run host and its broker. Claude Code's code exchange
+  reaches the host asking `identity`; its token response is held until the broker keeps the issued tokens, then reaches
+  the guest with the broker's placeholders, no real token in it; a request to the API host with the access placeholder
+  is filled with the kept token; the refresh never reaches the host, one call to the provider outside, the guest given
+  the same placeholders and no rotated token; the held lease of the rotated token let go; the revocation answered 200
+  here, the kept tokens as they were; two connections' refreshes at once one ask; the minting endpoint 403. Units: the
+  words' codecs, `SignIns`' single flight and end, placeholders that are no tokens or another's declined, a rotated
+  value's held lease let go and an ask under way kept. Each guard removed in turn fails its test (STEP8.md).
+- *Owed.* The run host's relay of `NET_SIGN_INS` and `NET_SIGN_IN` to its orchestrator, the image channel's next
+  version and `Lessor` grown (this slice's second part); kiln's broker answering them (step 8's third slice).
 
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** The injector that
 fills HTTP/2 headers (step 7); the sign-in profiles' wiring (step 8's second slice: the network

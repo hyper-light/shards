@@ -151,6 +151,63 @@ file restored after each (exit 101 each; 39 s).
 - R14, R15, R16: no profiling, campaigns or runner cleanup owed by this slice beyond deleting the target dir.
 - R06/R08: no complexity hot spot; no performance claim.
 
+## Slice 2a: the injector takes a sign-in's tokens outside and answers its refresh and revocation there
+
+### Change
+
+- `crates/dns/src/credential.rs`: `Cli`, `SignInGrant`, `Captured` (their `Debug` shows no placeholder), and
+  `check_sign_ins` (a run's grants and its sign-ins' placeholders checked as one).
+- `crates/ipc/src/lib.rs`: `NET_SIGN_INS` (104) and `NET_SIGN_IN` (105), after main's highest (103).
+- `crates/net/src/signin.rs`: `NET_SIGN_INS`' codec (`encode_grants`, `decode_grants`: one sign-in of a CLI a run);
+  `NET_SIGN_IN`'s (`Told`: a capture's tokens, a refresh, a revocation; `Answered`, `Declined`); `SignIns`, the run's
+  sign-ins and their asks (one refresh ask for every flow of a sign-in); `append` (a growing buffer whose old copy is
+  wiped).
+- `crates/net/src/inject.rs`: TLS ended at a sign-in's token host and the hosts its access token goes to; at its token
+  host no value filled, `Accept-Encoding: identity` asked, a POST to its token or revocation path read whole and
+  answered outside where it carries the sign-in's placeholder (`Request::Refreshing`), every final response with a body
+  read whole (`Response::Whole`) and, where it holds tokens, held until the run host answers their capture
+  (`Response::Capturing`), then written with the placeholders and framed anew; `Refusal::Mints` (403),
+  `Refusal::SignIn` (502), `Refusal::Declined` (`invalid_grant` 400 for a refresh its broker refused, else 502 or
+  503); `Audit` says what it did (`Did`).
+- `crates/net/src/lib.rs`: `Credentials::sign_ins`; `NET_SIGN_INS` taken before `NET_CREDENTIALS`, whose CA names the
+  sign-ins' hosts; `NET_SIGN_IN`'s answers followed (`follow`: a capture's access grant in place of the one it
+  replaced, a rotated token's held lease let go); its asks sent as leases' are, as they lie (`tell`).
+- `crates/net/src/lease.rs`: `Leases::grant`, `Leases::forget`.
+
+### Tests (adas-mac-studio.local, macOS arm64, cargo 1.98.1; the carrier as above)
+
+- Run (head ceeab486b, after r676's compile errors, `REFRESH` named twice, were fixed):
+  - `cargo test -p shards-dns --lib credential`: 5 passed (r676).
+  - `cargo test -p shards-ipc --lib every_message_kind_has_its_own_number`: 1 passed (r676).
+  - `cargo test -p shards-net --lib -- signin inject:: lease:: credential`: 46 passed, among them the plan's light test
+    (`inject::tests::a_sign_in_is_taken_outside_and_its_refresh_and_revocation_answered_there`,
+    `refreshes_of_one_sign_in_at_once_ask_once`, `a_sign_ins_token_never_goes_to_the_endpoint_that_mints_a_key`): a
+    simulated token endpoint behind the injector and a test lessor standing for the run host and its broker.
+  - `cargo clippy -p shards-dns -p shards-ipc -p shards-net --all-targets -- -D warnings`: clean.
+
+### R10: each guard's red (`scripts/step8-reds.py 2a`)
+
+Run r686 (head 56204ded6): 13 of 14 red, each its own test failing at its assertion; the fourteenth (single flight)
+did not compile as written (its `None` arms left the type open, so it was no red), was rewritten to
+`Asking::Refresh { waiting, .. } if false => Some(waiting)` and run alone (head 5124309b4): red. 14 of 14.
+
+| Guard removed | Its test, failing |
+|---|---|
+| a sign-in's response read whole before any of it goes (the real tokens through) | `inject::tests::a_sign_in_is_taken_outside_and_its_refresh_and_revocation_answered_there` (inject.rs:3190) |
+| a refresh answered outside, never sent on | the same (3242) |
+| a revocation answered here, never sent on | the same (3272) |
+| a refresh's answer given placeholders (the rotated tokens through) | the same (3245) |
+| a sign-in's request asks identity coding | the same (3189) |
+| no value toward an endpoint that mints a key | `a_sign_ins_token_never_goes_to_the_endpoint_that_mints_a_key` (3131: no 403, at its deadline) |
+| a capture grants its access token | `a_sign_in_is_taken_outside_and_its_refresh_and_revocation_answered_there` (3217) |
+| a refreshed token's held lease let go | the same (3255) |
+| a rotated value's ask under way kept | `lease::tests::a_captured_credential_is_granted_and_a_rotated_ones_held_lease_let_go` (lease.rs:721) |
+| refreshes of one sign-in ask once | `inject::tests::refreshes_of_one_sign_in_at_once_ask_once` (inject.rs:3335) |
+| one sign-in of a CLI a run | `signin::tests::sign_in_grants_ride_their_message_and_a_cli_has_one` (signin.rs:2127) |
+| a capture's placeholders checked | `signin::tests::a_captures_placeholders_that_are_no_tokens_or_anothers_are_declined` (2304) |
+| a refresh's answer never prints its tokens | `signin::tests::a_sign_ins_words_round_trip_and_print_no_token` (2189) |
+| a sign-in's refresh placeholder one credential's alone | `credential::tests::a_sign_ins_placeholders_are_tokens_and_one_credentials_alone` (credential.rs:442) |
+
 ## Owed
 
 - Slice 2 (Shards): the NET kinds, the image channel's next version, `Lessor` grown append-only, the injector wired, the
