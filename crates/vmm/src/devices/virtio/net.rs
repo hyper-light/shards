@@ -24,7 +24,7 @@ use shards_netring::{Consumer, Producer, Region};
 use super::queue::{Chain, Queue, QueueError, with};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
 use crate::memory::{Access, GuestMemory};
-use crate::sync::{lock, wait_timeout};
+use crate::sync::{lock, wait, wait_timeout};
 use crate::{debug, warn};
 
 pub const DEVICE_ID: u32 = 1;
@@ -91,8 +91,10 @@ struct Flushes {
 impl TxFlush {
     /// True once every frame the guest had given the device when this was asked is in the
     /// ring, or at once where no worker runs (no session, or paused); false if `deadline`
-    /// came first.
-    pub fn flush(&self, deadline: Instant) -> bool {
+    /// came first. With none, it waits while its worker runs: a worker that ends answers
+    /// every flush (`answer(u64::MAX)`), as one whose ring broke takes its frames for gone, so
+    /// that its network process's end, which its daemon judges (D217), ends the wait.
+    pub fn flush(&self, deadline: Option<Instant>) -> bool {
         let Some(waker) = lock(&self.0.waker).clone() else {
             return true;
         };
@@ -100,6 +102,10 @@ impl TxFlush {
         waker.wake();
         let mut answered = lock(&self.0.answered);
         while *answered < n {
+            let Some(deadline) = deadline else {
+                answered = wait(&self.0.changed, answered);
+                continue;
+            };
             let Some(left) = deadline
                 .checked_duration_since(Instant::now())
                 .filter(|d| !d.is_zero())
@@ -779,6 +785,29 @@ mod tests {
     /// VIRTQ_DESC_F_WRITE (virtio 1.2 §2.7.5): a buffer the device writes.
     const DESC_WRITE: u16 = 2;
 
+    /// A flush with no deadline waits while its worker runs, however long it takes to
+    /// answer (a second and a half here), where one given the second the VM process took
+    /// gave up (warm.rs, until ROOT's (A), 2026-11-13); and a worker that ends answers it.
+    #[test]
+    fn a_flush_waits_while_its_worker_runs() {
+        let flush = TxFlush::default();
+        *lock(&flush.0.waker) = Some(Arc::new(Waker::new().unwrap()));
+        let late = std::time::Duration::from_millis(1500);
+        std::thread::scope(|s| {
+            let answering = flush.clone();
+            s.spawn(move || {
+                std::thread::sleep(late);
+                answering.answer(1);
+            });
+            let began = Instant::now();
+            assert!(flush.flush(None), "a flush its worker answered");
+            assert!(began.elapsed() >= late, "{:?}", began.elapsed());
+        });
+        // Its worker ended: every flush answered, at once.
+        flush.answer(u64::MAX);
+        assert!(flush.flush(None));
+    }
+
     struct Line;
 
     impl Interrupt for Line {
@@ -861,7 +890,7 @@ mod tests {
         let soon = || Instant::now() + std::time::Duration::from_secs(10);
         let mut net = Net::new(host).unwrap();
         let began = Instant::now();
-        assert!(flush.flush(soon()), "no worker, nothing to wait for");
+        assert!(flush.flush(Some(soon())), "no worker, nothing to wait for");
         assert!(began.elapsed() < std::time::Duration::from_secs(1));
         let page = crate::platform::page_size().unwrap();
         let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 16 * page)]).unwrap());
@@ -901,9 +930,9 @@ mod tests {
         // While guest memory is this thread's, the worker cannot take the frame: the flush
         // is not answered, however promptly the worker wakes.
         let shortly = Instant::now() + std::time::Duration::from_millis(300);
-        assert!(!flush.flush(shortly), "answered before the frame was taken");
+        assert!(!flush.flush(Some(shortly)), "answered before the frame was taken");
         drop(a);
-        assert!(flush.flush(soon()));
+        assert!(flush.flush(Some(soon())));
         let ring = Region::map(region.try_clone().unwrap()).unwrap();
         let (_nobody, rings) = shards_netring::doorbell().unwrap();
         let mut from_guest = ring.consumer(0, rings, net_waits);
@@ -918,7 +947,7 @@ mod tests {
         assert_eq!(got, f);
         // Stopped, the device's flush waits for nothing.
         net.reset();
-        assert!(flush.flush(soon()));
+        assert!(flush.flush(Some(soon())));
     }
 
     /// A device's session on guest memory, and the network process's ends of its frame

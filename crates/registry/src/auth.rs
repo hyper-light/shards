@@ -738,7 +738,7 @@ impl Bearer {
                 Some(_) => false,
             };
             let wait = passing
-                .then(|| trouble.wait(asked, http.budget(&self.realm), None))
+                .then(|| trouble.wait(http, &self.realm, asked, None))
                 .flatten();
             let Some(wait) = wait else {
                 // The credentials' refusal stays one, for a login to say so; anything else
@@ -753,7 +753,8 @@ impl Bearer {
                 ));
             };
             last = failed.status;
-            // An overdue answer is asked again at once (crate::patience `Cutoff`).
+            // An overdue answer, one past the slowest its path has shown, is asked again at
+            // once (crate::patience).
             if !failed.error.is_overdue() {
                 http.pause(wait)?;
             }

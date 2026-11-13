@@ -251,7 +251,7 @@ impl<D: Disk> Daemon<D> {
                         }
                     }
                     let ready = wait_readable(
-                        watch.as_ref(),
+                        watch.as_ref().as_slice(),
                         &end,
                         reply.0,
                         watch.is_none().then_some(super::UNWATCHED),

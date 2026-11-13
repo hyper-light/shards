@@ -119,6 +119,7 @@ static HOST: Host = Host {
     daemon: std::sync::OnceLock::new(),
     asked: std::sync::Mutex::new(Vec::new()),
     released: std::sync::Mutex::new(Vec::new()),
+    gone: std::sync::atomic::AtomicBool::new(false),
     said: std::sync::Condvar::new(),
 };
 
@@ -126,6 +127,9 @@ struct Host {
     daemon: std::sync::OnceLock<UnixStream>,
     asked: std::sync::Mutex<Vec<u32>>,
     released: std::sync::Mutex<Vec<u32>>,
+    /// Its daemon's connection has ended: no let-go waits on it more ([`release_host`]).
+    /// Set under `released`'s lock, so that no wait misses it.
+    gone: std::sync::atomic::AtomicBool,
     said: std::sync::Condvar,
 }
 
@@ -153,11 +157,11 @@ pub fn adopt_release(socket: shards_vmm::platform::UnixStream) -> Result<(), Str
 
 /// Has the network process close the run's published ports, and waits until it has, so
 /// that they are free once the run's end is told: a script's next run of the same port
-/// finds it free (`run --rm -p 80 …; run -p 80 …`). A network
-/// process that does not answer within a second is ended with the VM, and frees them then,
-/// as the daemon follows one to its end (`netproc::reap`). That second was the one a
-/// network process was given to end (`netproc::GRACE`, until PM M546); its own basis is owed
-/// (R03).
+/// finds it free (`run --rm -p 80 …; run -p 80 …`). Its daemon is told it waits
+/// (`UNPUBLISHING`), and the wait follows that process's liveness alone: confined, the VM
+/// process sees nothing of its progress, which the daemon follows from here and ends where
+/// it goes on with nothing (D217's helper slice, ROOT's (A), 2026-11-13), and its end ends
+/// the wait. It was a second, picked (`netproc::GRACE`'s, until PM M546).
 ///
 /// First, what the guest sent before its command ended goes into the network process's
 /// ring, which it takes before UNPUBLISH: a datagram a command sends just before it exits
@@ -165,10 +169,9 @@ pub fn adopt_release(socket: shards_vmm::platform::UnixStream) -> Result<(), Str
 /// VM (the published UDP flake of 2026-10-06 and 2026-10-10: the guest answered its last
 /// datagram and exited, and the answer never came). Whether it published ports and its
 /// network process has closed them, as it answered.
-fn release_ports() -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+fn release_ports(daemon: &UnixStream) -> bool {
     if let Some(flush) = FLUSH.get() {
-        flush.flush(deadline);
+        flush.flush(None);
     }
     if !PUBLISHED.load(std::sync::atomic::Ordering::Relaxed) {
         return false;
@@ -176,24 +179,30 @@ fn release_ports() -> bool {
     let Some(release) = RELEASE.get() else {
         return false;
     };
+    unpublish(release, || {
+        let _ = to_daemon(daemon, kind::UNPUBLISHING, &[], &[]);
+    })
+}
+
+/// Asks the network process on `release` to close the run's published ports (`UNPUBLISH`),
+/// tells `asked` once it has, and waits for its answer while it lives, its socket's end the
+/// wait's: whether it answered.
+fn unpublish(release: &shards_vmm::platform::UnixStream, asked: impl FnOnce()) -> bool {
     #[cfg(unix)]
     {
         if shards_ipc::send(release, kind::UNPUBLISH, &[], &[]).is_err() {
             return false;
         }
-        // Bounded by poll(2), not a socket option: the VM process's seccomp filter refuses
-        // setsockopt(2) (confine.rs).
-        matches!(shards_ipc::recv_by(release, deadline), Ok(Some(m)) if m.kind == kind::UNPUBLISH)
+        asked();
+        matches!(shards_ipc::recv(release), Ok(Some(m)) if m.kind == kind::UNPUBLISH)
     }
     #[cfg(windows)]
     {
         if shards_ipc::write_message(release, kind::UNPUBLISH, &[]).is_err() {
             return false;
         }
-        // Bounded by a poll before the read (shards_afunix's read timeout).
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        !left.is_zero()
-            && release.set_read_timeout(Some(left)).is_ok()
+        asked();
+        release.set_read_timeout(None).is_ok()
             && matches!(shards_ipc::read_message(release), Ok(Some(m)) if m.kind == kind::UNPUBLISH)
     }
 }
@@ -1134,6 +1143,15 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
     if client && let Ok(null) = workload::null() {
         let_go(&null);
     }
+    // Its daemon's connection ended: no let-go of a port of the host's waits on it more.
+    if matches!(from, From::Daemon(_)) {
+        let _held = HOST
+            .released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        HOST.gone.store(true, std::sync::atomic::Ordering::Relaxed);
+        HOST.said.notify_all();
+    }
     // The daemon gone with the run going: its stop, its signal and then SIGKILL once its
     // grace is up, so that no run outlives its daemon unreachable. A run already over
     // takes no signal.
@@ -2008,7 +2026,7 @@ pub fn finish(
     }
     // Its ports closed, the daemon frees them before it hears the run is done, so that they
     // are free by the time its client returns.
-    if release_ports() {
+    if release_ports(&link.daemon) {
         let _ = to_daemon(&link.daemon, kind::PORTS_FREE, &[], &[]);
     }
     release_host(0);
@@ -2054,7 +2072,7 @@ pub fn host_net(link: &Link, frame: &[u8]) {
     if frame.first() == Some(&shards_abi::run::kind::UNBIND)
         && let Some(flush) = FLUSH.get()
     {
-        flush.flush(std::time::Instant::now() + std::time::Duration::from_secs(1));
+        flush.flush(None);
     }
     // Whose processes have ports of the host's, to be let go as each ends.
     if let Some((&shards_abi::run::kind::BIND, bind)) = frame.split_first()
@@ -2077,9 +2095,11 @@ pub fn host_net(link: &Link, frame: &[u8]) {
 }
 
 /// Has the daemon let go of microVM `owner`'s ports of the host's (D124) as it ends,
-/// before its end is told, waiting up to a second for it to say it has: the daemon's
-/// copies and its network process's closed, so that the host may bind them again once
-/// the end is told, as dockerd's may (PM M181). Nothing to do for one that asked for none.
+/// before its end is told, waiting while the daemon lives for it to say it has: the
+/// daemon's copies and its network process's closed, so that the host may bind them again
+/// once the end is told, as dockerd's may (PM M181). Nothing to do for one that asked for
+/// none. The VM process, confined, sees nothing of the daemon's progress; its connection's
+/// end ends the wait (ROOT's (A), 2026-11-13). It was a second, picked.
 fn release_host(owner: u32) {
     {
         let mut asked = HOST
@@ -2097,25 +2117,28 @@ fn release_host(owner: u32) {
     if to_daemon(daemon, kind::HOST_RELEASE, &owner.to_be_bytes(), &[]).is_err() {
         return;
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    let mut released = HOST
+    await_release(&HOST, owner);
+}
+
+/// Waits until `host`'s daemon has said it let go of microVM `owner`'s ports
+/// (`HOST_RELEASE`), or its connection has ended: whether it said so.
+fn await_release(host: &Host, owner: u32) -> bool {
+    let mut released = host
         .released
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     loop {
         if let Some(at) = released.iter().position(|&o| o == owner) {
             released.swap_remove(at);
-            return;
+            return true;
         }
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        if left.is_zero() {
-            return;
+        if host.gone.load(std::sync::atomic::Ordering::Relaxed) {
+            return false;
         }
-        released = HOST
+        released = host
             .said
-            .wait_timeout(released, left)
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .0;
+            .wait(released)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
 }
 
@@ -2378,6 +2401,79 @@ fn open_lane(owner: &UnixStream, to: &'static ToGuest, number: [u8; 8], name: Ve
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A run's ports' closing is waited for while its network process lives, however long
+    /// its answer takes (a second and a half here), its daemon told it waits first
+    /// (`UNPUBLISHING`); a network process that goes ends the wait, unanswered. Before, the VM
+    /// process gave up a second on, picked, and the run's end was told with its ports held
+    /// (ROOT's (A), 2026-11-13).
+    #[cfg(unix)]
+    #[test]
+    fn a_runs_ports_closing_is_waited_for_while_its_network_process_lives() {
+        let late = std::time::Duration::from_millis(1500);
+        let (vm, net) = UnixStream::pair().unwrap();
+        let told = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let m = shards_ipc::recv(&net).unwrap().unwrap();
+                assert_eq!(m.kind, kind::UNPUBLISH);
+                std::thread::sleep(late);
+                shards_ipc::send(&net, kind::UNPUBLISH, &[], &[]).unwrap();
+            });
+            let began = std::time::Instant::now();
+            assert!(unpublish(&vm, || told.store(true, std::sync::atomic::Ordering::Relaxed)));
+            assert!(began.elapsed() >= late, "{:?}", began.elapsed());
+            assert!(
+                told.load(std::sync::atomic::Ordering::Relaxed),
+                "its daemon not told"
+            );
+        });
+        // Its network process gone, unanswered.
+        let (vm, net) = UnixStream::pair().unwrap();
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                let _ = shards_ipc::recv(&net);
+                drop(net);
+            });
+            assert!(!unpublish(&vm, || {}));
+        });
+    }
+
+    /// A port of the host's let go is waited for while the daemon lives, however long its
+    /// word takes (a second and a half here); its connection's end ends the wait, unsaid.
+    /// Before, the VM process gave up a second on, picked (ROOT's (A), 2026-11-13).
+    #[test]
+    fn a_host_ports_release_is_waited_for_while_its_daemon_lives() {
+        let host = || Host {
+            daemon: std::sync::OnceLock::new(),
+            asked: std::sync::Mutex::new(Vec::new()),
+            released: std::sync::Mutex::new(Vec::new()),
+            gone: std::sync::atomic::AtomicBool::new(false),
+            said: std::sync::Condvar::new(),
+        };
+        let late = std::time::Duration::from_millis(1500);
+        let said = host();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(late);
+                said.released.lock().unwrap().push(7);
+                said.said.notify_all();
+            });
+            let began = std::time::Instant::now();
+            assert!(await_release(&said, 7));
+            assert!(began.elapsed() >= late, "{:?}", began.elapsed());
+        });
+        let unsaid = host();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(late);
+                let _held = unsaid.released.lock().unwrap();
+                unsaid.gone.store(true, std::sync::atomic::Ordering::Relaxed);
+                unsaid.said.notify_all();
+            });
+            assert!(!await_release(&unsaid, 7));
+        });
+    }
 
     /// A lane's answer (D251) by its number: 0 for connected, the guest's errno for a refusal,
     /// and ESRCH with why for a lane its guest could not be asked for or never answered.

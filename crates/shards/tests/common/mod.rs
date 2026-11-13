@@ -276,6 +276,24 @@ pub fn cannot_pool() -> bool {
     cannot_snapshot()
 }
 
+/// Whether a test that must reach Docker Hub itself skips here, saying why: unless
+/// `SHARDS_TESTS_DOCKER_HUB=1` says it runs, as CI's test step does. Docker Hub counts
+/// anonymous pulls by address, and every machine behind one shares them: 100 an hour for
+/// this LAN's whole IPv6 /64, which tests that pulled each run spent (CI cluster 13). What
+/// such a test reads is Docker Hub's own (`what`: attestation chains and signatures, tags as
+/// they move, other CPUs' images and the emulator image), which the tests' own registry
+/// ([`hub`]) does not serve.
+pub fn cannot_reach_docker_hub(what: &str) -> bool {
+    if std::env::var_os("SHARDS_TESTS_DOCKER_HUB").is_some_and(|v| v == "1") {
+        return false;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIP: {what} is Docker Hub's, whose anonymous pulls every machine behind this address shares: SHARDS_TESTS_DOCKER_HUB=1 runs it"
+    );
+    true
+}
+
 /// The kernel shards pins for its guests (src/kernel.rs), which the tests boot too.
 #[path = "../../src/kernel.rs"]
 pub mod pinned;
@@ -767,11 +785,14 @@ pub fn command() -> Command {
 /// publishing the microVMs it makes to no local image store (pull.rs `publish`), so that no
 /// test writes to the Docker engine of the host it runs on (a test of publishing names an
 /// engine of its own), and given the tests' own docker config ([`docker_config`]), so that
-/// none reads this host's or runs its credential helpers. No default platform of the
-/// host's user's reaches it.
+/// none reads this host's or runs its credential helpers, and their own daemon.json and
+/// certs.d in place of the host's Docker's (`SHARDS_DAEMON_JSON`, D194; `SHARDS_CERTS_D`,
+/// D23), so that no mirror, insecure registry or certificate of the host's reaches one. No default platform of the host's user's reaches it.
 pub fn as_tests_run(cmd: &mut Command) -> &mut Command {
     cmd.env("SHARDS_LOCAL_STORE", "none")
         .env("DOCKER_CONFIG", docker_config())
+        .env("SHARDS_DAEMON_JSON", docker_config().join("daemon.json"))
+        .env("SHARDS_CERTS_D", docker_config().join("certs.d"))
         .env_remove("DOCKER_AUTH_CONFIG")
         // A platform this host's user prefers is no test's: a test names its own.
         .env_remove("SHARDS_DEFAULT_PLATFORM")
@@ -781,7 +802,9 @@ pub fn as_tests_run(cmd: &mut Command) -> &mut Command {
 /// The tests' own docker config, which every command is given unless a test gives its
 /// own: no test, nor any daemon one starts, reads this host's docker config or its
 /// credential helpers. Its `auths` name a host no test reaches, so that no platform helper
-/// is looked for either (D184: a config that holds credentials keeps them itself).
+/// is looked for either (D184: a config that holds credentials keeps them itself). Beside it,
+/// the tests' own daemon.json, which names no registry, and certs.d, which holds nothing
+/// ([`as_tests_run`]).
 pub fn docker_config() -> &'static Path {
     static CONFIG: OnceLock<TempDir> = OnceLock::new();
     CONFIG.get_or_init(|| {
@@ -791,6 +814,8 @@ pub fn docker_config() -> &'static Path {
             r#"{"auths":{"shards-tests.invalid":{}}}"#,
         )
         .unwrap();
+        std::fs::write(dir.join("daemon.json"), "{}").unwrap();
+        std::fs::create_dir(dir.join("certs.d")).unwrap();
         dir
     })
 }
@@ -3210,6 +3235,8 @@ fn registry_serving_at(
                     let kind = |doc: &[u8]| {
                         if has(doc, b"image.index") {
                             "application/vnd.oci.image.index.v1+json"
+                        } else if has(doc, b"application/vnd.docker.distribution.manifest.list.v2+json") {
+                            "application/vnd.docker.distribution.manifest.list.v2+json"
                         } else if has(doc, b"application/vnd.docker.distribution.manifest.v2+json") {
                             "application/vnd.docker.distribution.manifest.v2+json"
                         } else {
@@ -3541,6 +3568,178 @@ pub fn served_counting() -> (String, Arc<AtomicUsize>) {
     let (manifest, blobs) = test_image();
     let (port, served) = registry(manifest, blobs);
     (format!("127.0.0.1:{port}/test/image:v1"), served)
+}
+
+/// A remote registry's image `reference` (Docker Hub's, ghcr.io's), pinned by its digest,
+/// served by a registry of the tests' own as `127.0.0.1:<port>/test/image@<digest>`: the
+/// same image, never pulled from its registry as a test runs. Docker Hub counts its
+/// anonymous pulls by address, here the whole LAN's IPv6 /64, 100 an hour, and test homes
+/// that pulled their base from it each run spent them for every machine there (CI cluster
+/// 13: api_image.rs's builds, refused from its eighth round of 30 on); ghcr.io limits its own.
+/// What it serves is what a pull of the image for this host's platform fetches, pulled once
+/// per checkout ([`hub_seed`]); one registry serves each image to every test of the binary.
+pub fn hub(reference: &str, timeout: Duration) -> String {
+    static SERVED: OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
+    let mut served = SERVED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(at) = served.get(reference) {
+        return at.clone();
+    }
+    let (top, blobs) = hub_seed(reference, timeout);
+    let digest = sha256_digest(&top);
+    let (port, _) = registry(top, blobs);
+    let at = format!("127.0.0.1:{port}/test/image@{digest}");
+    served.insert(reference.to_string(), at.clone());
+    at
+}
+
+/// `reference` as a test pulls it: a remote registry's image pinned by its digest from the
+/// tests' own registry ([`hub`]), any other (a loopback registry's, a tag) as it is.
+pub fn hubless(reference: &str, timeout: Duration) -> String {
+    match shards_image::reference::Reference::parse(reference) {
+        Ok(r) if remote(&r) && r.digest.is_some() => hub(reference, timeout),
+        _ => reference.to_string(),
+    }
+}
+
+/// Whether `r` names a registry off this machine: not `localhost`, nor a loopback address.
+fn remote(r: &shards_image::reference::Reference) -> bool {
+    let domain = r.domain.as_str();
+    let host = match domain.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or(bracketed),
+        None => domain.split(':').next().unwrap_or(domain),
+    };
+    host != "localhost" && !host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// `agentfile` with each base it takes `FROM` a remote registry by a digest taken from the
+/// tests' own registry instead ([`hubless`]): the same image, every other word as it was.
+pub fn hub_bases(agentfile: &str, timeout: Duration) -> String {
+    agentfile
+        .split_inclusive('\n')
+        .map(|line| {
+            let base = line
+                .strip_prefix("FROM ")
+                .and_then(|rest| rest.split_whitespace().find(|w| !w.starts_with("--")));
+            match base {
+                Some(base) => line.replacen(base, &hubless(base, timeout), 1),
+                None => line.to_string(),
+            }
+        })
+        .collect()
+}
+
+/// What [`hub`] serves of `reference`: the document its digest names, then each manifest,
+/// config and layer of it a pull for this host's platform fetched (the platform's manifest
+/// and its attestations), from the store of target/artifacts/hub, a home of the tests' own
+/// that a build pulls each into from its registry the first time it is asked for, in
+/// process, as a build pulls its base (no daemon): once per checkout, as the pinned kernel
+/// is downloaded once into target/artifacts ([`fetch`]), one test process at a time.
+fn hub_seed(reference: &str, timeout: Duration) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let pinned = shards_image::reference::Reference::parse(reference).unwrap();
+    assert!(
+        remote(&pinned) && pinned.digest.is_some(),
+        "{reference}: a remote registry's image pinned by its digest"
+    );
+    let home = workspace().join("target/artifacts/hub");
+    shards_vmm::platform::create_private_dir(&home).unwrap();
+    let _seeding = shards_image::store::Locked::exclusive(&home.join("seeding.lock")).unwrap();
+    if let Ok(seed) = hub_held(&home, &pinned) {
+        return seed;
+    }
+    let ctx = TempDir::new("hub-seed");
+    std::fs::write(ctx.join("Dockerfile"), format!("FROM {reference}\n")).unwrap();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let built = run_shards_env(&["build"], &[ctx.as_os_str()], &env, timeout);
+    assert_eq!(
+        built.status,
+        Some(0),
+        "{reference}, pulled from its registry once into {}: {}",
+        home.display(),
+        built.stderr
+    );
+    hub_held(&home, &pinned).unwrap_or_else(|missing| panic!("{reference}, pulled once: {missing}"))
+}
+
+/// What `home`'s store holds of `pinned`, found by its digest as content is, whoever's
+/// record holds it: a pull of an index holds its platform's manifest by its own digest, under
+/// the index's name alone, and a seed's build that finds a digest held pulls nothing (D78).
+/// The document the digest names; then, of an index, this host's platform's manifest and
+/// its attestations, which a pull of it fetches, and of each manifest its config and
+/// layers. Where one is not there whole, what is missing.
+pub fn hub_held(
+    home: &Path,
+    pinned: &shards_image::reference::Reference,
+) -> Result<(Vec<u8>, Vec<Vec<u8>>), String> {
+    let store = shards_image::store::Store::open(&home.join("images")).map_err(|e| e.to_string())?;
+    let read = |what: &str, d: &str| {
+        let path = shards_image::reference::Digest::parse(d)
+            .map(|digest| store.blob_path(&digest))
+            .map_err(|e| format!("{pinned}: {what} {d}: {e}"))?;
+        match std::fs::read(&path) {
+            Ok(bytes) if sha256_digest(&bytes) == d => Ok(bytes),
+            Ok(_) => Err(format!(
+                "{pinned}: {what} {d}: {} is not what its digest says",
+                path.display()
+            )),
+            Err(e) => Err(format!("{pinned}: {what} {d}: {}: {e}", path.display())),
+        }
+    };
+    let parse = |what: &str, bytes: &[u8]| {
+        serde_json::from_slice::<serde_json::Value>(bytes).map_err(|e| format!("{pinned}: {what}: {e}"))
+    };
+    let digest = pinned
+        .digest
+        .as_ref()
+        .ok_or_else(|| format!("{pinned}: pinned by no digest"))?
+        .to_string();
+    let top = read("the document", &digest)?;
+    let doc = parse("the document", &top)?;
+    let manifests = match doc["manifests"].as_array() {
+        None => vec![top.clone()],
+        Some(listed) => {
+            let arch = match ARCH {
+                "aarch64" => "arm64",
+                "x86_64" => "amd64",
+                other => other,
+            };
+            let ours = listed
+                .iter()
+                .find(|m| m["platform"]["os"] == "linux" && m["platform"]["architecture"] == arch)
+                .and_then(|m| m["digest"].as_str())
+                .ok_or_else(|| format!("{pinned}: its index lists no linux/{arch} manifest"))?;
+            let mut held = vec![read(&format!("its linux/{arch} manifest"), ours)?];
+            for attestation in listed
+                .iter()
+                .filter(|m| m["annotations"]["vnd.docker.reference.digest"] == ours)
+            {
+                let d = attestation["digest"].as_str().unwrap_or_default();
+                held.push(read("an attestation of it", d)?);
+            }
+            held
+        }
+    };
+    let mut blobs = Vec::new();
+    for manifest in manifests {
+        let parsed = parse("a manifest", &manifest)?;
+        let layers = parsed["layers"].as_array().map(Vec::as_slice).unwrap_or_default();
+        for part in std::iter::once(&parsed["config"]).chain(layers) {
+            blobs.push(read(
+                "a manifest's part",
+                part["digest"].as_str().unwrap_or_default(),
+            )?);
+        }
+        if doc["manifests"].is_array() {
+            blobs.push(manifest);
+        }
+    }
+    Ok((top, blobs))
 }
 
 /// A running `shards` whose output lines arrive on a channel, killed when dropped.

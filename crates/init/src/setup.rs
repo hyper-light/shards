@@ -499,6 +499,7 @@ fn members_own(entry: &[u8]) -> bool {
             managed::ACTIVE_KEY,
             managed::INPUT_KEY,
             managed::INPUT_TOKEN_KEY,
+            managed::DRAINED_KEY,
             members::ENV_KEY,
             members::FILE_KEY,
             members::WORKDIR_KEY,
@@ -1381,6 +1382,7 @@ mod tests {
 
         let entries = [
             [managed::INPUT_KEY, &1u32.to_be_bytes()[..]].concat(),
+            [managed::DRAINED_KEY, &b"1,2"[..]].concat(),
             [
                 managed::INPUT_TOKEN_KEY,
                 &1u32.to_be_bytes()[..],
