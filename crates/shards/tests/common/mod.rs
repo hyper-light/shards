@@ -2384,7 +2384,7 @@ pub fn measured(what: &str, times: &[Duration]) {
     let mut times = times.to_vec();
     times.sort_unstable();
     let Some(&max) = times.last() else {
-        println!("MEASURED {what}: n 0");
+        let _ = writeln!(io::stdout(), "MEASURED {what}: n 0");
         return;
     };
     // The nearest rank: the least time that many of the times are within.
@@ -2399,7 +2399,8 @@ pub fn measured(what: &str, times: &[Duration]) {
             || "revision unknown".to_string(),
             |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
         );
-    println!(
+    let _ = writeln!(
+        io::stdout(),
         "MEASURED {what}: n {} p50 {:?} p90 {:?} p99 {:?} max {max:?} (host {} {}, {revision})",
         times.len(),
         at(50),

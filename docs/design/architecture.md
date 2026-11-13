@@ -10834,6 +10834,40 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     for a second. A judged wait cannot refuse those while their microVM idles, since its CPU
     is progress. They need a decision of their own, not a judge. ROOT owes the real-VM runs of
     the files this part touched.
+- **Part 4: the last test constants, and what a judge cannot refuse** (#77, W6, part A:
+  warm.rs, budget.rs, daemon.rs, containers.rs; 2026-11-13, ROOT's ruling on claims that a
+  thing does not happen within a time). A judged wait cannot refuse "it does not happen
+  within T" while its party idles, since an idle microVM's CPU is progress. So each such
+  claim is an ordering against an observable later event of the test's, or, where no later
+  event exists, a measurement taken out of pass or fail (`common::measured`: n, p50, p90,
+  p99 and max by nearest rank, with the host's name and class and the revision, on the
+  test's output as `MEASURED`). No constant is added.
+  - *warm.rs.* The daemon link's and the client connection's reads at `TIMEOUT` are `told`,
+    a `judged` recv on this test's own VM processes, the warm VM killed (its job's end on
+    Windows) where refused, which ends the read; after the VM's exit its link is read to its
+    end with nothing to wait on, its peer gone. Its stdout's end "within a second": after
+    the exit status, with the VM frozen (SIGSTOP; on Windows already gone), a look that waits
+    for nothing, as nothing can change while it is frozen. After the client hangs up, the
+    VM's let-go has no later event of its own (its client's relay ends there): the end is a
+    `Patience` wait, the VM found still running past it shows the end was the let-go and not
+    the VM's exit, and the let-go's time is told.
+  - *budget.rs* (Linux). The slice's statistics catching up with its counter is a
+    `Patience`. The least room's search set a budget, waited 3 s for the daemon's word and
+    set it again, all within `TIMEOUT`: now a `Patience`, a budget set again once the daemon
+    has answered the one before (a budget set anew is always said, daemon/budget.rs) or once
+    the slice has moved so that the budget it leaves is another.
+  - Red at 68770070f (tests/harness.rs `red_a_judged_read_goes_on_while_its_party_works`,
+    adas-mac-studio.local, macOS arm64, kiln r1328): the old shape of these reads, a read
+    timeout at its test's `TIMEOUT` scaled to 100 ms, cut a stand-in that answers after a
+    second's work 102 ms in (`WouldBlock`). Green at 9046e46fe there:
+    `a_judged_read_goes_on_while_its_party_works`, two rounds through `judged` held to the
+    answer, the second judged on what the first taught; harness.rs 8 passed.
+  - What would falsify it: a warm VM's read refused while its VM process ran; a let-go
+    measured whose VM had ended first; a budget set again before the daemon answered the
+    one before while the slice stood still.
+  - The gaps. A let-go that never comes holds its wait while the idle VM's CPU shows
+    progress, to its CI job's limit, its account said then, as any cold wait on a hung live
+    party does. ROOT owes the real-VM runs of warm.rs and budget.rs.
 
 **The storm's watch, by the host's word (audit of picked constants, 2026-11-09).** The test
 guest's storm said its main thread stood still after 15 s and took its host's stream for
