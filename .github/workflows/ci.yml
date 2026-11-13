@@ -254,6 +254,10 @@ jobs:
             x86_64-unknown-linux-gnu) export SHARDS_REQUIRE_VMS=1 SHARDS_REQUIRE_USER_MANAGER=1 ;;
             x86_64-pc-windows-msvc) export SHARDS_REQUIRE_VMS=1 ;;
           esac
+          # The tests that must reach Docker Hub itself run here, as before they were gated;
+          # where a LAN's machines share an address and its pulls, they skip unless asked
+          # (tests/common, cannot_reach_docker_hub).
+          export SHARDS_TESTS_DOCKER_HUB=1
           if [ "${{ matrix.target }}" = x86_64-unknown-linux-gnu ]; then
             scripts/ci/hang-watch.sh "$RUNNER_TEMP/hangs" &
             watcher=$!

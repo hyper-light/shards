@@ -444,6 +444,9 @@ fn a_run_of_another_cpus_image_runs_under_its_emulator() {
         eprintln!("SKIP: this host cannot run VMs");
         return;
     }
+    if common::cannot_reach_docker_hub("alpine:3.22 for other CPUs, and the run's emulator image") {
+        return;
+    }
     let home = TempDir::new("emulated-runs");
     let env = [("SHARDS_HOME", home.as_os_str())];
     let args = [

@@ -276,6 +276,24 @@ pub fn cannot_pool() -> bool {
     cannot_snapshot()
 }
 
+/// Whether a test that must reach Docker Hub itself skips here, saying why: unless
+/// `SHARDS_TESTS_DOCKER_HUB=1` says it runs, as CI's test step does. Docker Hub counts
+/// anonymous pulls by address, and every machine behind one shares them: 100 an hour for
+/// this LAN's whole IPv6 /64, which tests that pulled each run spent (CI cluster 13). What
+/// such a test reads is Docker Hub's own (`what`: attestation chains and signatures, tags as
+/// they move, other CPUs' images and the emulator image), which the tests' own registry
+/// ([`hub`]) does not serve.
+pub fn cannot_reach_docker_hub(what: &str) -> bool {
+    if std::env::var_os("SHARDS_TESTS_DOCKER_HUB").is_some_and(|v| v == "1") {
+        return false;
+    }
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIP: {what} is Docker Hub's, whose anonymous pulls every machine behind this address shares: SHARDS_TESTS_DOCKER_HUB=1 runs it"
+    );
+    true
+}
+
 /// The kernel shards pins for its guests (src/kernel.rs), which the tests boot too.
 #[path = "../../src/kernel.rs"]
 pub mod pinned;

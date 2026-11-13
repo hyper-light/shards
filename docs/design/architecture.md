@@ -21737,7 +21737,10 @@ against (7152fa749): what spent Docker Hub's anonymous pulls (100 an hour for th
 IPv6 /64) were E2E tests whose fresh homes each pulled their base, which now take Docker
 Hub's images from the tests' own registry, served from what a build pulled once per
 checkout into target/artifacts/hub (tests/common `hub`), as the pinned kernel is fetched
-once into target/artifacts.
+once into target/artifacts. A test that must read Docker Hub itself (attestation chains and
+signatures, tags as they move, other CPUs' images and the emulator image) skips unless
+`SHARDS_TESTS_DOCKER_HUB=1`, which CI's test step sets (tests/common
+`cannot_reach_docker_hub`).
 
 **A pull's Agentfile, and the platform's (2026-10-16).** §10 has a pull make an image a
 microVM, an Agentfile, or both; `pull --output-agentfile` was in pull's help from its first
