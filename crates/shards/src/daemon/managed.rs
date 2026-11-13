@@ -2,6 +2,7 @@
 
 mod drain;
 mod execs;
+mod log_lanes;
 mod members;
 #[cfg(test)]
 mod terminal_order_tests;
@@ -1913,6 +1914,8 @@ impl<D: Disk> Daemon<D> {
         }
         // A client attached to the run is shown what is drained as it is kept: a thread that
         // writes to it alone, which nothing waits on (drain.rs).
+        // Its log lanes (D238) read what the drain keeps, and wait on its members' ends.
+        let logged = drain.clone();
         if let (Some(drain), Some(mut to), Some(_)) = (drain, shown.to, shown.retention) {
             std::thread::Builder::new()
                 .name("managed-shown".into())
@@ -1921,6 +1924,12 @@ impl<D: Disk> Daemon<D> {
         // Its execs (D238), hosted until the endpoint that brings them ends.
         if let Some((starts, admissions, exec_charge)) = agent_execs {
             let run_id = id.to_owned();
+            let mut running = Vec::new();
+            running
+                .try_reserve_exact(active.len())
+                .map_err(io::Error::other)?;
+            running.extend_from_slice(active);
+            let run_dir = dir.clone();
             std::thread::Builder::new()
                 .name("agent-execs".into())
                 .spawn_scoped(threads, move || {
@@ -1930,6 +1939,13 @@ impl<D: Disk> Daemon<D> {
                         &exec_charge,
                         &|spec, argv, flags, stdio, theirs| {
                             self.launch_exec(&run_id, spec, argv, flags, stdio, theirs)
+                        },
+                        &log_lanes::Logs {
+                            dir: &run_dir,
+                            active: &running,
+                            drain: logged.as_deref(),
+                            run_end: &|| self.wake_at_end(&run_id),
+                            forget: &|waiter| self.forget_waiter(&run_id, waiter),
                         },
                     );
                 })?;
@@ -3235,9 +3251,17 @@ mod tests {
                 .map_err(io::Error::other)
         };
         let line = b"\x00\xff typed, no newline";
+        let nowhere = shards_testdir::TempDir::new("exec-logs").unwrap();
+        let logs = log_lanes::Logs {
+            dir: &nowhere,
+            active: &[0],
+            drain: None,
+            run_end: &|| Ok(None),
+            forget: &|_| {},
+        };
         std::thread::scope(|s| {
-            let (charged, launcher) = (&charge, &launch);
-            let hosting = s.spawn(move || execs::host(&starts, admissions, charged, launcher));
+            let (charged, launcher, logs) = (&charge, &launch, &logs);
+            let hosting = s.spawn(move || execs::host(&starts, admissions, charged, launcher, logs));
             // Its VM process: the first exec it runs, an echo of its stdin; the second its member
             // refuses.
             let process = s.spawn(move || {
@@ -3348,6 +3372,171 @@ mod tests {
             "an exec refused here reached its VM process"
         );
         assert_eq!(*lock(&charge.bytes), 0, "an exec's charge outlived it");
+    }
+
+    /// A writer of the log in `dir`, as a run's VM writes its command's (segments of `size`
+    /// bytes, as many as `files`).
+    fn log_writer(dir: &Path, size: u64, files: u64) -> crate::log_writer::Writer {
+        let newest = crate::daemon::newest_log(dir).unwrap();
+        let held = shards_vmm::platform::open_dir(dir).unwrap();
+        crate::log_writer::Writer::new(
+            newest.log,
+            newest.index,
+            newest.seq,
+            LogRetention { size, files },
+            Box::new(move |seq| crate::segments::new_segment(&held, seq, files)),
+        )
+        .unwrap()
+    }
+
+    /// The run's log host (D238's log lane): through the run's agent-control endpoint its
+    /// owner's controller reads the run's command's log and a drained member's, each record
+    /// exact at its place, from the oldest kept; a place older than that is refused `Rotated`,
+    /// naming the oldest kept, and a member that runs no program `Unknown`; a member's log
+    /// followed from where an earlier lane got to gives what is kept as it is kept, and ends
+    /// with its member's channels; the run's budget is charged while a lane reads and given
+    /// back after.
+    #[test]
+    fn a_runs_log_host_serves_its_logs_from_the_store() {
+        use crate::spec::{LOG_STDERR, LOG_STDOUT};
+        use shards_remote::control::exec::{LogChannels, LogCursor, LogPos, LogRecord, LogSource, Unlogged};
+        use shards_remote::control::{Controller, Fault, Logged, Subscriptions};
+        let owner = identity::Identity::generate().unwrap();
+        let run = shards_testdir::TempDir::new("log-host").unwrap();
+        // The command's log, in segments of 30 bytes, two kept: its first let go.
+        let mut command = log_writer(&run, 30, 2);
+        command.keep(LOG_STDOUT, b"cmd out\n");
+        command.keep(LOG_STDERR, b"cmd err\n");
+        command.keep(LOG_STDOUT, b"third\n");
+        let labels = vec![
+            "agent files".to_string(),
+            "agent main".to_string(),
+            "agent idle".to_string(),
+        ];
+        let keep = LogRetention {
+            size: 1 << 20,
+            files: 2,
+        };
+        let drain = drain::Drain::open(&run, &labels, &[1], Some(keep), 64).unwrap();
+        drain
+            .keep(&encoded(1, Channel::Stdout, 0, Event::Data(b"kept\n")))
+            .unwrap();
+        let scope = Scope {
+            run: RunId([3; 32]),
+            generation: 1,
+            member: 0,
+            channel: Channel::Stdout,
+        };
+        let out = admitted(64);
+        let admissions = exec_admitted();
+        let (endpoint, served) = bind_agent(owner.fingerprint(), &[(scope, out)], &[], admissions).unwrap();
+        let (vm, address) = (endpoint.fingerprint, endpoint.address);
+        let starts = served.execs.unwrap();
+        let serving = std::thread::spawn(move || endpoint.run());
+        let budget = Arc::new(Mutex::new(Some(0)));
+        let charge = Charge::reserve(&budget, 0).unwrap();
+        let launch = |_: &run::Spec,
+                      _: &[String],
+                      _: u8,
+                      _: [shards_ipc::fd::BorrowedFd<'_>; 3],
+                      _: &Stream|
+         -> io::Result<()> { Err(io::Error::other("no exec here")) };
+        let logs = log_lanes::Logs {
+            dir: &run,
+            active: &[0, 1],
+            drain: Some(&drain),
+            run_end: &|| Ok(None),
+            forget: &|_| {},
+        };
+        // What a lane gave, its times aside: an output's channel, place and bytes.
+        let output = |logged: Logged| match logged {
+            Logged::Record(LogRecord::Output {
+                channel, pos, bytes, ..
+            }) => Some((channel, pos, bytes)),
+            _ => None,
+        };
+        let read_all = |log: &mut shards_remote::control::Log| {
+            let mut got = Vec::new();
+            loop {
+                match log.next_record().unwrap() {
+                    Logged::Finished => return got,
+                    logged => got.push(output(logged).unwrap()),
+                }
+            }
+        };
+        let at = |seq, no, byte| LogPos { seq, no, byte };
+        std::thread::scope(|s| {
+            let (charged, launcher, logs) = (&charge, &launch, &logs);
+            let hosting = s.spawn(move || execs::host(&starts, admissions, charged, launcher, logs));
+            let (controller, dialed) = Controller::dial(
+                &owner,
+                vm,
+                address,
+                Subscriptions {
+                    outputs: &[(scope, out, 0)],
+                    inputs: &[],
+                    execs: Some(admissions),
+                    sockets: None,
+                },
+            )
+            .unwrap();
+            let driver = s.spawn(move || controller.run());
+            let execs = dialed.execs.as_ref().unwrap();
+            let mut ran = execs
+                .log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, false)
+                .unwrap();
+            assert_eq!(
+                read_all(&mut ran),
+                [
+                    (Channel::Stderr, at(1, 0, 0), b"cmd err\n".to_vec()),
+                    (Channel::Stdout, at(2, 0, 0), b"third\n".to_vec()),
+                ]
+            );
+            let older = LogCursor {
+                stdout: Some(at(0, 0, 0)),
+                stderr: None,
+            };
+            assert_eq!(
+                execs
+                    .log(LogSource::Command, LogChannels::BOTH, older, false)
+                    .map(|_| ()),
+                Err(Fault::Unlogged(Unlogged::Rotated { oldest: at(1, 0, 0) }))
+            );
+            assert_eq!(
+                execs
+                    .log(LogSource::Member(2), LogChannels::BOTH, LogCursor::OLDEST, false)
+                    .map(|_| ()),
+                Err(Fault::Unlogged(Unlogged::Unknown))
+            );
+            let mut member = execs
+                .log(LogSource::Member(1), LogChannels::BOTH, LogCursor::OLDEST, false)
+                .unwrap();
+            assert_eq!(
+                read_all(&mut member),
+                [(Channel::Stdout, at(0, 0, 0), b"kept\n".to_vec())]
+            );
+            // Followed from where it got to: what is kept as it is kept, then its end.
+            let mut followed = execs
+                .log(LogSource::Member(1), LogChannels::BOTH, member.cursor(), true)
+                .unwrap();
+            assert!(*lock(&charge.bytes) > 0, "a log lane reading is charged");
+            drain
+                .keep(&encoded(1, Channel::Stderr, 0, Event::Data(b"\x00\xff more")))
+                .unwrap();
+            assert_eq!(
+                output(followed.next_record().unwrap()),
+                Some((Channel::Stderr, at(0, 1, 0), b"\x00\xff more".to_vec()))
+            );
+            for channel in [Channel::Stdout, Channel::Stderr] {
+                drain.keep(&encoded(1, channel, 0, Event::End)).unwrap();
+            }
+            assert_eq!(followed.next_record().unwrap(), Logged::Finished);
+            served.revoke.revoke();
+            serving.join().unwrap().unwrap();
+            hosting.join().unwrap();
+            let _ = driver.join();
+        });
+        assert_eq!(*lock(&charge.bytes), 0, "a log lane's charge outlived it");
     }
 
     /// What a run's member host hands its VM process (`Daemon::launch_builtin`): the built-in's

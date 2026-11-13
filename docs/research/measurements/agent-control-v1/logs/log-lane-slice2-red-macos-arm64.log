@@ -1,0 +1,11 @@
+host=adalundhe-MacBook-Pro Darwin 25.5.0 arm64 load={ 4.69 5.37 4.62 } base=db4168345a683e46d4f517b78e99a198931f1167 patch=s11-logs-red.patch 91c196f56e0d5f60
+rustc 1.98.1 (48a229cea 2026-09-01)
+red: the slice with `Reader::read_segment` (daemon/logs.rs) taking a gap's record as output: its
+`if record.gap { return Ok(true); }` removed, so `logs` and `--tail` would show a gap's bytes.
+== cargo test -p shards --bin shards -- daemon::logs::tests::records_say_a_gap 2>&1 | grep -E "^test |panicked|left|right|test result" | head -20
+test daemon::logs::tests::records_say_a_gap_and_the_segments_let_go ... FAILED
+thread 'daemon::logs::tests::records_say_a_gap_and_the_segments_let_go' (23257330) panicked at crates/shards/src/daemon/logs.rs:1824:9:
+assertion `left == right` failed
+  left: [[[98, 101, 102, 111, 114, 101, 10], [1, 0, 0, 0, 0, 0, 0, 16, 0, 97, 102, 116, 101, 114, 10]], [[101, 114, 114, 10], [2, 0, 0, 0, 0, 0, 0, 0, 7]]]
+ right: [[[98, 101, 102, 111, 114, 101, 10], [97, 102, 116, 101, 114, 10]], [[101, 114, 114, 10]]]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 863 filtered out; finished in 0.01s

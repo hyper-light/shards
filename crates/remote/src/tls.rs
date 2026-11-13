@@ -38,9 +38,9 @@ pub enum Known {
     /// is available, the initial RTT SHOULD be set to 333 milliseconds") and has no deadline.
     Never,
     /// Reached, its last waits answered: its next handshake starts from its path's RTT and is
-    /// judged by the slowest handshake seen from it, as a send is by the slowest answer: given
-    /// up after that long with nothing heard from it, past its probe timeout (net.rs,
-    /// `Liveness::due`).
+    /// judged by the slowest handshake seen from it, as a send is by the slowest answer: run out
+    /// after that long with nothing heard from it, past its probe timeout (net.rs,
+    /// `Liveness::due`), and waited for on as a peer never reached is.
     Reached(Path),
     /// A wait of its last connection ran out: its next handshake starts from its path's RTT and
     /// has no window, as a peer never reached's, until a handshake ends again.

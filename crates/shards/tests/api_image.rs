@@ -1051,8 +1051,10 @@ fn a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it() 
     assert!(!outside.join("s1").exists());
     let saved = home.join("leak-save");
     guest.save(&saved, TIMEOUT).unwrap();
-    let generation = std::fs::read_to_string(saved.join("current")).unwrap();
-    let memory = saved.join(generation.trim()).join("memory");
+    // Its memory as the store reads it, through the generation its pointer names: on Windows
+    // that pointer is the newest version of `current` (platform `write_in`, PM M345), never a
+    // file of that name (WHP at 5af644eab).
+    let memory = common::snapshot_file(&saved, "memory");
     assert!(std::fs::metadata(&memory).unwrap().len() > 0);
     echo(b"after\n");
     let keys = TempDir::new("api-save-keys");

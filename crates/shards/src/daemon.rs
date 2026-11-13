@@ -9284,14 +9284,24 @@ fn readable_within(socket: &UnixStream, wait: Option<Duration>) -> bool {
 /// this daemon's VMs' starts (`Answers::ready`): before its first, its liveness alone, its
 /// socket's end; then past W*, the slowest start seen, looked at each W* and given up on
 /// where a whole W* shows it ran no CPU, its host not the reason. Its READY teaches the
-/// record. It was `READY_STALL`'s 10 s looks and `READY_TIMEOUT`'s 60 s, picked, judged by PM
-/// M357's idle microVM (ROOT's (3), 2026-11-13).
+/// record, but one there as the wait begins, which was waited for not at all (D222's wait of
+/// nothing): on macOS the wait begins once the VM has its grants, which a quick restore can
+/// end with its READY said, and as a sample, its W* of next to nothing would have each later
+/// start looked at each millisecond. The log says once, as a start first outlasts W*, how far
+/// into it it is. It was `READY_STALL`'s 10 s looks and `READY_TIMEOUT`'s 60 s, picked, judged
+/// by PM M357's idle microVM (ROOT's (3), 2026-11-13).
 fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(), String> {
     let began = Instant::now();
-    let mut follow = shards_api::Followed::of_pid(pid)
-        .ok()
+    // Its time so far, to the microsecond, as the log says it.
+    let into = || Duration::from_micros(u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX));
+    // Followed only where its READY is still to come, as a slot's rest is learned only where
+    // it was waited for (D185's `Asked::waited`).
+    let mut follow = (!readable_within(socket, Some(Duration::ZERO)))
+        .then(|| shards_api::Followed::of_pid(pid).ok().flatten())
         .flatten()
         .and_then(|followed| shards_api::Follow::begin(record, followed).ok().flatten());
+    // Whether the log has said it outlasted the slowest start seen: once, as it does.
+    let mut said = false;
     loop {
         let wait = follow
             .as_ref()
@@ -9308,16 +9318,19 @@ fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(
                 "VM {pid} was not ready: it ran nothing for {:?}, past the slowest start seen ({:?}), {:?} after it began",
                 stall.over(),
                 stall.slowest(),
-                Duration::from_secs(began.elapsed().as_secs())
+                into()
             ),
             shards_api::Unfollowed::Process { failure, .. } => {
                 format!("VM {pid} was not ready: its process could not be read: {failure}")
             }
         })?;
-        log(format!(
-            "VM {pid}: not ready in {:?}, going on with its start",
-            Duration::from_secs(began.elapsed().as_secs())
-        ));
+        if let (false, shards_api::Seen::Learned { slowest, .. }) = (said, record.seen()) {
+            said = true;
+            log(format!(
+                "VM {pid}: not ready {:?} into its start, past the slowest start seen ({slowest:?}): followed as it goes on",
+                into()
+            ));
+        }
     }
     match shards_ipc::recv(socket) {
         Ok(Some(m)) if m.kind == kind::READY => {
@@ -9635,6 +9648,19 @@ mod tests {
         assert!(refused.contains("ran nothing for"), "{refused}");
         let _ = asleep.kill(shards_ipc::signal::SIGKILL);
         let _ = asleep.wait();
+    }
+
+    /// A READY there as its wait begins was waited for not at all: it is taken, and teaches
+    /// the daemon's record of starts nothing (D222's wait of nothing), whose W* of next to
+    /// nothing would have each later start looked at each millisecond. Its VM process is this
+    /// one, which lives throughout.
+    #[test]
+    fn a_ready_said_before_its_wait_teaches_nothing() {
+        let record = shards_api::Record::new();
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        shards_ipc::send(&theirs, kind::READY, &[], &[]).unwrap();
+        ready(&ours, std::process::id(), &record).unwrap();
+        assert_eq!(record.seen(), shards_api::Seen::Cold);
     }
 
     /// The basis as the daemon reads it of a VM's process, on this host: a process that

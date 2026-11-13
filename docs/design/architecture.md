@@ -6487,18 +6487,33 @@ replaced by:
   closed port, 22 minutes).
 - *A handshake's bound, after that.* A daemon reached before, its last waits answered, has its
   handshake judged as a send is (`Liveness::due`), by a window of the slowest handshake seen
-  from it (`Known::handshake_window`), no sooner than its probe timeout: given up a whole window
-  with nothing heard from it (its Initial and Handshake packets count) past the later of when it
-  was last heard and that timeout, told so ("no answer from the shards daemon at ADDR: nothing
-  heard from it in T, its probe timeout (P) and then the slowest handshake seen from it (W)",
-  typed as QUIC's `TimedOut`), and marked; one that goes past its window and its probe timeout both while it is
-  heard has run out, and goes on, marked. A marked record's next handshake waits as a cold start
-  does, as every wait after a run-out does, until a handshake ends again. QUIC's loss recovery
-  starts each handshake from the path's last RTT (`initial_rtt`). The window alone, from its
-  start, gave up daemons whose next handshake the suite's own load slowed: ROOT's runs of
-  `tests/context.rs` at 084891178, 8 of 21 on HVF and 1 on KVM, and at c1ef455c9 6 of 21 on HVF
-  (an engine relay's 502 among them), each "within the slowest handshake seen from it" of
-  0.57-4.2 ms, one sample of which, a fresh home's join, had set it. The probe timeout here is the one a send's wait is held to (patch Q7's
+  from it (`Known::handshake_window`), no sooner than its probe timeout: a whole window with
+  nothing heard from it (its Initial and Handshake packets count; before its first, nothing
+  does, QUIC's probes being this side's own sends) past the later of when it was last heard and
+  that timeout, it has run out. Run out, it is marked, told once, typed (`Handler::ran_out`,
+  `RanOut::Handshake { waited, window }`), and its window let go (`Liveness::handshake_ran_out`):
+  it goes on as a cold start's does, with no deadline, each probe told to whoever waits, until it
+  ends or its caller gives up, as every wait after a run-out follows the party's liveness and
+  progress (the person's ruling; D222's "a run-out learns nothing"). One that goes past its
+  window and its probe timeout both while it is heard has run out too, and goes on, marked. A
+  marked record's next handshake waits as a cold start does, until a handshake ends again.
+  QUIC's loss recovery starts each handshake from the path's last RTT (`initial_rtt`). The
+  window alone, from its start, gave up daemons whose next handshake the suite's own load
+  slowed: ROOT's runs of `tests/context.rs` at 084891178, 8 of 21 on HVF and 1 on KVM, and at
+  c1ef455c9 6 of 21 on HVF (an engine relay's 502 among them), each "within the slowest
+  handshake seen from it" of 0.57-4.2 ms, one sample of which, a fresh home's join, had set it.
+  Past the window and the probe timeout, the run-out then ended the handshake, and a daemon its
+  loaded host descheduled was told to its client as one gone: "no answer from the shards daemon
+  at ADDR: nothing heard from it in 30.075715ms, its probe timeout (26.36784ms) and then the
+  slowest handshake seen from it (3.707875ms): is it listening there" (ROOT's run of
+  `tests/loopback.rs` on adas-macbook-pro-2 at ea6f4b53b, load1 about 44, its relay holding the
+  daemon's answers 7.4 ms). Red so on an unloaded host at 476f77d7b with a relay holding them four
+  times the probe timeout and window (`a_daemon_reached_before_unheard_past_its_window_runs_out_and_is_waited_for`:
+  "nothing heard from it in 39.906044ms, its probe timeout (38.234002ms) and then the slowest
+  handshake seen from it (1.672042ms)", kiln r619 on adas-mac-studio.local-2), and with a daemon
+  reached before that answers nothing (given up at 328 ms), each green with the run-out going on.
+  Owed, ROOT's: `cargo test -p shards-remote --profile test-release --test loopback` on
+  adas-macbook-pro-2 under its usual load. The probe timeout here is the one a send's wait is held to (patch Q7's
   `probe_timeout`: its RTT terms and the peer's `max_ack_delay`, 25 ms until its transport
   parameters say otherwise, RFC 9000 §18.2), where RFC 9002 §6.2.1 arms the Initial and
   Handshake spaces' own probe timer without `max_ack_delay`, a peer acknowledging their packets
@@ -6648,8 +6663,9 @@ up every other client's acknowledgements: the tests' commands' program, built by
 first start, did so to every test that started one first (`tests/loopback.rs` builds it
 before its daemon serves, all the same). Tested, each test red before its code: `tls::tests` (what is known of a
 peer follows what its path showed), `net::tests` (a handshake judged by its window or probing
-on, its silences measured; a handshake given up a whole window unheard past its probe timeout,
-one heard living on past both, red with its window a deadline from its start; a send's window,
+on, its silences measured; a handshake run out a whole window unheard past its probe timeout,
+going on with no window, red with its window kept, one heard living on past both, red with its
+window a deadline from its start; a send's window,
 its run-out with progress and its death without; a cold wait following its peer however long
 its first answer takes; a wait judged no sooner than its probe timeout; a wait judged on the
 time its side was there to hear, red with no absence taken; a send taken in before its
@@ -6661,10 +6677,12 @@ daemon and address alone, kept only where it changed, removed with its context),
 way; an enrolled client's silent command living with no keep-alive; no daemon answering
 probed until its caller gives up; a hang-up ending a command whose daemon never answered; a
 closed port refusing its client at once, its caller giving up past the test's deadline, red on
-Linux with a send's refusal let go; a daemon reached before given up past its slowest
-handshake, unheard; a daemon reached before slower to shake hands than ever, by more than its
-slowest but within a probe timeout, answered, a relay holding what it sends back, red with the
-slowest handshake a deadline; a process frozen 200 ms (SIGSTOP) while a command trickles
+Linux with a send's refusal let go; a daemon reached before that answers nothing running out
+past its slowest handshake and probed on until its caller gives up, red with the run-out its
+end; a daemon reached before slower to shake hands than ever, by more than its slowest but
+within a probe timeout, answered, a relay holding what it sends back, red with the slowest
+handshake a deadline; one unheard past its probe timeout and window, run out and answered as the
+relay lets its answers go, red with the run-out its end; a process frozen 200 ms (SIGSTOP) while a command trickles
 through it keeping its connections, red with no absence taken; a daemon slow to answer a fresh
 client waited for (a stand-in's driver held in its handler), red with its handshake seeding the
 window; a slow start, a slow join and a slow verdict on one key holding up no other client, the
@@ -8494,7 +8512,10 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
     (ROOT's (3), 2026-11-13). Each keeps W*, the slowest answer seen from a
     wait's start to its exec's end, and R*, the least CPU rate a microVM still answered at
     (`shards_api::Record`). Only an exec's own end teaches: one the daemon ended teaches
-    nothing.
+    nothing, and neither does one there as its wait begins, read as D185's `Asked::waited`
+    is: it was waited for not at all (D222's wait of nothing), and its W* of next to nothing
+    would have its kind's next asks looked at each microsecond
+    (`an_exit_said_before_its_wait_teaches_nothing`).
   - *Cold start*: before its kind's first answer, a wait follows its microVM's liveness
     alone, to its exec's end or its microVM's.
   - *The judge*: past W* from its start, the wait looks at the microVM's process once each
@@ -10314,10 +10335,16 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   up on where a whole W* shows it ran no CPU, its host not the reason. A claim of a pool whose VM is starting waits for it
   past its minute, its watcher waking it; and a builder's boot is judged so, past
   `BOOT_PATIENCE`'s 30 s. Not caught: a guest that spins before it is ready (a panic
-  resets it, `panic=-1`, which ends its VM). Each slice is logged, the durable evidence by
-  which the tests' clients past their deadlines are waited on while their daemon says
-  something (`common::Said`, within the daemon's `READY_TIMEOUT`), never a guess at the
-  host's speed. `a_starting_vm_progresses_by_more_cpu_than_an_idle_one_takes` holds the
+  resets it, `panic=-1`, which ends its VM). A READY there as its wait begins teaches
+  nothing, as it was waited for not at all (D222's wait of nothing, read as D185's
+  `Asked::waited` is): on macOS the wait begins once the VM has its grants, which a quick
+  restore can end with its READY said, and its W* of next to nothing would have each later
+  start looked at each millisecond (`a_ready_said_before_its_wait_teaches_nothing`). The log
+  says once, as a start first outlasts W*, how far into it it is, to the µs; it said so at
+  each look, a cadence, in whole seconds: "not ready in 0ns" of one under a second (HVF, at
+  5ec3f86cc). A test's client past its deadline is waited on while its daemon says
+  something (`common::Said`): a start past W* is said once, a cold one not at all, the cold
+  start's gap (D215). `a_starting_vm_progresses_by_more_cpu_than_an_idle_one_takes` holds the
   basis to M357, and `a_sleeping_process_runs_nothing_a_boot_does_and_a_busy_one_runs`
   to the host's own process times.
 - **A workload is waited for while it runs** (M424, every host). Five of the suite's cases
@@ -13106,8 +13133,8 @@ peer", each going on here as it should. What changed for them:
     `ready`, the image's `load`, the import, the restore, these asks): its slowest answer.
     Not known then. An ask's handshake waits on while that machine has gone unheard no longer
     than that (`Heard::silent`, given `context::exec_with` as whether it waits), as a daemon
-    whose last wait ran out has no handshake deadline of its own (D180), and gives up past the
-    slowest handshake seen from it where it has one. The first ask goes out whatever that
+    whose last wait ran out has no handshake deadline of its own (D180), nor one whose
+    handshake ran out past the slowest seen from it. The first ask goes out whatever that
     machine's silence, the wait after the restore's run-out following liveness alone, each
     ask held to the link's own bounds (its handshake's, then its liveness at use). The cold
     start, a move that heard nothing of that machine (none reaches this step, `ready` and the
@@ -24812,7 +24839,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built; log lanes building, goal 58's step 7: the lane and its controller built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built; log lanes building, goal 58's step 7: the lane, its controller and the daemon's log host built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -25485,9 +25512,44 @@ refused `Unknown`; a followed lane reading what comes as it comes and ending at 
 a lane let go before its end letting its host go. Red first: with the endpoint refusing the log of
 a member it serves no stream of, `Refused(Scope)` where `Unlogged(Unknown)` was due.
 
-Building next: the daemon's log host (until it lands, the daemon's exec host refuses a log lane
-`Failed`), and every member's output kept in its log, owned or not, within the run's one log cap
-(D240).
+*The daemon's log host* (`daemon/managed/log_lanes.rs`). The run's exec host hands each log lane
+to it, on a thread of its own:
+- *Refused, typed*, as `logs` refuses a run's log: `Unkept`, `Uncached`; `Unknown` for a member
+  that runs no program; `Rotated { oldest }` for a place older than the oldest segment kept; and
+  `Capacity` where the run's budget has no room for what it holds (its lanes' windows, its
+  stream's record and its reader's two buffers, as an exec's are charged).
+- *Read byte for byte* (`daemon::logs::Records`): the store's records as written, from each
+  channel's place (inside a record, its rest), in the log's order, in pieces of the stream's
+  record less the head; a gap's record given typed; segments let go before it read them said
+  (`Rotated`) and read on from the oldest kept. `logs`' and the shipper's reader, which holds a
+  line until it ends and goes on from a line's start, walks the same segments (`logs::walk`) and
+  passes over a gap's record: a log without gaps reads byte for byte as before.
+- *Followed* as `logs -f` follows a log: woken by its watch on the segment it reads
+  (`platform::FileWatch`, a segment's coming among its changes), by its source's end (the run's,
+  for its command; for a member, its channels all ended in the drain, a latch the drain sets), or
+  by its lane let go (its steering closed, which the endpoint does as it drops the lane); every
+  `UNWATCHED` where no watch can be had (PM M257). Unfollowed, it reads what is kept as it is
+  asked.
+- *Its end*: its stream finished once read, and its exit told after, so that its lane goes.
+- *A gap in the log* (spec.rs `INDEX_GAP`, the index entry's bit 61; its stream byte 3; its
+  bytes why and how many were lost): written by the daemon into members' logs alone (D240); a
+  run's own log, which its VM writes, holds none. A record's start is the entry's bits below 61
+  now, past what any log reaches.
+
+Until the daemon keeps an owned member's output (D240), a log lane of an owned member is refused
+`Failed`.
+
+Tested in the daemon: `daemon::logs::tests` reads a log through `Records` from any place, in
+pieces, across segments its writer cut records over, inside a record and one channel alone; a
+gap's record given typed and passed over by `logs` and `--tail`, which read the log as they read
+it without the gap; segments let go before the reader read on said `Rotated`. The readers'
+existing tests hold logs without gaps to what they read before. `daemon::managed::tests`, through
+the run's endpoint and the production controller: the command's log from its oldest kept, a place
+older refused `Rotated` naming it, a member that runs no program `Unknown`, a drained member's
+log, then followed from its cursor, given what is kept as it is kept and ended with its member's
+channels; the run's budget charged while it reads and given back. Red first: with `logs`' line
+reader taking a gap's record as output, the gap test fails, `logs` showing the gap's bytes (why 1
+and 4096 lost) joined to the next line.
 
 Record:
 [agent-control-v1](../research/measurements/agent-control-v1/README.md).
@@ -25542,6 +25604,7 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | A log ask past its scope, 53 bytes | its source, channels and follow (a byte each), and each channel's place (a flag byte and the store's 24-byte `Pos`) |
 | A log record's kinds 1, 2, 3; its head, 34 bytes | output, gap, rotation; the kind and channel (a byte each), its place (24) and its time (8) |
 | A gap's why, 1 and 2 | `Behind` (let go so as never to hold up its owner, D240) and `Unwritten` (its write failed) |
+| `INDEX_GAP` bit 61; a gap's stream byte 3; its bytes, 9 | the index entry's next bit below `INDEX_LINE`'s 62; the stream byte after `LOG_STDERR`'s 2; why (a byte) and how many bytes it lost (u64) |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 
@@ -26442,6 +26505,60 @@ pin, read on Linux and never run), as data and pure functions the injector drive
   CLI's refresh (JSON and form) and revocation found, and a refresh of another or a near placeholder passed; the
   minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
   clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
+
+**Built: step 8's second slice, its first part: the injector takes a sign-in's tokens outside and answers its
+refresh and revocation there** (crates/net: `signin.rs`, `inject.rs`, `lib.rs`, `lease.rs`; shards-dns' sign-in grant;
+record docs/research/s33-veil-creds/STEP8.md).
+- *Question 1: who calls the provider.* The orchestrator's broker alone (kiln's `Turn`, step 5), for every run of the
+  sign-in: the injector never sends a refresh on. It reads a POST to the sign-in's token path whole (its body within the
+  connection's window) and, where it carries the sign-in's refresh placeholder (`signin::ask`), asks its run host
+  (`NET_SIGN_IN`, kind 105) and parks the request (`Request::Refreshing`); every flow of the run that asks the
+  sign-in's refresh meanwhile joins that one ask (`SignIns::refresh`), and the broker's `Turn` makes it one across
+  runs. Refused: the network process refreshing on its own, which would need the refresh token in it and would let two
+  runs rotate one sign-in's tokens out from under each other (RFC 6749 §6, f47).
+- *Question 2: the grant, its hosts, its placeholders.* A run captures a sign-in only where a sign-in grant
+  (`shards_dns::credential::SignInGrant`: the sign-in's name in the store, its CLI, the hosts its access token goes to,
+  and what an earlier capture gave) names its CLI, whose profile names its token host, and its egress reaches that host
+  and each host its access token goes to (checked again as the grants come, `NET_SIGN_INS`, kind 104, before
+  `NET_CREDENTIALS`, whose CA names them). TLS is ended at the token host for that CLI's sign-in alone; no value is
+  filled toward it. One sign-in of a CLI a run: a capture names no sign-in. The access token goes to the grant's hosts
+  alone, as a credential grant the capture adds (`Captured::grant`). After a refresh the VM keeps its placeholders: the
+  broker keeps the rotated tokens under the same references, and the network process lets its held lease of the access
+  token go (`Leases::forget`), so that the next flow that needs it asks anew. Refused: new placeholders at each refresh
+  (a grant changed mid-run, the CLI's file rewritten each time, every other run's staged placeholders stale); a
+  JWT-shaped access placeholder (above).
+- *Question 3: the one body rewritten.* A sign-in's token host is asked `Accept-Encoding: identity` (RFC 9110
+  §12.5.3), and each of its final responses with a body is read whole (`Response::Whole`) within the connection's
+  window (4 MiB, `TO_GUEST`, which already bounds each way: no bound of its own, R03), its chunks joined into a buffer
+  that, outgrown, is replaced by one of twice its size and wiped (`signin::append`); one coded otherwise is refused 502,
+  as its tokens could not be found. A body with tokens is held (`Response::Capturing`) while its run host keeps them
+  outside (`NET_SIGN_IN`), then written with the broker's placeholders and framed anew (RFC 9112 §6.3); none of it
+  reaches the guest before, and none of its real tokens after. A refresh's answer is rewritten as well, whatever its
+  broker sent (`write` gives the sign-in's placeholders in each token's place).
+- *Question 6: the VM's revocation.* A POST to the sign-in's revocation path naming either of its placeholders is
+  answered 200 here (RFC 7009 §2.2) and never sent on; its run host is told (`NET_SIGN_IN`), the stored tokens kept.
+  Claude Code revokes at logout and for a refused sign-in (`i3r`, `Ib`); Codex at logout and before each login
+  (auth/revoke.rs, cli/src/login.rs:133): neither ends the sign-in outside.
+- *The minting endpoint* (step 8's first slice): a request toward it carrying a captured sign-in's access placeholder
+  is answered 403 (`Refusal::Mints`), never sent, nothing leased.
+- *Refusals, typed (R04):* `signin::Declined` (`Denied`, `Unavailable`, `Ended`, `Unanswered`: an orchestrator that
+  answers no sign-in), rendered by the injector as `invalid_grant` (400, RFC 6749 §5.2) for a refresh its broker
+  refused, so that its CLI signs in anew, else 503; a capture not kept 502. The audit says each capture, refresh and
+  revocation by the sign-in's name and its host, with the time, never a token or a placeholder (`Did`).
+- *Literals.* Kinds 104 and 105 are sequence numbers (103 went first to `UNPUBLISHING`); the CLI's codes 1 and 2 and the
+  words' 1 to 3 are names on a wire. Lengths: a name or placeholder in two bytes, as `NET_CREDENTIALS`' are; a token or
+  a body in four, as `shards_ipc` frames its payload's length. No learned value.
+- *Tests (macOS arm64, adas-mac-studio.local; STEP8.md).* The plan's light test: a simulated token endpoint behind the
+  injector, real TLS both ways, and a test lessor standing for the run host and its broker. Claude Code's code exchange
+  reaches the host asking `identity`; its token response is held until the broker keeps the issued tokens, then reaches
+  the guest with the broker's placeholders, no real token in it; a request to the API host with the access placeholder
+  is filled with the kept token; the refresh never reaches the host, one call to the provider outside, the guest given
+  the same placeholders and no rotated token; the held lease of the rotated token let go; the revocation answered 200
+  here, the kept tokens as they were; two connections' refreshes at once one ask; the minting endpoint 403. Units: the
+  words' codecs, `SignIns`' single flight and end, placeholders that are no tokens or another's declined, a rotated
+  value's held lease let go and an ask under way kept. Each guard removed in turn fails its test (STEP8.md).
+- *Owed.* The run host's relay of `NET_SIGN_INS` and `NET_SIGN_IN` to its orchestrator, the image channel's next
+  version and `Lessor` grown (this slice's second part); kiln's broker answering them (step 8's third slice).
 
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** The injector that
 fills HTTP/2 headers (step 7); the sign-in profiles' wiring (step 8's second slice: the network
