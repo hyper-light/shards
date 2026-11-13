@@ -151,6 +151,46 @@ fn room_of(said: &[u8]) -> io::Result<i64> {
         .ok_or_else(|| io::Error::other("a room that is no number of bytes"))
 }
 
+/// What its host's word leaves the run (`ROOM`, D188), R04: no budget; a room; or, where the
+/// word said the footprint its VM process held as that room was read (a group's, D183) and
+/// its VMM cannot say what it holds now, that room as said, which its answer says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Told {
+    Unbudgeted,
+    Room(i64),
+    AsSaid(i64),
+}
+
+impl Told {
+    fn room(self) -> Option<i64> {
+        match self {
+            Told::Unbudgeted => None,
+            Told::Room(room) | Told::AsSaid(room) => Some(room),
+        }
+    }
+}
+
+/// [`Told`] by its host's word `args`: a room in signed decimal, and, where a second word says
+/// in decimal the footprint its VM process held as that room was read, that room as of what
+/// it holds now, read from its VMM (`control::FOOTPRINT`) just before the hold reads what
+/// the run uses (`run::room_now`): what it came to hold since that read counts once.
+fn told(args: &[Vec<u8>]) -> io::Result<Told> {
+    let Some(room) = args.first() else {
+        return Ok(Told::Unbudgeted);
+    };
+    let room = room_of(room)?;
+    let Some(at) = args.get(1) else {
+        return Ok(Told::Room(room));
+    };
+    let at = std::str::from_utf8(at)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .ok_or_else(|| io::Error::other("a footprint that is no number of bytes"))?;
+    // A read that fails is a footprint its VMM cannot say, as 0 is.
+    let now = crate::linux::control_read64(control::FOOTPRINT).unwrap_or(0);
+    Ok(run::room_now(room, at, now).map_or(Told::AsSaid(room), Told::Room))
+}
+
 /// Reports at once the memory the guest holds free that waits to be reported to its
 /// microVM, which gives it back to the host (D151), and waits for it: a template is saved
 /// with none waiting, else each copy reports, two seconds into its life, what the
@@ -3889,13 +3929,14 @@ fn builtin(
             }),
             // Its engine's relay told first, which lets its idle ring slots go where the room
             // is short of what the run needs to go on (D230); with no slot made, nothing.
-            run::builtin::ROOM => args
-                .first()
-                .map(|a| room_of(a))
-                .transpose()
-                .inspect(|room| crate::ring::told(*room))
-                .and_then(|room| crate::plug::hold_within(RUN_CGROUP, room))
-                .and_then(|held| held.map_or(Ok(()), |held| write!(out, "{held}"))),
+            run::builtin::ROOM => told(args).and_then(|told| {
+                crate::ring::told(told.room());
+                match (crate::plug::hold_within(RUN_CGROUP, told.room())?, told) {
+                    (Some(held), Told::AsSaid(_)) => write!(out, "{held} {}", run::builtin::ROOM_UNREAD),
+                    (Some(held), _) => write!(out, "{held}"),
+                    (None, _) => Ok(()),
+                }
+            }),
             run::builtin::FREEZE => freeze(&cgroup, args.first().is_some_and(|a| a == b"1")),
             // A device plugged in or let go of, or a disk grown, in the workload's mounts
             // (D214), or a domain's (D235).
@@ -5012,8 +5053,15 @@ impl Workload {
             }
             if exited {
                 for domain in &mut self.domains {
-                    domain.stdout.abort();
-                    domain.stderr.abort();
+                    // What the host drains (D240) goes on to its end, which the run's end
+                    // brings it: its members are killed with the run, and their pipes hold
+                    // what they wrote. The capture is let go once each such channel has ended
+                    // and nothing of it is in flight (below). Every other member's output
+                    // ends here, aborted: its owner's credit may never come.
+                    if !self.capture.as_ref().is_some_and(|c| c.drains(domain.member)) {
+                        domain.stdout.abort();
+                        domain.stderr.abort();
+                    }
                     // An input that ended is told before the scope ends; one still open goes
                     // with the run, whose end says it.
                     if let Some(ended) = domain.input.as_ref().and_then(crate::input::Input::report)
@@ -5025,7 +5073,6 @@ impl Workload {
                     }
                     domain.input = None;
                 }
-                self.capture = None;
                 if let Some(control) = self.capture_control.as_mut()
                     && let Err(e) = control.end()
                 {
@@ -5152,6 +5199,8 @@ impl Workload {
                 && !reported
                 && self.stdout.is_none()
                 && self.stderr.is_none()
+                // What its members wrote sent whole first (D240).
+                && self.capture.is_none()
                 && self
                     .domains
                     .iter()
@@ -5192,6 +5241,8 @@ impl Workload {
                     .capture_control
                     .as_ref()
                     .is_none_or(crate::capture::ControlQueue::ended)
+                // Its members' last records sent whole, none cut in flight (D240).
+                && self.capture.is_none()
                 && cut.open()
                 && self.stdout.is_none()
                 && self.stderr.is_none()
@@ -5750,6 +5801,20 @@ impl Workload {
                             && let Err(e) = capture.progress()
                             && !e.transient()
                         {
+                            // Once the command has ended its status stands: the members'
+                            // output, drained to its end (D240), ends where its host went.
+                            if status.is_some() {
+                                let _ = writeln!(
+                                    io::stderr(),
+                                    "shards-init: the members' output as the run ends: {e}"
+                                );
+                                for domain in &mut self.domains {
+                                    domain.stdout.abort();
+                                    domain.stderr.abort();
+                                }
+                                self.capture = None;
+                                continue;
+                            }
                             fatal = Some(setup_failed(format!("managed output connection: {e}")));
                             break 'relay;
                         }

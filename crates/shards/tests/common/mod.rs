@@ -785,13 +785,14 @@ pub fn command() -> Command {
 /// publishing the microVMs it makes to no local image store (pull.rs `publish`), so that no
 /// test writes to the Docker engine of the host it runs on (a test of publishing names an
 /// engine of its own), and given the tests' own docker config ([`docker_config`]), so that
-/// none reads this host's or runs its credential helpers, and their own daemon.json in place
-/// of the host's Docker's (`SHARDS_DAEMON_JSON`, D194), so that no mirror or insecure
-/// registry of the host's reaches one. No default platform of the host's user's reaches it.
+/// none reads this host's or runs its credential helpers, and their own daemon.json and
+/// certs.d in place of the host's Docker's (`SHARDS_DAEMON_JSON`, D194; `SHARDS_CERTS_D`,
+/// D23), so that no mirror, insecure registry or certificate of the host's reaches one. No default platform of the host's user's reaches it.
 pub fn as_tests_run(cmd: &mut Command) -> &mut Command {
     cmd.env("SHARDS_LOCAL_STORE", "none")
         .env("DOCKER_CONFIG", docker_config())
         .env("SHARDS_DAEMON_JSON", docker_config().join("daemon.json"))
+        .env("SHARDS_CERTS_D", docker_config().join("certs.d"))
         .env_remove("DOCKER_AUTH_CONFIG")
         // A platform this host's user prefers is no test's: a test names its own.
         .env_remove("SHARDS_DEFAULT_PLATFORM")
@@ -802,7 +803,8 @@ pub fn as_tests_run(cmd: &mut Command) -> &mut Command {
 /// own: no test, nor any daemon one starts, reads this host's docker config or its
 /// credential helpers. Its `auths` name a host no test reaches, so that no platform helper
 /// is looked for either (D184: a config that holds credentials keeps them itself). Beside it,
-/// the tests' own daemon.json, which names no registry ([`as_tests_run`]).
+/// the tests' own daemon.json, which names no registry, and certs.d, which holds nothing
+/// ([`as_tests_run`]).
 pub fn docker_config() -> &'static Path {
     static CONFIG: OnceLock<TempDir> = OnceLock::new();
     CONFIG.get_or_init(|| {
@@ -813,6 +815,7 @@ pub fn docker_config() -> &'static Path {
         )
         .unwrap();
         std::fs::write(dir.join("daemon.json"), "{}").unwrap();
+        std::fs::create_dir(dir.join("certs.d")).unwrap();
         dir
     })
 }
@@ -3643,7 +3646,7 @@ fn hub_seed(reference: &str, timeout: Duration) -> (Vec<u8>, Vec<Vec<u8>>) {
     let home = workspace().join("target/artifacts/hub");
     shards_vmm::platform::create_private_dir(&home).unwrap();
     let _seeding = shards_image::store::Locked::exclusive(&home.join("seeding.lock")).unwrap();
-    if let Some(seed) = hub_held(&home, &pinned) {
+    if let Ok(seed) = hub_held(&home, &pinned) {
         return seed;
     }
     let ctx = TempDir::new("hub-seed");
@@ -3661,48 +3664,82 @@ fn hub_seed(reference: &str, timeout: Duration) -> (Vec<u8>, Vec<Vec<u8>>) {
         home.display(),
         built.stderr
     );
-    hub_held(&home, &pinned)
-        .unwrap_or_else(|| panic!("{reference}: not held whole in {} once pulled", home.display()))
+    hub_held(&home, &pinned).unwrap_or_else(|missing| panic!("{reference}, pulled once: {missing}"))
 }
 
-/// What `home`'s store holds of `pinned`, whole: none where a part is missing or is not
-/// what its digest says.
-fn hub_held(home: &Path, pinned: &shards_image::reference::Reference) -> Option<(Vec<u8>, Vec<Vec<u8>>)> {
-    let store = shards_image::store::Store::open(&home.join("images")).ok()?;
-    let digest = pinned.digest.as_ref()?.to_string();
-    if store.resolved(&pinned.to_string()).ok()??.to_string() != digest {
-        return None;
-    }
-    let read = |d: &str| {
-        let bytes = std::fs::read(store.blob_path(&shards_image::reference::Digest::parse(d).ok()?)).ok()?;
-        (sha256_digest(&bytes) == d).then_some(bytes)
+/// What `home`'s store holds of `pinned`, found by its digest as content is, whoever's
+/// record holds it: a pull of an index holds its platform's manifest by its own digest, under
+/// the index's name alone, and a seed's build that finds a digest held pulls nothing (D78).
+/// The document the digest names; then, of an index, this host's platform's manifest and
+/// its attestations, which a pull of it fetches, and of each manifest its config and
+/// layers. Where one is not there whole, what is missing.
+pub fn hub_held(
+    home: &Path,
+    pinned: &shards_image::reference::Reference,
+) -> Result<(Vec<u8>, Vec<Vec<u8>>), String> {
+    let store = shards_image::store::Store::open(&home.join("images")).map_err(|e| e.to_string())?;
+    let read = |what: &str, d: &str| {
+        let path = shards_image::reference::Digest::parse(d)
+            .map(|digest| store.blob_path(&digest))
+            .map_err(|e| format!("{pinned}: {what} {d}: {e}"))?;
+        match std::fs::read(&path) {
+            Ok(bytes) if sha256_digest(&bytes) == d => Ok(bytes),
+            Ok(_) => Err(format!(
+                "{pinned}: {what} {d}: {} is not what its digest says",
+                path.display()
+            )),
+            Err(e) => Err(format!("{pinned}: {what} {d}: {}: {e}", path.display())),
+        }
     };
-    let top = read(&digest)?;
-    let doc: serde_json::Value = serde_json::from_slice(&top).ok()?;
-    // An index's manifests that its pull fetched, which the registry serves among the blobs;
-    // a lone manifest is the document itself.
-    let listed = doc["manifests"].as_array();
-    let manifests: Vec<Vec<u8>> = match listed {
-        Some(listed) => listed
-            .iter()
-            .filter_map(|m| read(m["digest"].as_str()?))
-            .collect(),
+    let parse = |what: &str, bytes: &[u8]| {
+        serde_json::from_slice::<serde_json::Value>(bytes).map_err(|e| format!("{pinned}: {what}: {e}"))
+    };
+    let digest = pinned
+        .digest
+        .as_ref()
+        .ok_or_else(|| format!("{pinned}: pinned by no digest"))?
+        .to_string();
+    let top = read("the document", &digest)?;
+    let doc = parse("the document", &top)?;
+    let manifests = match doc["manifests"].as_array() {
         None => vec![top.clone()],
+        Some(listed) => {
+            let arch = match ARCH {
+                "aarch64" => "arm64",
+                "x86_64" => "amd64",
+                other => other,
+            };
+            let ours = listed
+                .iter()
+                .find(|m| m["platform"]["os"] == "linux" && m["platform"]["architecture"] == arch)
+                .and_then(|m| m["digest"].as_str())
+                .ok_or_else(|| format!("{pinned}: its index lists no linux/{arch} manifest"))?;
+            let mut held = vec![read(&format!("its linux/{arch} manifest"), ours)?];
+            for attestation in listed
+                .iter()
+                .filter(|m| m["annotations"]["vnd.docker.reference.digest"] == ours)
+            {
+                let d = attestation["digest"].as_str().unwrap_or_default();
+                held.push(read("an attestation of it", d)?);
+            }
+            held
+        }
     };
-    if manifests.is_empty() {
-        return None;
-    }
     let mut blobs = Vec::new();
     for manifest in manifests {
-        let parsed: serde_json::Value = serde_json::from_slice(&manifest).ok()?;
-        for part in std::iter::once(&parsed["config"]).chain(parsed["layers"].as_array()?) {
-            blobs.push(read(part["digest"].as_str()?)?);
+        let parsed = parse("a manifest", &manifest)?;
+        let layers = parsed["layers"].as_array().map(Vec::as_slice).unwrap_or_default();
+        for part in std::iter::once(&parsed["config"]).chain(layers) {
+            blobs.push(read(
+                "a manifest's part",
+                part["digest"].as_str().unwrap_or_default(),
+            )?);
         }
-        if listed.is_some() {
+        if doc["manifests"].is_array() {
             blobs.push(manifest);
         }
     }
-    Some((top, blobs))
+    Ok((top, blobs))
 }
 
 /// A running `shards` whose output lines arrive on a channel, killed when dropped.

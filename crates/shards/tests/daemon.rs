@@ -895,6 +895,67 @@ fn a_stop_gives_each_run_its_own_signal_and_time() {
     );
 }
 
+/// A stop that finds its daemon stopping already, at another stop's word, returns once that
+/// daemon has let go of its home, as the first does (D185): before, it took the RESTART it
+/// was answered, or the slot it found none of, for the daemon's exit, and returned at once,
+/// while the daemon still ended its run and held the home's lock.
+#[test]
+fn a_stop_while_another_stops_its_daemon_waits_for_its_home_let_go_of() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = home("daemon-stop-twice", &image);
+    // Its stop signal ignored, the run ends at its stop timeout's SIGKILL: the stop's span.
+    let mut ignoring = spawn_run(
+        &home,
+        &[
+            "--pull",
+            "never",
+            "--stop-signal",
+            "USR1",
+            "--stop-timeout",
+            "5",
+            &image,
+            "ignore",
+            "USR1",
+        ],
+    );
+    let mut line = String::new();
+    BufReader::new(ignoring.stdout.as_mut().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line, "ready\n");
+    let env = [("SHARDS_HOME", home.as_os_str())];
+    let log = home.join("daemon.log");
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT));
+        // The second asks once the first has its daemon stepping aside, as its log says.
+        eventually(&home, "the first stop taken", || {
+            std::fs::read_to_string(&log)
+                .is_ok_and(|said| said.contains("stepping aside: a client asked it to stop"))
+        });
+        let second = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+        assert_eq!(second.status, Some(0), "{}", second.stderr);
+        assert!(
+            home_is_free(&home),
+            "the second stop returned while its daemon held its home"
+        );
+        let first = first.join().unwrap();
+        assert_eq!(first.status, Some(0), "{}", first.stderr);
+        assert!(
+            home_is_free(&home),
+            "the first stop returned while its daemon held its home"
+        );
+    });
+    assert_eq!(
+        wait(&mut ignoring, &home),
+        Some(128 + 9),
+        "killed once its stop timeout was up: {}",
+        std::fs::read_to_string(&log).unwrap_or_default()
+    );
+}
+
 /// A daemon ending its runs is waited for as long as their stop timeouts make it: a run
 /// asked for meanwhile is served by the next daemon once it is gone.
 #[test]

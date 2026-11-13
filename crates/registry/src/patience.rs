@@ -17,11 +17,9 @@
 //!   second before any wait is measured, and doubled for each timeout in a row (§5.5)
 //!   until one is answered;
 //! - how long a trouble (a passing failure, RFC 9110 §15.6.3 to §15.6.5, or a download
-//!   that brings nothing) is ridden out: twice the longest this path has passed (a
-//!   doubling search past what is known, Baeza-Yates, Culberson and Rawlins, "Searching
-//!   in the plane", Inf. Comput. 106(2), 1993), and never less than the 100 s TCP itself
-//!   retransmits to an unanswering peer for before it gives up (RFC 1122 §4.2.3.5, R2),
-//!   which is all a path that has passed none is given.
+//!   that brings nothing) is ridden out: no longer than the longest this path has passed;
+//!   a path that has passed none rides it out while it lasts, as one does after a trouble
+//!   ran out, until one passes, by the same rule (D222's run-out clause).
 //!
 //! What a path showed is kept in the home, in the image store's `links/`, in the one
 //! record of the path that its transfers learn into too (D226, crate::links): by its host
@@ -38,8 +36,6 @@ use std::time::{Duration, SystemTime};
 
 /// The wait before any is measured, and a pace's least: RFC 6298 §2.1 and §2.4.
 pub(crate) const FIRST: Duration = Duration::from_secs(1);
-/// The least a trouble is ridden out: TCP's R2 (RFC 1122 §4.2.3.5).
-pub(crate) const R2: Duration = Duration::from_secs(100);
 
 /// A wait's estimator: RFC 6298 §2's SRTT and RTTVAR, in µs, how many waits it has seen,
 /// and when the last was seen, in µs since the Unix epoch (0 where never, or a record of
@@ -148,11 +144,6 @@ pub(crate) struct Shown {
 }
 
 impl Shown {
-    /// How long a trouble of this path's is ridden out.
-    pub(crate) fn budget(&self) -> Duration {
-        Duration::from_micros(self.trouble_us).saturating_mul(2).max(R2)
-    }
-
     /// What a record keeps of `self`, as it holds it now (which other clients may have
     /// merged into since it was read), and `own`, a client's, which started from `base`,
     /// what it read: each slowest the slower, both seen; each pace the newer sample's
@@ -244,6 +235,7 @@ struct Path {
     handshake_timeouts: u32,
     answer: Out,
     silence: Out,
+    trouble: Out,
     changed: bool,
 }
 
@@ -510,19 +502,28 @@ impl Paths {
         });
     }
 
-    /// How long a trouble is ridden out.
-    pub(crate) fn budget(&self, key: &str) -> Duration {
-        self.with(key, |p| p.shown.budget())
+    /// How long a trouble of `key`'s is ridden out: no longer than the longest it has
+    /// passed; none where it has passed none, or where its last ran out and none has
+    /// passed since, whose trouble is ridden out while it lasts (`Bounded`).
+    pub(crate) fn budget(&self, key: &str) -> Option<Duration> {
+        self.with(key, |p| bounded(Some(p.shown.trouble_us), p.trouble).bound())
     }
 
-    /// A trouble that lasted `lasted` passed.
+    /// A trouble that lasted `lasted` passed: the longest where it is longer, a run-out over.
     pub(crate) fn passed(&self, key: &str, lasted: Duration) {
         let us = micros(lasted);
         self.with(key, |p| {
             p.shown.trouble_us = p.shown.trouble_us.max(us);
             p.shown.troubles = p.shown.troubles.saturating_add(1);
+            p.trouble = Out::No;
             p.changed = true;
         });
+    }
+
+    /// A trouble of `key`'s lasted the longest it had passed and was given up on. It learns
+    /// nothing: until one passes, its troubles are ridden out while they last.
+    pub(crate) fn trouble_ran_out(&self, key: &str) {
+        self.with(key, |p| p.trouble = Out::Yes);
     }
 }
 
@@ -631,19 +632,24 @@ mod tests {
         );
     }
 
-    /// A path that has passed no trouble rides one out for TCP's R2, one that has passed
-    /// longer ones for twice the longest; its connects and handshakes double while they
-    /// time out, and come back to RFC 6298's as one is answered, each its own; what was
-    /// kept starts it, unless it has shown something since.
+    /// A path that has passed no trouble rides one out while it lasts, one that has passed
+    /// some for the longest, and one whose trouble ran out while it lasts again until one
+    /// passes; its connects and handshakes double while they time out, and come back to
+    /// RFC 6298's as one is answered, each its own; what was kept starts it, unless it has
+    /// shown something since.
     #[test]
     fn a_path_learns_its_waits() {
         let paths = Paths::default();
-        assert_eq!(paths.budget("r:443"), R2);
+        assert_eq!(paths.budget("r:443"), None, "the cold start");
         paths.passed("r:443", Duration::from_secs(3));
-        assert_eq!(paths.budget("r:443"), R2);
+        assert_eq!(paths.budget("r:443"), Some(Duration::from_secs(3)));
         paths.passed("r:443", Duration::from_secs(80));
-        assert_eq!(paths.budget("r:443"), Duration::from_secs(160));
+        assert_eq!(paths.budget("r:443"), Some(Duration::from_secs(80)));
         assert_eq!(paths.shown("r:443").troubles, 2);
+        paths.trouble_ran_out("r:443");
+        assert_eq!(paths.budget("r:443"), None, "ran out: while it lasts");
+        paths.passed("r:443", Duration::from_secs(90));
+        assert_eq!(paths.budget("r:443"), Some(Duration::from_secs(90)));
         for wait in [Wait::Connect, Wait::Handshake] {
             assert_eq!(paths.timeout("s:443", wait), FIRST, "{wait:?}");
             paths.timed_out("s:443", wait);
@@ -664,11 +670,11 @@ mod tests {
             ..Shown::default()
         };
         paths.learn("t:443", kept.clone());
-        assert_eq!(paths.budget("t:443"), Duration::from_secs(400));
+        assert_eq!(paths.budget("t:443"), Some(Duration::from_secs(200)));
         assert_eq!(paths.answer("t:443"), Bounded::Slowest(Duration::from_secs(7)));
         paths.answered("s:443", Duration::from_secs(2));
         paths.learn("s:443", kept);
-        assert_eq!(paths.budget("s:443"), R2, "what it showed since is kept");
+        assert_eq!(paths.budget("s:443"), None, "what it showed since is kept");
         assert_eq!(
             paths.answer("s:443"),
             Bounded::Slowest(Duration::from_secs(7)),
@@ -702,7 +708,7 @@ mod tests {
         next.keep_in(&dir);
         assert_eq!(
             next.budget("r:443"),
-            Duration::from_secs(300),
+            Some(Duration::from_secs(150)),
             "asked before it knew where"
         );
         assert_eq!(
@@ -803,11 +809,11 @@ mod tests {
         .unwrap();
         let paths = Paths::default();
         paths.keep_in(&dir);
-        assert_eq!(paths.budget("r:443"), R2, "the route not known yet");
+        assert_eq!(paths.budget("r:443"), None, "the route not known yet");
         paths.located("r:443", wired);
         assert_eq!(
             paths.budget("r:443"),
-            Duration::from_secs(400),
+            Some(Duration::from_secs(200)),
             "its route's record"
         );
         paths.passed("r:443", Duration::from_secs(300));

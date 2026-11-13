@@ -54,6 +54,12 @@ pub fn exiting(home: &Path) -> bool {
     named_lives(&home.join(STOPPING))
 }
 
+/// A file a daemon that has closed makes anew and holds locked (flock(2), LockFileEx) until
+/// it has let go of its home's lock: `stop daemon` waits for it by a shared lock, which none
+/// but a closed daemon holds against it, so that no next daemon's lock is waited for. Apart
+/// from [`STOPPING`], whose readers Windows' mandatory locks would refuse.
+pub const STOPPING_LOCK: &str = "daemon.stopping.lock";
+
 /// What the daemon that holds a home's lock writes in it as it takes it, before it offers
 /// any slot: its process, as [`this_process`] names it.
 pub const PID: &str = "daemon.pid";
@@ -1966,16 +1972,18 @@ impl Run {
 }
 
 /// What a registry is reached by (shards_registry's credentials, certs and proxy): the
-/// Docker CLI's config, the daemon.json shards is given in place of Docker's daemons' (D194),
+/// Docker CLI's config, the daemon.json and certs.d shards is given in place of Docker's
+/// daemons' (D194, D23),
 /// credential helpers on `PATH`, the homes of `certs.d` and of Docker's daemon.json files,
 /// and the proxies Go's net/http takes from the environment; and the local engine a made microVM
 /// is published to, as docker/cli v29.8.1 finds it (`DOCKER_HOST`, `DOCKER_CONTEXT`), or none
 /// (`SHARDS_LOCAL_STORE=none`).
-pub const REGISTRY_ENV: [&str; 19] = [
+pub const REGISTRY_ENV: [&str; 20] = [
     "SHARDS_AUTH_CONFIG",
     "DOCKER_AUTH_CONFIG",
     "DOCKER_CONFIG",
     "SHARDS_DAEMON_JSON",
+    "SHARDS_CERTS_D",
     "HOME",
     "USERPROFILE",
     "PATH",

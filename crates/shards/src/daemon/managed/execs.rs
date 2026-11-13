@@ -469,6 +469,10 @@ fn serve(start: Start, admissions: exec::Admissions, charge: &Charge, launch: &L
         exec::Kind::Member => {
             return refuse(Unstarted::Failed, "a member's own lane, which no exec serves");
         }
+        // A log lane is read from the run's logs, which no exec of its microVM's does.
+        exec::Kind::Log(_) => {
+            return refuse(Unstarted::Failed, "a log lane, which no exec serves");
+        }
     };
     let argv: Vec<String> = spec
         .argv

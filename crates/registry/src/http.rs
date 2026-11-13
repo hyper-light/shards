@@ -485,9 +485,15 @@ impl Client {
     }
 
     /// How long a trouble of `url`'s server is ridden out before it is said as the
-    /// server's failure (registry.rs `Trouble`): as long as its path's troubles say.
-    pub(crate) fn budget(&self, url: &Url) -> Duration {
-        self.moment.unwrap_or_else(|| self.paths.budget(&path_of(url)))
+    /// server's failure (registry.rs `Trouble`): as long as its path's troubles say, none
+    /// where they bound nothing.
+    pub(crate) fn budget(&self, url: &Url) -> Option<Duration> {
+        self.moment.or_else(|| self.paths.budget(&path_of(url)))
+    }
+
+    /// A trouble of `url`'s server lasted its path's budget and was given up on.
+    pub(crate) fn trouble_ran_out(&self, url: &Url) {
+        self.paths.trouble_ran_out(&path_of(url));
     }
 
     /// A trouble of `url`'s server that lasted `lasted` passed.

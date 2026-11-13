@@ -445,3 +445,76 @@ clean on every file changed.
   goal's next).
 - Hex and kiln: shards-remote's `control::Fault` gains `Unsteered`; a re-vendored caller that
   matches `Fault` exhaustively must add the arm.
+
+## Goal 58's step 7: log lanes
+
+Goal 58's plan, item 7 (design L1, ROOT's): a run's logs read over the agent-control link, every
+member's output kept in its log owned or not, within the run's one log cap. D238's "Log lanes"
+records what was built; D240 what is kept. Built in slices, each landed as it went green.
+
+### Identity
+
+| | |
+|---|---|
+| Policy | origin/main `744dd57cc`: `docs/development-rules.md` `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`; role implementer, a child of goal 58's agent (`a5cbff00b30d2e4f0`), POLICY_READ sent to it |
+| Source | branch `p/s11-logs-v1`, based on origin/main `744dd57cc` |
+| Owned | `crates/remote/src/{frame.rs,control.rs,control/exec.rs,control/drive.rs}`'s log lane; `crates/shards/src/daemon/managed/` (the log host and the keeper of members' logs); `daemon/logs.rs`, `log_writer.rs`, `spec.rs`'s log constants, `segments.rs` (the run's one cap), `daemon/files.rs` (its one call), `daemon/packed.rs` (members' segments), `daemon/commands.rs` (`logs`'s notice); D238's and D240's text |
+| Numbers | frame tags `Log` 9, `Rotated` 45; `Unlogged` 23 to 25 (reservations.md); no D, no image channel version, no run or IPC kind |
+
+### Decision (R02, R03, R05, R12)
+
+- *Asked as an exec is* (L1): a log lane is `exec::Kind::Log`, so its records ride the exec
+  machinery already built and reviewed: one stream of step 5's records (offset and bytes, one in
+  flight under the controller's credit), its own lane opened at `Started`, its end told once its
+  records finished, its windows the run's exec admission. No second record protocol (R12).
+- *Byte-exact, not by lines*: the log's records as written, each at its own place (`LogPos`,
+  the store's `Pos`), so that a lane goes on from any byte. `logs`'s and the shipper's reader
+  holds a line until it ends and goes on from a line's start; a harness's prompt, written with
+  no newline, would wait there, and a lane resumed inside a line would lose its rest.
+- *Typed in-band events*: what was not kept (a gap, typed by why) and what was let go before the
+  lane read it (`Rotated`) are records, not words, so a controller matches them (R04).
+- *No constant chosen* (R03): tags and codes are the protocol's next; every size is a field's
+  own (the place's 24 bytes, a byte per flag); records and windows are the run's exec admission.
+
+### States and refusals (R01, R04, R06, R07, R13)
+
+The endpoint's lane is an exec lane's (`Asking`, `Pending`, `Running`, `Exited`, `Told`), with a
+`log` flag: only a log lane is told why it reads none (`Unlogged`); a host's `Unlogged` for any
+other lane is told as `Unstarted::Failed`. The controller's: an exec lane's with `log`, its
+records held to `LogRecord::check` (a record that does not read breaks its protocol), `Hangup` as
+its `Log` is let go before its end. No `unwrap`, `expect`, index or unchecked arithmetic in
+production code; clippy with the workspace's denied lints.
+
+### Light tests and results
+
+| Slice | Host | Commands | Result |
+|---|---|---|---|
+| 1, the lane and its controller | adalundhe-macbook-pro, macOS 26.5 arm64, rustc 1.98.1 | `cargo test -p shards-remote --lib control::`; `cargo clippy -p shards-remote -p shards --all-targets -- -D warnings` | 56 passed (5 new codec tests, the loopback log test); clean ([log](logs/log-lane-slice1-macos-arm64.log)) |
+
+Red before green, slice 1: the endpoint refusing the log of a member it serves no stream of
+(`scoped()` without its log exception): `left: Err(Refused(Scope))`, `right:
+Err(Unlogged(Unknown))` ([log](logs/log-lane-slice1-red-macos-arm64.log)).
+
+### R01–R16 (so far)
+
+| Rule | Evidence / gap |
+| --- | --- |
+| R01 | No panic path in production code (checked arithmetic, `get`, chunked splits, no indexing); clippy clean with the denied lints. |
+| R02 | D163's cursor (the store's `Pos`) for places; step 5's records reused; the line reader's resumption read in `daemon/logs.rs` (why a lane cannot use it). |
+| R03 | No chosen constant: the protocol's next numbers, fields' own sizes, the run's exec admission. |
+| R04 | Every refusal and event typed (`Unlogged`, `LogRecord`, `Gapped`); callers match variants. |
+| R05 | No new seam: the exec lane's; no cache. |
+| R06, R07, R13 | One `log` flag on each side's exec lane; comments carry sources and invariants. |
+| R08, R14 | No performance claim; owed to ROOT. |
+| R09, R10 | New behaviour, not a defect: its test's red (above). |
+| R11, R12 | One implementation for every target; tested on macOS arm64; the rest owed to CI on main. |
+| R15 | Implementer: light tests only, no real VM. |
+| R16 | Build output under `~/g121-tmp/s11-logs` on the runner, removed after landing. |
+
+### Owed
+
+- ROOT's real-VM run, once the daemon's log host lands (next slice): a run with
+  `--annotation shards.control=true`, its controller's `Execs::log` of the run's command and of a
+  member, unfollowed and followed, resumed from a cursor; on Linux KVM, macOS HVF and WHP.
+- Hex and kiln: shards-remote's `control::Fault` gains `Unlogged`, and `Granted` gains `Log`; a
+  re-vendored caller that matches either exhaustively must add the arm.
