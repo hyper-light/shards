@@ -24136,7 +24136,8 @@ control plane's transport, lanes, identity and AES-256-GCM-only crypto are D238 
   its destination (no private key leaves the host that made it), so the move revokes every
   lease bound to the old fingerprint, the destination's first use is leased anew to the new
   one, and an ask under the old fingerprint after the move is refused, typed (the lease side:
-  this plan's steps 4 and 5).
+  this plan's steps 4 and 5). On a run host that makes no such key, an orchestrator's
+  (`shards api-run`), the run's own channel names it ("Built: step 4", below).
 
 **Built in this slice (the contract).** `crates/api/src/image/wire.rs`: `CredentialGrant`,
 `Fill`, `decide`, `Request.credentials`, channel version 8 (appended, so an older reader
@@ -24191,10 +24192,109 @@ check refuses a grant toward no host as well.
   CA's SHA-256. The cost of the key at the network process's start, measured (unmeasured
   here). The CA reaching the granted members' trust is the next slice.
 
+**Built: step 4, values just in time.** A credential's value is leased by reference as a
+flow first needs it, through the run's host, and released as the run ends (kiln plan
+01a1d2b88be57304b972761e2a5c6781 step 4; research f7, f35, f72). Its record:
+docs/research/s33-veil-creds/STEP4.md.
+- *The path.* The network process asks its run host (`NET_LEASE`, kind 98: the ask's id and
+  the reference, `shards_net::lease`). `shards api-run` relays the ask to its orchestrator on
+  the run channel (version 14: `LEASE`, a `wire::LeaseAsk`), whose `Lessor` for the run
+  (`ImageSpec::lessor`) answers from its broker (`LEASED`: a `wire::Lease`, the value in a
+  `Secret` and how long the lease lives, or a typed `wire::LeaseRefusal`). The run host hands
+  the answer on (`NET_LEASE`), and the network process holds the value in memory while the
+  lease lives. A value never rides the spec, an image or the VM process; it crosses the run
+  host's memory only to be handed on.
+- *States (R04): asked, then held, then released; or asked, then refused.* In the network
+  process (`lease::Leases`): one lease of a credential at a time, joined while asked by every
+  flow that needs it (`Asked::Waiting`); its answer comes as an event naming those flows
+  (`Leases::resumed`), and its ask goes out on the loop's next pass (`asks`, sent by
+  `ask_run_host`), so neither a flow nor the loop waits on an ask. The value is held until the
+  lease's end (`Leases::lapse`, on the loop's timers), the end of the run host's control, or
+  the process's own end, and is wiped as it goes. In the run host (`api_run::Ledger`): each ask
+  by the id the run channel names it by; refused there, typed, what no grant names
+  (`Ungranted`), a second lease of a credential while one lives (`Live`), and anything after
+  the run's release (`Ended`). Every end of a run passes `end_run`, which releases the ledger
+  and says `RELEASED` before `ENDED`: the run's command's exit, `STOP`, the owner's channel
+  closing (both end the run `Stopped`), and its VM failing. On the orchestrator's side
+  (`image::session`): each ask is put to the run's `Lessor` on a thread of its own, and each
+  lease it gave is released once: as the host says `RELEASED`, as the channel ends where it
+  never says it, or at once where given after the run's release or with none of its life left
+  (answered `Ended` or `Lapsed`).
+- *Refusals, typed through.* The broker's `Denied` and `Unavailable` (in its words),
+  `KeyReplaced { asked, current }` (the fields of the daemon's `Refused::KeyReplaced`, D176 part
+  6), `Ended` and `Lapsed`; and the run host's own `Ungranted` and `Live`. The run host maps the
+  orchestrator's to the network process's, each cause kept; its asker matches the variant.
+- *A run with no grant asks nothing.* The network process has leases only once its grants come
+  (`NET_CREDENTIALS`), asks only what they name, and asks only on its spawner's control
+  (`Control::Daemon`, which alone may say `NET_LEASE`); the run host relays only for a run with
+  grants, and a spec with grants and no lessor is refused before anything starts
+  (`ImageRefusal::Spec`, "the run's lessor"). The daemon gives no network process grants, so
+  none of its runs asks.
+- *The run's identity on this host: its channel* (the implementer's decision, for ROOT to
+  confirm). D238's key is the daemon's: made as a run's managed scope begins
+  (daemon/managed.rs `bind_agent`), its SHA-256 the `vm` line of the run's managed metadata
+  (`vm_key`). An orchestrator's run under `shards api-run` has none: nothing in crates/api or
+  api_run.rs makes or names one, it has no managed scope and no agent-control endpoint, and its
+  orchestrator speaks to it over its stdio (D231). That channel is the run's alone: its
+  orchestrator started its host for it, which holds its three standard streams alone (D248),
+  and no other party speaks to it (f7). So an ask names its run by the channel it comes on, and
+  the `Lessor` is given for that one run, binding its leases to it toward its broker (step 5;
+  Hex, step 6). No key is made for it: a key whose possession nothing proves names a run no
+  better than its channel, and D238 makes one where a run's TLS ends, which on this host is
+  nowhere. Moves are the daemon's runs' (`shards move vm`); an api-run run moves nowhere. Where a
+  run host has a D238 key, an ask names its SHA-256 and the broker checks it ("the leases bound
+  to the old key are revoked at the move and reissued to the new, by the broker, which alone
+  says which key is current", the 7a entry): a move ends the run at its source, which releases
+  every lease there as any end does (built here for api-run; owed on the daemon, whose runs have
+  no grants yet); the destination's first use asks anew with nothing carried, as a value lives
+  only in a network process, a new process there, and never in the guest memory a move carries;
+  and an ask under the old key is refused typed, `KeyReplaced { asked, current }`, which this
+  step carries from the broker to the asker.
+- *Audit.* The run host says each ask, answer and the run's release on its diagnostics, by the
+  credential's reference and the lease's id (`api_run::Audit`), never a value. No `Debug` of a
+  type holding a value prints it: `Secret` its length, `lease::Asked` and `lease::Leases` neither.
+- *Wiping.* `Secret` zeroizes its bytes as it drops; the network process holds a value in
+  `Zeroizing`; the copies of a frame that carries one are wiped once sent or taken (the
+  orchestrator's `LEASED` payload, the run host's read of it and the `NET_LEASE` it sends, the
+  network process's received message), each value appended last and whole, so that no buffer
+  let go of as one grows holds a part of it. Not wiped: kernel pipe and socket buffers, std's
+  `Stdin` buffer in the run host (later frames overwrite it), and the memory of a process
+  killed before its drop.
+- *Literals.* Kind 98, the run channel's kinds 13 (`LEASED`), 30 (`LEASE`) and 31 (`RELEASED`)
+  and its version 14 are sequence numbers. A lease's life is the broker's: the answer carries it
+  in nanoseconds (a u64, as `ready_by` is) past the answer's arrival, which each side makes an
+  instant on its own monotonic clock as it reads it. The run host reads it first, so its lease
+  of a credential ends no later than the network process's, whose next ask then finds the run
+  host's ended. A life past what a clock can name lives until the run ends; a life of none is
+  no lease, refused. Ask ids are u32s as the channel's other asks', a new one never a live
+  lease's. No deadline is set on an ask: each side waits on its answer or its channel's end.
+  The run host's ledger is bounded by the run's grants, one lease of each at a time, a bound
+  derived from the request rather than chosen.
+- *Tests (macOS arm64, adas-mac-studio.local).* STEP4.md has the commands, counts and each
+  guard's red: shards-net 12, shards-api's `image::` 38, shards' `api_run::` 21 and shards-ipc's
+  kind numbers pass; the four crates' clippy is clean; each of 16 guards removed fails its
+  test, and a defect the tests found first is fixed. `shards_net::lease`: no value before first
+  use, one ask for every waiting flow, held then released at its end and asked anew, each
+  refusal to its flows, the run's end releasing all, the codec. `shards_net`: the run host's control alone answers a lease; an ask
+  sent on it and its answer taken; a stray answer breaking the control. `image::wire`: the
+  messages round-trip and refuse unknown tags, a cut, a padding and a life of none; version 13
+  refused; no value in `Debug`. `image::session`: a simulated orchestrator's leases given as
+  asked and each released once at the run's exit, at its stop and at its channel's close; a
+  lease given after the run's release released at once; an ungranted ask, one of a run with no
+  lessor and one by an id in use breaking the channel. `image`: grants without a lessor refused.
+  `api_run`: the ledger's states; the relay end to end over a socket and pipes, the network
+  process's real lease client with a simulated orchestrator, at three kinds of end; an answer
+  to no ask breaking the channel; the audit's lines.
+- *Owed (ROOT).* A real run with a credential grant through `shards api-run` (KVM x86_64, HVF,
+  WHP): the lease asked on first use and released at each end, with the run host's diagnostics
+  saying each and no value. That needs the injector (step 3), the first caller of
+  `Leases::ask`; until it lands, nothing in a run asks. Hex's vendored shards-api takes
+  `ImageSpec::lessor` (step 6). The daemon's runs have no grants, so their lease relay and a
+  move's release there are owed with them.
+
 **Owed (later slices of step 33, this plan's steps 2–10).** The per-VM CA in the network
 process and the granted members' trust (step 2); the injector that terminates TLS and fills
-HTTP/1.1 then HTTP/2 headers (steps 3, 7); the grants through the run host and the just-in-
-time fetch and release (step 4); kiln's broker over kiln-seams' `Secrets` with per-run
+HTTP/1.1 then HTTP/2 headers (steps 3, 7); kiln's broker over kiln-seams' `Secrets` with per-run
 leases, single-flight refresh and sign-in capture outside the VM (step 5); Hex wiring the
 grants (step 6); the Claude Code and Codex sign-in/refresh profiles (step 8); the survey of
 each harness's trust and token checks and the tmpfs-fallback list (step 9); and ROOT's
