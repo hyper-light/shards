@@ -19,6 +19,10 @@ triomphe = { version = "=0.1.17", default-features = false, features = ["std", "
 unsize = "=1.1.0"
 # A credential's bytes wiped as they drop (D242), as shards wipes its own (google.rs).
 zeroize = "1"
+# A run's upstream roots (D242): PEM read as rustls reads it (RFC 7468), and each certificate
+# parsed as webpki parses a trust anchor, as the run's injector will.
+rustls-pki-types = { version = "1.15.1", features = ["std"] }
+rustls-webpki = { version = "0.103.16", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

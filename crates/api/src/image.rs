@@ -231,6 +231,13 @@ pub struct ImageSpec {
     /// [`lessor`](Self::lessor), needed by a run with any. One sign-in of a CLI a run. Empty
     /// for a run with none (default deny).
     pub sign_ins: Vec<SignInGrant>,
+    /// The roots the run's injector trusts beside the host's own (D242), for its injected flows
+    /// alone (its credential grants' and sign-ins' hosts): a corporate TLS proxy's CA, a test's.
+    /// Never taken from any environment: the run's network process reads no `SSL_CERT_FILE` or
+    /// `SSL_CERT_DIR`. Each refused, by field, where it is no certificate, and past what the
+    /// network process's wire carries. Empty: the host's roots alone. A run with no grant and
+    /// no sign-in injects nothing, and its roots go nowhere.
+    pub upstream_roots: Vec<UpstreamRoot>,
     pub shares: Vec<ImageShare>,
     /// The nesting grant for the run's own command (D234): the run's consent, as
     /// `--security-opt nesting=true` gives it to `run vm`. Given only where the image's
@@ -260,6 +267,16 @@ pub struct ImageSpec {
     /// nesting grant its command reads them in `/run/shards/gpus` (D234's `gpus=`). None: no
     /// GPU.
     pub gpu_devices: Vec<crate::PhysicalGpu>,
+}
+
+/// A root a run's injector trusts beside the host's own ([`ImageSpec::upstream_roots`], D242).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpstreamRoot {
+    /// One X.509 certificate, DER (RFC 5280).
+    Der(Vec<u8>),
+    /// One or more X.509 certificates, PEM (RFC 7468 §5): a bundle's, any text between its
+    /// sections, and no section of anything else (a key).
+    Pem(String),
 }
 
 /// How a member ended.
@@ -717,6 +734,48 @@ fn sign_ins(
     Ok(sign_ins)
 }
 
+/// The run's upstream roots (D242) as the run host carries them: each certificate's DER, in
+/// order, a PEM bundle's each, refused by field where an entry holds bytes that are no
+/// certificate (as webpki parses a trust anchor, where the run's injector would refuse it), a
+/// PEM of none or of anything else, or one past the network process's wire.
+fn upstream_roots(roots: &[UpstreamRoot]) -> Result<Vec<Vec<u8>>, ImageRefusal> {
+    use rustls_pki_types::pem::SectionKind;
+    let refuse = |why: String| ImageRefusal::Spec {
+        what: "an upstream root",
+        why,
+    };
+    let mut ders = Vec::new();
+    for (i, root) in roots.iter().enumerate() {
+        match root {
+            UpstreamRoot::Der(der) => ders.push(der.clone()),
+            UpstreamRoot::Pem(pem) => {
+                let mut read = pem.as_bytes();
+                let before = ders.len();
+                while let Some((kind, der)) = rustls_pki_types::pem::from_buf(&mut read)
+                    .map_err(|e| refuse(format!("the PEM at {i}: {e}")))?
+                {
+                    if kind != SectionKind::Certificate {
+                        return Err(refuse(format!(
+                            "the PEM at {i} holds a {kind:?} section, where a root is a certificate alone"
+                        )));
+                    }
+                    ders.push(der);
+                }
+                if ders.len() == before {
+                    return Err(refuse(format!("the PEM at {i} holds no certificate")));
+                }
+            }
+        }
+    }
+    shards_dns::credential::check_roots(&ders).map_err(|refused| refuse(refused.to_string()))?;
+    for (i, der) in ders.iter().enumerate() {
+        let cert = rustls_pki_types::CertificateDer::from(der.as_slice());
+        webpki::anchor_from_trusted_cert(&cert)
+            .map_err(|e| refuse(format!("the certificate at {i}: {e}")))?;
+    }
+    Ok(ders)
+}
+
 /// `spec` as the run host reads it, refused here where it could never be run: a member's
 /// terminal (owed, G24), a share's path that is no UTF-8 or is relative, a variable's key
 /// that holds `=` or a NUL, an argument that holds a NUL, or a key or file the guest would
@@ -897,6 +956,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
         });
     }
     let sign_ins = sign_ins(spec, &credentials)?;
+    let upstream_roots = upstream_roots(&spec.upstream_roots)?;
     // The run's agent-control endpoint (D252): its socket grant's directory absolute and plain,
     // as a member's working directory is, refused here, by the run host and by init; its
     // admission one lane and one byte at least (R03: the caller's numbers), and the grant a run's
@@ -946,6 +1006,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
         control: spec.control.clone(),
         gpu_devices: spec.gpu_devices.clone(),
         sign_ins,
+        upstream_roots,
     };
     // Past the channel's bound it would never be read; the guest's bound is the same one.
     request.encode().map_err(|e| ImageRefusal::Spec {
@@ -1246,7 +1307,11 @@ mod tests {
             UpstreamRoot::Der(Vec::new()),
             UpstreamRoot::Pem("no certificate here".into()),
             UpstreamRoot::Pem(format!("{}{unparsed}", a.pem())),
-            UpstreamRoot::Pem(format!("{}{}", a.pem(), rcgen::KeyPair::generate().unwrap().serialize_pem())),
+            UpstreamRoot::Pem(format!(
+                "{}{}",
+                a.pem(),
+                rcgen::KeyPair::generate().unwrap().serialize_pem()
+            )),
         ] {
             refused(vec![bad]);
         }

@@ -71,16 +71,22 @@ const H2: &[u8] = b"h2";
 /// The host's side of an injected flow's TLS (D242): verified as the registry's client
 /// verifies (D19, f20), offering, flow by flow, what the guest offered of the protocols the
 /// injector speaks (HTTP/1.1 where it offered none), and resuming no session, as a session kept is
-/// a cache nothing measured (R05). Made as the network process starts, before it confines
-/// itself, as on Linux the verifier reads the system's roots then (shards-verify).
+/// a cache nothing measured (R05). Made as the run's grants come, of the host's roots its network
+/// process read as it started, before it confined itself ([`crate::Prepared`]), and the run's
+/// own: never of a root its environment names (shards-verify's `Platform`).
 #[derive(Debug, Clone)]
 pub struct Upstream(Arc<ClientConfig>);
 
 impl Upstream {
-    /// Trusting the host's roots, and `extra_roots` (a test's).
-    pub fn new(extra_roots: Vec<CertificateDer<'static>>) -> Result<Upstream, String> {
+    /// Trusting `platform`'s roots, and `extra_roots`: the run's upstream roots, which its
+    /// orchestrator names (a corporate TLS proxy's CA, a test's), refused where one is no
+    /// certificate.
+    pub fn new(
+        platform: &shards_verify::Platform,
+        extra_roots: Vec<CertificateDer<'static>>,
+    ) -> Result<Upstream, String> {
         let provider = PROVIDER.clone();
-        let verifier = shards_verify::verifier(extra_roots, provider.clone())
+        let verifier = shards_verify::verifier_of(platform, extra_roots, provider.clone())
             .map_err(|e| format!("the injector's verifier: {e}"))?;
         let mut config = ClientConfig::builder_with_provider(provider)
             .with_protocol_versions(&[&rustls::version::TLS13])
@@ -4027,7 +4033,11 @@ pub(crate) mod tests {
 
     /// `upstream`'s handshake, in memory, with a host serving `server` as `name`: what the
     /// injector's host side makes of that host's certificate.
-    pub(crate) fn handshake(upstream: &Upstream, server: Arc<ServerConfig>, name: &str) -> Result<(), rustls::Error> {
+    pub(crate) fn handshake(
+        upstream: &Upstream,
+        server: Arc<ServerConfig>,
+        name: &str,
+    ) -> Result<(), rustls::Error> {
         let name = ServerName::try_from(name.to_string()).unwrap();
         let mut client = ClientConnection::new(upstream.0.clone(), name)?;
         let mut host = ServerConnection::new(server)?;
@@ -4068,7 +4078,10 @@ pub(crate) mod tests {
     }
 
     /// A leaf for `names` that `root` signs, and its key (PKCS #8).
-    pub(crate) fn leaf(root: &CertifiedIssuer<'static, KeyPair>, names: &[&str]) -> (CertificateDer<'static>, Vec<u8>) {
+    pub(crate) fn leaf(
+        root: &CertifiedIssuer<'static, KeyPair>,
+        names: &[&str],
+    ) -> (CertificateDer<'static>, Vec<u8>) {
         let mut p = params(names);
         p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         p.key_usages = vec![KeyUsagePurpose::DigitalSignature];
@@ -4234,7 +4247,7 @@ pub(crate) mod tests {
             ],
             ca: ca::Ca::new(ca::Key::generate().unwrap(), &[GRANTED, OTHER]).unwrap(),
             leases: lease::Leases::new(vec![CLAUDE.into(), ELSEWHERE.into()]),
-            upstream: Upstream::new(vec![root.der().clone()]).unwrap(),
+            upstream: Upstream::new(&shards_verify::Platform::read(), vec![root.der().clone()]).unwrap(),
             sign_ins: signin::SignIns::new(Vec::new()),
         }
     }
@@ -5147,7 +5160,7 @@ pub(crate) mod tests {
             leases: lease::Leases::new(grants.iter().map(|g| g.reference.clone()).collect()),
             grants,
             ca: ca::Ca::new(ca::Key::generate().unwrap(), &[API_HOST, TOKEN_HOST]).unwrap(),
-            upstream: Upstream::new(vec![root.der().clone()]).unwrap(),
+            upstream: Upstream::new(&shards_verify::Platform::read(), vec![root.der().clone()]).unwrap(),
             sign_ins: signin::SignIns::new(vec![signin::SignInGrant {
                 sign_in: SIGN_IN.into(),
                 cli: Cli::ClaudeCode,

@@ -62,8 +62,10 @@ pub use shards_abi::run::nesting::Ready;
 /// [`to_client::REFRESH`] and [`to_client::REVOKE`], answered [`to_host::CAPTURED`] and
 /// [`to_host::REFRESHED`]), so that a side that knows no sign-in refuses the run by its version; 25, each member's MCP
 /// bridge ([`MemberStage::mcp`], D254), so that a side that makes none never starts a harness
-/// whose MCP config names one that is not there.
-pub const VERSION: u8 = 25;
+/// whose MCP config names one that is not there; 26, the run's upstream roots
+/// ([`Request::upstream_roots`], D242), so that a side that knows none never runs an injector
+/// that trusts fewer roots than its orchestrator named.
+pub const VERSION: u8 = 26;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -519,6 +521,9 @@ pub struct Request {
     /// tokens kept outside and its CLI given placeholders. Empty for a run with none. Appended
     /// in version 24.
     pub sign_ins: Vec<SignInGrant>,
+    /// The roots the run's injector trusts beside the host's own, each a certificate's DER
+    /// (D242), for its injected flows alone; empty for the host's alone. Appended in version 26.
+    pub upstream_roots: Vec<Vec<u8>>,
 }
 
 /// What a run's agent-control endpoint takes and serves (D252): the one key it takes, its
@@ -1572,6 +1577,11 @@ impl Request {
         for m in &self.members {
             w.u8(u8::from(m.mcp));
         }
+        // The run's upstream roots, appended in version 26 (D242): their count, then each DER.
+        w.count(self.upstream_roots.len())?;
+        for root in &self.upstream_roots {
+            w.bytes(root)?;
+        }
         w.done()
     }
 
@@ -1783,6 +1793,13 @@ impl Request {
         for m in &mut members {
             m.mcp = r.flag()?;
         }
+        // The run's upstream roots, appended in version 26 (D242): each at least its length's
+        // four bytes.
+        let n = r.count(4)?;
+        let mut upstream_roots = Vec::with_capacity(n);
+        for _ in 0..n {
+            upstream_roots.push(r.bytes()?.to_vec());
+        }
         r.end()?;
         Ok(Request {
             image,
@@ -1799,6 +1816,7 @@ impl Request {
             control,
             gpu_devices,
             sign_ins,
+            upstream_roots,
         })
     }
 }
@@ -3203,6 +3221,7 @@ mod tests {
             control: None,
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
+            upstream_roots: Vec::new(),
         }
     }
 
@@ -4191,6 +4210,7 @@ mod tests {
             }),
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
+            upstream_roots: Vec::new(),
         };
         let exemplar = full.exemplar();
         assert!(exemplar.members.is_empty() && exemplar.ready_by.is_none() && exemplar.control.is_none());
@@ -4367,6 +4387,7 @@ mod tests {
             control,
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
+            upstream_roots: Vec::new(),
         }
     }
 
@@ -4458,6 +4479,21 @@ mod tests {
             ..request()
         };
         assert_eq!(Request::decode(&twice.encode().unwrap()), Err(WireError::Gpu));
+    }
+
+    /// A run's upstream roots (version 26, D242). Expect: each DER read back, in order; a request
+    /// cut anywhere in them refused.
+    #[test]
+    fn a_runs_upstream_roots_cross_the_channel() {
+        let rooted = Request {
+            upstream_roots: vec![vec![0x30, 0x01, 0x02], vec![0x30; 300]],
+            ..request()
+        };
+        let bytes = rooted.encode().unwrap();
+        assert_eq!(Request::decode(&bytes).unwrap(), rooted);
+        for cut in 1..=bytes.len() - request().encode().unwrap().len() {
+            assert!(Request::decode(&bytes[..bytes.len() - cut]).is_err(), "cut {cut}");
+        }
     }
 
     /// A run's sign-ins and their words (version 24, D242 step 8). Do: carry a sign-in captured

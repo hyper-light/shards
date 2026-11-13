@@ -165,6 +165,37 @@ pub fn encode_grants(grants: &[Grant]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// `NET_CREDENTIALS`' payload: the run's upstream roots (D242), which its injector trusts beside
+/// the host's, as their count (two bytes, network order) and each one's DER behind its length
+/// (two bytes), then its grants as [`encode_grants`] writes them. None where a root passes 65535
+/// bytes, or their count does: shards-dns's `WIRE_MOST`, which each side that takes the roots
+/// checks first (`credential::check_roots`).
+pub fn encode_credentials(roots: &[Vec<u8>], grants: &[Grant]) -> Option<Vec<u8>> {
+    let mut out = u16::try_from(roots.len()).ok()?.to_be_bytes().to_vec();
+    for root in roots {
+        out.extend_from_slice(&u16::try_from(root.len()).ok()?.to_be_bytes());
+        out.extend_from_slice(root);
+    }
+    out.extend(encode_grants(grants)?);
+    Some(out)
+}
+
+/// What [`encode_credentials`] wrote: the run's upstream roots and its grants; None for a
+/// malformed payload, or grants [`decode_grants`] refuses.
+pub fn decode_credentials(
+    bytes: &[u8],
+) -> Option<(Vec<rustls::pki_types::CertificateDer<'static>>, Vec<Grant>)> {
+    let (count, mut rest) = bytes.split_first_chunk::<2>()?;
+    let mut roots = Vec::new();
+    for _ in 0..u16::from_be_bytes(*count) {
+        let (len, after) = rest.split_first_chunk::<2>()?;
+        let (der, after) = after.split_at_checked(usize::from(u16::from_be_bytes(*len)))?;
+        roots.push(rustls::pki_types::CertificateDer::from(der.to_vec()));
+        rest = after;
+    }
+    Some((roots, decode_grants(rest)?))
+}
+
 /// What [`encode_grants`] wrote; None for a malformed payload, or one of a grant toward no
 /// host, which could never be filled.
 pub fn decode_grants(mut bytes: &[u8]) -> Option<Vec<Grant>> {
@@ -212,20 +243,22 @@ pub struct Credentials {
 }
 
 /// What a run with credential grants makes as its network process starts, before it confines
-/// itself (D242): its CA's key ([`ca::Key`]) and its injector's TLS to a granted host, whose
-/// verifier reads the host's roots then on Linux ([`inject::Upstream`]). A run with none makes
+/// itself (D242): its CA's key ([`ca::Key`]) and the host's roots, which on Linux are read then
+/// from the system's directories and never from the process's environment
+/// (`shards_verify::Platform`); its injector's TLS to a granted host is made of them and the
+/// run's upstream roots as its grants come ([`inject::Upstream`]). A run with none makes
 /// neither and pays nothing.
 #[derive(Debug)]
 pub struct Prepared {
     pub key: ca::Key,
-    pub upstream: inject::Upstream,
+    pub platform: shards_verify::Platform,
 }
 
 impl Prepared {
     pub fn new() -> Result<Prepared, String> {
         Ok(Prepared {
             key: ca::Key::generate()?,
-            upstream: inject::Upstream::new(Vec::new())?,
+            platform: shards_verify::Platform::read(),
         })
     }
 }
@@ -1443,7 +1476,7 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             // where it has any): each host one its egress grants name (D236), checked again here
             // as its run host checked it (D109), as a grant toward a host the run cannot reach
             // could never be filled; each placeholder a token, and one credential's alone.
-            let Some(grants) = decode_grants(&m.payload) else {
+            let Some((roots, grants)) = decode_credentials(&m.payload) else {
                 return Err(malformed());
             };
             let sign_ins = stack.sign_ins.take().unwrap_or_default();
@@ -1459,11 +1492,13 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             {
                 return Err(malformed());
             }
-            // Its key and its injector's TLS, made as the process started, where its spawner
-            // said they would come.
+            // Its key and the host's roots, made and read as the process started, where its
+            // spawner said they would come; its injector's TLS of those and the run's upstream
+            // roots, each a certificate as its run host checked (D109).
             let Some(prepared) = stack.prepared.take() else {
                 return Err(malformed());
             };
+            let upstream = inject::Upstream::new(&prepared.platform, roots).map_err(|_| malformed())?;
             // Its CA names each host a value may be filled toward, and each sign-in's token host,
             // whose responses its injector reads.
             let mut hosts: Vec<&str> = grants
@@ -1491,7 +1526,7 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
                 grants,
                 ca,
                 leases,
-                upstream: prepared.upstream,
+                upstream,
                 sign_ins: signin::SignIns::new(sign_ins),
             });
             reply(sock, shards_ipc::kind::NET_CREDENTIALS, &der)
@@ -3338,7 +3373,7 @@ mod tests {
             grants: Vec::new(),
             ca: ca::Ca::new(ca::Key::generate().unwrap(), &["platform.claude.com"]).unwrap(),
             leases: lease::Leases::new(Vec::new()),
-            upstream: inject::Upstream::new(Vec::new()).unwrap(),
+            upstream: inject::Upstream::new(&shards_verify::Platform::read(), Vec::new()).unwrap(),
             sign_ins: signin::SignIns::new(vec![signin::SignInGrant {
                 sign_in: "claude/acct-1".into(),
                 cli: signin::Cli::ClaudeCode,
@@ -3967,7 +4002,7 @@ mod tests {
             }],
             ca: ca::Ca::new(ca::Key::generate().unwrap(), &["api.anthropic.com"]).unwrap(),
             leases: lease::Leases::new(vec![CLAUDE.into(), "openai/chatgpt".into()]),
-            upstream: inject::Upstream::new(Vec::new()).unwrap(),
+            upstream: inject::Upstream::new(&shards_verify::Platform::read(), Vec::new()).unwrap(),
             sign_ins: signin::SignIns::new(Vec::new()),
         });
         let now = Instant::now();
@@ -4035,7 +4070,7 @@ mod tests {
         };
         let message = |grants: &[Grant]| shards_ipc::Message {
             kind: shards_ipc::kind::NET_CREDENTIALS,
-            payload: encode_grants(grants).unwrap(),
+            payload: encode_credentials(&[], grants).unwrap(),
             fds: Vec::new(),
         };
         for refused in [
