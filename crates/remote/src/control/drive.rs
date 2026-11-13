@@ -1494,6 +1494,12 @@ impl Lane {
     /// Adds `frame` to what it has to send: within what was reserved for it, or, for an exec's
     /// steering, which its controller sends as it likes, in room made for it.
     fn queue(&mut self, frame: &[u8]) -> bool {
+        // A socket lane's bytes that have gone make room for its writer, whose room counts them
+        // as they go (D251): what is left moves to the front, within the window it was made for.
+        if matches!(self.carries, Carries::Socket(_)) && self.sent > 0 {
+            self.out.drain(..self.sent.min(self.out.len()));
+            self.sent = 0;
+        }
         let fits = self
             .out
             .len()

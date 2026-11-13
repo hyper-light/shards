@@ -664,6 +664,12 @@ impl super::Lanes {
             match said {
                 Said::Wrote(n) => pump.writer_room = pump.writer_room.saturating_add(n),
                 Said::Read(bytes) => {
+                    // What has gone makes room, so that the lane holds at most its answer and
+                    // the window unsent.
+                    if pump.sent > 0 {
+                        pump.out.drain(..pump.sent.min(pump.out.len()));
+                        pump.sent = 0;
+                    }
                     if pump.out.try_reserve(bytes.len()).is_err() {
                         failed = true;
                         break;
@@ -1017,7 +1023,9 @@ mod tests {
         let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
         let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(4));
         let _host = host(dir.path().to_owned(), asks);
-        let sockets = dial(&hex, vm.fingerprint(), at, admission(4)).sockets.unwrap();
+        // Its Hangup kept, as a controller keeps it: dropped, it ends the connection.
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
+        let sockets = dialed.sockets.take().unwrap();
         let errno = |e: i32| Err(Fault::Unreached(NonZeroU16::new(e as u16).unwrap()));
         assert_eq!(sockets.connect("absent.sock").map(|_| ()), errno(libc::ENOENT));
         assert_eq!(
@@ -1030,7 +1038,9 @@ mod tests {
     fn a_name_that_is_no_file_name_is_refused_before_its_host_is_asked() {
         let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
         let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(4));
-        let sockets = dial(&hex, vm.fingerprint(), at, admission(4)).sockets.unwrap();
+        // Its Hangup kept, as a controller keeps it: dropped, it ends the connection.
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
+        let sockets = dialed.sockets.take().unwrap();
         let long = "x".repeat(256);
         for name in [
             "",
@@ -1061,7 +1071,9 @@ mod tests {
         let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
         let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(4));
         let _host = host(dir.path().to_owned(), asks);
-        let sockets = dial(&hex, vm.fingerprint(), at, admission(4)).sockets.unwrap();
+        // Its Hangup kept, as a controller keeps it: dropped, it ends the connection.
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
+        let sockets = dialed.sockets.take().unwrap();
 
         let closer = std::thread::spawn({
             let listener = listener.try_clone().unwrap();
@@ -1101,7 +1113,8 @@ mod tests {
         let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
         let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(2));
         let _host = host(dir.path().to_owned(), asks);
-        let sockets = dial(&hex, vm.fingerprint(), at, admission(2)).sockets.unwrap();
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(2));
+        let sockets = dialed.sockets.take().unwrap();
         let first = sockets.connect("stdio.sock").unwrap();
         let _second = sockets.connect("stdio.sock").unwrap();
         assert_eq!(
