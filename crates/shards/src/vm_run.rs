@@ -1007,7 +1007,7 @@ fn function(
     _step: &[u8],
     _fds: Vec<shards_ipc::fd::OwnedFd>,
 ) -> Result<vm::Plugged, String> {
-    Err(vm::passthrough_refused())
+    Err(vm::passthrough_refused().to_string())
 }
 
 /// Holds this VM's vCPUs together to `cpus` CPUs' time of the host's, its run's CPU
@@ -3005,7 +3005,7 @@ fn granted(paths: &crate::confine::Paths) -> Result<(), String> {
         return Err("a directory of sockets cannot be granted to a confined VM process".into());
     }
     if !paths.devices.is_empty() {
-        return Err(vm::passthrough_refused());
+        return Err(vm::passthrough_refused().to_string());
     }
     let wanted: Vec<crate::grant::Wanted> = paths
         .read

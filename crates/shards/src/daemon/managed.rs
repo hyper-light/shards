@@ -577,7 +577,11 @@ fn bind_agent(
         &vm,
         key,
         std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
-        control::Streams { outputs, inputs },
+        control::Streams {
+            outputs,
+            inputs,
+            execs: None,
+        },
     )
     .map_err(Failure::Endpoint)
 }
@@ -1290,6 +1294,8 @@ impl<D: Disk> Daemon<D> {
                 outputs: served_outputs,
                 inputs: served_inputs,
                 revoke,
+                // The daemon admits no exec yet: `bind_agent`'s streams carry none.
+                execs: _,
             } = served;
             for ((scope, _), (producer, control)) in lanes.into_iter().zip(served_outputs) {
                 let excess = u64::try_from(producer.storage_capacity().saturating_sub(capacity))

@@ -3876,6 +3876,8 @@ fn builtin(
             // A device plugged in or let go of, or a disk grown, in the workload's mounts
             // (D214), or a domain's (D235).
             run::builtin::DEVICE => crate::hotplug::device(args, workload, domains, &mut out),
+            // A member's own terminal sized (plan step 6, D244).
+            run::builtin::RESIZE => resize_member(args, domains),
             run::builtin::SIZE => match &layers {
                 Some((_, upper)) => Some(format!("/proc/self/fd/{}", upper.as_raw_fd())),
                 None => crate::changes::upper(),
@@ -6147,6 +6149,42 @@ fn resize(fd: RawFd, size: Size) {
     };
     // SAFETY: TIOCSWINSZ reads one winsize.
     unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) };
+}
+
+/// `builtin::RESIZE`: the own terminal of the member `args` names sized as they say (plan
+/// step 6, D244), as an exec's is ([`resize`]: a size of 0 in either leaves it alone), the
+/// kernel telling the terminal's foreground process group SIGWINCH where it changed; what
+/// stopped it said by kind, a member of no such index or one with no terminal of its own
+/// among them.
+fn resize_member(args: &[Vec<u8>], domains: &[crate::domains::Started]) -> io::Result<()> {
+    let (member, size) = run::members::parse_resize(args)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+    let started = domains.iter().find(|d| d.member == member).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("member {member} did not start in this run"),
+        )
+    })?;
+    let master = started.terminal.as_ref().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{}: it has no terminal of its own", started.label),
+        )
+    })?;
+    if size.rows == 0 || size.cols == 0 {
+        return Ok(());
+    }
+    let ws = libc::winsize {
+        ws_row: size.rows,
+        ws_col: size.cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: TIOCSWINSZ reads one winsize, on this stack, for a descriptor init holds.
+    if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &raw const ws) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// The working directory, made as Docker makes it (moby daemon/container/container.go,
