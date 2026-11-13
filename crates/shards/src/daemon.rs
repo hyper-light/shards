@@ -10977,9 +10977,9 @@ mod tests {
     /// (cut off by its exit before its slot passed it on, x86_64 CI); and a client that
     /// takes nothing holds it no longer than the slowest take seen, from when its answer's
     /// writer began waiting on it, so that a stopped client keeps no daemon from exiting (PM
-    /// M261, M549). Unix's: a named pipe says nothing of its room before a write, so on
-    /// Windows a closed daemon follows its clients' ends alone.
-    #[cfg(unix)]
+    /// M261, M549). On every host: on Windows a part of an answer whose write pends is the
+    /// take (`slots::write_all_waiting`); before, no take was seen there, and a closed daemon
+    /// held such a client until it ended.
     #[test]
     fn a_closed_daemon_waits_for_its_clients_to_take_their_answers() {
         use shards_ipc::slots as s;
@@ -11069,8 +11069,8 @@ mod tests {
     /// said its microVM stopped before its command ended (125: budget E2E 40162744975's a,
     /// `a_daemon_ending_its_runs_is_waited_for`, PM M331). Its client leaving its answer
     /// untaken lets go of it once the slowest take seen has passed, no more: before, twice
-    /// the longest piece, at least TCP's R2, 100 s (PM M549). Unix's, as the test above.
-    #[cfg(unix)]
+    /// the longest piece, at least TCP's R2, 100 s (PM M549). On every host, as the test
+    /// above.
     #[test]
     fn a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear() {
         let t = Test::new("sp");
@@ -11102,8 +11102,7 @@ mod tests {
 
     /// Before any take has been seen, a closed daemon follows a client that takes nothing of
     /// its answer by its end alone (PM M549): held, with no time it lets go at, until the
-    /// client ends, and its writer's write fails then. Unix's, as the tests above.
-    #[cfg(unix)]
+    /// client ends, and its writer's write fails then. On every host, as the tests above.
     #[test]
     fn a_closed_daemon_with_no_take_seen_holds_a_client_until_it_ends() {
         let t = Test::new("cold");

@@ -522,11 +522,48 @@ impl Opened {
     }
 }
 
-/// Writes all of `buf` to a slot's line: a named pipe tells its writer of no room before a
-/// write, so a write it cannot take waits in WriteFile, and `waits` is told none (owed: a
-/// signal of a named pipe's outbound room; D185, PM M549).
-pub fn write_all_waiting(to: &Pipe, buf: &[u8], _waits: impl FnMut(super::Wait)) -> io::Result<()> {
-    (&*to).write_all(buf)
+/// Writes all of `buf` to a slot's line, waiting on its reader only where a write of it
+/// pends: each such wait told `waits` as it begins, and once its reader has taken enough,
+/// how long it took (D185, PM M549), as Unix's FIFO's `write_all_waiting` does. A named pipe
+/// says nothing of its room before a write. Its local information's WriteQuotaAvailable is no
+/// room: npfs keeps it as its quota less what is charged to it (ReactOS's
+/// `NpQueryPipeLocalInfo`), which a read its reader has pending is charged too (`NpCommonRead`,
+/// `NpAddDataQueueEntry`), and which a stalled write takes as its reader frees it
+/// (`NpCompleteStalledWrites`); Cygwin found it so ("WriteQuotaAvailable is unreliable",
+/// select.cc's `pipe_data_available`), and Wine says its whole quota. What says room is the
+/// write's own pend (`pipe::write_telling`). So `buf` goes in parts no larger than the line's
+/// outbound quota, each a write that waits on its reader for no more than a quota's worth of
+/// its reading: a part that finishes at once waits on no reader and teaches nothing, and one
+/// that pends is a take. A wait that fails, its reader gone, is told no end.
+pub fn write_all_waiting(to: &Pipe, buf: &[u8], mut waits: impl FnMut(super::Wait)) -> io::Result<()> {
+    let quota = usize::try_from(pipe::outbound_quota(to.raw())?).unwrap_or(usize::MAX);
+    let part = if quota == 0 { buf.len() } else { quota }.max(1);
+    for piece in buf.chunks(part) {
+        let mut rest = piece;
+        while !rest.is_empty() {
+            let mut began = None;
+            let written = pipe::write_telling(to.raw(), rest, || {
+                let at = Instant::now();
+                began = Some(at);
+                waits(super::Wait::Began(at));
+            });
+            let n = match written {
+                Called::Done(Ok(0)) => return Err(io::ErrorKind::WriteZero.into()),
+                Called::Done(Ok(n)) => n,
+                Called::Done(Err(e)) if pipe::ended(&e) => return Err(io::ErrorKind::BrokenPipe.into()),
+                Called::Done(Err(e)) => return Err(e),
+                // It waits on nothing else, so neither comes.
+                Called::Cancelled | Called::Late => {
+                    return Err(io::Error::other("a slot's write ended with nothing to end it"));
+                }
+            };
+            rest = rest.get(n..).unwrap_or_default();
+            if let Some(began) = began {
+                waits(super::Wait::Ended(began.elapsed()));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Ends a slot's wait from another thread ([`Slot::stopper`]), through the slot's own event:
@@ -1509,5 +1546,58 @@ mod tests {
         };
         assert_eq!(asked.request, ps);
         assert!(!asked.waited, "a rest there at once waited on its client");
+    }
+
+    /// A slot's answer is written as its line takes it (D185, PM M549): one its line holds
+    /// whole goes at once, waiting on no reader; one past its outbound quota waits on its
+    /// reader only where a part's write pends, each such wait ending once the reader has taken
+    /// a quota's worth, the next part waiting again; and a reader that goes ends a waiting
+    /// write, its wait told no end. Its reader is the waits themselves, on this thread: each
+    /// wait begun takes a quota, so that every part past the first pends, and ends. Before, a
+    /// named pipe's writer told no wait at all (`_waits`), and a closed daemon held a client
+    /// that took nothing of its answer until it ended.
+    #[test]
+    fn an_answer_is_written_as_its_line_takes_it() {
+        use super::super::Wait;
+        let (reader, writer) = super::super::joined().unwrap();
+        let mut waits = Vec::new();
+        write_all_waiting(&writer, &[7; 1024], |w| waits.push(w)).unwrap();
+        assert!(waits.is_empty(), "{waits:?}");
+        let mut got = vec![0; 1024];
+        (&reader).read_exact(&mut got).unwrap();
+        // Four quotas' worth: its first part the line holds whole, and each after it waits
+        // until the reader takes the quota before it (three, where its quota is what
+        // GetNamedPipeInfo says).
+        let quota = usize::try_from(pipe::outbound_quota(writer.raw()).unwrap()).unwrap();
+        let answer: Vec<u8> = (0..quota * 4).map(|i| u8::try_from(i % 251).unwrap()).collect();
+        let mut taken = Vec::new();
+        write_all_waiting(&writer, &answer, |w| {
+            if matches!(w, Wait::Began(_)) {
+                let mut part = vec![0; quota];
+                (&reader).read_exact(&mut part).unwrap();
+                taken.extend(part);
+            }
+            waits.push(w);
+        })
+        .unwrap();
+        let mut last = vec![0; answer.len() - taken.len()];
+        (&reader).read_exact(&mut last).unwrap();
+        taken.extend(last);
+        assert!(taken == answer, "the answer read was not the one written");
+        assert!(!waits.is_empty() && waits.len() % 2 == 0, "{waits:?}");
+        for pair in waits.chunks(2) {
+            assert!(matches!(pair, [Wait::Began(_), Wait::Ended(_)]), "{waits:?}");
+        }
+        // Its reader gone as a part waits: the write fails, its wait told no end.
+        let (reader, writer) = super::super::joined().unwrap();
+        let mut reader = Some(reader);
+        let mut waits = Vec::new();
+        let failed = write_all_waiting(&writer, &vec![5u8; quota * 2], |w| {
+            drop(reader.take());
+            waits.push(w);
+        })
+        .unwrap_err();
+        assert_eq!(failed.kind(), io::ErrorKind::BrokenPipe, "{failed}");
+        assert!(matches!(waits.as_slice(), [Wait::Began(_)]), "{waits:?}");
     }
 }

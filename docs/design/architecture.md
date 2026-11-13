@@ -7762,9 +7762,31 @@ process.
     than the slowest take seen. One that reads, however slowly, ends each wait as it reads.
   - *Its cold start*: before any take, a client holds a closed daemon until it ends (its
     FIFO's end).
-  - *Windows*: a named pipe says nothing of its room before a write, so its writes wait in
-    WriteFile and no take is seen; a closed daemon follows its clients' ends alone there
-    (owed: a signal of a named pipe's outbound room).
+  - *Windows*: a named pipe says nothing of its room before a write, and
+    `NtQueryInformationFile`'s `FilePipeLocalInformation` is no room either: its
+    `WriteQuotaAvailable` is the outbound quota less what is charged to it (ReactOS npfs,
+    `drivers/filesystems/npfs/fileinfo.c` `NpQueryPipeLocalInfo`), which a read the client
+    has pending is charged too (`read.c` `NpCommonRead` queues it `Buffered`, of its whole
+    length, and `datasup.c` `NpAddDataQueueEntry` charges a buffered entry what the quota has
+    free), and which a stalled write takes as the client frees it (`datasup.c`
+    `NpCompleteStalledWrites`): a client waiting in a read of a quota or more, as a frame's
+    payload is read, shows none, though a write would go at once into its read; and while a
+    write of the daemon's waits, it stays none however the client reads. Cygwin met the
+    first: "WriteQuotaAvailable is unreliable ... if a pipe read is currently pending,
+    WriteQuotaAvailable on the write side is decremented by the number of bytes the read
+    side is requesting" (`winsup/cygwin/select.cc` `pipe_data_available`, which works round
+    it by setting the pipe nonblocking for a moment); and Wine reports its whole quota,
+    unreduced ("FIXME: Needs to be reduced by ReadDataAvailable at the other end",
+    `server/named_pipe.c` `pipe_end_get_file_info`). What says room is the write's own pend:
+    an overlapped WriteFile that its pipe holds whole, or hands to a pending read, finishes at
+    once, and one it cannot pends until the client has taken enough (npfs above; Wine's
+    `reselect_write_queue` completes a pending write once the reader's unread bytes fit its
+    buffer). So an answer is written in parts no larger than its line's outbound quota
+    (GetNamedPipeInfo's out buffer size, `LINE_BUFFER`), each waiting on the client for no
+    more than a quota's worth of its reading: a part that finishes at once teaches nothing,
+    and one that pends is a take, from its pend (`ERROR_IO_PENDING`, `pipe::write_telling`)
+    to its completion (ROOT, 2026-11-13). WriteQuotaAvailable is no measure of a client's
+    room; it was a closed daemon following its clients' ends alone there, no take seen.
   - It was twice the longest a piece of 64 KiB took, at least TCP's R2 (100 s, RFC 1122
     §4.2.3.5).
   A slot whose answer's last word is its client's holds it no more: the word is in its FIFO
