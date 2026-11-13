@@ -532,6 +532,13 @@ pub mod kind {
     /// that process goes, which on Windows came 95 ms after a run's end on jupiter and past
     /// 2 s on CI's runners (PM M380): the next program to bind one has it.
     pub const PORTS_FREE: u8 = 79;
+    /// Warm VM → daemon, empty, as its run ends: it has asked its network process to close
+    /// the run's published ports (`UNPUBLISH`), and waits for its answer while that process
+    /// lives, the VM process, confined, seeing nothing of its progress. The daemon follows
+    /// that process from here (D217's helper slice, its `Followed`), and ends it where it
+    /// goes on with nothing for a whole slice; `PORTS_FREE` ends the follow (ROOT's (A),
+    /// 2026-11-13).
+    pub const UNPUBLISHING: u8 = 103;
     /// Daemon → a running run's VM: a device plugged into its microVM, let go of, or a disk
     /// grown (D214): a number its answer ([`DEVICED`]) names (8, big-endian), then a step
     /// ([`device`]) and what it takes. With [`device::DISK`] the disk's file, with
@@ -1959,14 +1966,16 @@ impl Run {
 }
 
 /// What a registry is reached by (shards_registry's credentials, certs and proxy): the
-/// Docker CLI's config, credential helpers on `PATH`, the homes of `certs.d`, and the
-/// proxies Go's net/http takes from the environment; and the local engine a made microVM
+/// Docker CLI's config, the daemon.json shards is given in place of Docker's daemons' (D194),
+/// credential helpers on `PATH`, the homes of `certs.d` and of Docker's daemon.json files,
+/// and the proxies Go's net/http takes from the environment; and the local engine a made microVM
 /// is published to, as docker/cli v29.8.1 finds it (`DOCKER_HOST`, `DOCKER_CONTEXT`), or none
 /// (`SHARDS_LOCAL_STORE=none`).
-pub const REGISTRY_ENV: [&str; 18] = [
+pub const REGISTRY_ENV: [&str; 19] = [
     "SHARDS_AUTH_CONFIG",
     "DOCKER_AUTH_CONFIG",
     "DOCKER_CONFIG",
+    "SHARDS_DAEMON_JSON",
     "HOME",
     "USERPROFILE",
     "PATH",

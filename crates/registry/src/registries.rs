@@ -14,6 +14,12 @@
 //! A missing file names nothing; one that cannot be read, or whose two keys do not hold
 //! what dockerd takes, is an error that names it: a setting misread would send a pull
 //! where its user did not mean it to go (D194).
+//!
+//! Where `SHARDS_DAEMON_JSON` ([`DAEMON_JSON`]) names a file, that file alone is read, as
+//! `dockerd --config-file` names the one dockerd reads, and as there it must be there (moby
+//! docker-v29.8.1 `daemon/command/daemon.go:679-684`): what shards is told of registries
+//! apart from the Docker on its machine. The tests name their own (tests/common,
+//! `as_tests_run`), as they give their own `DOCKER_CONFIG`.
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -49,14 +55,22 @@ struct DaemonJson {
 /// (auth.rs, `loopback`).
 pub const LOOPBACK: [&str; 2] = ["::1/128", "127.0.0.0/8"];
 
+/// The variable that names the one daemon.json shards reads, in place of Docker's daemons'.
+pub const DAEMON_JSON: &str = "SHARDS_DAEMON_JSON";
+
 impl Registries {
-    /// What the files Docker's daemons read name, found as `env` says.
+    /// What the files Docker's daemons read name, found as `env` says; or the one file
+    /// [`DAEMON_JSON`] names, alone.
     pub fn from_env(env: Env<'_>) -> Result<Registries, Error> {
         let mut registries = Registries::default();
-        for path in files(env) {
+        let (named, paths) = match env(DAEMON_JSON).filter(|p| !p.is_empty()) {
+            Some(path) => (true, vec![PathBuf::from(path)]),
+            None => (false, files(env)),
+        };
+        for path in paths {
             let text = match std::fs::read(&path) {
                 Ok(text) => text,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && !named => continue,
                 Err(e) => return Err(Error::from(e).context(path.display())),
             };
             registries
@@ -452,6 +466,44 @@ mod tests {
         );
         std::fs::write(desktop.join("daemon.json"), "{").unwrap();
         let said = Registries::from_env(&env).unwrap_err().to_string();
+        assert!(
+            said.contains(&desktop.join("daemon.json").display().to_string()),
+            "{said}"
+        );
+    }
+
+    /// The file `SHARDS_DAEMON_JSON` names is read alone, Docker's daemons' files beside it
+    /// read not at all, however they are; one named and missing is an error naming it, as
+    /// `dockerd --config-file` refuses one; an empty name names none.
+    #[test]
+    fn the_daemon_json_named_is_read_alone() {
+        let home = shards_testdir::TempDir::new("registries-named").unwrap();
+        let desktop = home.join(".docker");
+        std::fs::create_dir_all(&desktop).unwrap();
+        std::fs::write(desktop.join("daemon.json"), "{").unwrap();
+        let named = home.join("own.json");
+        std::fs::write(&named, r#"{"insecure-registries": ["c.lan:5000"]}"#).unwrap();
+        let home_s = home.to_string_lossy().into_owned();
+        let given = |file: Option<String>| {
+            let home_s = home_s.clone();
+            move |k: &str| match k {
+                "HOME" | "USERPROFILE" | "XDG_CONFIG_HOME" | "PROGRAMDATA" => Some(home_s.clone()),
+                DAEMON_JSON => file.clone(),
+                _ => None,
+            }
+        };
+        let r = Registries::from_env(&given(Some(named.to_string_lossy().into_owned()))).unwrap();
+        assert_eq!(r.hosts(), ["c.lan:5000".to_string()]);
+        assert!(r.mirrors().is_empty());
+        let missing = home.join("missing.json");
+        let said = Registries::from_env(&given(Some(missing.to_string_lossy().into_owned())))
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains(&missing.display().to_string()), "{said}");
+        // Named by nothing: Docker's files, the broken one among them.
+        let said = Registries::from_env(&given(Some(String::new())))
+            .unwrap_err()
+            .to_string();
         assert!(
             said.contains(&desktop.join("daemon.json").display().to_string()),
             "{said}"

@@ -1407,6 +1407,7 @@ dependencies = [
 name = "shards-net"
 version = "0.1.0"
 dependencies = [
+ "httparse",
  "libc",
  "rcgen",
  "rustls",
@@ -1417,6 +1418,7 @@ dependencies = [
  "shards-netring",
  "shards-syscall-filter",
  "shards-testdir",
+ "shards-verify",
  "time",
  "windows-sys 0.61.2",
  "zeroize",
@@ -1461,15 +1463,14 @@ dependencies = [
  "libc",
  "rcgen",
  "rustls",
- "rustls-platform-verifier",
  "ruzstd",
  "serde",
  "serde_json",
  "sha2",
- "shards-apple",
  "shards-image",
  "shards-ipc",
  "shards-testdir",
+ "shards-verify",
  "time",
  "windows-sys 0.61.2",
 ]
@@ -1586,6 +1587,17 @@ version = "0.1.0"
 [[package]]
 name = "shards-user"
 version = "0.1.0"
+
+[[package]]
+name = "shards-verify"
+version = "0.1.0"
+dependencies = [
+ "rcgen",
+ "rustls",
+ "rustls-platform-verifier",
+ "shards-apple",
+ "time",
+]
 
 [[package]]
 name = "shards-vm-process"

@@ -785,11 +785,13 @@ pub fn command() -> Command {
 /// publishing the microVMs it makes to no local image store (pull.rs `publish`), so that no
 /// test writes to the Docker engine of the host it runs on (a test of publishing names an
 /// engine of its own), and given the tests' own docker config ([`docker_config`]), so that
-/// none reads this host's or runs its credential helpers. No default platform of the
-/// host's user's reaches it.
+/// none reads this host's or runs its credential helpers, and their own daemon.json in place
+/// of the host's Docker's (`SHARDS_DAEMON_JSON`, D194), so that no mirror or insecure
+/// registry of the host's reaches one. No default platform of the host's user's reaches it.
 pub fn as_tests_run(cmd: &mut Command) -> &mut Command {
     cmd.env("SHARDS_LOCAL_STORE", "none")
         .env("DOCKER_CONFIG", docker_config())
+        .env("SHARDS_DAEMON_JSON", docker_config().join("daemon.json"))
         .env_remove("DOCKER_AUTH_CONFIG")
         // A platform this host's user prefers is no test's: a test names its own.
         .env_remove("SHARDS_DEFAULT_PLATFORM")
@@ -799,7 +801,8 @@ pub fn as_tests_run(cmd: &mut Command) -> &mut Command {
 /// The tests' own docker config, which every command is given unless a test gives its
 /// own: no test, nor any daemon one starts, reads this host's docker config or its
 /// credential helpers. Its `auths` name a host no test reaches, so that no platform helper
-/// is looked for either (D184: a config that holds credentials keeps them itself).
+/// is looked for either (D184: a config that holds credentials keeps them itself). Beside it,
+/// the tests' own daemon.json, which names no registry ([`as_tests_run`]).
 pub fn docker_config() -> &'static Path {
     static CONFIG: OnceLock<TempDir> = OnceLock::new();
     CONFIG.get_or_init(|| {
@@ -809,6 +812,7 @@ pub fn docker_config() -> &'static Path {
             r#"{"auths":{"shards-tests.invalid":{}}}"#,
         )
         .unwrap();
+        std::fs::write(dir.join("daemon.json"), "{}").unwrap();
         dir
     })
 }
@@ -3228,6 +3232,8 @@ fn registry_serving_at(
                     let kind = |doc: &[u8]| {
                         if has(doc, b"image.index") {
                             "application/vnd.oci.image.index.v1+json"
+                        } else if has(doc, b"application/vnd.docker.distribution.manifest.list.v2+json") {
+                            "application/vnd.docker.distribution.manifest.list.v2+json"
                         } else if has(doc, b"application/vnd.docker.distribution.manifest.v2+json") {
                             "application/vnd.docker.distribution.manifest.v2+json"
                         } else {
@@ -3561,14 +3567,14 @@ pub fn served_counting() -> (String, Arc<AtomicUsize>) {
     (format!("127.0.0.1:{port}/test/image:v1"), served)
 }
 
-/// Docker Hub's image `reference`, pinned by its digest, served by a registry of the
-/// tests' own as `127.0.0.1:<port>/test/image@<digest>`: the same image, never pulled from
-/// Docker Hub as a test runs. Docker Hub counts its anonymous pulls by address, here the
-/// whole LAN's IPv6 /64, 100 an hour, and test homes that pulled their base from it each run
-/// spent them for every machine there (CI cluster 13: api_image.rs's builds, refused from its
-/// eighth round of 30 on). What it serves is what a pull of the image for this host's
-/// platform fetches, pulled once per checkout ([`hub_seed`]); one registry serves each image
-/// to every test of the binary.
+/// A remote registry's image `reference` (Docker Hub's, ghcr.io's), pinned by its digest,
+/// served by a registry of the tests' own as `127.0.0.1:<port>/test/image@<digest>`: the
+/// same image, never pulled from its registry as a test runs. Docker Hub counts its
+/// anonymous pulls by address, here the whole LAN's IPv6 /64, 100 an hour, and test homes
+/// that pulled their base from it each run spent them for every machine there (CI cluster
+/// 13: api_image.rs's builds, refused from its eighth round of 30 on); ghcr.io limits its own.
+/// What it serves is what a pull of the image for this host's platform fetches, pulled once
+/// per checkout ([`hub_seed`]); one registry serves each image to every test of the binary.
 pub fn hub(reference: &str, timeout: Duration) -> String {
     static SERVED: OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
     let mut served = SERVED
@@ -3586,19 +3592,27 @@ pub fn hub(reference: &str, timeout: Duration) -> String {
     at
 }
 
-/// `reference` as a test pulls it: a Docker Hub image pinned by its digest from the tests'
-/// own registry ([`hub`]), any other as it is.
+/// `reference` as a test pulls it: a remote registry's image pinned by its digest from the
+/// tests' own registry ([`hub`]), any other (a loopback registry's, a tag) as it is.
 pub fn hubless(reference: &str, timeout: Duration) -> String {
     match shards_image::reference::Reference::parse(reference) {
-        Ok(r) if r.domain == shards_image::reference::DOCKER_HUB && r.digest.is_some() => {
-            hub(reference, timeout)
-        }
+        Ok(r) if remote(&r) && r.digest.is_some() => hub(reference, timeout),
         _ => reference.to_string(),
     }
 }
 
-/// `agentfile` with each base it takes `FROM` Docker Hub by a digest taken from the tests'
-/// own registry instead ([`hubless`]): the same image, every other word as it was.
+/// Whether `r` names a registry off this machine: not `localhost`, nor a loopback address.
+fn remote(r: &shards_image::reference::Reference) -> bool {
+    let domain = r.domain.as_str();
+    let host = match domain.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or(bracketed),
+        None => domain.split(':').next().unwrap_or(domain),
+    };
+    host != "localhost" && !host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// `agentfile` with each base it takes `FROM` a remote registry by a digest taken from the
+/// tests' own registry instead ([`hubless`]): the same image, every other word as it was.
 pub fn hub_bases(agentfile: &str, timeout: Duration) -> String {
     agentfile
         .split_inclusive('\n')
@@ -3617,14 +3631,14 @@ pub fn hub_bases(agentfile: &str, timeout: Duration) -> String {
 /// What [`hub`] serves of `reference`: the document its digest names, then each manifest,
 /// config and layer of it a pull for this host's platform fetched (the platform's manifest
 /// and its attestations), from the store of target/artifacts/hub, a home of the tests' own
-/// that a build pulls each into from Docker Hub the first time it is asked for, in process,
-/// as a build pulls its base (no daemon): once per checkout, as the pinned kernel is
-/// downloaded once into target/artifacts ([`fetch`]), one test process at a time.
+/// that a build pulls each into from its registry the first time it is asked for, in
+/// process, as a build pulls its base (no daemon): once per checkout, as the pinned kernel
+/// is downloaded once into target/artifacts ([`fetch`]), one test process at a time.
 fn hub_seed(reference: &str, timeout: Duration) -> (Vec<u8>, Vec<Vec<u8>>) {
     let pinned = shards_image::reference::Reference::parse(reference).unwrap();
     assert!(
-        pinned.domain == shards_image::reference::DOCKER_HUB && pinned.digest.is_some(),
-        "{reference}: a Docker Hub image pinned by its digest"
+        remote(&pinned) && pinned.digest.is_some(),
+        "{reference}: a remote registry's image pinned by its digest"
     );
     let home = workspace().join("target/artifacts/hub");
     shards_vmm::platform::create_private_dir(&home).unwrap();
@@ -3643,7 +3657,7 @@ fn hub_seed(reference: &str, timeout: Duration) -> (Vec<u8>, Vec<Vec<u8>>) {
     assert_eq!(
         built.status,
         Some(0),
-        "{reference}, pulled from Docker Hub once into {}: {}",
+        "{reference}, pulled from its registry once into {}: {}",
         home.display(),
         built.stderr
     );
@@ -3665,13 +3679,6 @@ fn hub_held(home: &Path, pinned: &shards_image::reference::Reference) -> Option<
     };
     let top = read(&digest)?;
     let doc: serde_json::Value = serde_json::from_slice(&top).ok()?;
-    // The registry serves a document as the media type its words name, a Docker list's as
-    // a Docker manifest's (registry_serving_at): Docker Hub's official images are OCI's.
-    assert_ne!(
-        doc["mediaType"].as_str(),
-        Some("application/vnd.docker.distribution.manifest.list.v2+json"),
-        "{pinned}: a Docker manifest list, which the tests' registry serves as a manifest"
-    );
     // An index's manifests that its pull fetched, which the registry serves among the blobs;
     // a lone manifest is the document itself.
     let listed = doc["manifests"].as_array();

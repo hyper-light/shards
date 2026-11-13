@@ -54,18 +54,18 @@ struct Machine {
     stall: Mutex<Option<mpsc::Receiver<()>>>,
     /// What lets a join go on, where one is held.
     join_stall: Mutex<Option<mpsc::Receiver<()>>>,
-    /// How long it takes to say whom a key is, on the driver at each handshake's end: a host
-    /// slow to answer a fresh client's first ask.
-    enroll_stall: Duration,
+    /// The key whose verdict it holds, and what lets that go: a machine slow to say whom a key
+    /// is, its files read from a disk under load.
+    verdict_stall: Mutex<Option<(Vec<u8>, mpsc::Receiver<()>)>>,
 }
 
-/// What a [`Machine`] holds up, and how: a `stalls` command's start, every join, and each
-/// handshake's end.
+/// What a [`Machine`] holds up, and how: a `stalls` command's start, every join, and its verdict
+/// on one key.
 #[derive(Default)]
 struct Stalls {
     start: Option<mpsc::Receiver<()>>,
     join: Option<mpsc::Receiver<()>>,
-    enroll: Duration,
+    verdict: Option<(Vec<u8>, mpsc::Receiver<()>)>,
 }
 
 /// A command's stdin, which says when it is let go.
@@ -101,7 +101,18 @@ impl Drop for Held {
 
 impl Host for Machine {
     fn enrolled(&self, spki: &[u8]) -> Option<String> {
-        std::thread::sleep(self.enroll_stall);
+        // Taken out of its lock as it holds, so that no other key's verdict waits on it.
+        let stalled = {
+            let mut stall = self.verdict_stall.lock().unwrap();
+            match stall.as_ref() {
+                Some((key, _)) if key == spki => stall.take(),
+                _ => None,
+            }
+        };
+        if let Some((_, release)) = stalled {
+            let _ = self.seen.send(Seen::Stalled("verdict".into()));
+            let _ = release.recv();
+        }
         let clients = self.clients.lock().unwrap();
         clients
             .iter()
@@ -294,7 +305,7 @@ fn daemon_with(
         seen,
         stall: Mutex::new(stalls.start),
         join_stall: Mutex::new(stalls.join),
-        enroll_stall: stalls.enroll,
+        verdict_stall: Mutex::new(stalls.verdict),
     };
     let (tx, bound) = mpsc::channel();
     std::thread::spawn(move || {
@@ -474,9 +485,12 @@ fn a_client_joins_then_runs_commands_whose_output_crosses_whole() {
     assert_eq!(status, Err(server::NOT_ENROLLED.to_string()));
 }
 
-/// A daemon that answers each request with `answer`, written at once with its stream's end.
+/// A daemon that answers each request with `answer`, written at once with its stream's end,
+/// its driver held `stall` as each handshake ends (a host busy, or scheduled off, as its client
+/// asks).
 struct Answers {
     answer: Vec<u8>,
+    stall: Duration,
     /// What each stream has sent, by its connection too: every connection's first stream
     /// has the same number, and a frame one left must never be read as the next one's.
     inbound: HashMap<(ConnKey, StreamId), Vec<u8>>,
@@ -486,6 +500,7 @@ impl Handler for Answers {
     type Command = ();
 
     fn connected(&mut self, _io: &mut Io<'_>, _conn: ConnKey, _peer: &[u8]) -> Result<(), Close> {
+        std::thread::sleep(self.stall);
         Ok(())
     }
 
@@ -549,6 +564,7 @@ fn a_streams_last_frames_and_its_end_come_at_once_and_are_all_taken() {
     std::thread::spawn(move || {
         let handler = Answers {
             answer,
+            stall: Duration::ZERO,
             inbound: HashMap::new(),
         };
         let config = tls::server(daemon_id).unwrap();
@@ -1203,26 +1219,97 @@ fn a_slow_join_holds_up_no_other_client() {
     assert_eq!(joined.recv_timeout(DEADLINE).unwrap().unwrap(), Ok(()));
 }
 
-/// A daemon slow to answer a fresh client's first ask, its driver held a while as it says whom
-/// the key is (a stand-in for a host busy, or scheduled off, as the client asks), is waited for:
-/// cold, before any answer of a send's has been seen on its path, the client's wait has no
-/// window, a handshake's own being no measure of a request's (D180). Red with the handshake
-/// seeding the window: the client's send unanswered past it, its connection taken for dead.
+/// A machine's verdict on a key runs apart from the daemon's driver too, which acknowledges
+/// every client meanwhile: while a stranger's is held (a stand-in for a machine whose files take
+/// long to read, its disk under load), an enrolled client's command is answered whole, and the
+/// stranger, its verdict let go, is refused as one not enrolled. Red with the verdict on the
+/// driver: the enrolled client unanswered past the test's deadline.
 #[test]
-fn a_daemon_slow_to_answer_a_fresh_client_is_waited_for() {
+fn a_slow_verdict_holds_up_no_other_client() {
     let daemon_id = leak(Identity::generate().unwrap());
-    let laptop = leak(Identity::generate().unwrap());
-    let d = daemon_with(
+    let (laptop, stranger) = (
+        leak(Identity::generate().unwrap()),
+        leak(Identity::generate().unwrap()),
+    );
+    let (release, held) = mpsc::channel();
+    let mut d = daemon_with(
         daemon_id,
         vec![("laptop".into(), laptop.spki().to_vec())],
         Vec::new(),
         Stalls {
-            enroll: Duration::from_millis(300),
+            verdict: Some((stranger.spki().to_vec(), held)),
             ..Stalls::default()
         },
     );
-    let (status, out, _) = run(laptop, d.remote, &["say", "late", "x", "0"], None).get();
-    assert_eq!((status, out), (Ok(0), b"late\n".to_vec()));
+    // A thread of its own, which a failing test does not wait for (the verdict it waits on
+    // would never be let go).
+    let (refused_tx, refused) = mpsc::channel();
+    let remote = d.remote;
+    std::thread::spawn(move || {
+        let request = Request {
+            args: vec![b"true".to_vec()],
+            env: Vec::new(),
+            terminal: None,
+        };
+        let ran = client::exec(
+            stranger,
+            remote,
+            request,
+            None,
+            std::io::sink(),
+            std::io::sink(),
+            |_| {},
+        );
+        let _ = refused_tx.send(ran.map_err(|e| e.to_string()));
+    });
+    d.seen.saw(&Seen::Stalled("verdict".into()));
+    let (status, out, _) = run(laptop, d.remote, &["say", "quick", "x", "0"], None).get();
+    assert_eq!((status, out), (Ok(0), b"quick\n".to_vec()));
+    release.send(()).unwrap();
+    assert_eq!(
+        refused.recv_timeout(DEADLINE).unwrap(),
+        Ok(Err(server::NOT_ENROLLED.to_string()))
+    );
+}
+
+/// A daemon slow to answer a fresh client's first ask, its driver held a while as its handshake
+/// ends (a stand-in for a host busy, or scheduled off, as the client asks), is waited for: cold,
+/// before any answer of a send's has been seen on its path, the client's wait has no window, a
+/// handshake's own being no measure of a request's (D180). Red with the handshake seeding the
+/// window: the client's send unanswered past it, its connection taken for dead.
+#[test]
+fn a_daemon_slow_to_answer_a_fresh_client_is_waited_for() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let mut answer = Vec::new();
+    frame::put(&mut answer, Tag::Exit, &0i32.to_be_bytes()).unwrap();
+    let (tx, bound) = mpsc::channel();
+    std::thread::spawn(move || {
+        let handler = Answers {
+            answer,
+            stall: Duration::from_millis(300),
+            inbound: HashMap::new(),
+        };
+        let config = tls::server(daemon_id).unwrap();
+        let (mut driver, sender) = Driver::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            Some(config),
+            handler,
+            tls::Known::Never,
+        )
+        .unwrap();
+        let _ = tx.send((driver.local().unwrap(), sender));
+        let _ = driver.run();
+    });
+    let (address, sender) = bound.recv_timeout(DEADLINE).unwrap();
+    let _stops = Stops(sender);
+    let remote = Remote {
+        address,
+        daemon: daemon_id.fingerprint(),
+        known: tls::Known::Never,
+    };
+    let (status, _, _) = run(laptop, remote, &["anything"], None).get();
+    assert_eq!(status, Ok(0));
 }
 
 /// A client the machine enrolled keeps its connection through its command's silence: neither

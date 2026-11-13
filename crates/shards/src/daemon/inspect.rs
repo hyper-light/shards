@@ -856,7 +856,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 builtin: shards_abi::run::builtin::SIZE,
                 ..Default::default()
             };
-            self.exec_quietly(&c.id, &spec, None, 64, super::TAKE_TIMEOUT)
+            self.exec_answered(&c.id, &spec, 64)
                 .ok()
                 .filter(|q| q.status == Some(0))
                 .and_then(|q| String::from_utf8_lossy(&q.output).trim().parse::<u64>().ok())

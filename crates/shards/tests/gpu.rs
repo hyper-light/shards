@@ -88,9 +88,16 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
     };
     let home = TempDir::new("gpu-home");
     let ctx = TempDir::new("gpu-ctx");
+    let timeout = std::time::Duration::from_secs(900);
+    // debian:trixie-slim as Docker Hub's API named it (2026-11-13, updated 2026-11-05), from
+    // the tests' own registry: Debian's packages still come from its mirrors.
+    let debian = common::hub(
+        "debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2",
+        timeout,
+    );
     std::fs::write(
         ctx.join("Dockerfile"),
-        "FROM debian:trixie-slim\nRUN apt-get update -q && apt-get install -y -q --no-install-recommends mesa-vulkan-drivers vulkan-tools\n",
+        format!("FROM {debian}\nRUN apt-get update -q && apt-get install -y -q --no-install-recommends mesa-vulkan-drivers vulkan-tools\n"),
     )
     .unwrap();
     let mut env: Vec<(&str, &OsStr)> = vec![
@@ -101,7 +108,6 @@ fn the_gpu_renders_through_venus_in_runs_and_build_steps() {
     if let Some(vm) = &vm {
         env.push(("SHARDS_VM_BINARY", vm.as_os_str()));
     }
-    let timeout = std::time::Duration::from_secs(900);
     let built = run_shards_env(
         &["build"],
         &["-q", "-t", "gpu-venus:1", ctx.to_str().unwrap()],
