@@ -1719,7 +1719,7 @@ fn readable(socket: &UdpSocket, wake: &UdpSocket, wait: Option<Duration>) -> std
 
 /// The silence a connection is kept alive within: the shortest after which one on its path was
 /// found dead (`lost`), and the idle timeout its peer negotiated (RFC 9000 §10.1, hyper-quic's
-/// patch Q30), whichever is shorter; none where neither is, and no keep-alive goes.
+/// patch Q34), whichever is shorter; none where neither is, and no keep-alive goes.
 fn keep_within(lost: Option<Duration>, idle: Option<Duration>) -> Option<Duration> {
     match (lost, idle) {
         (Some(a), Some(b)) => Some(a.min(b)),

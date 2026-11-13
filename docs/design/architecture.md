@@ -6448,8 +6448,8 @@ replaced by:
   silence seen, a window before it (`keep_within`, `Liveness::keep_alive`), so that the first
   expiry of a middlebox's state measures it; and where the peer negotiated an idle timeout of
   its own (a build that still advertises one), within it, read from what was negotiated
-  (`Connection::idle_timeout`, hyper-quic patch Q30, on hyper-raft branch
-  `p/negotiated-idle-v1` until it lands there). No keep-alive goes while a send waits.
+  (`Connection::idle_timeout`, hyper-quic patch Q34, VENDORED.md §50, on hyper-raft's main
+  since 045cf3ff). No keep-alive goes while a send waits.
 - *A stranger's place* (was its time to join, from the probe timeout its handshake measured):
   no deadline. A machine holds as many connections of clients it has not enrolled as it holds
   open invitations, none while it holds none, and where every place is taken, a newer stranger
@@ -6479,6 +6479,26 @@ replaced by:
   alone (connect(2): Linux udp(7), XNU `udp_input`): a wake sent there never came, and a
   client's resize waited for the daemon's next packet. poll waits whole milliseconds, a wait
   under one taken as one, so that a timer is looked at no sooner than it is due.
+
+**hyper-raft's main under it** (2026-11-13). Shards pinned hyper-quic and hyper-tls to a branch
+of hyper-raft forked at f116ac27 (2026-10-15) and carrying nine hyper-tls experiment commits
+(d393b4c2..233b7fce, raw public keys' certificate compression). They are pinned since to
+hyper-raft's main at 045cf3ff, where Q34 landed alone: 238 commits of main's newer than that fork
+come with it, 29 of them hyper-quic's (VENDORED.md §30 to §49: BBR, loss thresholds that learn a
+path's reordering and RACK's time threshold, the pacer, the path MTU probe's waits, forward
+erasure correction of stream data, a stream's writes recorded without allocating), so a
+context's and an agent-control link's two ends run the QUIC kiln's and Hex's vendor. The
+experiment's one effect shards relied on, no certificate compression of a raw public key, is
+shards' own since: its TLS configs offer and use none (tls.rs `tls_client`, `tls_server`; red
+with hyper-tls's defaults, which offer Brotli and zlib). Owed, ROOT's, as the behaviour under
+every link changed: the workspace on each backend (`cargo test --workspace --profile
+test-release --no-fail-fast` on macOS arm64, Linux x86_64 KVM and Windows WHP); the two-host
+moves over Wi-Fi as D176 part 6 ran them (`docs/research/measurements/migrate/two-hosts.sh`:
+`listen` on the machine moved to, `invite`, then `move` N of each mode from the other, with
+`SHARDS_MOVE_TIMES=1`, n 20, comparing `sent` and the links' longest silences with the 20 of
+2026-11-07); and the link's timing over a real network (`cargo test -p shards --profile
+test-release --test context`, and the moves' `move:` log lines, each connection's RTT, lost
+packets and longest silence).
 
 Left as hyper-quic sets them, and owed: quinn-proto's stream and connection receive windows,
 its send window, and the 100 streams a daemon's client may open at once (one command and its
