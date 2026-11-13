@@ -1,0 +1,28 @@
+# Review of ring-pins-v1 (goal 52, plan step 5), F2: the relay's owed fix (review-f2.patch), its tests
+# alone (review-f2-red.patch) and its guard-removal mutation (review-f2.patch with
+#   Swapped::Broken => return self.end(),
+# replaced by
+#   Swapped::Broken => return (Offered::Done, Disposal::Release { given_back: false }),
+# ), each applied to origin/main 672b6fb47b2194f3ac27a3a40a90896587f640d1 and checked as far as a Mac may:
+#   cargo fmt -p shards-init -- --check
+#   cargo clippy -p shards-init --target {aarch64,x86_64}-unknown-linux-musl --all-targets -- -D warnings
+# Their tests are the Linux guest's relay's and run on Linux alone: red, green and mutation are ROOT's
+# (review.md, "Owed to ROOT"). Runner adas-mac-studio-3.local, macOS 26.2 (25C56), Apple M4 Max, 14 CPUs,
+# 36 GiB; rustc 1.98.1 (48a229cea 2026-09-01); 2026-11-12, kiln run r333.
+ProductName:		macOS ProductVersion:		26.2 BuildVersion:		25C56
+Apple M4 Max 14 38654705664
+######## F2 RED PATCH (tests only)
+== at 672b6fb4 + s5-init-f2-red.patch:  M crates/init/src/ring.rs
+fmt init exit 0        0 lines
+clippy init (aarch64-unknown-linux-musl) exit 0 0 diagnostics
+clippy init (x86_64-unknown-linux-musl) exit 0 0 diagnostics
+######## F2 PATCH (fix and tests)
+== at 672b6fb4 + s5-init-f2.patch:  M crates/init/src/ring.rs
+fmt init exit 0        0 lines
+clippy init (aarch64-unknown-linux-musl) exit 0 0 diagnostics
+clippy init (x86_64-unknown-linux-musl) exit 0 0 diagnostics
+######## F2 MUTATION PATCH
+== at 672b6fb4 + s5-init-f2-mut.patch:  M crates/init/src/ring.rs
+fmt init exit 0        0 lines
+clippy init (aarch64-unknown-linux-musl) exit 0 0 diagnostics
+clippy init (x86_64-unknown-linux-musl) exit 0 0 diagnostics
