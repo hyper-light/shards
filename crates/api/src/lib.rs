@@ -575,7 +575,8 @@ pub enum Refusal {
     /// Preparation failed before any native owner launches a process.
     Launch(LaunchError),
     /// A managed guest's own I/O failed, typed, without allocating diagnostic text: its
-    /// output's and observer's setup, or its rate's exchange on its vsock socket (D255).
+    /// output's and observer's setup, or its rate's or use's exchange on its vsock socket
+    /// (D255, D260).
     ManagedIo {
         operation: &'static str,
         kind: io::ErrorKind,

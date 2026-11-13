@@ -728,13 +728,13 @@ impl Muxer {
                     Some(to) => {
                         // Out of the muxer's waits, to be written blocking by its owner.
                         if let Err(e) = super::poll::release(h.stream.raw_socket()) {
-                            debug!("vsock: a rate's dial kept in the muxer's waits: {e}");
+                            debug!("vsock: a host ask's dial kept in the muxer's waits: {e}");
                         }
                         if to.send((h.stream, asked)).is_err() {
-                            debug!("vsock: a rate no one takes any more; its dial closed");
+                            debug!("vsock: a host ask no one takes any more; its dial closed");
                         }
                     }
-                    None => debug!("vsock: a rate asked of a machine that takes none; its dial closed"),
+                    None => debug!("vsock: a host ask of a machine that takes none; its dial closed"),
                 }
             }
             Ok(Some(Line::Connect(peer_port))) => {

@@ -29252,6 +29252,115 @@ carrier: a bundle over origin/main in a blobless clone):
 - A credential's run in a save's files that the scan does not report, or a report that prints
   a value.
 
+### D260. A managed microVM's use: its vCPUs' guest time and its VM process's own, told on its vsock socket (built; real-VM validation owed)
+
+**Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d steps 13/14, the Hex lead's ask (#71). Hex's
+learner charges a microVM by its measured use: per-vCPU guest time plus the VMM's own CPU
+(step 14, Hex `learned-charge.md`). An image run gives its orchestrator both in its stats
+(D241's `microvm`). A managed microVM (D215, D233) gave its client nothing but its process: Hex
+read its whole-process CPU and could not tell its vCPUs' guest time from its VMM's own. On
+Windows the job's CPU rate stays the hard ceiling, which then binds before Hex's governor
+(D255's rate) can. With both parts, Hex's governor takes the rate less the VMM's own CPU and
+binds first.
+
+**Decided.**
+- *The word* (`shards_abi::rate`, D255's path). On a microVM booted `--host-managed`, a host
+  client may write `USE\n` on its vsock socket in place of `CONNECT <port>`, as it writes
+  `RATE`. The muxer reads it as a host ask (`read_ask`'s `Asked::Use`) and hands the connection
+  to the VM process's `rates` thread with it (`VsockHost::rate`, one channel of typed asks).
+- *The answer* (`rate::used`): `USED`; then the vCPUs' guest times as `GuestTimes::encode`
+  writes them for the daemon's `GUEST_TIMED` (`departed NS`, `vcpu INDEX NS [unread CAUSE
+  [CODE]]`), or `guest-unread <why>`; then `host CPU_NS RESIDENT FOOTPRINT`, the VM process's
+  own `platform::process_usage`, or `host-unread <why>`. A line each, then the connection
+  closes.
+  - The guest's times are read first and the process's use after them, as D241 reads an image
+    run's: the process's CPU time holds its vCPUs', so the later read is never the less, and
+    `Microvm::vmm_ns`, the process's CPU less its vCPUs' guest time, is never less than none
+    past the clocks' steps (saturating).
+  - Each vCPU's time comes from the backend's own clock, which `GUEST_TIME` already reads
+    (guest-cpu-time-v1): KVM, the vCPU thread's stat (`/proc/self/task/TID/stat`); HVF,
+    `hv_vcpu_get_exec_time`; WHP, `WHvGetVirtualProcessorCounters`' run time. Nothing new is
+    measured, and no platform has a path of its own.
+  - A part not read is its words, never a number: `the microVM has not started`, or the
+    process-usage call's error (`its VM process: …`), and each vCPU not read is typed
+    (`shards_abi::guest_time::Unread`) with the most it read before.
+- *The client.* `ManagedGuest::host_use(patience) -> Result<ManagedUse, Refusal>`, where
+  `ManagedUse { microvm: image::Microvm, asked: Instant, answered: Instant }`. One dial, its
+  ask, and its answer read until the VM process closes it, within its caller's patience. The
+  sample was read after `asked` and before `answered`: two samples' window is known within
+  their asks' spans, measured on the client's own clock.
+  - It is the same `Microvm` that an image run's stats carry, so the learner Hex already has for
+    image VMs reads managed ones unchanged. `Microvm::vmm_ns()` is the VMM's own CPU time, or
+    none where either part was not read.
+  - Refused, typed: `Refusal::HostUse(UseBroken)`, where the answer is none of the protocol's
+    (`Long`, `Text` (cut short: the VM process ended as it answered), `Word`, `Guest`, `Host`).
+    `Unsupported { what: "host use" }`, where the VM process closes the ask unanswered (not
+    booted `--host-managed`, or a shards before this) or does not answer within the patience.
+    `ManagedIo` where the socket fails, and `Ended` once the guest has ended.
+  - `rate` and `host_use` share one exchange (`host_exchange`): the rate's answer is whole at
+    its newline, the use's at the connection's close. Its buffer grows fallibly, and its words
+    are allocated fallibly, as the managed path's are.
+- *One form.* `GuestTimes`, `VcpuTime` and their text, and `HostUse`, are now
+  `shards_abi::guest_time`'s. The VMM and shards-api's `image::wire` re-export them, where
+  each had its own copy, so the VM process's `GUEST_TIMED`, an image run's stats and a managed
+  guest's use are one type with one codec.
+- *Why the vsock socket*: D255's reasons. It is the one path every managed microVM serves on all
+  three OSes, which a recovered client (`attach_managed`) reaches by its identity. The client
+  could read the VM process's use itself by its pid, but not its vCPUs' guest time, which only
+  the VM process holds. Both read there in order give one consistent sample.
+
+**Literals.**
+- `USE`, `USED`, `guest-unread`, `host`, `host-unread`: the protocol's words; `departed`,
+  `vcpu`, `unread`: `GUEST_TIMED`'s.
+- The longest answer is D255's `ANSWER_MOST`, the run protocol's payload bound
+  (`run::MAX_PAYLOAD`). A use answer of a machine's most vCPUs fits far within it: at most 4096,
+  as `arch`'s tests hold both layouts to, each line at most 70 bytes (`vcpu 4294967295
+  18446744073709551615 unread hvf-exec-time -2147483648`). A guest's words are cut to leave
+  room for the longest `host` line (`HOST_MOST`: its key and three u64s), a host's to what is
+  left.
+- No other number. The window is the caller's two samples on its own clock.
+
+**Cold start** (R03). Nothing here is learned. The first sample is a reading from boot, and a
+window takes two. A vCPU that has not yet run its guest reads 0. A sample asked before the
+machine starts carries `guest-unread the microVM has not started` beside its process's use, so
+its caller charges nothing it cannot split (`vmm_ns` none) rather than charging the whole
+process as guest.
+
+**Tested** (light, macOS arm64):
+- abi `guest_time`'s `encoded_times_decode_as_they_were` and
+  `text_other_than_encoded_times_is_refused` (moved from the VMM with the codec); `rate`'s
+  `an_ask_reads_back_as_its_rate_and_nothing_else_does` (`USE` now among them),
+  `a_use_answer_reads_back_as_it_was_said` and `a_broken_use_answer_is_refused_by_what_breaks_it`.
+- The muxer's `parses_connect_lines_and_nothing_else`,
+  `handshake_lines_are_bounded_by_the_protocols_words` (`USE\n`, shorter than its first read,
+  read whole), `a_rate_comes_from_a_dial_on_the_socket_alone` and
+  `a_rates_dial_is_handed_out_able_to_block`.
+- vm_run's `each_rate_handed_over_is_answered_on_its_connection` (a use beside a rate, its
+  process's use read for real) and `a_uses_answer_reads_the_guest_then_its_process`.
+- shards-api's `a_managed_guests_use_is_asked_on_its_socket_and_read_as_answered` and
+  `a_managed_use_unanswered_or_of_an_ended_guest_is_refused` (red against a refusing stub,
+  then green), with D255's three rate tests over the shared exchange.
+
+**Owed** (ROOT).
+- The real-VM run on HVF, KVM and WHP, in D255's test, which now asks `USE` too:
+  `cargo test --profile test-release -p shards --test boot a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket`.
+  A guest booted `--host-managed`, spinning its one vCPU, its rate lifted, asked `USE` twice a
+  window apart: every part is read, its one vCPU's guest time grows by no more than the time
+  between the asks (and by at least a twentieth of it, as D255's floor), and its process's CPU
+  holds its vCPU's time. A guest booted without `--host-managed` closes `USE` unanswered. The
+  confined VM process reads its own use there: Landlock's `/proc/self` rule on Linux, App
+  Sandbox's process-info of itself on macOS, AppContainer's `OpenProcess` of itself on Windows.
+- Guard-removal mutants, each of which must fail its test: `use_answer`'s order (host before
+  guest), `read_used`'s `host` word, the client's close-unanswered as `Unsupported`, and the
+  muxer's `Asked::Use` arm.
+- These light tests on Linux and Windows (CI), and `scripts/lint` on the 7 targets.
+- Hex's adoption: its learner reading each managed microVM through `ManagedGuest::host_use` on
+  every OS, its governor taking the rate less `vmm_ns` over the window.
+
+**What would falsify it.** A guest that reaches the use from inside. A sample whose
+process CPU is less than its vCPUs' guest time read before it. A vCPU's guest time that falls
+between samples. A machine not booted `--host-managed` that answers a use.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM

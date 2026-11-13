@@ -1080,7 +1080,7 @@ fn serve_rates(
             .set_nonblocking(false)
             .and_then(|()| stream.write_all(line.as_bytes()));
         if let Err(e) = answered {
-            shards_vmm::debug!("a rate's answer: {e}");
+            shards_vmm::debug!("a host ask's answer: {e}");
         }
     }
 }
