@@ -278,7 +278,7 @@ impl<H: Hosts> Pools<H> {
 }
 
 /// The pools' thread: their asks, and the keep-alives ending, until their owner is gone.
-fn keep<H: Hosts>(mut pools: Pools<H>, asks: mpsc::Receiver<Ask<H::Warm>>) {
+fn serve<H: Hosts>(mut pools: Pools<H>, asks: mpsc::Receiver<Ask<H::Warm>>) {
     loop {
         let ask = match pools.next_expiry() {
             Some(at) => match asks.recv_timeout(at.saturating_duration_since(Instant::now())) {
@@ -342,7 +342,7 @@ impl<H: Hosts> Pooling<H> {
         };
         let thread = std::thread::Builder::new()
             .name("shards-api-image-pools".into())
-            .spawn(move || keep(pools, received))
+            .spawn(move || serve(pools, received))
             .map_err(|e| ImageRefusal::Os {
                 what: "the pools' thread",
                 kind: e.kind(),
@@ -714,7 +714,7 @@ mod tests {
             Ok(Warmed(self.0.clone()))
         }
 
-        fn kill(&self, (): &()) {
+        fn kill(&self, _: &()) {
             self.tell(|l| {
                 l.killed += 1;
                 l.hold = false;
