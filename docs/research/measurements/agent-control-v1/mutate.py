@@ -5,13 +5,15 @@ rewriting it (a fresh mtime, so cargo rebuilds the original), and the test run a
 
     python3 -I mutate.py SRC_ROOT [NAME_PREFIX]
 
-Run from a checkout of the branch; build output where CARGO_TARGET_DIR says. Prints one line
-per mutation: its name, whether its test failed with the guard gone (killed) and whether it
-passed again restored.
+Run from a checkout of the branch; build output where CARGO_TARGET_DIR says. Prints per
+mutation its name, whether its test ran and failed with the guard gone (killed: a build that
+fails kills nothing) and whether it passed again restored, then each run's time, outcome and
+failure lines.
 """
 import os
 import subprocess
 import sys
+import time
 
 CONTROL = "crates/remote/src/control.rs"
 TLS = "crates/remote/src/tls.rs"
@@ -64,14 +66,21 @@ MUTATIONS = [
 
 
 def test(root, name_filter):
+    """Runs the test alone: whether it passed, and what shows why, its outcome line and the
+    first lines of its failure, with how long the build and run took."""
+    began = time.monotonic()
     run = subprocess.run(
-        ["cargo", "test", "-p", "shards-remote", "--lib", name_filter],
+        ["cargo", "test", "-p", "shards-remote", "--lib", name_filter, "--", "--exact"],
         cwd=root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
     )
-    return run.returncode == 0, run.stdout
+    took = time.monotonic() - began
+    lines = run.stdout.splitlines()
+    shown = [l for l in lines if l.startswith(("running ", "test result:", "error"))]
+    shown += [l for l in lines if "panicked at" in l or l.lstrip().startswith(("left:", "right:"))][:4]
+    return run.returncode == 0, f"{took:.1f}s | " + " | ".join(shown)
 
 
 def main():
@@ -95,10 +104,12 @@ def main():
         finally:
             with open(full, "w", encoding="utf-8") as f:
                 f.write(original)
-        restored, _ = test(root, name_filter)
-        killed = not passed
-        compiled = "error[" not in out
-        print(f"{name}: killed={killed} compiled={compiled} restored_green={restored}")
+        restored, again = test(root, name_filter)
+        # Killed only by its test failing as it runs, never by a build that failed.
+        killed = not passed and "running 1 test" in out and "1 failed" in out
+        print(f"{name}: killed={killed} restored_green={restored}")
+        print(f"    mutant:   {out}")
+        print(f"    restored: {again}", flush=True)
         failed |= not (killed and restored)
     sys.exit(1 if failed else 0)
 

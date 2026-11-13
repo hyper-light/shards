@@ -23105,7 +23105,9 @@ no TLS to narrow. Step 3 left whether the directive reaches them to Ada and ROOT
 ([aes256-only-v1](../research/measurements/aes256-only-v1/evidence.json), `tls_configs`). Step
 10's decision settles the guest's leg; the rest is theirs to decide.
 
-**Literals** (step 11's endpoint; none chosen, each a protocol's or step 5's):
+**Literals** (step 11's endpoint; none chosen, each a protocol's or step 5's). No window,
+buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
+`control::controller` take their transport from their caller.
 
 | Literal | Source |
 |---|---|

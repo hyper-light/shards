@@ -54,7 +54,10 @@ RFC 9001 (`3bbaecdf…a591`) from rfc-editor.org's text; the WireGuard paper fro
 wireguard.com/papers; the kubelet TLS bootstrapping page from kubernetes.io; kiln, Hex and
 hyper-raft at the revisions named.
 
-R03: every literal is a protocol's or step 5's (D238's table). No new constant is chosen.
+R03 (the person, 2026-11-13: "we do not tolerate arbitrary constants. learned and data-derived
+values. Period."): every literal is a protocol's or step 5's (D238's table). Slice 1 sets no
+window, buffer, chunk, keep-alive or idle value: `endpoint` and `controller` take their
+transport from their caller.
 
 ## States and refusals (R01, R04, R06, R07, R13)
 
@@ -86,7 +89,23 @@ frame's length, a lane's channel).
 
 ## Results
 
-Each with its host, revision and command.
+Each with its host, revision and command; logs in [logs/](logs/), aws-lc-sys's build chatter left
+out. Slice 1 is `2a3b62356` (on origin/main `e82b9403b`), built cold in a target directory of
+its own on each host, from a clone of that commit (`git bundle` of the branch, its sha256
+checked).
+
+| Host | Ran | Result |
+| --- | --- | --- |
+| Linux x86_64 (adacachy, CachyOS 7.2.9, rustc 1.98.1) | `cargo test -p shards-remote --lib`; `cargo clippy -p shards-remote --all-targets -- -D warnings` | 52 passed (8 of them `control::tests`); clean ([log](logs/slice1-linux-x86_64-test-clippy.log)) |
+| the same | `cargo fmt --all --check`; scripts/lint's Linux arms for the crate changed, `cargo clippy -p shards-remote --all-targets --target T -- -D warnings` with zig 0.17.0 as C compiler, T each of x86_64 and aarch64, gnu and musl | clean ([log](logs/slice1-linux-lint.log)) |
+| the same | `python3 -I mutate.py SRC` | 6 of 6 mutants killed, each by its test's assertion failing (no build failed); each restored green ([log](logs/slice1-linux-mutations.log)) |
+| macOS 26.2 arm64 (adas-mac-studio-2, Darwin 25.2.0) | `cargo test -p shards-remote --lib`; `cargo clippy -p shards-remote --all-targets -- -D warnings` (aarch64-apple-darwin) | 51 passed (the 8 `control::tests` among them; `net::tests::an_interrupted_receive_keeps_serving_commands` is Linux's alone); clean ([log](logs/slice1-macos-arm64.log)) |
+| Windows 11 x86_64 (adacachy's guest, 10.0.26200, MSVC 14.44) | `cargo test -p shards-remote --lib`; `cargo clippy -p shards-remote --all-targets -- -D warnings` | 51 passed (the 8 `control::tests` among them); clean ([log](logs/slice1-windows-x86_64.log)) |
+| macOS arm64 (adas-mac-studio-2), cargo-xwin with Homebrew's LLVM | scripts/lint's Windows arm for the crate changed: `cargo xwin clippy -p shards-remote --all-targets --target aarch64-pc-windows-msvc -- -D warnings` | clean ([log](logs/slice1-windows-aarch64-lint.log)); MSVC's own ARM64 compiler on the Windows guest cannot build aws-lc's C, as scripts/lint's use of clang-cl implies |
+
+The first run of `mutate.py` reported its kills by exit status alone; the harness now counts a
+mutant killed only where its one test ran and failed, and prints the failure, and the log is
+that second run's.
 
 ## R01–R16
 
@@ -94,18 +113,19 @@ Each with its host, revision and command.
 | --- | --- |
 | R01 | Panic review above; clippy with the workspace's denied lints on each target linted. |
 | R02 | D238's comparison, with its sources and their revisions. |
-| R03 | No new literal: D238's table. |
+| R03 | No new literal: D238's table; no transport value (the caller's). |
 | R04 | `Ended`, `Lane` and the lane's refusal typed; callers match variants. |
 | R05 | No new trait or layer: `endpoint` and `controller` are D180's contexts under this protocol's name. No wait or cache added. |
 | R06, R07, R13 | One module of codecs and two constructors; comments carry sources and invariants. |
 | R08, R14 | No performance claim; handshake CPU, per-VM memory and allocations are ROOT's (step 10's harness measures this connection). |
 | R09, R10 | A new capability: no defect claimed reproduced. Red/green: each guard's mutation, above. |
-| R11, R12 | Pure Rust over D180's driver, one implementation on every target; hosts in Results, the rest owed. |
+| R11, R12 | Pure Rust over D180's driver, one implementation on every target: tests on Linux x86_64, macOS arm64 and Windows x86_64, clippy on all seven targets (Results); tests on aarch64 Linux and aarch64 Windows owed. |
 | R15 | Implementer: light tests only; no real VM run. |
 | R16 | Build output under `~/g121-tmp/s11-control` on each runner, removed after. |
 
 ## Owed
 
+- Slice 1's light tests on aarch64 Linux and aarch64 Windows (linted only): no such host ran them (no native arm64 Linux or Windows runner; Docker Desktop's arm64 Linux is owed with slice 2's UDP tests).
 - The lanes' service on the driver, stdio lanes served from step 5's slots, and its loopback
   tests over UDP (next slice).
 - Exec, signal, inspect, attach and TTY lanes on step 6; the log lane and the arm on step 10.

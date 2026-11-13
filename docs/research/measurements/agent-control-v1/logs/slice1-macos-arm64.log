@@ -1,0 +1,27 @@
+# kiln run r834 on adas-mac-studio-2.local (runner b24c5c951260dcdfd0972f2aeaf3cf51), its output as returned
+bundle 3a7244ee6855b28caf531277a2dfc8c40f3f8c6297e5fb3b7e85e93fc28fdeae
+../s11.bundle is okay
+Darwin Adas-Mac-Studio-2.local 25.2.0 Darwin Kernel Version 25.2.0: Tue Nov 18 21:09:56 PST 2025; root:xnu-12377.61.12~1/RELEASE_ARM64_T6041 arm64
+ProductName:		macOS ProductVersion:		26.2 BuildVersion:		25C56 
+rustc 1.98.1 (48a229cea 2026-09-01)
+2a3b623565016b8636b885eb49fb79bd015c9525
+Fri Nov 13 01:21:26 UTC 2026
+=== cargo test -p shards-remote --lib
+running 51 tests
+test control::tests::a_lanes_refusal_reads_back_as_its_reason ... ok
+test control::tests::step_5s_subscriptions_open_a_members_lanes ... ok
+test control::tests::a_close_reads_as_its_cause ... ok
+test control::tests::a_lane_of_no_kind_is_refused ... ok
+test control::tests::a_controller_not_enrolled_is_refused_at_its_handshake ... ok
+test control::tests::a_peer_of_another_protocol_is_refused ... ok
+test control::tests::an_endpoint_not_the_pinned_vm_is_refused_at_its_handshake ... ok
+test control::tests::an_enrolled_controller_and_its_pinned_vm_connect_on_aes_256_gcm ... ok
+(the 43 other tests of shards-remote: ok)
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.29s
+=== exit 0
+=== cargo clippy -p shards-remote --all-targets -- -D warnings
+    Checking hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+    Checking shards-remote v0.1.0 (/Users/adalundhe/g121-tmp/s11-control/src/crates/remote)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.78s
+=== exit 0
+Fri Nov 13 01:22:07 UTC 2026
