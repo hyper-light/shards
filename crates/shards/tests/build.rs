@@ -9058,6 +9058,11 @@ fn supplied_agents_and_harness_archives_start_their_declared_entrypoints() {
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
 }
 
+/// A run's supplied members' output never rewrites its command's own (G01): its stdout stays
+/// exactly the command's JSON-RPC, and its stderr bytes whole, while the daemon drains its
+/// members' output into their logs and shows the attached client each of their lines on its
+/// stderr after its label, to the members' ends (their tails cut short as the run ends them
+/// included), before the client's own end says its timing (D59 "Its stdio", PM M543).
 #[test]
 fn supplied_member_output_does_not_rewrite_the_main_protocol() {
     if cannot_run_vms() {
@@ -9119,12 +9124,43 @@ fn supplied_member_output_does_not_rewrite_the_main_protocol() {
     );
     assert_eq!(ran.status, Some(0), "{ran}");
     assert_eq!(ran.stdout, r#"{"jsonrpc":"2.0","id":1,"result":"main"}"#, "{ran}");
-    let timing = ran
+    // Its stderr: main's own bytes, whole, and its members' lines, which the daemon drains
+    // and shows the client attached, each after its label (D59 "Its stdio", PM M543), the
+    // host's timing last. Main's are one write of its command's, so they lie whole between
+    // two of the members' lines, or within one, each of which is one write too.
+    let (said, timing) = ran
         .stderr
-        .strip_prefix("main-stderrshards-timing ")
-        .and_then(|s| s.strip_suffix('\n'))
-        .expect("only main stderr and one final host timing diagnostic");
+        .rsplit_once("shards-timing ")
+        .expect("a final host timing diagnostic");
+    let timing = timing
+        .strip_suffix('\n')
+        .expect("the timing line ends the stderr");
     assert!(!timing.contains('\n'), "{ran}");
+    let members = said.replacen("main-stderr", "", 1);
+    assert_eq!(
+        said.len() - members.len(),
+        "main-stderr".len(),
+        "main's stderr whole: {ran}"
+    );
+    assert!(members.is_empty() || members.ends_with('\n'), "{ran}");
+    let mut shown: Vec<&str> = members.lines().collect();
+    shown.sort_unstable();
+    // What each member writes (testguest `managed_capture_bytes`), its lines as shown: a line
+    // cut short at its stream's end ended.
+    let mut expected: Vec<String> = [("agent helper", "agent"), ("harness driver", "harness")]
+        .iter()
+        .flat_map(|(label, member)| {
+            [
+                format!("{member}\0stdout").into_bytes(),
+                b"\xff\x1b[2Jout-tail".to_vec(),
+                format!("{member}\0stderr").into_bytes(),
+                b"\x80\xfeerr-tail".to_vec(),
+            ]
+            .map(|line| format!("[{label}] {}", String::from_utf8_lossy(&line)))
+        })
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(shown, expected, "{ran}");
     let value: serde_json::Value = serde_json::from_str(timing).expect("host timing JSON");
     let timing = value.as_object().expect("host timing object");
     let numbers = [

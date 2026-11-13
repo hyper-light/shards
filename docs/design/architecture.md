@@ -8385,7 +8385,10 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   now D215's judge, shared, not copied (R12):
   - *Records*: each kind of answer apart, in the daemon's memory (`health::Answers`): a
     give-back (`RECLAIM`, at its host's pressure, a budget's or a group's), a room told
-    (`ROOM`), metrics read (`METRICS`). Each keeps W*, the slowest answer seen from a
+    (`ROOM`), metrics read (`METRICS`), and each of init's builtins its quiet work asks
+    (`exec_answered`, a record per builtin: `STAT`, `TOP`, `STATS`, a member's ports, a
+    network's switch, a layer's size, an update), which were each `TAKE_TIMEOUT`'s 10 s
+    (ROOT's (3), 2026-11-13). Each keeps W*, the slowest answer seen from a
     wait's start to its exec's end, and R*, the least CPU rate a microVM still answered at
     (`shards_api::Record`). Only an exec's own end teaches: one the daemon ended teaches
     nothing.
@@ -23020,11 +23023,16 @@ JSON library into PID 1. Each domain gets:
 - **Its stdio:** stdin is `/dev/null`; stdout and stderr are pipes of their own, which init
   captures whole for its owner (D240). Where the run names no owner of a member's output
   (`shards.output`), the daemon reads it itself, keeps it in the member's log
-  (`members/<index>` in the run's directory, as the run's log is kept) and shows it to a
-  client attached to the run on that client's **stderr**, each line prefixed
-  `[agent main] `; the run's own stdout, stderr and log stay its command's. No member
-  waits on a reader: the daemon credits a channel again as soon as what came is kept, a
-  detached run's and one whose client has gone alike (PM M543). Every descriptor past 2
+  (`members/<index>` in the run's directory, as the run's log is kept, its label beside it)
+  and shows it to a client attached to the run on that client's **stderr**, each line
+  prefixed `[agent main] ` and written whole; `shards read logs` shows the same lines after
+  the run's own output, and follows them with `-f`. The run's own stdout, stderr and log stay
+  its command's. No member waits on a reader: the daemon credits a channel again as soon as
+  what came is kept, a detached run's and one whose client has gone alike (PM M543). As the
+  run ends, all such a member wrote is kept and shown before the run's end is said: init
+  reads its pipes to their ends, which the run's end brings as it ends the member, and the
+  daemon tells the run's end once its capture has kept the last of it (PM M543, "Lost at the
+  run's end"). Every descriptor past 2
   is closed before exec. Every descriptor init holds is close-on-exec today, which the
   mutation shows: without the close, nothing of init's reaches the agent. The close is
   there so that one descriptor not marked close-on-exec, such as the O_PATH descriptors
@@ -25464,9 +25472,18 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   members' output as they serve the named members' input;
   else the daemon, which keeps it in the member's log and credits it again at once, so that
   no member waits for want of a subscriber, and shows it to an attached client prefixed
-  with the member's label (D59, "Its stdio"; PM M543). Before, every member's output waited
-  for an owner's subscription that no `shards run` made: a run's agents were heard by no one
-  (`tests/build.rs`'s agents in their domains, red on every CI run since 9151296a8).
+  with the member's label, as `shards read logs` shows it (D59, "Its stdio"; PM M543). Before,
+  every member's output waited for an owner's subscription that no `shards run` made: a run's
+  agents were heard by no one (`tests/build.rs`'s agents in their domains, red on every CI
+  run since 9151296a8).
+  As the run ends, a drained member's output goes to its end: the daemon names those members
+  in the run's setup (`managed-drained=`, `shards_abi::run::managed::DRAINED_KEY`), init reads
+  their pipes to their ends before it says the run's end, and the daemon tells the run's end
+  (its waiters, `logs -f`, its removal and restart) once its capture has kept the last record
+  it brought; an owner's channel still ends with the run, aborted, as its credit may never
+  come. Before, init aborted every member's pipes as the command ended, and the daemon ended
+  the capture at the run's DONE, and agents' reports were cut mid-line (PM M543, "Lost at
+  the run's end").
 - *Its environment* (step 7, 239749c60). Init's, then the image's `Env`, then its own
   `run.env`, then what its run stages, the last given of each name winning. `PATH` keeps the
   member's own programs first; `HOME` is never the image's; `SHARDS_DOMAIN` is refused at the
@@ -25604,7 +25621,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; HTTP/2 and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; HTTP/2 and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -26122,6 +26139,49 @@ docs/research/s33-veil-creds/STEP3.md).
   in the run host's diagnostics. The injector's cost per connection (a leaf minted, two handshakes)
   and per request, measured (step 10). HTTP/2 (step 7).
 
+**Built: step 6, Hex fills a harness VM's credential grants and answers its leases from kiln's broker** (kiln plan
+01a1d2b88be57304b972761e2a5c6781 step 6; docs/research/s33-veil-creds/STEP6.md). Hex boots harness images through
+shards-api (D231) and is their orchestrator; kiln is Hex's.
+- *Hex* (a local branch given to the Hex lead, on its main cf535152 at Shards 740fa372; nothing pushed; Hex's
+  docs/design/credential-grants.md): a box's credential grants ride its image class's spec (`ShardsImage::credentials`,
+  each `{member, reference, toward}`), its durable record and its node's wire, and `inspect` shows every one
+  (`BoxInfo::credentials`). One check (`check_credentials`) refuses, typed, a grant that could not be filled in exactly
+  as it says: a reference no store could name; a host its member's own egress grant (a destination by name, by TCP,
+  D236) does not reach, as a credential grant grants no egress; a host another member reaches ungranted, as the
+  injector ends the TLS of every flow to a granted host whichever member's ("Who", above), so each such member must
+  hold the grant and Hex's record says what the run does; and, at 740fa372, a second credential toward one host. Hex
+  lowers them to this entry's run-wide grants, one of each credential toward every host its members' grants name,
+  adding none, and gives the boot a lessor for that run alone, made by the lessors its own orchestrator gave its node
+  (`hex_api::lease::Lessors`, `Lessor`). Through it each ask is answered: the value moved whole into `Secret`, a life
+  of none the run channel's most (the run's life), each refusal kind for kind, and each lease the session gives back
+  (every one, once, by whatever end, as above) given back to the orchestrator's. A run granting none has no lessor; a
+  box granting one on a node given no lessors is refused as it is created (`Refusal::Unconfigured`, a node's
+  configuration).
+- *kiln* (main e76cc5e72): the Sandbox seam's launch carries credentials by reference
+  (`kiln_seams::sandbox::CredentialGrant`, `Holds::credentials`, SANDBOX-13: filled in toward its granted host alone,
+  never-fillable grants `Invalid`, unheld ones `Unsupported`; kiln's host sandbox holds none), and `secrets::lessor`
+  answers a run's asks from the run-lease broker: its leases issued to the run's own key where it binds one, else to a
+  channel of its own (256 random bits in a key fingerprint's form, which names no other run), each lease given back
+  alone (`Broker::release_lease`), the run's end revoking the rest (`RunLessor::ended`).
+- *Since 740fa372:* step 3's injector moved the grant to `shards_dns::credential` and gave it its member's
+  `placeholder`, filling a value only where that placeholder stands. Hex's re-vendor past it carries each grant's
+  placeholder (kiln mints it where it stages the credential into its member) and drops the one-credential-per-host
+  rule, which Shards holds by placeholder (`Refused::Shared`).
+- *Literals.* A reference's grammar is the store's (1 to 512 of A-Za-z0-9/_+=.@-, Secrets Manager's, as kiln-seams'
+  `check_name` keeps it); a life of none is the u64 of nanoseconds this entry's channel carries at its most; 256 random
+  bits are a key fingerprint's form (D238). No learned value enters this step.
+- *Tests (Linux x86_64, adacachy2, rust 1.99.1; STEP6.md).* kiln (r426): kiln-seams sandbox 7/7, doc_truth 3/3, kiln
+  `secrets::` and `sandbox::` 34/34 (the lessor over SimSecrets and kiln's store alike), clippy clean. Hex (r503):
+  red at its red commit (hex-api 6, hex-core 12, hex-runtime 5 failing), green at its green (33/33, 131/131, 64/64:
+  a harness VM's grants in its boot and its record, its ask answered from a simulated broker and given back as it
+  stops, an ungranted host passed bare, a grant beyond its egress or on a node with no lessors refused before any
+  record, the wire both ways, the lease contract), the record's and the release's removal each failing its test, and
+  clippy clean for Linux, macOS and Windows.
+- *Owed.* The Hex lead's merge and re-vendor (past 740fa372: placeholders); kiln's implementation of Hex's lease seam
+  over `secrets::lessor` once kiln vendors that Hex, and its sandbox's grants carried to `ShardsImage::credentials`;
+  a remote node's lessors (a node reached over its wire has none, and refuses grants `Unconfigured`); ROOT's real runs
+  (step 10).
+
 **Built: step 9, every harness's trust and token checks surveyed** (docs/research/s33-veil-creds/
 harness-survey.md, its evidence `evidence/survey/<harness>.txt`). Each of kiln's ten harnesses was read from its own
 build: its pinned linux/amd64 files, held to their pins' sha256, searched for the strings that say how it trusts and
@@ -26134,11 +26194,11 @@ token beside a real ID token; whether its Anthropic sign-in runs it is step 8's 
 sender-constrained tokens. A string found says the build carries the code, not that every path runs it; ROOT's real
 runs (step 10) confirm each harness's trust of the run's CA.
 
-**Owed (later slices of step 33, this plan's steps 6–8 and 10).** The injector that
-fills HTTP/2 headers (step 7); Hex wiring the grants
-and answering a run's leases from kiln's broker (step 6); the Claude Code and Codex
+**Owed (later slices of step 33, this plan's steps 7, 8 and 10).** The injector that
+fills HTTP/2 headers (step 7); the Claude Code and Codex
 sign-in/refresh profiles (step 8); and ROOT's real-VM runs on KVM, HVF and WHP with a
-whole-guest-memory leak scan and the injector's measured cost (step 10).
+whole-guest-memory leak scan and the injector's measured cost (step 10). Step 6's own owed
+items are its block's, above.
 
 **Literals.** None of its own: this slice adds no numeric bound. A credential's `reference`
 is bounded by the store it names (kiln-seams `NAME_MAX`, 512), not re-stated here; its hosts
