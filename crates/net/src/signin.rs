@@ -2418,6 +2418,64 @@ mod tests {
         assert!(s.asks().is_empty());
     }
 
+    /// Asks and answers are kept per flow and HTTP/2 stream (D242, steps 7 and 8). Do: three streams
+    /// of one flow ask its sign-in's refresh at once, the third let go of before the answer; then a
+    /// stream asks a capture and is let go of before its answer. Expect: one refresh asked; each of
+    /// the first two its own answer, none for the flow's HTTP/1.1 stream 0 or the third; the
+    /// capture kept as the sign-in's all the same, no answer kept for its stream.
+    #[test]
+    fn each_stream_of_a_flow_takes_its_own_answer_and_one_let_go_of_none() {
+        let mut s = SignIns::new(vec![sign_in(false)]);
+        let on = |stream| Asker { flow: 7, stream };
+        for stream in [1, 3, 5] {
+            s.refresh(0, on(stream)).unwrap();
+        }
+        s.forget(on(5));
+        let asks = s.asks();
+        assert_eq!(
+            (asks.len(), s.waiting()),
+            (1, 2),
+            "one refresh, two streams waiting"
+        );
+        let Some(Told::Refresh { id, .. }) = Told::decode(&asks[0]) else {
+            panic!("no refresh asked")
+        };
+        let body = Zeroizing::new(token_body(ACCESS, REFRESH).into_bytes());
+        let answer = Answered::Refreshed {
+            id,
+            result: Ok(body.clone()),
+        };
+        assert_eq!(
+            s.answered(&answer.encode().unwrap(), &[]),
+            Some(Changed::Refreshed { index: 0 })
+        );
+        assert_eq!(s.resumed(), [7, 7]);
+        assert!(s.take(7).is_none(), "stream 0 took a stream's answer");
+        for stream in [1, 3] {
+            assert!(matches!(s.take(on(stream)), Some(Answer::Refreshed(b)) if b == body));
+        }
+        assert!(s.take(on(5)).is_none(), "an answer kept for a stream let go of");
+        s.capture(0, taken(), on(9)).unwrap();
+        let Some(Told::Capture { id, .. }) = Told::decode(&s.asks()[0]) else {
+            panic!("no capture asked")
+        };
+        s.forget(on(9));
+        let captured = sign_in(true).captured.unwrap();
+        let answer = Answered::Captured {
+            id,
+            result: Ok(captured.clone()),
+        };
+        assert_eq!(
+            s.answered(&answer.encode().unwrap(), &[]),
+            Some(Changed::Captured {
+                index: 0,
+                replaced: None
+            })
+        );
+        assert!(s.take(on(9)).is_none() && s.resumed().is_empty());
+        assert_eq!(s.grants[0].captured, Some(captured));
+    }
+
     #[test]
     fn a_captures_placeholders_that_are_no_tokens_or_anothers_are_declined() {
         let other = credential::CredentialGrant {
