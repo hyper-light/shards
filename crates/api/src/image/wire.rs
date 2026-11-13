@@ -52,11 +52,13 @@ pub use shards_abi::run::nesting::Ready;
 /// (`RELEASED`; D242), so that a side that leases nothing refuses the run as it is asked,
 /// before any lease is: a client of an earlier version ends a run at a frame it has no kind
 /// for; 21, warm run hosts ([`to_host::WARM`], [`to_client::WARMED`], [`Cause::Unfit`],
-/// [`StartedFrom::Warm`]; D253's pools), so that a side that keeps none is never asked to; 22,
-/// the run's microVM saved whole for its owner ([`to_host::SAVE`], answered
-/// [`to_client::SAVED`]; D259), so that a side that saves none refuses the run as it is asked,
-/// before any save is.
-pub const VERSION: u8 = 22;
+/// [`StartedFrom::Warm`]; D253's pools), so that a side that keeps none is never asked to;
+/// 22, each credential grant's placeholder ([`CredentialGrant::placeholder`], D242), what
+/// stands for its credential in a request, so that the run's injector fills a value in where
+/// its own placeholder stands and nowhere else; 23, the run's microVM saved whole for its
+/// owner ([`to_host::SAVE`], answered [`to_client::SAVED`]; D259), so that a side that saves
+/// none refuses the run as it is asked, before any save is.
+pub const VERSION: u8 = 23;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -322,58 +324,13 @@ pub struct MemberReach {
     pub destinations: Vec<String>,
 }
 
-/// A credential grant by reference (D242): the credential named `reference` (a secret's
-/// path in the orchestrator's store, never a value) may be filled in at the VM's egress
-/// toward the hosts in `toward`, and no others. The grant carries no value, so it may
-/// print; the value rides a lease the injector pulls just in time, never this channel.
-///
-/// Each host in `toward` is a DNS name lowered, as a network's `--egress=HOST:PORT` names a
-/// destination's host by name (D236), or [`host.docker.internal`](shards_dns::HOST), the
-/// host itself; never an address (TLS names a server by its DNS name alone, RFC 6066 §3),
-/// never with a port, and never `localhost`. The orchestrator's side checks that where it builds the request
-/// ([`super::request`]); a side reading the wire takes them as bytes.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CredentialGrant {
-    pub reference: String,
-    pub toward: Vec<String>,
-}
-
-/// What the credential injector (a gateway, not a proxy: RFC 9110 §3.7, so it may set the
-/// `Authorization` header a proxy may not, §11.6.2) does with a request it has terminated,
-/// decided by [`decide`] from the TLS name the flow arrived on, the request's host and the
-/// VM's grants (D242). The injector renders the outcome; this enum is the decision.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Fill {
-    /// Fill the credential named `reference` into the request, then forward it.
-    With(String),
-    /// No grant names this host: forward the request with no credential (default deny).
-    Pass,
-    /// The request's host disagrees with the TLS name the flow arrived on, so the flow is
-    /// misdirected (RFC 9110 §7.4): refuse it 421, never guessing which host was meant.
-    Misdirected,
-}
-
-/// Decide what the injector fills into a request to a credential-granted host (D242).
-/// `sni` is the TLS server name the flow was terminated on, `host` the request's host (its
-/// HTTP/1.1 `Host` or HTTP/2 `:authority`, the authority alone, without a port); `grants`
-/// are the VM's. A value is filled only when the SNI, the host and a grant's host all
-/// agree: the SNI alone is not enough (a client picks its `Host` freely; domain fronting),
-/// so a `Host` that differs from the SNI is [`Misdirected`](Fill::Misdirected), and
-/// otherwise the first grant whose `toward` names the host fills it, else
-/// [`Pass`](Fill::Pass). Matching is ASCII case-insensitive, as DNS names compare (RFC
-/// 9549 §2.3); callers that also require the request to carry the credential's placeholder
-/// add that where they substitute.
-pub fn decide(grants: &[CredentialGrant], sni: &str, host: &str) -> Fill {
-    if !sni.eq_ignore_ascii_case(host) {
-        return Fill::Misdirected;
-    }
-    for grant in grants {
-        if grant.toward.iter().any(|h| h.eq_ignore_ascii_case(host)) {
-            return Fill::With(grant.reference.clone());
-        }
-    }
-    Fill::Pass
-}
+/// A run's credential grants and the injector's decision with them (D242): shards-dns's, which
+/// the network process's injector decides with too (both name a grant's hosts by its rules).
+/// A grant rides this channel by reference with the hosts it may be filled in toward and the
+/// placeholder that stands for it; its value rides a lease the injector pulls just in time,
+/// never this channel. The orchestrator's side checks it where it builds the request
+/// ([`super::request`]).
+pub use shards_dns::credential::{CredentialGrant, Fill, decide};
 
 /// A credential's lease, asked by the run's host just in time (D242): the credential its
 /// network process first needs, by reference, one of the run's grants and never a value;
@@ -1488,6 +1445,11 @@ impl Request {
                 w.text(a)?;
             }
         }
+        // Each credential grant's placeholder, in the grants' order, appended in version 22
+        // (D242).
+        for grant in &self.credentials {
+            w.text(&grant.placeholder)?;
+        }
         w.done()
     }
 
@@ -1595,7 +1557,12 @@ impl Request {
             for _ in 0..toward_n {
                 toward.push(r.text()?);
             }
-            credentials.push(CredentialGrant { reference, toward });
+            // Its placeholder, read with the members' arguments, appended last.
+            credentials.push(CredentialGrant {
+                reference,
+                toward,
+                placeholder: String::new(),
+            });
         }
         // Each member's terminal, in the members' order, appended in version 11 (D244).
         for m in &mut members {
@@ -1658,6 +1625,11 @@ impl Request {
                 args.push(r.text()?);
             }
             m.args = args;
+        }
+        // Each credential grant's placeholder, in the grants' order, appended in version 22
+        // (D242).
+        for grant in &mut credentials {
+            grant.placeholder = r.text()?;
         }
         r.end()?;
         Ok(Request {
@@ -2644,55 +2616,9 @@ mod tests {
         assert_eq!(SaveAnswer::decode(&[0, 0, 0, 9, 0, 0]), Err(WireError::Trailing));
     }
 
-    /// The injector fills a credential only when the TLS name, the request's host and a
-    /// grant's host all agree (D242): a grant toward one host does not fill a request to
-    /// another, a host that differs from the SNI is misdirected, and matching ignores
-    /// ASCII case.
-    #[test]
-    fn decide_fills_only_on_an_agreed_granted_host() {
-        let grants = vec![
-            CredentialGrant {
-                reference: "anthropic/claude-max".into(),
-                toward: vec!["api.anthropic.com".into(), "platform.claude.com".into()],
-            },
-            CredentialGrant {
-                reference: "openai/chatgpt".into(),
-                toward: vec!["chatgpt.com".into()],
-            },
-        ];
-        // SNI == Host == a grant's host: filled, the first grant that names it.
-        assert_eq!(
-            decide(&grants, "api.anthropic.com", "api.anthropic.com"),
-            Fill::With("anthropic/claude-max".into())
-        );
-        assert_eq!(
-            decide(&grants, "chatgpt.com", "chatgpt.com"),
-            Fill::With("openai/chatgpt".into())
-        );
-        // Case folds, as DNS names compare (RFC 9549 §2.3).
-        assert_eq!(
-            decide(&grants, "API.Anthropic.Com", "api.anthropic.com"),
-            Fill::With("anthropic/claude-max".into())
-        );
-        // A host no grant names: forwarded bare (default deny).
-        assert_eq!(decide(&grants, "example.com", "example.com"), Fill::Pass);
-        assert_eq!(decide(&[], "api.anthropic.com", "api.anthropic.com"), Fill::Pass);
-        // A grant toward host A does not fill a request whose host is B.
-        assert_eq!(decide(&grants, "evil.example", "evil.example"), Fill::Pass);
-        // The request's host disagrees with the TLS name it arrived on: misdirected, and
-        // never filled even though the SNI is a granted host (the SNI alone is not enough).
-        assert_eq!(
-            decide(&grants, "api.anthropic.com", "evil.example"),
-            Fill::Misdirected
-        );
-        assert_eq!(
-            decide(&grants, "chatgpt.com", "api.anthropic.com"),
-            Fill::Misdirected
-        );
-    }
-
     /// A credential's value never prints: a [`Secret`]'s `Debug` says only its length, and
-    /// a [`CredentialGrant`] carries no value to print (reference and hosts alone).
+    /// a [`CredentialGrant`] carries no value to print (its reference and hosts; of its
+    /// placeholder, its length alone).
     #[test]
     fn a_value_never_prints() {
         let secret = Secret(b"sk-ant-very-secret-value".to_vec());
@@ -2705,8 +2631,13 @@ mod tests {
         let grant = CredentialGrant {
             reference: "anthropic/claude-max".into(),
             toward: vec!["api.anthropic.com".into()],
+            placeholder: "kiln-placeholder-5ec2e7".into(),
         };
         let shown = format!("{grant:?}");
+        assert!(
+            !shown.contains("5ec2e7"),
+            "a grant's Debug showed its placeholder: {shown}"
+        );
         assert!(
             shown.contains("anthropic/claude-max"),
             "the reference is a name, not a value"
@@ -2900,19 +2831,24 @@ mod tests {
         let r = request();
         assert_eq!(Request::decode(&r.encode().unwrap()).unwrap(), r);
         // The run's credential grants (version 8, D242): none, one with several hosts, and
-        // one with none, each reading back as written.
+        // one with none, each reading back as written, with its placeholder (version 22).
         let mut credited = request();
         credited.credentials = vec![
             CredentialGrant {
                 reference: "anthropic/claude-max".into(),
                 toward: vec!["api.anthropic.com".into(), "platform.claude.com".into()],
+                placeholder: "kiln-placeholder-0a1b".into(),
             },
             CredentialGrant {
                 reference: "openai/chatgpt".into(),
                 toward: Vec::new(),
+                placeholder: String::new(),
             },
         ];
         assert_eq!(Request::decode(&credited.encode().unwrap()).unwrap(), credited);
+        // A placeholder is the grants' last field: a request cut in it is refused.
+        let bytes = credited.encode().unwrap();
+        assert!(Request::decode(&bytes[..bytes.len() - 1]).is_err());
         // Each member's working directory, or none, in the members' order (version 5),
         // whether its input is the orchestrator's (version 6), and its run-time arguments, none,
         // several, or an empty one among others (version 18).

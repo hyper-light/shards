@@ -572,12 +572,15 @@ fn egress(
 
 /// The run's credential grants for its network process (D242), by reference and never a
 /// value: each toward one host at least, and each host one its egress grants reach (D236),
-/// as a grant that could never be filled is refused, not kept silently; the network process
-/// checks them again as it takes them (D109). None where the run has none.
+/// as a grant that could never be filled is refused, not kept silently; each placeholder a
+/// token, and one credential's alone, as its orchestrator's side checked them; the network
+/// process checks them again as it takes them (D109). None where the run has none.
 fn credentials(grants: &[wire::CredentialGrant], egress: Option<&[u8]>) -> Result<Option<Vec<u8>>, No> {
     if grants.is_empty() {
         return Ok(None);
     }
+    shards_net::dns::credential::check(grants)
+        .map_err(|refused| No(Cause::Request, format!("credential {refused}")))?;
     let (ports, named, _) = egress.and_then(shards_net::decode_policy).unwrap_or_default();
     let mut held = Vec::with_capacity(grants.len());
     for g in grants {
@@ -599,10 +602,7 @@ fn credentials(grants: &[wire::CredentialGrant], egress: Option<&[u8]>) -> Resul
                 ),
             ));
         }
-        held.push(shards_net::Grant {
-            reference: g.reference.clone(),
-            toward: g.toward.clone(),
-        });
+        held.push(g.clone());
     }
     shards_net::encode_grants(&held).map(Some).ok_or_else(|| {
         No(
@@ -3166,7 +3166,7 @@ mod hosted {
             {
                 let started = std::thread::Builder::new()
                     .name("api-run output".into())
-                    .spawn_scoped(scope, move || records(live, reading));
+                    .spawn_scoped(scope, move || records(live, reading, &launched.vm));
                 if let Err(e) = started {
                     let _ = writeln!(io::stderr(), "shards api-run: its members' output: {e}");
                 }
@@ -3460,7 +3460,8 @@ mod hosted {
         if let super::AsksEnd::Failed(why) = &ended {
             super::say(format_args!("its asks ended: {why}"));
         }
-        *lock(&live.asks_end) = Some(ended);
+        // The first end of its asks stands: its members' output's, where that came first.
+        lock(&live.asks_end).get_or_insert(ended);
         let _ = vm.kill(shards_ipc::signal::SIGKILL);
     }
 
@@ -3826,30 +3827,44 @@ mod hosted {
     }
 
     /// Reads the run's managed output until it ends: each member's bytes to the
-    /// orchestrator within its room, its channel's end, each record's credit renewed.
-    fn records(live: &Live<'_>, mut capture: Stream) {
+    /// orchestrator within its room, its channel's end, each record's credit renewed. Its
+    /// VM's end of it, at a frame's start or within one, is the VM's end, which `follow`
+    /// tells. Where this host cannot take what comes (a frame of no record's kind, cut short
+    /// in its header or malformed, a record it cannot hold or read) or cannot send its
+    /// orchestrator what it has, the run fails in those words: its asks' end
+    /// ([`super::AsksEnd`]), and `vm`, its VM, killed for it, so that no run waits for its
+    /// `STOP` on a failure its host saw (D258).
+    fn records(live: &Live<'_>, capture: Stream, vm: &shards_ipc::Child) {
+        if let Err(why) = read_records(live, capture) {
+            super::say(format_args!("its asks ended: {why}"));
+            lock(&live.asks_end).get_or_insert(super::AsksEnd::Failed(why));
+            let _ = vm.kill(shards_ipc::signal::SIGKILL);
+        }
+    }
+
+    /// [`records`]' reads, to their end: its VM's, or why not.
+    fn read_records(live: &Live<'_>, mut capture: Stream) -> Result<(), String> {
+        let broke = |why: std::fmt::Arguments<'_>| format!("its VM's members' output broke: {why}");
         loop {
             let mut header = [0u8; protocol::HEADER];
             if capture.read_exact(&mut header).is_err() {
-                return;
+                return Ok(());
             }
-            let Some((which, len)) = protocol::parse_header(header) else {
-                return;
-            };
+            let (which, len) =
+                protocol::parse_header(header).ok_or_else(|| broke(format_args!("a frame's header")))?;
             if which != protocol::kind::MANAGED {
-                return;
+                return Err(broke(format_args!("a frame of kind {which}, no record's")));
             }
             let mut record = Vec::new();
-            if record.try_reserve_exact(len as usize).is_err() {
-                return;
-            }
+            record
+                .try_reserve_exact(len as usize)
+                .map_err(|e| broke(format_args!("no room for a record of {len} bytes: {e}")))?;
             record.resize(len as usize, 0);
             if capture.read_exact(&mut record).is_err() {
-                return;
+                return Ok(());
             }
-            let Ok(parsed) = managed::Record::decode(&record) else {
-                return;
-            };
+            let parsed =
+                managed::Record::decode(&record).map_err(|e| broke(format_args!("a record: {e}")))?;
             let key = (parsed.member, channel_of(parsed.channel));
             let mut flows = lock(&live.flows);
             flows.granted.insert(key, false);
@@ -3881,8 +3896,13 @@ mod hosted {
                     sent.and_then(|()| live.answers.send(wire::to_client::OUTPUT_END, &[&end.encode()]))
                 }
             };
-            if sent.is_err() || live.grant(&mut flows, key).is_err() {
-                return;
+            sent.map_err(|e| format!("its answers to its orchestrator: {e}"))?;
+            // Room its VM can take no more of is its VM ending, its end the VM's (`take`'s
+            // credits likewise), said once.
+            if let Err(e) = live.grant(&mut flows, key)
+                && !std::mem::replace(&mut flows.ungranted, true)
+            {
+                super::say(format_args!("its VM takes no more of its members' output: {e}"));
             }
         }
     }
@@ -4479,6 +4499,70 @@ mod hosted {
             let _ = vm.wait();
         }
 
+        /// Do have a run's VM bring its managed output a frame its host cannot take, here one
+        /// of no record's kind; and end that output at a frame's start, as a VM does as its
+        /// run ends. Expect: the first to end the run's asks failed in its words, its VM killed
+        /// for it, so that no run waits for its `STOP` on a failure its host saw (D258); the
+        /// second to end nothing of the run, whose end is its VM's to say.
+        #[test]
+        fn members_output_its_host_cannot_take_ends_its_run_failed_saying_why() {
+            for refused in [true, false] {
+                let dir = shards_testdir::TempDir::new("api-records").unwrap();
+                let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+                let (capture, its_vms) = Stream::pair().unwrap();
+                let (link, _vm_link) = Stream::pair().unwrap();
+                let live = Live {
+                    answers: &answers,
+                    ends: Ends::kept_in(dir.path()),
+                    flows: Mutex::new(Flows::default()),
+                    feeds: Mutex::new(HashMap::new()),
+                    fed: std::sync::Condvar::new(),
+                    capture: None,
+                    link: Mutex::new(link),
+                    held: Mutex::new(Some(HashMap::new())),
+                    asks_end: Mutex::new(None),
+                    next_exec: std::sync::atomic::AtomicU64::new(0),
+                    home: dir.path(),
+                    members: &[],
+                    roots: &[],
+                    devices: Mutex::new(Some(Vec::new())),
+                    guest_times: Mutex::new(Some(Vec::new())),
+                    rates: Mutex::new(Some(Vec::new())),
+                    lanes: Mutex::new(Some(HashMap::new())),
+                    next_lane: std::sync::atomic::AtomicU64::new(0),
+                    plugged: Mutex::new(HashMap::new()),
+                    notices_due: Mutex::new(None),
+                    notices: Mutex::new(Vec::new()),
+                    leasing: None,
+                };
+                let args = [OsStr::new("-c"), OsStr::new("sleep 30")];
+                let vm = shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap();
+                if refused {
+                    (&its_vms)
+                        .write_all(&protocol::header(protocol::kind::STDOUT, 0))
+                        .unwrap();
+                } else {
+                    drop(its_vms);
+                }
+                records(&live, capture, &vm);
+                if refused {
+                    assert_eq!(
+                        *lock(&live.asks_end),
+                        Some(super::super::AsksEnd::Failed(format!(
+                            "its VM's members' output broke: a frame of kind {}, no record's",
+                            protocol::kind::STDOUT
+                        )))
+                    );
+                    assert_eq!(vm.wait().unwrap(), 128 + libc::SIGKILL);
+                } else {
+                    assert_eq!(*lock(&live.asks_end), None);
+                    assert_eq!(vm.try_wait(), None, "its VM, killed for an end of its own");
+                    let _ = vm.kill(libc::SIGKILL);
+                    let _ = vm.wait();
+                }
+            }
+        }
+
         /// A run's share process ends as its run ends, by its own going: [`Shares::end`]
         /// lets go of its door before it waits, and the process, which goes once its
         /// connection to the VM ends, has gone well before `reap`'s grace ends it (CI run
@@ -4550,6 +4634,10 @@ mod hosted {
             let dir = shards_testdir::TempDir::new("api-save").unwrap();
             let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
             let (link, vm) = Stream::pair().unwrap();
+            // A bound on the VM's waits, as the session's tests bound theirs: it decides no
+            // result, but ends a run whose save went wrong failing, never hanging, its link
+            // closing as its thread goes.
+            vm.set_read_timeout(Some(std::time::Duration::from_secs(120))).unwrap();
             let followed = link.try_clone().unwrap();
             let live = live(&answers, dir.path(), link, None);
             let to = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
@@ -5175,6 +5263,7 @@ mod tests {
         let grant = |reference: &str, toward: &[&str]| wire::CredentialGrant {
             reference: reference.into(),
             toward: toward.iter().map(|h| (*h).to_string()).collect(),
+            placeholder: format!("kiln-placeholder-{}", reference.replace('/', "-")),
         };
         let named = shards_net::encode_policy(
             &shards_net::Ports::default(),
@@ -5194,12 +5283,24 @@ mod tests {
             Some(vec![shards_net::Grant {
                 reference: "anthropic/claude-max".into(),
                 toward: vec!["api.anthropic.com".into()],
+                placeholder: "kiln-placeholder-anthropic-claude-max".into(),
             }])
         );
+        // A placeholder that is no token, and one shared by two credentials, as an
+        // orchestrator's side that checked nothing could send them.
+        let mut untoken = grant("anthropic/claude-max", &["api.anthropic.com"]);
+        untoken.placeholder = "two words".into();
+        let mut shared = grant("anthropic/console", &["api.anthropic.com"]);
+        shared.placeholder = "kiln-placeholder-anthropic-claude-max".into();
         for refused in [
             credentials(&[grant("openai/chatgpt", &["chatgpt.com"])], Some(&named)),
             credentials(&[grant("anthropic/claude-max", &[])], Some(&named)),
             credentials(&[grant("anthropic/claude-max", &["api.anthropic.com"])], None),
+            credentials(&[untoken], Some(&named)),
+            credentials(
+                &[grant("anthropic/claude-max", &["api.anthropic.com"]), shared],
+                Some(&named),
+            ),
         ] {
             assert!(matches!(refused, Err(No(Cause::Request, _))));
         }
@@ -5219,10 +5320,12 @@ mod tests {
             shards_net::Grant {
                 reference: "anthropic/claude-max".into(),
                 toward: vec!["api.anthropic.com".into(), "claude.ai".into()],
+                placeholder: "kiln-placeholder-0a".into(),
             },
             shards_net::Grant {
                 reference: "anthropic/console".into(),
                 toward: vec!["api.anthropic.com".into()],
+                placeholder: "kiln-placeholder-1b".into(),
             },
         ])
         .unwrap();

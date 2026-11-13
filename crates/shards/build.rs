@@ -369,6 +369,7 @@ fn compile_helpers(out: &mut impl io::Write) -> Result<PathBuf, String> {
         "crates/vmm",
         "crates/net",
         "crates/netring",
+        "crates/verify",
         "crates/dns",
         "crates/ipc",
         "crates/abi",

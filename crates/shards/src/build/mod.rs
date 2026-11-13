@@ -35,6 +35,8 @@ use shards_registry::pull::{self as registry_pull, Event};
 
 mod attest;
 mod azblob;
+#[cfg(test)]
+mod bases_tests;
 pub(crate) mod builder;
 mod cache;
 pub(crate) mod cdi;

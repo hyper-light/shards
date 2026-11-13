@@ -622,10 +622,7 @@ mod tests {
     use crate::testing::{After, Seen, route};
 
     fn client() -> Client {
-        Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        )
+        crate::testing::client()
     }
 
     fn json(status: &str, fields: &[(&str, &str)], body: &str) -> Vec<u8> {

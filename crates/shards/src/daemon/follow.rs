@@ -45,13 +45,18 @@ enum Process {
     /// and whether that VM still runs; once it has ended, the VM, not yet reaped, so that
     /// its pid names no new process before its ports are freed (review 2.25); and from then
     /// on, when, and what the network process does since (D217's `Followed`), which each of
-    /// its deadlines looks at: none once it was ended for doing nothing.
+    /// its deadlines looks at: none once it was ended for doing nothing. While its VM runs,
+    /// from its VM's word that it waits on it to close the run's ports (`UNPUBLISHING`) to
+    /// its answer (`PORTS_FREE`), what it does since (`unpublishing`). `due` is when its
+    /// look is next: a deadline before it, or with none, one left from a follow since ended.
     Net {
         child: Arc<shards_ipc::Child>,
         vm: u32,
         vm_running: bool,
         ended_vm: Option<Arc<shards_ipc::Child>>,
         following: Option<(Instant, super::ends::Followed)>,
+        unpublishing: Option<Box<super::ends::Followed>>,
+        due: Option<Instant>,
         watch: Option<ExitWatch>,
     },
     /// A run's share process (D38), which ends as its VM's connections close: Unix's
@@ -269,24 +274,47 @@ impl<D: Disk> Daemon<D> {
                     self.restart_due(threads, &id);
                     continue;
                 }
-                // A network process whose VM has gone: given another slice while it goes on
-                // with its end (D217, PM M546), ended once it has run nothing and freed
-                // nothing for one. Its end follows, which frees its VM's ports.
+                // A network process whose VM has gone, or whose VM waits on it to close the
+                // run's ports: given another slice while it goes on with it (D217, PM M546),
+                // ended once it has run nothing and freed nothing for one. Its end follows,
+                // which frees its VM's ports, and ends its VM's wait.
                 let again = {
                     let mut processes = lock(&f.processes);
-                    let Some(Process::Net { child, following, .. }) = processes.get_mut(&token) else {
+                    let Some(Process::Net {
+                        child,
+                        following,
+                        unpublishing,
+                        due,
+                        ..
+                    }) = processes.get_mut(&token)
+                    else {
                         continue;
                     };
-                    if following
-                        .as_mut()
-                        .is_some_and(|(_, done)| done.goes_on().is_some())
-                    {
-                        Instant::now().checked_add(self.ends.slice(End::Helper))
-                    } else {
-                        *following = None;
-                        let _ = child.kill(shards_ipc::signal::SIGKILL);
-                        None
+                    // One left from a follow since ended, or come before its look is due.
+                    if due.is_none_or(|at| now < at) {
+                        continue;
                     }
+                    let goes_on = match unpublishing.as_mut() {
+                        Some(followed) => Some(followed.goes_on().is_some()),
+                        None => following
+                            .as_mut()
+                            .map(|(_, followed)| followed.goes_on().is_some()),
+                    };
+                    let next = match goes_on {
+                        Some(true) => self
+                            .ends
+                            .slice(End::Helper)
+                            .and_then(|slice| Instant::now().checked_add(slice)),
+                        Some(false) => {
+                            *following = None;
+                            *unpublishing = None;
+                            let _ = child.kill(shards_ipc::signal::SIGKILL);
+                            None
+                        }
+                        None => None,
+                    };
+                    *due = next;
+                    next
                 };
                 if let Some(at) = again {
                     lock(&f.deadlines).push(Reverse((at, token)));
@@ -325,6 +353,8 @@ impl<D: Disk> Daemon<D> {
                         vm_running: true,
                         ended_vm: None,
                         following: None,
+                        unpublishing: None,
+                        due: None,
                         watch: None,
                     },
                 );
@@ -424,6 +454,8 @@ impl<D: Disk> Daemon<D> {
                     vm_running,
                     ended_vm,
                     following,
+                    unpublishing,
+                    due,
                     ..
                 }) = processes.get_mut(&net)
                 {
@@ -431,9 +463,16 @@ impl<D: Disk> Daemon<D> {
                     *ended_vm = Some(vm);
                     let now = Instant::now();
                     *following = Some((now, super::ends::Followed::of(Some(child.id()))));
+                    *unpublishing = None;
+                    // A slice past what a clock holds, or none heard yet: its end alone,
+                    // which reaps it.
+                    let at = self
+                        .ends
+                        .slice(End::Helper)
+                        .and_then(|slice| now.checked_add(slice));
+                    *due = at;
                     drop(processes);
-                    // A slice past what a clock holds: its end alone, which reaps it.
-                    if let Some(at) = now.checked_add(self.ends.slice(End::Helper)) {
+                    if let Some(at) = at {
                         lock(&f.deadlines).push(Reverse((at, net)));
                         f.wake();
                     }
@@ -466,6 +505,65 @@ impl<D: Disk> Daemon<D> {
             }
             Process::Share { child, .. } => {
                 let _ = child.wait();
+            }
+        }
+    }
+
+    /// VM `vm`'s word that it has asked its network process to close its run's ports and
+    /// waits on it (`UNPUBLISHING`): that process followed from now, as one whose VM has gone
+    /// is (D217's helper slice): looked at once a slice has passed, and each slice after while
+    /// it goes on, ended where it goes on with nothing for one, which ends its VM's wait. The
+    /// VM process, confined, sees nothing of its progress (ROOT's (A), 2026-11-13). A home
+    /// that has heard no helper's end yet has no slice: its liveness alone, as its VM's wait.
+    pub(super) fn follow_unpublish(&self, vm: u32) {
+        let f = &self.followers;
+        let mut processes = lock(&f.processes);
+        let Some((
+            token,
+            Process::Net {
+                child,
+                unpublishing,
+                due,
+                ..
+            },
+        )) = processes
+            .iter_mut()
+            .find(|(_, p)| matches!(p, Process::Net { vm: of, vm_running: true, .. } if *of == vm))
+        else {
+            return;
+        };
+        *unpublishing = Some(Box::new(super::ends::Followed::of(Some(child.id()))));
+        let at = self
+            .ends
+            .slice(End::Helper)
+            .and_then(|slice| Instant::now().checked_add(slice));
+        *due = at;
+        let token = *token;
+        drop(processes);
+        if let Some(at) = at {
+            lock(&f.deadlines).push(Reverse((at, token)));
+            f.wake();
+        }
+    }
+
+    /// VM `vm`'s network process answered its ports' closing (`PORTS_FREE`): followed no more
+    /// for it, its VM's wait over.
+    pub(super) fn unpublished(&self, vm: u32) {
+        let f = &self.followers;
+        let mut processes = lock(&f.processes);
+        for process in processes.values_mut() {
+            if let Process::Net {
+                vm: of,
+                unpublishing,
+                following,
+                due,
+                ..
+            } = process
+                && *of == vm
+                && unpublishing.take().is_some()
+                && following.is_none()
+            {
+                *due = None;
             }
         }
     }

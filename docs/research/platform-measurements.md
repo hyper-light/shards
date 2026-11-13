@@ -23188,3 +23188,347 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   | R09, R10 | Each symptom in CI's or ROOT's logs, before and after; the premise red then green on macOS; the kernel's red/green is ROOT's run with the pin. |
   | R11 | Unix moves the file; Windows refuses the cut, as before. Linux's inotify check is CI's. |
   | R15, R16 | Implementer; light runs on one host; its checkout and target removed after landing. |
+
+### M553. A slot's line on Windows: what it holds before a write waits, and how a waiting write ends as its reader goes (D185)
+
+- **Question.** D185's Windows take (82da06b02) writes a slot's answer in parts no larger than
+  its line's outbound quota, and takes a part's pend for a wait on its client until the part
+  finishes. Does the line hold what GetNamedPipeInfo says before a part pends, and how does a
+  part that pends end when its client goes, rather than reads? ReactOS's npfs completes such a
+  write `STATUS_PIPE_BROKEN` (`statesup.c` `NpSetClosingPipeState` drains the closing end's
+  inbound queue so). On Windows its unit test (`an_answer_is_written_as_its_line_takes_it`)
+  failed: a client dropped as its two-quota answer's second part waited left the write `Ok`
+  (jupiter, at 68baef2d0).
+- **Method.** shards-ipc
+  `slots::named::tests::what_a_line_holds_and_what_a_waiting_write_comes_to_as_its_reader_goes`
+  (ignored, run by hand with `--ignored --nocapture`), both ways of a `slots::joined` line
+  (the client end writing, and the server end, as a slot's answer goes): the writer's
+  GetNamedPipeInfo; parts of a sixteenth of the outbound quota written through
+  `pipe::write_telling`, nothing read, until one pends, the bytes before it what the line held,
+  and PeekNamedPipe's count at the pend; then, on a fresh line, the reader dropped as the first
+  pending part waits, what that write came to, and the next write. Run once on jupiter (Windows
+  11 build 26200, x86_64; `MINGW64_NT-10.0-26200`), at main 68baef2d0 with the test alone added,
+  in a clone and target of its own, removed after.
+- **Found** (each way alike; flags 0x8 for the client end, 0x9 the server's):
+  - GetNamedPipeInfo: out 65,536, in 65,536, the `LINE_BUFFER` the instance was made with.
+  - The line held 65,536 bytes, 16 parts of 4,096, before a part pended: its quota exactly.
+    PeekNamedPipe then said 69,632 bytes, the pending part's among them.
+  - The pending write, its reader dropped: `Ok(4096)`, the whole part, which no reader took.
+    The next write: `ERROR_NO_DATA` (232, "The pipe is being closed").
+- **Decision** (D185's Windows line).
+  - A part's finish is a take only where the pipe is connected still after it: its local
+    information's `NamedPipeState` (`FILE_PIPE_CONNECTED_STATE`, `pipe::connected_now`,
+    NtQueryInformationFile's `FilePipeLocalInformation`). One that finished as its client
+    went teaches nothing, is told no end, and the write fails `BrokenPipe`, as a run's answer
+    to a client gone must end typed, never waiting on it. Taken for a take, it would have
+    taught the time a client that read nothing lived, a W* of that.
+  - Its cost: a client that takes the last of a part and goes at once may be seen gone after
+    that part's finish; its take teaches nothing, and the write says BrokenPipe though its
+    bytes were read. A lesson lost, never a wrong one.
+  - The parts stay the quota GetNamedPipeInfo says: the line holds that much, no more.
+- **Tests.** `an_answer_is_written_as_its_line_takes_it`, its dropped reader asserted as before
+  (`BrokenPipe`, its wait told no end), now on Windows' own finish.
+- **Owed.** The run of `slots::named` on jupiter again (ROOT's); CI's windows-2022.
+- **Rules** (policy cbd392849, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap or panic added to production code; the state query's NTSTATUS is a typed error. |
+  | R02, R03 | Windows' own behaviour, measured once on jupiter; the quota is the line's own; no figure added. |
+  | R04 | A pend's end is a take, or `BrokenPipe` with no end told. |
+  | R09, R10 | Red: the Windows test's failure at 68baef2d0 (`unwrap_err` of `Ok`); the cause measured here. |
+  | R11 | Windows' writer only; Unix's FIFO writer sees its reader's end as EPIPE. |
+  | R15, R16 | Implementer; one light run on jupiter, ROOT's leave; its clone and target removed after. |
+
+### M554. A stopped child hung up by its run's end: why rusage_times_are_task_info_times failed once (D215)
+
+- **Question.** shards-api's `progress::tests::rusage_times_are_task_info_times` (08336a4cb)
+  stops a shell child (SIGSTOP), waits for its stop (`waitid(WSTOPPED | WNOWAIT)`), then reads
+  its user and system times once through proc_pid_rusage(3) and once through
+  PROC_PIDTASKINFO, and holds them equal. It failed once on adas-mac-studio.local (macOS 26.2
+  arm64, load average 20), in kiln run r227, which kiln had already counted ended (no exit code)
+  as its first test binary ran, and whose test binary then died part-way through its tests. What
+  in the comparison can differ?
+- **Method.**
+  - Load alone: 200 such children stopped under a spinner on each of the host's 14 CPUs, each
+    read PROC_PIDTASKINFO, proc_pid_rusage, PROC_PIDTASKINFO (a stand-in, since replaced by the
+    one below).
+  - A run's end: a kiln run whose shell child traps HUP, INT, TERM and CONT into a log, stops
+    itself, and is stopped by `kiln stop` (Ctrl-C, then terminate).
+  - The stand-in, `progress::tests::a_stopped_child_is_hung_up_by_its_runs_end` (ignored, run by
+    hand with `--ignored --nocapture`): under a spinner per CPU, 100 children stopped as the test
+    stopped its own, each sent SIGHUP then SIGCONT, as the kernel sends an orphaned process
+    group's members (below), its end waited for (`waitid(WEXITED | WNOWAIT)`), then read once
+    each; and 100 stopped as the test stops its own now, sent the same, read where they ran
+    nothing between.
+- **Found** (adas-mac-studio.local, macOS 26.2 arm64, at main 4506d5268):
+  - Load alone never ran a stopped child on: its times grew after `waitid` in 0 of 200, and
+    one read of each never disagreed.
+  - The run's end did: the stopped child ran its HUP trap and exited. Its run's shell gone, its
+    process group was orphaned while holding a stopped member, and POSIX has the kernel then send
+    each member SIGHUP, then SIGCONT: "If the exit of the process causes a process group to
+    become orphaned, and if any member of the newly-orphaned process group is stopped, then a
+    SIGHUP signal followed by a SIGCONT signal shall be sent to each process in the
+    newly-orphaned process group" (POSIX.1-2017, `_exit`).
+  - The stand-in: one read of each disagreed in 100 of 100 children stopped as before.
+    Continued and hung up, the child had gone, and PROC_PIDTASKINFO read nothing of it.
+    Stopped as now, they disagreed in 0 of 100.
+- **Decision.** The test's child ignores HUP, INT and TERM and stops itself again whenever
+  continued (`while :; do kill -STOP $$; done`), so that only the test's SIGKILL ends it. Its
+  two readers are compared where it ran nothing between them: PROC_PIDTASKINFO's times the same
+  on either side of proc_pid_rusage's read (`times_still`). The readers themselves were never
+  at fault. A run's end makes its test binary's last results noise; this one no longer says a
+  false failure in them.
+- **Tests.** `rusage_times_are_task_info_times` (its child and reads as above);
+  `a_stopped_child_is_hung_up_by_its_runs_end` (ignored), its counts asserted: every child stopped
+  as before disagrees, none stopped as now.
+- **Rules** (policy cbd392849, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | Test code only. |
+  | R02, R03 | XNU's readers and POSIX's orphaned process groups, measured here; no figure but the stand-in's rounds. |
+  | R09, R10 | Red: one read of each, 100 of 100 hung-up children; green: 0 of 100, and the test. |
+  | R11 | macOS's test alone (`cfg(target_os = "macos")`). |
+  | R15, R16 | Implementer; light runs on one host, ROOT's ask. |
+
+### M555. A registry's answers and silences follow their path's liveness and progress, then the slowest it has shown (D222)
+
+- **Question.** D222's waits for a lookup's answer and for a download's next byte were a
+  restart cutoff (Luby, Sinclair and Zuckerman's t* over a Kaplan-Meier estimate of the
+  path's times), drawn from [t, 2t), doubled for each cut in a row and at least a second
+  (RFC 6298 §2.4, §5.5): a floor, a doubling and a draw, none of them the path's. The person
+  ruled on 2026-11-13: "we do not tolerate arbitrary constants. learned and data-derived
+  values. Period."; and of every such wait: "The cold start, and every wait after a
+  run-out, follows the party's liveness and progress. After that the bound is the slowest
+  answer seen." What are an answer's and a silence's stalls, what bounds them, and what
+  follows one that runs out?
+- **Found** (from the code, and from the crate's own tests on adas-mac-studio.local).
+  - A stall is a gap with no progress: an answer's, from its request's end to its head's
+    first byte; a silence, a read's own wait for its bytes. The old silence counted from the
+    read before, so the reader's own time between its reads was in it
+    (`a_silence_is_a_reads_own_wait_not_its_readers_time`, red below).
+  - An asking cut at the slowest, and asked again only to be cut there again, would never
+    let a slower answer through with no doubling now: a fresh home's `/v2/` check teaching a
+    bound that each slower manifest then runs out on until its budget ends the pull. So
+    the rule's run-out clause is built (`Bounded::RanOut`), and its removal goes red below.
+  - With the exact slowest as the bound, a fresh path's k-th answer is its slowest yet with
+    chance 1/k where its times are alike (records among exchangeable times; Glick,
+    "Breaking records and breaking boards", Amer. Math. Monthly 85(1), 1978), and it runs
+    out. Run, the crate's lib tests failed 22 and then 11 of 168 in two rounds (r40, at
+    dc0950b5b): every one a scripted server whose next answer an asking again took out of
+    turn (pull.rs, search.rs, push.rs, fetch.rs, registry.rs), none a fault of the client's.
+    Those tests' clients now follow liveness alone (`testing::client`), with no number of
+    the tests' own.
+  - `Client::learned` counted a connect's or a handshake's timeout only where
+    `took >= within` by `Instant`. A system wait may end a tick before its time by the clock
+    (Microsoft Learn, Wait Functions), as an answer's read did on CI's arm64 Windows
+    (48ef5a191), so such a timeout went uncounted, its next wait not doubled: found from the
+    code by goal 51's step 4, reproduced by `a_wait_its_own_time_ended_counts_as_its_timeout`,
+    which ends a wait by its own time with no time passed by the clock (red below).
+- **Decision** (D222's first bullet and "A wait's end is its own stop").
+  - Each path keeps its slowest answer and its slowest silence (`Shown::slowest_answer_us`,
+    `slowest_silence_us`), in the home's links record, merged by the slower; a run-out
+    learns nothing.
+  - A wait begins `Bounded::Cold` (none of its kind shown: liveness alone, a body all its
+    life), `Slowest(d)` (past d with nothing come it runs out: overdue, typed `Overdue::Answer`
+    or `Overdue::Silence`, asked again at once; a download resumed where it was) or
+    `RanOut(d)` (the next of its kind after one ran out: liveness alone until an answer
+    comes, whatever its time; for silences until one longer than d ends, which is then the
+    slowest and bounds the rest of its body, or until a body that brought bytes ends).
+  - A head's rest after its first byte waits as a silence does.
+  - A connect's and a handshake's timeout is counted by its own stop (`Error::is_timed_out`):
+    its dial's deadline, an attempt's `connect_timeout` set to what was left, attempts still
+    pending as it passed, a name's lookup past it, a handshake's deadline or socket timeout.
+  - Gone: `Cutoff`, `Sketch`, `ALPHA`, the draw (`Client::drawing`), what a cut cost
+    (`again_us`), and the crate's export of both.
+- **Tests.**
+  - patience.rs `a_paths_waits_follow_the_slowest_and_a_run_out_learns_nothing`; the
+    record's, the merge's and the routes' tests on the slowest; records of RFC 6298's and
+    of the cutoff's read whole, cold.
+  - http.rs `an_answer_cut_by_its_wait_is_overdue`, `an_answer_is_cut_only_before_its_first_byte`,
+    `a_silence_is_a_reads_own_wait_not_its_readers_time`,
+    `a_wait_its_own_time_ended_counts_as_its_timeout`, `a_handshake_or_a_dial_its_time_ends_says_so`.
+  - registry.rs `a_paths_answers_are_waited_for_as_long_as_it_shows`,
+    `a_silent_download_is_cut_and_resumed_and_its_silence_learned`; fetch.rs
+    `a_stuck_layer_keeps_no_other_waiting` (its CDN's path having shown a second).
+- **Checked** (one host, adas-mac-studio.local, macOS arm64, `CARGO_INCREMENTAL=0`, a
+  carrier's checkout at 8ec9cca76 over main baba912ee; kiln runs r40, r107, r118):
+  - `cargo test -p shards-registry --lib`: 169 passed, three rounds (r107). Before its
+    scripted servers' clients followed liveness, 146 and 157 of 168 (r40, above).
+  - Red with each guard removed (`/tmp/r03-carrier/red-reg.sh`, r118), each failing for its
+    own reason: the second back as the cold start (four tests, among them a 1.5 s path's
+    answers cut at a second until its 100 s budget ended the request); no run-out clause
+    (two, the same path's answers cut at 0.3 s again and again until the budget); the
+    answer's bound kept past its first byte; a head's rest unbounded; timeouts counted by
+    the clock (`1s` where `2s` was due); silences counted from the read before; a silence
+    run-out ended by the next silence (101 range requests where two were due, each resume
+    cut at its first 0.5 s gap).
+  - `cargo clippy -p shards-registry --all-targets -- -D warnings`: clean (r107).
+  - `cargo fmt --check`: clean.
+  - On the merged tree (8e3568e75 over main 740fa3726, r156): 169 passed; clippy clean for
+    aarch64-apple-darwin, and for x86_64-pc-windows-msvc through cargo-xwin with `shards`
+    (r450, at a1cb7dd64).
+- **Owed.** CI's: Linux and Windows (where a system wait's early end is the own-stop rule's
+  reason) and arm64 Linux. ROOT's: real pulls and pushes on every backend (api_image.rs,
+  containers.rs), where a fresh home's first pull now runs out on a few answers a path's
+  first askings make (about ln n of n askings over a home's life, above), each asked
+  again at once.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap, index or panic added to production code; times saturate (`micros`, `slower`). |
+  | R02, R03 | The person's rule, quoted; the bound is each path's own slowest, cold its liveness; the second, the doubling and the draw go, and the tests' clients carry no number either. RFC 6298 stays for connects and handshakes, a cited protocol bound. |
+  | R04 | `Bounded` (`Cold`, `Slowest`, `RanOut`), `Overdue` (`Answer`, `Silence`), `Last` (`Unread`, `Bytes`, `RanOut`), `Error::is_timed_out`: typed, matched by their callers. |
+  | R05 | Each wait is a socket's readiness and its timeout, no probe; a re-arm only as a run-out ends. |
+  | R09, R10 | The CI run of 48ef5a191 and the unit tests above; red with each guard removed, green after. |
+  | R11 | Cross-platform code; macOS arm64 run, Linux and Windows owed to CI. |
+  | R15, R16 | Implementer; the carrier's checkout and target on adas-mac-studio.local are removed after landing. |
+
+### M556. A run's relays drain to their own peers' ends, typed, with no clock (D124)
+
+- **Question.** On the host's network (D124) init's hostbind process relays connections to
+  the guest's loopback servers, and once the run has ended it passed on what they held for
+  a second (`DRAIN`), the network process's grace that PM M546 retired (`netproc::GRACE`).
+  The person ruled on 2026-11-13 that a wait follows the party's liveness and progress, then
+  the slowest answer seen, cold the liveness alone. ROOT's frame: progress is bytes
+  relayed; each run's relay drains once, so in-process learning is always cold, and the
+  slowest drain would have to come from the host (the run's setup) to bound anything; cold
+  means the relays' own peers' ends. What are those ends, and what is left to pass on?
+- **Found** (from Linux's source, and the relay's unit tests on adacachy2).
+  - The run's other processes are killed before init lets the relay process go; a killed
+    server's socket closes with a FIN, or with a reset where its client's bytes lay unread
+    (tcp_close()'s `data_was_unread`), and tcp_recvmsg() gives what was queued before the
+    reset's error. The relay ended at any failure, that reset among them, and lost what it
+    held of the server's (red below: `[Failed(Local, 104)]`).
+  - A relay's socket to the client, closed with the client's bytes unread, resets in turn,
+    which takes its unsent queue with it: what the client sends after its server's end has
+    to be read and dropped.
+  - Written is not sent: a client with a small window leaves the relay's bytes queued in the
+    guest. TCP_NOTSENT_LOWAT of one byte (Linux 3.12) has POLLOUT say so only once nothing
+    is left unsent (tcp_stream_memory_free()), and SIOCOUTQNSD says how much is.
+  - A client that holds its connection open without a word (an idle pooled one) never sends
+    its end: waiting for it would hold the run's end for ever.
+  - poll(2) says POLLERR and POLLHUP whatever is asked: a reset socket kept in the set would
+    wake the loop again and again; one waited on no more goes in as -1.
+- **Decision** (D124's "Let go."; D217's owed list).
+  - Once init has gone, `hostbind::drain` waits on its relays' sockets alone, no clock, each
+    relay until its own end, typed (`Ended`): `Drained`, its server's end (FIN or reset) and
+    all it sent before passed on and sent, its end then told the client; `Failed(Side,
+    errno)`, a socket's failure, the client's (its reset) ending it; `Closed`, both ways
+    ended as the run went on; `Unwatched(errno)`, poll(2) failing. Each way's read and write
+    says how it went (`Moved::On`, `Moved::Failed(errno)`), and a relay's run says whether it
+    has ended (`Drain::No`, `Drain::Yes { sent }`).
+  - The bound the host could give is not built: a client that stops taking a dead server's
+    last bytes holds its run's end while it lives, as a closed daemon's client does (PM
+    M549), and the run's kill ends it.
+- **Tests** (init's hostbind.rs, each with its harness waiting on events alone):
+  `a_relay_drains_its_servers_bytes_however_long_its_client_takes` (4 MiB, a 4 KiB window,
+  reading from 1.5 s), `a_relays_drain_ends_once_its_servers_bytes_are_sent` (256 KiB the
+  relay can write at once: its drain ends after its client began to read),
+  `a_reset_servers_bytes_are_drained_too`, `a_relays_drain_ends_with_its_server_or_its_client`
+  (a client that holds its connection: drained; one that resets: `Failed(Net, ECONNRESET)`).
+- **Checked** (one host, adacachy2, CachyOS Linux 7.3.3 x86_64, glibc, `nice -n 10`,
+  `CARGO_INCREMENTAL=0`, a carrier's checkout at 8ec9cca76 over main baba912ee; kiln runs
+  r52, r76, r108):
+  - `cargo test -p shards-init -- hostbind::`: 7 passed (r52 at 5c02cd61b, r108 at
+    8ec9cca76).
+  - Red with each guard removed (`/tmp/r03-carrier/red-drain.sh`, r76): the second back
+    failed the 4 MiB and the sent tests (fewer bytes, the server's writes broken); the
+    sent-wait gone failed the sent test (drained before its client read); a reset ending the
+    relay failed the reset test (`[Failed(Local, 104)]` for `[Drained]`); no drain failed
+    four (`Closed` for `Drained`, the reset's loss, and the held-open client's drain never
+    ending).
+  - `cargo clippy -p shards-init --all-targets -- -D warnings`: clean (r108).
+  - `cargo fmt --check`: clean.
+  - On the merged tree (8e3568e75 over main 740fa3726, r157): 7 passed, clippy clean.
+- **Owed.** CI's: the musl and aarch64 lints and tests. ROOT's: tests/containers.rs
+  `a_run_on_the_hosts_network_is_on_the_hosts_network` (its relays drained at the run's
+  end) on KVM and HVF.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap, index or panic added to production code; `unsent` reads none as none. |
+  | R02, R03 | Linux's own TCP (tcp_close, tcp_recvmsg, TCP_NOTSENT_LOWAT, SIOCOUTQNSD) is the evidence; no clock remains; the host's bound, which would need the host's record, is said not built. |
+  | R04 | `Ended`, `Moved`, `Side`, `Drain`: typed, the drain's and the pump's decisions matched on them. |
+  | R05 | The drain waits on its sockets' readiness alone; a socket waited on no more is passed over (-1). |
+  | R09, R10 | Red with each guard removed, green after: above. |
+  | R11 | Linux-only code (init); x86_64 glibc run, musl and aarch64 owed to CI. |
+  | R15, R16 | Implementer; the carrier's checkout and target on adacachy2 are removed after landing. |
+
+### M557. A builder's Drop follows its VM's liveness and progress, D215's judge shared (D34, D133)
+
+- **Question.** As a build let its builder go, it asked its guest what the build needed
+  (`NEEDS`, D133), closed its connection so that the guest powers off, and gave the answer
+  and the VM's exit 5 s in all, picked, looking for the exit each millisecond, then killed
+  it. ROOT (2026-11-13): follow the builder VM's own liveness and progress instead, its
+  exit, or no progress over a whole slowest-teardown window, reusing D215's judge where its
+  process source fits.
+- **Found** (from the code).
+  - shards-api's `Follow` reads a process's CPU by its pid on each OS (`Followed::of_pid`:
+    Linux's CPU clock, macOS's proc_pid_rusage, Windows' process tree), the judge's
+    `Record` keeps the slowest answer and the least rate, and its `Judge` schedules a look
+    each slowest past the look before: it fits a builder's VM as it fits the daemon's.
+  - A zombie's CPU is read before it is reaped (progress.rs), so an end teaches its kind
+    only if its process is watched without reaping: `netproc::ended_within` reaps.
+  - On macOS waitid(2) says a child has ended that has not (PM M442, `Child::try_wait`'s
+    note). Run on the merged tree, a stopped stand-in was so taken for ended past its first
+    look: its kind would have learned an end that had not come, and its reap waited on it
+    for an hour (r158, its test thread sampled in `wait4`). The end is the kernel's own word
+    of it alone (`Poller::add_exit`: kqueue's NOTE_EXIT, Linux's pidfd), never waitid's.
+  - A frame begun by the guest is written whole (init's `send`), so a readiness wait, then
+    a whole frame's read, waits on no clock.
+- **Decision** (D34's "Its end follows its VM"; D133).
+  - `ask_needed` waits for `NEEDED` past a step's frames, woken by its connection's
+    readiness; `follow_to_end` waits for the VM's exit, woken by its kernel's word of it
+    (`exits_by`: `Poller::add_exit`, not reaped; Windows, its handle, rounded up to whole
+    milliseconds), never waitid(2)'s; one whose end cannot be watched is reaped as it lives.
+    Both follow the VM with the judge, each kind its own `Record` in the process
+    (`NEEDED`, `ENDED`): cold, liveness alone; once seen, a look each slowest past the look
+    before, and the answer given up on, or the VM killed (`VmEnd::Stalled`, logged), at a
+    look that finds it ran nothing at all since. An unreadable VM is never taken for no
+    progress. Its own end teaches its kind; a kill does not.
+  - A `shards build` boots one builder, so its waits are cold, its VM's liveness alone; a
+    daemon serving builds (the Engine API) learns from its first.
+- **Tests** (crates/shards build/builder.rs, Unix): `a_builders_vm_is_followed_to_its_end_while_it_goes_on`
+  (cold, a stand-in VM taking 6 s waited for and its end learned; 0.2 s learned, a busy one
+  waited on past five looks, an asleep one killed at its first look) and
+  `a_builders_needs_are_waited_for_while_its_vm_goes_on` (cold, an answer after 6 s past a
+  step's frame; 0.2 s learned, a silent guest over an asleep VM given up on at its first
+  look).
+- **Checked** (one host, adas-mac-studio-3.local, macOS 26.2 arm64, Apple M4 Max,
+  `CARGO_INCREMENTAL=0`, a carrier's checkout at 8ec9cca76 over main baba912ee, its
+  helpers and guests not built, `SHARDS_HELPERS=skip` and stand-in guest binaries, which no
+  unit test of the builder's boots; kiln runs r115, r122):
+  - `cargo test -p shards --bin shards -- build::builder::tests::`: 6 passed (r115).
+  - Red with the old rule back in turn (`/tmp/r03-carrier/red-bld.sh`, r122): 5 s in all for
+    the VM's end failed the end test (the 6 s VM killed); 5 s for the answer failed the needs
+    test (`Ok(None)` for `Ok(Some((1048576, 0)))`); never looking failed the end test (the
+    asleep VM waited on for its own 60 s).
+  - `cargo clippy -p shards --all-targets -- -D warnings`: clean for aarch64-apple-darwin
+    (r122); for x86_64-pc-windows-msvc through cargo-xwin on adas-mac-studio.local, one
+    error: the Unix tests' helper `learned` dead on Windows (r143), gated since; the merged
+    tree's run is below.
+  - `cargo fmt --check`: clean.
+  - On the merged tree (over main 740fa3726): its first run hung on waitid's word (r158,
+    above); with the end the kernel's word, at a1cb7dd64, 7 passed with main's own
+    builder test (r448), clippy clean for aarch64-apple-darwin (r448) and, through
+    cargo-xwin, for x86_64-pc-windows-msvc (r450). The stalled stand-ins are stopped
+    (SIGSTOP), as main's judge (5716d309d) holds an asleep process live while its host's
+    pressure grows.
+- **Owed.** CI's: Linux (the CPU clock's look) and Windows (`exits_by` on its handle, the
+  process tree's look), where the tests, Unix's, do not run. ROOT's: tests/build.rs on
+  every backend, the builder's real end.
+- **Rules** (policy df2acf47, role implementer):
+
+  | rule | proof, result, gap |
+  |---|---|
+  | R01 | No unwrap or panic added to production code; an unreadable VM falls back to its liveness. |
+  | R02, R03 | D215's judge's rule and records, shared; the 5 s and the millisecond poll go; cold, liveness alone. |
+  | R04 | `VmEnd` (`Exited`, `Stalled`), `Unfollowed` matched; a stall's facts logged. |
+  | R05 | Woken by the connection's readiness and the VM's exit (`Poller::add_exit`), looked at once each slowest. |
+  | R09, R10 | Red with the old rule back, green after: above. |
+  | R11, R12 | The judge and its process source shared; Unix's and Windows' `exits_by` each the smallest adapter; macOS arm64 run, Linux and Windows owed to CI. |
+  | R15, R16 | Implementer; the carrier's checkouts and targets on adas-mac-studio-3.local and adas-mac-studio.local are removed after landing. |

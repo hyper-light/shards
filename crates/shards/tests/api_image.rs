@@ -642,14 +642,15 @@ fn a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs() {
 }
 
 /// The example harness image (docs/examples/harness-codex), built in `home` as `tag`: its
-/// Agentfile and harness.json as the repository holds them, FROM its pinned alpine, and the
-/// test guest as its `codex`, as OpenAI's binaries are no part of the repository (its
-/// .gitignore).
+/// Agentfile and harness.json as the repository holds them, FROM its pinned alpine, which
+/// the tests' own registry serves (`common::hub_bases`), and the test guest as its `codex`,
+/// as OpenAI's binaries are no part of the repository (its .gitignore).
 fn build_example(home: &TempDir, tag: &str) {
     let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples/harness-codex");
     let ctx = TempDir::new("api-example-ctx");
     std::fs::create_dir_all(ctx.join("codex/bin")).unwrap();
-    std::fs::copy(example.join("Agentfile"), ctx.join("Agentfile")).unwrap();
+    let agentfile = std::fs::read_to_string(example.join("Agentfile")).unwrap();
+    std::fs::write(ctx.join("Agentfile"), common::hub_bases(&agentfile, TIMEOUT)).unwrap();
     std::fs::copy(example.join("codex/harness.json"), ctx.join("codex/harness.json")).unwrap();
     std::fs::copy(common::test_guest(), ctx.join("codex/bin/codex")).unwrap();
     // A context's files keep their modes on a Unix host, as fsutil walks them; a Windows
@@ -746,9 +747,11 @@ fn an_images_next_run_restores_the_template_its_first_saved() {
         .filter(|p| p.is_dir())
         .collect();
     assert_eq!(templates.len(), 1, "{templates:?}");
-    // Its snapshot's state emptied: a template that is there and no longer restores.
-    let current = std::fs::read_to_string(templates[0].join("current")).unwrap();
-    std::fs::write(templates[0].join(current.trim_end()).join("state"), b"").unwrap();
+    // Its snapshot's state emptied: a template that is there and no longer restores. Its
+    // generation found as the store finds it (`common::snapshot_file`): on Windows its pointer
+    // is the newest `current.~N`, never `current` itself (platform `write_in`, PM M345), and
+    // reading that name failed NotFound on WHP at 6c3cb7137.
+    std::fs::write(common::snapshot_file(&templates[0], "state"), b"").unwrap();
     assert_eq!(run(&stored), StartedFrom::Replaced);
     assert_eq!(run(&stored), StartedFrom::Restored);
     assert_eq!(run(&given), StartedFrom::Booted);

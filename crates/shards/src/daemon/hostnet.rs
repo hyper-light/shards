@@ -15,13 +15,12 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd as _, FromRawFd as _};
-use std::time::{Duration, Instant};
 
 use shards_abi::run::{HostBind, HostBound, HostListen, kind};
 #[cfg(unix)]
 use shards_ipc::fd::{AsFd as _, OwnedFd};
 
-use crate::netproc::{Control, Sock};
+use crate::netproc::{NET_ANSWERS, NetLink, Sock, Way};
 #[cfg(unix)]
 use shards_vmm::devices::virtio::fs::host::linux_errno;
 
@@ -38,10 +37,9 @@ const EADDRINUSE: i32 = 98;
 /// answers, and how many of them are owed; each socket by its number.
 #[derive(Debug)]
 pub(super) struct HostNet {
-    net: Control,
+    net: NetLink,
     incoming: shards_ipc::Incoming,
     owed: u32,
-    patience: Duration,
     sockets: HashMap<u32, Hosted>,
     next: u32,
 }
@@ -58,14 +56,14 @@ struct Hosted {
 
 impl HostNet {
     /// What it sends the network process, and waits for of it, on the followers' loop,
-    /// waits `patience` at most, as a run's start waits for that process's answers.
-    pub(super) fn new(net: Control, patience: Duration) -> HostNet {
-        let _ = net.set_write_timeout(Some(patience));
+    /// waits while that process goes on with it, as a run's start waits for its answers
+    /// (`netproc::until_ready`, D215's judge on the daemon's record of its network processes'
+    /// answers). It was a second at most, picked (`PUBLISH_PATIENCE`).
+    pub(super) fn new(net: NetLink) -> HostNet {
         HostNet {
             net,
             incoming: shards_ipc::Incoming::default(),
             owed: 0,
-            patience,
             sockets: HashMap::new(),
             next: 0,
         }
@@ -88,19 +86,23 @@ impl HostNet {
     }
 
     /// Takes the network process's answers to `NET_UNPUBLISHED` that have come; with
-    /// `wait`, every one owed, waiting [`patience`](Self::new) at most.
+    /// `wait`, every one owed, waited for while that process goes on with them
+    /// ([`netproc::until_ready`](crate::netproc::until_ready)), each teaching the daemon's
+    /// record.
     fn answers(&mut self, wait: bool) {
-        let deadline = Instant::now() + self.patience;
+        let mut follow = if wait { self.net.follow(&NET_ANSWERS) } else { None };
         while self.owed > 0 {
-            match self.incoming.take(&self.net) {
+            match self.incoming.take(&self.net.control) {
                 Ok(shards_ipc::Took::Message(m)) => {
                     if m.kind == shards_ipc::kind::NET_UNPUBLISHED {
                         self.owed -= 1;
+                        if let Some(follow) = follow.as_mut() {
+                            follow.answered();
+                        }
                     }
                 }
                 Ok(shards_ipc::Took::Partial) => {
-                    let left = deadline.saturating_duration_since(Instant::now());
-                    if !wait || left.is_zero() || !readable(&self.net, left) {
+                    if !wait || crate::netproc::until_ready(&self.net, Way::Read, &mut follow).is_err() {
                         return;
                     }
                 }
@@ -189,8 +191,11 @@ impl HostNet {
         let mut payload = l.number.to_be_bytes().to_vec();
         payload.extend_from_slice(&l.guest_port.to_be_bytes());
         payload.push(h.proto);
+        if !room(&self.net) {
+            return answer(ENETDOWN);
+        }
         match crate::netproc::send(
-            &self.net,
+            &self.net.control,
             shards_ipc::kind::NET_PUBLISHED,
             &payload,
             &[crate::netproc::lend(&h.fd)],
@@ -203,8 +208,8 @@ impl HostNet {
         }
     }
 
-    /// Waits, [`patience`](Self::new) at most, until the network process has closed every
-    /// copy it was told to: the ports let go are the host's to bind again.
+    /// Waits, while the network process goes on with it, until it has closed every copy it
+    /// was told to: the ports let go are the host's to bind again.
     pub(super) fn settle(&mut self) {
         self.answers(true);
     }
@@ -225,8 +230,9 @@ impl HostNet {
 
     fn unbind(&mut self, number: u32) {
         if self.sockets.remove(&number).is_some_and(|h| h.published)
+            && room(&self.net)
             && crate::netproc::send(
-                &self.net,
+                &self.net.control,
                 shards_ipc::kind::NET_UNPUBLISHED,
                 &number.to_be_bytes(),
                 &[],
@@ -238,31 +244,11 @@ impl HostNet {
     }
 }
 
-/// Whether `net` has something to read within `wait`.
-#[cfg(windows)]
-fn readable(net: &Control, wait: Duration) -> bool {
-    use windows_sys::Win32::Networking::WinSock::{POLLRDNORM, WSAPOLLFD, WSAPoll};
-    let mut p = WSAPOLLFD {
-        fd: net.socket.raw(),
-        events: POLLRDNORM,
-        revents: 0,
-    };
-    let ms = i32::try_from(wait.as_millis().saturating_add(1)).unwrap_or(i32::MAX);
-    // SAFETY: WSAPoll of one entry, a socket of ours.
-    unsafe { WSAPoll(&raw mut p, 1, ms) > 0 }
-}
-
-/// Whether `sock` has something to read within `wait`.
-#[cfg(unix)]
-fn readable(sock: &Control, wait: Duration) -> bool {
-    let mut p = libc::pollfd {
-        fd: sock.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let ms = libc::c_int::try_from(wait.as_millis().saturating_add(1)).unwrap_or(libc::c_int::MAX);
-    // SAFETY: poll(2) of one pollfd of ours.
-    unsafe { libc::poll(&raw mut p, 1, ms) > 0 }
+/// Whether network process `net` has room for a message, waited for while it goes on with
+/// what it has ([`netproc::until_ready`](crate::netproc::until_ready)).
+fn room(net: &NetLink) -> bool {
+    let mut follow = net.follow(&NET_ANSWERS);
+    crate::netproc::until_ready(net, Way::Write, &mut follow).is_ok()
 }
 
 #[cfg(unix)]
@@ -466,6 +452,7 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
     use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
 
     /// A guest's bind on the host's network (D124), as the host makes it: the port the
     /// host chose, a port the host holds refused as Linux says it, a listen given to the
@@ -474,7 +461,11 @@ mod tests {
     #[test]
     fn a_guests_bind_is_the_hosts() {
         let (daemon, net) = UnixStream::pair().unwrap();
-        let mut h = HostNet::new(daemon, Duration::from_secs(1));
+        // Its network process this test's own, which answers as it goes on.
+        let mut h = HostNet::new(NetLink {
+            control: daemon,
+            pid: std::process::id(),
+        });
         let ask = |request, port| HostBind {
             request,
             owner: 0,

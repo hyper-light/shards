@@ -50,8 +50,9 @@ struct Args {
     resolvers: Vec<(std::net::Ipv4Addr, u16)>,
     /// What its spawner handed it (Windows: `--grants HANDLE`, shards_ipc's pipe).
     grants: Option<String>,
-    /// The run has credential grants (`--credentials`, D242): its CA's key is made before
-    /// the process confines itself, its certificate once the grants come.
+    /// The run has credential grants (`--credentials`, D242): its CA's key and its injector's
+    /// TLS to a granted host are made before the process confines itself, its CA's
+    /// certificate once the grants come.
     credentials: bool,
 }
 
@@ -169,10 +170,11 @@ impl Args {
         Ok(cfg)
     }
 
-    /// The run's CA's key where it has credential grants, made now, before the process
-    /// confines itself (shards_net::ca::Key); none where it has none.
-    fn credential_key(&self) -> Result<Option<shards_net::ca::Key>, String> {
-        self.credentials.then(shards_net::ca::Key::generate).transpose()
+    /// What a run with credential grants needs made now, before the process confines itself
+    /// (shards_net::Prepared: its CA's key, and its injector's TLS, whose verifier reads the
+    /// host's roots now on Linux); none where it has none.
+    fn prepared(&self) -> Result<Option<shards_net::Prepared>, String> {
+        self.credentials.then(shards_net::Prepared::new).transpose()
     }
 }
 
@@ -191,7 +193,7 @@ fn run() -> Result<(), String> {
     let ring = a.ring.take().ok_or("--ring is required")?;
     let proxy = matches!(a.policy, Some(None));
     let cfg = a.config()?;
-    let credential_key = a.credential_key()?;
+    let prepared = a.prepared()?;
     let fds: Vec<i32> = ring
         .split(',')
         .map(|v| {
@@ -241,7 +243,7 @@ fn run() -> Result<(), String> {
     shards_net::confine::filter().map_err(|e| format!("its seccomp filter: {e}"))?;
     #[cfg(not(target_os = "linux"))]
     let _ = proxy;
-    shards_net::serve(region, me, peer, cfg, credential_key, controls).map_err(|e| e.to_string())
+    shards_net::serve(region, me, peer, cfg, prepared, controls).map_err(|e| e.to_string())
 }
 
 /// On Windows (D142): in an AppContainer of its own from its start, holding the network's
@@ -262,7 +264,7 @@ fn run() -> Result<(), String> {
     let mut a = parse()?;
     let grants = a.grants.take().ok_or("--grants is required")?;
     let cfg = a.config()?;
-    let credential_key = a.credential_key()?;
+    let prepared = a.prepared()?;
     let pipe = grants
         .parse::<usize>()
         .map_err(|_| format!("--grants: {grants:?} is not a handle"))?;
@@ -323,7 +325,7 @@ fn run() -> Result<(), String> {
         shards_net::Bell::Event(peer),
         shards_net::Contained { vm, dialer },
         cfg,
-        credential_key,
+        prepared,
         controls,
     )
     .map_err(|e| e.to_string())
