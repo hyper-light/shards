@@ -400,7 +400,6 @@ fn blob(
 mod tests {
     use super::*;
     use crate::auth::Credentials;
-    use crate::http::Client;
     use crate::testing::{After, route};
     use sha2::{Digest as _, Sha256};
     use shards_image::reference::{Algorithm, Reference};
@@ -479,10 +478,7 @@ mod tests {
             Some((reply.to_vec(), After::Keep))
         });
         let reference = Reference::parse(&format!("127.0.0.1:{}/team/app:v1", server.port)).unwrap();
-        let http = Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        );
+        let http = crate::testing::client();
         let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
         push(
             &registry,
@@ -521,10 +517,7 @@ mod tests {
             ))
         });
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
-        let http = Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        );
+        let http = crate::testing::client();
         let registry = Registry::new(http, &reference, Credentials::Anonymous).unwrap();
         let [config, manifest] = layerless();
         let quiet = |_: &Digest, _: Layer| {};
@@ -591,10 +584,7 @@ mod tests {
         });
         let reference = Reference::parse(&format!("127.0.0.1:{}/test/image:v1", server.port)).unwrap();
         let pushed = |credentials, from| {
-            let http = Client::new(
-                Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-                "shards-test",
-            );
+            let http = crate::testing::client();
             let registry = Registry::new(http, &reference, credentials).unwrap();
             push(&registry, &store, &manifest.0, Some("v1"), from, &|_, _| {}).unwrap_err()
         };

@@ -111,6 +111,14 @@ enum Event {
         stream: StreamId,
         started: Result<Running, Error>,
     },
+    /// What the machine says of a peer whose handshake ended, on its worker ([`judge_apart`]):
+    /// the name of the client it enrolled under the peer's key, if one is, and how many
+    /// invitations it holds open.
+    Judged {
+        conn: ConnKey,
+        client: Option<String>,
+        invited: usize,
+    },
     /// A stranger's join, on its worker ([`join_apart`]), ended: enrolled as `name`, or not.
     Joined {
         conn: ConnKey,
@@ -267,6 +275,9 @@ struct Peer {
     /// Its join is under way, apart from the driver: its place is not given up meanwhile, as its
     /// invitation may be spent by then.
     joining: bool,
+    /// The machine has said whom its key is ([`Event::Judged`]): till then it is no stranger and
+    /// no client, and nothing it sends is read.
+    judged: bool,
 }
 
 struct Server<'s, 'e, H: Host> {
@@ -297,7 +308,7 @@ impl<H: Host> Server<'_, '_, H> {
     fn strangers(&self) -> impl Iterator<Item = (ConnKey, Instant, bool)> + '_ {
         self.peers
             .iter()
-            .filter(|(_, p)| p.client.is_none())
+            .filter(|(_, p)| p.judged && p.client.is_none())
             .map(|(conn, p)| (*conn, p.since, p.joining))
     }
 
@@ -305,6 +316,11 @@ impl<H: Host> Server<'_, '_, H> {
     /// its command's stdin has no room for what came before, or its command's start is under
     /// way.
     fn serve(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId) {
+        // A peer the machine has not yet said whom its key is sends nothing read (its verdict
+        // reads on, [`Server::judged`]).
+        if !self.peers.get(&conn).is_some_and(|p| p.judged) {
+            return;
+        }
         loop {
             let Some(stream) = self.stream(conn, id) else {
                 return;
@@ -573,9 +589,58 @@ impl<H: Host> Server<'_, '_, H> {
 /// What [`relay`] keeps of a command for its stream: where its stdin goes, its output's
 /// credits, and what hangs it up, sizes its terminal and signals it.
 impl<H: Host> Server<'_, '_, H> {
-    /// A command's start ended ([`Event::Started`]): its stdio relayed, and what its client
-    /// sent meanwhile read on, its control streams' too; refused, said so; its stream gone
-    /// meanwhile (its client left, or its connection) or ended, hung up, its relay reaping it.
+    /// The machine said whom peer `conn`'s key is: an enrolled client is served, under its name;
+    /// one it has not enrolled connects to join alone, in a place an invitation holds for it:
+    /// none while the machine holds none, and where every place is taken, the oldest stranger's,
+    /// which has not joined in all the time since (the person's ruling, 2026-11-13: no deadline
+    /// of shards' own, the slots its resources hold, the oldest unanswered given up). One whose
+    /// join is under way keeps its place, as its invitation may be spent by then: where every
+    /// place is so held, the newcomer has none. What it sent meanwhile is read on.
+    fn judged(&mut self, io: &mut Io<'_>, conn: ConnKey, client: Option<String>, invited: usize) {
+        if !self.peers.contains_key(&conn) {
+            return;
+        }
+        if client.is_none() {
+            if invited == 0 {
+                io.close(conn, UNENROLLED, "not enrolled");
+                self.peers.remove(&conn);
+                return;
+            }
+            if self.strangers().count() >= invited {
+                let oldest = self
+                    .strangers()
+                    .filter(|(_, _, joining)| !joining)
+                    .min_by_key(|(_, since, _)| *since);
+                let Some((oldest, _, _)) = oldest else {
+                    io.close(
+                        conn,
+                        UNENROLLED,
+                        "not enrolled: every place is held by a join under way",
+                    );
+                    self.peers.remove(&conn);
+                    return;
+                };
+                io.close(
+                    oldest,
+                    UNENROLLED,
+                    "not enrolled: a newer stranger took its place",
+                );
+                self.peers.remove(&oldest);
+            }
+        }
+        let Some(peer) = self.peers.get_mut(&conn) else {
+            return;
+        };
+        peer.client = client;
+        peer.judged = true;
+        let streams: Vec<StreamId> = peer.streams.keys().copied().collect();
+        for id in streams {
+            self.serve(io, conn, id);
+        }
+    }
+
+    /// A stranger's join ended on its worker ([`Event::Joined`]): enrolled, its peer is the
+    /// client `name` from then on and its join answered so; refused, answered so.
     fn joined(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId, name: String, joined: bool) {
         let Some(peer) = self.peers.get_mut(&conn) else {
             return;
@@ -596,6 +661,9 @@ impl<H: Host> Server<'_, '_, H> {
         self.settle(io, conn, id);
     }
 
+    /// A command's start ended ([`Event::Started`]): its stdio relayed, and what its client
+    /// sent meanwhile read on, its control streams' too; refused, said so; its stream gone
+    /// meanwhile (its client left, or its connection) or ended, hung up, its relay reaping it.
     fn started(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId, started: Result<Running, Error>) {
         let began = started.is_ok();
         let relayed = match (started, &self.sender) {
@@ -768,50 +836,32 @@ fn relay(
 impl<H: Host> Handler for Server<'_, '_, H> {
     type Command = Event;
 
+    /// Whom the peer's key is, the machine says on a worker of its own ([`judge_apart`]): its
+    /// files are read for it, which takes as long as their disk does, and the driver, which
+    /// acknowledges every client meanwhile, waits on none. Nothing the peer sends is read
+    /// before the verdict ([`Server::judged`]).
     fn connected(&mut self, io: &mut Io<'_>, conn: ConnKey, peer: &[u8]) -> Result<(), Close> {
-        let client = self.host.enrolled(peer);
-        // A peer the machine has not enrolled connects to join alone, in a place an invitation
-        // holds for it: none while the machine holds none; and where every place is taken, the
-        // oldest stranger's, which has not joined in all the time since (the person's ruling,
-        // 2026-11-13: no deadline of shards' own, the slots its resources hold, the oldest
-        // unanswered given up).
-        if client.is_none() {
-            let invited = self.host.invited();
-            if invited == 0 {
-                return Err(Close {
-                    code: UNENROLLED,
-                    why: "not enrolled",
-                });
-            }
-            // One whose join is under way keeps its place, as its invitation may be spent by then:
-            // where every place is so held, the newcomer has none.
-            if self.strangers().count() >= invited {
-                let oldest = self
-                    .strangers()
-                    .filter(|(_, _, joining)| !joining)
-                    .min_by_key(|(_, since, _)| *since);
-                let Some((oldest, _, _)) = oldest else {
-                    return Err(Close {
-                        code: UNENROLLED,
-                        why: "not enrolled: every place is held by a join under way",
-                    });
-                };
-                io.close(
-                    oldest,
-                    UNENROLLED,
-                    "not enrolled: a newer stranger took its place",
-                );
-                self.peers.remove(&oldest);
-            }
+        let Some(sender) = &self.sender else {
+            return Err(Close {
+                code: UNENROLLED,
+                why: "the daemon's listener is not running",
+            });
+        };
+        if judge_apart(self.starts, self.host, sender, conn, peer.to_vec()).is_err() {
+            return Err(Close {
+                code: UNENROLLED,
+                why: "no thread to judge its key",
+            });
         }
         self.peers.insert(
             conn,
             Peer {
                 spki: peer.to_vec(),
-                client,
+                client: None,
                 streams: HashMap::new(),
                 since: io.now(),
                 joining: false,
+                judged: false,
             },
         );
         Ok(())
@@ -864,6 +914,11 @@ impl<H: Host> Handler for Server<'_, '_, H> {
                 started,
             } => return self.started(io, conn, stream, started),
             Event::InputTaken { conn, stream } => return self.serve(io, conn, stream),
+            Event::Judged {
+                conn,
+                client,
+                invited,
+            } => return self.judged(io, conn, client, invited),
             Event::Joined {
                 conn,
                 stream,
@@ -887,7 +942,10 @@ impl<H: Host> Handler for Server<'_, '_, H> {
             Event::OutputEnd { tag: Tag::Made, .. } => stream.made_done = true,
             Event::OutputEnd { .. } => stream.stderr_done = true,
             Event::Exited { status, .. } => stream.status = Some(status),
-            Event::InputTaken { .. } | Event::Started { .. } | Event::Joined { .. } => {}
+            Event::InputTaken { .. }
+            | Event::Started { .. }
+            | Event::Joined { .. }
+            | Event::Judged { .. } => {}
         }
         stream.exit_when_done(io, conn, id);
         self.settle(io, conn, id);
@@ -935,6 +993,32 @@ pub fn serve<H: Host>(
         ready(driver.local()?, Stopper(sender));
         driver.run()
     })
+}
+
+/// Says whom `spki` is on a worker of `starts` of its own, as [`start_apart`] starts a command:
+/// `host`'s client of that key, if it enrolled one, and the invitations it holds open, told
+/// the driver through `sender` ([`Event::Judged`]).
+fn judge_apart<'s, 'e, H: Host>(
+    starts: &'s std::thread::Scope<'s, 'e>,
+    host: &'e H,
+    sender: &Sender<Event>,
+    conn: ConnKey,
+    spki: Vec<u8>,
+) -> Result<(), Error> {
+    let sender = sender.try_clone()?;
+    std::thread::Builder::new()
+        .name("remote-judge".into())
+        .spawn_scoped(starts, move || {
+            let client = host.enrolled(&spki);
+            let invited = if client.is_some() { 0 } else { host.invited() };
+            let _ = sender.send(Command::Handler(Event::Judged {
+                conn,
+                client,
+                invited,
+            }));
+        })
+        .map(|_| ())
+        .map_err(|e| Error::new(format!("a thread to judge a key: {e}")))
 }
 
 /// Judges `name`'s join on a worker of `starts` of its own, as [`start_apart`] starts a command:
