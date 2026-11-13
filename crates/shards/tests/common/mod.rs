@@ -3664,52 +3664,75 @@ fn hub_seed(reference: &str, timeout: Duration) -> (Vec<u8>, Vec<Vec<u8>>) {
     hub_held(&home, &pinned).unwrap_or_else(|missing| panic!("{reference}, pulled once: {missing}"))
 }
 
-/// What `home`'s store holds of `pinned`, whole; where it does not, what is missing.
+/// What `home`'s store holds of `pinned`, found by its digest as content is, whoever's
+/// record holds it: a pull of an index holds its platform's manifest by its own digest, under
+/// the index's name alone, and a seed's build that finds a digest held pulls nothing (D78).
+/// The document the digest names; then, of an index, this host's platform's manifest and
+/// its attestations, which a pull of it fetches, and of each manifest its config and
+/// layers. Where one is not there whole, what is missing.
 pub fn hub_held(
     home: &Path,
     pinned: &shards_image::reference::Reference,
 ) -> Result<(Vec<u8>, Vec<Vec<u8>>), String> {
-    let missing = |what: String| move || format!("{pinned}: {what}");
     let store = shards_image::store::Store::open(&home.join("images")).map_err(|e| e.to_string())?;
+    let read = |what: &str, d: &str| {
+        let path = shards_image::reference::Digest::parse(d)
+            .map(|digest| store.blob_path(&digest))
+            .map_err(|e| format!("{pinned}: {what} {d}: {e}"))?;
+        match std::fs::read(&path) {
+            Ok(bytes) if sha256_digest(&bytes) == d => Ok(bytes),
+            Ok(_) => Err(format!(
+                "{pinned}: {what} {d}: {} is not what its digest says",
+                path.display()
+            )),
+            Err(e) => Err(format!("{pinned}: {what} {d}: {}: {e}", path.display())),
+        }
+    };
+    let parse = |what: &str, bytes: &[u8]| {
+        serde_json::from_slice::<serde_json::Value>(bytes).map_err(|e| format!("{pinned}: {what}: {e}"))
+    };
     let digest = pinned
         .digest
         .as_ref()
-        .ok_or_else(missing("pinned by no digest".into()))?
+        .ok_or_else(|| format!("{pinned}: pinned by no digest"))?
         .to_string();
-    let resolved = store.resolved(&pinned.to_string()).map_err(|e| e.to_string())?;
-    if resolved.map(|d| d.to_string()) != Some(digest.clone()) {
-        return Err(missing(format!("no record of {} names it", home.display()))());
-    }
-    let read = |d: &str| {
-        let bytes = std::fs::read(store.blob_path(&shards_image::reference::Digest::parse(d).ok()?)).ok()?;
-        (sha256_digest(&bytes) == d).then_some(bytes)
-    };
-    let top = read(&digest).ok_or_else(missing("its document is not held".into()))?;
-    let doc: serde_json::Value = serde_json::from_slice(&top).map_err(|e| e.to_string())?;
-    // An index's manifests that its pull fetched, which the registry serves among the blobs;
-    // a lone manifest is the document itself.
-    let listed = doc["manifests"].as_array();
-    let manifests: Vec<Vec<u8>> = match listed {
-        Some(listed) => listed
-            .iter()
-            .filter_map(|m| read(m["digest"].as_str()?))
-            .collect(),
+    let top = read("the document", &digest)?;
+    let doc = parse("the document", &top)?;
+    let manifests = match doc["manifests"].as_array() {
         None => vec![top.clone()],
+        Some(listed) => {
+            let arch = match ARCH {
+                "aarch64" => "arm64",
+                "x86_64" => "amd64",
+                other => other,
+            };
+            let ours = listed
+                .iter()
+                .find(|m| m["platform"]["os"] == "linux" && m["platform"]["architecture"] == arch)
+                .and_then(|m| m["digest"].as_str())
+                .ok_or_else(|| format!("{pinned}: its index lists no linux/{arch} manifest"))?;
+            let mut held = vec![read(&format!("its linux/{arch} manifest"), ours)?];
+            for attestation in listed
+                .iter()
+                .filter(|m| m["annotations"]["vnd.docker.reference.digest"] == ours)
+            {
+                let d = attestation["digest"].as_str().unwrap_or_default();
+                held.push(read("an attestation of it", d)?);
+            }
+            held
+        }
     };
-    if manifests.is_empty() {
-        return Err(missing("no manifest of it is held".into())());
-    }
     let mut blobs = Vec::new();
     for manifest in manifests {
-        let parsed: serde_json::Value = serde_json::from_slice(&manifest).map_err(|e| e.to_string())?;
-        let layers = parsed["layers"]
-            .as_array()
-            .ok_or_else(missing("a manifest with no layers".into()))?;
+        let parsed = parse("a manifest", &manifest)?;
+        let layers = parsed["layers"].as_array().map(Vec::as_slice).unwrap_or_default();
         for part in std::iter::once(&parsed["config"]).chain(layers) {
-            let d = part["digest"].as_str().unwrap_or_default();
-            blobs.push(read(d).ok_or_else(missing(format!("{d} is not held")))?);
+            blobs.push(read(
+                "a manifest's part",
+                part["digest"].as_str().unwrap_or_default(),
+            )?);
         }
-        if listed.is_some() {
+        if doc["manifests"].is_array() {
             blobs.push(manifest);
         }
     }
