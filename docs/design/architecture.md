@@ -6981,7 +6981,7 @@ throughput both ways, small requests no slower, on every host.
 | `MAX_RING` 2 MiB | The largest power of two each turn of which one `readv`/`writev` reaches whole, its pages each apart: a turn of S bytes from any offset spans S/4096 + 1 pages, within 1,024 iovecs (Linux `UIO_MAXIOV`, macOS `IOV_MAX`): 513 for 2 MiB, 1,025 for 4 MiB. |
 | Control page, 4 KiB; fields 128 bytes apart | The smallest page of every supported guest; Apple silicon's 128-byte line (hw.cachelinesize), x86's paired-line prefetch. |
 | Slots in use | No count: one a stream (two while it swaps), within the room. |
-| Room for pins | With a budget: init's hold (`plug::cap`) less what the run holds (`memory.current`, the slots among it) and its working room (`plug::working_room`, D188, PM M309/M321, of the CPUs online as read); with none: `MemAvailable` (free pages less the zones' high watermarks and reserves, with reclaimable cache) less the working room. Read as each slot is made. |
+| Room for pins | With a budget: init's hold (`plug::cap`) less what the run holds (`memory.current`, the slots among it) and its working room (`plug::working_room`, D188, PM M309/M321, of the CPUs online as read); with none: `MemAvailable` (free pages less the zones' high watermarks and reserves, with reclaimable cache) less the working room. Read as each slot is reserved, under the same hold of the relay's pool lock as its reservation: read and reserved apart, a slot another stream made between the two was counted by neither, and streams that started at once pinned past the room (review F3). |
 | Idle slots owed a told room | The working room less the room told, where positive. |
 | Fixed-buffer table | Twice the relay's `RLIMIT_NOFILE` over 3 (a stream's client, vsock and wake descriptors; two slots while it swaps), within io_uring's 16,384 (`IORING_MAX_REG_BUFFERS`). |
 | Doorbell 0x01, end 0x02, detach 0x03, swap 0x04; offer header 16 bytes, extents 16 bytes, reply 8 bytes; version 2; the owner's cue to its own device after an offer, `CUE` 0x00 (host-side) | Protocol constants. |
@@ -6999,7 +6999,7 @@ pins E2E on WHP arm64, and on WHP x86_64 past that bound; and throughput, small-
 latency (paced and back to back), connection setup with its slot's making, a ring's ramp, CPU
 and pinned memory, on KVM x86_64 and arm64, HVF, WHP x86_64 and arm64.
 
-**Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2-F4 owed to ROOT with their reds and commands).
+**Review (plan step 2):** [ring-pins-v1/review.md](../research/measurements/ring-pins-v1/review.md) (F1 fixed, b81d707a9; F2 fixed by ROOT, a6edfb8e9; F3 cured, 6557c8597, and F4, a2c887eeb: its "Cures, F3 and F4", with the real-VM runs F4 owes).
 
 ### D183. `--cgroup-parent`: a microVM's processes under a slice of the user's service manager (slices 1, 2 and 3 built)
 

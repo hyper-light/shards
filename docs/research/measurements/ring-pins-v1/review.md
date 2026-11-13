@@ -221,8 +221,10 @@ At the landed revision, from a checkout of it:
    `git apply docs/research/measurements/ring-pins-v1/review-f2-red.patch && cargo test --locked -p shards-init a_swap_past_belief` (red:
    "the relay let go of the attached slot before the device's DETACH"); then `git checkout crates/init/src/ring.rs && git apply docs/research/measurements/ring-pins-v1/review-f2.patch && cargo test --locked -p shards-init ring::` (green, with the relay's other tests);
    then `sed -i 's/Swapped::Broken => return self.end(),/Swapped::Broken => return (Offered::Done, Disposal::Release { given_back: false }),/' crates/init/src/ring.rs && cargo test --locked -p shards-init a_swap_past_belief` (red); land the fix where green.
-3. **F3's red and fix** (Linux): the test and fix above, with a stress test of concurrent streams.
-4. **F4's change** with the E2E of item 1.
+3. **F3's red and fix** (Linux): cured, red, green and mutation run (6557c8597, "Cures, F3 and F4"
+   below).
+4. **F4's change**: made (a2c887eeb, "Cures, F3 and F4" below); its run is item 1's pins test, and its
+   red is owed with it (below).
 5. **Light gates this step could not run:** `cargo test --locked -p shards-init ring::` and
    `cargo test --locked -p shards-vmm --lib -- devices::virtio::vsock` on Linux x86_64 and arm64 (musl or glibc);
    the vsock device's tests and clippy on Windows x86_64 (no Windows target or cargo-xwin on the Mac
@@ -230,3 +232,143 @@ At the landed revision, from a checkout of it:
 6. **The lane's own owed items** (README.md): the engine suite (D181), isolation's token test, the budget
    and reclaim suites on real VMs; the idle-pins red on 032b63b1c; the E2E mutations (`told` removed from
    `ROOM`, the leaf join removed); the measurements.
+
+## Cures, F3 and F4
+
+ROOT's word (2026-11-13): "one critical section for read-and-reserve, with a concurrent-starts test
+red first, and the settle following the ring's progress, Part B's shape." F2 is ROOT's (a6edfb8e9)
+and is untouched here.
+
+- **Identity:** goal 52's child for F3 and F4, role implementer (goal agent a88ba9336b2a5c118, ROOT
+  "main"). Base: origin/main 15215d729609fa1200f3028c3af476b71351f0c5. Policy as above (AGENTS.md
+  f66d304c…, development-rules.md df2acf47…, development-evidence.md 61613a24…, CLAUDE.md 588b0020…),
+  POLICY_READ sent to both before any edit. Owned: crates/init/src/ring.rs and the admission's callers
+  (D230's hunks), crates/shards/tests/engine_ring.rs, this section, and D230's text.
+- **Hosts:** adacachy2 (Linux 7.3.3-1-cachyos x86_64, 32 CPUs) for shards-init's tests and lints;
+  adas-mac-studio-3 (macOS 26.2 arm64, M4 Max) for engine_ring's lint. Each ran through a carrier of this
+  child's: a blobless clone at the revision, a patch, `CARGO_TARGET_DIR` under ~/g121-tmp/s2-ring-f3,
+  `CARGO_INCREMENTAL=0`, `nice -n 10`, rustc 1.98.1. No E2E, VM, CI or scripts/lint ran, and nothing
+  was built on adas-macbook-pro-2.
+
+### F3, cured (6557c8597)
+
+- **Reproduced first (R09; [r20](logs/r20-cure-f3-at-once.txt)).**
+  `streams_started_at_once_pin_no_more_than_their_room`, with the test alone
+  ([cure-f3-red.patch](cure-f3-red.patch) on 15215d729), failed: "round 1: 73728 bytes pinned at once,
+  past the room's 61439". That is six slots of `MIN_RING` held at once against a room for four, with
+  the relay in the run's cgroup. The relay's other 21 tests passed.
+- **The cure.**
+  - `Pool::reserve` reads the room itself (`self.supply()`), under the same hold of the pool's lock as
+    the reservation it makes, and picks a new stream's start ring from that read.
+  - `take` and its two callers read no room any more: `hello_in`'s `lock(pool).supply()` and `swap`'s
+    `(p.supply(), p.room_gen)` are gone.
+  - The pool is the room's one owner, and a reservation needs its lock (`&mut Pool`), so no caller can
+    read a room and reserve against it apart.
+  - `swap` reads the room's generation before the reservation's critical section. A refusal is tried
+    again once the generation moves (a slot freed, a word of the run's room), so no move after the
+    read is missed. A move between the two costs at most one try more.
+- **The test.**
+  - 64 streams are released at once into their hellos (`Hold`, a barrier with the stand-ins' 20 s
+    deadline) against a room for four slots, and less than a fifth.
+  - Each holds its slot, or goes plain, until every stream has started and the test has read the
+    pool's pins. The pins are never past the room, every stream's bytes arrive whole, and every slot is
+    freed.
+  - It runs eight rounds with a budget and the relay in the run's cgroup, and eight with no budget.
+  - The test pool's room is read as its kernel reads it (the cfg(test) arm of `Pool::supply`): the
+    slots made count among what the run's cgroup holds once the relay is in it (`memory.current`), and
+    out of what the guest has available (`MemAvailable`). Before, a test pool counted made slots only
+    through `outside()`, which is 0 once the relay is in, so it could not show F3.
+- **Its sizes (R03: a test's; r20, RATES).**
+  - On main's two critical sections, 16 rounds of each of five sizes pinned past the room in 25 to 94%
+    of them ([cure-f3-rates.patch](cure-f3-rates.patch), a diagnostic test, not committed as one).
+  - 64 streams against four slots did so in 8 and in 6 rounds of 16 (with a budget, with none).
+  - At that rate, about one round in two on that host, the test's 16 rounds miss a split section about
+    once in 10^4.
+  - The cure holds in every round on any host, because a reservation and the room it is judged by are
+    one state under one lock.
+- **Green and mutation (r20).**
+  - With the cure, `cargo test -p shards-init ring::` passed 22 of 22. The new test's 16 rounds took
+    7.4 s of that run.
+  - With the section split back in two at its owner ([cure-f3-split.patch](cure-f3-split.patch):
+    `reserve` handed a room read under a hold of the lock of its own), it failed again: "round 0: 98304
+    bytes pinned at once, past the room's 61439" (eight slots).
+- **Lints.** clippy -D warnings `--all-targets` of shards-init was clean for x86_64-unknown-linux-gnu
+  and for x86_64- and aarch64-unknown-linux-musl (r20). `cargo fmt -p shards-init -p shards -- --check`
+  was clean.
+- **Its cost (R05, R14).**
+  - The room is now read with the pool's lock held: `plug::cap` (an atomic load), `plug::working_room`
+    (sysconf), and one kernel file (`memory.current` with a budget, `/proc/meminfo` with none).
+  - None of these takes a lock, so no lock order is added. Each stream start or growth reads the room
+    once, as before.
+  - How much longer the lock is held is not measured (R14, ROOT's).
+
+### F4, cured (a2c887eeb)
+
+- **The cure.** `settled` follows the ring's progress, in D215's shape.
+  - *Progress:* the guest's pinned pages fall to a new low as a slot's pins are released. The relay
+    frees a slot once it has heard its device let go and has passed on what the slot held.
+  - *Window:* as long as the ring took at the work whose slots the settle waits for. That runs from the
+    work's start (the setup's emitter, or the streams) to the settle's start, which follows the
+    device's word that it let go of every ring.
+  - *Judged:* starting one window after its first look, and once each window after that. A window over
+    which the pins fell no lower is refused, typed, as `Stalled`, which carries the pins now and
+    wanted, how long it waited, the time looked over, and the window. A count that reaches what the
+    microVM pinned idle settles the wait exactly, as before.
+  - *Cold start:* none. Each settle follows work the ring did, timed as it ran, and its first look is
+    its baseline.
+  - *Its looks* are execs into the microVM, each paced by its answer. The 50 ms sleep is gone.
+- **Not chosen.**
+  - `Patience::of(home, TIMEOUT)` (this review's own proposal): its 600 s and `DAEMON_QUIET`'s minute
+    are numbers of ours.
+  - Part B's own W*, the slowest settle this process has seen, with a cold settle following liveness
+    alone: the test's first settle would then wait without end on a slot never freed, the very
+    failure this wait exists to catch.
+- **Its limits.**
+  - A window is the whole work's time, so a stall is refused no sooner than one window after its last
+    fall: seconds on a fast host, longer on a slow one.
+  - A relay that frees one slot each window but never all of them is never refused, as a guest that
+    spins is never stalled in D215.
+- **Evidence ([r21](logs/r21-cure-f4-settle-lint.txt)).** It compiled, and `cargo clippy -p shards
+  --test engine_ring -- -D warnings` was clean on adas-mac-studio-3; fmt was clean. Its run is a real
+  VM's, owed below. No red is claimed here.
+
+### R01-R16 for the cures
+
+| Rule | F3 and F4 |
+|---|---|
+| R01 | No new panic path in production: `reserve` returns `None` through `?`, as before. The tests may panic. |
+| R02 | ROOT's word and this review's proposed fix; F4's alternatives above. |
+| R03 | No production literal added or changed. The test's sizes are a test's, sized from measured leak rates. F4's window is the ring's own work, measured where it runs, with no cold start. |
+| R04 | `Stalled` is typed. The slot's states (`Making`, made, released, lost) are unchanged. |
+| R05 | The room is read and acted on in one critical section of its one owner. F4's wait follows progress, with no deadline of ours. No cache. |
+| R06 | `reserve` gains the read and the start ring's choice; `take` loses a block; `hello_in` and `swap` lose their reads. |
+| R07 | Comments say why: the invariant, the generation's order, the window's basis. |
+| R08 | No performance claim. |
+| R09 | F3 was reproduced live, red, before its cure (r20). F4 has no live reproduction here: it needs a real VM. |
+| R10 | F3: red, green and guard-removal mutation, with their patches and the sizing harness committed (r20). F4: owed with its E2E. |
+| R11 | shards-init's tests ran on Linux x86_64, and its lints for both musl guests; engine_ring's lint ran on macOS arm64. Unverified: shards-init's tests on Linux arm64, engine_ring's lint on Windows and Linux (CI on main), every real VM. |
+| R12 | One owner, one path for every host. |
+| R13 | The cure moves one read; the test adds one barrier and one field. |
+| R14 | Not run (ROOT's): how long the lock is held with the read inside it. |
+| R15 | Implementer's light tests, on one host each; landed fast-forward on the person's rule of 2026-11-13. |
+| R16 | The carrier's clones and target directories on both runners are removed at the end. |
+
+### What ran where (cures)
+
+| Log | Host | What |
+|---|---|---|
+| [r20](logs/r20-cure-f3-at-once.txt) | adacachy2, Linux 7.3.3 x86_64 | F3: red, the sizes' leak rates, green (ring:: 22 of 22), clippy for x86_64-gnu and both musl guests, mutation |
+| [r21](logs/r21-cure-f4-settle-lint.txt) | adas-mac-studio-3, macOS 26.2 arm64 | F4: `cargo clippy -p shards --test engine_ring -- -D warnings` |
+
+### Owed to ROOT (cures)
+
+1. **The pins test with its new settle, on real VMs**
+   (`an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends`), with item 1's commands above:
+   HVF arm64, KVM x86_64, KVM arm64 through L1, and WHP x86_64 (past 13 streams it waits on D181's
+   bound, O3). WHP arm64 is unverified: no host.
+2. **F4's red**, on one of those hosts, with every slot kept so that the first settle stalls:
+   `sed -i 's/Disposal::Release { given_back } => p.release(slot, given_back),/Disposal::Release { .. } => p.lose(slot),/' crates/init/src/ring.rs`,
+   then that host's command for the pins test. Expected: refused "1 vCPUs: the setup's slots freed: N
+   pages pinned, not M, after …: none released over the last …, its window …", one to two windows after
+   the setup, where before it waited 600 s. Then `git checkout crates/init/src/ring.rs`.
+3. **F3's test on Linux arm64** (CI on main runs it), and R14's measure of how long the lock is held.
