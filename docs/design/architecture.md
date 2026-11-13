@@ -27356,6 +27356,26 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
   socket ended with `shards_ipc::end`, as M236 asks of a Mac. A write that fails resets the
   lane, never ending it in order. The socket's writer and reader run on threads of their own,
   woken into the endpoint's driver as exec's host is; the endpoint's end ends every socket.
+- *Its cut* (the Hex lead's Link test, 2026-11-13). A socket cut short resets the lane
+  (RESET_STREAM and STOP_SENDING), never its FIN first: its write fails (EPIPE, ECONNRESET),
+  its read fails, or it has hung up as its reads end, its peer gone rather than half-closed.
+  A read's end alone does not tell: a peer's close reads as a half-close's end, and the
+  writer finds EPIPE only at its next write, after the reader's FIN has gone (macOS 4 of 4;
+  on Linux a close that left a byte unread reads ECONNRESET, which resets the lane, and one
+  that left none an end, as on macOS, PM M559). So the reader asks the socket at its end
+  (`shards_ipc::hung_up`: poll(2)'s POLLHUP or POLLERR asked for POLLOUT, which a peer's
+  close sets as it ends the reads, and a half-close never; on Windows the pipe's other end
+  closed, PeekNamedPipe's ERROR_BROKEN_PIPE, where a half-close is a message of no bytes).
+  The endpoint holds each way's state (`Upward`, `Downward`, R04): hung up while the
+  controller's way is open is a cut; hung up while the controller's FIN is being written
+  waits for the writer, whose socket shut after all the controller sent (which hangs a Unix
+  socket up as well) ends the lane in order, and whose failed write cuts it. A socket that
+  cannot say is taken as hung up. Only a half-close, or both ways' ends, close in order. The
+  transport's RST drops what the controller had not read (RFC 9000 §3.2; hyper-quic's
+  `Recv::reset` clears its buffer): a cut promises no byte before it. No wire change: the
+  cut is the stream's reset, `ConnectionReset` at the controller. On Windows a cut WinSock
+  socket (AF_UNIX, the VM process's legs) reads WSAECONNRESET (10054), which std reads as
+  `ConnectionReset`.
 - *The controller* (`control::drive`). `Subscriptions::sockets` and `Dialed::sockets`;
   `Sockets::connect(name)` answers a `Socket` or a typed `Fault`, `Fault::Unreached(errno)`
   among them. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
@@ -27404,7 +27424,10 @@ four-byte head (RFC 8446 §4), with D180's datagrams for a link of socket lanes 
 daemon's endpoints take them, its liveness judged at use (D180; `tls::QUIET` before). The asks' bounds are the frame's
 own: its head, the run (32), the generation (8) and the name. Linux's errnos are
 asm-generic's, which every guest architecture shares. The window, the lanes and so every
-buffer are the caller's admission (R03).
+buffer are the caller's admission (R03). The cut's probe waits for nothing (poll(2)'s
+timeout 0): it reads the socket's state as its reads end, which a peer's close has set by
+then (Linux's `unix_release_sock` sets the peer's `sk_shutdown` to SHUTDOWN_MASK before it
+wakes it, net/unix/af_unix.c; macOS as measured, PM M559).
 
 **Built and tested** (unit, focused).
 - shards-init on adacachy2 (Linux 7.3 x86_64, rustc 1.98.1): `lanes::tests`, 3 tests, among
@@ -27421,18 +27444,41 @@ buffer are the caller's admission (R03).
   reset each way; lanes past the admitted most refused `Capacity` until one ends; a stranger
   `NotEnrolled`. Plus an endpoint of no socket lanes refusing one `Scope`, and the frames' own
   tests.
+- Its cut: `control::unix::tests::a_socket_cut_short_resets_its_lane_never_ending_it_in_order`,
+  the workload reading all the controller sent and then closing, so that its end comes with
+  nothing for the writer to fail on, on every host: red on 8bfa6150e's pump (`Ok(0)` where
+  `ConnectionReset` was due) on adas-mac-studio.local (macOS 26.2 arm64) and adacachy2 (Linux
+  7.3.3 x86_64), green after with the unix module's 10 tests, among them
+  `a_workloads_half_close_ends_its_way_in_order_while_the_other_goes_on` (the workload speaks
+  first and ends its writes, the controller reads to that end before it writes a byte);
+  shards-ipc `hung_up_tells_a_peer_gone_from_a_half_close`; clippy for shards-remote and
+  shards-ipc on macOS, x86_64-unknown-linux-gnu (natively, adacachy2) and
+  x86_64-pc-windows-msvc (cargo xwin).
 
 **Evidence owed** (ROOT, real VMs).
 - Hex's case (f), `nesting::a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller`
   (with the run host's endpoint, D252), on HVF, KVM x86_64 and WHP.
 - The lane's throughput and round trip against D238's arm h numbers (control-end's harness).
 - Mutation of the grant's and the name's checks.
+- A cut carried through a real VM, which the guest's legs do not yet carry: shards-init's
+  relay (`relay.rs` `Direction::turn`, `EndPolicy::Independent`) forwards the workload's end
+  as SHUT_WR on vsock before its write's EPIPE is known, and the VM process's muxer
+  (`vsock/conn.rs` `flush`) turns the guest's SHUTDOWN(SEND) into the host socket's
+  shutdown(Write) before it closes on the guest's RST, so the endpoint's socket reads a
+  half-close first, not hung up, and the lane ends in order. On Windows warm.rs's `pass`
+  reads a guest connection's WSAECONNRESET as its end and half-closes the owner's pipe. Each
+  leg needs this entry's rule: hung up at a read's end while the other way is open is a cut,
+  carried as both ways ended at once (the muxer closing its host socket, no shutdown(Write)
+  first), with real-VM runs on HVF, KVM and WHP, the muxer being every exec's and engine's
+  too.
+- Windows: `hung_up` on a pipe whose other end has closed, unrun (its peek is `readable`'s).
 
 **What would falsify it.**
 - A workload reaching a socket outside its root.
 - A lane's bytes reordered or lost.
 - A half-close turned into a full close.
 - A lane held past its window.
+- A socket cut short read as `Ok(0)` at the controller, or a half-close read as a cut.
 
 ### D252. An orchestrator's run binds its own agent-control endpoint, and shards-api carries Shards' controller (built; real-VM runs owed)
 

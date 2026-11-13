@@ -2868,7 +2868,7 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
     let wake_me = adopt("WAKE_ME", me)?;
     let wake_peer = adopt("WAKE_PEER", peer)?;
     let mac = mac
-        .parse::<shards_net::Mac>()
+        .parse::<shards_ipc::Mac>()
         .map_err(|e| format!("--net: {e}"))?
         .0;
     // Asked as the command ends, so that what it sent goes before the run does.
@@ -2933,7 +2933,7 @@ fn net_host(spec: &str) -> Result<shards_vmm::devices::virtio::net::NetHost, Str
         crate::warm::adopt_release(release)?;
     }
     let mac = spec
-        .parse::<shards_net::Mac>()
+        .parse::<shards_ipc::Mac>()
         .map_err(|e| format!("--net: {e}"))?
         .0;
     // Asked as the command ends, so that what it sent goes before the run does.
