@@ -6377,12 +6377,40 @@ read-only: invalid argument" on KVM) and `capture` (the end's room reserved and
 told before the scope's end); remote `managed::input` (frames; a record taken whole once the
 last is delivered; resubscription and refusals by scope, generation, channel and offset; an
 abort held by an unread record closes its connection; revocation), and over the real transport
-a stranger's key refused, exact bytes, a record held until delivered, a vanished owner's
-record going on and its next subscription told where to go on, and the end. Written for the
+a stranger's key refused and its owner taken at its first attempt after it, exact bytes, a
+record held until delivered, a vanished owner's record going on and its next subscription told
+where to go on, an owner that closed its connection without its end taken again at its first
+attempt where its last was taken, and the end. Written for the
 coordinator's real-VM suite: `tests/managed_output.rs` `member_stdin` (a harness echoing its
 stdin: exact JSON lines and bytes past a pipe's capacity, a stranger refused, a resumed
 owner, its end; and a member that ends, its input `EPIPE`).
 [Record](../research/measurements/member-stdin-v1/README.md).
+
+**A closed connection holds no place** (2026-11-13, goal 71's CI cluster 6c). The endpoint
+holds one connection (`DriverLimits::connections`, 1), and its driver (net.rs) counted a closed
+one against it while it closed or drained, three probe timeouts with its peer's
+`max_ack_delay` in each (RFC 9000 §10.2, RFC 9002 §6.2.1): an owner subscribing right after a
+stranger's refused handshake, or right after closing its own connection without its end, was
+refused, CONNECTION_REFUSED with no application code. The coordinator's first real-VM run of
+`member_stdin` (KVM x86_64, d5afadbc8) met it at the owner's first subscription, just after the
+stranger's (`member_stdin.rs:70`, `Err(Lost(None))`); the remote test's owner had retried past
+it every 100 ms since step 5's first commit (e7825cb32). A newcomer that finds its places full
+now takes the place of the closed connection nearest its drain (`Driver::free_closed`): what
+that one has yet to send, its CONNECTION_CLOSE, goes with the turn's datagrams, none is freed
+while the socket holds back an earlier one, and its endpoint is told it drained
+(`EndpointEvent::drained`), as §10.2 lets an endpoint end those states early "to allow for
+faster resource recovery", at the cost it names: a late packet of its peer's is answered by a
+stateless reset (§10.3), which ends the connection for that peer as its close would. An open
+connection, its handshake's or established, keeps its place: a vanished owner's is freed only
+as liveness at use finds it dead (above), its successor refused and dialing again meanwhile;
+a stranger's handshake in flight holds it too. Every bounded endpoint shares the driver, so an
+output endpoint's observer resubscribing after its close is taken at once, and so is the
+agent-control endpoint's third connection while the older drains (D238's `CONNECTIONS`). No
+literal: the places are the caller's admission, the close period the transport's own. Red at
+d5afadbc8 on macOS arm64 (`over_the_real_transport_…` and
+`an_owner_closed_without_its_end_resubscribes_at_its_first_attempt_…`, each owner subscribing
+once: "the server refused to accept a new connection"), green with it
+([record](../research/measurements/member-stdin-v1/README.md#a-closed-connection-held-the-endpoints-one-place-2026-11-13)).
 
 **Its values derived** (2026-11-13; R03: no value chosen). D180's transport and relays held
 values chosen by hand; each is now a protocol's bound, a cited system's, learned per peer, or
@@ -24894,7 +24922,7 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | `REFUSED_BYTES` 9 | a frame's head (5) and a u32 code |
 | A lane's refusal, 1 to 5 | `managed::Reason` (Protocol, Scope, Stale, Closed, Auth), as step 5's endpoints close with them |
 | Channels 0, 1, 2 | the run protocol's stdin, stdout and stderr (abi `run::kind`) |
-| `CONNECTIONS` 2 | its controller's connection and the one that replaces it; the older closes at the newer's handshake and is held until its close drains (RFC 9000 §10.2) |
+| `CONNECTIONS` 2 | its controller's connection and the one that replaces it; the older closes at the newer's handshake, and while its close drains (RFC 9000 §10.2) its place is the next newcomer's (D180's "A closed connection holds no place") |
 | One command slot | a wake is one unit whose turn serves every stream; a full handoff is a wake queued |
 | Windows, streams | each stream's own (above): its endpoint of one stream's windows, summed; one stream per lane |
 | The controller's windows; its command slots | the endpoint's admissions, summed over its lanes as the endpoint sums its own; one slot per lane, as each handle has one ask in flight |
