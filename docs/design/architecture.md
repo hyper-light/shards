@@ -7538,6 +7538,15 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     of it read values. So it grows into its room once, whichever comes first. Where its VMM
     cannot say its footprint, init holds the room as told and says so (`ROOM_UNREAD`),
     which the daemon logs. A one-word `ROOM`, a budget's (D188), holds as it did.
+  - **Each VM process once** (built, macOS and Windows). A joiner runs in its provider's VM
+    process (D119), and the group summed its footprint by run: a joiner in its provider's
+    group counted that process twice in `memory.current` and listed it twice in
+    `cgroup.procs` (`a_joiner_and_its_provider_in_one_group_count_their_vm_process_once`,
+    red at 9d7e74bc0: 1300 MiB where 700 were held). A member now keeps its VM process's
+    identity, its pid and when it started (`shards_ipc::started`, read as its run joins),
+    and the group reads each identity once: its `memory.current`, its `cgroup.procs` on
+    macOS, each member's room as of its process's footprint, and its verdict's largest. A
+    member whose pid now names a process that started at another time holds nothing of it.
   - **Windows** (built): every process of a microVM under NAME is made in a job object of
     NAME's, nested above the VM process's own (PROC_THREAD_ATTRIBUTE_JOB_LIST, the
     group's first; Job Objects, "Nested Jobs", Windows 8 on), its warm VMs too: a VM
