@@ -1,7 +1,8 @@
 //! Lanes between the host and sockets inside the microVM (D251), carried over vsock through
 //! the exec port: each one's connection says its token in its HELLO, then its status, then
 //! carries the bytes each way, each way's end that way's half-close (`native_relay::pump`,
-//! `EndPolicy::Independent`).
+//! `EndPolicy::Independent`); a workload's socket gone while its host's way is open ends the
+//! vsock connection both ways at once, D251's cut (`Termination::ClientCut`).
 //!
 //! A lane to a socket of the run's own command is asked by the host ([`open`]): its name must
 //! be a file name in the one directory the run grants (`sockets=`, default deny), and its path
@@ -256,5 +257,81 @@ mod tests {
             connect(&dir.path().join("no-root"), b"/run/s.sock").map(drop),
             Err(errno::ESRCH)
         );
+    }
+
+    /// The relay between a workload's socket and a stand-in for its vsock connection, as
+    /// [`carry`] runs it once connected: the workload's end, the host's end and the relay's
+    /// thread, which returns what the pump said.
+    fn relayed() -> (
+        UnixStream,
+        UnixStream,
+        std::thread::JoinHandle<Result<native_relay::Termination, native_relay::Fault>>,
+    ) {
+        let (workload, local) = UnixStream::pair().unwrap();
+        let (host, vsock) = UnixStream::pair().unwrap();
+        let slots = native_relay::Slots::minimum_mapped().unwrap();
+        let relay = std::thread::spawn(move || {
+            let mut report = native_relay::Report::new();
+            native_relay::pump(
+                [local.as_fd(), vsock.as_fd()],
+                slots,
+                [native_relay::ByteLimit::PeerEnd; 2],
+                native_relay::Control::ProcessOwned,
+                native_relay::EndPolicy::Independent,
+                &mut report,
+            )
+        });
+        (workload, host, relay)
+    }
+
+    /// What `sock` reads until its end, and whether it has hung up there: its peer gone both
+    /// ways (POLLHUP asked for POLLOUT at once, PM M559), not only its writes ended.
+    fn read_to_end(sock: &mut UnixStream) -> (Vec<u8>, bool) {
+        let mut got = Vec::new();
+        sock.read_to_end(&mut got).unwrap();
+        let mut fd = libc::pollfd {
+            fd: std::os::fd::AsRawFd::as_raw_fd(sock),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: one pollfd of a socket this test holds; a timeout of 0 waits for none.
+        assert!(unsafe { libc::poll(&raw mut fd, 1, 0) } >= 0);
+        (got, fd.revents & (libc::POLLHUP | libc::POLLERR) != 0)
+    }
+
+    /// A workload that closes its socket while its host still has the lane's other way open
+    /// cuts the lane (D251's cut): its host reads what it sent, whole, then the vsock
+    /// connection ended both ways at once, never its writes' end alone first.
+    #[test]
+    fn a_workload_gone_mid_stream_ends_its_vsock_both_ways() {
+        let (mut workload, mut host, relay) = relayed();
+        host.write_all(b"ask").unwrap();
+        let mut asked = [0u8; 3];
+        workload.read_exact(&mut asked).unwrap();
+        assert_eq!(&asked, b"ask");
+        workload.write_all(b"answer").unwrap();
+        drop(workload);
+        assert_eq!(read_to_end(&mut host), (b"answer".to_vec(), true));
+        drop(host);
+        assert!(relay.join().unwrap().is_ok());
+    }
+
+    /// A workload's half-close stays its way's end alone: its host reads the end with the
+    /// lane's other way open, sends on, and the workload reads it all before its own end.
+    #[test]
+    fn a_workloads_half_close_still_ends_its_way_in_order() {
+        let (mut workload, mut host, relay) = relayed();
+        workload.write_all(b"said").unwrap();
+        workload.shutdown(std::net::Shutdown::Write).unwrap();
+        assert_eq!(read_to_end(&mut host), (b"said".to_vec(), false));
+        host.write_all(b"heard").unwrap();
+        host.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut got = Vec::new();
+        workload.read_to_end(&mut got).unwrap();
+        assert_eq!(got, b"heard");
+        assert!(matches!(
+            relay.join().unwrap(),
+            Ok(native_relay::Termination::BothHalvesClosed)
+        ));
     }
 }

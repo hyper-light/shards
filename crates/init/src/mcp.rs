@@ -8,7 +8,8 @@
 //! process reaches it. The relay takes each connection on a thread of its own, as a lane's is
 //! (lanes.rs), dials [`run::MCP_PORT`], says the run's token in its HELLO, then the member's
 //! declared index ([`run::mcp::preamble`]), then carries the bytes each way, each way's end
-//! that way's half-close (`native_relay::pump`, `EndPolicy::Independent`). The member never
+//! that way's half-close (`native_relay::pump`, `EndPolicy::Independent`), a member gone while
+//! its host's way is open the connection's cut, as a lane's (D251). The member never
 //! holds the token: what it says reaches its host as its own, never as another member's.
 
 use std::io::{self, Read, Write};

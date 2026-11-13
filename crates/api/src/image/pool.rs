@@ -803,6 +803,7 @@ mod tests {
             env: Vec::new(),
             control: None,
             gpu_devices: Vec::new(),
+            sign_ins: Vec::new(),
         }
     }
 
@@ -821,6 +822,7 @@ mod tests {
             credentials: Vec::new(),
             control: None,
             gpu_devices: Vec::new(),
+            sign_ins: Vec::new(),
         }
     }
 

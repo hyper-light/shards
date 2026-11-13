@@ -33,7 +33,7 @@ use shards_abi::ring::{self as abi, Offer, Refusal, Reply};
 use super::super::Span;
 use super::super::packet::{Header, op, shutdown};
 use super::super::ring::{Broken, CUE, Ring, RingHandle};
-use super::{Conn, Phase};
+use super::{Conn, HostWrites, Phase};
 use crate::debug;
 use crate::memory::GuestMemory;
 
@@ -356,8 +356,8 @@ impl Conn {
         };
         r.blocked = !drained;
         // The guest's client ended its writes: they end at the host too, after its last.
-        if drained && r.ended && !self.host_write_shut {
-            self.host_write_shut = true;
+        if drained && r.ended && self.host_writes == HostWrites::Open {
+            self.host_writes = HostWrites::Shut;
             let _ = self.stream.shutdown(std::net::Shutdown::Write);
         }
         Ok(drained)

@@ -59,6 +59,8 @@ struct Machine {
     /// The key whose verdict it holds, and what lets that go: a machine slow to say whom a key
     /// is, its files read from a disk under load.
     verdict_stall: Mutex<Option<(Vec<u8>, mpsc::Receiver<()>)>>,
+    /// The connections its daemon holds at once (`Host::handshakes`).
+    places: usize,
 }
 
 /// What a [`Machine`] holds up, and how: a `stalls` command's start, every join, and its verdict
@@ -235,7 +237,7 @@ impl Host for Machine {
     }
 
     fn handshakes(&self) -> usize {
-        usize::MAX
+        self.places
     }
 
     fn unheard(&self, client: Option<&str>, _at: SocketAddr, _unheard: Duration) {
@@ -302,6 +304,21 @@ fn daemon_with(
     invitations: Vec<Invitation>,
     stalls: Stalls,
 ) -> Daemon {
+    daemon_of(identity, clients, invitations, stalls, usize::MAX)
+}
+
+/// [`daemon`], holding `places` connections at once.
+fn daemon_holding(identity: &'static Identity, clients: Vec<(String, Vec<u8>)>, places: usize) -> Daemon {
+    daemon_of(identity, clients, Vec::new(), Stalls::default(), places)
+}
+
+fn daemon_of(
+    identity: &'static Identity,
+    clients: Vec<(String, Vec<u8>)>,
+    invitations: Vec<Invitation>,
+    stalls: Stalls,
+    places: usize,
+) -> Daemon {
     // The commands' program, built before the daemon serves: its first start would build it
     // (cargo, seconds) on the daemon's driver, which answers nothing meanwhile, and a client
     // whose send goes unanswered a whole window past its probe timeout is let go (D180).
@@ -314,6 +331,7 @@ fn daemon_with(
         stall: Mutex::new(stalls.start),
         join_stall: Mutex::new(stalls.join),
         verdict_stall: Mutex::new(stalls.verdict),
+        places,
     };
     let (tx, bound) = mpsc::channel();
     std::thread::spawn(move || {
@@ -789,6 +807,8 @@ enum Ask {
     Reset(StreamId),
     Stop(StreamId),
     Close,
+    /// Ends its driver without a word to the daemon, as a killed process's ends.
+    Vanish,
 }
 
 /// A client that sends the bytes a test gives it, keeps its connection as long as the test
@@ -862,6 +882,7 @@ impl Handler for Raw {
                 io.close(self.conn.unwrap(), 0, "");
                 self.done = true;
             }
+            Ask::Vanish => self.done = true,
         }
     }
 
@@ -879,6 +900,12 @@ struct RawClient {
 
 impl RawClient {
     fn new(identity: &'static Identity, remote: Remote) -> RawClient {
+        RawClient::dial(identity, remote).unwrap_or_else(|heard| panic!("not connected: {heard:?}"))
+    }
+
+    /// A raw client of `remote`, as `identity`, on a thread of its own: connected, or what it
+    /// heard instead.
+    fn dial(identity: &'static Identity, remote: Remote) -> Result<RawClient, Heard> {
         let (heard_tx, heard) = mpsc::channel();
         let (stops_tx, stops) = mpsc::channel();
         let (tx, made) = mpsc::channel();
@@ -900,8 +927,10 @@ impl RawClient {
         ask.send(net::Command::Handler(Ask::Connect(remote.address)))
             .unwrap();
         let client = RawClient { ask, heard, stops };
-        assert_eq!(client.next(), Heard::Connected);
-        client
+        match client.next() {
+            Heard::Connected => Ok(client),
+            other => Err(other),
+        }
     }
 
     fn next(&self) -> Heard {
@@ -1118,6 +1147,68 @@ fn a_control_stream_for_no_command_is_refused() {
             b"no command of this connection's to steer".to_vec()
         )
     );
+}
+
+/// A daemon's listener holds as many connections at once as its machine's resources bound
+/// (`Host::handshakes`: at the daemon, the process's descriptors, each connection served
+/// holding a command and its stdio): past them a newcomer is refused and each holder asked for
+/// an answer (a PING). A holder that answers keeps its place, past its probe timeout too; one
+/// gone without a word gives it to a later attempt once unheard past its probe timeout (ROOT's
+/// ruling on #72). Red with no bound on established connections: the newcomer let in at once.
+#[test]
+fn a_listener_at_its_bound_gives_a_vanished_clients_place_to_a_newcomer() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let (laptop, desktop) = (
+        leak(Identity::generate().unwrap()),
+        leak(Identity::generate().unwrap()),
+    );
+    let d = daemon_holding(
+        daemon_id,
+        vec![
+            ("laptop".into(), laptop.spki().to_vec()),
+            ("desktop".into(), desktop.spki().to_vec()),
+        ],
+        1,
+    );
+    let held = RawClient::new(laptop, d.remote);
+    let refused = RawClient::dial(desktop, d.remote);
+    assert!(
+        matches!(refused, Err(Heard::Lost(_))),
+        "at its bound, a newcomer is refused: {:?}",
+        refused.map(|_| "connected")
+    );
+    // The holder heard after it was asked: its stream's answer comes after the ask.
+    let mut named = Vec::new();
+    frame::put(&mut named, Tag::Controls, &96u64.to_be_bytes()).unwrap();
+    let stream = held.open(named);
+    assert!(matches!(held.next(), Heard::Frame(s, Tag::Refused, _) if s == stream));
+    // Past its probe timeout on loopback (its RTT terms and the peer's 25 ms `max_ack_delay`,
+    // RFC 9000 §18.2's default), still answered.
+    std::thread::sleep(Duration::from_millis(200));
+    let kept = RawClient::dial(desktop, d.remote);
+    assert!(
+        matches!(kept, Err(Heard::Lost(_))),
+        "a holder that answers keeps its place: {:?}",
+        kept.map(|_| "connected")
+    );
+    // Gone without a word: a later attempt takes its place.
+    held.ask(Ask::Vanish);
+    let until = Instant::now() + DEADLINE;
+    let mut attempts = 0;
+    let newcomer = loop {
+        attempts += 1;
+        match RawClient::dial(desktop, d.remote) {
+            Ok(newcomer) => break newcomer,
+            Err(heard) => assert!(
+                Instant::now() < until,
+                "refused {attempts} times over {DEADLINE:?}: {heard:?}"
+            ),
+        }
+    };
+    let mut named = Vec::new();
+    frame::put(&mut named, Tag::Controls, &96u64.to_be_bytes()).unwrap();
+    let stream = newcomer.open(named);
+    assert!(matches!(newcomer.next(), Heard::Frame(s, Tag::Refused, _) if s == stream));
 }
 
 /// An invitation of the daemon `of`, for no one in particular.
