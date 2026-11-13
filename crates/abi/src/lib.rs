@@ -20,6 +20,13 @@ pub const DOMAIN_FIRST_ID: u32 = 200_000;
 /// 4 * 1024 * 1024).
 pub const SERVER_FIRST_ID: u32 = DOMAIN_FIRST_ID + 4 * 1024 * 1024;
 
+/// The group a share's server takes a request of for a notice of its host's (D235): init's
+/// [`NOTICE`](run::builtin::NOTICE) built-in touches a file as this fsgid, which its server
+/// answers with the file as it is, changing nothing on the host, and refuses anything else
+/// of (EACCES). The first ID past every in-VM server instance's ([`SERVER_FIRST_ID`] plus
+/// `PID_MAX_LIMIT`), which no process of shards' own takes.
+pub const NOTICE_ID: u32 = SERVER_FIRST_ID + 4 * 1024 * 1024;
+
 /// The join disk's virtio-blk serial (D119), which init finds it by: the read-only disk
 /// whose ranges are the images of runs joining the microVM's network.
 pub const JOIN_DISK_SERIAL: &str = "shards-join";

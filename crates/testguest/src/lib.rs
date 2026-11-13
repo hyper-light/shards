@@ -3,6 +3,7 @@
 
 #![no_std]
 
+pub mod case;
 pub mod limits;
 
 /// The byte at `offset` of a disk filled with pattern `salt`: varies with every byte

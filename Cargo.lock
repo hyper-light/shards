@@ -1601,6 +1601,7 @@ dependencies = [
  "libc",
  "shards-abi",
  "shards-afunix",
+ "shards-apple",
  "shards-ipc",
  "shards-netring",
  "shards-ntfs",

@@ -1,0 +1,65 @@
+applied: 62bcd355c1998945 on dc7d3601
+host: Linux 6.19.10-300.fc44.x86_64 x86_64,  Intel(R) Core(TM) i9-14900HX, load: load average: 7.94, 7.46, 8.30
+test result: ok. 37 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 7.75s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.23s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.17s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.42s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.86s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.01s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.31s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+host: Linux x86_64,  Intel(R) Core(TM) i9-14900HX, dc7d360
+abs [80000000000e00029174680]: 0.044312 s, 29174691 bytes, peak 59.1 MiB (start 3.2), footprint 59.1 MiB, 96916226 bits, bound 196218786 B
+floor [80000000000e00029174680]: 4.913498 s, 29174691 bytes, peak 111.1 MiB (start 3.0), footprint 111.1 MiB, 96916226 bits, bound 196218786 B
+ceil [-80000000000e00029174680]: 4.769662 s, 29174692 bytes, peak 111.7 MiB (start 3.0), footprint 111.7 MiB, 96916226 bits, bound 196218786 B
+round [80000000000e00029174680]: 4.749462 s, 29174691 bytes, peak 111.6 MiB (start 3.0), footprint 111.6 MiB, 96916226 bits, bound 196218786 B
+format_int [80000000000e00029174680,10]: 4.946205 s, 29174693 bytes, peak 111.9 MiB (start 3.0), footprint 111.9 MiB, 96916226 bits, bound 196218786 B
+format_int [80000000000e00029174680,16]: 0.059290 s, 24229059 bytes, peak 65.3 MiB (start 3.0), footprint 65.3 MiB, 96916226 bits, bound 196218786 B
+format_int [80000000000e00029174680,2]: 0.219841 s, 96916228 bytes, peak 188.0 MiB (start 2.8), footprint 188.0 MiB, 96916226 bits, bound 196218786 B
+floor [1e100000]: 0.010205 s, 100001 bytes, peak 3.8 MiB (start 3.0), footprint 3.8 MiB, 332193 bits, bound 721984 B
+floor [1e1000000]: 0.101322 s, 1000000 bytes, peak 6.5 MiB (start 3.0), footprint 6.5 MiB, 3321929 bits, bound 6421168 B
+floor [1e3000000]: 0.432683 s, 3000001 bytes, peak 15.5 MiB (start 2.9), footprint 15.5 MiB, 9965785 bits, bound 22417826 B
+floor [1e10000000]: 1.349925 s, 10000001 bytes, peak 51.9 MiB (start 2.7), footprint 51.9 MiB, 33219281 bits, bound 76761304 B
+floor [1e29174690]: 4.768427 s, 29174690 bytes, peak 111.9 MiB (start 2.8), footprint 111.9 MiB, 96916223 bits, bound 196218786 B
+floor [1e100000000]: 19.427776 s, 100000000 bytes, peak 414.9 MiB (start 3.0), footprint 414.9 MiB, 332192810 bits, bound 730379588 B
+floor [1e200000000]: 43.075112 s, 200000000 bytes, peak 827.1 MiB (start 3.2), footprint 827.1 MiB, 664385619 bits, bound 1460757496 B
+floor [1e400000000]: 99.159092 s, 400000001 bytes, peak 1645.4 MiB (start 2.9), footprint 1645.4 MiB, 1328771238 bits, bound 2921513264 B
+floor [1e646456992]: 205.433001 s, 646456993 bytes, peak 2956.1 MiB (start 3.3), footprint 2956.1 MiB, 2147483644 bits, bound 5341989622 B
+floor [80000000000e00029174680]: 4.905813 s, 29174691 bytes, peak 111.8 MiB (start 3.2), footprint 111.8 MiB, 96916226 bits, bound 196218786 B
+floor [80000000000e00029174680]: refused in 0.000033 s, peak 3.2 MiB: number too large to write: the text of a 96916226-bit number takes 196218786 bytes to make, more than the 196218785 bytes this evaluation can hold
+host kiln-a094a12d.attlocal.net, Linux 6.19.10-300.fc44.x86_64 x86_64, 32 cores, dc7d360, 2026-11-13T00:10:18Z; cargo-fuzz 0.13.1; rustc 1.100.0-nightly (0ed41eb41 2026-09-04)
+  CRATE_CC_NO_DEFAULTS = None
+  cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+  cargo:warning=Compiler family detection failed due to error: ToolNotFound: failed to find tool "c++": No such file or directory (os error 2)
+  cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+  CRATE_CC_NO_DEFAULTS = None
+  cargo:rerun-if-env-changed=CXXFLAGS
+  CXXFLAGS = None
+  cargo:rerun-if-env-changed=HOST_CXXFLAGS
+  HOST_CXXFLAGS = None
+  cargo:rerun-if-env-changed=CXXFLAGS_x86_64_unknown_linux_gnu
+  CXXFLAGS_x86_64_unknown_linux_gnu = None
+  cargo:rerun-if-env-changed=CXXFLAGS_x86_64-unknown-linux-gnu
+  CXXFLAGS_x86_64-unknown-linux-gnu = None
+  cargo:rerun-if-env-changed=CXXFLAGS
+  CXXFLAGS = None
+  cargo:rerun-if-env-changed=HOST_CXXFLAGS
+  HOST_CXXFLAGS = None
+  cargo:rerun-if-env-changed=CXXFLAGS_x86_64_unknown_linux_gnu
+  CXXFLAGS_x86_64_unknown_linux_gnu = None
+  cargo:rerun-if-env-changed=CXXFLAGS_x86_64-unknown-linux-gnu
+  CXXFLAGS_x86_64-unknown-linux-gnu = None
+
+  --- stderr
+
+
+  error occurred in cc-rs: failed to find tool "c++": No such file or directory (os error 2)
+
+
+warning: build failed, waiting for other jobs to finish...
+Error: failed to build fuzz script: ASAN_OPTIONS="detect_odr_violation=0" RUSTFLAGS=" -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares --cfg fuzzing -Cllvm-args=-simplifycfg-branch-fold-threshold=0 -Zsanitizer=address -Cllvm-args=-sanitizer-coverage-stack-depth -Cdebug-assertions -Ccodegen-units=1" "cargo" "build" "--manifest-path" "/tmp/rb2/shards/fuzz/Cargo.toml" "--target" "x86_64-unknown-linux-gnu" "--release" "--config" "profile.release.debug=\"line-tables-only\"" "--bins" "--target-dir" "/tmp/rb2-fuzz/target"

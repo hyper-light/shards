@@ -1,0 +1,185 @@
+Linux adacachy 7.2.9-2-cachyos #1 SMP PREEMPT_DYNAMIC Thu, 08 Oct 2026 15:06:16 +0000 x86_64 GNU/Linux
+rustc 1.98.1 (48a229cea 2026-09-01)
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+2a3b623565016b8636b885eb49fb79bd015c9525
+Fri Nov 13 01:04:14 AM UTC 2026
+=== cargo test -p shards-remote --lib
+   Compiling libc v0.2.189
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling pkg-config v0.3.34
+   Compiling fs_extra v1.3.0
+   Compiling dunce v1.0.5
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling alloc-no-stdlib v2.0.4
+   Compiling typenum v1.20.1
+   Compiling zeroize v1.9.0
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/g121-tmp/s11-control/src/vendor/aws-lc-rs)
+   Compiling cfg-if v1.0.5
+   Compiling rand_core v0.10.1
+   Compiling getrandom v0.4.3
+   Compiling portable-atomic v1.15.0
+   Compiling libm v0.2.16
+   Compiling cpufeatures v0.3.1
+   Compiling once_cell v1.21.4
+   Compiling thiserror v2.0.21
+   Compiling shards-abi v0.1.0 (/home/adalundhe/g121-tmp/s11-control/src/crates/abi)
+   Compiling untrusted v0.9.0
+   Compiling log v0.4.34
+   Compiling const-oid v0.10.2
+   Compiling pin-project-lite v0.2.17
+   Compiling subtle v2.6.1
+   Compiling siphasher v1.0.4
+   Compiling zlib-rs v0.6.8
+   Compiling foldhash v0.2.0
+   Compiling rustc-hash v2.1.3
+   Compiling tinyvec v1.13.3
+   Compiling lru-slab v0.1.3
+   Compiling rand_pcg v0.10.2
+   Compiling slab v0.4.12
+   Compiling bytes v1.12.1
+   Compiling alloc-stdlib v0.2.4
+   Compiling chacha20 v0.10.2
+   Compiling rustls-pki-types v1.15.1
+   Compiling brotli-decompressor v5.0.3
+   Compiling tracing-core v0.1.36
+   Compiling hybrid-array v0.4.15
+   Compiling tracing v0.1.44
+   Compiling brotli v8.0.4
+   Compiling fastbloom v0.17.0
+   Compiling jobserver v0.1.35
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/g121-tmp/s11-control/src/crates/testdir)
+   Compiling syn v3.0.6
+   Compiling rand v0.10.3
+   Compiling cc v1.5.1
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling shards-ipc v0.1.0 (/home/adalundhe/g121-tmp/s11-control/src/crates/ipc)
+   Compiling digest v0.11.3
+   Compiling sha2 v0.11.0
+   Compiling cmake v0.1.58
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/g121-tmp/s11-control/src/vendor/aws-lc-sys)
+   Compiling thiserror-impl v2.0.21
+   Compiling rustls-webpki v0.103.16
+   Compiling hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling shards-remote v0.1.0 (/home/adalundhe/g121-tmp/s11-control/src/crates/remote)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.10s
+     Running unittests src/lib.rs (/home/adalundhe/g121-tmp/s11-control/target/debug/deps/shards_remote-29bd2c628b689384)
+
+running 52 tests
+test control::tests::a_lane_of_no_kind_is_refused ... ok
+test control::tests::a_close_reads_as_its_cause ... ok
+test frame::tests::frames_come_back_whole_however_they_arrive ... ok
+test frame::tests::a_request_carries_its_arguments_and_printing_variables_alone ... ok
+test invite::tests::a_proof_holds_for_its_secret_and_session_alone ... ok
+test managed::input::tests::a_record_is_taken_whole_once_the_last_is_delivered_and_the_owners_end_closes_it ... ok
+test control::tests::a_lanes_refusal_reads_back_as_its_reason ... ok
+test control::tests::a_peer_of_another_protocol_is_refused ... ok
+test managed::input::tests::frames_round_trip_and_an_owner_reads_what_the_endpoint_says ... ok
+test managed::tests::a_patience_under_a_millisecond_is_refused ... ok
+test managed::tests::controls_preserve_scope_and_cursor_across_every_split ... ok
+test managed::tests::finishing_releases_the_last_record_only_after_its_application_ack ... ok
+test invite::tests::an_invitation_is_written_private_and_read_back ... ok
+test managed::tests::refusal_categories_preserve_scope_and_stale_generation ... ok
+test managed::tests::observer_loss_retains_only_the_unacknowledged_record_for_the_same_cursor ... ok
+test managed::tests::finish_coalesces_a_queued_wake_for_an_empty_stream ... ok
+test managed::tests::rejection_debug_never_prints_captured_content ... ok
+test managed::tests::finish_coalesces_the_queued_record_wake_without_discarding_the_record ... ok
+test managed::tests::replay_and_forward_cursors_do_not_subscribe_to_a_new_stream ... ok
+test identity::tests::an_identity_is_made_once_and_kept ... ok
+test managed::tests::prepared_capture_storage_is_transferred_and_recycled_after_ack ... ok
+test managed::tests::terminal_finish_never_revives_an_aborted_slot_or_ending ... ok
+test managed::tests::three_keep_alives_fall_within_every_idle_bound_quic_carries ... ok
+test control::tests::an_endpoint_not_the_pinned_vm_is_refused_at_its_handshake ... ok
+test managed::tests::terminal_ack_notification_exposes_finished_after_releasing_shared ... ok
+test managed::tests::finish_after_the_native_driver_drops_keeps_the_disconnect_error ... ok
+test net::tests::a_connection_lives_while_it_is_heard_and_its_handshake_alone_is_held_to_idle ... ok
+test managed::tests::growth_prepares_real_storage_and_refusal_preserves_the_previous_window ... ok
+test managed::input::tests::a_lost_subscription_lets_go_of_a_record_cut_short_and_a_resubscription_is_told_where_to_go_on ... ok
+test control::tests::a_controller_not_enrolled_is_refused_at_its_handshake ... ok
+test managed::tests::only_a_contiguous_application_ack_returns_credit ... ok
+test control::tests::an_enrolled_controller_and_its_pinned_vm_connect_on_aes_256_gcm ... ok
+test control::tests::step_5s_subscriptions_open_a_members_lanes ... ok
+test managed::input::tests::revocation_tells_the_relay_and_closes_the_members_connection_once_it_has_one ... ok
+test managed::tests::control_lengths_and_tags_are_refused_before_payload_allocation ... ok
+test managed::tests::capture_reconnect_preserves_the_borrowed_record_and_cursor ... ok
+test handshake::a_daemon_not_pinned_is_refused ... ok
+test net::tests::an_interrupted_receive_keeps_serving_commands ... ok
+test managed::input::tests::an_abort_ends_a_record_the_member_does_not_read_and_its_connection_is_closed ... ok
+test managed::tests::terminal_observations_do_not_infer_completion_from_equal_cursors ... ok
+test managed::tests::a_record_cannot_be_acked_before_it_was_sent ... ok
+test tls::tests::a_peer_limited_to_chacha20_poly1305_is_refused_either_way ... ok
+test tls::tests::a_peer_limited_to_aes_128_gcm_is_refused_either_way ... ok
+test handshake::only_a_clients_two_way_streams_open ... ok
+test handshake::homes_connect_by_their_raw_keys ... ok
+test tls::tests::a_peer_preferring_other_suites_gets_aes_256_gcm_either_way ... ok
+test tls::tests::every_link_is_aes_256_gcm_at_both_ends ... ok
+test tls::tests::an_earlier_shards_still_connects_on_aes_256_gcm ... ok
+test managed::tests::a_vanished_owner_is_let_go_within_its_endpoints_patience ... ok
+test managed::tests::a_quiet_subscription_outlives_its_endpoints_patience ... ok
+test managed::tests::a_quiet_subscription_outlives_its_owners_patience ... ok
+test managed::input::tests::over_the_real_transport_input_goes_exactly_paced_resumed_ended_and_only_from_its_owner ... ok
+
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.09s
+
+=== exit 0 : cargo test -p shards-remote --lib
+=== cargo clippy -p shards-remote --all-targets -- -D warnings
+   Compiling shards-abi v0.1.0 (/home/adalundhe/g121-tmp/s11-control/src/crates/abi)
+    Checking cfg-if v1.0.5
+    Checking zeroize v1.9.0
+    Checking typenum v1.20.1
+    Checking alloc-no-stdlib v2.0.4
+    Checking rand_core v0.10.1
+    Checking once_cell v1.21.4
+    Checking cpufeatures v0.3.1
+    Checking untrusted v0.9.0
+    Checking zlib-rs v0.6.8
+    Checking pin-project-lite v0.2.17
+   Compiling libc v0.2.189
+    Checking const-oid v0.10.2
+    Checking log v0.4.34
+    Checking foldhash v0.2.0
+    Checking siphasher v1.0.4
+    Checking subtle v2.6.1
+    Checking libm v0.2.16
+    Checking portable-atomic v1.15.0
+    Checking lru-slab v0.1.3
+    Checking slab v0.4.12
+    Checking bytes v1.12.1
+    Checking thiserror v2.0.21
+    Checking rustc-hash v2.1.3
+    Checking tinyvec v1.13.3
+    Checking alloc-stdlib v0.2.4
+    Checking chacha20 v0.10.2
+    Checking rustls-pki-types v1.15.1
+    Checking rand_pcg v0.10.2
+    Checking tracing-core v0.1.36
+    Checking brotli-decompressor v5.0.3
+    Checking tracing v0.1.44
+    Checking hybrid-array v0.4.15
+    Checking getrandom v0.4.3
+    Checking fastbloom v0.17.0
+   Compiling jobserver v0.1.35
+    Checking shards-testdir v0.1.0 (/home/adalundhe/g121-tmp/s11-control/src/crates/testdir)
+    Checking rand v0.10.3
+    Checking brotli v8.0.4
+   Compiling cc v1.5.1
+    Checking crypto-common v0.2.2
+    Checking block-buffer v0.12.1
+    Checking shards-ipc v0.1.0 (/home/adalundhe/g121-tmp/s11-control/src/crates/ipc)
+    Checking digest v0.11.3
+    Checking sha2 v0.11.0
+   Compiling cmake v0.1.58
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/g121-tmp/s11-control/src/vendor/aws-lc-sys)
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/g121-tmp/s11-control/src/vendor/aws-lc-rs)
+    Checking rustls-webpki v0.103.16
+    Checking hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+    Checking hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+    Checking shards-remote v0.1.0 (/home/adalundhe/g121-tmp/s11-control/src/crates/remote)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.80s
+=== exit 0 : cargo clippy -p shards-remote --all-targets -- -D warnings
+Fri Nov 13 01:05:13 AM UTC 2026
+GATE_DONE

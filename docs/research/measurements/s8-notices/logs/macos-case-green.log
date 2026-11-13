@@ -1,0 +1,7 @@
+# Mac Studio (adas-mac-studio.local-2, macOS 26.4, arm64, APFS case-insensitive), HVF.
+# ~/g121-tmp/s8p2/run-test.sh p/s8-part2-v1 plug a_shares_names_are_its_hosts_case_and_all
+== 6de3842ac WIP: step 8 part 2 (not for main yet) 2026-11-12T23:20:59Z
+running 1 test
+test a_shares_names_are_its_hosts_case_and_all ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 26.93s
+== exit 0 2026-11-12T23:23:01Z

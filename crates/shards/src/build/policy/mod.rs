@@ -1184,7 +1184,9 @@ fn runtime_refs(unknowns: &[&str]) -> Vec<String> {
     out
 }
 
-/// A query's context: its time now, and randomness from the system.
+/// A query's context: its time now, randomness from the system, and the memory it can
+/// hold: what this host has available as it starts ([`crate::build::holdable`]), past
+/// which a builtin refuses a number's text rather than make it (D98).
 fn context() -> shards_rego::funcs::Context {
     let time_ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1192,6 +1194,7 @@ fn context() -> shards_rego::funcs::Context {
     shards_rego::funcs::Context {
         time_ns,
         fill: Some(|buf| aws_lc_rs::rand::fill(buf).map_err(|_| "reading random bytes failed".to_string())),
+        holdable: crate::build::holdable(),
         ..Default::default()
     }
 }

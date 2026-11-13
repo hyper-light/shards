@@ -1,0 +1,78 @@
+# Mac Studio (adas-mac-studio.local-2, macOS 26.4 25E246, arm64, APFS case-insensitive), HVF.
+# ~/g121-tmp/s8p2/run-test.sh p/s8-part2-v1 plug a_shares_names_are_its_hosts_case_and_all
+# (cargo test --profile test-release -p shards --test plug -- NAME --exact --nocapture --test-threads 1)
+# Compile noise (aws-lc-sys warnings, Compiling lines) left out.
+== a2096f8ef WIP, not for main: step 8's case reproduction (D235), a share's names  2026-11-12T22:32:23Z
+running 1 test
+thread 'a_shares_names_are_its_hosts_case_and_all' (30758044) panicked at crates/shards/tests/plug.rs:293:5:
+31 steps; the guest's differ from the host's:
+host "case stat foo NotFound", guest "case stat foo ok"
+host "case stat FOO NotFound", guest "case stat FOO ok"
+host "case list dIR", guest "case list Dir"
+host "case list LOW,dIR", guest "case list Dir,low"
+host:
+case write Foo ok
+case stat Foo ok
+case stat foo ok
+case stat FOO ok
+case create-new foo AlreadyExists
+case list Foo
+case read FOO one
+case write foo ok
+case read Foo two
+case rename Foo Bar ok
+case stat foo NotFound
+case stat FOO NotFound
+case stat Foo NotFound
+case stat Bar ok
+case stat bar ok
+case list Bar
+case remove BAR ok
+case stat Bar NotFound
+case stat bar NotFound
+case stat foo NotFound
+case read foo NotFound
+case mkdir Dir ok
+case mkdir dir AlreadyExists
+case stat DIR ok
+case list Dir
+case rename Dir dIR ok
+case list dIR
+case write low ok
+case rename low LOW ok
+case list LOW,dIR
+case read low three
+guest:
+case write Foo ok
+case stat Foo ok
+case stat foo ok
+case stat FOO ok
+case create-new foo AlreadyExists
+case list Foo
+case read FOO one
+case write foo ok
+case read Foo two
+case rename Foo Bar ok
+case stat foo ok
+case stat FOO ok
+case stat Foo NotFound
+case stat Bar ok
+case stat bar ok
+case list Bar
+case remove BAR ok
+case stat Bar NotFound
+case stat bar NotFound
+case stat foo NotFound
+case read foo NotFound
+case mkdir Dir ok
+case mkdir dir AlreadyExists
+case stat DIR ok
+case list Dir
+case rename Dir dIR ok
+case list Dir
+case write low ok
+case rename low LOW ok
+case list Dir,low
+case read low three
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 72.76s
+== exit 101 2026-11-12T22:41:15Z
