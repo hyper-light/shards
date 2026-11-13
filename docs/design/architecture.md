@@ -23198,7 +23198,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller and the daemon's endpoint per run built)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run and exec lanes' endpoint side built)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -23550,6 +23550,37 @@ Other runs keep step 5's endpoints, so nothing landed changes until a run asks. 
 scope reserves is step 5's for every stream. It holds the one endpoint, whose handshake and
 datagram buffers are one connection's, not one per stream.
 
+*Exec lanes* (`control::exec`; ROOT chose design (B), 2026-11-13). A command run in a member is a
+lane of its own, and its stdout, stderr and stdin are step 5's streams on lanes of their own, as a
+member's are, so one stdio protocol carries both. The pieces:
+- *The ask*: the lane's first frame (`MemberExec`) names the run, its generation and the member,
+  then carries step 6's member exec as the run protocol carries it, a `run::Spec` byte for byte
+  (D243). Its length is bound by the run protocol's own `MAX_PAYLOAD`, which is as large as Linux
+  execs. An endpoint that admits no exec, or an ask for another run, generation or member,
+  refuses the lane alone, typed.
+- *Its streams*: the endpoint numbers each exec. The exec's stdout, its stderr (none on a
+  terminal) and its stdin (where it reads one) are step 5's streams under a run of their own: the
+  run's identity and the exec's number hashed (SHA-256), so the controller's subscriptions name
+  them as they name a member's. Their record sizes are what the endpoint's caller admits for
+  execs (`Streams::execs`). Streams are looked up by run as well, so no exec's stream answers for a
+  member's.
+- *Its host*: the endpoint starts nothing itself. It hands its host the ask and its streams'
+  handles (`exec::Start`). The host charges the run's budget for each exec and replies
+  `Started`, `Unstarted` (`Capacity`, `Refused` by the member, or `Failed`) or `Exited(status)`.
+  While the exec runs, the endpoint raises the connection's stream limit and windows by its lanes
+  (RFC 9000 §4.1, §4.6, through `Io::limit`), and lowers them as the exec is let go.
+- *Its steering*: after `Started`, the lane carries the controller's resizes and signals (D180's
+  `Resize` and `Signal` frames, a signal `1..=NSIG`), one in flight to the host at a time, as
+  step 5 has one record in flight.
+- *Its end*: its exit is told only once its outputs have finished, every record consumed, so no
+  tail is cut. Its steering channel stays open until the endpoint lets the exec go. A host keeps
+  each stream's control until then, because a control dropped revokes its stream.
+- *Its connection*: an exec belongs to the connection that asked for it. That connection gone,
+  or the lane stopped, hangs the exec up: its steering is dropped, its streams are let go.
+
+Its host in the daemon (charging and pumping a member exec through the VM process) and the
+controller's exec handle are the next slices.
+
 Tested in `crates/remote` (`control::tests`, over the in-process exchange of `lib.rs`'s
 handshake tests): the enrolled controller and its pinned microVM connect,
 TLS13_AES_256_GCM_SHA384 and `shards-control/1` at both ends, each holding the other's key; a
@@ -23608,6 +23639,11 @@ buffer, chunk, keep-alive or idle value is set here: `control::endpoint` and
 | The controller's windows; its command slots | the endpoint's admissions, summed over its lanes as the endpoint sums its own; one slot per lane, as each handle has one ask in flight |
 | An output's acknowledgment, 13 bytes | step 5's `consumed` frame: a frame's head (5) and an offset (8) |
 | An errno under 4096 (`NonZeroU16`) | Linux's MAX_ERRNO, 4095 (`include/linux/err.h`) |
+| Frame tags `MemberExec` 4, `Started` 38 | this protocol's own, after D180's (`frame::Tag`) |
+| An exec's ask, at most its scope (44) and `run::MAX_PAYLOAD` | the run protocol's bound, as large as Linux execs (D243) |
+| `Unstarted` 16, 17, 18 | this protocol's own, apart from `managed::Reason`'s 1 to 5 |
+| A told or steering frame, 9 bytes | a frame's head (5) and a u32 |
+| One steer in flight; per exec, its lane, one ask and its stdio lanes; their windows | as step 5 has one record in flight; each lane's own, summed as the endpoint's streams are |
 
 ### D239. AES-256-GCM alone, both ways, on every link that carries agent or shards control (built: plan step 3; its real-VM runs owed)
 
