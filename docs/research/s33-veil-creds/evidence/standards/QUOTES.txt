@@ -1,0 +1,442 @@
+rfc/rfc5280.txt @@ 2206 @@ The name constraints extension, which MUST be used only in a CA
+rfc/rfc5280.txt @@ 2207 @@ certificate, indicates a name space within which all subject names in
+rfc/rfc5280.txt @@ 2208 @@ subsequent certificates in a certification path MUST be located.
+rfc/rfc5280.txt @@ 2209 @@ Restrictions apply to the subject distinguished name and apply to
+rfc/rfc5280.txt @@ 2210 @@ subject alternative names.  Restrictions apply only when the
+rfc/rfc5280.txt @@ 2211 @@ specified name form is present.  If no name of the type is in the
+rfc/rfc5280.txt @@ 2212 @@ certificate, the certificate is acceptable.
+rfc/rfc5280.txt @@ 2214 @@ Name constraints are not applied to self-issued certificates (unless
+rfc/rfc5280.txt @@ 2220 @@ subtrees.  Any name matching a restriction in the excludedSubtrees
+rfc/rfc5280.txt @@ 2221 @@ field is invalid regardless of information appearing in the
+rfc/rfc5280.txt @@ 2222 @@ permittedSubtrees.  Conforming CAs MUST mark this extension as
+rfc/rfc5280.txt @@ 2223 @@ critical and SHOULD NOT impose name constraints on the x400Address,
+rfc/rfc5280.txt @@ 2232 @@ rfc822Name, uniformResourceIdentifier, dNSName, and iPAddress name
+rfc/rfc5280.txt @@ 2233 @@ forms.  If a name constraints extension that is marked as critical
+rfc/rfc5280.txt @@ 2236 @@ extension of a subsequent certificate, then the application MUST
+rfc/rfc5280.txt @@ 2237 @@ either process the constraint or reject the certificate.
+rfc/rfc5280.txt @@ 2286 @@ DNS name restrictions are expressed as host.example.com.  Any DNS
+rfc/rfc5280.txt @@ 2287 @@ name that can be constructed by simply adding zero or more labels to
+rfc/rfc5280.txt @@ 2288 @@ the left-hand side of the name satisfies the name constraint.  For
+rfc/rfc5280.txt @@ 2289 @@ example, www.host.example.com would satisfy the constraint but
+rfc/rfc5280.txt @@ 2290 @@ host1.example.com would not.
+rfc/rfc5280.txt @@ 4074 @@ When the trust anchor is provided in the form of a self-signed
+rfc/rfc5280.txt @@ 4075 @@ certificate, this self-signed certificate is not included as part of
+rfc/rfc5280.txt @@ 4344 @@ (b)  permitted_subtrees:  a set of root names for each name type
+rfc/rfc5280.txt @@ 4347 @@ subject names in subsequent certificates in the certification
+rfc/rfc5280.txt @@ 4465 @@ that each of the alternative names in the subjectAltName
+rfc/rfc5280.txt @@ 4466 @@ extension (critical or non-critical) is within one of the
+rfc/rfc5280.txt @@ 4775 @@ the permitted_subtrees state variable to the intersection
+rfc/rfc5280.txt @@ 5011 @@ should be trusted only for the specified policies.  Similarly, a name
+rfc/rfc5280.txt @@ 5012 @@ constraints extension could be included to indicate that paths
+rfc/rfc5280.txt @@ 5015 @@ Section 6.1 does not assume that trust anchor information is provided
+rfc/rfc5280.txt @@ 5018 @@ Implementations that use self-signed certificates to specify trust
+rfc/rfc5280.txt @@ 5019 @@ anchor information are free to process or ignore such information.
+rfc/rfc9549.txt @@ 228 @@ name.  When evaluating name constraints, conforming
+rfc/rfc9549.txt @@ 229 @@ implementations MUST perform a case-insensitive exact match on a
+rfc/rfc9549.txt @@ 230 @@ label-by-label basis.  As noted in Section 4.2.1.10, any DNS name
+openssl/x509_vfy.c @@ 254 @@ if ((ok = check_name_constraints(ctx)) <= 0)
+openssl/x509_vfy.c @@ 785 @@ /* Ignore self-issued certs unless last in chain */
+openssl/x509_vfy.c @@ 857 @@ * Check against constraints for all certificates higher in chain
+openssl/x509_vfy.c @@ 858 @@ * including trust anchor. Trust anchor not strictly speaking needed
+openssl/x509_vfy.c @@ 859 @@ * but if it includes constraints it is to be assumed it expects them
+openssl/x509_vfy.c @@ 866 @@ int rv = NAME_CONSTRAINTS_check(x, nc);
+openssl/x509_vfy.c @@ 869 @@ /* If EE certificate check commonName too */
+openssl/v3_ncons.c @@ 272 @@ X509_V_ERR_PERMITTED_VIOLATION: Permitted subtree violation.
+openssl/v3_ncons.c @@ 640 @@ * Otherwise can add zero or more components on the left so compare RHS
+node/tls.md @@ 10 @@ (TLS) and Secure Socket Layer (SSL) protocols that is built on top of OpenSSL.
+node/tls.md @@ 1786 @@ `rejectUnauthorized` {boolean} If not `false`, the server certificate is
+node/tls.md @@ 1788 @@ verification fails; `err.code` contains the OpenSSL error code.
+node/nodejs-dist-index.json @@ 4 @@ "version":"v26.13.1","date":"2026-11-10"
+node/nodejs-dist-index.json @@ 4 @@ "openssl":"3.5.9"
+bun/boringssl.ts @@ 2 @@ * BoringSSL — Google's OpenSSL fork. Provides TLS, all crypto primitives,
+bun/boringssl.ts @@ 27 @@ 41bf9b59c2ebf277a7aa427e1ecad5cc80dd4d4f
+bun/boringssl.ts @@ 35 @@ repo: "oven-sh/boringssl",
+bun/openssl.c @@ 1174 @@ static int us_x509_verify_chain(X509_STORE_CTX *ctx) {
+bun/openssl.c @@ 1175 @@ int ok = X509_verify_cert(ctx);
+bun/openssl.c @@ 1191 @@ SSL_CTX_set_cert_verify_callback(ctx, us_x509_verify_chain_cb, NULL);
+boringssl/x509_vfy.cc @@ 363 @@ !check_name_constraints(ctx) ||
+boringssl/x509_vfy.cc @@ 568 @@ // Ignore self issued certs unless last in chain
+boringssl/x509_vfy.cc @@ 572 @@ // Check against constraints for all certificates higher in chain
+boringssl/x509_vfy.cc @@ 573 @@ // including trust anchor. Trust anchor not strictly speaking needed
+boringssl/x509_vfy.cc @@ 574 @@ // but if it includes constraints it is to be assumed it expects them
+boringssl/x509_vfy.cc @@ 580 @@ rv = NAME_CONSTRAINTS_check(x, nc);
+boringssl/x509_vfy.cc @@ 600 @@ // Name constraints do not match against the common name, but
+boringssl/v3_ncons.cc @@ 366 @@ // Otherwise can add zero or more components on the left so compare RHS
+rustls/workspace-Cargo.toml @@ 94 @@ webpki = { package = "rustls-webpki", version = "0.103.14"
+rustls/webpki-server_verifier.rs @@ 131 @@ /// Default `ServerCertVerifier`, see the trait impl for more information.
+rustls/webpki-server_verifier.rs @@ 134 @@ pub struct WebPkiServerVerifier {
+webpki/src_verify_cert.rs @@ 95 @@ check_signed_chain_name_constraints(&node, trust_anchor, budget)?;
+webpki/src_verify_cert.rs @@ 302 @@ let mut name_constraints = trust_anchor
+webpki/src_verify_cert.rs @@ 309 @@ subject_name::check_name_constraints(value, &path, budget)
+webpki/src_verify_cert.rs @@ 312 @@ name_constraints = path.cert.name_constraints;
+webpki/src_subject_name_mod.rs @@ 31 @@ // https://tools.ietf.org/html/rfc5280#section-4.2.1.10
+webpki/src_subject_name_mod.rs @@ 141 @@ // Reject any uses of directory name constraints; we don't implement this.
+webpki/src_subject_name_mod.rs @@ 166 @@ // We currently don't support URI constraints -- fail closed for now.
+webpki/src_error.rs @@ 144 @@ /// The certificate violates one or more name constraints.
+webpki/src_trust_anchor.rs @@ 13 @@ /// the subject name, public key, and name constraints in the certificate, for example your
+webpki/src_trust_anchor.rs @@ 102 @@ name_constraints: cert
+go/verify.go @@ 35 @@ // CANotAuthorizedForThisName results when an intermediate or root
+go/verify.go @@ 36 @@ // certificate has a name constraint which doesn't permit a DNS or
+go/verify.go @@ 37 @@ // other name (including IP address) in the leaf certificate.
+go/verify.go @@ 452 @@ if len(c.UnhandledCriticalExtensions) > 0 {
+go/verify.go @@ 527 @@ // Name constraints in the intermediates will be applied to all names claimed
+go/verify.go @@ 641 @@ if err := checkChainConstraints(chain); err != nil {
+go/constraints.go @@ 515 @@ func checkChainConstraints(chain []*Certificate) error {
+go/constraints.go @@ 519 @@ if !c.hasNameConstraints() {
+go/parser.go @@ 608 @@ // RFC 5280, 4.2.1.10
+go/parser.go @@ 732 @@ unhandled = true
+go/parser.go @@ 954 @@ if e.Critical && unhandled {
+go/pkg.go.dev-crypto-x509-go1.27.4.html @@ 3811 @@ // CANotAuthorizedForThisName results when an intermediate or root
+go/pkg.go.dev-crypto-x509-go1.27.4.html @@ 3256 @@ If opts.Roots is nil, the platform verifier might be used, and
+go/pkg.go.dev-crypto-x509-go1.27.4.html @@ 3259 @@ Name constraints in the intermediates will be applied to all names claimed
+go/pkg.go.dev-crypto-x509-go1.27.4.html @@ 3262 @@ the name being validated. Note that DirectoryName constraints are not
+go/pkg.go.dev-crypto-x509-go1.27.4.html @@ 2702 @@ The environment variables SSL_CERT_FILE and SSL_CERT_DIR can be used to
+go/pkg.go.dev-crypto-x509-go1.27.4.html @@ 2969 @@ // if true then the name constraints are marked critical.
+rfc/rfc8446.txt @@ 5693 @@ A TLS-compliant application MUST implement the TLS_AES_128_GCM_SHA256
+rfc/rfc8446.txt @@ 5694 @@ [GCM] cipher suite and SHOULD implement the TLS_AES_256_GCM_SHA384
+rfc/rfc8446.txt @@ 5695 @@ [GCM] and TLS_CHACHA20_POLY1305_SHA256 [RFC8439] cipher suites (see
+rfc/rfc8446.txt @@ 7437 @@ | TLS_AES_128_GCM_SHA256       | {0x13,0x01} |
+rfc/rfc8446.txt @@ 7439 @@ | TLS_AES_256_GCM_SHA384       | {0x13,0x02} |
+rfc/rfc8446.txt @@ 7441 @@ | TLS_CHACHA20_POLY1305_SHA256 | {0x13,0x03} |
+rfc/rfc8446.txt @@ 5792 @@ Additionally, all implementations MUST support the use of the
+rfc/rfc9846.txt @@ 7 @@ Obsoletes: 5077, 5246, 6961, 7627, 8422, 8446
+rfc/rfc9846.txt @@ 8 @@ Updates: 5705, 6066
+rfc/rfc9846.txt @@ 270 @@ therefore updates [RFC6066] and obsoletes [RFC6961] as described in
+rfc/rfc9846.txt @@ 4540 @@ *  A TLS-compliant application MUST implement the
+rfc/rfc9846.txt @@ 4541 @@ TLS_AES_128_GCM_SHA256 [GCM] cipher suite and SHOULD implement the
+rfc/rfc9846.txt @@ 4542 @@ TLS_AES_256_GCM_SHA384 [GCM] and TLS_CHACHA20_POLY1305_SHA256
+rfc/rfc9846.txt @@ 6018 @@ | TLS_AES_128_GCM_SHA256       | {0x13,0x01} |
+rfc/rfc9846.txt @@ 6020 @@ | TLS_AES_256_GCM_SHA384       | {0x13,0x02} |
+rfc/rfc9846.txt @@ 6022 @@ | TLS_CHACHA20_POLY1305_SHA256 | {0x13,0x03} |
+rfc/rfc9846.txt @@ 1271 @@ cipher_suites:  A list of the symmetric cipher options supported by
+rfc/rfc9846.txt @@ 1274 @@ descending order of client preference.  Values are defined in
+rfc/rfc9846.txt @@ 1613 @@ | application_layer_protocol_negotiation [RFC7301] |      CH, EE |
+rfc/rfc9846.txt @@ 4607 @@ Additionally, all implementations MUST support the use of the
+rfc/rfc6066.txt @@ 289 @@ TLS does not provide a mechanism for a client to tell a server the
+rfc/rfc6066.txt @@ 295 @@ In order to provide any of the server names, clients MAY include an
+rfc/rfc6066.txt @@ 317 @@ The ServerNameList MUST NOT contain more than one name of the same
+rfc/rfc6066.txt @@ 349 @@ Currently, the only server names supported are DNS hostnames;
+rfc/rfc6066.txt @@ 360 @@ as understood by the client.  The hostname is represented as a byte
+rfc/rfc6066.txt @@ 361 @@ string using ASCII encoding without a trailing dot.  This allows the
+rfc/rfc6066.txt @@ 367 @@ Literal IPv4 and IPv6 addresses are not permitted in
+rfc/rfc9849.txt @@ 21 @@ for encrypting a ClientHello message under a server public key.
+rfc/rfc9849.txt @@ 242 @@ referred to as the ClientHelloOuter.  The ClientHelloOuter contains
+rfc/rfc9849.txt @@ 243 @@ innocuous values for sensitive extensions and an
+rfc/rfc9849.txt @@ 343 @@ public_name:  The DNS name of the client-facing server, i.e., the
+rfc/rfc9849.txt @@ 687 @@ 5.  It SHOULD place the value of ECHConfig.contents.public_name in
+rfc/rfc9849.txt @@ 922 @@ If the server rejects ECH, the client proceeds with the handshake,
+rfc/rfc9849.txt @@ 923 @@ authenticating for ECHConfig.contents.public_name as described in
+rfc/rfc9849.txt @@ 969 @@ regard ECH as securely disabled by the server, and it SHOULD retry
+rfc/rfc9849.txt @@ 970 @@ the handshake with a new transport connection and ECH disabled.
+rfc/rfc9849.txt @@ 991 @@ *  The client MUST verify that the certificate is valid for
+rfc/rfc6455.txt @@ 920 @@ Clients MUST use the Server Name Indication extension in the TLS
+rfc/rfc7301.txt @@ 162 @@ client, in descending order of preference.  Protocols are named by
+rfc/rfc7301.txt @@ 184 @@ except that the "ProtocolNameList" MUST contain
+rfc/rfc7301.txt @@ 185 @@ exactly one "ProtocolName".
+rfc/rfc7301.txt @@ 248 @@ Unlike many other TLS extensions, this extension does not establish
+rfc/rfc7301.txt @@ 249 @@ properties of the session, only of the connection.  When session
+rfc/rfc7301.txt @@ 256 @@ It is expected that a server will have a list of protocols that it
+rfc/rfc7301.txt @@ 257 @@ supports, in preference order, and will only select a protocol if the
+rfc/rfc7301.txt @@ 258 @@ client supports it.  In that case, the server SHOULD select the most
+rfc/rfc7301.txt @@ 259 @@ highly preferred protocol that it supports and that is also
+rfc/rfc7301.txt @@ 260 @@ advertised by the client.  In the event that the server supports no
+rfc/rfc7301.txt @@ 261 @@ protocols that the client advertises, then the server SHALL respond
+rfc/rfc7301.txt @@ 265 @@ no_application_protocol(120),
+rfc/rfc7301.txt @@ 271 @@ ServerHello SHALL be definitive for the connection, until
+rfc/rfc7301.txt @@ 272 @@ renegotiated.  The server SHALL NOT respond with a selected protocol
+rfc/rfc9113.txt @@ 577 @@ Each field block is processed as a discrete unit.  Field blocks MUST
+rfc/rfc9113.txt @@ 586 @@ HEADERS, PUSH_PROMISE, or CONTINUATION frames because these frames
+rfc/rfc9113.txt @@ 587 @@ carry data that can modify the compression context maintained by a
+rfc/rfc9113.txt @@ 591 @@ MUST terminate the connection with a connection error (Section 5.4.1)
+rfc/rfc9113.txt @@ 592 @@ of type COMPRESSION_ERROR if it does not decompress a field block.
+rfc/rfc9113.txt @@ 599 @@ Field compression is stateful.  Each endpoint has an HPACK encoder
+rfc/rfc9113.txt @@ 600 @@ context and an HPACK decoder context that are used for encoding and
+rfc/rfc9113.txt @@ 601 @@ decoding all field blocks on a connection.  Section 4 of
+rfc/rfc9113.txt @@ 983 @@ 1.  Flow control is specific to a connection.  HTTP/2 flow control
+rfc/rfc9113.txt @@ 984 @@ operates between the endpoints of a single hop and not over the
+rfc/rfc9113.txt @@ 985 @@ entire end-to-end path.
+rfc/rfc9113.txt @@ 996 @@ servers, and intermediaries all independently advertise their
+rfc/rfc9113.txt @@ 1028 @@ resource constraints.  For example, a proxy needs to share memory
+rfc/rfc9113.txt @@ 2080 @@ Both types of flow control are hop by hop, that is, only between the
+rfc/rfc9113.txt @@ 2081 @@ two endpoints.  Intermediaries do not forward WINDOW_UPDATE frames
+rfc/rfc9113.txt @@ 2082 @@ between dependent connections.  However, throttling of data transfer
+rfc/rfc9113.txt @@ 2452 @@ content-length header field.  A request or response is also malformed
+rfc/rfc9113.txt @@ 2453 @@ if the value of a content-length header field does not equal the sum
+rfc/rfc9113.txt @@ 2454 @@ of the DATA frame payload lengths that form the content, unless the
+rfc/rfc9113.txt @@ 2462 @@ intermediary not acting as a tunnel) MUST NOT forward a malformed
+rfc/rfc9113.txt @@ 2518 @@ *  A field value MUST NOT contain the zero value (ASCII NUL, 0x00),
+rfc/rfc9113.txt @@ 2519 @@ line feed (ASCII LF, 0x0a), or carriage return (ASCII CR, 0x0d) at
+rfc/rfc9113.txt @@ 2552 @@ An endpoint MUST NOT generate an HTTP/2 message containing
+rfc/rfc9113.txt @@ 2553 @@ connection-specific header fields.  This includes the Connection
+rfc/rfc9113.txt @@ 2555 @@ in Section 7.6.1 of [HTTP] (that is, Proxy-Connection, Keep-Alive,
+rfc/rfc9113.txt @@ 2556 @@ Transfer-Encoding, and Upgrade).  Any message containing connection-
+rfc/rfc9113.txt @@ 2559 @@ The only exception to this is the TE header field, which MAY be
+rfc/rfc9113.txt @@ 2563 @@ An intermediary transforming an HTTP/1.x message to HTTP/2 MUST
+rfc/rfc9113.txt @@ 2564 @@ remove connection-specific header fields as discussed in
+rfc/rfc7541.txt @@ 308 @@ When used for bidirectional communication, such as in HTTP, the
+rfc/rfc7541.txt @@ 309 @@ encoding and decoding dynamic tables maintained by an endpoint are
+rfc/rfc7541.txt @@ 310 @@ completely independent, i.e., the request and response dynamic tables
+rfc/rfc7541.txt @@ 331 @@ The dynamic table consists of a list of header fields maintained in
+rfc/rfc7541.txt @@ 343 @@ The dynamic table is initially empty.  Entries are added as each
+rfc/rfc7541.txt @@ 344 @@ header block is decompressed.
+rfc/rfc7541.txt @@ 350 @@ The encoder decides how to update the dynamic table and as such can
+rfc/rfc7541.txt @@ 355 @@ The decoder updates the dynamic table during the processing of a list
+rfc/rfc7541.txt @@ 469 @@ All the header field representations contained in a header block are
+rfc/rfc7541.txt @@ 470 @@ processed in the order in which they appear, as specified below.
+rfc/rfc7541.txt @@ 938 @@ the dynamic table.  Intermediaries MUST use the same representation
+rfc/rfc7541.txt @@ 1166 @@ Refusing to generate an indexed representation for a header field is
+rfc/rfc7541.txt @@ 1167 @@ only effective if compression is avoided on all hops.  The never-
+rfc/rfc7541.txt @@ 1183 @@ An intermediary MUST NOT re-encode a value that uses the never-
+rfc/rfc7541.txt @@ 1184 @@ indexed literal representation with another representation that would
+rfc/rfc7541.txt @@ 1196 @@ such as the Cookie or Authorization header fields.
+rfc/rfc9112.txt @@ 895 @@ When a message does not have a Transfer-Encoding header field, a
+rfc/rfc9112.txt @@ 898 @@ content.  For messages that do include content, the Content-Length
+rfc/rfc9112.txt @@ 899 @@ field value provides the framing information necessary for
+rfc/rfc9112.txt @@ 900 @@ determining where the data (and message) ends.  For messages that do
+rfc/rfc9112.txt @@ 904 @@ A sender MUST NOT send a Content-Length header field in any message
+rfc/rfc9112.txt @@ 905 @@ that contains a Transfer-Encoding header field.
+rfc/rfc9112.txt @@ 930 @@ 3.  If a message is received with both a Transfer-Encoding and a
+rfc/rfc9112.txt @@ 931 @@ Content-Length header field, the Transfer-Encoding overrides the
+rfc/rfc9112.txt @@ 935 @@ intermediary that chooses to forward the message MUST first
+rfc/rfc9112.txt @@ 936 @@ remove the received Content-Length field and process the
+rfc/rfc9112.txt @@ 966 @@ response message received by a proxy, the proxy MUST close the
+rfc/rfc9112.txt @@ 973 @@ 6.  If a valid Content-Length header field is present without
+rfc/rfc9112.txt @@ 974 @@ Transfer-Encoding, its decimal value defines the expected message
+rfc/rfc9112.txt @@ 975 @@ body length in octets.  If the sender closes the connection or
+rfc/rfc9112.txt @@ 807 @@ A recipient MUST be able to parse the chunked transfer coding
+rfc/rfc9112.txt @@ 808 @@ (Section 7.1) because it plays a crucial role in framing messages
+rfc/rfc9112.txt @@ 809 @@ when the content size is not known in advance.  A sender MUST NOT
+rfc/rfc9112.txt @@ 829 @@ recipient along the request/response chain MAY decode the received
+rfc/rfc9112.txt @@ 830 @@ transfer coding(s) or apply additional transfer coding(s) to the
+rfc/rfc9112.txt @@ 831 @@ message body, assuming that corresponding changes are made to the
+rfc/rfc9112.txt @@ 1049 @@ content streams of unknown size to be transferred as a sequence of
+rfc/rfc9110.txt @@ 3204 @@ representation's data length as a decimal non-negative integer number
+rfc/rfc9110.txt @@ 3205 @@ of octets.  When transferring a representation as content, Content-
+rfc/rfc9110.txt @@ 3206 @@ Length refers specifically to the amount of data enclosed so that it
+rfc/rfc9110.txt @@ 3259 @@ If the message is forwarded by a downstream intermediary, a Content-
+rfc/rfc9110.txt @@ 3260 @@ Length field value that is inconsistent with the received message
+rfc/rfc9110.txt @@ 3261 @@ framing might cause a security failure due to request smuggling or
+rfc/rfc9110.txt @@ 3264 @@ As a result, a sender MUST NOT forward a message with a Content-
+rfc/rfc9110.txt @@ 3265 @@ Length header field value that is known to be incorrect.
+rfc/rfc9110.txt @@ 2589 @@ Intermediaries MUST parse a received Connection header field before a
+rfc/rfc9110.txt @@ 2590 @@ message is forwarded and, for each connection-option in this field,
+rfc/rfc9110.txt @@ 2591 @@ remove any header or trailer field(s) from the message with the same
+rfc/rfc9110.txt @@ 2592 @@ name as the connection-option, and then remove the Connection header
+rfc/rfc9110.txt @@ 2604 @@ Furthermore, intermediaries SHOULD remove or replace fields that are
+rfc/rfc9110.txt @@ 2605 @@ known to require removal before forwarding, whether or not they
+rfc/rfc9110.txt @@ 2609 @@ *  Proxy-Connection (Appendix C.2.2 of [HTTP/1.1])
+rfc/rfc9110.txt @@ 2611 @@ *  Keep-Alive (Section 19.7.1 of [RFC2068])
+rfc/rfc9110.txt @@ 2613 @@ *  TE (Section 10.1.4)
+rfc/rfc9110.txt @@ 2615 @@ *  Transfer-Encoding (Section 6.1 of [HTTP/1.1])
+rfc/rfc9110.txt @@ 2617 @@ *  Upgrade (Section 7.8)
+rfc/rfc9110.txt @@ 2757 @@ designed or configured to modify messages in a semantically
+rfc/rfc9110.txt @@ 2765 @@ presumed to be desired by whichever client (or client organization)
+rfc/rfc9110.txt @@ 2780 @@ A proxy MUST NOT transform the content (Section 6.4) of a response
+rfc/rfc9110.txt @@ 2781 @@ message that contains a no-transform cache directive (Section 5.2.2.6
+rfc/rfc9110.txt @@ 2786 @@ A proxy MAY transform the content of a message that does not contain
+rfc/rfc9110.txt @@ 5078 @@ A proxy forwarding a request MUST NOT modify any Authorization header
+rfc/rfc9110.txt @@ 5032 @@ A proxy forwarding a response MUST NOT modify any WWW-Authenticate
+rfc/rfc9110.txt @@ 898 @@ is a message-forwarding agent that is chosen by the client,
+rfc/rfc9110.txt @@ 912 @@ an origin server for the outbound connection but translates received
+rfc/rfc9110.txt @@ 919 @@ All HTTP requirements applicable to an origin server also apply to
+rfc/rfc9110.txt @@ 920 @@ the outbound communication of a gateway.  A gateway communicates with
+rfc/rfc9110.txt @@ 941 @@ indistinguishable (at a protocol level) from an on-path attacker,
+rfc/rfc9110.txt @@ 947 @@ because it is not chosen by the client.  Instead, an interception
+rfc/rfc6749.txt @@ 2435 @@ response containing tokens, credentials, or other sensitive
+rfc/rfc6749.txt @@ 2455 @@ sizes of tokens and other values received from the authorization
+rfc/rfc6749.txt @@ 2456 @@ server are left undefined.  The client should avoid making
+rfc/rfc6455.txt @@ 305 @@ The opening handshake is intended to be compatible with HTTP-based
+rfc/rfc6455.txt @@ 306 @@ server-side software and intermediaries, so that a single port can be
+rfc/rfc6455.txt @@ 309 @@ handshake is an HTTP Upgrade request:
+rfc/rfc6455.txt @@ 313 @@ Upgrade: websocket
+rfc/rfc6455.txt @@ 314 @@ Connection: Upgrade
+rfc/rfc6455.txt @@ 271 @@ Once the client and server have both sent their handshakes, and if
+rfc/rfc6455.txt @@ 272 @@ the handshake was successful, then the data transfer part starts.
+rfc/rfc6455.txt @@ 588 @@ only relationship to HTTP is that its handshake is interpreted by
+rfc/rfc6455.txt @@ 925 @@ MUST send an opening handshake to the server.  The handshake consists
+rfc/rfc6455.txt @@ 926 @@ of an HTTP Upgrade request, along with a list of required and
+rfc/rfc6455.txt @@ 930 @@ 1.   The handshake MUST be a valid HTTP request as specified by
+rfc/rfc6455.txt @@ 1021 @@ 12.  The request MAY include any other header fields, for example,
+rfc/rfc6455.txt @@ 1022 @@ cookies [RFC6265] and/or authentication-related header fields
+rfc/rfc6455.txt @@ 1023 @@ such as the |Authorization| header field [RFC2616], which are
+rfc/rfc6455.txt @@ 1024 @@ processed according to documents that define them.
+rfc/rfc6455.txt @@ 1492 @@ discussed in Section 10.3, a client MUST mask all frames that it
+rfc/rfc9931.txt @@ 325 @@ Thus, optimistic use of HTTP Upgrade is already forbidden in the
+rfc/rfc9931.txt @@ 401 @@ Proxy clients that send CONNECT requests on behalf of untrusted TCP
+rfc/rfc9931.txt @@ 414 @@ vulnerable as described.  As a mitigation, proxy servers MUST close
+rfc/rfc9931.txt @@ 415 @@ the underlying connection when rejecting a CONNECT request without
+rfc/rfc8441.txt @@ 119 @@ This tunneled stream will be multiplexed with other regular streams
+rfc/rfc8441.txt @@ 121 @@ flow-control features of HTTP/2.
+rfc/rfc8441.txt @@ 145 @@ Upon receipt of SETTINGS_ENABLE_CONNECT_PROTOCOL with a value of 1, a
+rfc/rfc8441.txt @@ 146 @@ client MAY use the Extended CONNECT as defined in this document when
+rfc/rfc8441.txt @@ 180 @@ o  A new pseudo-header field :protocol MAY be included on request
+rfc/rfc8441.txt @@ 205 @@ The :protocol pseudo-header field MUST be included in the CONNECT
+rfc/rfc8441.txt @@ 207 @@ WebSocket connection on an HTTP/2 stream.  Other HTTP request and
+rfc/rfc8441.txt @@ 208 @@ response-header fields, such as those for manipulating cookies, may
+rfc/rfc8441.txt @@ 209 @@ be included in the HEADERS with the CONNECT method as usual.  This
+rfc/rfc8441.txt @@ 210 @@ request replaces the GET-based request in [RFC6455] and is used to
+rfc/rfc8441.txt @@ 231 @@ [RFC6455] requires the use of Connection and Upgrade header fields
+rfc/rfc8441.txt @@ 232 @@ that are not part of HTTP/2.  They MUST NOT be included in the
+rfc/rfc8441.txt @@ 251 @@ After successfully processing the opening handshake, the peers should
+rfc/rfc8441.txt @@ 252 @@ proceed with the WebSocket Protocol [RFC6455] using the HTTP/2 stream
+rfc/rfc8441.txt @@ 296 @@ :protocol = websocket
+rfc/rfc6749.txt @@ 2388 @@ The authorization server issues an access token and optional refresh
+rfc/rfc6749.txt @@ 2393 @@ REQUIRED.  The access token issued by the authorization server.
+rfc/rfc6749.txt @@ 2396 @@ REQUIRED.  The type of the token issued as described in
+rfc/rfc6749.txt @@ 2400 @@ RECOMMENDED.  The lifetime in seconds of the access token.  For
+rfc/rfc6749.txt @@ 2416 @@ OPTIONAL.  The refresh token, which can be used to obtain new
+rfc/rfc6749.txt @@ 2417 @@ access tokens using the same authorization grant as described
+rfc/rfc6749.txt @@ 2425 @@ The parameters are included in the entity-body of the HTTP response
+rfc/rfc6749.txt @@ 2585 @@ If the authorization server issued a refresh token to the client, the
+rfc/rfc6749.txt @@ 2586 @@ client makes a refresh request to the token endpoint by adding the
+rfc/rfc6749.txt @@ 2592 @@ REQUIRED.  Value MUST be set to "refresh_token".
+rfc/rfc6749.txt @@ 2595 @@ REQUIRED.  The refresh token issued to the client.
+rfc/rfc6749.txt @@ 2620 @@ grant_type=refresh_token&refresh_token=tGzv3JOkF0XG5Qx2TlKWIA
+rfc/rfc6749.txt @@ 2606 @@ client to which it was issued.  If the client type is confidential or
+rfc/rfc6749.txt @@ 2608 @@ authentication requirements), the client MUST authenticate with the
+rfc/rfc6749.txt @@ 2656 @@ The authorization server MAY issue a new refresh token, in which case
+rfc/rfc6749.txt @@ 2657 @@ the client MUST discard the old refresh token and replace it with the
+rfc/rfc6749.txt @@ 2658 @@ new refresh token.  The authorization server MAY revoke the old
+rfc/rfc6749.txt @@ 3062 @@ Refresh tokens MUST be kept confidential in transit and storage, and
+rfc/rfc6749.txt @@ 3063 @@ shared only among the authorization server and the client to whom the
+rfc/rfc6749.txt @@ 3076 @@ For example, the authorization server could employ refresh token
+rfc/rfc6749.txt @@ 3077 @@ rotation in which a new refresh token is issued with every access
+rfc/rfc6749.txt @@ 3088 @@ compromised and subsequently used by both the attacker and the
+rfc/rfc6749.txt @@ 3089 @@ legitimate client, one of them will present an invalidated refresh
+rfc/rfc8628.txt @@ 345 @@ In response, the authorization server generates a unique device
+rfc/rfc8628.txt @@ 352 @@ REQUIRED.  The device verification code.
+rfc/rfc8628.txt @@ 355 @@ REQUIRED.  The end-user verification code.
+rfc/rfc8628.txt @@ 358 @@ REQUIRED.  The end-user verification URI on the authorization
+rfc/rfc8628.txt @@ 362 @@ verification_uri_complete
+rfc/rfc8628.txt @@ 368 @@ REQUIRED.  The lifetime in seconds of the
+rfc/rfc8628.txt @@ 372 @@ OPTIONAL.  The minimum amount of time in seconds that the client
+rfc/rfc8628.txt @@ 374 @@ value is provided, clients MUST use 5 as the default.
+rfc/rfc8628.txt @@ 536 @@ REQUIRED.  Value MUST be set to
+rfc/rfc8628.txt @@ 537 @@ urn:ietf:params:oauth:grant-type:device_code
+rfc/rfc8628.txt @@ 540 @@ REQUIRED.  The device verification code,
+rfc/rfc8628.txt @@ 555 @@ grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code
+rfc/rfc8628.txt @@ 574 @@ OAuth grant types, it is expected for the client to try the access
+rfc/rfc8628.txt @@ 575 @@ token request repeatedly in a polling fashion based on the error code
+rfc/rfc8628.txt @@ 580 @@ If the user has approved the grant, the token endpoint responds with
+rfc/rfc8628.txt @@ 581 @@ a success response defined in Section 5.1 of [RFC6749]; otherwise, it
+rfc/rfc8628.txt @@ 582 @@ responds with an error, as defined in Section 5.2 of [RFC6749].
+rfc/rfc8628.txt @@ 588 @@ authorization_pending
+rfc/rfc8628.txt @@ 599 @@ slow_down
+rfc/rfc8628.txt @@ 607 @@ expired_token
+rfc/rfc7636.txt @@ 521 @@ Upon receipt of the Authorization Code, the client sends the Access
+rfc/rfc7636.txt @@ 522 @@ Token Request to the token endpoint.  In addition to the parameters
+rfc/rfc7636.txt @@ 524 @@ [RFC6749]), it sends the following parameter:
+rfc/rfc7636.txt @@ 526 @@ code_verifier
+rfc/rfc7636.txt @@ 527 @@ REQUIRED.  Code verifier
+rfc/rfc7636.txt @@ 545 @@ BASE64URL-ENCODE(SHA256(ASCII(code_verifier))) == code_challenge
+rfc/rfc9700.txt @@ 373 @@ A sender-constrained access token scopes the applicability of an
+rfc/rfc9700.txt @@ 374 @@ access token to a certain sender.  This sender is obliged to
+rfc/rfc9700.txt @@ 375 @@ demonstrate knowledge of a certain secret as a prerequisite for the
+rfc/rfc9700.txt @@ 378 @@ Authorization and resource servers SHOULD use mechanisms for sender-
+rfc/rfc9700.txt @@ 386 @@ Refresh tokens for public clients MUST be sender-constrained or use
+rfc/rfc9700.txt @@ 387 @@ refresh token rotation as described in Section 4.14.  [RFC6749]
+rfc/rfc9700.txt @@ 1609 @@ authorization server utilizes key material (or data derived from
+rfc/rfc9700.txt @@ 1610 @@ the key material) known to the client.
+rfc/rfc9700.txt @@ 1650 @@ Note that the security of sender-constrained tokens is undermined
+rfc/rfc9700.txt @@ 1651 @@ when an attacker gets access to the token and the key material.  This
+rfc/rfc9700.txt @@ 1983 @@ Authorization servers MUST utilize one of these methods to detect
+rfc/rfc9700.txt @@ 1984 @@ refresh token replay by malicious actors for public clients:
+rfc/rfc9700.txt @@ 1986 @@ *  *Sender-constrained refresh tokens:* the authorization server
+rfc/rfc9700.txt @@ 1987 @@ cryptographically binds the refresh token to a certain client
+rfc/rfc9700.txt @@ 1990 @@ *  *Refresh token rotation:* the authorization server issues a new
+rfc/rfc9700.txt @@ 1991 @@ refresh token with every access token refresh response.  The
+rfc/rfc9700.txt @@ 1997 @@ server of the breach.  The authorization server cannot determine
+rfc/rfc9700.txt @@ 1998 @@ which party submitted the invalid refresh token, but it will
+rfc/rfc9700.txt @@ 1999 @@ revoke the active refresh token.  This stops the attack at the
+rfc/rfc9449.txt @@ 116 @@ Demonstrating Proof of Possession (DPoP) is an application-level
+rfc/rfc9449.txt @@ 117 @@ mechanism for sender-constraining OAuth [RFC6749] access and refresh
+rfc/rfc9449.txt @@ 118 @@ tokens.  It enables a client to prove the possession of a public/
+rfc/rfc9449.txt @@ 126 @@ the private key.  In other words, the legitimate presenter of the
+rfc/rfc9449.txt @@ 127 @@ token is constrained to be the sender that holds and proves
+rfc/rfc9449.txt @@ 128 @@ possession of the private part of the key pair.
+rfc/rfc9449.txt @@ 302 @@ B.  The authorization server binds (sender-constrains) the access
+rfc/rfc9449.txt @@ 303 @@ token to the public key claimed by the client in the DPoP proof;
+rfc/rfc9449.txt @@ 304 @@ that is, the access token cannot be used without proving
+rfc/rfc9449.txt @@ 305 @@ possession of the respective private key.  If a refresh token is
+rfc/rfc9449.txt @@ 306 @@ issued to a public client, it is also bound to the public key of
+rfc/rfc9449.txt @@ 436 @@ ath:  Hash of the access token.  The value MUST be the result of a
+rfc/rfc9449.txt @@ 437 @@ base64url encoding (as defined in Section 2 of [RFC7515]) the
+rfc/rfc9449.txt @@ 438 @@ SHA-256 [SHS] hash of the ASCII encoding of the associated access
+rfc/rfc9449.txt @@ 610 @@ When an authorization server supporting DPoP issues a refresh token
+rfc/rfc9449.txt @@ 611 @@ to a public client that presents a valid DPoP proof at the token
+rfc/rfc9449.txt @@ 612 @@ endpoint, the refresh token MUST be bound to the respective public
+rfc/rfc9449.txt @@ 613 @@ key.  The binding MUST be validated when the refresh token is later
+rfc/rfc9449.txt @@ 614 @@ presented to get new access tokens.  As a result, such a client MUST
+rfc/rfc9449.txt @@ 615 @@ present a DPoP proof for the same key that was used to obtain the
+rfc/rfc9449.txt @@ 798 @@ Requests to DPoP-protected resources MUST include both a DPoP proof
+rfc/rfc9449.txt @@ 800 @@ The DPoP proof MUST include the ath claim with a valid hash of the
+rfc/rfc9449.txt @@ 813 @@ value would require the calculation of a new proof.  This binding
+rfc/rfc9449.txt @@ 820 @@ is covered by the DPoP proof's signature, its inclusion binds the
+rfc/rfc9449.txt @@ 821 @@ access token value to the holder of the key used to generate the
+rfc/rfc9449.txt @@ 832 @@ A DPoP-bound access token is sent using the Authorization request
+rfc/rfc9449.txt @@ 834 @@ scheme of DPoP.  The syntax of the Authorization header field for the
+rfc/rfc8705.txt @@ 392 @@ When mutual TLS is used by the client on the connection to the token
+rfc/rfc8705.txt @@ 393 @@ endpoint, the authorization server is able to bind the issued access
+rfc/rfc8705.txt @@ 394 @@ token to the client certificate.  Such a binding is accomplished by
+rfc/rfc8705.txt @@ 429 @@ however, those requests MUST be made over a mutually authenticated
+rfc/rfc8705.txt @@ 430 @@ TLS connection using the same certificate that was used for mutual
+rfc/rfc8705.txt @@ 433 @@ The protected resource MUST obtain, from its TLS implementation
+rfc/rfc8705.txt @@ 434 @@ layer, the client certificate used for mutual TLS and MUST verify
+rfc/rfc8705.txt @@ 435 @@ that the certificate matches the certificate associated with the
+rfc/rfc8705.txt @@ 436 @@ access token.  If they do not match, the resource access attempt MUST
+rfc/rfc8705.txt @@ 437 @@ be rejected with an error, per [RFC6750], using an HTTP 401 status
+rfc/rfc8705.txt @@ 729 @@ An authorization server or resource server MAY choose to terminate
+rfc/rfc6750.txt @@ 218 @@ This section defines three methods of sending bearer access tokens in
+rfc/rfc6750.txt @@ 219 @@ resource requests to resource servers.  Clients MUST NOT use more
+rfc/rfc6750.txt @@ 220 @@ than one method to transmit the token in each request.
+rfc/rfc6750.txt @@ 235 @@ authentication scheme to transmit the access token.
+rfc/rfc6750.txt @@ 241 @@ Authorization: Bearer mF_9.B5f-4.1JqM
+rfc/rfc6750.txt @@ 252 @@ b64token    = 1*( ALPHA / DIGIT /
+rfc/rfc6750.txt @@ 254 @@ credentials = "Bearer" 1*SP b64token
+rfc/rfc6750.txt @@ 256 @@ Clients SHOULD make authenticated requests with a bearer token using
+rfc/rfc6750.txt @@ 258 @@ authorization scheme.  Resource servers MUST support this method.
+rfc/rfc6750.txt @@ 262 @@ When sending the access token in the HTTP request entity-body, the
+rfc/rfc6750.txt @@ 315 @@ When sending the access token in the HTTP request URI, the client
+rfc/rfc6750.txt @@ 476 @@ invalid_token
+rfc/rfc6750.txt @@ 477 @@ The access token provided is expired, revoked, malformed, or
+rfc/rfc6750.txt @@ 478 @@ invalid for other reasons.  The resource SHOULD respond with
+rfc/rfc6750.txt @@ 479 @@ the HTTP 401 (Unauthorized) status code.  The client MAY
+rfc/rfc6750.txt @@ 480 @@ request a new access token and retry the protected resource
+openid/openid-connect-core-1_0.html @@ 157 @@ OpenID Connect Core 1.0 incorporating errata set 2
+openid/openid-connect-core-1_0.html @@ 2598 @@ Clients MUST validate the ID Token in the Token Response
+openid/openid-connect-core-1_0.html @@ 2650 @@ If the ID Token is received via direct
+openid/openid-connect-core-1_0.html @@ 2651 @@ communication between the Client and the Token Endpoint
+openid/openid-connect-core-1_0.html @@ 2652 @@ (which it is in this flow), the TLS server
+openid/openid-connect-core-1_0.html @@ 2653 @@ validation MAY be used to validate the issuer in place of
+openid/openid-connect-core-1_0.html @@ 2654 @@ checking the token signature.
+openid/openid-connect-core-1_0.html @@ 2655 @@ The Client MUST validate the signature of all other ID Tokens according to
+openid/openid-connect-core-1_0.html @@ 2658 @@ The Client MUST use the keys provided by the Issuer.
+openid/openid-connect-core-1_0.html @@ 2575 @@ Access Token hash value.
+openid/openid-connect-core-1_0.html @@ 2725 @@ the Client MAY use it to validate the Access Token
+openid/openid-connect-core-1_0.html @@ 2728 @@ but using the ID Token and Access Token returned from the Token Endpoint.
+openid/openid-connect-core-1_0.html @@ 3103 @@ The value of <tt>at_hash</tt> in the ID Token MUST
+openid/openid-connect-core-1_0.html @@ 3104 @@ match the value produced in the previous step.
+openid/openid-connect-core-1_0.html @@ 7213 @@ Upon successful validation of the Refresh Token,
+openid/openid-connect-core-1_0.html @@ 7219 @@ If an ID Token is returned as a result of a token refresh request,
+openid/openid-connect-core-1_0.html @@ 7224 @@ its <tt>iss</tt> Claim Value MUST be the same as
+rfc/rfc9110.txt @@ 7550 @@ The 401 (Unauthorized) status code indicates that the request has not
+rfc/rfc9110.txt @@ 7551 @@ been applied because it lacks valid authentication credentials for
+rfc/rfc9110.txt @@ 7552 @@ the target resource.  The server generating a 401 response MUST send
+rfc/rfc9110.txt @@ 7553 @@ a WWW-Authenticate header field (Section 11.6.1) containing at least
+rfc/rfc9110.txt @@ 7556 @@ If the request included authentication credentials, then the 401
+rfc/rfc9110.txt @@ 7557 @@ response indicates that authorization has been refused for those
+rfc/rfc9110.txt @@ 7558 @@ credentials.  The user agent MAY repeat the request with a new or
+rfc/rfc9110.txt @@ 5026 @@ A server generating a 401 (Unauthorized) response MUST send a WWW-
+webpki/README.md @@ 7 @@ used by [Rustls](https://github.com/rustls/rustls) to handle certificate-related
+bun/releases-latest.json @@ 1 @@ "tag_name":"bun-v1.4.4"
+bun/releases-latest.json @@ 1 @@ "published_at":"2026-10-22T10:11:32Z"
+go/go-dl.json @@ 3 @@ "version": "go1.27.4"
+webpki/crates-io-rustls-webpki.json @@ 1 @@ "max_stable_version":"0.103.17"
+rustls/crates-io-rustls.json @@ 1 @@ "max_stable_version":"0.23.46"
+node/tls.md @@ 1788 @@ contains the OpenSSL error code.
+node/nodejs-dist-index.json @@ 39 @@ "version":"v24.22.3","date":"2026-11-10"
+go/pkg.go.dev-crypto-x509-go1.27.4.html @@ 2706 @@ which have system APIs for certificate verification (macOS and Windows),
+webpki/src_subject_name_mod.rs @@ 75 @@ GeneralName::DirectoryName,
+webpki/src_subject_name_mod.rs @@ 140 @@ (GeneralName::DirectoryName, GeneralName::DirectoryName) => Ok(
+rustls/webpki-anchors.rs @@ 70 @@ pub fn add(&mut self, der: CertificateDer<'_>) -> Result<(), Error> {
+rustls/webpki-anchors.rs @@ 72 @@ anchor_from_trusted_cert(&der)

@@ -379,7 +379,7 @@ fn ram_ranges(memory_mib: u64) -> Result<(u64, Vec<(u64, usize)>), String> {
 /// (D150, D201).
 #[expect(
     clippy::too_many_arguments,
-    reason = "a boot's CPU baseline (D243) beside the machine's config, which a snapshot keeps without one"
+    reason = "a boot's CPU baseline (D245) beside the machine's config, which a snapshot keeps without one"
 )]
 fn assemble(
     memory: &Arc<GuestMemory>,

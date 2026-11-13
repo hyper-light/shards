@@ -50,9 +50,9 @@ Landed as merged with main again, 4a79f7f93 (2026-11-13T03:07Z,
 [logs/s1m3.log](logs/s1m3.log)): the two unit steps as above, 45 and 10 passed, and
 `cargo clippy -p shards -p shards-vmm --all-targets -- -D warnings` clean.
 
-## Step 2: the x86-64 CPU baseline on KVM (D243)
+## Step 2: the x86-64 CPU baseline on KVM (D245)
 
-The guards (D243; mutants M4-M10 of `light-gate.sh`):
+The guards (D245; mutants M4-M10 of `light-gate.sh`):
 
 - M4, `hv::kvm::x86_64` `Vm::new`: a VM not told its baseline (`cpuid::within`).
 - M5, `cpuid::meet`: every bit either machine has, not both.

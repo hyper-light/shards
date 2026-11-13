@@ -1,0 +1,46 @@
+{
+  "draft": "draft-ietf-oauth-mtls-17",
+  "doc_id": "RFC8705",
+  "title": "OAuth 2.0 Mutual-TLS Client Authentication and Certificate-Bound Access Tokens",
+  "authors": [
+    "B. Campbell",
+    "J. Bradley",
+    "N. Sakimura",
+    "T. Lodderstedt"
+  ],
+  "format": [
+    "XML",
+    "TEXT",
+    "HTML",
+    "PDF"
+  ],
+  "page_count": "24",
+  "pub_status": "PROPOSED STANDARD",
+  "status": "PROPOSED STANDARD",
+  "source": "Web Authorization Protocol",
+  "abstract": "This document describes OAuth client authentication and certificate-bound access and refresh tokens using mutual Transport Layer Security (TLS) authentication with X.509 certificates.  OAuth clients are provided a mechanism for authentication to the authorization server using mutual TLS, based on either self-signed certificates or public key infrastructure (PKI).  OAuth authorization servers are provided a mechanism for binding access tokens to a client's mutual-TLS certificate, and OAuth protected resources are provided a method for ensuring that such an access token presented to it was issued to the client presenting the token.",
+  "pub_date": "February 2020",
+  "keywords": [
+    "JSON Web Token",
+    "JWT",
+    "MTLS",
+    "Mutual TLS",
+    "proof-of-possession",
+    "proof-of-possession access token",
+    "key confirmed access token",
+    "certificate-bound access token",
+    "client certificate",
+    "X.509 Client Certificate Authentication",
+    "key confirmation",
+    "confirmation method",
+    "holder-of-key",
+    "OAuth"
+  ],
+  "obsoletes": [],
+  "obsoleted_by": [],
+  "updates": [],
+  "updated_by": [],
+  "see_also": [],
+  "doi": "10.17487/RFC8705",
+  "errata_url": null
+}

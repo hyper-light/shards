@@ -4070,8 +4070,9 @@ impl<D: Disk> Daemon<D> {
                 &agentfile.managed_labels,
                 &agentfile.active_members,
             )
+            .and_then(|inputs| Ok((inputs, managed::control_asked(&run.annotations)?)))
             .map_err(managed::Failure::Refused)
-            .and_then(|inputs| {
+            .and_then(|(inputs, agent_control)| {
                 self.managed_capture(
                     threads,
                     &id,
@@ -4079,6 +4080,7 @@ impl<D: Disk> Daemon<D> {
                     &agentfile.managed_labels,
                     &agentfile.active_members,
                     &inputs,
+                    agent_control,
                     &mut prepared.spec.setup,
                 )
             }) {

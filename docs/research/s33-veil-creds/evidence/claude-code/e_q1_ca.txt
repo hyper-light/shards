@@ -1,0 +1,76 @@
+# Q1 CA/trust searches on BIN=$B = linux-x64 claude 2.1.311 (sha256 86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada), searched only, never executed. GG = GNU grep 3.12. Offsets >= 115363840 (0x6e05000) are in the .bun section (Claude Code app payload); 24195408-26906852 (.bun_builtins) is Bun's own JS builtins; see e_elf_sections.txt.
+# B=/var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/tmp.cvKZio0ayi/claude
+# GG=/opt/homebrew/bin/ggrep
+## command: LC_ALL=C $GG -a -o -b -E 'function _n\(\)\{let e=i\.CLAUDE_CODE_CERT_STORE;.{0,700}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+240707891:function _n(){let e=i.CLAUDE_CODE_CERT_STORE;if(e){let r=[];for(let n of e.split(",")){let o=n.trim().toLowerCase();if(o==="bundled"||o==="system"){if(!r.includes(o))r.push(o)}else if(o){if(t(`CA certs: unrecognized CLAUDE_CODE_CERT_STORE source '${o}', ignoring`,{level:"warn"}),z("parse_skip"))f("ca_certs_load","parse_skip")}}if(r.length===0&&z("parse_all_invalid"))f("ca_certs_load","parse_all_invalid");return r.length>0?r:yt}if(l8t("--use-system-ca")||l8t("--use-openssl-ca"))return["system"];return yt}function Sn(e,r=Date.now()){let{X509Certificate:n}=Fe("crypto"),o=0,s=e.filter((c)=>{try{let u=new n(c),a=new Date(u.validTo).getTime();if(Number.isNaN(a)||a>r)return!0;return o++,!1}catch{return!0}});if(o>0){if(t(`CA certs: Dropped ${o
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'var yt=\["bundled","system"\]' "$B"
+240706928:var yt=["bundled","system"]
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'var mt=\["NODE_EXTRA_CA_CERTS","SSL_CERT_FILE","SSL_CERT_DIR"\]' "$B"
+240706700:var mt=["NODE_EXTRA_CA_CERTS","SSL_CERT_FILE","SSL_CERT_DIR"]
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function xt\(e,r,n\)\{let o=_n\(\).{0,2400}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+240720197:function xt(e,r,n){let o=_n(),s=i.NODE_EXTRA_CA_CERTS,c=o.includes("bundled"),u=o.includes("system"),a=!c&&e.refusesBundledFallback;t(`CA certs: stores=${o.join(",")}, extraCertsPath=${s}`);let l=Fe("tls"),d=l.getCACertificates;if(!c&&u&&!d){if(t(`CA certs: stores=system but system CA API unavailable${a?"":", using bundled roots"}`),z("system_api_unavailable"))f("ca_certs_load","system_api_unavailable")}let p=[],E="every certificate in the system CA store is expired or on the deny list",h=(v,b)=>{for(let O of b)p.push({pem:O,source:v})},y=[],A=!1;if(c)h("bundled",l.rootCertificates),t(`CA certs: Loaded ${l.rootCertificates.length} bundled root certificates`);if(u)try{let v=d?.("system");if(v&&v.length>0){let b=Sn(v);h("system",b),t(`CA certs: Loaded ${b.length} system CA certificates`)}else if(t(`CA certs: system store ${d?"returned empty":"unavailable"}`),E=d?"the system CA store is empty: check that this process can read its CA files (SSL_CERT_FILE, SSL_CERT_DIR, or the system's default paths)":"the runtime has no system CA store",!c&&!a)h("bundled",l.rootCertificates)}catch(v){if(t(`CA certs: Failed to load system CA certificates: ${v}`,{level:"error"}),z("system_store_failed"))f("ca_certs_load","system_store_failed");if(E="reading the system CA store failed",!c&&!a)h("bundled",l.rootCertificates)}let S=Ie(l.rootCertificates),C=a?ne(p,S,n,e.warnedExtraCerts):wn(p,l.rootCertificates,n,S,e.warnedExtraCerts);if(C.length===0)throw new R(`No certificate authority to trust: CLAUDE_CODE_CERT_STORE=system (or NODE_OPTIONS --use-system-ca or --use-openssl-ca) leaves out the runtime's bundled roots, and ${E}. NODE_EXTRA_CA_CERTS only adds to the store; it does not count on its own.`,"No certificate authority to trust");if(s&&e.extraCACerts?.path===s){let v=e.extraCACerts.content,b=new Set(C.map((D)=>D.trim())),O=v.replace(/^\n{1,2}|\n{1,2}$/g,"").split(/\n{1,2}(?=-----BEGIN CERTIFICATE-----)/).every((D)=>b.has(D));y=O?[]:ne([{pem:v,source:"NODE_EXTRA_CA_CERTS"}],S,n,e.warnedExtraCerts),A=O||y.length>0,t(A?`CA certs: Appended extra certificates from NODE_EXTRA_CA_CERTS (${s})${O?": all of them were already trusted from the CA store, so each is listed once":""}`:`CA certs: Nothing from NODE_EXTRA_CA_CERTS (${s}) is left to append`)}let P=L([...C,...y]),k=r?{kept:P,dropped:0}:St(P);return{list:k.kept,dropped:k.dropped,storeCerts:C,appendedExtraCerts:A,wantsBundled:c,wantsSystem:u}}function Rn(e,r
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function CP\(e\)\{let r=CA\(\),n=hat\(zie\(e\)\);if\(!r&&!n\)return\{\};return\{tls:\{\.\.\.r,\.\.\.n&&\{ca:n\}\}\}\}' "$B"
+240731707:function CP(e){let r=CA(),n=hat(zie(e));if(!r&&!n)return{};return{tls:{...r,...n&&{ca:n}}}}
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function hat\(e\)\{.{0,170}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+240730671:function hat(e){let r=[i.https_proxy,i.HTTPS_PROXY,i.http_proxy,i.HTTP_PROXY,i.all_proxy,i.ALL_PROXY].every((n)=>!n||/^\s*http:/i.test(n));return gat(r?e:void 0)}class je extends Un{#e=t
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function gat\(e\)\{let r=ZM\(\),n=J\(\);.{0,300}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+240718263:function gat(e){let r=ZM(),n=J();if(!e||!r||n.fromHost)return r;let o=n.customerLists.get(r);if(o)return o;t("CA certs: Building the list for hosts that aren't ours");let{list:s}=xt(n,Boolean(i.CLAUDE_CODE_CLIENT_CERT),Tn);return Object.freeze(s),n.customerLists.set(r,s),s}function oss(e){return Array.isArray(e)&&J().runtimeStoreBu
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function oa\(e\)\{let r=process\.env\.API_FORCE_IDLE_TIMEOUT.{0,760}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+240738616:function oa(e){let r=process.env.API_FORCE_IDLE_TIMEOUT,n=Le(r)?!0:ms(r)?!1:e.bodyIdleTimeout,o=e.forAnthropicAPI&&n!==!0&&(e.hasBodyIdleWatchdog||n===!1),s={...X().keepAliveDisabled&&{keepalive:!1},...o&&{timeout:!1}};if(e.forAnthropicAPI){let u=i.ANTHROPIC_UNIX_SOCKET;if(u)return{...s,unix:u}}let c=Hm();if(c){if(e.url&&Yy(e.url))return{...s,...CP(e.url)};let u=pr();return{...s,proxy:u?{url:c,headers:{"Proxy-Authorization":u}}:c,...CP(e.url)}}if(e.fallbackProxy){if(e.url&&(fr(e.url,e.fallbackProxy.noProxy)||fr(e.url,O5e())))return{...s,...CP(e.url)};let u=CP(e.url);return{...s,proxy:e.fallbackProxy.url,...e.fallbackProxy.ca?{tls:{...u.tls,ca:e.fallbackProxy.ca}}:u}}return{...s,...CP(e.url)}}var ge,Ke=!1;function mo(e,r){if(e.socketPath)return e;let n=It.getUri(e),o=zie(b6t(n,e.headers));if(r&&!(n&&Yy(n)
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function yat\(e\)\{let r=Z\(\),n=CA\(\),o=hat\(e\).{0,300}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+240731106:function yat(e){let r=Z(),n=CA(),o=hat(e),s=e?"customer":"strict",c=r.agents.get(s);if(c&&c.config===n&&c.ca===o)return c.agent;let u;if(n||o){let a={...n,...o&&{ca:o},keepAlive:!0};t("mTLS: Creating HTTPS agent with custom certificates"),u=new je(a)}return r.agents.set(s,{config:n,ca:o,agent:u}),Mt(c?.agent),u}function Mt(e){if(!e)return;
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function mo\(e,r\)\{if\(e\.socketPath\)return e;.{0,240}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+240739330:function mo(e,r){if(e.socketPath)return e;let n=It.getUri(e),o=zie(b6t(n,e.headers));if(r&&!(n&&Yy(n))){let s=r(o);return Object.assign(e,{httpsAgent:s,httpAgent:s})}return Object.assign(e,{httpsAgent:e.httpsAgent??yat(o)})}function iw(){let e=YB(),r=Hm();if(yat(),Ht(),ge!==void 0)
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'var De=\[(\{certificate:"[0-9a-f]{64}",key:"[0-9a-f]{64}"\},?)+\]' "$B" | LC_ALL=C $GG -o -E 'certificate:"[0-9a-f]{64}"' | wc -l
+      19
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'No certificate authority to trust: every CA certificate found is on the CLI.s deny list[^"]{0,170}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.' | head -3
+118972048:No certificate authority to trust: every CA certificate found is on the CLI's deny list, and this runtime has no built-in root certificates. Add a certificate authority that is not on the deny list to the CA files (SSL_CERT_FILE, SSL_CERT_DIR).y...R.
+240717392:No certificate authority to trust: every CA certificate found is on the CLI's deny list, and this runtime has no built-in root certificates. Add a certificate authority that is not on the deny list to the CA files (SSL_CERT_FILE, SSL_CERT_DIR).
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'let E=new r\(p\),h=Et\(E\.subject\),y=Et\(E\.issuer\),A=_t\(p,E\),S=A\|\|h===y;' "$B"
+240719060:let E=new r(p),h=Et(E.subject),y=Et(E.issuer),A=_t(p,E),S=A||h===y;
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'CA certs: Dropped \$\{s\} certificate\(s\) that do not chain to a root in the CA list' "$B"
+240723079:CA certs: Dropped ${s} certificate(s) that do not chain to a root in the CA list
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'let P=L\(\[\.\.\.C,\.\.\.y\]\),k=r\?\{kept:P,dropped:0\}:St\(P\);' "$B"
+240722460:let P=L([...C,...y]),k=r?{kept:P,dropped:0}:St(P);
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function ZM\(\)\{let e=J\(\);if\(e\.fromHost\)return e\.fromHost\.certificates;let r=Boolean\(i\.CLAUDE_CODE_CLIENT_CERT\);' "$B"
+240718065:function ZM(){let e=J();if(e.fromHost)return e.fromHost.certificates;let r=Boolean(i.CLAUDE_CODE_CLIENT_CERT);
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'function Sn\(e,r=Date\.now\(\)\)\{.{0,330}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+240708400:function Sn(e,r=Date.now()){let{X509Certificate:n}=Fe("crypto"),o=0,s=e.filter((c)=>{try{let u=new n(c),a=new Date(u.validTo).getTime();if(Number.isNaN(a)||a>r)return!0;return o++,!1}catch{return!0}});if(o>0){if(t(`CA certs: Dropped ${o} expired certificate(s) from system store`),z("expired_dropped"))f("ca_certs_load","expired_dropped",{dropped_count:o})}r
+## end
+## command: LC_ALL=C $GG -a -o -b -E 'air\("1\.4\.4",">=1\.4\.0"\)\)throw Error\("this runtime, Bun 1\.3 or earlier, trusts its own store beside the one root given"\)' "$B"
+242060057:air("1.4.4",">=1.4.0"))throw Error("this runtime, Bun 1.3 or earlier, trusts its own store beside the one root given")
+## end
+## command: LC_ALL=C $GG -a -o -b -F 'if (store === "system" || process.env.NODE_USE_SYSTEM_CA === "1") {' "$B"
+25425146:if (store === "system" || process.env.NODE_USE_SYSTEM_CA === "1") {
+## end
+## command: LC_ALL=C $GG -a -o -b -F 'if (process.env.NODE_EXTRA_CA_CERTS) {' "$B"
+25425387:if (process.env.NODE_EXTRA_CA_CERTS) {
+## end
+## command: LC_ALL=C $GG -a -o -b -F 'return cacheSystemCACertificates();' "$B"
+25427434:return cacheSystemCACertificates();
+## end
+## command: LC_ALL=C $GG -a -o -b -F 'get rootCertificates() {' "$B"
+25428749:get rootCertificates() {
+## end
+## command: LC_ALL=C $GG -a -o -b -E '/etc/ssl/certs/ca-certificates\.crt|/etc/pki/ca-trust/extracted/pem/tls-ca-bundle\.pem|/etc/pki/tls/certs/ca-bundle\.crt|/usr/local/share/ca-certificates/ca-certificates\.crt' "$B" | awk -F: '$1 < 115363840'
+1409792:/etc/pki/tls/certs/ca-bundle.crt
+15595894:/etc/ssl/certs/ca-certificates.crt
+15595971:/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+15596068:/usr/local/share/ca-certificates/ca-certificates.crt
+## end

@@ -1,0 +1,14 @@
+LC_ALL=C $GG -a -o -b -E 'function SC\(e,n=Date\.now\(\)\)\{if\(e===null\)return!1;return n\+300000>=e\}' "$B"
+LC_ALL=C $GG -a -o -b -E 'async function Fu\(e,n,r,s,h,y,S,w,C=!1,x=!1\)\{.{0,640}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'P=\{grant_type:"refresh_token",refresh_token:e,client_id:s\?\?on\(\)\.CLIENT_ID,scope:x\.join\(" "\)\};.{0,420}' "$B" | LC_ALL=C tr -c '[:print:]\n' '.'
+LC_ALL=C $GG -a -o -b -E 'function o3r\(e,n\)\{if\(typeof e==="number"\)return Date\.now\(\)\+e\*1000;return n\?Date\.now\(\)\+YF:void 0\}' "$B"
+LC_ALL=C $GG -a -o -b -E 'async function i3r\(e,n\)\{try\{return await It\.post\(`\$\{on\(\)\.TOKEN_URL\}/revoke`,\{token:e,token_type_hint:"refresh_token",client_id:n\?\?on\(\)\.CLIENT_ID\}' "$B"
+LC_ALL=C $GG -a -o -b -E 'function gar\(e,n\)\{return\{lockfilePath:wp\(e,"\.oauth_refresh\.lock"\),realpath:!1,stale:60000,update:5000' "$B"
+LC_ALL=C $GG -a -o -b -E 'claudeAiOauth:\{\.\.\.y,refreshToken:"",accessToken:"",expiresAt:0\}' "$B"
+LC_ALL=C $GG -a -o -b -E 'tengu_oauth_refresh_token_marked_dead_invalid_grant' "$B" | head -2
+LC_ALL=C $GG -a -o -b -E 'let S=\{force:!0,entryAccessToken:e,credentials:n,storageV5:r,usesLoginOffFirstParty:s\};if\(!h\)return pa\(S\);' "$B"
+LC_ALL=C $GG -a -o -b -E 'OAuth 401 recovery: waiting up to \$\{F\}ms for a rotated' "$B"
+LC_ALL=C $GG -a -o -b -E 'function X\$\(\)\{if\(i\.CLAUDE_CODE_OAUTH_TOKEN\)return Tp\(i\.CLAUDE_CODE_OAUTH_TOKEN\);' "$B"
+LC_ALL=C $GG -a -o -b -E 'function Tp\(e\)\{return\{accessToken:e,refreshToken:null,expiresAt:null,scopes:cA\(\),subscriptionType:i\.CLAUDE_CODE_SUBSCRIPTION_TYPE\|\|null,rateLimitTier:i\.CLAUDE_CODE_RATE_LIMIT_TIER\|\|null\}\}' "$B"
+LC_ALL=C $GG -a -o -b -E 'function cA\(e=\["user:inference"\]\)\{return fA\(\)\?\?\[\.\.\.e\]\}function fA\(\)\{let e=i\.CLAUDE_CODE_OAUTH_SCOPES\?\.split' "$B"
+LC_ALL=C $GG -a -o -b -E 'This hosted session \(claude-code-server\) cannot refresh an OAuth token' "$B" | head -1

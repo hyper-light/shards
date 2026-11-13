@@ -1,0 +1,52 @@
+## command: llvm-readelf -S -W $BIN   (BIN = linux-x64 claude 2.1.311, sha256 86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada; read only, not executed)
+There are 42 section headers, starting at offset 0x1182a2f0:
+
+Section Headers:
+  [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+  [ 1] .interp           PROGBITS        0000000000200270 000270 00001c 00   A  0   0  1
+  [ 2] .note.ABI-tag     NOTE            000000000020028c 00028c 000020 00   A  0   0  4
+  [ 3] .note.gnu.build-id NOTE           00000000002002ac 0002ac 000024 00   A  0   0  4
+  [ 4] .dynsym           DYNSYM          00000000002002d0 0002d0 0073b0 18   A 10   1  8
+  [ 5] .gnu.version      VERSYM          0000000000207680 007680 0009a4 02   A  4   0  2
+  [ 6] .gnu.version_d    VERDEF          0000000000208024 008024 00008c 00   A 10   5  4
+  [ 7] .gnu.version_r    VERNEED         00000000002080b0 0080b0 0001a0 00   A 10   6  4
+  [ 8] .gnu.hash         GNU_HASH        0000000000208250 008250 001640 00   A  4   0  8
+  [ 9] .hash             HASH            0000000000209890 009890 002698 04   A  4   0  4
+  [10] .dynstr           STRTAB          000000000020bf28 00bf28 00602b 00   A  0   0  1
+  [11] .rela.dyn         RELA            0000000000211f58 011f58 000678 18   A  4   0  8
+  [12] .rela.plt         RELA            00000000002125d0 0125d0 002e98 18  AI  4  35  8
+  [13] .rodata           PROGBITS        0000000000216000 016000 16fd144 00 AMS  0   0 4096
+  [14] .bun_builtins     PROGBITS        0000000001913150 1713150 295f94 00   A  0   0 16
+  [15] .gcc_except_table PROGBITS        0000000001ba90e4 19a90e4 00767f 00   A  0   0  4
+  [16] .eh_frame_hdr     PROGBITS        0000000001bb0764 19b0764 00641c 00   A  0   0  4
+  [17] .eh_frame         PROGBITS        0000000001bb6b80 19b6b80 028e4c 00   A  0   0  8
+  [18] .text             PROGBITS        0000000001be0a00 19dfa00 5215e8c 00  AX  0   0 256
+  [19] .init             PROGBITS        0000000006df688c 6bf588c 00001b 00  AX  0   0  4
+  [20] .fini             PROGBITS        0000000006df68a8 6bf58a8 00000d 00  AX  0   0  4
+  [21] .plt              PROGBITS        0000000006df68c0 6bf58c0 001f20 00  AX  0   0 16
+  [22] .iplt             PROGBITS        0000000006df87e0 6bf77e0 000080 00  AX  0   0 16
+  [23] .tdata            PROGBITS        0000000006df9860 6bf7860 002560 00 WAT  0   0 16
+  [24] .tbss             NOBITS          0000000006dfbdc0 6bf9dc0 0033e0 00 WAT  0   0 16
+  [25] .tm_clone_table   PROGBITS        0000000006dfbdc0 6bf9dc0 000000 00  WA  0   0  8
+  [26] .data             PROGBITS        0000000006dfbdc0 6bf9dc0 0177cc 00  WA  0   0 64
+  [27] .fini_array       FINI_ARRAY      0000000006e13590 6c11590 000010 08  WA  0   0  8
+  [28] .init_array       INIT_ARRAY      0000000006e135a0 6c115a0 000098 08 WAR  0   0  8
+  [29] .data.rel.ro      PROGBITS        0000000006e13640 6c11640 0093f8 00  WA  0   0 32
+  [30] .bun              PROGBITS        0000000007007000 6e05000 aa1753a 00  WA  0   0  8
+  [31] __DATA,__wtf_config PROGBITS      0000000006e1d000 6c1b000 004000 00  WA  0   0 4096
+  [32] __DATA,__jsc_opcodes PROGBITS     0000000006e21000 6c1f000 004000 00  WA  0   0 4096
+  [33] .dynamic          DYNAMIC         0000000006e25000 6c23000 000200 10  WA 10   0  8
+  [34] .got              PROGBITS        0000000006e25200 6c23200 0001f0 00  WA  0   0  8
+  [35] .got.plt          PROGBITS        0000000006e253f0 6c233f0 000fe0 00  WA  0   0  8
+  [36] .bss              NOBITS          0000000006e26400 6c243d0 1e03b8 00  WA  0   0 64
+  [37] .comment          PROGBITS        0000000000000000 1181d000 00017f 01  MS  0   0  1
+  [38] .note.stapsdt     NOTE            0000000000000000 1181d180 0000e8 00      0   0  4
+  [39] .symtab           SYMTAB          0000000000000000 1181d268 0073b0 18     40   1  8
+  [40] .strtab           STRTAB          0000000000000000 11824618 005b36 00      0   0  1
+  [41] .shstrtab         STRTAB          0000000000000000 1182a14e 00019e 00      0   0  1
+Key to Flags:
+  W (write), A (alloc), X (execute), M (merge), S (strings), I (info),
+  L (link order), O (extra OS processing required), G (group), T (TLS),
+  C (compressed), x (unknown), o (OS specific), E (exclude),
+  R (retain), l (large), p (processor specific)

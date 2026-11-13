@@ -84,6 +84,7 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         members: Vec::new(),
         publish: Vec::new(),
         egress: Narrowing::default(),
+        credentials: Vec::new(),
         shares: Vec::new(),
         nesting: false,
         ready_by: None,
@@ -432,9 +433,56 @@ fn stats_read_the_run_and_a_member() {
     let run = guest.stats(StatsScope::Run, TIMEOUT).unwrap();
     assert!(run.memory_bytes.is_some_and(|m| m > 0), "{run:?}");
     assert!(run.cpu_ns.is_some(), "{run:?}");
+    // The run's microVM beside its guest's cgroup (D241): its VM process's use, and what its
+    // one vCPU has run of its guest, by its index.
+    let microvm = run.microvm.as_ref().expect("the run's microVM");
+    let host = microvm.host.as_ref().expect("its VM process's use");
+    assert!(host.cpu_ns > 0 && host.footprint_bytes > 0, "{host:?}");
+    let times = microvm.guest.as_ref().expect("its vCPUs' guest time");
+    assert_eq!(
+        times
+            .vcpus
+            .iter()
+            .map(|v| (v.index, v.unread.is_none()))
+            .collect::<Vec<_>>(),
+        [(0, true)],
+        "{times:?}"
+    );
     let member = guest.stats(StatsScope::Member(1), TIMEOUT).unwrap();
     assert!(member.pids.is_some_and(|p| p >= 1), "{member:?}");
+    assert_eq!(member.microvm, None, "a member's scope is inside the microVM");
     assert!(guest.stats(StatsScope::Member(9), TIMEOUT).is_err());
+    guest.stop().unwrap();
+    assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
+}
+
+/// The room an orchestrator's budget leaves its run (D241) reaches the run's init through
+/// its host: told a room past the least a run goes on in, the run is held within it, in
+/// whole pages; told none left, within the least, short of what it had; told no budget,
+/// its hold is lifted and nothing is answered.
+#[test]
+fn the_orchestrators_room_holds_its_run_within_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-room-home");
+    build(&home, "api-room:1", &["sleep-for", "60000"], "");
+    let guest = ImageShards::new()
+        .boot(&spec(&home, "api-room:1"), TIMEOUT)
+        .unwrap();
+    let room: u64 = 64 << 20;
+    let held = guest
+        .room(Some(i64::try_from(room).unwrap()), TIMEOUT)
+        .unwrap()
+        .expect("held within the room told");
+    // Whole pages, as `memory.high` and `memory.current` are kept: exactly the room told.
+    assert_eq!(held, room);
+    let least = guest
+        .room(Some(0), TIMEOUT)
+        .unwrap()
+        .expect("held within the least room");
+    assert!(least > 0 && least < held, "held within {least}, short of {held}");
+    assert_eq!(guest.room(None, TIMEOUT).unwrap(), None);
     guest.stop().unwrap();
     assert_eq!(guest.wait_for(TIMEOUT).unwrap(), Some(RunEnd::Stopped));
 }

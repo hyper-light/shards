@@ -1,5 +1,5 @@
 #!/bin/bash
-# Roadmap item 7a's light gate (D176 part 6, D243): the unit tests of a move's checks and of
+# Roadmap item 7a's light gate (D176 part 6, D245): the unit tests of a move's checks and of
 # CPU baselines, then each guard's removal, which must fail them. The one VM it makes is a
 # KVM VM with no guest (hv::kvm's baseline test, SKIP without KVM); no microVM boots. Run in
 # a copy of the tree (rsync, no .git), each step logged, at nice 10:
