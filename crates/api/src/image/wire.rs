@@ -3592,8 +3592,9 @@ mod tests {
             .encode()
             .unwrap();
         // ... then the control ask's absence (version 15), the GPUs' count (version 16), the
-        // one member's arguments' count (version 18) and the sign-ins' count (version 24).
-        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1);
+        // one member's arguments' count (version 18), the sign-ins' count (version 24), its MCP
+        // bridge (version 25) and the upstream roots' count (version 26).
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1 + 4);
         assert_eq!(kindless[at], MemberKind::Agent as u8);
         kindless[at] = 2;
         assert_eq!(
