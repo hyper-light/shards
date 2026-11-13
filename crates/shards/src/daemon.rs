@@ -93,7 +93,7 @@ mod restart;
 mod rmi;
 mod ship;
 mod slots;
-mod snapshots;
+pub(crate) mod snapshots;
 mod top;
 mod update;
 mod visit;

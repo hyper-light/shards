@@ -500,7 +500,7 @@ impl<'a> Flows<'a> {
             }
             drop(response);
             // It brought nothing: asked again while that lasts its path's budget (D222).
-            match trouble.wait(asked, self.registry.budget(url), None) {
+            match self.registry.ride(&mut trouble, url, asked) {
                 Some(wait) => self.registry.pause(wait)?,
                 None => return Err(stalled(&layer.digest, trouble.lasted())),
             }
