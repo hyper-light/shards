@@ -12511,7 +12511,7 @@ mod tests {
         assert!(spare.is_some(), "the spare not made again");
         assert!(
             matches!(
-                read("the client heard nothing", &client, |c| shards_ipc::recv(c)),
+                read("the client heard nothing", &client, shards_ipc::recv),
                 Ok(None)
             ),
             "the client was not refused"
@@ -14491,7 +14491,7 @@ mod tests {
             assert_eq!(heard(&vm).0, kind::RUN);
             say(&vm, kind::TAKEN, &[]);
             say(&vm, kind::STARTED, &[]);
-            let heard = |what: &str| read(what, &client, |c| shards_ipc::recv(c)).unwrap().unwrap();
+            let heard = |what: &str| read(what, &client, shards_ipc::recv).unwrap().unwrap();
             let warning = heard("the client was not warned");
             assert_eq!(warning.kind, kind::ERR);
             let said = String::from_utf8_lossy(&warning.payload).into_owned();
@@ -14831,7 +14831,7 @@ mod tests {
             // Its VM was told its stop as its run was tracked, its own signal in it, so that
             // it stops its run so should this daemon die (STOP_ORDER); then the stop's
             // signal. Linux numbers SIGUSR1 10.
-            let order = read("its VM was told nothing", &vm, |vm| shards_ipc::recv(vm))
+            let order = read("its VM was told nothing", &vm, shards_ipc::recv)
                 .unwrap()
                 .unwrap();
             let grace = u64::try_from(STOP_GRACE.as_millis()).unwrap();
@@ -15394,7 +15394,7 @@ mod tests {
             assert!(ended, "its end waited for its files");
             assert_eq!(queued, 2, "its files made on the loop");
             joined(starting.run).unwrap();
-            let made = read("its VM was given no segment", &vm, |vm| shards_ipc::recv(vm))
+            let made = read("its VM was given no segment", &vm, shards_ipc::recv)
                 .unwrap()
                 .unwrap();
             assert_eq!(
