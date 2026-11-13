@@ -375,6 +375,66 @@ fn log(message: impl std::fmt::Display) {
     let _ = io::stderr().write_all(line.as_bytes());
 }
 
+/// A daemon thread's timed wait, held for its length (#77): under test, its deadline
+/// registered ([`DEADLINES`]), by which a test's judged wait knows that a thread asleep
+/// until then has not stalled, its next progress scheduled; elsewhere nothing. None, a wait
+/// with no deadline, registers none.
+#[must_use]
+struct Waiting(#[cfg(test)] Option<u64>);
+
+impl Waiting {
+    #[cfg_attr(not(test), allow(unused_variables))]
+    fn of(timeout: Option<Duration>) -> Waiting {
+        #[cfg(test)]
+        return Waiting(timeout.and_then(|t| Instant::now().checked_add(t)).map(|until| {
+            let key = NEXT_DEADLINE.fetch_add(1, Ordering::Relaxed);
+            lock(&DEADLINES).push((key, until));
+            key
+        }));
+        #[cfg(not(test))]
+        Waiting()
+    }
+}
+
+#[cfg(test)]
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        if let Some(key) = self.0 {
+            lock(&DEADLINES).retain(|(k, _)| *k != key);
+        }
+    }
+}
+
+/// `wait`, a wait of at most `timeout` ([`Waiting`]).
+fn timed<T>(timeout: Option<Duration>, wait: impl FnOnce() -> T) -> T {
+    let _waiting = Waiting::of(timeout);
+    wait()
+}
+
+/// Sleeps `d` ([`timed`]).
+fn slept(d: Duration) {
+    timed(Some(d), || std::thread::sleep(d));
+}
+
+/// poll(2)'s timeout `ms` as [`timed`] takes it: none where it waits for ever (negative).
+#[cfg(unix)]
+fn poll_timeout(ms: libc::c_int) -> Option<Duration> {
+    u64::try_from(ms).ok().map(Duration::from_millis)
+}
+
+/// The deadlines daemon threads of this test process wait until ([`Waiting`]), each under
+/// its key.
+#[cfg(test)]
+static DEADLINES: Mutex<Vec<(u64, Instant)>> = Mutex::new(Vec::new());
+#[cfg(test)]
+static NEXT_DEADLINE: AtomicU64 = AtomicU64::new(0);
+
+/// The latest deadline a daemon thread of this test process waits until now.
+#[cfg(test)]
+fn latest_deadline() -> Option<Instant> {
+    lock(&DEADLINES).iter().map(|(_, until)| *until).max()
+}
+
 /// The lines the daemons of a test process have logged ([`log`]), which tests count.
 #[cfg(test)]
 static LOGGED: AtomicU64 = AtomicU64::new(0);
@@ -2059,7 +2119,7 @@ fn take_lock(home: &Path) -> Result<Option<File>, String> {
         } else if Instant::now() >= deadline {
             return Ok(None);
         }
-        std::thread::sleep(Duration::from_millis(10));
+        slept(Duration::from_millis(10));
     }
 }
 
@@ -2540,9 +2600,11 @@ impl<D: Disk> Daemon<D> {
             libc::c_int::try_from(t.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
         });
         let n = libc::nfds_t::try_from(polled.len()).unwrap_or(libc::nfds_t::MAX);
-        // SAFETY: poll(2) on pollfds of descriptors this daemon holds open (negative ones
-        // are ignored), `n` of them.
-        unsafe { libc::poll(polled.as_mut_ptr(), n, ms) };
+        timed(poll_timeout(ms), || {
+            // SAFETY: poll(2) on pollfds of descriptors this daemon holds open (negative
+            // ones are ignored), `n` of them.
+            unsafe { libc::poll(polled.as_mut_ptr(), n, ms) }
+        });
         let ready = |i: usize| polled.get(i).is_some_and(|p| p.revents != 0);
         if ready(0) {
             self.listener_wake.drain();
@@ -2577,8 +2639,10 @@ impl<D: Disk> Daemon<D> {
             u32::try_from(t.as_micros().div_ceil(1000)).map_or(INFINITE - 1, |ms| ms.min(INFINITE - 1))
         });
         let n = u32::try_from(waited.len()).unwrap_or(1);
-        // SAFETY: events this daemon holds, `n` of them.
-        unsafe { WaitForMultipleObjects(n, waited.as_ptr(), 0, ms) };
+        timed(timeout, || {
+            // SAFETY: events this daemon holds, `n` of them.
+            unsafe { WaitForMultipleObjects(n, waited.as_ptr(), 0, ms) }
+        });
         if self.listener_wake.pending() {
             self.listener_wake.drain();
         }
@@ -4561,8 +4625,7 @@ impl<D: Disk> Daemon<D> {
             }
             held = match left.flatten() {
                 Some(left) => {
-                    self.ports_freed
-                        .wait_timeout(held, left)
+                    timed(Some(left), || self.ports_freed.wait_timeout(held, left))
                         .unwrap_or_else(PoisonError::into_inner)
                         .0
                 }
@@ -6978,11 +7041,12 @@ impl<D: Disk> Daemon<D> {
                     revents: 0,
                 },
             ];
-            // SAFETY: poll(2) on two pollfds of descriptors this function holds open (a
-            // negative one is ignored).
-            if unsafe { libc::poll(polled.as_mut_ptr(), 2, ms) } < 0
-                && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
-            {
+            let polls = timed(poll_timeout(ms), || {
+                // SAFETY: poll(2) on two pollfds of descriptors this function holds open (a
+                // negative one is ignored).
+                unsafe { libc::poll(polled.as_mut_ptr(), 2, ms) }
+            });
+            if polls < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
                 break;
             }
             let [code, hung_up] = polled;
@@ -7136,8 +7200,8 @@ impl<D: Disk> Daemon<D> {
                     }
                     runs = match stops.values().filter_map(|stop| stop.next).min() {
                         Some(at) => {
-                            self.resolved
-                                .wait_timeout(runs, at.saturating_duration_since(now))
+                            let left = at.saturating_duration_since(now);
+                            timed(Some(left), || self.resolved.wait_timeout(runs, left))
                                 .unwrap_or_else(PoisonError::into_inner)
                                 .0
                         }
@@ -7582,6 +7646,7 @@ impl<D: Disk> Daemon<D> {
         }
         link.set_read_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
         link.set_write_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
+        let _waiting = Waiting::of(Some(TAKE_TIMEOUT));
         for ((dir, read_only, only), name) in volumes {
             let mut payload = name.as_bytes().to_vec();
             payload.push(0);
@@ -7649,6 +7714,7 @@ impl<D: Disk> Daemon<D> {
         }
         link.set_read_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
         link.set_write_timeout(Some(TAKE_TIMEOUT)).map_err(failed)?;
+        let _waiting = Waiting::of(Some(TAKE_TIMEOUT));
         for ((dir, read_only, only), name) in volumes {
             let mut payload = name.as_bytes().to_vec();
             payload.push(0);
@@ -8075,9 +8141,7 @@ impl<D: Disk> Daemon<D> {
                 )));
             }
             let wait = if left.is_zero() { READY_STALL } else { left };
-            state = self
-                .changed
-                .wait_timeout(state, wait)
+            state = timed(Some(wait), || self.changed.wait_timeout(state, wait))
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
@@ -8676,7 +8740,7 @@ fn with_its_process(child: &shards_ipc::Child, why: String) -> String {
         if Instant::now() >= deadline {
             return format!("{why}; its process still ran a second after");
         }
-        std::thread::sleep(Duration::from_millis(10));
+        slept(Duration::from_millis(10));
     }
 }
 
@@ -8829,6 +8893,7 @@ fn taken(vm: &UnixStream) -> Result<(), Untaken> {
         Err(e) if e.kind() == io::ErrorKind::InvalidInput => {}
         Err(e) => return Err(Untaken::Unknown(e.to_string())),
     }
+    let _waiting = Waiting::of(Some(TAKE_TIMEOUT));
     match shards_ipc::recv(vm) {
         Ok(Some(m)) if m.kind == kind::TAKEN => Ok(()),
         Ok(Some(m)) => Err(Untaken::Unknown(format!(
@@ -9159,6 +9224,7 @@ fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), Gra
     let started = |why: String| GrantError { why, started: true };
     link.set_read_timeout(Some(READY_TIMEOUT))
         .map_err(|e| started(format!("VM {pid}: {e}")))?;
+    let _waiting = Waiting::of(Some(READY_TIMEOUT));
     // A VM the host has not let run yet: its stacks would hold nothing (PM M166).
     let unstarted = || shards_vmm::platform::launched(pid) == Some(false);
     let mut sampled: Option<String> = None;
@@ -9181,8 +9247,11 @@ fn grant(link: &UnixStream, pid: u32, template: Option<&Path>) -> Result<(), Gra
             revents: 0,
         };
         let stall = i32::try_from(GRANT_STALL.as_millis()).unwrap_or(i32::MAX);
-        // SAFETY: poll(2) of one pollfd of ours.
-        if unsafe { libc::poll(&raw mut next, 1, stall) } != 0 {
+        let polled = timed(poll_timeout(stall), || {
+            // SAFETY: poll(2) of one pollfd of ours.
+            unsafe { libc::poll(&raw mut next, 1, stall) }
+        });
+        if polled != 0 {
             return;
         }
         if sent == 0 && unstarted() {
@@ -9273,8 +9342,10 @@ fn readable_within(socket: &UnixStream, wait: Option<Duration>) -> bool {
         let ms = wait.map_or(-1, |w| {
             i32::try_from(w.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
         });
-        // SAFETY: poll(2) of one pollfd of ours.
-        unsafe { libc::poll(&raw mut next, 1, ms) != 0 }
+        timed(poll_timeout(ms), || {
+            // SAFETY: poll(2) of one pollfd of ours.
+            unsafe { libc::poll(&raw mut next, 1, ms) != 0 }
+        })
     }
 }
 
@@ -9983,9 +10054,11 @@ mod tests {
     /// A test's wait on its daemon, whose threads run in this process: judged as D215 judges
     /// a wait on a VM process (#77), its party this process. Past the slowest wait of its
     /// tests seen ([`WAITS`], W*), it looks once each W*, and gives up only where no thread
-    /// of this process but its waiters ran since the look before, a whole W* in which its
-    /// host did not hold it. Before the first answer it follows this process's liveness
-    /// alone, and is judged from the first that comes.
+    /// of this process but its waiters has run for a whole W* its host did not hold it in,
+    /// counted from no earlier than the latest deadline a daemon thread waits until
+    /// ([`Waiting`]): a party asleep on a deadline of its own has not stalled before it.
+    /// Before the first answer it follows this process's liveness alone, and is judged from
+    /// the first that comes.
     ///
     /// Not [`shards_api::progress::Watch`]: of its own process every look finds it ran and
     /// runnable, the looking thread among its threads. How long its host held it is what
@@ -10002,13 +10075,17 @@ mod tests {
         others: i128,
         /// This thread's CPU as it last added its own to [`WAITERS`].
         mine: u64,
-        /// When it last looked, or began; and how long its host has held it since.
-        looked: Instant,
+        /// When its party last progressed, or the wait began or was first judged; and how
+        /// long its host has held it since.
+        since: Instant,
         held: Duration,
+        /// The latest deadline its party waits until ([`latest_deadline`]; a test's
+        /// stand-in).
+        deadline: fn() -> Option<Instant>,
     }
 
     impl<'r> Wait<'r> {
-        fn on(record: &'r Record, party: fn() -> i128) -> Wait<'r> {
+        fn on(record: &'r Record, party: fn() -> i128, deadline: fn() -> Option<Instant>) -> Wait<'r> {
             let (began, mine, others) = (Instant::now(), cpu(false), party());
             Wait {
                 record,
@@ -10018,8 +10095,9 @@ mod tests {
                 from: others,
                 others,
                 mine,
-                looked: began,
+                since: began,
                 held: Duration::ZERO,
+                deadline,
             }
         }
 
@@ -10040,8 +10118,8 @@ mod tests {
         }
 
         /// Looks at this process where a look is due ([`Wait`]): refused where none of its
-        /// threads but its waiters ran since the look before, over a whole W* its host did
-        /// not hold it in.
+        /// threads but its waiters has run for a whole W* its host did not hold it in, past
+        /// the latest deadline it waits until.
         fn look(&mut self) -> Result<(), Stall> {
             let mine = cpu(false);
             WAITERS.fetch_add(mine.saturating_sub(self.mine), Ordering::Relaxed);
@@ -10051,7 +10129,7 @@ mod tests {
                 // Begun before its kind's first answer: judged from the first.
                 if matches!(self.record.seen(), Seen::Learned { .. }) {
                     self.judge = Judge::begin(self.record);
-                    (self.others, self.looked, self.held) = ((self.party)(), now, Duration::ZERO);
+                    (self.others, self.since, self.held) = ((self.party)(), now, Duration::ZERO);
                 }
                 return Ok(());
             };
@@ -10063,9 +10141,11 @@ mod tests {
             }
             let others = (self.party)();
             let ran = others > std::mem::replace(&mut self.others, others);
-            let free = now
-                .saturating_duration_since(std::mem::replace(&mut self.looked, now))
-                .saturating_sub(std::mem::take(&mut self.held));
+            if ran {
+                (self.since, self.held) = (now, Duration::ZERO);
+            }
+            let from = (self.deadline)().map_or(self.since, |until| until.max(self.since));
+            let free = now.saturating_duration_since(from).saturating_sub(self.held);
             self.judge.found(if ran {
                 Found::Progressed
             } else if free < slowest {
@@ -10100,8 +10180,13 @@ mod tests {
 
     /// Waits until `f` holds, polled as the tests poll, `party` judged on `record`'s
     /// judgment ([`Wait`]).
-    fn waited_on(record: &Record, party: fn() -> i128, mut f: impl FnMut() -> bool) -> Result<(), Stall> {
-        let mut wait = Wait::on(record, party);
+    fn waited_on(
+        record: &Record,
+        party: fn() -> i128,
+        deadline: fn() -> Option<Instant>,
+        mut f: impl FnMut() -> bool,
+    ) -> Result<(), Stall> {
+        let mut wait = Wait::on(record, party, deadline);
         loop {
             if f() {
                 wait.answered();
@@ -10116,7 +10201,7 @@ mod tests {
 
     /// Waits until `f` holds ([`Wait`]).
     fn waited(f: impl FnMut() -> bool) -> Result<(), Stall> {
-        waited_on(&WAITS, others, f)
+        waited_on(&WAITS, others, latest_deadline, f)
     }
 
     /// Waits until `f` holds ([`Wait`]); a wait given up on fails the test, saying `what`.
@@ -10136,7 +10221,7 @@ mod tests {
 
     /// What `rx` gives, waited for ([`Wait`]).
     fn received<T>(rx: &mpsc::Receiver<T>) -> Result<T, Unreceived> {
-        let mut wait = Wait::on(&WAITS, others);
+        let mut wait = Wait::on(&WAITS, others, latest_deadline);
         loop {
             let (asked, began) = (wait.slice(), Instant::now());
             match rx.recv_timeout(asked) {
@@ -10200,23 +10285,42 @@ mod tests {
         }
     }
 
-    /// A test's wait gives up on a party that stopped, a whole W* gone by with nothing run,
-    /// and waits on one that is slow but runs, many W* past the slowest seen (#77). Each party
-    /// is a stand-in whose run is a count, its record its own, taught a W* of a millisecond.
-    /// Red where the wait is bounded by wall time alone (the stopped one is waited on for good,
-    /// or the slow one cut), or where it takes its own looks for progress.
+    /// A test's wait gives up on a party that stopped, a whole W* gone by with nothing run;
+    /// waits on one that is slow but runs, many W* past the slowest seen; and waits on one
+    /// asleep until a deadline of its own, giving up a whole W* past the deadline where
+    /// nothing follows (#77). Each party is a stand-in whose run is a count, its deadline a
+    /// stand-in's, each case's record its own, taught a W* of 20 ms. Red where the wait is
+    /// bounded by wall time alone (the stopped one waited on for good, or the slow or
+    /// sleeping one cut), takes its own looks for progress, or judges a sleeping party
+    /// before its deadline.
     #[test]
-    fn a_wait_gives_up_on_a_stopped_party_and_waits_on_a_slow_one() {
+    fn a_wait_gives_up_on_a_stopped_party_and_waits_on_a_slow_or_sleeping_one() {
         static STOPPED: Record = Record::new();
         static SLOW: Record = Record::new();
+        static ASLEEP: Record = Record::new();
+        static WOKE_TO_NOTHING: Record = Record::new();
         static RUN: AtomicU64 = AtomicU64::new(0);
-        let slowest = Duration::from_millis(1);
-        for record in [&STOPPED, &SLOW] {
+        static UNTIL: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        let slowest = Duration::from_millis(20);
+        for record in [&STOPPED, &SLOW, &ASLEEP, &WOKE_TO_NOTHING] {
             record.teach(slowest, Duration::ZERO);
         }
-        let stopped = || 0;
-        let stall = waited_on(&STOPPED, stopped, || false).unwrap_err();
-        assert!(stall.over() >= slowest, "{stall:?}");
+        let still = || 0;
+        let none = || None;
+        let stall = waited_on(&STOPPED, still, none, || false).unwrap_err();
+        assert!(stall.waited() >= slowest, "{stall:?}");
+
+        // Asleep until 10 W* from now: waited on to its deadline, then a whole W* more.
+        let until = *UNTIL.get_or_init(|| Instant::now() + slowest * 10);
+        let asleep = || UNTIL.get().copied();
+        let began = Instant::now();
+        assert_eq!(
+            waited_on(&ASLEEP, still, asleep, || began.elapsed() >= slowest * 5),
+            Ok(())
+        );
+        let stall = waited_on(&WOKE_TO_NOTHING, still, asleep, || false).unwrap_err();
+        assert!(Instant::now() >= until + slowest, "{stall:?}");
+
         let runs = || i128::from(RUN.load(Ordering::Relaxed));
         let done = AtomicBool::new(false);
         let began = Instant::now();
@@ -10224,10 +10328,10 @@ mod tests {
             s.spawn(|| {
                 while !done.load(Ordering::Relaxed) {
                     RUN.fetch_add(1, Ordering::Relaxed);
-                    std::thread::sleep(slowest / 4);
+                    std::thread::yield_now();
                 }
             });
-            let waited = waited_on(&SLOW, runs, || began.elapsed() >= slowest * 50);
+            let waited = waited_on(&SLOW, runs, none, || began.elapsed() >= slowest * 25);
             done.store(true, Ordering::Relaxed);
             assert_eq!(waited, Ok(()));
         });

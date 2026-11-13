@@ -564,9 +564,8 @@ impl<D: Disk> Daemon<D> {
                             .wait(woke)
                             .unwrap_or_else(PoisonError::into_inner),
                         Some(at) => {
-                            self.groups
-                                .wake
-                                .wait_timeout(woke, at.saturating_duration_since(Instant::now()))
+                            let left = at.saturating_duration_since(Instant::now());
+                            super::timed(Some(left), || self.groups.wake.wait_timeout(woke, left))
                                 .unwrap_or_else(PoisonError::into_inner)
                                 .0
                         }

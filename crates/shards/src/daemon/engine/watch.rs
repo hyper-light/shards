@@ -36,8 +36,10 @@ fn gone_within(client: &UnixStream, limit: Duration) -> bool {
         revents: 0,
     };
     let ms = libc::c_int::try_from(limit.as_millis()).unwrap_or(libc::c_int::MAX);
-    // SAFETY: poll(2) on one pollfd of a descriptor this function's caller holds open.
-    unsafe { libc::poll(&raw mut polled, 1, ms) > 0 }
+    super::super::timed(super::super::poll_timeout(ms), || {
+        // SAFETY: poll(2) on one pollfd of a descriptor this function's caller holds open.
+        unsafe { libc::poll(&raw mut polled, 1, ms) > 0 }
+    })
 }
 
 /// A sample of a microVM: its workload's use as its guest's cgroup has it, its own cost
