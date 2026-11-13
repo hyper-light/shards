@@ -583,12 +583,15 @@ mod tests {
         }
         assert!(matches!(l.ask("other", 9, now), Asked::Waiting));
         let asks = l.asks();
+        assert_eq!(asks.len(), 2, "one ask a credential");
+        let id = |reference: &str| {
+            let ask = asks.iter().find(|a| decode_ask(a).unwrap().1 == reference);
+            decode_ask(ask.unwrap()).unwrap().0
+        };
         let why = Refusal::Denied("its policy keeps it".into());
-        let id = the_ask(&asks, CLAUDE);
-        assert!(l.answered(&encode_answer(id, Err(&why)).unwrap(), now));
+        assert!(l.answered(&encode_answer(id(CLAUDE), Err(&why)).unwrap(), now));
         let life = NonZeroU64::new(60_000_000_000).unwrap();
-        let id = the_ask(&asks, "other");
-        assert!(l.answered(&encode_answer(id, Ok((life, b"v"))).unwrap(), now));
+        assert!(l.answered(&encode_answer(id("other"), Ok((life, b"v"))).unwrap(), now));
         let resumed = l.resumed();
         assert_eq!(resumed.len(), 4);
         for waiter in [7, 8] {
