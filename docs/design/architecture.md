@@ -28331,7 +28331,7 @@ be Shards' own code. Hex's acceptance (step11-b-run-host-endpoint) is held to he
   `Transport(Peer)`: typed, never `Silent`. (g) asks never `Silent`, as (f) does.
 
 **Amended** (goal 58). The run host's endpoint admits execs too, as the daemon's runs do
-(`managed::exec_admissions`), so that it hosts its members' MCP connections (D254) through the
+(`shards_api::control::exec_admissions`), so that it hosts its members' MCP connections (D254) through the
 daemon's exec host, and hosts its execs and its members' own lanes (D238) through the daemon's
 hosts too. Its asks name the zero run and generation 0, as its socket lanes do, its
 endpoint serving no member stream (D238).
@@ -28713,7 +28713,7 @@ hosts' stubs (`daemon` through a stand-in VM, api-run's `mcp_accepted`).
   bridge, or that its budget has no room for, is let go, logged by its typed cause (`Unheld`).
 - *api-run's hand-off and endpoint.* Its `follow` holds each connection as the daemon does
   (`mcp_accepted`, its watcher on a thread of the run's scope), its Windows leg as D251's lanes'.
-  Its endpoint now admits execs as the daemon's runs do (`managed::exec_admissions`, one source
+  Its endpoint now admits execs as the daemon's runs do (`shards_api::control::exec_admissions`, one source
   for both: an output's record `run::CHUNK`, a stdin's a member's), so that an MCP ask reaches
   its host, the daemon's exec host (`host_lanes`), its budget its own (`Charge`, held to the
   host's available memory); its execs and its members' own lanes go through the daemon's hosts

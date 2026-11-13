@@ -2164,7 +2164,7 @@ mod hosted {
 
     use super::{Answers, No, no};
     use crate::daemon::ends::Ends;
-    use crate::daemon::managed::{self as hosts, Charge, execs, mcp, members};
+    use crate::daemon::managed::{Charge, execs, mcp, members};
     use crate::daemon::publish;
 
     fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -3227,7 +3227,7 @@ mod hosted {
     /// lanes, each through the daemon's hosts.
     struct Agent {
         /// What each exec's and MCP connection's streams are admitted, as the daemon's runs
-        /// admit them (`managed::exec_admissions`).
+        /// admit them (`shards_api::control::exec_admissions`).
         admissions: shards_remote::control::exec::Admissions,
         /// The budget its lanes are charged to: this host's own, held to the host's available
         /// memory as the daemon's runs' is.
@@ -3256,7 +3256,7 @@ mod hosted {
     impl Agent {
         /// A run's, `plan`'s.
         fn of(plan: &Plan) -> Result<Agent, String> {
-            let admissions = hosts::exec_admissions().map_err(|e| format!("its lanes' admissions: {e}"))?;
+            let admissions = shards_api::control::exec_admissions();
             let budget = std::sync::Arc::new(Mutex::new(Some(0)));
             let charge = Charge::reserve(&budget, 0).map_err(|e| format!("its lanes' budget: {e:?}"))?;
             let charge = std::sync::Arc::new(charge);
@@ -5430,10 +5430,10 @@ mod hosted {
 
         /// D238, D252, D254: an orchestrator's run hosts its own lanes as the daemon hosts its
         /// runs'. Through its endpoint, of no member stream, a controller asks in the zero run:
-        /// its member 1 runs, a signal to it goes to its VM as init's SIGNAL built-in, told
-        /// (`EXEC_TOLD`), once its command has started, and is taken; a resize of it, which has
-        /// no terminal of its own, is refused `Terminal`; its end as its init told it reaches its
-        /// lane; member 0, files alone, is refused `Refused`; its MCP connection, held as its VM
+        /// its members 1 and 2 run; a TERM to member 1 and a KILL to member 2 each go to its VM
+        /// as init's SIGNAL built-in, told (`EXEC_TOLD`), once its command has started, and are
+        /// taken; a resize of member 1, which has no terminal of its own, is refused `Terminal`;
+        /// each one's end as its init told it (143 and 137) reaches its lane; member 0, files alone, is refused `Refused`; its MCP connection, held as its VM
         /// handed it over, carries the harness's bytes to the controller and back; and once the
         /// run is over a member's lane is refused `Failed`.
         #[test]
@@ -5447,7 +5447,7 @@ mod hosted {
             let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
             let (link, vm) = Stream::pair().unwrap();
             let kiln = shards_remote::identity::Identity::generate().unwrap();
-            let admissions = hosts::exec_admissions().unwrap();
+            let admissions = shards_api::control::exec_admissions();
             let budget = std::sync::Arc::new(Mutex::new(Some(0)));
             let charge = std::sync::Arc::new(Charge::reserve(&budget, 0).unwrap());
             let agent = Agent {
@@ -5455,8 +5455,8 @@ mod hosted {
                 charge: std::sync::Arc::clone(&charge),
                 begun: Mutex::new(Begun::Awaited),
                 began: std::sync::Condvar::new(),
-                ends: members::Ends::new(2).unwrap(),
-                active: vec![1],
+                ends: members::Ends::new(3).unwrap(),
+                active: vec![1, 2],
                 terminals: Vec::new(),
                 bridges: Some(mcp::Bridges::new(vec![1], protocol::CHUNK, charge)),
             };
@@ -5475,20 +5475,23 @@ mod hosted {
             std::thread::scope(|scope| {
                 let serving = scope.spawn(move || endpoint.run());
                 host_lanes(&live, agent, served.execs, served.members, scope);
-                // Its VM: the one built-in it is handed, a SIGNAL to member 1, taken.
+                // Its VM: the built-ins it is handed, a TERM to member 1 and a KILL to member 2,
+                // each taken.
                 let process = scope.spawn(|| {
-                    let m = shards_ipc::recv(&vm).unwrap().unwrap();
-                    assert_eq!(m.kind, kind::EXEC_RUN);
-                    let (number, rest) = m.payload.split_first_chunk::<8>().unwrap();
-                    assert_eq!((u64::from_be_bytes(*number), rest[0]), (0, shards_ipc::EXEC_TOLD));
-                    let spec = protocol::Spec::decode(&rest[1..]).unwrap();
-                    assert_eq!(spec.builtin, protocol::builtin::SIGNAL);
-                    assert_eq!(spec.argv, protocol::members::signal_args(1, 15));
-                    let mut fds = m.fds.into_iter();
-                    let conn = Stream::from(fds.next().unwrap());
-                    drop(fds);
-                    shards_ipc::send(&conn, kind::STARTED, &[], &[]).unwrap();
-                    shards_ipc::send(&conn, kind::EXIT, &[0], &[]).unwrap();
+                    for (number, member, signal) in [(0, 1, 15), (1, 2, 9)] {
+                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                        assert_eq!(m.kind, kind::EXEC_RUN);
+                        let (n, rest) = m.payload.split_first_chunk::<8>().unwrap();
+                        assert_eq!((u64::from_be_bytes(*n), rest[0]), (number, shards_ipc::EXEC_TOLD));
+                        let spec = protocol::Spec::decode(&rest[1..]).unwrap();
+                        assert_eq!(spec.builtin, protocol::builtin::SIGNAL);
+                        assert_eq!(spec.argv, protocol::members::signal_args(member, signal));
+                        let mut fds = m.fds.into_iter();
+                        let conn = Stream::from(fds.next().unwrap());
+                        drop(fds);
+                        shards_ipc::send(&conn, kind::STARTED, &[], &[]).unwrap();
+                        shards_ipc::send(&conn, kind::EXIT, &[0], &[]).unwrap();
+                    }
                 });
                 let (controller, dialed) = Controller::dial(
                     &kiln,
@@ -5513,11 +5516,21 @@ mod hosted {
                     panic!("member 1 runs");
                 };
                 assert_eq!(steering.signal(15), Ok(()));
+                let Member::Running(MemberControl {
+                    steering: mut killed,
+                    end: mut kill_end,
+                }) = execs.member(2).unwrap()
+                else {
+                    panic!("member 2 runs");
+                };
+                assert_eq!(killed.signal(9), Ok(()));
                 process.join().unwrap();
                 let size = protocol::Size { rows: 50, cols: 132 };
                 assert_eq!(steering.resize(size), Err(Fault::Unsteered(Unsteered::Terminal)));
                 agent.ends.told(1, 143).unwrap();
+                agent.ends.told(2, 137).unwrap();
                 assert_eq!(end.wait(), Ok(143));
+                assert_eq!(kill_end.wait(), Ok(137));
                 assert_eq!(
                     execs.member(0).map(|_| ()),
                     Err(Fault::Unstarted(Unstarted::Refused))
@@ -7191,7 +7204,7 @@ mod tests {
                 window: 4096,
             }),
         };
-        let execs = crate::daemon::managed::exec_admissions().unwrap();
+        let execs = shards_api::control::exec_admissions();
         let (first, served) = hosted::bind_control(&ask, execs).unwrap();
         assert!(first.address.ip().is_loopback(), "{:?}", first.address);
         assert!(served.sockets.is_some());
