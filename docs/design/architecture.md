@@ -2110,13 +2110,27 @@ devices. The code is `crates/vmm/src/memory.rs`.
     span short of a huge page on THP (`memory::huge_runs`). The guest reports free memory
     in whole pageblocks, 2 MiB with 4 KiB pages (include/linux/pageblock-flags.h l. 60-66;
     D151).
-  - Proposed for x86-64, with ROOT's word before anything changes: either keep 2 MiB as
-    its large page (a PDE that maps a 2-MByte page, Intel SDM Vol. 3A §4.5), the unit those
-    mechanisms work in, and measure what a tail short of it costs; or take x86-64's unit
-    down to the MiB that `memory_mib` counts in.
+  - Decided for x86-64 (ROOT, 2026-11-13): 2 MiB stays, as its large page (a PDE that
+    maps a 2-MByte page, Intel SDM Vol. 3A §4.5), the unit those three mechanisms work in.
+    One unit on both architectures keeps shards-api's `envelope` the same for every
+    caller; taking x86-64 to the MiB would split it by architecture for a cost nothing has
+    measured. Should the tail's cost measure nil, the MiB is weighed again with that data.
+  - Owed to ROOT, the tail's cost on x86-64 KVM: two boots of one kernel, at 2N MiB and
+    2N + 1 MiB (the latter in a build that takes an odd MiB), n of each interleaved. Read
+    the 4 KiB and 2 MiB mappings KVM made (its `pages_4k` and `pages_2m` VM statistics),
+    the VM process's `AnonHugePages` (smaps), and what the guest reported free (D151's
+    count) after one fill and free of its RAM. Report the difference in each, with
+    p50/p90/p99/max of a boot to its PID 1 and of the fill.
   - The least memory each architecture boots in, 64 MiB on arm64 and 128 on x86-64
     (`MIN_MEMORY_MIB`), rests on its comment alone (a kernel, its bss and early
-    allocations, and on arm64 the DTB's window). No record measures it: owed.
+    allocations, and on arm64 the DTB's window); no record measures it.
+  - Owed to ROOT, that measurement, on each backend (HVF and KVM arm64, through the L1
+    path where no host has KVM, and KVM and WHP x86-64): boot shards' pinned kernel with
+    shards-init at 1 vCPU and at the host's count (per-CPU allocations grow with vCPUs),
+    from today's floor down in 2 MiB steps, 20 boots a step. The least memory is the
+    smallest step at which every boot reaches `marker::INIT_STARTED`; record it with the
+    kernel's own `Memory:` line (available, reserved) at that step. A floor taken from it
+    is a derivation of the kernel and the vCPU count, not a constant.
 
   Linux citations are at 1590cf03 (7.2-rc4) unless a revision is named.
 - **Tests:** `memory::tests` (copies at every alignment of either side to 64 bytes and
@@ -22786,10 +22800,10 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
     there); and the most, 2^44 - 2 MiB, the last even MiB whose bytes fit the u64 those
     functions count a guest's memory in (`checked_mul(MIB)`).
   - The unit's derivation is D29's ("Its size"). On arm64 it comes from the boot protocol:
-    the DTB at RAM's top lies in one 2 MiB block of RAM. On x86-64 it is arm64's rule
-    restated, with no requirement of its own, and a change is proposed there for ROOT's
-    word. The least rests on its comment (a kernel, its bss and early allocations, and on
-    arm64 its DTB window); no measure of it is recorded, so it is owed (D29).
+    the DTB at RAM's top lies in one 2 MiB block of RAM. On x86-64, which needs none of
+    its own, it is kept as its large page (ROOT, 2026-11-13), and what an odd tail would
+    cost is owed as a measurement. The least rests on its comment (a kernel, its bss and
+    early allocations, and on arm64 its DTB window); its measurement is owed too (D29).
   - Tested (light): lib's `an_envelope_rounds_up_to_the_unit_and_the_least`,
     `an_envelope_past_what_a_u64_holds_is_refused` and
     `check_and_envelope_agree_on_every_case` (each architecture's rule, at every bound and
