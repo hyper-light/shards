@@ -129,21 +129,9 @@ const HYPERV: [WHV_REGISTER_NAME; 3] = [
     WHvRegisterReferenceTsc,
 ];
 
-/// The CPUID leaves that say which CPU a snapshot was taken on, as WHP describes it to a
-/// partition's guest: its vendor and family, its features, its XSAVE components and its
-/// address sizes. Not its caches, which a hybrid host's cores describe apart (PM M258).
-pub(super) const IDENTITY: &[(u32, u32)] = &[
-    (0, 0),
-    (1, 0),
-    (7, 0),
-    (7, 1),
-    (0xD, 0),
-    (0xD, 1),
-    (0x8000_0000, 0),
-    (0x8000_0001, 0),
-    (0x8000_0007, 0),
-    (0x8000_0008, 0),
-];
+/// The CPUID leaves that say which CPU a snapshot was taken on, which a move checks before
+/// anything moves too (D245).
+pub(super) use crate::arch::x86_64::cpuid::IDENTITY;
 
 /// ERROR_MORE_DATA (234) as an HRESULT (FACILITY_WIN32).
 pub(super) const ERROR_MORE_DATA_HRESULT: u32 = 0x8007_00EA;

@@ -110,6 +110,11 @@ pub(crate) struct Plan {
     /// where it was told none, its host's own CPU.
     #[serde(default)]
     pub baseline: shards_vmm::arch::cpu::Id,
+    /// The CPU its snapshot was saved on, where its hypervisor restores a snapshot only on
+    /// that CPU (WHP: `cpuid::IDENTITY`'s leaves, D245), for the machine moved to to check
+    /// before anything moves. Empty elsewhere, and from a daemon of an earlier build.
+    #[serde(default)]
+    pub cpu_identity: shards_vmm::arch::cpu::Id,
 }
 
 /// What a run keeps the CPU baseline its guest was told in, in its container's directory
@@ -349,6 +354,9 @@ pub(crate) enum Refused {
     Cpu { name: String, short: Vec<CpuShort> },
     /// The CPU baseline its guest was told is another vendor's than this machine's CPU.
     CpuVendor { name: String },
+    /// This machine's CPU is not the one its snapshot was saved on, which its hypervisor
+    /// restores a snapshot only on (WHP).
+    CpuIdentity { name: String },
     /// This machine's CPU lacks these features, as its OS names them, which its guest may
     /// have used where it ran.
     Features { name: String, lacks: Vec<String> },
@@ -394,6 +402,21 @@ fn baseline_refused(
     shards_vmm::arch::cpu::covers(here, baseline)
         .err()
         .map(|lacks| cpu_refused(name.to_string(), lacks))
+}
+
+/// Whether this machine's hypervisor restores a snapshot only on the CPU it was taken on: WHP
+/// on x86-64 (hv::whp's state.rs), which a move checks before anything moves (D245). WHP on
+/// arm64 tells a guest its ID registers, as KVM and Hypervisor.framework do.
+fn restores_on_its_own_cpu_alone() -> bool {
+    cfg!(target_arch = "x86_64") && shards_vmm::hv::BACKEND == Some("whp")
+}
+
+/// What a machine whose hypervisor restores a snapshot only on the CPU it was taken on, and
+/// whose CPU is `here`, refuses of microVM `name`, saved on `theirs` (D245): any other CPU.
+fn identity_refused<T: PartialEq>(name: &str, here: &[T], theirs: &[T]) -> Option<Refused> {
+    (here != theirs).then(|| Refused::CpuIdentity {
+        name: name.to_string(),
+    })
 }
 
 /// What `lacks`, of this build's architecture, refuses of microVM `name`'s CPU baseline.
@@ -512,6 +535,10 @@ impl std::fmt::Display for Refused {
             Refused::CpuVendor { name } => write!(
                 f,
                 "{name}'s CPU baseline is another vendor's CPU than this machine's: no CPUID makes one vendor's CPU another's"
+            ),
+            Refused::CpuIdentity { name } => write!(
+                f,
+                "this machine's CPU is not the one {name} was saved on, and the Windows Hypervisor Platform restores a snapshot only on that CPU"
             ),
             Refused::Features { name, lacks } => write!(
                 f,
@@ -1131,6 +1158,9 @@ impl<D: Disk> Daemon<D> {
                     return 1;
                 }
             },
+            Some("cpu") if restores_on_its_own_cpu_alone() => {
+                Err(shards_vmm::vm::NO_BASELINE_ON_WHP.to_string())
+            }
             Some("cpu") => self.host_cpu_id().map(|id| shards_vmm::arch::cpu::encode(&id)),
             Some("export") => self.move_export(args.get(1..).unwrap_or_default(), asker),
             Some("import") => self.move_import(args.get(1..).unwrap_or_default(), asker),
@@ -1155,6 +1185,9 @@ impl<D: Disk> Daemon<D> {
     fn move_save(&self, reference: &str) -> Result<String, String> {
         let id = self.resolve(reference)?;
         self.await_start(&id);
+        // On WHP its plan names this CPU (`exact_cpu`), asked of the VM process once a
+        // daemon: asked before the save, not in the time the microVM runs nowhere.
+        let _ = self.exact_cpu();
         let snapshot = if self.running(&id) {
             let (_, name) = self
                 .save_snapshot(reference, None, false)
@@ -1244,6 +1277,7 @@ impl<D: Disk> Daemon<D> {
             cpu: host_cpu(),
             guest: self.boots_stored_guest(&c.id),
             baseline: read_baseline(&lock(&self.containers).dir(&c.id).join(RUN_BASELINE)),
+            cpu_identity: self.exact_cpu(),
         };
         serde_json::to_string(&plan).map_err(|e| e.to_string())
     }
@@ -1472,6 +1506,21 @@ impl<D: Disk> Daemon<D> {
             cpu: host_cpu(),
             guest: self.boots_stored_guest(id),
             baseline: read_baseline(&lock(&self.containers).dir(id).join(RUN_BASELINE)),
+            cpu_identity: self.exact_cpu(),
+        })
+    }
+
+    /// The CPU a snapshot saved here may be restored on alone, for a plan to carry (D245):
+    /// this machine's, where its hypervisor restores a snapshot only on the CPU it was taken
+    /// on (WHP on x86-64); none elsewhere. Where its VM process cannot say, none: the machine moved to
+    /// then finds another CPU at the restore, as with a plan of an earlier build.
+    fn exact_cpu(&self) -> shards_vmm::arch::cpu::Id {
+        if !restores_on_its_own_cpu_alone() {
+            return Default::default();
+        }
+        self.host_cpu_id().unwrap_or_else(|e| {
+            super::log(format!("a move's plan names no CPU: {e}"));
+            Default::default()
         })
     }
 
@@ -1530,6 +1579,14 @@ impl<D: Disk> Daemon<D> {
             shards_vmm::hv::BACKEND,
             shards_vmm::snapshot::FORMAT,
         ) {
+            return Err(refused.into());
+        }
+        // On WHP its CPU first: a restore there takes only the CPU its snapshot was saved on
+        // (hv::whp's state.rs), checked here rather than after the whole stream (D245).
+        if !plan.cpu_identity.is_empty()
+            && restores_on_its_own_cpu_alone()
+            && let Some(refused) = identity_refused(&plan.name, &self.host_cpu_id()?, &plan.cpu_identity)
+        {
             return Err(refused.into());
         }
         // Its CPU: every feature of the machine it ran on, as its guest may have used any.
@@ -2088,6 +2145,7 @@ mod tests {
             cpu: Vec::new(),
             guest: false,
             baseline: Vec::new(),
+            cpu_identity: Vec::new(),
         }
     }
 
@@ -2139,6 +2197,31 @@ mod tests {
                 here: format + 1,
             })
         );
+    }
+
+    /// A machine whose hypervisor restores a snapshot only on the CPU it was taken on (WHP)
+    /// refuses a microVM saved on another, by name, and takes one saved on its own; a plan of
+    /// an earlier build, which names no CPU, reads back naming none, which no machine checks
+    /// before its restore (D245).
+    #[test]
+    fn a_microvm_saved_on_another_cpu_is_refused_where_a_restore_takes_only_its_own() {
+        let (here, other) = (
+            [[1u32, 0, 0, 0x00a6_0f12, 0, 0, 0]],
+            [[1u32, 0, 0, 0x00b4_0f40, 0, 0, 0]],
+        );
+        assert_eq!(identity_refused("web", &here, &here), None);
+        assert_eq!(
+            identity_refused("web", &here, &other),
+            Some(Refused::CpuIdentity { name: "web".into() })
+        );
+        assert_eq!(
+            identity_refused("web", &here, &here[..0]),
+            Some(Refused::CpuIdentity { name: "web".into() })
+        );
+        let mut earlier = serde_json::to_value(plan()).unwrap();
+        earlier.as_object_mut().unwrap().remove("cpu_identity");
+        let earlier: Plan = serde_json::from_value(earlier).unwrap();
+        assert!(earlier.cpu_identity.is_empty());
     }
 
     /// A refusal goes as JSON, tagged by what refused it, and reads back as it went; its
@@ -2201,6 +2284,11 @@ mod tests {
                 Refused::CpuVendor { name: "web".into() },
                 "web's CPU baseline is another vendor's CPU than this machine's: no CPUID makes \
                  one vendor's CPU another's",
+            ),
+            (
+                Refused::CpuIdentity { name: "web".into() },
+                "this machine's CPU is not the one web was saved on, and the Windows Hypervisor \
+                 Platform restores a snapshot only on that CPU",
             ),
             (
                 Refused::Features {

@@ -12031,7 +12031,9 @@ other's but what the move sends, and what the other takes by content:
   and devices are (KVM's x86-64 state is not WHP's, nor Hypervisor.framework's arm64 state
   KVM's), which a snapshot's head, naming its architecture alone, does not tell apart;
   another snapshot format; the fields of its CPU baseline this machine's hypervisor shows
-  less of, each by register, field and both levels (`arch::aarch64::cpu::Short`); the
+  less of, each by register, field and both levels (`arch::aarch64::cpu::Short`); another
+  CPU than the one it was saved on, where this machine's hypervisor restores a snapshot only
+  on that one (WHP on x86-64, `Plan::cpu_identity`, D245); the
   features its guest may have used that this CPU lacks, by name; its ID, its name or a
   volume of its name here already; a bind's host path absent. A plan of an earlier build
   names no hypervisor, and is taken as before. Held by
@@ -12201,8 +12203,9 @@ peer", each going on here as it should. What changed for them:
   CPUID's feature leaves, one vendor's, each register the bits every machine's KVM offers
   (`arch::x86_64::cpuid::meet`), the VM's supported CPUID brought within it before its
   shape is written in (`cpuid::within`), and checked by those bits alone, none by name.
-  Not on WHP, which restores a snapshot only on the CPU it was taken on: `configure cpu`
-  says so there. Between the two Linux hosts measured (one CPU model, Linux 7.2 and 7.3)
+  Not on WHP x86-64, which restores a snapshot only on the CPU it was taken on: `configure
+  cpu` says so there, and a move checks that CPU before anything moves (D245). Between the
+  two Linux hosts measured (one CPU model, Linux 7.2 and 7.3)
   every move went through without one (PM M497).
 - **A listener that outlives its runner's restarts** (two-hosts.sh, the harness of these
   measurements). A runner that restarts ends what its runs started, the listening daemon
@@ -24085,7 +24088,7 @@ end of their TLS (D238). So there is no separate shards-api exec (ROOT, 2026-11-
 **Building.** A member's own terminal (`MemberSpec::terminal`, refused `Unsupported` until
 then).
 
-### D245. A CPU baseline: the CPU every machine a home moves among gives a guest, told each microVM it starts (decided; built on Hypervisor.framework, KVM arm64 and KVM x86-64; WHP next; real-VM runs owed)
+### D245. A CPU baseline: the CPU every machine a home moves among gives a guest, told each microVM it starts (decided; built on Hypervisor.framework, KVM arm64 and KVM x86-64; on WHP x86-64 its CPU checked at a move, its baseline researched, not built; real-VM runs owed)
 
 A microVM saved on one machine resumes on another only where that CPU has every feature its
 guest found (D176 part 6, "Its CPU"). Between two machines neither of which has every
@@ -24134,8 +24137,30 @@ refusing typed. `arch::cpu` names a CPU per architecture:
   are no features. It holds every feature register of cloud-hypervisor's migration check
   (v54.1 `arch/src/x86_64/mod.rs`, `CpuidFeatureEntry`), and leaves 14H, 19H, 0x80000007,
   0x80000008 and 0x80000021 besides.
-- *WHP*: none told yet. A WHP microVM's restore takes only the CPU it was taken on
-  (`hv::whp` `state.rs`), and `configure cpu` says so there.
+- *WHP on x86-64*: none told. Its restore takes only the CPU its snapshot was taken on
+  (`hv::whp` `state.rs`), and `configure cpu` says so there. So a move carries that CPU
+  (`Plan::cpu_identity`: the leaves of `cpuid::IDENTITY`, which WHP's restore compares, as
+  the machine's VM process reads them from a partition's vCPU), and the machine moved to
+  refuses another before anything moves (`Refused::CpuIdentity`), where it was refused only
+  at the restore, after the whole stream. A plan of an earlier build names none, and its
+  CPU is found at the restore as before. WHP on arm64 tells a guest its ID registers, as
+  KVM and Hypervisor.framework do (`whp_arm64`'s `cpu_id`).
+
+**A baseline on WHP x86-64: researched, not built.** WHP has the means: its
+processor-related partition properties (ProcessorFeaturesBanks, ProcessorXsaveFeatures,
+CpuidResultList2) "control the processor features that are made available to the virtual
+processor of the partition" and are set before WHvSetupPartition (Microsoft Learn,
+Partition Property Data Types), and Hyper-V's own processor compatibility mode moves a
+saved VM between hosts of different processors by giving it a common set of features,
+cancelling a restore whose sets differ, never across vendors (Microsoft Learn, Processor
+compatibility for Hyper-V virtual machines). What decides it is live and unmeasured:
+whether WHP sets a vCPU state saved on another CPU (the registers of features one CPU has,
+an XSAVE area of its components) into a partition told the same features; and a restore
+there must give the guest its snapshot's CPUID, as KVM's restore gives it
+(KVM_SET_CPUID2 from the snapshot), which shards' WHP restore does not yet. The runs that
+decide it: on one Windows host, a partition told a baseline less one feature leaf, saved
+and restored into a partition told the same; then between two Windows hosts of different
+CPUs of one vendor, of which there are none here.
 
 **Masked, not enforced.** A guest's kernel and programs use a feature only where its CPUID or
 ID registers say so; an instruction a program runs regardless is not stopped.
@@ -24168,7 +24193,8 @@ M497).
 
 **Owed** (ROOT). The x86-64 E2E on KVM x86-64; a move told a baseline between two machines of
 different CPUs on KVM x86-64 and on Macs (two-hosts.sh `BASELINE=1`); the arm64 unit tests
-(CI on main); WHP's baseline.
+(CI on main); WHP x86-64's move refused at `ready` between two Windows hosts of different
+CPUs (two-hosts.sh on each; none here), and the WHP baseline's deciding runs above.
 
 ## 4. Start path (≤ 5 ms budget)
 

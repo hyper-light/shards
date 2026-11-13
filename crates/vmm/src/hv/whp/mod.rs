@@ -282,6 +282,13 @@ pub fn max_vcpus() -> Result<u32> {
     host().map(|h| h.max_vcpus)
 }
 
+/// This host's CPU as WHP describes it to a partition's guest, the leaves of
+/// [`state::IDENTITY`]: what a snapshot saved here records and a restore requires again,
+/// which a move checks before anything moves (D245).
+pub fn host_cpu_id() -> Result<Vec<[u32; 7]>> {
+    host().map(|h| h.identity.clone())
+}
+
 /// What this host's partitions give their guests, read once a process from vCPU 0 of a
 /// partition of one, set up as every VM's is: a partition offered no synthetic features
 /// gives its guest no hypervisor leaves to read (PM M202: 0 there). Only an answer that
