@@ -282,15 +282,20 @@ pub fn recorder(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::proc
     }
 }
 
-/// The `--console-said` given in a VM's arguments `args` (before any `--`), and whether
-/// they give `--said-to`, where its starter takes what it tells itself.
+/// The `--console-said` given in a VM's arguments `args` (`run …` or `restore …`, before
+/// any `--`), and whether they give `--said-to`, where its starter takes what it tells
+/// itself. Each word is read with its own command's grammar (`spec::next_vm_word`), as the
+/// VM reads it: a flag's value is never a flag.
 pub fn given(args: &[std::ffi::OsString]) -> (Option<usize>, bool) {
     let mut kept = None;
     let mut to = false;
-    let mut words = args.iter().take_while(|a| *a != "--");
-    while let Some(w) = words.next() {
-        if w == "--console-said" {
-            kept = words.next().and_then(|n| n.to_str()).and_then(|n| n.parse().ok());
+    let restore = args.first().is_some_and(|a| a == "restore");
+    let mut words = args.iter().skip(1);
+    while let Some((w, value)) = crate::spec::next_vm_word(&mut words, restore) {
+        if w == "--" {
+            break;
+        } else if w == "--console-said" {
+            kept = value.and_then(|n| n.to_str()).and_then(|n| n.parse().ok());
         } else if w == "--said-to" {
             to = true;
         }
@@ -301,7 +306,8 @@ pub fn given(args: &[std::ffi::OsString]) -> (Option<usize>, bool) {
 /// Whether the VM `args` start (`run …` or `restore …`) quotes its console as it fails: one
 /// whose console no one reads (`--no-console`), that runs no command and is no daemon's
 /// warm VM, whose starter takes no report of it already (`--said-to`). Its kernel, a
-/// run's (`--kernel`), or none for a restore.
+/// run's (`--kernel`), or none for a restore. Each word is read with its own command's
+/// grammar, as [`given`] reads it.
 pub fn quotes(args: &[std::ffi::OsString]) -> Option<Option<PathBuf>> {
     let first = args.first().and_then(|a| a.to_str())?;
     if !matches!(first, "run" | "restore") {
@@ -310,7 +316,7 @@ pub fn quotes(args: &[std::ffi::OsString]) -> Option<Option<PathBuf>> {
     let mut kernel = None;
     let mut discard = false;
     let mut words = args.iter().skip(1).cloned();
-    while let Some((w, value)) = crate::spec::next_word(&mut words) {
+    while let Some((w, value)) = crate::spec::next_vm_word(&mut words, first == "restore") {
         match w.to_str() {
             Some("--" | "--warm" | "--resume" | "--said-to") => return None,
             Some("--no-console") => discard = true,
@@ -483,6 +489,51 @@ mod tests {
         assert_eq!(
             given(&words(&["run", "--", "--console-said", "300"])),
             (None, false)
+        );
+    }
+
+    /// D12, D232: a VM's words are read as it reads them, a restore's with its own valued
+    /// flags (`spec::RESTORE_VALUED`): a backing file named `--no-console` quotes no console,
+    /// and one named `--said-to` is no starter's report, where read with run's grammar each
+    /// was the flag; and a flag's value, `--` included, is no flag to `given`.
+    #[test]
+    fn a_vms_values_are_never_its_flags() {
+        let run = |w: &[&str]| quotes(&words(w));
+        for valued in ["--backing", "--layer-cloned", "--working-set"] {
+            assert_eq!(run(&["restore", "dir", valued, "--no-console"]), None, "{valued}");
+            assert_eq!(
+                run(&["restore", "dir", "--no-console", valued, "--said-to"]),
+                Some(None),
+                "{valued}"
+            );
+            assert_eq!(
+                given(&words(&["restore", "dir", valued, "--said-to"])),
+                (None, false),
+                "{valued}"
+            );
+        }
+        assert_eq!(
+            given(&words(&[
+                "restore",
+                "dir",
+                "--backing",
+                "--console-said",
+                "--said-to",
+                "4"
+            ])),
+            (None, true)
+        );
+        assert_eq!(
+            given(&words(&[
+                "run",
+                "--kernel",
+                "k",
+                "--cmdline",
+                "--",
+                "--console-said",
+                "300"
+            ])),
+            (Some(300), false)
         );
     }
 
